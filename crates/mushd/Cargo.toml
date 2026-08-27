@@ -6,14 +6,11 @@ license.workspace = true
 authors.workspace = true
 description = "rustmush server binary: config, wiring, main loop"
 
+# M0: a synchronous stdin REPL — no tokio/config/tracing yet (they return
+# with the real server loop in M1).
 [dependencies]
 mush-core.workspace = true
-mush-proto.workspace = true
-tokio.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
-toml.workspace = true
-serde.workspace = true
+mush-testkit.workspace = true
 
 [lints]
 workspace = true

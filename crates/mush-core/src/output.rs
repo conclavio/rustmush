@@ -1,0 +1,381 @@
+//! The output pipeline: audiences, the [`Outbox`], and view builders.
+//!
+//! Per treaty ruling 1 the core emits [`mush_proto`] types **directly** —
+//! there is no parallel event enum here. Handlers queue
+//! `(Audience, OutputEvent)` pairs into an [`Outbox`]; the (future) world
+//! task resolves game audiences (room → actor list) and the session layer
+//! resolves actors → live connections (treaty ruling 2). In tests the outbox
+//! is simply inspected.
+
+use mush_proto::{ExitRef, ObjRef, OutputEvent, RichText, RoomView, Span};
+
+use crate::flags::{Flags, Powers};
+use crate::obj::{ObjId, ObjKind};
+use crate::perm;
+use crate::world::World;
+
+/// Placeholder connection id. The session layer (M1) owns the real type;
+/// the core only needs an opaque handle to address one specific connection
+/// (pre-login prompts, WHO refreshes).
+pub type ConnId = u64;
+
+/// Who should receive an event.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Audience {
+    /// One specific connection (pre-auth, panel hydration).
+    Conn(ConnId),
+    /// Every connection attached to one actor.
+    Actor(ObjId),
+    /// Everyone in a room, minus the excluded actors (usually the one who
+    /// already got a personalized line).
+    Room {
+        /// The room whose occupants should hear it.
+        room: ObjId,
+        /// Actors in the room who should *not* receive the event.
+        exclude: Vec<ObjId>,
+    },
+    /// Every connection on the game (`@wall`, shutdown notices).
+    All,
+}
+
+/// An ordered queue of `(Audience, OutputEvent)` pairs collected while a
+/// command runs. Draining and delivery belong to the caller.
+#[derive(Debug, Default)]
+pub struct Outbox {
+    events: Vec<(Audience, OutputEvent)>,
+}
+
+impl Outbox {
+    /// An empty outbox.
+    #[must_use]
+    pub fn new() -> Outbox {
+        Outbox::default()
+    }
+
+    /// Queue an event for an arbitrary audience.
+    pub fn push(&mut self, audience: Audience, event: OutputEvent) {
+        self.events.push((audience, event));
+    }
+
+    /// Queue an event to a single actor.
+    pub fn to_actor(&mut self, actor: ObjId, event: OutputEvent) {
+        self.push(Audience::Actor(actor), event);
+    }
+
+    /// Queue an event to a single connection.
+    pub fn to_conn(&mut self, conn: ConnId, event: OutputEvent) {
+        self.push(Audience::Conn(conn), event);
+    }
+
+    /// Queue an event to everyone in `room` except `exclude`.
+    pub fn to_room(&mut self, room: ObjId, exclude: Vec<ObjId>, event: OutputEvent) {
+        self.push(Audience::Room { room, exclude }, event);
+    }
+
+    /// Queue an event to everyone connected.
+    pub fn to_all(&mut self, event: OutputEvent) {
+        self.push(Audience::All, event);
+    }
+
+    /// Queue a [`OutputEvent::Sys`] line to one actor, tagged `tag`
+    /// (`"error"`, `"system"`, …).
+    pub fn sys_to_actor(&mut self, actor: ObjId, tag: &str, msg: impl Into<String>) {
+        self.to_actor(actor, OutputEvent::Sys(RichText::tag(tag, msg)));
+    }
+
+    /// Queue an error line (`Sys` tagged `"error"`) to one actor.
+    pub fn error(&mut self, actor: ObjId, msg: impl Into<String>) {
+        self.sys_to_actor(actor, "error", msg);
+    }
+
+    /// Queue an informational line (`Sys` tagged `"system"`) to one actor.
+    pub fn info(&mut self, actor: ObjId, msg: impl Into<String>) {
+        self.sys_to_actor(actor, "system", msg);
+    }
+
+    /// The queued events, in emission order.
+    #[must_use]
+    pub fn events(&self) -> &[(Audience, OutputEvent)] {
+        &self.events
+    }
+
+    /// Drain the queue, leaving the outbox empty.
+    pub fn take(&mut self) -> Vec<(Audience, OutputEvent)> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// Number of queued events.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    /// Whether nothing has been queued.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+}
+
+/// The semantic span tag for an object kind (`"player"`, `"npc"`, `"exit"`,
+/// `"room"`, `"thing"`). Renderers resolve these to theme colors / CSS.
+#[must_use]
+pub fn kind_tag(kind: ObjKind) -> &'static str {
+    match kind {
+        ObjKind::Room => "room",
+        ObjKind::Exit => "exit",
+        ObjKind::Thing => "thing",
+        ObjKind::Player => "player",
+        ObjKind::Npc => "npc",
+    }
+}
+
+/// The display name of an object: for exits, the primary (first `;`-segment)
+/// name; `"nothing"` for missing objects.
+#[must_use]
+pub fn display_name(w: &World, id: ObjId) -> String {
+    match w.get(id) {
+        Some(o) => primary_name(&o.name).to_string(),
+        None => "nothing".to_string(),
+    }
+}
+
+/// The primary segment of a possibly `;`-aliased name (`"north;n"` →
+/// `"north"`).
+#[must_use]
+pub fn primary_name(name: &str) -> &str {
+    name.split(';').next().unwrap_or(name).trim()
+}
+
+/// A wire [`ObjRef`] (`{id: "#5", name: "sword"}`) for an object.
+#[must_use]
+pub fn obj_ref(w: &World, id: ObjId) -> ObjRef {
+    ObjRef::new(id.to_string(), display_name(w, id))
+}
+
+/// A [`Span`] carrying the object's display name, semantically tagged by
+/// its kind — the building block for MUSH-style narrative lines.
+#[must_use]
+pub fn name_span(w: &World, id: ObjId) -> Span {
+    match w.get(id) {
+        Some(o) => Span::tagged(kind_tag(o.kind), primary_name(&o.name)),
+        None => Span::plain("nothing"),
+    }
+}
+
+/// Build the structured room render for `looker` looking at `room`
+/// (`None` if the room does not exist).
+///
+/// Visibility rules honored:
+/// - a `DARK` room hides its contents entirely;
+/// - an `OPAQUE` room hides contents from lookers **outside** it;
+/// - `DARK` objects and exits are omitted individually;
+/// - `GOING` husks never appear;
+/// - all of the above are waived when the looker controls the room/object
+///   or holds the `SEE_HIDDEN` power.
+#[must_use]
+pub fn room_view(w: &World, looker: ObjId, room: ObjId) -> Option<RoomView> {
+    let r = w.get(room)?;
+    let see_hidden = perm::has_power(w, looker, Powers::SEE_HIDDEN);
+    let inside = w.get(looker).and_then(|o| o.location) == Some(room);
+    let room_privileged = see_hidden || perm::controls(w, looker, room);
+
+    let desc = w.attr(room, "desc").and_then(|a| a.as_text()).map_or_else(
+        || RichText::plain("You see nothing special."),
+        RichText::plain,
+    );
+
+    let hide_contents = !room_privileged
+        && (r.flags.contains(Flags::DARK) || (r.flags.contains(Flags::OPAQUE) && !inside));
+
+    let mut contents = Vec::new();
+    if !hide_contents {
+        for &c in &r.contents {
+            if c == looker {
+                continue;
+            }
+            let Some(o) = w.get(c) else { continue };
+            if o.flags.contains(Flags::GOING) {
+                continue;
+            }
+            if o.flags.contains(Flags::DARK) && !see_hidden && !perm::controls(w, looker, c) {
+                continue;
+            }
+            // Primary segment only: "lever;switch" renders as "lever",
+            // consistent with every other name path.
+            contents.push(ObjRef::new(
+                c.to_string(),
+                primary_name(&o.name).to_string(),
+            ));
+        }
+    }
+
+    let mut exits = Vec::new();
+    for &e in &r.exits {
+        let Some(o) = w.get(e) else { continue };
+        if o.flags.contains(Flags::GOING) {
+            continue;
+        }
+        if o.flags.contains(Flags::DARK) && !see_hidden && !perm::controls(w, looker, e) {
+            continue;
+        }
+        let mut segs = o.name.split(';').map(str::trim).filter(|s| !s.is_empty());
+        let name = segs.next().unwrap_or("").to_string();
+        let mut aliases: Vec<String> = segs.map(str::to_string).collect();
+        aliases.extend(o.aliases.iter().map(|a| a.to_string()));
+        exits.push(ExitRef { name, aliases });
+    }
+
+    let zone = r
+        .zone
+        .and_then(|z| w.get(z))
+        .map(|zo| ObjRef::new(zo.id.to_string(), zo.name.clone()));
+
+    Some(RoomView {
+        name: r.name.clone(),
+        id: room.to_string(),
+        desc,
+        contents,
+        exits,
+        zone,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::attr::Attr;
+    use crate::obj::{GOD, LIMBO};
+
+    fn setup() -> (World, ObjId, ObjId) {
+        let mut w = World::new_minimal();
+        let nick = w.create(ObjKind::Player, "Nick", GOD, Some(LIMBO)).unwrap();
+        let hall = w.create(ObjKind::Room, "Hall", GOD, None).unwrap();
+        (w, nick, hall)
+    }
+
+    #[test]
+    fn outbox_helpers_and_take() {
+        let mut out = Outbox::new();
+        assert!(out.is_empty());
+        out.error(ObjId(2), "nope");
+        out.info(ObjId(2), "fine");
+        out.to_room(
+            LIMBO,
+            vec![ObjId(2)],
+            OutputEvent::Sys(RichText::plain("x")),
+        );
+        assert_eq!(out.len(), 3);
+        match &out.events()[0] {
+            (Audience::Actor(a), OutputEvent::Sys(t)) => {
+                assert_eq!(*a, ObjId(2));
+                assert_eq!(t.to_plain_text(), "nope");
+                assert_eq!(t.spans()[0].tag.as_deref(), Some("error"));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        match &out.events()[1] {
+            (_, OutputEvent::Sys(t)) => {
+                assert_eq!(t.spans()[0].tag.as_deref(), Some("system"));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        let drained = out.take();
+        assert_eq!(drained.len(), 3);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn name_span_tags_by_kind() {
+        let (mut w, nick, hall) = setup();
+        let exit = w.create(ObjKind::Exit, "north;n", GOD, Some(hall)).unwrap();
+        let npc = w.create(ObjKind::Npc, "Barkeep", GOD, Some(hall)).unwrap();
+        let thing = w.create(ObjKind::Thing, "mug", GOD, Some(hall)).unwrap();
+        assert_eq!(name_span(&w, nick).tag.as_deref(), Some("player"));
+        assert_eq!(name_span(&w, npc).tag.as_deref(), Some("npc"));
+        assert_eq!(name_span(&w, hall).tag.as_deref(), Some("room"));
+        assert_eq!(name_span(&w, thing).tag.as_deref(), Some("thing"));
+        let e = name_span(&w, exit);
+        assert_eq!(e.tag.as_deref(), Some("exit"));
+        assert_eq!(e.text, "north"); // primary segment only
+        assert_eq!(name_span(&w, ObjId(99)).text, "nothing");
+        assert_eq!(obj_ref(&w, nick).id, nick.to_string());
+    }
+
+    #[test]
+    fn room_view_basics_and_desc() {
+        let (mut w, nick, hall) = setup();
+        w.move_to(nick, hall).unwrap();
+        w.set_attr(hall, "desc", Attr::text("A big hall.", GOD))
+            .unwrap();
+        let exit = w.create(ObjKind::Exit, "north;n", GOD, Some(hall)).unwrap();
+        w.add_alias(exit, "no").unwrap();
+        let ball = w.create(ObjKind::Thing, "ball", GOD, Some(hall)).unwrap();
+
+        let rv = room_view(&w, nick, hall).unwrap();
+        assert_eq!(rv.name, "Hall");
+        assert_eq!(rv.id, hall.to_string());
+        assert_eq!(rv.desc.to_plain_text(), "A big hall.");
+        // Looker excluded; ball listed.
+        assert_eq!(rv.contents.len(), 1);
+        assert_eq!(rv.contents[0].name, "ball");
+        assert_eq!(rv.contents[0].id, ball.to_string());
+        // Exit name split into primary + aliases (segments then alias list).
+        assert_eq!(rv.exits.len(), 1);
+        assert_eq!(rv.exits[0].name, "north");
+        assert_eq!(rv.exits[0].aliases, vec!["n".to_string(), "no".to_string()]);
+        // Default desc when unset.
+        let rv0 = room_view(&w, nick, LIMBO).unwrap();
+        assert_eq!(rv0.desc.to_plain_text(), "You see nothing special.");
+        assert!(room_view(&w, nick, ObjId(99)).is_none());
+    }
+
+    #[test]
+    fn room_view_honors_dark_and_opaque() {
+        let (mut w, nick, hall) = setup();
+        w.move_to(nick, hall).unwrap();
+        let ball = w.create(ObjKind::Thing, "ball", GOD, Some(hall)).unwrap();
+        let exit = w.create(ObjKind::Exit, "north", GOD, Some(hall)).unwrap();
+
+        // DARK object hidden from plain players, visible to God (controls).
+        // (Hall holds Nick and the ball; the looker is never listed.)
+        w.set_flag(ball, Flags::DARK, true).unwrap();
+        assert!(room_view(&w, nick, hall).unwrap().contents.is_empty());
+        assert_eq!(room_view(&w, GOD, hall).unwrap().contents.len(), 2);
+        w.set_flag(ball, Flags::DARK, false).unwrap();
+
+        // DARK exit hidden.
+        w.set_flag(exit, Flags::DARK, true).unwrap();
+        assert!(room_view(&w, nick, hall).unwrap().exits.is_empty());
+        w.set_flag(exit, Flags::DARK, false).unwrap();
+
+        // DARK room hides all contents from non-controllers.
+        w.set_flag(hall, Flags::DARK, true).unwrap();
+        assert!(room_view(&w, nick, hall).unwrap().contents.is_empty());
+        assert_eq!(room_view(&w, GOD, hall).unwrap().contents.len(), 2);
+        w.set_flag(hall, Flags::DARK, false).unwrap();
+
+        // OPAQUE hides contents from outside lookers only.
+        w.set_flag(hall, Flags::OPAQUE, true).unwrap();
+        assert_eq!(room_view(&w, nick, hall).unwrap().contents.len(), 1);
+        let outsider = w.create(ObjKind::Player, "Out", GOD, Some(LIMBO)).unwrap();
+        assert!(room_view(&w, outsider, hall).unwrap().contents.is_empty());
+
+        // SEE_HIDDEN power waives DARK (and OPAQUE-from-outside).
+        w.set_flag(hall, Flags::DARK, true).unwrap();
+        w.get_mut(outsider).unwrap().powers = Powers::SEE_HIDDEN;
+        assert_eq!(room_view(&w, outsider, hall).unwrap().contents.len(), 2);
+    }
+
+    #[test]
+    fn room_view_includes_zone() {
+        let (mut w, nick, hall) = setup();
+        let zmo = w
+            .create(ObjKind::Thing, "Downtown", GOD, Some(LIMBO))
+            .unwrap();
+        w.set_flag(zmo, Flags::ZONE_MASTER, true).unwrap();
+        w.set_zone(hall, Some(zmo)).unwrap();
+        let rv = room_view(&w, nick, hall).unwrap();
+        assert_eq!(rv.zone.unwrap().name, "Downtown");
+    }
+}
