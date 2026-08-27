@@ -1,0 +1,14 @@
+[package]
+name = "mush-ansi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "OutputEvent -> ANSI renderer: themes, color downgrade, wrapping"
+
+[dependencies]
+mush-proto.workspace = true
+smol_str.workspace = true
+
+[lints]
+workspace = true

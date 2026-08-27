@@ -1,0 +1,28 @@
+# SSH keys — never commit
+hostinger
+hostinger.pub
+*.pem
+id_*
+
+# Rust
+/target/
+**/*.rs.bk
+
+# Node / web client
+node_modules/
+web/dist/
+
+# Secrets & local config
+.env
+.env.*
+mushd.local.toml
+
+# Runtime data
+/data/
+*.rdb
+*.aof
+logs/
+
+# OS noise
+Thumbs.db
+.DS_Store

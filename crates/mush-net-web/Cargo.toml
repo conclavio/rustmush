@@ -1,0 +1,16 @@
+[package]
+name = "mush-net-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "axum web server: token auth, WS envelope, embedded SPA"
+
+[dependencies]
+mush-session.workspace = true
+mush-proto.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

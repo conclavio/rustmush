@@ -1,0 +1,17 @@
+[package]
+name = "mush-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Redis 8 persistence: ObjectStore trait, RedisJSON docs, write-through pipeline, accounts"
+
+[dependencies]
+mush-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

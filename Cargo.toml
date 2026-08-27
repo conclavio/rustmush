@@ -1,0 +1,80 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["Nicholas York"]
+
+# Version pins verified Aug 2026 at design time; each crate re-verifies when its
+# milestone lands (entries here are inert until a member references them).
+[workspace.dependencies]
+# core plumbing
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+bitflags = { version = "2", features = ["serde"] }
+smol_str = { version = "0.3", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+# dice / rng
+rand = "0.9"
+rand_chacha = "0.9"
+winnow = "0.7"
+# store (M2)
+fred = "10"
+# net (M1/M4)
+russh = "0.63"
+axum = { version = "0.8", features = ["ws"] }
+tower-http = { version = "0.6", features = ["fs", "trace", "compression-gzip"] }
+tower_governor = "0.8"
+rust-embed = "8"
+argon2 = "0.5"
+dashmap = "6"
+# scripting (M5)
+rhai = { version = "1", features = ["sync", "serde"] }
+# llm (M7)
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+eventsource-stream = "0.2"
+backon = "1"
+governor = "0.8"
+# schema / codegen
+schemars = "1"
+ts-rs = "10"
+# config
+toml = "0.8"
+# workspace-internal
+mush-proto = { path = "crates/mush-proto" }
+mush-core = { path = "crates/mush-core" }
+mush-ansi = { path = "crates/mush-ansi" }
+mush-store = { path = "crates/mush-store" }
+mush-session = { path = "crates/mush-session" }
+mush-net-ssh = { path = "crates/mush-net-ssh" }
+mush-net-web = { path = "crates/mush-net-web" }
+mush-script = { path = "crates/mush-script" }
+mush-llm = { path = "crates/mush-llm" }
+mush-worldgen = { path = "crates/mush-worldgen" }
+mush-npc = { path = "crates/mush-npc" }
+mush-ruleset = { path = "crates/mush-ruleset" }
+mush-dice = { path = "crates/mush-dice" }
+mush-jobs = { path = "crates/mush-jobs" }
+mush-comsys = { path = "crates/mush-comsys" }
+mush-mail = { path = "crates/mush-mail" }
+mush-weather = { path = "crates/mush-weather" }
+ruleset-wod = { path = "crates/ruleset-wod" }
+ruleset-btech = { path = "crates/ruleset-btech" }
+mush-testkit = { path = "crates/mush-testkit" }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+
+[profile.release]
+lto = "thin"

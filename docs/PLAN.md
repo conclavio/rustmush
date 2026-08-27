@@ -1,0 +1,135 @@
+# rustmush — Modern MUSH Server in Rust: Master Plan
+
+## Context
+
+Greenfield project in `C:\Users\faeni\cc\rustmush` (currently empty, not yet a git repo): a TinyMUX/TinyMUSH/RhostMUSH-style game server in Rust with **SSH access instead of telnet**, a **native web client** (structured protocol, not an SSH wrapper), **native LLM integration** (worldbuilding assist + LLM-driven NPC agents), and **ruleset modules** — World of Darkness first, BattleTech (btmux-style) later. Built-ins: chat channels (comsys), @mail, weather.
+
+Four parallel design agents produced detailed subsystem designs (server core, connectivity, LLM, game systems) and a critic reconciled them. This plan is the unified synthesis. The full design docs (~150K chars) will be committed to `docs/design/` in step 0 as implementation reference — with a README note that their SQLite persistence sections and mlua/Luau scripting choice are **superseded** by the Redis and Rhai decisions below (user calls after plan review).
+
+**User decisions (locked):**
+- No mushcode/softcode interpreter. Classic MUSH command surface (@dig, @desc, look, say, pose, +commands) hardcoded in Rust; user scripting via embedded **Rhai** only (user preference — not a Lua fan; also removes the vendored C++ build risk entirely since Rhai is pure Rust).
+- Dev on Windows 11; production target is an **Ubuntu LTS VPS (16GB RAM / 4 vCPU)** — Redis 8 runs locally on the same box under systemd. CI matrix covers both platforms.
+- World of Darkness ruleset first; BattleTech later but its seams reserved now.
+- LLM: multi-provider from day one — Anthropic Messages API + generic OpenAI-compatible client (covers OpenAI, Ollama, vLLM), behind one trait.
+- Web client: rich hybrid UI — scrollback + input center, native panels (channels, sheet, mail, who, map) fed by JSON events over WebSocket.
+
+## Architecture at a glance
+
+- **Single-writer world**: one tokio task owns the entire in-RAM `World`; zero locks on game state. Everything else (SSH/WS sessions, LLM calls, store writer, NPC agents) is separate tasks over channels. Handlers are sync and fast; slow work snapshots context, runs detached, re-enters as typed commands.
+- **Persistence (user decision)**: **Redis 8+ is the authoritative persistent store** — RedisJSON docs per object, Query Engine (RediSearch) indexes, streams for history/audit, native TTL for tokens. As of Redis 8, JSON/search/vector are in core Redis under AGPLv3 (tri-licensed). The in-process `World` remains a full read cache so command handlers stay sync and fast, but persistence is **write-through, not write-behind**: each command's mutations are pipelined to Redis as one MULTI/EXEC transaction immediately on completion (durability-critical ops — account creation, mail send, XP approval — gate their confirmation output on the ack). Redis runs AOF `appendfsync everysec` by default (`always` for zero-loss pedants) + RDB snapshots for backups. Crash recovery is therefore trivial: restart loads the world from Redis; at most the in-flight command is lost — no dirty-flush window, no replay machinery. Boot fails fast with a clear error if Redis is unreachable; if Redis drops mid-game, mutating commands pause with a staff alert until fred reconnects (reads continue from RAM). Migrations are app-level versioned per namespace (meta keys + Rust migration fns; BGSAVE before migrate is mandatory). Rust client: `fred` (async-first, first-class RedisJSON support, actively maintained; redis-rs lacks a native JSON interface). Storage sits behind a thin `ObjectStore` trait with an in-memory fake for tests, so most tests never need a live Redis.
+- **Scripting**: **Rhai** — pure Rust, sandboxed by construction (no filesystem/network/process access unless we register it) with built-in budget knobs: `set_max_operations` (CPU), `max_call_levels`, `max_string_size`/`max_array_size`/`max_map_size` (memory), plus a wall-clock backstop via progress callback. One engine scope per script owner. Scripts live in `script:*` attributes, compiled to cached ASTs. Hooks: on_command (the no-softcode replacement for $-commands), on_enter/leave, on_hear, on_use, timers. Overrun → abort, error to owner, auto-disable after 3 strikes. Exposed API is the `mush` module (attr get/set, emit, move, schedule, matchit, dice — every call permission-checked as the script owner); modules extend it (`mush::dice`, `mush::weather`).
+- **Protocol**: one semantic `OutputEvent` enum in `mush-proto` (serde). Spans carry semantic `tag` + optional explicit style + optional click-to-run `link`. Two renderers: ANSI (SSH) and JSON envelope (web; the enum *is* the wire format, `{seq, ts, t, d}`). Module panels ride `Panel { feed: "wod.roll", data }` frames with keyframe+delta support. TS types generated via ts-rs.
+- **SSH**: russh 0.63.x, ed25519 host key generated on first boot. Username routing: `guest` / `new` (account wizard) / `play` (classic welcome screen + `connect name password`) / `<account>` (pubkey via in-game `@sshkey/add`, else password). Argon2id everywhere. Server-side LineEditor (raw mode: we own echo/editing/masked input/history). Linkdead grace on drop.
+- **Web**: axum 0.8 + WS; opaque server-side tokens (persisted, hashed); Svelte 5 + Vite + TS SPA embedded via rust-embed; DOM-rendered scrollback (no xterm.js); resume via per-session ring buffer + seq replay.
+- **LLM**: `mush-llm` = thin hand-rolled adapters (reqwest/rustls + eventsource-stream + backon + governor), neutral Anthropic-shaped types, `LlmService` front door: feature routes (TOML config: provider/model/max_tokens/effort/timeout per feature), layered budgets (global/feature/NPC/**builder**), audit table, kill switches, circuit breaker.
+- **Worldgen**: zone Theme objects (style guide, vocabulary, banned words, exemplars) resolved hierarchically; `@gen here=<prose>` → forced tool-call structured output → **draft** table → builder review (`@gen/accept|edit|retry|discard`) → commits through normal attr-set path. Batch: `@gen/building` = brief pass (reviewed) then per-room passes seeded with brief + drafted neighbors. Worldgen describes; it never digs topology.
+- **NPC agents**: `ObjKind::Npc` first-class + `AgentProfile` (persona/background/goals/knowledge bounds/tier) in `agent:*` JSON attrs. `AgentHost` owns per-NPC tasks: stimulus coalescing (1–2s window), one in-flight call, tier cooldowns, **no players in room = zero tokens**. Actions via typed tool allowlist only (say/pose/move/look/remember/use_ability/do_nothing) — never raw command text; re-validated in the world task. Memory: rolling buffer → summarization attr → subject-keyed long-term memory docs (embedding recall later via Redis 8 native vector search, behind a `MemoryRecall` trait). Injection posture: allowlist is the security boundary; secrets never enter prompts; player speech delimited/escaped; full audit log.
+- **Rulesets**: compiled-in crates implementing `Ruleset` (a `GameModule` + sheet schema/chargen/agent grounding), selected by config + cargo features. Declarative `SheetSchema` (dots/tracks/derived exprs) drives +sheet rendering, web panel, validation, chargen, and LLM sheet summaries from one source. `mush-dice`: winnow grammar + per-die records + seedable RNG; pool mechanics per ruleset (CofD 2e first: 8-again, rote, chance die; oWoD20 as later variant).
+- **BattleTech seams reserved from M0** (verified by a stub `ruleset-btech` crate kept green in CI): `TickCadence::{Coarse,Fast,Scene}`, `SceneId` + scene hooks, `RulesetStateStore` + `MapBlob`, panel keyframe/delta frames, parser input-context stack (also used by mail compose, chargen, masked passwords), veto-capable `MoveAttempt` hook, `WeatherQuery`.
+- **Comsys**: TinyMUX surface (`addcom pub=Public`, alias-as-verb `pub Hello`, `comlist`, `@channel/*` admin), per-channel ring history + persistence, web channel tabs with unread cursors.
+- **@mail**: flat messages + `reply_to` (web derives threads), named folders, quotas, compose via input context, soft-delete.
+- **Weather**: zone-scoped Markov state machine over climate data files, seasonal/time-of-day matrices, INDOORS/OUTDOORS/SHELTERED room flags, staff pinning. LLM only tops up cached flavor-line pools per (climate,state,season,tod) bucket — states are always deterministic.
+- **Jobs/notes** (`mush-jobs`): ticket queues with structured payload + approval handlers (powers chargen approval and XP spends), `+request` for players, `+note` character notes.
+
+## Workspace layout (final, resolves naming conflicts)
+
+```
+rustmush/
+├── Cargo.toml            # virtual workspace, shared deps + lints
+├── crates/
+│   ├── mush-proto/       # OutputEvent, ClientCommand, RichText/Span, ClientCaps, envelope. serde only. ts-rs export.
+│   ├── mush-core/        # World, Obj/attrs/flags/locks/zones, matchit, perms, command registry,
+│   │                     #   merged module Registrar, scheduler, Outbox/Effects, game clock. → mush-proto
+│   ├── mush-ansi/        # OutputEvent → ANSI renderer, color downgrade, themes, wrapping. → mush-proto
+│   ├── mush-store/       # fred/Redis: ObjectStore trait + Redis impl + in-memory fake; object JSON docs,
+│   │                     #   FT index bootstrap, write-through pipeline (per-command MULTI/EXEC), ack gating,
+│   │                     #   accounts/bans/tokens, streams, sorted-set scheduler persistence,
+│   │                     #   namespaced app-level migrations, BGSAVE orchestration. → mush-core
+│   ├── mush-session/     # SessionManager, ConnectionHandle, attach/detach, linkdead, resume buffers,
+│   │                     #   flood control, backpressure. → mush-proto
+│   ├── mush-net-ssh/     # russh server, auth flows, LineEditor, caps detection. → mush-session, mush-ansi
+│   ├── mush-net-web/     # axum, token auth, WS envelope/resume, rust-embed SPA. → mush-session, mush-proto
+│   ├── mush-script/      # Rhai engine, sandbox budgets, hook plumbing. → mush-core
+│   ├── mush-llm/         # provider trait, anthropic.rs, openai.rs, LlmService (routes/budgets/audit). → mush-core
+│   ├── mush-worldgen/    # themes, @gen draft/review pipeline, batch briefs. → mush-core, mush-llm
+│   ├── mush-npc/         # AgentHost/AgentTask, stimuli, action tools, memory. → mush-core, mush-llm
+│   ├── mush-ruleset/     # Ruleset trait, SheetSchema/SheetDoc/SheetStore, chargen framework, scenes. → mush-core
+│   ├── mush-dice/        # winnow dice grammar, per-die records, PoolMechanic trait. leaf + rand
+│   ├── mush-jobs/        # ticket queues + notes. → mush-core
+│   ├── mush-comsys/      # channels module. → mush-core
+│   ├── mush-mail/        # @mail module. → mush-core
+│   ├── mush-weather/     # weather module + climate data. → mush-core
+│   ├── ruleset-wod/      # CofD 2e (oWoD20 variant later). → mush-ruleset, mush-dice
+│   ├── ruleset-btech/    # STUB seam-test ruleset from M0; real engine later (hexx). → mush-ruleset, mush-dice
+│   ├── mush-testkit/     # in-process world driver, fake connections, scripted I/O assertions
+│   └── mushd/            # binary: mushd.toml config, wiring, main loop, graceful shutdown
+├── web/                  # Svelte 5 + Vite + TS SPA (npm; built into mush-net-web via rust-embed)
+└── docs/design/          # the four subsystem design docs + critique, committed as reference
+```
+
+Key pinned deps (versions verified, Aug 2026): tokio 1, russh 0.63, axum 0.8, **fred** (Redis client, RESP3 + RedisJSON), **rhai** (latest 1.x), reqwest 0.12 (rustls), backon, governor, eventsource-stream, winnow 0.7, schemars, ts-rs, argon2, tower_governor 0.8, rust-embed, rand 0.9 + rand_chacha, bitflags 2, smol_str, thiserror 2, tracing.
+
+**Redis data layout** (all in one Redis 8+ instance, logical key namespaces): `obj:{id}` JSON doc per object (fields + attrs; attr writes are `JSON.SET obj:N $.attrs.<name>`); FT indexes over name/aliases/kind/owner/zone/flags + full-text over desc-class attrs (powers `@find`, `@search`, player lookup); `account:{name}` JSON + index; web tokens as keys with native TTL; `chan:{id}:history` streams; mail as JSON docs + per-owner index; jobs as JSON; LLM audit + budget counters as JSON/streams; persisted scheduler entries in a due-time sorted set; `next_id` via INCR; NPC long-term memories as JSON docs queried by subject — with Redis 8 **vector search** as the native upgrade path for embedding recall (replaces the previously deferred sqlite-vec seam). Dev/ops: Redis 8 via Docker/WSL2, or natively on Windows via Memurai (official Redis partner, Redis 8.2-based builds); `mushd.toml` carries the connection URL; README documents recommended redis.conf (AOF everysec/always + RDB save points) and the AGPLv3 licensing note (fine for running a server; we don't redistribute Redis).
+
+## Treaty rulings (resolve the critique's contradictions — binding for implementation)
+
+1. **One protocol.** `mush-proto::OutputEvent` merges the three vocabularies: connectivity's event shapes + spans (`tag` + optional explicit style + `link`), game-systems' rich per-domain payloads (e.g. channel msg carries seq/speaker/title/kind/ts), and `Panel { feed, kind: Keyframe|Delta, data }` frames + capability negotiation in the `hello` frame (features + panel manifest + sheet JSON Schemas). Modules register text-fallback renderers with `mush-ansi` for panel events.
+2. **Fan-out split.** The world task resolves *game* audiences (room → list of actor ObjIds); `mush-session::SessionManager` resolves actor → live connections (`Target::Char`) and owns delivery/backpressure. Events are `Arc`-wrapped once.
+3. **Async re-entry = typed commands.** All cross-crate async completions re-enter the world as typed `WorldCommand` variants (e.g. `NpcAct`, `WorldgenDraftReady`, `AuthResult`) with correlation ids, handled by their registering module and re-validated against current state. `Inbound::Apply` closures are permitted only inside mush-core internals. LLM tasks never hold world references — snapshot context in, typed command out.
+4. **One module API.** Merged `GameModule` trait + `Registrar`: commands (`Arc<dyn CommandHandler>` — trait objects, NOT fn pointers, so modules capture state; `CommandSpec` includes switches, arg shape, lock/power gate, **help text**), `TickCadence::{Coarse,Fast,Scene}` with dynamic add/remove, veto-capable hooks (`MoveAttempt`, `LookRendered`, scene/connect events), panel feeds, query handlers (web `Req` hydration), Rhai API modules (`mush::<id>::*`), job queues, namespaced migrations, typed state slots. `Ruleset` extends `GameModule` with `sheet_schema()/chargen()/migrate_sheet()/agent_profile()/invoke_ability()`. Comsys + mail are built on this API first as its proving ground — no second registry ever.
+5. **Dispatch order.** prefix chars (`"` `:` `;` `\`) → per-player comsys aliases → exit match (room, zone, global) → command table (longest-prefix; @-cmds exact) → Huh (with fuzzy suggestion). `addcom` warns when an alias shadows an exit or command.
+6. **NPC model.** `ObjKind::Npc` first-class kind; `AgentProfile` in `agent:*` JSON attrs; `mush-npc::AgentHost` per-NPC tasks are the wake/coalescing mechanism (world scheduler only forwards subscribed events as stimuli). Ruleset grounding via `Ruleset::agent_profile(&SheetDoc) -> AgentCapabilityProfile` (summary, trimmed stats, tool manifest) + `Ruleset::invoke_ability()` — the LLM doc's separate `RulesetAgentExt` trait is subsumed.
+7. **Sheets.** `SheetDoc` (versioned JSON + `ApprovalState`) stored as `AttrValue::Json` under `sheet:<ruleset>`; `SheetStore` in mush-ruleset is a validating/auditing facade over attr access. One storage, one API.
+8. **Zone themes.** Single `worldgen.theme` JSON attribute on Zone Master Objects holding the rich `Theme` struct (style_guide, vocabulary, banned, exemplars, desc_length, pov_rules); consumed by worldgen AND weather flavor. Worldgen command surface is `@gen`.
+9. **Versions/naming.** russh 0.63.x; crate names as in the layout above; the scripting language is Rhai and its game API namespace is the `mush` module (`mush::dice`, `mush::weather`, …); `mush-llm → mush-core` dependency accepted (ObjId in CallCtx).
+
+## Gap closures (from critique — now owned)
+
+- **Accounts are core store schema v1**: accounts (argon2 hash, email optional, SSH keys), characters-per-account (cap config), bans, web token hashes (persisted with native TTL — sessions survive restart). Async `AuthService` reads account docs directly via fred (no world-task round trip); account writes go through the world/store path.
+- **Login/creation end-to-end owned by core+net**: account wizard (`ssh new@host`) → create account → character naming (name rules/reserved list) → Player object created in start room; `chargen_required` config gates play behind ruleset chargen + approval (Unapproved chars restricted to a chargen area). Guest pool (GuestN objects, reset on disconnect). Staff `@newpassword`; self-serve reset deferred (needs email infra; config-off stub).
+- **LLM spend permissions**: `@gen` gated on `Powers::BUILDER_LLM`; per-builder daily quota added to the budget ledger alongside global/feature/NPC.
+- **Admin tooling**: `@boot`, `@wall`, sitebans (feeding IpGuard), `@ps` (queue/scheduler inspection), `@stats` (uptime, loop-lag watchdog, DB flush health), `@dump`, ignore/mute lists (`@ignore player`), staff log tailing.
+- **Help system**: `help <cmd>` generated from CommandSpec help fields + markdown topic files in `docs/help/` loaded at boot; `+help` for module commands.
+- **Game clock**: core IC clock (configurable IC:OOC ratio + calendar + season/time-of-day) — weather and rulesets read it.
+- **Config**: single `mushd.toml` (ports, TLS, trusted_proxies, flush intervals, idle policy, `[llm]`, `[rulesets]`, `[weather]`); documented hot-reload set (`@reload` — routes/budgets/themes/help), rest requires restart.
+- **Shutdown sequence** (also SIGTERM): stop accepting → announce → abort in-flight LLM → NPC memory summaries flush → drain write pipeline (await final acks) → trigger BGSAVE → exit. Crash-only safe by design (write-through means Redis is always current to within the in-flight command).
+- **Backups**: RDB snapshots (BGSAVE on schedule + `@dump`) + AOF; retention/copy-offsite via documented ops script; `@dump/verify` sanity-loads the latest RDB; BGSAVE-before-migrate mandatory; documented restore procedure (point Redis at the dump, start mushd).
+- **Observability**: tracing with rolling file logs + stdout, loop-lag metric, per-feature LLM cost counters surfaced in `@llm/budget` and web staff panel (full dashboards later).
+- **Testing**: mush-testkit (in-process, in-memory ObjectStore fake, no sockets) for module/e2e logic; Redis integration tests gated on `REDIS_URL` (Linux CI runs a Redis 8 service container; dev box runs them locally); cargo-fuzz targets for LineEditor + WS envelope decode; golden seeded-RNG dice tests; MockProvider for LLM; one real-socket smoke test (russh client + WS client) in CI; soak test for the write-through pipeline.
+
+## Milestones (each demoable; order from critique)
+
+- **M0 — Skeleton (wk 1–2):** git init; commit design docs; workspace + CI (GitHub Actions, Windows + Ubuntu matrix — pure-Rust deps throughout, no C/C++ vendored builds to babysit); mush-proto v0; mush-core object model + matchit + perms + locks; mush-testkit; stdin REPL driver. *Demo: look/say/pose/@dig/@desc pass in tests.*
+- **M1 — Two players SSH and talk (wk 3–5):** world task + scheduler + typed-command re-entry; SessionManager; russh + LineEditor + `play` welcome screen; minimal accounts (create/connect, argon2); say/pose/movement/WHO/QUIT; prototype the M1 seam early with a fake 3-second "LLM" call to prove the async model.
+- **M2 — Durability + real accounts (wk 5–7):** mush-store on Redis 8: object JSON docs + FT index bootstrap, write-through per-command pipeline + ack gating, world load on boot, app-level migration versioning; accounts/characters/bans/tokens; char select; multi-connect + linkdead; BGSAVE backups + restore procedure; graceful shutdown; kill-9-both-processes test; IpGuard. *Demo: kill -9 the server mid-play → restart → world intact including the last command.*
+- **M3 — Building + module API v1 (wk 7–10):** full @-building suite, zones, powers; merged Registrar + input context stack; **comsys + mail + jobs as proving modules**; help system; admin tools; btech stub crate green in CI (stays green forever after).
+- **M4 — Web client MVP (wk 10–12):** axum + token auth + WS envelope/resume; SPA scrollback + input; channel tabs; WHO rail; mail panel. *Demo: SSH and web user in the same room.*
+- **M5 — Scripting + weather (wk 12–14):** mush-script sandbox/budgets/hooks; game clock; weather module (ticks, zones, room flags, LookRendered). *Demo: scripted room trigger; rain rolls in.*
+- **M6 — Dice + WoD playable core (wk 14–17):** mush-dice; SheetSchema/SheetDoc/store; `+sheet`, `@sheet/set`, full `+roll` syntax (rote/9again/wp/contested/extended/priv/job), damage tracks, roll log, wod panels. *Demo: an ST runs a scene end to end.*
+- **M7 — LLM foundation + worldgen (wk 17–19):** mush-llm adapters/routes/budgets/audit/kill switches (BUILDER_LLM + per-builder quotas); themes; `@gen` single-room draft/review; web preview panel. *Demo: builder generates and accepts a desc.*
+- **M8 — NPC agents (wk 19–22):** AgentHost, stimuli/coalescing, action tools, memory v1, WoD grounding (validated `wod_roll`), fallback lines, `npc.thinking` indicator. *Demo: players chat with a bartender who rolls real dice.*
+- **M9 — Progression + hardening (wk 22–25):** chargen wizard (terminal + web) wired end to end; beats/XP → job approval applying sheet diffs; +note; backpressure/flood/fuzz/load pass; observability pass. *Demo: new player signs up → approved character → plays.*
+- **M10 — Depth:** batch `@gen/building`, memory summarization + long-term recall, weather LLM flavor pools, oWoD20 variant, cost dashboards, streaming worldgen previews. **Then BattleTech**: grow ruleset-btech (hexx maps, unit templates, scene tickers, heat/weapons, canvas map panel) touching only reserved seams.
+
+## Immediate next steps on approval
+
+1. `git init`, `.gitignore`, commit the four design docs + critique into `docs/design/` (source: workflow output file in scratchpad).
+2. Scaffold the workspace (root Cargo.toml, all crate stubs compiling, web/ Vite scaffold), CI workflow (Windows + Ubuntu).
+3. Begin M0: mush-proto v0 + mush-core object model with tests through mush-testkit.
+
+## Verification
+
+- Per-milestone demo criteria above; every milestone ends with `cargo test` green on Windows + Linux CI.
+- M1+: manual SSH smoke test via OpenSSH client on Windows Terminal (`ssh -p 2222 play@localhost`).
+- M4+: web client via Claude's browser pane against localhost.
+- M7+: `@llm/test` smoke command against real Anthropic key (env) and local Ollama when available; MockProvider in CI; prompt-cache assertion test (`cache_read_input_tokens > 0` on repeated NPC turns).
+- Standing: btech stub seam test, LineEditor/envelope fuzzers, seeded dice golden tests, kill-9 durability test.
+
+## Top risks (watched from day one)
+
+1. The proto/session/output seam → prototyped end-to-end in M1 before features stack on it.
+2. Single-writer loop + async edges (auth, LLM, write-ack gating) → fake-slow-call prototype in M1; loop-lag watchdog from M2.
+3. Redis as a hard runtime dependency → fred auto-reconnect + pause-mutations-on-outage policy; per-command MULTI/EXEC keeps crash consistency; `ObjectStore` trait keeps an embedded-backend escape hatch if ops burden ever bites; Windows dev via Docker/WSL2/Memurai documented in README (prod is Redis 8 on the Ubuntu box itself).
+4. russh pre-1.0 API churn → pinned minor, russh types quarantined in mush-net-ssh.
+5. Module API ossifying wrong → comsys/mail/jobs must ship on the merged Registrar (M3) before WoD freezes it.
+6. Rhai interpreter speed on hot hooks (AST-walking; e.g. on_hear firing per room line) → budget caps bound the damage; profile in M5; hot paths belong in Rust modules, scripts are for glue and builder logic.

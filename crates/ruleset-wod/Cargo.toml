@@ -1,0 +1,17 @@
+[package]
+name = "ruleset-wod"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "World of Darkness ruleset (CofD 2e first)"
+
+[dependencies]
+mush-ruleset.workspace = true
+mush-dice.workspace = true
+mush-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

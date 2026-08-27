@@ -1,0 +1,16 @@
+[package]
+name = "mush-weather"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Zone weather state machines, climate data, ambience"
+
+[dependencies]
+mush-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+
+[lints]
+workspace = true

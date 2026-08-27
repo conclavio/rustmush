@@ -1,0 +1,17 @@
+[package]
+name = "mush-ruleset"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Ruleset trait, SheetSchema/SheetDoc, chargen framework, scenes"
+
+[dependencies]
+mush-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
