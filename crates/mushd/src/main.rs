@@ -30,6 +30,7 @@ use mushd::modules;
 use mushd::persist::load_or_seed_world;
 use mushd::ssh_bridge::{SshBridge, start_listener};
 use mushd::staff::{StaffQueue, register_server_commands};
+use mushd::web_bridge::WebBridge;
 use mushd::world_task::{self, ServerDeps};
 use mushd::{repl, unix_now_s};
 
@@ -158,6 +159,25 @@ async fn serve(config: Config) -> Result<(), String> {
         .map_err(|e| format!("module registration: {e}"))?;
     modules::boot_modules(&mut engine, &*store).await?;
 
+    // The web hello manifest, collected while the registry is still in
+    // hand: every module-registered panel feed plus the engine-side "who",
+    // and one feature id per module (comsys advertises as "channels").
+    let mut panels: Vec<String> = engine
+        .registry
+        .panel_feeds()
+        .iter()
+        .map(|(feed, _)| feed.to_string())
+        .collect();
+    panels.push("who".to_string());
+    let features: Vec<String> = engine
+        .modules()
+        .iter()
+        .map(|m| match m.name() {
+            "comsys" => "channels".to_string(),
+            other => other.to_string(),
+        })
+        .collect();
+
     // Session layer.
     let sessions = Arc::new(SessionManager::with_config(SessionConfig {
         linkdead_grace: Duration::from_secs(config.game.linkdead_grace_s),
@@ -202,7 +222,7 @@ async fn serve(config: Config) -> Result<(), String> {
         config.game.max_characters as usize,
     ));
     let bridge = Arc::new(SshBridge::new(
-        accounts,
+        Arc::clone(&accounts),
         Arc::clone(&sessions),
         world.clone(),
         Arc::clone(&guard),
@@ -211,7 +231,41 @@ async fn serve(config: Config) -> Result<(), String> {
         .await
         .map_err(|e| format!("SSH listener on {listen}: {e}"))?;
 
-    tracing::info!(ssh = %listener.addr(), "up; press Ctrl-C to shut down");
+    // The web ingress (M4): same accounts, same session manager, same
+    // world handle, same guard — plus the token store and the panel
+    // manifest. Served by mush-net-web on its own task; stopped gracefully
+    // in the shutdown tail.
+    let mut web_config = config.web.clone();
+    web_config.server_name = format!(
+        "{} (rustmush {})",
+        config.server.name,
+        env!("CARGO_PKG_VERSION")
+    );
+    web_config.features = features;
+    web_config.panels = panels.clone();
+    let web_listen = web_config.listen;
+    let web_bridge: Arc<dyn mush_net_web::WebHooks> = Arc::new(WebBridge::new(
+        Arc::clone(&accounts),
+        Arc::clone(&sessions),
+        world.clone(),
+        Arc::clone(&guard),
+        Arc::clone(&store),
+        panels,
+    ));
+    let (web_stop, web_stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let web_join = tokio::spawn(async move {
+        // A web bind/serve failure is loud but non-fatal: SSH players keep
+        // playing while the operator fixes the [web] config.
+        if let Err(e) = mush_net_web::serve_with_shutdown(web_bridge, web_config, async move {
+            let _ = web_stop_rx.await;
+        })
+        .await
+        {
+            tracing::error!(error = %e, "web server failed");
+        }
+    });
+
+    tracing::info!(ssh = %listener.addr(), web = %web_listen, "up; press Ctrl-C to shut down");
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("Ctrl-C: shutting down");
@@ -237,6 +291,15 @@ async fn serve(config: Config) -> Result<(), String> {
             tracing::info!("world task ended on its own");
             listener.stop_accepting();
         }
+    }
+    // Stop the web ingress (graceful: in-flight requests finish; WS conns
+    // saw the shutdown announce before the world task exited).
+    let _ = web_stop.send(());
+    if tokio::time::timeout(Duration::from_secs(5), web_join)
+        .await
+        .is_err()
+    {
+        tracing::warn!("web server did not stop in time; continuing shutdown");
     }
     // Shutdown order (PLAN gap closures): the world task has stopped
     // mutating; its dropped job sender lets the writer drain every pending

@@ -31,9 +31,17 @@
 //!   `accounts.json` import. Creating a character creates the Player *via a
 //!   world-task request*, never by touching `World` directly, and its
 //!   confirmation gates on the store ack.
-//! - [`ssh_bridge`] — implements `mush_net_ssh::SshHooks` against the
-//!   account backend, the session manager, and the world inbound sender,
-//!   and starts the real SSH listener.
+//! - [`bridge_common`] — the transport-agnostic bridge core
+//!   ([`bridge_common::GameBridge`]): account auth/creation, session
+//!   attach/enter-game, line handling (sanitize/QUIT/flood), the
+//!   disconnect/linkdead flow — shared verbatim by both transports.
+//! - [`ssh_bridge`] — implements `mush_net_ssh::SshHooks` over the shared
+//!   core and starts the real SSH listener.
+//! - [`web_bridge`] — M4: implements `mush_net_web::WebHooks` over the
+//!   same core, plus web-only concerns: opaque session tokens (SHA-256
+//!   hashed in the store, 7-day sliding TTL), structured-envelope
+//!   connections, resume replay, and the `Req` → `Inbound::Query` panel
+//!   hydration mapping.
 //! - [`ipguard`] — per-IP auth-failure tempbans + concurrent-connection cap
 //!   + the in-memory mirror of persisted sitebans.
 //! - [`config`] — `mushd.toml` (subset of keys used through M2).
@@ -41,6 +49,7 @@
 //!   `Engine` synchronously entirely in memory (no store, no persistence).
 
 pub mod accounts;
+pub mod bridge_common;
 pub mod config;
 pub mod help;
 pub mod ipguard;
@@ -49,6 +58,7 @@ pub mod persist;
 pub mod repl;
 pub mod ssh_bridge;
 pub mod staff;
+pub mod web_bridge;
 pub mod world_task;
 
 /// The current wall clock as unix seconds (0 if the system clock is broken).

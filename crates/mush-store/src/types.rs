@@ -181,6 +181,35 @@ impl std::fmt::Debug for AccountRec {
     }
 }
 
+/// One persisted web-session token (`token:{hash}` in Redis, expiring via
+/// native `EXAT` TTL).
+///
+/// The storage key is the **SHA-256 hex digest of the token**, never the
+/// token itself — a leaked store dump cannot be replayed as sessions. The
+/// record carries only identity + lifetime facts; sliding-TTL refresh goes
+/// through [`crate::ObjectStore::token_touch`], which updates `expires` and
+/// the store-side TTL together.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenRecord {
+    /// Canonical account name the token authenticates.
+    pub account: String,
+    /// Unix seconds when the token was minted.
+    pub created: i64,
+    /// Unix seconds when the token lapses. A record with
+    /// `expires <= now` is treated as gone everywhere.
+    pub expires: i64,
+}
+
+/// Validate a token hash key: non-empty. (The callers store SHA-256 hex —
+/// 64 chars — but the store does not police the digest format, only that a
+/// key exists to address.)
+pub(crate) fn validate_token_hash(hash: &str) -> Result<(), StoreError> {
+    if hash.is_empty() {
+        return Err(StoreError::Invalid("empty token hash".into()));
+    }
+    Ok(())
+}
+
 /// One persisted siteban (`ban:{ip}` in Redis, expiring via native TTL).
 /// `IpGuard` tempbans stay in-memory; these are the staff-set persistent
 /// bans that survive restarts.

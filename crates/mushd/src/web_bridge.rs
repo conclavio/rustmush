@@ -1,0 +1,718 @@
+//! The bridge between the web front end (`mush-net-web`: axum HTTP + WS)
+//! and the game: token auth, structured-session attachment, resume replay,
+//! input, and the `Req` → [`Inbound::Query`] hydration path — the
+//! [`mush_net_web::WebHooks`] implementation.
+//!
+//! ## Division of labor (mirrors [`crate::ssh_bridge`])
+//!
+//! - The **transport** (`mush-net-web`) owns axum, the WS upgrade, JSON
+//!   framing (it serializes the [`Envelope`]s it receives on the conn's
+//!   channel), the `hello` frame (features + panels from its `WebConfig` —
+//!   `mushd` fills those from [`WebBridge::panels`] at boot), the
+//!   `resumed { replayed }` frame it derives from [`WebHooks::resume`]'s
+//!   result, app-level ping, and the `/api/auth/*` rate limiter.
+//! - The **bridge** owns everything game-side, through the shared
+//!   [`GameBridge`] core plus the token machinery here: opaque 256-bit
+//!   tokens stored **only** as SHA-256 hashes with a 7-day sliding TTL
+//!   ([`ObjectStore`] `token_*` ops), argon2 verification on the blocking
+//!   pool (inside the [`AuthBackend`]), and the [`IpGuard`].
+//! - Failure counting follows the SSH convention exactly: the bridge never
+//!   records auth failures itself — the transport calls
+//!   [`WebHooks::auth_failed`] once per failed login/register, and gates on
+//!   [`WebHooks::is_ip_blocked`] first.
+//!
+//! ## Token rules (design 02 §6.2, binding)
+//!
+//! Raw tokens are 32 bytes from the OS-seeded CSPRNG, hex-encoded (64
+//! chars). They exist in memory only on their way to the client; the store
+//! holds `sha256(token)` under `token:{hash}` with native TTL. Tokens are
+//! **never logged** — no `tracing` call in this module ever receives one —
+//! and never reach the world task. Validation slides the expiry to
+//! `now + 7 days`. `@newpassword` revokes every token of the target's
+//! account ([`ObjectStore::tokens_del_account`]), so stolen or stale web
+//! sessions die with the old password.
+//!
+//! ## Resume semantics (exact contract with `mush-net-web/src/ws.rs`)
+//!
+//! `resume` replays **before** attaching, so the live queue never carries
+//! an envelope the replay already delivered (the SPA renders every frame it
+//! receives — duplicates would double-print). The cost is a microsecond
+//! window between the replay snapshot and the attach whose events this
+//! connection misses (they stay in the ring; they were "lost to the
+//! outage" from the client's point of view). On [`ResumeErr::TooOld`] —
+//! which this bridge also returns when the session was already reaped —
+//! **nothing has been attached**: the transport falls back to a fresh
+//! [`WebHooks::connect_character`] with the same conn id, which is the
+//! re-hydration path (fresh `Room` render; the client re-requests panels).
+
+use std::collections::HashMap;
+use std::net::IpAddr;
+use std::sync::{Arc, Mutex};
+
+use futures::future::BoxFuture;
+use mush_core::{DisconnectKind, Inbound, ObjId};
+use mush_net_web::{
+    CharSummary, LoginErr, LoginOk, NewWebConn, RegisterErr, ResumeErr, ResumeOk, SessionStart,
+    TokenIdentity, WebHooks,
+};
+use mush_proto::{ClientCaps, ClientKind, ColorDepth, OutputEvent, Query, RichText, SmolStr};
+use mush_session::{ConnId, ConnectionHandle, FloodVerdict, ReplayError, SessionManager};
+use mush_store::{ObjectStore, TokenRecord};
+use sha2::{Digest, Sha256};
+
+use crate::accounts::{AuthBackend, CreateErr};
+use crate::bridge_common::{AuthResult, GameBridge};
+use crate::ipguard::IpGuard;
+use crate::unix_now_s;
+use crate::world_task::{WorldHandle, char_key, send_event_to_conn};
+
+/// Web session lifetime: 7 days, sliding (each successful validation
+/// pushes expiry out to `now + TOKEN_TTL_S`).
+pub const TOKEN_TTL_S: i64 = 7 * 24 * 60 * 60;
+
+/// The production [`WebHooks`] implementation: the shared [`GameBridge`]
+/// core plus the token store and the panel manifest.
+pub struct WebBridge<A: AuthBackend + 'static> {
+    core: GameBridge<A>,
+    store: Arc<dyn ObjectStore>,
+    /// Panel feed ids for `hello` / `PanelSubscribe` checks
+    /// (module-registered feeds plus the engine-side `"who"`), collected at
+    /// boot from the registry.
+    panels: Vec<String>,
+    /// Live web connections by the **hash** of the token that authenticated
+    /// them (never the raw token), so `logout` can boot exactly the
+    /// connections that token opened — revocation is instant (design 02
+    /// §6.2), not "at next reconnect". Entries live from a successful
+    /// `connect_character`/`resume` until `disconnected` (or the boot
+    /// itself).
+    conn_tokens: Mutex<HashMap<u64, String>>,
+}
+
+impl<A: AuthBackend + 'static> WebBridge<A> {
+    /// Wire the bridge. `panels` is the panel manifest for `hello` /
+    /// `PanelSubscribe` (boot wiring: the registry's panel feeds plus
+    /// `"who"` — see `main.rs`).
+    pub fn new(
+        accounts: Arc<A>,
+        sessions: Arc<SessionManager>,
+        world: WorldHandle,
+        guard: Arc<IpGuard>,
+        store: Arc<dyn ObjectStore>,
+        panels: Vec<String>,
+    ) -> WebBridge<A> {
+        WebBridge {
+            core: GameBridge::new(accounts, sessions, world, guard),
+            store,
+            panels,
+            conn_tokens: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The panel feed ids the server can publish — `mushd` copies these
+    /// into the transport's `WebConfig::panels` for the `hello` frame.
+    #[must_use]
+    pub fn panels(&self) -> &[String] {
+        &self.panels
+    }
+
+    /// Viewport / capability update from the client
+    /// (`ClientCommand::Caps`). Not part of the [`WebHooks`] contract (the
+    /// transport may handle caps purely client-side); provided so the
+    /// integration can forward them into the session layer like SSH resize
+    /// does.
+    pub fn caps_changed(&self, conn: u64, caps: ClientCaps) {
+        self.core.sessions.update_caps(ConnId(conn), caps);
+    }
+
+    /// Mint + persist a fresh token for `account`. The raw token goes to
+    /// the caller; the store sees only the hash.
+    async fn issue_token(&self, account: &str) -> Result<String, String> {
+        let token = mint_token();
+        let now = unix_now_s();
+        self.store
+            .token_put(
+                token_hash(&token),
+                TokenRecord {
+                    account: account.to_string(),
+                    created: now,
+                    expires: now + TOKEN_TTL_S,
+                },
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(token)
+    }
+
+    /// Shared token validation: fetch by hash, slide the TTL, resolve the
+    /// account's characters. `None` = unknown, expired, or store failure
+    /// (fail closed).
+    async fn validate(&self, token: &str) -> Option<TokenIdentity> {
+        let hash = token_hash(token);
+        let rec = match self.store.token_get(&hash).await {
+            Ok(Some(rec)) => rec,
+            Ok(None) => return None,
+            Err(e) => {
+                tracing::error!(error = %e, "token lookup failed; failing closed");
+                return None;
+            }
+        };
+        // Sliding TTL: push expiry out on every successful validation. A
+        // `false` means the token lapsed between get and touch — expired.
+        match self
+            .store
+            .token_touch(&hash, unix_now_s() + TOKEN_TTL_S)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => return None,
+            Err(e) => {
+                // The token itself validated; a failed refresh only means
+                // the TTL did not slide this time. Not fatal.
+                tracing::warn!(error = %e, "token TTL refresh failed (continuing)");
+            }
+        }
+        let characters = self
+            .core
+            .accounts
+            .characters(&rec.account)
+            .await
+            .into_iter()
+            .map(|c| CharSummary {
+                key: u64::from(c.id.0),
+                name: c.name,
+            })
+            .collect();
+        Some(TokenIdentity {
+            account: rec.account,
+            characters,
+        })
+    }
+
+    /// Validate a token AND that `character` is on its account. Returns the
+    /// account name + character name.
+    async fn authorize_character(&self, token: &str, character: u64) -> Option<(String, String)> {
+        let identity = self.validate(token).await?;
+        let name = identity
+            .characters
+            .iter()
+            .find(|c| c.key == character)
+            .map(|c| c.name.clone())?;
+        Some((identity.account, name))
+    }
+
+    /// The default capability set for a fresh web connection: structured
+    /// JSON wire, true color, UTF-8. Width/height are nominal — the web
+    /// client renders its own layout and may update them via
+    /// [`WebBridge::caps_changed`].
+    fn web_caps() -> ClientCaps {
+        ClientCaps {
+            kind: ClientKind::Web,
+            color: ColorDepth::TrueColor,
+            width: 80,
+            height: 24,
+            utf8: true,
+            structured: true,
+        }
+    }
+
+    /// Send a correlated `Reply` straight to one connection, bypassing the
+    /// world task (transport-level refusals and acks). The session layer
+    /// stamps the envelope; conn-scoped sends are never ring-recorded.
+    fn direct_reply(&self, conn: ConnId, id: u64, event: OutputEvent) {
+        send_event_to_conn(
+            &self.core.sessions,
+            conn,
+            OutputEvent::Reply {
+                id,
+                event: Box::new(event),
+            },
+        );
+    }
+
+    fn direct_error_reply(&self, conn: ConnId, id: u64, msg: impl Into<String>) {
+        self.direct_reply(conn, id, OutputEvent::Sys(RichText::tag("error", msg)));
+    }
+
+    /// Remember which token (hash) authenticated a now-attached connection.
+    fn track_conn(&self, conn: u64, token: &str) {
+        self.conn_tokens
+            .lock()
+            .expect("conn_tokens lock")
+            .insert(conn, token_hash(token));
+    }
+
+    /// Boot one attached web connection game-side: world `ConnDown(Boot)`
+    /// (announce + engine bookkeeping), a barrier so that output lands
+    /// first, a final `Disconnect` event, then the clean detach — dropping
+    /// the session's handle closes the envelope channel, which is what
+    /// tells the WS pump to close the socket after draining. Mirrors
+    /// [`GameBridge::quit`] with `Boot` semantics.
+    async fn boot_conn(&self, conn: ConnId, why: &str) {
+        if let Some(actor) = self.core.actor_of(conn) {
+            self.core
+                .world
+                .inbound(Inbound::ConnDown {
+                    conn: conn.0,
+                    actor,
+                    reason: DisconnectKind::Boot,
+                })
+                .await;
+            self.core.world.barrier().await;
+        }
+        send_event_to_conn(
+            &self.core.sessions,
+            conn,
+            OutputEvent::Disconnect {
+                reason: RichText::tag("system", why),
+            },
+        );
+        self.core
+            .sessions
+            .detach(conn, mush_session::DetachReason::Booted);
+        self.conn_tokens
+            .lock()
+            .expect("conn_tokens lock")
+            .remove(&conn.0);
+    }
+}
+
+impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
+    fn login<'a>(
+        &'a self,
+        account: &'a str,
+        password: &'a str,
+        ip: IpAddr,
+    ) -> BoxFuture<'a, Result<LoginOk, LoginErr>> {
+        Box::pin(async move {
+            // Sitebans read as Banned; the failure-window tempban as
+            // RateLimited. `is_blocked` folds both, so consult the siteban
+            // mirror first.
+            if self.core.guard.siteban_active_at(ip, unix_now_s()) {
+                return Err(LoginErr::Banned);
+            }
+            if self.core.guard.is_blocked(ip) {
+                return Err(LoginErr::RateLimited);
+            }
+            match self.core.auth_account(account, password, ip).await {
+                AuthResult::Ok {
+                    account,
+                    characters,
+                } => {
+                    let token = self.issue_token(&account).await.map_err(|e| {
+                        // The credentials were GOOD; only the session mint
+                        // failed (store hiccup). Surface as try-again —
+                        // never BadCreds, which the transport counts
+                        // against the IP.
+                        tracing::error!(error = %e, "token mint failed after successful login");
+                        LoginErr::RateLimited
+                    })?;
+                    Ok(LoginOk {
+                        token,
+                        account,
+                        characters: characters
+                            .into_iter()
+                            .map(|c| CharSummary {
+                                key: c.id,
+                                name: c.name,
+                            })
+                            .collect(),
+                    })
+                }
+                AuthResult::Denied => Err(LoginErr::BadCreds),
+            }
+        })
+    }
+
+    fn register<'a>(
+        &'a self,
+        account: &'a str,
+        password: &'a str,
+        char_name: &'a str,
+        ip: IpAddr,
+    ) -> BoxFuture<'a, Result<LoginOk, RegisterErr>> {
+        Box::pin(async move {
+            if self.core.is_ip_blocked(ip) {
+                return Err(RegisterErr::Banned);
+            }
+            // The shared creation flow: validation, argon2 on the blocking
+            // pool, atomic store reservation, ack-gated Player creation.
+            let created = match self
+                .core
+                .create_account(account, password, char_name, ip)
+                .await
+            {
+                Ok(c) => c,
+                Err(CreateErr::AccountExists | CreateErr::CharacterNameTaken) => {
+                    return Err(RegisterErr::Taken);
+                }
+                Err(CreateErr::BadPassword) => return Err(RegisterErr::Weak),
+                Err(other) => return Err(RegisterErr::BadName(format!("{other}."))),
+            };
+            let token = self.issue_token(account).await.map_err(|e| {
+                // Account + character exist; only the auto-login token
+                // failed. The player can log in normally.
+                tracing::error!(error = %e, "token mint failed after registration");
+                RegisterErr::BadName(
+                    "Your account was created, but signing you in failed; \
+                     please log in."
+                        .to_string(),
+                )
+            })?;
+            Ok(LoginOk {
+                token,
+                account: account.to_string(),
+                characters: vec![CharSummary {
+                    key: created.id,
+                    name: created.name,
+                }],
+            })
+        })
+    }
+
+    fn logout<'a>(&'a self, token: &'a str) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            let hash = token_hash(token);
+            if let Err(e) = self.store.token_del(&hash).await {
+                tracing::error!(error = %e, "token delete failed on logout");
+            }
+            // Revocation is instant: any live connection this token opened
+            // is booted now, not left playing until its transport drops.
+            let doomed: Vec<u64> = {
+                let map = self.conn_tokens.lock().expect("conn_tokens lock");
+                map.iter()
+                    .filter(|&(_, h)| *h == hash)
+                    .map(|(&c, _)| c)
+                    .collect()
+            };
+            for conn in doomed {
+                tracing::info!(conn, "logout boots live web connection");
+                self.boot_conn(ConnId(conn), "You have logged out.").await;
+            }
+        })
+    }
+
+    fn validate_token<'a>(&'a self, token: &'a str) -> BoxFuture<'a, Option<TokenIdentity>> {
+        Box::pin(self.validate(token))
+    }
+
+    fn connect_character<'a>(
+        &'a self,
+        conn: NewWebConn,
+        token: &'a str,
+        character: u64,
+    ) -> BoxFuture<'a, Result<SessionStart, String>> {
+        Box::pin(async move {
+            let Some((account, char_name)) = self.authorize_character(token, character).await
+            else {
+                return Err("Invalid session; please log in again.".to_string());
+            };
+            let Ok(actor) = u32::try_from(character).map(ObjId) else {
+                return Err("That is not your character.".to_string());
+            };
+            let handle = ConnectionHandle::new_structured(
+                ConnId(conn.id),
+                conn.addr,
+                Self::web_caps(),
+                conn.tx,
+            );
+            let conn_id = conn.id;
+            // Track BEFORE attach (LOW finding: track_conn revocation
+            // race) — a concurrent logout sweep must never be able to run
+            // between the session attaching and this entry existing, so it
+            // is inserted before `enter_game` even starts, not after it
+            // succeeds; removed again if the attach itself fails.
+            self.track_conn(conn_id, token);
+            let entered = match self
+                .core
+                .enter_game(handle, actor, &account, &char_name, true)
+                .await
+            {
+                Ok(entered) => entered,
+                Err(e) => {
+                    self.conn_tokens
+                        .lock()
+                        .expect("conn_tokens lock")
+                        .remove(&conn_id);
+                    return Err(format!("{e}."));
+                }
+            };
+            Ok(SessionStart {
+                resume_from: entered.resume_from,
+            })
+        })
+    }
+
+    fn resume<'a>(
+        &'a self,
+        conn: NewWebConn,
+        token: &'a str,
+        character: u64,
+        last_seq: u64,
+    ) -> BoxFuture<'a, Result<ResumeOk, ResumeErr>> {
+        Box::pin(async move {
+            let Some((account, _char_name)) = self.authorize_character(token, character).await
+            else {
+                return Err(ResumeErr::BadSession);
+            };
+            let Ok(actor) = u32::try_from(character).map(ObjId) else {
+                return Err(ResumeErr::BadSession);
+            };
+            // Resume targets an EXISTING session (live or linkdead). A
+            // reaped session cannot replay — report TooOld, whose
+            // transport-side fallback (fresh connect_character) IS the
+            // re-hydration path. Nothing is attached on any Err.
+            let Some(sess) = self.core.sessions.session_of_char(char_key(actor)) else {
+                tracing::info!(conn = conn.id, %actor, "resume with no session; re-hydrating");
+                return Err(ResumeErr::TooOld);
+            };
+            // Replay BEFORE attaching (see the module docs): the live queue
+            // must never duplicate a replayed envelope.
+            let replayed = match self.core.sessions.replay_since(sess, last_seq) {
+                Ok(envs) => envs,
+                Err(ReplayError::TooOld | ReplayError::UnknownSession) => {
+                    tracing::info!(conn = conn.id, %actor, "resume gap too old; re-hydrating");
+                    return Err(ResumeErr::TooOld);
+                }
+            };
+            let conn_id = ConnId(conn.id);
+            let handle =
+                ConnectionHandle::new_structured(conn_id, conn.addr, Self::web_caps(), conn.tx);
+            // Track BEFORE attach (LOW finding: track_conn revocation
+            // race) — see the matching comment in `connect_character`;
+            // removed again if the world's ConnUp confirmation fails.
+            self.track_conn(conn_id.0, token);
+            let (_sess, outcome) = self.core.sessions.attach(handle, char_key(actor), account);
+            let from_linkdead = matches!(
+                outcome,
+                mush_session::AttachOutcome::Rejoined {
+                    from_linkdead: true,
+                    ..
+                }
+            );
+            // World side: the reconnect announce (delivered live, after the
+            // replay snapshot — never duplicated into it).
+            if !self
+                .core
+                .world
+                .inbound(Inbound::ConnUp {
+                    conn: conn_id.0,
+                    actor,
+                    caps_structured: true,
+                    from_linkdead,
+                })
+                .await
+            {
+                self.core
+                    .sessions
+                    .detach(conn_id, mush_session::DetachReason::Booted);
+                self.conn_tokens
+                    .lock()
+                    .expect("conn_tokens lock")
+                    .remove(&conn_id.0);
+                return Err(ResumeErr::BadSession);
+            }
+            let live_from = replayed.last().map_or(last_seq, |env| env.seq) + 1;
+            tracing::info!(
+                conn = conn_id.0,
+                %actor,
+                replayed = replayed.len(),
+                live_from,
+                "web session resumed"
+            );
+            Ok(ResumeOk {
+                replayed,
+                live_from,
+            })
+        })
+    }
+
+    fn line(&self, conn: u64, line: String) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            // On `Close` (QUIT) the detach already dropped the envelope
+            // sender; the transport's pump closes the socket.
+            let _ = self.core.line(ConnId(conn), &line).await;
+        })
+    }
+
+    fn request(&self, conn: u64, id: u64, q: Query) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            let conn_id = ConnId(conn);
+            // Requests share the per-connection input flood bucket with
+            // lines (a panel cannot spam the world task past the throttle)
+            // but do NOT stamp idle time — a background refresh is not the
+            // player typing.
+            if self.core.sessions.check_input(conn_id) == FloodVerdict::Throttled {
+                self.direct_error_reply(conn_id, id, "You're doing that too fast.");
+                return;
+            }
+            let Some(actor) = self.core.actor_of(conn_id) else {
+                tracing::warn!(conn, "request from unattached connection dropped");
+                return;
+            };
+            // Map the wire Query onto a registered query handler
+            // (engine-side dispatch via Inbound::Query), or answer directly
+            // where no world state is needed.
+            let (name, args) = match q {
+                Query::Who => (SmolStr::new_static("who"), serde_json::json!({})),
+                Query::MailList { folder } => (
+                    SmolStr::new_static("mail.list"),
+                    serde_json::json!({ "folder": folder }),
+                ),
+                Query::ChannelBacklog {
+                    channel,
+                    before_seq,
+                    limit,
+                } => (
+                    SmolStr::new_static("comsys.backlog"),
+                    serde_json::json!({
+                        "channel": channel,
+                        "before_seq": before_seq,
+                        "limit": limit,
+                    }),
+                ),
+                Query::Sheet => {
+                    // Polite future: sheets land with the first ruleset
+                    // (M6); reply now so the panel can say so.
+                    self.direct_reply(
+                        conn_id,
+                        id,
+                        OutputEvent::Sys(RichText::tag(
+                            "system",
+                            "Character sheets are not available yet.",
+                        )),
+                    );
+                    return;
+                }
+                Query::PanelSubscribe { feed } => {
+                    if !self.panels.iter().any(|p| p.as_str() == feed.as_str()) {
+                        self.direct_error_reply(
+                            conn_id,
+                            id,
+                            format!("No such panel feed {feed:?}."),
+                        );
+                        return;
+                    }
+                    // The subscription ack IS the panel's keyframe where a
+                    // state query exists; deltas then stream live. (M4 has
+                    // no per-feed mute — every attached connection receives
+                    // all panel frames.)
+                    match feed.as_str() {
+                        "comsys" => (SmolStr::new_static("comsys.state"), serde_json::json!({})),
+                        "who" => (SmolStr::new_static("who"), serde_json::json!({})),
+                        "mail" => (
+                            SmolStr::new_static("mail.list"),
+                            serde_json::json!({ "folder": null }),
+                        ),
+                        _ => {
+                            self.direct_reply(
+                                conn_id,
+                                id,
+                                OutputEvent::Sys(RichText::tag(
+                                    "system",
+                                    format!("Subscribed to panel feed {feed:?}."),
+                                )),
+                            );
+                            return;
+                        }
+                    }
+                }
+            };
+            if !self
+                .core
+                .world
+                .inbound(Inbound::Query {
+                    conn,
+                    actor,
+                    id,
+                    name,
+                    args,
+                })
+                .await
+            {
+                self.direct_error_reply(conn_id, id, "The game is shutting down.");
+            }
+        })
+    }
+
+    fn disconnected(&self, conn: u64) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            self.conn_tokens
+                .lock()
+                .expect("conn_tokens lock")
+                .remove(&conn);
+            self.core.disconnected(ConnId(conn)).await;
+        })
+    }
+
+    fn is_ip_blocked(&self, addr: IpAddr) -> bool {
+        self.core.is_ip_blocked(addr)
+    }
+
+    fn auth_failed(&self, addr: IpAddr) {
+        self.core.auth_failed(addr);
+    }
+
+    // Per-IP concurrent-connection cap (HIGH finding): the same `IpGuard`
+    // counter the SSH bridge already claims/releases via
+    // `connection_opened`/`connection_closed` — reused, not duplicated, so
+    // one address's SSH and web connections share one cap.
+    fn connection_opened(&self, addr: IpAddr) -> bool {
+        self.core.guard.conn_opened(addr)
+    }
+
+    fn connection_closed(&self, addr: IpAddr) {
+        self.core.guard.conn_closed(addr);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Token primitives
+// ---------------------------------------------------------------------------
+
+/// 32 bytes from the OS-seeded CSPRNG (`rand`'s thread-local generator),
+/// hex-encoded: the raw session token.
+fn mint_token() -> String {
+    let bytes: [u8; 32] = rand::random();
+    hex(&bytes)
+}
+
+/// The store key material for a token: SHA-256 of the raw token, hex.
+/// Crate-visible so tests can locate records without ever persisting a raw
+/// token.
+pub(crate) fn token_hash(token: &str) -> String {
+    hex(&Sha256::digest(token.as_bytes()))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tokens_are_64_hex_chars_and_unique() {
+        let a = mint_token();
+        let b = mint_token();
+        assert_eq!(a.len(), 64);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b, "two mints must differ");
+    }
+
+    #[test]
+    fn token_hash_is_sha256_hex() {
+        // sha256("abc") — the classic test vector.
+        assert_eq!(
+            token_hash("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(token_hash("abc").len(), 64);
+        assert_ne!(token_hash("abc"), token_hash("abd"));
+    }
+}

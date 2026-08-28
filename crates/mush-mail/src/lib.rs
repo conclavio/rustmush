@@ -36,12 +36,14 @@ use mush_core::{
 mod cmds;
 pub mod data;
 pub mod date;
+pub mod query;
 
 pub use data::{
     ARCHIVE, DEFAULT_QUOTA, INBOX, MAX_FOLDER_NAME, MAX_USER_FOLDERS, MailMsg, MailState,
     MailStatus, Mailbox, MailboxEntry, NS, SENT, TRASH,
 };
 pub use date::{format_date, format_datetime};
+pub use query::ListQuery;
 
 /// The `@mail` game module. Hand to
 /// [`Engine::with_modules`](mush_core::engine::Engine::with_modules).
@@ -57,6 +59,10 @@ impl GameModule for MailModule {
         reg.state(MailState::default());
         reg.hook(HookPoint::Connected, Arc::new(ConnectNotice));
         reg.subscribe(WorldEventKind::ObjDestroyed, Arc::new(on_obj_destroyed));
+        // M4 web hydration: the "mail" panel feed plus the read-only
+        // listing query. Reading stays a Line command — see `query.rs`.
+        reg.panel_feed("mail")?;
+        reg.query_handler("mail.list", Arc::new(query::ListQuery))?;
         reg.command(
             CommandSpec {
                 name: "@mail".into(),

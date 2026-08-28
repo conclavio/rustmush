@@ -6,9 +6,9 @@
 //! has no Redis; Linux CI runs a `redis:8` service container.
 //!
 //! **WARNING:** these tests delete every `obj:*`, `account:*`, `ban:*`,
-//! `meta:*`, and `mod:*` key in the configured database between phases —
-//! module data (channels, mail, jobs) is wiped along with the world. Point
-//! `REDIS_URL` at a disposable database.
+//! `token:*`, `meta:*`, and `mod:*` key in the configured database between
+//! phases — module data (channels, mail, jobs) is wiped along with the
+//! world. Point `REDIS_URL` at a disposable database.
 //!
 //! Tests in this file share one database, so they serialize on a static
 //! async mutex (cargo runs `#[tokio::test]`s in one process concurrently).
@@ -60,8 +60,20 @@ redis_gated!(account_reserve_race, store, {
 redis_gated!(account_lifecycle, store, {
     suite::account_lifecycle(&store).await;
 });
+redis_gated!(account_password_update, store, {
+    suite::account_password_update(&store).await;
+});
 redis_gated!(ban_expiry, store, {
     suite::ban_expiry(&store).await;
+});
+redis_gated!(token_lifecycle, store, {
+    suite::token_lifecycle(&store).await;
+});
+redis_gated!(token_sliding_ttl, store, {
+    suite::token_sliding_ttl(&store).await;
+});
+redis_gated!(token_del_account, store, {
+    suite::token_del_account(&store).await;
 });
 redis_gated!(migration_version_bump, store, {
     suite::migration_version_bump(&store).await;
@@ -207,6 +219,62 @@ redis_gated!(ban_native_ttl, store, {
         assert!(
             std::time::Instant::now() < deadline,
             "Redis TTL never expired the short ban: {bans:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+});
+
+redis_gated!(token_native_ttl, store, {
+    // Tokens expire server-side via EXAT — same claims as ban_native_ttl:
+    // a long-TTL token proves visibility despite clock skew/WAN latency,
+    // a short-TTL token proves per-key server-side expiry (polled).
+    use mush_store::TokenRecord;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let rec = |expires: i64| TokenRecord {
+        account: "Nick".into(),
+        created: now,
+        expires,
+    };
+    store
+        .token_put("longhash".into(), rec(now + 60))
+        .await
+        .expect("put long token");
+    store
+        .token_put("shorthash".into(), rec(now + 2))
+        .await
+        .expect("put short token");
+    assert!(
+        store
+            .token_get("longhash")
+            .await
+            .expect("get long")
+            .is_some(),
+        "long token visible before expiry"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        if store
+            .token_get("shorthash")
+            .await
+            .expect("get short while polling")
+            .is_none()
+        {
+            assert!(
+                store
+                    .token_get("longhash")
+                    .await
+                    .expect("get long after short expired")
+                    .is_some(),
+                "expiry must be per-key: long token vanished with the short one"
+            );
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Redis TTL never expired the short token"
         );
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }

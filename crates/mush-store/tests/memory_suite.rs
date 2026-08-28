@@ -30,8 +30,28 @@ async fn account_lifecycle() {
 }
 
 #[tokio::test]
+async fn account_password_update() {
+    suite::account_password_update(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
 async fn ban_expiry() {
     suite::ban_expiry(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
+async fn token_lifecycle() {
+    suite::token_lifecycle(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
+async fn token_sliding_ttl() {
+    suite::token_sliding_ttl(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
+async fn token_del_account() {
+    suite::token_del_account(&InMemoryStore::new()).await;
 }
 
 #[tokio::test]

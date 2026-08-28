@@ -1273,3 +1273,188 @@ fn ignore_filters_channel_messages_and_notices() {
         "other members still see the notice"
     );
 }
+
+// ----------------------------------------------------------------------
+// Web query handlers (M4): comsys.state / comsys.backlog via Inbound::Query
+// ----------------------------------------------------------------------
+
+/// Step one `Inbound::Query` and unwrap the conn-scoped `Reply` payload.
+fn web_query(
+    engine: &mut Engine,
+    actor: ObjId,
+    name: &str,
+    args: serde_json::Value,
+) -> OutputEvent {
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine.step(
+        Inbound::Query {
+            conn: 77,
+            actor,
+            id: 5,
+            name: SmolStr::new(name),
+            args,
+        },
+        &mut out,
+        &mut fx,
+    );
+    let mut events = out.take();
+    assert_eq!(events.len(), 1, "exactly one reply: {events:?}");
+    let (aud, ev) = events.remove(0);
+    assert_eq!(aud, Audience::Conn(77), "replies are conn-scoped");
+    let OutputEvent::Reply { id: 5, event } = ev else {
+        panic!("expected Reply id 5, got {ev:?}");
+    };
+    *event
+}
+
+fn panel_data(ev: OutputEvent, want_feed: &str) -> serde_json::Value {
+    let OutputEvent::Panel { feed, data, .. } = ev else {
+        panic!("expected Panel {want_feed}, got {ev:?}");
+    };
+    assert_eq!(feed, want_feed);
+    data
+}
+
+/// `comsys.state` reports joined channels with alias, colors (web hex
+/// included), and the unread count derived from seq vs. last_read; a
+/// channel whose see lock the member fails is omitted entirely.
+#[test]
+fn state_query_reports_channels_colors_and_unread() {
+    let (mut engine, nick, ann) = setup();
+    // Ann loses her live conns (linkdead): messages stop advancing her
+    // cursor, so unread grows.
+    engine.world.set_live_conns(ann, 0);
+    run(&mut engine, nick, "pub one");
+    run(&mut engine, nick, "pub two");
+
+    let data = panel_data(
+        web_query(&mut engine, ann, "comsys.state", serde_json::json!({})),
+        "comsys",
+    );
+    let chans = data["channels"].as_array().unwrap();
+    let public = chans
+        .iter()
+        .find(|c| c["name"] == "Public")
+        .expect("Public listed");
+    assert_eq!(public["alias"], "pub");
+    assert_eq!(public["color"]["ansi"], "cyan");
+    assert_eq!(public["color"]["web_hex"], "#00ffff");
+    assert_eq!(public["seq"], 2);
+    assert_eq!(public["last_read"], 0);
+    assert_eq!(public["unread"], 2);
+    assert_eq!(public["gagged"], false);
+    assert_eq!(public["loud"], true);
+    assert_eq!(public["logged"], true);
+
+    // See-locked away: the channel vanishes from the member's state.
+    run(&mut engine, GOD, "@channel/perm Public=see=flag^WIZARD");
+    let data = panel_data(
+        web_query(&mut engine, ann, "comsys.state", serde_json::json!({})),
+        "comsys",
+    );
+    assert!(
+        data["channels"].as_array().unwrap().is_empty(),
+        "see-locked channels must not appear: {data:?}"
+    );
+}
+
+/// `comsys.backlog` returns the newest-first slice with `before_seq`
+/// paging, resolves by channel name or personal alias, and requires
+/// membership.
+#[test]
+fn backlog_query_slices_newest_first() {
+    let (mut engine, nick, _) = setup();
+    for i in 1..=5 {
+        run(&mut engine, nick, &format!("pub msg-{i}"));
+    }
+    let data = panel_data(
+        web_query(
+            &mut engine,
+            nick,
+            "comsys.backlog",
+            serde_json::json!({"channel": "Public", "limit": 2}),
+        ),
+        "comsys",
+    );
+    let texts: Vec<&str> = data["backlog"]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(texts, ["msg-5", "msg-4"], "newest first");
+    assert_eq!(data["backlog"]["channel"], "Public");
+
+    // Paging: strictly below before_seq, resolved via the personal alias.
+    let data = panel_data(
+        web_query(
+            &mut engine,
+            nick,
+            "comsys.backlog",
+            serde_json::json!({"channel": "pub", "before_seq": 4, "limit": 10}),
+        ),
+        "comsys",
+    );
+    let seqs: Vec<u64> = data["backlog"]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["seq"].as_u64().unwrap())
+        .collect();
+    assert_eq!(seqs, [3, 2, 1]);
+    // Message shape matches the live Channel frame fields.
+    let top = &data["backlog"]["messages"][0];
+    assert_eq!(top["actor"]["name"], "Nick");
+    assert_eq!(top["kind"], "say");
+    assert!(top["ts"].as_i64().unwrap() > 0);
+
+    // Not a member (God delcom'd? no — use a channel Nick never joined).
+    run(&mut engine, GOD, "@channel/create Private");
+    let ev = web_query(
+        &mut engine,
+        nick,
+        "comsys.backlog",
+        serde_json::json!({"channel": "Private", "limit": 5}),
+    );
+    let OutputEvent::Sys(t) = ev else {
+        panic!("expected Sys refusal, got {ev:?}");
+    };
+    assert!(t.to_plain_text().contains("You are not on that channel."));
+}
+
+/// The see lock gates backlog hydration exactly like recall and live
+/// delivery — no admin bypass for plain members.
+#[test]
+fn backlog_query_honors_the_see_lock() {
+    let (mut engine, nick, _) = setup();
+    run(&mut engine, nick, "pub before the lock");
+    run(&mut engine, GOD, "@channel/perm Public=see=flag^WIZARD");
+    let ev = web_query(
+        &mut engine,
+        nick,
+        "comsys.backlog",
+        serde_json::json!({"channel": "Public", "limit": 10}),
+    );
+    let OutputEvent::Sys(t) = ev else {
+        panic!("expected Sys refusal, got {ev:?}");
+    };
+    assert_eq!(t.to_plain_text(), "You cannot listen to Public.");
+
+    // A member passing the lock still hydrates.
+    let data = panel_data(
+        web_query(
+            &mut engine,
+            GOD,
+            "comsys.backlog",
+            serde_json::json!({"channel": "Public", "limit": 10}),
+        ),
+        "comsys",
+    );
+    let texts: Vec<&str> = data["backlog"]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(texts, ["before the lock"]);
+}

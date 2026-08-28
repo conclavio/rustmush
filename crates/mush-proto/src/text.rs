@@ -18,6 +18,7 @@ use std::fmt;
 /// [`ColorDepth`](crate::ColorDepth) (e.g. `Rgb` → nearest 256-color →
 /// nearest 16-color → stripped).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Color {
     /// Basic ANSI palette index (0–15).
@@ -33,6 +34,7 @@ pub enum Color {
 /// Most spans carry no explicit style (the semantic [`Span::tag`] does the
 /// theming) — a plain `Style` is skipped entirely on the wire.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Style {
     /// Foreground color, if explicitly set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -96,6 +98,7 @@ impl Style {
 /// Interactive affordance for the web client: activating the span submits
 /// `cmd` exactly as if the player typed it. SSH renderers ignore links.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct CommandLink {
     /// The command line to submit, e.g. `"look north"`.
     pub cmd: String,
@@ -110,6 +113,7 @@ impl CommandLink {
 
 /// One run of text with uniform styling/semantics inside a [`RichText`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Span {
     /// The literal text. Control characters are never permitted here (the
     /// session layer strips them from inbound lines; emitters must not
@@ -192,6 +196,7 @@ impl From<String> for Span {
 /// assert_eq!(text.to_plain_text(), "You can go north from here.");
 /// ```
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct RichText(pub Vec<Span>);
 
 impl RichText {

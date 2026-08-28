@@ -10,6 +10,7 @@ use crate::text::RichText;
 /// The id is the classic dbref string form (`"#123"`); clients treat it as
 /// opaque (it keys click-to-run commands, unread cursors, etc.).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ObjRef {
     /// Opaque object id, e.g. `"#123"`.
     pub id: String,
@@ -32,6 +33,7 @@ impl ObjRef {
 /// Renderers use this to format the line (`Say` quotes, `Pose` prefixes the
 /// name, …); it is shared by room narration and channel messages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum NarrativeKind {
     /// `say` — quoted speech.
@@ -55,6 +57,7 @@ pub enum NarrativeKind {
 
 /// One exit as shown in a room: primary name plus aliases (`north`/`n`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ExitRef {
     /// Primary exit name, e.g. `"north"`.
     pub name: String,
@@ -65,6 +68,7 @@ pub struct ExitRef {
 
 /// A full structured room render: `look`, movement, resume snapshots.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct RoomView {
     /// Room display name.
     pub name: String,
@@ -85,6 +89,7 @@ pub struct RoomView {
 
 /// One row of a WHO listing.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct WhoEntry {
     /// Character name.
     pub name: String,
@@ -105,6 +110,7 @@ pub struct WhoEntry {
 
 /// Whether a [`OutputEvent::Panel`] frame replaces panel state or patches it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum PanelFrameKind {
     /// Full state snapshot; replaces everything the panel holds.
@@ -115,6 +121,7 @@ pub enum PanelFrameKind {
 
 /// How the client should treat subsequent input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum InputMode {
     /// Normal echoed line input.
@@ -130,6 +137,7 @@ pub enum InputMode {
 /// Modules may set a rich prompt (dice pools, compose mode, chargen steps);
 /// `text: None` keeps the client's default prompt.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct PromptSpec {
     /// The input mode to switch to.
     pub mode: InputMode,
@@ -149,6 +157,7 @@ pub struct PromptSpec {
 /// Clients MUST ignore events whose `t` they do not recognize (additive
 /// evolution).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "t", content = "d", rename_all = "snake_case")]
 pub enum OutputEvent {
     // -- narrative stream --
@@ -237,6 +246,20 @@ pub enum OutputEvent {
     },
 
     // -- session control --
+    /// The server's answer to a
+    /// [`ClientCommand::Resume`](crate::ClientCommand::Resume), sent before
+    /// any replayed or fresh events.
+    ///
+    /// `replayed: true` — every event after the client's `last_seq` follows
+    /// in order; the client keeps its local state. `replayed: false` — the
+    /// gap exceeded the session's resume buffer (the client's `last_seq` is
+    /// too old): the client must discard local scrollback/panel state and
+    /// treat what follows (fresh `Room` + panel snapshots) as a full
+    /// re-hydration.
+    Resumed {
+        /// Whether the gap could be replayed from the resume buffer.
+        replayed: bool,
+    },
     /// Input-mode change / prompt update.
     Prompt(PromptSpec),
     /// Server keepalive; the client answers with

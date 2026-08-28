@@ -1,0 +1,4 @@
+[alias]
+# Regenerates web/src/lib/proto/ (committed TypeScript bindings) from the
+# mush-proto wire types. Run after any change to crates/mush-proto/src.
+gen-ts = "test -p mush-proto --features ts --test ts_export"

@@ -229,7 +229,10 @@ impl Effects {
 }
 
 /// Everything the world task can receive.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// (`Eq` is deliberately not derived: [`Inbound::Query`] carries a
+/// `serde_json::Value`, which is only `PartialEq`.)
+#[derive(Clone, Debug, PartialEq)]
 pub enum Inbound {
     /// One input line from a live connection.
     Cmd {
@@ -239,6 +242,26 @@ pub enum Inbound {
         actor: ObjId,
         /// The raw line.
         line: String,
+    },
+    /// A structured panel-hydration request (`ClientCommand::Req`, M4): the
+    /// web bridge maps each [`mush_proto::Query`] variant to a registered
+    /// query-handler `name` plus JSON `args`. The engine dispatches to the
+    /// registry's query handler and answers with
+    /// [`OutputEvent::Reply`]`{ id, event }` addressed to `conn` only —
+    /// queries are read-only and never stamp `last_input` (a background
+    /// panel refresh must not reset WHO idle time).
+    Query {
+        /// The connection the reply goes to.
+        conn: ConnId,
+        /// The requesting actor (permissions are evaluated as them).
+        actor: ObjId,
+        /// Client-chosen correlation id, echoed in the `Reply`.
+        id: u64,
+        /// The registered query-handler name (e.g. `"who"`, `"mail.list"`,
+        /// `"comsys.backlog"`).
+        name: SmolStr,
+        /// Handler-defined parameters.
+        args: serde_json::Value,
     },
     /// A connection finished auth and attached to an actor.
     ConnUp {
@@ -562,6 +585,16 @@ impl Engine {
                 }
                 StepOutcome::Continue
             }
+            Inbound::Query {
+                conn,
+                actor,
+                id,
+                name,
+                args,
+            } => {
+                self.handle_query(conn, actor, id, &name, &args, out);
+                StepOutcome::Continue
+            }
             Inbound::ConnUp {
                 conn,
                 actor,
@@ -858,6 +891,43 @@ impl Engine {
             );
         }
         self.world.session_end(actor);
+    }
+
+    /// Answer one [`Inbound::Query`]: look up the registered
+    /// [`QueryHandler`](crate::module::QueryHandler) by `name`, run it
+    /// read-only as `actor`, and address the wrapped
+    /// [`OutputEvent::Reply`] to the requesting connection only. Every
+    /// outcome — success, handler refusal, unknown name — produces exactly
+    /// one `Reply` carrying the request's `id`, so the client can always
+    /// correlate. A query for a missing actor is dropped (the connection is
+    /// mid-teardown; treaty ruling 3 re-validation).
+    fn handle_query(
+        &self,
+        conn: ConnId,
+        actor: ObjId,
+        id: u64,
+        name: &str,
+        args: &serde_json::Value,
+        out: &mut Outbox,
+    ) {
+        if self.world.get(actor).is_none() {
+            tracing::warn!(%actor, name, "Query for missing actor dropped");
+            return;
+        }
+        let event = match self.registry.query_handler(name) {
+            Some((_module, handler)) => match handler.query(&self.world, actor, args) {
+                Ok(event) => event,
+                Err(err) => OutputEvent::Sys(err),
+            },
+            None => OutputEvent::Sys(RichText::tag("error", format!("Unknown query {name:?}."))),
+        };
+        out.to_conn(
+            conn,
+            OutputEvent::Reply {
+                id,
+                event: Box::new(event),
+            },
+        );
     }
 
     fn apply(&mut self, cmd: WorldCommand, out: &mut Outbox) {
@@ -1831,5 +1901,166 @@ mod tests {
                 exclude: vec![nick]
             }
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Inbound::Query → Reply (the web Req hydration seam, M4)
+    // ------------------------------------------------------------------
+
+    /// A test query handler: echoes its params back inside a `Sys` event,
+    /// or refuses when params carry `"deny": true`.
+    struct EchoQuery;
+
+    impl crate::module::QueryHandler for EchoQuery {
+        fn query(
+            &self,
+            _w: &World,
+            actor: ObjId,
+            params: &serde_json::Value,
+        ) -> Result<OutputEvent, RichText> {
+            if params.get("deny").and_then(serde_json::Value::as_bool) == Some(true) {
+                return Err(RichText::tag("error", "Denied by handler."));
+            }
+            Ok(OutputEvent::Sys(RichText::plain(format!(
+                "echo actor={actor} params={params}"
+            ))))
+        }
+    }
+
+    fn engine_with_echo_query() -> (Engine, ObjId) {
+        let (mut engine, nick) = setup();
+        crate::module::Registrar::new(&mut engine.registry, "test")
+            .query_handler("test.echo", Arc::new(EchoQuery))
+            .unwrap();
+        (engine, nick)
+    }
+
+    fn query(name: &str, args: serde_json::Value) -> Inbound {
+        Inbound::Query {
+            conn: 42,
+            actor: GOD,
+            id: 7,
+            name: SmolStr::new(name),
+            args,
+        }
+    }
+
+    /// The full round trip: a Query dispatches to the registered handler
+    /// and exactly one conn-addressed `Reply { id }` wrapping the handler's
+    /// event comes back.
+    #[test]
+    fn query_round_trips_to_conn_scoped_reply() {
+        let (mut engine, _) = engine_with_echo_query();
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            query("test.echo", serde_json::json!({"n": 3})),
+            &mut out,
+            &mut fx,
+        );
+        assert_eq!(out.len(), 1, "exactly one reply: {:?}", out.events());
+        let (aud, ev) = &out.events()[0];
+        assert_eq!(aud, &Audience::Conn(42), "reply is conn-scoped");
+        let OutputEvent::Reply { id, event } = ev else {
+            panic!("expected Reply, got {ev:?}");
+        };
+        assert_eq!(*id, 7);
+        let OutputEvent::Sys(t) = event.as_ref() else {
+            panic!("expected wrapped Sys, got {event:?}");
+        };
+        assert_eq!(t.to_plain_text(), r#"echo actor=#1 params={"n":3}"#);
+        assert!(fx.is_empty());
+    }
+
+    /// A handler refusal and an unknown query name still answer with a
+    /// correlated Reply (wrapping a Sys error), never silence.
+    #[test]
+    fn query_errors_reply_with_correlated_sys() {
+        let (mut engine, _) = engine_with_echo_query();
+        for (q, needle) in [
+            (
+                query("test.echo", serde_json::json!({"deny": true})),
+                "Denied by handler.",
+            ),
+            (query("no.such", serde_json::json!({})), "Unknown query"),
+        ] {
+            let (mut out, mut fx) = (Outbox::new(), Effects::new());
+            engine.step(q, &mut out, &mut fx);
+            assert_eq!(out.len(), 1);
+            let (aud, ev) = &out.events()[0];
+            assert_eq!(aud, &Audience::Conn(42));
+            let OutputEvent::Reply { id: 7, event } = ev else {
+                panic!("expected Reply id 7, got {ev:?}");
+            };
+            assert!(
+                matches!(event.as_ref(), OutputEvent::Sys(t) if t.to_plain_text().contains(needle)),
+                "wanted {needle:?} in {event:?}"
+            );
+        }
+    }
+
+    /// The core `"who"` handler is registered by `register_core_commands`
+    /// and answers with the same listing the WHO command produces. Queries
+    /// never stamp `last_input` (panel refreshes must not reset idle).
+    #[test]
+    fn who_query_answers_without_stamping_idle() {
+        let (mut engine, nick) = setup();
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::ConnUp {
+                conn: 2,
+                actor: nick,
+                caps_structured: true,
+                from_linkdead: false,
+            },
+            &mut out,
+            &mut fx,
+        );
+        engine.set_now(1_040);
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Query {
+                conn: 2,
+                actor: nick,
+                id: 1,
+                name: SmolStr::new("who"),
+                args: serde_json::json!({}),
+            },
+            &mut out,
+            &mut fx,
+        );
+        let (aud, ev) = &out.events()[0];
+        assert_eq!(aud, &Audience::Conn(2));
+        let OutputEvent::Reply { id: 1, event } = ev else {
+            panic!("expected Reply, got {ev:?}");
+        };
+        let OutputEvent::Who(entries) = event.as_ref() else {
+            panic!("expected Who, got {event:?}");
+        };
+        let row = entries.iter().find(|e| e.name == "Nick").expect("Nick row");
+        assert_eq!(row.conn_s, 40);
+        assert_eq!(
+            row.idle_s, 40,
+            "a Query must not stamp last_input (idle would read 0)"
+        );
+    }
+
+    /// A Query for a vanished actor is dropped outright — no reply, no
+    /// panic (the connection is mid-teardown).
+    #[test]
+    fn query_for_missing_actor_is_dropped() {
+        let (mut engine, _) = engine_with_echo_query();
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Query {
+                conn: 3,
+                actor: ObjId(99),
+                id: 9,
+                name: SmolStr::new("test.echo"),
+                args: serde_json::json!({}),
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert!(out.is_empty());
     }
 }

@@ -1,0 +1,25 @@
+{
+  "name": "rustmush-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "rustmush web client — Svelte 5 + Vite + TypeScript SPA, embedded into mush-net-web via rust-embed",
+  "scripts": {
+    "dev": "vite",
+    "build": "svelte-check --tsconfig ./tsconfig.json && vite build",
+    "preview": "vite preview",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^7.3.0",
+    "@tsconfig/svelte": "^5.0.8",
+    "@types/node": "^24.0.0",
+    "svelte": "^5.56.0",
+    "svelte-check": "^4.7.6",
+    "typescript": "^5.9.3",
+    "vite": "^8.2.2",
+    "vitest": "^4.1.11"
+  }
+}

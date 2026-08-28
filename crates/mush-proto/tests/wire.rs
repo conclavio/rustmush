@@ -126,6 +126,8 @@ fn roundtrip_every_output_event_variant() {
             text: None,
         }),
         OutputEvent::Ping { nonce: 7 },
+        OutputEvent::Resumed { replayed: true },
+        OutputEvent::Resumed { replayed: false },
         OutputEvent::Reply {
             id: 3,
             event: Box::new(OutputEvent::Who(vec![])),
@@ -457,6 +459,18 @@ fn golden_ping_pong() {
     assert_eq!(
         serde_json::to_string(&ClientCommand::Pong { nonce: 7 }).unwrap(),
         r#"{"t":"pong","d":{"nonce":7}}"#
+    );
+}
+
+#[test]
+fn golden_resume_flow() {
+    assert_eq!(
+        serde_json::to_string(&ClientCommand::Resume { last_seq: 4180 }).unwrap(),
+        r#"{"t":"resume","d":{"last_seq":4180}}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&OutputEvent::Resumed { replayed: false }).unwrap(),
+        r#"{"t":"resumed","d":{"replayed":false}}"#
     );
 }
 

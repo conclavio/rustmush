@@ -38,6 +38,6 @@ pub use migrate::{
 pub use redis::RedisStore;
 pub use store::ObjectStore;
 pub use types::{
-    AccountRec, BanRec, CharacterRef, ModuleOp, ModuleWrite, StoreError, WorldSnapshot, WriteBatch,
-    WriteReceipt,
+    AccountRec, BanRec, CharacterRef, ModuleOp, ModuleWrite, StoreError, TokenRecord,
+    WorldSnapshot, WriteBatch, WriteReceipt,
 };

@@ -28,8 +28,9 @@ use mush_core::{Obj, ObjId};
 
 use crate::store::ObjectStore;
 use crate::types::{
-    AccountRec, BanRec, CharacterRef, ModuleWrite, StoreError, WorldSnapshot, WriteBatch,
-    WriteReceipt, validate_module_key, validate_module_ns, validate_module_op,
+    AccountRec, BanRec, CharacterRef, ModuleWrite, StoreError, TokenRecord, WorldSnapshot,
+    WriteBatch, WriteReceipt, validate_module_key, validate_module_ns, validate_module_op,
+    validate_token_hash,
 };
 
 /// See the [module docs](self).
@@ -50,6 +51,10 @@ struct Inner {
     accounts: HashMap<String, String>,
     /// ip → serialized `BanRec` JSON doc.
     bans: HashMap<String, String>,
+    /// token hash → serialized `TokenRecord` JSON doc (`token:{hash}` in
+    /// Redis). Expired entries are pruned lazily at read time against the
+    /// system clock, mirroring Redis TTL — like `bans`.
+    tokens: HashMap<String, String>,
     /// `(ns, key)` → serialized module JSON doc (`mod:{ns}:{key}` in
     /// Redis). The tuple key makes namespace isolation structural — no
     /// prefix matching to get wrong.
@@ -304,6 +309,25 @@ impl ObjectStore for InMemoryStore {
         })
     }
 
+    fn set_account_password<'a>(
+        &'a self,
+        account: &'a str,
+        argon2_hash: &'a str,
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        Box::pin(async move {
+            let key = account.to_lowercase();
+            let mut inner = self.lock()?;
+            let Some(doc) = inner.accounts.get(&key) else {
+                return Ok(false);
+            };
+            let mut rec: AccountRec = serde_json::from_str(doc)?;
+            rec.argon2_hash = argon2_hash.to_string();
+            let doc = serde_json::to_string(&rec)?;
+            inner.accounts.insert(key, doc);
+            Ok(true)
+        })
+    }
+
     fn set_ban<'a>(
         &'a self,
         ip: &'a str,
@@ -364,6 +388,117 @@ impl ObjectStore for InMemoryStore {
         Box::pin(async move {
             let mut inner = self.lock()?;
             Ok(inner.bans.remove(ip).is_some())
+        })
+    }
+
+    fn token_put(&self, hash: String, rec: TokenRecord) -> BoxFuture<'_, Result<(), StoreError>> {
+        Box::pin(async move {
+            validate_token_hash(&hash)?;
+            let doc = serde_json::to_string(&rec)?;
+            let mut inner = self.lock()?;
+            if rec.expires <= now_unix() {
+                // Mirrors Redis: a key set with EXAT in the past is
+                // immediately gone.
+                inner.tokens.remove(&hash);
+                return Ok(());
+            }
+            inner.tokens.insert(hash, doc);
+            Ok(())
+        })
+    }
+
+    fn token_get<'a>(
+        &'a self,
+        hash: &'a str,
+    ) -> BoxFuture<'a, Result<Option<TokenRecord>, StoreError>> {
+        Box::pin(async move {
+            validate_token_hash(hash)?;
+            let mut inner = self.lock()?;
+            let Some(doc) = inner.tokens.get(hash) else {
+                return Ok(None);
+            };
+            let rec: TokenRecord = serde_json::from_str(doc)?;
+            if rec.expires <= now_unix() {
+                // Lazy delete, as Redis TTL would have.
+                inner.tokens.remove(hash);
+                return Ok(None);
+            }
+            Ok(Some(rec))
+        })
+    }
+
+    fn token_touch<'a>(
+        &'a self,
+        hash: &'a str,
+        new_expires: i64,
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        Box::pin(async move {
+            validate_token_hash(hash)?;
+            let mut inner = self.lock()?;
+            let Some(doc) = inner.tokens.get(hash) else {
+                return Ok(false);
+            };
+            let mut rec: TokenRecord = serde_json::from_str(doc)?;
+            if rec.expires <= now_unix() {
+                // Expired = missing; a touch never resurrects.
+                inner.tokens.remove(hash);
+                return Ok(false);
+            }
+            if new_expires <= now_unix() {
+                // Sliding into the past is a delete.
+                inner.tokens.remove(hash);
+                return Ok(true);
+            }
+            rec.expires = new_expires;
+            let doc = serde_json::to_string(&rec)?;
+            inner.tokens.insert(hash.to_string(), doc);
+            Ok(true)
+        })
+    }
+
+    fn token_del<'a>(&'a self, hash: &'a str) -> BoxFuture<'a, Result<bool, StoreError>> {
+        Box::pin(async move {
+            validate_token_hash(hash)?;
+            let mut inner = self.lock()?;
+            let Some(doc) = inner.tokens.remove(hash) else {
+                return Ok(false);
+            };
+            // An expired straggler is already "gone": removed, not reported.
+            let live =
+                serde_json::from_str::<TokenRecord>(&doc).is_ok_and(|rec| rec.expires > now_unix());
+            Ok(live)
+        })
+    }
+
+    fn tokens_del_account<'a>(
+        &'a self,
+        account: &'a str,
+    ) -> BoxFuture<'a, Result<u64, StoreError>> {
+        Box::pin(async move {
+            let account_lc = account.to_lowercase();
+            let now = now_unix();
+            let mut inner = self.lock()?;
+            let mut doomed = Vec::new();
+            let mut live = 0u64;
+            for (hash, doc) in &inner.tokens {
+                match serde_json::from_str::<TokenRecord>(doc) {
+                    Ok(rec) => {
+                        let expired = rec.expires <= now;
+                        if expired {
+                            // Prune, as Redis TTL would have — not counted.
+                            doomed.push(hash.clone());
+                        } else if rec.account.to_lowercase() == account_lc {
+                            doomed.push(hash.clone());
+                            live += 1;
+                        }
+                    }
+                    Err(e) => tracing::error!(error = %e, "skipping corrupt token doc"),
+                }
+            }
+            for hash in doomed {
+                inner.tokens.remove(&hash);
+            }
+            Ok(live)
         })
     }
 

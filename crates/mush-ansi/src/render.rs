@@ -76,6 +76,9 @@ pub fn render(event: &OutputEvent, caps: &ClientCaps, theme: &AnsiTheme, out: &m
         }
         // Transport keepalive: nothing to show.
         OutputEvent::Ping { .. } => {}
+        // Web-resume acknowledgement: structured-transport only (the WS
+        // handshake emits it out-of-band); SSH never sees a resume.
+        OutputEvent::Resumed { .. } => {}
         OutputEvent::Hello { proto, server, .. } => {
             w.tagged("system", &format!("{server} (proto {proto})"));
             w.end_line();

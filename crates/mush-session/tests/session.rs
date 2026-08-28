@@ -442,3 +442,45 @@ fn sanitize_is_exported_and_strips_esc() {
     assert_eq!(sanitize_line("say \x1b[2J\x1b[H boo"), "say [2J[H boo");
     assert_eq!(sanitize_line("keep\ttabs"), "keep\ttabs");
 }
+
+#[test]
+fn conns_of_session_lists_handles_in_attach_order() {
+    let mgr = SessionManager::new();
+    let t0 = Instant::now();
+    // One ANSI and one structured connection on the same session (an SSH
+    // login plus a web tab), so a driver can act on a subset (e.g.
+    // @newpassword boots only the structured one).
+    let (ansi, _rx1) = conn_at(1, 1, 8, t0);
+    let (env_tx, _env_rx) = mpsc::channel(8);
+    let structured = ConnectionHandle::new_structured(
+        ConnId(2),
+        addr(2),
+        ClientCaps {
+            kind: ClientKind::Web,
+            structured: true,
+            ..ssh_caps()
+        },
+        env_tx,
+    );
+    let (sess, _) = mgr.attach(ansi, CharKey(7), "nick".into());
+    mgr.attach(structured, CharKey(7), "nick".into());
+
+    let handles = mgr.conns_of_session(sess);
+    assert_eq!(
+        handles.iter().map(|h| h.id).collect::<Vec<_>>(),
+        vec![ConnId(1), ConnId(2)],
+        "attach order"
+    );
+    assert!(!handles[0].is_structured());
+    assert!(handles[1].is_structured());
+
+    // Detaching one shrinks the list; an unknown session is empty.
+    mgr.detach(ConnId(1), DetachReason::Quit);
+    let handles = mgr.conns_of_session(sess);
+    assert_eq!(handles.len(), 1);
+    assert_eq!(handles[0].id, ConnId(2));
+    assert!(
+        mgr.conns_of_session(mush_session::SessId(999)).is_empty(),
+        "unknown session lists nothing"
+    );
+}

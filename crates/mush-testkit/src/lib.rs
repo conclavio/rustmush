@@ -326,6 +326,7 @@ pub fn text_of(event: &OutputEvent) -> String {
         OutputEvent::Who(entries) => who_text(entries),
         OutputEvent::Reply { id, event } => format!("[reply {id}] {}", text_of(event)),
         OutputEvent::Ping { nonce } => format!("[ping {nonce}]"),
+        OutputEvent::Resumed { replayed } => format!("[resumed replayed={replayed}]"),
         OutputEvent::Panel { feed, .. } => format!("[panel {feed}]"),
         OutputEvent::Weather { text, .. } => text.to_plain_text(),
         OutputEvent::Prompt(p) => p

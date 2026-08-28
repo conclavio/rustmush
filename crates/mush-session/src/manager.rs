@@ -1,17 +1,31 @@
-//! [`SessionManager`]: character → connections fan-out, attach/detach,
-//! linkdead, WHO, flood control.
+//! [`SessionManager`]: character → connections fan-out, envelope stamping +
+//! resume ring buffers, attach/detach, linkdead, WHO, flood control.
 
+use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
-use mush_proto::{ClientCaps, OutputEvent};
+use mush_proto::{ClientCaps, Envelope, OutputEvent};
 
 use crate::conn::{ConnId, ConnectionHandle};
 use crate::flood::{FloodBucket, FloodVerdict};
+
+/// The wall-clock source for [`Envelope::ts`] stamps: unix **milliseconds**.
+/// Injected at construction so tests drive a manual clock; production uses
+/// [`system_unix_ms`].
+pub type EnvelopeClock = Arc<dyn Fn() -> i64 + Send + Sync>;
+
+/// The default [`EnvelopeClock`]: `SystemTime::now()` as unix milliseconds.
+#[must_use]
+pub fn system_unix_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
 
 /// Identifies one session (one account playing one character, over 1..N
 /// connections).
@@ -34,6 +48,14 @@ pub struct SessionConfig {
     pub flood_rate: f64,
     /// Input burst allowance per connection (token-bucket capacity).
     pub flood_burst: f64,
+    /// Capacity of the per-session resume ring buffer (stamped envelopes
+    /// retained for web `Resume { last_seq }` replay). Recording is
+    /// **always on** for every session (chosen for simplicity over
+    /// per-transport gating): worst-case memory is
+    /// `resume_ring × (8-byte seq + Arc<Envelope>)` per session, where each
+    /// retained [`Envelope`] owns a full clone of its event — ~512 small
+    /// events per session, an acceptable cost at MUSH populations.
+    pub resume_ring: usize,
 }
 
 impl Default for SessionConfig {
@@ -42,6 +64,7 @@ impl Default for SessionConfig {
             linkdead_grace: Duration::from_secs(300),
             flood_rate: 10.0,
             flood_burst: 30.0,
+            resume_ring: 512,
         }
     }
 }
@@ -136,6 +159,17 @@ pub enum SendToConn {
     Unknown,
 }
 
+/// Why [`SessionManager::replay_since`] could not replay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplayError {
+    /// The gap exceeds the ring: at least one event after `last_seq` has
+    /// already been evicted. The client must re-hydrate (fresh `Room` +
+    /// panel snapshots) instead of replaying.
+    TooOld,
+    /// No such session (closed, reaped, or never existed).
+    UnknownSession,
+}
+
 /// One row of [`SessionManager::who`].
 #[derive(Clone, Debug)]
 pub struct SessionMeta {
@@ -177,6 +211,19 @@ struct SessEntry {
     last_addr: IpAddr,
     /// High-water input mark carried over from detached connections.
     last_input_snapshot: Instant,
+    /// Highest envelope seq stamped for this session (0 = none yet). Lives
+    /// on the session, not the connection, so seqs stay monotonic across
+    /// reconnects and multi-connect.
+    last_seq: u64,
+    /// Resume ring: the newest [`SessionConfig::resume_ring`] session-scoped
+    /// stamped envelopes, oldest first. Conn-scoped sends
+    /// ([`SessionManager::send_to_conn`]) consume seqs but are **not**
+    /// recorded — they must not replay to other/future connections; the
+    /// resulting seq gaps are harmless (replay filters `seq > last_seq`).
+    ring: VecDeque<(u64, Arc<Envelope>)>,
+    /// Highest seq evicted from the ring (0 = nothing evicted yet) — the
+    /// [`ReplayError::TooOld`] boundary.
+    evicted_seq: u64,
 }
 
 struct ConnEntry {
@@ -195,6 +242,9 @@ struct ConnEntry {
 /// shard at a time. Do not add code that acquires in a different order.
 pub struct SessionManager {
     config: SessionConfig,
+    /// Wall-clock source for envelope `ts` stamps (injected; tests use a
+    /// manual clock).
+    clock: EnvelopeClock,
     sessions: DashMap<SessId, SessEntry>,
     conns: DashMap<ConnId, ConnEntry>,
     by_char: DashMap<CharKey, SessId>,
@@ -212,15 +262,26 @@ impl Default for SessionManager {
 }
 
 impl SessionManager {
-    /// Manager with default config (300 s grace, 10 lines/s, burst 30).
+    /// Manager with default config (300 s grace, 10 lines/s, burst 30,
+    /// 512-envelope resume rings) and the system clock.
     pub fn new() -> Self {
         Self::with_config(SessionConfig::default())
     }
 
-    /// Manager with explicit tunables.
+    /// Manager with explicit tunables and the system clock.
     pub fn with_config(config: SessionConfig) -> Self {
+        Self::with_config_and_clock(config, system_unix_ms)
+    }
+
+    /// Manager with explicit tunables and an injected [`EnvelopeClock`]
+    /// (unix milliseconds) — deterministic `ts` stamps for tests.
+    pub fn with_config_and_clock(
+        config: SessionConfig,
+        clock: impl Fn() -> i64 + Send + Sync + 'static,
+    ) -> Self {
         Self {
             config,
+            clock: Arc::new(clock),
             sessions: DashMap::new(),
             conns: DashMap::new(),
             by_char: DashMap::new(),
@@ -348,6 +409,9 @@ impl SessionManager {
                 first_connected_at: attached_at,
                 last_addr: addr,
                 last_input_snapshot: attached_at,
+                last_seq: 0,
+                ring: VecDeque::new(),
+                evicted_seq: 0,
             },
         );
         sess
@@ -468,30 +532,78 @@ impl SessionManager {
     }
 
     // ---- delivery -------------------------------------------------------
+    //
+    // Every session-scoped send funnels through `deliver_to_session`, the
+    // single stamping path: it allocates the session's next seq, stamps an
+    // Envelope (seq + ts from the injected clock + a clone of the event),
+    // records it in the resume ring, and fans out — the plain
+    // Arc<OutputEvent> to ANSI connections, the Arc<Envelope> to structured
+    // ones. One semantic event, two renders (treaty ruling 1); the ring is
+    // recorded for every session, live connections or not, so output during
+    // web linkdead replays on resume.
 
     /// Fan an event out to every connection of `character`'s session (treaty
     /// ruling 2: the world resolves room → characters, this resolves
     /// character → connections). The `Arc` is cloned per connection; sends
-    /// never block. A character with no session (or linkdead) reports zero
-    /// deliveries.
+    /// never block. A character with no session reports zero deliveries; a
+    /// linkdead session delivers to nobody but still records the resume
+    /// ring.
     pub fn send_to_char(&self, character: CharKey, ev: Arc<OutputEvent>) -> SendReport {
         match self.by_char.get(&character).map(|r| *r) {
-            Some(sess) => self.send_to_session(sess, ev),
+            Some(sess) => self.deliver_to_session(sess, &ev),
             None => SendReport::default(),
         }
     }
 
     /// Fan an event out to every connection of one session.
     pub fn send_to_session(&self, sess: SessId, ev: Arc<OutputEvent>) -> SendReport {
-        let conn_ids = self
-            .sessions
-            .get(&sess)
-            .map(|s| s.conns.clone())
-            .unwrap_or_default();
+        self.deliver_to_session(sess, &ev)
+    }
+
+    /// Owned-event convenience over [`send_to_char`](Self::send_to_char):
+    /// the world task's primary send path. Stamps seq/ts into an
+    /// [`Envelope`] for the ring + structured connections and hands the
+    /// plain [`OutputEvent`] to ANSI-rendering connections.
+    pub fn send_event_to_char(&self, character: CharKey, event: OutputEvent) -> SendReport {
+        self.send_to_char(character, Arc::new(event))
+    }
+
+    /// Owned-event convenience over
+    /// [`send_to_session`](Self::send_to_session).
+    pub fn send_event_to_session(&self, sess: SessId, event: OutputEvent) -> SendReport {
+        self.deliver_to_session(sess, &Arc::new(event))
+    }
+
+    /// Stamp + ring + fan out one session-scoped event (see the section
+    /// note above). Unknown sessions report zero deliveries.
+    fn deliver_to_session(&self, sess: SessId, ev: &Arc<OutputEvent>) -> SendReport {
+        // Stamp under the session shard lock, then release it before
+        // touching `conns` (one map at a time — see the struct docs).
+        let stamped = {
+            let Some(mut s) = self.sessions.get_mut(&sess) else {
+                return SendReport::default();
+            };
+            s.last_seq += 1;
+            let seq = s.last_seq;
+            let env = Arc::new(Envelope::new(seq, (self.clock)(), (**ev).clone()));
+            s.ring.push_back((seq, Arc::clone(&env)));
+            while s.ring.len() > self.config.resume_ring {
+                if let Some((evicted, _)) = s.ring.pop_front() {
+                    s.evicted_seq = evicted;
+                }
+            }
+            (env, s.conns.clone())
+        };
+        let (env, conn_ids) = stamped;
         let mut report = SendReport::default();
         for id in conn_ids {
             if let Some(e) = self.conns.get(&id) {
-                if e.handle.try_send(Arc::clone(&ev)) {
+                let sent = if e.handle.is_structured() {
+                    e.handle.try_send_envelope(Arc::clone(&env))
+                } else {
+                    e.handle.try_send(Arc::clone(ev))
+                };
+                if sent {
                     report.delivered += 1;
                 } else {
                     report.dropped.push(id);
@@ -502,30 +614,108 @@ impl SessionManager {
     }
 
     /// Send to one specific connection (prompts, login banners, echoes).
+    ///
+    /// A structured connection still receives a stamped [`Envelope`] (its
+    /// wire carries nothing else), but conn-scoped envelopes are **not**
+    /// recorded in the resume ring — a prompt addressed to one connection
+    /// must not replay to the session's other or future connections. The
+    /// seq gap this leaves in the ring is harmless.
     pub fn send_to_conn(&self, conn: ConnId, ev: Arc<OutputEvent>) -> SendToConn {
-        match self.conns.get(&conn) {
-            None => SendToConn::Unknown,
-            Some(e) => {
-                if e.handle.try_send(ev) {
-                    SendToConn::Delivered
-                } else {
-                    SendToConn::Dropped
-                }
-            }
+        let Some(e) = self.conns.get(&conn) else {
+            return SendToConn::Unknown;
+        };
+        if !e.handle.is_structured() {
+            return if e.handle.try_send(ev) {
+                SendToConn::Delivered
+            } else {
+                SendToConn::Dropped
+            };
+        }
+        let sess = e.sess;
+        let handle = Arc::clone(&e.handle);
+        // Release `conns` before touching `sessions` (one map at a time).
+        drop(e);
+        let Some(env) = self.stamp_conn_scoped(sess, &ev) else {
+            // Session vanished mid-teardown; the connection is going away
+            // with it.
+            return SendToConn::Unknown;
+        };
+        if handle.try_send_envelope(env) {
+            SendToConn::Delivered
+        } else {
+            SendToConn::Dropped
         }
     }
 
+    /// Allocate the session's next seq and stamp an envelope **without**
+    /// ring recording (see [`send_to_conn`](Self::send_to_conn)).
+    fn stamp_conn_scoped(&self, sess: SessId, ev: &Arc<OutputEvent>) -> Option<Arc<Envelope>> {
+        let mut s = self.sessions.get_mut(&sess)?;
+        s.last_seq += 1;
+        Some(Arc::new(Envelope::new(
+            s.last_seq,
+            (self.clock)(),
+            (**ev).clone(),
+        )))
+    }
+
     /// Send to every attached connection (`@wall`, shutdown notices).
+    /// Stamped + ring-recorded per session like any session-scoped send.
     pub fn broadcast_all(&self, ev: Arc<OutputEvent>) -> SendReport {
+        // Collect ids first: `deliver_to_session` takes the same shards
+        // `iter()` would hold.
+        let sessions: Vec<SessId> = self.sessions.iter().map(|s| *s.key()).collect();
         let mut report = SendReport::default();
-        for e in self.conns.iter() {
-            if e.handle.try_send(Arc::clone(&ev)) {
-                report.delivered += 1;
-            } else {
-                report.dropped.push(e.handle.id);
-            }
+        for sess in sessions {
+            let r = self.deliver_to_session(sess, &ev);
+            report.delivered += r.delivered;
+            report.dropped.extend(r.dropped);
         }
         report
+    }
+
+    // ---- resume replay --------------------------------------------------
+
+    /// The stamped envelopes a reconnecting structured client is missing:
+    /// every **ring-recorded** envelope with `seq > last_seq`, oldest
+    /// first. `Err(TooOld)` when the gap exceeds the ring (an event after
+    /// `last_seq` was already evicted) — the client must re-hydrate. A
+    /// `last_seq` exactly at the newest stamp replays nothing.
+    ///
+    /// Also `Err(TooOld)` when `last_seq` is **higher** than anything this
+    /// session ever stamped (HIGH finding): per-session seqs restart at 0,
+    /// so a client resuming with a seq remembered from a *prior*
+    /// incarnation of this character's session (that session was reaped
+    /// and a fresh one now exists under the same character) would
+    /// otherwise pass the `evicted_seq` check and get `Ok(empty)` — the
+    /// client reads that as "already caught up" and silently loses every
+    /// event the new session ever stamps. A legitimate client can never
+    /// exceed `last_seq`: conn-scoped sends
+    /// ([`SessionManager::send_to_conn`]) advance it without ring-recording,
+    /// but they still advance it.
+    pub fn replay_since(
+        &self,
+        sess: SessId,
+        last_seq: u64,
+    ) -> Result<Vec<Arc<Envelope>>, ReplayError> {
+        let s = self
+            .sessions
+            .get(&sess)
+            .ok_or(ReplayError::UnknownSession)?;
+        if last_seq < s.evicted_seq || last_seq > s.last_seq {
+            return Err(ReplayError::TooOld);
+        }
+        Ok(s.ring
+            .iter()
+            .filter(|(seq, _)| *seq > last_seq)
+            .map(|(_, env)| Arc::clone(env))
+            .collect())
+    }
+
+    /// Highest envelope seq stamped for a session so far (0 = none) — what
+    /// a fresh structured connect reports as its resume baseline.
+    pub fn last_seq(&self, sess: SessId) -> Option<u64> {
+        self.sessions.get(&sess).map(|s| s.last_seq)
     }
 
     // ---- idle + flood bookkeeping ---------------------------------------
@@ -639,6 +829,25 @@ impl SessionManager {
     /// The shared handle for a connection.
     pub fn conn_handle(&self, conn: ConnId) -> Option<Arc<ConnectionHandle>> {
         self.conns.get(&conn).map(|e| Arc::clone(&e.handle))
+    }
+
+    /// The live connection handles attached to a session, in attach order;
+    /// empty if the session is unknown (or linkdead — no connections).
+    /// Lets drivers act on a *subset* of a session's connections (e.g.
+    /// `@newpassword` boots the structured/web ones and leaves SSH alone)
+    /// where [`SessionManager::close_session`] would take all of them.
+    #[must_use]
+    pub fn conns_of_session(&self, sess: SessId) -> Vec<Arc<ConnectionHandle>> {
+        // Snapshot the id list first, then resolve handles — never hold a
+        // `sessions` ref while touching `conns` (see the struct docs on
+        // lock order).
+        let ids: Vec<ConnId> = match self.sessions.get(&sess) {
+            Some(s) => s.conns.clone(),
+            None => return Vec::new(),
+        };
+        ids.into_iter()
+            .filter_map(|c| self.conns.get(&c).map(|e| Arc::clone(&e.handle)))
+            .collect()
     }
 
     /// Whether a session is currently linkdead.

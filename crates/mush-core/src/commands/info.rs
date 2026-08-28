@@ -1,38 +1,46 @@
 //! Info commands: `WHO` (connected players with real idle/connect times
 //! from the world's session stats) and `help`/`+help` (rendered from every
-//! registered [`CommandSpec`]'s real help text).
+//! registered [`CommandSpec`]'s real help text). The same WHO view also
+//! backs the `"who"` query handler (web WHO-rail hydration, M4).
 
 use std::sync::Arc;
 
-use mush_proto::{OutputEvent, WhoEntry};
+use mush_proto::{OutputEvent, RichText, WhoEntry};
 
 use crate::cmd::{ArgShape, CmdError, CommandSpec, Ctx, Registry, RegistryError};
 use crate::flags::{Flags, Powers, Role};
+use crate::module::{QueryHandler, Registrar};
+use crate::obj::ObjId;
 use crate::perm;
+use crate::world::World;
 
 use super::attr_text;
 
-fn who_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let staff = perm::has_role(ctx.w, ctx.actor, Role::Wizard)
-        || perm::has_power(ctx.w, ctx.actor, Powers::SEE_HIDDEN);
+/// The WHO listing as seen by `viewer`: connected actors with real
+/// idle/connect times from the engine-maintained session stats. Staff
+/// (Wizard+ or `SEE_HIDDEN`) also see locations and DARK players. Shared by
+/// the `WHO` command and the `"who"` query handler — one view, two
+/// transports.
+#[must_use]
+pub fn who_entries(w: &World, viewer: ObjId) -> Vec<WhoEntry> {
+    let staff =
+        perm::has_role(w, viewer, Role::Wizard) || perm::has_power(w, viewer, Powers::SEE_HIDDEN);
     let mut entries = Vec::new();
-    for id in ctx.w.connected() {
-        let Some(o) = ctx.w.get(id) else { continue };
-        if o.flags.contains(Flags::DARK) && !staff && id != ctx.actor {
+    for id in w.connected() {
+        let Some(o) = w.get(id) else { continue };
+        if o.flags.contains(Flags::DARK) && !staff && id != viewer {
             continue;
         }
         let location = if staff {
-            o.location
-                .and_then(|l| ctx.w.get(l))
-                .map(|r| r.name.clone())
+            o.location.and_then(|l| w.get(l)).map(|r| r.name.clone())
         } else {
             None
         };
         // Idle/connect times come from the engine-maintained session stats
         // (clamped to 0 against clock skew); actors marked connected by
         // other means (tests, NPCs) report zeros.
-        let now = ctx.w.now();
-        let (idle_s, conn_s) = ctx.w.session_stat(id).map_or((0, 0), |s| {
+        let now = w.now();
+        let (idle_s, conn_s) = w.session_stat(id).map_or((0, 0), |s| {
             (
                 u64::try_from(now - s.last_input).unwrap_or(0),
                 u64::try_from(now - s.connect_time).unwrap_or(0),
@@ -44,11 +52,31 @@ fn who_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             idle_s,
             conn_s,
             location,
-            doing: attr_text(ctx.w, id, "doing"),
+            doing: attr_text(w, id, "doing"),
         });
     }
+    entries
+}
+
+fn who_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let entries = who_entries(ctx.w, ctx.actor);
     ctx.out.to_actor(ctx.actor, OutputEvent::Who(entries));
     Ok(())
+}
+
+/// The `"who"` query handler (web `Req { q: Who }` hydration): the same
+/// listing the `WHO` command produces, wrapped by the engine in a `Reply`.
+struct WhoQuery;
+
+impl QueryHandler for WhoQuery {
+    fn query(
+        &self,
+        w: &World,
+        actor: ObjId,
+        _params: &serde_json::Value,
+    ) -> Result<OutputEvent, RichText> {
+        Ok(OutputEvent::Who(who_entries(w, actor)))
+    }
 }
 
 fn help_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -96,8 +124,14 @@ fn help_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-/// Register `WHO` and `help`.
+/// Register `WHO` and `help` (plus the core `"who"` query handler).
 pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
+    // Core query handlers register under the reserved module identity
+    // "core". This runs before any game module registers, so a collision is
+    // a programming error, not a runtime condition.
+    Registrar::new(reg, "core")
+        .query_handler("who", Arc::new(WhoQuery))
+        .expect("core query handler registration must not collide");
     reg.register(
         CommandSpec {
             name: "WHO".into(),

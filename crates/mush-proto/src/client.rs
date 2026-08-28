@@ -14,6 +14,7 @@ use crate::caps::ClientCaps;
 /// panels can populate without spamming scrollback (mail list on login,
 /// channel backlog on tab open, …).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "t", content = "d", rename_all = "snake_case")]
 pub enum Query {
     /// Mail summaries for one folder.
@@ -51,6 +52,7 @@ pub enum Query {
 /// Adjacently tagged on the wire, same scheme as
 /// [`OutputEvent`](crate::OutputEvent): `{"t": "line", "d": "look"}`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "t", content = "d", rename_all = "snake_case")]
 pub enum ClientCommand {
     /// A command line as typed — THE primary input for both transports.

@@ -54,6 +54,7 @@
 
 mod commands;
 mod data;
+mod query;
 mod speak;
 
 use std::collections::{BTreeMap, VecDeque};
@@ -71,6 +72,7 @@ pub use data::{
     DEFAULT_ALIAS, DEFAULT_CHANNEL, DEFAULT_HISTORY_CAP, HistoryPolicy, META_KEY, Membership, NS,
     chan_key, hist_key, member_key,
 };
+pub use query::{BacklogQuery, MAX_BACKLOG_LIMIT, StateQuery};
 pub use speak::ComsysAliases;
 
 use data::{persist_channel, persist_del, persist_membership, persist_meta};
@@ -104,6 +106,11 @@ impl GameModule for ComsysModule {
         reg.subscribe(WorldEventKind::ObjCreated, Arc::new(on_obj_created));
         reg.subscribe(WorldEventKind::ObjDestroyed, Arc::new(on_obj_destroyed));
         reg.script_api("comsys")?;
+        // M4 web hydration: the "comsys" panel feed (channel tabs) plus its
+        // two read-only query handlers (see `query.rs`).
+        reg.panel_feed("comsys")?;
+        reg.query_handler("comsys.state", Arc::new(query::StateQuery))?;
+        reg.query_handler("comsys.backlog", Arc::new(query::BacklogQuery))?;
         commands::register(reg)?;
         Ok(())
     }

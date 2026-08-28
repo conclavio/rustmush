@@ -17,6 +17,7 @@ use crate::event::OutputEvent;
 /// SSH connections never see envelopes — the ANSI renderer consumes
 /// [`OutputEvent`] directly.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Envelope {
     /// Per-session monotonic sequence number, stamped by the session layer.
     pub seq: u64,

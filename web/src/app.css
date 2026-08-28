@@ -1,0 +1,350 @@
+/* Global theme. Dark by default (design 02-connectivity §7); light via an
+ * explicit choice (`<html data-theme="light">`, persisted) or the system
+ * preference when no choice is stored. Fully self-contained: system font
+ * stacks only, no external fonts or CDNs. */
+
+:root {
+  color-scheme: dark;
+
+  --bg: #101418;
+  --bg-panel: #171d24;
+  --bg-input: #1c242d;
+  --border: #2a333d;
+  --fg: #d7dee5;
+  --fg-muted: #8b98a5;
+  --fg-faint: #5b6672;
+  --accent: #6ea8fe;
+  --accent-dim: #3d5a80;
+  --error: #ff6b6b;
+  --success: #63d471;
+  --warn: #e8c268;
+
+  /* Semantic span tags (tag-* classes below). */
+  --c-player: #8ab8e8;
+  --c-npc: #c9a3e8;
+  --c-exit: #63d471;
+  --c-channel: #d1a458;
+  --c-system: #8b98a5;
+  --c-error: #ff6b6b;
+  --c-say: #d7dee5;
+  --c-pose: #cfd8e0;
+  --c-room: #e8c268;
+  --c-weather: #7fd4e0;
+
+  /* The 16-color ANSI palette (Span.style.fg/bg `Color::Ansi`/low
+   * `Color::Idx256`), applied via the `.ansi-<n>`/`.ansi-bg-<n>` classes
+   * below (web/src/lib/render.ts) instead of inline hex, so explicit colors
+   * stay legible across themes — a single dark-optimized hex set emitted
+   * inline made white(7)/yellow(3) nearly invisible on the light theme. */
+  --ansi-0: #3f4451;
+  --ansi-1: #e05561;
+  --ansi-2: #8cc265;
+  --ansi-3: #d1a458;
+  --ansi-4: #4aa5f0;
+  --ansi-5: #c162de;
+  --ansi-6: #42b3c2;
+  --ansi-7: #d7dae0;
+  --ansi-8: #6c7484;
+  --ansi-9: #ff616e;
+  --ansi-10: #a5e075;
+  --ansi-11: #f0a45d;
+  --ansi-12: #4dc4ff;
+  --ansi-13: #de73ff;
+  --ansi-14: #4cd1e0;
+  --ansi-15: #ffffff;
+
+  --font-ui:
+    system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono:
+    ui-monospace, "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+}
+
+/* Light palette (shared by the explicit choice and the system fallback). */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+
+    --bg: #f5f4f0;
+    --bg-panel: #ffffff;
+    --bg-input: #eceae4;
+    --border: #d5d2c9;
+    --fg: #2b2f36;
+    --fg-muted: #6b7280;
+    --fg-faint: #9aa1ab;
+    --accent: #2563c9;
+    --accent-dim: #a8c3e8;
+    --error: #c62828;
+    --success: #1e7d38;
+    --warn: #9a6b0a;
+
+    --c-player: #1d5fa8;
+    --c-npc: #7c3aad;
+    --c-exit: #1e7d38;
+    --c-channel: #9a6b0a;
+    --c-system: #6b7280;
+    --c-error: #c62828;
+    --c-say: #2b2f36;
+    --c-pose: #3d434c;
+    --c-room: #8a5a00;
+    --c-weather: #0b7285;
+
+    /* Re-tuned for contrast on the light --bg (white/yellow in particular
+     * are unreadable at the dark values above); see the bare :root block. */
+    --ansi-0: #383a42;
+    --ansi-1: #d1373f;
+    --ansi-2: #3d8b3d;
+    --ansi-3: #9c6b0a;
+    --ansi-4: #2f5fc4;
+    --ansi-5: #9a3fb0;
+    --ansi-6: #0f7c8c;
+    --ansi-7: #55606b;
+    --ansi-8: #7a828d;
+    --ansi-9: #c62828;
+    --ansi-10: #1e7d38;
+    --ansi-11: #8a5a00;
+    --ansi-12: #1d5fa8;
+    --ansi-13: #7c3aad;
+    --ansi-14: #0b7285;
+    --ansi-15: #2b2f36;
+  }
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #f5f4f0;
+  --bg-panel: #ffffff;
+  --bg-input: #eceae4;
+  --border: #d5d2c9;
+  --fg: #2b2f36;
+  --fg-muted: #6b7280;
+  --fg-faint: #9aa1ab;
+  --accent: #2563c9;
+  --accent-dim: #a8c3e8;
+  --error: #c62828;
+  --success: #1e7d38;
+  --warn: #9a6b0a;
+
+  --c-player: #1d5fa8;
+  --c-npc: #7c3aad;
+  --c-exit: #1e7d38;
+  --c-channel: #9a6b0a;
+  --c-system: #6b7280;
+  --c-error: #c62828;
+  --c-say: #2b2f36;
+  --c-pose: #3d434c;
+  --c-room: #8a5a00;
+  --c-weather: #0b7285;
+
+  --ansi-0: #383a42;
+  --ansi-1: #d1373f;
+  --ansi-2: #3d8b3d;
+  --ansi-3: #9c6b0a;
+  --ansi-4: #2f5fc4;
+  --ansi-5: #9a3fb0;
+  --ansi-6: #0f7c8c;
+  --ansi-7: #55606b;
+  --ansi-8: #7a828d;
+  --ansi-9: #c62828;
+  --ansi-10: #1e7d38;
+  --ansi-11: #8a5a00;
+  --ansi-12: #1d5fa8;
+  --ansi-13: #7c3aad;
+  --ansi-14: #0b7285;
+  --ansi-15: #2b2f36;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+#app {
+  height: 100%;
+}
+
+/* ---- semantic span tags (Span.tag → tag-<name>) -------------------------
+ * Global (not component-scoped): RichLine renders spans with these classes
+ * from server-provided tags, including tags added by future modules. */
+
+.tag-player {
+  color: var(--c-player);
+  font-weight: 600;
+}
+
+.tag-npc {
+  color: var(--c-npc);
+  font-weight: 600;
+}
+
+.tag-exit {
+  color: var(--c-exit);
+}
+
+.tag-channel {
+  color: var(--c-channel);
+  font-weight: 600;
+}
+
+.tag-system {
+  color: var(--c-system);
+}
+
+.tag-error {
+  color: var(--c-error);
+}
+
+.tag-say {
+  color: var(--c-say);
+}
+
+.tag-pose {
+  color: var(--c-pose);
+}
+
+.tag-room {
+  color: var(--c-room);
+  font-weight: 700;
+}
+
+.tag-weather {
+  color: var(--c-weather);
+}
+
+/* ---- explicit ANSI span colors (Span.style.fg/bg → render.ts styleToClasses)
+ * Declared after .tag-* so an explicit Style wins if a span somehow carries
+ * both (same specificity; source order breaks the tie). */
+
+.ansi-0 {
+  color: var(--ansi-0);
+}
+.ansi-1 {
+  color: var(--ansi-1);
+}
+.ansi-2 {
+  color: var(--ansi-2);
+}
+.ansi-3 {
+  color: var(--ansi-3);
+}
+.ansi-4 {
+  color: var(--ansi-4);
+}
+.ansi-5 {
+  color: var(--ansi-5);
+}
+.ansi-6 {
+  color: var(--ansi-6);
+}
+.ansi-7 {
+  color: var(--ansi-7);
+}
+.ansi-8 {
+  color: var(--ansi-8);
+}
+.ansi-9 {
+  color: var(--ansi-9);
+}
+.ansi-10 {
+  color: var(--ansi-10);
+}
+.ansi-11 {
+  color: var(--ansi-11);
+}
+.ansi-12 {
+  color: var(--ansi-12);
+}
+.ansi-13 {
+  color: var(--ansi-13);
+}
+.ansi-14 {
+  color: var(--ansi-14);
+}
+.ansi-15 {
+  color: var(--ansi-15);
+}
+
+.ansi-bg-0 {
+  background-color: var(--ansi-0);
+}
+.ansi-bg-1 {
+  background-color: var(--ansi-1);
+}
+.ansi-bg-2 {
+  background-color: var(--ansi-2);
+}
+.ansi-bg-3 {
+  background-color: var(--ansi-3);
+}
+.ansi-bg-4 {
+  background-color: var(--ansi-4);
+}
+.ansi-bg-5 {
+  background-color: var(--ansi-5);
+}
+.ansi-bg-6 {
+  background-color: var(--ansi-6);
+}
+.ansi-bg-7 {
+  background-color: var(--ansi-7);
+}
+.ansi-bg-8 {
+  background-color: var(--ansi-8);
+}
+.ansi-bg-9 {
+  background-color: var(--ansi-9);
+}
+.ansi-bg-10 {
+  background-color: var(--ansi-10);
+}
+.ansi-bg-11 {
+  background-color: var(--ansi-11);
+}
+.ansi-bg-12 {
+  background-color: var(--ansi-12);
+}
+.ansi-bg-13 {
+  background-color: var(--ansi-13);
+}
+.ansi-bg-14 {
+  background-color: var(--ansi-14);
+}
+.ansi-bg-15 {
+  background-color: var(--ansi-15);
+}
+
+/* ---- scrollback block flavors (ScrollbackStore push classes) ---------- */
+
+.ev-sys {
+  color: var(--c-system);
+}
+
+.ev-weather {
+  color: var(--c-weather);
+  font-style: italic;
+}
+
+.ev-echo {
+  color: var(--fg-faint);
+}
+
+.ev-local {
+  font-style: italic;
+}
+
+.ev-room {
+  margin-top: 0.25rem;
+}

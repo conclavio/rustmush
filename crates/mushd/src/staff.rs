@@ -1,5 +1,5 @@
-//! Server-side staff commands: `@siteban`, `@dump`, `@shutdown` (M2), and
-//! `@boot`, `@ps`, `@stats` (M3).
+//! Server-side staff commands: `@siteban`, `@dump`, `@shutdown` (M2),
+//! `@boot`, `@ps`, `@stats` (M3), and `@newpassword` (M4).
 //!
 //! These need server-side state (the store, the session layer, the
 //! scheduler), which `mush-core` must never see. The bridge is the
@@ -14,11 +14,13 @@
 //! handled inline in the loop where the `Engine`, the scheduler, and the
 //! session manager are all at hand.
 
+use std::fmt;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
 use mush_core::{
-    ArgShape, CmdError, CommandSpec, Ctx, ObjId, Powers, Registry, RegistryError, Role, perm,
+    ArgShape, CmdError, CommandSpec, Ctx, ObjId, ObjKind, Powers, Registry, RegistryError, Role,
+    perm,
 };
 use mush_proto::{OutputEvent, RichText};
 
@@ -68,6 +70,20 @@ pub enum StaffOpKind {
         /// Staff-entered message (empty when none was given) — audit log.
         message: String,
     },
+    /// `@newpassword <player>=<newpass>` — re-hash (argon2 on the blocking
+    /// pool), update the owning account's stored hash, and revoke every one
+    /// of the account's web session tokens (logout-everywhere). The
+    /// confirmation gates on the store acks.
+    NewPassword {
+        /// The target character (the account is resolved store-side).
+        target: ObjId,
+        /// The target's display name at command time (messages/audit).
+        name: String,
+        /// The requesting wizard's display name (target notification).
+        by: String,
+        /// The new password — redacted from `Debug` so no log can leak it.
+        password: Secret,
+    },
     /// `@ps` — render the scheduler (pending `@wait`s, module ticks,
     /// counts) to the requesting wizard.
     Ps,
@@ -87,6 +103,19 @@ impl StaffOpKind {
             self,
             StaffOpKind::Boot { .. } | StaffOpKind::Ps | StaffOpKind::Stats
         )
+    }
+}
+
+/// A staff-supplied secret riding the op queue (`@newpassword`'s new
+/// password). `Debug` is hand-written to redact, so the derived `Debug` on
+/// [`StaffOpKind`] (and any future `tracing` of whole ops) can never leak
+/// it into a log.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret(pub String);
+
+impl fmt::Debug for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Secret(<redacted>)")
     }
 }
 
@@ -254,6 +283,46 @@ fn boot_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+fn newpassword_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    const USAGE: &str = "Usage: @newpassword <player>=<new password>.";
+    let who = ctx.args.lhs().trim().to_string();
+    let Some(password) = ctx.args.rhs().map(str::trim).filter(|p| !p.is_empty()) else {
+        return Err(CmdError::msg(USAGE));
+    };
+    if who.is_empty() {
+        return Err(CmdError::msg(USAGE));
+    }
+    let target = resolve_actor(ctx.w, &who)?;
+    if ctx.w.get(target).is_none_or(|o| o.kind != ObjKind::Player) {
+        return Err(CmdError::msg("Only players have passwords."));
+    }
+    // Rank still matters: nobody resets a password above their own role.
+    if perm::role_of(ctx.w, target) > perm::role_of(ctx.w, ctx.actor) {
+        return Err(CmdError::msg("Permission denied."));
+    }
+    crate::accounts::validate_password(password).map_err(|e| CmdError::msg(format!("{e}.")))?;
+    let name = ctx
+        .w
+        .get(target)
+        .map_or_else(|| target.to_string(), |o| o.name.clone());
+    let by = ctx
+        .w
+        .get(ctx.actor)
+        .map_or_else(|| ctx.actor.to_string(), |o| o.name.clone());
+    // No output here: the confirmation gates on the store acks (hash
+    // update + token revocation), delivered by the sequential executor.
+    queue.push(StaffOp {
+        actor: ctx.actor,
+        kind: StaffOpKind::NewPassword {
+            target,
+            name,
+            by,
+            password: Secret(password.to_string()),
+        },
+    });
+    Ok(())
+}
+
 fn ps_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     queue.push(StaffOp {
         actor: ctx.actor,
@@ -374,6 +443,23 @@ pub fn register_server_commands(
             ..CommandSpec::default()
         },
         Arc::new(move |ctx: &mut Ctx<'_>| boot_cmd(&q, ctx)),
+    )?;
+    let q = Arc::clone(queue);
+    reg.register(
+        CommandSpec {
+            name: "@newpassword".into(),
+            shape: ArgShape::EqPair,
+            min_role: Role::Wizard,
+            help: "@newpassword <player>=<new password>  --  Set a player's account \
+                   password (they forgot it, or it leaked). The change is written \
+                   through to the database, and every one of the account's web \
+                   sessions is logged out (their tokens are revoked); active SSH \
+                   connections stay up. You cannot change the password of someone \
+                   of higher rank than yourself. Wizards only."
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(move |ctx: &mut Ctx<'_>| newpassword_cmd(&q, ctx)),
     )?;
     let q = Arc::clone(queue);
     reg.register(

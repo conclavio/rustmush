@@ -1,0 +1,413 @@
+//! The transport-agnostic half of the game bridges: everything the SSH
+//! bridge ([`crate::ssh_bridge::SshBridge`]) and the web bridge
+//! ([`crate::web_bridge::WebBridge`]) share — account auth/creation over
+//! the [`AuthBackend`], the session attach/enter-game flow, input handling
+//! (sanitation, `QUIT`, flood), the disconnect/linkdead flow, and the
+//! [`IpGuard`] pass-throughs.
+//!
+//! ## Division of labor (identical for both transports)
+//!
+//! - The **transport** owns its socket, its wire (ANSI render vs. JSON
+//!   envelopes — the [`Sink`](mush_session::Sink) it builds the
+//!   [`ConnectionHandle`] with), and closes when the session detaches
+//!   (output sender dropped) or a `Disconnect` event arrives.
+//! - The **bridge core** owns everything game-side: argon2 checks via the
+//!   [`AuthBackend`] (on the blocking pool), the [`SessionManager`]
+//!   attach/detach lifecycle, flood control, input sanitation, `QUIT`,
+//!   linkdead grace reaping, and the [`IpGuard`].
+//! - Failure counting: the core **never** records auth failures itself;
+//!   the transport calls [`GameBridge::auth_failed`] for every failed
+//!   attempt, so each failure is counted exactly once. Likewise the
+//!   transport gates on [`GameBridge::is_ip_blocked`] before every auth
+//!   attempt.
+
+use std::net::IpAddr;
+use std::sync::Arc;
+use std::time::Instant;
+
+use mush_core::{DisconnectKind, Inbound, ObjId};
+// Shared with the SSH transport's own line cap (`mush-net-ssh::editor`) so
+// both agree on one bound (MEDIUM finding).
+use mush_net_ssh::MAX_LINE_CHARS;
+use mush_proto::{ObjRef, OutputEvent, RichText};
+use mush_session::{
+    ConnId, ConnectionHandle, DetachOutcome, DetachReason, FloodVerdict, SessId, SessionManager,
+    sanitize_line,
+};
+
+use crate::accounts::{AuthBackend, AuthOutcome, CreateErr};
+use crate::ipguard::IpGuard;
+use crate::world_task::{WorldHandle, char_key, char_key_obj, send_event_to_conn};
+
+/// One character offered on a character-select surface (welcome screen,
+/// web character picker). The `id` is a widened `ObjId`, opaque to
+/// transports.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CharSummary {
+    /// Character key (a widened `ObjId`; opaque to the transport).
+    pub id: u64,
+    /// Character name.
+    pub name: String,
+}
+
+/// Result of an account credential check.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthResult {
+    /// Credentials good.
+    Ok {
+        /// Account name in registered display case.
+        account: String,
+        /// The account's characters.
+        characters: Vec<CharSummary>,
+    },
+    /// Unknown account or wrong password (deliberately indistinguishable).
+    Denied,
+}
+
+/// Why [`GameBridge::enter_game`] refused.
+///
+/// (The per-IP concurrent-connection cap is enforced by the transport at
+/// accept time via its `connection_opened` hook, not here.)
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ConnectErr {
+    /// The character does not belong to that account.
+    #[error("that is not your character")]
+    NotYourCharacter,
+    /// The world task is gone (shutdown in progress).
+    #[error("the game is shutting down")]
+    WorldGone,
+}
+
+/// What the transport should do after feeding a line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineOutcome {
+    /// Keep reading.
+    Continue,
+    /// Flush pending output and close the connection (player quit).
+    Close,
+}
+
+/// What [`GameBridge::enter_game`] established.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EnterOutcome {
+    /// The session the connection joined (fresh or existing).
+    pub sess: SessId,
+    /// The highest envelope seq already stamped for the session **before**
+    /// this connection's own entry output (0 for a fresh session) — the
+    /// web `SessionStart::resume_from` baseline; meaningless-but-harmless
+    /// for ANSI transports.
+    pub resume_from: u64,
+}
+
+/// The shared game-side bridge core. Both transport bridges hold one and
+/// delegate; it is generic over [`AuthBackend`] so the store-backed
+/// implementation and test fakes slot in identically.
+pub struct GameBridge<A: AuthBackend + 'static> {
+    pub(crate) accounts: Arc<A>,
+    pub(crate) sessions: Arc<SessionManager>,
+    pub(crate) world: WorldHandle,
+    pub(crate) guard: Arc<IpGuard>,
+}
+
+impl<A: AuthBackend + 'static> GameBridge<A> {
+    /// Wire the core.
+    pub fn new(
+        accounts: Arc<A>,
+        sessions: Arc<SessionManager>,
+        world: WorldHandle,
+        guard: Arc<IpGuard>,
+    ) -> GameBridge<A> {
+        GameBridge {
+            accounts,
+            sessions,
+            world,
+            guard,
+        }
+    }
+
+    /// The actor a connection is playing, if attached.
+    pub fn actor_of(&self, conn: ConnId) -> Option<ObjId> {
+        self.sessions
+            .session_of_conn(conn)
+            .and_then(|s| self.sessions.character_of(s))
+            .map(char_key_obj)
+    }
+
+    /// Check account credentials. A blocked address is denied outright.
+    /// (The backend runs the argon2id verify on the blocking pool.)
+    pub async fn auth_account(&self, account: &str, password: &str, addr: IpAddr) -> AuthResult {
+        if self.guard.is_blocked(addr) {
+            return AuthResult::Denied;
+        }
+        match self.accounts.verify(account, password).await {
+            AuthOutcome::Ok {
+                account,
+                characters,
+            } => AuthResult::Ok {
+                account,
+                characters: characters
+                    .into_iter()
+                    .map(|c| CharSummary {
+                        id: u64::from(c.id.0),
+                        name: c.name,
+                    })
+                    .collect(),
+            },
+            AuthOutcome::BadCredentials => AuthResult::Denied,
+        }
+    }
+
+    /// Create an account plus its first character.
+    pub async fn create_account(
+        &self,
+        account: &str,
+        password: &str,
+        char_name: &str,
+        addr: IpAddr,
+    ) -> Result<CharSummary, CreateErr> {
+        if self.guard.is_blocked(addr) {
+            return Err(CreateErr::Io("your address is blocked".to_string()));
+        }
+        // Validation + argon2 hash + store reservation + ack-gated world
+        // round trip; the backend hops CPU-heavy work to the blocking pool.
+        let created = self.accounts.create(account, password, char_name).await?;
+        Ok(CharSummary {
+            id: u64::from(created.id.0),
+            name: created.name,
+        })
+    }
+
+    /// Create an additional character on an authenticated account. Cap and
+    /// ack gating live in the backend.
+    pub async fn create_character(
+        &self,
+        account: &str,
+        char_name: &str,
+    ) -> Result<CharSummary, CreateErr> {
+        let created = self.accounts.create_character(account, char_name).await?;
+        Ok(CharSummary {
+            id: u64::from(created.id.0),
+            name: created.name,
+        })
+    }
+
+    /// Attach an already-authenticated, already-authorized connection
+    /// handle to a character and bring it into the game: session attach,
+    /// world `ConnUp` (announces connect/reconnect), `SessionInfo`, and an
+    /// initial `look`. The caller has verified the character belongs to
+    /// the account and built the handle with the right
+    /// [`Sink`](mush_session::Sink) for its wire.
+    pub async fn enter_game(
+        &self,
+        handle: ConnectionHandle,
+        actor: ObjId,
+        account: &str,
+        char_name: &str,
+        caps_structured: bool,
+    ) -> Result<EnterOutcome, ConnectErr> {
+        let conn_id = handle.id;
+        let (sess, outcome) = self
+            .sessions
+            .attach(handle, char_key(actor), account.to_string());
+        // The resume baseline is captured BEFORE this connection's own
+        // entry output advances the session counter.
+        let resume_from = self.sessions.last_seq(sess).unwrap_or(0);
+        let (connections, from_linkdead) = match outcome {
+            mush_session::AttachOutcome::New => (1, false),
+            mush_session::AttachOutcome::Rejoined {
+                others,
+                from_linkdead,
+            } => (others + 1, from_linkdead),
+        };
+
+        // World side: connection up (announces connect/reconnect), then an
+        // initial look so the player sees where they are.
+        if !self
+            .world
+            .inbound(Inbound::ConnUp {
+                conn: conn_id.0,
+                actor,
+                caps_structured,
+                from_linkdead,
+            })
+            .await
+        {
+            self.sessions.detach(conn_id, DetachReason::Booted);
+            return Err(ConnectErr::WorldGone);
+        }
+        send_event_to_conn(
+            &self.sessions,
+            conn_id,
+            OutputEvent::SessionInfo {
+                character: ObjRef::new(actor.to_string(), char_name.to_string()),
+                account: account.to_string(),
+                connections: u8::try_from(connections).unwrap_or(u8::MAX),
+            },
+        );
+        self.world
+            .inbound(Inbound::Cmd {
+                conn: conn_id.0,
+                actor,
+                line: "look".to_string(),
+            })
+            .await;
+        tracing::info!(conn = conn_id.0, %actor, account, "character connected");
+        Ok(EnterOutcome { sess, resume_from })
+    }
+
+    /// One input line from an attached connection.
+    pub async fn line(&self, conn: ConnId, line: &str) -> LineOutcome {
+        // Idle bookkeeping first — even a throttled keypress is activity.
+        self.sessions.record_input(conn);
+        let line = sanitize_line(line);
+        // SSH's LineEditor never lets a submitted line grow past
+        // `MAX_LINE_CHARS` (bell + drop beyond, mid-typing); the web path
+        // has no such gate upstream of this shared entry point — only the
+        // 64 KiB WS frame cap — so enforce the same char bound here, where
+        // both transports meet (MEDIUM finding). Measured pre-trim so
+        // padding can't hide an oversize paste under the cap.
+        if line.chars().count() > MAX_LINE_CHARS {
+            send_event_to_conn(
+                &self.sessions,
+                conn,
+                OutputEvent::Sys(RichText::tag("error", "Line too long.")),
+            );
+            return LineOutcome::Continue;
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return LineOutcome::Continue;
+        }
+        // QUIT is checked before the flood throttle: a flooding client must
+        // always be able to leave.
+        if trimmed.eq_ignore_ascii_case("QUIT") {
+            self.quit(conn).await;
+            return LineOutcome::Close;
+        }
+        if self.sessions.check_input(conn) == FloodVerdict::Throttled {
+            send_event_to_conn(
+                &self.sessions,
+                conn,
+                OutputEvent::Sys(RichText::tag("error", "You're doing that too fast.")),
+            );
+            return LineOutcome::Continue;
+        }
+        let Some(actor) = self.actor_of(conn) else {
+            tracing::warn!(conn = conn.0, "line from unattached connection dropped");
+            return LineOutcome::Continue;
+        };
+        self.world
+            .inbound(Inbound::Cmd {
+                conn: conn.0,
+                actor,
+                line: trimmed.to_string(),
+            })
+            .await;
+        LineOutcome::Continue
+    }
+
+    /// The transport lost (or closed) a connection. (Its IP-guard slot is
+    /// released by the transport's own accept/drop accounting, not here.)
+    pub async fn disconnected(&self, conn: ConnId) {
+        let actor = self.actor_of(conn);
+        let outcome = self.sessions.detach(conn, DetachReason::Lost);
+        let (Some(actor), Some(outcome)) = (actor, outcome) else {
+            // Already detached (QUIT raced the transport teardown) or never
+            // attached: nothing game-side.
+            return;
+        };
+        match outcome {
+            DetachOutcome::OthersRemain | DetachOutcome::Linkdead { .. } => {
+                // The engine announces "has gone link-dead." when this was
+                // the actor's last connection.
+                self.world
+                    .inbound(Inbound::ConnDown {
+                        conn: conn.0,
+                        actor,
+                        reason: DisconnectKind::Lost,
+                    })
+                    .await;
+            }
+            DetachOutcome::Closed => {
+                // Session vanished underneath us (e.g. concurrent close):
+                // clean scoped cleanup for this connection, then a full
+                // disconnect (which the engine ignores if a fresh session's
+                // connections are live — treaty ruling 3 re-validation).
+                self.world
+                    .inbound(Inbound::ConnDown {
+                        conn: conn.0,
+                        actor,
+                        reason: DisconnectKind::Boot,
+                    })
+                    .await;
+                self.world.inbound(Inbound::SessionGone { actor }).await;
+            }
+        }
+        if let DetachOutcome::Linkdead { grace } = outcome {
+            tracing::info!(conn = conn.0, %actor, grace_s = grace.as_secs(), "linkdead");
+            self.arm_linkdead_reaper(grace);
+        }
+    }
+
+    /// Auth gate: is the address currently blocked (tempban or siteban)?
+    #[must_use]
+    pub fn is_ip_blocked(&self, addr: IpAddr) -> bool {
+        self.guard.is_blocked(addr)
+    }
+
+    /// Record one failed auth attempt against an IP.
+    pub fn auth_failed(&self, addr: IpAddr) {
+        self.guard.record_failure(addr);
+    }
+
+    /// The `QUIT` flow, serialized through the world task so a quitter's
+    /// in-flight output is never dropped:
+    ///
+    /// 1. `ConnDown(Quit)` is queued **behind** every line the connection
+    ///    already sent; the engine processes those first (their output
+    ///    reaches this connection's queue), then announces the clean
+    ///    disconnect ("has disconnected." on the last connection) and
+    ///    forgets the conn.
+    /// 2. A world barrier guarantees all of that has been delivered.
+    /// 3. Only then the farewell + `Disconnect` event go out and the session
+    ///    detaches. Detaching drops the session's `ConnectionHandle` (and
+    ///    with it the output sender), which is what tells the transport's
+    ///    pump to close the socket after draining.
+    pub(crate) async fn quit(&self, conn: ConnId) {
+        if let Some(actor) = self.actor_of(conn) {
+            self.world
+                .inbound(Inbound::ConnDown {
+                    conn: conn.0,
+                    actor,
+                    reason: DisconnectKind::Quit,
+                })
+                .await;
+            self.world.barrier().await;
+        }
+        send_event_to_conn(
+            &self.sessions,
+            conn,
+            OutputEvent::Disconnect {
+                reason: RichText::tag("system", "Goodbye."),
+            },
+        );
+        self.sessions.detach(conn, DetachReason::Quit);
+    }
+
+    /// Arm one reaper for a session that just went linkdead: after the
+    /// grace period, every expired linkdead session is closed and its
+    /// character fully disconnected. Reattachment in the meantime revives
+    /// the session and [`SessionManager::take_expired`] skips it.
+    pub(crate) fn arm_linkdead_reaper(&self, grace: std::time::Duration) {
+        let sessions = Arc::clone(&self.sessions);
+        let world = self.world.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(grace).await;
+            for expired in sessions.take_expired(Instant::now()) {
+                let actor = char_key_obj(expired.character);
+                tracing::info!(%actor, account = %expired.account, "linkdead grace expired");
+                world.inbound(Inbound::SessionGone { actor }).await;
+            }
+        });
+    }
+}

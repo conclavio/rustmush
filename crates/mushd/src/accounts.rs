@@ -434,7 +434,9 @@ pub fn validate_character_name(name: &str) -> Result<(), CreateErr> {
     Ok(())
 }
 
-fn validate_password(password: &str) -> Result<(), CreateErr> {
+/// Password rule: 4–128 characters. Shared by account creation and
+/// `@newpassword`.
+pub fn validate_password(password: &str) -> Result<(), CreateErr> {
     if (4..=128).contains(&password.len()) {
         Ok(())
     } else {

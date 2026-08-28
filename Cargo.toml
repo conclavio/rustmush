@@ -35,10 +35,22 @@ fred = { version = "10.1", features = ["i-redis-json", "i-redisearch", "serde-js
 # workspace's no-C-toolchain-babysitting rule intact on Windows + Linux.
 russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
 getrandom = "0.4"
+# web session tokens are stored as SHA-256 hashes (design 02 §6.2); 0.11.0
+# already in-tree transitively.
+sha2 = "0.11"
 axum = { version = "0.8", features = ["ws"] }
-tower-http = { version = "0.6", features = ["fs", "trace", "compression-gzip"] }
-tower_governor = "0.8"
+tower-http = { version = "0.6", features = ["fs", "trace", "compression-gzip", "set-header"] }
+# default features pull tonic (grpc) — axum only for us
+tower_governor = { version = "0.8", default-features = false, features = ["axum", "tracing"] }
 rust-embed = "8"
+# native TLS path for mush-net-web's optional `tls` feature (M4) — verified
+# Aug 2026: axum-server 0.8.0 current. tls-rustls-no-provider + rustls/ring
+# keeps the no-C-toolchain rule (default tls-rustls pulls aws-lc-sys).
+axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+# dev-only WS client for mush-net-web integration tests (verified Aug 2026:
+# 0.30.0 current; plain ws://, no TLS features needed)
+tokio-tungstenite = "0.30"
 argon2 = "0.5"
 dashmap = "6"
 # scripting (M5)
@@ -50,7 +62,10 @@ backon = "1"
 governor = "0.8"
 # schema / codegen
 schemars = "1"
-ts-rs = "10"
+# verified Aug 2026: ts-rs 12.0.x current on docs.rs (12 adds programmatic
+# Config: out dir + large-int-as-number; 11 made skip_serializing_if fields
+# optional in TS). smol_str-impl/serde-json-impl cover SmolStr/serde_json::Value.
+ts-rs = { version = "12", features = ["serde-compat", "smol_str-impl", "serde-json-impl"] }
 # config
 toml = "0.8"
 # workspace-internal

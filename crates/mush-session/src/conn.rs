@@ -1,4 +1,5 @@
-//! Per-connection state: [`ConnId`] and [`ConnectionHandle`].
+//! Per-connection state: [`ConnId`], the output [`Sink`], and
+//! [`ConnectionHandle`].
 
 use std::fmt;
 use std::net::IpAddr;
@@ -7,11 +8,11 @@ use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::{Duration, Instant};
 
-use mush_proto::{ClientCaps, OutputEvent};
+use mush_proto::{ClientCaps, Envelope, OutputEvent};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 
-/// Identifies one physical transport (an SSH channel or, later, a WebSocket).
+/// Identifies one physical transport (an SSH channel or a WebSocket).
 ///
 /// Newtype over `u64`. `mush-core` uses a bare `type ConnId = u64` alias for
 /// the same value; `mushd` bridges with `.0` / `ConnId(n)` (this crate must
@@ -25,9 +26,26 @@ impl fmt::Display for ConnId {
     }
 }
 
+/// A connection's output channel — which of the two renders it receives
+/// (treaty ruling 1: one semantic event, two renders).
+///
+/// The sink kind is fixed at connect time; it is the routing discriminator
+/// [`SessionManager`](crate::SessionManager) fans out on. Capabilities
+/// ([`ClientCaps::structured`]) describe the same fact for renderers, but
+/// the sink is what actually types the wire.
+#[derive(Clone, Debug)]
+pub enum Sink {
+    /// ANSI-rendering transport (SSH): receives plain [`OutputEvent`]s and
+    /// renders them through `mush-ansi`. Never sees envelopes.
+    Ansi(mpsc::Sender<Arc<OutputEvent>>),
+    /// Structured transport (web): receives seq/ts-stamped [`Envelope`]s
+    /// (serialized as JSON on the wire). Never sees bare events.
+    Structured(mpsc::Sender<Arc<Envelope>>),
+}
+
 /// The session layer's handle to one live connection. The transport task
-/// holds the receiving end of `tx` and owns the socket; this handle is what
-/// [`SessionManager`](crate::SessionManager) fans output out through.
+/// holds the receiving end of the sink and owns the socket; this handle is
+/// what [`SessionManager`](crate::SessionManager) fans output out through.
 ///
 /// Idle bookkeeping: `last_input` is stored as **milliseconds since
 /// `connected_at`** in an `AtomicI64`, so recording input is a lock-free
@@ -40,9 +58,10 @@ pub struct ConnectionHandle {
     pub addr: IpAddr,
     /// Negotiated client capabilities; updated in place on terminal resize.
     pub caps: RwLock<ClientCaps>,
-    /// Bounded output queue to the transport task. All delivery is
-    /// non-blocking `try_send`; see the slow-client policy in the crate docs.
-    pub tx: mpsc::Sender<Arc<OutputEvent>>,
+    /// Bounded output queue to the transport task, typed by transport kind.
+    /// All delivery is non-blocking `try_send`; see the slow-client policy
+    /// in the crate docs.
+    sink: Sink,
     /// When the transport finished connecting (epoch for `last_input`).
     pub connected_at: Instant,
     /// Milliseconds since `connected_at` of the most recent input line.
@@ -53,18 +72,19 @@ pub struct ConnectionHandle {
 }
 
 impl ConnectionHandle {
-    /// New handle connected "now".
+    /// New ANSI (SSH) handle connected "now". (The historical constructor —
+    /// existing SSH call sites keep working unchanged.)
     pub fn new(
         id: ConnId,
         addr: IpAddr,
         caps: ClientCaps,
         tx: mpsc::Sender<Arc<OutputEvent>>,
     ) -> Self {
-        Self::new_at(id, addr, caps, tx, Instant::now())
+        Self::new_with_sink_at(id, addr, caps, Sink::Ansi(tx), Instant::now())
     }
 
-    /// New handle with an explicit connect instant (deterministic tests,
-    /// drivers that stamp their own clock).
+    /// New ANSI (SSH) handle with an explicit connect instant
+    /// (deterministic tests, drivers that stamp their own clock).
     pub fn new_at(
         id: ConnId,
         addr: IpAddr,
@@ -72,17 +92,54 @@ impl ConnectionHandle {
         tx: mpsc::Sender<Arc<OutputEvent>>,
         connected_at: Instant,
     ) -> Self {
+        Self::new_with_sink_at(id, addr, caps, Sink::Ansi(tx), connected_at)
+    }
+
+    /// New structured (web) handle connected "now": receives [`Envelope`]s.
+    pub fn new_structured(
+        id: ConnId,
+        addr: IpAddr,
+        caps: ClientCaps,
+        tx: mpsc::Sender<Arc<Envelope>>,
+    ) -> Self {
+        Self::new_with_sink_at(id, addr, caps, Sink::Structured(tx), Instant::now())
+    }
+
+    /// New structured (web) handle with an explicit connect instant.
+    pub fn new_structured_at(
+        id: ConnId,
+        addr: IpAddr,
+        caps: ClientCaps,
+        tx: mpsc::Sender<Arc<Envelope>>,
+        connected_at: Instant,
+    ) -> Self {
+        Self::new_with_sink_at(id, addr, caps, Sink::Structured(tx), connected_at)
+    }
+
+    /// New handle over any [`Sink`] with an explicit connect instant.
+    pub fn new_with_sink_at(
+        id: ConnId,
+        addr: IpAddr,
+        caps: ClientCaps,
+        sink: Sink,
+        connected_at: Instant,
+    ) -> Self {
         Self {
             id,
             addr,
             caps: RwLock::new(caps),
-            tx,
+            sink,
             connected_at,
             // Connect counts as input: idle is measured from connect until
             // the first real line.
             last_input: AtomicI64::new(0),
             output_dropped: AtomicBool::new(false),
         }
+    }
+
+    /// Whether this connection's sink is [`Sink::Structured`] (web).
+    pub fn is_structured(&self) -> bool {
+        matches!(self.sink, Sink::Structured(_))
     }
 
     /// Current capabilities (copy).
@@ -112,30 +169,54 @@ impl ConnectionHandle {
         now.saturating_duration_since(self.last_input_at())
     }
 
-    /// Non-blocking send. On a full or closed buffer the *dropped* flag is
-    /// set and `false` is returned; the event is discarded for this
-    /// connection (the caller may disconnect it — see the crate docs).
+    /// Non-blocking send of a plain event to an **ANSI** connection. On a
+    /// full or closed buffer the *dropped* flag is set and `false` is
+    /// returned; the event is discarded for this connection (the caller may
+    /// disconnect it — see the crate docs).
+    ///
+    /// Calling this on a structured connection is a caller bug (structured
+    /// sinks carry envelopes): the event is discarded with an error log,
+    /// `false` is returned, and the dropped flag is **not** set — a routing
+    /// mistake must not read as a slow client.
     pub fn try_send(&self, ev: Arc<OutputEvent>) -> bool {
-        match self.tx.try_send(ev) {
-            Ok(()) => true,
-            Err(err) => {
-                let already = self.output_dropped.swap(true, Ordering::Relaxed);
-                if !already {
-                    match err {
-                        TrySendError::Full(_) => {
-                            tracing::warn!(
-                                conn = self.id.0,
-                                "output buffer full; slow client flagged"
-                            );
-                        }
-                        TrySendError::Closed(_) => {
-                            tracing::warn!(
-                                conn = self.id.0,
-                                "output channel closed; connection flagged"
-                            );
-                        }
-                    }
+        match &self.sink {
+            Sink::Ansi(tx) => match tx.try_send(ev) {
+                Ok(()) => true,
+                Err(err) => {
+                    self.note_send_failure(matches!(err, TrySendError::Full(_)));
+                    false
                 }
+            },
+            Sink::Structured(_) => {
+                tracing::error!(
+                    conn = self.id.0,
+                    "bare OutputEvent sent to a structured connection; \
+                     stamp an Envelope instead (caller bug)"
+                );
+                false
+            }
+        }
+    }
+
+    /// Non-blocking send of a stamped envelope to a **structured**
+    /// connection; flag semantics identical to [`try_send`](Self::try_send).
+    /// Calling this on an ANSI connection is the mirror-image caller bug
+    /// and is handled the same way.
+    pub fn try_send_envelope(&self, env: Arc<Envelope>) -> bool {
+        match &self.sink {
+            Sink::Structured(tx) => match tx.try_send(env) {
+                Ok(()) => true,
+                Err(err) => {
+                    self.note_send_failure(matches!(err, TrySendError::Full(_)));
+                    false
+                }
+            },
+            Sink::Ansi(_) => {
+                tracing::error!(
+                    conn = self.id.0,
+                    "Envelope sent to an ANSI connection; \
+                     send the plain OutputEvent instead (caller bug)"
+                );
                 false
             }
         }
@@ -149,6 +230,21 @@ impl ConnectionHandle {
     /// Clear the dropped flag (a driver that chooses to forgive).
     pub fn clear_output_dropped(&self) {
         self.output_dropped.store(false, Ordering::Relaxed);
+    }
+
+    /// Set the dropped flag; log the first failure (full vs. closed).
+    fn note_send_failure(&self, full: bool) {
+        let already = self.output_dropped.swap(true, Ordering::Relaxed);
+        if !already {
+            if full {
+                tracing::warn!(conn = self.id.0, "output buffer full; slow client flagged");
+            } else {
+                tracing::warn!(
+                    conn = self.id.0,
+                    "output channel closed; connection flagged"
+                );
+            }
+        }
     }
 
     fn millis_since_connect(&self, now: Instant) -> i64 {

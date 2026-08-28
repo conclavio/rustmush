@@ -197,6 +197,11 @@ pub fn write_config(dir: &Path, store_section: &str) -> PathBuf {
          {store_section}\n\
          \n\
          [ssh]\n\
+         listen = \"127.0.0.1:0\"\n\
+         \n\
+         # Ephemeral web port too: parallel test children must not fight\n\
+         # over the default 8080.\n\
+         [web]\n\
          listen = \"127.0.0.1:0\"\n"
     );
     std::fs::write(&path, toml).unwrap();

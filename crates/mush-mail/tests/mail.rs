@@ -843,3 +843,114 @@ fn destroyed_character_mailbox_is_cleaned_up() {
     assert!(dels.contains(&format!("box:{}:1", bob.0)));
     assert!(dels.contains(&format!("folders:{}", bob.0)));
 }
+
+// ----------------------------------------------------------------------
+// Web query handler (M4): mail.list via Inbound::Query
+// ----------------------------------------------------------------------
+
+/// Step one `Inbound::Query` and unwrap the conn-scoped `Reply` payload.
+fn web_query(
+    engine: &mut Engine,
+    actor: ObjId,
+    name: &str,
+    args: serde_json::Value,
+) -> OutputEvent {
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine.step(
+        Inbound::Query {
+            conn: 77,
+            actor,
+            id: 5,
+            name: SmolStr::new(name),
+            args,
+        },
+        &mut out,
+        &mut fx,
+    );
+    let mut events = out.take();
+    assert_eq!(events.len(), 1, "exactly one reply: {events:?}");
+    let (aud, ev) = events.remove(0);
+    assert_eq!(
+        aud,
+        mush_core::Audience::Conn(77),
+        "replies are conn-scoped"
+    );
+    let OutputEvent::Reply { id: 5, event } = ev else {
+        panic!("expected Reply id 5, got {ev:?}");
+    };
+    *event
+}
+
+/// `mail.list` — folder summaries plus one folder's entries, as a `mail`
+/// panel keyframe. Reading stays a Line command (it mutates); listing must
+/// NOT change any entry's status.
+#[test]
+fn mail_list_query_reports_folders_and_entries() {
+    let (mut engine, alice, bob) = setup();
+    run(&mut engine, alice, "@mail/quick Bob=Lunch/Meet at noon?");
+    run(&mut engine, alice, "@mail/quick/urgent Bob=Now/really");
+
+    // Default folder (null) is the inbox.
+    let ev = web_query(
+        &mut engine,
+        bob,
+        "mail.list",
+        serde_json::json!({"folder": null}),
+    );
+    let OutputEvent::Panel { feed, kind, data } = ev else {
+        panic!("expected Panel, got {ev:?}");
+    };
+    assert_eq!(feed, "mail");
+    assert_eq!(kind, mush_proto::PanelFrameKind::Keyframe);
+    assert_eq!(data["folder"], "inbox");
+    let folders = data["folders"].as_array().unwrap();
+    let inbox = folders.iter().find(|f| f["name"] == "inbox").unwrap();
+    assert_eq!(inbox["count"], 2);
+    assert_eq!(inbox["unread"], 2);
+    assert!(
+        folders.iter().all(|f| f["name"] != "trash"),
+        "trash stays hidden from summaries: {folders:?}"
+    );
+    let entries = data["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0]["index"], 1);
+    assert_eq!(entries[0]["id"], 1);
+    assert_eq!(entries[0]["from"]["name"], "Alice");
+    assert_eq!(entries[0]["subject"], "Lunch");
+    assert_eq!(entries[0]["status"], "unread");
+    assert_eq!(entries[0]["sent_at"], NOW);
+    assert_eq!(entries[1]["status"], "urgent");
+    // Mortals see their quota.
+    assert_eq!(data["quota"]["used"], 2);
+
+    // Listing is read-only: nothing was marked read by the query.
+    let st = mail(&engine);
+    assert_eq!(st.entry(bob, 1).unwrap().status, MailStatus::Unread);
+
+    // The sender's copy lands pre-read in `sent`.
+    let ev = web_query(
+        &mut engine,
+        alice,
+        "mail.list",
+        serde_json::json!({"folder": "sent"}),
+    );
+    let OutputEvent::Panel { data, .. } = ev else {
+        panic!("expected Panel, got {ev:?}");
+    };
+    assert_eq!(data["folder"], "sent");
+    let entries = data["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0]["status"], "read");
+
+    // Unknown folders refuse, correlated as a Sys reply.
+    let ev = web_query(
+        &mut engine,
+        bob,
+        "mail.list",
+        serde_json::json!({"folder": "nope"}),
+    );
+    let OutputEvent::Sys(t) = ev else {
+        panic!("expected Sys refusal, got {ev:?}");
+    };
+    assert!(t.to_plain_text().contains("No folder named nope"));
+}

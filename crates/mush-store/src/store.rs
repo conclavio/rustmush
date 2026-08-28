@@ -36,7 +36,9 @@
 use futures::future::BoxFuture;
 use mush_core::ObjId;
 
-use crate::types::{AccountRec, BanRec, StoreError, WorldSnapshot, WriteBatch, WriteReceipt};
+use crate::types::{
+    AccountRec, BanRec, StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt,
+};
 
 /// Persistent storage for the world, accounts, sitebans, and store metadata.
 ///
@@ -90,6 +92,18 @@ pub trait ObjectStore: Send + Sync {
     /// later milestone; the key layout already supports it.)
     fn list_accounts(&self) -> BoxFuture<'_, Result<Vec<AccountRec>, StoreError>>;
 
+    /// Replace an account's password hash (`@newpassword`, future
+    /// self-serve reset). Atomic per call (Redis: a single server-side
+    /// `JSON.SET $.argon2_hash` on the existing doc). Returns whether the
+    /// account existed — `Ok(false)` for an unknown name, never an error.
+    /// The caller is responsible for invalidating the account's web tokens
+    /// ([`ObjectStore::tokens_del_account`]) alongside.
+    fn set_account_password<'a>(
+        &'a self,
+        account: &'a str,
+        argon2_hash: &'a str,
+    ) -> BoxFuture<'a, Result<bool, StoreError>>;
+
     // ------------------------------------------------------------------
     // Sitebans (persisted; IpGuard tempbans stay in-memory)
     // ------------------------------------------------------------------
@@ -111,6 +125,51 @@ pub trait ObjectStore: Send + Sync {
 
     /// Lift the ban on `ip`. Returns whether a ban was actually removed.
     fn clear_ban<'a>(&'a self, ip: &'a str) -> BoxFuture<'a, Result<bool, StoreError>>;
+
+    // ------------------------------------------------------------------
+    // Web session tokens (`token:{hash}` keys, native TTL)
+    //
+    // The key is the SHA-256 hex of the opaque token (hashing happens
+    // caller-side in the web auth layer; the raw token never reaches the
+    // store, is never persisted, and must never be logged). Expiry
+    // semantics mirror bans: Redis expires keys natively via `EXAT`; the
+    // in-memory store prunes lazily against the system clock. Concurrency:
+    // called from the web auth tasks — each call is individually atomic,
+    // no cross-call ordering (same contract as the account methods).
+    // ------------------------------------------------------------------
+
+    /// Store (or replace — last write wins) the token record under its
+    /// hash. An `expires` at or before now is equivalent to deleting the
+    /// token (mirroring a key set with `EXAT` in the past).
+    fn token_put(&self, hash: String, rec: TokenRecord) -> BoxFuture<'_, Result<(), StoreError>>;
+
+    /// Fetch a live token record. `Ok(None)` when absent **or expired** —
+    /// an expired record is lazily deleted on the way out (Redis TTL does
+    /// this natively; the in-memory store prunes on read).
+    fn token_get<'a>(
+        &'a self,
+        hash: &'a str,
+    ) -> BoxFuture<'a, Result<Option<TokenRecord>, StoreError>>;
+
+    /// Sliding-TTL refresh: move a live token's `expires` (record field
+    /// *and* store TTL) to `new_expires`. Returns whether a live token was
+    /// touched — a missing or already-expired token is `false`, never
+    /// resurrected. A `new_expires` at or before now deletes the token
+    /// (and still reports `true` if it was live).
+    fn token_touch<'a>(
+        &'a self,
+        hash: &'a str,
+        new_expires: i64,
+    ) -> BoxFuture<'a, Result<bool, StoreError>>;
+
+    /// Delete one token (logout). Returns whether a live token was removed.
+    fn token_del<'a>(&'a self, hash: &'a str) -> BoxFuture<'a, Result<bool, StoreError>>;
+
+    /// Delete every live token belonging to `account` (case-insensitive) —
+    /// logout-everywhere and ban support. Returns how many live tokens were
+    /// removed (expired stragglers are pruned but not counted).
+    fn tokens_del_account<'a>(&'a self, account: &'a str)
+    -> BoxFuture<'a, Result<u64, StoreError>>;
 
     // ------------------------------------------------------------------
     // Module persistence reads (`mod:{ns}:{key}` keys)

@@ -10,6 +10,7 @@
 //! | `meta:schema_version` | string int  | app-level schema version                  |
 //! | `account:{lowername}` | JSON doc    | one [`AccountRec`] (display case inside)  |
 //! | `ban:{ip}`            | string JSON | one [`BanRec`], native `EXAT` TTL         |
+//! | `token:{hash}`        | string JSON | one [`TokenRecord`], native `EXAT` TTL    |
 //! | `mod:{ns}:{key}`      | JSON/stream | module state ([`WriteBatch::module_ops`]) |
 //! | `idx:objs`            | FT index    | see [`RedisStore::ensure_index`]          |
 //!
@@ -81,8 +82,9 @@ use fred::types::{Key, RespVersion, Value};
 
 use crate::store::ObjectStore;
 use crate::types::{
-    AccountRec, BanRec, CharacterRef, ModuleWrite, StoreError, WorldSnapshot, WriteBatch,
-    WriteReceipt, validate_module_key, validate_module_ns, validate_module_op,
+    AccountRec, BanRec, CharacterRef, ModuleWrite, StoreError, TokenRecord, WorldSnapshot,
+    WriteBatch, WriteReceipt, validate_module_key, validate_module_ns, validate_module_op,
+    validate_token_hash,
 };
 
 /// Prefix of per-object JSON docs.
@@ -91,6 +93,8 @@ pub const OBJ_PREFIX: &str = "obj:";
 pub const ACCOUNT_PREFIX: &str = "account:";
 /// Prefix of siteban keys.
 pub const BAN_PREFIX: &str = "ban:";
+/// Prefix of web-session token keys (`token:{sha256-hex}`).
+pub const TOKEN_PREFIX: &str = "token:";
 /// Prefix of module-state keys (`mod:{ns}:{key}`).
 pub const MOD_PREFIX: &str = "mod:";
 /// Id-allocator resume point.
@@ -122,6 +126,10 @@ fn account_key(name: &str) -> String {
 
 fn ban_key(ip: &str) -> String {
     format!("{BAN_PREFIX}{ip}")
+}
+
+fn token_key(hash: &str) -> String {
+    format!("{TOKEN_PREFIX}{hash}")
 }
 
 /// `mod:{ns}:{key}`. Callers validate `ns`/`key` first (see
@@ -358,12 +366,12 @@ impl RedisStore {
     }
 
     /// Test/ops helper: delete every key in this crate's namespaces
-    /// (`obj:*`, `account:*`, `ban:*`, `meta:*`, `mod:*`) in the connected
-    /// database. Deliberately not `FLUSHDB` — it only touches what this
-    /// crate owns.
+    /// (`obj:*`, `account:*`, `ban:*`, `token:*`, `meta:*`, `mod:*`) in the
+    /// connected database. Deliberately not `FLUSHDB` — it only touches
+    /// what this crate owns.
     #[doc(hidden)]
     pub async fn wipe_namespaces(&self) -> Result<(), StoreError> {
-        for pattern in ["obj:*", "account:*", "ban:*", "meta:*", "mod:*"] {
+        for pattern in ["obj:*", "account:*", "ban:*", "token:*", "meta:*", "mod:*"] {
             let keys = self.scan_keys(pattern).await?;
             if !keys.is_empty() {
                 let _: i64 = self.client.del(keys).await?;
@@ -650,6 +658,44 @@ impl ObjectStore for RedisStore {
         })
     }
 
+    fn set_account_password<'a>(
+        &'a self,
+        account: &'a str,
+        argon2_hash: &'a str,
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        Box::pin(async move {
+            let key = account_key(account);
+            let value = serde_json::to_string(argon2_hash)?;
+            // One atomic server-side field replace. XX = only set an
+            // existing path, so a concurrent create/update never turns
+            // into a partial doc. When the condition cannot be met the
+            // reply is nil (Redis 8 answers nil for a missing key OR a
+            // missing path; older builds errored on the missing key) — an
+            // existence check then splits "no such account" (false) from a
+            // doc missing its argon2_hash field (corrupt, never silently
+            // "updated"), like link_character.
+            let outcome: Result<Option<String>, _> = self
+                .client
+                .json_set(key.as_str(), "$.argon2_hash", value, Some(SetOptions::XX))
+                .await;
+            let unmet = match outcome {
+                Ok(Some(_)) => return Ok(true),
+                Ok(None) => Ok(()),
+                Err(e) => Err(e),
+            };
+            let exists: i64 = self.client.exists(key.as_str()).await?;
+            if exists == 0 {
+                return Ok(false);
+            }
+            match unmet {
+                Ok(()) => Err(StoreError::Corrupt(format!(
+                    "account doc for {account:?} has no argon2_hash field"
+                ))),
+                Err(e) => Err(e.into()),
+            }
+        })
+    }
+
     fn set_ban<'a>(
         &'a self,
         ip: &'a str,
@@ -701,6 +747,105 @@ impl ObjectStore for RedisStore {
         Box::pin(async move {
             let removed: i64 = self.client.del(ban_key(ip)).await?;
             Ok(removed > 0)
+        })
+    }
+
+    fn token_put(&self, hash: String, rec: TokenRecord) -> BoxFuture<'_, Result<(), StoreError>> {
+        Box::pin(async move {
+            validate_token_hash(&hash)?;
+            let key = token_key(&hash);
+            if rec.expires <= now_unix() {
+                // Already lapsed: equivalent to the key expiring instantly.
+                let _: i64 = self.client.del(key).await?;
+                return Ok(());
+            }
+            let doc = serde_json::to_string(&rec)?;
+            let _: () = self
+                .client
+                .set(key, doc, Some(Expiration::EXAT(rec.expires)), None, false)
+                .await?;
+            Ok(())
+        })
+    }
+
+    fn token_get<'a>(
+        &'a self,
+        hash: &'a str,
+    ) -> BoxFuture<'a, Result<Option<TokenRecord>, StoreError>> {
+        Box::pin(async move {
+            validate_token_hash(hash)?;
+            // Expiry is the server's native TTL (EXAT stamped at put/touch):
+            // an expired token is simply absent. No client-side clock check —
+            // the server clock is authoritative, exactly as for bans.
+            let doc: Option<String> = self.client.get(token_key(hash)).await?;
+            match doc {
+                Some(doc) => Ok(Some(serde_json::from_str(&doc)?)),
+                None => Ok(None),
+            }
+        })
+    }
+
+    fn token_touch<'a>(
+        &'a self,
+        hash: &'a str,
+        new_expires: i64,
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        Box::pin(async move {
+            validate_token_hash(hash)?;
+            let key = token_key(hash);
+            // Read-modify-write: the record's `expires` field and the key
+            // TTL move together. Two concurrent touches race benignly (last
+            // write wins — both extend); a touch racing a delete could
+            // rewrite the key for at most one sliding window, which is the
+            // same as having touched just before the delete.
+            let doc: Option<String> = self.client.get(key.as_str()).await?;
+            let Some(doc) = doc else { return Ok(false) };
+            if new_expires <= now_unix() {
+                // Sliding into the past is a delete.
+                let _: i64 = self.client.del(key).await?;
+                return Ok(true);
+            }
+            let mut rec: TokenRecord = serde_json::from_str(&doc)?;
+            rec.expires = new_expires;
+            let doc = serde_json::to_string(&rec)?;
+            let _: () = self
+                .client
+                .set(key, doc, Some(Expiration::EXAT(new_expires)), None, false)
+                .await?;
+            Ok(true)
+        })
+    }
+
+    fn token_del<'a>(&'a self, hash: &'a str) -> BoxFuture<'a, Result<bool, StoreError>> {
+        Box::pin(async move {
+            validate_token_hash(hash)?;
+            let removed: i64 = self.client.del(token_key(hash)).await?;
+            Ok(removed > 0)
+        })
+    }
+
+    fn tokens_del_account<'a>(
+        &'a self,
+        account: &'a str,
+    ) -> BoxFuture<'a, Result<u64, StoreError>> {
+        Box::pin(async move {
+            let account_lc = account.to_lowercase();
+            let keys = self.scan_keys("token:*").await?;
+            let mut live = 0u64;
+            for key in &keys {
+                // TTL may have fired between SCAN and GET; None is fine.
+                let doc: Option<String> = self.client.get(key.as_str()).await?;
+                let Some(doc) = doc else { continue };
+                match serde_json::from_str::<TokenRecord>(&doc) {
+                    Ok(rec) if rec.account.to_lowercase() == account_lc => {
+                        let removed: i64 = self.client.del(key.as_str()).await?;
+                        live += u64::try_from(removed).unwrap_or(0);
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::error!(key, error = %e, "skipping corrupt token doc"),
+                }
+            }
+            Ok(live)
         })
     }
 

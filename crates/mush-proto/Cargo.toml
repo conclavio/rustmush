@@ -10,6 +10,13 @@ description = "Wire types: OutputEvent, ClientCommand, RichText, envelope (serde
 serde.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true
+ts-rs = { workspace = true, optional = true }
+
+[features]
+# TypeScript binding generation for the web client. Not a default feature:
+# `cargo test -p mush-proto --features ts` (alias: `cargo gen-ts`) regenerates
+# web/src/lib/proto/, which is committed so web builds never need cargo.
+ts = ["dep:ts-rs"]
 
 [lints]
 workspace = true

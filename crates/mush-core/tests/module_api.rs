@@ -151,8 +151,12 @@ impl QueryHandler for ToyQuery {
         _w: &World,
         actor: ObjId,
         params: &serde_json::Value,
-    ) -> Result<serde_json::Value, String> {
-        Ok(json!({ "actor": actor.to_string(), "echo": params }))
+    ) -> Result<OutputEvent, RichText> {
+        Ok(OutputEvent::Panel {
+            feed: SmolStr::new_static("toy.panel"),
+            kind: PanelFrameKind::Keyframe,
+            data: json!({ "actor": actor.to_string(), "echo": params }),
+        })
     }
 }
 
@@ -545,7 +549,10 @@ fn registrar_populates_every_table() {
     let (owner, q) = reg.query_handler("toy.list").expect("query handler");
     assert_eq!(owner.as_str(), "toy");
     let ans = q.query(&engine.world, GOD, &json!({"n": 3})).unwrap();
-    assert_eq!(ans["echo"]["n"], json!(3));
+    let OutputEvent::Panel { data, .. } = ans else {
+        panic!("expected Panel, got {ans:?}");
+    };
+    assert_eq!(data["echo"]["n"], json!(3));
     assert_eq!(reg.job_queues()[0].name, "toyq");
     assert_eq!(reg.script_apis()[0].0, "toy");
     let ms = reg.migrations().get("toy").expect("migrations collected");

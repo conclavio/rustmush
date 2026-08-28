@@ -188,9 +188,12 @@ the console, SIGTERM (what `systemctl stop` sends):
 
 1. stop accepting new SSH connections;
 2. announce (`GAME: Shutdown in progress.`) and stop the world task;
-3. drain the store writer (log: `store writer drained and exiting`);
-4. final store barrier + `BGSAVE` (log: `shutdown BGSAVE triggered`);
-5. exit 0.
+3. stop the web server gracefully (in-flight requests finish; WebSocket
+   clients received the announce first — their tokens survive in Redis, so
+   they resume after the restart);
+4. drain the store writer (log: `store writer drained and exiting`);
+5. final store barrier + `BGSAVE` (log: `shutdown BGSAVE triggered`);
+6. exit 0.
 
 `kill -9` / power loss skips all of that and is still safe (write-through);
 you lose at most the in-flight command (or the small writer queue if Redis
@@ -216,6 +219,7 @@ All keys live in one Redis logical database (db 0 by default). From
 | `meta:schema_version` | string int | app-level schema version |
 | `account:{lowername}` | JSON doc | account record (argon2 hash, characters) |
 | `ban:{ip}` | string JSON | one siteban, native `EXAT` TTL |
+| `token:{sha256hex}` | string JSON | one web session token record, native `EXAT` TTL (7-day sliding). The key is the SHA-256 of the token — raw tokens are never stored or logged |
 | `idx:objs` | FT index | RediSearch index over `obj:*` (staff tooling; non-fatal if absent) |
 | `mod:{ns}:{key}` | JSON doc | one game-module document (comsys channels/memberships, mail messages/boxes/folders, jobs/notes, module `meta`/`next_id` counters) |
 | `mod:{ns}:schema` | JSON doc | that module namespace's schema version (see Migrations) |
@@ -228,7 +232,7 @@ and `ban:*` are read live and are safe to inspect
 (`redis-cli JSON.GET account:nick`).
 
 Note for shared instances: the REDIS_URL-gated tests **wipe the `obj:*`,
-`account:*`, `ban:*`, `meta:*`, and `mod:*` namespaces** in logical dbs
+`account:*`, `ban:*`, `token:*`, `meta:*`, and `mod:*` namespaces** in logical dbs
 12–14 *and* in whatever database `REDIS_URL` itself points at (db 0 unless
 the URL says otherwise — mush-store's suite uses the URL as given). Never
 point `REDIS_URL` at an instance holding real data — module data (channels,

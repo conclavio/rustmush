@@ -21,7 +21,7 @@ use mush_core::{
 
 use crate::migrate::{Migration, run_migrations};
 use crate::store::ObjectStore;
-use crate::types::{AccountRec, ModuleOp, ModuleWrite, StoreError, WriteBatch};
+use crate::types::{AccountRec, ModuleOp, ModuleWrite, StoreError, TokenRecord, WriteBatch};
 
 fn now_unix() -> i64 {
     SystemTime::now()
@@ -266,6 +266,52 @@ pub async fn account_lifecycle(store: &dyn ObjectStore) {
     assert_eq!(names, ["Nick", "Zoe"]);
 }
 
+/// `set_account_password` (`@newpassword`): replaces only the hash
+/// (case-insensitive lookup, everything else untouched), reports `false`
+/// for unknown accounts, and never disturbs the account's tokens itself
+/// (the caller pairs it with `tokens_del_account`).
+pub async fn account_password_update(store: &dyn ObjectStore) {
+    assert!(
+        !store
+            .set_account_password("nobody", "$argon2id$new")
+            .await
+            .expect("unknown account is not an error"),
+        "unknown account must report false"
+    );
+
+    let created = now_unix();
+    store
+        .create_account(AccountRec {
+            name: "Nick".to_string(),
+            argon2_hash: "$argon2id$old".to_string(),
+            created,
+            characters: vec![],
+        })
+        .await
+        .expect("create");
+    store
+        .link_character("nick", ObjId(7), "Nicky")
+        .await
+        .expect("link");
+
+    assert!(
+        store
+            .set_account_password("NICK", "$argon2id$new")
+            .await
+            .expect("update"),
+        "existing account must report true (case-insensitive)"
+    );
+    let rec = store
+        .get_account("nick")
+        .await
+        .expect("get")
+        .expect("exists");
+    assert_eq!(rec.argon2_hash, "$argon2id$new");
+    assert_eq!(rec.name, "Nick", "display case untouched");
+    assert_eq!(rec.created, created, "created untouched");
+    assert_eq!(rec.characters.len(), 1, "characters untouched");
+}
+
 /// Active, permanent, and already-expired bans; clear semantics.
 pub async fn ban_expiry(store: &dyn ObjectStore) {
     let now = now_unix();
@@ -406,6 +452,175 @@ pub async fn serde_obj_round_trip(store: &dyn ObjectStore) {
         snap.objects[0], o,
         "Obj must survive the store path exactly"
     );
+}
+
+// ---------------------------------------------------------------------
+// Web session tokens (`token:{hash}` keys)
+//
+// Timing note: like `ban_expiry`, these use wide margins (±1 h) around the
+// system clock so they hold against a live Redis across a WAN tunnel with
+// modest clock skew.
+// ---------------------------------------------------------------------
+
+fn token(account: &str, created: i64, expires: i64) -> TokenRecord {
+    TokenRecord {
+        account: account.to_string(),
+        created,
+        expires,
+    }
+}
+
+/// Put → get round trip, overwrite (last write wins), expired-at-put and
+/// expired-at-get both read as `None`, delete semantics, and input
+/// validation (empty hash refused).
+pub async fn token_lifecycle(store: &dyn ObjectStore) {
+    let now = now_unix();
+    assert_eq!(
+        store.token_get("cafe01").await.expect("get"),
+        None,
+        "unknown token must be None"
+    );
+    assert!(
+        matches!(
+            store
+                .token_put(String::new(), token("nick", now, now + 3600))
+                .await,
+            Err(StoreError::Invalid(_))
+        ),
+        "empty hash must be refused"
+    );
+
+    // Live token round-trips exactly.
+    let rec = token("Nick", now, now + 3600);
+    store
+        .token_put("cafe01".into(), rec.clone())
+        .await
+        .expect("put");
+    assert_eq!(store.token_get("cafe01").await.expect("get"), Some(rec));
+
+    // Last write wins: a re-put replaces the record.
+    let rec2 = token("Nick", now + 1, now + 7200);
+    store
+        .token_put("cafe01".into(), rec2.clone())
+        .await
+        .expect("re-put");
+    assert_eq!(store.token_get("cafe01").await.expect("get"), Some(rec2));
+
+    // A put with expires in the past is a delete.
+    store
+        .token_put("cafe01".into(), token("Nick", now, now - 10))
+        .await
+        .expect("lapsed put");
+    assert_eq!(
+        store.token_get("cafe01").await.expect("get"),
+        None,
+        "a token put already-expired must be gone"
+    );
+
+    // An expired token reads as None (lazy delete path).
+    store
+        .token_put("dead01".into(), token("Nick", now - 100, now - 10))
+        .await
+        .expect("expired put");
+    assert_eq!(store.token_get("dead01").await.expect("get"), None);
+
+    // Delete: true for a live token, false thereafter and for unknowns.
+    store
+        .token_put("gone01".into(), token("Nick", now, now + 3600))
+        .await
+        .expect("put");
+    assert!(store.token_del("gone01").await.expect("del"));
+    assert!(!store.token_del("gone01").await.expect("re-del"));
+    assert!(!store.token_del("never01").await.expect("del unknown"));
+    assert_eq!(store.token_get("gone01").await.expect("get"), None);
+}
+
+/// Sliding-TTL semantics of `token_touch`: extends a live token (record
+/// field and store TTL together), reports `false` for missing/expired
+/// tokens without resurrecting them, and deletes on a past `new_expires`.
+pub async fn token_sliding_ttl(store: &dyn ObjectStore) {
+    let now = now_unix();
+    assert!(
+        !store
+            .token_touch("ghost01", now + 3600)
+            .await
+            .expect("touch"),
+        "touching an unknown token is false"
+    );
+
+    store
+        .token_put("slide01".into(), token("Zoe", now, now + 3600))
+        .await
+        .expect("put");
+    assert!(
+        store
+            .token_touch("slide01", now + 7200)
+            .await
+            .expect("touch")
+    );
+    let rec = store
+        .token_get("slide01")
+        .await
+        .expect("get")
+        .expect("still live");
+    assert_eq!(rec.expires, now + 7200, "touch must move expires");
+    assert_eq!(rec.account, "Zoe", "identity fields survive the touch");
+    assert_eq!(rec.created, now);
+
+    // Touching an expired token must not resurrect it.
+    store
+        .token_put("stale01".into(), token("Zoe", now - 100, now - 10))
+        .await
+        .expect("expired put");
+    assert!(
+        !store
+            .token_touch("stale01", now + 3600)
+            .await
+            .expect("touch"),
+        "an expired token is missing; a touch never resurrects"
+    );
+    assert_eq!(store.token_get("stale01").await.expect("get"), None);
+
+    // Sliding into the past deletes (and reports the token was live).
+    assert!(store.token_touch("slide01", now - 10).await.expect("touch"));
+    assert_eq!(store.token_get("slide01").await.expect("get"), None);
+}
+
+/// `tokens_del_account`: deletes every live token of one account
+/// (case-insensitive), leaves other accounts' tokens intact, and reports
+/// the live-token count.
+pub async fn token_del_account(store: &dyn ObjectStore) {
+    let now = now_unix();
+    store
+        .token_put("nick-a".into(), token("Nick", now, now + 3600))
+        .await
+        .expect("put");
+    store
+        .token_put("nick-b".into(), token("Nick", now, now + 7200))
+        .await
+        .expect("put");
+    store
+        .token_put("nick-dead".into(), token("Nick", now - 100, now - 10))
+        .await
+        .expect("expired put");
+    store
+        .token_put("zoe-a".into(), token("Zoe", now, now + 3600))
+        .await
+        .expect("put");
+
+    let removed = store.tokens_del_account("nIcK").await.expect("del account");
+    assert_eq!(removed, 2, "both live Nick tokens, not the expired one");
+    assert_eq!(store.token_get("nick-a").await.expect("get"), None);
+    assert_eq!(store.token_get("nick-b").await.expect("get"), None);
+    assert!(
+        store.token_get("zoe-a").await.expect("get").is_some(),
+        "other accounts' tokens must survive"
+    );
+
+    // Idempotent: nothing left to delete.
+    assert_eq!(store.tokens_del_account("nick").await.expect("re-del"), 0);
+    // An account with no tokens at all is simply zero.
+    assert_eq!(store.tokens_del_account("nobody").await.expect("none"), 0);
 }
 
 // ---------------------------------------------------------------------

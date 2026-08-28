@@ -28,11 +28,31 @@
 //! ## Concepts
 //!
 //! - **Connection** ([`ConnectionHandle`]): one physical transport. Owns
-//!   caps, peer address, output sender, idle bookkeeping, and the
-//!   slow-client "dropped output" flag.
+//!   caps, peer address, its output [`Sink`] (ANSI or structured), idle
+//!   bookkeeping, and the slow-client "dropped output" flag.
 //! - **Session**: one authenticated attachment of an *account* to a
 //!   *character*, with **1..N connections** (classic multi-connect: all
 //!   connections receive all output; input is accepted from any).
+//!
+//! ## Two renders, one stamping path (treaty ruling 1, M4)
+//!
+//! A connection's [`Sink`] types its wire: [`Sink::Ansi`] transports (SSH)
+//! receive plain `Arc<OutputEvent>`s and render ANSI; [`Sink::Structured`]
+//! transports (web) receive `Arc<Envelope>`s — the same event stamped with
+//! a per-session monotonic `seq` and a wall-clock `ts` from the
+//! [`EnvelopeClock`] injected at construction. Every session-scoped send
+//! funnels through one stamping path
+//! ([`SessionManager::send_event_to_char`] and the `Arc`-taking
+//! equivalents), which also records the envelope in the session's **resume
+//! ring** (capacity [`SessionConfig::resume_ring`], default 512).
+//! Recording is always on for every session — memory cost documented on
+//! [`SessionConfig::resume_ring`] — so a web client that dropped its socket
+//! resumes with [`SessionManager::replay_since`]`(sess, last_seq)`: the
+//! missed envelopes in order, or [`ReplayError::TooOld`] when the gap
+//! outgrew the ring and the client must re-hydrate. Seqs live on the
+//! session, so they stay monotonic across reconnects; connection-scoped
+//! sends ([`SessionManager::send_to_conn`]) consume seqs but are never
+//! recorded — a prompt for one connection must not replay to another.
 //!
 //! ## Linkdead contract (no internal timers)
 //!
@@ -67,10 +87,11 @@ mod flood;
 mod manager;
 mod sanitize;
 
-pub use conn::{ConnId, ConnectionHandle};
+pub use conn::{ConnId, ConnectionHandle, Sink};
 pub use flood::{FloodBucket, FloodVerdict};
 pub use manager::{
-    AttachOutcome, CharKey, DetachOutcome, DetachReason, ExpiredSession, SendReport, SendToConn,
-    SessId, SessionConfig, SessionManager, SessionMeta,
+    AttachOutcome, CharKey, DetachOutcome, DetachReason, EnvelopeClock, ExpiredSession,
+    ReplayError, SendReport, SendToConn, SessId, SessionConfig, SessionManager, SessionMeta,
+    system_unix_ms,
 };
 pub use sanitize::sanitize_line;

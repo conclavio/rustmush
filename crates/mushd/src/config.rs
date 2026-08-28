@@ -12,8 +12,16 @@
 //! | `[store].store` | `"redis"` | store backend: `"redis"` or `"memory"` |
 //! | `[store].redis_url` | `"redis://127.0.0.1:6379"` | Redis connection URL |
 //! | `[ssh].listen` | `"0.0.0.0:2222"` | SSH listen address |
+//! | `[web].listen` | `"127.0.0.1:8080"` | web (HTTP/WS) listen address |
+//! | `[web].trusted_proxies` | `[]` | proxies whose `X-Forwarded-For` is honored |
 //! | `[game].linkdead_grace_s` | `300` | linkdead grace before disconnect |
 //! | `[game].max_characters` | `3` | characters per account cap |
+//!
+//! The `[web]` table deserializes straight into
+//! [`mush_net_web::WebConfig`] (every knob it documents — TLS material,
+//! rate limits, WS tuning — is available here). Its `features`/`panels`
+//! fields are **overwritten at boot** from the module registry, so config
+//! files should leave them unset.
 //!
 //! A missing file yields the defaults; a file that exists but does not parse
 //! is a hard error (silently ignoring a typo'd config is worse than not
@@ -22,6 +30,7 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
+use mush_net_web::WebConfig;
 use serde::Deserialize;
 
 /// Errors loading `mushd.toml`.
@@ -148,7 +157,7 @@ impl Default for GameCfg {
     }
 }
 
-/// The whole configuration (M2 subset; unknown sections/keys ignored).
+/// The whole configuration (unknown sections/keys ignored).
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -158,6 +167,9 @@ pub struct Config {
     pub store: StoreCfg,
     /// `[ssh]`.
     pub ssh: SshCfg,
+    /// `[web]` — passed to `mush-net-web` (M4); `features`/`panels` are
+    /// filled from the module registry at boot.
+    pub web: WebConfig,
     /// `[game]`.
     pub game: GameCfg,
 }
@@ -225,6 +237,25 @@ mod tests {
         assert_eq!(cfg.store.redis_url, "redis://127.0.0.1:6379");
         assert_eq!(cfg.store_backend().unwrap(), StoreBackend::Redis);
         assert_eq!(cfg.ssh_listen().unwrap().port(), 2222);
+        assert_eq!(cfg.web.listen.to_string(), "127.0.0.1:8080");
+        assert!(cfg.web.trusted_proxies.is_empty());
+    }
+
+    #[test]
+    fn web_section_parses_into_webconfig() {
+        let text = r#"
+            [web]
+            listen = "0.0.0.0:9090"
+            trusted_proxies = ["127.0.0.1"]
+        "#;
+        let cfg: Config = toml::from_str(text).unwrap();
+        assert_eq!(cfg.web.listen.to_string(), "0.0.0.0:9090");
+        assert_eq!(
+            cfg.web.trusted_proxies,
+            ["127.0.0.1".parse::<std::net::IpAddr>().unwrap()]
+        );
+        // Rate-limit / WS tuning knobs keep their crate defaults.
+        assert_eq!(cfg.web.auth_burst, 5);
     }
 
     #[test]
@@ -278,7 +309,9 @@ mod tests {
 
     #[test]
     fn malformed_file_is_an_error() {
-        let dir = std::env::temp_dir().join("mushd-config-test");
+        // Process-unique dir: concurrent test runs (other checkouts, CI
+        // shards) must not race each other on a shared fixed path.
+        let dir = std::env::temp_dir().join(format!("mushd-config-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("bad.toml");
         std::fs::write(&path, "[server\nname=]").unwrap();

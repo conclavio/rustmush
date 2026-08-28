@@ -16,11 +16,15 @@ redis_url = "redis://127.0.0.1:6379"   # (M2)
 [ssh]
 listen = "0.0.0.0:2222"            # (M2)
 
-[web]                              # (reserved — web client is M4)
-listen = "127.0.0.1:8080"
-# tls_cert = ""                    # native TLS optional; reverse proxy recommended in prod
-# tls_key = ""
-# trusted_proxies = ["127.0.0.1"]
+[web]                              # (M4) HTTP + WebSocket client (mush-net-web)
+listen = "127.0.0.1:8080"          # (M4) bind a public address or reverse-proxy to it
+# trusted_proxies = ["127.0.0.1"]  # (M4) honor X-Forwarded-For from these proxies only
+# tls = { cert = "cert.pem", key = "key.pem" }  # (M4) native TLS (needs the `tls`
+#                                  # cargo feature; a reverse proxy is the usual prod setup)
+# auth_burst = 5                   # (M4) /api/auth/* rate limit: burst ...
+# auth_replenish_secs = 30         # (M4) ... and refill (one attempt per 30s per IP)
+# Note: `features` / `panels` are filled from the module registry at boot —
+# do not set them here.
 
 [game]
 start_room = 0                     # (reserved — creation currently uses Limbo #0 regardless)

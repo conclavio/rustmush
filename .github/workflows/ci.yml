@@ -34,3 +34,27 @@ jobs:
         run: cargo build --workspace --all-targets
       - name: Test
         run: cargo test --workspace
+      - name: TS bindings drift check (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          cargo test -p mush-proto --features ts --test ts_export
+          git diff --exit-code web/src/lib/proto
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Test
+        run: npm test
+      - name: Build
+        run: npm run build

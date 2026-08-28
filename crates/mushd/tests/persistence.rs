@@ -18,8 +18,8 @@ use mush_core::{Engine, GOD, Inbound, LIMBO, ObjId, ObjKind};
 use mush_proto::{ClientCaps, ClientKind, ColorDepth, OutputEvent};
 use mush_session::{ConnId, ConnectionHandle, SessionManager};
 use mush_store::{
-    AccountRec, BanRec, InMemoryStore, ObjectStore, StoreError, WorldSnapshot, WriteBatch,
-    WriteReceipt,
+    AccountRec, BanRec, InMemoryStore, ObjectStore, StoreError, TokenRecord, WorldSnapshot,
+    WriteBatch, WriteReceipt,
 };
 use mush_testkit::text_of;
 use tokio::sync::mpsc;
@@ -329,6 +329,14 @@ impl ObjectStore for FlakyStore {
         self.inner.list_accounts()
     }
 
+    fn set_account_password<'a>(
+        &'a self,
+        account: &'a str,
+        argon2_hash: &'a str,
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        self.inner.set_account_password(account, argon2_hash)
+    }
+
     fn set_ban<'a>(
         &'a self,
         ip: &'a str,
@@ -344,6 +352,36 @@ impl ObjectStore for FlakyStore {
 
     fn clear_ban<'a>(&'a self, ip: &'a str) -> BoxFuture<'a, Result<bool, StoreError>> {
         self.inner.clear_ban(ip)
+    }
+
+    fn token_put(&self, hash: String, rec: TokenRecord) -> BoxFuture<'_, Result<(), StoreError>> {
+        self.inner.token_put(hash, rec)
+    }
+
+    fn token_get<'a>(
+        &'a self,
+        hash: &'a str,
+    ) -> BoxFuture<'a, Result<Option<TokenRecord>, StoreError>> {
+        self.inner.token_get(hash)
+    }
+
+    fn token_touch<'a>(
+        &'a self,
+        hash: &'a str,
+        new_expires: i64,
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        self.inner.token_touch(hash, new_expires)
+    }
+
+    fn token_del<'a>(&'a self, hash: &'a str) -> BoxFuture<'a, Result<bool, StoreError>> {
+        self.inner.token_del(hash)
+    }
+
+    fn tokens_del_account<'a>(
+        &'a self,
+        account: &'a str,
+    ) -> BoxFuture<'a, Result<u64, StoreError>> {
+        self.inner.tokens_del_account(account)
     }
 
     fn module_json_get<'a>(

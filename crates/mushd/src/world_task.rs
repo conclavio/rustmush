@@ -352,10 +352,15 @@ pub fn spawn_persist(
     // can never race each other in the store or the IpGuard mirror. It
     // drains and exits when the world loop (the only sender) ends.
     let (staff_tx, staff_rx) = mpsc::channel(STAFF_OPS_CAPACITY);
+    // The staff executor gets only a WEAK world sender (like the writer):
+    // it needs the world for `@newpassword`'s web-connection boots, but a
+    // strong sender would keep the world loop's channel alive while the
+    // loop is what closes the staff queue — a shutdown deadlock.
     tokio::spawn(staff_ops_loop(
         Arc::clone(&deps.store),
         Arc::clone(&deps.guard),
         Arc::clone(&sessions),
+        tx.downgrade(),
         staff_rx,
     ));
     // The loop keeps only a weak sender for effect completions — holding a
@@ -1119,6 +1124,14 @@ async fn run_staff_ops(
                     send_sys(sessions, actor, "@siteban failed: staff executor gone.");
                 }
             }
+            StaffOpKind::NewPassword { target, .. } => {
+                // Audit: actor + target only — the op's password never
+                // reaches a log (Secret redacts even derived Debug).
+                tracing::info!(%actor, %target, "@newpassword requested");
+                if staff_ops.send(op).await.is_err() {
+                    send_sys(sessions, actor, "@newpassword failed: staff executor gone.");
+                }
+            }
             StaffOpKind::Dump => {
                 tracing::info!(%actor, "@dump requested");
                 let writer = writer.clone();
@@ -1150,6 +1163,120 @@ async fn run_staff_ops(
     shutdown
 }
 
+/// Execute one `@newpassword`: argon2-hash on the blocking pool, find the
+/// owning account by scanning the account docs (characters are few; the
+/// store has no reverse index yet), update the stored hash, then revoke
+/// every web token of that account (logout-everywhere) **and boot the
+/// account's live web connections** — web transports are token-
+/// authenticated, so they die with the tokens (SSH sessions are session-
+/// authenticated and stay; boot them with `@boot` if needed). Returns the
+/// confirmation text for the requesting wizard; delivers the target's
+/// notification itself.
+async fn run_newpassword(
+    store: &dyn ObjectStore,
+    sessions: &SessionManager,
+    world: &mpsc::WeakSender<WorldMsg>,
+    target: ObjId,
+    name: &str,
+    by: &str,
+    password: &str,
+) -> String {
+    let hash = {
+        let password = password.to_string();
+        match tokio::task::spawn_blocking(move || crate::accounts::hash_password(&password)).await {
+            Ok(Ok(h)) => h,
+            Ok(Err(e)) => return format!("@newpassword failed: {e}."),
+            Err(e) => return format!("@newpassword failed: hashing task failed: {e}."),
+        }
+    };
+    let account = match store.list_accounts().await {
+        Ok(accounts) => accounts
+            .into_iter()
+            .find(|a| a.characters.iter().any(|c| c.id == target)),
+        Err(e) => return format!("@newpassword failed: {e}"),
+    };
+    let Some(account) = account else {
+        return format!("@newpassword: {name} is not linked to any account.");
+    };
+    match store.set_account_password(&account.name, &hash).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return format!(
+                "@newpassword failed: account {} vanished mid-update.",
+                account.name
+            );
+        }
+        Err(e) => return format!("@newpassword failed: {e}"),
+    }
+    // Logout-everywhere: every web session token of the account dies with
+    // the old password. (Live SSH connections are session-authenticated
+    // and stay; boot them separately with @boot if needed.)
+    let revoked = match store.tokens_del_account(&account.name).await {
+        Ok(n) => n,
+        Err(e) => {
+            // The password DID change; report the partial failure honestly.
+            return format!(
+                "@newpassword: password for {name} changed, but revoking web \
+                 sessions failed: {e}"
+            );
+        }
+    };
+    tracing::info!(%target, account = %account.name, revoked, "@newpassword applied");
+    // Notify BEFORE booting, so a web-connected target actually sees why
+    // their session is about to close.
+    send_sys(
+        sessions,
+        target,
+        &format!("GAME: Your password has been changed by {by}."),
+    );
+    // The tokens are dead; so are the live connections they opened. Every
+    // structured (web) connection on any of the account's characters is
+    // booted — cleanly, through the world (announce + bookkeeping) when it
+    // is still up.
+    let world = world.upgrade().map(|tx| WorldHandle { tx });
+    let mut booted = 0u32;
+    for ch in &account.characters {
+        let Some(sess) = sessions.session_of_char(char_key(ch.id)) else {
+            continue;
+        };
+        for handle in sessions.conns_of_session(sess) {
+            if !handle.is_structured() {
+                continue;
+            }
+            if let Some(world) = &world {
+                world
+                    .inbound(Inbound::ConnDown {
+                        conn: handle.id.0,
+                        actor: ch.id,
+                        reason: DisconnectKind::Boot,
+                    })
+                    .await;
+                world.barrier().await;
+            }
+            send_event_to_conn(
+                sessions,
+                handle.id,
+                OutputEvent::Disconnect {
+                    reason: RichText::tag(
+                        "system",
+                        format!("Your password has been changed by {by}; please log in again."),
+                    ),
+                },
+            );
+            sessions.detach(handle.id, DetachReason::Booted);
+            booted += 1;
+        }
+    }
+    format!(
+        "@newpassword: Password for {name} (account {}) changed; \
+         {revoked} web session token{} revoked, {booted} live web \
+         connection{} booted.",
+        account.name,
+        if revoked == 1 { "" } else { "s" },
+        if booted == 1 { "" } else { "s" },
+    )
+}
+
 /// The sequential staff-op executor: one task, one queue, ops applied to
 /// the store (and mirrored into the [`IpGuard`]) strictly in the order
 /// staff issued them — a `@siteban/clear` can never lose to the `@siteban`
@@ -1159,6 +1286,7 @@ async fn staff_ops_loop(
     store: Arc<dyn ObjectStore>,
     guard: Arc<IpGuard>,
     sessions: Arc<SessionManager>,
+    world: mpsc::WeakSender<WorldMsg>,
     mut rx: mpsc::Receiver<StaffOp>,
 ) {
     while let Some(op) = rx.recv().await {
@@ -1189,6 +1317,12 @@ async fn staff_ops_loop(
                 }
                 Err(e) => format!("@siteban/clear failed: {e}"),
             },
+            StaffOpKind::NewPassword {
+                target,
+                name,
+                by,
+                password,
+            } => run_newpassword(&*store, &sessions, &world, target, &name, &by, &password.0).await,
             StaffOpKind::ListBans => match store.get_bans().await {
                 Ok(bans) if bans.is_empty() => "No active sitebans.".to_string(),
                 Ok(mut bans) => {

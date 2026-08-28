@@ -522,8 +522,19 @@ pub trait WeatherQuery: Send + Sync {
 }
 
 /// A read-only query handler for web `Req` hydration (mail lists, channel
-/// backlogs, sheet reads). **Registry only in M3** — the transport that
-/// invokes these lands with the web client (M4).
+/// backlogs, sheet reads), invoked by the engine's
+/// [`Inbound::Query`](crate::engine::Inbound::Query) handling (M4).
+///
+/// The handler answers with a full [`OutputEvent`] (typically a
+/// [`OutputEvent::Panel`] keyframe or a `Who` listing); the engine wraps it
+/// in [`OutputEvent::Reply`] with the request's correlation id and
+/// addresses it to the requesting **connection** only. An `Err` is a
+/// player-readable refusal; the engine delivers it as a `Reply` wrapping a
+/// `Sys` line so the client can still correlate it.
+///
+/// Handlers are **read-only by contract**: they get `&World` and must not
+/// queue persistence — a query must never mutate (that is why `@mail`
+/// *reading* stays a `Line` command: it marks messages read).
 pub trait QueryHandler: Send + Sync {
     /// Answer one query for `actor`.
     fn query(
@@ -531,7 +542,7 @@ pub trait QueryHandler: Send + Sync {
         w: &World,
         actor: ObjId,
         params: &serde_json::Value,
-    ) -> Result<serde_json::Value, String>;
+    ) -> Result<OutputEvent, RichText>;
 }
 
 /// A module job queue declaration (chargen approval, XP spends, +requests).

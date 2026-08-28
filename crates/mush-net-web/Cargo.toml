@@ -6,11 +6,28 @@ license.workspace = true
 authors.workspace = true
 description = "axum web server: token auth, WS envelope, embedded SPA"
 
+[features]
+# Native TLS via axum-server + rustls (ring provider — no C toolchain).
+# Off by default; prod behind a reverse proxy needs plain HTTP only.
+tls = ["dep:axum-server", "dep:rustls"]
+
 [dependencies]
-mush-session.workspace = true
 mush-proto.workspace = true
+axum.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tower-http.workspace = true
+tower_governor.workspace = true
+rust-embed.workspace = true
+axum-server = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+
+[dev-dependencies]
+reqwest.workspace = true
+tokio-tungstenite.workspace = true
 
 [lints]
 workspace = true

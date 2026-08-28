@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 /// Which transport the client connected over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ClientKind {
     /// SSH connection (ANSI-rendered text).
@@ -16,6 +17,7 @@ pub enum ClientKind {
 /// How much color the connection can display; the ANSI renderer downgrades
 /// [`Color`](crate::Color) values to fit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ColorDepth {
     /// No color at all (`TERM=dumb`, `NOCOLOR`).
@@ -33,6 +35,7 @@ pub enum ColorDepth {
 /// messages; the web client sends it explicitly via
 /// [`ClientCommand::Caps`](crate::ClientCommand::Caps).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ClientCaps {
     /// Transport kind.
     pub kind: ClientKind,
