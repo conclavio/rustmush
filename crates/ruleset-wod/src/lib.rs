@@ -34,83 +34,153 @@ pub mod dice;
 pub mod health;
 pub mod roll;
 pub mod schema;
+pub mod sheet_cmds;
+pub mod splats;
 pub mod state;
 pub mod xp;
 
 use std::sync::Arc;
 
 use mush_core::{
-    GameModule, JobQueueSpec, ModError, ModuleBootData, ModuleCtx, PanelFeedHandle, Registrar, Role,
+    GameModule, JobQueueSpec, ModError, ModuleBootData, ModuleCtx, ObjId, PanelFeedHandle,
+    Registrar, Role, World,
 };
 use mush_jobs::register_payload_handler;
 use mush_ruleset::chargen::ChargenFlow;
 use mush_ruleset::schema::SheetSchema;
-use mush_ruleset::{
-    AgentCapabilityProfile, AgentToolSpec, Ruleset, SheetDoc, SheetStore, register_sheet_commands,
-};
+use mush_ruleset::{AgentCapabilityProfile, AgentToolSpec, Ruleset, SheetDoc, SheetStore};
 use smol_str::SmolStr;
 
 use crate::chargen::WodChargen;
 use crate::config::WodConfig;
-use crate::schema::{ATTRIBUTES, KNOWLEDGES, Mortal, SKILLS, TALENTS, Template, build_schema};
+use crate::schema::{ATTRIBUTES, KNOWLEDGES, SKILLS, TALENTS, Template};
+use crate::splats::{
+    DEFAULT_TEMPLATES, Dispatch, Splat, TemplateSchemas, all_splats, schema_only_splats,
+};
 use crate::state::WodState;
 
-/// The shared bundle captured by every WoD command closure: the composed
-/// schema, the tunable config, the sheet store, and the roll panel feed.
+/// The shared bundle captured by every WoD command closure: the multi-template
+/// [`Dispatch`] (per-template schemas + splat behaviours), the tunable config,
+/// and the roll panel feed.
+///
+/// The dispatch helpers here are the M6b backbone — every sheet read, write,
+/// render, roll and chargen step selects the character's **active schema/splat**
+/// by their `template` field through one of these.
 pub(crate) struct WodCmd {
-    pub schema: Arc<SheetSchema>,
+    pub dispatch: Arc<Dispatch>,
     pub config: WodConfig,
-    pub store: SheetStore,
     pub roll_feed: PanelFeedHandle,
 }
 
-/// The oWoD20 base ruleset (`"wod"`).
+impl WodCmd {
+    /// The per-template schema table.
+    pub(crate) fn schemas(&self) -> &TemplateSchemas {
+        &self.dispatch.schemas
+    }
+
+    /// The default (fallback / mortal) schema.
+    pub(crate) fn default_schema(&self) -> Arc<SheetSchema> {
+        self.dispatch.schemas.default_schema()
+    }
+
+    /// A store over the default schema — reads never validate, so this is the
+    /// schema-agnostic read path.
+    pub(crate) fn default_store(&self) -> SheetStore {
+        SheetStore::new(self.default_schema())
+    }
+
+    /// Read `obj`'s sheet (schema-agnostic; `None` if they have none).
+    pub(crate) fn read(&self, w: &World, obj: ObjId) -> Option<SheetDoc> {
+        self.default_store().get(w, obj)
+    }
+
+    /// Read `obj`'s sheet, or a fresh default (mortal) sheet if they have none.
+    pub(crate) fn read_or_default(&self, w: &World, obj: ObjId) -> SheetDoc {
+        self.read(w, obj)
+            .unwrap_or_else(|| SheetDoc::new_default(&self.default_schema()))
+    }
+
+    /// The active schema for a sheet, selected by its `template` field.
+    pub(crate) fn schema_for_doc(&self, doc: &SheetDoc) -> Arc<SheetSchema> {
+        self.dispatch.schemas.schema_for_doc(doc)
+    }
+
+    /// A **validating** store over a sheet's active schema (the write path).
+    pub(crate) fn store_for_doc(&self, doc: &SheetDoc) -> SheetStore {
+        SheetStore::new(self.schema_for_doc(doc))
+    }
+
+    /// The splat active for a sheet, selected by its `template` field.
+    pub(crate) fn splat_for_doc(&self, doc: &SheetDoc) -> Arc<dyn Splat> {
+        self.dispatch.splats.for_doc(doc)
+    }
+}
+
+/// The oWoD20 base ruleset (`"wod"`) with the M6b multi-template splats.
 pub struct WodRuleset {
-    schema: Arc<SheetSchema>,
+    dispatch: Arc<Dispatch>,
     config: WodConfig,
-    store: SheetStore,
     chargen: WodChargen,
     seed: Option<u64>,
 }
 
 impl WodRuleset {
-    /// The base ruleset with the default (Mortal-only) template set and an
-    /// OS-seeded RNG.
+    /// The full game with the [`DEFAULT_TEMPLATES`] splat set and an OS-seeded
+    /// RNG.
     #[must_use]
     pub fn new() -> WodRuleset {
-        WodRuleset::with_templates(vec![Box::new(Mortal)], WodConfig::default(), None)
+        WodRuleset::with_splats(all_splats(DEFAULT_TEMPLATES), WodConfig::default(), None)
     }
 
-    /// The base ruleset with a fixed RNG seed (deterministic tests).
+    /// The full game with a fixed RNG seed (deterministic tests).
     #[must_use]
     pub fn with_seed(seed: u64) -> WodRuleset {
-        WodRuleset::with_templates(vec![Box::new(Mortal)], WodConfig::default(), Some(seed))
+        WodRuleset::with_splats(
+            all_splats(DEFAULT_TEMPLATES),
+            WodConfig::default(),
+            Some(seed),
+        )
     }
 
-    /// The ruleset composed from an explicit template set (the M6b splat entry
-    /// point) with a config and optional RNG seed.
+    /// A ruleset composed from an explicit **schema-only** template set (the
+    /// M6a entry point, kept for tests and custom schema splats). Each template
+    /// gets per-template dispatch but no splat commands or chargen contribution.
     #[must_use]
     pub fn with_templates(
         templates: Vec<Box<dyn Template>>,
         config: WodConfig,
         seed: Option<u64>,
     ) -> WodRuleset {
-        let schema = Arc::new(build_schema("wod", &templates));
-        let store = SheetStore::new(Arc::clone(&schema));
-        let chargen = WodChargen::new(Arc::clone(&schema), config.clone());
+        WodRuleset::with_splats(schema_only_splats(templates), config, seed)
+    }
+
+    /// The internal constructor: build the [`Dispatch`] from a splat set.
+    fn with_splats(
+        splats: Vec<Arc<dyn Splat>>,
+        config: WodConfig,
+        seed: Option<u64>,
+    ) -> WodRuleset {
+        let dispatch = Arc::new(Dispatch::build("wod", splats));
+        let chargen = WodChargen::new(Arc::clone(&dispatch), config.clone());
         WodRuleset {
-            schema,
+            dispatch,
             config,
-            store,
             chargen,
             seed,
         }
     }
 
-    /// The sheet store this ruleset uses (for tests / host code).
+    /// A validating store over the default (mortal) schema (for tests / host
+    /// code). Per-template writes go through [`WodCmd`]'s dispatch helpers.
     #[must_use]
-    pub fn store(&self) -> &SheetStore {
-        &self.store
+    pub fn store(&self) -> SheetStore {
+        SheetStore::new(self.dispatch.schemas.default_schema())
+    }
+
+    /// The active schema for a sheet, selected by its `template` field.
+    #[must_use]
+    pub fn schema_for(&self, doc: &SheetDoc) -> Arc<SheetSchema> {
+        self.dispatch.schemas.schema_for_doc(doc)
     }
 }
 
@@ -145,22 +215,27 @@ impl GameModule for WodRuleset {
             min_role: Role::Royalty,
         })?;
 
-        // Generic sheet surface + web query + `sheet` namespace claim.
-        register_sheet_commands(reg, Arc::clone(&self.schema), None)?;
-
-        // Roll panel feed, then the command bundle.
+        // Roll panel feed, then the command bundle carrying dispatch.
         let roll_feed = reg.panel_feed("wod.roll")?;
         let cmd = Arc::new(WodCmd {
-            schema: Arc::clone(&self.schema),
+            dispatch: Arc::clone(&self.dispatch),
             config: self.config.clone(),
-            store: self.store.clone(),
             roll_feed,
         });
 
+        // Template-dispatching sheet surface (+sheet/@sheet/@sheet/set + the
+        // web query), then the shared command sets.
+        sheet_cmds::register(reg, Arc::clone(&cmd))?;
         roll::register(reg, Arc::clone(&cmd))?;
         damage::register(reg, Arc::clone(&cmd))?;
         chargen_cmds::register(reg, Arc::clone(&cmd))?;
         xp::register(reg, Arc::clone(&cmd))?;
+
+        // Every enabled splat registers its own commands (always active; each
+        // self-gates on the actor's template).
+        for splat in self.dispatch.splats.iter() {
+            splat.register_commands(reg, Arc::clone(&cmd))?;
+        }
         Ok(())
     }
 
@@ -169,23 +244,24 @@ impl GameModule for WodRuleset {
         ctx: &mut ModuleCtx<'_>,
         _data: ModuleBootData,
     ) -> Result<(), ModError> {
-        // Chargen approval: re-validate the budget, then stamp Approved.
-        let store = self.store.clone();
+        // Chargen approval: re-validate the budget (template-aware), then
+        // stamp Approved.
+        let dispatch = Arc::clone(&self.dispatch);
         let config = self.config.clone();
         register_payload_handler(
             ctx.w,
             chargen_cmds::CHARGEN_HANDLER,
-            Arc::new(move |ctx, job| chargen_cmds::chargen_approval(&config, &store, ctx, job)),
+            Arc::new(move |ctx, job| chargen_cmds::chargen_approval(&config, &dispatch, ctx, job)),
         )
         .map_err(ModError::msg)?;
 
-        // XP spend: re-validate + apply atomically.
-        let store = self.store.clone();
+        // XP spend: re-validate + apply atomically (template-aware).
+        let dispatch = Arc::clone(&self.dispatch);
         let config = self.config.clone();
         register_payload_handler(
             ctx.w,
             xp::XP_HANDLER,
-            Arc::new(move |ctx, job| xp::xp_approval(&config, &store, ctx, job)),
+            Arc::new(move |ctx, job| xp::xp_approval(&config, &dispatch, ctx, job)),
         )
         .map_err(ModError::msg)?;
         Ok(())
@@ -198,7 +274,9 @@ impl Ruleset for WodRuleset {
     }
 
     fn sheet_schema(&self) -> &SheetSchema {
-        &self.schema
+        // The framework's single-schema hook returns the default (mortal)
+        // schema; the live surfaces dispatch per character by `template`.
+        self.dispatch.schemas.default_schema_ref()
     }
 
     fn chargen(&self) -> Option<&dyn ChargenFlow> {
@@ -206,7 +284,7 @@ impl Ruleset for WodRuleset {
     }
 
     fn agent_profile(&self, sheet: &SheetDoc) -> AgentCapabilityProfile {
-        agent_profile(&self.schema, sheet)
+        agent_profile(&self.dispatch.schemas.schema_for_doc(sheet), sheet)
     }
 }
 

@@ -289,6 +289,12 @@ pub fn base_builder(ruleset: &str, template_ids: &[SmolStr]) -> SheetSchemaBuild
 /// Fold `templates` over the base builder and build the composed schema. The
 /// `template` enum is seeded with every template id.
 ///
+/// This folds **all** templates into one sheet — the M6a single-schema shape,
+/// still used to assert the composition merges cleanly. The live multi-template
+/// dispatch (M6b) instead builds one schema *per* template with
+/// [`build_template_schema`], so a character's active sheet carries only their
+/// own splat's sections.
+///
 /// # Panics
 ///
 /// Panics if a template's extension collides with the base or another template
@@ -303,6 +309,38 @@ pub fn build_schema(ruleset: &str, templates: &[Box<dyn Template>]) -> SheetSche
             .unwrap_or_else(|e| panic!("template {:?} failed to extend the sheet: {e}", t.id()));
     }
     builder.build()
+}
+
+/// Build **one** template's composed schema: the base oWoD sheet (whose
+/// `template` enum lists every id in `all_ids`, so a character may switch
+/// templates) plus **only** `template`'s own sections.
+///
+/// This is the per-character "active schema" the M6b multi-template dispatch
+/// selects by the sheet's `template` field: a vampire's schema carries
+/// Disciplines / Blood Pool / Generation and *not* a mage's Spheres, and a
+/// mortal's carries neither. The ruleset holds a map `template-id -> schema`
+/// built once at boot with this.
+///
+/// # Panics
+///
+/// Panics if the template's extension collides with the base — a programming
+/// error surfaced at construction.
+#[must_use]
+pub fn build_template_schema(
+    ruleset: &str,
+    all_ids: &[SmolStr],
+    template: &dyn Template,
+) -> SheetSchema {
+    let builder = base_builder(ruleset, all_ids);
+    template
+        .extend_schema(builder)
+        .unwrap_or_else(|e| {
+            panic!(
+                "template {:?} failed to extend the sheet: {e}",
+                template.id()
+            )
+        })
+        .build()
 }
 
 #[cfg(test)]

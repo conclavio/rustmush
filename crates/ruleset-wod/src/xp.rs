@@ -11,23 +11,53 @@ use std::sync::Arc;
 
 use mush_core::{ArgShape, CmdError, CommandSpec, Ctx, ObjId, Registrar, Role, match_object, perm};
 use mush_jobs::{Job, JobPayload, OpenJob, open_job};
-use mush_ruleset::{SheetDoc, SheetStore};
+use mush_ruleset::SheetDoc;
+use mush_ruleset::schema::SheetSchema;
 
 use crate::WodCmd;
 use crate::config::{TraitKind, WodConfig};
 use crate::schema::{ATTRIBUTES, KNOWLEDGES, SKILLS, TALENTS, VIRTUES};
+use crate::splats::{Dispatch, Splat};
 
 /// The `wod-xp` job queue name.
 pub const XP_QUEUE: &str = "wod-xp";
 /// The XP payload-handler name.
 pub const XP_HANDLER: &str = "wod.xp";
 
-/// A parsed spend target: a scalar field or a background map entry.
+/// How a spend target is costed: a base [`TraitKind`] table, or a splat-owned
+/// trait the active splat prices (Vampire: Disciplines).
+enum CostKind {
+    /// A base trait costed from [`crate::config::XpCosts`].
+    Base(TraitKind),
+    /// A splat-owned trait costed by the active [`Splat`].
+    Splat,
+}
+
+/// A parsed spend target: a scalar field, a background/discipline map entry.
 struct SpendTarget {
     field: String,
     key: Option<String>,
-    kind: TraitKind,
+    cost: CostKind,
     max: i32,
+}
+
+impl SpendTarget {
+    /// The XP cost to raise this target `from`→`to` on `doc` under `splat`.
+    fn raise_cost(
+        &self,
+        config: &WodConfig,
+        doc: &SheetDoc,
+        splat: &dyn Splat,
+        from: i32,
+        to: i32,
+    ) -> i32 {
+        match self.cost {
+            CostKind::Base(kind) => config.xp_costs.rule(kind).raise_cost(from, to),
+            CostKind::Splat => {
+                splat.xp_cost(config, doc, &self.field, self.key.as_deref(), from, to)
+            }
+        }
+    }
 }
 
 /// `+xp` / `+xp/spend` / `+xp/award`.
@@ -54,8 +84,7 @@ fn show(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         t
     };
     let doc = cmd
-        .store
-        .get(ctx.w, target)
+        .read(ctx.w, target)
         .ok_or_else(|| CmdError::msg("That character has no sheet."))?;
     let cur = doc.number("experience").unwrap_or(0);
     let total = doc.number("total_xp").unwrap_or(0);
@@ -87,12 +116,14 @@ fn spend(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .rhs()
         .and_then(|r| r.trim().parse().ok())
         .ok_or_else(|| CmdError::msg("Usage: +xp/spend <field>[:<key>]=<new-rating>"))?;
-    let target = resolve_spend_target(cmd, &lhs)?;
 
     let doc = cmd
-        .store
-        .get(ctx.w, actor)
+        .read(ctx.w, actor)
         .ok_or_else(|| CmdError::msg("You have no sheet."))?;
+    let splat = cmd.splat_for_doc(&doc);
+    let schema = cmd.schema_for_doc(&doc);
+    let target = resolve_spend_target(&schema, splat.as_ref(), &doc, &lhs)?;
+
     let from = current_rating(&doc, &target);
     if to <= from {
         return Err(CmdError::msg(format!(
@@ -107,7 +138,7 @@ fn spend(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             target.max
         )));
     }
-    let cost = cmd.config.xp_costs.rule(target.kind).raise_cost(from, to);
+    let cost = target.raise_cost(&cmd.config, &doc, splat.as_ref(), from, to);
     let have = doc.number("experience").unwrap_or(0) as i32;
     if cost > have {
         return Err(CmdError::msg(format!(
@@ -171,8 +202,7 @@ fn award(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .ok_or_else(|| CmdError::msg("Usage: +xp/award <target>=<n> (n > 0)"))?;
     let target = match_object(ctx.w, ctx.actor, target_spec)?;
     let mut doc = cmd
-        .store
-        .get(ctx.w, target)
+        .read(ctx.w, target)
         .ok_or_else(|| CmdError::msg("That character has no sheet."))?;
     let cur = doc.number("experience").unwrap_or(0) as i32;
     let total = doc.number("total_xp").unwrap_or(0) as i32;
@@ -182,7 +212,7 @@ fn award(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         &mut doc,
         format!("+{n} XP awarded by {}", name_of(ctx, ctx.actor)),
     );
-    cmd.store
+    cmd.store_for_doc(&doc)
         .put_by(ctx.w, target, &doc, ctx.actor)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     ctx.out.info(
@@ -195,7 +225,7 @@ fn award(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// The `wod.xp` payload handler: re-validate and apply an approved raise.
 pub(crate) fn xp_approval(
     config: &WodConfig,
-    store: &SheetStore,
+    dispatch: &Dispatch,
     ctx: &mut Ctx<'_>,
     job: &Job,
 ) -> Result<(), String> {
@@ -231,12 +261,15 @@ pub(crate) fn xp_approval(
         .and_then(serde_json::Value::as_i64)
         .unwrap_or(0) as i32;
 
-    let spend_target = resolve_spend_target_from(config, store, &field, key.as_deref())
-        .ok_or_else(|| format!("unknown trait {field:?}"))?;
-
-    let mut doc = store
-        .get(ctx.w, target)
+    let mut doc = dispatch
+        .read(ctx.w, target)
         .ok_or_else(|| "the character has no sheet".to_string())?;
+    let splat = dispatch.splats.for_doc(&doc);
+    let schema = dispatch.schemas.schema_for_doc(&doc);
+    let spend_target =
+        resolve_spend_target_from(&schema, splat.as_ref(), &doc, &field, key.as_deref())
+            .ok_or_else(|| format!("unknown trait {field:?}"))?;
+
     // Re-check: the trait has not moved and the recomputed cost is still funded.
     let now_from = current_rating(&doc, &spend_target);
     if now_from != from {
@@ -245,7 +278,16 @@ pub(crate) fn xp_approval(
             display_field(&spend_target)
         ));
     }
-    let recost = config.xp_costs.rule(spend_target.kind).raise_cost(from, to);
+    // Re-check the (possibly sheet-dependent) cap: a Sphere spend filed while
+    // Arete was higher must not apply above the current Arete.
+    if to > spend_target.max {
+        return Err(format!(
+            "{} now caps at {}; re-file the spend.",
+            display_field(&spend_target),
+            spend_target.max
+        ));
+    }
+    let recost = spend_target.raise_cost(config, &doc, splat.as_ref(), from, to);
     if recost != cost {
         return Err("the XP cost changed; re-file the spend.".to_string());
     }
@@ -264,43 +306,64 @@ pub(crate) fn xp_approval(
             job.id
         ),
     );
-    store
+    dispatch
+        .store_for_doc(&doc)
         .put_by(ctx.w, target, &doc, ctx.actor)
         .map_err(|es| fmt_errs(&es))?;
     Ok(())
 }
 
-/// Resolve a spend target from a `+xp/spend` LHS against the schema.
-fn resolve_spend_target(cmd: &WodCmd, lhs: &str) -> Result<SpendTarget, CmdError> {
+/// Resolve a spend target from a `+xp/spend` LHS against the active schema +
+/// splat, applying any sheet-dependent cap (Mage: a Sphere is capped at Arete).
+fn resolve_spend_target(
+    schema: &SheetSchema,
+    splat: &dyn Splat,
+    doc: &SheetDoc,
+    lhs: &str,
+) -> Result<SpendTarget, CmdError> {
     let (field, key) = match lhs.split_once(':') {
         Some((f, k)) => (f.trim(), Some(k.trim())),
         None => (lhs.trim(), None),
     };
-    resolve_spend_target_from(&cmd.config, &cmd.store, field, key)
+    resolve_spend_target_from(schema, splat, doc, field, key)
         .ok_or_else(|| CmdError::msg(format!("Cannot buy {field:?} with XP.")))
 }
 
 /// Classify a field into a costed spend target (returns `None` for a field XP
 /// cannot buy).
 fn resolve_spend_target_from(
-    _config: &WodConfig,
-    store: &SheetStore,
+    schema: &SheetSchema,
+    splat: &dyn Splat,
+    doc: &SheetDoc,
     field: &str,
     key: Option<&str>,
 ) -> Option<SpendTarget> {
     let f = field.to_ascii_lowercase();
+    // Splat-owned traits first (Vampire: Disciplines).
+    if let Some(max) = splat.xp_max(&f, key) {
+        // A sheet-dependent cap (Mage: Sphere ≤ Arete) narrows the flat max.
+        let max = splat
+            .xp_target_cap(doc, &f, key)
+            .map_or(max, |cap| cap.min(max));
+        return Some(SpendTarget {
+            field: f,
+            key: key.map(str::to_string),
+            cost: CostKind::Splat,
+            max,
+        });
+    }
     // Backgrounds: a map entry.
     if f == "backgrounds" {
         let key = key?;
         return Some(SpendTarget {
             field: "backgrounds".to_string(),
             key: Some(key.to_string()),
-            kind: TraitKind::Background,
+            cost: CostKind::Base(TraitKind::Background),
             max: 5,
         });
     }
-    // Otherwise a scalar field on the schema.
-    let fdef = store.schema().field(&f)?;
+    // Otherwise a scalar field on the active schema.
+    let fdef = schema.field(&f)?;
     let id = fdef.id.to_string();
     let kind = trait_kind(&id)?;
     let max = match kind {
@@ -310,7 +373,7 @@ fn resolve_spend_target_from(
     Some(SpendTarget {
         field: id,
         key: None,
-        kind,
+        cost: CostKind::Base(kind),
         max,
     })
 }

@@ -641,8 +641,18 @@ fn test_splat_template_merges() {
         )),
     ]);
     let v = tw.spawn_player("Vlad");
+    // Under multi-template dispatch a character must BE the splat before its
+    // fields exist on their sheet: a mortal's schema has no `disciplines`.
+    let denied = tw.run(GOD, "@sheet/set Vlad/disciplines:Dominate=2");
+    assert!(
+        tw.seen_by(&denied, GOD)
+            .iter()
+            .any(|l| l.contains("No such sheet field")),
+        "a mortal's active schema must not carry splat fields"
+    );
+    // Pick the template, then the splat field is settable and rolls.
+    tw.run(GOD, "@sheet/set Vlad/template=testsplat");
     tw.run(GOD, "@sheet/set Vlad/disciplines:Dominate=2");
-    // Rolling a splat trait resolves from the map.
     tw.run(v, "+roll dominate");
     let out = last_outcome(&tw, v);
     // Dominate 2 → 2 dice.
@@ -957,4 +967,914 @@ fn unapproved_character_can_still_roll() {
             .iter()
             .any(|l| l.contains("Nick rolls"))
     );
+}
+
+// ----------------------------------------------------------------------
+// M6b: Vampire (V20) + the per-template dispatch
+// ----------------------------------------------------------------------
+
+/// The vampire's active schema carries Disciplines / Blood Pool / Generation;
+/// a mortal's carries none of them (and neither carries a mage's Spheres).
+#[test]
+fn template_selects_the_active_schema() {
+    let ruleset = WodRuleset::with_seed(S);
+    let base = ruleset.sheet_schema().clone();
+
+    let mut vamp = SheetDoc::new_default(&base);
+    vamp.set_text("template", "vampire");
+    let vsch = ruleset.schema_for(&vamp);
+    assert!(vsch.field("disciplines").is_some());
+    assert!(vsch.field("bloodpool").is_some());
+    assert!(vsch.field("generation").is_some());
+    assert!(vsch.field("spheres").is_none(), "a vampire is not a mage");
+
+    let mortal = SheetDoc::new_default(&base);
+    let msch = ruleset.schema_for(&mortal);
+    assert!(msch.field("disciplines").is_none());
+    assert!(msch.field("bloodpool").is_none());
+    assert!(msch.field("generation").is_none());
+}
+
+/// The `+sheet` render surface selects the active schema: a vampire's sheet
+/// shows the Kindred / Disciplines sections, a mortal's does not.
+#[test]
+fn sheet_render_dispatches_on_template() {
+    let (mut tw, nick) = world(S);
+    // Mortal sheet: no Kindred sections.
+    set(&mut tw, "@sheet/set Nick/strength=3");
+    let ev = tw.run(nick, "+sheet");
+    let mortal = tw.seen_by(&ev, nick).join("\n");
+    assert!(!mortal.contains("DISCIPLINES"));
+    assert!(!mortal.contains("Blood Pool"));
+    // Turn Kindred: the render now carries Disciplines + Blood Pool.
+    set(&mut tw, "@sheet/set Nick/template=vampire");
+    set(&mut tw, "@sheet/set Nick/disciplines:Celerity=2");
+    let ev = tw.run(nick, "+sheet");
+    let vamp = tw.seen_by(&ev, nick).join("\n");
+    assert!(
+        vamp.contains("DISCIPLINES"),
+        "vampire sheet shows Disciplines"
+    );
+    assert!(
+        vamp.contains("Blood Pool"),
+        "vampire sheet shows Blood Pool"
+    );
+    assert!(vamp.contains("Celerity"));
+}
+
+/// Splat commands are always registered but self-gate: a mortal is refused.
+#[test]
+fn splat_commands_refuse_non_kindred() {
+    let (mut tw, nick) = world(S);
+    for cmd in ["+blood", "+disc", "+frenzy", "+generation"] {
+        let ev = tw.run(nick, cmd);
+        assert!(
+            tw.seen_by(&ev, nick)
+                .iter()
+                .any(|l| l.contains("not Kindred")),
+            "{cmd} must refuse a mortal"
+        );
+    }
+}
+
+/// Drive a full, budget-balancing Brujah chargen.
+fn do_vampire_chargen(tw: &mut TestWorld, who: ObjId) {
+    tw.run(who, "+chargen");
+    tw.run(who, "+chargen/template vampire");
+    tw.run(who, "+chargen/attr physical=7 social=5 mental=3");
+    tw.run(who, "+chargen/abil talents=13 skills=9 knowledges=5");
+    tw.run(who, "+stat clan=brujah");
+    for c in [
+        "+stat strength=4",
+        "+stat dexterity=4",
+        "+stat stamina=2",
+        "+stat charisma=3",
+        "+stat manipulation=3",
+        "+stat appearance=2",
+        "+stat perception=2",
+        "+stat intelligence=2",
+        "+stat wits=2",
+    ] {
+        tw.run(who, c);
+    }
+    for c in [
+        "+stat alertness=3",
+        "+stat athletics=3",
+        "+stat brawl=3",
+        "+stat empathy=2",
+        "+stat expression=2",
+    ] {
+        tw.run(who, c);
+    }
+    for c in ["+stat drive=3", "+stat firearms=3", "+stat stealth=3"] {
+        tw.run(who, c);
+    }
+    for c in ["+stat academics=3", "+stat computer=2"] {
+        tw.run(who, c);
+    }
+    tw.run(who, "+stat backgrounds:Resources=3");
+    tw.run(who, "+stat backgrounds:Contacts=2");
+    // Disciplines: 3 in-clan dots (Brujah = Celerity/Potence/Presence).
+    tw.run(who, "+stat disciplines:Celerity=2");
+    tw.run(who, "+stat disciplines:Potence=1");
+    // Virtues: 7 dots on top of 1 each (2 + 2 + 3).
+    tw.run(who, "+stat conscience=3");
+    tw.run(who, "+stat self_control=3");
+    tw.run(who, "+stat courage=4");
+}
+
+#[test]
+fn vampire_full_chargen_derives_pools_and_approves() {
+    let (mut tw, nick) = world(S);
+    do_vampire_chargen(&mut tw, nick);
+
+    // Budget (incl. Disciplines + Virtues pools) balances.
+    let ev = tw.run(nick, "+chargen/status");
+    let seen = tw.seen_by(&ev, nick);
+    assert!(
+        seen.iter().any(|l| l.contains("Budget balances")),
+        "vampire budget must balance: {seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .any(|l| l.contains("Disciplines") && l.contains("3/3"))
+    );
+    assert!(
+        seen.iter()
+            .any(|l| l.contains("Virtues") && l.contains("7/7"))
+    );
+
+    // Submit → Pending → staff approve → Approved.
+    tw.run(nick, "+chargen/submit");
+    let job = match read_sheet(&tw, nick).approved {
+        ApprovalState::Pending(j) => j,
+        other => panic!("expected Pending, got {other:?}"),
+    };
+    tw.run(GOD, &format!("+job/approve {job}=Welcome to the night."));
+    let doc = read_sheet(&tw, nick);
+    assert!(doc.approved.is_approved());
+    assert_eq!(doc.text("template"), Some("vampire"));
+    // Derived starting values.
+    assert_eq!(doc.number("willpower"), Some(4), "Willpower = Courage");
+    assert_eq!(doc.number("bloodpool"), Some(10), "13th-gen Blood Pool max");
+    assert_eq!(
+        doc.number("humanity"),
+        Some(6),
+        "Humanity = Conscience + Self-Control"
+    );
+    assert_eq!(doc.number("generation"), Some(13));
+    assert!(
+        doc.text("weakness")
+            .unwrap_or("")
+            .to_lowercase()
+            .contains("frenzy"),
+        "Brujah weakness derived onto the sheet"
+    );
+}
+
+#[test]
+fn disc_roll_builds_and_rolls_the_pool() {
+    let (mut tw, nick) = world(S);
+    set(&mut tw, "@sheet/set Nick/template=vampire");
+    set(&mut tw, "@sheet/set Nick/dexterity=3");
+    set(&mut tw, "@sheet/set Nick/disciplines:Celerity=2");
+    let ev = tw.run(nick, "+disc/roll celerity+dexterity vs 6");
+    let out = last_outcome(&tw, nick);
+    // Celerity 2 + Dexterity 3 = 5 dice at difficulty 6.
+    assert_eq!(out.dice.len(), 5);
+    assert_eq!(out.difficulty, 6);
+    assert!(
+        tw.seen_by(&ev, nick)
+            .iter()
+            .any(|l| l.contains("discipline"))
+    );
+    // A discipline you do not have is refused.
+    let denied = tw.run(nick, "+disc/roll dominate+wits");
+    assert!(
+        tw.seen_by(&denied, nick)
+            .iter()
+            .any(|l| l.contains("Discipline you have"))
+    );
+}
+
+#[test]
+fn blood_spend_and_gain_are_bounded() {
+    let (mut tw, nick) = world(S);
+    set(&mut tw, "@sheet/set Nick/template=vampire"); // 13th gen: max 10
+    tw.run(nick, "+blood/gain 5");
+    assert_eq!(read_sheet(&tw, nick).number("bloodpool"), Some(5));
+    // Feeding caps at the generation maximum.
+    tw.run(nick, "+blood/gain 100");
+    assert_eq!(read_sheet(&tw, nick).number("bloodpool"), Some(10));
+    tw.run(nick, "+blood/spend 3");
+    assert_eq!(read_sheet(&tw, nick).number("bloodpool"), Some(7));
+    // Cannot overspend the pool.
+    let ev = tw.run(nick, "+blood/spend 100");
+    assert!(
+        tw.seen_by(&ev, nick)
+            .iter()
+            .any(|l| l.contains("only 7 blood"))
+    );
+    assert_eq!(read_sheet(&tw, nick).number("bloodpool"), Some(7));
+    // Healing with no damage is refused (no blood wasted).
+    let ev = tw.run(nick, "+blood/heal 2");
+    assert!(
+        tw.seen_by(&ev, nick)
+            .iter()
+            .any(|l| l.contains("no bashing or lethal"))
+    );
+    assert_eq!(read_sheet(&tw, nick).number("bloodpool"), Some(7));
+    // With damage, healing spends blood 1:1 and clears the levels.
+    tw.run(GOD, "+harm Nick=2b");
+    tw.run(nick, "+blood/heal 2");
+    let doc = read_sheet(&tw, nick);
+    assert_eq!(doc.number("bloodpool"), Some(5));
+    assert_eq!(
+        doc.track("health")
+            .unwrap()
+            .iter()
+            .filter(|m| m.is_some())
+            .count(),
+        0,
+        "both bashing levels mended"
+    );
+}
+
+#[test]
+fn frenzy_rolls_the_resisting_virtue() {
+    let (mut tw, nick) = world(S);
+    set(&mut tw, "@sheet/set Nick/template=vampire");
+    set(&mut tw, "@sheet/set Nick/self_control=3");
+    set(&mut tw, "@sheet/set Nick/courage=4");
+    // Anger frenzy: Self-Control (3 dice).
+    tw.run(nick, "+frenzy vs 6");
+    assert_eq!(last_outcome(&tw, nick).dice.len(), 3);
+    // Rötschreck: Courage (4 dice).
+    tw.run(nick, "+frenzy/fear vs 6");
+    assert_eq!(last_outcome(&tw, nick).dice.len(), 4);
+}
+
+#[test]
+fn generation_derives_the_blood_table() {
+    let (mut tw, nick) = world(S);
+    set(&mut tw, "@sheet/set Nick/template=vampire");
+    set(&mut tw, "@sheet/set Nick/generation=8");
+    let ev = tw.run(nick, "+generation");
+    let seen = tw.seen_by(&ev, nick);
+    // 8th generation: 15 blood / 3 per turn / trait max 5.
+    assert!(
+        seen.iter().any(|l| l.contains("max 15")
+            && l.contains("3 blood/turn")
+            && l.contains("trait max 5")),
+        "generation table: {seen:?}"
+    );
+}
+
+#[test]
+fn discipline_xp_costs_in_clan_vs_out_of_clan() {
+    let (mut tw, nick) = world(S);
+    set(&mut tw, "@sheet/set Nick/template=vampire");
+    set(&mut tw, "@sheet/set Nick/clan=brujah");
+    set(&mut tw, "@sheet/set Nick/disciplines:Celerity=2"); // in-clan
+    set(&mut tw, "@sheet/set Nick/disciplines:Auspex=2"); // out-of-clan
+    tw.run(GOD, "+xp/award Nick=50");
+    // In-clan Celerity 2→3: current 2 × 5 = 10 XP.
+    let ev = tw.run(nick, "+xp/spend disciplines:Celerity=3");
+    assert!(
+        tw.seen_by(&ev, nick)
+            .iter()
+            .any(|l| l.contains("for 10 XP")),
+        "in-clan discipline is ×5"
+    );
+    // Out-of-clan Auspex 2→3: current 2 × 7 = 14 XP.
+    let ev = tw.run(nick, "+xp/spend disciplines:Auspex=3");
+    assert!(
+        tw.seen_by(&ev, nick)
+            .iter()
+            .any(|l| l.contains("for 14 XP")),
+        "out-of-clan discipline is ×7"
+    );
+    // Approve the in-clan raise (job 1): it applies atomically.
+    tw.run(GOD, "+job/approve 1");
+    let doc = read_sheet(&tw, nick);
+    assert_eq!(
+        doc.map("disciplines").unwrap()["Celerity"],
+        serde_json::json!(3)
+    );
+    assert_eq!(doc.number("experience"), Some(40)); // 50 - 10
+}
+
+// ----------------------------------------------------------------------
+// M6b: Werewolf (W20) on the same per-template dispatch
+// ----------------------------------------------------------------------
+
+/// The Garou's active schema carries Rage / Gnosis / Renown / Gifts / Forms and
+/// none of the other splats' fields; a mortal's carries none of the Garou ones.
+#[test]
+fn werewolf_template_selects_the_active_schema() {
+    let ruleset = WodRuleset::with_seed(S);
+    let base = ruleset.sheet_schema().clone();
+
+    let mut garou = SheetDoc::new_default(&base);
+    garou.set_text("template", "werewolf");
+    let w = ruleset.schema_for(&garou);
+    for id in [
+        "rage",
+        "gnosis",
+        "glory_perm",
+        "gifts",
+        "current_form",
+        "breed",
+    ] {
+        assert!(w.field(id).is_some(), "werewolf schema missing {id}");
+    }
+    assert!(w.field("disciplines").is_none(), "a Garou is not Kindred");
+    assert!(w.field("spheres").is_none(), "a Garou is not a mage");
+
+    let mortal = SheetDoc::new_default(&base);
+    let m = ruleset.schema_for(&mortal);
+    assert!(m.field("rage").is_none());
+    assert!(m.field("gnosis").is_none());
+    assert!(m.field("gifts").is_none());
+}
+
+/// Werewolf splat commands are always registered but self-gate: a mortal is
+/// refused politely. (Werewolf frenzy lives under `+rage/frenzy` because Vampire
+/// already owns the `+frenzy` command name.)
+#[test]
+fn garou_commands_refuse_non_garou() {
+    let (mut tw, nick) = world(S);
+    for cmd in [
+        "+rage",
+        "+gnosis",
+        "+renown",
+        "+gifts",
+        "+shift crinos",
+        "+rank",
+    ] {
+        let ev = tw.run(nick, cmd);
+        assert!(
+            tw.seen_by(&ev, nick)
+                .iter()
+                .any(|l| l.contains("not Garou")),
+            "{cmd} must refuse a mortal"
+        );
+    }
+}
+
+/// `+sheet` renders the Garou sections only for a werewolf.
+#[test]
+fn werewolf_sheet_render_dispatches_on_template() {
+    let (mut tw, nick) = world(S);
+    set(&mut tw, "@sheet/set Nick/strength=3");
+    let ev = tw.run(nick, "+sheet");
+    let mortal = tw.seen_by(&ev, nick).join("\n");
+    assert!(!mortal.contains("GAROU"));
+    assert!(!mortal.contains("Gnosis"));
+    set(&mut tw, "@sheet/set Nick/template=werewolf");
+    let ev = tw.run(nick, "+sheet");
+    let garou = tw.seen_by(&ev, nick).join("\n");
+    assert!(garou.contains("GAROU"), "garou sheet shows the Garou block");
+    assert!(garou.contains("Rage"));
+    assert!(garou.contains("Gnosis"));
+}
+
+/// `+shift` sets the current form and the base `+roll` reflects the war form's
+/// Physical deltas (Crinos Strength +4).
+#[test]
+fn shift_applies_form_deltas_to_roll() {
+    let (mut tw, nick) = world(S);
+    set(&mut tw, "@sheet/set Nick/template=werewolf");
+    set(&mut tw, "@sheet/set Nick/strength=3");
+    // Homid: Strength+Brawl (3 + 0) = 3 dice.
+    tw.run(nick, "+roll strength+brawl");
+    assert_eq!(last_outcome(&tw, nick).dice.len(), 3);
+    // Shift to Crinos: Str +4, so the same pool becomes 7 dice.
+    let ev = tw.run(nick, "+shift crinos");
+    let seen = tw.seen_by(&ev, nick);
+    assert!(seen.iter().any(|l| l.to_lowercase().contains("crinos")));
+    assert!(
+        seen.iter().any(|l| l.contains("Delirium")),
+        "the war form warns about the Delirium"
+    );
+    tw.run(nick, "+roll strength+brawl");
+    assert_eq!(
+        last_outcome(&tw, nick).dice.len(),
+        7,
+        "Crinos Strength +4 reaches the base +roll"
+    );
+    // A non-physical pool is unaffected by the form.
+    set(&mut tw, "@sheet/set Nick/occult=2");
+    tw.run(nick, "+roll occult");
+    assert_eq!(last_outcome(&tw, nick).dice.len(), 2);
+    // Shifting back to Homid drops the bonus.
+    tw.run(nick, "+shift homid");
+    tw.run(nick, "+roll strength+brawl");
+    assert_eq!(last_outcome(&tw, nick).dice.len(), 3);
+}
+
+/// Rage/Gnosis spend and gain operate on the *temporary* pool: `/gain` recovers
+/// only up to the permanent rating (never inflating it for free), and `/spend`
+/// is bounded below. The permanent rating rises only through XP.
+#[test]
+fn rage_and_gnosis_pools_are_bounded() {
+    let (mut tw, nick) = world(S);
+    set(&mut tw, "@sheet/set Nick/template=werewolf");
+    // A permanent Rage of 5 with the temporary pool drained.
+    set(&mut tw, "@sheet/set Nick/rage=5");
+    set(&mut tw, "@sheet/set Nick/rage_temp=0");
+    tw.run(nick, "+rage/gain 3");
+    assert_eq!(read_sheet(&tw, nick).number("rage_temp"), Some(3));
+    // Gain caps at the permanent rating (5), not the 0..10 schema range.
+    tw.run(nick, "+rage/gain 100");
+    assert_eq!(read_sheet(&tw, nick).number("rage_temp"), Some(5));
+    // The permanent rating is never inflated by /gain (no free XP).
+    assert_eq!(read_sheet(&tw, nick).number("rage"), Some(5));
+    tw.run(nick, "+rage/spend 3");
+    assert_eq!(read_sheet(&tw, nick).number("rage_temp"), Some(2));
+    let ev = tw.run(nick, "+rage/spend 100");
+    assert!(
+        tw.seen_by(&ev, nick)
+            .iter()
+            .any(|l| l.contains("only 2 Rage"))
+    );
+    assert_eq!(read_sheet(&tw, nick).number("rage_temp"), Some(2));
+    // Gnosis behaves the same way.
+    set(&mut tw, "@sheet/set Nick/gnosis=5");
+    set(&mut tw, "@sheet/set Nick/gnosis_temp=0");
+    tw.run(nick, "+gnosis/gain 4");
+    tw.run(nick, "+gnosis/spend 1");
+    assert_eq!(read_sheet(&tw, nick).number("gnosis_temp"), Some(3));
+    assert_eq!(
+        read_sheet(&tw, nick).number("gnosis"),
+        Some(5),
+        "permanent untouched"
+    );
+}
+
+/// `+renown/gain` logs temporary Renown; permanent Renown drives Rank.
+#[test]
+fn renown_gain_and_rank_thresholds() {
+    let (mut tw, nick) = world(S);
+    set(&mut tw, "@sheet/set Nick/template=werewolf");
+    let ev = tw.run(nick, "+renown/gain glory=2");
+    assert!(tw.seen_by(&ev, nick).iter().any(|l| l.contains("2/10")));
+    assert_eq!(read_sheet(&tw, nick).number("glory_temp"), Some(2));
+    // Staff raises permanent renown; Rank re-derives (7 total = Fostern, Rank 2).
+    set(&mut tw, "@sheet/set Nick/glory_perm=7");
+    assert_eq!(read_sheet(&tw, nick).number("rank"), Some(2));
+    let ev = tw.run(nick, "+rank");
+    assert!(
+        tw.seen_by(&ev, nick)
+            .iter()
+            .any(|l| l.contains("Rank 2") && l.contains("Fostern"))
+    );
+}
+
+/// `+gift/roll` validates the Gift and builds+rolls its pool.
+#[test]
+fn gift_roll_builds_and_rolls_the_pool() {
+    let (mut tw, nick) = world(S);
+    set(&mut tw, "@sheet/set Nick/template=werewolf");
+    set(&mut tw, "@sheet/set Nick/dexterity=3");
+    set(&mut tw, "@sheet/set Nick/brawl=2");
+    set(&mut tw, "@sheet/set Nick/gifts:Razor Claws=1");
+    let ev = tw.run(nick, "+gift/roll razor claws=dexterity+brawl vs 6");
+    let out = last_outcome(&tw, nick);
+    // Dexterity 3 + Brawl 2 = 5 dice at difficulty 6.
+    assert_eq!(out.dice.len(), 5);
+    assert_eq!(out.difficulty, 6);
+    assert!(
+        tw.seen_by(&ev, nick)
+            .iter()
+            .any(|l| l.to_lowercase().contains("razor claws"))
+    );
+    // A Gift you do not know is refused.
+    let denied = tw.run(nick, "+gift/roll mother's touch=stamina+empathy");
+    assert!(
+        tw.seen_by(&denied, nick)
+            .iter()
+            .any(|l| l.contains("do not know the Gift"))
+    );
+}
+
+/// Drive a full, budget-balancing Garou chargen (mortal-identical budget plus
+/// the Breed/Auspice/Tribe choices).
+fn do_werewolf_chargen(tw: &mut TestWorld, who: ObjId) {
+    tw.run(who, "+chargen");
+    tw.run(who, "+chargen/template werewolf");
+    tw.run(who, "+chargen/attr physical=7 social=5 mental=3");
+    tw.run(who, "+chargen/abil talents=13 skills=9 knowledges=5");
+    tw.run(who, "+stat breed=lupus"); // Gnosis 5
+    tw.run(who, "+stat auspice=ahroun"); // Rage 5, Glory 3
+    tw.run(who, "+stat tribe=silver_fangs"); // Willpower 3
+    for c in [
+        "+stat strength=4",
+        "+stat dexterity=4",
+        "+stat stamina=2",
+        "+stat charisma=3",
+        "+stat manipulation=3",
+        "+stat appearance=2",
+        "+stat perception=2",
+        "+stat intelligence=2",
+        "+stat wits=2",
+    ] {
+        tw.run(who, c);
+    }
+    for c in [
+        "+stat alertness=3",
+        "+stat athletics=3",
+        "+stat brawl=3",
+        "+stat empathy=2",
+        "+stat expression=2",
+    ] {
+        tw.run(who, c);
+    }
+    for c in ["+stat drive=3", "+stat firearms=3", "+stat stealth=3"] {
+        tw.run(who, c);
+    }
+    for c in ["+stat academics=3", "+stat computer=2"] {
+        tw.run(who, c);
+    }
+    tw.run(who, "+stat backgrounds:Resources=3");
+    tw.run(who, "+stat backgrounds:Contacts=2");
+}
+
+#[test]
+fn werewolf_full_chargen_derives_pools_and_approves() {
+    let (mut tw, nick) = world(S);
+    do_werewolf_chargen(&mut tw, nick);
+
+    // Budget balances byte-identically to a mortal (no splat pools).
+    let ev = tw.run(nick, "+chargen/status");
+    assert!(
+        tw.seen_by(&ev, nick)
+            .iter()
+            .any(|l| l.contains("Budget balances")),
+        "werewolf budget must balance"
+    );
+
+    // A locked derived field cannot be set with +stat during chargen.
+    let ev = tw.run(nick, "+stat rage=9");
+    assert!(
+        tw.seen_by(&ev, nick)
+            .iter()
+            .any(|l| l.contains("not a chargen-allocatable trait")),
+        "Rage is derived, not +stat-settable"
+    );
+
+    // Submit → Pending → approve → Approved with derived starting values.
+    tw.run(nick, "+chargen/submit");
+    let job = match read_sheet(&tw, nick).approved {
+        ApprovalState::Pending(j) => j,
+        other => panic!("expected Pending, got {other:?}"),
+    };
+    tw.run(GOD, &format!("+job/approve {job}=For Gaia."));
+    let doc = read_sheet(&tw, nick);
+    assert!(doc.approved.is_approved());
+    assert_eq!(doc.text("template"), Some("werewolf"));
+    assert_eq!(doc.number("rage"), Some(5), "Ahroun Rage");
+    assert_eq!(doc.number("rage_temp"), Some(5), "Rage pool starts full");
+    assert_eq!(doc.number("gnosis"), Some(5), "Lupus Gnosis");
+    assert_eq!(
+        doc.number("gnosis_temp"),
+        Some(5),
+        "Gnosis pool starts full"
+    );
+    assert_eq!(doc.number("willpower"), Some(3), "Silver Fang Willpower");
+    assert_eq!(doc.number("glory_perm"), Some(3), "Ahroun Glory");
+    assert_eq!(doc.number("rank"), Some(1), "a starting Garou is a Cliath");
+    // Three starting Gifts (one each from breed/auspice/tribe).
+    assert_eq!(
+        doc.map("gifts")
+            .unwrap()
+            .values()
+            .filter(|v| v.as_i64().unwrap_or(0) > 0)
+            .count(),
+        3
+    );
+    assert!(
+        doc.text("ban")
+            .unwrap_or("")
+            .to_lowercase()
+            .contains("honour"),
+        "Silver Fang ban derived onto the sheet"
+    );
+}
+
+/// Gift and Rage XP spends route through the splat's cost hooks and apply on
+/// approval.
+#[test]
+fn werewolf_gift_xp_spend_applies_on_approval() {
+    let (mut tw, nick) = world(S);
+    set(&mut tw, "@sheet/set Nick/template=werewolf");
+    set(&mut tw, "@sheet/set Nick/gifts:Razor Claws=1");
+    tw.run(GOD, "+xp/award Nick=20");
+    // Raise a Gift 1→2: new level 2 × 3 = 6 XP.
+    let ev = tw.run(nick, "+xp/spend gifts:Razor Claws=2");
+    assert!(
+        tw.seen_by(&ev, nick).iter().any(|l| l.contains("for 6 XP")),
+        "gift level 2 is 6 XP"
+    );
+    tw.run(GOD, "+job/approve 1");
+    let doc = read_sheet(&tw, nick);
+    assert_eq!(
+        doc.map("gifts").unwrap()["Razor Claws"],
+        serde_json::json!(2)
+    );
+    assert_eq!(doc.number("experience"), Some(14)); // 20 - 6
+}
+
+// ----------------------------------------------------------------------
+// M6b: Mage (M20) on the same per-template dispatch
+// ----------------------------------------------------------------------
+
+/// A mage's active schema carries Spheres / Arete / Quintessence / Paradox; a
+/// mortal's carries none of them, and a mage has no Vampire fields.
+#[test]
+fn mage_template_selects_the_active_schema() {
+    let ruleset = WodRuleset::with_seed(S);
+    let base = ruleset.sheet_schema().clone();
+
+    let mut mage = SheetDoc::new_default(&base);
+    mage.set_text("template", "mage");
+    let msch = ruleset.schema_for(&mage);
+    assert!(msch.field("spheres").is_some());
+    assert!(msch.field("arete").is_some());
+    assert!(msch.field("quintessence").is_some());
+    assert!(msch.field("paradox").is_some());
+    assert!(msch.field("affiliation").is_some());
+    assert!(msch.field("disciplines").is_none(), "a mage is not Kindred");
+    assert!(msch.field("bloodpool").is_none());
+
+    let mortal = SheetDoc::new_default(&base);
+    let mo = ruleset.schema_for(&mortal);
+    assert!(mo.field("spheres").is_none());
+    assert!(mo.field("arete").is_none());
+}
+
+/// Mage splat commands are always registered but self-gate: a mortal is refused.
+#[test]
+fn mage_commands_refuse_non_mage() {
+    let (mut tw, nick) = world(S);
+    for cmd in [
+        "+sphere",
+        "+arete",
+        "+cast",
+        "+quint",
+        "+paradox",
+        "+resonance",
+    ] {
+        let ev = tw.run(nick, cmd);
+        assert!(
+            tw.seen_by(&ev, nick)
+                .iter()
+                .any(|l| l.contains("not Awakened")),
+            "{cmd} must refuse a mortal"
+        );
+    }
+}
+
+/// `+sphere` refuses a rating above the caster's Arete; raising Arete lifts the
+/// cap. Direct `+sphere` sets are a chargen (or staff) action, so this drives a
+/// chargen session; post-approval, Spheres rise only through `+xp/spend`.
+#[test]
+fn sphere_rating_is_capped_by_arete() {
+    let (mut tw, nick) = world(S);
+    tw.run(nick, "+chargen");
+    tw.run(nick, "+chargen/template mage"); // Arete defaults to 1
+    let ev = tw.run(nick, "+sphere Forces=2");
+    assert!(
+        tw.seen_by(&ev, nick)
+            .iter()
+            .any(|l| l.contains("cannot exceed your Arete")),
+        "a Sphere above Arete is refused"
+    );
+    // At Arete 1 a single dot is fine.
+    tw.run(nick, "+sphere Forces=1");
+    assert_eq!(
+        read_sheet(&tw, nick).map("spheres").unwrap()["Forces"],
+        serde_json::json!(1)
+    );
+    // Raise Arete to 3 (staff bypass of the chargen lock), then a 3-dot Sphere
+    // is allowed but a 4-dot is not.
+    set(&mut tw, "@sheet/set Nick/arete=3");
+    tw.run(nick, "+sphere Forces=3");
+    assert_eq!(
+        read_sheet(&tw, nick).map("spheres").unwrap()["Forces"],
+        serde_json::json!(3)
+    );
+    let ev = tw.run(nick, "+sphere Forces=4");
+    assert!(
+        tw.seen_by(&ev, nick)
+            .iter()
+            .any(|l| l.contains("cannot exceed your Arete")),
+    );
+}
+
+/// Once the sheet is approved (out of chargen), `+sphere` refuses a direct set
+/// and points at the costed XP path — it is not a free way to raise Spheres.
+#[test]
+fn sphere_set_is_refused_after_chargen() {
+    let (mut tw, nick) = world(S);
+    set(&mut tw, "@sheet/set Nick/template=mage");
+    set(&mut tw, "@sheet/set Nick/arete=3"); // room under the Arete cap
+    let ev = tw.run(nick, "+sphere Forces=2");
+    let seen = tw.seen_by(&ev, nick);
+    assert!(
+        seen.iter().any(|l| l.contains("+xp/spend")),
+        "a within-Arete set outside chargen is refused and points at XP: {seen:?}"
+    );
+    // The Sphere was not written.
+    assert!(
+        read_sheet(&tw, nick)
+            .map("spheres")
+            .and_then(|m| m.get("Forces"))
+            .is_none()
+    );
+}
+
+/// `+cast` rolls the Arete pool at the given difficulty (seeded/deterministic).
+#[test]
+fn cast_rolls_the_arete_pool() {
+    let (mut tw, nick) = world(S);
+    set(&mut tw, "@sheet/set Nick/template=mage");
+    set(&mut tw, "@sheet/set Nick/arete=4");
+    let ev = tw.run(nick, "+cast Hurl a bolt of fire vs 7");
+    let out = last_outcome(&tw, nick);
+    assert_eq!(out.dice.len(), 4, "Arete 4 → 4 dice");
+    assert_eq!(out.difficulty, 7);
+    let seen = tw.seen_by(&ev, nick);
+    assert!(seen.iter().any(|l| l.contains("magick")));
+    // /vulgar flags Paradox risk.
+    let ev = tw.run(nick, "+cast/vulgar Warp gravity vs 6");
+    assert!(
+        tw.seen_by(&ev, nick)
+            .iter()
+            .any(|l| l.to_lowercase().contains("paradox"))
+    );
+}
+
+/// Quintessence gains are capped at the Avatar rating; spends are bounded below.
+#[test]
+fn quintessence_is_avatar_bounded() {
+    let (mut tw, nick) = world(S);
+    set(&mut tw, "@sheet/set Nick/template=mage");
+    set(&mut tw, "@sheet/set Nick/backgrounds:Avatar=3");
+    // Channelling caps at the Avatar rating (3).
+    tw.run(nick, "+quint/gain 5");
+    assert_eq!(read_sheet(&tw, nick).number("quintessence"), Some(3));
+    tw.run(nick, "+quint/spend 2");
+    assert_eq!(read_sheet(&tw, nick).number("quintessence"), Some(1));
+    // Cannot overspend.
+    let ev = tw.run(nick, "+quint/spend 5");
+    assert!(
+        tw.seen_by(&ev, nick)
+            .iter()
+            .any(|l| l.contains("only 1 Quintessence"))
+    );
+    assert_eq!(read_sheet(&tw, nick).number("quintessence"), Some(1));
+}
+
+/// Paradox accrues and is worked off, bounded at zero.
+#[test]
+fn paradox_accrues_and_burns_off() {
+    let (mut tw, nick) = world(S);
+    set(&mut tw, "@sheet/set Nick/template=mage");
+    tw.run(nick, "+paradox/gain 3");
+    assert_eq!(read_sheet(&tw, nick).number("paradox"), Some(3));
+    // Burning off more than held floors at zero.
+    tw.run(nick, "+paradox/spend 5");
+    assert_eq!(read_sheet(&tw, nick).number("paradox"), Some(0));
+}
+
+/// Drive a full, budget-balancing Order of Hermes chargen.
+fn do_mage_chargen(tw: &mut TestWorld, who: ObjId) {
+    tw.run(who, "+chargen");
+    tw.run(who, "+chargen/template mage");
+    tw.run(who, "+chargen/attr physical=7 social=5 mental=3");
+    tw.run(who, "+chargen/abil talents=13 skills=9 knowledges=5");
+    tw.run(who, "+stat affiliation=order_of_hermes");
+    for c in [
+        "+stat strength=4",
+        "+stat dexterity=4",
+        "+stat stamina=2",
+        "+stat charisma=3",
+        "+stat manipulation=3",
+        "+stat appearance=2",
+        "+stat perception=2",
+        "+stat intelligence=2",
+        "+stat wits=2",
+    ] {
+        tw.run(who, c);
+    }
+    for c in [
+        "+stat alertness=3",
+        "+stat athletics=3",
+        "+stat brawl=3",
+        "+stat empathy=2",
+        "+stat expression=2",
+    ] {
+        tw.run(who, c);
+    }
+    for c in ["+stat drive=3", "+stat firearms=3", "+stat stealth=3"] {
+        tw.run(who, c);
+    }
+    for c in ["+stat academics=3", "+stat computer=2"] {
+        tw.run(who, c);
+    }
+    // Backgrounds 5: Avatar 2 (starting Quintessence), Resources 3.
+    tw.run(who, "+stat backgrounds:Avatar=2");
+    tw.run(who, "+stat backgrounds:Resources=3");
+    // Spheres: 5 dots at Arete 1 (one in the affinity Sphere, Forces).
+    for c in [
+        "+sphere Forces=1",
+        "+sphere Correspondence=1",
+        "+sphere Life=1",
+        "+sphere Mind=1",
+        "+sphere Prime=1",
+    ] {
+        tw.run(who, c);
+    }
+}
+
+#[test]
+fn mage_full_chargen_derives_pools_and_approves() {
+    let (mut tw, nick) = world(S);
+    do_mage_chargen(&mut tw, nick);
+
+    // Budget (incl. the Spheres pool) balances.
+    let ev = tw.run(nick, "+chargen/status");
+    let seen = tw.seen_by(&ev, nick);
+    assert!(
+        seen.iter().any(|l| l.contains("Budget balances")),
+        "mage budget must balance: {seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .any(|l| l.contains("Spheres") && l.contains("5/5"))
+    );
+
+    // Submit → Pending → staff approve → Approved.
+    tw.run(nick, "+chargen/submit");
+    let job = match read_sheet(&tw, nick).approved {
+        ApprovalState::Pending(j) => j,
+        other => panic!("expected Pending, got {other:?}"),
+    };
+    tw.run(
+        GOD,
+        &format!("+job/approve {job}=The Awakened world welcomes you."),
+    );
+    let doc = read_sheet(&tw, nick);
+    assert!(doc.approved.is_approved());
+    assert_eq!(doc.text("template"), Some("mage"));
+    // Derived starting values.
+    assert_eq!(
+        doc.number("willpower"),
+        Some(5),
+        "mage Willpower is a flat 5"
+    );
+    assert_eq!(
+        doc.number("quintessence"),
+        Some(2),
+        "Quintessence = Avatar rating"
+    );
+    assert_eq!(doc.number("arete"), Some(1));
+    assert_eq!(
+        doc.text("affinity"),
+        Some("Forces"),
+        "Order of Hermes → Forces"
+    );
+}
+
+#[test]
+fn sphere_xp_costs_affinity_vs_other() {
+    let (mut tw, nick) = world(S);
+    set(&mut tw, "@sheet/set Nick/template=mage");
+    set(&mut tw, "@sheet/set Nick/affiliation=order_of_hermes"); // affinity Forces
+    set(&mut tw, "@sheet/set Nick/arete=5"); // Arete cap: room to raise Spheres to 3
+    set(&mut tw, "@sheet/set Nick/spheres:Forces=2"); // affinity
+    set(&mut tw, "@sheet/set Nick/spheres:Mind=2"); // other
+    tw.run(GOD, "+xp/award Nick=50");
+    // Affinity Forces 2→3: current 2 × 7 = 14 XP.
+    let ev = tw.run(nick, "+xp/spend spheres:Forces=3");
+    assert!(
+        tw.seen_by(&ev, nick)
+            .iter()
+            .any(|l| l.contains("for 14 XP")),
+        "affinity Sphere is ×7"
+    );
+    // Other Mind 2→3: current 2 × 8 = 16 XP.
+    let ev = tw.run(nick, "+xp/spend spheres:Mind=3");
+    assert!(
+        tw.seen_by(&ev, nick)
+            .iter()
+            .any(|l| l.contains("for 16 XP")),
+        "out-of-affinity Sphere is ×8"
+    );
+    // Approve the affinity raise (job 1): applies atomically.
+    tw.run(GOD, "+job/approve 1");
+    let doc = read_sheet(&tw, nick);
+    assert_eq!(doc.map("spheres").unwrap()["Forces"], serde_json::json!(3));
+    assert_eq!(doc.number("experience"), Some(36)); // 50 - 14
 }

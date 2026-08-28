@@ -18,8 +18,7 @@ use crate::schema::HEALTH_FIELD;
 fn harm_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (target, spec) = parse_target_spec(ctx)?;
     let mut doc = cmd
-        .store
-        .get(ctx.w, target)
+        .read(ctx.w, target)
         .ok_or_else(|| CmdError::msg("That character has no sheet."))?;
 
     let mut track = HealthTrack::from_marks(&doc.track(HEALTH_FIELD).unwrap_or_default());
@@ -28,7 +27,7 @@ fn harm_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     track.apply(spec.kind, spec.count);
     let marks = track.to_marks();
     doc.set_track(HEALTH_FIELD, &marks);
-    cmd.store
+    cmd.store_for_doc(&doc)
         .put_by(ctx.w, target, &doc, ctx.actor)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
 
@@ -56,13 +55,12 @@ fn harm_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 fn heal_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (target, spec) = parse_target_spec(ctx)?;
     let mut doc = cmd
-        .store
-        .get(ctx.w, target)
+        .read(ctx.w, target)
         .ok_or_else(|| CmdError::msg("That character has no sheet."))?;
     let mut track = HealthTrack::from_marks(&doc.track(HEALTH_FIELD).unwrap_or_default());
     let removed = track.heal(spec.kind, spec.count);
     doc.set_track(HEALTH_FIELD, &track.to_marks());
-    cmd.store
+    cmd.store_for_doc(&doc)
         .put_by(ctx.w, target, &doc, ctx.actor)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     let name = name_of(ctx, target);
@@ -91,8 +89,7 @@ fn health_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         t
     };
     let doc = cmd
-        .store
-        .get(ctx.w, target)
+        .read(ctx.w, target)
         .ok_or_else(|| CmdError::msg("That character has no sheet."))?;
     let track = HealthTrack::from_marks(&doc.track(HEALTH_FIELD).unwrap_or_default());
     let name = name_of(ctx, target);

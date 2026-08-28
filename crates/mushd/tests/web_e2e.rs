@@ -92,6 +92,22 @@ impl Rig {
 /// features/panels manifest. `auth_burst` 0 disables the auth rate limiter
 /// (most tests; the dedicated rate-limit test turns it on).
 async fn boot(tag: &str, session_config: SessionConfig, auth_burst: u32) -> Rig {
+    boot_inner(tag, session_config, auth_burst, Vec::new()).await
+}
+
+/// Boot with the wod ruleset loaded too (adds the `wod.sheet`/`wod.roll`
+/// feeds + `+chargen`/`+sheet` surface), for the sheet-over-web test.
+async fn boot_wod(tag: &str, session_config: SessionConfig, auth_burst: u32) -> Rig {
+    let wod = modules::ruleset_modules(&["wod".to_string()]).expect("wod ruleset");
+    boot_inner(tag, session_config, auth_burst, wod).await
+}
+
+async fn boot_inner(
+    tag: &str,
+    session_config: SessionConfig,
+    auth_burst: u32,
+    extra_modules: Vec<Box<dyn mush_core::GameModule>>,
+) -> Rig {
     let dir = scratch_dir(tag);
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     store
@@ -110,8 +126,9 @@ async fn boot(tag: &str, session_config: SessionConfig, auth_burst: u32) -> Rig 
     let staff = Arc::new(StaffQueue::new());
     let mut registry = world_task::base_registry();
     register_server_commands(&mut registry, &staff).unwrap();
-    let mut engine =
-        Engine::with_modules(world, registry, modules::server_modules()).expect("modules");
+    let mut all_modules = modules::server_modules();
+    all_modules.extend(extra_modules);
+    let mut engine = Engine::with_modules(world, registry, all_modules).expect("modules");
     modules::boot_modules(&mut engine, &*store)
         .await
         .expect("module boot");
@@ -898,4 +915,68 @@ async fn spa_and_healthz_are_served() {
         .unwrap();
     assert_eq!(health["ok"], true);
     assert!(health["uptime_s"].is_u64());
+}
+
+// ---------------------------------------------------------------------------
+// The M6b web deliverable: a character sheet reaches the web client.
+// ---------------------------------------------------------------------------
+
+/// With the wod ruleset loaded, `Query::Sheet` routes to the ruleset's
+/// `<ruleset>.sheet` handler (not the pre-M6 "unavailable" bridge stub), so
+/// the schema-driven web Sheet panel actually gets data. Regression guard for
+/// the web_bridge routing gap the M6b web agent flagged.
+#[tokio::test(flavor = "multi_thread")]
+async fn sheet_query_routes_to_the_ruleset_over_web() {
+    let rig = boot_wod("sheet", SessionConfig::default(), 0).await;
+    let (_god_handle, mut god) = god_terminal(&rig).await;
+
+    // The hello manifest advertises the ruleset's sheet feed + "wod" feature,
+    // which is what gates the web client into asking for a sheet at all.
+    let (token, key) = register(&rig, "mina", "hunter42", "Mina").await;
+    let mut ws = connect_ws(&rig, &token, key, "").await.expect("ws connect");
+    let (features, panels) = expect_hello(&mut ws).await;
+    assert!(
+        features.iter().any(|f| f == "wod"),
+        "wod feature: {features:?}"
+    );
+    let sheet_feed = panels
+        .iter()
+        .find(|p| p.ends_with(".sheet"))
+        .cloned()
+        .expect("a <ruleset>.sheet feed in the manifest");
+    // Drain the entry stream (SessionInfo + room render).
+    let _ = expect_env(&mut ws, "Connected as Mina").await;
+    let _ = expect_env(&mut ws, "Limbo(#0)").await;
+    god.expect("Mina has connected.").await;
+
+    // Staff give Mina a sheet by setting a stat (creates the sheet:wod doc).
+    god.send_line("@sheet/set Mina/strength=3").await;
+    god.expect("Set Mina/strength").await;
+
+    // The web client asks for its sheet; the reply is the ruleset handler's
+    // keyframe, carrying the schema + data — NOT the old "unavailable" Sys.
+    send_cmd(
+        &mut ws,
+        &ClientCommand::Req {
+            id: 7,
+            q: Query::Sheet,
+        },
+    )
+    .await;
+    let env = expect_env(&mut ws, "[reply 7]").await;
+    let OutputEvent::Reply { id: 7, event } = &env.event else {
+        panic!("expected Reply 7, got {:?}", env.event);
+    };
+    let OutputEvent::Panel { feed, data, .. } = event.as_ref() else {
+        panic!("expected a sheet Panel keyframe, got {event:?}");
+    };
+    assert_eq!(feed.as_str(), sheet_feed, "reply rides the sheet feed");
+    assert!(
+        data.get("schema").is_some(),
+        "sheet payload carries the schema: {data}"
+    );
+    assert_eq!(
+        data["data"]["strength"], 3,
+        "the staff-set strength reached the web sheet: {data}"
+    );
 }

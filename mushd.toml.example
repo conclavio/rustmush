@@ -48,6 +48,11 @@ ic_epoch = "2020-01-01 00:00"      # (M5) IC datetime at OOC unix time 0 — the
 # panels, and approval job queues wire cleanly. An unknown id is a hard boot
 # error; an empty list runs a ruleset-less server. In-game: "help wod".
 enabled = ["wod"]                  # (M6) oWoD20 — the only ruleset available today
+# The "wod" ruleset ships all four templates — Mortal, Vampire (V20), Mage
+# (M20), Werewolf (W20). There is no per-splat allow-list: every template is
+# selectable, and each player picks theirs during chargen with
+# "+chargen/template <mortal|vampire|mage|werewolf>". A character is exactly one
+# template, and its sheet carries only that splat's sections.
 
 [llm]
 enabled = false                    # (reserved — LLM features are M7+)

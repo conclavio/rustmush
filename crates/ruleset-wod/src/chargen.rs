@@ -19,11 +19,11 @@ use std::sync::Arc;
 
 use mush_ruleset::SheetDoc;
 use mush_ruleset::chargen::{BudgetLedger, ChargenFlow, ChargenIssue, ChargenStage};
-use mush_ruleset::schema::SheetSchema;
 use smol_str::SmolStr;
 
-use crate::config::WodConfig;
+use crate::config::{TraitKind, WodConfig};
 use crate::schema::{ATTRIBUTES, KNOWLEDGES, SKILLS, TALENTS, VIRTUES};
+use crate::splats::{Dispatch, Splat, SplatPool};
 use crate::state::ChargenSession;
 
 /// The concrete pool totals for one chargen assessment.
@@ -37,6 +37,29 @@ pub struct Pools {
     pub backgrounds: i32,
     /// Freebie points.
     pub freebies: i32,
+    /// The active splat's extra pools (Vampire: Disciplines, Virtues). Empty
+    /// for a mortal.
+    pub splat: Vec<SplatPool>,
+    /// Base trait kinds the splat pools already account for, so base freebie
+    /// counting skips them (Vampire: [`TraitKind::Virtue`]).
+    pub freebie_exempt: Vec<TraitKind>,
+}
+
+impl Pools {
+    /// Attach the active splat's chargen contribution (pools + freebie
+    /// exemptions), computed against the in-progress `doc`.
+    #[must_use]
+    pub(crate) fn with_splat(
+        mut self,
+        config: &WodConfig,
+        splat: &dyn Splat,
+        doc: &SheetDoc,
+    ) -> Pools {
+        let c = splat.chargen_contribution(config, doc);
+        self.splat = c.pools;
+        self.freebie_exempt = c.freebie_exempt;
+        self
+    }
 }
 
 /// The default pools from config, assigning the priority tiers to
@@ -57,6 +80,8 @@ pub fn default_pools(config: &WodConfig) -> Pools {
         ],
         backgrounds: config.background_dots,
         freebies: config.freebies,
+        splat: Vec::new(),
+        freebie_exempt: Vec::new(),
     }
 }
 
@@ -195,11 +220,24 @@ pub fn freebie_spent(config: &WodConfig, doc: &SheetDoc, pools: &Pools) -> i32 {
     }
     let bg = background_total(doc);
     f += (bg - pools.backgrounds).max(0) * costs.background;
-    let wp = doc.number("willpower").unwrap_or(1) as i32;
-    f += (wp - starting_wp_baseline(config, doc)).max(0) * costs.willpower;
-    for (id, _) in VIRTUES {
-        let d = doc.number(id).unwrap_or(1) as i32;
-        f += (d - 1).max(0) * costs.virtue;
+    // Base Willpower freebies — skipped when the active splat derives Willpower
+    // to a fixed baseline rather than the config's (Mage: a flat 5, exempt so
+    // its free dots are not charged against the Courage baseline).
+    if !pools.freebie_exempt.contains(&TraitKind::Willpower) {
+        let wp = doc.number("willpower").unwrap_or(1) as i32;
+        f += (wp - starting_wp_baseline(config, doc)).max(0) * costs.willpower;
+    }
+    // Base Virtue freebies — skipped when the active splat's own Virtue pool
+    // already accounts for them (Vampire).
+    if !pools.freebie_exempt.contains(&TraitKind::Virtue) {
+        for (id, _) in VIRTUES {
+            let d = doc.number(id).unwrap_or(1) as i32;
+            f += (d - 1).max(0) * costs.virtue;
+        }
+    }
+    // Splat pools: dots spent beyond the pool total cost freebies.
+    for pool in &pools.splat {
+        f += (pool.spent(doc) - pool.total).max(0) * pool.freebie_cost;
     }
     f
 }
@@ -231,6 +269,15 @@ pub fn ledgers(config: &WodConfig, doc: &SheetDoc, pools: &Pools) -> Vec<BudgetL
         total: pools.backgrounds,
         spent: background_total(doc),
     });
+    // Splat pools (Disciplines, Virtues) sit between backgrounds and freebies.
+    for pool in &pools.splat {
+        out.push(BudgetLedger {
+            name: pool.id.clone(),
+            label: pool.label.clone(),
+            total: pool.total,
+            spent: pool.spent(doc),
+        });
+    }
     out.push(BudgetLedger {
         name: SmolStr::new("freebies"),
         label: "Freebies".to_string(),
@@ -265,17 +312,19 @@ pub fn issues(config: &WodConfig, doc: &SheetDoc, pools: &Pools) -> Vec<ChargenI
     issues
 }
 
-/// Finalize: verify the budget, then derive Willpower (max of current and the
-/// config starting-Willpower baseline, Courage by default) and set the
-/// temporary Willpower pool to full.
+/// Finalize: verify the budget, derive Willpower (max of current and the
+/// config starting-Willpower baseline, Courage by default), set the temporary
+/// Willpower pool to full, then let the active `splat` derive its own starting
+/// values (Vampire: Blood Pool full, Humanity, clan weakness).
 ///
 /// # Errors
 ///
 /// Returns the first blocking [`ChargenIssue`] if the budget does not balance.
-pub fn finalize_sheet(
+pub(crate) fn finalize_sheet(
     config: &WodConfig,
     doc: &mut SheetDoc,
     pools: &Pools,
+    splat: &dyn Splat,
 ) -> Result<(), ChargenIssue> {
     if let Some(first) = issues(config, doc, pools).into_iter().next() {
         return Err(first);
@@ -283,6 +332,7 @@ pub fn finalize_sheet(
     let wp = (doc.number("willpower").unwrap_or(1) as i32).max(starting_wp_baseline(config, doc));
     doc.set_number("willpower", i64::from(wp));
     doc.set_number("willpower_temp", i64::from(wp));
+    splat.finalize_starting(config, doc);
     Ok(())
 }
 
@@ -295,31 +345,33 @@ fn cap_first(s: &str) -> String {
 }
 
 /// The oWoD chargen flow (framework-facing). Assesses against the priority
-/// assignment persisted on the sheet (the player's choice), matching the live
-/// `+chargen` command surface, and falls back to the config defaults only when
-/// no assignment is recorded.
+/// assignment persisted on the sheet (the player's choice) **plus** the active
+/// template's chargen contribution, matching the live `+chargen` command
+/// surface, and falls back to the config defaults only when no assignment is
+/// recorded.
 pub struct WodChargen {
-    schema: Arc<SheetSchema>,
+    dispatch: Arc<Dispatch>,
     config: WodConfig,
 }
 
 impl WodChargen {
-    /// A flow over `schema` with `config`.
+    /// A flow over the multi-template `dispatch` with `config`.
     #[must_use]
-    pub fn new(schema: Arc<SheetSchema>, config: WodConfig) -> WodChargen {
-        WodChargen { schema, config }
-    }
-
-    /// The schema this flow allocates against.
-    #[must_use]
-    pub fn schema(&self) -> &SheetSchema {
-        &self.schema
+    pub(crate) fn new(dispatch: Arc<Dispatch>, config: WodConfig) -> WodChargen {
+        WodChargen { dispatch, config }
     }
 
     /// The config this flow costs against.
     #[must_use]
     pub fn config(&self) -> &WodConfig {
         &self.config
+    }
+
+    /// The pools for a sheet: persisted priority pools + the active splat's
+    /// contribution (selected by the sheet's `template`).
+    fn pools_for(&self, sheet: &SheetDoc) -> Pools {
+        let splat = self.dispatch.splats.for_doc(sheet);
+        persisted_pools(&self.config, sheet).with_splat(&self.config, splat.as_ref(), sheet)
     }
 }
 
@@ -362,10 +414,10 @@ impl ChargenFlow for WodChargen {
 
     fn validate_stage(&self, sheet: &SheetDoc, stage: &SmolStr) -> Vec<ChargenIssue> {
         // Assess against the priority assignment persisted on the sheet (the
-        // player's real choice), falling back to the config defaults only when
-        // none is recorded — so this framework-facing flow matches the live
-        // `+chargen` command surface instead of always using the defaults.
-        let pools = persisted_pools(&self.config, sheet);
+        // player's real choice) plus the active splat's pools, falling back to
+        // the config defaults only when none is recorded — so this
+        // framework-facing flow matches the live `+chargen` command surface.
+        let pools = self.pools_for(sheet);
         let all = issues(&self.config, sheet, &pools);
         // Filter to the pools relevant to the named stage.
         all.into_iter()
@@ -374,8 +426,9 @@ impl ChargenFlow for WodChargen {
     }
 
     fn finalize(&self, sheet: &mut SheetDoc) -> Result<(), ChargenIssue> {
-        let pools = persisted_pools(&self.config, sheet);
-        finalize_sheet(&self.config, sheet, &pools)
+        let pools = self.pools_for(sheet);
+        let splat = self.dispatch.splats.for_doc(sheet);
+        finalize_sheet(&self.config, sheet, &pools, splat.as_ref())
     }
 }
 
@@ -403,6 +456,8 @@ fn stage_owns(stage: &str, pool: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use mush_ruleset::schema::SheetSchema;
+
     use super::*;
     use crate::schema::{Mortal, Template, build_schema};
 
@@ -530,11 +585,13 @@ mod tests {
             ],
             backgrounds: 0,
             freebies: 15,
+            splat: Vec::new(),
+            freebie_exempt: Vec::new(),
         };
         let mut doc = SheetDoc::new_default(&s);
         // WP left at the schema default (1) → finalize raises it to the flat 5.
         assert_eq!(freebie_spent(&cfg, &doc, &pools), 0);
-        finalize_sheet(&cfg, &mut doc, &pools).unwrap();
+        finalize_sheet(&cfg, &mut doc, &pools, &crate::splats::MortalSplat).unwrap();
         assert_eq!(doc.number("willpower"), Some(5));
         assert_eq!(doc.number("willpower_temp"), Some(5));
     }
@@ -557,10 +614,12 @@ mod tests {
             ],
             backgrounds: 0,
             freebies: 15,
+            splat: Vec::new(),
+            freebie_exempt: Vec::new(),
         };
         let mut doc = SheetDoc::new_default(&s);
         doc.set_number("courage", 4);
-        finalize_sheet(&cfg, &mut doc, &pools).unwrap();
+        finalize_sheet(&cfg, &mut doc, &pools, &crate::splats::MortalSplat).unwrap();
         assert_eq!(doc.number("willpower"), Some(4));
         assert_eq!(doc.number("willpower_temp"), Some(4));
     }

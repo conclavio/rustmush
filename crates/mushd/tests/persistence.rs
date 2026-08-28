@@ -485,6 +485,181 @@ async fn wod_sheet_persistence_round_trip_redis_gated() {
     wod_sheet_round_trip(Arc::new(store)).await;
 }
 
+/// The M6b splat twin: staff-build one of **each** splat — a Vampire
+/// (Disciplines / Blood Pool / Generation), a Mage (Spheres / Arete /
+/// Quintessence) and a Werewolf (the Garou block, the split Rage/Gnosis pools,
+/// `current_form` and Gifts) — reboot from the store alone, and assert every
+/// splat sheet survived, holds its own values, and still validates against the
+/// per-template schema selected by its `template` field (not merely the base
+/// mortal one).
+async fn wod_splat_sheet_round_trip(store: Arc<dyn ObjectStore>) {
+    use mush_ruleset::SheetDoc;
+
+    let guard = Arc::new(IpGuard::new());
+
+    // --- first boot: create a character, staff-build a Kindred sheet. ------
+    let (sessions, handles) = boot_wod_rig(&store, &guard).await;
+    let world = handles.handle.clone();
+    let _god_rx = attach_direct(&sessions, &world, 1, GOD, "god").await;
+
+    let vlad = world.create_player("Vlad").await.expect("create Vlad");
+    // Turn Kindred (re-shapes the sheet to the vampire schema), then set the
+    // splat-only fields. A mortal's schema has none of these — they exist only
+    // because the sheet's `template` is now `vampire`.
+    god_cmd(&world, "@sheet/set Vlad/template=vampire").await;
+    god_cmd(&world, "@sheet/set Vlad/clan=brujah").await;
+    god_cmd(&world, "@sheet/set Vlad/generation=10").await;
+    god_cmd(&world, "@sheet/set Vlad/disciplines:Celerity=2").await;
+    god_cmd(&world, "@sheet/set Vlad/disciplines:Potence=1").await;
+    god_cmd(&world, "@sheet/set Vlad/bloodpool=8").await;
+    god_cmd(&world, "@sheet/set Vlad/strength=3").await;
+
+    // A Mage — Spheres / Arete / Quintessence must survive on the mage schema.
+    let mira = world.create_player("Mira").await.expect("create Mira");
+    god_cmd(&world, "@sheet/set Mira/template=mage").await;
+    god_cmd(&world, "@sheet/set Mira/affiliation=order_of_hermes").await;
+    god_cmd(&world, "@sheet/set Mira/arete=3").await;
+    god_cmd(&world, "@sheet/set Mira/spheres:Forces=3").await;
+    god_cmd(&world, "@sheet/set Mira/quintessence=2").await;
+
+    // A Werewolf — the Garou block, the split Rage/Gnosis pools, `current_form`
+    // and Gifts must all survive on the werewolf schema.
+    let rex = world.create_player("Rex").await.expect("create Rex");
+    god_cmd(&world, "@sheet/set Rex/template=werewolf").await;
+    god_cmd(&world, "@sheet/set Rex/breed=lupus").await;
+    god_cmd(&world, "@sheet/set Rex/auspice=ahroun").await;
+    god_cmd(&world, "@sheet/set Rex/tribe=get_of_fenris").await;
+    god_cmd(&world, "@sheet/set Rex/rage=5").await;
+    god_cmd(&world, "@sheet/set Rex/rage_temp=3").await;
+    god_cmd(&world, "@sheet/set Rex/gnosis=5").await;
+    god_cmd(&world, "@sheet/set Rex/current_form=crinos").await;
+    god_cmd(&world, "@sheet/set Rex/gifts:Razor Claws=2").await;
+
+    // Fence on an ack-gated create so every sheet write has landed in the store.
+    world.create_player("Fence").await.expect("fence create");
+
+    // --- reboot: hydrate a fresh world from the store alone. --------------
+    let reloaded = load_or_seed_world(&*store).await.expect("reload");
+    let attr = reloaded
+        .attr(vlad, "sheet:wod")
+        .and_then(mush_core::Attr::as_json)
+        .expect("the vampire sheet attribute survived the reboot");
+    let doc: SheetDoc = serde_json::from_value(attr.clone()).expect("sheet decodes");
+    assert_eq!(doc.text("template"), Some("vampire"), "template survived");
+    assert_eq!(doc.text("clan"), Some("brujah"), "clan survived");
+    assert_eq!(doc.number("generation"), Some(10), "generation survived");
+    assert_eq!(doc.number("bloodpool"), Some(8), "Blood Pool survived");
+    assert_eq!(doc.number("strength"), Some(3), "base trait survived");
+    let disc = doc.map("disciplines").expect("Disciplines map survived");
+    assert_eq!(disc["Celerity"], serde_json::json!(2));
+    assert_eq!(disc["Potence"], serde_json::json!(1));
+
+    // The reloaded sheet validates against the VAMPIRE schema (selected by the
+    // sheet's `template`), which the base mortal schema could not do — proving
+    // the splat sections round-tripped, not just the shared base.
+    let ruleset = ruleset_wod::WodRuleset::new();
+    let schema = ruleset.schema_for(&doc);
+    assert!(
+        schema.field("disciplines").is_some(),
+        "the selected schema is the vampire one"
+    );
+    mush_ruleset::validate(&schema, &doc.data)
+        .expect("reloaded vampire sheet must validate against the vampire schema");
+
+    // --- Mage: Spheres / Arete / Quintessence survived on the mage schema. ---
+    let mattr = reloaded
+        .attr(mira, "sheet:wod")
+        .and_then(mush_core::Attr::as_json)
+        .expect("the mage sheet survived the reboot");
+    let mdoc: SheetDoc = serde_json::from_value(mattr.clone()).expect("mage sheet decodes");
+    assert_eq!(
+        mdoc.text("template"),
+        Some("mage"),
+        "mage template survived"
+    );
+    assert_eq!(mdoc.number("arete"), Some(3), "Arete survived");
+    assert_eq!(
+        mdoc.number("quintessence"),
+        Some(2),
+        "Quintessence survived"
+    );
+    assert_eq!(
+        mdoc.map("spheres").expect("Spheres map survived")["Forces"],
+        serde_json::json!(3)
+    );
+    let mschema = ruleset.schema_for(&mdoc);
+    assert!(
+        mschema.field("spheres").is_some() && mschema.field("disciplines").is_none(),
+        "the selected schema is the mage one"
+    );
+    mush_ruleset::validate(&mschema, &mdoc.data)
+        .expect("reloaded mage sheet must validate against the mage schema");
+
+    // --- Werewolf: Garou block, split Rage/Gnosis pools, form + Gifts. -------
+    let wattr = reloaded
+        .attr(rex, "sheet:wod")
+        .and_then(mush_core::Attr::as_json)
+        .expect("the werewolf sheet survived the reboot");
+    let wdoc: SheetDoc = serde_json::from_value(wattr.clone()).expect("werewolf sheet decodes");
+    assert_eq!(
+        wdoc.text("template"),
+        Some("werewolf"),
+        "werewolf template survived"
+    );
+    assert_eq!(wdoc.number("rage"), Some(5), "permanent Rage survived");
+    assert_eq!(
+        wdoc.number("rage_temp"),
+        Some(3),
+        "temporary Rage pool survived independently of the permanent rating"
+    );
+    assert_eq!(wdoc.number("gnosis"), Some(5), "Gnosis survived");
+    assert_eq!(
+        wdoc.text("current_form"),
+        Some("crinos"),
+        "current_form survived (was not reset to homid)"
+    );
+    assert_eq!(
+        wdoc.map("gifts").expect("Gifts map survived")["Razor Claws"],
+        serde_json::json!(2)
+    );
+    let wschema = ruleset.schema_for(&wdoc);
+    assert!(
+        wschema.field("gifts").is_some() && wschema.field("spheres").is_none(),
+        "the selected schema is the werewolf one"
+    );
+    mush_ruleset::validate(&wschema, &wdoc.data)
+        .expect("reloaded werewolf sheet must validate against the werewolf schema");
+
+    drop(handles);
+}
+
+/// The splat-sheet twin over an in-memory store — ungated CI coverage.
+#[tokio::test(flavor = "multi_thread")]
+async fn wod_splat_sheet_persistence_round_trip_in_memory() {
+    wod_splat_sheet_round_trip(Arc::new(InMemoryStore::new())).await;
+}
+
+/// The splat-sheet twin over a live Redis — a Vampire, a Mage and a Werewolf
+/// built, rebooted from Redis alone, and each revalidated against its own
+/// per-template schema. Gated on `REDIS_URL`; runs in db 10 (dbs 11–15 are
+/// claimed by the other gated tests, which run in parallel).
+#[tokio::test(flavor = "multi_thread")]
+async fn wod_splat_sheet_persistence_round_trip_redis_gated() {
+    let Some(url) = std::env::var("REDIS_URL").ok().filter(|s| !s.is_empty()) else {
+        eprintln!(
+            "skipping wod_splat_sheet_persistence_round_trip_redis_gated: REDIS_URL not set \
+             (no live Redis on this machine)"
+        );
+        return;
+    };
+    let url = support::redis_url_with_db(&url, 10);
+    let store = mush_store::RedisStore::connect(&url)
+        .await
+        .expect("connect to REDIS_URL");
+    store.wipe_namespaces().await.expect("wipe test namespaces");
+    wod_splat_sheet_round_trip(Arc::new(store)).await;
+}
+
 // ---------------------------------------------------------------------------
 // A store wrapper with injectable behavior (gate / fail), for the ack and
 // read-only tests. Only `write` misbehaves; everything else delegates.

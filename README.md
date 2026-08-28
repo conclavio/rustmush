@@ -99,6 +99,14 @@ pool (`+roll strength+brawl vs 6`, with `/spec` `/wp` `/priv` `/nowound` and inl
 sheets are stored as object attributes, so they persist and reload with the world — no
 separate save path. In-game: `help wod`.
 
+It ships all four **templates** — Mortal plus the **Vampire** (V20), **Mage** (M20), and
+**Werewolf** (W20) splats. Every template is always selectable (there is no per-splat
+allow-list): a player picks one during chargen with `+chargen/template`, and each character
+is exactly one template whose sheet carries only that splat's sections and per-template schema
+(a vampire's Disciplines / Blood Pool, a mage's Spheres / Arete, a Garou's Rage / Gnosis /
+Gifts). Splat commands (`+disc`/`+blood`, `+cast`/`+sphere`, `+shift`/`+rage`, …) are always
+registered but self-gate on the actor's template and refuse everyone else.
+
 The web client is served by the same process on `[web].listen` (default
 `http://127.0.0.1:8080`): log in or register over `POST /api/auth/*`, then the SPA speaks
 JSON envelopes over `/ws`. Sessions are opaque 256-bit tokens stored server-side as SHA-256

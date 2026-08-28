@@ -628,10 +628,13 @@ async fn requests_round_trip_to_correlated_replies() {
     let env = expect_env(&mut rx, "[reply 11]").await;
     assert!(text_of(&env.event).contains("No such panel feed"));
 
-    // Sheet is a polite not-yet.
+    // No ruleset is loaded in this bridge rig, so there is no `<ruleset>.sheet`
+    // feed to route to; the sheet query degrades to a polite reply (with a
+    // ruleset loaded it routes to the handler — see web_e2e's
+    // `sheet_query_routes_to_the_ruleset_over_web`).
     rig.bridge.request(1_300, 12, Query::Sheet).await;
     let env = expect_env(&mut rx, "[reply 12]").await;
-    assert!(text_of(&env.event).contains("not available yet"));
+    assert!(text_of(&env.event).contains("not available here"));
 }
 
 // ---------------------------------------------------------------------------

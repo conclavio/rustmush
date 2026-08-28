@@ -571,17 +571,27 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                     }),
                 ),
                 Query::Sheet => {
-                    // Polite future: sheets land with the first ruleset
-                    // (M6); reply now so the panel can say so.
-                    self.direct_reply(
-                        conn_id,
-                        id,
-                        OutputEvent::Sys(RichText::tag(
-                            "system",
-                            "Character sheets are not available yet.",
-                        )),
-                    );
-                    return;
+                    // Route to the active ruleset's sheet query handler,
+                    // registered under its `<ruleset>.sheet` feed name (e.g.
+                    // "wod.sheet"). Ruleset-agnostic: we pick the sole feed
+                    // whose id ends in ".sheet" rather than hardcoding "wod",
+                    // so a future ruleset works with no bridge change. When no
+                    // ruleset is loaded there is no such feed, so we keep the
+                    // polite "unavailable" reply the web panel degrades to.
+                    match self.panels.iter().find(|p| p.ends_with(".sheet")) {
+                        Some(feed) => (SmolStr::new(feed), serde_json::json!({})),
+                        None => {
+                            self.direct_reply(
+                                conn_id,
+                                id,
+                                OutputEvent::Sys(RichText::tag(
+                                    "system",
+                                    "Character sheets are not available here.",
+                                )),
+                            );
+                            return;
+                        }
+                    }
                 }
                 Query::PanelSubscribe { feed } => {
                     if !self.panels.iter().any(|p| p.as_str() == feed.as_str()) {

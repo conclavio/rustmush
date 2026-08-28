@@ -7,7 +7,7 @@
 
 import { login as apiLogin, logout as apiLogout, register as apiRegister } from "./auth";
 import type { CharSummary, LoginOk } from "./auth";
-import type { ClientCaps, OutputEvent, RoomView } from "./proto";
+import type { ClientCaps, OutputEvent, RichText, RoomView } from "./proto";
 import {
   channelLine,
   fmtDuration,
@@ -19,8 +19,10 @@ import {
 import { storageDel, storageGet, storageGetJson, storageSet, storageSetJson } from "./storage";
 import { ChannelsStore } from "./stores/channels.svelte";
 import { MailStore } from "./stores/mail.svelte";
+import { RollsStore } from "./stores/rolls.svelte";
 import { ScrollbackStore } from "./stores/scrollback.svelte";
 import { SessionStore } from "./stores/session.svelte";
+import { SheetStore } from "./stores/sheet.svelte";
 import { WhoStore } from "./stores/who.svelte";
 import {
   applyTheme,
@@ -48,7 +50,8 @@ type PendingReq =
   | { kind: "who" }
   | { kind: "comsys.state" }
   | { kind: "mail.list" }
-  | { kind: "backlog"; channel: string };
+  | { kind: "backlog"; channel: string }
+  | { kind: "sheet" };
 
 const HELP_LINES = [
   "Client commands (handled locally, never sent to the game):",
@@ -65,6 +68,8 @@ export class GameApp {
   channels = new ChannelsStore();
   who = new WhoStore();
   mail = new MailStore();
+  sheet = new SheetStore();
+  rolls = new RollsStore();
 
   screen = $state<Screen>("login");
   /** Login screen notice (e.g. "session expired"). */
@@ -82,6 +87,7 @@ export class GameApp {
   #token: string | null = null;
   #pending = new Map<number, PendingReq>();
   #nextToast = 1;
+  #sheetRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
     this.client = new WsClient({
@@ -213,10 +219,16 @@ export class GameApp {
     this.channels.clear();
     this.who.clear();
     this.mail.clear();
+    this.sheet.clear();
+    this.rolls.clear();
     this.session.clear();
     this.roomView = null;
     this.disconnectReason = null;
     this.#pending.clear();
+    if (this.#sheetRefreshTimer !== null) {
+      clearTimeout(this.#sheetRefreshTimer);
+      this.#sheetRefreshTimer = null;
+    }
   }
 
   // -- event routing ------------------------------------------------------
@@ -240,6 +252,7 @@ export class GameApp {
     });
     c.on("sys", (env) => {
       this.scrollback.push("ev-sys", [renderRich(env.d)], env.ts);
+      this.#maybeRefreshSheet(env.d);
     });
     c.on("channel", (env) => this.#onChannel(env));
     c.on("who", (env) => {
@@ -324,7 +337,8 @@ export class GameApp {
     }
   }
 
-  /** Post-hello hydration: WHO + channel tabs + mail list (feature-gated). */
+  /** Post-hello hydration: WHO + channel tabs + mail list + sheet (each
+   * feature-gated on the hello's panel manifest). */
   #hydrate(): void {
     this.#pending.clear(); // ids from a previous socket never resolve
     this.#req({ kind: "who" }, { t: "who" });
@@ -333,6 +347,9 @@ export class GameApp {
     }
     if (this.session.hasPanel("mail") || this.session.hasFeature("mail")) {
       this.#req({ kind: "mail.list" }, { t: "mail_list", d: { folder: null } });
+    }
+    if (this.session.sheetFeed !== null) {
+      this.#req({ kind: "sheet" }, { t: "sheet" });
     }
   }
 
@@ -353,9 +370,14 @@ export class GameApp {
         return;
       case "sys":
         // Errors and polite refusals ride Sys inside the reply. Backlog
-        // errors mark the channel fetched so tab opens don't loop.
+        // errors mark the channel fetched so tab opens don't loop; a Sheet
+        // reply falling back to Sys means the query isn't available yet
+        // (see SheetStore.markUnavailable's docs).
         if (pending?.kind === "backlog") {
           this.channels.backlogFetched[pending.channel.toLowerCase()] = true;
+        }
+        if (pending?.kind === "sheet") {
+          this.sheet.markUnavailable();
         }
         this.scrollback.push("ev-sys", [renderRich(event.d)], ts);
         return;
@@ -380,6 +402,17 @@ export class GameApp {
       }
     } else if (d.feed === "mail" && d.kind === "keyframe") {
       this.mail.applyList(d.data);
+    } else if (d.feed === this.session.sheetFeed) {
+      // The `<ruleset>.sheet` feed: full state today (the query handler
+      // always emits Keyframe — see sheet_cmds.rs's SheetQuery); applyDelta
+      // is exercised once the server gains a push-on-mutation delta.
+      if (d.kind === "keyframe") {
+        this.sheet.applyKeyframe(d.data);
+      } else {
+        this.sheet.applyDelta(d.data);
+      }
+    } else if (d.feed === this.session.rollFeed) {
+      this.rolls.push(d.data);
     }
     // Unknown feeds (future modules): ignored — additive evolution.
   }
@@ -513,6 +546,48 @@ export class GameApp {
 
   refreshWho(): void {
     this.#req({ kind: "who" }, { t: "who" });
+  }
+
+  // -- sheet ----------------------------------------------------------------
+
+  /** Re-request the viewer's sheet (the panel's Refresh button, the
+   * post-mutation heuristic below, and `SheetPanel`'s light visibility
+   * poll — see web/README.md for why polling exists at all). No-op before
+   * a sheet feed is known (nothing to ask for). */
+  refreshSheet(): void {
+    if (this.session.sheetFeed === null) {
+      return;
+    }
+    this.#req({ kind: "sheet" }, { t: "sheet" });
+  }
+
+  /**
+   * A `Sys` line tagged with the loaded sheet's own ruleset id (e.g. `"wod"`
+   * — `+harm`/`+heal`, splat pool spends, XP approval all tag their
+   * confirmations this way; see ruleset-wod's `sys_to_actor(ctx.actor,
+   * "wod", …)` call sites) plausibly means the viewer's own sheet changed,
+   * so quietly refresh it (debounced — several such lines often land
+   * together). This is a best-effort nudge, not the real fix: a public
+   * (non-`/priv`) `+roll/wp` spends Willpower but narrates to the room
+   * untagged, so it won't trigger this — `SheetPanel`'s poll and the
+   * Refresh button cover that gap until the server pushes a real delta on
+   * sheet mutation (see web/README.md).
+   */
+  #maybeRefreshSheet(text: RichText): void {
+    if (!this.sheet.loaded) {
+      return;
+    }
+    const ruleset = this.sheet.rulesetId;
+    if (ruleset === null || !text.some((span) => span.tag === ruleset)) {
+      return;
+    }
+    if (this.#sheetRefreshTimer !== null) {
+      clearTimeout(this.#sheetRefreshTimer);
+    }
+    this.#sheetRefreshTimer = setTimeout(() => {
+      this.#sheetRefreshTimer = null;
+      this.refreshSheet();
+    }, 350);
   }
 
   // -- misc ---------------------------------------------------------------

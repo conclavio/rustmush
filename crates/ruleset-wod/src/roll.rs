@@ -124,15 +124,16 @@ fn parse_roll_args(raw: &str) -> Result<RollArgs, CmdError> {
     Ok(args)
 }
 
-/// Resolve a pool against `who`'s sheet (or a raw integer if they have none).
+/// Resolve a pool against `who`'s sheet (or a raw integer if they have none),
+/// using the character's active (template-selected) schema.
 fn resolve_for(
     cmd: &WodCmd,
     ctx: &Ctx<'_>,
     who: ObjId,
     expr: &str,
 ) -> Result<ResolvedPool, String> {
-    match cmd.store.get(ctx.w, who) {
-        Some(doc) => resolve_pool(&cmd.schema, &doc, expr),
+    match cmd.read(ctx.w, who) {
+        Some(doc) => resolve_pool(&cmd.schema_for_doc(&doc), &doc, expr),
         None => {
             let n: i32 = expr
                 .trim()
@@ -176,7 +177,7 @@ fn prepare(
     nowound: bool,
 ) -> Result<Prepared, CmdError> {
     let resolved = resolve_for(cmd, ctx, who, &args.pool_expr).map_err(CmdError::msg)?;
-    let doc = cmd.store.get(ctx.w, who);
+    let doc = cmd.read(ctx.w, who);
 
     // Wound penalty (<= 0) and incapacitation.
     let (wound, incap) = match (&doc, nowound) {
@@ -184,7 +185,7 @@ fn prepare(
             let track =
                 crate::health::HealthTrack::from_marks(&d.track("health").unwrap_or_default());
             (
-                i32::from(cmd.store.wound_penalty(d, "health")),
+                i32::from(cmd.store_for_doc(d).wound_penalty(d, "health")),
                 track.is_incapacitated(),
             )
         }
@@ -236,13 +237,19 @@ fn prepare(
             return Err(CmdError::msg("You have no temporary Willpower to spend."));
         }
         d.set_number("willpower_temp", temp - 1);
-        cmd.store
+        cmd.store_for_doc(&d)
             .put_by(ctx.w, who, &d, who)
             .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
         willpower = true;
     }
 
-    let base = resolved.total + args.mod_delta + wound;
+    // A Garou's current form shifts the Physical (and social) traits it names;
+    // the delta is applied at roll time (never stored — a war form exceeds the
+    // 5-dot cap). Returns 0 for any non-Werewolf sheet.
+    let form = doc.as_ref().map_or(0, |d| {
+        crate::splats::werewolf::current_form_pool_delta(d, &resolved.trait_fields)
+    });
+    let base = resolved.total + args.mod_delta + wound + form;
     let pool = base.max(1);
     let opts = Owod20Opts {
         difficulty: args.difficulty.unwrap_or(6),
@@ -320,6 +327,79 @@ fn single_roll(cmd: &WodCmd, ctx: &mut Ctx<'_>, args: &RollArgs) -> Result<(), C
         attach_to_job(ctx, who, job, &line)?;
     }
     Ok(())
+}
+
+/// Resolve `expr` against `who`'s active sheet, roll it at `difficulty`
+/// (optionally applying the wound penalty), log it, and emit the classic line
+/// to the room. The reusable roll path splat commands (`+disc/roll`,
+/// `+frenzy`) build on — no specialty/willpower/contested machinery.
+///
+/// # Errors
+///
+/// Returns a [`CmdError`] if the pool expression cannot be resolved.
+pub(crate) fn roll_expr(
+    cmd: &WodCmd,
+    ctx: &mut Ctx<'_>,
+    who: ObjId,
+    expr: &str,
+    difficulty: u8,
+    apply_wound: bool,
+    label: &str,
+) -> Result<Owod20Outcome, CmdError> {
+    let resolved = resolve_for(cmd, ctx, who, expr).map_err(CmdError::msg)?;
+    let doc = cmd.read(ctx.w, who);
+    let (wound, incap) = match (&doc, apply_wound) {
+        (Some(d), true) => {
+            let track =
+                crate::health::HealthTrack::from_marks(&d.track("health").unwrap_or_default());
+            (
+                i32::from(cmd.store_for_doc(d).wound_penalty(d, "health")),
+                track.is_incapacitated(),
+            )
+        }
+        _ => (0, false),
+    };
+    let form = doc.as_ref().map_or(0, |d| {
+        crate::splats::werewolf::current_form_pool_delta(d, &resolved.trait_fields)
+    });
+    let pool = (resolved.total + wound + form).max(1);
+    let opts = Owod20Opts::new(difficulty);
+    let now = ctx.w.now();
+    let outcome = {
+        let st = ctx
+            .state_mut::<WodState>()
+            .ok_or_else(|| CmdError::msg("The WoD ruleset is not loaded."))?;
+        let outcome = {
+            let mut rctx = RollCtx::new(st.rng());
+            Owod20Pool.roll(pool, &opts, &mut rctx)
+        };
+        st.push_log(
+            who,
+            RollLogEntry {
+                who,
+                expr: format!("{label}: {expr}"),
+                summary: outcome.summary(),
+                difficulty: outcome.difficulty,
+                ts: now,
+                private: false,
+                outcome: outcome.clone(),
+            },
+        );
+        outcome
+    };
+    let name = name_of(ctx, who);
+    let mut line = format!(
+        "{name} rolls {label} ({expr}, {pool} dice, diff {difficulty}) and {}",
+        outcome.summary()
+    );
+    if wound < 0 {
+        line.push_str(&format!(" [wound {wound}]"));
+    }
+    if incap {
+        line.push_str(" [incapacitated]");
+    }
+    emit_roll(cmd, ctx, who, false, &line, &outcome);
+    Ok(outcome)
 }
 
 /// A contested roll: the actor and a target each roll, then compare.

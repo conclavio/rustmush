@@ -18,14 +18,15 @@ use std::sync::Arc;
 use mush_core::{ArgShape, CmdError, CommandSpec, Ctx, ObjId, Registrar};
 use mush_jobs::{Job, OpenJob, open_job};
 use mush_ruleset::schema::FieldType;
-use mush_ruleset::{ApprovalState, SheetDoc, SheetStore};
+use mush_ruleset::{ApprovalState, SheetDoc};
 use smol_str::SmolStr;
 
 use crate::WodCmd;
 use crate::chargen::{
-    CHARGEN_POOLS_FIELD, ledgers, persisted_pools, persisted_priorities, session_pools,
+    CHARGEN_POOLS_FIELD, Pools, ledgers, persisted_pools, persisted_priorities, session_pools,
 };
 use crate::config::WodConfig;
+use crate::splats::{Dispatch, retemplate};
 use crate::state::WodState;
 
 /// The `wod-chargen` job queue name.
@@ -36,6 +37,9 @@ pub const CHARGEN_HANDLER: &str = "wod.chargen";
 /// `+chargen` / `+chargen/status` / `+chargen/attr` / `+chargen/abil` /
 /// `+chargen/submit`.
 fn chargen_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if ctx.switches.has("template") {
+        return set_template(cmd, ctx);
+    }
     if ctx.switches.has("attr") {
         return set_priorities(cmd, ctx, true);
     }
@@ -52,10 +56,31 @@ fn chargen_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     start(cmd, ctx)
 }
 
+/// The pools for a chargen assessment: session priority pools + the active
+/// splat's contribution (selected by the sheet's `template`).
+fn assessment_pools(cmd: &WodCmd, session_or_persisted: Pools, doc: &SheetDoc) -> Pools {
+    let splat = cmd.splat_for_doc(doc);
+    session_or_persisted.with_splat(&cmd.config, splat.as_ref(), doc)
+}
+
+/// `+chargen/template <id>` — choose a splat (Vampire/Mage/…). Re-shapes the
+/// sheet to that template's schema, wiping any previous splat's fields.
+fn set_template(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    require_chargen(ctx)?;
+    let id = ctx.args.raw().trim().to_string();
+    if id.is_empty() {
+        let choices = cmd.schemas().ids().join(", ");
+        return Err(CmdError::msg(format!(
+            "Choose a template: +chargen/template <{choices}>."
+        )));
+    }
+    set_template_to(cmd, ctx, &id)
+}
+
 /// Start or resume chargen.
 fn start(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let actor = ctx.actor;
-    let existing = cmd.store.get(ctx.w, actor);
+    let existing = cmd.read(ctx.w, actor);
     if let Some(doc) = &existing {
         match doc.approved {
             ApprovalState::Approved { .. } => {
@@ -73,10 +98,11 @@ fn start(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             ApprovalState::Unapproved => {}
         }
     }
-    // Ensure an Unapproved sheet exists.
+    // Ensure an Unapproved sheet exists (a fresh sheet starts as the default
+    // template; the player picks a splat with +chargen/template).
     if existing.is_none() {
-        let doc = SheetDoc::new_default(&cmd.schema);
-        cmd.store
+        let doc = SheetDoc::new_default(&cmd.default_schema());
+        cmd.default_store()
             .put_by(ctx.w, actor, &doc, actor)
             .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     }
@@ -109,8 +135,9 @@ fn start(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     } else {
         ctx.out.info(
             actor,
-            "Chargen started. Set priorities with +chargen/attr and +chargen/abil, \
-             allocate with +stat, then +chargen/submit.",
+            "Chargen started. Pick a splat with +chargen/template (mortal is the \
+             default), set priorities with +chargen/attr and +chargen/abil, allocate \
+             with +stat, then +chargen/submit.",
         );
     }
     status(cmd, ctx)
@@ -147,13 +174,14 @@ fn set_priorities(cmd: &WodCmd, ctx: &mut Ctx<'_>, attributes: bool) -> Result<(
     }
     // Persist the assignment onto the sheet (staff-only `chargen_pools`) so it
     // survives a reboot and can be re-validated at approval time.
-    let mut doc = cmd.store.get_or_default(ctx.w, actor);
+    let mut doc = cmd.read_or_default(ctx.w, actor);
+    let store = cmd.store_for_doc(&doc);
     for (cat, n) in &assignment {
-        cmd.store
+        store
             .set_map_entry(&mut doc, CHARGEN_POOLS_FIELD, cat, serde_json::json!(n))
             .map_err(|e| CmdError::msg(e.to_string()))?;
     }
-    cmd.store
+    store
         .put_by(ctx.w, actor, &doc, actor)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     ctx.out.info(actor, "Priorities set.");
@@ -176,24 +204,40 @@ fn stat_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Some((f, k)) => (f.trim(), Some(k.trim())),
         None => (lhs.as_str(), None),
     };
-    if !chargen_settable(field) {
+    // Changing the template re-shapes the sheet — route it through the same
+    // path as +chargen/template.
+    if field.eq_ignore_ascii_case("template") {
+        let id = value_raw.trim().to_string();
+        return set_template_to(cmd, ctx, &id);
+    }
+    let mut doc = cmd.read_or_default(ctx.w, actor);
+    let splat = cmd.splat_for_doc(&doc);
+    if !chargen_settable(field) || splat.chargen_locked_fields().contains(&field) {
         return Err(CmdError::msg(format!(
-            "{field} is not a chargen-allocatable trait. XP, health, and bookkeeping \
-             fields are not set with +stat."
+            "{field} is not a chargen-allocatable trait. XP, health, derived, and \
+             bookkeeping fields are not set with +stat."
         )));
     }
-    let fdef = cmd
-        .schema
+    // A splat-imposed chargen ceiling (Mage: Arete caps at 3 at chargen).
+    if let Some(cap) = splat.chargen_max(field)
+        && value_raw.trim().parse::<i32>().is_ok_and(|n| n > cap)
+    {
+        return Err(CmdError::msg(format!(
+            "{field} caps at {cap} during chargen; raise it further with XP after approval."
+        )));
+    }
+    let schema = cmd.schema_for_doc(&doc);
+    let fdef = schema
         .field(field)
         .ok_or_else(|| CmdError::msg(format!("No such sheet field: {field}")))?
         .clone();
 
-    let mut doc = cmd.store.get_or_default(ctx.w, actor);
+    let store = cmd.store_for_doc(&doc);
     let audit = match (&fdef.ty, key) {
         (FieldType::Map { value }, Some(key)) => {
             let coerced = coerce(value, value_raw)
                 .map_err(|e| CmdError::msg(format!("{field}:{key}: {e}")))?;
-            cmd.store
+            store
                 .set_map_entry(&mut doc, field, key, coerced)
                 .map_err(|e| CmdError::msg(e.to_string()))?;
             format!("{field}:{key} = {}", value_raw.trim())
@@ -212,7 +256,7 @@ fn stat_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ) => {
             let coerced =
                 coerce(&fdef.ty, value_raw).map_err(|e| CmdError::msg(format!("{field}: {e}")))?;
-            cmd.store
+            store
                 .set_field(&mut doc, field, coerced)
                 .map_err(|e| CmdError::msg(e.to_string()))?;
             format!("{field} = {}", value_raw.trim())
@@ -224,10 +268,33 @@ fn stat_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             )));
         }
     };
-    cmd.store
+    // Let the splat recompute any derived fields (Vampire: clan weakness).
+    splat.on_field_changed(&mut doc, field);
+    store
         .put_by(ctx.w, actor, &doc, actor)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     ctx.out.info(actor, format!("Set {audit}."));
+    status(cmd, ctx)
+}
+
+/// Set the template during chargen (shared by `+chargen/template` and
+/// `+stat template=`).
+fn set_template_to(cmd: &WodCmd, ctx: &mut Ctx<'_>, id: &str) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    let id = id.to_ascii_lowercase();
+    if !cmd.schemas().ids().iter().any(|t| t == &id) {
+        let choices = cmd.schemas().ids().join(", ");
+        return Err(CmdError::msg(format!(
+            "Unknown template {id:?}. Choose one of: {choices}."
+        )));
+    }
+    let target_schema = cmd.schemas().schema_for_id(&id);
+    let mut doc = cmd.read_or_default(ctx.w, actor);
+    retemplate(&mut doc, &target_schema, &id);
+    cmd.store_for_doc(&doc)
+        .put_by(ctx.w, actor, &doc, actor)
+        .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
+    ctx.out.info(actor, format!("Template set to {id}."));
     status(cmd, ctx)
 }
 
@@ -242,15 +309,15 @@ fn spec_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .filter(|s| !s.is_empty())
         .ok_or_else(|| CmdError::msg("Usage: +spec <ability>=<specialty>"))?
         .to_string();
-    let fdef = cmd
-        .schema
+    let mut doc = cmd.read_or_default(ctx.w, actor);
+    let schema = cmd.schema_for_doc(&doc);
+    let fdef = schema
         .field(&ability)
         .ok_or_else(|| CmdError::msg(format!("No such ability: {ability}")))?;
     if !matches!(fdef.ty, FieldType::Dots { .. }) {
         return Err(CmdError::msg("Specialties attach to abilities/attributes."));
     }
     let id = fdef.id.to_string();
-    let mut doc = cmd.store.get_or_default(ctx.w, actor);
     let mut list: Vec<serde_json::Value> = doc
         .map("specialties")
         .and_then(|m| m.get(&id))
@@ -265,10 +332,11 @@ fn spec_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("That specialty is already recorded."));
     }
     list.push(serde_json::json!(specialty));
-    cmd.store
+    let store = cmd.store_for_doc(&doc);
+    store
         .set_map_entry(&mut doc, "specialties", &id, serde_json::Value::Array(list))
         .map_err(|e| CmdError::msg(e.to_string()))?;
-    cmd.store
+    store
         .put_by(ctx.w, actor, &doc, actor)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     ctx.out
@@ -279,7 +347,7 @@ fn spec_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// Show the live budget ledgers.
 fn status(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let actor = ctx.actor;
-    let pools = {
+    let base = {
         let st = ctx
             .state_mut::<WodState>()
             .ok_or_else(|| CmdError::msg("The WoD ruleset is not loaded."))?;
@@ -288,7 +356,8 @@ fn status(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .ok_or_else(|| CmdError::msg("You are not in chargen. Start with +chargen."))?;
         session_pools(&cmd.config, session)
     };
-    let doc = cmd.store.get_or_default(ctx.w, actor);
+    let doc = cmd.read_or_default(ctx.w, actor);
+    let pools = assessment_pools(cmd, base, &doc);
     let ls = ledgers(&cmd.config, &doc, &pools);
     ctx.out.sys_to_actor(actor, "wod", "Chargen budget:");
     for l in &ls {
@@ -326,7 +395,7 @@ fn submit(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let actor = ctx.actor;
     // Refuse to re-submit an already-submitted (Pending) or approved sheet:
     // that would orphan the first job and open a second one for one character.
-    if let Some(doc) = cmd.store.get(ctx.w, actor) {
+    if let Some(doc) = cmd.read(ctx.w, actor) {
         match doc.approved {
             ApprovalState::Pending(job) => {
                 return Err(CmdError::msg(format!(
@@ -339,7 +408,7 @@ fn submit(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             ApprovalState::Unapproved => {}
         }
     }
-    let pools = {
+    let base = {
         let st = ctx
             .state_mut::<WodState>()
             .ok_or_else(|| CmdError::msg("The WoD ruleset is not loaded."))?;
@@ -354,10 +423,11 @@ fn submit(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         session_pools(&cmd.config, session)
     };
     let mut doc = cmd
-        .store
-        .get(ctx.w, actor)
+        .read(ctx.w, actor)
         .ok_or_else(|| CmdError::msg("You have no sheet to submit."))?;
-    crate::chargen::finalize_sheet(&cmd.config, &mut doc, &pools)
+    let splat = cmd.splat_for_doc(&doc);
+    let pools = base.with_splat(&cmd.config, splat.as_ref(), &doc);
+    crate::chargen::finalize_sheet(&cmd.config, &mut doc, &pools, splat.as_ref())
         .map_err(|i| CmdError::msg(format!("Cannot submit: {i}")))?;
 
     // Open the approval job carrying the target, then mark the sheet Pending.
@@ -378,7 +448,7 @@ fn submit(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     .map_err(CmdError::msg)?;
 
     doc.approved = ApprovalState::Pending(job);
-    cmd.store
+    cmd.store_for_doc(&doc)
         .put_by(ctx.w, actor, &doc, actor)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     if let Some(st) = ctx.state_mut::<WodState>() {
@@ -398,15 +468,18 @@ fn submit(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// job open.
 pub(crate) fn chargen_approval(
     config: &WodConfig,
-    store: &SheetStore,
+    dispatch: &Dispatch,
     ctx: &mut Ctx<'_>,
     job: &Job,
 ) -> Result<(), String> {
     let target = payload_target(job)?;
-    let mut doc = store
-        .get(ctx.w, target)
+    // Read schema-agnostically, then re-validate against the active template's
+    // pools + contribution.
+    let mut doc = dispatch
+        .read(ctx.w, target)
         .ok_or_else(|| "the character has no sheet".to_string())?;
-    let pools = persisted_pools(config, &doc);
+    let splat = dispatch.splats.for_doc(&doc);
+    let pools = persisted_pools(config, &doc).with_splat(config, splat.as_ref(), &doc);
     if let Some(issue) = crate::chargen::issues(config, &doc, &pools)
         .into_iter()
         .next()
@@ -419,7 +492,8 @@ pub(crate) fn chargen_approval(
         by: ctx.actor,
         at: ctx.w.now(),
     };
-    store
+    dispatch
+        .store_for_doc(&doc)
         .put_by(ctx.w, target, &doc, ctx.actor)
         .map_err(|es| fmt_errs(&es))?;
     Ok(())
@@ -552,12 +626,15 @@ pub(crate) fn register(
             name: "+chargen".into(),
             switches: vec![
                 "status".into(),
+                "template".into(),
                 "attr".into(),
                 "abil".into(),
                 "submit".into(),
             ],
             shape: ArgShape::Raw,
             help: "+chargen  --  Begin character generation (priority point-buy).\n\
+                   +chargen/template <mortal|vampire|…>  --  Choose your splat (adds \
+                   its traits to the sheet).\n\
                    +chargen/attr physical=7 social=5 mental=3  --  Assign attribute \
                    priorities.\n\
                    +chargen/abil talents=13 skills=9 knowledges=5  --  Assign ability \

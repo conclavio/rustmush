@@ -276,12 +276,31 @@ Bruised→Incapacitated track with wound penalties), and `+xp` / `+xp/spend`
 (costed raises applied atomically on `+job/approve`) / `+xp/award` (staff). The
 dice RNG is OS-seeded in production. In-game reference: `help wod`.
 
+**Splats (M6b).** `wod` ships four **templates**: Mortal plus the Vampire (V20),
+Mage (M20), and Werewolf (W20) splats. There is **no per-splat config knob** —
+every template is always selectable, and a player picks theirs during chargen
+with `+chargen/template <mortal|vampire|mage|werewolf>` (staff can re-template a
+sheet with `@sheet/set <who>/template=<id>`). A character is exactly **one**
+template; the ruleset builds one composed schema per template at boot (base +
+that splat's sections only), and every surface — `+sheet` render, sheet
+validation, chargen accounting, `+roll` field resolution, and the web sheet
+query — selects the active schema by the sheet's `template` field. So a
+vampire's sheet carries Disciplines / Blood Pool / Generation, a mage's Spheres /
+Arete / Quintessence / Paradox, a Garou's Rage / Gnosis / Renown / Gifts, and
+never another splat's. The splat commands (`+disc`/`+blood`/`+frenzy`,
+`+cast`/`+sphere`/`+quint`/`+paradox`, `+shift`/`+rage`/`+gnosis`/`+gifts`/`+renown`,
+…) are all registered at boot and self-gate on the actor's template, refusing
+everyone else ("You are not Kindred/Awakened/Garou.").
+
 **Persistence.** Like scripting, the WoD ruleset has **no `mod:wod:*` namespace
 and runs no store migrations**: a character sheet is a single `sheet:wod`
 JSON attribute on the character's `obj:*` document (treaty ruling 7), so it
 rides the ordinary object write-through and **reloads with the world** — there
-is no separate sheet save/load path, and the reboot round trip is CI-tested
-(`crates/mushd/tests/persistence.rs::wod_sheet_persistence_round_trip_*`). The
+is no separate sheet save/load path, and the reboot round trip is CI-tested for
+both a base sheet and a splat sheet (a Vampire with Disciplines + Blood Pool,
+rebuilt from Redis alone and revalidated against the vampire schema —
+`crates/mushd/tests/persistence.rs::wod_sheet_persistence_round_trip_*` and
+`::wod_splat_sheet_persistence_round_trip_*`). The
 only ruleset-owned persisted docs are its two approval job queues, which live
 under the jobs module's `mod:jobs:*` namespace like any other queue. Do not
 hand-edit a `sheet:wod` attribute while the server runs (same rule as any

@@ -2,9 +2,13 @@
 
 The game runs on the Classic World of Darkness 20th Anniversary rules (the
 Storyteller System — V20 / M20 / W20 core). Your character is described by a
-sheet you build in chargen and roll against in play. This milestone ships the
-base **Mortal** template; the Vampire, Mage, and Werewolf splats add their own
-sheet sections and powers on top of it.
+sheet you build in chargen and roll against in play. Every character is exactly
+one **template**: a plain **Mortal**, or one of the three splats — **Vampire**
+(V20), **Mage** (M20), or **Werewolf** (W20) — each of which adds its own sheet
+sections, powers, and commands on top of the shared base. You pick your template
+during chargen (see below). The splat commands (`+disc`, `+cast`, `+shift`, …)
+are always available, but each works only for a character of its splat and
+politely refuses everyone else ("You are not Kindred.").
 
 ## Your sheet
 
@@ -71,6 +75,12 @@ upgrades the least-severe mark. A full track is Incapacitated.
 ## Character generation
 
   +chargen                   Start (or resume) chargen. Creates your sheet.
+  +chargen/template <mortal|vampire|mage|werewolf>
+                             Choose your template/splat. This adds that splat's
+                             sheet sections (a vampire gets Disciplines / Blood
+                             Pool / Generation; a mage Spheres / Arete; a Garou
+                             Rage / Gnosis / Renown / Gifts). Mortal is the
+                             default; switching wipes the previous splat's fields.
   +chargen/attr physical=7 social=5 mental=3
                              Assign the 7/5/3 attribute priorities.
   +chargen/abil talents=13 skills=9 knowledges=5
@@ -88,6 +98,12 @@ anything beyond your priority pools, with your 15 freebie points (Attribute 5,
 Ability 2, Background 1, Willpower 1, Virtue 2 per dot). When you submit, your
 sheet is locked pending a storyteller's approval.
 
+**House rule — uniform chargen pools.** This game uses the base oWoD pools for
+every splat: 5 Background dots and (for mages) 5 Sphere dots. That is a
+deliberate simplification of the by-the-book M20 mage, who receives 7
+Backgrounds and 6 Spheres; use freebies or post-approval XP for the extra dots
+a canon Mage build would start with.
+
 ## Experience
 
   +xp [<target>]                     Show XP balance and spend history.
@@ -100,8 +116,66 @@ sheet is locked pending a storyteller's approval.
 Costs follow the current-rating × multiplier table: Attribute ×4, Ability ×2
 (a brand-new ability dot costs 3), Background ×3, Willpower ×1, Virtue ×2.
 
+## Splats
+
+Powers are **sheet-tracked and pool-rolled**, the way the tabletop and most
+MU*s run them: a power is stored on your sheet as a rating and rolled as a dice
+pool, so there is no bespoke per-power automation — the mechanical result is a
+Storyteller roll and the effect is adjudicated in play. Pick your splat with
+`+chargen/template` (above); these commands then work for you and refuse anyone
+of the wrong template.
+
+**Vampire (V20)** — you are Kindred, of a Clan, at a Generation:
+
+  +disc                      List your Disciplines.
+  +disc/roll <disc>+<trait> [vs <diff>]
+                             Build and roll a Discipline pool, e.g.
+                             +disc/roll celerity+dexterity vs 6.
+  +blood                     Show your Blood Pool.
+  +blood/spend <n>           Spend blood; +blood/gain <n> to feed (capped by
+                             your generation); +blood/heal [<n>] mends
+                             bashing/lethal 1:1; +blood/buff <n> floods an
+                             Attribute.
+  +frenzy [vs <diff>]        Roll Self-Control/Instinct to resist frenzy;
+                             +frenzy/fear rolls Courage against Rötschreck.
+  +generation                Show your generation's Blood Pool / trait limits.
+  +humanity                  Show your Humanity or Path rating.
+
+**Mage (M20)** — you are Awakened, of a Tradition/Convention, with an Avatar:
+
+  +sphere                    List your nine Spheres and your Arete.
+  +sphere <name>=<0..5>      Rate a Sphere (it cannot exceed your Arete).
+  +arete                     Show your Arete (magic rating and casting pool).
+  +cast <description> [vs <diff>]
+                             Roll your Arete to work an effect; successes are
+                             its magnitude. +cast/vulgar flags Paradox risk.
+  +quint                     Show/spend/gain Quintessence (capped by your Avatar).
+  +paradox                   Show, accrue, or work off Paradox.
+  +resonance                 List/set your Resonance traits.
+
+**Werewolf (W20)** — you are Garou, of a Breed / Auspice / Tribe:
+
+  +rage                      Show your Rage (temporary pool / permanent rating);
+                             +rage/spend <n> for extra actions, +rage/gain <n>
+                             to recover (only up to your permanent Rage),
+                             +rage/frenzy to roll Willpower against frenzy.
+  +gnosis                    Show/spend/gain your Gnosis (recovers up to your
+                             permanent rating). Raise permanent Rage/Gnosis with
+                             +xp/spend rage=<n> / gnosis=<n>.
+  +renown                    Show Glory/Honor/Wisdom and your Rank;
+                             +renown/gain <type>=<n> logs temporary Renown.
+  +gifts                     List the Gifts you know.
+  +gift/roll <gift>=<attribute>+<ability> [vs <diff>]
+                             Build and roll the pool a Gift names.
+  +shift <form>              Change form (homid/glabro/crinos/hispo/lupus); the
+                             war forms' Physical bonuses apply to your rolls
+                             while shifted.
+  +rank                      Show your Rank (from permanent Renown).
+
 ## Staff
 
   @sheet <target>                    Staff view of a sheet (shows hidden fields).
   @sheet/set <target>/<field>=<value>
                                      Set any field directly (validated, audited).
+                                     Setting <field>=template re-shapes the sheet
+                                     to that splat.
