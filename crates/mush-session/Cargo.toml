@@ -9,8 +9,7 @@ description = "SessionManager: connections, attach/detach, linkdead, resume buff
 [dependencies]
 mush-proto.workspace = true
 tokio.workspace = true
-serde.workspace = true
-serde_json.workspace = true
+dashmap.workspace = true
 tracing.workspace = true
 
 [lints]

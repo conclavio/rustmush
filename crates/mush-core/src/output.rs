@@ -9,14 +9,15 @@
 
 use mush_proto::{ExitRef, ObjRef, OutputEvent, RichText, RoomView, Span};
 
+use crate::engine::Deferred;
 use crate::flags::{Flags, Powers};
 use crate::obj::{ObjId, ObjKind};
 use crate::perm;
 use crate::world::World;
 
-/// Placeholder connection id. The session layer (M1) owns the real type;
-/// the core only needs an opaque handle to address one specific connection
-/// (pre-login prompts, WHO refreshes).
+/// Connection id, allocated by the session layer. The core only needs an
+/// opaque handle to address one specific connection (pre-login prompts,
+/// per-connection routing); `mush-session` owns allocation and delivery.
 pub type ConnId = u64;
 
 /// Who should receive an event.
@@ -40,9 +41,17 @@ pub enum Audience {
 
 /// An ordered queue of `(Audience, OutputEvent)` pairs collected while a
 /// command runs. Draining and delivery belong to the caller.
+///
+/// The outbox also carries the command's **deferred work side-queue**
+/// ([`Outbox::defer`]): handlers are sync and cannot reach the effects
+/// queue or the scheduler directly, so they describe async work / timers
+/// as [`Deferred`] values here and
+/// [`Engine::step`](crate::engine::Engine::step) routes them after the
+/// handler returns.
 #[derive(Debug, Default)]
 pub struct Outbox {
     events: Vec<(Audience, OutputEvent)>,
+    deferred: Vec<Deferred>,
 }
 
 impl Outbox {
@@ -91,6 +100,25 @@ impl Outbox {
     /// Queue an informational line (`Sys` tagged `"system"`) to one actor.
     pub fn info(&mut self, actor: ObjId, msg: impl Into<String>) {
         self.sys_to_actor(actor, "system", msg);
+    }
+
+    /// Defer async work or a timer (routed by the engine after the current
+    /// handler returns — see the type-level docs).
+    pub fn defer(&mut self, deferred: Deferred) {
+        self.deferred.push(deferred);
+    }
+
+    /// The deferred work queued so far, in push order.
+    #[must_use]
+    pub fn deferred(&self) -> &[Deferred] {
+        &self.deferred
+    }
+
+    /// Drain the deferred-work side-queue, leaving it empty. (Separate from
+    /// [`Outbox::take`]: events go to delivery, deferred work goes to the
+    /// engine's effects queue and scheduler.)
+    pub fn take_deferred(&mut self) -> Vec<Deferred> {
+        std::mem::take(&mut self.deferred)
     }
 
     /// The queued events, in emission order.

@@ -1,154 +1,141 @@
 //! mushd — the rustmush server binary.
 //!
-//! M0 ships a **synchronous stdin REPL**: it boots the same world wiring
-//! the test suite uses ([`mush_testkit::boot_world`]), reads lines from
-//! stdin as God (`#1`), dispatches them through the real command pipeline,
-//! and prints the resulting `mush-proto` `OutputEvent`s that would reach
-//! God as plain text. Networking (SSH), the session manager,
-//! and the tokio world task all land in M1; nothing here is async.
+//! M1: boots the single-writer world task, the session layer, the interim
+//! account store, and the SSH bridge, then runs until Ctrl-C (or an in-game
+//! `@shutdown` via [`ControlMsg::Shutdown`]). `--repl` preserves the M0
+//! synchronous stdin REPL for offline poking.
+//!
+//! Usage: `mushd [--repl] [--config <path>]` (config defaults to
+//! `mushd.toml` in the working directory; a missing file means defaults).
 
-use std::io::Write as _;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::PathBuf;
+use std::process::ExitCode;
+use std::sync::Arc;
+use std::time::Duration;
 
-use mush_core::{Audience, GOD, Outbox, World, dispatch};
-use mush_testkit::{boot_world, text_of};
+use mush_core::{ControlMsg, Inbound};
+use mush_session::{SessionConfig, SessionManager};
+use tracing_subscriber::EnvFilter;
 
-fn main() {
-    let (mut world, registry) = boot_world();
-    world.set_connected(GOD, true);
-    world.set_now(unix_now());
+use mushd::accounts::{AccountStore, Accounts};
+use mushd::config::Config;
+use mushd::ipguard::IpGuard;
+use mushd::ssh_bridge::{SshBridge, start_listener};
+use mushd::world_task;
+use mushd::{repl, unix_now_s};
 
-    println!(
-        "rustmush {} -- M0 REPL driver (no networking yet)",
-        env!("CARGO_PKG_VERSION")
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("Usage: mushd [--repl] [--config <path>]");
+        return ExitCode::SUCCESS;
+    }
+    if args.iter().any(|a| a == "--repl") {
+        repl::run();
+        return ExitCode::SUCCESS;
+    }
+
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
+
+    let config_path = args
+        .iter()
+        .position(|a| a == "--config")
+        .and_then(|i| args.get(i + 1))
+        .map_or_else(|| PathBuf::from("mushd.toml"), PathBuf::from);
+    let config = match Config::load(&config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("mushd: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    match runtime.block_on(serve(config)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("mushd: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn serve(config: Config) -> Result<(), String> {
+    let listen = config.ssh_listen().map_err(|e| e.to_string())?;
+    let data_dir = config.server.data_dir.clone();
+    tracing::info!(
+        name = %config.server.name,
+        data_dir = %data_dir.display(),
+        %listen,
+        "mushd {} starting",
+        env!("CARGO_PKG_VERSION"),
     );
-    println!("You are God (#1) in Limbo. Type \"help\" for commands, \"quit\" to exit.");
-    println!();
 
-    let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
-    loop {
-        print!("mush> ");
-        let _ = stdout.flush();
+    // Account store (M1-interim JSON file; Redis in M2).
+    let store = AccountStore::open(&data_dir)
+        .map_err(|e| format!("cannot open account store in {}: {e}", data_dir.display()))?;
 
-        let mut line = String::new();
-        match stdin.read_line(&mut line) {
-            Ok(0) | Err(_) => break, // EOF or a broken stdin: shut down.
-            Ok(_) => {}
-        }
-        // Strip a leading BOM too: piping a script into the REPL on
-        // Windows often prefixes the first line with U+FEFF.
-        let trimmed = line.trim().trim_start_matches('\u{feff}').trim();
-        if trimmed.eq_ignore_ascii_case("quit") {
-            println!("Goodbye.");
-            break;
-        }
-        if trimmed.is_empty() {
-            continue;
-        }
+    // Session layer.
+    let sessions = Arc::new(SessionManager::with_config(SessionConfig {
+        linkdead_grace: Duration::from_secs(config.game.linkdead_grace_s),
+        ..SessionConfig::default()
+    }));
 
-        world.set_now(unix_now());
-        let mut out = Outbox::new();
-        dispatch(&registry, &mut world, GOD, trimmed, &mut out);
-        for (audience, event) in out.take() {
-            if reaches_god(&world, &audience) {
-                println!("{}", text_of(&event));
-            }
+    // The single-writer world task.
+    let engine = world_task::boot_engine();
+    let (world, mut world_join) = world_task::spawn(engine, Arc::clone(&sessions));
+
+    // Auth + abuse protection + the SSH hooks bridge.
+    let accounts = Arc::new(Accounts::new(store, world.clone()));
+    let guard = Arc::new(IpGuard::new());
+    let bridge = Arc::new(SshBridge::new(
+        accounts,
+        Arc::clone(&sessions),
+        world.clone(),
+        Arc::clone(&guard),
+    ));
+    let bound = start_listener(listen, &data_dir, banner(&config.server.name), bridge)
+        .await
+        .map_err(|e| format!("SSH listener on {listen}: {e}"))?;
+
+    tracing::info!(ssh = %bound, "up; press Ctrl-C to shut down");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("Ctrl-C: shutting down");
+            // Announce + stop the loop; the world task delivers the
+            // shutdown notice to every connection before exiting.
+            world.inbound(Inbound::Control(ControlMsg::Shutdown)).await;
+            let _ = world_join.await;
+        }
+        // The world task can also end itself (in-game @shutdown, M3).
+        _ = &mut world_join => {
+            tracing::info!("world task ended on its own");
         }
     }
+    // Give transports a beat to flush the shutdown notice, then exit;
+    // dropping the runtime tears the listener and connections down.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    tracing::info!("mushd exiting at {}", unix_now_s());
+    Ok(())
 }
 
-/// Whether an event audience reaches God in this single-user REPL: God's
-/// own actor stream, broadcasts, and events for the room God is standing in
-/// (unless excluded). `Conn` audiences need the M1 session layer.
-fn reaches_god(world: &World, audience: &Audience) -> bool {
-    match audience {
-        Audience::Actor(a) => *a == GOD,
-        Audience::All => true,
-        Audience::Room { room, exclude } => {
-            !exclude.contains(&GOD) && world.get(GOD).and_then(|o| o.location) == Some(*room)
-        }
-        Audience::Conn(_) => false,
-    }
-}
-
-/// The current wall-clock time as unix seconds (0 if the clock is broken).
-fn unix_now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use mush_core::LIMBO;
-
-    #[test]
-    fn reaches_god_resolves_audiences() {
-        let (mut world, _registry) = boot_world();
-        world.set_connected(GOD, true);
-
-        assert!(reaches_god(&world, &Audience::Actor(GOD)));
-        assert!(!reaches_god(&world, &Audience::Actor(LIMBO)));
-        assert!(reaches_god(&world, &Audience::All));
-        assert!(!reaches_god(&world, &Audience::Conn(1)));
-        // God stands in Limbo.
-        assert!(reaches_god(
-            &world,
-            &Audience::Room {
-                room: LIMBO,
-                exclude: vec![]
-            }
-        ));
-        // ...but not when excluded, and not for other rooms.
-        assert!(!reaches_god(
-            &world,
-            &Audience::Room {
-                room: LIMBO,
-                exclude: vec![GOD]
-            }
-        ));
-        let hall = world
-            .create(mush_core::ObjKind::Room, "Hall", GOD, None)
-            .unwrap();
-        assert!(!reaches_god(
-            &world,
-            &Audience::Room {
-                room: hall,
-                exclude: vec![]
-            }
-        ));
-    }
-
-    #[test]
-    fn repl_dispatch_round_trip() {
-        // The exact loop body: dispatch a line as God, render what reaches
-        // God. Proves the REPL wiring without touching real stdin.
-        let (mut world, registry) = boot_world();
-        world.set_connected(GOD, true);
-        let mut out = Outbox::new();
-        dispatch(
-            &registry,
-            &mut world,
-            GOD,
-            "\"Let there be light.",
-            &mut out,
-        );
-        let lines: Vec<String> = out
-            .take()
-            .iter()
-            .filter(|(aud, _)| reaches_god(&world, aud))
-            .map(|(_, ev)| text_of(ev))
-            .collect();
-        assert_eq!(lines, vec!["God says, \"Let there be light.\"".to_string()]);
-    }
-
-    #[test]
-    fn unix_now_is_sane() {
-        // Some time after 2020-01-01 and monotone-ish across two calls.
-        let a = unix_now();
-        assert!(a > 1_577_836_800, "unix_now returned {a}");
-        assert!(unix_now() >= a);
-    }
+/// The classic welcome-screen banner (the transport appends the command
+/// help below it).
+fn banner(name: &str) -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    format!(
+        "------------------------------------------------------------------\n\
+         \x20  {name}\n\
+         \x20  a rustmush server, v{version}\n\
+         \n\
+         \x20  Connect to an existing account, or create a new one:\n\
+         ------------------------------------------------------------------"
+    )
 }

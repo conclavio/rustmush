@@ -1,6 +1,6 @@
-//! Info commands: `WHO` (connected players, M0 world-side stub) and
-//! `help`/`+help` (rendered from every registered [`CommandSpec`]'s real
-//! help text).
+//! Info commands: `WHO` (connected players with real idle/connect times
+//! from the world's session stats) and `help`/`+help` (rendered from every
+//! registered [`CommandSpec`]'s real help text).
 
 use std::sync::Arc;
 
@@ -28,13 +28,21 @@ fn who_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         } else {
             None
         };
+        // Idle/connect times come from the engine-maintained session stats
+        // (clamped to 0 against clock skew); actors marked connected by
+        // other means (tests, NPCs) report zeros.
+        let now = ctx.w.now();
+        let (idle_s, conn_s) = ctx.w.session_stat(id).map_or((0, 0), |s| {
+            (
+                u64::try_from(now - s.last_input).unwrap_or(0),
+                u64::try_from(now - s.connect_time).unwrap_or(0),
+            )
+        });
         entries.push(WhoEntry {
             name: o.name.clone(),
             alias: o.aliases.first().map(ToString::to_string),
-            // Idle/connect times are session-layer facts; the M0 world-side
-            // stub reports zeros until M1 wires the session manager in.
-            idle_s: 0,
-            conn_s: 0,
+            idle_s,
+            conn_s,
             location,
             doing: attr_text(ctx.w, id, "doing"),
         });
@@ -82,9 +90,9 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
         CommandSpec {
             name: "WHO".into(),
             shape: ArgShape::None,
-            help: "WHO  --  List connected players. Staff also see locations; DARK \
-                   players are hidden from non-staff. Idle and connect times appear \
-                   once the session layer lands (M1)."
+            help: "WHO  --  List connected players with their idle and connected \
+                   times. Staff also see locations; DARK players are hidden from \
+                   non-staff."
                 .into(),
             ..CommandSpec::default()
         },

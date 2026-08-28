@@ -30,17 +30,28 @@
 //!   command table → Huh).
 //! - [`commands`] — the core MUSH command set, registered via
 //!   [`register_core_commands`].
+//!
+//! And the async seam (still fully sync in here — the tokio loop lives in
+//! `mushd`):
+//!
+//! - [`engine`] — [`Engine`]/[`Inbound`]/[`Effects`]/[`WorldCommand`]: the
+//!   step function the world task drives, connection bookkeeping, and the
+//!   typed re-entry path for async completions (treaty ruling 3).
+//! - [`sched`] — the pure min-heap [`Scheduler`] behind `@wait` and module
+//!   ticks.
 
 pub mod attr;
 pub mod clock;
 pub mod cmd;
 pub mod commands;
+pub mod engine;
 pub mod flags;
 pub mod lock;
 pub mod matchit;
 pub mod obj;
 pub mod output;
 pub mod perm;
+pub mod sched;
 pub mod world;
 
 pub use attr::{Attr, AttrFlags, AttrMap, AttrValue, UncasedName};
@@ -50,9 +61,14 @@ pub use cmd::{
     ParsedArgs, Registry, RegistryError, SwitchSet, dispatch,
 };
 pub use commands::register_core_commands;
+pub use engine::{
+    ControlMsg, Deferred, DisconnectKind, Effect, Effects, Engine, Inbound, StepOutcome,
+    WorldCommand, register_engine_commands,
+};
 pub use flags::{Flags, Powers, Role};
 pub use lock::{LockExpr, LockParseError, LockType, eval_lock, glob_match, parse_lock};
 pub use matchit::{MatchErr, match_object};
 pub use obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
 pub use output::{Audience, ConnId, Outbox, name_span, obj_ref, room_view};
-pub use world::{World, WorldError};
+pub use sched::{ScheduledKind, Scheduler, TimerId};
+pub use world::{SessionStat, World, WorldError};

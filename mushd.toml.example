@@ -3,7 +3,7 @@
 
 [server]
 name = "rustmush dev"
-data_dir = "./data"            # host keys, logs
+data_dir = "./data"            # host keys, accounts.json (M1-interim), logs
 
 [store]
 redis_url = "redis://127.0.0.1:6379"

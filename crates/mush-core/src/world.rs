@@ -69,6 +69,16 @@ pub enum WorldError {
     },
 }
 
+/// Transient per-actor session timing, fed by the engine as connections
+/// come and go and read by `WHO`. Never persisted, never dirty-tracked.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct SessionStat {
+    /// Unix seconds when the actor's first live connection attached.
+    pub connect_time: i64,
+    /// Unix seconds of the actor's most recent input line.
+    pub last_input: i64,
+}
+
 /// The entire game state, in RAM, dense by [`ObjId`].
 ///
 /// Ids are never recycled: a destroyed-and-swept object leaves a permanent
@@ -89,6 +99,10 @@ pub struct World {
     /// Actors currently marked connected (transient session state for WHO
     /// and routing; never persisted, never dirty-tracked).
     connected: BTreeSet<ObjId>,
+    /// Per-actor session timing (transient, like `connected`).
+    session_stats: HashMap<ObjId, SessionStat>,
+    /// Monotonic correlation-id source for async re-entry (treaty ruling 3).
+    next_correlation: u64,
     /// Wall-clock unix seconds, fed by the driver via [`World::set_now`].
     now: i64,
 }
@@ -112,6 +126,8 @@ impl World {
             zone_members: HashMap::new(),
             dirty: BTreeSet::new(),
             connected: BTreeSet::new(),
+            session_stats: HashMap::new(),
+            next_correlation: 0,
             now: 0,
         };
         w.player_index.insert(UncasedName::from("God"), GOD);
@@ -340,6 +356,52 @@ impl World {
         self.connected.iter().copied()
     }
 
+    /// Record a session starting for `id` **now** (both `connect_time` and
+    /// `last_input` set to [`World::now`]). Idempotent: an existing stat is
+    /// kept, so extra connections attaching to the same actor never reset
+    /// the connect time. No-op for missing objects.
+    pub fn session_start(&mut self, id: ObjId) {
+        if self.get(id).is_some() {
+            let now = self.now;
+            self.session_stats.entry(id).or_insert(SessionStat {
+                connect_time: now,
+                last_input: now,
+            });
+        }
+    }
+
+    /// Stamp `last_input` for `id` with [`World::now`]. No-op if no session
+    /// is recorded (e.g. script/NPC origin).
+    pub fn session_input(&mut self, id: ObjId) {
+        let now = self.now;
+        if let Some(s) = self.session_stats.get_mut(&id) {
+            s.last_input = now;
+        }
+    }
+
+    /// Forget the session timing for `id` (the session fully ended).
+    pub fn session_end(&mut self, id: ObjId) {
+        self.session_stats.remove(&id);
+    }
+
+    /// The session timing recorded for `id`, if any.
+    #[must_use]
+    pub fn session_stat(&self, id: ObjId) -> Option<SessionStat> {
+        self.session_stats.get(&id).copied()
+    }
+
+    /// Allocate a fresh correlation id for async re-entry (treaty ruling 3:
+    /// deferred work carries one out and its typed [`WorldCommand`]
+    /// completion carries it back). Transient — restarts from 0 each boot,
+    /// which is fine because in-flight work does not survive a restart.
+    ///
+    /// [`WorldCommand`]: crate::engine::WorldCommand
+    pub fn next_correlation_id(&mut self) -> u64 {
+        let id = self.next_correlation;
+        self.next_correlation += 1;
+        id
+    }
+
     // ------------------------------------------------------------------
     // Mutators
     // ------------------------------------------------------------------
@@ -431,6 +493,7 @@ impl World {
             self.player_index.retain(|_, v| *v != id);
         }
         self.connected.remove(&id);
+        self.session_stats.remove(&id);
         // Leave any zone it was in...
         if zone.is_some() {
             self.set_zone(id, None)?;
@@ -1308,6 +1371,54 @@ mod tests {
             World::from_objects(objs, 3).unwrap_err(),
             WorldError::NameInUse("GOD".into())
         );
+    }
+
+    #[test]
+    fn session_stats_track_connect_and_input_times() {
+        let mut w = World::new_minimal();
+        let nick = w.create(ObjKind::Player, "Nick", GOD, Some(LIMBO)).unwrap();
+
+        w.set_now(1_000);
+        w.session_start(nick);
+        assert_eq!(
+            w.session_stat(nick),
+            Some(SessionStat {
+                connect_time: 1_000,
+                last_input: 1_000
+            })
+        );
+
+        // Input stamps last_input; connect_time is untouched.
+        w.set_now(1_040);
+        w.session_input(nick);
+        let s = w.session_stat(nick).unwrap();
+        assert_eq!((s.connect_time, s.last_input), (1_000, 1_040));
+
+        // A second session_start (multi-connect) never resets the times.
+        w.set_now(1_100);
+        w.session_start(nick);
+        assert_eq!(w.session_stat(nick).unwrap().connect_time, 1_000);
+
+        // Ending forgets; input without a session is a no-op.
+        w.session_end(nick);
+        assert_eq!(w.session_stat(nick), None);
+        w.session_input(nick);
+        assert_eq!(w.session_stat(nick), None);
+
+        // Missing objects never get stats; destroy clears them.
+        w.session_start(ObjId(99));
+        assert_eq!(w.session_stat(ObjId(99)), None);
+        w.session_start(nick);
+        w.destroy(nick).unwrap();
+        assert_eq!(w.session_stat(nick), None);
+    }
+
+    #[test]
+    fn correlation_ids_are_monotonic() {
+        let mut w = World::new_minimal();
+        assert_eq!(w.next_correlation_id(), 0);
+        assert_eq!(w.next_correlation_id(), 1);
+        assert_eq!(w.next_correlation_id(), 2);
     }
 
     #[test]

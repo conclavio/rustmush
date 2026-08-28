@@ -28,7 +28,10 @@ winnow = "0.7"
 # store (M2)
 fred = "10"
 # net (M1/M4)
-russh = "0.63"
+# default features pull aws-lc-sys (CMake/NASM C build); ring keeps the
+# workspace's no-C-toolchain-babysitting rule intact on Windows + Linux.
+russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
+getrandom = "0.4"
 axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["fs", "trace", "compression-gzip"] }
 tower_governor = "0.8"

@@ -4,13 +4,38 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "rustmush server binary: config, wiring, main loop"
+description = "rustmush server binary: config, accounts, world task, SSH bridge, main loop"
 
-# M0: a synchronous stdin REPL — no tokio/config/tracing yet (they return
-# with the real server loop in M1).
+# M1: the real async server. A lib target carries the wiring (config,
+# accounts, IP guard, world task, SSH bridge) so integration tests can drive
+# it; main.rs is a thin front door that also preserves the M0 stdin REPL
+# behind --repl.
+
 [dependencies]
 mush-core.workspace = true
+mush-proto.workspace = true
+mush-session.workspace = true
 mush-testkit.workspace = true
+mush-net-ssh.workspace = true
+# BoxFuture, to implement mush-net-ssh's dyn-compatible hooks trait.
+futures.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+argon2.workspace = true
+rand.workspace = true
+dashmap.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# start_paused tests (virtual clock) need tokio's test-util.
+tokio = { workspace = true, features = ["test-util"] }
+# Real SSH client for the full-stack loopback and e2e tests.
+russh.workspace = true
 
 [lints]
 workspace = true
