@@ -18,6 +18,7 @@
 //! | `[game].max_characters` | `3` | characters per account cap |
 //! | `[game].ic_ratio` | `1` | IC seconds per OOC second (game-clock speed); read at boot |
 //! | `[game].ic_epoch` | `"2020-01-01 00:00"` | IC datetime at OOC unix 0 — calendar phase/start; read at boot |
+//! | `[rulesets].enabled` | `["wod"]` | ruleset module(s) to load; unknown ids are a hard boot error |
 //!
 //! The `[web]` table deserializes straight into
 //! [`mush_net_web::WebConfig`] (every knob it documents — TLS material,
@@ -149,6 +150,31 @@ impl Default for SshCfg {
     }
 }
 
+/// `[rulesets]` section — which compiled-in ruleset module(s) load at boot.
+///
+/// Every ruleset crate is compiled into `mushd`; this list *selects* which
+/// ones register (design 00 "Rulesets": selected by config). The only
+/// ruleset available in M6a is `"wod"` (oWoD20); listing an unknown name is
+/// a hard boot error, resolved by [`crate::modules::ruleset_modules`].
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+pub struct RulesetsCfg {
+    /// Ruleset ids to load, in order. Registered **after** the built-in
+    /// modules so their commands/panels/job-queues wire cleanly and their
+    /// approval payload handlers see a loaded jobs module.
+    pub enabled: Vec<String>,
+}
+
+impl Default for RulesetsCfg {
+    fn default() -> Self {
+        // WoD is the flagship ruleset and the point of M6 — a config-less
+        // server is playable out of the box.
+        RulesetsCfg {
+            enabled: vec!["wod".to_string()],
+        }
+    }
+}
+
 /// `[game]` section.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -211,6 +237,8 @@ pub struct Config {
     pub web: WebConfig,
     /// `[game]`.
     pub game: GameCfg,
+    /// `[rulesets]` — which ruleset module(s) load (M6).
+    pub rulesets: RulesetsCfg,
 }
 
 impl Config {
@@ -289,6 +317,19 @@ mod tests {
                 .unwrap()
                 .to_ic_seconds()
         );
+    }
+
+    #[test]
+    fn rulesets_default_and_parse() {
+        // A config-less server loads WoD out of the box.
+        let cfg = Config::default();
+        assert_eq!(cfg.rulesets.enabled, ["wod"]);
+        // An explicit [rulesets] table overrides it.
+        let cfg: Config = toml::from_str("[rulesets]\nenabled = [\"wod\"]").unwrap();
+        assert_eq!(cfg.rulesets.enabled, ["wod"]);
+        // An empty list disables all rulesets (a bare comsys/mail server).
+        let cfg: Config = toml::from_str("[rulesets]\nenabled = []").unwrap();
+        assert!(cfg.rulesets.enabled.is_empty());
     }
 
     #[test]
@@ -378,6 +419,8 @@ mod tests {
         assert_eq!(cfg.game.ic_epoch, "2020-01-01 00:00");
         // The example's clock knobs must build a valid clock.
         assert!(cfg.game.game_clock().is_ok());
+        // The example enables the WoD ruleset.
+        assert_eq!(cfg.rulesets.enabled, ["wod"]);
     }
 
     #[test]

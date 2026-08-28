@@ -41,8 +41,13 @@ ic_epoch = "2020-01-01 00:00"      # (M5) IC datetime at OOC unix time 0 — the
 # and tick/ambient knobs (mush-weather) use built-in defaults; wiring them to
 # config is a later step. In-game: "help scripting" and "help weather".
 
-[rulesets]
-enabled = ["wod"]                  # (reserved — rulesets are M6)
+[rulesets]                         # (M6) which ruleset module(s) load
+# Every ruleset crate is compiled into mushd; this list SELECTS which ones
+# register (order matters only among themselves). Registered after the
+# built-in modules, so their commands (+roll, +sheet, +chargen, +xp, ...),
+# panels, and approval job queues wire cleanly. An unknown id is a hard boot
+# error; an empty list runs a ruleset-less server. In-game: "help wod".
+enabled = ["wod"]                  # (M6) oWoD20 — the only ruleset available today
 
 [llm]
 enabled = false                    # (reserved — LLM features are M7+)

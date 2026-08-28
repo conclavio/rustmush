@@ -177,6 +177,44 @@ pub fn get_job(w: &World, id: u64) -> Option<&Job> {
     w.module_state::<JobsState>()?.jobs.get(&id)
 }
 
+/// Append a comment to an existing job programmatically (RAM + write-through),
+/// the way a producing module attaches structured output to a ticket — the
+/// WoD `+roll /job <n>` switch pins a roll's summary to job `id`. Updates the
+/// in-RAM [`JobsState`] and queues the job-doc `JsonSet` on `ctx` so the store
+/// and the read cache never diverge. Enforce visibility/permission at the call
+/// site; this is the low-level primitive. Returns the job's title on success.
+///
+/// # Errors
+///
+/// Errors if the jobs module is not loaded or no job has that id.
+pub fn add_comment(ctx: &mut Ctx<'_>, id: u64, who: ObjId, text: &str) -> Result<String, String> {
+    let now = ctx.w.now();
+    let st = ctx
+        .w
+        .module_state_mut::<JobsState>()
+        .ok_or_else(|| "the jobs module is not loaded".to_string())?;
+    let job = st
+        .jobs
+        .get_mut(&id)
+        .ok_or_else(|| format!("no such job: {id}"))?;
+    job.comments.push(JobComment {
+        who,
+        ts: now,
+        text: text.to_string(),
+    });
+    job.updated_at = now;
+    let title = job.title.clone();
+    let doc = job_doc(job);
+    ctx.persist(ModuleOp {
+        ns: NS.into(),
+        op: ModuleWrite::JsonSet {
+            key: job_key(id),
+            value: doc,
+        },
+    });
+    Ok(title)
+}
+
 /// Read one note by character and category (case-insensitive category).
 #[must_use]
 pub fn get_note<'w>(w: &'w World, owner: ObjId, category: &str) -> Option<&'w Note> {

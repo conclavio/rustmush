@@ -249,6 +249,44 @@ A runaway script therefore cannot stall the single-writer world loop — the
 budget is the safety boundary. In-game reference: `help scripting`. Default
 budgets live on `ScriptConfig` (not yet config-wired).
 
+## Rulesets (M6): the game system
+
+Every ruleset crate is **compiled into `mushd`**; `[rulesets].enabled` selects
+which one(s) actually register at boot. They load **after** the built-in
+modules, so their commands, panel feeds, and approval job queues wire cleanly
+and their approval payload handlers see a loaded jobs module.
+
+```toml
+[rulesets]
+enabled = ["wod"]               # oWoD20 — the only ruleset available today
+```
+
+An **unknown id is a hard boot error** (`ruleset selection: ... unknown
+ruleset`), consistent with the rest of config — a typo does not start a
+half-configured game. An **empty list** boots a ruleset-less server (bare
+comsys/mail/jobs/weather/scripting). Changing the list needs a restart.
+
+**`wod`** is Classic World of Darkness 20th Anniversary (oWoD20 — the
+Storyteller System). Its player + staff surface: `+chargen` (priority
+point-buy → a `wod-chargen` approval job; a storyteller `+job/approve`s it and
+the sheet flips Approved), `+sheet` / staff `@sheet/set`, `+roll <pool> [vs
+<diff>]` (d10 pool, `/spec` `/wp` `/priv` `/nowound`, inline
+`vs`/`mod`/`spec`/`ext`/`job`/`contested`), `+harm` / `+heal` / `+health` (the
+Bruised→Incapacitated track with wound penalties), and `+xp` / `+xp/spend`
+(costed raises applied atomically on `+job/approve`) / `+xp/award` (staff). The
+dice RNG is OS-seeded in production. In-game reference: `help wod`.
+
+**Persistence.** Like scripting, the WoD ruleset has **no `mod:wod:*` namespace
+and runs no store migrations**: a character sheet is a single `sheet:wod`
+JSON attribute on the character's `obj:*` document (treaty ruling 7), so it
+rides the ordinary object write-through and **reloads with the world** — there
+is no separate sheet save/load path, and the reboot round trip is CI-tested
+(`crates/mushd/tests/persistence.rs::wod_sheet_persistence_round_trip_*`). The
+only ruleset-owned persisted docs are its two approval job queues, which live
+under the jobs module's `mod:jobs:*` namespace like any other queue. Do not
+hand-edit a `sheet:wod` attribute while the server runs (same rule as any
+`obj:*` write).
+
 ## Key layout reference
 
 All keys live in one Redis logical database (db 0 by default). From
@@ -275,7 +313,7 @@ and `ban:*` are read live and are safe to inspect
 
 Note for shared instances: the REDIS_URL-gated tests **wipe the `obj:*`,
 `account:*`, `ban:*`, `token:*`, `meta:*`, and `mod:*` namespaces** in logical dbs
-12–15 *and* in whatever database `REDIS_URL` itself points at (db 0 unless
+11–15 *and* in whatever database `REDIS_URL` itself points at (db 0 unless
 the URL says otherwise — mush-store's suite uses the URL as given). Never
 point `REDIS_URL` at an instance holding real data — module data (channels,
 mail, jobs) is wiped along with the world; use a disposable instance. The

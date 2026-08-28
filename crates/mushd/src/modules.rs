@@ -49,8 +49,10 @@ use smol_str::SmolStr;
 /// of [`ModuleBootData::kv`] so modules never see it.
 pub const SCHEMA_KEY: &str = "schema";
 
-/// The game modules a production `mushd` boots with, in registration
-/// order. Hand the result to [`Engine::with_modules`].
+/// The built-in game modules a production `mushd` boots with, in
+/// registration order. Config-selected [`ruleset_modules`] are appended
+/// **after** these (see `main.rs`); hand the concatenation to
+/// [`Engine::with_modules`].
 #[must_use]
 pub fn server_modules() -> Vec<Box<dyn GameModule>> {
     vec![
@@ -60,6 +62,42 @@ pub fn server_modules() -> Vec<Box<dyn GameModule>> {
         Box::new(mush_weather::WeatherModule::new()),
         Box::new(mush_script::ScriptModule::new()),
     ]
+}
+
+/// The ruleset module(s) named in `[rulesets].enabled`, in listed order.
+///
+/// Every ruleset crate is compiled into `mushd`; this maps the configured
+/// ids to their modules. Registered **after** [`server_modules`] so a
+/// ruleset's commands, panel feeds, and job queues wire cleanly and its
+/// approval payload handlers (registered in `on_world_loaded`) run after the
+/// jobs module's state slot exists.
+///
+/// A ruleset's sheets ride the object attr write-through (treaty ruling 7),
+/// so they load with the world — a ruleset registers no boot namespace and
+/// needs no separate boot-data load here.
+///
+/// An unknown id is a hard error (consistent with the rest of config: a
+/// silently-ignored typo is worse than not starting). The only id available
+/// in M6a is `"wod"` (oWoD20); duplicates are rejected too.
+pub fn ruleset_modules(enabled: &[String]) -> Result<Vec<Box<dyn GameModule>>, String> {
+    let mut seen: Vec<String> = Vec::new();
+    let mut mods: Vec<Box<dyn GameModule>> = Vec::new();
+    for id in enabled {
+        let key = id.trim().to_lowercase();
+        if seen.contains(&key) {
+            return Err(format!("[rulesets].enabled lists {id:?} more than once"));
+        }
+        match key.as_str() {
+            "wod" => mods.push(Box::new(ruleset_wod::WodRuleset::new())),
+            _ => {
+                return Err(format!(
+                    "[rulesets].enabled: unknown ruleset {id:?} (available: \"wod\")"
+                ));
+            }
+        }
+        seen.push(key);
+    }
+    Ok(mods)
 }
 
 /// Read one module's persisted boot data: every kv doc in its namespace
@@ -480,5 +518,61 @@ mod tests {
         let tw = TestWorld::with_modules(server_modules());
         let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
         assert_eq!(names, ["comsys", "mail", "jobs", "weather", "script"]);
+    }
+
+    #[test]
+    fn ruleset_modules_selects_wod() {
+        // "wod" resolves to the WoD ruleset module; the id survives boot.
+        let mods = ruleset_modules(&["wod".to_string()]).unwrap();
+        assert_eq!(mods.len(), 1);
+        assert_eq!(mods[0].name(), "wod");
+        // Case/whitespace-insensitive.
+        let mods = ruleset_modules(&["  WoD ".to_string()]).unwrap();
+        assert_eq!(mods[0].name(), "wod");
+        // Empty list is fine (a ruleset-less server).
+        assert!(ruleset_modules(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn ruleset_modules_rejects_unknown_and_duplicate() {
+        // `unwrap_err` needs `Debug` on the Ok value; `dyn GameModule` has
+        // none, so match the error out by hand.
+        let err = match ruleset_modules(&["btech".to_string()]) {
+            Err(e) => e,
+            Ok(_) => panic!("unknown ruleset must be rejected"),
+        };
+        assert!(err.contains("unknown ruleset"), "{err}");
+        let err = match ruleset_modules(&["wod".to_string(), "wod".to_string()]) {
+            Err(e) => e,
+            Ok(_) => panic!("duplicate ruleset must be rejected"),
+        };
+        assert!(err.contains("more than once"), "{err}");
+    }
+
+    #[test]
+    fn full_boot_list_registers_without_collision() {
+        // The production concatenation main.rs builds — built-ins THEN the
+        // config-selected wod ruleset — shares one registry with no
+        // collision, and wod registers last (after jobs, so its approval
+        // payload handlers see a loaded jobs module).
+        use mush_testkit::TestWorld;
+        let mut mods = server_modules();
+        mods.extend(ruleset_modules(&["wod".to_string()]).unwrap());
+        let tw = TestWorld::with_modules(mods);
+        let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
+        assert_eq!(
+            names,
+            ["comsys", "mail", "jobs", "weather", "script", "wod"]
+        );
+        // The ruleset's surface is live: +roll / +sheet registered, the
+        // wod.roll panel feed present, and the chargen/xp job queues too.
+        assert!(tw.registry().spec_of("+roll").is_some());
+        assert!(tw.registry().spec_of("+sheet").is_some());
+        assert!(
+            tw.registry()
+                .panel_feeds()
+                .iter()
+                .any(|(feed, _)| feed == "wod.roll")
+        );
     }
 }

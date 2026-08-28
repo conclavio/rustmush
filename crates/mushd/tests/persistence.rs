@@ -376,6 +376,116 @@ async fn m5_module_persistence_round_trip_redis_gated() {
 }
 
 // ---------------------------------------------------------------------------
+// M6a sheet-persistence twin: a WoD sheet is an object attribute (treaty
+// ruling 7), so it rides the SAME obj write-through as any @set and reloads
+// with the world — no module namespace, no separate boot load. This proves
+// the reboot round trip and that the reloaded sheet still validates.
+// ---------------------------------------------------------------------------
+
+/// Boot a full server rig with the built-in modules **plus the WoD ruleset**
+/// (the `[rulesets].enabled = ["wod"]` selection main.rs makes).
+async fn boot_wod_rig(
+    store: &Arc<dyn ObjectStore>,
+    guard: &Arc<IpGuard>,
+) -> (Arc<SessionManager>, PersistHandles) {
+    let world = load_or_seed_world(&**store).await.expect("boot world");
+    let staff = Arc::new(StaffQueue::new());
+    let mut registry = world_task::base_registry();
+    register_server_commands(&mut registry, &staff).unwrap();
+    let mut mods = mushd::modules::server_modules();
+    mods.extend(mushd::modules::ruleset_modules(&["wod".to_string()]).expect("wod ruleset"));
+    let mut engine =
+        Engine::with_modules(world, registry, mods).expect("module + ruleset registration");
+    mushd::modules::boot_modules(&mut engine, &**store)
+        .await
+        .expect("module boot");
+    let sessions = Arc::new(SessionManager::new());
+    let handles = world_task::spawn_persist(
+        engine,
+        Arc::clone(&sessions),
+        ServerDeps {
+            store: Arc::clone(store),
+            guard: Arc::clone(guard),
+            staff,
+        },
+    );
+    (sessions, handles)
+}
+
+/// Build a character's WoD sheet through the live `@sheet/set` command path,
+/// fence on an ack-gated create so every sheet write has landed, then reboot
+/// from the store alone and assert the sheet survived, holds its values, and
+/// still validates against the ruleset schema. Ungated + Redis-gated below.
+async fn wod_sheet_round_trip(store: Arc<dyn ObjectStore>) {
+    use mush_ruleset::{Ruleset, SheetDoc};
+
+    let guard = Arc::new(IpGuard::new());
+
+    // --- first boot: create a character, staff-build their sheet. ---------
+    let (sessions, handles) = boot_wod_rig(&store, &guard).await;
+    let world = handles.handle.clone();
+    let _god_rx = attach_direct(&sessions, &world, 1, GOD, "god").await;
+
+    let nick = world.create_player("Nick").await.expect("create Nick");
+    // Staff-edit the sheet (@sheet/set is Royalty-gated; God qualifies). The
+    // sheet is an attr on Nick's object, so these writes ride obj:* through.
+    god_cmd(&world, "@sheet/set Nick/strength=3").await;
+    god_cmd(&world, "@sheet/set Nick/brawl=4").await;
+    god_cmd(&world, "@sheet/set Nick/willpower=6").await;
+
+    // Fence: an ack-gated create returns only once the ordered writer has
+    // acknowledged its batch — so every @sheet/set above has certainly landed.
+    world.create_player("Fence").await.expect("fence create");
+
+    // --- reboot: hydrate a fresh world from the store alone. --------------
+    let reloaded = load_or_seed_world(&*store).await.expect("reload");
+    let attr = reloaded
+        .attr(nick, "sheet:wod")
+        .and_then(mush_core::Attr::as_json)
+        .expect("the sheet attribute survived the reboot");
+    let doc: SheetDoc = serde_json::from_value(attr.clone()).expect("sheet decodes");
+    assert_eq!(doc.number("strength"), Some(3), "strength survived");
+    assert_eq!(doc.number("brawl"), Some(4), "brawl survived");
+    assert_eq!(doc.number("willpower"), Some(6), "willpower survived");
+
+    // And the reloaded sheet still validates against the WoD schema.
+    let ruleset = ruleset_wod::WodRuleset::new();
+    mush_ruleset::validate(ruleset.sheet_schema(), &doc.data)
+        .expect("reloaded sheet must validate against the ruleset schema");
+
+    // The first world task + writer are reaped when the runtime shuts down
+    // at test end (as the other reboot twins here rely on).
+    drop(handles);
+}
+
+/// The sheet-persistence twin over an in-memory store — ungated, so CI proves
+/// the reboot round trip without a live Redis.
+#[tokio::test(flavor = "multi_thread")]
+async fn wod_sheet_persistence_round_trip_in_memory() {
+    wod_sheet_round_trip(Arc::new(InMemoryStore::new())).await;
+}
+
+/// The same twin over a live Redis — the reboot-from-Redis-alone surrogate.
+/// Gated on `REDIS_URL`; runs in db 11 (dbs 12–15 are claimed by the other
+/// gated tests, which run in parallel).
+#[tokio::test(flavor = "multi_thread")]
+async fn wod_sheet_persistence_round_trip_redis_gated() {
+    let Some(url) = std::env::var("REDIS_URL").ok().filter(|s| !s.is_empty()) else {
+        eprintln!(
+            "skipping wod_sheet_persistence_round_trip_redis_gated: REDIS_URL not set \
+             (no live Redis on this machine)"
+        );
+        return;
+    };
+    let url = support::redis_url_with_db(&url, 11);
+    let store = mush_store::RedisStore::connect(&url)
+        .await
+        .expect("connect to REDIS_URL");
+    store.wipe_namespaces().await.expect("wipe test namespaces");
+    wod_sheet_round_trip(Arc::new(store)).await;
+}
+
+// ---------------------------------------------------------------------------
 // A store wrapper with injectable behavior (gate / fail), for the ack and
 // read-only tests. Only `write` misbehaves; everything else delegates.
 // ---------------------------------------------------------------------------

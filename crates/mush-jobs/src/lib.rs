@@ -47,7 +47,8 @@ use mush_core::{
 };
 
 pub use api::{
-    JobsApi, OpenJob, PayloadHandlerFn, get_job, get_note, open_job, register_payload_handler,
+    JobsApi, OpenJob, PayloadHandlerFn, add_comment, get_job, get_note, open_job,
+    register_payload_handler,
 };
 pub use commands::NOTES_STAFF;
 pub use data::{

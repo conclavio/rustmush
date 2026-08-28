@@ -12,8 +12,10 @@ A modern MUSH server in Rust — the TinyMUX/TinyMUSH/RhostMUSH tradition, rebui
   sheets who act only through a validated tool allowlist and roll real dice.
 - **No softcode** — the classic command surface (`@dig`, `@desc`, `look`, `say`, `pose`,
   channels, `@mail`) is native Rust; user scripting is sandboxed [Rhai](https://rhai.rs).
-- **Ruleset modules** — World of Darkness (CofD 2e) first; BattleTech (btmux-style) seams
-  reserved and CI-tested from day one. Built-ins: comsys, @mail, weather, jobs.
+- **Ruleset modules** — Classic World of Darkness 20th Anniversary (oWoD20 — the Storyteller
+  System, Vampire/Mage/Werewolf templates) first; BattleTech (btmux-style) seams reserved and
+  CI-tested from day one. Config selects which ruleset(s) load. Built-ins: comsys, @mail,
+  weather, jobs.
 - **Redis 8 persistence** — RedisJSON object documents with write-through per-command
   transactions; RediSearch indexes power `@find`/`@search`; crash recovery is just a restart.
 
@@ -56,7 +58,7 @@ $env:REDIS_URL = "redis://127.0.0.1:6379"; cargo test --workspace  # PowerShell
 ```
 
 Point `REDIS_URL` at a **disposable** instance: the gated tests wipe their key namespaces
-(they use logical dbs 12–14 plus the default db).
+(they use logical dbs 11–15 plus the default db).
 
 The web SPA builds with `npm install && npm run build` in `web/` (vitest: `npm test`).
 Debug server builds serve `web/dist` straight from disk (rebuild the SPA, refresh the
@@ -71,8 +73,8 @@ we don't redistribute it.
 Copy [mushd.toml.example](mushd.toml.example) to `mushd.toml`, adjust, and run `mushd`
 (`mushd --repl` gives an offline in-memory REPL). In-game `help` is two-layered: per-command
 usage comes from the command table, and prose topics (getting started, building, locks,
-channels, mail, jobs, admin, scripting, weather, rules-of-conduct) are markdown files loaded
-at boot from `[server].help_dir` (default `./docs/help` — edit or add `*.md` files there and
+channels, mail, jobs, admin, scripting, weather, wod, rules-of-conduct) are markdown files
+loaded at boot from `[server].help_dir` (default `./docs/help` — edit or add `*.md` files there and
 restart to change them; `help <topic>` serves them, with exact command names taking
 precedence).
 Admin tooling includes `@boot`, `@wall`, `@ps` (scheduler inspection), `@stats` (uptime,
@@ -87,6 +89,15 @@ attach **sandboxed Rhai scripts** to objects as `script:*` attributes (budget-ca
 HALTED on repeated overrun — `help scripting`), and staff drive **zone weather** with the
 `@weather` family over `OUTDOORS`/`SHELTERED` rooms (`help weather`). See
 [docs/ops.md](docs/ops.md) for the operator view of all three.
+
+**Rulesets** are selected in `[rulesets].enabled` (default `["wod"]`). The **oWoD20** ruleset
+brings the Storyteller System to the game: point-buy character generation (`+chargen` →
+staff approval job), the classic dotted sheet (`+sheet`, staff `@sheet/set`), the d10 dice
+pool (`+roll strength+brawl vs 6`, with `/spec` `/wp` `/priv` `/nowound` and inline `vs`/`ext`/
+`job`/`contested`), the Bruised→Incapacitated health track with wound penalties (`+harm`/
+`+heal`/`+health`), and XP spends applied atomically on approval (`+xp/spend`). Character
+sheets are stored as object attributes, so they persist and reload with the world — no
+separate save path. In-game: `help wod`.
 
 The web client is served by the same process on `[web].listen` (default
 `http://127.0.0.1:8080`): log in or register over `POST /api/auth/*`, then the SPA speaks

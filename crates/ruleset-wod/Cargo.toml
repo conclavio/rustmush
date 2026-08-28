@@ -4,14 +4,23 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "World of Darkness ruleset (CofD 2e first)"
+description = "Classic World of Darkness 20th Anniversary (oWoD20) ruleset — base engine"
 
 [dependencies]
 mush-ruleset.workspace = true
 mush-dice.workspace = true
 mush-core.workspace = true
+mush-jobs.workspace = true
+mush-proto.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+smol_str.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+
+[dev-dependencies]
+mush-testkit.workspace = true
+mush-proto.workspace = true
 
 [lints]
 workspace = true

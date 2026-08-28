@@ -161,10 +161,20 @@ async fn serve(config: Config) -> Result<(), String> {
         Err(e) => tracing::warn!(error = %e, dir = %config.server.help_dir.display(),
             "help topics failed to load; continuing without them"),
     }
-    // Game modules (M3: comsys, mail, jobs): register against the one
-    // registry, run their namespaced store migrations, then hand each its
+    // Game modules: the built-ins (comsys, mail, jobs, weather, script) plus
+    // the config-selected rulesets ([rulesets].enabled — M6: "wod"), which
+    // register AFTER the built-ins so their commands/panels/job-queues wire
+    // cleanly and their approval payload handlers see a loaded jobs module.
+    // Then run each namespace's store migrations and hand each module its
     // persisted boot data — all before the world task starts serving.
-    let mut engine = Engine::with_modules(world, registry, modules::server_modules())
+    let mut mods = modules::server_modules();
+    let rulesets = modules::ruleset_modules(&config.rulesets.enabled)
+        .map_err(|e| format!("ruleset selection: {e}"))?;
+    if !rulesets.is_empty() {
+        tracing::info!(rulesets = ?config.rulesets.enabled, "rulesets enabled");
+    }
+    mods.extend(rulesets);
+    let mut engine = Engine::with_modules(world, registry, mods)
         .map_err(|e| format!("module registration: {e}"))?;
     modules::boot_modules(&mut engine, &*store).await?;
 
