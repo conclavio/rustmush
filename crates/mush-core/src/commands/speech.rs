@@ -5,6 +5,12 @@
 //! distinction. Room speech honors the room's `@lock/speech`. Private
 //! lines (`whisper`, `page`) go to the target's actor audience plus a
 //! confirmation to the speaker; they are not gated by the speech lock.
+//!
+//! `@ignore` shaping (silent gag — see [`crate::commands::admin`]): a page
+//! or whisper whose target has muted the sender is **dropped here**, while
+//! the sender still receives the ordinary delivery confirmation. Room
+//! speech from a muted speaker is instead filtered per-listener where the
+//! world task resolves `Audience::Room`.
 
 use std::sync::Arc;
 
@@ -37,6 +43,13 @@ fn room_narrative(ctx: &mut Ctx<'_>, kind: NarrativeKind, text: &str) -> Result<
         text: RichText::plain(text),
     };
     ctx.out.to_room(loc, Vec::new(), ev);
+    // Post-mutation observer notification (comsys logging, NPC stimuli).
+    ctx.emit_world_event(&crate::module::WorldEvent::Said {
+        who: ctx.actor,
+        room: loc,
+        kind,
+        text: text.to_string(),
+    });
     Ok(())
 }
 
@@ -103,12 +116,16 @@ fn whisper_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if my_loc.is_none() || my_loc != their_loc {
         return Err(CmdError::msg("They aren't here."));
     }
-    let ev = OutputEvent::Narrative {
-        kind: NarrativeKind::Whisper,
-        actor: Some(obj_ref(ctx.w, ctx.actor)),
-        text: RichText::plain(&msg),
-    };
-    ctx.out.to_actor(target, ev);
+    // Silent gag: a muted sender's whisper is dropped, but the sender's
+    // confirmation below is identical either way.
+    if !crate::commands::admin::is_ignoring(ctx.w, target, ctx.actor) {
+        let ev = OutputEvent::Narrative {
+            kind: NarrativeKind::Whisper,
+            actor: Some(obj_ref(ctx.w, ctx.actor)),
+            text: RichText::plain(&msg),
+        };
+        ctx.out.to_actor(target, ev);
+    }
     let who = display_name(ctx.w, target);
     ctx.out
         .info(ctx.actor, format!("You whisper \"{msg}\" to {who}."));
@@ -157,12 +174,16 @@ fn page_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if refused {
         return Err(CmdError::msg("That player does not wish to be disturbed."));
     }
-    let ev = OutputEvent::Narrative {
-        kind: NarrativeKind::Page,
-        actor: Some(obj_ref(ctx.w, ctx.actor)),
-        text: RichText::plain(&msg),
-    };
-    ctx.out.to_actor(target, ev);
+    // Silent gag: a muted sender's page is dropped, but the sender's
+    // confirmation below is identical either way ("delivered" semantics).
+    if !crate::commands::admin::is_ignoring(ctx.w, target, ctx.actor) {
+        let ev = OutputEvent::Narrative {
+            kind: NarrativeKind::Page,
+            actor: Some(obj_ref(ctx.w, ctx.actor)),
+            text: RichText::plain(&msg),
+        };
+        ctx.out.to_actor(target, ev);
+    }
     let who = display_name(ctx.w, target);
     ctx.out
         .info(ctx.actor, format!("You paged {who} with '{msg}'."));

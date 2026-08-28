@@ -15,12 +15,13 @@ use crate::cmd::{ArgShape, CmdError, CommandSpec, Ctx, Registry, RegistryError};
 use crate::flags::{Flags, Powers, Role};
 use crate::lock::{LockType, parse_lock};
 use crate::matchit::match_object;
+use crate::module::{WorldEvent, check_move_attempt};
 use crate::obj::{ObjId, ObjKind};
-use crate::output::{name_span, primary_name, room_view};
+use crate::output::{name_span, primary_name};
 use crate::perm;
 use crate::world::World;
 
-use super::narrative_emit;
+use super::{narrative_emit, show_room};
 
 /// Lock-type names valid as `/switches` on `@lock` and `@unlock`.
 ///
@@ -81,6 +82,11 @@ fn create_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .create(ObjKind::Thing, &name, ctx.actor, Some(ctx.actor))?;
     ctx.out
         .info(ctx.actor, format!("Created: {name}({thing})."));
+    ctx.emit_world_event(&WorldEvent::ObjCreated {
+        obj: thing,
+        kind: ObjKind::Thing,
+        creator: ctx.actor,
+    });
     Ok(())
 }
 
@@ -95,6 +101,11 @@ fn dig_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ctx.actor,
         format!("{name} created with room number {room}."),
     );
+    ctx.emit_world_event(&WorldEvent::ObjCreated {
+        obj: room,
+        kind: ObjKind::Room,
+        creator: ctx.actor,
+    });
 
     if !exit_specs.is_empty() {
         let here = ctx
@@ -113,6 +124,11 @@ fn dig_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             ctx.actor,
             format!("Opened exit {}({out_exit}).", primary_name(&exit_specs[0])),
         );
+        ctx.emit_world_event(&WorldEvent::ObjCreated {
+            obj: out_exit,
+            kind: ObjKind::Exit,
+            creator: ctx.actor,
+        });
         // Exit back: new room -> here.
         if let Some(back) = exit_specs.get(1) {
             let back_exit = open_exit(ctx.w, ctx.actor, room, back, Some(here))?;
@@ -120,13 +136,28 @@ fn dig_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 ctx.actor,
                 format!("Opened exit {}({back_exit}).", primary_name(back)),
             );
+            ctx.emit_world_event(&WorldEvent::ObjCreated {
+                obj: back_exit,
+                kind: ObjKind::Exit,
+                creator: ctx.actor,
+            });
         }
     }
     if ctx.switches.has("teleport") {
-        ctx.w.move_to(ctx.actor, room)?;
-        if let Some(rv) = room_view(ctx.w, ctx.actor, room) {
-            ctx.out.to_actor(ctx.actor, OutputEvent::Room(rv));
+        // Same contract as @teleport: consult the MoveAttempt veto and
+        // notify Moved observers — @dig/teleport is a move like any other.
+        if let Err(reason) = check_move_attempt(ctx.reg, ctx.w, ctx.actor, None, room) {
+            ctx.out.to_actor(ctx.actor, OutputEvent::Sys(reason));
+            return Ok(());
         }
+        let from = ctx.w.get(ctx.actor).and_then(|o| o.location);
+        ctx.w.move_to(ctx.actor, room)?;
+        show_room(ctx.reg, ctx.w, ctx.actor, room, ctx.out);
+        ctx.emit_world_event(&WorldEvent::Moved {
+            who: ctx.actor,
+            from,
+            to: room,
+        });
     }
     Ok(())
 }
@@ -156,6 +187,11 @@ fn open_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     let exit = open_exit(ctx.w, ctx.actor, here, &spec, dest)?;
     ctx.out.info(ctx.actor, format!("Opened. ({exit})"));
+    ctx.emit_world_event(&WorldEvent::ObjCreated {
+        obj: exit,
+        kind: ObjKind::Exit,
+        creator: ctx.actor,
+    });
     Ok(())
 }
 
@@ -287,6 +323,17 @@ fn set_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         if !perm::can_modify(ctx.w, ctx.actor, target) {
             return Err(perm_denied());
         }
+        // Module-owned attribute namespaces (`wod:*`): only the owning
+        // module's own commands (ctx.module) and Wizards+ may write them.
+        if !ctx
+            .reg
+            .may_write_attr(ctx.w, ctx.actor, ctx.module.as_deref(), aname)
+        {
+            let ns = aname.split(':').next().unwrap_or(aname);
+            return Err(CmdError::msg(format!(
+                "Permission denied.  (The {ns}: attribute namespace is module-owned.)"
+            )));
+        }
         let existing = ctx
             .w
             .get(target)
@@ -330,8 +377,23 @@ fn set_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if flag_name.is_empty() {
         return Err(CmdError::msg("Set which flag?"));
     }
-    let flag = Flags::from_name(&flag_name.to_uppercase())
-        .ok_or_else(|| CmdError::msg(format!("I don't understand the flag \"{flag_name}\".")))?;
+    let Some(flag) = Flags::from_name(&flag_name.to_uppercase()) else {
+        // Module marker flags ("wod:kindred"): registered names are
+        // settable by whoever can modify the target.
+        if let Some((canonical, _module)) = ctx.reg.marker_owner(&flag_name) {
+            let canonical = canonical.clone();
+            if !perm::can_modify(ctx.w, ctx.actor, target) {
+                return Err(perm_denied());
+            }
+            ctx.w.set_marker(target, &canonical, on)?;
+            ctx.out
+                .info(ctx.actor, if on { "Set." } else { "Cleared." });
+            return Ok(());
+        }
+        return Err(CmdError::msg(format!(
+            "I don't understand the flag \"{flag_name}\"."
+        )));
+    };
     if !perm::can_modify(ctx.w, ctx.actor, target) {
         return Err(perm_denied());
     }
@@ -454,6 +516,11 @@ fn teleport_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !perm::can_teleport(ctx.w, ctx.actor, target, dest) {
         return Err(perm_denied());
     }
+    // Module veto (MoveAttempt hooks; `exit: None` marks a teleport).
+    if let Err(reason) = check_move_attempt(ctx.reg, ctx.w, target, None, dest) {
+        ctx.out.to_actor(ctx.actor, OutputEvent::Sys(reason));
+        return Ok(());
+    }
     let from = ctx.w.get(target).and_then(|o| o.location);
     // Move first (a cycle — teleporting into something you carry — or a
     // vanished destination must NOT leak a raw internal error, and the
@@ -471,14 +538,17 @@ fn teleport_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .span(name_span(ctx.w, target))
         .text(" has arrived.");
     ctx.out.to_room(dest, vec![target], narrative_emit(text));
-    if ctx.w.get(target).is_some_and(|o| o.kind.is_actor())
-        && let Some(rv) = room_view(ctx.w, target, dest)
-    {
-        ctx.out.to_actor(target, OutputEvent::Room(rv));
+    if ctx.w.get(target).is_some_and(|o| o.kind.is_actor()) {
+        show_room(ctx.reg, ctx.w, target, dest, ctx.out);
     }
     if target != ctx.actor {
         ctx.out.info(ctx.actor, "Teleported.");
     }
+    ctx.emit_world_event(&WorldEvent::Moved {
+        who: target,
+        from,
+        to: dest,
+    });
     Ok(())
 }
 
@@ -601,6 +671,7 @@ fn destroy_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     ctx.w.destroy(target)?;
     ctx.out.info(ctx.actor, "Destroyed.");
+    ctx.emit_world_event(&WorldEvent::ObjDestroyed { obj: target });
     Ok(())
 }
 

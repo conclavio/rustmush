@@ -9,6 +9,9 @@
 //! - a [`WriteBatch`] applies all-or-nothing under one lock (serialization,
 //!   the only fallible step, happens before any mutation);
 //! - upserts land before deletes, so an id in both lists ends up deleted;
+//! - module ops apply after the object writes, in queue order; module
+//!   streams are capped `VecDeque`s (exact trim — see [`MemStream`]) with
+//!   monotonic `"N-0"` ids;
 //! - ban expiry mirrors Redis TTL: expired entries are pruned at read time
 //!   against the system clock.
 //!
@@ -16,7 +19,7 @@
 //! happens while it is held, so holding a blocking mutex inside async
 //! methods is safe and keeps the implementation dependency-free.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -25,7 +28,8 @@ use mush_core::{Obj, ObjId};
 
 use crate::store::ObjectStore;
 use crate::types::{
-    AccountRec, BanRec, CharacterRef, StoreError, WorldSnapshot, WriteBatch, WriteReceipt,
+    AccountRec, BanRec, CharacterRef, ModuleWrite, StoreError, WorldSnapshot, WriteBatch,
+    WriteReceipt, validate_module_key, validate_module_ns, validate_module_op,
 };
 
 /// See the [module docs](self).
@@ -46,9 +50,49 @@ struct Inner {
     accounts: HashMap<String, String>,
     /// ip → serialized `BanRec` JSON doc.
     bans: HashMap<String, String>,
+    /// `(ns, key)` → serialized module JSON doc (`mod:{ns}:{key}` in
+    /// Redis). The tuple key makes namespace isolation structural — no
+    /// prefix matching to get wrong.
+    module_kv: BTreeMap<(String, String), String>,
+    /// `(ns, key)` → capped module stream (`mod:{ns}:{key}` in Redis).
+    module_streams: BTreeMap<(String, String), MemStream>,
     /// Highest acknowledged batch serial (debug/ops visibility).
     last_serial: Option<u64>,
     closed: bool,
+}
+
+/// One in-memory module stream: a capped `VecDeque` mirroring
+/// `XADD ... MAXLEN ~ n`. Trimming is **exact** here (a valid instance of
+/// Redis's "at least `maxlen`, approximately" contract, which may retain
+/// more). Ids are `"{seq}-0"` with `seq` starting at 1 and monotonically
+/// increasing for the stream's lifetime — trims never reset it (like Redis,
+/// a `Del` destroys the stream, so a recreated stream starts fresh).
+#[derive(Debug, Default)]
+struct MemStream {
+    /// Sequence number the next appended entry receives.
+    next_seq: u64,
+    /// `(seq, serialized value JSON)`, oldest first.
+    entries: VecDeque<(u64, String)>,
+}
+
+/// A module op validated and serialized ahead of the state lock, so a bad
+/// op fails the whole batch before anything mutates.
+enum PlannedModuleOp {
+    JsonSet {
+        ns: String,
+        key: String,
+        doc: String,
+    },
+    Del {
+        ns: String,
+        key: String,
+    },
+    StreamAppend {
+        ns: String,
+        key: String,
+        doc: String,
+        maxlen: u32,
+    },
 }
 
 impl InMemoryStore {
@@ -121,11 +165,35 @@ impl ObjectStore for InMemoryStore {
             if batch.is_empty() {
                 return Ok(WriteReceipt { serial });
             }
-            // Serialize (the only fallible step) before touching state, so a
-            // failure leaves the store untouched: all-or-nothing.
+            // Validate + serialize (the only fallible steps) before touching
+            // state, so a failure leaves the store untouched: all-or-nothing.
             let mut docs = Vec::with_capacity(batch.upserts.len());
             for obj in &batch.upserts {
                 docs.push((obj.id.0, serde_json::to_string(obj)?));
+            }
+            let mut planned = Vec::with_capacity(batch.module_ops.len());
+            for op in &batch.module_ops {
+                validate_module_op(op)?;
+                let ns = op.ns.to_string();
+                planned.push(match &op.op {
+                    ModuleWrite::JsonSet { key, value } => PlannedModuleOp::JsonSet {
+                        ns,
+                        key: key.to_string(),
+                        doc: serde_json::to_string(value)?,
+                    },
+                    ModuleWrite::Del { key } => PlannedModuleOp::Del {
+                        ns,
+                        key: key.to_string(),
+                    },
+                    ModuleWrite::StreamAppend { key, value, maxlen } => {
+                        PlannedModuleOp::StreamAppend {
+                            ns,
+                            key: key.to_string(),
+                            doc: serde_json::to_string(value)?,
+                            maxlen: *maxlen,
+                        }
+                    }
+                });
             }
             let mut inner = self.lock()?;
             for (id, doc) in docs {
@@ -133,6 +201,34 @@ impl ObjectStore for InMemoryStore {
             }
             for id in &batch.deletes {
                 inner.objects.remove(&id.0);
+            }
+            // Module ops after the object writes, in queue order.
+            for op in planned {
+                match op {
+                    PlannedModuleOp::JsonSet { ns, key, doc } => {
+                        inner.module_kv.insert((ns, key), doc);
+                    }
+                    PlannedModuleOp::Del { ns, key } => {
+                        // Redis DEL is type-agnostic: it removes whatever
+                        // lives at mod:{ns}:{key}, JSON doc or stream.
+                        inner.module_kv.remove(&(ns.clone(), key.clone()));
+                        inner.module_streams.remove(&(ns, key));
+                    }
+                    PlannedModuleOp::StreamAppend {
+                        ns,
+                        key,
+                        doc,
+                        maxlen,
+                    } => {
+                        let stream = inner.module_streams.entry((ns, key)).or_default();
+                        stream.next_seq += 1;
+                        let seq = stream.next_seq;
+                        stream.entries.push_back((seq, doc));
+                        while stream.entries.len() > maxlen as usize {
+                            stream.entries.pop_front();
+                        }
+                    }
+                }
             }
             if let Some(next_id) = batch.next_id {
                 inner.next_id = Some(next_id);
@@ -271,6 +367,70 @@ impl ObjectStore for InMemoryStore {
         })
     }
 
+    fn module_json_get<'a>(
+        &'a self,
+        ns: &'a str,
+        key: &'a str,
+    ) -> BoxFuture<'a, Result<Option<serde_json::Value>, StoreError>> {
+        Box::pin(async move {
+            validate_module_ns(ns)?;
+            validate_module_key(key)?;
+            let inner = self.lock()?;
+            match inner.module_kv.get(&(ns.to_string(), key.to_string())) {
+                Some(doc) => Ok(Some(serde_json::from_str(doc)?)),
+                None => Ok(None),
+            }
+        })
+    }
+
+    fn module_json_list<'a>(
+        &'a self,
+        ns: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<(String, serde_json::Value)>, StoreError>> {
+        Box::pin(async move {
+            validate_module_ns(ns)?;
+            let inner = self.lock()?;
+            let mut out = Vec::new();
+            for ((doc_ns, key), doc) in &inner.module_kv {
+                if doc_ns != ns {
+                    continue;
+                }
+                match serde_json::from_str(doc) {
+                    Ok(value) => out.push((key.clone(), value)),
+                    Err(e) => {
+                        tracing::error!(ns, key, error = %e, "skipping corrupt module doc");
+                    }
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    fn stream_range<'a>(
+        &'a self,
+        ns: &'a str,
+        key: &'a str,
+        count_latest: u32,
+    ) -> BoxFuture<'a, Result<Vec<(String, serde_json::Value)>, StoreError>> {
+        Box::pin(async move {
+            validate_module_ns(ns)?;
+            validate_module_key(key)?;
+            if count_latest == 0 {
+                return Ok(Vec::new());
+            }
+            let inner = self.lock()?;
+            let Some(stream) = inner.module_streams.get(&(ns.to_string(), key.to_string())) else {
+                return Ok(Vec::new());
+            };
+            let skip = stream.entries.len().saturating_sub(count_latest as usize);
+            let mut out = Vec::with_capacity(stream.entries.len() - skip);
+            for (seq, doc) in stream.entries.iter().skip(skip) {
+                out.push((format!("{seq}-0"), serde_json::from_str(doc)?));
+            }
+            Ok(out)
+        })
+    }
+
     fn get_schema_version(&self) -> BoxFuture<'_, Result<Option<u32>, StoreError>> {
         Box::pin(async move { Ok(self.lock()?.schema_version) })
     }
@@ -304,5 +464,115 @@ impl ObjectStore for InMemoryStore {
                 .closed = true;
             Ok(())
         })
+    }
+}
+
+/// Memory-implementation-specific stream semantics (the cross-impl behavior
+/// lives in [`crate::suite`]): exact trimming to `maxlen`, `"N-0"` id
+/// format, monotonic ids across trims, and type-agnostic `Del`.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{ModuleOp, WriteBatch};
+
+    fn append(ns: &str, key: &str, value: serde_json::Value, maxlen: u32) -> ModuleOp {
+        ModuleOp {
+            ns: ns.into(),
+            op: ModuleWrite::StreamAppend {
+                key: key.into(),
+                value,
+                maxlen,
+            },
+        }
+    }
+
+    async fn write_ops(store: &InMemoryStore, serial: u64, module_ops: Vec<ModuleOp>) {
+        store
+            .write(WriteBatch {
+                serial,
+                module_ops,
+                ..WriteBatch::default()
+            })
+            .await
+            .expect("module-op batch");
+    }
+
+    #[tokio::test]
+    async fn stream_ids_are_n_dash_zero_and_survive_trims() {
+        let store = InMemoryStore::new();
+        // Five appends, cap 2: exact trim keeps exactly the newest two, and
+        // the surviving ids show the counter never reset.
+        for i in 1..=5 {
+            write_ops(&store, i, vec![append("m", "log", serde_json::json!(i), 2)]).await;
+        }
+        let entries = store.stream_range("m", "log", 10).await.expect("range");
+        let got: Vec<(&str, i64)> = entries
+            .iter()
+            .map(|(id, v)| (id.as_str(), v.as_i64().unwrap()))
+            .collect();
+        assert_eq!(got, [("4-0", 4), ("5-0", 5)], "exact trim, monotonic ids");
+
+        // The next append continues the sequence.
+        write_ops(&store, 6, vec![append("m", "log", serde_json::json!(6), 2)]).await;
+        let entries = store.stream_range("m", "log", 1).await.expect("range");
+        assert_eq!(entries[0].0, "6-0");
+    }
+
+    #[tokio::test]
+    async fn del_removes_streams_too() {
+        let store = InMemoryStore::new();
+        write_ops(
+            &store,
+            1,
+            vec![
+                append("m", "log", serde_json::json!("entry"), 8),
+                ModuleOp {
+                    ns: "m".into(),
+                    op: ModuleWrite::JsonSet {
+                        key: "doc".into(),
+                        value: serde_json::json!({"a": 1}),
+                    },
+                },
+            ],
+        )
+        .await;
+        write_ops(
+            &store,
+            2,
+            vec![
+                ModuleOp {
+                    ns: "m".into(),
+                    op: ModuleWrite::Del { key: "log".into() },
+                },
+                ModuleOp {
+                    ns: "m".into(),
+                    op: ModuleWrite::Del { key: "doc".into() },
+                },
+            ],
+        )
+        .await;
+        assert!(
+            store
+                .stream_range("m", "log", 10)
+                .await
+                .expect("range")
+                .is_empty(),
+            "Del must destroy the stream (Redis DEL is type-agnostic)"
+        );
+        assert_eq!(
+            store.module_json_get("m", "doc").await.expect("get"),
+            None,
+            "Del must remove the JSON doc"
+        );
+        // A recreated stream is a *new* stream: the counter starts over.
+        write_ops(
+            &store,
+            3,
+            vec![append("m", "log", serde_json::json!("x"), 8)],
+        )
+        .await;
+        let entries = store.stream_range("m", "log", 10).await.expect("range");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "1-0");
     }
 }

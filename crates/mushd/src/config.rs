@@ -8,6 +8,7 @@
 //! |---|---|---|
 //! | `[server].name` | `"rustmush"` | server name (banners, logs) |
 //! | `[server].data_dir` | `"./data"` | host keys, one-time `accounts.json` import, logs |
+//! | `[server].help_dir` | `"./docs/help"` | markdown help topics loaded at boot (`help <topic>`) |
 //! | `[store].store` | `"redis"` | store backend: `"redis"` or `"memory"` |
 //! | `[store].redis_url` | `"redis://127.0.0.1:6379"` | Redis connection URL |
 //! | `[ssh].listen` | `"0.0.0.0:2222"` | SSH listen address |
@@ -76,6 +77,9 @@ pub struct ServerCfg {
     pub name: String,
     /// Directory for host keys, `accounts.json`, and logs.
     pub data_dir: PathBuf,
+    /// Directory of markdown help topics loaded at boot (`help <topic>`).
+    /// A missing directory just means zero topics.
+    pub help_dir: PathBuf,
 }
 
 impl Default for ServerCfg {
@@ -83,6 +87,7 @@ impl Default for ServerCfg {
         ServerCfg {
             name: "rustmush".to_string(),
             data_dir: PathBuf::from("./data"),
+            help_dir: PathBuf::from("./docs/help"),
         }
     }
 }
@@ -212,6 +217,7 @@ mod tests {
         let cfg = Config::load(Path::new("Z:/definitely/not/here/mushd.toml")).unwrap();
         assert_eq!(cfg.server.name, "rustmush");
         assert_eq!(cfg.server.data_dir, PathBuf::from("./data"));
+        assert_eq!(cfg.server.help_dir, PathBuf::from("./docs/help"));
         assert_eq!(cfg.ssh.listen, "0.0.0.0:2222");
         assert_eq!(cfg.game.linkdead_grace_s, 300);
         assert_eq!(cfg.game.max_characters, 3);

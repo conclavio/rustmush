@@ -1104,6 +1104,12 @@ fn spawn_output_pump(
                             mush_ansi::render(&ev, &sh.caps, &theme, &mut prompt);
                             sh.editor
                                 .set_prompt(String::from_utf8_lossy(&prompt).into_owned());
+                        } else {
+                            // `text: None` means "no prompt" (the normal
+                            // in-game mode restored after an input context
+                            // pops) — clear the stored prompt rather than
+                            // keeping a stale "Mail>" on screen.
+                            sh.editor.set_prompt(String::new());
                         }
                         sh.editor.redraw(&mut bytes);
                     }

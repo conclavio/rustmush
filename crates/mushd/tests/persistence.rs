@@ -238,7 +238,7 @@ async fn boot_seed_persist_reload_round_trip_in_memory() {
 /// same namespaces) would race.
 #[tokio::test(flavor = "multi_thread")]
 async fn boot_round_trip_redis_gated() {
-    let Ok(url) = std::env::var("REDIS_URL") else {
+    let Some(url) = std::env::var("REDIS_URL").ok().filter(|s| !s.is_empty()) else {
         eprintln!(
             "skipping boot_round_trip_redis_gated: REDIS_URL not set \
              (no live Redis on this machine)"
@@ -344,6 +344,30 @@ impl ObjectStore for FlakyStore {
 
     fn clear_ban<'a>(&'a self, ip: &'a str) -> BoxFuture<'a, Result<bool, StoreError>> {
         self.inner.clear_ban(ip)
+    }
+
+    fn module_json_get<'a>(
+        &'a self,
+        ns: &'a str,
+        key: &'a str,
+    ) -> BoxFuture<'a, Result<Option<serde_json::Value>, StoreError>> {
+        self.inner.module_json_get(ns, key)
+    }
+
+    fn module_json_list<'a>(
+        &'a self,
+        ns: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<(String, serde_json::Value)>, StoreError>> {
+        self.inner.module_json_list(ns)
+    }
+
+    fn stream_range<'a>(
+        &'a self,
+        ns: &'a str,
+        key: &'a str,
+        count_latest: u32,
+    ) -> BoxFuture<'a, Result<Vec<(String, serde_json::Value)>, StoreError>> {
+        self.inner.stream_range(ns, key, count_latest)
     }
 
     fn get_schema_version(&self) -> BoxFuture<'_, Result<Option<u32>, StoreError>> {

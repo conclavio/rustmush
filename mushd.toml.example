@@ -7,6 +7,7 @@
 [server]
 name = "rustmush dev"              # (M2)
 data_dir = "./data"                # (M2) host keys, logs (a leftover accounts.json is imported once)
+help_dir = "./docs/help"           # (M3) markdown help topics served by "help <topic>" (missing dir = no topics)
 
 [store]
 store = "redis"                    # (M2) "redis" (authoritative) or "memory" (nothing survives restart)

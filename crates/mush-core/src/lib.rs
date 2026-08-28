@@ -30,6 +30,12 @@
 //!   command table → Huh).
 //! - [`commands`] — the core MUSH command set, registered via
 //!   [`register_core_commands`].
+//! - [`module`] — the merged module API (treaty ruling 4): [`GameModule`]
+//!   and [`Registrar`] (commands, alias stages, marker flags, attr
+//!   namespaces, ticks, hooks, observers, state slots, panel feeds, query
+//!   handlers, job queues, script-api reservations, migrations), module
+//!   persistence ops ([`ModuleOp`]), scenes ([`SceneId`], the btech seam),
+//!   and the input-context stack.
 //!
 //! And the async seam (still fully sync in here — the tokio loop lives in
 //! `mushd`):
@@ -48,6 +54,7 @@ pub mod engine;
 pub mod flags;
 pub mod lock;
 pub mod matchit;
+pub mod module;
 pub mod obj;
 pub mod output;
 pub mod perm;
@@ -57,10 +64,10 @@ pub mod world;
 pub use attr::{Attr, AttrFlags, AttrMap, AttrValue, UncasedName};
 pub use clock::{GameClock, Season, TimeOfDay};
 pub use cmd::{
-    AliasOutcome, AliasStage, ArgShape, CmdError, CommandHandler, CommandSpec, Ctx, LookupErr,
-    ParsedArgs, Registry, RegistryError, SwitchSet, dispatch,
+    AliasOutcome, AliasStage, ArgShape, CmdError, CommandHandler, CommandSpec, Ctx, HelpTopic,
+    LookupErr, ParsedArgs, Registry, RegistryError, SwitchSet, dispatch,
 };
-pub use commands::register_core_commands;
+pub use commands::{ignore_list, is_ignoring, narrative_actor, register_core_commands};
 pub use engine::{
     ControlMsg, Deferred, DisconnectKind, Effect, Effects, Engine, Inbound, StepOutcome,
     WorldCommand, register_engine_commands,
@@ -68,6 +75,12 @@ pub use engine::{
 pub use flags::{Flags, Powers, Role};
 pub use lock::{LockExpr, LockParseError, LockType, eval_lock, glob_match, parse_lock};
 pub use matchit::{MatchErr, match_object};
+pub use module::{
+    ContextOutcome, EventHook, GameModule, HookPoint, InputContext, JobQueueSpec, Migration,
+    ModError, ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, PanelFeedHandle, QueryHandler,
+    Registrar, Scene, SceneId, StackedContext, TickCadence, TickHandler, WeatherQuery, WorldEvent,
+    WorldEventKind, WorldObserver, WxSnapshot,
+};
 pub use obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
 pub use output::{Audience, ConnId, Outbox, name_span, obj_ref, room_view};
 pub use sched::{ScheduledKind, Scheduler, TimerId};

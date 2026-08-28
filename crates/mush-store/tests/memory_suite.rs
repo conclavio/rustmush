@@ -45,6 +45,26 @@ async fn serde_obj_round_trip() {
 }
 
 #[tokio::test]
+async fn module_batch_atomicity() {
+    suite::module_batch_atomicity(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
+async fn module_kv_round_trip() {
+    suite::module_kv_round_trip(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
+async fn module_stream_ordering() {
+    suite::module_stream_ordering(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
+async fn module_empty_namespace_list() {
+    suite::module_empty_namespace_list(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
 async fn closed_store_refuses_work() {
     let store = InMemoryStore::new();
     store.close().await.expect("close");

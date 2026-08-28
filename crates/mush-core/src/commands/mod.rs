@@ -6,14 +6,18 @@ use mush_proto::{NarrativeKind, OutputEvent, RichText};
 
 use crate::cmd::{Registry, RegistryError};
 use crate::obj::ObjId;
+use crate::output::{Outbox, room_view};
 use crate::world::World;
 
+pub mod admin;
 pub mod building;
 pub mod info;
 pub mod items;
 pub mod look;
 pub mod movement;
 pub mod speech;
+
+pub use admin::{ignore_list, is_ignoring, narrative_actor};
 
 /// Register every core command into `reg`. Called once at boot (and by
 /// tests); collisions among core commands are a programming error surfaced
@@ -25,6 +29,7 @@ pub fn register_core_commands(reg: &mut Registry) -> Result<(), RegistryError> {
     items::register(reg)?;
     building::register(reg)?;
     info::register(reg)?;
+    admin::register(reg)?;
     Ok(())
 }
 
@@ -41,5 +46,20 @@ pub(crate) fn narrative_emit(text: RichText) -> OutputEvent {
         kind: NarrativeKind::Emit,
         actor: None,
         text,
+    }
+}
+
+/// Show a room render to `looker`: the structured [`RoomView`] event plus
+/// any `LookRendered` hook lines (weather ambience, scene banners). The
+/// one room-render path — `look`, movement arrival, and `@teleport` all
+/// come through here so module lines appear everywhere a room does.
+///
+/// [`RoomView`]: mush_proto::RoomView
+pub(crate) fn show_room(reg: &Registry, w: &World, looker: ObjId, room: ObjId, out: &mut Outbox) {
+    if let Some(rv) = room_view(w, looker, room) {
+        out.to_actor(looker, OutputEvent::Room(rv));
+        for line in crate::module::look_rendered_lines(reg, w, looker, room) {
+            out.to_actor(looker, OutputEvent::Sys(line));
+        }
     }
 }

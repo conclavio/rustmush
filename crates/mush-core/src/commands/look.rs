@@ -10,25 +10,26 @@ use crate::cmd::{CmdError, CommandSpec, Ctx, Registry, RegistryError};
 use crate::flags::{Flags, Role};
 use crate::matchit::{MatchErr, match_object};
 use crate::obj::{ObjId, ObjKind};
-use crate::output::{Outbox, name_span, room_view};
+use crate::output::{Outbox, name_span};
 use crate::perm;
 use crate::world::World;
 
-use super::attr_text;
+use super::{attr_text, show_room};
 
 fn look_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let q = ctx.args.raw().to_string();
     let loc = ctx.w.get(ctx.actor).and_then(|o| o.location);
     if q.is_empty() {
         let loc = loc.ok_or_else(|| CmdError::msg("You are nowhere."))?;
-        let rv =
-            room_view(ctx.w, ctx.actor, loc).ok_or_else(|| CmdError::msg("You are nowhere."))?;
-        ctx.out.to_actor(ctx.actor, OutputEvent::Room(rv));
+        if ctx.w.get(loc).is_none() {
+            return Err(CmdError::msg("You are nowhere."));
+        }
+        show_room(ctx.reg, ctx.w, ctx.actor, loc, ctx.out);
         return Ok(());
     }
     match match_object(ctx.w, ctx.actor, &q) {
         Ok(target) => {
-            look_at(ctx.w, ctx.actor, target, ctx.out);
+            look_at(ctx.reg, ctx.w, ctx.actor, target, ctx.out);
             Ok(())
         }
         Err(MatchErr::NoMatch) => {
@@ -56,12 +57,10 @@ fn look_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// contents. An actor's carry is private — `look <player>` never lists
 /// another character's inventory unless the looker controls them
 /// (`inventory` is how you see your own).
-fn look_at(w: &World, looker: ObjId, target: ObjId, out: &mut Outbox) {
+fn look_at(reg: &Registry, w: &World, looker: ObjId, target: ObjId, out: &mut Outbox) {
     let Some(o) = w.get(target) else { return };
     if o.kind == ObjKind::Room {
-        if let Some(rv) = room_view(w, looker, target) {
-            out.to_actor(looker, OutputEvent::Room(rv));
-        }
+        show_room(reg, w, looker, target, out);
         return;
     }
     let desc =

@@ -198,6 +198,10 @@ pub struct SessionManager {
     sessions: DashMap<SessId, SessEntry>,
     conns: DashMap<ConnId, ConnEntry>,
     by_char: DashMap<CharKey, SessId>,
+    /// Characters whose input currently bypasses the flood throttle (the
+    /// world task marks actors sitting in an input context — multi-line
+    /// pastes into mail compose must not lose body lines).
+    flood_exempt: DashMap<CharKey, ()>,
     next_sess: AtomicU64,
 }
 
@@ -220,6 +224,7 @@ impl SessionManager {
             sessions: DashMap::new(),
             conns: DashMap::new(),
             by_char: DashMap::new(),
+            flood_exempt: DashMap::new(),
             next_sess: AtomicU64::new(1),
         }
     }
@@ -544,10 +549,36 @@ impl SessionManager {
 
     /// Charge one input line at an explicit instant. Unknown connections are
     /// not throttled (there is nothing to protect; treat as a caller bug).
+    /// Connections of a [flood-exempt](SessionManager::set_flood_exempt)
+    /// character pass without charging their bucket.
     pub fn check_input_at(&self, conn: ConnId, now: Instant) -> FloodVerdict {
+        // Lock discipline: never hold `conns` while touching `sessions` —
+        // each map is acquired and released one at a time here.
+        if !self.flood_exempt.is_empty() {
+            let sess = self.conns.get(&conn).map(|e| e.sess);
+            let character = sess.and_then(|s| self.sessions.get(&s).map(|s| s.character));
+            if character.is_some_and(|c| self.flood_exempt.contains_key(&c)) {
+                return FloodVerdict::Ok;
+            }
+        }
         match self.conns.get(&conn) {
             Some(e) => e.bucket.lock().expect("flood bucket poisoned").check(now),
             None => FloodVerdict::Ok,
+        }
+    }
+
+    /// Mark (or clear) a character as flood-exempt: their input lines
+    /// bypass the per-connection throttle while set. The world task sets
+    /// this while the character sits in an input context (mail compose,
+    /// chargen) — multi-line pastes are exactly what those contexts exist
+    /// for, and a throttled line would silently vanish from the composed
+    /// body. The flag is keyed by character, so it survives reconnects the
+    /// way the input-context stack itself does.
+    pub fn set_flood_exempt(&self, character: CharKey, exempt: bool) {
+        if exempt {
+            self.flood_exempt.insert(character, ());
+        } else {
+            self.flood_exempt.remove(&character);
         }
     }
 

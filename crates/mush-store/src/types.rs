@@ -3,6 +3,11 @@
 use mush_core::{Obj, ObjId};
 use serde::{Deserialize, Serialize};
 
+// The module-op vocabulary is owned by mush-core (modules queue these
+// through `Ctx::persist`); re-exported here because [`WriteBatch`] carries
+// them into the store.
+pub use mush_core::{ModuleOp, ModuleWrite};
+
 /// Everything needed to rebuild the world at boot: the persisted objects,
 /// the id allocator's resume point, and the store's schema version.
 ///
@@ -32,6 +37,9 @@ pub struct WorldSnapshot {
 ///   first, in order — a later upsert of the same id wins;
 /// - `deletes` are applied **after** upserts, so an id in both lists ends up
 ///   deleted;
+/// - `module_ops` are applied after the object deletes, **in queue order**
+///   (module keys live under `mod:{ns}:{key}` — see
+///   [`crate::ObjectStore::module_json_get`] for the namespace rules);
 /// - `next_id`, when present, is stored last;
 /// - the batch applies **atomically**: a failure before the store accepts
 ///   it (serialization, connection loss, a refused `EXEC`) leaves the store
@@ -51,10 +59,19 @@ pub struct WriteBatch {
     pub upserts: Vec<Obj>,
     /// Objects to remove (swept tombstones).
     pub deletes: Vec<ObjId>,
+    /// Module persistence ops (comsys/mail/jobs state, `mod:{ns}:{key}`
+    /// keys), drained from the per-command Outbox side-channel. They commit
+    /// inside the same transaction as the object writes — module state gets
+    /// the exact same atomicity and write-through durability. `WriteBatch`
+    /// is never serialized today; if that changes, skip this field when
+    /// empty.
+    pub module_ops: Vec<ModuleOp>,
     /// New id-allocator resume point, if allocation advanced.
     pub next_id: Option<u32>,
-    /// Durability-critical batch (account/character creation, mail send):
-    /// the caller gates its confirmation output on this call returning `Ok`.
+    /// Durability-critical batch (account/character creation, and any step
+    /// whose handler called `Ctx::gate_on_durable_ack` — mail send, job
+    /// approval): the caller gates its confirmation output on this call
+    /// returning `Ok`.
     /// Every batch is acknowledged the same way (the `EXEC` reply *is* the
     /// ack — see [`crate::redis`] on AOF durability); the flag exists so the
     /// store can trace-tag critical batches and so future backends can
@@ -63,12 +80,55 @@ pub struct WriteBatch {
 }
 
 impl WriteBatch {
-    /// True when the batch would change nothing (no upserts, deletes, or
-    /// `next_id`). Implementations skip the round trip for these.
+    /// True when the batch would change nothing (no upserts, deletes,
+    /// module ops, or `next_id`). Implementations skip the round trip for
+    /// these.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.upserts.is_empty() && self.deletes.is_empty() && self.next_id.is_none()
+        self.upserts.is_empty()
+            && self.deletes.is_empty()
+            && self.module_ops.is_empty()
+            && self.next_id.is_none()
     }
+}
+
+/// Validate a module namespace: non-empty and free of `:` — the separator
+/// in `mod:{ns}:{key}` keys. A `:` inside `ns` would let one namespace's
+/// keys alias another's (`ns="a", key="b:c"` vs `ns="a:b", key="c"`), and
+/// would let `module_json_list`'s `mod:{ns}:*` SCAN pattern leak across
+/// namespaces. Rejected here, at the storage boundary, for every
+/// implementation.
+pub(crate) fn validate_module_ns(ns: &str) -> Result<(), StoreError> {
+    if ns.is_empty() {
+        return Err(StoreError::Invalid("empty module namespace".into()));
+    }
+    if ns.contains(':') {
+        return Err(StoreError::Invalid(format!(
+            "module namespace {ns:?} contains ':' (reserved separator)"
+        )));
+    }
+    Ok(())
+}
+
+/// Validate a module key: non-empty. Unlike namespaces, keys **may**
+/// contain `:` — they sit after the second separator, so with `:`-free
+/// namespaces every `mod:{ns}:{key}` key parses unambiguously.
+pub(crate) fn validate_module_key(key: &str) -> Result<(), StoreError> {
+    if key.is_empty() {
+        return Err(StoreError::Invalid("empty module key".into()));
+    }
+    Ok(())
+}
+
+/// Validate one [`ModuleOp`] (namespace + the key inside the write).
+pub(crate) fn validate_module_op(op: &ModuleOp) -> Result<(), StoreError> {
+    validate_module_ns(&op.ns)?;
+    let key = match &op.op {
+        ModuleWrite::JsonSet { key, .. }
+        | ModuleWrite::Del { key }
+        | ModuleWrite::StreamAppend { key, .. } => key,
+    };
+    validate_module_key(key)
 }
 
 /// Acknowledgement of a durably applied [`WriteBatch`].

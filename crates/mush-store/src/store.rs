@@ -113,6 +113,55 @@ pub trait ObjectStore: Send + Sync {
     fn clear_ban<'a>(&'a self, ip: &'a str) -> BoxFuture<'a, Result<bool, StoreError>>;
 
     // ------------------------------------------------------------------
+    // Module persistence reads (`mod:{ns}:{key}` keys)
+    //
+    // Module state is *written* through [`WriteBatch::module_ops`] — same
+    // transaction, same atomicity as object writes. These reads are the
+    // out-of-band load path: modules hydrate their state at boot/module
+    // load, never during play (play-time reads come from the module's own
+    // in-RAM state). Called from the boot task; the concurrency notes for
+    // account/ban methods apply.
+    //
+    // Namespace rules (enforced by every implementation): `ns` is non-empty
+    // and contains no `:` — otherwise `mod:a:*` listings could leak keys
+    // across namespaces. Keys are non-empty and may contain `:`.
+    //
+    // [`WriteBatch::module_ops`]: crate::types::WriteBatch::module_ops
+    // ------------------------------------------------------------------
+
+    /// Fetch one module JSON document (`JSON.GET mod:{ns}:{key}`).
+    /// `Ok(None)` when absent.
+    fn module_json_get<'a>(
+        &'a self,
+        ns: &'a str,
+        key: &'a str,
+    ) -> BoxFuture<'a, Result<Option<serde_json::Value>, StoreError>>;
+
+    /// Every JSON document in a module namespace, as `(key, value)` pairs
+    /// (`SCAN mod:{ns}:*` — the trailing `:` in the pattern is what keeps
+    /// `mod:a:*` from matching `mod:ab:...`). Keys are returned **without**
+    /// the `mod:{ns}:` prefix. Order is unspecified. Stream keys sharing
+    /// the namespace are skipped, not errors. An unknown namespace is an
+    /// empty list.
+    fn module_json_list<'a>(
+        &'a self,
+        ns: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<(String, serde_json::Value)>, StoreError>>;
+
+    /// The newest `count_latest` entries of a module stream, returned
+    /// **oldest-first** (`XREVRANGE mod:{ns}:{key} + - COUNT n`, then
+    /// re-reversed). Each entry is `(id, value)` where `id` is the store's
+    /// stream id (Redis `ms-seq`; in-memory `N-0`) — ids within one stream
+    /// are strictly increasing in append order. A missing stream or
+    /// `count_latest == 0` yields an empty list.
+    fn stream_range<'a>(
+        &'a self,
+        ns: &'a str,
+        key: &'a str,
+        count_latest: u32,
+    ) -> BoxFuture<'a, Result<Vec<(String, serde_json::Value)>, StoreError>>;
+
+    // ------------------------------------------------------------------
     // Meta / migrations
     // ------------------------------------------------------------------
 

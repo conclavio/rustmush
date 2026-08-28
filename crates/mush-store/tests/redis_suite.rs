@@ -5,9 +5,10 @@
 //! Without `REDIS_URL` every test skips cleanly with a note — the dev box
 //! has no Redis; Linux CI runs a `redis:8` service container.
 //!
-//! **WARNING:** these tests delete every `obj:*`, `account:*`, `ban:*`, and
-//! `meta:*` key in the configured database between phases. Point `REDIS_URL`
-//! at a disposable database.
+//! **WARNING:** these tests delete every `obj:*`, `account:*`, `ban:*`,
+//! `meta:*`, and `mod:*` key in the configured database between phases —
+//! module data (channels, mail, jobs) is wiped along with the world. Point
+//! `REDIS_URL` at a disposable database.
 //!
 //! Tests in this file share one database, so they serialize on a static
 //! async mutex (cargo runs `#[tokio::test]`s in one process concurrently).
@@ -17,9 +18,10 @@ use tokio::sync::Mutex;
 
 static REDIS_LOCK: Mutex<()> = Mutex::const_new(());
 
-/// Connect and wipe, or `None` (with a note) when `REDIS_URL` is unset.
+/// Connect and wipe, or `None` (with a note) when `REDIS_URL` is unset
+/// (or set but empty — `REDIS_URL= cargo test` must skip, not panic).
 async fn fresh_store(test: &str) -> Option<RedisStore> {
-    let Ok(url) = std::env::var("REDIS_URL") else {
+    let Some(url) = std::env::var("REDIS_URL").ok().filter(|s| !s.is_empty()) else {
         eprintln!("skipping {test}: REDIS_URL not set (no live Redis on this machine)");
         return None;
     };
@@ -68,6 +70,22 @@ redis_gated!(serde_obj_round_trip, store, {
     suite::serde_obj_round_trip(&store).await;
 });
 
+// Module persistence twins (M3): same shared suite functions as
+// tests/memory_suite.rs, against live Redis. The wipe between phases
+// covers `mod:*` too.
+redis_gated!(module_batch_atomicity, store, {
+    suite::module_batch_atomicity(&store).await;
+});
+redis_gated!(module_kv_round_trip, store, {
+    suite::module_kv_round_trip(&store).await;
+});
+redis_gated!(module_stream_ordering, store, {
+    suite::module_stream_ordering(&store).await;
+});
+redis_gated!(module_empty_namespace_list, store, {
+    suite::module_empty_namespace_list(&store).await;
+});
+
 // ---------------------------------------------------------------------
 // Redis-only behavior
 // ---------------------------------------------------------------------
@@ -90,9 +108,8 @@ redis_gated!(index_bootstrap_and_search, store, {
         .write(WriteBatch {
             serial: 1,
             upserts: vec![obj],
-            deletes: vec![],
             next_id: Some(8),
-            durable: false,
+            ..WriteBatch::default()
         })
         .await
         .expect("write searchable object");
@@ -214,9 +231,9 @@ redis_gated!(kill9_equivalent_reconnect_load, store, {
                 o.location = Some(mush_core::LIMBO);
                 o
             }],
-            deletes: vec![],
             next_id: Some(3),
             durable: true,
+            ..WriteBatch::default()
         })
         .await
         .expect("last write");

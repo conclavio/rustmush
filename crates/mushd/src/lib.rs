@@ -22,6 +22,10 @@
 //!   boot-time world load/seed.
 //! - [`staff`] — `@siteban`/`@dump`: registry-registered handlers that push
 //!   typed ops to the world task (which owns the store handles).
+//! - [`modules`] — M3: the game-module roster (comsys, mail, jobs), their
+//!   boot-data load through the store read API, and per-namespace module
+//!   migrations. Module writes ride each command's `WriteBatch` as
+//!   `module_ops` (same transaction as the object writes).
 //! - [`accounts`] — store-backed accounts (argon2id PHC hashes in
 //!   `account:{name}` docs; verification caller-side), plus the one-time
 //!   `accounts.json` import. Creating a character creates the Player *via a
@@ -38,7 +42,9 @@
 
 pub mod accounts;
 pub mod config;
+pub mod help;
 pub mod ipguard;
+pub mod modules;
 pub mod persist;
 pub mod repl;
 pub mod ssh_bridge;

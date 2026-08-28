@@ -114,6 +114,14 @@ impl Outbox {
         &self.deferred
     }
 
+    /// Truncate the deferred-work side-queue back to `len` entries.
+    /// Dispatch uses this to discard everything a **failed** handler
+    /// deferred (persistence ops, timers, effects) — an `Err` return must
+    /// not half-commit the handler's queued writes.
+    pub fn truncate_deferred(&mut self, len: usize) {
+        self.deferred.truncate(len);
+    }
+
     /// Drain the deferred-work side-queue, leaving it empty. (Separate from
     /// [`Outbox::take`]: events go to delivery, deferred work goes to the
     /// engine's effects queue and scheduler.)

@@ -26,6 +26,7 @@ use tracing_subscriber::EnvFilter;
 use mushd::accounts::{Accounts, import_accounts_json};
 use mushd::config::{Config, StoreBackend};
 use mushd::ipguard::IpGuard;
+use mushd::modules;
 use mushd::persist::load_or_seed_world;
 use mushd::ssh_bridge::{SshBridge, start_listener};
 use mushd::staff::{StaffQueue, register_server_commands};
@@ -138,13 +139,24 @@ async fn serve(config: Config) -> Result<(), String> {
     }
     let world = load_or_seed_world(&*store).await?;
 
-    // Command table: core + engine + server staff commands (@siteban/@dump
-    // push typed ops onto the queue the world task drains).
+    // Command table: core + engine + server staff commands (@siteban/@dump/
+    // @boot/@ps/@stats push typed ops onto the queue the world task
+    // drains), plus the markdown help topics.
     let staff = Arc::new(StaffQueue::new());
     let mut registry = world_task::base_registry();
     register_server_commands(&mut registry, &staff)
         .map_err(|e| format!("server command registration: {e}"))?;
-    let engine = Engine::new(world, registry);
+    match mushd::help::load_help_topics(&mut registry, &config.server.help_dir) {
+        Ok(n) => tracing::info!(topics = n, "help topics loaded"),
+        Err(e) => tracing::warn!(error = %e, dir = %config.server.help_dir.display(),
+            "help topics failed to load; continuing without them"),
+    }
+    // Game modules (M3: comsys, mail, jobs): register against the one
+    // registry, run their namespaced store migrations, then hand each its
+    // persisted boot data — all before the world task starts serving.
+    let mut engine = Engine::with_modules(world, registry, modules::server_modules())
+        .map_err(|e| format!("module registration: {e}"))?;
+    modules::boot_modules(&mut engine, &*store).await?;
 
     // Session layer.
     let sessions = Arc::new(SessionManager::with_config(SessionConfig {

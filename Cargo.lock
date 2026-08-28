@@ -1269,10 +1269,15 @@ dependencies = [
 name = "mush-comsys"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "mush-core",
+ "mush-proto",
+ "mush-store",
+ "mush-testkit",
  "serde",
  "serde_json",
  "smol_str",
+ "tracing",
 ]
 
 [[package]]
@@ -1305,8 +1310,11 @@ name = "mush-jobs"
 version = "0.1.0"
 dependencies = [
  "mush-core",
+ "mush-proto",
  "serde",
  "serde_json",
+ "smol_str",
+ "tracing",
 ]
 
 [[package]]
@@ -1325,8 +1333,11 @@ name = "mush-mail"
 version = "0.1.0"
 dependencies = [
  "mush-core",
+ "mush-proto",
+ "mush-testkit",
  "serde",
  "serde_json",
+ "smol_str",
 ]
 
 [[package]]
@@ -1423,6 +1434,7 @@ version = "0.1.0"
 dependencies = [
  "mush-core",
  "mush-proto",
+ "smol_str",
 ]
 
 [[package]]
@@ -1454,7 +1466,10 @@ dependencies = [
  "dashmap",
  "fred",
  "futures",
+ "mush-comsys",
  "mush-core",
+ "mush-jobs",
+ "mush-mail",
  "mush-net-ssh",
  "mush-proto",
  "mush-session",
@@ -1955,9 +1970,12 @@ version = "0.1.0"
 dependencies = [
  "mush-core",
  "mush-dice",
+ "mush-proto",
  "mush-ruleset",
+ "mush-testkit",
  "serde",
  "serde_json",
+ "smol_str",
 ]
 
 [[package]]

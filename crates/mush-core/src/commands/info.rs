@@ -54,16 +54,28 @@ fn who_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 fn help_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let topic = ctx.args.raw().trim().to_string();
     if topic.is_empty() {
-        ctx.out.info(
-            ctx.actor,
-            "Help topics (type \"help <command>\" for details):",
-        );
+        ctx.out
+            .info(ctx.actor, "Commands (type \"help <command>\" for details):");
         let mut names: Vec<&str> = ctx.reg.specs().map(|s| s.name.as_str()).collect();
         names.sort_unstable();
         ctx.out.info(ctx.actor, names.join("  "));
+        let topics: Vec<&str> = ctx.reg.help_topic_names().collect();
+        if !topics.is_empty() {
+            ctx.out
+                .info(ctx.actor, "Topics (type \"help <topic>\" to read):");
+            ctx.out.info(ctx.actor, topics.join("  "));
+        }
         return Ok(());
     }
+    // Precedence: an exact command-name (or alias) match always wins over a
+    // prose topic of the same name; topics fill in everything else.
     let Some(spec) = ctx.reg.spec_of(&topic) else {
+        if let Some(t) = ctx.reg.help_topic(&topic) {
+            let (title, body) = (t.title.clone(), t.body.clone());
+            ctx.out.info(ctx.actor, title);
+            ctx.out.info(ctx.actor, body);
+            return Ok(());
+        }
         return Err(CmdError::msg(format!("No help available for \"{topic}\".")));
     };
     let mut header = spec.name.to_string();
@@ -102,9 +114,12 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
         CommandSpec {
             name: "help".into(),
             aliases: vec!["+help".into()],
-            help: "help [<command>]  --  With no argument, list every command. With \
-                   a command name (exact, including its @ or + prefix), show its \
-                   usage, aliases, and switches. +help is the same command."
+            help: "help [<command>|<topic>]  --  With no argument, list every \
+                   command and every prose topic. With a command name (exact, \
+                   including its @ or + prefix), show its usage, aliases, and \
+                   switches; otherwise serve the matching prose topic (e.g. \
+                   \"help getting-started\"). An exact command name wins over a \
+                   topic of the same name. +help is the same command."
                 .into(),
             ..CommandSpec::default()
         },

@@ -22,8 +22,12 @@
 //!   ([`WorldMsg::StoreStatus`]) until the store recovers (PLAN risk 3). A
 //!   *deterministic* failure (serialization, a type-clobbered key) would
 //!   fail identically forever, so the batch is dropped with a loud error
-//!   instead of wedging the writer behind it — RAM self-heals the store on
-//!   the next write touching those objects (upserts are full snapshots).
+//!   instead of wedging the writer behind it. **Self-healing is partial**:
+//!   object upserts are full snapshots, so RAM heals the store on the next
+//!   write touching those objects — but a dropped batch's *module ops* do
+//!   not heal (a dropped `Del` resurrects its doc at next boot; a dropped
+//!   `StreamAppend` is lost), so the affected `mod:*` keys are logged for
+//!   manual repair.
 //!
 //! Durability-critical batches (`durable: true`, e.g. Player creation)
 //! carry a receipt oneshot; the caller gates its confirmation output on it,
@@ -160,11 +164,36 @@ async fn write_with_retry(
             Err(e) if !e.is_transient() => {
                 // Deterministic failure: every retry would fail identically,
                 // wedging persistence behind one poisoned batch. Drop it,
-                // scream, and keep the pipeline moving.
+                // scream, and keep the pipeline moving. Object upserts
+                // self-heal (full snapshots re-sent on the next touch), but
+                // dropped MODULE ops do NOT: a dropped `Del` resurrects its
+                // document at next boot and a dropped `StreamAppend` is
+                // simply gone — log the affected keys so an operator can
+                // repair by hand.
+                if !batch.module_ops.is_empty() {
+                    let keys: Vec<String> = batch
+                        .module_ops
+                        .iter()
+                        .map(|op| {
+                            let key = match &op.op {
+                                mush_store::ModuleWrite::JsonSet { key, .. }
+                                | mush_store::ModuleWrite::Del { key }
+                                | mush_store::ModuleWrite::StreamAppend { key, .. } => key,
+                            };
+                            format!("mod:{}:{}", op.ns, key)
+                        })
+                        .collect();
+                    tracing::error!(
+                        serial = batch.serial,
+                        ?keys,
+                        "dropped batch carried module ops that will NOT self-heal \
+                         (deletes may resurrect at next boot; stream appends are lost)"
+                    );
+                }
                 tracing::error!(
                     serial = batch.serial, error = %e,
                     "store write failed with a non-retryable error; BATCH DROPPED \
-                     (store is behind RAM until these objects are next written)"
+                     (object docs are behind RAM until those objects are next written)"
                 );
                 return Err(format!("non-retryable store error: {e}"));
             }
@@ -347,9 +376,9 @@ mod tests {
             .write(mush_store::WriteBatch {
                 serial: 1,
                 upserts: vec![orphan],
-                deletes: vec![],
                 next_id: Some(6),
                 durable: true,
+                ..mush_store::WriteBatch::default()
             })
             .await
             .unwrap();
@@ -371,9 +400,9 @@ mod tests {
             .write(mush_store::WriteBatch {
                 serial: 1,
                 upserts: objects,
-                deletes: vec![],
                 next_id: Some(50_000_000),
                 durable: true,
+                ..mush_store::WriteBatch::default()
             })
             .await
             .unwrap();

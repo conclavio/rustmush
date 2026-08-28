@@ -60,3 +60,15 @@ Point `REDIS_URL` at a **disposable** instance: the gated tests wipe their key n
 
 Redis is tri-licensed (AGPLv3 option from Redis 8); running it alongside the server is fine —
 we don't redistribute it.
+
+## Running
+
+Copy [mushd.toml.example](mushd.toml.example) to `mushd.toml`, adjust, and run `mushd`
+(`mushd --repl` gives an offline in-memory REPL). In-game `help` is two-layered: per-command
+usage comes from the command table, and prose topics (getting started, building, locks,
+channels, mail, jobs, admin, rules-of-conduct) are markdown files loaded at boot from
+`[server].help_dir` (default `./docs/help` — edit or add `*.md` files there and restart to
+change them; `help <topic>` serves them, with exact command names taking precedence).
+Admin tooling includes `@boot`, `@wall`, `@ps` (scheduler inspection), `@stats` (uptime,
+loop lag, store health), `@siteban`, `@dump`, `@shutdown`, and a player-side `@ignore`
+mute list.

@@ -1,19 +1,25 @@
-//! Server-side staff commands (M2): `@siteban`, `@dump`, and `@shutdown`.
+//! Server-side staff commands: `@siteban`, `@dump`, `@shutdown` (M2), and
+//! `@boot`, `@ps`, `@stats` (M3).
 //!
-//! These need the store, which `mush-core` must never see. The bridge is
-//! the treaty-ruling-4 shape: the commands are registered into the normal
-//! [`Registry`] (so dispatch, `min_role: Wizard` gating, switch validation,
+//! These need server-side state (the store, the session layer, the
+//! scheduler), which `mush-core` must never see. The bridge is the
+//! treaty-ruling-4 shape: the commands are registered into the normal
+//! [`Registry`] (so dispatch, `min_role`/power gating, switch validation,
 //! and `help` all work natively), and their handlers — which run
 //! synchronously inside the world task's `Engine::step` — capture a shared
 //! [`StaffQueue`] and push typed [`StaffOp`]s onto it. The world task
-//! drains the queue right after the step and performs the async store work
-//! on detached tasks, delivering the confirmation to the actor when the
-//! store has acknowledged (ack-gated output, like account creation).
+//! drains the queue right after the step: store-touching ops
+//! (siteban/dump) run on async executor tasks with ack-gated confirmations,
+//! while **local** ops ([`StaffOpKind::is_local`]: boot/ps/stats) are
+//! handled inline in the loop where the `Engine`, the scheduler, and the
+//! session manager are all at hand.
 
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
-use mush_core::{ArgShape, CmdError, CommandSpec, Ctx, ObjId, Registry, RegistryError, Role};
+use mush_core::{
+    ArgShape, CmdError, CommandSpec, Ctx, ObjId, Powers, Registry, RegistryError, Role, perm,
+};
 use mush_proto::{OutputEvent, RichText};
 
 /// One queued staff operation, tagged with the requesting actor (who gets
@@ -51,6 +57,37 @@ pub enum StaffOpKind {
     /// `ControlMsg::Shutdown` (announce to all) and exits; main then runs
     /// the normal drain → BGSAVE → close sequence, exactly like Ctrl-C.
     Shutdown,
+    /// `@boot <player>[=<message>]` — disconnect every one of the target's
+    /// connections. The handler already queued the target an
+    /// [`OutputEvent::Disconnect`] carrying the message (delivered before
+    /// the world task detaches the session); this op does the detach and
+    /// feeds the resulting `ConnDown(Boot)`s back into the engine.
+    Boot {
+        /// The actor being booted.
+        target: ObjId,
+        /// Staff-entered message (empty when none was given) — audit log.
+        message: String,
+    },
+    /// `@ps` — render the scheduler (pending `@wait`s, module ticks,
+    /// counts) to the requesting wizard.
+    Ps,
+    /// `@stats` (wizard form) — render uptime, object counts, connected
+    /// count, loop lag, and store health to the requesting wizard. The
+    /// mortal form is answered directly by the command handler.
+    Stats,
+}
+
+impl StaffOpKind {
+    /// Whether the op is handled inline in the world loop (needs the
+    /// `Engine`/sessions, no store round-trip) rather than by the async
+    /// store executors.
+    #[must_use]
+    pub fn is_local(&self) -> bool {
+        matches!(
+            self,
+            StaffOpKind::Boot { .. } | StaffOpKind::Ps | StaffOpKind::Stats
+        )
+    }
 }
 
 /// The sync→async hand-off queue between command handlers (inside
@@ -151,6 +188,95 @@ fn siteban_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// Resolve a `@boot` target: player-index name (optionally `*`-prefixed) or
+/// a `#dbref` naming an actor.
+fn resolve_actor(w: &mush_core::World, raw: &str) -> Result<ObjId, CmdError> {
+    let q = raw.trim();
+    if let Ok(id) = q.parse::<ObjId>() {
+        return if w.get(id).is_some_and(|o| o.kind.is_actor()) {
+            Ok(id)
+        } else {
+            Err(CmdError::msg("I don't recognize that player."))
+        };
+    }
+    let name = q.strip_prefix('*').unwrap_or(q);
+    w.resolve_player(name)
+        .ok_or_else(|| CmdError::msg("I don't recognize that player."))
+}
+
+fn boot_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let who = ctx.args.lhs().trim().to_string();
+    if who.is_empty() {
+        return Err(CmdError::msg("Usage: @boot <player>[=<message>]."));
+    }
+    let target = resolve_actor(ctx.w, &who)?;
+    if target == ctx.actor {
+        return Err(CmdError::msg("Use QUIT to disconnect yourself."));
+    }
+    // The BOOT power (or Wizard, which implies it) got us past dispatch;
+    // rank still matters: nobody boots someone above their own role.
+    if perm::role_of(ctx.w, target) > perm::role_of(ctx.w, ctx.actor) {
+        return Err(CmdError::msg("Permission denied."));
+    }
+    if !ctx.w.is_connected(target) {
+        return Err(CmdError::msg("That player is not connected."));
+    }
+    let message = ctx
+        .args
+        .rhs()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .unwrap_or_default()
+        .to_string();
+    let booter = ctx
+        .w
+        .get(ctx.actor)
+        .map_or_else(|| ctx.actor.to_string(), |o| o.name.clone());
+    let reason = if message.is_empty() {
+        format!("You have been booted by {booter}.")
+    } else {
+        format!("You have been booted by {booter}: {message}")
+    };
+    // The Disconnect event rides the normal outbox and is DELIVERED before
+    // the world task processes the queued op (delivery happens right after
+    // the step, local staff ops after that) — so the message reaches the
+    // target's connections before their session is closed.
+    ctx.out.to_actor(
+        target,
+        OutputEvent::Disconnect {
+            reason: RichText::tag("system", reason),
+        },
+    );
+    queue.push(StaffOp {
+        actor: ctx.actor,
+        kind: StaffOpKind::Boot { target, message },
+    });
+    Ok(())
+}
+
+fn ps_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    queue.push(StaffOp {
+        actor: ctx.actor,
+        kind: StaffOpKind::Ps,
+    });
+    Ok(())
+}
+
+fn stats_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if perm::has_role(ctx.w, ctx.actor, Role::Wizard) {
+        queue.push(StaffOp {
+            actor: ctx.actor,
+            kind: StaffOpKind::Stats,
+        });
+    } else {
+        // The classic brief mortal form.
+        let n = ctx.w.iter().count();
+        ctx.out
+            .info(ctx.actor, format!("The universe contains {n} objects."));
+    }
+    Ok(())
+}
+
 fn shutdown_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // No announcement here: the world task steps `ControlMsg::Shutdown`,
     // whose engine handling broadcasts "GAME: Shutdown in progress." to
@@ -229,6 +355,55 @@ pub fn register_server_commands(
             ..CommandSpec::default()
         },
         Arc::new(move |ctx: &mut Ctx<'_>| shutdown_cmd(&q, ctx)),
+    )?;
+    let q = Arc::clone(queue);
+    reg.register(
+        CommandSpec {
+            name: "@boot".into(),
+            shape: ArgShape::EqPair,
+            // min_role stays Player so a mortal GRANTED the BOOT power can
+            // use it; Wizard+ passes the power check implicitly.
+            power: Some(Powers::BOOT),
+            help: "@boot <player>[=<message>]  --  Disconnect every one of a \
+                   player's connections at once. They see \"You have been \
+                   booted by <you>\" (plus your message, if given) before the \
+                   line drops; the room sees the normal disconnect. You cannot \
+                   boot someone of higher rank than yourself. Requires the \
+                   BOOT power (Wizards have it implicitly)."
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(move |ctx: &mut Ctx<'_>| boot_cmd(&q, ctx)),
+    )?;
+    let q = Arc::clone(queue);
+    reg.register(
+        CommandSpec {
+            name: "@ps".into(),
+            shape: ArgShape::None,
+            min_role: Role::Wizard,
+            help: "@ps  --  Inspect the scheduler: pending @wait entries (who \
+                   queued them, seconds remaining, a preview of the command), \
+                   registered module ticks with their cadences and next fire, \
+                   and totals. Wizards only."
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(move |ctx: &mut Ctx<'_>| ps_cmd(&q, ctx)),
+    )?;
+    let q = Arc::clone(queue);
+    reg.register(
+        CommandSpec {
+            name: "@stats".into(),
+            shape: ArgShape::None,
+            help: "@stats  --  Server statistics. Everyone gets the classic \
+                   \"The universe contains N objects.\"; Wizards get the full \
+                   report: uptime, object counts by kind, connected players, \
+                   world-loop lag (last/max), store health (read-only mode and \
+                   the age of the last write), and database size."
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(move |ctx: &mut Ctx<'_>| stats_cmd(&q, ctx)),
     )?;
     Ok(())
 }
@@ -360,6 +535,125 @@ mod tests {
         });
         assert!(denied, "{:?}", out.events());
         assert!(queue.drain().is_empty());
+    }
+
+    #[test]
+    fn boot_validates_and_queues_with_disconnect_event() {
+        let (mut engine, queue) = engine_with_staff();
+        let nick = engine
+            .world
+            .create(ObjKind::Player, "Nick", GOD, Some(LIMBO))
+            .unwrap();
+
+        // Not connected yet: refused, nothing queued.
+        let out = run(&mut engine, GOD, "@boot Nick");
+        assert!(
+            out.events().iter().any(|(_, e)| matches!(e,
+                OutputEvent::Sys(t) if t.to_plain_text().contains("not connected"))),
+            "{:?}",
+            out.events()
+        );
+        assert!(queue.drain().is_empty());
+
+        // Connect Nick, then boot with a message.
+        let mut fx = mush_core::Effects::new();
+        let mut o = Outbox::new();
+        engine.step(
+            mush_core::Inbound::ConnUp {
+                conn: 7,
+                actor: nick,
+                caps_structured: false,
+                from_linkdead: false,
+            },
+            &mut o,
+            &mut fx,
+        );
+        let out = run(&mut engine, GOD, "@boot Nick=go away");
+        // The engine-side Disconnect event carries the message to the actor.
+        let disc = out.events().iter().any(|(aud, e)| {
+            matches!(aud, mush_core::Audience::Actor(a) if *a == nick)
+                && matches!(e, OutputEvent::Disconnect { reason }
+                    if reason.to_plain_text() == "You have been booted by God: go away")
+        });
+        assert!(disc, "{:?}", out.events());
+        assert_eq!(
+            queue.drain(),
+            vec![StaffOp {
+                actor: GOD,
+                kind: StaffOpKind::Boot {
+                    target: nick,
+                    message: "go away".into()
+                }
+            }]
+        );
+
+        // Booting yourself is refused.
+        let out = run(&mut engine, GOD, "@boot God");
+        assert!(out.events().iter().any(|(_, e)| matches!(e,
+                OutputEvent::Sys(t) if t.to_plain_text().contains("Use QUIT"))),);
+        assert!(queue.drain().is_empty());
+
+        // A mortal without the BOOT power is refused by dispatch.
+        let out = run(&mut engine, nick, "@boot God");
+        assert!(out.events().iter().any(|(_, e)| matches!(e,
+            OutputEvent::Sys(t) if t.to_plain_text() == "Permission denied.")));
+        assert!(queue.drain().is_empty());
+
+        // Granting BOOT lets the mortal use the command — but never up-rank.
+        engine.world.get_mut(nick).unwrap().powers = mush_core::Powers::BOOT;
+        let out = run(&mut engine, nick, "@boot God=usurped");
+        assert!(out.events().iter().any(|(_, e)| matches!(e,
+            OutputEvent::Sys(t) if t.to_plain_text() == "Permission denied.")));
+        assert!(queue.drain().is_empty());
+    }
+
+    #[test]
+    fn ps_is_wizard_gated_and_queues() {
+        let (mut engine, queue) = engine_with_staff();
+        run(&mut engine, GOD, "@ps");
+        assert_eq!(
+            queue.drain(),
+            vec![StaffOp {
+                actor: GOD,
+                kind: StaffOpKind::Ps
+            }]
+        );
+        let nick = engine
+            .world
+            .create(ObjKind::Player, "Nick", GOD, Some(LIMBO))
+            .unwrap();
+        let out = run(&mut engine, nick, "@ps");
+        assert!(out.events().iter().any(|(_, e)| matches!(e,
+            OutputEvent::Sys(t) if t.to_plain_text() == "Permission denied.")));
+        assert!(queue.drain().is_empty());
+    }
+
+    #[test]
+    fn stats_brief_for_mortals_full_op_for_wizards() {
+        let (mut engine, queue) = engine_with_staff();
+        let nick = engine
+            .world
+            .create(ObjKind::Player, "Nick", GOD, Some(LIMBO))
+            .unwrap();
+        // Mortal: the classic one-liner, answered synchronously, no op.
+        let out = run(&mut engine, nick, "@stats");
+        // Limbo + God + Nick = 3 objects.
+        assert!(
+            out.events().iter().any(|(_, e)| matches!(e,
+                OutputEvent::Sys(t) if t.to_plain_text() == "The universe contains 3 objects.")),
+            "{:?}",
+            out.events()
+        );
+        assert!(queue.drain().is_empty());
+        // Wizard: the full report is rendered by the world task.
+        run(&mut engine, GOD, "@stats");
+        assert_eq!(
+            queue.drain(),
+            vec![StaffOp {
+                actor: GOD,
+                kind: StaffOpKind::Stats
+            }]
+        );
     }
 
     #[test]

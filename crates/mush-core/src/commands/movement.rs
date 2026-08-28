@@ -14,11 +14,12 @@ use mush_proto::{OutputEvent, RichText};
 use crate::cmd::{ArgShape, CmdError, CommandSpec, Ctx, Registry, RegistryError};
 use crate::flags::Flags;
 use crate::lock::{LockType, MAX_LOCK_DEPTH, eval_lock};
+use crate::module::{WorldEvent, check_move_attempt, emit_world_event};
 use crate::obj::{LIMBO, Obj, ObjId};
-use crate::output::{Outbox, name_span, primary_name, room_view};
+use crate::output::{Outbox, name_span, primary_name};
 use crate::world::World;
 
-use super::{attr_text, narrative_emit};
+use super::{attr_text, narrative_emit, show_room};
 
 /// Find an exit matching `name` from `actor`'s position: the room's own
 /// exits, then exits attached to the room's Zone Master Object, then
@@ -56,12 +57,14 @@ fn exit_name_matches(o: &Obj, q: &str) -> bool {
         || o.aliases.iter().any(|a| a.eq_ignore_ascii_case(q))
 }
 
-/// Move `actor` through `exit`: check the exit's `Basic` lock, relocate,
-/// and — only once the move has actually succeeded — emit the classic move
-/// messages and show the destination room. Observers never see a departure
-/// narrative for a move that failed (e.g. a destination destroyed after
-/// the exit was linked).
-pub fn traverse_exit(w: &mut World, actor: ObjId, exit: ObjId, out: &mut Outbox) {
+/// Move `actor` through `exit`: check the exit's `Basic` lock, consult
+/// module `MoveAttempt` hooks (veto-capable), relocate, and — only once
+/// the move has actually succeeded — emit the classic move messages, show
+/// the destination room (with `LookRendered` hook lines), and notify
+/// `Moved` observers. Observers never see a departure narrative for a
+/// move that failed (e.g. a destination destroyed after the exit was
+/// linked).
+pub fn traverse_exit(reg: &Registry, w: &mut World, actor: ObjId, exit: ObjId, out: &mut Outbox) {
     let Some(e) = w.get(exit) else { return };
     let exit_name = primary_name(&e.name).to_string();
     let lock = e.locks.get(&LockType::Basic).cloned();
@@ -90,6 +93,13 @@ pub fn traverse_exit(w: &mut World, actor: ObjId, exit: ObjId, out: &mut Outbox)
         return;
     };
 
+    // Module veto (btech hex movement, wod barriers): the reason is shown
+    // to the mover, the room sees nothing.
+    if let Err(reason) = check_move_attempt(reg, w, actor, Some(exit), dest) {
+        out.to_actor(actor, OutputEvent::Sys(reason));
+        return;
+    }
+
     // Move first; announce only what actually happened (MUSH voice, never
     // a raw internal error).
     if w.move_to(actor, dest).is_err() {
@@ -109,13 +119,24 @@ pub fn traverse_exit(w: &mut World, actor: ObjId, exit: ObjId, out: &mut Outbox)
         .map_or_else(|| " has arrived.".to_string(), |m| format!(" {m}"));
     let text = RichText::new().span(name_span(w, actor)).text(arrive);
     out.to_room(dest, vec![actor], narrative_emit(text));
-    if let Some(rv) = room_view(w, actor, dest) {
-        out.to_actor(actor, OutputEvent::Room(rv));
-    }
+    show_room(reg, w, actor, dest, out);
+    emit_world_event(
+        reg,
+        w,
+        out,
+        &WorldEvent::Moved {
+            who: actor,
+            from,
+            to: dest,
+        },
+    );
 }
 
-/// Send `actor` home (the `home` keyword / command).
-pub fn go_home(w: &mut World, actor: ObjId, out: &mut Outbox) {
+/// Send `actor` home (the `home` keyword / command). Consults the
+/// `MoveAttempt` hooks like every other move — a vetoed destination (a
+/// locked battle hex, a warded room) is vetoed even when it happens to be
+/// someone's home.
+pub fn go_home(reg: &Registry, w: &mut World, actor: ObjId, out: &mut Outbox) {
     let Some(home) = w.get(actor).and_then(|o| o.home) else {
         out.error(actor, "You have no home.");
         return;
@@ -127,6 +148,11 @@ pub fn go_home(w: &mut World, actor: ObjId, out: &mut Outbox) {
     let from = w.get(actor).and_then(|o| o.location);
     if from == Some(home) {
         out.info(actor, "You are already home.");
+        return;
+    }
+    // Module veto (`exit: None` — home is not an exit traversal).
+    if let Err(reason) = check_move_attempt(reg, w, actor, None, home) {
+        out.to_actor(actor, OutputEvent::Sys(reason));
         return;
     }
     // Move first; announce only on success (never a raw internal error).
@@ -145,9 +171,17 @@ pub fn go_home(w: &mut World, actor: ObjId, out: &mut Outbox) {
         .span(name_span(w, actor))
         .text(" arrives home.");
     out.to_room(home, vec![actor], narrative_emit(text));
-    if let Some(rv) = room_view(w, actor, home) {
-        out.to_actor(actor, OutputEvent::Room(rv));
-    }
+    show_room(reg, w, actor, home, out);
+    emit_world_event(
+        reg,
+        w,
+        out,
+        &WorldEvent::Moved {
+            who: actor,
+            from,
+            to: home,
+        },
+    );
 }
 
 fn goto_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -156,12 +190,12 @@ fn goto_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("Go where?"));
     }
     if dir.eq_ignore_ascii_case("home") {
-        go_home(ctx.w, ctx.actor, ctx.out);
+        go_home(ctx.reg, ctx.w, ctx.actor, ctx.out);
         return Ok(());
     }
     match find_exit(ctx.w, ctx.actor, &dir) {
         Some(e) => {
-            traverse_exit(ctx.w, ctx.actor, e, ctx.out);
+            traverse_exit(ctx.reg, ctx.w, ctx.actor, e, ctx.out);
             Ok(())
         }
         None => Err(CmdError::msg("You can't go that way.")),
@@ -169,7 +203,7 @@ fn goto_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 fn home_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    go_home(ctx.w, ctx.actor, ctx.out);
+    go_home(ctx.reg, ctx.w, ctx.actor, ctx.out);
     Ok(())
 }
 

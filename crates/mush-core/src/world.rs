@@ -14,10 +14,15 @@
 //! Time: the world never calls `SystemTime`. The driving loop feeds wall
 //! time in via [`World::set_now`]; `created`/`modified` stamps use it.
 
-use std::collections::{BTreeSet, HashMap};
+use std::any::Any;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+use mush_proto::PromptSpec;
+use smol_str::SmolStr;
 
 use crate::attr::{Attr, AttrFlags, UncasedName};
 use crate::flags::Flags;
+use crate::module::{InputContext, InputStacks, ModuleStateMap, Scene, SceneId, StateInit};
 use crate::obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
 
 /// Maximum `@parent` hops for attribute inheritance lookups.
@@ -101,10 +106,29 @@ pub struct World {
     connected: BTreeSet<ObjId>,
     /// Per-actor session timing (transient, like `connected`).
     session_stats: HashMap<ObjId, SessionStat>,
+    /// Live transport connections per actor, mirrored in by the engine
+    /// (transient). Differs from `connected` during link-dead grace: the
+    /// actor stays *connected* (WHO, room presence) while holding **zero**
+    /// live connections — nothing sent to them is actually delivered.
+    live_conns: HashMap<ObjId, u32>,
     /// Monotonic correlation-id source for async re-entry (treaty ruling 3).
     next_correlation: u64,
     /// Wall-clock unix seconds, fed by the driver via [`World::set_now`].
     now: i64,
+    /// Active scenes (transient world state; module data persists via
+    /// module ops).
+    scenes: BTreeMap<SceneId, Scene>,
+    /// Monotonic scene-id source (per boot).
+    next_scene_id: u64,
+    /// Per-`(scene, obj)` ruleset state (the `RulesetStateStore`).
+    scene_state: BTreeMap<(SceneId, ObjId), serde_json::Value>,
+    /// Per-scene map blobs (opaque to core).
+    scene_maps: BTreeMap<SceneId, serde_json::Value>,
+    /// Typed module state slots (anymap; in-RAM working state).
+    module_state: ModuleStateMap,
+    /// Per-actor input-context stacks (transient parser state — empty on
+    /// clone).
+    input_stacks: InputStacks,
 }
 
 impl World {
@@ -122,13 +146,7 @@ impl World {
         let mut w = World {
             objs: vec![Some(limbo), Some(god)],
             next_id: 2,
-            player_index: HashMap::new(),
-            zone_members: HashMap::new(),
-            dirty: BTreeSet::new(),
-            connected: BTreeSet::new(),
-            session_stats: HashMap::new(),
-            next_correlation: 0,
-            now: 0,
+            ..World::default()
         };
         w.player_index.insert(UncasedName::from("God"), GOD);
         w.dirty.insert(LIMBO);
@@ -356,6 +374,28 @@ impl World {
         self.connected.iter().copied()
     }
 
+    /// Mirror an actor's live transport-connection count (engine
+    /// bookkeeping — transient, never persisted). A link-dead actor is
+    /// still [`is_connected`](World::is_connected) but has zero live
+    /// connections.
+    pub fn set_live_conns(&mut self, id: ObjId, n: u32) {
+        if n == 0 {
+            self.live_conns.remove(&id);
+        } else if self.get(id).is_some() {
+            self.live_conns.insert(id, n);
+        }
+    }
+
+    /// Whether the actor has at least one live transport connection —
+    /// i.e. output sent to them right now is actually delivered. Modules
+    /// use this (not [`is_connected`](World::is_connected)) when advancing
+    /// delivery cursors, so link-dead players never "read" what they never
+    /// received.
+    #[must_use]
+    pub fn has_live_conns(&self, id: ObjId) -> bool {
+        self.live_conns.get(&id).copied().unwrap_or(0) > 0
+    }
+
     /// Record a session starting for `id` **now** (both `connect_time` and
     /// `last_input` set to [`World::now`]). Idempotent: an existing stat is
     /// kept, so extra connections attaching to the same actor never reset
@@ -493,7 +533,18 @@ impl World {
             self.player_index.retain(|_, v| *v != id);
         }
         self.connected.remove(&id);
+        self.live_conns.remove(&id);
         self.session_stats.remove(&id);
+        self.input_stacks.clear(id);
+        for s in self.scenes.values_mut() {
+            s.members.remove(&id);
+        }
+        // Drop the husk's per-scene ruleset state too, or the next scene
+        // snapshot re-persists dead-object entries forever. Scene owners
+        // that need richer cleanup (ending emptied scenes, stopping ticks)
+        // subscribe `WorldEventKind::ObjDestroyed` — the dispatch layer
+        // emits it right after this returns.
+        self.scene_state.retain(|(_, obj), _| *obj != id);
         // Leave any zone it was in...
         if zone.is_some() {
             self.set_zone(id, None)?;
@@ -823,6 +874,221 @@ impl World {
         }
         self.touch_modified(id);
         Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // Marker flags (module-defined flags on objects)
+    // ------------------------------------------------------------------
+
+    /// Set or clear a marker flag (e.g. `"wod:kindred"`) on an object.
+    /// Whether the marker is *registered* is the command layer's concern
+    /// (`@set` consults the registry); the world just stores it.
+    pub fn set_marker(&mut self, id: ObjId, name: &str, on: bool) -> Result<(), WorldError> {
+        self.ensure(id)?;
+        let mut changed = false;
+        if let Some(o) = self.slot_mut(id) {
+            changed = if on {
+                o.markers.insert(SmolStr::new(name))
+            } else {
+                o.markers.remove(name)
+            };
+        }
+        if changed {
+            self.touch_modified(id);
+        }
+        Ok(())
+    }
+
+    /// Whether an object carries a marker flag (case-insensitive).
+    #[must_use]
+    pub fn has_marker(&self, id: ObjId, name: &str) -> bool {
+        self.get(id)
+            .is_some_and(|o| o.markers.iter().any(|m| m.eq_ignore_ascii_case(name)))
+    }
+
+    // ------------------------------------------------------------------
+    // Scenes (transient; the btech seam)
+    // ------------------------------------------------------------------
+
+    /// Create a scene (no hooks fire here — [`Ctx::start_scene`] is the
+    /// module-facing path that does).
+    ///
+    /// [`Ctx::start_scene`]: crate::cmd::Ctx::start_scene
+    pub fn scene_create(&mut self, kind: &str, ns: &str, members: BTreeSet<ObjId>) -> SceneId {
+        let id = SceneId(self.next_scene_id);
+        self.next_scene_id += 1;
+        self.scenes.insert(
+            id,
+            Scene {
+                id,
+                kind: SmolStr::new(kind),
+                ns: SmolStr::new(ns),
+                members,
+                ruleset_state_key: SmolStr::new(format!("scene:{}:state", id.0)),
+            },
+        );
+        id
+    }
+
+    /// Look up an active scene.
+    #[must_use]
+    pub fn scene(&self, id: SceneId) -> Option<&Scene> {
+        self.scenes.get(&id)
+    }
+
+    /// Iterate active scenes in id order.
+    pub fn scenes(&self) -> impl Iterator<Item = &Scene> {
+        self.scenes.values()
+    }
+
+    /// Remove a scene, dropping its ruleset state and map blob. Returns
+    /// the removed scene ([`Ctx::end_scene`] is the module-facing path,
+    /// which also fires hooks and queues persistence deletes).
+    ///
+    /// [`Ctx::end_scene`]: crate::cmd::Ctx::end_scene
+    pub fn scene_remove(&mut self, id: SceneId) -> Option<Scene> {
+        let scene = self.scenes.remove(&id)?;
+        self.scene_state.retain(|(sid, _), _| *sid != id);
+        self.scene_maps.remove(&id);
+        Some(scene)
+    }
+
+    /// Add a member to a scene. Returns whether the scene exists and the
+    /// member is newly added.
+    pub fn scene_add_member(&mut self, id: SceneId, obj: ObjId) -> bool {
+        self.scenes
+            .get_mut(&id)
+            .is_some_and(|s| s.members.insert(obj))
+    }
+
+    /// Remove a member from a scene. Returns whether it was a member.
+    pub fn scene_remove_member(&mut self, id: SceneId, obj: ObjId) -> bool {
+        self.scenes
+            .get_mut(&id)
+            .is_some_and(|s| s.members.remove(&obj))
+    }
+
+    /// One `(scene, obj)` ruleset-state value.
+    #[must_use]
+    pub fn scene_state(&self, scene: SceneId, obj: ObjId) -> Option<&serde_json::Value> {
+        self.scene_state.get(&(scene, obj))
+    }
+
+    /// Set one `(scene, obj)` ruleset-state value. Returns `false` (and
+    /// stores nothing) when the scene does not exist.
+    pub fn scene_state_set(
+        &mut self,
+        scene: SceneId,
+        obj: ObjId,
+        value: serde_json::Value,
+    ) -> bool {
+        if !self.scenes.contains_key(&scene) {
+            return false;
+        }
+        self.scene_state.insert((scene, obj), value);
+        true
+    }
+
+    /// A serde snapshot of one scene's whole ruleset state: a JSON object
+    /// keyed by dbref (`{"#5": {...}, ...}`) — what gets persisted per
+    /// change.
+    #[must_use]
+    pub fn scene_state_snapshot(&self, scene: SceneId) -> serde_json::Value {
+        let mut map = serde_json::Map::new();
+        for ((sid, obj), v) in &self.scene_state {
+            if *sid == scene {
+                map.insert(obj.to_string(), v.clone());
+            }
+        }
+        serde_json::Value::Object(map)
+    }
+
+    /// A scene's map blob.
+    #[must_use]
+    pub fn scene_map(&self, scene: SceneId) -> Option<&serde_json::Value> {
+        self.scene_maps.get(&scene)
+    }
+
+    /// Set a scene's map blob (opaque to core). Returns `false` when the
+    /// scene does not exist.
+    pub fn scene_map_set(&mut self, scene: SceneId, value: serde_json::Value) -> bool {
+        if !self.scenes.contains_key(&scene) {
+            return false;
+        }
+        self.scene_maps.insert(scene, value);
+        true
+    }
+
+    // ------------------------------------------------------------------
+    // Typed module state slots
+    // ------------------------------------------------------------------
+
+    /// Read the module state slot for `T`.
+    #[must_use]
+    pub fn module_state<T: Any + Send>(&self) -> Option<&T> {
+        self.module_state.get::<T>()
+    }
+
+    /// Mutably access the module state slot for `T`.
+    pub fn module_state_mut<T: Any + Send>(&mut self) -> Option<&mut T> {
+        self.module_state.get_mut::<T>()
+    }
+
+    /// Install (or replace) the state slot for `T` directly (modules may
+    /// do this from `on_world_loaded` to seed loaded state).
+    pub fn module_state_insert<T: Any + Send + Clone>(&mut self, value: T) {
+        self.module_state.insert(value);
+    }
+
+    /// Install a collected [`StateInit`] (engine construction).
+    pub fn module_state_apply(&mut self, init: StateInit) {
+        self.module_state.apply(init);
+    }
+
+    // ------------------------------------------------------------------
+    // Input-context stacks (transient parser state)
+    // ------------------------------------------------------------------
+
+    /// Input-context stack depth for an actor.
+    #[must_use]
+    pub fn input_depth(&self, actor: ObjId) -> usize {
+        self.input_stacks.depth(actor)
+    }
+
+    /// Push an input context (tagged with the pushing module's identity) on
+    /// top of an actor's stack (prompt emission is the command layer's job
+    /// — [`Ctx::push_input_context`]).
+    ///
+    /// [`Ctx::push_input_context`]: crate::cmd::Ctx::push_input_context
+    pub fn push_input_context(
+        &mut self,
+        actor: ObjId,
+        module: Option<SmolStr>,
+        cx: Box<dyn InputContext>,
+    ) {
+        self.input_stacks.push(actor, module, cx);
+    }
+
+    /// Pop an actor's top input context, if any.
+    pub fn pop_input_context(&mut self, actor: ObjId) -> Option<crate::module::StackedContext> {
+        self.input_stacks.pop(actor)
+    }
+
+    /// Re-insert a context at `index` in an actor's stack (dispatch
+    /// internals: put a fed context back beneath anything it pushed).
+    pub fn restore_input_context_at(
+        &mut self,
+        actor: ObjId,
+        index: usize,
+        cx: crate::module::StackedContext,
+    ) {
+        self.input_stacks.insert_at(actor, index, cx);
+    }
+
+    /// The prompt of an actor's top input context, if any.
+    #[must_use]
+    pub fn top_input_prompt(&self, actor: ObjId) -> Option<PromptSpec> {
+        self.input_stacks.top(actor).map(|c| c.prompt(self))
     }
 
     // ------------------------------------------------------------------

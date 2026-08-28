@@ -10,6 +10,11 @@ description = "Ticket queues and character notes (staff infrastructure)"
 mush-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+smol_str.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+mush-proto.workspace = true
 
 [lints]
 workspace = true

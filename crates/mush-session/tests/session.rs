@@ -256,6 +256,46 @@ fn flood_bucket_over_manager_with_fake_clock() {
     assert_eq!(mgr.check_input_at(ConnId(99), t1), FloodVerdict::Ok);
 }
 
+/// A flood-exempt character (the world task marks actors inside an input
+/// context — mail compose) bypasses the throttle entirely, on every one of
+/// their connections, without draining their bucket; clearing the flag
+/// restores normal throttling with the bucket intact.
+#[test]
+fn flood_exemption_bypasses_the_throttle_for_a_character() {
+    let mgr = SessionManager::with_config(SessionConfig {
+        flood_rate: 2.0,
+        flood_burst: 3.0,
+        ..SessionConfig::default()
+    });
+    let t0 = Instant::now();
+    let (c1, _rx1) = conn_at(1, 1, 8, t0);
+    mgr.attach(c1, CharKey(1), "f".into());
+    let (c2, _rx2) = conn_at(2, 2, 8, t0);
+    mgr.attach(c2, CharKey(2), "g".into());
+
+    mgr.set_flood_exempt(CharKey(1), true);
+    // A 40-line paste (way over burst 3) passes untouched.
+    for i in 0..40 {
+        assert_eq!(
+            mgr.check_input_at(ConnId(1), t0),
+            FloodVerdict::Ok,
+            "exempt paste line {i}"
+        );
+    }
+    // A different character is still throttled normally.
+    for _ in 0..3 {
+        assert_eq!(mgr.check_input_at(ConnId(2), t0), FloodVerdict::Ok);
+    }
+    assert_eq!(mgr.check_input_at(ConnId(2), t0), FloodVerdict::Throttled);
+    // Clearing the exemption restores throttling — with the full burst
+    // intact (the exempt lines never charged the bucket).
+    mgr.set_flood_exempt(CharKey(1), false);
+    for _ in 0..3 {
+        assert_eq!(mgr.check_input_at(ConnId(1), t0), FloodVerdict::Ok);
+    }
+    assert_eq!(mgr.check_input_at(ConnId(1), t0), FloodVerdict::Throttled);
+}
+
 #[test]
 fn slow_client_full_buffer_sets_dropped_flag() {
     let mgr = SessionManager::new();

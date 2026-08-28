@@ -1,0 +1,39 @@
+# Communication
+
+Talking to the people around you — and the ones who aren't.
+
+In your room:
+
+  say <text>        Speak aloud. Shortcut: "<text>
+  pose <action>     Emote with your name prefixed: :grins.
+  semipose <action> Emote with no space after your name: ;'s eyes narrow.
+  @emit <text>      Free-form narration with no name prefix (the real
+                    sender is still tracked for staff). Shortcut: \<text>
+  whisper <who>=<message>
+                    Quiet words to one person in the same room.
+  think <text>      Echo text back to yourself only.
+
+Anywhere on the game:
+
+  page <player>=<message>
+                    A private line to any connected player (alias: p).
+                    A player set HAVEN, or whose page lock you fail,
+                    cannot be paged.
+
+Channels (the comsys) are the place for out-of-character chat across the
+whole game — see "help channels".
+
+Muting someone:
+
+  @ignore <player>  Silently drop that player's pages and whispers to
+                    you, filter their say/pose/emit out of what you hear
+                    in a room, and mute their channel messages and
+                    join/leave notices for you. They are NOT told they
+                    are ignored — they see normal delivery
+                    confirmations. Staff cannot be ignored.
+                    @ignore/list shows your mutes, @ignore/clear
+                    <player> lifts one, bare @ignore/clear lifts them
+                    all. (Mail has its own gate: @lock/mail.)
+
+Rooms can be locked against speech (@lock/speech); failing that lock
+means you cannot speak in that room at all.

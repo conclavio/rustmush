@@ -10,13 +10,21 @@
 //! | `meta:schema_version` | string int  | app-level schema version                  |
 //! | `account:{lowername}` | JSON doc    | one [`AccountRec`] (display case inside)  |
 //! | `ban:{ip}`            | string JSON | one [`BanRec`], native `EXAT` TTL         |
+//! | `mod:{ns}:{key}`      | JSON/stream | module state ([`WriteBatch::module_ops`]) |
 //! | `idx:objs`            | FT index    | see [`RedisStore::ensure_index`]          |
+//!
+//! Module ops ride the same `MULTI`/`EXEC` as the object writes:
+//! `JsonSet` → `JSON.SET mod:{ns}:{key} $ <value>`, `Del` → `DEL`,
+//! `StreamAppend` → `XADD mod:{ns}:{key} MAXLEN ~ {maxlen} * data <json>`
+//! (approximate trimming: Redis keeps *at least* `maxlen` entries and trims
+//! lazily by macro-node, so short streams may exceed the cap — callers read
+//! back through [`ObjectStore::stream_range`], which bounds what they see).
 //!
 //! ## Write-through durability
 //!
 //! [`write`](ObjectStore::write) issues **one `MULTI`/`EXEC` transaction per
-//! batch** — `JSON.SET` per upsert, `DEL` per delete, `SET meta:next_id`
-//! last — and returns when `EXEC` succeeds. That reply *is* the ack: Redis
+//! batch** — `JSON.SET` per upsert, `DEL` per delete, then the module ops in
+//! queue order, `SET meta:next_id` last — and returns when `EXEC` succeeds. That reply *is* the ack: Redis
 //! has applied the batch atomically. **Disk** durability is the server's
 //! AOF policy (`appendfsync everysec` recommended, `always` for zero-loss),
 //! configured server-side — there are no replicas, so `WAIT` adds nothing
@@ -63,7 +71,7 @@ use fred::clients::Client;
 use fred::error::Error as FredError;
 use fred::interfaces::{
     ClientLike, KeysInterface, RediSearchInterface, RedisJsonInterface, ServerInterface,
-    TransactionInterface,
+    StreamsInterface, TransactionInterface,
 };
 use fred::prelude::{Builder, Config, Expiration, ReconnectPolicy, SetOptions};
 use fred::types::redisearch::{
@@ -73,7 +81,8 @@ use fred::types::{Key, RespVersion, Value};
 
 use crate::store::ObjectStore;
 use crate::types::{
-    AccountRec, BanRec, CharacterRef, StoreError, WorldSnapshot, WriteBatch, WriteReceipt,
+    AccountRec, BanRec, CharacterRef, ModuleWrite, StoreError, WorldSnapshot, WriteBatch,
+    WriteReceipt, validate_module_key, validate_module_ns, validate_module_op,
 };
 
 /// Prefix of per-object JSON docs.
@@ -82,6 +91,8 @@ pub const OBJ_PREFIX: &str = "obj:";
 pub const ACCOUNT_PREFIX: &str = "account:";
 /// Prefix of siteban keys.
 pub const BAN_PREFIX: &str = "ban:";
+/// Prefix of module-state keys (`mod:{ns}:{key}`).
+pub const MOD_PREFIX: &str = "mod:";
 /// Id-allocator resume point.
 pub const META_NEXT_ID: &str = "meta:next_id";
 /// App-level schema version.
@@ -113,10 +124,40 @@ fn ban_key(ip: &str) -> String {
     format!("{BAN_PREFIX}{ip}")
 }
 
+/// `mod:{ns}:{key}`. Callers validate `ns`/`key` first (see
+/// [`crate::types::validate_module_ns`]): with a `:`-free namespace the key
+/// is unambiguous.
+fn module_key(ns: &str, key: &str) -> String {
+    format!("{MOD_PREFIX}{ns}:{key}")
+}
+
+/// The `SCAN` pattern for one module namespace. Two safety properties:
+/// the trailing `:` separator keeps `mod:a:*` from matching `mod:ab:...`,
+/// and glob metacharacters in `ns` are escaped so a namespace named `a*`
+/// scans literally instead of widening the match.
+fn module_scan_pattern(ns: &str) -> String {
+    let mut escaped = String::with_capacity(ns.len() * 2);
+    for c in ns.chars() {
+        if matches!(c, '*' | '?' | '[' | ']' | '\\') {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    format!("{MOD_PREFIX}{escaped}:*")
+}
+
 fn now_unix() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
+/// Whether a Redis error means "that key holds a different type". Core
+/// Redis says `WRONGTYPE ...`; RedisJSON (live Redis 8 verified) says
+/// `Existing key has wrong Redis type` — match both phrasings.
+fn is_wrong_type_err(e: &fred::error::Error) -> bool {
+    let msg = e.to_string().to_ascii_lowercase();
+    msg.contains("wrongtype") || msg.contains("wrong redis type")
 }
 
 /// `JSON.GET key $` → the raw doc, unwrapped from RedisJSON's one-element
@@ -317,11 +358,12 @@ impl RedisStore {
     }
 
     /// Test/ops helper: delete every key in this crate's namespaces
-    /// (`obj:*`, `account:*`, `ban:*`, `meta:*`) in the connected database.
-    /// Deliberately not `FLUSHDB` — it only touches what this crate owns.
+    /// (`obj:*`, `account:*`, `ban:*`, `meta:*`, `mod:*`) in the connected
+    /// database. Deliberately not `FLUSHDB` — it only touches what this
+    /// crate owns.
     #[doc(hidden)]
     pub async fn wipe_namespaces(&self) -> Result<(), StoreError> {
-        for pattern in ["obj:*", "account:*", "ban:*", "meta:*"] {
+        for pattern in ["obj:*", "account:*", "ban:*", "meta:*", "mod:*"] {
             let keys = self.scan_keys(pattern).await?;
             if !keys.is_empty() {
                 let _: i64 = self.client.del(keys).await?;
@@ -436,10 +478,43 @@ impl ObjectStore for RedisStore {
             if batch.is_empty() {
                 return Ok(WriteReceipt { serial });
             }
-            // Serialize everything up front; only then open the MULTI.
+            // Validate + serialize everything up front; only then open the
+            // MULTI — a refused op leaves the store untouched.
             let mut docs = Vec::with_capacity(batch.upserts.len());
             for obj in &batch.upserts {
                 docs.push((obj_key(obj.id), serde_json::to_string(obj)?));
+            }
+            enum Planned {
+                JsonSet {
+                    key: String,
+                    doc: String,
+                },
+                Del {
+                    key: String,
+                },
+                StreamAppend {
+                    key: String,
+                    doc: String,
+                    maxlen: u32,
+                },
+            }
+            let mut planned = Vec::with_capacity(batch.module_ops.len());
+            for op in &batch.module_ops {
+                validate_module_op(op)?;
+                planned.push(match &op.op {
+                    ModuleWrite::JsonSet { key, value } => Planned::JsonSet {
+                        key: module_key(&op.ns, key),
+                        doc: serde_json::to_string(value)?,
+                    },
+                    ModuleWrite::Del { key } => Planned::Del {
+                        key: module_key(&op.ns, key),
+                    },
+                    ModuleWrite::StreamAppend { key, value, maxlen } => Planned::StreamAppend {
+                        key: module_key(&op.ns, key),
+                        doc: serde_json::to_string(value)?,
+                        maxlen: *maxlen,
+                    },
+                });
             }
             let trx = self.client.multi();
             for (key, doc) in &docs {
@@ -447,6 +522,28 @@ impl ObjectStore for RedisStore {
             }
             for id in &batch.deletes {
                 let _: () = trx.del(obj_key(*id)).await?;
+            }
+            // Module ops after the object writes, in queue order.
+            for op in &planned {
+                match op {
+                    Planned::JsonSet { key, doc } => {
+                        let _: () = trx.json_set(key.as_str(), "$", doc.as_str(), None).await?;
+                    }
+                    Planned::Del { key } => {
+                        let _: () = trx.del(key.as_str()).await?;
+                    }
+                    Planned::StreamAppend { key, doc, maxlen } => {
+                        let _: () = trx
+                            .xadd(
+                                key.as_str(),
+                                false,
+                                ("MAXLEN", "~", i64::from(*maxlen)),
+                                "*",
+                                ("data", doc.as_str()),
+                            )
+                            .await?;
+                    }
+                }
             }
             if let Some(next_id) = batch.next_id {
                 let _: () = trx
@@ -604,6 +701,85 @@ impl ObjectStore for RedisStore {
         Box::pin(async move {
             let removed: i64 = self.client.del(ban_key(ip)).await?;
             Ok(removed > 0)
+        })
+    }
+
+    fn module_json_get<'a>(
+        &'a self,
+        ns: &'a str,
+        key: &'a str,
+    ) -> BoxFuture<'a, Result<Option<serde_json::Value>, StoreError>> {
+        Box::pin(async move {
+            validate_module_ns(ns)?;
+            validate_module_key(key)?;
+            json_doc(&self.client, &module_key(ns, key)).await
+        })
+    }
+
+    fn module_json_list<'a>(
+        &'a self,
+        ns: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<(String, serde_json::Value)>, StoreError>> {
+        Box::pin(async move {
+            validate_module_ns(ns)?;
+            let prefix = format!("{MOD_PREFIX}{ns}:");
+            let keys = self.scan_keys(&module_scan_pattern(ns)).await?;
+            let mut out = Vec::with_capacity(keys.len());
+            for full_key in &keys {
+                // The namespace mixes JSON docs and streams under one
+                // prefix; JSON.GET on a stream key is a wrong-type error —
+                // skip it, that key belongs to stream_range. Other errors
+                // propagate.
+                let doc = match json_doc(&self.client, full_key).await {
+                    Ok(doc) => doc,
+                    Err(StoreError::Redis(e)) if is_wrong_type_err(&e) => {
+                        tracing::debug!(key = full_key, "skipping non-JSON module key");
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                };
+                let Some(doc) = doc else { continue }; // gone between SCAN and GET
+                let Some(key) = full_key.strip_prefix(&prefix) else {
+                    continue; // unreachable under the SCAN pattern
+                };
+                out.push((key.to_string(), doc));
+            }
+            Ok(out)
+        })
+    }
+
+    fn stream_range<'a>(
+        &'a self,
+        ns: &'a str,
+        key: &'a str,
+        count_latest: u32,
+    ) -> BoxFuture<'a, Result<Vec<(String, serde_json::Value)>, StoreError>> {
+        Box::pin(async move {
+            validate_module_ns(ns)?;
+            validate_module_key(key)?;
+            if count_latest == 0 {
+                return Ok(Vec::new());
+            }
+            // XREVRANGE key + - COUNT n → newest-first; re-reverse below.
+            let entries: Vec<(String, std::collections::HashMap<String, String>)> = self
+                .client
+                .xrevrange_values(
+                    module_key(ns, key).as_str(),
+                    "+",
+                    "-",
+                    Some(u64::from(count_latest)),
+                )
+                .await?;
+            let mut out = Vec::with_capacity(entries.len());
+            for (id, fields) in entries.into_iter().rev() {
+                let Some(data) = fields.get("data") else {
+                    // Written by something other than StreamAppend; skip.
+                    tracing::error!(ns, key, id, "module stream entry without data field");
+                    continue;
+                };
+                out.push((id, serde_json::from_str(data)?));
+            }
+            Ok(out)
         })
     }
 

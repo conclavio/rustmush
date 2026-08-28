@@ -1,10 +1,15 @@
 //! Command specs, the registry, and the dispatch pipeline.
 //!
-//! Dispatch order is **exactly** treaty ruling 5:
+//! Dispatch order is **exactly** treaty ruling 5, with the input-context
+//! stack in front:
 //!
+//! 0. the actor's input-context stack (mail compose, chargen, consoles) —
+//!    checked before everything else, with a hard `~q` escape
 //! 1. single-char prefixes — `"` say, `:` pose, `;` semipose, `\` @emit
 //! 2. the alias stage — registered [`AliasStage`] hooks (the comsys seam;
-//!    empty in M0)
+//!    empty in M0). **Prefix-expanded lines skip this stage**: the prefix
+//!    character already settled the line's meaning, so a channel alias
+//!    named `say`/`pose` can never capture `"hello`
 //! 3. the `home` keyword
 //! 4. exit match — room exits, then the room's zone's exits, then global
 //!    exits on Limbo (the master room)
@@ -16,15 +21,18 @@
 //! Handlers are `Arc<dyn CommandHandler>` trait objects (treaty ruling 4)
 //! so modules can capture state; plain `fn` items work via the blanket impl.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use smol_str::SmolStr;
+
+use mush_proto::OutputEvent;
 
 use crate::commands::movement;
 use crate::flags::{Powers, Role};
 use crate::lock::{LockExpr, MAX_LOCK_DEPTH, eval_lock};
 use crate::matchit::MatchErr;
+use crate::module::{ContextOutcome, ModuleTables, restored_prompt};
 use crate::obj::ObjId;
 use crate::output::Outbox;
 use crate::perm;
@@ -238,7 +246,10 @@ impl SwitchSet {
     }
 }
 
-/// Everything a command handler gets to work with.
+/// Everything a command handler gets to work with. Hooks, ticks,
+/// observers, and module boot receive the same type
+/// ([`ModuleCtx`](crate::module::ModuleCtx) is an alias) — one context,
+/// everywhere (treaty ruling 4).
 pub struct Ctx<'a> {
     /// The world (single-writer: the handler owns it for its duration).
     pub w: &'a mut World,
@@ -252,6 +263,9 @@ pub struct Ctx<'a> {
     pub out: &'a mut Outbox,
     /// The command registry (for `help` and introspection).
     pub reg: &'a Registry,
+    /// The module this handler was registered by (`None` for core
+    /// commands) — the identity attr-namespace enforcement checks.
+    pub module: Option<SmolStr>,
 }
 
 /// A command implementation. Registered as `Arc<dyn CommandHandler>`
@@ -320,15 +334,37 @@ pub enum LookupErr {
 struct Entry {
     spec: CommandSpec,
     handler: Arc<dyn CommandHandler>,
+    /// The registering module (`None` for core commands).
+    module: Option<SmolStr>,
 }
 
-/// The command table plus alias-stage hooks.
+/// One prose help topic (loaded at boot from `docs/help/*.md` by the
+/// driver's I/O loader; this registry itself stays sync and file-free).
+/// Served by `help <topic>` — an exact command-name match always wins over
+/// a topic of the same name.
+#[derive(Clone, Debug)]
+pub struct HelpTopic {
+    /// Canonical topic key (lowercased file stem, e.g. `"getting-started"`).
+    pub name: SmolStr,
+    /// Human-readable title (the file's leading `# heading`, or the name).
+    pub title: String,
+    /// Full topic text, served verbatim.
+    pub body: String,
+}
+
+/// The command table, alias-stage hooks, and (treaty ruling 4 — one
+/// registry, ever) the module registration tables
+/// ([`ModuleTables`]; accessors live in [`crate::module`]).
 #[derive(Default)]
 pub struct Registry {
     entries: Vec<Entry>,
     /// Lowercased name and alias → entry index.
     index: HashMap<String, usize>,
     alias_stages: Vec<Arc<dyn AliasStage>>,
+    /// Module registrations (hooks, ticks, observers, namespaces, …).
+    pub(crate) mods: ModuleTables,
+    /// Prose help topics by lowercased name (sorted for listings).
+    help_topics: BTreeMap<SmolStr, HelpTopic>,
 }
 
 impl Registry {
@@ -345,6 +381,17 @@ impl Registry {
         spec: CommandSpec,
         handler: Arc<dyn CommandHandler>,
     ) -> Result<(), RegistryError> {
+        self.register_tagged(spec, handler, None)
+    }
+
+    /// Register a command tagged with the registering module's identity
+    /// (the [`Registrar`](crate::module::Registrar) path).
+    pub(crate) fn register_tagged(
+        &mut self,
+        spec: CommandSpec,
+        handler: Arc<dyn CommandHandler>,
+        module: Option<SmolStr>,
+    ) -> Result<(), RegistryError> {
         let mut keys = vec![spec.name.to_lowercase()];
         keys.extend(spec.aliases.iter().map(|a| a.to_lowercase()));
         for k in &keys {
@@ -353,7 +400,11 @@ impl Registry {
             }
         }
         let idx = self.entries.len();
-        self.entries.push(Entry { spec, handler });
+        self.entries.push(Entry {
+            spec,
+            handler,
+            module,
+        });
         for k in keys {
             self.index.insert(k, idx);
         }
@@ -383,13 +434,30 @@ impl Registry {
     /// only, an unambiguous prefix of a primary name. `@`/`+` commands
     /// never prefix-match.
     pub fn lookup(&self, verb: &str) -> Result<(&CommandSpec, Arc<dyn CommandHandler>), LookupErr> {
+        let i = self.lookup_idx(verb)?;
+        let e = &self.entries[i];
+        Ok((&e.spec, Arc::clone(&e.handler)))
+    }
+
+    /// [`Registry::lookup`] returning the registering module too (dispatch
+    /// internals: the handler's `Ctx` carries the module identity).
+    #[allow(clippy::type_complexity)] // private, one call site
+    fn lookup_full(
+        &self,
+        verb: &str,
+    ) -> Result<(&CommandSpec, Arc<dyn CommandHandler>, Option<SmolStr>), LookupErr> {
+        let i = self.lookup_idx(verb)?;
+        let e = &self.entries[i];
+        Ok((&e.spec, Arc::clone(&e.handler), e.module.clone()))
+    }
+
+    fn lookup_idx(&self, verb: &str) -> Result<usize, LookupErr> {
         let v = verb.to_lowercase();
         if v.is_empty() {
             return Err(LookupErr::NotFound);
         }
         if let Some(&i) = self.index.get(&v) {
-            let e = &self.entries[i];
-            return Ok((&e.spec, Arc::clone(&e.handler)));
+            return Ok(i);
         }
         if v.starts_with('@') || v.starts_with('+') {
             return Err(LookupErr::NotFound);
@@ -407,16 +475,43 @@ impl Registry {
         }
         match hits.len() {
             0 => Err(LookupErr::NotFound),
-            1 => {
-                let e = &self.entries[hits[0]];
-                Ok((&e.spec, Arc::clone(&e.handler)))
-            }
+            1 => Ok(hits[0]),
             _ => Err(LookupErr::Ambiguous(
                 hits.iter()
                     .map(|&i| self.entries[i].spec.name.clone())
                     .collect(),
             )),
         }
+    }
+
+    /// Add (or replace) a prose help topic. Names are case-insensitive.
+    /// Called by the driver's boot-time loader; also usable by modules.
+    pub fn add_help_topic(
+        &mut self,
+        name: &str,
+        title: impl Into<String>,
+        body: impl Into<String>,
+    ) {
+        let key = SmolStr::from(name.to_lowercase());
+        self.help_topics.insert(
+            key.clone(),
+            HelpTopic {
+                name: key,
+                title: title.into(),
+                body: body.into(),
+            },
+        );
+    }
+
+    /// Look up a help topic by name (case-insensitive).
+    #[must_use]
+    pub fn help_topic(&self, name: &str) -> Option<&HelpTopic> {
+        self.help_topics.get(name.to_lowercase().as_str())
+    }
+
+    /// All help-topic names, sorted.
+    pub fn help_topic_names(&self) -> impl Iterator<Item = &str> {
+        self.help_topics.keys().map(SmolStr::as_str)
     }
 
     /// The closest registered name/alias to `verb` by edit distance
@@ -474,9 +569,58 @@ pub fn dispatch(reg: &Registry, w: &mut World, actor: ObjId, line: &str, out: &m
         return;
     }
 
+    // 0. Input-context stack — BEFORE everything else (even prefix
+    //    chars), with one hard escape: a lone "~q" always pops the top
+    //    context with an abort message, so no context can trap a player.
+    if w.input_depth(actor) > 0 {
+        if trimmed.eq_ignore_ascii_case("~q") {
+            w.pop_input_context(actor);
+            out.info(actor, "Aborted.");
+            let spec = restored_prompt(w, actor);
+            out.to_actor(actor, OutputEvent::Prompt(spec));
+            return;
+        }
+        if let Some(mut stacked) = w.pop_input_context(actor) {
+            // Remember where it sat so it can go back beneath anything the
+            // feed itself pushes.
+            let index = w.input_depth(actor);
+            let outcome = {
+                let mut ctx = Ctx {
+                    w,
+                    actor,
+                    switches: SwitchSet::default(),
+                    args: ParsedArgs::default(),
+                    out,
+                    reg,
+                    // The context runs with the identity of the module that
+                    // pushed it (mail compose persists as "mail"; a chargen
+                    // context may write its ruleset's attr namespace).
+                    module: stacked.module.clone(),
+                };
+                stacked.cx.feed(&mut ctx, trimmed)
+            };
+            match outcome {
+                ContextOutcome::Consumed => {
+                    w.restore_input_context_at(actor, index, stacked);
+                }
+                ContextOutcome::Pop => {
+                    let spec = restored_prompt(w, actor);
+                    out.to_actor(actor, OutputEvent::Prompt(spec));
+                }
+                ContextOutcome::PopAndRun(cmd) => {
+                    let spec = restored_prompt(w, actor);
+                    out.to_actor(actor, OutputEvent::Prompt(spec));
+                    dispatch(reg, w, actor, &cmd, out);
+                }
+            }
+            return;
+        }
+    }
+
     // 1. Single-char prefixes.
     let first = trimmed.chars().next().unwrap_or(' ');
     let rest = &trimmed[first.len_utf8()..];
+    let prefix_expanded = matches!(first, '"' | ':' | ';' | '\\');
     let mut cur = match first {
         '"' => format!("say {rest}"),
         ':' => format!("pose {rest}"),
@@ -485,27 +629,34 @@ pub fn dispatch(reg: &Registry, w: &mut World, actor: ObjId, line: &str, out: &m
         _ => trimmed.to_string(),
     };
 
-    // 2. Alias stage (comsys seam).
-    for stage in &reg.alias_stages {
-        match stage.try_alias(w, actor, &cur, out) {
-            AliasOutcome::NotMine => {}
-            AliasOutcome::Handled => return,
-            AliasOutcome::Rewrite(s) => {
-                cur = s;
-                break;
+    // 2. Alias stage (comsys seam). Prefix-expanded lines skip it: the
+    //    prefix character already settled what the line means (room
+    //    speech), and letting an alias named "say"/"pose" capture the
+    //    synthetic verb would reroute private speech onto a channel the
+    //    player never named. A *typed* "say hello" still offers the alias
+    //    stage first, per treaty ruling 5.
+    if !prefix_expanded {
+        for stage in &reg.alias_stages {
+            match stage.try_alias(w, actor, &cur, out) {
+                AliasOutcome::NotMine => {}
+                AliasOutcome::Handled => return,
+                AliasOutcome::Rewrite(s) => {
+                    cur = s;
+                    break;
+                }
             }
         }
     }
 
     // 3. HOME keyword.
     if cur.trim().eq_ignore_ascii_case("home") {
-        movement::go_home(w, actor, out);
+        movement::go_home(reg, w, actor, out);
         return;
     }
 
     // 4. Exit match (room → zone → global) against the whole line.
     if let Some(exit) = movement::find_exit(w, actor, cur.trim()) {
-        movement::traverse_exit(w, actor, exit, out);
+        movement::traverse_exit(reg, w, actor, exit, out);
         return;
     }
 
@@ -514,7 +665,7 @@ pub fn dispatch(reg: &Registry, w: &mut World, actor: ObjId, line: &str, out: &m
     let mut parts = head.split('/');
     let verb = parts.next().unwrap_or("");
     let switch_names: Vec<&str> = parts.filter(|s| !s.is_empty()).collect();
-    match reg.lookup(verb) {
+    match reg.lookup_full(verb) {
         Err(LookupErr::NotFound) => huh(reg, actor, verb, out),
         Err(LookupErr::Ambiguous(names)) => {
             let names: Vec<&str> = names.iter().map(SmolStr::as_str).collect();
@@ -526,7 +677,7 @@ pub fn dispatch(reg: &Registry, w: &mut World, actor: ObjId, line: &str, out: &m
                 ),
             );
         }
-        Ok((spec, handler)) => {
+        Ok((spec, handler, module)) => {
             for s in &switch_names {
                 if !spec.switches.iter().any(|k| k.eq_ignore_ascii_case(s)) {
                     out.error(actor, format!("Unknown switch \"/{s}\" for {}.", spec.name));
@@ -551,6 +702,12 @@ pub fn dispatch(reg: &Registry, w: &mut World, actor: ObjId, line: &str, out: &m
             }
             let args = ParsedArgs::parse(spec.shape, rest);
             let switches = SwitchSet::from_names(switch_names.iter().copied());
+            // Snapshot the deferred queue so an Err can discard everything
+            // this handler deferred: queued persistence ops must never
+            // commit for a command that reported failure (world mutations
+            // made before the error remain best-effort — handlers
+            // validate-then-apply).
+            let deferred_before = out.deferred().len();
             let result = {
                 let mut ctx = Ctx {
                     w,
@@ -559,10 +716,12 @@ pub fn dispatch(reg: &Registry, w: &mut World, actor: ObjId, line: &str, out: &m
                     args,
                     out,
                     reg,
+                    module,
                 };
                 handler.call(&mut ctx)
             };
             if let Err(e) = result {
+                out.truncate_deferred(deferred_before);
                 out.error(actor, e.to_string());
             }
         }

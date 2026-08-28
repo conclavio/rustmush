@@ -62,7 +62,7 @@ static CHILD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[tokio::test(flavor = "multi_thread")]
 async fn kill9_mid_play_world_survives_redis_gated() {
-    let Ok(base) = std::env::var("REDIS_URL") else {
+    let Some(base) = std::env::var("REDIS_URL").ok().filter(|s| !s.is_empty()) else {
         eprintln!(
             "skipping kill9_mid_play_world_survives_redis_gated: REDIS_URL not set \
              (no live Redis on this machine)"
@@ -206,8 +206,8 @@ async fn clean_shutdown_drains_and_snapshots() {
     seed_boss_account(&dir.join("data"), GM_PASSWORD);
     // Redis when available (own logical db), in-memory otherwise — the
     // child-process shutdown path runs on every machine either way.
-    let store_section = match std::env::var("REDIS_URL") {
-        Ok(base) => {
+    let store_section = match std::env::var("REDIS_URL").ok().filter(|s| !s.is_empty()) {
+        Some(base) => {
             let url = redis_url_with_db(&base, 12);
             let admin = mush_store::RedisStore::connect(&url)
                 .await
@@ -216,7 +216,7 @@ async fn clean_shutdown_drains_and_snapshots() {
             admin.close().await.ok();
             format!("store = \"redis\"\nredis_url = \"{url}\"")
         }
-        Err(_) => {
+        None => {
             eprintln!(
                 "clean_shutdown_drains_and_snapshots: REDIS_URL not set; \
                  running the child against the in-memory backend"

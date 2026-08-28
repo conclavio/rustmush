@@ -16,6 +16,10 @@ mush-core.workspace = true
 mush-proto.workspace = true
 mush-session.workspace = true
 mush-store.workspace = true
+# The M3 proving modules, wired at boot (modules.rs).
+mush-comsys.workspace = true
+mush-mail.workspace = true
+mush-jobs.workspace = true
 mush-testkit.workspace = true
 mush-net-ssh.workspace = true
 # BoxFuture, to implement mush-net-ssh's dyn-compatible hooks trait.

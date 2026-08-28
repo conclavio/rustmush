@@ -16,6 +16,7 @@ use std::collections::{BinaryHeap, HashSet};
 
 use smol_str::SmolStr;
 
+use crate::module::SceneId;
 use crate::obj::ObjId;
 
 /// What fires when a scheduled deadline comes due.
@@ -29,13 +30,26 @@ pub enum ScheduledKind {
         line: String,
     },
     /// A recurring module tick (weather every 300s per zone, comsys
-    /// housekeeping, …). The engine routes it to the owning module; no
-    /// module consumes ticks in M1.
+    /// housekeeping, …). The engine routes it to the module's registered
+    /// [`TickHandler`](crate::module::TickHandler) and re-arms it at its
+    /// registered cadence.
     ModuleTick {
         /// Registered module id, e.g. `"weather"`.
         module: SmolStr,
         /// Module-defined discriminator, e.g. a zone id.
         tag: SmolStr,
+    },
+    /// One firing of a per-scene ticker
+    /// ([`TickCadence::Scene`](crate::module::TickCadence::Scene)),
+    /// started via `Ctx::scene_tick_start`. The engine re-arms it while
+    /// the scene is alive and the tick has not been stopped.
+    SceneTick {
+        /// The owning module.
+        module: SmolStr,
+        /// The registered tick tag.
+        tag: SmolStr,
+        /// The scene it is bound to.
+        scene: SceneId,
     },
     /// A named engine-internal control timer (garbage sweeps, checkpoints).
     Control(SmolStr),
@@ -143,6 +157,21 @@ impl Scheduler {
             }
         }
         fired
+    }
+
+    /// Snapshot every pending (not cancelled, not fired) entry as
+    /// `(due_unix_ms, kind)`, in firing order — the `@ps` inspection
+    /// surface. O(n log n); fine for a staff command.
+    #[must_use]
+    pub fn pending_entries(&self) -> Vec<(i64, &ScheduledKind)> {
+        let mut v: Vec<(i64, u64, &ScheduledKind)> = self
+            .heap
+            .iter()
+            .filter(|Reverse(e)| self.pending.contains(&e.seq))
+            .map(|Reverse(e)| (e.due_ms, e.seq, &e.kind))
+            .collect();
+        v.sort_unstable_by_key(|&(due, seq, _)| (due, seq));
+        v.into_iter().map(|(due, _, kind)| (due, kind)).collect()
     }
 
     /// Number of pending (not cancelled, not fired) entries.

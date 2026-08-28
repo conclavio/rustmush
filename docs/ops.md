@@ -141,9 +141,19 @@ The store carries an app-level schema version (`meta:schema_version`);
 - The version is bumped **per step**, so a crash mid-migration resumes at
   the failed step, not from scratch.
 
+**Module namespaces are versioned separately** (M3+): each game module's
+persisted namespace (`mod:comsys:*`, `mod:mail:*`, `mod:jobs:*`) carries
+its own schema version in a reserved `mod:{ns}:schema` document, and
+`mushd` runs each module's registered migration set at boot under the same
+rules (fresh namespace stamped without running; unstamped-with-data treated
+as v0; newer-than-binary refused; one BGSAVE before the first step that
+actually runs; docs + version bump committed per step, crash-resumable).
+Module migrations transform kv documents only — streams (`mod:*` history)
+are never migrated.
+
 Operator procedure for upgrades that mention a schema change: take an extra
 offsite copy of `dump.rdb`, deploy the new binary, start it, watch the log
-for `store schema current`.
+for `store schema current` (and any `running module migration` lines).
 
 ## Read-only mode (store outage mid-game)
 
@@ -207,15 +217,21 @@ All keys live in one Redis logical database (db 0 by default). From
 | `account:{lowername}` | JSON doc | account record (argon2 hash, characters) |
 | `ban:{ip}` | string JSON | one siteban, native `EXAT` TTL |
 | `idx:objs` | FT index | RediSearch index over `obj:*` (staff tooling; non-fatal if absent) |
+| `mod:{ns}:{key}` | JSON doc | one game-module document (comsys channels/memberships, mail messages/boxes/folders, jobs/notes, module `meta`/`next_id` counters) |
+| `mod:{ns}:schema` | JSON doc | that module namespace's schema version (see Migrations) |
+| `mod:{ns}:hist:{id}` | stream | persisted channel history (`XADD MAXLEN ~`), and any other module ring history |
 
-Do not hand-edit `obj:*`/`meta:*` while the server runs — the RAM world will
-not see the change and the next write-through wins. `account:*` and `ban:*`
-are read live and are safe to inspect (`redis-cli JSON.GET account:nick`).
+Do not hand-edit `obj:*`/`meta:*` **or `mod:*`** while the server runs — the
+RAM world (and each module's in-RAM state, rebuilt from `mod:*` only at
+boot) will not see the change and the next write-through wins. `account:*`
+and `ban:*` are read live and are safe to inspect
+(`redis-cli JSON.GET account:nick`).
 
 Note for shared instances: the REDIS_URL-gated tests **wipe the `obj:*`,
-`account:*`, `ban:*`, and `meta:*` namespaces** in logical dbs 12–14 *and*
-in whatever database `REDIS_URL` itself points at (db 0 unless the URL says
-otherwise — mush-store's suite uses the URL as given). Never point
-`REDIS_URL` at an instance holding real data; use a disposable one. The
+`account:*`, `ban:*`, `meta:*`, and `mod:*` namespaces** in logical dbs
+12–14 *and* in whatever database `REDIS_URL` itself points at (db 0 unless
+the URL says otherwise — mush-store's suite uses the URL as given). Never
+point `REDIS_URL` at an instance holding real data — module data (channels,
+mail, jobs) is wiped along with the world; use a disposable instance. The
 RediSearch index only works on db 0, which is one more reason production
 uses a dedicated instance on db 0.

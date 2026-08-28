@@ -24,8 +24,11 @@
 //!    (`@destroy`ed husks are swept to tombstones first, so the same batch
 //!    carries their store deletes). Ordinary command batches are
 //!    fire-and-forget (the writer retries transient failures forever, in
-//!    order); durability-critical flows (Player creation) carry a receipt
-//!    oneshot and their confirmations wait for the ack;
+//!    order); durability-critical flows carry a receipt oneshot and their
+//!    confirmations wait for the ack — Player creation via its typed reply,
+//!    and any step whose handler called `Ctx::gate_on_durable_ack` (mail
+//!    send, job approval) via a held-output gate: the step's resolved
+//!    output is transmitted only once the store acks its durable batch;
 //! 6. **staff ops** (M2): `@siteban`/`@dump`/`@shutdown` handlers
 //!    (registered by [`crate::staff`]) queued typed ops during the step;
 //!    ban ops are executed by ONE sequential executor task (staff commands
@@ -70,8 +73,8 @@ use std::time::{Duration, Instant};
 use mush_core::commands::movement::find_exit;
 use mush_core::{
     Audience, ControlMsg, DisconnectKind, Effect, Effects, Engine, Flags, Inbound, ObjId, ObjKind,
-    Outbox, Registry, Role, StepOutcome, World, WorldCommand, register_core_commands,
-    register_engine_commands,
+    Outbox, Registry, Role, ScheduledKind, StepOutcome, TickCadence, World, WorldCommand,
+    WorldEvent, is_ignoring, narrative_actor, register_core_commands, register_engine_commands,
 };
 use mush_proto::{OutputEvent, RichText};
 use mush_session::{CharKey, ConnId as SessConnId, DetachOutcome, DetachReason, SessionManager};
@@ -158,6 +161,35 @@ pub enum WorldMsg {
         /// The triggering error, for the staff alert (empty on recovery).
         detail: String,
     },
+}
+
+/// The world loop's in-task mirror of store-writer health — the small
+/// `StoreStatus` mirror `@stats` reads (the writer task itself only sends
+/// health *transitions*; the loop keeps the current picture).
+#[derive(Clone, Copy, Debug)]
+pub struct StoreHealth {
+    /// Whether the world is in read-only mode (writes failing).
+    pub read_only: bool,
+    /// Unix seconds when the most recent batch was handed to the writer
+    /// (`None` before the first write of this boot).
+    pub last_write_unix: Option<i64>,
+}
+
+impl StoreHealth {
+    /// Healthy, nothing written yet.
+    #[must_use]
+    pub fn new() -> StoreHealth {
+        StoreHealth {
+            read_only: false,
+            last_write_unix: None,
+        }
+    }
+}
+
+impl Default for StoreHealth {
+    fn default() -> Self {
+        StoreHealth::new()
+    }
 }
 
 /// Cloneable handle for sending into the world task.
@@ -363,10 +395,11 @@ async fn run(
     staff_ops: mpsc::Sender<StaffOp>,
 ) {
     tracing::info!("world task running");
+    let boot_unix = unix_now_s();
     let mut out = Outbox::new();
     let mut fx = Effects::new();
     let mut serial: u64 = 0;
-    let mut read_only = false;
+    let mut health = StoreHealth::new();
     loop {
         let next_due = engine.sched.next_due();
         let wake = tokio::select! {
@@ -375,9 +408,17 @@ async fn run(
         };
         let iteration_start = Instant::now();
         engine.set_now(unix_now_s());
+        // Whose flood-exempt flag to re-sync after the step (the acting
+        // player of a Cmd — the only path that pushes/pops input contexts).
+        let mut flood_sync: Option<ObjId> = None;
         let outcome = match wake {
             Wake::Msg(WorldMsg::Inbound(msg)) => {
-                if read_only && let Some(refused) = refuse_read_only(&engine.world, &msg) {
+                if let Inbound::Cmd { actor, .. } = &msg {
+                    flood_sync = Some(*actor);
+                }
+                if health.read_only
+                    && let Some(refused) = refuse_read_only(&engine.world, &msg)
+                {
                     let (actor, text) = refused;
                     sessions.send_to_char(
                         char_key(actor),
@@ -389,7 +430,7 @@ async fn run(
                 }
             }
             Wake::Msg(WorldMsg::CreatePlayer { name, reply }) => {
-                if read_only {
+                if health.read_only {
                     // A creation now would mutate RAM behind a stuck writer
                     // queue and hang the requester on an ack that cannot
                     // come until the store recovers. Fail closed instead.
@@ -397,10 +438,26 @@ async fn run(
                 } else {
                     match create_player(&mut engine, &name) {
                         Ok(id) => {
+                            // Tell module observers a Player now exists
+                            // (comsys auto-joins the default channel here).
+                            // Emitted BEFORE the flush so whatever the
+                            // observers persist rides the same durable
+                            // creation batch.
+                            engine.emit_world_event(
+                                &WorldEvent::ObjCreated {
+                                    obj: id,
+                                    kind: ObjKind::Player,
+                                    creator: mush_core::GOD,
+                                },
+                                &mut out,
+                                &mut fx,
+                            );
                             // Flush the creation batch (durable) and defer
                             // the reply until the store acks — the whole
                             // point of the gate.
-                            match flush_dirty(&mut engine, &writer, &mut serial, true).await {
+                            match flush_dirty(&mut engine, &writer, &mut serial, true, &mut health)
+                                .await
+                            {
                                 FlushOutcome::Queued(Some(ack_rx)) => {
                                     tokio::spawn(async move {
                                         let result = match ack_rx.await {
@@ -445,7 +502,7 @@ async fn run(
                 StepOutcome::Continue
             }
             Wake::Msg(WorldMsg::StoreStatus { healthy, detail }) => {
-                apply_store_status(&engine.world, &sessions, &mut read_only, healthy, &detail);
+                apply_store_status(&engine.world, &sessions, &mut health, healthy, &detail);
                 StepOutcome::Continue
             }
             Wake::Timer => {
@@ -457,16 +514,98 @@ async fn run(
                 break;
             }
         };
-        deliver_and_police(&mut engine, &sessions, &mut out, &mut fx, &tx);
-        spawn_effects(&mut fx, &tx);
-        // Write-through: one batch per processed message that dirtied the
-        // world (fire-and-forget; the writer preserves order and retries).
-        let _ = flush_dirty(&mut engine, &writer, &mut serial, false).await;
-        let staff_shutdown = run_staff_ops(&deps, &sessions, &writer, &staff_ops).await;
+        // Flood-exempt sync: while the acting player sits in an input
+        // context their lines bypass the transport throttle (a pasted mail
+        // body must not lose lines 31+ to the burst cap).
+        if let Some(actor) = flood_sync {
+            sessions.set_flood_exempt(char_key(actor), engine.world.input_depth(actor) > 0);
+        }
+        if let Some(gate_actor) = engine.take_durable_gate() {
+            // The step asked for the durable-ack output gate (mail send,
+            // XP approval — PLAN's ack-gated confirmations): resolve the
+            // step's audiences against CURRENT world state, flush its
+            // batch durable, and transmit the held output only once the
+            // store acks. Slow-client policing is skipped for held sends
+            // (a handful of lines; drops are still counted by the session
+            // layer). Later steps' output may overtake the held lines by
+            // up to one ack round-trip — accepted.
+            let resolved = resolve_sends(&engine.world, &mut out);
+            spawn_effects(&mut fx, &tx);
+            match flush_dirty(&mut engine, &writer, &mut serial, true, &mut health).await {
+                FlushOutcome::Queued(Some(ack_rx)) => {
+                    let sessions = Arc::clone(&sessions);
+                    tokio::spawn(async move {
+                        match ack_rx.await {
+                            Ok(Ok(_)) => {
+                                let _ = transmit(&sessions, resolved);
+                            }
+                            Ok(Err(e)) => {
+                                // The write was dropped (non-retryable):
+                                // deliver what happened in RAM, but never
+                                // pretend it is durable.
+                                let _ = transmit(&sessions, resolved);
+                                send_sys(
+                                    &sessions,
+                                    gate_actor,
+                                    &format!(
+                                        "WARNING: the database write for your last \
+                                         command failed ({e}); its effects may not \
+                                         survive a restart."
+                                    ),
+                                );
+                            }
+                            // Teardown: the writer vanished before acking —
+                            // the batch may be lost; never confirm.
+                            Err(_) => {}
+                        }
+                    });
+                }
+                // Nothing was actually dirty: nothing to gate on.
+                FlushOutcome::Clean | FlushOutcome::Queued(None) => {
+                    let _ = transmit(&sessions, resolved);
+                }
+                // The batch was DROPPED (writer gone, teardown): the write
+                // is not durable — never deliver the confirmation.
+                FlushOutcome::WriterGone => {}
+            }
+        } else {
+            deliver_and_police(&mut engine, &sessions, &mut out, &mut fx, &tx);
+            spawn_effects(&mut fx, &tx);
+            // Write-through: one batch per processed message that dirtied
+            // the world (fire-and-forget; the writer preserves order and
+            // retries).
+            let _ = flush_dirty(&mut engine, &writer, &mut serial, false, &mut health).await;
+        }
+        // Staff ops the step's handlers queued. Local ops (@boot/@ps/@stats)
+        // run inline here — the engine, scheduler, and session manager are
+        // all at hand — AFTER the delivery above, so a @boot target's
+        // Disconnect message reaches their connections before the session
+        // is closed. Store ops go to the async executors, as in M2.
+        let (local_ops, store_ops): (Vec<StaffOp>, Vec<StaffOp>) = deps
+            .staff
+            .drain()
+            .into_iter()
+            .partition(|op| op.kind.is_local());
+        if !local_ops.is_empty() {
+            run_local_staff_ops(
+                &mut engine,
+                &sessions,
+                &health,
+                boot_unix,
+                local_ops,
+                &mut out,
+                &mut fx,
+            );
+            deliver_and_police(&mut engine, &sessions, &mut out, &mut fx, &tx);
+            spawn_effects(&mut fx, &tx);
+            let _ = flush_dirty(&mut engine, &writer, &mut serial, false, &mut health).await;
+        }
+        let staff_shutdown = run_staff_ops(&deps, &sessions, &writer, &staff_ops, store_ops).await;
         // Loop-lag watchdog (PLAN risk 2): the single-writer loop must stay
         // fast; a slow iteration means a slow sync handler or writer-queue
-        // backpressure.
+        // backpressure. The engine mirrors the numbers for `@stats`.
         let lag = iteration_start.elapsed();
+        engine.record_loop_lag(u64::try_from(lag.as_millis()).unwrap_or(u64::MAX));
         if lag > LOOP_LAG_WARN {
             tracing::warn!(
                 lag_ms = lag.as_millis() as u64,
@@ -485,7 +624,7 @@ async fn run(
             let outcome = engine.step(Inbound::Control(ControlMsg::Shutdown), &mut out, &mut fx);
             deliver_and_police(&mut engine, &sessions, &mut out, &mut fx, &tx);
             spawn_effects(&mut fx, &tx);
-            let _ = flush_dirty(&mut engine, &writer, &mut serial, false).await;
+            let _ = flush_dirty(&mut engine, &writer, &mut serial, false, &mut health).await;
             debug_assert_eq!(outcome, StepOutcome::Shutdown);
             tracing::info!("world task shut down cleanly");
             break;
@@ -516,6 +655,16 @@ fn refuse_read_only(world: &World, msg: &Inbound) -> Option<(ObjId, String)> {
     };
     let t = line.trim();
     if t.is_empty() {
+        return None;
+    }
+    // An actor inside an input context (mail compose, chargen) must never
+    // be trapped there: their lines are arbitrary text, not verbs — the
+    // allowlist would refuse the hard escape `~q` (which dispatch promises
+    // ALWAYS pops) while letting allowlisted verbs through to be silently
+    // captured as body text. Context feeds mutate only RAM and queue
+    // ordered module ops — exactly the bounded divergence this gate's
+    // contract accepts — so they pass wholesale.
+    if world.input_depth(*actor) > 0 {
         return None;
     }
     // Speech prefixes never mutate the world (and dispatch rewrites them
@@ -573,13 +722,13 @@ fn refuse_read_only(world: &World, msg: &Inbound) -> Option<(ObjId, String)> {
 fn apply_store_status(
     world: &World,
     sessions: &SessionManager,
-    read_only: &mut bool,
+    health: &mut StoreHealth,
     healthy: bool,
     detail: &str,
 ) {
     if healthy {
-        if *read_only {
-            *read_only = false;
+        if health.read_only {
+            health.read_only = false;
             tracing::info!("store recovered; leaving read-only mode");
             broadcast_wizards(
                 world,
@@ -587,8 +736,8 @@ fn apply_store_status(
                 "GAME: store writes recovered; the world is writable again.",
             );
         }
-    } else if !*read_only {
-        *read_only = true;
+    } else if !health.read_only {
+        health.read_only = true;
         tracing::error!(detail, "store write failure; entering read-only mode");
         broadcast_wizards(
             world,
@@ -638,9 +787,14 @@ async fn flush_dirty(
     writer: &mpsc::Sender<StoreJob>,
     serial: &mut u64,
     durable: bool,
+    health: &mut StoreHealth,
 ) -> FlushOutcome {
     let mut dirty = engine.world.take_dirty();
-    if dirty.is_empty() {
+    // Module persistence ops (comsys/mail/jobs writes queued via
+    // Ctx::persist) ride the SAME batch as the step's object mutations —
+    // that is the write-through atomicity contract of the module API.
+    let module_ops = engine.take_module_ops();
+    if dirty.is_empty() && module_ops.is_empty() {
         return FlushOutcome::Clean;
     }
     // `destroy` dirties everything it marks GOING, and every flush sweeps,
@@ -656,7 +810,8 @@ async fn flush_dirty(
         dirty.append(&mut engine.world.take_dirty());
     }
     *serial += 1;
-    let batch = persist::batch_from_dirty(&engine.world, dirty, *serial, durable);
+    let mut batch = persist::batch_from_dirty(&engine.world, dirty, *serial, durable);
+    batch.module_ops = module_ops;
     if batch.is_empty() {
         return FlushOutcome::Clean;
     }
@@ -677,7 +832,247 @@ async fn flush_dirty(
         );
         return FlushOutcome::WriterGone;
     }
+    health.last_write_unix = Some(unix_now_s());
     FlushOutcome::Queued(receipt)
+}
+
+/// Handle the **local** staff ops (`@boot`, `@ps`, `@stats`) inline in the
+/// world loop: they need the `Engine` (scheduler, world, loop-lag mirror)
+/// and the session manager, and never touch the store. Output rides the
+/// normal outbox; the caller delivers it right after.
+fn run_local_staff_ops(
+    engine: &mut Engine,
+    sessions: &Arc<SessionManager>,
+    health: &StoreHealth,
+    boot_unix: i64,
+    ops: Vec<StaffOp>,
+    out: &mut Outbox,
+    fx: &mut Effects,
+) {
+    for op in ops {
+        let actor = op.actor;
+        match op.kind {
+            StaffOpKind::Boot {
+                target,
+                ref message,
+            } => {
+                tracing::info!(%actor, %target, message, "@boot requested");
+                let name = engine
+                    .world
+                    .get(target)
+                    .map_or_else(|| target.to_string(), |o| o.name.clone());
+                // Close the whole session: every connection handle comes
+                // back so each ConnDown(Boot) can be fed to the engine
+                // (announce + world-side disconnect on the last one).
+                // The handler's Disconnect event was already delivered, so
+                // the target saw the message; dropping the handles closes
+                // the transports once their queues drain.
+                let mut booted = 0u32;
+                if let Some(sess) = sessions.session_of_char(char_key(target)) {
+                    for handle in sessions.close_session(sess) {
+                        booted += 1;
+                        engine.step(
+                            Inbound::ConnDown {
+                                conn: handle.id.0,
+                                actor: target,
+                                reason: DisconnectKind::Boot,
+                            },
+                            out,
+                            fx,
+                        );
+                    }
+                }
+                if booted == 0 {
+                    // No live connections (linkdead, or a test world with
+                    // no session layer attachment): force the world-side
+                    // disconnect so WHO and the room agree.
+                    engine.step(Inbound::SessionGone { actor: target }, out, fx);
+                    out.info(
+                        actor,
+                        format!("@boot: {name} had no live connections; session cleared."),
+                    );
+                } else {
+                    let plural = if booted == 1 {
+                        "connection"
+                    } else {
+                        "connections"
+                    };
+                    out.info(actor, format!("@boot: {name} booted ({booted} {plural})."));
+                }
+            }
+            StaffOpKind::Ps => {
+                tracing::info!(%actor, "@ps requested");
+                out.info(actor, render_ps(engine, unix_now_ms()));
+            }
+            StaffOpKind::Stats => {
+                tracing::info!(%actor, "@stats requested");
+                out.info(actor, render_stats(engine, health, boot_unix, unix_now_s()));
+            }
+            // Store ops never reach here (see the partition in `run`).
+            _ => {}
+        }
+    }
+}
+
+/// Truncate a command line for `@ps` display.
+fn preview(line: &str) -> String {
+    const MAX: usize = 40;
+    if line.chars().count() <= MAX {
+        line.to_string()
+    } else {
+        let cut: String = line.chars().take(MAX).collect();
+        format!("{cut}...")
+    }
+}
+
+/// Human form of a tick cadence: `coarse 300s`, `fast 250ms`, `scene`.
+fn cadence_text(c: TickCadence) -> String {
+    match c {
+        TickCadence::Coarse(d) => format!("coarse {}s", d.as_secs().max(1)),
+        TickCadence::Fast(d) => format!("fast {}ms", d.as_millis().max(1)),
+        TickCadence::Scene => "scene".to_string(),
+    }
+}
+
+/// Render the `@ps` scheduler report: pending `@wait`s (actor, seconds
+/// remaining, command preview), module ticks (tag, cadence, next fire),
+/// scene ticks, and totals. Pure over the engine — unit-testable.
+#[must_use]
+pub fn render_ps(engine: &Engine, now_ms: i64) -> String {
+    let entries = engine.sched.pending_entries();
+    let mut next_fire: std::collections::HashMap<(String, String), i64> =
+        std::collections::HashMap::new();
+    let mut waits = Vec::new();
+    let mut scenes = Vec::new();
+    let mut control = 0usize;
+    for &(due, kind) in &entries {
+        let remain_s = (due - now_ms).max(0) / 1000;
+        match kind {
+            ScheduledKind::WaitCmd { actor, line } => {
+                let name = engine
+                    .world
+                    .get(*actor)
+                    .map_or_else(|| actor.to_string(), |o| o.name.clone());
+                waits.push(format!("  {name}  in {remain_s}s: {}", preview(line)));
+            }
+            ScheduledKind::ModuleTick { module, tag } => {
+                next_fire.insert((module.to_string(), tag.to_string()), remain_s);
+            }
+            ScheduledKind::SceneTick { module, tag, scene } => {
+                scenes.push(format!("  {module}:{tag}  {scene}  next in {remain_s}s"));
+            }
+            ScheduledKind::Control(_) => control += 1,
+        }
+    }
+    let mut ticks = Vec::new();
+    for t in engine.registry.module_ticks() {
+        let when = next_fire
+            .get(&(t.module.to_string(), t.tag.to_string()))
+            .map_or_else(String::new, |s| format!("  next in {s}s"));
+        ticks.push(format!(
+            "  {}:{}  {}{when}",
+            t.module,
+            t.tag,
+            cadence_text(t.cadence)
+        ));
+    }
+    let mut text = String::from("Scheduler:");
+    text.push_str(&format!("\nWaits: {}", waits.len()));
+    for w in &waits {
+        text.push('\n');
+        text.push_str(w);
+    }
+    text.push_str(&format!("\nModule ticks: {}", ticks.len()));
+    for t in &ticks {
+        text.push('\n');
+        text.push_str(t);
+    }
+    text.push_str(&format!("\nScene ticks: {}", scenes.len()));
+    for s in &scenes {
+        text.push('\n');
+        text.push_str(s);
+    }
+    if control > 0 {
+        text.push_str(&format!("\nControl timers: {control}"));
+    }
+    text.push_str(&format!("\nTotal scheduled entries: {}", entries.len()));
+    text
+}
+
+/// Render the wizard `@stats` report: uptime, object counts by kind,
+/// connected count, loop lag (last/max), store health (read-only mode +
+/// last-write age), and db size. Pure over its inputs — unit-testable.
+#[must_use]
+pub fn render_stats(
+    engine: &Engine,
+    health: &StoreHealth,
+    boot_unix: i64,
+    now_unix: i64,
+) -> String {
+    let w = &engine.world;
+    let (mut rooms, mut exits, mut things, mut players, mut npcs, mut going) =
+        (0usize, 0, 0, 0, 0, 0usize);
+    for o in w.iter() {
+        if o.flags.contains(Flags::GOING) {
+            going += 1;
+            continue;
+        }
+        match o.kind {
+            ObjKind::Room => rooms += 1,
+            ObjKind::Exit => exits += 1,
+            ObjKind::Thing => things += 1,
+            ObjKind::Player => players += 1,
+            ObjKind::Npc => npcs += 1,
+        }
+    }
+    let total = rooms + exits + things + players + npcs;
+    let connected = w.connected().count();
+    let (lag_last, lag_max) = engine.loop_lag_ms();
+    let uptime = (now_unix - boot_unix).max(0);
+    let store = if health.read_only {
+        "READ-ONLY (writes failing; mutations paused)".to_string()
+    } else {
+        "healthy".to_string()
+    };
+    let write_age = match health.last_write_unix {
+        Some(at) => format!("{}s ago", (now_unix - at).max(0)),
+        None => "no writes yet this boot".to_string(),
+    };
+    let mut text = String::from("Server statistics:");
+    text.push_str(&format!(
+        "\nUptime: {} (since unix {boot_unix})",
+        human_duration(uptime)
+    ));
+    text.push_str(&format!(
+        "\nObjects: {total} ({rooms} rooms, {exits} exits, {things} things, \
+         {players} players, {npcs} NPCs)"
+    ));
+    if going > 0 {
+        text.push_str(&format!("\nPending destruction: {going}"));
+    }
+    text.push_str(&format!("\nConnected: {connected}"));
+    text.push_str(&format!("\nLoop lag: last {lag_last}ms, max {lag_max}ms"));
+    text.push_str(&format!("\nStore: {store}; last write {write_age}"));
+    text.push_str(&format!(
+        "\nDb size: {total} objects (next id #{})",
+        w.next_id()
+    ));
+    text
+}
+
+/// `3661` → `"1h 1m 1s"`.
+fn human_duration(mut s: i64) -> String {
+    let h = s / 3600;
+    s %= 3600;
+    let m = s / 60;
+    s %= 60;
+    if h > 0 {
+        format!("{h}h {m}m {s}s")
+    } else if m > 0 {
+        format!("{m}m {s}s")
+    } else {
+        format!("{s}s")
+    }
 }
 
 /// Hand off the staff ops the step's command handlers queued. Ban ops
@@ -688,13 +1083,14 @@ async fn flush_dirty(
 /// `ControlMsg::Shutdown` and exits. Every op is audit-logged with the
 /// requesting actor.
 async fn run_staff_ops(
-    deps: &ServerDeps,
+    _deps: &ServerDeps,
     sessions: &Arc<SessionManager>,
     writer: &mpsc::Sender<StoreJob>,
     staff_ops: &mpsc::Sender<StaffOp>,
+    ops: Vec<StaffOp>,
 ) -> bool {
     let mut shutdown = false;
-    for op in deps.staff.drain() {
+    for op in ops {
         let actor = op.actor;
         match op.kind {
             StaffOpKind::SetBan {
@@ -744,6 +1140,10 @@ async fn run_staff_ops(
             StaffOpKind::Shutdown => {
                 tracing::info!(%actor, "@shutdown requested");
                 shutdown = true;
+            }
+            // Local ops are partitioned out before this call.
+            StaffOpKind::Boot { .. } | StaffOpKind::Ps | StaffOpKind::Stats => {
+                debug_assert!(false, "local staff op reached the store executor path");
             }
         }
     }
@@ -804,8 +1204,13 @@ async fn staff_ops_loop(
                 }
                 Err(e) => format!("@siteban list failed: {e}"),
             },
-            // Dump and Shutdown never enter this queue (see run_staff_ops).
-            StaffOpKind::Dump | StaffOpKind::Shutdown => continue,
+            // Dump/Shutdown and the local ops never enter this queue (see
+            // run_staff_ops / run_local_staff_ops).
+            StaffOpKind::Dump
+            | StaffOpKind::Shutdown
+            | StaffOpKind::Boot { .. }
+            | StaffOpKind::Ps
+            | StaffOpKind::Stats => continue,
         };
         send_sys(&sessions, actor, &text);
     }
@@ -939,44 +1344,90 @@ fn create_player(engine: &mut Engine, name: &str) -> Result<ObjId, CreatePlayerE
     }
 }
 
-/// Resolve every queued audience to per-character (or per-connection) sends
-/// through the session manager. The world half of treaty ruling 2 lives
-/// here: `Room` audiences become the room's *connected actors*; the session
-/// manager takes it from character to connections.
-///
-/// Returns the connections whose buffer overflowed (the event was dropped
-/// for them); the caller disconnects them as slow clients.
-fn deliver(world: &World, sessions: &SessionManager, out: &mut Outbox) -> Vec<SessConnId> {
-    let mut slow = Vec::new();
+/// One fully resolved send target (world-side audience resolution already
+/// applied).
+enum SendTarget {
+    /// Every connection of one character.
+    Char(CharKey),
+    /// One specific connection.
+    Conn(SessConnId),
+    /// Everyone connected.
+    All,
+}
+
+/// Resolve every queued audience against **current** world state into
+/// per-character (or per-connection) sends. The world half of treaty
+/// ruling 2 lives here: `Room` audiences become the room's *connected
+/// actors*; the session manager later takes it from character to
+/// connections. Split from [`transmit`] so a durable-gated step can
+/// resolve now and deliver after the store ack.
+fn resolve_sends(world: &World, out: &mut Outbox) -> Vec<(SendTarget, Arc<OutputEvent>)> {
+    let mut sends = Vec::new();
     for (audience, event) in out.take() {
         let ev = Arc::new(event);
         match audience {
             Audience::Actor(actor) => {
-                let report = sessions.send_to_char(char_key(actor), ev);
+                sends.push((SendTarget::Char(char_key(actor)), ev));
+            }
+            Audience::Conn(conn) => {
+                sends.push((SendTarget::Conn(SessConnId(conn)), ev));
+            }
+            Audience::Room { room, exclude } => {
+                // `@ignore` room filtering happens HERE — the one place a
+                // Room audience resolves to listeners (treaty ruling 2's
+                // world half). An attributed narrative line (say/pose/
+                // semipose/@emit) from a speaker a listener has muted is
+                // skipped for that listener only; staff speakers are never
+                // filtered (mush_core::is_ignoring owns the policy).
+                let speaker = narrative_actor(&ev);
+                for &occupant in world.contents_of(room) {
+                    if exclude.contains(&occupant) || !world.is_connected(occupant) {
+                        continue;
+                    }
+                    if let Some(speaker) = speaker
+                        && is_ignoring(world, occupant, speaker)
+                    {
+                        continue;
+                    }
+                    sends.push((SendTarget::Char(char_key(occupant)), Arc::clone(&ev)));
+                }
+            }
+            Audience::All => sends.push((SendTarget::All, ev)),
+        }
+    }
+    sends
+}
+
+/// Hand resolved sends to the session manager. Returns the connections
+/// whose buffer overflowed (the event was dropped for them); the caller
+/// disconnects them as slow clients.
+fn transmit(
+    sessions: &SessionManager,
+    sends: Vec<(SendTarget, Arc<OutputEvent>)>,
+) -> Vec<SessConnId> {
+    let mut slow = Vec::new();
+    for (target, ev) in sends {
+        match target {
+            SendTarget::Char(ch) => {
+                let report = sessions.send_to_char(ch, ev);
                 if report.delivered == 0 && report.dropped.is_empty() {
                     // Link-dead actor (or a race with a disconnect): the
                     // event is lost. Resume buffers are an M2+ concern
                     // (PLAN: mush-session "resume buffers"); make the loss
                     // observable at least.
-                    tracing::debug!(%actor, "output to actor with no live connections dropped");
+                    tracing::debug!(
+                        char = ch.0,
+                        "output to actor with no live connections dropped"
+                    );
                 }
                 slow.extend(report.dropped);
             }
-            Audience::Conn(conn) => {
+            SendTarget::Conn(conn) => {
                 // Pre-auth / connection-addressed events. An unknown conn is
                 // fine (it may have raced a disconnect).
-                let _ = sessions.send_to_conn(SessConnId(conn), ev);
+                let _ = sessions.send_to_conn(conn, ev);
             }
-            Audience::Room { room, exclude } => {
-                for &occupant in world.contents_of(room) {
-                    if exclude.contains(&occupant) || !world.is_connected(occupant) {
-                        continue;
-                    }
-                    let report = sessions.send_to_char(char_key(occupant), Arc::clone(&ev));
-                    slow.extend(report.dropped);
-                }
-            }
-            Audience::All => {
+            SendTarget::All => {
                 let report = sessions.broadcast_all(ev);
                 slow.extend(report.dropped);
             }
@@ -985,6 +1436,11 @@ fn deliver(world: &World, sessions: &SessionManager, out: &mut Outbox) -> Vec<Se
     slow.sort_unstable();
     slow.dedup();
     slow
+}
+
+/// Resolve and transmit in one pass (the ordinary, un-gated path).
+fn deliver(world: &World, sessions: &SessionManager, out: &mut Outbox) -> Vec<SessConnId> {
+    transmit(sessions, resolve_sends(world, out))
 }
 
 /// Spawn one detached task per drained [`Effect`]; each completion re-enters
@@ -1045,4 +1501,84 @@ pub fn char_key_obj(key: CharKey) -> ObjId {
 /// (login screens, error notices). Used by the SSH bridge.
 pub fn send_event_to_conn(sessions: &SessionManager, conn: SessConnId, event: OutputEvent) {
     let _ = sessions.send_to_conn(conn, Arc::new(event));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mush_core::module::{ContextOutcome, InputContext};
+    use mush_core::{Ctx, GOD};
+    use mush_proto::{InputMode, PromptSpec};
+
+    fn cmd(line: &str) -> Inbound {
+        Inbound::Cmd {
+            conn: 1,
+            actor: GOD,
+            line: line.to_string(),
+        }
+    }
+
+    /// The conservative allowlist really is a pin: module verbs — comsys
+    /// aliases, `@mail`, `+jobs` — mutate module state (seq bumps, boxes,
+    /// cursors) and MUST stay refused while read-only. If a future
+    /// allowlist edit lets one through, this fails.
+    #[test]
+    fn read_only_refuses_module_verbs() {
+        let world = World::new_minimal();
+        for line in [
+            "pub Hello there",
+            "@mail/quick Nick=hi/there",
+            "@mail",
+            "addcom pub=Public",
+            "comlist",
+            "+request T=text",
+            "+job/approve 1",
+            "@channel/recall pub",
+        ] {
+            assert!(
+                refuse_read_only(&world, &cmd(line)).is_some(),
+                "{line:?} must be refused while read-only"
+            );
+        }
+        for line in ["look", "WHO", "say hi", "\"hi", ":waves", "help mail"] {
+            assert!(
+                refuse_read_only(&world, &cmd(line)).is_none(),
+                "{line:?} must pass while read-only"
+            );
+        }
+    }
+
+    struct Sink;
+
+    impl InputContext for Sink {
+        fn prompt(&self, _w: &World) -> PromptSpec {
+            PromptSpec {
+                mode: InputMode::Normal,
+                text: None,
+            }
+        }
+
+        fn feed(&mut self, _ctx: &mut Ctx<'_>, _line: &str) -> ContextOutcome {
+            ContextOutcome::Consumed
+        }
+    }
+
+    /// A player inside an input context (mail compose) must never be
+    /// trapped by read-only mode: every line — the hard escape `~q`, the
+    /// send terminator `--`, and arbitrary body text that happens to spell
+    /// a refused verb — passes the gate and feeds the context.
+    #[test]
+    fn read_only_passes_input_context_lines() {
+        let mut world = World::new_minimal();
+        world.push_input_context(GOD, None, Box::new(Sink));
+        for line in ["~q", "--", "body text", "@create orb", "pub Hello", "l"] {
+            assert!(
+                refuse_read_only(&world, &cmd(line)).is_none(),
+                "{line:?} must pass while composing"
+            );
+        }
+        // Popped: the gate applies again.
+        world.pop_input_context(GOD);
+        assert!(refuse_read_only(&world, &cmd("@create orb")).is_some());
+    }
 }

@@ -20,6 +20,16 @@
 //!   triggered — the mandatory pre-migrate snapshot.
 //! - Each migration that completes bumps the stored version immediately, so
 //!   a crash mid-sequence resumes exactly where it stopped.
+//!
+//! Schema history:
+//!
+//! - **v1** — initial schema (`obj:*`, `account:*`, `ban:*`, `meta:*`).
+//!   The M3 module-persistence keys (`mod:{ns}:{key}`, written via
+//!   [`crate::types::WriteBatch::module_ops`]) are **additive**: a brand-new
+//!   key namespace that older data simply doesn't have, so they required no
+//!   schema bump and no migration — v1 stores read and write them as-is.
+//!   Future *shape* changes to module docs are the owning module's own
+//!   namespaced migrations (per the module API), not core schema bumps.
 
 use futures::future::BoxFuture;
 

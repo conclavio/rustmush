@@ -111,6 +111,24 @@ impl Term {
         let bytes = format!("{line}\r").into_bytes();
         self.channel.data(&bytes[..]).await.expect("send line");
     }
+
+    /// Await the channel closing (server-side boot/quit), collecting any
+    /// final output into `seen` on the way.
+    pub async fn expect_close(&mut self) {
+        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
+        loop {
+            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
+                .await
+                .unwrap_or_else(|_| panic!("timeout waiting for close; seen: {:?}", self.seen));
+            match msg {
+                None | Some(ChannelMsg::Close) => return,
+                Some(ChannelMsg::Data { data }) => {
+                    self.seen.push_str(&String::from_utf8_lossy(&data));
+                }
+                Some(_) => {}
+            }
+        }
+    }
 }
 
 /// `ssh play@addr` with a PTY + shell, landing on the welcome screen.

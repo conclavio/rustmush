@@ -1388,3 +1388,101 @@ fn empty_and_missing_args_error_cleanly() {
     let out = g.run(ann, "@teleport");
     assert_error_contains(&out, ann, "Teleport where?");
 }
+
+// ---------------------------------------------------------------------
+// @ignore delivery shaping (M3): silent page/whisper gag
+// ---------------------------------------------------------------------
+
+#[test]
+fn ignored_page_and_whisper_drop_silently() {
+    let mut g = Game::new();
+    let (ann, bob) = (g.ann, g.bob);
+    // Bob mutes Ann.
+    let out = g.run(bob, "@ignore Ann");
+    assert_error_contains(&out, bob, "You are now ignoring Ann.");
+
+    // Ann pages Bob: Ann gets the NORMAL confirmation (never told she is
+    // ignored); Bob receives nothing at all.
+    let out = g.run(ann, "page Bob=secret ping");
+    assert_error_contains(&out, ann, "You paged Bob with 'secret ping'.");
+    assert!(
+        actor_texts(&out, bob).is_empty(),
+        "gagged page must deliver nothing to the target: {:?}",
+        out.events()
+    );
+
+    // Whisper likewise (same room).
+    let out = g.run(ann, "whisper Bob=psst");
+    assert_error_contains(&out, ann, "You whisper \"psst\" to Bob.");
+    assert!(
+        actor_texts(&out, bob).is_empty(),
+        "gagged whisper must deliver nothing to the target"
+    );
+
+    // Staff cannot be gagged: a page from God delivers even if Bob's list
+    // somehow contained him (adding staff is refused up front anyway).
+    let out = g.run(GOD, "page Bob=staff line");
+    assert!(
+        actor_texts(&out, bob).iter().any(|t| t == "staff line"),
+        "staff pages must always deliver"
+    );
+
+    // Lifting the mute restores delivery.
+    g.run(bob, "@ignore/clear Ann");
+    let out = g.run(ann, "page Bob=hello again");
+    assert!(
+        actor_texts(&out, bob).iter().any(|t| t == "hello again"),
+        "cleared mute must deliver again: {:?}",
+        out.events()
+    );
+}
+
+// ---------------------------------------------------------------------
+// Help topics (M3): prose topics with command precedence
+// ---------------------------------------------------------------------
+
+#[test]
+fn help_serves_topics_with_command_precedence() {
+    let mut g = Game::new();
+    let ann = g.ann;
+    g.reg
+        .add_help_topic("building", "Building Things", "Dig rooms with @dig.");
+    // A topic deliberately shadowing a command name: the command must win.
+    g.reg
+        .add_help_topic("look", "WRONG", "This must never be served.");
+
+    // Topic lookup (case-insensitive).
+    let out = g.run(ann, "help BUILDING");
+    assert_error_contains(&out, ann, "Building Things");
+    assert_error_contains(&out, ann, "Dig rooms with @dig.");
+
+    // Exact command name wins over the identically named topic.
+    let out = g.run(ann, "help look");
+    let texts = actor_texts(&out, ann);
+    assert!(
+        texts.iter().any(|t| t.starts_with("look")),
+        "command help expected: {texts:?}"
+    );
+    assert!(
+        !texts
+            .iter()
+            .any(|t| t.contains("This must never be served")),
+        "topic must not shadow the command: {texts:?}"
+    );
+
+    // Bare help lists commands AND topics.
+    let out = g.run(ann, "help");
+    let texts = actor_texts(&out, ann);
+    assert!(
+        texts.iter().any(|t| t.contains("Topics")),
+        "topic section expected: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|t| t.contains("building")),
+        "topic name expected in listing: {texts:?}"
+    );
+
+    // Unknown names still error.
+    let out = g.run(ann, "help nonesuch");
+    assert_error_contains(&out, ann, "No help available");
+}

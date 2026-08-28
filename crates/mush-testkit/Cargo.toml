@@ -9,6 +9,7 @@ description = "In-process world driver for integration tests"
 [dependencies]
 mush-core.workspace = true
 mush-proto.workspace = true
+smol_str.workspace = true
 
 [lints]
 workspace = true

@@ -23,13 +23,19 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use mush_proto::{OutputEvent, RichText};
+use smol_str::SmolStr;
 
-use crate::cmd::{ArgShape, CmdError, CommandSpec, Ctx, Registry, RegistryError, dispatch};
+use crate::cmd::{
+    ArgShape, CmdError, CommandSpec, Ctx, ParsedArgs, Registry, RegistryError, SwitchSet, dispatch,
+};
 use crate::commands::narrative_emit;
 use crate::flags::Role;
-use crate::obj::ObjId;
+use crate::module::{
+    self, GameModule, ModError, ModuleBootData, ModuleOp, SceneId, TickCadence, WorldEvent,
+};
+use crate::obj::{GOD, ObjId};
 use crate::output::{ConnId, Outbox, name_span};
-use crate::sched::{ScheduledKind, Scheduler};
+use crate::sched::{ScheduledKind, Scheduler, TimerId};
 use crate::world::World;
 
 /// Cap on `@slowtest` delays (seconds) — it is a debug tool, not a timer.
@@ -129,8 +135,9 @@ pub enum Effect {
 
 /// What a command handler deferred through [`Outbox::defer`], routed by
 /// [`Engine::step`]: async work goes to [`Effects`], timers go to the
-/// [`Scheduler`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// [`Scheduler`], module persistence ops go to the engine's module-op
+/// queue (drained by the world task into the current `WriteBatch`).
+#[derive(Clone, Debug, PartialEq)]
 pub enum Deferred {
     /// Spawn this async work (via the [`Effects`] queue).
     Effect(Effect),
@@ -140,6 +147,40 @@ pub enum Deferred {
         delay_ms: i64,
         /// What fires.
         kind: ScheduledKind,
+    },
+    /// A module persistence op ([`Ctx::persist`](crate::cmd::Ctx::persist))
+    /// — collected via [`Engine::take_module_ops`] into the per-command
+    /// write batch.
+    Persist(ModuleOp),
+    /// Start (or re-arm with a new period) a per-scene module tick
+    /// ([`Ctx::scene_tick_start`](crate::cmd::Ctx::scene_tick_start)).
+    SceneTickStart {
+        /// The owning module.
+        module: SmolStr,
+        /// The registered `Scene`-cadence tick tag.
+        tag: SmolStr,
+        /// The scene it is bound to.
+        scene: SceneId,
+        /// Period in milliseconds (>= 1).
+        every_ms: i64,
+    },
+    /// Stop a running per-scene module tick.
+    SceneTickStop {
+        /// The owning module.
+        module: SmolStr,
+        /// The tick tag.
+        tag: SmolStr,
+        /// The scene.
+        scene: SceneId,
+    },
+    /// Gate this step's output on the store's durable ack
+    /// ([`Ctx::gate_on_durable_ack`](crate::cmd::Ctx::gate_on_durable_ack)):
+    /// the driving loop flushes the step's batch `durable: true` and holds
+    /// the step's queued output until the receipt resolves, warning `actor`
+    /// if the write ultimately fails.
+    DurableGate {
+        /// The acting player whose confirmation is being gated.
+        actor: ObjId,
     },
 }
 
@@ -257,21 +298,45 @@ struct ConnInfo {
     caps_structured: bool,
 }
 
-/// The sync world engine: world + command registry + scheduler + connection
-/// bookkeeping. The tokio loop in `mushd` owns exactly one of these.
+/// Bookkeeping for one running per-scene tick.
+#[derive(Copy, Clone, Debug)]
+struct SceneTickInfo {
+    timer: TimerId,
+    every_ms: i64,
+}
+
+/// The sync world engine: world + command registry + scheduler + modules +
+/// connection bookkeeping. The tokio loop in `mushd` owns exactly one of
+/// these.
 pub struct Engine {
     /// The game state.
     pub world: World,
-    /// The command table.
+    /// The command table (plus module registration tables).
     pub registry: Registry,
     /// Pending timers (`@wait`, module ticks).
     pub sched: Scheduler,
+    /// The registered game modules (for [`Engine::modules_loaded`]).
+    modules: Vec<Box<dyn GameModule>>,
+    /// Module persistence ops drained from handlers, awaiting
+    /// [`Engine::take_module_ops`] (the world task folds them into the
+    /// current `WriteBatch`).
+    module_ops: Vec<ModuleOp>,
+    /// Running per-scene ticks by `(module, tag, scene)`.
+    scene_ticks: HashMap<(SmolStr, SmolStr, SceneId), SceneTickInfo>,
+    /// Set when the last drained step requested a durable-ack output gate
+    /// ([`Deferred::DurableGate`]); the driving loop takes it via
+    /// [`Engine::take_durable_gate`].
+    durable_gate: Option<ObjId>,
     /// Live connections by id.
     conns: HashMap<ConnId, ConnInfo>,
     /// Live connection count per actor (invariant: sums `conns` rows).
     conn_count: HashMap<ObjId, u32>,
     /// Pending `@wait` entries per actor (capped at [`WAIT_QUEUE_MAX`]).
     pending_waits: HashMap<ObjId, u32>,
+    /// Most recent loop-iteration lag reported by the driver (ms).
+    lag_last_ms: u64,
+    /// Worst loop-iteration lag reported since boot (ms).
+    lag_max_ms: u64,
 }
 
 impl Engine {
@@ -285,10 +350,179 @@ impl Engine {
             world,
             registry,
             sched: Scheduler::new(),
+            modules: Vec::new(),
+            module_ops: Vec::new(),
+            scene_ticks: HashMap::new(),
+            durable_gate: None,
             conns: HashMap::new(),
             conn_count: HashMap::new(),
             pending_waits: HashMap::new(),
+            lag_last_ms: 0,
+            lag_max_ms: 0,
         }
+    }
+
+    /// Record one loop-iteration duration from the driving loop's watchdog
+    /// (the M2 loop-lag metric). The engine only mirrors it so sync staff
+    /// tooling (`@stats`) can report it.
+    pub fn record_loop_lag(&mut self, lag_ms: u64) {
+        self.lag_last_ms = lag_ms;
+        self.lag_max_ms = self.lag_max_ms.max(lag_ms);
+    }
+
+    /// The `(last, max)` loop-iteration lag in milliseconds recorded via
+    /// [`Engine::record_loop_lag`].
+    #[must_use]
+    pub fn loop_lag_ms(&self) -> (u64, u64) {
+        (self.lag_last_ms, self.lag_max_ms)
+    }
+
+    /// [`Engine::new`] plus game modules: each module's
+    /// [`GameModule::register`] runs here (against the one registry),
+    /// declared state slots are installed on the world, and every
+    /// `Coarse`/`Fast` tick is armed for its first fire one period from
+    /// [`World::now`] — call [`World::set_now`] (or
+    /// [`Engine::set_now`]) first, or the first fires land immediately
+    /// (they self-heal: re-arming is relative to fire time).
+    ///
+    /// After the driver has loaded each module's persisted data, it calls
+    /// [`Engine::modules_loaded`].
+    pub fn with_modules(
+        world: World,
+        mut registry: Registry,
+        mut modules: Vec<Box<dyn GameModule>>,
+    ) -> Result<Engine, ModError> {
+        // Duplicate module names would silently merge persistence
+        // namespaces and clobber each other's boot data — refuse at boot.
+        let mut seen_names: std::collections::HashSet<&'static str> =
+            std::collections::HashSet::new();
+        for m in &modules {
+            if !seen_names.insert(m.name()) {
+                return Err(ModError::msg(format!(
+                    "two modules share the name {:?}",
+                    m.name()
+                )));
+            }
+        }
+        for m in &mut modules {
+            let name = m.name();
+            let mut registrar = module::Registrar::new(&mut registry, name);
+            m.register(&mut registrar)?;
+        }
+        let mut engine = Engine::new(world, registry);
+        engine.modules = modules;
+        // State-slot conflict check: a second module declaring the same
+        // TypeId would silently wipe the first module's slot (and with it
+        // e.g. every registered jobs payload handler). A module
+        // re-declaring its OWN slot keeps the last value.
+        let inits = engine.registry.take_state_inits();
+        let mut slot_owners: HashMap<std::any::TypeId, SmolStr> = HashMap::new();
+        for init in &inits {
+            if let Some(owner) = slot_owners.get(&init.type_id()) {
+                if owner != init.module() {
+                    return Err(ModError::msg(format!(
+                        "module {:?}: state slot already declared by module {owner:?} \
+                         (one slot type, one owner)",
+                        init.module()
+                    )));
+                }
+            } else {
+                slot_owners.insert(init.type_id(), init.module().clone());
+            }
+        }
+        for init in inits {
+            engine.world.module_state_apply(init);
+        }
+        let base_ms = engine.world.now().saturating_mul(1000);
+        let periodic: Vec<(SmolStr, SmolStr, i64)> = engine
+            .registry
+            .module_ticks()
+            .iter()
+            .filter_map(|t| match t.cadence {
+                TickCadence::Coarse(d) | TickCadence::Fast(d) => Some((
+                    t.module.clone(),
+                    t.tag.clone(),
+                    crate::module::duration_ms(d),
+                )),
+                TickCadence::Scene => None,
+            })
+            .collect();
+        for (module, tag, period) in periodic {
+            engine.sched.insert(
+                base_ms.saturating_add(period),
+                ScheduledKind::ModuleTick { module, tag },
+            );
+        }
+        Ok(engine)
+    }
+
+    /// Deliver each module its persisted boot data (loaded by the driver
+    /// via the store read API, out-of-band) after the world is up. Each
+    /// module's [`GameModule::on_world_loaded`] runs with a full
+    /// [`ModuleCtx`](crate::module::ModuleCtx); anything it defers
+    /// (persistence ops, timers) is routed exactly like a command's.
+    pub fn modules_loaded(
+        &mut self,
+        mut boot: HashMap<SmolStr, ModuleBootData>,
+        out: &mut Outbox,
+        fx: &mut Effects,
+    ) -> Result<(), ModError> {
+        let mut modules = std::mem::take(&mut self.modules);
+        let mut result = Ok(());
+        for m in &mut modules {
+            let data = boot.remove(m.name()).unwrap_or_default();
+            let module_name = SmolStr::new(m.name());
+            let mut ctx = Ctx {
+                w: &mut self.world,
+                actor: GOD,
+                switches: SwitchSet::default(),
+                args: ParsedArgs::default(),
+                out,
+                reg: &self.registry,
+                module: Some(module_name),
+            };
+            if let Err(e) = m.on_world_loaded(&mut ctx, data) {
+                result = Err(e);
+                break;
+            }
+        }
+        self.modules = modules;
+        self.drain_deferred(out, fx);
+        result
+    }
+
+    /// Drain the module persistence ops collected since the last call, in
+    /// emission order. The world task appends them to the same
+    /// `WriteBatch` as the step's dirty objects (write-through, one
+    /// atomic commit).
+    pub fn take_module_ops(&mut self) -> Vec<ModuleOp> {
+        std::mem::take(&mut self.module_ops)
+    }
+
+    /// The registered game modules, in registration order. The driver uses
+    /// this between [`Engine::with_modules`] and [`Engine::modules_loaded`]
+    /// to ask each module which persisted streams its boot data needs
+    /// ([`GameModule::boot_stream_requests`]).
+    #[must_use]
+    pub fn modules(&self) -> &[Box<dyn GameModule>] {
+        &self.modules
+    }
+
+    /// Emit one world event to subscribed observers from **outside** a
+    /// command dispatch (driver-side mutations such as the account
+    /// service's player creation), then route anything the observers
+    /// deferred — so their persistence ops land in this engine's module-op
+    /// queue and ride the caller's next `WriteBatch`, exactly as if the
+    /// event had been emitted during a step.
+    pub fn emit_world_event(&mut self, ev: &WorldEvent, out: &mut Outbox, fx: &mut Effects) {
+        module::emit_world_event(&self.registry, &mut self.world, out, ev);
+        self.drain_deferred(out, fx);
+    }
+
+    /// The module persistence ops queued so far (tests/inspection).
+    #[must_use]
+    pub fn module_ops(&self) -> &[ModuleOp] {
+        &self.module_ops
     }
 
     /// Feed wall time in (unix seconds) — forwarded to [`World::set_now`].
@@ -373,9 +607,10 @@ impl Engine {
     }
 
     /// Fire every scheduled entry due at `now_ms` (unix milliseconds):
-    /// `WaitCmd` dispatches its line as its actor; module ticks and control
-    /// timers have no consumers in M1 and are logged. The driving loop
-    /// calls this when the [`Scheduler::next_due`] sleep elapses.
+    /// `WaitCmd` dispatches its line as its actor; module ticks run their
+    /// registered [`TickHandler`](crate::module::TickHandler) and re-arm;
+    /// scene ticks additionally stop when their scene is gone. The driving
+    /// loop calls this when the [`Scheduler::next_due`] sleep elapses.
     pub fn fire_due(&mut self, now_ms: i64, out: &mut Outbox, fx: &mut Effects) {
         for kind in self.sched.pop_due(now_ms) {
             match kind {
@@ -390,7 +625,10 @@ impl Engine {
                     }
                 }
                 ScheduledKind::ModuleTick { module, tag } => {
-                    tracing::debug!(%module, %tag, "module tick with no consumer (M1)");
+                    self.fire_module_tick(module, tag, now_ms, out);
+                }
+                ScheduledKind::SceneTick { module, tag, scene } => {
+                    self.fire_scene_tick(module, tag, scene, now_ms, out);
                 }
                 ScheduledKind::Control(name) => {
                     tracing::debug!(%name, "control timer with no consumer (M1)");
@@ -398,6 +636,92 @@ impl Engine {
             }
         }
         self.drain_deferred(out, fx);
+    }
+
+    /// One periodic (`Coarse`/`Fast`) module tick: run the handler, re-arm
+    /// one period from the fire time.
+    fn fire_module_tick(&mut self, module: SmolStr, tag: SmolStr, now_ms: i64, out: &mut Outbox) {
+        let Some((handler, cadence)) = self
+            .registry
+            .tick_reg(&module, &tag)
+            .map(|t| (Arc::clone(&t.handler), t.cadence))
+        else {
+            tracing::debug!(%module, %tag, "module tick with no registration dropped");
+            return;
+        };
+        let (TickCadence::Coarse(d) | TickCadence::Fast(d)) = cadence else {
+            tracing::debug!(%module, %tag, "Scene-cadence tick fired as periodic; dropped");
+            return;
+        };
+        {
+            let mut ctx = Ctx {
+                w: &mut self.world,
+                actor: GOD,
+                switches: SwitchSet::default(),
+                args: ParsedArgs::default(),
+                out,
+                reg: &self.registry,
+                module: Some(module.clone()),
+            };
+            handler.tick(&mut ctx, &tag, None);
+        }
+        let period = crate::module::duration_ms(d);
+        self.sched.insert(
+            now_ms.saturating_add(period),
+            ScheduledKind::ModuleTick { module, tag },
+        );
+    }
+
+    /// One per-scene tick: runs only while the scene is alive and the tick
+    /// has not been stopped; re-arms itself afterwards.
+    fn fire_scene_tick(
+        &mut self,
+        module: SmolStr,
+        tag: SmolStr,
+        scene: SceneId,
+        now_ms: i64,
+        out: &mut Outbox,
+    ) {
+        let key = (module.clone(), tag.clone(), scene);
+        let Some(info) = self.scene_ticks.get(&key).copied() else {
+            return; // stopped
+        };
+        if self.world.scene(scene).is_none() {
+            // The scene ended: the tick dies with it.
+            self.scene_ticks.remove(&key);
+            return;
+        }
+        let Some(handler) = self
+            .registry
+            .tick_reg(&module, &tag)
+            .map(|t| Arc::clone(&t.handler))
+        else {
+            self.scene_ticks.remove(&key);
+            return;
+        };
+        {
+            let mut ctx = Ctx {
+                w: &mut self.world,
+                actor: GOD,
+                switches: SwitchSet::default(),
+                args: ParsedArgs::default(),
+                out,
+                reg: &self.registry,
+                module: Some(module.clone()),
+            };
+            handler.tick(&mut ctx, &tag, Some(scene));
+        }
+        let timer = self.sched.insert(
+            now_ms.saturating_add(info.every_ms),
+            ScheduledKind::SceneTick { module, tag, scene },
+        );
+        self.scene_ticks.insert(
+            key,
+            SceneTickInfo {
+                timer,
+                every_ms: info.every_ms,
+            },
+        );
     }
 
     // ------------------------------------------------------------------
@@ -433,12 +757,26 @@ impl Engine {
             // recover by releasing the old attachment.
             tracing::warn!(conn, old = %p.actor, new = %actor, "conn id re-attached");
             self.dec_conn_count(p.actor);
+            let old = p.actor;
+            self.world.set_live_conns(old, self.connections_of(old));
         }
         let n = self.conn_count.entry(actor).or_insert(0);
         *n += 1;
-        if *n == 1 {
+        let n = *n;
+        self.world.set_live_conns(actor, n);
+        // Reconnecting into a live input context (mail compose survives a
+        // linkdead drop) must re-sync the connection's prompt and echo
+        // mode, or the player types "look" into their mail body with a
+        // normal-mode editor. Conn-addressed: only the NEW connection needs
+        // the state pushed.
+        if self.world.input_depth(actor) > 0 {
+            let spec = crate::module::restored_prompt(&self.world, actor);
+            out.to_conn(conn, OutputEvent::Prompt(spec));
+        }
+        if n == 1 {
             // set_connected/session_start are idempotent, so reviving a
             // link-dead session keeps the original connect time.
+            let was_connected = self.world.is_connected(actor);
             self.world.set_connected(actor, true);
             self.world.session_start(actor);
             let suffix = if from_linkdead {
@@ -447,6 +785,17 @@ impl Engine {
                 " has connected."
             };
             announce_room(&self.world, actor, suffix, out);
+            // Hooks/observers fire on the world-side transition only — a
+            // link-dead revival never "connected" twice.
+            if !was_connected {
+                module::fire_conn_hook(&self.registry, &mut self.world, out, actor, true);
+                module::emit_world_event(
+                    &self.registry,
+                    &mut self.world,
+                    out,
+                    &WorldEvent::Connected { who: actor },
+                );
+            }
         } else {
             announce_room(&self.world, actor, " has reconnected.", out);
         }
@@ -460,6 +809,7 @@ impl Engine {
         debug_assert_eq!(info.actor, actor, "ConnDown actor mismatch");
         let actor = info.actor; // trust our own bookkeeping over the message
         let last = self.dec_conn_count(actor);
+        self.world.set_live_conns(actor, self.connections_of(actor));
         tracing::info!(conn, %actor, %reason, last, "connection down");
         if last && self.world.is_connected(actor) {
             if reason.is_clean() {
@@ -467,6 +817,13 @@ impl Engine {
                 announce_room(&self.world, actor, " has disconnected.", out);
                 self.world.set_connected(actor, false);
                 self.world.session_end(actor);
+                module::fire_conn_hook(&self.registry, &mut self.world, out, actor, false);
+                module::emit_world_event(
+                    &self.registry,
+                    &mut self.world,
+                    out,
+                    &WorldEvent::Disconnected { who: actor },
+                );
             } else {
                 // The character stays in the room (and connected, for WHO)
                 // — linkdead until the session layer sends SessionGone.
@@ -488,9 +845,17 @@ impl Engine {
         // Defensive: forget any connections still attached to the actor.
         self.conns.retain(|_, i| i.actor != actor);
         self.conn_count.remove(&actor);
+        self.world.set_live_conns(actor, 0);
         if self.world.is_connected(actor) {
             announce_room(&self.world, actor, " has disconnected.", out);
             self.world.set_connected(actor, false);
+            module::fire_conn_hook(&self.registry, &mut self.world, out, actor, false);
+            module::emit_world_event(
+                &self.registry,
+                &mut self.world,
+                out,
+                &WorldEvent::Disconnected { who: actor },
+            );
         }
         self.world.session_end(actor);
     }
@@ -543,8 +908,47 @@ impl Engine {
                         .saturating_add(delay_ms);
                     self.sched.insert(due, kind);
                 }
+                Deferred::Persist(op) => self.module_ops.push(op),
+                Deferred::SceneTickStart {
+                    module,
+                    tag,
+                    scene,
+                    every_ms,
+                } => {
+                    let key = (module.clone(), tag.clone(), scene);
+                    // Re-arming an already-running tick replaces its timer.
+                    if let Some(prev) = self.scene_ticks.get(&key) {
+                        self.sched.cancel(prev.timer);
+                    }
+                    let due = self
+                        .world
+                        .now()
+                        .saturating_mul(1000)
+                        .saturating_add(every_ms);
+                    let timer = self
+                        .sched
+                        .insert(due, ScheduledKind::SceneTick { module, tag, scene });
+                    self.scene_ticks
+                        .insert(key, SceneTickInfo { timer, every_ms });
+                }
+                Deferred::SceneTickStop { module, tag, scene } => {
+                    if let Some(info) = self.scene_ticks.remove(&(module, tag, scene)) {
+                        self.sched.cancel(info.timer);
+                    }
+                }
+                Deferred::DurableGate { actor } => {
+                    // First gate of the step wins (one batch, one gate).
+                    self.durable_gate.get_or_insert(actor);
+                }
             }
         }
+    }
+
+    /// Take the durable-ack output gate the last step requested (if any):
+    /// the driving loop flushes that step's batch `durable: true` and
+    /// withholds its output until the receipt resolves.
+    pub fn take_durable_gate(&mut self) -> Option<ObjId> {
+        self.durable_gate.take()
     }
 
     /// Release one pending-`@wait` slot for an actor (its timer fired).

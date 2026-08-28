@@ -26,10 +26,14 @@
 //! \"hi\"", "Alice grins."). It is deliberately simple; the real ANSI
 //! renderer lands in `mush-ansi` later and owns niceties like You-vs-Name.
 
+use std::collections::HashMap;
+
 use mush_core::{
-    Audience, GOD, LIMBO, ObjId, ObjKind, Outbox, Registry, World, dispatch, register_core_commands,
+    Audience, Effects, Engine, GOD, GameModule, Inbound, LIMBO, ModuleBootData, ModuleOp, ObjId,
+    ObjKind, Outbox, Registry, World, WorldEvent, register_core_commands,
 };
 use mush_proto::{NarrativeKind, ObjRef, OutputEvent, RichText, RoomView, WhoEntry};
+use smol_str::SmolStr;
 
 /// Build the standard M0 world wiring: a minimal [`World`] (Limbo `#0` +
 /// God `#1`) and a [`Registry`] with every core command registered.
@@ -57,40 +61,92 @@ pub fn boot_world() -> (World, Registry) {
 
 /// An in-process game world plus command registry, driven one input line at
 /// a time. God (`#1`) is marked connected at construction.
+///
+/// Since M3 this wraps the real [`Engine`] (rather than raw `dispatch`), so
+/// game modules plug straight in: [`TestWorld::with_modules`] registers
+/// them, installs their state slots, arms their ticks, and runs a
+/// first-boot [`Engine::modules_loaded`] with empty boot data — exactly the
+/// server's boot order over an empty store. Module persistence ops
+/// accumulate in the engine and are inspectable via
+/// [`TestWorld::take_module_ops`]; timers (ticks, `@wait`) fire through
+/// [`TestWorld::fire_due`].
 pub struct TestWorld {
-    world: World,
-    registry: Registry,
+    engine: Engine,
+    next_conn: u64,
 }
 
 impl TestWorld {
     /// A fresh world (Limbo + God, all core commands registered, God
-    /// connected).
+    /// connected). No modules — identical surface to the M0 testkit.
     #[must_use]
     pub fn new() -> TestWorld {
-        let (mut world, registry) = boot_world();
-        world.set_connected(GOD, true);
-        TestWorld { world, registry }
+        TestWorld::with_modules(Vec::new())
+    }
+
+    /// A fresh world with `modules` registered and first-booted (empty
+    /// [`ModuleBootData`] — modules seed their defaults exactly as on a
+    /// server's very first boot). God is connected through the engine, so
+    /// module `Connected` hooks have fired for him.
+    ///
+    /// For reboot tests (persisted boot data), drive [`Engine`] directly:
+    /// build the boot map yourself and call [`Engine::modules_loaded`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if registration or module boot fails — in a test fixture that
+    /// is always a bug in the test.
+    #[must_use]
+    pub fn with_modules(modules: Vec<Box<dyn GameModule>>) -> TestWorld {
+        let (world, registry) = boot_world();
+        let mut engine = Engine::with_modules(world, registry, modules)
+            .expect("test module registration must not collide");
+        let mut out = Outbox::new();
+        let mut fx = Effects::new();
+        engine
+            .modules_loaded(HashMap::new(), &mut out, &mut fx)
+            .expect("test module boot must not fail");
+        let mut tw = TestWorld {
+            engine,
+            next_conn: 0,
+        };
+        tw.connect(GOD); // boot-time output (none expected) is discarded
+        tw
     }
 
     /// Read access to the world, for assertions on game state.
     #[must_use]
     pub fn world(&self) -> &World {
-        &self.world
+        &self.engine.world
     }
 
     /// Mutable access to the world, for fixture setup that has no command
     /// surface (granting flags, planting attributes, creating props).
     pub fn world_mut(&mut self) -> &mut World {
-        &mut self.world
+        &mut self.engine.world
     }
 
     /// The command registry (for spec introspection).
     #[must_use]
     pub fn registry(&self) -> &Registry {
-        &self.registry
+        &self.engine.registry
     }
 
-    /// Create a player named `name` in Limbo and mark them connected.
+    /// The engine itself, for tests that need the full surface (scheduler
+    /// inspection, `modules_loaded` with real boot data, conn bookkeeping).
+    #[must_use]
+    pub fn engine(&self) -> &Engine {
+        &self.engine
+    }
+
+    /// Mutable engine access (see [`TestWorld::engine`]).
+    pub fn engine_mut(&mut self) -> &mut Engine {
+        &mut self.engine
+    }
+
+    /// Create a player named `name` in Limbo and mark them connected
+    /// (through the engine, so module `ObjCreated` observers and
+    /// `Connected` hooks fire — connect-time output is discarded; use
+    /// [`TestWorld::connect`] on a fresh player to capture it).
     ///
     /// # Panics
     ///
@@ -98,19 +154,96 @@ impl TestWorld {
     /// test fixture that is always a bug in the test.
     pub fn spawn_player(&mut self, name: &str) -> ObjId {
         let id = self
+            .engine
             .world
             .create(ObjKind::Player, name, GOD, Some(LIMBO))
             .unwrap_or_else(|e| panic!("spawn_player({name:?}) failed: {e}"));
-        self.world.set_connected(id, true);
+        let mut out = Outbox::new();
+        let mut fx = Effects::new();
+        self.engine.emit_world_event(
+            &WorldEvent::ObjCreated {
+                obj: id,
+                kind: ObjKind::Player,
+                creator: GOD,
+            },
+            &mut out,
+            &mut fx,
+        );
+        self.connect(id);
         id
+    }
+
+    /// Attach one fresh engine connection to `actor` (fires module
+    /// `Connected` hooks on the first one) and return the emitted events —
+    /// connect announcements, module login notices.
+    pub fn connect(&mut self, actor: ObjId) -> Vec<(Audience, OutputEvent)> {
+        self.next_conn += 1;
+        let conn = self.next_conn;
+        let mut out = Outbox::new();
+        let mut fx = Effects::new();
+        self.engine.step(
+            Inbound::ConnUp {
+                conn,
+                actor,
+                caps_structured: false,
+                from_linkdead: false,
+            },
+            &mut out,
+            &mut fx,
+        );
+        out.take()
     }
 
     /// Dispatch one input line as `actor` and return every queued
     /// `(Audience, OutputEvent)` pair, in emission order.
     pub fn run(&mut self, actor: ObjId, line: &str) -> Vec<(Audience, OutputEvent)> {
         let mut out = Outbox::new();
-        dispatch(&self.registry, &mut self.world, actor, line, &mut out);
+        let mut fx = Effects::new();
+        self.engine.step(
+            Inbound::Cmd {
+                conn: 0,
+                actor,
+                line: line.to_string(),
+            },
+            &mut out,
+            &mut fx,
+        );
         out.take()
+    }
+
+    /// Feed wall time in (unix seconds) — module ticks and `@wait` due
+    /// times are relative to it.
+    pub fn set_now(&mut self, unix_seconds: i64) {
+        self.engine.set_now(unix_seconds);
+    }
+
+    /// Fire every scheduled entry due at `now_ms` (unix milliseconds) and
+    /// return the emitted events. Drive module ticks with this.
+    pub fn fire_due(&mut self, now_ms: i64) -> Vec<(Audience, OutputEvent)> {
+        let mut out = Outbox::new();
+        let mut fx = Effects::new();
+        self.engine.fire_due(now_ms, &mut out, &mut fx);
+        out.take()
+    }
+
+    /// Drain the module persistence ops queued since the last call (what
+    /// the server would fold into the next `WriteBatch`).
+    pub fn take_module_ops(&mut self) -> Vec<ModuleOp> {
+        self.engine.take_module_ops()
+    }
+
+    /// Hand each module its persisted boot data (reboot tests): a thin
+    /// forward to [`Engine::modules_loaded`], with output discarded.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a module rejects its boot data.
+    pub fn modules_loaded(&mut self, boot: HashMap<SmolStr, ModuleBootData>) {
+        let mut out = Outbox::new();
+        let mut fx = Effects::new();
+        self.engine
+            .modules_loaded(boot, &mut out, &mut fx)
+            .expect("module boot data must load");
     }
 
     /// Render exactly what `viewer` would have received from `events`,
@@ -120,12 +253,12 @@ impl TestWorld {
     /// deliver (there is no session layer here).
     #[must_use]
     pub fn seen_by(&self, events: &[(Audience, OutputEvent)], viewer: ObjId) -> Vec<String> {
-        let location = self.world.get(viewer).and_then(|o| o.location);
+        let location = self.world().get(viewer).and_then(|o| o.location);
         events
             .iter()
             .filter(|(aud, _)| match aud {
                 Audience::Actor(a) => *a == viewer,
-                Audience::All => self.world.is_connected(viewer),
+                Audience::All => self.world().is_connected(viewer),
                 Audience::Room { room, exclude } => {
                     location == Some(*room) && !exclude.contains(&viewer)
                 }
