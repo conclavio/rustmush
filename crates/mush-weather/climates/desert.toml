@@ -1,0 +1,106 @@
+# Desert climate: clear skies most of the year, wide day/night temperature
+# swings, occasional dust-laden thunderstorms, rare morning fog. No snow.
+#
+# DATA file (see temperate-coastal.toml for the schema and the LLM top-up seam).
+
+id = "desert"
+name = "Arid Desert"
+
+[[states]]
+id = "clear"
+visibility = 100
+precip = 0
+wind = 15
+temp_band = [2, 44]
+
+[[states]]
+id = "overcast"
+visibility = 90
+precip = 0
+wind = 25
+temp_band = [5, 34]
+
+[[states]]
+id = "fog"
+visibility = 30
+precip = 0
+wind = 6
+temp_band = [3, 18]
+
+[[states]]
+id = "storm"
+visibility = 20
+precip = 55
+wind = 90
+temp_band = [8, 30]
+
+[seasonal.spring]
+clear = { clear = 82, overcast = 12, storm = 4, fog = 2 }
+overcast = { clear = 55, overcast = 30, storm = 15 }
+fog = { fog = 15, clear = 70, overcast = 15 }
+storm = { storm = 20, overcast = 40, clear = 40 }
+
+[seasonal.summer]
+clear = { clear = 80, overcast = 12, storm = 8 }
+overcast = { clear = 45, overcast = 30, storm = 25 }
+fog = { fog = 10, clear = 80, overcast = 10 }
+storm = { storm = 25, overcast = 35, clear = 40 }
+
+[seasonal.autumn]
+clear = { clear = 85, overcast = 10, storm = 3, fog = 2 }
+overcast = { clear = 55, overcast = 32, storm = 13 }
+fog = { fog = 18, clear = 67, overcast = 15 }
+storm = { storm = 18, overcast = 42, clear = 40 }
+
+[seasonal.winter]
+clear = { clear = 80, overcast = 12, fog = 6, storm = 2 }
+overcast = { clear = 50, overcast = 35, storm = 10, fog = 5 }
+fog = { fog = 30, clear = 50, overcast = 20 }
+storm = { storm = 15, overcast = 45, clear = 40 }
+
+[tod.dawn]
+fog = 320
+clear = 70
+
+[tod.morning]
+fog = 120
+
+[tod.afternoon]
+storm = 150
+fog = 20
+clear = 115
+
+[tod.dusk]
+storm = 120
+
+[tod.night]
+fog = 150
+clear = 120
+
+[lines.transition]
+clear = ["The last cloud burns away to open sky.", "The air clears to a hard, cloudless blue."]
+overcast = ["A high haze dims the sun to a pale coin.", "Cloud spreads thin across the sky and the light goes flat."]
+fog = ["A rare fog creeps up out of the cold night ground.", "Grey mist pools in the low ground before the heat lifts it."]
+storm = ["A wall of dust and rain rushes in on a hot wind.", "The sky yellows and a dust storm barrels toward you."]
+
+[lines.transition_pair]
+"clear->storm" = ["Out of a clear sky a dust storm builds with startling speed."]
+"storm->clear" = ["The dust settles out of the air and the sky snaps back to blue."]
+"overcast->storm" = ["The haze curdles into a churning wall of dust."]
+"fog->clear" = ["The sun climbs and boils the last of the fog away."]
+
+[lines.ambient]
+clear = ["Heat shimmers up off the baked ground.", "The dry air smells of hot stone and nothing else."]
+overcast = ["The muted light gives no relief from the dry heat.", "A gritty wind stirs and dies again."]
+fog = ["Damp grit clings to everything the fog touches.", "The mist muffles the world to a close grey hush."]
+storm = ["Grit stings any exposed skin.", "The wind screams and drives sand into every crack."]
+
+[lines.ambient_season]
+winter = ["The night's chill still lingers in the shadows."]
+spring = ["A brief, sharp scent of desert bloom rides the wind."]
+summer = ["The heat presses down like a physical weight."]
+autumn = ["The light slants long and gold across the sand."]
+
+[lines.ambient_tod]
+dawn = ["The cold of night still holds before the sun takes over."]
+night = ["The heat bleeds fast out of the ground into a cold, star-hard dark."]

@@ -113,6 +113,36 @@ async fn boot_rig(
     (sessions, handles)
 }
 
+/// Like [`boot_rig`], but booting the full production **game modules**
+/// (`Engine::with_modules` + `boot_modules`) — the module-op write-through
+/// and reboot-rebuild path (weather cells, script recompile) the M5 twin
+/// exercises over a real store.
+async fn boot_module_rig(
+    store: &Arc<dyn ObjectStore>,
+    guard: &Arc<IpGuard>,
+) -> (Arc<SessionManager>, PersistHandles) {
+    let world = load_or_seed_world(&**store).await.expect("boot world");
+    let staff = Arc::new(StaffQueue::new());
+    let mut registry = world_task::base_registry();
+    register_server_commands(&mut registry, &staff).unwrap();
+    let mut engine = Engine::with_modules(world, registry, mushd::modules::server_modules())
+        .expect("module registration");
+    mushd::modules::boot_modules(&mut engine, &**store)
+        .await
+        .expect("module boot");
+    let sessions = Arc::new(SessionManager::new());
+    let handles = world_task::spawn_persist(
+        engine,
+        Arc::clone(&sessions),
+        ServerDeps {
+            store: Arc::clone(store),
+            guard: Arc::clone(guard),
+            staff,
+        },
+    );
+    (sessions, handles)
+}
+
 async fn god_cmd(world: &WorldHandle, line: &str) {
     assert!(
         world
@@ -251,6 +281,98 @@ async fn boot_round_trip_redis_gated() {
         .expect("connect to REDIS_URL");
     store.wipe_namespaces().await.expect("wipe test namespaces");
     boot_round_trip(Arc::new(store)).await;
+}
+
+/// The M5 module-op persistence twin, parameterized over the store: a booted
+/// server with the standard game modules assigns a climate to a zone and pins
+/// its weather (a `mod:weather:*` cell, written through), and stores a scripted
+/// object (a `script:*` attribute on `obj:*`). A second boot rebuilds from the
+/// store alone — `boot_modules` restores the weather cell, and the script
+/// module recompiles the object from its persisted attribute — and both are
+/// live again. Exercised both in-memory (ungated) and against a live Redis.
+async fn m5_module_round_trip(store: Arc<dyn ObjectStore>) {
+    let guard = Arc::new(IpGuard::new());
+
+    // --- first boot: build a weather zone + a scripted object. -----------
+    let (sessions, handles) = boot_module_rig(&store, &guard).await;
+    let world = handles.handle.clone();
+    let mut god_rx = attach_direct(&sessions, &world, 1, GOD, "god").await;
+
+    // A Zone Master Object, a room in it (teleport there so `here` resolves),
+    // and a pinned storm — the pin persists a weather cell through the same
+    // write-through path as any command.
+    god_cmd(&world, "@create Downtown").await;
+    god_cmd(&world, "@set Downtown=ZONE_MASTER").await;
+    god_cmd(&world, "@dig/teleport Plaza").await;
+    god_cmd(&world, "@zone here=Downtown").await;
+    god_cmd(&world, "@set here=OUTDOORS").await;
+    god_cmd(&world, "@weather/climate here=temperate-coastal").await;
+    god_cmd(&world, "@weather here=storm").await;
+    expect_text(&mut god_rx, "Pinned").await;
+
+    // A scripted object: its script lives in a `script:*` attribute on the
+    // object doc, so it rides `obj:*` persistence with no module namespace.
+    god_cmd(&world, "@create parrot").await;
+    god_cmd(
+        &world,
+        r#"@set parrot/script:command:squawk=mush::pemit(mush::caller(), "SQUAWK survived the reboot")"#,
+    )
+    .await;
+
+    // Fence: an ack-gated Player create returns only once the store has
+    // acknowledged its batch, and the writer is strictly ordered — so every
+    // fire-and-forget batch above (the weather cell, the script attribute)
+    // has certainly landed in the store by the time this returns.
+    world.create_player("Fence").await.expect("fence create");
+
+    // --- second boot: rebuild from the store alone. ----------------------
+    let (sessions2, handles2) = boot_module_rig(&store, &guard).await;
+    let world2 = handles2.handle.clone();
+    let mut god_rx2 = attach_direct(&sessions2, &world2, 2, GOD, "god").await;
+
+    // The weather cell survived: @weather/list reports the pinned storm.
+    // Key on "[pinned]" — only the list line carries it (the room render and
+    // its "Overhead: a storm" conditions line also mention the zone/state).
+    god_cmd(&world2, "@weather/list").await;
+    let ev = expect_text(&mut god_rx2, "[pinned]").await;
+    let listed = text_of(&ev);
+    assert!(
+        listed.contains("storm") && listed.contains("Downtown"),
+        "reboot must rebuild the pinned storm cell: {listed:?}"
+    );
+
+    // The scripted object recompiled from its persisted attribute and runs.
+    god_cmd(&world2, "squawk").await;
+    expect_text(&mut god_rx2, "SQUAWK survived the reboot").await;
+}
+
+/// The M5 module round trip over an in-memory store — ungated, so CI proves
+/// the assembled `boot_modules` + world-task reload path (namespace keys, boot
+/// order) without a live Redis. The constituent logic is unit-covered in the
+/// module crates; this locks the integration-level wiring.
+#[tokio::test(flavor = "multi_thread")]
+async fn m5_module_persistence_round_trip_in_memory() {
+    m5_module_round_trip(Arc::new(InMemoryStore::new())).await;
+}
+
+/// The same round trip over a live Redis — the reboot-from-Redis-alone
+/// surrogate. Gated on `REDIS_URL`; runs in db 15 (dbs 12–14 are claimed by
+/// the durability and boot-round-trip gated tests, which run in parallel).
+#[tokio::test(flavor = "multi_thread")]
+async fn m5_module_persistence_round_trip_redis_gated() {
+    let Some(url) = std::env::var("REDIS_URL").ok().filter(|s| !s.is_empty()) else {
+        eprintln!(
+            "skipping m5_module_persistence_round_trip_redis_gated: REDIS_URL not set \
+             (no live Redis on this machine)"
+        );
+        return;
+    };
+    let url = support::redis_url_with_db(&url, 15);
+    let store = mush_store::RedisStore::connect(&url)
+        .await
+        .expect("connect to REDIS_URL");
+    store.wipe_namespaces().await.expect("wipe test namespaces");
+    m5_module_round_trip(Arc::new(store)).await;
 }
 
 // ---------------------------------------------------------------------------

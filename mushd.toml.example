@@ -32,7 +32,14 @@ guest_pool = 5                     # (reserved — guest pool is M3+)
 chargen_required = false           # (reserved — chargen gating is M6+)
 linkdead_grace_s = 300             # (M2)
 max_characters = 3                 # (M2) per-account character cap (newchar)
-ic_time_ratio = 1                  # (reserved — game clock is M5)
+ic_ratio = 1                       # (M5) IC seconds per OOC second (game-clock speed); 4 = an IC day every 6 real hours; read at boot
+ic_epoch = "2020-01-01 00:00"      # (M5) IC datetime at OOC unix time 0 — the calendar's phase/start. "YYYY-MM-DD[ HH:MM[:SS]]".
+#                                  # IC time is a pure function of real time (survives restarts); it is NOT reset to this at each boot.
+
+# (M5) The scripting and weather modules are compiled in and always active —
+# there is nothing to configure here yet. Their sandbox budgets (mush-script)
+# and tick/ambient knobs (mush-weather) use built-in defaults; wiring them to
+# config is a later step. In-game: "help scripting" and "help weather".
 
 [rulesets]
 enabled = ["wod"]                  # (reserved — rulesets are M6)

@@ -71,14 +71,22 @@ we don't redistribute it.
 Copy [mushd.toml.example](mushd.toml.example) to `mushd.toml`, adjust, and run `mushd`
 (`mushd --repl` gives an offline in-memory REPL). In-game `help` is two-layered: per-command
 usage comes from the command table, and prose topics (getting started, building, locks,
-channels, mail, jobs, admin, rules-of-conduct) are markdown files loaded at boot from
-`[server].help_dir` (default `./docs/help` — edit or add `*.md` files there and restart to
-change them; `help <topic>` serves them, with exact command names taking precedence).
+channels, mail, jobs, admin, scripting, weather, rules-of-conduct) are markdown files loaded
+at boot from `[server].help_dir` (default `./docs/help` — edit or add `*.md` files there and
+restart to change them; `help <topic>` serves them, with exact command names taking
+precedence).
 Admin tooling includes `@boot`, `@wall`, `@ps` (scheduler inspection), `@stats` (uptime,
 loop lag, store health), `@siteban`, `@dump`, `@shutdown`, `@newpassword` (staff password
 reset — also revokes every web session token of the account and boots its live web
 connections), and a player-side `@ignore`
 mute list.
+
+Game systems: an **IC game clock** (`time`/`@time`) runs at a configurable IC:OOC ratio over
+a fictional calendar — set `[game].ic_ratio` and `[game].ic_epoch` in `mushd.toml`. Builders
+attach **sandboxed Rhai scripts** to objects as `script:*` attributes (budget-capped, auto-
+HALTED on repeated overrun — `help scripting`), and staff drive **zone weather** with the
+`@weather` family over `OUTDOORS`/`SHELTERED` rooms (`help weather`). See
+[docs/ops.md](docs/ops.md) for the operator view of all three.
 
 The web client is served by the same process on `[web].listen` (default
 `http://127.0.0.1:8080`): log in or register over `POST /api/auth/*`, then the SPA speaks

@@ -36,8 +36,10 @@ use mush_proto::{NarrativeKind, OutputEvent, PanelFrameKind, PromptSpec, RichTex
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
+use crate::clock::{Season, TimeOfDay};
 use crate::cmd::{
-    AliasStage, CmdError, CommandHandler, CommandSpec, Ctx, ParsedArgs, Registry, SwitchSet,
+    AliasStage, CmdError, CommandFallback, CommandHandler, CommandSpec, Ctx, ParsedArgs, Registry,
+    SwitchSet,
 };
 use crate::engine::Deferred;
 use crate::obj::{GOD, ObjId, ObjKind};
@@ -336,6 +338,11 @@ pub enum WorldEventKind {
     Connected,
     /// An actor's session fully ended.
     Disconnected,
+    /// An attribute was set or cleared on an object (the
+    /// `@set <obj>/<attr>=…` path). Observers filter by the carried name —
+    /// mush-script recompiles an object's scripts when a `script:*`
+    /// attribute changes.
+    AttrSet,
 }
 
 /// A world mutation, delivered to subscribed observers **post-mutation** in
@@ -389,6 +396,15 @@ pub enum WorldEvent {
         /// The actor.
         who: ObjId,
     },
+    /// An attribute was set or cleared on `obj` via the `@set` path.
+    AttrSet {
+        /// The object whose attribute changed.
+        obj: ObjId,
+        /// The attribute name, original casing (`"script:command:greet"`).
+        name: String,
+        /// Who set it.
+        setter: ObjId,
+    },
 }
 
 impl WorldEvent {
@@ -402,6 +418,7 @@ impl WorldEvent {
             WorldEvent::ObjDestroyed { .. } => WorldEventKind::ObjDestroyed,
             WorldEvent::Connected { .. } => WorldEventKind::Connected,
             WorldEvent::Disconnected { .. } => WorldEventKind::Disconnected,
+            WorldEvent::AttrSet { .. } => WorldEventKind::AttrSet,
         }
     }
 
@@ -414,7 +431,7 @@ impl WorldEvent {
             | WorldEvent::Connected { who }
             | WorldEvent::Disconnected { who } => *who,
             WorldEvent::ObjCreated { creator, .. } => *creator,
-            WorldEvent::ObjDestroyed { obj } => *obj,
+            WorldEvent::ObjDestroyed { obj } | WorldEvent::AttrSet { obj, .. } => *obj,
         }
     }
 }
@@ -919,6 +936,15 @@ impl Registry {
         self.mods.attr_ns.get(ns.to_lowercase().as_str())
     }
 
+    /// Every module-owned attribute-namespace key (lowercased, no trailing
+    /// `:`). Lets a module snapshot the ownership set at boot and enforce it
+    /// later without a live `Registry` (mush-script writes attrs as the
+    /// script owner and must refuse module namespaces off-loop).
+    #[must_use]
+    pub fn module_attr_namespaces(&self) -> Vec<SmolStr> {
+        self.mods.attr_ns.keys().cloned().collect()
+    }
+
     /// Whether `who` (acting on behalf of `module`, when set) may write the
     /// attribute `name`: unnamespaced attrs are always fine, module-owned
     /// namespaces admit the owning module and Wizards+ only.
@@ -1108,6 +1134,13 @@ impl<'a> Registrar<'a> {
     /// order during dispatch).
     pub fn alias_stage(&mut self, stage: Arc<dyn AliasStage>) {
         self.reg.add_alias_stage(stage);
+    }
+
+    /// Append a post-command-table [`CommandFallback`] (object
+    /// `$`-commands — the mush-script seam; runs after built-ins/exits,
+    /// before `Huh?`, in registration order).
+    pub fn command_fallback(&mut self, fallback: Arc<dyn CommandFallback>) {
+        self.reg.add_command_fallback(fallback);
     }
 
     /// Register a marker flag (e.g. `"wod:kindred"`): settable via
@@ -1513,6 +1546,80 @@ impl Ctx<'_> {
     /// core helpers call this themselves.
     pub fn emit_world_event(&mut self, ev: &WorldEvent) {
         emit_world_event(self.reg, self.w, self.out, ev);
+    }
+
+    // ------------------------------------------------------------------
+    // IC game clock
+    // ------------------------------------------------------------------
+    //
+    // Thin delegators onto the [`World`] read model so hooks, ticks, and
+    // (later) scripts read IC time without reaching for `ctx.w.now()` (which
+    // is OOC wall time). The recommended way for a module to notice a
+    // day/season rollover is to read [`Ctx::season`] / [`Ctx::ic_day_of_year`]
+    // in its `Coarse` tick and compare against the value it saw last — no new
+    // world event is needed, and the clock is a pure function of wall time so
+    // the check is cheap.
+
+    /// IC unix-style timestamp right now (the game clock applied to wall
+    /// time).
+    #[must_use]
+    pub fn game_now_unix(&self) -> i64 {
+        self.w.game_now_unix()
+    }
+
+    /// The IC season right now.
+    #[must_use]
+    pub fn season(&self) -> Season {
+        self.w.season()
+    }
+
+    /// The IC time-of-day bucket right now.
+    #[must_use]
+    pub fn time_of_day(&self) -> TimeOfDay {
+        self.w.time_of_day()
+    }
+
+    /// IC hour of day right now, `0..24`.
+    #[must_use]
+    pub fn ic_hour(&self) -> u32 {
+        self.w.ic_hour()
+    }
+
+    /// IC minute of the hour right now, `0..60`.
+    #[must_use]
+    pub fn ic_minute(&self) -> u32 {
+        self.w.ic_minute()
+    }
+
+    /// IC day of the current month right now, `1..=` its length.
+    #[must_use]
+    pub fn ic_day(&self) -> u32 {
+        self.w.ic_day()
+    }
+
+    /// IC day of the current year right now, `0..365` (rollover signal for
+    /// ticking modules).
+    #[must_use]
+    pub fn ic_day_of_year(&self) -> u32 {
+        self.w.ic_day_of_year()
+    }
+
+    /// IC month right now, `1..=12`.
+    #[must_use]
+    pub fn ic_month(&self) -> u32 {
+        self.w.ic_month()
+    }
+
+    /// IC year right now.
+    #[must_use]
+    pub fn ic_year(&self) -> i64 {
+        self.w.ic_year()
+    }
+
+    /// The human-facing IC datetime string right now.
+    #[must_use]
+    pub fn ic_datetime(&self) -> String {
+        self.w.ic_datetime()
     }
 
     // ------------------------------------------------------------------

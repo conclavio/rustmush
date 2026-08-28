@@ -21,6 +21,7 @@ use mush_proto::PromptSpec;
 use smol_str::SmolStr;
 
 use crate::attr::{Attr, AttrFlags, UncasedName};
+use crate::clock::{GameClock, Season, TimeOfDay};
 use crate::flags::Flags;
 use crate::module::{InputContext, InputStacks, ModuleStateMap, Scene, SceneId, StateInit};
 use crate::obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
@@ -115,6 +116,11 @@ pub struct World {
     next_correlation: u64,
     /// Wall-clock unix seconds, fed by the driver via [`World::set_now`].
     now: i64,
+    /// The IC game clock (IC:OOC ratio + calendar phase). Boot configuration,
+    /// not persisted and not dirty-tracked; the driver installs it from
+    /// `mushd.toml [game]` via [`World::set_game_clock`] and it derives IC
+    /// time purely from [`World::now`]. `Default` is 1:1 with OOC time.
+    game_clock: GameClock,
     /// Active scenes (transient world state; module data persists via
     /// module ops).
     scenes: BTreeMap<SceneId, Scene>,
@@ -255,6 +261,87 @@ impl World {
     #[must_use]
     pub fn now(&self) -> i64 {
         self.now
+    }
+
+    // ------------------------------------------------------------------
+    // IC game clock (read model for commands, modules, scripts)
+    // ------------------------------------------------------------------
+
+    /// Install the IC game clock (the driver calls this once at boot from
+    /// `mushd.toml [game]`; `ic_ratio` is therefore read at boot — hot-reload
+    /// comes later). Purely configuration: nothing is dirtied or persisted.
+    pub fn set_game_clock(&mut self, clock: GameClock) {
+        self.game_clock = clock;
+    }
+
+    /// The configured IC game clock.
+    #[must_use]
+    pub fn game_clock(&self) -> GameClock {
+        self.game_clock
+    }
+
+    /// IC ("in-character") unix-style timestamp for the current wall time —
+    /// the game clock applied to [`World::now`]. Modules and scripts read the
+    /// IC clock through these accessors rather than touching
+    /// [`World::now`] (which is OOC wall time).
+    #[must_use]
+    pub fn game_now_unix(&self) -> i64 {
+        self.game_clock.ic_unix(self.now)
+    }
+
+    /// The IC season right now.
+    #[must_use]
+    pub fn season(&self) -> Season {
+        self.game_clock.season(self.now)
+    }
+
+    /// The IC time-of-day bucket right now.
+    #[must_use]
+    pub fn time_of_day(&self) -> TimeOfDay {
+        self.game_clock.time_of_day(self.now)
+    }
+
+    /// IC hour of day right now, `0..24`.
+    #[must_use]
+    pub fn ic_hour(&self) -> u32 {
+        self.game_clock.ic_hour(self.now)
+    }
+
+    /// IC minute of the hour right now, `0..60`.
+    #[must_use]
+    pub fn ic_minute(&self) -> u32 {
+        self.game_clock.ic_minute(self.now)
+    }
+
+    /// IC day of the current month, `1..=` its length.
+    #[must_use]
+    pub fn ic_day(&self) -> u32 {
+        self.game_clock.ic_day(self.now)
+    }
+
+    /// IC day of the current year, `0..365`.
+    #[must_use]
+    pub fn ic_day_of_year(&self) -> u32 {
+        self.game_clock.ic_day_of_year(self.now)
+    }
+
+    /// IC month right now, `1..=12`.
+    #[must_use]
+    pub fn ic_month(&self) -> u32 {
+        self.game_clock.ic_month(self.now)
+    }
+
+    /// IC year right now.
+    #[must_use]
+    pub fn ic_year(&self) -> i64 {
+        self.game_clock.ic_year(self.now)
+    }
+
+    /// The human-facing IC datetime string right now
+    /// (`"August 28, 2075, 02:57"`).
+    #[must_use]
+    pub fn ic_datetime(&self) -> String {
+        self.game_clock.ic_datetime(self.now)
     }
 
     /// The next id the allocator will hand out (monotonic, never recycled).
@@ -1159,6 +1246,30 @@ mod tests {
         assert_eq!(w.resolve_player("GOD"), Some(GOD));
         assert_eq!(god.role(), Role::God);
         assert_eq!(god.owner, GOD);
+    }
+
+    #[test]
+    fn game_clock_reads_ic_time_from_now() {
+        let mut w = World::new_minimal();
+        // Default clock is 1:1 with OOC time and phase 0.
+        assert_eq!(w.game_clock(), GameClock::default());
+        // Install a 4x clock anchored so OOC time 0 reads a fixed IC date.
+        let epoch = crate::clock::CivilDate::parse("2100-03-01 00:00").unwrap();
+        w.set_game_clock(GameClock {
+            ic_ratio: 4,
+            epoch_offset: epoch.to_ic_seconds(),
+        });
+        // At OOC now 0 the IC clock reads exactly the epoch.
+        w.set_now(0);
+        assert_eq!(w.ic_datetime(), "March 1, 2100, 00:00");
+        assert_eq!((w.ic_month(), w.ic_day(), w.ic_year()), (3, 1, 2100));
+        assert_eq!(w.season(), Season::Spring);
+        assert_eq!(w.time_of_day(), TimeOfDay::Night);
+        // Six OOC hours -> 24 IC hours -> next IC day; season/tod track it.
+        w.set_now(6 * 3_600);
+        assert_eq!(w.ic_day(), 2);
+        assert_eq!(w.time_of_day(), TimeOfDay::Night);
+        assert_eq!(w.ic_hour(), 0);
     }
 
     #[test]

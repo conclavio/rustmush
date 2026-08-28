@@ -20,9 +20,20 @@
 //!
 //! The module list itself is [`server_modules`]: comsys first (its
 //! [`AliasStage`](mush_core::AliasStage) is the earliest alias stage in
-//! dispatch), then mail, then jobs. Their persistence namespaces are
-//! disjoint, so the order is otherwise cosmetic — but it is the registration
-//! order hooks and observers fire in, so keep it stable.
+//! dispatch), then mail, then jobs, then weather, then script (both M5).
+//! Their persistence namespaces are disjoint, so the order is otherwise
+//! cosmetic — but it is the registration order hooks and observers fire in,
+//! so keep it stable.
+//!
+//! Script goes **last** deliberately. Its object `$`-command matcher is a
+//! post-command-table [`CommandFallback`](mush_core::CommandFallback), not an
+//! alias stage, so it never competes with comsys for dispatch order. Running
+//! its `register` after the others means its `on_world_loaded` snapshots a
+//! registry that already carries every other module's attr namespaces (the
+//! off-loop session enforces module-namespace ownership against that
+//! snapshot), and its `AttrSet`/`Moved`/`Said` observers fire after the
+//! game-system modules' observers for the same event — the intended order,
+//! since a scripted reflex should see the world the built-ins already left.
 //!
 //! The M0 `--repl` stays module-free on purpose (offline poking of the core
 //! surface; it has no store to load module data from).
@@ -46,6 +57,8 @@ pub fn server_modules() -> Vec<Box<dyn GameModule>> {
         Box::new(mush_comsys::ComsysModule::new()),
         Box::new(mush_mail::MailModule),
         Box::new(mush_jobs::JobsModule::new()),
+        Box::new(mush_weather::WeatherModule::new()),
+        Box::new(mush_script::ScriptModule::new()),
     ]
 }
 
@@ -428,5 +441,44 @@ mod tests {
             cs.iter().filter(|(k, _)| k.starts_with("chan:")).count()
         };
         assert_eq!(count(&chans), count(&chans2), "reboot must not re-seed");
+    }
+
+    #[test]
+    fn m5_modules_opt_into_the_testkit_cleanly() {
+        // The testkit's `with_modules` is the module-authoring on-ramp: the
+        // M5 scripting + weather modules must register (commands, hooks,
+        // state slots), first-boot, and surface their seams there — the
+        // "opt into the modules" confirmation for both.
+        use mush_testkit::TestWorld;
+        let tw = TestWorld::with_modules(vec![
+            Box::new(mush_weather::WeatherModule::new()),
+            Box::new(mush_script::ScriptModule::new()),
+        ]);
+        // Weather filled its reserved query seam...
+        let (owner, _) = tw.registry().weather_query().expect("weather query seam");
+        assert_eq!(owner.as_str(), "weather");
+        // ...and script installed its post-command-table `$`-command
+        // fallback (the object-command matcher).
+        assert!(
+            tw.registry().command_fallback_count() >= 1,
+            "script registers a command fallback"
+        );
+        // Both modules are present under the one registry, no collision.
+        let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
+        assert!(
+            names.contains(&"weather") && names.contains(&"script"),
+            "{names:?}"
+        );
+    }
+
+    #[test]
+    fn server_modules_register_without_collision() {
+        // The full production list (comsys, mail, jobs, weather, script)
+        // shares one registry: registration must not collide, and every
+        // module must be present in boot order.
+        use mush_testkit::TestWorld;
+        let tw = TestWorld::with_modules(server_modules());
+        let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
+        assert_eq!(names, ["comsys", "mail", "jobs", "weather", "script"]);
     }
 }

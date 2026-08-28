@@ -142,14 +142,21 @@ The store carries an app-level schema version (`meta:schema_version`);
   the failed step, not from scratch.
 
 **Module namespaces are versioned separately** (M3+): each game module's
-persisted namespace (`mod:comsys:*`, `mod:mail:*`, `mod:jobs:*`) carries
-its own schema version in a reserved `mod:{ns}:schema` document, and
-`mushd` runs each module's registered migration set at boot under the same
-rules (fresh namespace stamped without running; unstamped-with-data treated
-as v0; newer-than-binary refused; one BGSAVE before the first step that
-actually runs; docs + version bump committed per step, crash-resumable).
-Module migrations transform kv documents only — streams (`mod:*` history)
-are never migrated.
+persisted namespace (`mod:comsys:*`, `mod:mail:*`, `mod:jobs:*`,
+`mod:weather:*`) carries its own schema version in a reserved
+`mod:{ns}:schema` document, and `mushd` runs each module's registered
+migration set at boot under the same rules (fresh namespace stamped without
+running; unstamped-with-data treated as v0; newer-than-binary refused; one
+BGSAVE before the first step that actually runs; docs + version bump
+committed per step, crash-resumable). Module migrations transform kv
+documents only — streams (`mod:*` history) are never migrated.
+
+The **weather** module (M5) persists one `mod:weather:cell:{zone}` document
+per opted-in zone (state, temperature, pinned flag); its RNG and tick counter
+are in-RAM and reseed at boot. The **scripting** module (M5) has **no
+persisted namespace at all** — scripts are ordinary `script:*` attributes
+that ride the object docs (`obj:*`), and compiled ASTs plus per-object strike
+counts are rebuilt in RAM at boot. So no `mod:script:*` keys exist.
 
 Operator procedure for upgrades that mention a schema change: take an extra
 offsite copy of `dump.rdb`, deploy the new binary, start it, watch the log
@@ -207,6 +214,41 @@ step (drain barrier, BGSAVE, close) at 10s, all loudly logged. Batches that
 could not be flushed within the cap are lost — the same window a `kill -9`
 during the outage would lose.
 
+## Game systems (M5): clock, weather, scripting
+
+Three M5 subsystems are compiled in and boot with every server; none needs
+its own config section today.
+
+**Game clock.** A core IC ("in-character") clock runs at a configurable
+IC:OOC ratio over a fictional 365-day calendar. Two `[game]` keys, read once
+at boot (hot-reload is deferred):
+
+```toml
+[game]
+ic_ratio = 4                    # IC seconds per OOC second; 4 = an IC day every 6 real hours (0 is treated as 1)
+ic_epoch = "2075-03-21 06:00"   # the IC datetime the clock reads at OOC unix 0 — the calendar's phase/start
+```
+
+IC time is a **pure function of real wall-clock time**: it survives restarts
+and is *not* reset to `ic_epoch` at each boot (the epoch only fixes the
+calendar's offset). A malformed `ic_epoch` is a hard boot error. Players read
+the clock with `time` / `@time`; modules and scripts read it through the API.
+The server logs `game clock installed` with the ratio and epoch at boot.
+
+**Weather.** The weather module ticks a deterministic per-zone state machine
+(a Coarse module tick, default every 300s of real time) and persists one cell
+per opted-in zone (see Migrations / Key layout). Staff drive it with the
+`@weather` family (Wizard/Royalty); rooms opt in with `OUTDOORS` / `SHELTERED`
+flags. Full operator + builder notes are in-game under `help weather`. The
+tick/ambient budgets are built-in defaults (not yet config-wired).
+
+**Scripting.** Builders attach sandboxed Rhai scripts to objects as `script:*`
+attributes (no separate store). Every run is bounded by operation, call-depth,
+memory, and wall-clock budgets; three budget overruns auto-`HALTED` the object.
+A runaway script therefore cannot stall the single-writer world loop — the
+budget is the safety boundary. In-game reference: `help scripting`. Default
+budgets live on `ScriptConfig` (not yet config-wired).
+
 ## Key layout reference
 
 All keys live in one Redis logical database (db 0 by default). From
@@ -221,7 +263,7 @@ All keys live in one Redis logical database (db 0 by default). From
 | `ban:{ip}` | string JSON | one siteban, native `EXAT` TTL |
 | `token:{sha256hex}` | string JSON | one web session token record, native `EXAT` TTL (7-day sliding). The key is the SHA-256 of the token — raw tokens are never stored or logged |
 | `idx:objs` | FT index | RediSearch index over `obj:*` (staff tooling; non-fatal if absent) |
-| `mod:{ns}:{key}` | JSON doc | one game-module document (comsys channels/memberships, mail messages/boxes/folders, jobs/notes, module `meta`/`next_id` counters) |
+| `mod:{ns}:{key}` | JSON doc | one game-module document (comsys channels/memberships, mail messages/boxes/folders, jobs/notes, weather `cell:{zone}` cells, module `meta`/`next_id` counters) |
 | `mod:{ns}:schema` | JSON doc | that module namespace's schema version (see Migrations) |
 | `mod:{ns}:hist:{id}` | stream | persisted channel history (`XADD MAXLEN ~`), and any other module ring history |
 
@@ -233,7 +275,7 @@ and `ban:*` are read live and are safe to inspect
 
 Note for shared instances: the REDIS_URL-gated tests **wipe the `obj:*`,
 `account:*`, `ban:*`, `token:*`, `meta:*`, and `mod:*` namespaces** in logical dbs
-12–14 *and* in whatever database `REDIS_URL` itself points at (db 0 unless
+12–15 *and* in whatever database `REDIS_URL` itself points at (db 0 unless
 the URL says otherwise — mush-store's suite uses the URL as given). Never
 point `REDIS_URL` at an instance holding real data — module data (channels,
 mail, jobs) is wiped along with the world; use a disposable instance. The

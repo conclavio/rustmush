@@ -16,6 +16,8 @@
 //! | `[web].trusted_proxies` | `[]` | proxies whose `X-Forwarded-For` is honored |
 //! | `[game].linkdead_grace_s` | `300` | linkdead grace before disconnect |
 //! | `[game].max_characters` | `3` | characters per account cap |
+//! | `[game].ic_ratio` | `1` | IC seconds per OOC second (game-clock speed); read at boot |
+//! | `[game].ic_epoch` | `"2020-01-01 00:00"` | IC datetime at OOC unix 0 — calendar phase/start; read at boot |
 //!
 //! The `[web]` table deserializes straight into
 //! [`mush_net_web::WebConfig`] (every knob it documents — TLS material,
@@ -30,6 +32,7 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
+use mush_core::{CivilDate, GameClock};
 use mush_net_web::WebConfig;
 use serde::Deserialize;
 
@@ -63,6 +66,15 @@ pub enum ConfigError {
     /// `[store].store` is not a known backend.
     #[error("invalid [store].store {value:?}: expected \"redis\" or \"memory\"")]
     BadStoreBackend {
+        /// The offending value.
+        value: String,
+    },
+    /// `[game].ic_epoch` is not a parseable IC datetime.
+    #[error(
+        "invalid [game].ic_epoch {value:?}: expected \"YYYY-MM-DD\" or \
+         \"YYYY-MM-DD HH:MM[:SS]\""
+    )]
+    BadIcEpoch {
         /// The offending value.
         value: String,
     },
@@ -137,7 +149,7 @@ impl Default for SshCfg {
     }
 }
 
-/// `[game]` section (M2 subset).
+/// `[game]` section.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct GameCfg {
@@ -146,6 +158,16 @@ pub struct GameCfg {
     pub linkdead_grace_s: u64,
     /// Maximum characters per account (`newchar` cap).
     pub max_characters: u32,
+    /// IC seconds per OOC second — the game-clock speed. `4` makes a full IC
+    /// day pass in six real hours; `0` is treated as `1`. **Read once at
+    /// boot** (hot-reload lands later); changing it needs a restart.
+    pub ic_ratio: u32,
+    /// The IC civil datetime the clock reads at OOC unix time 0 — the
+    /// calendar's phase and starting year. `"YYYY-MM-DD"` or
+    /// `"YYYY-MM-DD HH:MM[:SS]"`. IC time is a pure function of real wall
+    /// time (so it survives restarts); it is **not** reset to this value at
+    /// each boot. Also read once at boot.
+    pub ic_epoch: String,
 }
 
 impl Default for GameCfg {
@@ -153,7 +175,24 @@ impl Default for GameCfg {
         GameCfg {
             linkdead_grace_s: 300,
             max_characters: 3,
+            ic_ratio: 1,
+            ic_epoch: "2020-01-01 00:00".to_string(),
         }
+    }
+}
+
+impl GameCfg {
+    /// Build the [`GameClock`] from the `[game]` clock knobs. A malformed
+    /// `ic_epoch` is a hard boot error (a silently-wrong calendar is worse
+    /// than not starting).
+    pub fn game_clock(&self) -> Result<GameClock, ConfigError> {
+        let epoch = CivilDate::parse(&self.ic_epoch).ok_or_else(|| ConfigError::BadIcEpoch {
+            value: self.ic_epoch.clone(),
+        })?;
+        Ok(GameClock {
+            ic_ratio: self.ic_ratio,
+            epoch_offset: epoch.to_ic_seconds(),
+        })
     }
 }
 
@@ -239,6 +278,36 @@ mod tests {
         assert_eq!(cfg.ssh_listen().unwrap().port(), 2222);
         assert_eq!(cfg.web.listen.to_string(), "127.0.0.1:8080");
         assert!(cfg.web.trusted_proxies.is_empty());
+        // Game-clock defaults: 1:1 with OOC time, calendar phased to 2020.
+        assert_eq!(cfg.game.ic_ratio, 1);
+        assert_eq!(cfg.game.ic_epoch, "2020-01-01 00:00");
+        let clock = cfg.game.game_clock().unwrap();
+        assert_eq!(clock.ic_ratio, 1);
+        assert_eq!(
+            clock.epoch_offset,
+            mush_core::CivilDate::parse("2020-01-01 00:00")
+                .unwrap()
+                .to_ic_seconds()
+        );
+    }
+
+    #[test]
+    fn game_clock_parses_ratio_and_epoch() {
+        let cfg: Config =
+            toml::from_str("[game]\nic_ratio = 4\nic_epoch = \"2150-06-15 08:30\"").unwrap();
+        let clock = cfg.game.game_clock().unwrap();
+        assert_eq!(clock.ic_ratio, 4);
+        // At OOC time 0 the clock reads exactly the configured epoch.
+        assert_eq!(clock.ic_datetime(0), "June 15, 2150, 08:30");
+    }
+
+    #[test]
+    fn bad_ic_epoch_is_an_error() {
+        let cfg: Config = toml::from_str("[game]\nic_epoch = \"not-a-date\"").unwrap();
+        assert!(matches!(
+            cfg.game.game_clock(),
+            Err(ConfigError::BadIcEpoch { .. })
+        ));
     }
 
     #[test]
@@ -305,6 +374,10 @@ mod tests {
         assert_eq!(cfg.game.linkdead_grace_s, 300);
         assert_eq!(cfg.store_backend().unwrap(), StoreBackend::Redis);
         assert_eq!(cfg.game.max_characters, 3);
+        assert_eq!(cfg.game.ic_ratio, 1);
+        assert_eq!(cfg.game.ic_epoch, "2020-01-01 00:00");
+        // The example's clock knobs must build a valid clock.
+        assert!(cfg.game.game_clock().is_ok());
     }
 
     #[test]

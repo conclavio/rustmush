@@ -1,0 +1,112 @@
+# Arctic climate: cold year-round, snow and blizzards dominate, clear cold
+# snaps between fronts, ice fog in the deep cold. No rain.
+#
+# DATA file (see temperate-coastal.toml for the schema and the LLM top-up seam).
+
+id = "arctic"
+name = "Arctic Tundra"
+
+[[states]]
+id = "clear"
+visibility = 100
+precip = 0
+wind = 25
+temp_band = [-38, -2]
+
+[[states]]
+id = "overcast"
+visibility = 80
+precip = 0
+wind = 35
+temp_band = [-30, 0]
+
+[[states]]
+id = "fog"
+visibility = 20
+precip = 10
+wind = 10
+temp_band = [-40, -8]
+
+[[states]]
+id = "snow"
+visibility = 45
+precip = 65
+wind = 45
+temp_band = [-28, -1]
+
+[[states]]
+id = "storm"
+visibility = 10
+precip = 95
+wind = 100
+temp_band = [-35, -6]
+
+[seasonal.spring]
+clear = { clear = 45, overcast = 30, snow = 18, fog = 7 }
+overcast = { clear = 28, overcast = 32, snow = 30, storm = 10 }
+fog = { fog = 35, clear = 35, overcast = 30 }
+snow = { snow = 40, overcast = 30, storm = 15, clear = 15 }
+storm = { storm = 35, snow = 35, overcast = 20, clear = 10 }
+
+[seasonal.summer]
+clear = { clear = 60, overcast = 25, fog = 10, snow = 5 }
+overcast = { clear = 40, overcast = 35, snow = 18, fog = 7 }
+fog = { fog = 40, clear = 35, overcast = 25 }
+snow = { snow = 30, overcast = 40, clear = 30 }
+storm = { storm = 25, snow = 35, overcast = 25, clear = 15 }
+
+[seasonal.autumn]
+clear = { clear = 42, overcast = 30, snow = 20, fog = 8 }
+overcast = { clear = 25, overcast = 32, snow = 33, storm = 10 }
+fog = { fog = 38, clear = 32, overcast = 30 }
+snow = { snow = 42, overcast = 28, storm = 18, clear = 12 }
+storm = { storm = 38, snow = 34, overcast = 18, clear = 10 }
+
+[seasonal.winter]
+clear = { clear = 38, overcast = 30, snow = 22, fog = 10 }
+overcast = { clear = 20, overcast = 30, snow = 35, storm = 15 }
+fog = { fog = 45, clear = 30, overcast = 25 }
+snow = { snow = 45, overcast = 22, storm = 25, clear = 8 }
+storm = { storm = 45, snow = 33, overcast = 15, clear = 7 }
+
+[tod.dawn]
+fog = 220
+
+[tod.afternoon]
+clear = 120
+fog = 40
+
+[tod.night]
+fog = 200
+storm = 130
+clear = 110
+
+[lines.transition]
+clear = ["The cloud tears open on a hard, glittering cold.", "The sky clears to a merciless blue and the cold bites deeper."]
+overcast = ["A low iron sky closes over the white ground.", "Cloud thickens overhead until sky and snow are one grey."]
+fog = ["Ice fog forms, hanging in glittering, breath-stealing air.", "A freezing mist settles until the world shrinks to arm's length."]
+snow = ["Snow begins to fall across the white waste.", "Fresh snow starts down out of the grey."]
+storm = ["The wind rises to a howl and the blizzard closes in.", "A whiteout blizzard slams in; the world vanishes into driving snow."]
+
+[lines.transition_pair]
+"snow->storm" = ["The steady snow whips up into a blinding blizzard."]
+"storm->snow" = ["The blizzard's howl drops back to an ordinary snowfall."]
+"clear->snow" = ["The hard blue sky greys over and lets down its snow."]
+"fog->clear" = ["The ice fog lifts and the frozen distance snaps clear."]
+
+[lines.ambient]
+clear = ["The cold air is sharp enough to ache in the lungs.", "Snow crunches and squeaks underfoot in the dry cold."]
+overcast = ["The flat grey light erases every shadow on the snow.", "A raw wind worries at every gap and seam."]
+fog = ["Ice crystals hang glittering in the still, frozen air.", "The fog rimes every surface in feathery frost."]
+snow = ["Snow ticks softly against every surface.", "Flakes settle thick and silent over the white ground."]
+storm = ["The wind claws and screams around every corner.", "Driving snow stings like grit against any bare skin."]
+
+[lines.ambient_season]
+winter = ["The dark and the cold together feel absolute."]
+spring = ["Meltwater trickles somewhere, the year's first thaw."]
+summer = ["The low sun circles without ever quite setting."]
+autumn = ["The light fails earlier each day toward the long dark."]
+
+[lines.ambient_tod]
+dawn = ["A thin band of cold light shows low on the horizon."]
+night = ["The aurora ripples green and silent overhead."]

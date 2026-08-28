@@ -314,6 +314,24 @@ pub trait AliasStage: Send + Sync {
     fn try_alias(&self, w: &mut World, actor: ObjId, line: &str, out: &mut Outbox) -> AliasOutcome;
 }
 
+/// A **post-command-table** fallback matcher (design doc §3.1 "module
+/// fallback matchers"), consulted only when the command table produced
+/// [`LookupErr::NotFound`], **after** exits and built-in commands and
+/// **before** `Huh?`.
+///
+/// This is the seam mush-script hangs object `$`-commands
+/// (`script:command:*`) on: a fallback that never shadows a built-in verb
+/// or an exit (classic dollar-command semantics — built-ins win). Fallbacks
+/// run in registration order; the first to return `true` handled the line
+/// and dispatch stops, otherwise the next fallback (then `Huh?`) runs. The
+/// signature mirrors [`AliasStage`] deliberately — `&mut World` + `&mut
+/// Outbox`, no `Ctx`.
+pub trait CommandFallback: Send + Sync {
+    /// Try to handle `line` (the whole post-alias command line) as `actor`.
+    /// Return `true` if handled (dispatch stops before `Huh?`).
+    fn try_command(&self, w: &mut World, actor: ObjId, line: &str, out: &mut Outbox) -> bool;
+}
+
 /// Registration failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RegistryError {
@@ -361,6 +379,9 @@ pub struct Registry {
     /// Lowercased name and alias → entry index.
     index: HashMap<String, usize>,
     alias_stages: Vec<Arc<dyn AliasStage>>,
+    /// Post-command-table fallback matchers (object `$`-commands); consulted
+    /// on [`LookupErr::NotFound`] before `Huh?`, in registration order.
+    command_fallbacks: Vec<Arc<dyn CommandFallback>>,
     /// Module registrations (hooks, ticks, observers, namespaces, …).
     pub(crate) mods: ModuleTables,
     /// Prose help topics by lowercased name (sorted for listings).
@@ -414,6 +435,19 @@ impl Registry {
     /// Append an alias-stage hook (runs in registration order).
     pub fn add_alias_stage(&mut self, stage: Arc<dyn AliasStage>) {
         self.alias_stages.push(stage);
+    }
+
+    /// Append a post-command-table [`CommandFallback`] (object
+    /// `$`-commands). Runs in registration order, after built-ins/exits and
+    /// before `Huh?`.
+    pub fn add_command_fallback(&mut self, fallback: Arc<dyn CommandFallback>) {
+        self.command_fallbacks.push(fallback);
+    }
+
+    /// Number of registered command fallbacks (tests/inspection).
+    #[must_use]
+    pub fn command_fallback_count(&self) -> usize {
+        self.command_fallbacks.len()
     }
 
     /// Iterate all registered command specs (registration order).
@@ -666,7 +700,18 @@ pub fn dispatch(reg: &Registry, w: &mut World, actor: ObjId, line: &str, out: &m
     let verb = parts.next().unwrap_or("");
     let switch_names: Vec<&str> = parts.filter(|s| !s.is_empty()).collect();
     match reg.lookup_full(verb) {
-        Err(LookupErr::NotFound) => huh(reg, actor, verb, out),
+        Err(LookupErr::NotFound) => {
+            // Post-command-table fallbacks (object `$`-commands): a
+            // fallback that claims the whole line ends dispatch before
+            // `Huh?`. They run against the full post-alias line.
+            let line = cur.trim().to_string();
+            for fb in &reg.command_fallbacks {
+                if fb.try_command(w, actor, &line, out) {
+                    return;
+                }
+            }
+            huh(reg, actor, verb, out);
+        }
         Err(LookupErr::Ambiguous(names)) => {
             let names: Vec<&str> = names.iter().map(SmolStr::as_str).collect();
             out.error(

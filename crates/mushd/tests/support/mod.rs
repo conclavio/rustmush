@@ -157,7 +157,7 @@ pub async fn play_client(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>,
 /// Rewrite a Redis URL to a specific logical database, dropping any db (or
 /// path) the base URL carried. Gated tests each claim their own db so the
 /// test binaries cargo runs in parallel never wipe each other's keys:
-/// mush-store's suite uses the URL as given (db 0); mushd claims dbs 12-14.
+/// mush-store's suite uses the URL as given (db 0); mushd claims dbs 12-15.
 pub fn redis_url_with_db(base: &str, db: u32) -> String {
     let (scheme, rest) = base.split_once("://").unwrap_or(("redis", base));
     let authority = rest.split(['/', '?']).next().unwrap_or(rest);
@@ -206,6 +206,102 @@ pub fn write_config(dir: &Path, store_section: &str) -> PathBuf {
     );
     std::fs::write(&path, toml).unwrap();
     path
+}
+
+/// Boot the full production wiring — world task, session layer,
+/// store-backed accounts, IP guard, SSH listener — with the real
+/// [`server_modules`](mushd::modules::server_modules) list (comsys, mail,
+/// jobs, weather, script) booted exactly as `main.rs` does
+/// (`Engine::with_modules` → `boot_modules`), on an ephemeral SSH port with
+/// an in-memory store. A `boss` account linked to God (`#1`) is seeded so a
+/// staff connection can drive builder commands over the same front door as
+/// everyone else. Returns the bound SSH address.
+///
+/// The M5 scripting + weather e2e journeys share this; it is the minimal
+/// standard-module server (no per-test producer module — those boot their
+/// own rig, cf. `modules_e2e`).
+pub async fn boot_module_server(dir: &Path, server_name: &str, boss_password: &str) -> SocketAddr {
+    use mush_session::{SessionConfig, SessionManager};
+
+    std::fs::create_dir_all(dir).unwrap();
+    let sessions = Arc::new(SessionManager::with_config(SessionConfig {
+        linkdead_grace: Duration::from_secs(120),
+        ..SessionConfig::default()
+    }));
+    let store: Arc<dyn mush_store::ObjectStore> = Arc::new(mush_store::InMemoryStore::new());
+    store
+        .create_account(mush_store::AccountRec {
+            name: "boss".to_string(),
+            argon2_hash: mushd::accounts::hash_password(boss_password).unwrap(),
+            created: 0,
+            characters: vec![mush_store::CharacterRef {
+                id: mush_core::GOD,
+                name: "God".to_string(),
+            }],
+        })
+        .await
+        .unwrap();
+
+    // main.rs boot order: base registry + staff commands + help topics, then
+    // Engine::with_modules + boot_modules, then the world task.
+    let staff = Arc::new(mushd::staff::StaffQueue::new());
+    let mut registry = mushd::world_task::base_registry();
+    mushd::staff::register_server_commands(&mut registry, &staff).unwrap();
+    let help_dir = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/help"));
+    let _ = mushd::help::load_help_topics(&mut registry, help_dir);
+
+    let mut world = mush_core::World::new_minimal();
+    world.set_now(mushd::unix_now_s());
+    let mut engine =
+        mush_core::Engine::with_modules(world, registry, mushd::modules::server_modules()).unwrap();
+    mushd::modules::boot_modules(&mut engine, &*store)
+        .await
+        .unwrap();
+
+    let handles = mushd::world_task::spawn_persist(
+        engine,
+        Arc::clone(&sessions),
+        mushd::world_task::ServerDeps {
+            store: Arc::clone(&store),
+            guard: Arc::new(mushd::ipguard::IpGuard::new()),
+            staff,
+        },
+    );
+    let world = handles.handle;
+    let accounts = Arc::new(mushd::accounts::Accounts::new(
+        Arc::clone(&store),
+        world.clone(),
+        3,
+    ));
+    let bridge = Arc::new(mushd::ssh_bridge::SshBridge::new(
+        accounts,
+        Arc::clone(&sessions),
+        world,
+        Arc::new(mushd::ipguard::IpGuard::new()),
+    ));
+    mushd::ssh_bridge::start_listener(
+        "127.0.0.1:0".parse().unwrap(),
+        dir,
+        server_name.to_string(),
+        bridge,
+    )
+    .await
+    .expect("listener")
+    .addr()
+}
+
+/// `create <name> <pw>` a fresh account+character in-band and land in Limbo.
+/// Returns the client handle (kept alive by the caller) and its terminal.
+pub async fn login_create(
+    addr: SocketAddr,
+    name: &str,
+    pw: &str,
+) -> (russh::client::Handle<AcceptAll>, Term) {
+    let (handle, mut term) = play_client(addr).await;
+    term.send_line(&format!("create {name} {pw}")).await;
+    term.expect(&format!("Connected as {name}")).await;
+    term.expect("Limbo(#0)").await;
+    (handle, term)
 }
 
 /// Seed a `boss` account linked to God (`#1`) via the one-time

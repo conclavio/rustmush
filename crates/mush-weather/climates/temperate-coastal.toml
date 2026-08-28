@@ -1,0 +1,153 @@
+# Temperate coastal climate: mild, damp, changeable. Rain and fog are common;
+# snow appears only in the depth of winter; storms roll in off the water.
+#
+# This file is DATA, hand-authored for M5. Its shape is the LLM top-up seam
+# (design 04 s10.4): M10 appends generated variants to any `lines.*` pool
+# without touching the deterministic state machine above them.
+
+id = "temperate-coastal"
+name = "Temperate Coastal"
+
+# --- states -----------------------------------------------------------------
+# visibility / precip / wind are 0..=100 scales; temp_band is [low, high] in C.
+
+[[states]]
+id = "clear"
+visibility = 100
+precip = 0
+wind = 20
+temp_band = [4, 26]
+
+[[states]]
+id = "overcast"
+visibility = 85
+precip = 0
+wind = 30
+temp_band = [2, 22]
+
+[[states]]
+id = "fog"
+visibility = 25
+precip = 5
+wind = 8
+temp_band = [1, 16]
+
+[[states]]
+id = "rain"
+visibility = 60
+precip = 60
+wind = 40
+temp_band = [2, 18]
+
+[[states]]
+id = "storm"
+visibility = 35
+precip = 90
+wind = 85
+temp_band = [1, 16]
+
+[[states]]
+id = "snow"
+visibility = 45
+precip = 70
+wind = 45
+temp_band = [-8, 1]
+
+# --- per-season transition matrices ----------------------------------------
+# seasonal.<season>.<from> = { <to> = weight, ... }. Weights are relative;
+# the machine normalizes by their sum, so rows need not add to 100.
+
+[seasonal.spring]
+clear = { clear = 60, overcast = 25, fog = 8, rain = 7 }
+overcast = { clear = 35, overcast = 35, rain = 22, fog = 8 }
+fog = { fog = 30, clear = 40, overcast = 30 }
+rain = { rain = 45, overcast = 30, storm = 10, clear = 15 }
+storm = { storm = 25, rain = 40, overcast = 25, clear = 10 }
+snow = { snow = 10, overcast = 45, clear = 45 }
+
+[seasonal.summer]
+clear = { clear = 78, overcast = 14, fog = 4, rain = 4 }
+overcast = { clear = 45, overcast = 38, rain = 14, storm = 3 }
+fog = { fog = 25, clear = 55, overcast = 20 }
+rain = { rain = 40, overcast = 32, storm = 13, clear = 15 }
+storm = { storm = 22, rain = 43, overcast = 25, clear = 10 }
+snow = { snow = 5, overcast = 40, clear = 55 }
+
+[seasonal.autumn]
+clear = { clear = 55, overcast = 28, fog = 10, rain = 7 }
+overcast = { clear = 30, overcast = 38, rain = 24, fog = 8 }
+fog = { fog = 35, clear = 35, overcast = 30 }
+rain = { rain = 48, overcast = 28, storm = 12, clear = 12 }
+storm = { storm = 28, rain = 40, overcast = 22, clear = 10 }
+snow = { snow = 12, overcast = 45, clear = 43 }
+
+[seasonal.winter]
+clear = { clear = 48, overcast = 32, fog = 10, snow = 7, rain = 3 }
+overcast = { clear = 25, overcast = 38, rain = 16, snow = 15, fog = 6 }
+fog = { fog = 38, clear = 32, overcast = 30 }
+rain = { rain = 40, overcast = 30, snow = 15, storm = 8, clear = 7 }
+storm = { storm = 30, rain = 30, snow = 20, overcast = 15, clear = 5 }
+snow = { snow = 45, overcast = 30, clear = 15, storm = 10 }
+
+# --- time-of-day modifiers --------------------------------------------------
+# tod.<bucket>.<to> = percent applied to that target's weight during a roll
+# (100 = no change). Fog favours dawn and night; clear favours the afternoon.
+
+[tod.dawn]
+fog = 260
+clear = 80
+
+[tod.morning]
+fog = 140
+
+[tod.afternoon]
+fog = 40
+clear = 120
+
+[tod.dusk]
+fog = 160
+
+[tod.night]
+fog = 180
+storm = 120
+
+# --- line pools -------------------------------------------------------------
+# transition:      picked when ENTERING <to> (generic destination pool).
+# transition_pair: "<from>-><to>" specific lines, preferred over the generic.
+# ambient:         idle-drip lines while IN <state>.
+# ambient_season / ambient_tod: generic mood lines merged into the ambient pick.
+
+[lines.transition]
+clear = ["The clouds break and the sky clears.", "The weather settles; the air turns clean and bright."]
+overcast = ["A grey ceiling of cloud slides in overhead.", "The light flattens as cloud closes over the sky."]
+fog = ["A soft fog rolls in off the water.", "Mist gathers until the far walls turn to grey suggestions."]
+rain = ["Rain begins to fall in earnest.", "The first fat drops give way to steady rain."]
+storm = ["The wind rises and the sky goes bruise-dark.", "A squall barrels in; the air crackles with the coming storm."]
+snow = ["The first snow begins to sift down.", "Snow starts to fall, thick and silent."]
+
+[lines.transition_pair]
+"overcast->rain" = ["The drizzle thickens into steady rain."]
+"rain->storm" = ["The rain hardens and thunder rolls in close."]
+"storm->rain" = ["The storm's fury eases back to an ordinary rain."]
+"rain->clear" = ["The rain thins to nothing and the clouds pull apart."]
+"fog->clear" = ["The fog burns off and the world sharpens into focus."]
+"overcast->snow" = ["The grey overhead lets go its first flakes of snow."]
+"snow->clear" = ["The snow tapers off and a hard clear light returns."]
+
+[lines.ambient]
+clear = ["Sunlight lies warm across the ground.", "A gull's cry carries on the clean air."]
+overcast = ["The flat grey light drains the color from everything.", "A damp, still hush hangs under the cloud."]
+fog = ["Fog beads cold on every surface.", "Somewhere out in the murk, a foghorn sounds."]
+rain = ["Rain patters steadily against every surface.", "Water sheets from the eaves and gutters."]
+storm = ["Wind slams a loose shutter somewhere nearby.", "Thunder rolls, close enough to feel in the chest."]
+snow = ["Snowflakes settle silently on every ledge.", "The snow deadens every sound to a hush."]
+
+[lines.ambient_season]
+winter = ["Your breath fogs white in the raw cold."]
+spring = ["A green, growing smell rides the breeze."]
+summer = ["The air is thick and warm and slow."]
+autumn = ["A dry leaf skitters past on the wind."]
+
+[lines.ambient_tod]
+dawn = ["The first grey light seeps in low across the ground."]
+night = ["The dark presses close beyond the nearest lights."]

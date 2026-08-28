@@ -79,6 +79,35 @@ impl QueryHandler for WhoQuery {
     }
 }
 
+/// `time` / `@time`: the IC ("in-character") date and time, the season, and
+/// the time-of-day — all derived from the core game clock (its IC:OOC ratio
+/// and calendar phase come from `mushd.toml [game]`). Public info; the OOC
+/// wall clock is deliberately not shown.
+fn time_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let datetime = ctx.w.ic_datetime();
+    let season = ctx.w.season();
+    let tod = ctx.w.time_of_day();
+    // The article agrees with the word it precedes (the season): "an autumn
+    // evening", "a summer night".
+    let season = season.to_string();
+    ctx.out.info(
+        ctx.actor,
+        format!(
+            "Game time: {datetime} -- {} {season} {tod}.",
+            article(&season)
+        ),
+    );
+    Ok(())
+}
+
+/// "a" or "an" for the following word, by its first letter (vowel → "an").
+fn article(word: &str) -> &'static str {
+    match word.chars().next().map(|c| c.to_ascii_lowercase()) {
+        Some('a' | 'e' | 'i' | 'o' | 'u') => "an",
+        _ => "a",
+    }
+}
+
 fn help_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let topic = ctx.args.raw().trim().to_string();
     if topic.is_empty() {
@@ -146,6 +175,20 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
     )?;
     reg.register(
         CommandSpec {
+            name: "time".into(),
+            aliases: vec!["@time".into()],
+            help: "time  --  Show the in-character date and time: the game's \
+                   calendar date, the clock, the current season, and the time \
+                   of day. IC time runs at the configured IC:OOC ratio (a ratio \
+                   of 4 means four IC hours pass each real hour). @time is the \
+                   same command."
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(time_cmd),
+    )?;
+    reg.register(
+        CommandSpec {
             name: "help".into(),
             aliases: vec!["+help".into()],
             help: "help [<command>|<topic>]  --  With no argument, list every \
@@ -160,4 +203,110 @@ pub(super) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
         Arc::new(help_cmd),
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::clock::{CivilDate, GameClock};
+    use crate::cmd::{Registry, dispatch};
+    use crate::obj::{GOD, LIMBO, ObjId, ObjKind};
+    use crate::output::{Audience, Outbox};
+    use crate::world::World;
+
+    use mush_proto::OutputEvent;
+
+    fn setup() -> (World, Registry, ObjId) {
+        let mut w = World::new_minimal();
+        let nick = w.create(ObjKind::Player, "Nick", GOD, Some(LIMBO)).unwrap();
+        // Anchor a fixed IC datetime at OOC time 0, then read it at OOC 0.
+        let epoch = CivilDate::parse("2075-08-28 02:57").unwrap();
+        w.set_game_clock(GameClock {
+            ic_ratio: 1,
+            epoch_offset: epoch.to_ic_seconds(),
+        });
+        w.set_now(0);
+        let mut reg = Registry::new();
+        crate::commands::register_core_commands(&mut reg).unwrap();
+        (w, reg, nick)
+    }
+
+    fn lines(out: &Outbox, actor: ObjId) -> Vec<String> {
+        out.events()
+            .iter()
+            .filter(|(aud, _)| matches!(aud, Audience::Actor(a) if *a == actor))
+            .filter_map(|(_, e)| match e {
+                OutputEvent::Sys(t) => Some(t.to_plain_text()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn time_shows_ic_date_season_and_tod() {
+        let (mut w, reg, nick) = setup();
+        let mut out = Outbox::new();
+        dispatch(&reg, &mut w, nick, "time", &mut out);
+        let got = lines(&out, nick);
+        assert_eq!(
+            got,
+            vec!["Game time: August 28, 2075, 02:57 -- a summer night.".to_string()],
+        );
+    }
+
+    #[test]
+    fn time_uses_an_before_a_vowel_initial_season() {
+        let mut w = World::new_minimal();
+        let nick = w.create(ObjKind::Player, "Nick", GOD, Some(LIMBO)).unwrap();
+        // Day-of-year 250 at OOC time 0 → autumn (a vowel-initial season),
+        // hour 0 → night: the article agrees with the season → "an autumn".
+        w.set_game_clock(GameClock {
+            ic_ratio: 1,
+            epoch_offset: 250 * 86_400,
+        });
+        w.set_now(0);
+        let mut reg = Registry::new();
+        crate::commands::register_core_commands(&mut reg).unwrap();
+        let mut out = Outbox::new();
+        dispatch(&reg, &mut w, nick, "time", &mut out);
+        let got = lines(&out, nick);
+        assert!(
+            got[0].contains("-- an autumn night."),
+            "vowel-initial season takes 'an': {got:?}"
+        );
+    }
+
+    #[test]
+    fn at_time_alias_is_the_same_command() {
+        let (mut w, reg, nick) = setup();
+        let mut out = Outbox::new();
+        dispatch(&reg, &mut w, nick, "@time", &mut out);
+        assert_eq!(
+            lines(&out, nick),
+            vec!["Game time: August 28, 2075, 02:57 -- a summer night.".to_string()],
+        );
+    }
+
+    #[test]
+    fn time_tracks_the_ratio_as_ooc_time_advances() {
+        let mut w = World::new_minimal();
+        let nick = w.create(ObjKind::Player, "Nick", GOD, Some(LIMBO)).unwrap();
+        // Ratio 4, epoch at midnight: six OOC hours -> a full IC day.
+        w.set_game_clock(GameClock {
+            ic_ratio: 4,
+            epoch_offset: CivilDate::parse("2100-01-01 00:00")
+                .unwrap()
+                .to_ic_seconds(),
+        });
+        let mut reg = Registry::new();
+        crate::commands::register_core_commands(&mut reg).unwrap();
+
+        w.set_now(6 * 3_600);
+        let mut out = Outbox::new();
+        dispatch(&reg, &mut w, nick, "time", &mut out);
+        assert!(
+            lines(&out, nick)[0].contains("January 2, 2100"),
+            "{:?}",
+            lines(&out, nick)
+        );
+    }
 }

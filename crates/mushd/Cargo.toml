@@ -20,6 +20,9 @@ mush-store.workspace = true
 mush-comsys.workspace = true
 mush-mail.workspace = true
 mush-jobs.workspace = true
+# The M5 scripting + weather modules.
+mush-script.workspace = true
+mush-weather.workspace = true
 mush-testkit.workspace = true
 mush-net-ssh.workspace = true
 # The M4 web ingress; mushd implements its WebHooks (web_bridge.rs).

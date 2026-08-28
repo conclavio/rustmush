@@ -8,9 +8,17 @@ description = "Zone weather state machines, climate data, ambience"
 
 [dependencies]
 mush-core.workspace = true
+mush-proto.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true
+toml.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+mush-testkit.workspace = true
+mush-store.workspace = true
+futures.workspace = true
 
 [lints]
 workspace = true

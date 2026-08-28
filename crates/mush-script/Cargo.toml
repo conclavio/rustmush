@@ -8,6 +8,9 @@ description = "Rhai scripting engine: sandbox budgets, hooks"
 
 [dependencies]
 mush-core.workspace = true
+mush-proto.workspace = true
+rhai.workspace = true
+smol_str.workspace = true
 tracing.workspace = true
 
 [lints]

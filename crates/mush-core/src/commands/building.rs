@@ -365,6 +365,13 @@ fn set_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             ctx.w.set_attr(target, aname, attr)?;
             ctx.out.info(ctx.actor, format!("{aname} - Set."));
         }
+        // Post-mutation observer signal (mush-script recompiles on
+        // `script:*` changes; harmless for observers that filter it out).
+        ctx.emit_world_event(&crate::module::WorldEvent::AttrSet {
+            obj: target,
+            name: aname.to_string(),
+            setter: ctx.actor,
+        });
         return Ok(());
     }
 

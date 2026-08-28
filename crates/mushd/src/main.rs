@@ -138,7 +138,16 @@ async fn serve(config: Config) -> Result<(), String> {
     if imported > 0 {
         tracing::info!(imported, "M1 accounts.json imported");
     }
-    let world = load_or_seed_world(&*store).await?;
+    let mut world = load_or_seed_world(&*store).await?;
+    // Install the IC game clock from [game] before the world starts serving.
+    // ic_ratio / ic_epoch are read once here (hot-reload comes later).
+    let clock = config.game.game_clock().map_err(|e| e.to_string())?;
+    world.set_game_clock(clock);
+    tracing::info!(
+        ic_ratio = clock.ic_ratio,
+        ic_epoch = %config.game.ic_epoch,
+        "game clock installed",
+    );
 
     // Command table: core + engine + server staff commands (@siteban/@dump/
     // @boot/@ps/@stats push typed ops onto the queue the world task
