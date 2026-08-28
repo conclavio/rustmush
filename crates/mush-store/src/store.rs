@@ -1,0 +1,144 @@
+//! The [`ObjectStore`] trait — the seam between the game and its storage.
+//!
+//! ## Why `BoxFuture` instead of native `async fn` in the trait
+//!
+//! The behavior test suite and `mushd` both work with `dyn ObjectStore`
+//! (one code path over the Redis store and the in-memory fake). Native
+//! `async fn` in traits is not dyn-compatible in Rust 2024, so every method
+//! returns a [`BoxFuture`] explicitly. The one boxed allocation per call is
+//! noise next to a network round trip, and implementations still just write
+//! `async` blocks.
+//!
+//! ## Concurrency contract
+//!
+//! - The **world task is the only writer of world state**: [`write`] is
+//!   called from exactly one task (the dedicated store-writer), one batch
+//!   at a time, each awaited to its ack before the next is sent — batches
+//!   are never concurrent or reordered. The world task hands batches to
+//!   that writer through a small bounded queue immediately per command
+//!   (write-through per-command; no timer batching anywhere), so on a hard
+//!   kill the loss window is the writer's queue — at most a handful of
+//!   already-confirmed commands while the store is stalled, and just the
+//!   in-flight command in the steady state where the queue is empty.
+//!   Durability-critical flows (account/character creation) additionally
+//!   await the ack before confirming, closing even that window.
+//! - Account, ban, and meta methods may additionally be called from a small
+//!   number of other tasks (the auth service reads account docs directly;
+//!   staff tooling reads bans). Each call is individually atomic; the store
+//!   guarantees **no ordering between concurrent calls** beyond that.
+//!   Cross-call invariants (e.g. "create the Player object, then link it")
+//!   are the caller's protocol, exactly as in M1.
+//! - [`load_world`] runs once at boot, before the world task starts writing.
+//!
+//! [`write`]: ObjectStore::write
+//! [`load_world`]: ObjectStore::load_world
+
+use futures::future::BoxFuture;
+use mush_core::ObjId;
+
+use crate::types::{AccountRec, BanRec, StoreError, WorldSnapshot, WriteBatch, WriteReceipt};
+
+/// Persistent storage for the world, accounts, sitebans, and store metadata.
+///
+/// Implementations: [`crate::RedisStore`] (authoritative, Redis 8) and
+/// [`crate::InMemoryStore`] (tests and `mushd --repl`). Both honor the exact
+/// same semantics; the shared behavior suite in [`crate::suite`] proves it.
+pub trait ObjectStore: Send + Sync {
+    /// Load every persisted object plus `next_id` and `schema_version`.
+    ///
+    /// Returns `Ok(None)` for a **completely empty store** (no objects *and*
+    /// no `next_id`) so the caller can seed a fresh world. A store with
+    /// objects but no `next_id` is corrupt ([`StoreError::Corrupt`]) — ids
+    /// are never recycled, so the allocator resume point must exist.
+    /// Individual corrupt object docs are tolerated: logged via `tracing`
+    /// and skipped, never a panic.
+    fn load_world(&self) -> BoxFuture<'_, Result<Option<WorldSnapshot>, StoreError>>;
+
+    /// Apply one [`WriteBatch`] atomically (see its docs for the exact
+    /// semantics). Returns once the batch is **acknowledged by the store**;
+    /// for Redis that means the `MULTI`/`EXEC` transaction committed.
+    /// Callers gate durability-critical confirmation output on this `Ok`.
+    fn write(&self, batch: WriteBatch) -> BoxFuture<'_, Result<WriteReceipt, StoreError>>;
+
+    // ------------------------------------------------------------------
+    // Accounts
+    // ------------------------------------------------------------------
+
+    /// Atomically reserve and store a new account. Fails with
+    /// [`StoreError::AccountExists`] if any account already holds the name
+    /// (case-insensitive) — under concurrent creates exactly one wins.
+    fn create_account(&self, rec: AccountRec) -> BoxFuture<'_, Result<(), StoreError>>;
+
+    /// Fetch an account by name (case-insensitive). `Ok(None)` when absent.
+    /// This is the verify path: the caller checks the password against
+    /// [`AccountRec::argon2_hash`] itself — hashing never enters the store.
+    fn get_account<'a>(
+        &'a self,
+        name: &'a str,
+    ) -> BoxFuture<'a, Result<Option<AccountRec>, StoreError>>;
+
+    /// Append a character to an account's list (atomic per call). Fails with
+    /// [`StoreError::NoSuchAccount`] if the account is missing.
+    fn link_character<'a>(
+        &'a self,
+        account: &'a str,
+        id: ObjId,
+        char_name: &'a str,
+    ) -> BoxFuture<'a, Result<(), StoreError>>;
+
+    /// Every stored account, in unspecified order. (Deleting accounts is a
+    /// later milestone; the key layout already supports it.)
+    fn list_accounts(&self) -> BoxFuture<'_, Result<Vec<AccountRec>, StoreError>>;
+
+    // ------------------------------------------------------------------
+    // Sitebans (persisted; IpGuard tempbans stay in-memory)
+    // ------------------------------------------------------------------
+
+    /// Set (or replace) the ban on `ip`. `until_unix = None` is permanent;
+    /// a timestamp at or before now clears any existing ban (mirroring
+    /// Redis TTL semantics, where such a key expires immediately).
+    fn set_ban<'a>(
+        &'a self,
+        ip: &'a str,
+        until_unix: Option<i64>,
+        reason: &'a str,
+    ) -> BoxFuture<'a, Result<(), StoreError>>;
+
+    /// Every **active** ban. Expired bans are gone: Redis expires the keys
+    /// natively; the in-memory store filters (and prunes) by the system
+    /// clock at read time.
+    fn get_bans(&self) -> BoxFuture<'_, Result<Vec<BanRec>, StoreError>>;
+
+    /// Lift the ban on `ip`. Returns whether a ban was actually removed.
+    fn clear_ban<'a>(&'a self, ip: &'a str) -> BoxFuture<'a, Result<bool, StoreError>>;
+
+    // ------------------------------------------------------------------
+    // Meta / migrations
+    // ------------------------------------------------------------------
+
+    /// The stored app-level schema version. `Ok(None)` on a store that has
+    /// never been stamped (fresh, or pre-versioning).
+    fn get_schema_version(&self) -> BoxFuture<'_, Result<Option<u32>, StoreError>>;
+
+    /// Stamp the schema version ([`crate::run_migrations`] drives this).
+    fn set_schema_version(&self, version: u32) -> BoxFuture<'_, Result<(), StoreError>>;
+
+    // ------------------------------------------------------------------
+    // Maintenance
+    // ------------------------------------------------------------------
+
+    /// Trigger a background snapshot (Redis `BGSAVE`; no-op in memory).
+    /// "Already in progress" is success. Used by `@dump`, scheduled backups,
+    /// and mandatorily before migrations run.
+    fn bgsave(&self) -> BoxFuture<'_, Result<(), StoreError>>;
+
+    /// Flush anything pending and await its acknowledgement. Because every
+    /// [`write`](ObjectStore::write) is already awaited to its ack, there is
+    /// never a client-side queue; this is the shutdown-sequence barrier
+    /// ("drain write pipeline") and doubles as a liveness check.
+    fn drain(&self) -> BoxFuture<'_, Result<(), StoreError>>;
+
+    /// Release the store (close connections). Further calls fail with
+    /// [`StoreError::Closed`] (or a connection error from Redis).
+    fn close(&self) -> BoxFuture<'_, Result<(), StoreError>>;
+}

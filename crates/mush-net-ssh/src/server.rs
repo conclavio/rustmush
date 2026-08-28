@@ -376,6 +376,21 @@ impl Drop for ConnHandler {
     }
 }
 
+/// Case-insensitively strip a leading `verb` from `line`, returning the
+/// remainder when the verb is followed by whitespace or the end of line.
+fn strip_verb<'a>(line: &'a str, verb: &str) -> Option<&'a str> {
+    let head = line.get(..verb.len())?;
+    if !head.eq_ignore_ascii_case(verb) {
+        return None;
+    }
+    let rest = &line[verb.len()..];
+    if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+        Some(rest)
+    } else {
+        None
+    }
+}
+
 /// `play` / `guest` / `new` — the auth-none front door (M1: all three
 /// alias to the welcome screen).
 fn is_front_door(user: &str) -> bool {
@@ -570,29 +585,24 @@ impl ConnHandler {
         }
     }
 
+    /// Route an authenticated account: one character auto-connects, any
+    /// other count (including zero) lands on the character-select screen,
+    /// where `newchar <Name>` is also available (M2).
     async fn enter_account(
         &mut self,
         session: &mut Session,
         account: String,
         chars: Vec<CharSummary>,
     ) -> Result<(), russh::Error> {
-        match chars.len() {
-            0 => self.write_text(
-                session,
-                "That account has no characters yet; ask staff for help.",
-            ),
-            1 => {
-                let c = chars[0].clone();
-                self.do_connect(session, &account, &c).await
-            }
-            _ => {
-                self.lock().mode = Mode::CharSelect {
-                    account: account.clone(),
-                    chars: chars.clone(),
-                };
-                self.print_char_select(session, &account, &chars)
-            }
+        if chars.len() == 1 {
+            let c = chars[0].clone();
+            return self.do_connect(session, &account, &c).await;
         }
+        self.lock().mode = Mode::CharSelect {
+            account: account.clone(),
+            chars: chars.clone(),
+        };
+        self.print_char_select(session, &account, &chars)
     }
 
     fn print_char_select(
@@ -601,11 +611,16 @@ impl ConnHandler {
         account: &str,
         chars: &[CharSummary],
     ) -> Result<(), russh::Error> {
-        let mut text = format!("Characters on {account}:\n");
-        for (i, c) in chars.iter().enumerate() {
-            text.push_str(&format!("  {}) {}\n", i + 1, c.name));
-        }
-        text.push_str("Enter a number (or QUIT):");
+        let mut text = if chars.is_empty() {
+            format!("The account {account} has no characters yet.\n")
+        } else {
+            let mut text = format!("Characters on {account}:\n");
+            for (i, c) in chars.iter().enumerate() {
+                text.push_str(&format!("  {}) {}\n", i + 1, c.name));
+            }
+            text
+        };
+        text.push_str("Enter a number, newchar <Name>, or QUIT:");
         self.write_text(session, &text)
     }
 
@@ -622,6 +637,24 @@ impl ConnHandler {
         }
         if pick.eq_ignore_ascii_case("quit") {
             return self.close_polite(session, "Goodbye.");
+        }
+        if let Some(rest) = strip_verb(pick, "newchar") {
+            let name = rest.trim();
+            if name.is_empty() {
+                self.write_text(session, "Usage: newchar <Name>")?;
+                return self.print_char_select(session, account, chars);
+            }
+            return match self.hooks.create_character(account, name).await {
+                Ok(c) => {
+                    self.write_text(session, &format!("Character {} created.", c.name))?;
+                    let account = account.to_owned();
+                    self.do_connect(session, &account, &c).await
+                }
+                Err(why) => {
+                    self.write_text(session, &why)?;
+                    self.print_char_select(session, account, chars)
+                }
+            };
         }
         let choice = pick
             .parse::<usize>()

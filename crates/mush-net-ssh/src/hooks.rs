@@ -78,13 +78,26 @@ pub trait SshHooks: Send + Sync {
     fn auth_account<'a>(&'a self, account: &'a str, password: &'a str)
     -> BoxFuture<'a, AuthResult>;
 
-    /// Create a new account (M1: this also creates the account's first,
+    /// Create a new account (this also creates the account's first,
     /// same-named character).
     fn create_account<'a>(
         &'a self,
         account: &'a str,
         password: &'a str,
     ) -> BoxFuture<'a, Result<(), CreateErr>>;
+
+    /// Create an additional character on an already-authenticated account —
+    /// the character-select screen's `newchar <Name>` (M2). `Err` carries a
+    /// player-readable refusal (name rules, per-account cap, ...). The
+    /// default refuses, so transports can offer the verb only against
+    /// binaries that support it.
+    fn create_character<'a>(
+        &'a self,
+        _account: &'a str,
+        _name: &'a str,
+    ) -> BoxFuture<'a, Result<CharSummary, String>> {
+        Box::pin(async { Err("Character creation is not available.".to_string()) })
+    }
 
     /// Attach `conn` as playing `character` under `account`. On `Ok` the
     /// world owns the character's output until the connection ends; an

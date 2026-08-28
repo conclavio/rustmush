@@ -1,10 +1,18 @@
 //! Per-IP abuse protection (design 02 §8.2): a sliding-window auth-failure
-//! counter with temporary bans, plus a concurrent-connection cap.
+//! counter with temporary bans, plus a concurrent-connection cap, plus the
+//! in-memory mirror of the **persisted sitebans** (M2).
 //!
 //! Defaults: **5 auth failures in 10 minutes → 15-minute tempban**; at most
-//! **8 concurrent connections** per IP. Clock-free: every method takes an
-//! explicit `Instant` (the `*_now` wrappers stamp `Instant::now()`), so the
-//! window math is deterministic under test.
+//! **8 concurrent connections** per IP. Clock-free for tempbans: every
+//! method takes an explicit `Instant` (the `*_now` wrappers stamp
+//! `Instant::now()`), so the window math is deterministic under test.
+//!
+//! Sitebans are different: they are staff-set, persisted in the store
+//! (`ban:{ip}`, native TTL on Redis), and expressed in **unix seconds** so
+//! they survive restarts. The guard only mirrors them: the world task loads
+//! the persisted set at boot ([`IpGuard::load_sitebans`]) and updates the
+//! mirror after every acknowledged `@siteban` store write. Expiry is
+//! checked lazily against the wall clock (mirroring the store's TTL).
 
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
@@ -57,6 +65,9 @@ impl IpEntry {
 pub struct IpGuard {
     cfg: IpGuardConfig,
     map: DashMap<IpAddr, IpEntry>,
+    /// Persisted-siteban mirror: ip → expiry (unix seconds; `None` =
+    /// permanent). Loaded from the store at boot, updated on `@siteban`.
+    sitebans: DashMap<IpAddr, Option<i64>>,
 }
 
 impl IpGuard {
@@ -72,6 +83,7 @@ impl IpGuard {
         IpGuard {
             cfg,
             map: DashMap::new(),
+            sitebans: DashMap::new(),
         }
     }
 
@@ -90,6 +102,9 @@ impl IpGuard {
     /// their later auth checks.
     #[must_use]
     pub fn is_blocked_at(&self, ip: IpAddr, now: Instant) -> bool {
+        if self.siteban_active_at(ip, crate::unix_now_s()) {
+            return true;
+        }
         let Some(mut e) = self.map.get_mut(&ip) else {
             return false;
         };
@@ -163,6 +178,62 @@ impl IpGuard {
     pub fn tracked(&self) -> usize {
         self.map.len()
     }
+
+    // ------------------------------------------------------------------
+    // Persisted sitebans (mirror of the store's `ban:*` namespace)
+    // ------------------------------------------------------------------
+
+    /// Replace the siteban mirror wholesale (boot-time load from the
+    /// store). Expired entries are dropped on the way in.
+    pub fn load_sitebans(&self, bans: impl IntoIterator<Item = (IpAddr, Option<i64>)>) {
+        let now = crate::unix_now_s();
+        self.sitebans.clear();
+        for (ip, until) in bans {
+            if until.is_none_or(|u| u > now) {
+                self.sitebans.insert(ip, until);
+            }
+        }
+    }
+
+    /// Mirror one siteban (called after the store write is acknowledged).
+    /// An already-expired `until` clears instead, matching the store's
+    /// instant-expiry semantics.
+    pub fn set_siteban(&self, ip: IpAddr, until_unix: Option<i64>) {
+        if until_unix.is_some_and(|u| u <= crate::unix_now_s()) {
+            self.sitebans.remove(&ip);
+        } else {
+            self.sitebans.insert(ip, until_unix);
+        }
+    }
+
+    /// Drop one siteban from the mirror; `true` if it was present.
+    pub fn clear_siteban(&self, ip: IpAddr) -> bool {
+        self.sitebans.remove(&ip).is_some()
+    }
+
+    /// Whether a mirrored siteban is active at `now_unix` (unix seconds).
+    /// Expired entries are pruned as a side effect, like the store's TTL.
+    #[must_use]
+    pub fn siteban_active_at(&self, ip: IpAddr, now_unix: i64) -> bool {
+        let Some(entry) = self.sitebans.get(&ip) else {
+            return false;
+        };
+        match *entry {
+            None => true,
+            Some(until) if until > now_unix => true,
+            Some(_) => {
+                drop(entry);
+                self.sitebans.remove(&ip);
+                false
+            }
+        }
+    }
+
+    /// Number of mirrored sitebans (diagnostics/tests).
+    #[must_use]
+    pub fn siteban_count(&self) -> usize {
+        self.sitebans.len()
+    }
 }
 
 #[cfg(test)]
@@ -207,6 +278,35 @@ mod tests {
             assert!(!g.record_failure_at(ip(3), t0 + Duration::from_secs(602 + i)));
         }
         assert!(g.record_failure_at(ip(3), t0 + Duration::from_secs(606)));
+    }
+
+    #[test]
+    fn sitebans_block_expire_and_clear() {
+        let g = IpGuard::new();
+        let now = crate::unix_now_s();
+        g.load_sitebans([
+            (ip(10), None),             // permanent
+            (ip(11), Some(now + 3600)), // active
+            (ip(12), Some(now - 10)),   // already expired: dropped on load
+        ]);
+        assert_eq!(g.siteban_count(), 2);
+        assert!(g.is_blocked(ip(10)));
+        assert!(g.is_blocked(ip(11)));
+        assert!(!g.is_blocked(ip(12)));
+
+        // Expiry is honored lazily (and pruned).
+        assert!(!g.siteban_active_at(ip(11), now + 7200));
+        assert_eq!(g.siteban_count(), 1);
+
+        // set/clear mirror store writes.
+        g.set_siteban(ip(13), Some(now + 60));
+        assert!(g.is_blocked(ip(13)));
+        assert!(g.clear_siteban(ip(13)));
+        assert!(!g.clear_siteban(ip(13)));
+        assert!(!g.is_blocked(ip(13)));
+        // Setting an already-expired ban clears instead.
+        g.set_siteban(ip(10), Some(now - 5));
+        assert!(!g.is_blocked(ip(10)));
     }
 
     #[test]

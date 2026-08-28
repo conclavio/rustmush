@@ -25,8 +25,11 @@ futures = "0.3"
 rand = "0.9"
 rand_chacha = "0.9"
 winnow = "0.7"
-# store (M2)
-fred = "10"
+# store (M2) — verified Aug 2026: fred 10.1.x current on docs.rs; RESP3 +
+# RedisJSON (i-redis-json) + RediSearch (i-redisearch) interfaces; serde-json
+# enables Value <-> serde_json::Value conversion. Defaults (i-std,
+# transactions) stay on.
+fred = { version = "10.1", features = ["i-redis-json", "i-redisearch", "serde-json"] }
 # net (M1/M4)
 # default features pull aws-lc-sys (CMake/NASM C build); ring keeps the
 # workspace's no-C-toolchain-babysitting rule intact on Windows + Linux.

@@ -1,15 +1,18 @@
 //! `mushd.toml` configuration.
 //!
-//! M1 reads only the keys it uses; everything else in the file (e.g. the
-//! `[store]`, `[web]`, `[llm]` sections from `mushd.toml.example`) is
-//! tolerated and ignored until its milestone lands. Keys used now:
+//! M2 reads only the keys it uses; everything else in the file (e.g. the
+//! `[web]`, `[llm]` sections from `mushd.toml.example`) is tolerated and
+//! ignored until its milestone lands. Keys used now:
 //!
 //! | key | default | meaning |
 //! |---|---|---|
 //! | `[server].name` | `"rustmush"` | server name (banners, logs) |
-//! | `[server].data_dir` | `"./data"` | host keys, `accounts.json`, logs |
+//! | `[server].data_dir` | `"./data"` | host keys, one-time `accounts.json` import, logs |
+//! | `[store].store` | `"redis"` | store backend: `"redis"` or `"memory"` |
+//! | `[store].redis_url` | `"redis://127.0.0.1:6379"` | Redis connection URL |
 //! | `[ssh].listen` | `"0.0.0.0:2222"` | SSH listen address |
 //! | `[game].linkdead_grace_s` | `300` | linkdead grace before disconnect |
+//! | `[game].max_characters` | `3` | characters per account cap |
 //!
 //! A missing file yields the defaults; a file that exists but does not parse
 //! is a hard error (silently ignoring a typo'd config is worse than not
@@ -47,6 +50,22 @@ pub enum ConfigError {
         /// Underlying error.
         source: std::net::AddrParseError,
     },
+    /// `[store].store` is not a known backend.
+    #[error("invalid [store].store {value:?}: expected \"redis\" or \"memory\"")]
+    BadStoreBackend {
+        /// The offending value.
+        value: String,
+    },
+}
+
+/// Which [`mush_store::ObjectStore`] implementation to boot with.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum StoreBackend {
+    /// The authoritative Redis 8 store (`[store].redis_url`).
+    Redis,
+    /// The in-memory store — tests and offline runs only; nothing survives
+    /// a restart.
+    Memory,
 }
 
 /// `[server]` section.
@@ -68,6 +87,26 @@ impl Default for ServerCfg {
     }
 }
 
+/// `[store]` section.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+pub struct StoreCfg {
+    /// Store backend: `"redis"` (default) or `"memory"`. `--repl` never
+    /// reaches the store at all.
+    pub store: String,
+    /// Redis connection URL (`redis://[user:pass@]host:port[/db]`).
+    pub redis_url: String,
+}
+
+impl Default for StoreCfg {
+    fn default() -> Self {
+        StoreCfg {
+            store: "redis".to_string(),
+            redis_url: "redis://127.0.0.1:6379".to_string(),
+        }
+    }
+}
+
 /// `[ssh]` section.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -84,29 +123,34 @@ impl Default for SshCfg {
     }
 }
 
-/// `[game]` section (M1 subset).
+/// `[game]` section (M2 subset).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct GameCfg {
     /// Seconds a session stays linkdead after an unclean drop before the
     /// character is fully disconnected.
     pub linkdead_grace_s: u64,
+    /// Maximum characters per account (`newchar` cap).
+    pub max_characters: u32,
 }
 
 impl Default for GameCfg {
     fn default() -> Self {
         GameCfg {
             linkdead_grace_s: 300,
+            max_characters: 3,
         }
     }
 }
 
-/// The whole configuration (M1 subset; unknown sections/keys ignored).
+/// The whole configuration (M2 subset; unknown sections/keys ignored).
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// `[server]`.
     pub server: ServerCfg,
+    /// `[store]`.
+    pub store: StoreCfg,
     /// `[ssh]`.
     pub ssh: SshCfg,
     /// `[game]`.
@@ -146,6 +190,17 @@ impl Config {
                 source,
             })
     }
+
+    /// The validated `[store].store` backend selection.
+    pub fn store_backend(&self) -> Result<StoreBackend, ConfigError> {
+        match self.store.store.to_lowercase().as_str() {
+            "redis" => Ok(StoreBackend::Redis),
+            "memory" => Ok(StoreBackend::Memory),
+            other => Err(ConfigError::BadStoreBackend {
+                value: other.to_string(),
+            }),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -159,6 +214,10 @@ mod tests {
         assert_eq!(cfg.server.data_dir, PathBuf::from("./data"));
         assert_eq!(cfg.ssh.listen, "0.0.0.0:2222");
         assert_eq!(cfg.game.linkdead_grace_s, 300);
+        assert_eq!(cfg.game.max_characters, 3);
+        assert_eq!(cfg.store.store, "redis");
+        assert_eq!(cfg.store.redis_url, "redis://127.0.0.1:6379");
+        assert_eq!(cfg.store_backend().unwrap(), StoreBackend::Redis);
         assert_eq!(cfg.ssh_listen().unwrap().port(), 2222);
     }
 
@@ -171,7 +230,8 @@ mod tests {
             name = "testmush"
 
             [store]
-            redis_url = "redis://127.0.0.1:6379"
+            store = "memory"
+            redis_url = "redis://10.0.0.1:6380"
 
             [game]
             linkdead_grace_s = 10
@@ -185,6 +245,17 @@ mod tests {
         assert_eq!(cfg.server.data_dir, PathBuf::from("./data"));
         assert_eq!(cfg.ssh.listen, "0.0.0.0:2222");
         assert_eq!(cfg.game.linkdead_grace_s, 10);
+        assert_eq!(cfg.store_backend().unwrap(), StoreBackend::Memory);
+        assert_eq!(cfg.store.redis_url, "redis://10.0.0.1:6380");
+    }
+
+    #[test]
+    fn bad_store_backend_reports() {
+        let cfg: Config = toml::from_str("[store]\nstore = \"sqlite\"").unwrap();
+        assert!(matches!(
+            cfg.store_backend(),
+            Err(ConfigError::BadStoreBackend { .. })
+        ));
     }
 
     #[test]
@@ -195,6 +266,8 @@ mod tests {
         assert_eq!(cfg.server.name, "rustmush dev");
         assert_eq!(cfg.ssh.listen, "0.0.0.0:2222");
         assert_eq!(cfg.game.linkdead_grace_s, 300);
+        assert_eq!(cfg.store_backend().unwrap(), StoreBackend::Redis);
+        assert_eq!(cfg.game.max_characters, 3);
     }
 
     #[test]

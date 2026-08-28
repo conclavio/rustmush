@@ -1,7 +1,8 @@
 //! The M1 exit criterion as one scripted end-to-end journey over real SSH.
 //!
-//! Boots the whole server (world task, session layer, JSON account store,
-//! IP guard, SSH listener) on an ephemeral port with a scratch data dir —
+//! Boots the whole server (world task, session layer, store-backed
+//! accounts, IP guard, SSH listener) on an ephemeral port with a scratch
+//! data dir —
 //! production wiring except for port and paths — then drives three russh
 //! clients through the classic session:
 //!
@@ -27,7 +28,8 @@ use mush_core::GOD;
 use mush_session::{SessionConfig, SessionManager};
 use russh::ChannelMsg;
 
-use mushd::accounts::{AccountStore, Accounts};
+use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore};
+use mushd::accounts::{Accounts, hash_password};
 use mushd::ipguard::IpGuard;
 use mushd::ssh_bridge::{SshBridge, start_listener};
 use mushd::world_task;
@@ -51,10 +53,20 @@ async fn boot_server(dir: &std::path::Path) -> SocketAddr {
         ..SessionConfig::default()
     }));
     let (world, _join) = world_task::spawn(world_task::boot_engine(), Arc::clone(&sessions));
-    let store = AccountStore::open(dir).unwrap();
-    store.reserve("boss", GM_PASSWORD).unwrap();
-    store.link_character("boss", GOD, "God");
-    let accounts = Arc::new(Accounts::new(store, world.clone()));
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+    store
+        .create_account(AccountRec {
+            name: "boss".to_string(),
+            argon2_hash: hash_password(GM_PASSWORD).unwrap(),
+            created: 0,
+            characters: vec![CharacterRef {
+                id: GOD,
+                name: "God".to_string(),
+            }],
+        })
+        .await
+        .unwrap();
+    let accounts = Arc::new(Accounts::new(store, world.clone(), 3));
     let bridge = Arc::new(SshBridge::new(
         accounts,
         Arc::clone(&sessions),
@@ -69,6 +81,7 @@ async fn boot_server(dir: &std::path::Path) -> SocketAddr {
     )
     .await
     .expect("listener")
+    .addr()
 }
 
 struct AcceptAll;

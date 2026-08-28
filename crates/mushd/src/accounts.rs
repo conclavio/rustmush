@@ -1,44 +1,72 @@
-//! Minimal account storage for M1 — **interim by design**.
+//! Store-backed accounts (M2): argon2id verification against
+//! `account:{name}` docs in the [`ObjectStore`], character creation through
+//! the world task, and the one-time import of the M1 `accounts.json`.
 //!
-//! Accounts live in a [`DashMap`] mirrored to `data_dir/accounts.json`
-//! (atomic temp-file+rename writes), loaded once at boot. **M2 replaces this
-//! wholesale with the Redis store** (`account:{name}` JSON docs per
-//! `docs/PLAN.md`); the [`AuthBackend`] trait is the seam the swap happens
-//! behind, which is why nothing outside this module names [`AccountStore`]
-//! directly.
+//! The [`AuthBackend`] trait is the seam the SSH bridge talks through;
+//! [`Accounts`] is the production implementation over `Arc<dyn
+//! ObjectStore>` (Redis in production, [`mush_store::InMemoryStore`] in
+//! tests). Passwords are argon2id PHC strings (design 02 §8.1); hashing and
+//! verification stay caller-side — the store only ever holds the opaque
+//! hash. Verification is CPU-heavy by design (~tens of milliseconds), so it
+//! runs on the blocking pool internally; callers just `.await`.
 //!
-//! Passwords are argon2id PHC strings (design 02 §8.1). Verification is
-//! CPU-heavy by design (~tens of milliseconds): callers on async threads
-//! wrap [`AuthBackend::verify`] in `spawn_blocking` (the SSH bridge does).
+//! Creating an account **never touches `World`**: the flow is
 //!
-//! Creating an account **never touches `World`**: the [`Accounts`] service
-//! reserves the account record, asks the world task to create the Player via
-//! [`WorldHandle::create_player`] (a typed message with a oneshot reply),
-//! then links the resulting id — rolling the reservation back if the world
-//! says no.
+//! 1. validate names + password, pre-check the character name against the
+//!    world's player index ([`WorldHandle::name_free`]);
+//! 2. reserve the account record — [`ObjectStore::create_account`] is
+//!    server-side atomic, so concurrent creates race safely;
+//! 3. ask the world task to create the Player
+//!    ([`WorldHandle::create_player`]), which **waits for the store to
+//!    acknowledge the creation batch** (durable write-through);
+//! 4. link the character ([`ObjectStore::link_character`], atomic append).
+//!
+//! Only after all of that does the caller emit its confirmation output —
+//! the ack gate PLAN's write-through design requires. The store has no
+//! account deletion yet (a later milestone), so a world-side name conflict
+//! that slips past the pre-check (step 1 is advisory, not atomic) leaves a
+//! character-less account behind; it is logged loudly and the pre-check
+//! makes it a genuine race, not a normal path.
+//!
+//! ## `accounts.json` import (one-time)
+//!
+//! If `data_dir/accounts.json` (the M1 interim store) exists at boot,
+//! [`import_accounts_json`] copies every record into the store (existing
+//! store accounts win) and renames the file to `accounts.json.imported` so
+//! the import never runs twice.
 
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::path::Path;
+use std::sync::{Arc, OnceLock};
 
 use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
-use dashmap::DashMap;
 use mush_core::ObjId;
+use mush_store::{AccountRec, CharacterRef, ObjectStore, StoreError};
 use serde::{Deserialize, Serialize};
 
+use crate::unix_now_s;
 use crate::world_task::{CreatePlayerErr, WorldHandle};
 
 /// Account names no one may register (routing usernames, staff identities).
 pub const RESERVED_NAMES: &[&str] = &["god", "play", "guest", "new", "root", "admin"];
 
-/// One character on an account. The name is denormalized from the world at
-/// link time (M1-interim; Redis owns this in M2).
+/// One character on an account. Mirrors the store's [`CharacterRef`] with
+/// the core [`ObjId`] type.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CharSummary {
     /// The character's object id.
     pub id: ObjId,
     /// The character's name when it was linked.
     pub name: String,
+}
+
+impl From<CharacterRef> for CharSummary {
+    fn from(c: CharacterRef) -> CharSummary {
+        CharSummary {
+            id: c.id,
+            name: c.name,
+        }
+    }
 }
 
 /// Result of a password check. Unknown account and wrong password are the
@@ -57,7 +85,7 @@ pub enum AuthOutcome {
     BadCredentials,
 }
 
-/// Account-creation failure (player-facing messages).
+/// Account/character-creation failure (player-facing messages).
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum CreateErr {
     /// The account name breaks the rules.
@@ -69,6 +97,13 @@ pub enum CreateErr {
     /// An account with that name already exists.
     #[error("an account with that name already exists")]
     AccountExists,
+    /// `newchar` against an account that does not exist (should not happen
+    /// through the normal flow — the player just authenticated).
+    #[error("no such account")]
+    NoSuchAccount,
+    /// The account is at its character cap.
+    #[error("that account already has the maximum number of characters")]
+    CharacterLimit,
     /// The password breaks the rules.
     #[error("passwords must be 4-128 characters")]
     BadPassword,
@@ -81,226 +116,141 @@ pub enum CreateErr {
     /// The world task refused or is gone.
     #[error("character creation failed: {0}")]
     World(String),
-    /// The account file could not be written.
+    /// The persistence layer failed.
     #[error("account storage failed: {0}")]
     Io(String),
 }
 
-/// The pluggable auth seam: M1 implements it with [`Accounts`]
-/// (JSON-file-backed); M2 swaps in the Redis-backed store.
+/// The pluggable auth seam the SSH bridge is generic over.
 ///
-/// `create` is declared as `-> impl Future + Send` (not `async fn`) so
-/// generic callers can box it into `Send` futures — the SSH bridge
+/// Methods are declared as `-> impl Future + Send` (not `async fn`) so
+/// generic callers can box them into `Send` futures — the SSH bridge
 /// implements the dyn-compatible `mush_net_ssh::SshHooks` on top of a
-/// generic `A: AuthBackend`. Implementors still just write `async fn`.
+/// generic `A: AuthBackend`. Implementors still just write `async` blocks.
 pub trait AuthBackend: Send + Sync {
-    /// Check credentials. CPU-heavy (argon2id) — call via `spawn_blocking`
-    /// from async contexts.
-    fn verify(&self, account: &str, password: &str) -> AuthOutcome;
+    /// Check credentials. Internally CPU-heavy (argon2id, run on the
+    /// blocking pool); callers just await.
+    fn verify(&self, account: &str, password: &str) -> impl Future<Output = AuthOutcome> + Send;
     /// The characters on an account (empty for unknown accounts).
-    fn characters(&self, account: &str) -> Vec<CharSummary>;
+    fn characters(&self, account: &str) -> impl Future<Output = Vec<CharSummary>> + Send;
     /// Create an account with its first character. The Player object is
-    /// created by the world task; on failure nothing is left behind.
+    /// created by the world task and the confirmation is gated on the
+    /// store's ack.
     fn create(
         &self,
         account: &str,
         password: &str,
         char_name: &str,
     ) -> impl Future<Output = Result<CharSummary, CreateErr>> + Send;
+    /// Create an additional character on an existing account (`newchar` on
+    /// the character-select screen), honoring the per-account cap. Same ack
+    /// gating as [`AuthBackend::create`].
+    fn create_character(
+        &self,
+        account: &str,
+        char_name: &str,
+    ) -> impl Future<Output = Result<CharSummary, CreateErr>> + Send;
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct AccountRecord {
-    /// Display-case name (the map key is the lowercase form).
-    name: String,
-    /// argon2id PHC string.
-    hash: String,
-    /// Linked characters.
-    characters: Vec<CharSummary>,
+/// The production [`AuthBackend`]: the object store plus the world-task
+/// handle for Player creation.
+pub struct Accounts {
+    store: Arc<dyn ObjectStore>,
+    world: WorldHandle,
+    max_characters: usize,
 }
 
-#[derive(Serialize, Deserialize)]
-struct AccountsFile {
-    version: u32,
-    accounts: Vec<AccountRecord>,
-}
-
-/// The M1 record store: in-memory map + JSON file. See the module docs.
-pub struct AccountStore {
-    path: PathBuf,
-    map: DashMap<String, AccountRecord>,
-    /// Serializes file writes (the map itself is shard-locked).
-    save: Mutex<()>,
-}
-
-impl AccountStore {
-    /// Open the store in `data_dir`, loading `accounts.json` if present
-    /// (creating the directory if needed).
-    pub fn open(data_dir: &Path) -> std::io::Result<AccountStore> {
-        std::fs::create_dir_all(data_dir)?;
-        let path = data_dir.join("accounts.json");
-        let map = DashMap::new();
-        match std::fs::read_to_string(&path) {
-            Ok(text) => {
-                let file: AccountsFile = serde_json::from_str(&text).map_err(|e| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("{} is corrupt: {e}", path.display()),
-                    )
-                })?;
-                for rec in file.accounts {
-                    map.insert(rec.name.to_lowercase(), rec);
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
+impl Accounts {
+    /// Wire the store to the world task. `max_characters` is the
+    /// `[game].max_characters` cap (per account).
+    #[must_use]
+    pub fn new(store: Arc<dyn ObjectStore>, world: WorldHandle, max_characters: usize) -> Accounts {
+        Accounts {
+            store,
+            world,
+            max_characters,
         }
-        tracing::info!(path = %path.display(), accounts = map.len(), "account store open");
-        Ok(AccountStore {
-            path,
-            map,
-            save: Mutex::new(()),
-        })
     }
 
-    /// Number of accounts.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.map.len()
+    /// Fetch an account doc, mapping store failures to a logged `None`
+    /// (auth paths fail closed and uniform).
+    async fn fetch(&self, account: &str) -> Option<AccountRec> {
+        match self.store.get_account(account).await {
+            Ok(rec) => rec,
+            Err(e) => {
+                tracing::error!(account, error = %e, "account fetch failed");
+                None
+            }
+        }
     }
 
-    /// Whether the store has no accounts.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
+    /// The shared tail of both creation flows: Player via the world task
+    /// (ack-gated), then the atomic link.
+    async fn create_and_link(
+        &self,
+        account: &str,
+        char_name: &str,
+    ) -> Result<CharSummary, CreateErr> {
+        let id = match self.world.create_player(char_name).await {
+            Ok(id) => id,
+            Err(CreatePlayerErr::NameTaken) => {
+                // The pre-check raced another create. The account (possibly
+                // freshly reserved, possibly character-less) stays — the
+                // store cannot delete accounts yet. Loud log, clear error.
+                tracing::error!(
+                    account,
+                    char_name,
+                    "character name taken after pre-check; account left without this character"
+                );
+                return Err(CreateErr::CharacterNameTaken);
+            }
+            Err(e) => return Err(CreateErr::World(e.to_string())),
+        };
+        match self.store.link_character(account, id, char_name).await {
+            Ok(()) => Ok(CharSummary {
+                id,
+                name: char_name.to_string(),
+            }),
+            Err(e) => {
+                // The Player exists but the account does not list it —
+                // recoverable by staff, never silent.
+                tracing::error!(account, %id, char_name, error = %e, "linking character failed");
+                Err(CreateErr::Io(e.to_string()))
+            }
+        }
     }
+}
 
-    /// Check `password` against `account`. Uniform failure; a miss still
-    /// burns one argon2 verify so timing does not reveal account existence.
-    #[must_use]
-    pub fn verify(&self, account: &str, password: &str) -> AuthOutcome {
-        let key = account.to_lowercase();
-        let Some(rec) = self.map.get(&key).map(|r| r.clone()) else {
-            burn_dummy_verify(password);
+impl AuthBackend for Accounts {
+    async fn verify(&self, account: &str, password: &str) -> AuthOutcome {
+        let Some(rec) = self.fetch(account).await else {
+            // A miss still burns one argon2 verify so timing does not
+            // reveal account existence.
+            let password = password.to_string();
+            let _ = run_blocking(move || burn_dummy_verify(&password)).await;
             return AuthOutcome::BadCredentials;
         };
-        if verify_hash(&rec.hash, password) {
+        let ok = {
+            let (hash, password) = (rec.argon2_hash.clone(), password.to_string());
+            run_blocking(move || verify_hash(&hash, &password))
+                .await
+                .unwrap_or(false)
+        };
+        if ok {
             AuthOutcome::Ok {
                 account: rec.name,
-                characters: rec.characters,
+                characters: rec.characters.into_iter().map(Into::into).collect(),
             }
         } else {
             AuthOutcome::BadCredentials
         }
     }
 
-    /// The characters on an account (empty when unknown).
-    #[must_use]
-    pub fn characters(&self, account: &str) -> Vec<CharSummary> {
-        self.map
-            .get(&account.to_lowercase())
-            .map(|r| r.characters.clone())
+    async fn characters(&self, account: &str) -> Vec<CharSummary> {
+        self.fetch(account)
+            .await
+            .map(|r| r.characters.into_iter().map(Into::into).collect())
             .unwrap_or_default()
-    }
-
-    /// Validate names and password, hash, and insert an account with no
-    /// characters yet. Persists. The caller links the first character next
-    /// (or [`AccountStore::unreserve`]s on failure).
-    pub fn reserve(&self, account: &str, password: &str) -> Result<(), CreateErr> {
-        validate_account_name(account)?;
-        validate_password(password)?;
-        let hash = hash_password(password)?;
-        let key = account.to_lowercase();
-        // Entry-based insert so two concurrent creates cannot both win.
-        match self.map.entry(key) {
-            dashmap::mapref::entry::Entry::Occupied(_) => return Err(CreateErr::AccountExists),
-            dashmap::mapref::entry::Entry::Vacant(v) => {
-                v.insert(AccountRecord {
-                    name: account.to_string(),
-                    hash,
-                    characters: Vec::new(),
-                });
-            }
-        }
-        if let Err(e) = self.persist() {
-            self.map.remove(&account.to_lowercase());
-            return Err(CreateErr::Io(e.to_string()));
-        }
-        Ok(())
-    }
-
-    /// Link a character to an account. Persist failures are logged, not
-    /// fatal — the in-memory link is authoritative for this process
-    /// (M1-interim tradeoff).
-    pub fn link_character(&self, account: &str, id: ObjId, name: &str) {
-        if let Some(mut rec) = self.map.get_mut(&account.to_lowercase()) {
-            rec.characters.push(CharSummary {
-                id,
-                name: name.to_string(),
-            });
-        } else {
-            tracing::error!(account, %id, "link_character: no such account");
-            return;
-        }
-        if let Err(e) = self.persist() {
-            tracing::error!(account, error = %e, "persisting character link failed");
-        }
-    }
-
-    /// Roll back a reservation (world-side creation failed). Persists.
-    pub fn unreserve(&self, account: &str) {
-        if self.map.remove(&account.to_lowercase()).is_some()
-            && let Err(e) = self.persist()
-        {
-            tracing::error!(account, error = %e, "persisting unreserve failed");
-        }
-    }
-
-    /// Write the whole store to `accounts.json` atomically: serialize to
-    /// `accounts.json.tmp`, then rename over the real file (`rename`
-    /// replaces on both Windows and POSIX).
-    fn persist(&self) -> std::io::Result<()> {
-        let _guard = self.save.lock().expect("account save lock poisoned");
-        let mut accounts: Vec<AccountRecord> = self.map.iter().map(|r| r.clone()).collect();
-        accounts.sort_by_key(|a| a.name.to_lowercase());
-        let file = AccountsFile {
-            version: 1,
-            accounts,
-        };
-        let json = serde_json::to_string_pretty(&file).expect("account records serialize");
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, json)?;
-        std::fs::rename(&tmp, &self.path)
-    }
-}
-
-/// The M1 [`AuthBackend`]: [`AccountStore`] + the world-task handle for
-/// Player creation. The store rides an `Arc` so the create path can hop to
-/// the blocking pool (argon2id hash + whole-file persist are too heavy for
-/// tokio workers).
-pub struct Accounts {
-    store: Arc<AccountStore>,
-    world: WorldHandle,
-}
-
-impl Accounts {
-    /// Wire the store to the world task.
-    #[must_use]
-    pub fn new(store: AccountStore, world: WorldHandle) -> Accounts {
-        Accounts {
-            store: Arc::new(store),
-            world,
-        }
-    }
-}
-
-impl AuthBackend for Accounts {
-    fn verify(&self, account: &str, password: &str) -> AuthOutcome {
-        self.store.verify(account, password)
-    }
-
-    fn characters(&self, account: &str) -> Vec<CharSummary> {
-        self.store.characters(account)
     }
 
     async fn create(
@@ -309,38 +259,138 @@ impl AuthBackend for Accounts {
         password: &str,
         char_name: &str,
     ) -> Result<CharSummary, CreateErr> {
+        validate_account_name(account)?;
+        validate_password(password)?;
         validate_character_name(char_name)?;
-        // 1. Reserve the account (validates account name + password, argon2
-        //    hash, file persist) — CPU + disk heavy, so blocking pool.
-        {
-            let store = Arc::clone(&self.store);
-            let (account, password) = (account.to_string(), password.to_string());
-            run_blocking(move || store.reserve(&account, &password)).await??;
+        // Advisory pre-check: catch a taken character name BEFORE the
+        // account record exists (the world create re-validates atomically).
+        if !self.world.name_free(char_name).await {
+            return Err(CreateErr::CharacterNameTaken);
         }
-        // 2. World task creates the Player (typed request, oneshot reply).
-        match self.world.create_player(char_name).await {
-            Ok(id) => {
-                // 3. Link (persists; failure inside is logged, not fatal).
-                let store = Arc::clone(&self.store);
-                let (account, name) = (account.to_string(), char_name.to_string());
-                run_blocking(move || store.link_character(&account, id, &name)).await?;
-                Ok(CharSummary {
-                    id,
-                    name: char_name.to_string(),
-                })
-            }
-            Err(e) => {
-                let store = Arc::clone(&self.store);
-                let account = account.to_string();
-                run_blocking(move || store.unreserve(&account)).await?;
-                Err(match e {
-                    CreatePlayerErr::NameTaken => CreateErr::CharacterNameTaken,
-                    other => CreateErr::World(other.to_string()),
-                })
-            }
+        let hash = {
+            let password = password.to_string();
+            run_blocking(move || hash_password(&password)).await??
+        };
+        let rec = AccountRec {
+            name: account.to_string(),
+            argon2_hash: hash,
+            created: unix_now_s(),
+            characters: Vec::new(),
+        };
+        match self.store.create_account(rec).await {
+            Ok(()) => {}
+            Err(StoreError::AccountExists) => return Err(CreateErr::AccountExists),
+            Err(e) => return Err(CreateErr::Io(e.to_string())),
         }
+        self.create_and_link(account, char_name).await
+    }
+
+    async fn create_character(
+        &self,
+        account: &str,
+        char_name: &str,
+    ) -> Result<CharSummary, CreateErr> {
+        validate_character_name(char_name)?;
+        let rec = self.fetch(account).await.ok_or(CreateErr::NoSuchAccount)?;
+        // Known TOCTOU: two concurrent `newchar`s on the SAME account at
+        // cap-1 can both pass this check (link_character appends
+        // unconditionally), exceeding the cap by one. Closing it needs a
+        // server-side conditional append (WATCH/MULTI or Lua); accepted for
+        // M2 — it takes the account holder racing themselves, and the only
+        // damage is one extra character.
+        if rec.characters.len() >= self.max_characters {
+            return Err(CreateErr::CharacterLimit);
+        }
+        if !self.world.name_free(char_name).await {
+            return Err(CreateErr::CharacterNameTaken);
+        }
+        self.create_and_link(account, char_name).await
     }
 }
+
+// ---------------------------------------------------------------------------
+// One-time accounts.json import
+// ---------------------------------------------------------------------------
+
+/// The M1 interim file format, kept only so old files can be imported.
+#[derive(Deserialize)]
+struct LegacyAccountsFile {
+    #[allow(dead_code)]
+    version: u32,
+    accounts: Vec<LegacyAccountRecord>,
+}
+
+#[derive(Deserialize)]
+struct LegacyAccountRecord {
+    name: String,
+    hash: String,
+    characters: Vec<CharSummary>,
+}
+
+/// If `data_dir/accounts.json` exists, import every record into the store
+/// (an account already in the store wins and is skipped with a log line),
+/// then rename the file to `accounts.json.imported`. Returns how many
+/// accounts were imported; `Ok(0)` when there was no file.
+///
+/// A corrupt file is a boot error — silently skipping real account data
+/// would strand every player in it.
+pub async fn import_accounts_json(
+    store: &dyn ObjectStore,
+    data_dir: &Path,
+) -> Result<usize, String> {
+    let path = data_dir.join("accounts.json");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    };
+    let file: LegacyAccountsFile =
+        serde_json::from_str(&text).map_err(|e| format!("{} is corrupt: {e}", path.display()))?;
+
+    let mut imported = 0usize;
+    let now = unix_now_s();
+    for rec in file.accounts {
+        let name = rec.name.clone();
+        let account = AccountRec {
+            name: rec.name,
+            argon2_hash: rec.hash,
+            created: now,
+            characters: rec
+                .characters
+                .into_iter()
+                .map(|c| CharacterRef {
+                    id: c.id,
+                    name: c.name,
+                })
+                .collect(),
+        };
+        match store.create_account(account).await {
+            Ok(()) => imported += 1,
+            Err(StoreError::AccountExists) => {
+                tracing::warn!(account = name, "import: account already in store; skipped");
+            }
+            Err(e) => return Err(format!("importing account {name:?}: {e}")),
+        }
+    }
+
+    let imported_path = data_dir.join("accounts.json.imported");
+    // `rename` refuses an existing destination on Windows; a stale marker
+    // from an interrupted earlier import may be replaced.
+    let _ = std::fs::remove_file(&imported_path);
+    std::fs::rename(&path, &imported_path)
+        .map_err(|e| format!("renaming {} after import: {e}", path.display()))?;
+    tracing::info!(
+        imported,
+        from = %path.display(),
+        to = %imported_path.display(),
+        "legacy accounts.json imported into the store"
+    );
+    Ok(imported)
+}
+
+// ---------------------------------------------------------------------------
+// Validation + hashing
+// ---------------------------------------------------------------------------
 
 /// `spawn_blocking` with the join failure folded into [`CreateErr`].
 async fn run_blocking<T: Send + 'static>(
@@ -394,10 +444,11 @@ fn validate_password(password: &str) -> Result<(), CreateErr> {
 
 /// argon2id-hash a password into a PHC string (default params: Argon2id
 /// v19, m=19456 KiB, t=2, p=1 — the crate's OWASP-aligned defaults).
+/// Public so tests and seeding tools can mint valid account records.
 ///
 /// Salt: 16 bytes from `rand`'s thread-local CSPRNG (the `argon2` crate's
 /// own `OsRng` path is feature-gated off in this workspace's dep graph).
-fn hash_password(password: &str) -> Result<String, CreateErr> {
+pub fn hash_password(password: &str) -> Result<String, CreateErr> {
     let salt_bytes: [u8; 16] = rand::random();
     let salt = SaltString::encode_b64(&salt_bytes).map_err(|e| CreateErr::Io(e.to_string()))?;
     Argon2::default()
@@ -429,6 +480,8 @@ fn burn_dummy_verify(password: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mush_store::InMemoryStore;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     fn scratch_dir(tag: &str) -> PathBuf {
@@ -439,6 +492,7 @@ mod tests {
             N.fetch_add(1, Ordering::Relaxed)
         ));
         let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
         dir
     }
 
@@ -488,77 +542,58 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reserve_verify_and_uniform_failure() {
-        let dir = scratch_dir("verify");
-        let store = AccountStore::open(&dir).unwrap();
-        store.reserve("nick", "hunter42").unwrap();
+    #[tokio::test]
+    async fn import_moves_legacy_accounts_into_the_store() {
+        let dir = scratch_dir("import");
+        let hash = hash_password("hunter42").unwrap();
+        let json = serde_json::json!({
+            "version": 1,
+            "accounts": [
+                { "name": "nick", "hash": hash,
+                  "characters": [ { "id": 7, "name": "Nick" } ] },
+                { "name": "dupe", "hash": hash, "characters": [] },
+            ]
+        });
+        std::fs::write(dir.join("accounts.json"), json.to_string()).unwrap();
 
-        match store.verify("Nick", "hunter42") {
-            AuthOutcome::Ok {
-                account,
-                characters,
-            } => {
-                assert_eq!(account, "nick");
-                assert!(characters.is_empty());
-            }
-            other => panic!("expected Ok, got {other:?}"),
-        }
-        // Wrong password and unknown account are indistinguishable.
-        assert_eq!(store.verify("nick", "wrong"), AuthOutcome::BadCredentials);
-        assert_eq!(
-            store.verify("nobody", "hunter42"),
-            AuthOutcome::BadCredentials
-        );
-        // Duplicate reservation (any case) refused; bad password refused.
-        assert_eq!(
-            store.reserve("NICK", "otherpw"),
-            Err(CreateErr::AccountExists)
-        );
-        assert_eq!(store.reserve("newbie", "abc"), Err(CreateErr::BadPassword));
+        let store = InMemoryStore::new();
+        // "dupe" already lives in the store: import must keep the store copy.
+        store
+            .create_account(AccountRec {
+                name: "Dupe".into(),
+                argon2_hash: "store-copy".into(),
+                created: 1,
+                characters: vec![],
+            })
+            .await
+            .unwrap();
+
+        let imported = import_accounts_json(&store, &dir).await.unwrap();
+        assert_eq!(imported, 1);
+        assert!(!dir.join("accounts.json").exists());
+        assert!(dir.join("accounts.json.imported").exists());
+
+        let nick = store.get_account("NICK").await.unwrap().unwrap();
+        assert_eq!(nick.name, "nick");
+        assert_eq!(nick.characters.len(), 1);
+        assert_eq!(nick.characters[0].name, "Nick");
+        assert!(verify_hash(&nick.argon2_hash, "hunter42"));
+        let dupe = store.get_account("dupe").await.unwrap().unwrap();
+        assert_eq!(dupe.argon2_hash, "store-copy", "store copy must win");
+
+        // Second boot: nothing to import.
+        assert_eq!(import_accounts_json(&store, &dir).await.unwrap(), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn persistence_round_trip_is_atomic() {
-        let dir = scratch_dir("persist");
-        {
-            let store = AccountStore::open(&dir).unwrap();
-            store.reserve("nick", "hunter42").unwrap();
-            store.link_character("nick", ObjId(7), "Nick");
-            store.reserve("gone", "hunter42").unwrap();
-            store.unreserve("gone");
-        }
-        // No temp file left behind; the real file exists.
-        assert!(dir.join("accounts.json").exists());
-        assert!(!dir.join("accounts.json.tmp").exists());
-
-        // A fresh store sees exactly what was persisted.
-        let store = AccountStore::open(&dir).unwrap();
-        assert_eq!(store.len(), 1);
-        match store.verify("nick", "hunter42") {
-            AuthOutcome::Ok { characters, .. } => {
-                assert_eq!(
-                    characters,
-                    vec![CharSummary {
-                        id: ObjId(7),
-                        name: "Nick".to_string()
-                    }]
-                );
-            }
-            other => panic!("expected Ok, got {other:?}"),
-        }
-        assert_eq!(store.characters("NICK")[0].name, "Nick");
-        assert!(store.characters("gone").is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn corrupt_file_is_a_boot_error() {
-        let dir = scratch_dir("corrupt");
-        std::fs::create_dir_all(&dir).unwrap();
+    #[tokio::test]
+    async fn import_corrupt_file_is_a_boot_error() {
+        let dir = scratch_dir("import-corrupt");
         std::fs::write(dir.join("accounts.json"), "{not json").unwrap();
-        assert!(AccountStore::open(&dir).is_err());
+        let store = InMemoryStore::new();
+        assert!(import_accounts_json(&store, &dir).await.is_err());
+        // The corrupt file is left in place for the operator.
+        assert!(dir.join("accounts.json").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

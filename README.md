@@ -25,16 +25,38 @@ milestones, and [docs/design/](docs/design/) for subsystem design docs.
 ## Development
 
 Requirements: Rust (stable), Node 20+ (web client), and Redis 8+ for integration tests and
-runtime from M2 on. On Windows, run Redis via Docker Desktop/WSL2 or
-[Memurai](https://www.memurai.com/) (Redis 8.2-based native builds). Production target is
-Ubuntu LTS with Redis 8 local (AOF `everysec` minimum; `always` for zero-loss).
+runtime from M2 on. Production target is Ubuntu LTS with Redis 8 local (AOF `everysec`
+minimum; `always` for zero-loss) — see [docs/ops.md](docs/ops.md) for backups, restore,
+migrations, and shutdown/crash semantics.
+
+Getting a dev Redis, in order of preference:
+
+- **Docker** (any platform): `docker compose up -d redis` — the repo-root
+  [docker-compose.yml](docker-compose.yml) runs `redis:8` with `appendonly yes` +
+  `appendfsync everysec` and a persistent volume on port 6379.
+- **Windows without Docker**: [Memurai](https://www.memurai.com/) (Redis 8.2-based native
+  builds), or Redis inside WSL2 (`sudo apt install redis-server`).
+- **No local option**: tunnel to a disposable remote instance —
+  `ssh -N -L 6379:127.0.0.1:6379 you@your-vps`.
 
 ```bash
 cargo test --workspace
 ```
 
-Redis-backed integration tests run only when `REDIS_URL` is set (e.g.
-`redis://127.0.0.1:6379`).
+Everything runs against the in-memory store by default; the Redis-backed integration tests
+(store behavior suite, boot round trip, the kill-9 durability test) run only when `REDIS_URL`
+is set, and skip with a note otherwise:
+
+```bash
+REDIS_URL=redis://127.0.0.1:6379 cargo test --workspace          # bash
+```
+
+```powershell
+$env:REDIS_URL = "redis://127.0.0.1:6379"; cargo test --workspace  # PowerShell
+```
+
+Point `REDIS_URL` at a **disposable** instance: the gated tests wipe their key namespaces
+(they use logical dbs 12–14 plus the default db).
 
 Redis is tri-licensed (AGPLv3 option from Redis 8); running it alongside the server is fine —
 we don't redistribute it.

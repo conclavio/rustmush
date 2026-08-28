@@ -15,6 +15,7 @@ description = "rustmush server binary: config, accounts, world task, SSH bridge,
 mush-core.workspace = true
 mush-proto.workspace = true
 mush-session.workspace = true
+mush-store.workspace = true
 mush-testkit.workspace = true
 mush-net-ssh.workspace = true
 # BoxFuture, to implement mush-net-ssh's dyn-compatible hooks trait.
@@ -36,6 +37,9 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 # Real SSH client for the full-stack loopback and e2e tests.
 russh.workspace = true
+# Tests inject connection-shaped (transient) store errors and drive raw
+# Redis commands (DEBUG RELOAD) in the gated durability e2e.
+fred.workspace = true
 
 [lints]
 workspace = true

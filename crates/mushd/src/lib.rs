@@ -1,33 +1,48 @@
 //! # mushd — the rustmush server
 //!
-//! The M1 binary: a tokio process wrapping the synchronous
-//! [`mush_core::Engine`] in the **single-writer world task** (design
-//! 01 §4.1), with the session layer ([`mush_session::SessionManager`]) doing
-//! character → connection fan-out (treaty ruling 2) and an SSH bridge
-//! implementing the `mush-net-ssh` hooks.
+//! A tokio process wrapping the synchronous [`mush_core::Engine`] in the
+//! **single-writer world task** (design 01 §4.1), with the session layer
+//! ([`mush_session::SessionManager`]) doing character → connection fan-out
+//! (treaty ruling 2), an SSH bridge implementing the `mush-net-ssh` hooks,
+//! and — since M2 — **write-through persistence** on the
+//! [`mush_store::ObjectStore`] (Redis authoritative; in-memory for tests):
+//! every processed command's world mutations become one atomic store batch,
+//! sent immediately, so a `kill -9` loses at most the in-flight command.
 //!
 //! Layering (nothing here violates the treaty):
 //!
 //! - [`world_task`] — owns the `Engine`; the only place `World` is touched.
 //!   Everything else talks to it over an mpsc of [`world_task::WorldMsg`].
 //!   Async completions re-enter as typed
-//!   [`WorldCommand`](mush_core::WorldCommand)s (treaty ruling 3).
-//! - [`accounts`] — M1-interim account store (argon2id + JSON file),
-//!   explicitly replaced by Redis in M2. Creating an account creates the
-//!   Player *via a world-task request*, never by touching `World` directly.
+//!   [`WorldCommand`](mush_core::WorldCommand)s (treaty ruling 3). M2: also
+//!   the write-through seam — every step's dirty set becomes one store
+//!   batch, and the pause-mutations (read-only) policy lives here.
+//! - [`persist`] — the store-writer task (ordered, retrying, ack-gating),
+//!   dirty-set → [`WriteBatch`](mush_store::WriteBatch) snapshotting, and
+//!   boot-time world load/seed.
+//! - [`staff`] — `@siteban`/`@dump`: registry-registered handlers that push
+//!   typed ops to the world task (which owns the store handles).
+//! - [`accounts`] — store-backed accounts (argon2id PHC hashes in
+//!   `account:{name}` docs; verification caller-side), plus the one-time
+//!   `accounts.json` import. Creating a character creates the Player *via a
+//!   world-task request*, never by touching `World` directly, and its
+//!   confirmation gates on the store ack.
 //! - [`ssh_bridge`] — implements `mush_net_ssh::SshHooks` against the
-//!   account store, the session manager, and the world inbound sender, and
-//!   starts the real SSH listener.
-//! - [`ipguard`] — per-IP auth-failure tempbans + concurrent-connection cap.
-//! - [`config`] — `mushd.toml` (subset of keys used in M1).
-//! - [`repl`] — the M0 stdin REPL, preserved behind `--repl`, now driving
-//!   the `Engine` synchronously.
+//!   account backend, the session manager, and the world inbound sender,
+//!   and starts the real SSH listener.
+//! - [`ipguard`] — per-IP auth-failure tempbans + concurrent-connection cap
+//!   + the in-memory mirror of persisted sitebans.
+//! - [`config`] — `mushd.toml` (subset of keys used through M2).
+//! - [`repl`] — the M0 stdin REPL, preserved behind `--repl`, driving the
+//!   `Engine` synchronously entirely in memory (no store, no persistence).
 
 pub mod accounts;
 pub mod config;
 pub mod ipguard;
+pub mod persist;
 pub mod repl;
 pub mod ssh_bridge;
+pub mod staff;
 pub mod world_task;
 
 /// The current wall clock as unix seconds (0 if the system clock is broken).

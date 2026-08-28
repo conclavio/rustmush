@@ -147,6 +147,31 @@ impl SshHooks for MockHooks {
         })
     }
 
+    fn create_character<'a>(
+        &'a self,
+        account: &'a str,
+        name: &'a str,
+    ) -> BoxFuture<'a, Result<CharSummary, String>> {
+        Box::pin(async move {
+            let key = account.to_ascii_lowercase();
+            let mut accounts = self.accounts.lock().unwrap();
+            let Some((_, chars)) = accounts.get_mut(&key) else {
+                return Err("No such account.".to_owned());
+            };
+            // Mirrors the binary's [game].max_characters cap (2 here).
+            if chars.len() >= 2 {
+                return Err("That account already has the maximum number of characters.".to_owned());
+            }
+            let char_key = 100 + self.next_char_key.fetch_add(1, Ordering::Relaxed) as u64;
+            let c = CharSummary {
+                key: char_key,
+                name: name.to_owned(),
+            };
+            chars.push(c.clone());
+            Ok(c)
+        })
+    }
+
     fn is_ip_blocked(&self, _addr: IpAddr) -> bool {
         // Mirrors the binary's IpGuard policy: 5 failures arm a tempban.
         self.auth_failures.load(Ordering::Relaxed) >= 5
@@ -415,6 +440,107 @@ async fn in_band_lockout_closes_open_welcome_screen() {
     let _ = handle
         .disconnect(russh::Disconnect::ByApplication, "", "")
         .await;
+}
+
+/// The M2 character-select screen: multiple characters show a numbered
+/// menu (with the newchar hint), picking by number connects, `newchar`
+/// creates-and-connects, the per-account cap refuses politely, and an
+/// account with zero characters lands on the same screen instead of a
+/// dead end.
+#[tokio::test]
+async fn char_select_menu_newchar_and_cap() {
+    let hooks = Arc::new(MockHooks::default());
+    hooks.seed_account(
+        "duo",
+        "pw123",
+        vec![
+            CharSummary {
+                key: 7,
+                name: "Zoe".to_owned(),
+            },
+            CharSummary {
+                key: 8,
+                name: "Max".to_owned(),
+            },
+        ],
+    );
+    hooks.seed_account("fresh", "pw123", vec![]);
+    let addr = start_server("charselect", Arc::clone(&hooks)).await;
+    let config = Arc::new(russh::client::Config::default());
+
+    // Two characters: numbered menu, pick #2.
+    let mut handle = russh::client::connect(Arc::clone(&config), addr, AcceptAll)
+        .await
+        .expect("connect");
+    assert!(
+        handle
+            .authenticate_password("duo", "pw123")
+            .await
+            .expect("auth")
+            .success()
+    );
+    let mut term = Term {
+        channel: open_shell_on(&handle).await,
+        seen: String::new(),
+    };
+    term.expect("Characters on duo:").await;
+    term.expect("1) Zoe").await;
+    term.expect("2) Max").await;
+    term.expect("newchar <Name>").await;
+    term.send_line("2").await;
+    term.expect("Welcome, duo!").await;
+
+    // Cap: the mock allows 2 characters; a third is refused and the menu
+    // comes back (the select screen survives the error).
+    let mut handle2 = russh::client::connect(Arc::clone(&config), addr, AcceptAll)
+        .await
+        .expect("connect");
+    assert!(
+        handle2
+            .authenticate_password("duo", "pw123")
+            .await
+            .expect("auth")
+            .success()
+    );
+    let mut term2 = Term {
+        channel: open_shell_on(&handle2).await,
+        seen: String::new(),
+    };
+    term2.expect("Characters on duo:").await;
+    term2.send_line("newchar Trinity").await;
+    term2.expect("maximum number of characters").await;
+    term2
+        .expect("Enter a number, newchar <Name>, or QUIT:")
+        .await;
+    term2.send_line("Zoe").await; // picking by name still works
+    term2.expect("Welcome, duo!").await;
+
+    // Zero characters: the select screen offers newchar instead of a dead
+    // end, and creating auto-connects.
+    let mut handle3 = russh::client::connect(Arc::clone(&config), addr, AcceptAll)
+        .await
+        .expect("connect");
+    assert!(
+        handle3
+            .authenticate_password("fresh", "pw123")
+            .await
+            .expect("auth")
+            .success()
+    );
+    let mut term3 = Term {
+        channel: open_shell_on(&handle3).await,
+        seen: String::new(),
+    };
+    term3.expect("has no characters yet").await;
+    term3.send_line("newchar").await;
+    term3.expect("Usage: newchar <Name>").await;
+    term3.send_line("newchar Neo").await;
+    term3.expect("Character Neo created.").await;
+    term3.expect("Welcome, fresh!").await;
+
+    for h in [handle, handle2, handle3] {
+        let _ = h.disconnect(russh::Disconnect::ByApplication, "", "").await;
+    }
 }
 
 #[tokio::test]

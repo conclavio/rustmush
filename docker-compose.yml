@@ -1,0 +1,33 @@
+# Development Redis for rustmush (docs/ops.md has the full ops story).
+#
+#   docker compose up -d redis
+#   $env:REDIS_URL = "redis://127.0.0.1:6379"   # PowerShell
+#   export REDIS_URL=redis://127.0.0.1:6379     # bash
+#
+# AOF everysec matches the production recommendation: at most ~1s of
+# acknowledged writes can be lost to a host crash (a mushd crash alone
+# loses nothing — Redis outlives it). The named volume keeps the world
+# across container restarts; `docker compose down -v` is the reset button.
+#
+# Redis 8 is tri-licensed (AGPLv3 option); running it next to the server is
+# fine — we do not redistribute it.
+
+services:
+  redis:
+    image: redis:8
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports:
+      # Loopback only — this file gets copied to VPSes; never expose Redis
+      # publicly (ops.md preaches `bind 127.0.0.1` for the same reason).
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  redis-data:

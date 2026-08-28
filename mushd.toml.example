@@ -1,37 +1,42 @@
 # rustmush server configuration — copy to mushd.toml and edit.
-# Keys marked (hot) can be reloaded at runtime with @reload; others need a restart.
+# Keys marked (M2) are honored by the current server; keys marked
+# (reserved) are documented targets for later milestones and are read but
+# NOT yet honored — listed so operators aren't surprised. The "(hot)"
+# / @reload story also lands later (M3+); today everything needs a restart.
 
 [server]
-name = "rustmush dev"
-data_dir = "./data"            # host keys, accounts.json (M1-interim), logs
+name = "rustmush dev"              # (M2)
+data_dir = "./data"                # (M2) host keys, logs (a leftover accounts.json is imported once)
 
 [store]
-redis_url = "redis://127.0.0.1:6379"
+store = "redis"                    # (M2) "redis" (authoritative) or "memory" (nothing survives restart)
+redis_url = "redis://127.0.0.1:6379"   # (M2)
 
 [ssh]
-listen = "0.0.0.0:2222"
+listen = "0.0.0.0:2222"            # (M2)
 
-[web]
+[web]                              # (reserved — web client is M4)
 listen = "127.0.0.1:8080"
-# tls_cert = ""                # native TLS optional; reverse proxy recommended in prod
+# tls_cert = ""                    # native TLS optional; reverse proxy recommended in prod
 # tls_key = ""
 # trusted_proxies = ["127.0.0.1"]
 
 [game]
-start_room = 0                 # Limbo
-guest_pool = 5
-chargen_required = false
-linkdead_grace_s = 300
-ic_time_ratio = 1              # IC hours per OOC hour
+start_room = 0                     # (reserved — creation currently uses Limbo #0 regardless)
+guest_pool = 5                     # (reserved — guest pool is M3+)
+chargen_required = false           # (reserved — chargen gating is M6+)
+linkdead_grace_s = 300             # (M2)
+max_characters = 3                 # (M2) per-account character cap (newchar)
+ic_time_ratio = 1                  # (reserved — game clock is M5)
 
 [rulesets]
-enabled = ["wod"]
+enabled = ["wod"]                  # (reserved — rulesets are M6)
 
 [llm]
-enabled = false                # flip on with keys configured (M7+)
+enabled = false                    # (reserved — LLM features are M7+)
 # [llm.providers.anthropic]
 # kind = "anthropic"
 # api_key = { env = "ANTHROPIC_API_KEY" }
-# [llm.routes.worldgen_room]   # (hot)
+# [llm.routes.worldgen_room]
 # provider = "anthropic"
 # model = "claude-opus-5"

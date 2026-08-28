@@ -141,22 +141,14 @@ impl<A: AuthBackend + 'static> SshBridge<A> {
             .map(char_key_obj)
     }
 
-    /// argon2id verify on the blocking pool (CPU-heavy by design).
-    async fn verify_blocking(&self, account: &str, password: &str) -> AuthOutcome {
-        let accounts = Arc::clone(&self.accounts);
-        let (account, password) = (account.to_string(), password.to_string());
-        tokio::task::spawn_blocking(move || accounts.verify(&account, &password))
-            .await
-            .unwrap_or(AuthOutcome::BadCredentials)
-    }
-
     /// Check account credentials (welcome-screen `connect`, SSH password
     /// auth for `<account>@host`). A blocked address is denied outright.
+    /// (The backend runs the argon2id verify on the blocking pool.)
     pub async fn auth_account(&self, account: &str, password: &str, addr: IpAddr) -> AuthResult {
         if self.guard.is_blocked(addr) {
             return AuthResult::Denied;
         }
-        match self.verify_blocking(account, password).await {
+        match self.accounts.verify(account, password).await {
             AuthOutcome::Ok {
                 account,
                 characters,
@@ -186,9 +178,24 @@ impl<A: AuthBackend + 'static> SshBridge<A> {
         if self.guard.is_blocked(addr) {
             return Err(CreateErr::Io("your address is blocked".to_string()));
         }
-        // Validation + argon2 hash + world round trip; the backend runs the
-        // hash and file persist on the blocking pool.
+        // Validation + argon2 hash + store reservation + ack-gated world
+        // round trip; the backend hops CPU-heavy work to the blocking pool.
         let created = self.accounts.create(account, password, char_name).await?;
+        Ok(CharSummary {
+            id: u64::from(created.id.0),
+            name: created.name,
+        })
+    }
+
+    /// Create an additional character on an authenticated account (the
+    /// character-select screen's `newchar`). Cap and ack gating live in the
+    /// backend.
+    pub async fn create_character(
+        &self,
+        account: &str,
+        char_name: &str,
+    ) -> Result<CharSummary, CreateErr> {
+        let created = self.accounts.create_character(account, char_name).await?;
         Ok(CharSummary {
             id: u64::from(created.id.0),
             name: created.name,
@@ -204,14 +211,14 @@ impl<A: AuthBackend + 'static> SshBridge<A> {
         character: u64,
     ) -> Result<(), ConnectErr> {
         let actor = ObjId(u32::try_from(character).map_err(|_| ConnectErr::NotYourCharacter)?);
-        let owned = self
-            .accounts
-            .characters(account)
+        let characters = self.accounts.characters(account).await;
+        let Some(char_name) = characters
             .iter()
-            .any(|c| c.id == actor);
-        if !owned {
+            .find(|c| c.id == actor)
+            .map(|c| c.name.clone())
+        else {
             return Err(ConnectErr::NotYourCharacter);
-        }
+        };
 
         let caps_structured = conn.caps.structured;
         let conn_id = conn.id;
@@ -246,14 +253,7 @@ impl<A: AuthBackend + 'static> SshBridge<A> {
             &self.sessions,
             conn_id,
             OutputEvent::SessionInfo {
-                character: ObjRef::new(
-                    actor.to_string(),
-                    self.accounts
-                        .characters(account)
-                        .iter()
-                        .find(|c| c.id == actor)
-                        .map_or_else(String::new, |c| c.name.clone()),
-                ),
+                character: ObjRef::new(actor.to_string(), char_name),
                 account: account.to_string(),
                 connections: u8::try_from(connections).unwrap_or(u8::MAX),
             },
@@ -444,7 +444,7 @@ mod net {
             password: &'a str,
         ) -> BoxFuture<'a, net_ssh::AuthResult> {
             Box::pin(async move {
-                match self.verify_blocking(account, password).await {
+                match self.accounts.verify(account, password).await {
                     AuthOutcome::Ok {
                         account,
                         characters,
@@ -469,8 +469,8 @@ mod net {
             password: &'a str,
         ) -> BoxFuture<'a, Result<(), net_ssh::CreateErr>> {
             Box::pin(async move {
-                // M1: the account's first character shares the account's
-                // name (as typed).
+                // The account's first character shares the account's name
+                // (as typed); more arrive via the select screen's newchar.
                 match self.accounts.create(account, password, account).await {
                     Ok(_) => Ok(()),
                     Err(CreateErr::AccountExists | CreateErr::CharacterNameTaken) => {
@@ -478,6 +478,22 @@ mod net {
                     }
                     Err(CreateErr::BadPassword) => Err(net_ssh::CreateErr::Weak),
                     Err(other) => Err(net_ssh::CreateErr::BadName(other.to_string())),
+                }
+            })
+        }
+
+        fn create_character<'a>(
+            &'a self,
+            account: &'a str,
+            name: &'a str,
+        ) -> BoxFuture<'a, Result<net_ssh::CharSummary, String>> {
+            Box::pin(async move {
+                match self.create_character(account, name).await {
+                    Ok(c) => Ok(net_ssh::CharSummary {
+                        key: c.id,
+                        name: c.name,
+                    }),
+                    Err(e) => Err(format!("{e}.")),
                 }
             })
         }
@@ -535,14 +551,37 @@ mod net {
     }
 }
 
-/// Bind the SSH listener and start serving on a background task. Returns
-/// the actual bound address (resolves an ephemeral port).
+/// The running SSH listener: its bound address plus the stop switch the
+/// shutdown sequence uses ("stop accepting" comes before the announce in
+/// the PLAN order). Dropping the handle leaves the listener running
+/// (detached), which is what tests want.
+pub struct SshListener {
+    addr: std::net::SocketAddr,
+    accept_loop: tokio::task::JoinHandle<()>,
+}
+
+impl SshListener {
+    /// The actual bound address (resolves an ephemeral port).
+    #[must_use]
+    pub fn addr(&self) -> std::net::SocketAddr {
+        self.addr
+    }
+
+    /// Stop accepting new connections. Established sessions are untouched —
+    /// they belong to their own per-connection tasks.
+    pub fn stop_accepting(&self) {
+        self.accept_loop.abort();
+        tracing::info!("SSH listener stopped accepting");
+    }
+}
+
+/// Bind the SSH listener and start serving on a background task.
 pub async fn start_listener<A: AuthBackend + 'static>(
     listen: std::net::SocketAddr,
     data_dir: &std::path::Path,
     banner: String,
     bridge: Arc<SshBridge<A>>,
-) -> Result<std::net::SocketAddr, String> {
+) -> Result<SshListener, String> {
     let cfg = mush_net_ssh::SshConfig {
         listen,
         host_key_path: data_dir.join("ssh_host_ed25519"),
@@ -553,10 +592,10 @@ pub async fn start_listener<A: AuthBackend + 'static>(
         .await
         .map_err(|e| e.to_string())?;
     let addr = bound.local_addr();
-    tokio::spawn(async move {
+    let accept_loop = tokio::spawn(async move {
         if let Err(e) = bound.run().await {
             tracing::error!(error = %e, "SSH accept loop failed");
         }
     });
-    Ok(addr)
+    Ok(SshListener { addr, accept_loop })
 }

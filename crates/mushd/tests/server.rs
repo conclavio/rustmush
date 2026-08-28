@@ -14,7 +14,8 @@ use mush_session::{ConnId, ConnectionHandle, SessionConfig, SessionManager};
 use mush_testkit::text_of;
 use tokio::sync::mpsc;
 
-use mushd::accounts::{AccountStore, Accounts, AuthBackend, AuthOutcome, CharSummary, CreateErr};
+use mush_store::{InMemoryStore, ObjectStore};
+use mushd::accounts::{Accounts, AuthBackend, AuthOutcome, CharSummary, CreateErr};
 use mushd::ipguard::IpGuard;
 use mushd::ssh_bridge::{AuthResult, ConnectErr, LineOutcome, NewConn, SshBridge};
 use mushd::world_task::{self, CreatePlayerErr, WorldHandle, char_key};
@@ -256,19 +257,26 @@ struct FakeAuth {
 }
 
 impl AuthBackend for FakeAuth {
-    fn verify(&self, account: &str, _password: &str) -> AuthOutcome {
+    async fn verify(&self, account: &str, _password: &str) -> AuthOutcome {
         AuthOutcome::Ok {
             account: account.to_string(),
             characters: self.chars.clone(),
         }
     }
-    fn characters(&self, _account: &str) -> Vec<CharSummary> {
+    async fn characters(&self, _account: &str) -> Vec<CharSummary> {
         self.chars.clone()
     }
     async fn create(
         &self,
         _account: &str,
         _password: &str,
+        _char_name: &str,
+    ) -> Result<CharSummary, CreateErr> {
+        Err(CreateErr::Io("FakeAuth cannot create".into()))
+    }
+    async fn create_character(
+        &self,
+        _account: &str,
         _char_name: &str,
     ) -> Result<CharSummary, CreateErr> {
         Err(CreateErr::Io("FakeAuth cannot create".into()))
@@ -678,15 +686,15 @@ async fn bridge_ip_guard_blocks_after_failures() {
     ));
 }
 
-/// The real account store end to end: create over the bridge (argon2 +
-/// world round trip), auth, connect, and a second process-lifetime load.
+/// The real store-backed accounts end to end: create over the bridge
+/// (argon2 + ack-gated world round trip), auth, connect, and the newchar
+/// cap. (Restart survival is covered by tests/persistence.rs.)
 #[tokio::test(flavor = "multi_thread")]
 async fn accounts_create_auth_connect_end_to_end() {
-    let dir = scratch_dir("accounts-e2e");
     let sessions = Arc::new(SessionManager::new());
     let (world, _join) = world_task::spawn(world_task::boot_engine(), Arc::clone(&sessions));
-    let store = AccountStore::open(&dir).unwrap();
-    let accounts = Arc::new(Accounts::new(store, world.clone()));
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+    let accounts = Arc::new(Accounts::new(Arc::clone(&store), world.clone(), 2));
     let bridge = Arc::new(SshBridge::new(
         Arc::clone(&accounts),
         Arc::clone(&sessions),
@@ -747,7 +755,22 @@ async fn accounts_create_auth_connect_end_to_end() {
     bridge.line(ConnId(50), "think it works").await;
     expect_text(&mut rx, "it works").await;
 
-    let _ = std::fs::remove_dir_all(&dir);
+    // newchar honors the per-account cap (2 here): one more fits, the
+    // next is refused before touching the world.
+    let second = bridge.create_character("nick", "Nick2").await.unwrap();
+    assert_eq!(second.name, "Nick2");
+    assert_eq!(
+        bridge.create_character("nick", "Nick3").await.unwrap_err(),
+        CreateErr::CharacterLimit
+    );
+    assert_eq!(
+        bridge.create_character("nick", "n").await.unwrap_err(),
+        CreateErr::BadCharacterName
+    );
+    // Both characters are on the account doc in the store.
+    let rec = store.get_account("nick").await.unwrap().unwrap();
+    let names: Vec<&str> = rec.characters.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, vec!["Nick", "Nick2"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -878,8 +901,8 @@ mod ssh_full_stack {
         std::fs::create_dir_all(&dir).unwrap();
         let sessions = Arc::new(SessionManager::new());
         let (world, _join) = world_task::spawn(world_task::boot_engine(), Arc::clone(&sessions));
-        let store = AccountStore::open(&dir).unwrap();
-        let accounts = Arc::new(Accounts::new(store, world.clone()));
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+        let accounts = Arc::new(Accounts::new(store, world.clone(), 3));
         let bridge = Arc::new(SshBridge::new(
             accounts,
             Arc::clone(&sessions),
@@ -893,7 +916,8 @@ mod ssh_full_stack {
             bridge,
         )
         .await
-        .expect("listener");
+        .expect("listener")
+        .addr();
 
         // Player one: welcome screen -> create -> auto-connect into Limbo.
         let (h1, mut nick) = play_client(addr).await;
