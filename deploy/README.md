@@ -9,8 +9,14 @@ BattleTech one, …). Each instance `<name>` gets:
 - its own SSH + HTTPS ports (dev1 = **6789** / **6790**), bound to the box's
   **external IPv4 only** (not `0.0.0.0`, not the tailscale address)
 
-The reference instance is **dev1** ([`dev1/`](dev1/)). Copy that directory,
-rename the units/config, and pick fresh ports to add another.
+The reference instance is **dev1** ([`dev1/`](dev1/)) — oWoD, ports **6788/6789/6790**.
+A second instance **dev2** ([`dev2/`](dev2/)) runs **Shadowrun** (`[rulesets].enabled = ["shadowrun"]`)
+on ports **6791** (redis) / **6792** (ssh) / **6793** (https), `/opt/rustmush/dev2`.
+To add another, copy an instance directory, rename the units/config, and pick fresh ports.
+
+Each new external port must be opened in **BOTH** ufw (`ufw allow <port>/tcp`, done by
+this deploy) **and** the Hostinger network ACL (done in the Hostinger panel — ufw alone
+is not enough for external reachability).
 
 ## First deploy of dev1 (from the dev box, over SSH)
 
