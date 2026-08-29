@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use mush_core::{ObjId, PanelFeedHandle};
 
+use crate::intel::IntelStore;
 use crate::knowledge::LorePools;
 use crate::memory::{LongTermStore, MemoryBuffer};
 use crate::stimulus::Stimulus;
@@ -110,6 +111,10 @@ pub struct NpcHostState {
     /// Shared world-knowledge lore pools (design: M10d), rebuilt from boot data
     /// and mirrored by the persisted `lore:{slug}` documents.
     pub lore_pools: LorePools,
+    /// The M12 informant loop's intel log: provenance-tagged records grouped by
+    /// principal, rebuilt from boot data and mirrored by the persisted
+    /// `intel:{principal}` documents.
+    pub intel: IntelStore,
     /// The `npc.thinking` panel feed handle (`None` in headless/test worlds).
     pub thinking: Option<PanelFeedHandle>,
     /// Tuning.
@@ -124,6 +129,7 @@ impl NpcHostState {
             runtimes: HashMap::new(),
             long_term: LongTermStore::default(),
             lore_pools: LorePools::default(),
+            intel: IntelStore::default(),
             thinking: Some(thinking),
             config: NpcConfig::default(),
         }
@@ -136,6 +142,7 @@ impl NpcHostState {
             runtimes: HashMap::new(),
             long_term: LongTermStore::default(),
             lore_pools: LorePools::default(),
+            intel: IntelStore::default(),
             thinking: None,
             config: NpcConfig::default(),
         }

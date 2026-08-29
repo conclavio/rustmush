@@ -39,6 +39,13 @@ Profile fields (`@agent/set <npc>/<field>=<value>`):
   daily_tokens    Per-NPC daily token ceiling; replaces the per_npc_default
                   budget for this NPC and is enforced pre-call by the LLM budget.
   enabled         yes/no — park or wake the agent.
+  principal       A character name — who this NPC reports intel to (its domitor
+                  / employer). Empty clears it; with none set the NPC files
+                  nothing. See the informant loop below.
+  loyal           yes/no — the willingness gate for the informant loop (default
+                  yes; no = files nothing, however much it sees).
+  watch           Subjects of interest for the informant loop (";"-separated
+                  names/topics). Empty watches nobody.
 
 An empty value clears a field (e.g. `@agent/set bones/goals=` drops all goals).
 
@@ -151,6 +158,18 @@ and per-feature budgets. Rapid chatter is coalesced into a single turn (a short
 A killed or budget-tripped NPC that is spoken to falls back to a profile line
 rather than erroring; staff get a one-time notice when an NPC degrades.
 
+## Informants (the intel loop)
+
+An NPC can be made an **informant** that quietly reports what it witnesses to a
+**principal** (a player — its domitor or employer). Set its `principal`, keep it
+`loyal`, and optionally give it a `watch` list; it then files provenance-tagged
+**intel records** the principal pulls with `+intel`. Crucially, an informant can
+report only what its NPC actually *perceived* (see `help perception`): a subject
+it cannot sense produces no record. A pierced concealment is always reported; a
+watched subject's arrivals, departures, and speech are reported; ordinary
+unwatched traffic is not. The loop is opt-in and additive — an NPC with no
+principal set behaves exactly as before. Full details in `help intel`.
+
 ## Safety
 
 The action allowlist — not the prompt — is the real boundary. Player speech is
@@ -164,4 +183,5 @@ audited (`@llm/log`).
 
 ## See also
 
-  @agent, @lore, @llm, @sheet, +roll, help worldgen
+  @agent, @lore, @llm, @sheet, +roll, +intel, help intel, help perception,
+  help worldgen

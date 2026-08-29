@@ -83,7 +83,7 @@ pub use module::{
     Migration, ModError, ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, PanelFeedHandle,
     Perceive, QueryHandler, Registrar, Scene, SceneId, StackedContext, TickCadence, TickHandler,
     WeatherQuery, WorldEvent, WorldEventKind, WorldObserver, WxSnapshot, can_perceive,
-    perceives_via,
+    is_concealed, perceives_via,
 };
 pub use obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
 pub use output::{Audience, ConnId, Outbox, name_span, obj_ref, room_view};

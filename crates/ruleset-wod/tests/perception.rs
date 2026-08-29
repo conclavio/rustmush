@@ -20,7 +20,7 @@
 //! NPC, a ghoul), not a "mage"; the mechanic (a preternatural sense pierces the
 //! veil, mundane senses do not) is exactly as specified.
 
-use mush_core::{GOD, LIMBO, ObjId, ObjKind, can_perceive};
+use mush_core::{GOD, LIMBO, ObjId, ObjKind, can_perceive, is_concealed};
 use mush_testkit::TestWorld;
 use mush_jobs::JobsModule;
 use ruleset_wod::WodRuleset;
@@ -238,6 +238,33 @@ fn recloak_leaves_no_stale_verdict() {
         verdict(&tw, seer, vlad),
         Some(true),
         "a re-cloak re-rolls; the verdict is present and fresh"
+    );
+}
+
+#[test]
+fn is_concealed_query_tracks_active_obfuscate() {
+    // The ruleset-agnostic notability query (D1): false for a subject in plain
+    // sight, true while they are actively Obfuscated, false again once revealed.
+    // Unlike `can_perceive`, it is observer-independent.
+    let mut tw = world();
+    let vlad = make_vampire(&mut tw, "Vlad", 2);
+    let _mort = make_mortal(&mut tw, "Mort");
+
+    assert!(
+        !is_concealed(tw.registry(), tw.world(), vlad),
+        "a subject in plain sight is not concealed"
+    );
+
+    tw.run(vlad, "+obfuscate on");
+    assert!(
+        is_concealed(tw.registry(), tw.world(), vlad),
+        "an actively Obfuscated subject reads as concealed"
+    );
+
+    tw.run(vlad, "+obfuscate off");
+    assert!(
+        !is_concealed(tw.registry(), tw.world(), vlad),
+        "revealing drops the concealment signal"
     );
 }
 

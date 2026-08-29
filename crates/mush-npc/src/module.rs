@@ -15,12 +15,13 @@ use mush_core::module::{AsyncCompletion, WorldEvent};
 use mush_core::{
     ArgShape, Attr, CmdError, CommandSpec, Ctx, Deferred, Effect, GameModule, ModError,
     ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, ObjId, ObjKind, Registrar, Role, TickCadence,
-    World, WorldEventKind, WorldObserver, can_perceive, obj_ref, perm,
+    World, WorldEventKind, WorldObserver, can_perceive, is_concealed, obj_ref, perm,
 };
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
 use smol_str::SmolStr;
 
 use crate::action::NpcAction;
+use crate::intel::{IntelKind, IntelRecord, IntelStore, intel_key};
 use crate::knowledge::{
     Familiarity, KNOWLEDGE_ATTR, LoreEntry, LorePool, NpcKnowledge, Secrecy, familiarity_of,
     pool_key,
@@ -126,9 +127,12 @@ impl GameModule for NpcModule {
                        @agent/set and (for rolls) a sheet with @agent/sheet.\n\
                        @agent/set <npc>/<field>=<value> -- edit the profile. Fields: \
                        persona, background, speech, goals, fallback, knows, does_not_know, \
-                       tier (major|minor|extra), cooldown (seconds), daily_tokens, enabled. \
-                       List fields (goals/fallback/knows/does_not_know) take \";\"-separated \
-                       values; an empty value clears a field.\n\
+                       tier (major|minor|extra), cooldown (seconds), daily_tokens, enabled, \
+                       principal (a character name; who this NPC reports intel to — empty \
+                       clears), loyal (yes|no; the willingness gate), watch (\";\"-separated \
+                       names/topics of interest). \
+                       List fields (goals/fallback/knows/does_not_know/watch) take \
+                       \";\"-separated values; an empty value clears a field.\n\
                        @agent/sheet <npc>[=<template>] -- give it a ruleset sheet (default \
                        mortal) so it can roll; fill it in with @sheet/set afterwards.\n\
                        @agent/lore <npc> -- list this NPC's world knowledge; \
@@ -138,6 +142,9 @@ impl GameModule for NpcModule {
                        @agent/show <npc> (or bare @agent <npc>) -- profile + runtime status.\n\
                        @agent/enable <npc> / @agent/disable <npc> -- wake or park the agent.\n\
                        @agent/poke <npc>=<note> -- prod the agent with an out-of-band note.\n\
+                       Informant loop: set principal/loyal/watch (above) to have an NPC file \
+                       intel its principal pulls with +intel; @agent/show reports its filed \
+                       count. See help intel.\n\
                        See also @llm/kill <npc> (per-NPC LLM disable) and help npc."
                     .into(),
                 ..CommandSpec::default()
@@ -164,6 +171,30 @@ impl GameModule for NpcModule {
             },
             Arc::new(cmd_lore),
         )?;
+
+        // The M12 informant PULL query: a player debriefs their own assets.
+        // Player-facing (min_role defaults to Player); shows ONLY the querying
+        // actor's own principal records — no cross-principal leak.
+        reg.command(
+            CommandSpec {
+                name: "+intel".into(),
+                shape: ArgShape::Raw,
+                switches: vec!["clear".into()],
+                help: "+intel  --  Debrief your informants: list the intel your NPC assets have \
+                       filed FOR YOU, newest first (subject, what happened, where, and how long \
+                       ago). Nothing is pushed to you — you pull it here.\n\
+                       +intel <subject>  --  Show only what has been filed about one subject \
+                       (by name, or a dbref like #42).\n\
+                       +intel/clear  --  Clear your own intel log.\n\
+                       An asset reports to you only if staff set it to (its principal is you), it \
+                       is willing (loyal) and active, and it actually PERCEIVED the subject. It \
+                       files a watched subject's arrivals/departures and speech, and always \
+                       flags anyone it catches trying to stay hidden. See help intel."
+                    .into(),
+                ..CommandSpec::default()
+            },
+            Arc::new(cmd_intel),
+        )?;
         Ok(())
     }
 
@@ -174,6 +205,7 @@ impl GameModule for NpcModule {
     ) -> Result<(), ModError> {
         let mut store = crate::memory::LongTermStore::default();
         let mut pools = crate::knowledge::LorePools::default();
+        let mut intel = IntelStore::default();
         for (key, value) in boot.kv {
             if key.starts_with("mem:") {
                 match serde_json::from_value::<MemoryRecord>(value) {
@@ -185,6 +217,16 @@ impl GameModule for NpcModule {
                     Ok(pool) => pools.insert(pool),
                     Err(e) => tracing::error!(%key, error = %e, "npc: unparseable lore pool skipped"),
                 }
+            } else if let Some(id) = key.strip_prefix("intel:") {
+                match (id.parse::<u32>(), serde_json::from_value::<Vec<IntelRecord>>(value)) {
+                    (Ok(principal), Ok(records)) => intel.load(ObjId(principal), records),
+                    (Err(e), _) => {
+                        tracing::error!(%key, error = %e, "npc: bad intel principal key skipped")
+                    }
+                    (_, Err(e)) => {
+                        tracing::error!(%key, error = %e, "npc: unparseable intel skipped")
+                    }
+                }
             } else {
                 tracing::warn!(%key, "npc: unknown persisted key ignored");
             }
@@ -192,6 +234,7 @@ impl GameModule for NpcModule {
         if let Some(h) = ctx.state_mut::<NpcHostState>() {
             h.long_term = store;
             h.lore_pools = pools;
+            h.intel = intel;
         }
         Ok(())
     }
@@ -272,6 +315,11 @@ fn on_said(ctx: &mut Ctx<'_>, who: ObjId, room: ObjId, kind: NarrativeKind, text
                 text: text.to_string(),
             }
         };
+        // Informant loop (M12): the NPC perceived `who` (the can_perceive gate
+        // above passed), so it may file — gated further by the willingness /
+        // watch / notability rules inside `file_intel`.
+        let short = crate::action::sanitize_line(text, INTEL_DETAIL_CAP);
+        file_intel(ctx, npc, who, IntelKind::Spoke, &format!("said: {short}"));
         remember_and_enqueue(ctx, npc, stim, &line, now);
     }
 }
@@ -291,6 +339,7 @@ fn on_moved(ctx: &mut Ctx<'_>, who: ObjId, from: Option<ObjId>, to: ObjId) {
         if !can_perceive(ctx.reg, ctx.w, npc, who) {
             continue;
         }
+        file_intel(ctx, npc, who, IntelKind::Arrived, "arrived");
         remember_and_enqueue(
             ctx,
             npc,
@@ -308,6 +357,7 @@ fn on_moved(ctx: &mut Ctx<'_>, who: ObjId, from: Option<ObjId>, to: ObjId) {
             if !can_perceive(ctx.reg, ctx.w, npc, who) {
                 continue;
             }
+            file_intel(ctx, npc, who, IntelKind::Departed, "left");
             remember_and_enqueue(
                 ctx,
                 npc,
@@ -328,11 +378,22 @@ fn on_presence(ctx: &mut Ctx<'_>, who: ObjId, connected: bool) {
     }
     let now = now_ms(ctx.w);
     let name = display_name(ctx.w, who);
-    let (stim_line, verb): (fn(ObjId) -> Stimulus, &str) = if connected {
-        (|who| Stimulus::PlayerArrived { who }, "arrives")
-    } else {
-        (|who| Stimulus::PlayerLeft { who }, "leaves")
-    };
+    let (stim_line, verb, kind, detail): (fn(ObjId) -> Stimulus, &str, IntelKind, &str) =
+        if connected {
+            (
+                |who| Stimulus::PlayerArrived { who },
+                "arrives",
+                IntelKind::Arrived,
+                "arrived",
+            )
+        } else {
+            (
+                |who| Stimulus::PlayerLeft { who },
+                "leaves",
+                IntelKind::Departed,
+                "left",
+            )
+        };
     for npc in npcs_in(ctx.w, room) {
         if !enabled_npc(ctx.w, npc) {
             continue;
@@ -341,6 +402,7 @@ fn on_presence(ctx: &mut Ctx<'_>, who: ObjId, connected: bool) {
         if !can_perceive(ctx.reg, ctx.w, npc, who) {
             continue;
         }
+        file_intel(ctx, npc, who, kind, detail);
         remember_and_enqueue(ctx, npc, stim_line(who), &format!("{name} {verb}."), now);
     }
 }
@@ -357,6 +419,238 @@ fn remember_and_enqueue(ctx: &mut Ctx<'_>, npc: ObjId, stim: Stimulus, line: &st
         }
         h.enqueue(npc, stim, now);
     }
+}
+
+// ----------------------------------------------------------------------
+// The informant loop (M12): file perceived intel to a principal
+// ----------------------------------------------------------------------
+
+/// Cap on the escaped speech snippet stored in an intel `detail` — short enough
+/// to keep the log terse, sanitized like every other stored NPC-adjacent text.
+const INTEL_DETAIL_CAP: usize = 80;
+
+/// File one perceived event as intel for `npc`'s principal, **iff** the loop is
+/// armed and the event is reportable (design M12 D4). This is only ever called
+/// from *inside* an observer's `can_perceive`-passed branch, so the informant
+/// has genuinely perceived `subject` (invariant P1): a subject the NPC failed
+/// to perceive never reaches here.
+///
+/// The willingness gate (P2): a principal must be set, the NPC must be `loyal`
+/// and `enabled`, and the subject must be neither the informant nor the
+/// principal. Reportability: the subject is on the NPC's `watch` list, OR it is
+/// under active concealment ([`is_concealed`] — a notable pierce, always filed
+/// regardless of the watch list). With an empty watch list and a non-concealed
+/// subject, nothing is filed (the log stays signal-rich).
+fn file_intel(ctx: &mut Ctx<'_>, npc: ObjId, subject: ObjId, kind: IntelKind, detail: &str) {
+    let Some(profile) = read_profile(ctx.w, npc) else {
+        return;
+    };
+    let Some(principal) = profile.principal else {
+        return; // no principal ⇒ files nothing
+    };
+    if !profile.loyal || !profile.enabled {
+        return; // resentful or parked ⇒ files nothing
+    }
+    if subject == npc || subject == principal {
+        return; // never report the informant or the principal itself
+    }
+    // Notability: a pierced concealment is always reported; otherwise the
+    // subject must be on the watch list.
+    let concealed = is_concealed(ctx.reg, ctx.w, subject);
+    if !concealed && !subject_on_watch(ctx.w, &profile, subject) {
+        return;
+    }
+    // A pierced-concealment sighting is filed as `Concealed` with the base
+    // detail annotated — the notable fact is that the informant saw someone
+    // trying not to be seen.
+    let (kind, detail) = if concealed {
+        (
+            IntelKind::Concealed,
+            format!("{detail} (though they were trying to stay hidden)"),
+        )
+    } else {
+        (kind, detail.to_string())
+    };
+    let room_name = ctx
+        .w
+        .get(npc)
+        .and_then(|o| o.location)
+        .map(|r| display_name(ctx.w, r))
+        .unwrap_or_default();
+    let subject_name = display_name(ctx.w, subject);
+    let informant_name = display_name(ctx.w, npc);
+    let rec = IntelRecord {
+        informant: npc,
+        principal,
+        subject,
+        subject_name,
+        kind,
+        detail,
+        room_name,
+        provenance: format!("witnessed directly by {informant_name}"),
+        ts: ctx.w.now(),
+    };
+    let records = ctx.state_mut::<NpcHostState>().map(|h| h.intel.file(rec));
+    if let Some(records) = records {
+        persist_intel(ctx, principal, &records);
+    }
+}
+
+/// Whether `subject` (by primary name, dbref, or alias) is on `profile`'s
+/// watch list. The watch entries are stored lowercased; comparisons are
+/// case-insensitive. An empty watch list matches nothing.
+fn subject_on_watch(w: &World, profile: &AgentProfile, subject: ObjId) -> bool {
+    if profile.watch.is_empty() {
+        return false;
+    }
+    let Some(o) = w.get(subject) else {
+        return false;
+    };
+    let name = primary(&o.name).to_lowercase();
+    let dbref = format!("#{}", subject.0);
+    profile.watch.iter().any(|watched| {
+        watched == &name
+            || watched == &dbref
+            || o.aliases.iter().any(|a| a.eq_ignore_ascii_case(watched))
+    })
+}
+
+// ----------------------------------------------------------------------
+// The pull query (M12 D5): +intel — a player debriefs their own assets
+// ----------------------------------------------------------------------
+
+/// `+intel` / `+intel <subject>` / `+intel/clear` — the player-facing PULL over
+/// the intel their NPC informants have filed FOR THEM (design M12 D5). The
+/// querying actor is the principal: it can only ever read its own bucket
+/// ([`IntelStore::for_principal`]), so there is no cross-principal leak (P5).
+/// Records are shown newest-first with the subject, kind, room, detail,
+/// provenance, and a relative timestamp. Nothing is ever pushed — the player
+/// pulls here.
+fn cmd_intel(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+
+    if ctx.switches.has("clear") {
+        let dropped = ctx
+            .state_mut::<NpcHostState>()
+            .map_or(0, |h| h.intel.clear_for(actor));
+        clear_intel(ctx, actor);
+        ctx.out.sys_to_actor(
+            actor,
+            "intel",
+            format!("Cleared {dropped} intel {}.", records_word(dropped)),
+        );
+        return Ok(());
+    }
+
+    // Snapshot the actor's own records (release the state borrow before we emit
+    // and before any `match_object` read of the world).
+    let records: Vec<IntelRecord> = ctx
+        .state::<NpcHostState>()
+        .map(|h| h.intel.for_principal(actor).to_vec())
+        .unwrap_or_default();
+
+    let arg = ctx.args.raw().trim().to_string();
+    let (records, filter): (Vec<IntelRecord>, Option<String>) = if arg.is_empty() {
+        (records, None)
+    } else {
+        // Resolve the subject to an id when we can (so `#42` or a present name
+        // filters exactly); always also accept a case-insensitive match on the
+        // stored subject name, so a subject who has since left is still findable.
+        let by_id = mush_core::match_object(ctx.w, actor, &arg).ok();
+        let needle = arg.to_lowercase();
+        let filtered = records
+            .into_iter()
+            .filter(|r| {
+                by_id == Some(r.subject) || r.subject_name.to_lowercase().contains(&needle)
+            })
+            .collect();
+        (filtered, Some(arg))
+    };
+
+    if records.is_empty() {
+        let msg = match &filter {
+            Some(s) => format!("No intel on file about {s}."),
+            None => "You have no intel on file. Your informants report here when they \
+                     have something to tell you."
+                .to_string(),
+        };
+        ctx.out.sys_to_actor(actor, "intel", msg);
+        return Ok(());
+    }
+
+    let n = records.len();
+    let header = match &filter {
+        Some(s) => format!("Intel about {s} — {n} {}, newest first:", records_word(n)),
+        None => format!("Your intel log — {n} {}, newest first:", records_word(n)),
+    };
+    ctx.out.sys_to_actor(actor, "intel", header);
+
+    let now = ctx.w.now();
+    for r in records.iter().rev() {
+        let room = if r.room_name.trim().is_empty() {
+            String::new()
+        } else {
+            format!(" in {}", r.room_name)
+        };
+        ctx.out.sys_to_actor(
+            actor,
+            "intel",
+            format!(
+                "  {:>4} ago  {} [{}]{}: {}  ({})",
+                fmt_ago(now, r.ts),
+                r.subject_name,
+                intel_kind_label(r.kind),
+                room,
+                r.detail,
+                r.provenance,
+            ),
+        );
+    }
+    Ok(())
+}
+
+/// The human label for an [`IntelKind`] in the `+intel` render.
+fn intel_kind_label(kind: IntelKind) -> &'static str {
+    match kind {
+        IntelKind::Arrived => "arrived",
+        IntelKind::Departed => "departed",
+        IntelKind::Present => "present",
+        IntelKind::Spoke => "spoke",
+        IntelKind::Concealed => "concealed",
+    }
+}
+
+/// "record" / "records" for a count.
+fn records_word(n: usize) -> &'static str {
+    if n == 1 { "record" } else { "records" }
+}
+
+/// A compact "how long ago" for the `+intel` render (`42s`, `5m`, `3h`, `2d`),
+/// mirroring the jobs surface's `fmt_ago` (kept local to avoid a cross-crate
+/// dependency for one tiny helper).
+fn fmt_ago(now: i64, ts: i64) -> String {
+    let d = (now - ts).max(0);
+    if d < 60 {
+        format!("{d}s")
+    } else if d < 3600 {
+        format!("{}m", d / 60)
+    } else if d < 86_400 {
+        format!("{}h", d / 3600)
+    } else {
+        format!("{}d", d / 86_400)
+    }
+}
+
+/// Delete a principal's persisted intel doc (the whole bucket was already
+/// cleared from the in-RAM [`IntelStore`] by the caller). Mirrors
+/// [`delete_pool`]'s persistence shape.
+fn clear_intel(ctx: &mut Ctx<'_>, principal: ObjId) {
+    ctx.persist(ModuleOp {
+        ns: SmolStr::new(NS),
+        op: ModuleWrite::Del {
+            key: intel_key(principal),
+        },
+    });
 }
 
 // ----------------------------------------------------------------------
@@ -686,6 +980,33 @@ fn cmd_agent(grounding: &dyn AgentGrounding, ctx: &mut Ctx<'_>) -> Result<(), Cm
         ctx.out
             .info(ctx.actor, format!("  Goals: {}", profile.goals.join("; ")));
     }
+    // Informant loop (M12): who this NPC reports to, whether it is willing, and
+    // what it watches for.
+    if let Some(principal) = profile.principal {
+        let pname = display_name(ctx.w, principal);
+        let watch = if profile.watch.is_empty() {
+            "only notable events (pierced concealment)".to_string()
+        } else {
+            profile.watch.join(", ")
+        };
+        ctx.out.info(
+            ctx.actor,
+            format!(
+                "  Informant: reports to {pname} (#{}); {}; watching {watch}.",
+                principal.0,
+                if profile.loyal {
+                    "loyal"
+                } else {
+                    "NOT loyal (files nothing)"
+                }
+            ),
+        );
+        let filed = ctx.state::<NpcHostState>().map_or(0, |h| h.intel.filed_by(npc));
+        ctx.out.info(
+            ctx.actor,
+            format!("  Intel filed: {filed} {}.", records_word(filed)),
+        );
+    }
     let status = ctx
         .state::<NpcHostState>()
         .and_then(|h| h.runtime(npc))
@@ -830,19 +1151,40 @@ fn agent_set(ctx: &mut Ctx<'_>, npc: ObjId, lhs: &str) -> Result<(), CmdError> {
         "cooldown" | "cooldown_s" => profile.cooldown_s = parse_opt_u32(&value)?,
         "daily_tokens" | "budget" => profile.daily_tokens = parse_opt_u64(&value)?,
         "enabled" => profile.enabled = parse_bool(&value)?,
+        "principal" => {
+            profile.principal = if value.is_empty() {
+                None
+            } else {
+                Some(mush_core::match_object(ctx.w, ctx.actor, &value)?)
+            };
+        }
+        "loyal" => profile.loyal = parse_bool(&value)?,
+        "watch" => {
+            profile.watch = split_list(&value)
+                .iter()
+                .map(|s| s.to_ascii_lowercase())
+                .collect();
+        }
         _ => {
             return Err(CmdError::msg(format!(
                 "Unknown agent field {field:?}. Fields: persona, background, speech, goals, \
-                 fallback, knows, does_not_know, tier, cooldown, daily_tokens, enabled."
+                 fallback, knows, does_not_know, tier, cooldown, daily_tokens, enabled, \
+                 principal, loyal, watch."
             )));
         }
     }
+    let set_principal = profile.principal.filter(|_| field_l == "principal");
     store_profile(ctx, npc, &profile)?;
     let name = display_name(ctx.w, npc);
     ctx.out.info(
         ctx.actor,
         if value.is_empty() && is_clearable(&field_l) {
             format!("Cleared {field} on {name}.")
+        } else if let Some(principal) = set_principal {
+            // Echo the resolved target so staff can confirm the name bound to
+            // the intended object (a mis-binding is otherwise silent).
+            let pname = display_name(ctx.w, principal);
+            format!("Set {field} on {name} to {pname} (#{}).", principal.0)
         } else {
             format!("Set {field} on {name}.")
         },
@@ -1342,6 +1684,8 @@ fn is_clearable(field: &str) -> bool {
             | "cooldown_s"
             | "daily_tokens"
             | "budget"
+            | "principal"
+            | "watch"
     )
 }
 
@@ -1715,6 +2059,27 @@ fn persist_memory(ctx: &mut Ctx<'_>, rec: &MemoryRecord) {
         ns: SmolStr::new(NS),
         op: ModuleWrite::JsonSet {
             key: record_key(rec.npc, &rec.subject),
+            value,
+        },
+    });
+}
+
+/// Persist one principal's bounded intel vec as the module doc keyed by
+/// [`intel_key`] (whole-doc `JsonSet` on each file, like a memory subject doc).
+/// The in-RAM [`IntelStore`] was already updated by
+/// [`IntelStore::file`](crate::intel::IntelStore::file); this mirrors it durably.
+fn persist_intel(ctx: &mut Ctx<'_>, principal: ObjId, records: &[IntelRecord]) {
+    let value = match serde_json::to_value(records) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(error = %e, "npc: could not serialize intel");
+            return;
+        }
+    };
+    ctx.persist(ModuleOp {
+        ns: SmolStr::new(NS),
+        op: ModuleWrite::JsonSet {
+            key: intel_key(principal),
             value,
         },
     });

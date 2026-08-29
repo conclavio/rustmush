@@ -18,9 +18,9 @@ use mush_llm::{
     MockProvider, RouteConfig, StopReason, Usage,
 };
 use mush_npc::{
-    AgentGrounding, AgentProfile, Familiarity, LorePool, NpcHostState, NpcModule, NpcTier,
-    PROFILE_ATTR, SUMMARY_ATTR, Secrecy, TurnKind, TurnSnapshot, pool_key, run_npc_turn_async,
-    user_prompt,
+    AgentGrounding, AgentProfile, Familiarity, IntelKind, IntelRecord, LorePool, NpcHostState,
+    NpcModule, NpcTier, PROFILE_ATTR, SUMMARY_ATTR, Secrecy, TurnKind, TurnSnapshot, intel_key,
+    pool_key, run_npc_turn_async, user_prompt,
 };
 use mush_ruleset::{AbilityError, AbilityOutcome, AgentCapabilityProfile, AgentToolSpec};
 use smol_str::SmolStr;
@@ -63,6 +63,21 @@ impl Rig {
         let mut fx = Effects::new();
         engine
             .modules_loaded(boot, &mut out, &mut fx)
+            .expect("module boot");
+        Rig { engine }
+    }
+
+    /// A rig wiring the `npc` module plus extra modules (e.g. a test
+    /// concealment hook), in order.
+    fn with_modules(mods: Vec<Box<dyn mush_core::GameModule>>) -> Rig {
+        let world = World::new_minimal();
+        let mut reg = Registry::new();
+        register_core_commands(&mut reg).expect("core cmds");
+        let mut engine = Engine::with_modules(world, reg, mods).expect("module wiring");
+        let mut out = Outbox::new();
+        let mut fx = Effects::new();
+        engine
+            .modules_loaded(Default::default(), &mut out, &mut fx)
             .expect("module boot");
         Rig { engine }
     }
@@ -125,8 +140,13 @@ impl Rig {
     /// Run a staff command as `GOD` and return the plain-text Sys/Info lines it
     /// produced (for asserting confirmations + errors).
     fn staff(&mut self, line: &str) -> String {
+        self.actor_sys(GOD, line)
+    }
+
+    /// Run a command as `actor` and return the plain-text Sys lines it produced.
+    fn actor_sys(&mut self, actor: ObjId, line: &str) -> String {
         let mut s = String::new();
-        for (_, ev) in self.run(GOD, line) {
+        for (_, ev) in self.run(actor, line) {
             if let mush_proto::OutputEvent::Sys(rt) = ev {
                 s.push_str(&rt.to_plain_text());
                 s.push('\n');
@@ -1255,4 +1275,483 @@ async fn lore_pool_surface_list_show_and_delete() {
     // Showing a missing pool errors cleanly.
     let out = rig.staff("@lore docks");
     assert!(out.contains("No lore pool tagged"), "{out}");
+}
+
+// ----------------------------------------------------------------------
+// M12: the NPC informant loop (perceive → remember → report)
+// ----------------------------------------------------------------------
+
+/// A test concealment module: its `Perceive` hook conceals any subject flagged
+/// with the plain `cloaked` attr (so `can_perceive` is false for it), and its
+/// `is_concealed` reports any subject flagged `notable` as concealed (the
+/// notability signal) — without hiding it. This lets a test drive the
+/// perception seam without loading a full ruleset.
+struct CloakModule;
+
+impl mush_core::GameModule for CloakModule {
+    fn name(&self) -> &'static str {
+        "cloak-test"
+    }
+
+    fn register(&mut self, reg: &mut mush_core::Registrar<'_>) -> Result<(), mush_core::ModError> {
+        reg.hook(mush_core::HookPoint::Perceive, Arc::new(CloakHook));
+        Ok(())
+    }
+}
+
+struct CloakHook;
+
+impl mush_core::EventHook for CloakHook {
+    fn perceives(
+        &self,
+        w: &World,
+        _observer: ObjId,
+        subject: ObjId,
+    ) -> mush_core::Perceive {
+        if attr_flag(w, subject, "cloaked") {
+            mush_core::Perceive::Conceal
+        } else {
+            mush_core::Perceive::Abstain
+        }
+    }
+
+    fn is_concealed(&self, w: &World, subject: ObjId) -> bool {
+        attr_flag(w, subject, "notable")
+    }
+}
+
+fn attr_flag(w: &World, obj: ObjId, name: &str) -> bool {
+    w.attr(obj, name)
+        .and_then(|a| a.as_text())
+        .map(|t| t == "1")
+        .unwrap_or(false)
+}
+
+/// A profile that files intel to `principal`, watching `watch`.
+fn informant(principal: ObjId, loyal: bool, watch: &[&str]) -> AgentProfile {
+    AgentProfile {
+        persona: "a watchful informant".into(),
+        principal: Some(principal),
+        loyal,
+        watch: watch.iter().map(|s| s.to_string()).collect(),
+        ..AgentProfile::default()
+    }
+}
+
+/// P1 + the watch gate: an informant files perceived speech of a WATCHED
+/// subject as `Spoke` intel for its principal, with provenance recorded.
+#[tokio::test]
+async fn informant_files_watched_subject_speech() {
+    let mut rig = Rig::new();
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    let boss = rig.player("Boss", bar, true);
+    let spy = rig.npc("Spy", bar, &informant(boss, true, &["bob"]));
+    let bob = rig.player("Bob", bar, true);
+
+    rig.run(bob, "say the shipment lands at midnight");
+
+    let recs = rig.host().intel.for_principal(boss);
+    assert_eq!(recs.len(), 1, "one record filed for the principal");
+    let r = &recs[0];
+    assert_eq!(r.informant, spy);
+    assert_eq!(r.subject, bob);
+    assert_eq!(r.subject_name, "Bob");
+    assert_eq!(r.kind, IntelKind::Spoke);
+    assert!(r.detail.contains("shipment lands at midnight"), "{}", r.detail);
+    assert_eq!(r.room_name, "Bar");
+    assert!(
+        r.provenance.contains("witnessed directly by Spy"),
+        "provenance recorded: {}",
+        r.provenance
+    );
+}
+
+/// P1 (movement): a watched subject ARRIVING is filed as `Arrived`.
+#[tokio::test]
+async fn informant_files_watched_subject_arrival() {
+    let mut rig = Rig::new();
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    let hall = rig.room("Hall");
+    // Bob walks from the Hall into the Bar via the exit "bar".
+    let exit = rig
+        .engine
+        .world
+        .create(ObjKind::Exit, "bar", GOD, Some(hall))
+        .unwrap();
+    rig.engine.world.get_mut(exit).unwrap().destination = Some(bar);
+    let boss = rig.player("Boss", bar, true);
+    let _spy = rig.npc("Spy", bar, &informant(boss, true, &["bob"]));
+    let bob = rig.player("Bob", hall, true);
+
+    rig.run(bob, "bar"); // traverse into the Bar
+
+    let recs = rig.host().intel.for_principal(boss);
+    assert_eq!(recs.len(), 1, "arrival filed");
+    assert_eq!(recs[0].kind, IntelKind::Arrived);
+    assert_eq!(recs[0].subject, bob);
+}
+
+/// The watch gate: with an empty watch list, an ordinary (non-notable)
+/// perceived subject is NOT filed — the log stays signal-rich.
+#[tokio::test]
+async fn unwatched_ordinary_subject_is_not_filed() {
+    let mut rig = Rig::new();
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    let boss = rig.player("Boss", bar, true);
+    let _spy = rig.npc("Spy", bar, &informant(boss, true, &[]));
+    let bob = rig.player("Bob", bar, true);
+
+    rig.run(bob, "say just passing through");
+
+    assert!(
+        rig.host().intel.for_principal(boss).is_empty(),
+        "an unwatched, non-notable subject files nothing"
+    );
+}
+
+/// P2: the willingness gate. No principal, loyal=false, and disabled each file
+/// nothing, even for a watched subject the NPC perceives.
+#[tokio::test]
+async fn willingness_gate_blocks_filing() {
+    // (a) No principal ⇒ nothing filed anywhere.
+    {
+        let mut rig = Rig::new();
+        rig.set_now(1000);
+        let bar = rig.room("Bar");
+        let none_principal = AgentProfile {
+            watch: vec!["bob".into()],
+            ..AgentProfile::default()
+        };
+        let spy = rig.npc("Spy", bar, &none_principal);
+        let bob = rig.player("Bob", bar, true);
+        rig.run(bob, "say hello");
+        assert_eq!(rig.host().intel.filed_by(spy), 0, "no principal ⇒ files nothing");
+    }
+    // (b) loyal=false ⇒ nothing filed.
+    {
+        let mut rig = Rig::new();
+        rig.set_now(1000);
+        let bar = rig.room("Bar");
+        let boss = rig.player("Boss", bar, true);
+        let spy = rig.npc("Spy", bar, &informant(boss, false, &["bob"]));
+        let bob = rig.player("Bob", bar, true);
+        rig.run(bob, "say hello");
+        assert_eq!(rig.host().intel.filed_by(spy), 0, "a disloyal informant files nothing");
+    }
+    // (c) disabled ⇒ nothing filed.
+    {
+        let mut rig = Rig::new();
+        rig.set_now(1000);
+        let bar = rig.room("Bar");
+        let boss = rig.player("Boss", bar, true);
+        let mut prof = informant(boss, true, &["bob"]);
+        prof.enabled = false;
+        let spy = rig.npc("Spy", bar, &prof);
+        let bob = rig.player("Bob", bar, true);
+        rig.run(bob, "say hello");
+        assert_eq!(rig.host().intel.filed_by(spy), 0, "a disabled informant files nothing");
+    }
+}
+
+/// The informant never reports the principal itself, nor itself.
+#[tokio::test]
+async fn never_reports_principal_or_self() {
+    let mut rig = Rig::new();
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    let boss = rig.player("Boss", bar, true);
+    // Watch the principal by name — filing must still refuse.
+    let _spy = rig.npc("Spy", bar, &informant(boss, true, &["boss"]));
+
+    rig.run(boss, "say I am here");
+    assert!(
+        rig.host().intel.for_principal(boss).is_empty(),
+        "the principal is never a subject of its own intel"
+    );
+}
+
+/// P1 + notability: a NOTABLE (concealment-pierced) subject is filed as
+/// `Concealed` even with an empty watch list — a pierce is always reported.
+#[tokio::test]
+async fn perceived_concealed_subject_is_always_filed() {
+    let mut rig = Rig::with_modules(vec![
+        Box::new(NpcModule::new()),
+        Box::new(CloakModule),
+    ]);
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    let boss = rig.player("Boss", bar, true);
+    let _spy = rig.npc("Spy", bar, &informant(boss, true, &[])); // empty watch
+    let bob = rig.player("Bob", bar, true);
+    // Bob is NOTABLE (concealment active) but NOT cloaked from the NPC, so the
+    // NPC perceives him and pierces the veil.
+    rig.engine
+        .world
+        .set_attr(bob, "notable", Attr::text("1", GOD))
+        .unwrap();
+
+    rig.run(bob, "say you shouldn't be able to see me");
+
+    let recs = rig.host().intel.for_principal(boss);
+    assert_eq!(recs.len(), 1, "a pierced concealment is always filed");
+    assert_eq!(recs[0].kind, IntelKind::Concealed);
+    assert!(
+        recs[0].detail.contains("trying to stay hidden"),
+        "{}",
+        recs[0].detail
+    );
+}
+
+/// P1 (the load-bearing property): a subject the NPC CANNOT perceive produces
+/// NO record, even when it is on the watch list.
+#[tokio::test]
+async fn unperceived_subject_is_never_filed() {
+    let mut rig = Rig::with_modules(vec![
+        Box::new(NpcModule::new()),
+        Box::new(CloakModule),
+    ]);
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    let boss = rig.player("Boss", bar, true);
+    let _spy = rig.npc("Spy", bar, &informant(boss, true, &["bob"])); // watches Bob
+    let bob = rig.player("Bob", bar, true);
+    // Bob is cloaked from every observer: the NPC cannot perceive him.
+    rig.engine
+        .world
+        .set_attr(bob, "cloaked", Attr::text("1", GOD))
+        .unwrap();
+
+    rig.run(bob, "say can you hear me?");
+
+    assert!(
+        rig.host().intel.for_principal(boss).is_empty(),
+        "an informant files nothing about a subject it could not perceive (P1)"
+    );
+}
+
+/// P4: the intel log survives an `on_world_loaded` round-trip through the
+/// persisted `intel:{principal}` document.
+#[tokio::test]
+async fn intel_survives_on_world_loaded_round_trip() {
+    let mut rig = Rig::new();
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    let boss = rig.player("Boss", bar, true);
+    let _spy = rig.npc("Spy", bar, &informant(boss, true, &["bob"]));
+    let bob = rig.player("Bob", bar, true);
+    rig.run(bob, "say the vault code is on the ledger");
+
+    // Capture the log as persistence would serialize it.
+    let recs: Vec<IntelRecord> = rig.host().intel.for_principal(boss).to_vec();
+    assert_eq!(recs.len(), 1);
+    let kv = vec![(intel_key(boss), serde_json::to_value(&recs).unwrap())];
+    let mut boot = std::collections::HashMap::new();
+    boot.insert(
+        SmolStr::new("npc"),
+        mush_core::ModuleBootData {
+            kv,
+            ..Default::default()
+        },
+    );
+
+    // A fresh server booted with only that boot data reloads the log.
+    let rig2 = Rig::with_boot(boot);
+    let reloaded = rig2.host().intel.for_principal(boss);
+    assert_eq!(reloaded.len(), 1, "the intel doc reloaded");
+    assert_eq!(reloaded[0].subject, bob);
+    assert_eq!(reloaded[0].kind, IntelKind::Spoke);
+    assert!(reloaded[0].detail.contains("vault code"), "{}", reloaded[0].detail);
+}
+
+/// P5-adjacent: filing keys strictly by principal — one NPC serving two
+/// principals never mixes their logs.
+#[tokio::test]
+async fn filing_does_not_leak_across_principals() {
+    let mut rig = Rig::new();
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    let boss_a = rig.player("Ander", bar, true);
+    let boss_b = rig.player("Bianca", bar, true);
+    // Two informants in the same room, reporting to different principals.
+    let _spy_a = rig.npc("SpyA", bar, &informant(boss_a, true, &["target"]));
+    let _spy_b = rig.npc("SpyB", bar, &informant(boss_b, true, &["target"]));
+    let target = rig.player("Target", bar, true);
+
+    rig.run(target, "say nothing to see here");
+
+    // Each principal got exactly one record; neither sees the other's.
+    assert_eq!(rig.host().intel.for_principal(boss_a).len(), 1);
+    assert_eq!(rig.host().intel.for_principal(boss_b).len(), 1);
+    assert!(
+        rig.host()
+            .intel
+            .for_principal(boss_a)
+            .iter()
+            .all(|r| r.principal == boss_a)
+    );
+}
+
+/// D2: `@agent/set` wires principal / loyal / watch, and `@agent/show` reports
+/// the informant status.
+#[tokio::test]
+async fn agent_set_and_show_informant_fields() {
+    let mut rig = Rig::new();
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    rig.engine.world.move_to(GOD, bar).unwrap();
+    let boss = rig.player("Boss", bar, true);
+    let npc = rig.npc("Spy", bar, &profile(NpcTier::Minor));
+
+    let out = rig.staff("@agent/set Spy/principal=Boss");
+    assert!(out.contains("Set principal on Spy"), "{out}");
+    rig.staff("@agent/set Spy/watch=Bob;the docks");
+    rig.staff("@agent/set Spy/loyal=no");
+
+    // The profile persisted the resolved principal id + lowercased watch list.
+    let p = read_profile_attr(&rig, npc);
+    assert_eq!(p.principal, Some(boss));
+    assert!(!p.loyal);
+    assert_eq!(p.watch, vec!["bob".to_string(), "the docks".to_string()]);
+
+    // @agent/show reports it (NOT loyal, since we set loyal=no).
+    let out = rig.staff("@agent/show Spy");
+    assert!(out.contains("reports to Boss"), "{out}");
+    assert!(out.contains("NOT loyal"), "{out}");
+    assert!(out.contains("bob, the docks"), "{out}");
+
+    // Clearing the principal empties the field.
+    let out = rig.staff("@agent/set Spy/principal=");
+    assert!(out.contains("Cleared principal on Spy"), "{out}");
+    assert_eq!(read_profile_attr(&rig, npc).principal, None);
+}
+
+/// Read an NPC's persisted [`AgentProfile`] straight from its attribute.
+fn read_profile_attr(rig: &Rig, npc: ObjId) -> AgentProfile {
+    rig.engine
+        .world
+        .attr(npc, PROFILE_ATTR)
+        .and_then(|a| a.as_json())
+        .map(|v| serde_json::from_value(v.clone()).expect("profile parses"))
+        .unwrap_or_default()
+}
+
+// ----------------------------------------------------------------------
+// M12 D5: the +intel PULL query (a player debriefs their own assets)
+// ----------------------------------------------------------------------
+
+/// D5 + P5: `+intel` shows the querying player ONLY their own principal's
+/// records — no cross-principal leak. Two informants in one room report to two
+/// different bosses; each boss's pull renders only its own asset's report.
+#[tokio::test]
+async fn intel_pull_shows_only_own_principal_records() {
+    let mut rig = Rig::new();
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    let ander = rig.player("Ander", bar, true);
+    let bianca = rig.player("Bianca", bar, true);
+    let _spy_a = rig.npc("SpyA", bar, &informant(ander, true, &["target"]));
+    let _spy_b = rig.npc("SpyB", bar, &informant(bianca, true, &["target"]));
+    let _target = rig.player("Target", bar, true);
+
+    rig.run(_target, "say the meet is at dawn");
+
+    // Ander sees SpyA's report and nothing of Bianca's asset.
+    let out = rig.actor_sys(ander, "+intel");
+    assert!(out.contains("Your intel log"), "{out}");
+    assert!(out.contains("Target"), "{out}");
+    assert!(out.contains("[spoke]"), "{out}");
+    assert!(out.contains("meet is at dawn"), "{out}");
+    assert!(out.contains("witnessed directly by SpyA"), "provenance shown: {out}");
+    assert!(
+        !out.contains("SpyB"),
+        "no cross-principal leak into Ander's log: {out}"
+    );
+
+    // Bianca independently sees only her own asset's report.
+    let out_b = rig.actor_sys(bianca, "+intel");
+    assert!(out_b.contains("witnessed directly by SpyB"), "{out_b}");
+    assert!(!out_b.contains("SpyA"), "{out_b}");
+}
+
+/// D5: `+intel <subject>` filters to one subject; an unrelated subject's
+/// records are excluded.
+#[tokio::test]
+async fn intel_pull_filters_by_subject() {
+    let mut rig = Rig::new();
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    let boss = rig.player("Boss", bar, true);
+    let _spy = rig.npc("Spy", bar, &informant(boss, true, &["bob", "carol"]));
+    let bob = rig.player("Bob", bar, true);
+    let carol = rig.player("Carol", bar, true);
+
+    rig.run(bob, "say bob was here");
+    rig.run(carol, "say carol was here");
+
+    // Both are in the full log.
+    let all = rig.actor_sys(boss, "+intel");
+    assert!(all.contains("Bob"), "{all}");
+    assert!(all.contains("Carol"), "{all}");
+
+    // Filtering to Bob excludes Carol.
+    let just_bob = rig.actor_sys(boss, "+intel Bob");
+    assert!(just_bob.contains("Intel about Bob"), "{just_bob}");
+    assert!(just_bob.contains("bob was here"), "{just_bob}");
+    assert!(!just_bob.contains("Carol"), "{just_bob}");
+
+    // A subject with nothing filed reports cleanly.
+    let none = rig.actor_sys(boss, "+intel Nobody");
+    assert!(none.contains("No intel on file about Nobody"), "{none}");
+}
+
+/// D5: `+intel/clear` empties the querying player's own log (RAM + a persisted
+/// delete); a subsequent pull shows the empty message.
+#[tokio::test]
+async fn intel_pull_clear_empties_the_log() {
+    let mut rig = Rig::new();
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    let boss = rig.player("Boss", bar, true);
+    let _spy = rig.npc("Spy", bar, &informant(boss, true, &["bob"]));
+    let bob = rig.player("Bob", bar, true);
+    rig.run(bob, "say something worth filing");
+    assert_eq!(rig.host().intel.for_principal(boss).len(), 1);
+
+    let out = rig.actor_sys(boss, "+intel/clear");
+    assert!(out.contains("Cleared 1 intel record"), "{out}");
+    assert!(rig.host().intel.for_principal(boss).is_empty());
+
+    let out = rig.actor_sys(boss, "+intel");
+    assert!(out.contains("no intel on file"), "{out}");
+}
+
+/// D5: a player with no assets reporting to them gets a clean empty message,
+/// never an error.
+#[tokio::test]
+async fn intel_pull_empty_is_graceful() {
+    let mut rig = Rig::new();
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    let loner = rig.player("Loner", bar, true);
+    let out = rig.actor_sys(loner, "+intel");
+    assert!(out.contains("no intel on file"), "{out}");
+}
+
+/// D5: staff `@agent/show` reports the informant's filed-record count.
+#[tokio::test]
+async fn agent_show_reports_filed_count() {
+    let mut rig = Rig::new();
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    rig.engine.world.move_to(GOD, bar).unwrap();
+    let boss = rig.player("Boss", bar, true);
+    let _spy = rig.npc("Spy", bar, &informant(boss, true, &["bob"]));
+    let bob = rig.player("Bob", bar, true);
+    rig.run(bob, "say one");
+
+    let out = rig.staff("@agent/show Spy");
+    assert!(out.contains("Intel filed: 1 record"), "{out}");
 }

@@ -75,6 +75,15 @@ impl EventHook for PerceptionHook {
             Some(false) | None => Perceive::Conceal, // failed, or not yet rolled (fail-safe)
         }
     }
+
+    /// The ruleset-agnostic notability signal (see
+    /// [`mush_core::is_concealed`]): `subject` is concealed exactly when it is
+    /// under active Obfuscate. Observer-independent — a pure read of the
+    /// concealment set, no roll, no cache write.
+    fn is_concealed(&self, w: &World, subject: ObjId) -> bool {
+        w.module_state::<WodState>()
+            .is_some_and(|st| st.is_concealed(subject))
+    }
 }
 
 /// Keeps the pierced-verdict cache correct across presence changes. Registered

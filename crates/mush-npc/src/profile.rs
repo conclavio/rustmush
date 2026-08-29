@@ -10,6 +10,7 @@
 
 use std::time::Duration;
 
+use mush_core::ObjId;
 use mush_llm::{LlmFeature, NpcTier as LlmNpcTier};
 use serde::{Deserialize, Serialize};
 
@@ -118,6 +119,19 @@ pub struct AgentProfile {
     /// Canned lines the NPC degrades to on a budget trip / provider refusal /
     /// disabled service (design 03 §6.6 — never an error to players).
     pub fallback_lines: Vec<String>,
+    /// The M12 informant loop: who this NPC reports intel to (a domitor /
+    /// employer). `None` (the default) means the NPC files nothing — the loop
+    /// is entirely opt-in and additive.
+    pub principal: Option<ObjId>,
+    /// The willingness gate. `true` (default): a loyal informant files what it
+    /// perceives to its `principal`. `false`: a resentful asset that reports
+    /// nothing, however much it sees.
+    pub loyal: bool,
+    /// Subjects of interest (lowercased names / topics). An event about a
+    /// watched subject is reportable; with an empty list only inherently
+    /// notable events (a pierced concealment) are filed, keeping the log
+    /// signal-rich.
+    pub watch: Vec<String>,
 }
 
 impl Default for AgentProfile {
@@ -133,6 +147,9 @@ impl Default for AgentProfile {
             daily_tokens: None,
             enabled: true,
             fallback_lines: Vec::new(),
+            principal: None,
+            loyal: true,
+            watch: Vec::new(),
         }
     }
 }
@@ -194,6 +211,26 @@ mod tests {
         assert_eq!(p.tier, NpcTier::Minor);
         assert!(p.enabled);
         assert!(p.goals.is_empty());
+        // M12 informant fields default additively: no principal ⇒ files
+        // nothing, loyal by default, empty watch list (P3).
+        assert_eq!(p.principal, None);
+        assert!(p.loyal);
+        assert!(p.watch.is_empty());
+    }
+
+    #[test]
+    fn informant_fields_round_trip_through_serde() {
+        let p = AgentProfile {
+            principal: Some(mush_core::ObjId(42)),
+            loyal: false,
+            watch: vec!["alice".into(), "the docks".into()],
+            ..AgentProfile::default()
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        let back: AgentProfile = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.principal, Some(mush_core::ObjId(42)));
+        assert!(!back.loyal);
+        assert_eq!(back.watch, vec!["alice".to_string(), "the docks".to_string()]);
     }
 
     #[test]

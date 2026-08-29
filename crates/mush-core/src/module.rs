@@ -321,6 +321,16 @@ pub trait EventHook: Send + Sync {
         Perceive::Abstain
     }
 
+    /// Whether `subject` is under an *active* concealment effect (e.g. WoD
+    /// Obfuscate) — the ruleset-agnostic **notability** signal, distinct from
+    /// [`perceives`](EventHook::perceives) (which is the per-observer
+    /// projection). Read-only by the same contract as `perceives`: a cheap
+    /// cache lookup, never a mutation. Default `false` — with no concealment
+    /// ruleset a subject is never concealed. See [`is_concealed`].
+    fn is_concealed(&self, w: &World, subject: ObjId) -> bool {
+        false
+    }
+
     /// An actor connected (session became live).
     fn connected(&self, ctx: &mut Ctx<'_>, actor: ObjId) {}
 
@@ -1522,6 +1532,20 @@ pub fn can_perceive(reg: &Registry, w: &World, observer: ObjId, subject: ObjId) 
     perceives_via(reg.hooks(HookPoint::Perceive), w, observer, subject)
 }
 
+/// Whether `subject` is under an active concealment effect according to ANY
+/// registered `Perceive`-point hook (first-true-wins). The ruleset-agnostic
+/// **notability** query — distinct from [`can_perceive`], which is the
+/// per-observer projection: this asks "is this subject hidden at all?", not
+/// "can THIS watcher see them?". With no hook registered (or none claiming
+/// concealment) it is `false`, so it is additive and free — behavior identical
+/// to a game with no concealment ruleset.
+#[must_use]
+pub fn is_concealed(reg: &Registry, w: &World, subject: ObjId) -> bool {
+    reg.hooks(HookPoint::Perceive)
+        .iter()
+        .any(|h| h.hook.is_concealed(w, subject))
+}
+
 /// Collect every `LookRendered` hook's extra lines for a room render.
 #[must_use]
 pub fn look_rendered_lines(reg: &Registry, w: &World, looker: ObjId, room: ObjId) -> Vec<RichText> {
@@ -1981,4 +2005,38 @@ pub fn map_blob_key(scene: SceneId) -> String {
 #[must_use]
 pub(crate) fn duration_ms(d: Duration) -> i64 {
     i64::try_from(d.as_millis()).unwrap_or(i64::MAX).max(1)
+}
+
+#[cfg(test)]
+mod concealment_tests {
+    use super::*;
+    use crate::obj::ObjId;
+    use crate::world::World;
+
+    /// With no `Perceive` hook registered, the notability query defaults to
+    /// `false` — additive and free (a game with no concealment ruleset).
+    #[test]
+    fn is_concealed_defaults_false_with_no_hook() {
+        let reg = Registry::new();
+        let w = World::new_minimal();
+        assert!(!is_concealed(&reg, &w, ObjId(1)));
+        // And `can_perceive` remains a free pass on the same empty registry.
+        assert!(can_perceive(&reg, &w, ObjId(1), ObjId(2)));
+    }
+
+    /// A registered hook whose `is_concealed` returns true makes the firing
+    /// helper report the subject concealed (first-true-wins).
+    #[test]
+    fn is_concealed_true_when_a_hook_claims_it() {
+        struct AlwaysConcealed;
+        impl EventHook for AlwaysConcealed {
+            fn is_concealed(&self, _w: &World, _subject: ObjId) -> bool {
+                true
+            }
+        }
+        let mut reg = Registry::new();
+        Registrar::new(&mut reg, "test").hook(HookPoint::Perceive, Arc::new(AlwaysConcealed));
+        let w = World::new_minimal();
+        assert!(is_concealed(&reg, &w, ObjId(1)));
+    }
 }
