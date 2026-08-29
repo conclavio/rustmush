@@ -267,8 +267,14 @@ and their approval payload handlers see a loaded jobs module.
 
 ```toml
 [rulesets]
-enabled = ["wod"]               # oWoD20 — the only ruleset available today
+enabled = ["wod"]               # oWoD20 (default); or ["shadowrun"] for SR5
 ```
+
+Two rulesets are available today: **`wod`** (oWoD20) and **`shadowrun`** (SR5).
+A server runs **one ruleset** — they all register the same core commands
+(`+roll`/`+sheet`/`+chargen`), so enabling more than one is a **hard boot error**
+(`ruleset selection: ... one ruleset per server`) rather than an opaque command
+collision. Per-character ruleset dispatch across systems is a future concern.
 
 An **unknown id is a hard boot error** (`ruleset selection: ... unknown
 ruleset`), consistent with the rest of config — a typo does not start a
@@ -323,6 +329,33 @@ only ruleset-owned persisted docs are its two approval job queues, which live
 under the jobs module's `mod:jobs:*` namespace like any other queue. Do not
 hand-edit a `sheet:wod` attribute while the server runs (same rule as any
 `obj:*` write).
+
+**`shadowrun`** is **Shadowrun 5th Edition** (SR5, M10b) — the second full game
+system on the same `mush-ruleset` + `mush-dice` plugin API, selected with
+`enabled = ["shadowrun"]` (single-ruleset-per-server: it collides with `wod`).
+Its dice are a **d6 hit pool** (each 5/6 a hit) rather than oWoD's d10 pool, with
+SR5's two signatures: a **glitch** (more than half the dice show 1 — a
+**critical glitch** at zero hits) and a **Limit** that caps counted hits, which
+**Edge** can push past (`+roll/edge`: add Edge dice, waive the Limit, Rule of
+Six). Player + staff surface: `+chargen` (the **priority** point-buy —
+`+chargen/priority metatype=A attributes=B magic=C skills=D resources=E`, then
+`+stat`/`+spec`, `+chargen/submit` → a `shadowrun-chargen` approval job), `+sheet`
+/ staff `@sheet/set` (edits recompute the ceil-division derived stats — Limits,
+Condition Monitors, Initiative), `+roll <attr>+<skill>` (auto Limit + wound
+modifier; `/edge` `/edge+` `/priv` `/nowound`; inline `threshold`/`limit`/`mod`/
+`spec`/`contested`/`extended`), `+damage`/`+heal`/`+condition` (the two Condition
+Monitors with Stun→Physical and lethal Physical overflow), `+cast`/`+thread` and
+`+spell(s)`/`+powers`/`+complexforms`/`+magic`/`+resonance` (magic is
+sheet-tracked and **pool-rolled**, with **Drain**/**Fading** applied to the CM),
+`+init [/roll]`, and `+karma` / `+karma/spend` (costed raises applied atomically
+on `+job/approve`) / `+karma/award` (staff). The dice RNG is OS-seeded in
+production and injectable/seedable for tests. Persistence is identical to `wod`:
+the runner sheet is a single `sheet:shadowrun` JSON attribute on the character's
+`obj:*` document, so it rides the object write-through and **reloads with the
+world** (no separate save path); the reboot round trip is CI-tested against Redis
+(`crates/mushd/tests/shadowrun_e2e.rs::sr5_sheet_survives_redis_reboot_gated`).
+The sheet query is the schema-generic `<ruleset>.sheet` feed, so the web Sheet
+panel renders SR5 with **no** web change. In-game reference: `help shadowrun`.
 
 ## LLM layer (M7): worldgen, budgets, kill switch
 

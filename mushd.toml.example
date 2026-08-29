@@ -69,13 +69,15 @@ ic_epoch = "2020-01-01 00:00"      # (M5) IC datetime at OOC unix time 0 — the
 #                                  #       exits). A larger building is refused with a note. In-game:
 #                                  #       "help worldgen".
 
-[rulesets]                         # (M6) which ruleset module(s) load
-# Every ruleset crate is compiled into mushd; this list SELECTS which ones
-# register (order matters only among themselves). Registered after the
-# built-in modules, so their commands (+roll, +sheet, +chargen, +xp, ...),
-# panels, and approval job queues wire cleanly. An unknown id is a hard boot
-# error; an empty list runs a ruleset-less server. In-game: "help wod".
-enabled = ["wod"]                  # (M6) oWoD20 — the only ruleset available today
+[rulesets]                         # (M6) which ruleset module loads
+# Every ruleset crate is compiled into mushd; this list SELECTS which one
+# registers. Registered after the built-in modules, so their commands (+roll,
+# +sheet, +chargen, ...), panels, and approval job queues wire cleanly. Two
+# rulesets are available: "wod" (oWoD20) and "shadowrun" (SR5). A server runs
+# EXACTLY ONE — they share the +roll/+sheet/+chargen command names, so enabling
+# two is a hard boot error. An unknown id is a hard boot error; an empty list
+# runs a ruleset-less server. In-game: "help wod" / "help shadowrun".
+enabled = ["wod"]                  # oWoD20; use ["shadowrun"] for Shadowrun 5e (SR5)
 # The "wod" ruleset ships all four templates — Mortal, Vampire (V20), Mage
 # (M20), Werewolf (W20). There is no per-splat allow-list: every template is
 # selectable, and each player picks theirs during chargen with

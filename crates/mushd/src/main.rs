@@ -214,10 +214,9 @@ async fn serve(config: Config) -> Result<(), String> {
         config.worldgen.to_worldgen_config(),
     ));
     // M8: the NPC agent module, grounded by the enabled ruleset's sheet +
-    // on-loop abilities (the WoD adapter when "wod" is on; dialogue-only
-    // otherwise).
-    let npc_grounding = modules::npc_agent_adapter(&config.rulesets.enabled)
-        .map(|a| a as Arc<dyn mush_npc::AgentGrounding>);
+    // on-loop abilities through the generic ruleset grounding adapter (WoD,
+    // Shadowrun, …); dialogue-only when no ruleset is enabled.
+    let npc_grounding = modules::npc_agent_adapter(&config.rulesets.enabled);
     mods.push(modules::npc_module(npc_grounding));
     let rulesets =
         modules::ruleset_modules(&config.rulesets.enabled, &config.onboarding.to_ruleset())

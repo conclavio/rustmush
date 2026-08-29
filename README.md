@@ -12,10 +12,12 @@ A modern MUSH server in Rust — the TinyMUX/TinyMUSH/RhostMUSH tradition, rebui
   sheets who act only through a validated tool allowlist and roll real dice.
 - **No softcode** — the classic command surface (`@dig`, `@desc`, `look`, `say`, `pose`,
   channels, `@mail`) is native Rust; user scripting is sandboxed [Rhai](https://rhai.rs).
-- **Ruleset modules** — Classic World of Darkness 20th Anniversary (oWoD20 — the Storyteller
-  System, Vampire/Mage/Werewolf templates) first; BattleTech (btmux-style) seams reserved and
-  CI-tested from day one. Config selects which ruleset(s) load. Built-ins: comsys, @mail,
-  weather, jobs.
+- **Ruleset modules** — two full game systems on one plugin API: Classic World of Darkness
+  20th Anniversary (oWoD20 — the Storyteller System, Vampire/Mage/Werewolf templates) and
+  **Shadowrun 5th Edition** (SR5 — the d6 hit pool, Limits, Edge, priority chargen), proving
+  the API scales across very different dice engines; BattleTech (btmux-style) seams reserved
+  and CI-tested from day one. Config selects which **one** ruleset loads. Built-ins: comsys,
+  @mail, weather, jobs.
 - **Redis 8 persistence** — RedisJSON object documents with write-through per-command
   transactions; RediSearch indexes power `@find`/`@search`; crash recovery is just a restart.
 
@@ -73,7 +75,7 @@ we don't redistribute it.
 Copy [mushd.toml.example](mushd.toml.example) to `mushd.toml`, adjust, and run `mushd`
 (`mushd --repl` gives an offline in-memory REPL). In-game `help` is two-layered: per-command
 usage comes from the command table, and prose topics (getting started, building, locks,
-channels, mail, jobs, admin, scripting, weather, worldgen, wod, chargen, rules-of-conduct) are markdown files
+channels, mail, jobs, admin, scripting, weather, worldgen, wod, shadowrun, chargen, rules-of-conduct) are markdown files
 loaded at boot from `[server].help_dir` (default `./docs/help` — edit or add `*.md` files there and
 restart to change them; `help <topic>` serves them, with exact command names taking
 precedence).
@@ -90,7 +92,10 @@ HALTED on repeated overrun — `help scripting`), and staff drive **zone weather
 `@weather` family over `OUTDOORS`/`SHELTERED` rooms (`help weather`). See
 [docs/ops.md](docs/ops.md) for the operator view of all three.
 
-**Rulesets** are selected in `[rulesets].enabled` (default `["wod"]`). The **oWoD20** ruleset
+**Rulesets** are selected in `[rulesets].enabled` (default `["wod"]`). A server runs **one**
+ruleset — `wod` *or* `shadowrun` — since both register the same core surface (`+roll`/`+sheet`/
+`+chargen`); enabling two is a clear boot error (per-character cross-system dispatch is a future
+concern). The **oWoD20** ruleset
 brings the Storyteller System to the game: point-buy character generation (`+chargen` →
 staff approval job), the classic dotted sheet (`+sheet`, staff `@sheet/set`), the d10 dice
 pool (`+roll strength+brawl vs 6`, with `/spec` `/wp` `/priv` `/nowound` and inline `vs`/`ext`/
@@ -109,6 +114,20 @@ Spheres / Arete, a Garou's Rage / Gnosis / Gifts, a changeling's Arts / Realms /
 Splat commands (`+disc`/`+blood`, `+cast`/`+sphere`, `+shift`/`+rage`, `+cantrip`/`+glamour`,
 …) are always registered but self-gate on the actor's template and refuse everyone else; a
 Ghoul shares the vampire `+disc`/`+blood` surface and a Kinfolk the werewolf `+gnosis`/`+gift`.
+
+The **Shadowrun 5th Edition** ruleset (`enabled = ["shadowrun"]`, M10b) is the second system on
+the same `mush-ruleset` + `mush-dice` plugin API — the deliberate proof it scales past oWoD's
+d10 Storyteller pool. Its dice are a **d6 hit pool** (each 5/6 is a hit; more than half 1s
+**glitch**, zero hits then is a **critical glitch**) with SR5's two signatures: a **Limit** caps
+counted hits, and **Edge** can push past it (add Edge dice, waive the Limit, Rule of Six). A
+runner has a flat sheet (eight attributes + Edge/Essence/Magic/Resonance, active-skill /
+skill-group / knowledge maps, two Condition Monitors), built with the classic **priority**
+chargen (`+chargen/priority`, A–E across Metatype/Attributes/Magic/Skills/Resources → a
+`shadowrun-chargen` approval job). Play is `+roll agility+pistols` (auto Limit + wound modifier,
+`/edge` to push), `+damage`/`+heal`/`+condition` (Stun→Physical overflow), `+cast`/`+thread`
+(spells/complex forms — sheet-tracked, pool-rolled, with **Drain**/**Fading**), `+init`, and
+**Karma** advancement (`+karma/spend` → approval). The sheet is the same schema-generic object
+attribute, so it renders on the web Sheet panel with **no** web change. In-game: `help shadowrun`.
 
 **LLM worldbuilding** (M7) is configured in `[llm]` and is **off by default**
 (`enabled = false`) — a keyless clone boots and `@gen` just answers "LLM features are

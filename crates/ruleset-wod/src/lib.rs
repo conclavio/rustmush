@@ -201,51 +201,6 @@ impl WodRuleset {
     pub fn schema_for(&self, doc: &SheetDoc) -> Arc<SheetSchema> {
         self.dispatch.schemas.schema_for_doc(doc)
     }
-
-    /// Give `obj` a fresh character sheet of `template` (default the empty
-    /// string ⇒ `mortal`) through the same validated retemplate path
-    /// `@sheet/set .../template=<id>` uses — the M8 `@agent/sheet` bootstrap so
-    /// an NPC has real traits for `wod_roll`. An existing sheet is re-shaped
-    /// (dots preserved where the templates share fields); a missing one starts
-    /// from the mortal default. Written as `by`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a human-readable message when the template id is unknown or the
-    /// validated write fails.
-    pub fn init_sheet(
-        &self,
-        w: &mut World,
-        obj: ObjId,
-        template: &str,
-        by: ObjId,
-    ) -> Result<String, String> {
-        let id = match template.trim().to_ascii_lowercase().as_str() {
-            "" => "mortal".to_string(),
-            other => other.to_string(),
-        };
-        if !self.dispatch.schemas.ids().iter().any(|t| t == &id) {
-            return Err(format!(
-                "unknown template {id:?}; choose one of: {}",
-                self.dispatch.schemas.ids().join(", ")
-            ));
-        }
-        let schema = self.dispatch.schemas.schema_for_id(&id);
-        let default = self.dispatch.schemas.default_schema();
-        let mut doc = SheetStore::new(default.clone())
-            .get(w, obj)
-            .unwrap_or_else(|| SheetDoc::new_default(&default));
-        crate::splats::retemplate(&mut doc, &schema, &id);
-        SheetStore::new(schema)
-            .put_by(w, obj, &doc, by)
-            .map_err(|es| {
-                es.iter()
-                    .map(std::string::ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            })?;
-        Ok(format!("Gave the NPC a {id} sheet."))
-    }
 }
 
 impl Default for WodRuleset {
@@ -383,5 +338,45 @@ impl Ruleset for WodRuleset {
         input: serde_json::Value,
     ) -> Result<AbilityOutcome, AbilityError> {
         agent::invoke(&self.dispatch, w, out, npc, name, input)
+    }
+
+    /// Give `npc` a fresh character sheet of `template` (default the empty
+    /// string ⇒ `mortal`) through the same validated retemplate path
+    /// `@sheet/set .../template=<id>` uses — the M8 `@agent/sheet` bootstrap so
+    /// an NPC has real traits for `wod_roll`. An existing sheet is re-shaped
+    /// (dots preserved where the templates share fields); a missing one starts
+    /// from the mortal default. Written as `by`.
+    fn init_sheet(
+        &self,
+        w: &mut World,
+        npc: ObjId,
+        template: &str,
+        by: ObjId,
+    ) -> Result<String, String> {
+        let id = match template.trim().to_ascii_lowercase().as_str() {
+            "" => "mortal".to_string(),
+            other => other.to_string(),
+        };
+        if !self.dispatch.schemas.ids().iter().any(|t| t == &id) {
+            return Err(format!(
+                "unknown template {id:?}; choose one of: {}",
+                self.dispatch.schemas.ids().join(", ")
+            ));
+        }
+        let schema = self.dispatch.schemas.schema_for_id(&id);
+        let default = self.dispatch.schemas.default_schema();
+        let mut doc = SheetStore::new(default.clone())
+            .get(w, npc)
+            .unwrap_or_else(|| SheetDoc::new_default(&default));
+        crate::splats::retemplate(&mut doc, &schema, &id);
+        SheetStore::new(schema)
+            .put_by(w, npc, &doc, by)
+            .map_err(|es| {
+                es.iter()
+                    .map(std::string::ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })?;
+        Ok(format!("Gave the NPC a {id} sheet."))
     }
 }

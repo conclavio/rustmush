@@ -32,6 +32,8 @@ mush-script.workspace = true
 mush-weather.workspace = true
 # The M6 rulesets: config's [rulesets] selects which load (modules.rs).
 ruleset-wod.workspace = true
+# The M10b second ruleset (SR5): proves the plugin API scales past oWoD.
+ruleset-shadowrun.workspace = true
 # The M7 LLM layer + worldgen module: LlmService built from [llm] config,
 # WorldgenModule registered at boot, and run_worldgen_async driven off the
 # world loop from the Effect::ModuleAsync re-entry seam (world_task.rs).
@@ -75,6 +77,10 @@ mush-ruleset.workspace = true
 # Tests inject connection-shaped (transient) store errors and drive raw
 # Redis commands (DEBUG RELOAD) in the gated durability e2e.
 fred.workspace = true
+# The SR5 e2e replays the ruleset's seeded ChaCha8 dice stream to pick a seed
+# that forces a deterministic glitch on the first roll (rand itself is already a
+# runtime dep).
+rand_chacha.workspace = true
 # The M4 web e2e (tests/web_e2e.rs) drives the real HTTP/WS surface:
 # axum serves mush-net-web's router on an ephemeral port exactly the way
 # serve_with_shutdown does, reqwest is the REST client, tokio-tungstenite

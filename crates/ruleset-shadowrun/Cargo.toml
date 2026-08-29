@@ -1,0 +1,25 @@
+[package]
+name = "ruleset-shadowrun"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Shadowrun 5th Edition (SR5) ruleset — SheetSchema, data tables, and Ruleset skeleton (M10b)"
+
+[dependencies]
+mush-ruleset.workspace = true
+mush-dice.workspace = true
+mush-core.workspace = true
+mush-jobs.workspace = true
+mush-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+
+[dev-dependencies]
+mush-testkit.workspace = true
+
+[lints]
+workspace = true

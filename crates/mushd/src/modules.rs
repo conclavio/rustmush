@@ -43,6 +43,7 @@ use std::sync::Arc;
 
 use mush_core::{Effects, Engine, GameModule, Migration, ModuleBootData, Outbox};
 use mush_llm::LlmService;
+use mush_ruleset::Ruleset;
 use mush_store::{ModuleOp, ModuleWrite, ObjectStore, WriteBatch};
 use mush_worldgen::WorldgenModule;
 use smol_str::SmolStr;
@@ -89,8 +90,16 @@ pub fn server_modules_with(weather: mush_weather::WeatherConfig) -> Vec<Box<dyn 
 /// needs no separate boot-data load here.
 ///
 /// An unknown id is a hard error (consistent with the rest of config: a
-/// silently-ignored typo is worse than not starting). The only id available
-/// in M6a is `"wod"` (oWoD20); duplicates are rejected too.
+/// silently-ignored typo is worse than not starting). The ids available as of
+/// M10b are `"wod"` (oWoD20) and `"shadowrun"` (SR5); duplicates are rejected.
+///
+/// **Single-ruleset-per-server.** Every ruleset registers the same core
+/// command surface (`+roll`/`+sheet`/`+chargen`/…), so two of them cannot share
+/// one registry — enabling more than one is a configuration error caught here
+/// with a clear message (rather than surfacing downstream as an opaque
+/// command-collision at registration). Enable exactly one ruleset, or none (a
+/// bare comsys/mail server). Per-character ruleset dispatch across systems is a
+/// future concern.
 pub fn ruleset_modules(
     enabled: &[String],
     onboarding: &ruleset_wod::OnboardingConfig,
@@ -108,13 +117,30 @@ pub fn ruleset_modules(
                     ruleset_wod::WodRuleset::new().onboarding(onboarding.clone()),
                 ));
             }
+            "shadowrun" => {
+                // SR5 (M10b). Single-ruleset-per-server: wod and shadowrun both
+                // register +roll/+sheet/+chargen, so a server runs one of them.
+                // SR5 has no onboarding gate wired yet.
+                mods.push(Box::new(ruleset_shadowrun::ShadowrunRuleset::new()));
+            }
             _ => {
                 return Err(format!(
-                    "[rulesets].enabled: unknown ruleset {id:?} (available: \"wod\")"
+                    "[rulesets].enabled: unknown ruleset {id:?} (available: \"wod\", \"shadowrun\")"
                 ));
             }
         }
         seen.push(key);
+    }
+    // Single ruleset per server: two rulesets would collide on the shared
+    // +roll/+sheet/+chargen command names. Fail here with an explanation
+    // instead of letting Engine::with_modules report an opaque collision.
+    if mods.len() > 1 {
+        return Err(format!(
+            "[rulesets].enabled selects {} rulesets ({enabled:?}), but rustmush runs one \
+             ruleset per server — they all register +roll/+sheet/+chargen, so more than one \
+             collides. Enable exactly one (e.g. [\"shadowrun\"]) or none.",
+            mods.len()
+        ));
     }
     Ok(mods)
 }
@@ -148,8 +174,9 @@ pub fn worldgen_module_with(
 }
 
 /// The M8 NPC agent module. Registered after worldgen and before the rulesets.
-/// `grounding` supplies the ruleset sheet summary + ability tools (the WoD
-/// adapter when `wod` is enabled); `None` runs NPCs dialogue-only.
+/// `grounding` supplies the ruleset sheet summary + ability tools through the
+/// generic [`RulesetAgent`] (whichever ruleset is enabled); `None` runs NPCs
+/// dialogue-only.
 #[must_use]
 pub fn npc_module(grounding: Option<Arc<dyn mush_npc::AgentGrounding>>) -> Box<dyn GameModule> {
     match grounding {
@@ -158,40 +185,75 @@ pub fn npc_module(grounding: Option<Arc<dyn mush_npc::AgentGrounding>>) -> Box<d
     }
 }
 
-/// Build the NPC↔ruleset grounding adapter for the enabled rulesets, if any
-/// grounds NPC agents. `main.rs` passes it to [`npc_module`]. Only `wod` grounds
-/// agents in M8; a config without it leaves NPCs dialogue-only.
+/// Build the NPC↔ruleset grounding adapter for the enabled ruleset, if one
+/// grounds NPC agents. `main.rs` passes it to [`npc_module`]. Grounding
+/// dispatches through the generic [`RulesetAgent`], so **every** ruleset — not
+/// just WoD — grounds its NPCs: a shadowrun-only server grounds SR5 NPCs
+/// (sheet summary + `sr_roll` + `@agent/sheet`) exactly as a wod server grounds
+/// WoD NPCs. A ruleset-less config leaves NPCs dialogue-only (`None`).
+///
+/// Single-ruleset-per-server (see [`ruleset_modules`]), so at most one entry
+/// matches; the first recognized id wins.
 #[must_use]
-pub fn npc_agent_adapter(enabled: &[String]) -> Option<Arc<WodAgent>> {
-    if enabled.iter().any(|s| s.trim().eq_ignore_ascii_case("wod")) {
-        Some(Arc::new(WodAgent {
-            wod: ruleset_wod::WodRuleset::new(),
-        }))
-    } else {
-        None
+pub fn npc_agent_adapter(enabled: &[String]) -> Option<Arc<dyn mush_npc::AgentGrounding>> {
+    for id in enabled {
+        match id.trim().to_ascii_lowercase().as_str() {
+            "wod" => {
+                return Some(Arc::new(RulesetAgent::new(ruleset_wod::WodRuleset::new())));
+            }
+            "shadowrun" => {
+                return Some(Arc::new(RulesetAgent::new(
+                    ruleset_shadowrun::ShadowrunRuleset::new(),
+                )));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// A generic NPC↔ruleset grounding adapter (treaty ruling 6) over any
+/// [`Ruleset`], running **on the world loop**. This is the seam that carries the
+/// milestone's "the plugin API generalises past WoD" claim end-to-end: the NPC
+/// host dispatches grounding through the [`Ruleset`] trait, so any enabled
+/// ruleset grounds its NPCs with no NPC-wiring change — the earlier
+/// `WodAgent` hardcoded the concrete `WodRuleset`, which left a shadowrun-only
+/// server's NPCs dialogue-only despite SR5 fully implementing the seam.
+///
+/// - [`profile`](mush_npc::AgentGrounding::profile) reads the NPC's `sheet:<id>`
+///   document (via a [`SheetStore`](mush_ruleset::SheetStore) over the cloned
+///   schema) and grounds it via [`Ruleset::agent_profile`].
+/// - [`invoke_ability`](mush_npc::AgentGrounding::invoke_ability) executes a
+///   validated ability (`wod_roll`, `sr_roll`, …) via
+///   [`Ruleset::invoke_ability`], which reads the NPC's own sheet, rolls on the
+///   shared server RNG, and emits to the room.
+/// - [`init_sheet`](mush_npc::AgentGrounding::init_sheet) backs `@agent/sheet`
+///   via [`Ruleset::init_sheet`].
+///
+/// The held ruleset is grounding-only — it reads each NPC's own sheet from the
+/// world and rolls on the shared world state, carrying no per-character state.
+pub struct RulesetAgent<R: Ruleset> {
+    ruleset: R,
+    schema: Arc<mush_ruleset::schema::SheetSchema>,
+}
+
+impl<R: Ruleset> RulesetAgent<R> {
+    /// A grounding adapter over `ruleset`, capturing its sheet schema for reads.
+    #[must_use]
+    pub fn new(ruleset: R) -> RulesetAgent<R> {
+        let schema = Arc::new(ruleset.sheet_schema().clone());
+        RulesetAgent { ruleset, schema }
     }
 }
 
-/// The WoD grounding adapter (M8), holding its own [`WodRuleset`]. Both halves
-/// of [`AgentGrounding`](mush_npc::AgentGrounding) run **on the world loop**:
-/// `profile` reads the NPC's `sheet:wod` document and grounds it via
-/// [`Ruleset::agent_profile`](mush_ruleset::Ruleset::agent_profile);
-/// `invoke_ability` executes a `wod_roll` (etc.) via
-/// [`Ruleset::invoke_ability`](mush_ruleset::Ruleset::invoke_ability), which
-/// reads the NPC's own sheet, rolls on the shared RNG, and emits to the room.
-pub struct WodAgent {
-    wod: ruleset_wod::WodRuleset,
-}
-
-impl mush_npc::AgentGrounding for WodAgent {
+impl<R: Ruleset + Send + Sync + 'static> mush_npc::AgentGrounding for RulesetAgent<R> {
     fn profile(
         &self,
         w: &mush_core::World,
         npc: mush_core::ObjId,
     ) -> Option<mush_ruleset::AgentCapabilityProfile> {
-        use mush_ruleset::Ruleset;
-        let doc = self.wod.store().get(w, npc)?;
-        Some(self.wod.agent_profile(&doc))
+        let doc = mush_ruleset::SheetStore::new(Arc::clone(&self.schema)).get(w, npc)?;
+        Some(self.ruleset.agent_profile(&doc))
     }
 
     fn invoke_ability(
@@ -202,8 +264,7 @@ impl mush_npc::AgentGrounding for WodAgent {
         name: &str,
         input: serde_json::Value,
     ) -> Result<mush_ruleset::AbilityOutcome, mush_ruleset::AbilityError> {
-        use mush_ruleset::Ruleset;
-        self.wod.invoke_ability(w, out, npc, name, input)
+        self.ruleset.invoke_ability(w, out, npc, name, input)
     }
 
     fn init_sheet(
@@ -213,9 +274,7 @@ impl mush_npc::AgentGrounding for WodAgent {
         template: &str,
         by: mush_core::ObjId,
     ) -> Result<String, String> {
-        // The `@agent/sheet` bootstrap: give the NPC a real WoD sheet through
-        // the ruleset's validated retemplate path so `wod_roll` has traits.
-        self.wod.init_sheet(w, npc, template, by)
+        self.ruleset.init_sheet(w, npc, template, by)
     }
 }
 
@@ -665,6 +724,33 @@ mod tests {
     }
 
     #[test]
+    fn ruleset_modules_selects_shadowrun() {
+        // "shadowrun" (M10b) resolves to the SR5 ruleset module.
+        let mods = ruleset_modules(
+            &["shadowrun".to_string()],
+            &ruleset_wod::OnboardingConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(mods.len(), 1);
+        assert_eq!(mods[0].name(), "shadowrun");
+    }
+
+    #[test]
+    fn ruleset_modules_rejects_two_rulesets_at_once() {
+        // Single-ruleset-per-server: enabling wod AND shadowrun (both register
+        // +roll/+sheet/+chargen) is caught here with a clear message, not left
+        // to surface as an opaque command collision at registration.
+        let err = match ruleset_modules(
+            &["wod".to_string(), "shadowrun".to_string()],
+            &ruleset_wod::OnboardingConfig::default(),
+        ) {
+            Err(e) => e,
+            Ok(_) => panic!("enabling two rulesets must be rejected"),
+        };
+        assert!(err.contains("one ruleset per server"), "{err}");
+    }
+
+    #[test]
     fn ruleset_modules_rejects_unknown_and_duplicate() {
         // `unwrap_err` needs `Debug` on the Ok value; `dyn GameModule` has
         // none, so match the error out by hand.
@@ -754,11 +840,56 @@ mod tests {
     }
 
     #[test]
-    fn npc_agent_adapter_only_grounds_when_wod_enabled() {
-        // The WoD grounding adapter is built only when "wod" is in the enabled
-        // rulesets; otherwise NPCs run dialogue-only (None).
+    fn ruleset_agent_grounds_a_shadowrun_npc_end_to_end() {
+        // The generic grounding adapter carries the API-scaling claim end-to-end:
+        // on a shadowrun-only world, an NPC grounds through the Ruleset trait
+        // (sheet bootstrap + capability profile), not the concrete WodAgent.
+        use mush_npc::AgentGrounding;
+        use mush_testkit::TestWorld;
+        let mut mods = server_modules(); // carries the jobs module the ruleset needs
+        mods.extend(
+            ruleset_modules(
+                &["shadowrun".to_string()],
+                &ruleset_wod::OnboardingConfig::default(),
+            )
+            .unwrap(),
+        );
+        let mut tw = TestWorld::with_modules(mods);
+        let npc = tw.spawn_player("Ganger");
+        let agent = RulesetAgent::new(ruleset_shadowrun::ShadowrunRuleset::new());
+        // No sheet yet → dialogue-only (no profile).
+        assert!(
+            agent.profile(tw.world(), npc).is_none(),
+            "an NPC with no sheet does not ground"
+        );
+        // The `@agent/sheet` bootstrap gives it a real SR5 sheet via Ruleset::init_sheet.
+        agent
+            .init_sheet(tw.world_mut(), npc, "", npc)
+            .expect("SR5 init_sheet writes a sheet");
+        // Now it grounds: a capability profile carrying the sr_roll tool.
+        let prof = agent
+            .profile(tw.world(), npc)
+            .expect("SR5 NPC grounds through the generic Ruleset seam after init_sheet");
+        assert!(
+            prof.tools.iter().any(|t| t.name == "sr_roll"),
+            "the grounded SR5 NPC exposes the sr_roll ability: {:?}",
+            prof.tools
+        );
+    }
+
+    #[test]
+    fn npc_agent_adapter_grounds_every_enabled_ruleset() {
+        // The generic grounding adapter is built for any ruleset that grounds
+        // NPCs — wod AND shadowrun (each dispatches through its Ruleset trait
+        // impl). A ruleset-less config, or one whose ruleset has no grounding,
+        // runs NPCs dialogue-only (None).
         assert!(npc_agent_adapter(&["wod".to_string()]).is_some());
         assert!(npc_agent_adapter(&["  WoD ".to_string()]).is_some());
+        assert!(
+            npc_agent_adapter(&["shadowrun".to_string()]).is_some(),
+            "SR5 NPCs must ground through the generic Ruleset seam, not just WoD"
+        );
+        assert!(npc_agent_adapter(&["  Shadowrun ".to_string()]).is_some());
         assert!(npc_agent_adapter(&[]).is_none());
         assert!(npc_agent_adapter(&["btech".to_string()]).is_none());
     }

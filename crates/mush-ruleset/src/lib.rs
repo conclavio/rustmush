@@ -171,6 +171,28 @@ pub trait Ruleset: GameModule {
         let _ = (w, out, npc, input);
         Err(AbilityError::Unknown(name.to_string()))
     }
+
+    /// Give `npc` a fresh character sheet of `template` through this ruleset's
+    /// validated sheet-write path, so an NPC agent has real traits for its
+    /// abilities to read. Backs the `@agent/sheet` staff command via the
+    /// driver's generic grounding adapter. `template` is ruleset-specific (a
+    /// splat/template id where the ruleset has them; ignored by single-sheet
+    /// rulesets). The default has no sheet bootstrap and errs.
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable message when the ruleset has no sheet bootstrap,
+    /// the template id is unknown, or the validated write fails.
+    fn init_sheet(
+        &self,
+        w: &mut World,
+        npc: ObjId,
+        template: &str,
+        by: ObjId,
+    ) -> Result<String, String> {
+        let _ = (w, npc, template, by);
+        Err("this ruleset has no character-sheet bootstrap".to_string())
+    }
 }
 
 /// LLM NPC-agent grounding for one NPC (design doc 04 §5.7). The LLM layer
