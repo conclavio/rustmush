@@ -33,6 +33,7 @@ use smol_str::SmolStr;
 use crate::WodCmd;
 use crate::config::{TraitKind, WodConfig};
 use crate::schema::Template;
+use crate::splats::ghoul;
 use crate::splats::{ChargenContribution, Splat, SplatPool, SplatPoolSource, is_template};
 
 /// The canonical V20 Discipline list (others are allowed on the map).
@@ -451,7 +452,16 @@ fn require_kindred(cmd: &WodCmd, ctx: &Ctx<'_>) -> Result<SheetDoc, CmdError> {
 }
 
 /// `+disc` / `+disciplines` / `+disc/roll <discipline>+<trait> [vs <diff>]`.
+///
+/// Vampire owns the `+disc` / `+disciplines` registration for the whole game;
+/// a **ghoul** shares the same commands and sheet-side Disciplines map, so this
+/// delegates to [`ghoul::disc_cmd`](crate::splats::ghoul) when the actor is a
+/// ghoul (its in-set tagging keys off `domitor_clan`, not `clan`). See the
+/// module-collision note in `ghoul.rs`.
 fn disc_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if is_template(cmd, ctx, "ghoul") {
+        return ghoul::disc_cmd(cmd, ctx);
+    }
     let doc = require_kindred(cmd, ctx)?;
     if ctx.switches.has("roll") {
         return disc_roll(cmd, ctx, &doc);
@@ -526,7 +536,16 @@ fn disc_roll(cmd: &WodCmd, ctx: &mut Ctx<'_>, doc: &SheetDoc) -> Result<(), CmdE
 
 /// `+blood` / `+blood/spend <n>` / `+blood/gain <n>` / `+blood/heal [<n>]` /
 /// `+blood/buff <n>`.
+///
+/// Vampire owns the `+blood` registration for the whole game; a **ghoul** has
+/// its own flat 10-point Blood Pool (fed only by drinking), so this delegates
+/// to [`ghoul::blood_cmd`](crate::splats::ghoul) when the actor is a ghoul
+/// rather than run the generation-scaled Kindred table (a ghoul has no
+/// `generation`). See the module-collision note in `ghoul.rs`.
 fn blood_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if is_template(cmd, ctx, "ghoul") {
+        return ghoul::blood_cmd(cmd, ctx);
+    }
     let mut doc = require_kindred(cmd, ctx)?;
     let generation = doc.number("generation").unwrap_or(13) as i32;
     let gt = generation_traits(generation);

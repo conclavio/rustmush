@@ -3,12 +3,16 @@
 The game runs on the Classic World of Darkness 20th Anniversary rules (the
 Storyteller System — V20 / M20 / W20 core). Your character is described by a
 sheet you build in chargen and roll against in play. Every character is exactly
-one **template**: a plain **Mortal**, or one of the three splats — **Vampire**
-(V20), **Mage** (M20), or **Werewolf** (W20) — each of which adds its own sheet
-sections, powers, and commands on top of the shared base. You pick your template
-during chargen (see below). The splat commands (`+disc`, `+cast`, `+shift`, …)
-are always available, but each works only for a character of its splat and
-politely refuses everyone else ("You are not Kindred.").
+one **template**: a plain **Mortal**, or one of the splats — **Vampire** (V20),
+**Mage** (M20), **Werewolf** (W20), **Changeling** (C20), or the two
+mortal-plus templates **Ghoul** (a mortal bound to a vampire) and **Kinfolk** (a
+Garou's mortal kin) — each of which adds its own sheet sections, powers, and
+commands on top of the shared base. You pick your template during chargen (see
+below). The splat commands (`+disc`, `+cast`, `+shift`, `+cantrip`, …) are
+always available, but each works only for a character of its splat (or a
+template that shares it — a Ghoul uses the vampire `+disc`/`+blood`, a Kinfolk
+the werewolf `+gnosis`/`+gift`) and politely refuses everyone else ("You are not
+Kindred.").
 
 ## Your sheet
 
@@ -75,12 +79,15 @@ upgrades the least-severe mark. A full track is Incapacitated.
 ## Character generation
 
   +chargen                   Start (or resume) chargen. Creates your sheet.
-  +chargen/template <mortal|vampire|mage|werewolf>
+  +chargen/template <mortal|vampire|mage|werewolf|changeling|ghoul|kinfolk>
                              Choose your template/splat. This adds that splat's
                              sheet sections (a vampire gets Disciplines / Blood
                              Pool / Generation; a mage Spheres / Arete; a Garou
-                             Rage / Gnosis / Renown / Gifts). Mortal is the
-                             default; switching wipes the previous splat's fields.
+                             Rage / Gnosis / Renown / Gifts; a changeling the Fae
+                             block with Arts / Realms / Glamour; a ghoul
+                             Disciplines + a Blood Pool; a kinfolk a Tribe,
+                             Gnosis and level-1 Gifts). Mortal is the default;
+                             switching wipes the previous splat's fields.
   +chargen/attr physical=7 social=5 mental=3
                              Assign the 7/5/3 attribute priorities.
   +chargen/abil talents=13 skills=9 knowledges=5
@@ -171,6 +178,53 @@ of the wrong template.
                              war forms' Physical bonuses apply to your rolls
                              while shifted.
   +rank                      Show your Rank (from permanent Renown).
+
+**Changeling (C20)** — you are Kithain, of a Kith / Seeming / Court:
+
+  +arts                      List your Arts; +art <name>=<0..5> rates one
+                             (Arts are open-ended).
+  +realms                    List your Realms; +realm <name>=<0..5> rates one
+                             (the six canonical Realms: Actor, Fae, Nature,
+                             Prop, Scene, Time).
+  +cantrip <art>+<realm> [vs <diff>]
+                             Weave a cantrip — roll the Art pool (the Realm is
+                             a level-gate: you must have a dot in it, but only
+                             the Art's dots are rolled), e.g.
+                             +cantrip chicanery+actor vs 6.
+                             +cantrip/bunk lowers the difficulty by 1 (floor 3).
+  +glamour                   Show/spend/gain your Glamour (recovers up to your
+                             permanent rating; raise it with +xp/spend glamour).
+  +banality                  Show your Banality (staff adjust with
+                             +banality/set <target>=<n>).
+  +legacy                    Show your Court and Seelie/Unseelie Legacies.
+
+**Ghoul (V20 mortal-plus)** — a mortal bound to a vampire domitor. A ghoul
+shares the vampire Discipline and Blood commands:
+
+  +disc / +disc/roll …       As Vampire (every ghoul starts with Potence 1; a
+                             domitor-clan Discipline is cheaper to raise).
+  +blood / +blood/spend <n> / +blood/gain <n> / +blood/heal [<n>]
+                             A flat 10-point Blood Pool, refilled only by
+                             drinking your domitor's vitae; /heal spends vitae
+                             to mend bashing/lethal (1:1).
+  +domitor                   Show your domitor and their clan.
+  +bond                      Show your Blood Bond level (0–3; staff set it with
+                             +bond/set <target>=<n>).
+
+**Kinfolk (W20 mortal-plus)** — a Garou's mortal relative: a Tribe, perhaps a
+little Gnosis, and immunity to the Delirium. A kinfolk shares the werewolf
+Gnosis and Gift commands:
+
+  +tribe                     Show your Tribe, Gnosis, Pure Breed, Delirium
+                             immunity, and the Gifts open to you.
+  +gnosis                    As Werewolf — show/spend/gain your Gnosis (0–3 for
+                             Kinfolk; raise it with +xp/spend gnosis=<n>).
+  +gifts / +gift/roll <gift>=<attribute>+<ability> [vs <diff>]
+                             As Werewolf — a kinfolk with Gnosis may know a
+                             level-1 Gift.
+
+Gnosis and Pure Breed are bought as ordinary **Backgrounds** at chargen
+(`+stat backgrounds:Gnosis=2`), not as a separate pool.
 
 ## Staff
 

@@ -99,13 +99,16 @@ pool (`+roll strength+brawl vs 6`, with `/spec` `/wp` `/priv` `/nowound` and inl
 sheets are stored as object attributes, so they persist and reload with the world — no
 separate save path. In-game: `help wod`.
 
-It ships all four **templates** — Mortal plus the **Vampire** (V20), **Mage** (M20), and
-**Werewolf** (W20) splats. Every template is always selectable (there is no per-splat
-allow-list): a player picks one during chargen with `+chargen/template`, and each character
-is exactly one template whose sheet carries only that splat's sections and per-template schema
-(a vampire's Disciplines / Blood Pool, a mage's Spheres / Arete, a Garou's Rage / Gnosis /
-Gifts). Splat commands (`+disc`/`+blood`, `+cast`/`+sphere`, `+shift`/`+rage`, …) are always
-registered but self-gate on the actor's template and refuse everyone else.
+It ships seven **templates** — Mortal plus the **Vampire** (V20), **Mage** (M20), **Werewolf**
+(W20), and **Changeling** (C20) splats, and the two mortal-plus templates **Ghoul** (a mortal
+bound to a vampire) and **Kinfolk** (a Garou's mortal kin). Every template is always
+selectable (there is no per-splat allow-list): a player picks one during chargen with
+`+chargen/template`, and each character is exactly one template whose sheet carries only that
+splat's sections and per-template schema (a vampire's Disciplines / Blood Pool, a mage's
+Spheres / Arete, a Garou's Rage / Gnosis / Gifts, a changeling's Arts / Realms / Glamour).
+Splat commands (`+disc`/`+blood`, `+cast`/`+sphere`, `+shift`/`+rage`, `+cantrip`/`+glamour`,
+…) are always registered but self-gate on the actor's template and refuse everyone else; a
+Ghoul shares the vampire `+disc`/`+blood` surface and a Kinfolk the werewolf `+gnosis`/`+gift`.
 
 **LLM worldbuilding** (M7) is configured in `[llm]` and is **off by default**
 (`enabled = false`) — a keyless clone boots and `@gen` just answers "LLM features are

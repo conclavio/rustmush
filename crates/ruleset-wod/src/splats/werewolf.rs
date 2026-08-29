@@ -700,6 +700,22 @@ fn require_garou(cmd: &WodCmd, ctx: &Ctx<'_>) -> Result<SheetDoc, CmdError> {
         .ok_or_else(|| CmdError::msg("You have no sheet."))
 }
 
+/// Refuse politely unless the actor is Garou **or Kinfolk** — the two W20
+/// templates that share Gnosis and Gifts. Used by `+gnosis` and `+gift`
+/// (which Kinfolk reuse rather than re-register — see
+/// [`crate::splats::kinfolk`]); the strictly-Garou commands (`+rage`,
+/// `+renown`, `+shift`, `+rank`) keep [`require_garou`]. Both handlers are
+/// already schema-generic — they read `gnosis`/`gnosis_temp`/`gifts` off
+/// whatever sheet is passed — so no further Kinfolk-specific branching is
+/// needed here.
+fn require_garou_or_kin(cmd: &WodCmd, ctx: &Ctx<'_>) -> Result<SheetDoc, CmdError> {
+    if !is_template(cmd, ctx, "werewolf") && !is_template(cmd, ctx, "kinfolk") {
+        return Err(CmdError::msg("You are not Garou or Kinfolk."));
+    }
+    cmd.read(ctx.w, ctx.actor)
+        .ok_or_else(|| CmdError::msg("You have no sheet."))
+}
+
 /// `+rage` / `+rage/spend <n>` / `+rage/gain <n>` / `+rage/frenzy [vs <diff>]`.
 fn rage_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let mut doc = require_garou(cmd, ctx)?;
@@ -787,9 +803,9 @@ fn rage_frenzy(cmd: &WodCmd, ctx: &mut Ctx<'_>, doc: &SheetDoc) -> Result<(), Cm
     Ok(())
 }
 
-/// `+gnosis` / `+gnosis/spend <n>` / `+gnosis/gain <n>`.
+/// `+gnosis` / `+gnosis/spend <n>` / `+gnosis/gain <n>` (Garou or Kinfolk).
 fn gnosis_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let mut doc = require_garou(cmd, ctx)?;
+    let mut doc = require_garou_or_kin(cmd, ctx)?;
     let perm = doc.number("gnosis").unwrap_or(0) as i32;
     let cur = doc.number("gnosis_temp").unwrap_or(0) as i32;
     if ctx.switches.has("spend") {
@@ -906,9 +922,10 @@ fn renown_gain(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-/// `+gifts` / `+gift` (list) / `+gift/roll <gift>=<pool> [vs <diff>]`.
+/// `+gifts` / `+gift` (list) / `+gift/roll <gift>=<pool> [vs <diff>]` (Garou or
+/// Kinfolk — Kinfolk with Gnosis may know a level-1 Gift).
 fn gift_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let doc = require_garou(cmd, ctx)?;
+    let doc = require_garou_or_kin(cmd, ctx)?;
     if ctx.switches.has("roll") {
         return gift_roll(cmd, ctx, &doc);
     }

@@ -1105,3 +1105,234 @@ async fn sheet_query_routes_to_the_ruleset_over_web() {
         "the staff-set strength reached the web sheet: {data}"
     );
 }
+
+/// M10a: the schema-generic web Sheet panel needs **no** change to serve a new
+/// template — the `wod.sheet` query selects the character's active
+/// (template-dispatched) schema and returns a well-formed schema + data payload
+/// for a **Changeling** exactly as it does for a Mortal. This confirms the
+/// payload is well-formed for one of the M10a templates: the returned schema is
+/// the changeling one (Fae / Arts / Realms sections, not Disciplines) and the
+/// staff-set changeling fields ride the `data` block.
+#[tokio::test(flavor = "multi_thread")]
+async fn changeling_sheet_routes_over_web() {
+    let rig = boot_wod("changeling-sheet", SessionConfig::default(), 0).await;
+    let (_god_handle, mut god) = god_terminal(&rig).await;
+
+    let (token, key) = register(&rig, "titania", "hunter42", "Titania").await;
+    let mut ws = connect_ws(&rig, &token, key, "").await.expect("ws connect");
+    let (features, panels) = expect_hello(&mut ws).await;
+    assert!(
+        features.iter().any(|f| f == "wod"),
+        "wod feature: {features:?}"
+    );
+    let sheet_feed = panels
+        .iter()
+        .find(|p| p.ends_with(".sheet"))
+        .cloned()
+        .expect("a <ruleset>.sheet feed in the manifest");
+    let _ = expect_env(&mut ws, "Connected as Titania").await;
+    let _ = expect_env(&mut ws, "Limbo(#0)").await;
+    god.expect("Titania has connected.").await;
+
+    // Staff turn Titania Kithain and set some Fae traits (re-shapes the sheet to
+    // the changeling schema; a mortal's schema has none of these fields).
+    god.send_line("@sheet/set Titania/template=changeling")
+        .await;
+    god.expect("Set Titania/template = changeling").await;
+    god.send_line("@sheet/set Titania/kith=pooka").await;
+    god.expect("Set Titania/kith").await;
+    god.send_line("@sheet/set Titania/glamour=3").await;
+    god.expect("Set Titania/glamour").await;
+    god.send_line("@sheet/set Titania/arts:Chicanery=2").await;
+    god.expect("Set Titania/arts:Chicanery").await;
+
+    // The web client asks for its sheet; the reply carries the changeling
+    // schema + data.
+    send_cmd(
+        &mut ws,
+        &ClientCommand::Req {
+            id: 9,
+            q: Query::Sheet,
+        },
+    )
+    .await;
+    let env = expect_env(&mut ws, "[reply 9]").await;
+    let OutputEvent::Reply { id: 9, event } = &env.event else {
+        panic!("expected Reply 9, got {:?}", env.event);
+    };
+    let OutputEvent::Panel { feed, data, .. } = event.as_ref() else {
+        panic!("expected a sheet Panel keyframe, got {event:?}");
+    };
+    assert_eq!(feed.as_str(), sheet_feed, "reply rides the sheet feed");
+
+    // The payload is well-formed: it carries a schema, and that schema is the
+    // *changeling* one (Arts / Glamour present, Disciplines absent).
+    let schema = data.get("schema").expect("sheet payload carries a schema");
+    let schema_str = schema.to_string();
+    assert!(
+        schema_str.contains("arts") && schema_str.contains("glamour"),
+        "the selected schema is the changeling one: {schema_str}"
+    );
+    assert!(
+        !schema_str.contains("disciplines"),
+        "the changeling schema has no Disciplines: {schema_str}"
+    );
+
+    // The staff-set changeling fields reached the web sheet data block.
+    assert_eq!(data["data"]["template"], "changeling");
+    assert_eq!(data["data"]["kith"], "pooka");
+    assert_eq!(data["data"]["glamour"], 3);
+    assert_eq!(
+        data["data"]["arts"]["Chicanery"], 2,
+        "the Arts map rode the web sheet data: {data}"
+    );
+}
+
+/// M10a: the schema-generic web Sheet panel serves a **Ghoul** with no web
+/// change — the payload carries the ghoul schema (Disciplines + Blood Pool, not
+/// Fae / Spheres) and the staff-set ghoul fields ride the `data` block.
+#[tokio::test(flavor = "multi_thread")]
+async fn ghoul_sheet_routes_over_web() {
+    let rig = boot_wod("ghoul-sheet", SessionConfig::default(), 0).await;
+    let (_god_handle, mut god) = god_terminal(&rig).await;
+
+    let (token, key) = register(&rig, "renfield", "hunter42", "Renfield").await;
+    let mut ws = connect_ws(&rig, &token, key, "").await.expect("ws connect");
+    let (features, panels) = expect_hello(&mut ws).await;
+    assert!(
+        features.iter().any(|f| f == "wod"),
+        "wod feature: {features:?}"
+    );
+    let sheet_feed = panels
+        .iter()
+        .find(|p| p.ends_with(".sheet"))
+        .cloned()
+        .expect("a <ruleset>.sheet feed in the manifest");
+    let _ = expect_env(&mut ws, "Connected as Renfield").await;
+    let _ = expect_env(&mut ws, "Limbo(#0)").await;
+    god.expect("Renfield has connected.").await;
+
+    // Staff turn Renfield a ghoul and set some Kindred-adjacent traits.
+    god.send_line("@sheet/set Renfield/template=ghoul").await;
+    god.expect("Set Renfield/template = ghoul").await;
+    god.send_line("@sheet/set Renfield/domitor_clan=gangrel")
+        .await;
+    god.expect("Set Renfield/domitor_clan").await;
+    god.send_line("@sheet/set Renfield/disciplines:Potence=1")
+        .await;
+    god.expect("Set Renfield/disciplines:Potence").await;
+    god.send_line("@sheet/set Renfield/bloodpool=6").await;
+    god.expect("Set Renfield/bloodpool").await;
+
+    send_cmd(
+        &mut ws,
+        &ClientCommand::Req {
+            id: 11,
+            q: Query::Sheet,
+        },
+    )
+    .await;
+    let env = expect_env(&mut ws, "[reply 11]").await;
+    let OutputEvent::Reply { id: 11, event } = &env.event else {
+        panic!("expected Reply 11, got {:?}", env.event);
+    };
+    let OutputEvent::Panel { feed, data, .. } = event.as_ref() else {
+        panic!("expected a sheet Panel keyframe, got {event:?}");
+    };
+    assert_eq!(feed.as_str(), sheet_feed, "reply rides the sheet feed");
+
+    // The payload is the *ghoul* schema (Disciplines + Blood Pool present, Fae /
+    // Spheres absent).
+    let schema = data.get("schema").expect("sheet payload carries a schema");
+    let schema_str = schema.to_string();
+    assert!(
+        schema_str.contains("disciplines") && schema_str.contains("bloodpool"),
+        "the selected schema is the ghoul one: {schema_str}"
+    );
+    assert!(
+        !schema_str.contains("\"arts\"") && !schema_str.contains("spheres"),
+        "the ghoul schema has no Fae/Spheres: {schema_str}"
+    );
+
+    assert_eq!(data["data"]["template"], "ghoul");
+    assert_eq!(data["data"]["domitor_clan"], "gangrel");
+    assert_eq!(data["data"]["bloodpool"], 6);
+    assert_eq!(
+        data["data"]["disciplines"]["Potence"], 1,
+        "the Disciplines map rode the web sheet data: {data}"
+    );
+}
+
+/// M10a: the schema-generic web Sheet panel serves a **Kinfolk** with no web
+/// change — the payload carries the kinfolk schema (Gnosis + Gifts, not Rage /
+/// Disciplines) and the staff-set kinfolk fields ride the `data` block.
+#[tokio::test(flavor = "multi_thread")]
+async fn kinfolk_sheet_routes_over_web() {
+    let rig = boot_wod("kinfolk-sheet", SessionConfig::default(), 0).await;
+    let (_god_handle, mut god) = god_terminal(&rig).await;
+
+    let (token, key) = register(&rig, "willa", "hunter42", "Willa").await;
+    let mut ws = connect_ws(&rig, &token, key, "").await.expect("ws connect");
+    let (features, panels) = expect_hello(&mut ws).await;
+    assert!(
+        features.iter().any(|f| f == "wod"),
+        "wod feature: {features:?}"
+    );
+    let sheet_feed = panels
+        .iter()
+        .find(|p| p.ends_with(".sheet"))
+        .cloned()
+        .expect("a <ruleset>.sheet feed in the manifest");
+    let _ = expect_env(&mut ws, "Connected as Willa").await;
+    let _ = expect_env(&mut ws, "Limbo(#0)").await;
+    god.expect("Willa has connected.").await;
+
+    // Staff turn Willa Kinfolk and set some traits (gnosis is chargen-locked but
+    // @sheet/set is staff and writes it directly).
+    god.send_line("@sheet/set Willa/template=kinfolk").await;
+    god.expect("Set Willa/template = kinfolk").await;
+    god.send_line("@sheet/set Willa/tribe=fianna").await;
+    god.expect("Set Willa/tribe").await;
+    god.send_line("@sheet/set Willa/gnosis=3").await;
+    god.expect("Set Willa/gnosis").await;
+    god.send_line("@sheet/set Willa/gifts:Persuasion=1").await;
+    god.expect("Set Willa/gifts:Persuasion").await;
+
+    send_cmd(
+        &mut ws,
+        &ClientCommand::Req {
+            id: 13,
+            q: Query::Sheet,
+        },
+    )
+    .await;
+    let env = expect_env(&mut ws, "[reply 13]").await;
+    let OutputEvent::Reply { id: 13, event } = &env.event else {
+        panic!("expected Reply 13, got {:?}", env.event);
+    };
+    let OutputEvent::Panel { feed, data, .. } = event.as_ref() else {
+        panic!("expected a sheet Panel keyframe, got {event:?}");
+    };
+    assert_eq!(feed.as_str(), sheet_feed, "reply rides the sheet feed");
+
+    // The payload is the *kinfolk* schema (Gnosis + Gifts present, Rage /
+    // Disciplines absent).
+    let schema = data.get("schema").expect("sheet payload carries a schema");
+    let schema_str = schema.to_string();
+    assert!(
+        schema_str.contains("gnosis") && schema_str.contains("gifts"),
+        "the selected schema is the kinfolk one: {schema_str}"
+    );
+    assert!(
+        !schema_str.contains("\"rage\"") && !schema_str.contains("disciplines"),
+        "the kinfolk schema has no Rage/Disciplines: {schema_str}"
+    );
+
+    assert_eq!(data["data"]["template"], "kinfolk");
+    assert_eq!(data["data"]["tribe"], "fianna");
+    assert_eq!(data["data"]["gnosis"], 3);
+    assert_eq!(
+        data["data"]["gifts"]["Persuasion"], 1,
+        "the Gifts map rode the web sheet data: {data}"
+    );
+}

@@ -639,6 +639,9 @@ fn template_blurb(id: &str) -> &'static str {
         "vampire" => "Kindred of the Masquerade — Clan, Disciplines, Blood Pool",
         "mage" => "an Awakened will-worker — Tradition, Arete, nine Spheres",
         "werewolf" => "a Garou shapeshifter — Breed, Auspice, Tribe, Rage & Gnosis",
+        "changeling" => "one of the Kithain — Kith, Seeming, Court, Arts & Realms, Glamour",
+        "ghoul" => "a mortal bound to a vampire — Domitor's Clan, Disciplines, Blood Pool",
+        "kinfolk" => "a Garou's mortal kin — Tribe, Gnosis, level-1 Gifts, Delirium immunity",
         _ => "a character template",
     }
 }

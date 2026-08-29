@@ -276,21 +276,30 @@ Bruised→Incapacitated track with wound penalties), and `+xp` / `+xp/spend`
 (costed raises applied atomically on `+job/approve`) / `+xp/award` (staff). The
 dice RNG is OS-seeded in production. In-game reference: `help wod`.
 
-**Splats (M6b).** `wod` ships four **templates**: Mortal plus the Vampire (V20),
-Mage (M20), and Werewolf (W20) splats. There is **no per-splat config knob** —
-every template is always selectable, and a player picks theirs during chargen
-with `+chargen/template <mortal|vampire|mage|werewolf>` (staff can re-template a
-sheet with `@sheet/set <who>/template=<id>`). A character is exactly **one**
-template; the ruleset builds one composed schema per template at boot (base +
-that splat's sections only), and every surface — `+sheet` render, sheet
-validation, chargen accounting, `+roll` field resolution, and the web sheet
-query — selects the active schema by the sheet's `template` field. So a
-vampire's sheet carries Disciplines / Blood Pool / Generation, a mage's Spheres /
-Arete / Quintessence / Paradox, a Garou's Rage / Gnosis / Renown / Gifts, and
-never another splat's. The splat commands (`+disc`/`+blood`/`+frenzy`,
+**Splats (M6b + M10a).** `wod` ships seven **templates**: Mortal plus the Vampire
+(V20), Mage (M20), Werewolf (W20) and Changeling (C20) splats, and the two
+mortal-plus templates Ghoul (V20; a mortal bound to a vampire) and Kinfolk (W20;
+a Garou's mortal kin). There is **no per-splat config knob** — every template is
+always selectable, and a player picks theirs during chargen with
+`+chargen/template <mortal|vampire|mage|werewolf|changeling|ghoul|kinfolk>`
+(staff can re-template a sheet with `@sheet/set <who>/template=<id>`). A
+character is exactly **one** template; the ruleset builds one composed schema per
+template at boot (base + that splat's sections only), and every surface —
+`+sheet` render, sheet validation, chargen accounting, `+roll` field resolution,
+and the web sheet query — selects the active schema by the sheet's `template`
+field. So a vampire's sheet carries Disciplines / Blood Pool / Generation, a
+mage's Spheres / Arete / Quintessence / Paradox, a Garou's Rage / Gnosis /
+Renown / Gifts, a changeling's Arts / Realms / Glamour / Banality, and never
+another splat's. The splat commands (`+disc`/`+blood`/`+frenzy`,
 `+cast`/`+sphere`/`+quint`/`+paradox`, `+shift`/`+rage`/`+gnosis`/`+gifts`/`+renown`,
+`+cantrip`/`+art`/`+realm`/`+glamour`/`+banality`, `+domitor`/`+bond`, `+tribe`,
 …) are all registered at boot and self-gate on the actor's template, refusing
-everyone else ("You are not Kindred/Awakened/Garou.").
+everyone else ("You are not Kindred/Awakened/Garou/Kithain."). Two templates
+**share** another's command surface rather than re-registering colliding names:
+a **Ghoul** reuses the vampire `+disc`/`+blood` (which delegate to the ghoul's
+own flat Blood Pool + domitor-clan Discipline logic), and a **Kinfolk** reuses
+the werewolf `+gnosis`/`+gift` (whose gate is widened to accept Garou *or*
+Kinfolk); the strictly-Garou `+rage`/`+shift`/`+renown`/`+rank` stay Garou-only.
 
 **Persistence.** Like scripting, the WoD ruleset has **no `mod:wod:*` namespace
 and runs no store migrations**: a character sheet is a single `sheet:wod`

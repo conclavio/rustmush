@@ -51,6 +51,9 @@
 //! Everything else (Attributes, Abilities, Backgrounds, Willpower, Health,
 //! Virtues, `+roll`, `+harm`) is base machinery every splat inherits for free.
 
+pub mod changeling;
+pub mod ghoul;
+pub mod kinfolk;
 pub mod mage;
 pub mod vampire;
 pub mod werewolf;
@@ -68,9 +71,29 @@ use crate::config::{TraitKind, WodConfig};
 use crate::schema::{Template, base_builder};
 
 /// The templates a default full game enables, in display order. The first is
-/// the fallback for a sheet with no (or an unknown) `template` field. Phase-2
-/// agents append `"mage"` / `"werewolf"` here once those splats land.
-pub const DEFAULT_TEMPLATES: &[&str] = &["mortal", "vampire", "mage", "werewolf"];
+/// the fallback for a sheet with no (or an unknown) `template` field. M6b
+/// landed Vampire/Mage/Werewolf; M10a adds the three mortal-plus / secondary
+/// templates Changeling / Ghoul / Kinfolk.
+///
+/// **Parent-template invariant (M10a):** `ghoul`'s `+disc`/`+blood` commands
+/// are registered by (and delegate into) `vampire`, and `kinfolk`'s
+/// `+gnosis`/`+gift` are registered by `werewolf` — so a live game that enables
+/// `ghoul` must also enable `vampire`, and one that enables `kinfolk` must also
+/// enable `werewolf`, or those splats ship without their power commands (no
+/// boot error, just a missing surface). `DEFAULT_TEMPLATES` satisfies this by
+/// listing both parents. A future configurable-subset feature must preserve the
+/// pairing (or move the registrations). Isolated `with_templates`/`with_splats`
+/// test sets deliberately exercise a child without its parent, so this is a
+/// documented convention, not a runtime assertion.
+pub const DEFAULT_TEMPLATES: &[&str] = &[
+    "mortal",
+    "vampire",
+    "mage",
+    "werewolf",
+    "changeling",
+    "ghoul",
+    "kinfolk",
+];
 
 /// The extended template contract (M6b) — a supertrait of the M6a
 /// [`schema::Template`](crate::schema::Template) schema seam that adds chargen,
@@ -292,14 +315,18 @@ pub(crate) fn all_splats(enabled: &[&str]) -> Vec<Arc<dyn Splat>> {
     enabled.iter().filter_map(|id| splat_by_id(id)).collect()
 }
 
-/// The single match point from a template id to its [`Splat`]. Phase-2 agents
-/// add `"mage"` / `"werewolf"` arms here.
+/// The single match point from a template id to its [`Splat`]. Each splat
+/// module exposes its instance behind an `Arc<dyn Splat>` (vampire directly,
+/// the rest via a `template()` constructor).
 fn splat_by_id(id: &str) -> Option<Arc<dyn Splat>> {
     match id {
         "mortal" => Some(Arc::new(MortalSplat)),
         "vampire" => Some(Arc::new(vampire::Vampire)),
         "mage" => Some(mage::template()),
         "werewolf" => Some(werewolf::template()),
+        "changeling" => Some(changeling::template()),
+        "ghoul" => Some(ghoul::template()),
+        "kinfolk" => Some(kinfolk::template()),
         _ => None,
     }
 }

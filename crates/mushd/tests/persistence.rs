@@ -896,13 +896,16 @@ async fn wod_sheet_persistence_round_trip_redis_gated() {
     wod_sheet_round_trip(Arc::new(store)).await;
 }
 
-/// The M6b splat twin: staff-build one of **each** splat — a Vampire
+/// The M6b/M10a splat twin: staff-build one of **each** splat — a Vampire
 /// (Disciplines / Blood Pool / Generation), a Mage (Spheres / Arete /
-/// Quintessence) and a Werewolf (the Garou block, the split Rage/Gnosis pools,
-/// `current_form` and Gifts) — reboot from the store alone, and assert every
-/// splat sheet survived, holds its own values, and still validates against the
-/// per-template schema selected by its `template` field (not merely the base
-/// mortal one).
+/// Quintessence), a Werewolf (the Garou block, the split Rage/Gnosis pools,
+/// `current_form` and Gifts), a Changeling (the Fae block, Arts / Realms
+/// dots-maps and the split Glamour pool), a Ghoul (the Ghoul block, the
+/// Disciplines map, the flat Blood Pool and the Blood Bond), and a Kinfolk (the
+/// Kinfolk block, the split Gnosis pool, the Gifts map and the Delirium flag) —
+/// reboot from the store alone, and assert every splat sheet survived, holds its
+/// own values, and still validates against the per-template schema selected by
+/// its `template` field (not merely the base mortal one).
 async fn wod_splat_sheet_round_trip(store: Arc<dyn ObjectStore>) {
     use mush_ruleset::SheetDoc;
 
@@ -945,6 +948,41 @@ async fn wod_splat_sheet_round_trip(store: Arc<dyn ObjectStore>) {
     god_cmd(&world, "@sheet/set Rex/gnosis=5").await;
     god_cmd(&world, "@sheet/set Rex/current_form=crinos").await;
     god_cmd(&world, "@sheet/set Rex/gifts:Razor Claws=2").await;
+
+    // A Changeling (M10a) — the Fae block, Arts / Realms dots-maps, and the
+    // Glamour pool must all survive on the changeling schema.
+    let nuala = world.create_player("Nuala").await.expect("create Nuala");
+    god_cmd(&world, "@sheet/set Nuala/template=changeling").await;
+    god_cmd(&world, "@sheet/set Nuala/kith=pooka").await;
+    god_cmd(&world, "@sheet/set Nuala/seeming=childling").await;
+    god_cmd(&world, "@sheet/set Nuala/court=seelie").await;
+    god_cmd(&world, "@sheet/set Nuala/arts:Chicanery=2").await;
+    god_cmd(&world, "@sheet/set Nuala/realms:Actor=3").await;
+    god_cmd(&world, "@sheet/set Nuala/glamour=4").await;
+    god_cmd(&world, "@sheet/set Nuala/glamour_temp=3").await;
+    god_cmd(&world, "@sheet/set Nuala/banality=2").await;
+
+    // A Ghoul (M10a) — the Ghoul block, the Disciplines map (free Potence plus a
+    // domitor-clan pick), the flat Blood Pool and the Blood Bond must survive on
+    // the ghoul schema (which carries no clan/generation/weakness).
+    let grimm = world.create_player("Grimm").await.expect("create Grimm");
+    god_cmd(&world, "@sheet/set Grimm/template=ghoul").await;
+    god_cmd(&world, "@sheet/set Grimm/domitor_clan=gangrel").await;
+    god_cmd(&world, "@sheet/set Grimm/domitor=Lady Sascha").await;
+    god_cmd(&world, "@sheet/set Grimm/disciplines:Potence=1").await;
+    god_cmd(&world, "@sheet/set Grimm/disciplines:Fortitude=2").await;
+    god_cmd(&world, "@sheet/set Grimm/bloodpool=6").await;
+    god_cmd(&world, "@sheet/set Grimm/bond_level=2").await;
+
+    // A Kinfolk (M10a) — the Kinfolk block, the split Gnosis pool, the Gifts map
+    // and the Delirium-immunity flag must survive on the kinfolk schema (no
+    // Rage / Renown / Disciplines).
+    let willa = world.create_player("Willa").await.expect("create Willa");
+    god_cmd(&world, "@sheet/set Willa/template=kinfolk").await;
+    god_cmd(&world, "@sheet/set Willa/tribe=fianna").await;
+    god_cmd(&world, "@sheet/set Willa/gnosis=3").await;
+    god_cmd(&world, "@sheet/set Willa/gnosis_temp=2").await;
+    god_cmd(&world, "@sheet/set Willa/gifts:Persuasion=1").await;
 
     // Fence on an ack-gated create so every sheet write has landed in the store.
     world.create_player("Fence").await.expect("fence create");
@@ -1041,6 +1079,121 @@ async fn wod_splat_sheet_round_trip(store: Arc<dyn ObjectStore>) {
     mush_ruleset::validate(&wschema, &wdoc.data)
         .expect("reloaded werewolf sheet must validate against the werewolf schema");
 
+    // --- Changeling: Fae block, Arts / Realms maps + Glamour pool. ----------
+    let cattr = reloaded
+        .attr(nuala, "sheet:wod")
+        .and_then(mush_core::Attr::as_json)
+        .expect("the changeling sheet survived the reboot");
+    let cdoc: SheetDoc = serde_json::from_value(cattr.clone()).expect("changeling sheet decodes");
+    assert_eq!(
+        cdoc.text("template"),
+        Some("changeling"),
+        "changeling template survived"
+    );
+    assert_eq!(cdoc.text("kith"), Some("pooka"), "kith survived");
+    assert_eq!(
+        cdoc.number("glamour"),
+        Some(4),
+        "permanent Glamour survived"
+    );
+    assert_eq!(
+        cdoc.number("glamour_temp"),
+        Some(3),
+        "temporary Glamour pool survived independently of the permanent rating"
+    );
+    assert_eq!(cdoc.number("banality"), Some(2), "Banality survived");
+    assert_eq!(
+        cdoc.map("arts").expect("Arts map survived")["Chicanery"],
+        serde_json::json!(2)
+    );
+    assert_eq!(
+        cdoc.map("realms").expect("Realms map survived")["Actor"],
+        serde_json::json!(3)
+    );
+    let cschema = ruleset.schema_for(&cdoc);
+    assert!(
+        cschema.field("arts").is_some()
+            && cschema.field("glamour").is_some()
+            && cschema.field("disciplines").is_none(),
+        "the selected schema is the changeling one"
+    );
+    mush_ruleset::validate(&cschema, &cdoc.data)
+        .expect("reloaded changeling sheet must validate against the changeling schema");
+
+    // --- Ghoul: Ghoul block, Disciplines map, flat Blood Pool + Blood Bond. --
+    let gattr = reloaded
+        .attr(grimm, "sheet:wod")
+        .and_then(mush_core::Attr::as_json)
+        .expect("the ghoul sheet survived the reboot");
+    let gdoc: SheetDoc = serde_json::from_value(gattr.clone()).expect("ghoul sheet decodes");
+    assert_eq!(
+        gdoc.text("template"),
+        Some("ghoul"),
+        "ghoul template survived"
+    );
+    assert_eq!(
+        gdoc.text("domitor_clan"),
+        Some("gangrel"),
+        "domitor clan survived"
+    );
+    assert_eq!(gdoc.number("bloodpool"), Some(6), "Blood Pool survived");
+    assert_eq!(gdoc.number("bond_level"), Some(2), "Blood Bond survived");
+    let gdisc = gdoc.map("disciplines").expect("Disciplines map survived");
+    assert_eq!(
+        gdisc["Potence"],
+        serde_json::json!(1),
+        "free Potence survived"
+    );
+    assert_eq!(gdisc["Fortitude"], serde_json::json!(2));
+    let gschema = ruleset.schema_for(&gdoc);
+    assert!(
+        gschema.field("disciplines").is_some()
+            && gschema.field("bloodpool").is_some()
+            && gschema.field("generation").is_none()
+            && gschema.field("spheres").is_none(),
+        "the selected schema is the ghoul one"
+    );
+    mush_ruleset::validate(&gschema, &gdoc.data)
+        .expect("reloaded ghoul sheet must validate against the ghoul schema");
+
+    // --- Kinfolk: Kinfolk block, split Gnosis pool, Gifts + Delirium flag. ---
+    let kattr = reloaded
+        .attr(willa, "sheet:wod")
+        .and_then(mush_core::Attr::as_json)
+        .expect("the kinfolk sheet survived the reboot");
+    let kdoc: SheetDoc = serde_json::from_value(kattr.clone()).expect("kinfolk sheet decodes");
+    assert_eq!(
+        kdoc.text("template"),
+        Some("kinfolk"),
+        "kinfolk template survived"
+    );
+    assert_eq!(kdoc.text("tribe"), Some("fianna"), "tribe survived");
+    assert_eq!(kdoc.number("gnosis"), Some(3), "permanent Gnosis survived");
+    assert_eq!(
+        kdoc.number("gnosis_temp"),
+        Some(2),
+        "temporary Gnosis pool survived independently of the permanent rating"
+    );
+    assert_eq!(
+        kdoc.number("delirium_immune"),
+        Some(1),
+        "Delirium immunity survived"
+    );
+    assert_eq!(
+        kdoc.map("gifts").expect("Gifts map survived")["Persuasion"],
+        serde_json::json!(1)
+    );
+    let kschema = ruleset.schema_for(&kdoc);
+    assert!(
+        kschema.field("gnosis").is_some()
+            && kschema.field("gifts").is_some()
+            && kschema.field("rage").is_none()
+            && kschema.field("disciplines").is_none(),
+        "the selected schema is the kinfolk one"
+    );
+    mush_ruleset::validate(&kschema, &kdoc.data)
+        .expect("reloaded kinfolk sheet must validate against the kinfolk schema");
+
     drop(handles);
 }
 
@@ -1050,10 +1203,11 @@ async fn wod_splat_sheet_persistence_round_trip_in_memory() {
     wod_splat_sheet_round_trip(Arc::new(InMemoryStore::new())).await;
 }
 
-/// The splat-sheet twin over a live Redis — a Vampire, a Mage and a Werewolf
-/// built, rebooted from Redis alone, and each revalidated against its own
-/// per-template schema. Gated on `REDIS_URL`; runs in db 10 (dbs 11–15 are
-/// claimed by the other gated tests, which run in parallel).
+/// The splat-sheet twin over a live Redis — a Vampire, a Mage, a Werewolf, a
+/// Changeling, a Ghoul and a Kinfolk built, rebooted from Redis alone, and each
+/// revalidated against its own per-template schema. Gated on `REDIS_URL`; runs
+/// in db 10 (dbs 11–15 are claimed by the other gated tests, which run in
+/// parallel).
 #[tokio::test(flavor = "multi_thread")]
 async fn wod_splat_sheet_persistence_round_trip_redis_gated() {
     let Some(url) = std::env::var("REDIS_URL").ok().filter(|s| !s.is_empty()) else {
