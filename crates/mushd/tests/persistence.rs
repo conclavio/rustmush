@@ -14,11 +14,12 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use mush_core::{Engine, GOD, Inbound, LIMBO, ObjId, ObjKind};
+use mush_core::{Engine, GOD, Inbound, LIMBO, ObjId, ObjKind, WorldCommand};
 use mush_llm::{
     CompletionResponse, ContentBlock, LlmProvider, LlmService, MockProvider, RouteConfig,
     StopReason, Usage,
 };
+use mush_npc::{AppliedAction, NpcAction, TurnOutcome};
 use mush_proto::{ClientCaps, ClientKind, ColorDepth, OutputEvent};
 use mush_session::{ConnId, ConnectionHandle, SessionManager};
 use mush_store::{
@@ -26,6 +27,7 @@ use mush_store::{
     WriteBatch, WriteReceipt,
 };
 use mush_testkit::text_of;
+use smol_str::SmolStr;
 use tokio::sync::mpsc;
 
 use mushd::accounts::{Accounts, AuthBackend};
@@ -1347,4 +1349,185 @@ async fn dump_announces_and_acks() {
     god_cmd(&world, "@dump").await;
     expect_text(&mut god_rx, "GAME: Dumping database.").await;
     expect_text(&mut god_rx, "@dump: snapshot acknowledged by the store.").await;
+}
+
+// ---------------------------------------------------------------------------
+// 6. M8 NPC agent persistence twin: an NPC's staff profile is an obj attr, its
+// rolling summary is an obj attr, and its durable `remember` memories are
+// `mod:npc:mem:*` module docs. All three must survive a reboot from the store
+// alone. The Remember + Summary are applied through the REAL completion path
+// (an injected `WorldCommand::ModuleAsyncDone` — the same typed re-entry the
+// off-loop turn produces), so the module-op + attr write-through is exercised
+// end to end; no LLM/network is involved.
+// ---------------------------------------------------------------------------
+
+/// A never-called `npc_dialogue_major` mock service (the twin injects
+/// completions directly, so the provider is never invoked — but the world task
+/// still wires a service the way `main.rs` does).
+fn npc_service() -> Arc<LlmService> {
+    let mock = Arc::new(MockProvider::new("openrouter"));
+    let p: Arc<dyn LlmProvider> = mock;
+    Arc::new(
+        LlmService::builder()
+            .route(
+                "npc_dialogue_major",
+                RouteConfig {
+                    model: "z-ai/glm-5.3".into(),
+                    max_tokens: 1024,
+                    timeout_s: 30,
+                    reasoning: Some("low".into()),
+                    reasoning_max_tokens: None,
+                },
+            )
+            .provider("openrouter", p)
+            .global_enabled(true)
+            .build(),
+    )
+}
+
+/// Boot the full production module set with the `npc` module (WoD-grounded) and
+/// the WoD ruleset — exactly as `main.rs` assembles them — plus the service on
+/// the world task.
+async fn boot_npc_rig(
+    store: &Arc<dyn ObjectStore>,
+    guard: &Arc<IpGuard>,
+    llm: Arc<LlmService>,
+) -> (Arc<SessionManager>, PersistHandles) {
+    let world = load_or_seed_world(&**store).await.expect("boot world");
+    let staff = Arc::new(StaffQueue::new());
+    let mut registry = world_task::base_registry();
+    register_server_commands(&mut registry, &staff).unwrap();
+    let mut mods = mushd::modules::server_modules();
+    mods.push(mushd::modules::worldgen_module(Arc::clone(&llm)));
+    let grounding: Arc<dyn mush_npc::AgentGrounding> =
+        mushd::modules::npc_agent_adapter(&["wod".to_string()]).expect("wod grounding");
+    mods.push(mushd::modules::npc_module(Some(grounding)));
+    mods.push(Box::new(ruleset_wod::WodRuleset::new()));
+    let mut engine = Engine::with_modules(world, registry, mods).expect("npc module registration");
+    mushd::modules::boot_modules(&mut engine, &**store)
+        .await
+        .expect("module boot");
+    let sessions = Arc::new(SessionManager::new());
+    let handles = world_task::spawn_persist(
+        engine,
+        Arc::clone(&sessions),
+        ServerDeps {
+            store: Arc::clone(store),
+            guard: Arc::clone(guard),
+            staff,
+            llm: Some(llm),
+        },
+    );
+    (sessions, handles)
+}
+
+/// Re-enter a finished NPC turn as the typed completion the world task applies
+/// (the same `WorldCommand::ModuleAsyncDone` the off-loop turn re-enters as).
+async fn npc_complete(world: &WorldHandle, npc: ObjId, correlation: u64, outcome: &TurnOutcome) {
+    let payload = serde_json::to_string(outcome).unwrap();
+    assert!(
+        world
+            .inbound(Inbound::Apply(WorldCommand::ModuleAsyncDone {
+                module: SmolStr::new("npc"),
+                actor: npc,
+                correlation,
+                payload,
+            }))
+            .await
+    );
+}
+
+async fn npc_agent_round_trip(store: Arc<dyn ObjectStore>) {
+    const PERSONA: &str = "a gruff barkeep who never forgets a tab";
+    const NOTE: &str = "owes the bar forty coins for last week";
+    const SUMMARY: &str =
+        "Alice has been drinking here all evening and is running a large unpaid tab.";
+    let guard = Arc::new(IpGuard::new());
+
+    // --- first boot: create + configure an NPC, then apply a remember + a
+    // summary through the real completion path. --------------------------
+    let (sessions, handles) = boot_npc_rig(&store, &guard, npc_service()).await;
+    let world = handles.handle.clone();
+    let mut god_rx = attach_direct(&sessions, &world, 1, GOD, "god").await;
+
+    god_cmd(&world, "@agent/create Bartender").await;
+    let ev = expect_text(&mut god_rx, "Created NPC agent Bartender").await;
+    let bartender = ObjId(support::parse_id_after(&text_of(&ev), "(#"));
+    god_cmd(&world, &format!("@agent/set Bartender/persona={PERSONA}")).await;
+    expect_text(&mut god_rx, "Set persona on Bartender").await;
+
+    // A durable memory (a `mod:npc:mem:*` module doc) and a rolling summary
+    // (an `agent:memory:summary` obj attr), both via the typed re-entry.
+    npc_complete(
+        &world,
+        bartender,
+        1,
+        &TurnOutcome::Ok {
+            npc: bartender,
+            actions: vec![AppliedAction {
+                action: NpcAction::Remember {
+                    subject: "Alice".into(),
+                    note: NOTE.into(),
+                },
+            }],
+        },
+    )
+    .await;
+    npc_complete(
+        &world,
+        bartender,
+        2,
+        &TurnOutcome::Summary {
+            npc: bartender,
+            summary: SUMMARY.into(),
+        },
+    )
+    .await;
+
+    // Fence: an ack-gated create returns only after the strictly-ordered writer
+    // has acknowledged its batch — so the memory + summary batches queued before
+    // it have certainly landed in the store.
+    world.create_player("Fence").await.expect("fence create");
+
+    // --- second boot: rebuild from the store alone. ----------------------
+    let (sessions2, handles2) = boot_npc_rig(&store, &guard, npc_service()).await;
+    let world2 = handles2.handle.clone();
+    let mut god_rx2 = attach_direct(&sessions2, &world2, 2, GOD, "god").await;
+
+    // `@agent Bartender` shows the reloaded profile (obj attr), the reloaded
+    // summary (obj attr), and the durable memory count (a `mod:npc:*` doc
+    // reloaded by boot_modules -> on_world_loaded into the long-term store).
+    god_cmd(&world2, "@agent Bartender").await;
+    expect_text(&mut god_rx2, PERSONA).await;
+    expect_text(&mut god_rx2, "Alice has been drinking here").await;
+    expect_text(&mut god_rx2, "Durable memories: 1 subject").await;
+}
+
+/// The NPC agent round trip over an in-memory store — ungated, so CI proves the
+/// profile + summary (obj attrs) and the durable memory (module doc)
+/// write-through and reload wiring without a live Redis.
+#[tokio::test(flavor = "multi_thread")]
+async fn npc_agent_persistence_round_trip_in_memory() {
+    npc_agent_round_trip(Arc::new(InMemoryStore::new())).await;
+}
+
+/// The same round trip over a live Redis — the NPC's profile/summary obj docs
+/// and its `mod:npc:mem:*` module docs survive a reboot from Redis alone. Gated
+/// on `REDIS_URL`; runs in db 8 (dbs 9–15 are claimed by the other gated tests,
+/// which run in parallel).
+#[tokio::test(flavor = "multi_thread")]
+async fn npc_agent_persistence_round_trip_redis_gated() {
+    let Some(url) = std::env::var("REDIS_URL").ok().filter(|s| !s.is_empty()) else {
+        eprintln!(
+            "skipping npc_agent_persistence_round_trip_redis_gated: REDIS_URL not set \
+             (no live Redis on this machine)"
+        );
+        return;
+    };
+    let url = support::redis_url_with_db(&url, 8);
+    let store = mush_store::RedisStore::connect(&url)
+        .await
+        .expect("connect to REDIS_URL");
+    store.wipe_namespaces().await.expect("wipe test namespaces");
+    npc_agent_round_trip(Arc::new(store)).await;
 }

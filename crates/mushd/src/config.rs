@@ -460,15 +460,28 @@ mod tests {
             room.reasoning_config(),
             Some(mush_llm::ReasoningConfig::Effort(mush_llm::Effort::Low))
         ));
-        // The Anthropic-direct critical route uses the model-prefix scheme.
+        // The M8 NPC dialogue tiers each resolve to a route; the default
+        // major route rides OpenRouter (anthropic/claude-opus-5 is reserved as
+        // a documented per-NPC override, not the default).
         assert_eq!(
             cfg.llm
                 .routes
                 .get("npc_dialogue_major")
-                .expect("critical route")
+                .expect("npc_dialogue_major route")
                 .model,
-            "anthropic/claude-opus-5"
+            "z-ai/glm-5.3"
         );
+        assert_eq!(
+            cfg.llm.routes["npc_dialogue_minor"].model,
+            "z-ai/glm-5.3-flash"
+        );
+        assert_eq!(
+            cfg.llm.routes["npc_dialogue_extra"].model,
+            "deepseek/deepseek-v4-flash-0731"
+        );
+        assert!(cfg.llm.routes.contains_key("npc_summarize"));
+        // Per-NPC daily budget documented in the example.
+        assert!(cfg.llm.budgets.per_npc_default.is_some());
     }
 
     #[test]

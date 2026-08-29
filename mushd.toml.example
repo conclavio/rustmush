@@ -120,11 +120,44 @@ max_tokens = 400
 timeout_s = 30
 reasoning = "off"                  # deepseek: reasoning disabled -> clean short output
 
-[llm.routes.npc_dialogue_major]    # critical / cached path — Anthropic direct (M8)
-model = "anthropic/claude-opus-5"  # "anthropic/" prefix -> Anthropic, stripped
+# --- NPC dialogue routes (M8) ----------------------------------------------
+# One route per NPC tier, plus the memory-fold route. The agent layer picks a
+# route from each NPC's tier (set with `@agent/set <npc>/tier=<major|minor|
+# extra>`): Major = named, plot-relevant NPCs; Minor = recurring background;
+# Extra = throwaway. Cost preference: keep the whole default NPC pipeline on
+# OpenRouter's cheap reasoning/flash models. anthropic/claude-opus-5 (Anthropic
+# direct, prompt-cached) is RESERVED for a critical NPC you deliberately
+# promote — swap the npc_dialogue_major model line for it and keep reasoning
+# "low"; leave the others alone.
+#
+# Per-tier cooldowns (minimum seconds between LLM turns) default in code —
+# Major 5s / Minor 15s / Extra 60s — and are overridable per NPC with
+# `@agent/set <npc>/cooldown=<seconds>`. An NPC alone in a room costs zero
+# tokens (no connected player ⇒ no wake).
+
+[llm.routes.npc_dialogue_major]    # named, plot-relevant NPCs (short cooldown)
+model = "z-ai/glm-5.3"             # promote a hero NPC -> "anthropic/claude-opus-5"
 max_tokens = 1024
 timeout_s = 30
 reasoning = "low"
+
+[llm.routes.npc_dialogue_minor]    # recurring background NPCs
+model = "z-ai/glm-5.3-flash"
+max_tokens = 1024
+timeout_s = 30
+reasoning = "low"
+
+[llm.routes.npc_dialogue_extra]    # throwaway NPCs (cheapest, long cooldown)
+model = "deepseek/deepseek-v4-flash-0731"   # same cheap model as [ambience]
+max_tokens = 768
+timeout_s = 30
+reasoning = "off"                  # deepseek: reasoning off -> clean short output
+
+[llm.routes.npc_summarize]         # NPC memory fold (cheap, background)
+model = "z-ai/glm-5.3-flash"
+max_tokens = 768
+timeout_s = 60
+reasoning = "off"
 
 # --- Concurrency -----------------------------------------------------------
 [llm.concurrency]
@@ -138,9 +171,13 @@ max_background = 3                 # batch gen / summarization / ambience
 [llm.budgets]
 global = { tokens = 5_000_000, cost_usd = 5.0 }   # server-wide/day
 per_actor_default = { cost_usd = 1.0 }            # per builder/day (BUILDER_LLM quota)
+per_npc_default = { tokens = 200_000 }            # per NPC/day (any one agent's ceiling)
 
 [llm.budgets.per_feature]
 worldgen_room = { cost_usd = 2.0 }
+# Cap the whole NPC dialogue pipeline (all tiers share nothing but this key is
+# per-route; add npc_dialogue_minor / npc_dialogue_extra similarly if desired).
+npc_dialogue_major = { cost_usd = 1.0 }
 
 # --- Reliability (optional; sane defaults shown) ---------------------------
 # [llm.retry]                      # min_delay_ms=500 max_delay_ms=30000 factor=2.0 max_retries=3 jitter=true

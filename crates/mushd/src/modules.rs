@@ -119,6 +119,78 @@ pub fn worldgen_module(llm: Arc<LlmService>) -> Box<dyn GameModule> {
     Box::new(WorldgenModule::new(llm))
 }
 
+/// The M8 NPC agent module. Registered after worldgen and before the rulesets.
+/// `grounding` supplies the ruleset sheet summary + ability tools (the WoD
+/// adapter when `wod` is enabled); `None` runs NPCs dialogue-only.
+#[must_use]
+pub fn npc_module(grounding: Option<Arc<dyn mush_npc::AgentGrounding>>) -> Box<dyn GameModule> {
+    match grounding {
+        Some(g) => Box::new(mush_npc::NpcModule::with_grounding(g)),
+        None => Box::new(mush_npc::NpcModule::new()),
+    }
+}
+
+/// Build the NPC↔ruleset grounding adapter for the enabled rulesets, if any
+/// grounds NPC agents. `main.rs` passes it to [`npc_module`]. Only `wod` grounds
+/// agents in M8; a config without it leaves NPCs dialogue-only.
+#[must_use]
+pub fn npc_agent_adapter(enabled: &[String]) -> Option<Arc<WodAgent>> {
+    if enabled.iter().any(|s| s.trim().eq_ignore_ascii_case("wod")) {
+        Some(Arc::new(WodAgent {
+            wod: ruleset_wod::WodRuleset::new(),
+        }))
+    } else {
+        None
+    }
+}
+
+/// The WoD grounding adapter (M8), holding its own [`WodRuleset`]. Both halves
+/// of [`AgentGrounding`](mush_npc::AgentGrounding) run **on the world loop**:
+/// `profile` reads the NPC's `sheet:wod` document and grounds it via
+/// [`Ruleset::agent_profile`](mush_ruleset::Ruleset::agent_profile);
+/// `invoke_ability` executes a `wod_roll` (etc.) via
+/// [`Ruleset::invoke_ability`](mush_ruleset::Ruleset::invoke_ability), which
+/// reads the NPC's own sheet, rolls on the shared RNG, and emits to the room.
+pub struct WodAgent {
+    wod: ruleset_wod::WodRuleset,
+}
+
+impl mush_npc::AgentGrounding for WodAgent {
+    fn profile(
+        &self,
+        w: &mush_core::World,
+        npc: mush_core::ObjId,
+    ) -> Option<mush_ruleset::AgentCapabilityProfile> {
+        use mush_ruleset::Ruleset;
+        let doc = self.wod.store().get(w, npc)?;
+        Some(self.wod.agent_profile(&doc))
+    }
+
+    fn invoke_ability(
+        &self,
+        w: &mut mush_core::World,
+        out: &mut mush_core::Outbox,
+        npc: mush_core::ObjId,
+        name: &str,
+        input: serde_json::Value,
+    ) -> Result<mush_ruleset::AbilityOutcome, mush_ruleset::AbilityError> {
+        use mush_ruleset::Ruleset;
+        self.wod.invoke_ability(w, out, npc, name, input)
+    }
+
+    fn init_sheet(
+        &self,
+        w: &mut mush_core::World,
+        npc: mush_core::ObjId,
+        template: &str,
+        by: mush_core::ObjId,
+    ) -> Result<String, String> {
+        // The `@agent/sheet` bootstrap: give the NPC a real WoD sheet through
+        // the ruleset's validated retemplate path so `wod_roll` has traits.
+        self.wod.init_sheet(w, npc, template, by)
+    }
+}
+
 /// Read one module's persisted boot data: every kv doc in its namespace
 /// (minus the reserved [`SCHEMA_KEY`]) plus the streams the module asks
 /// for given those docs.
@@ -604,6 +676,39 @@ mod tests {
                 .iter()
                 .any(|(feed, _)| feed == "worldgen.draft")
         );
+    }
+
+    #[test]
+    fn npc_module_registers_and_joins_the_panel_manifest() {
+        // main.rs builds the web hello manifest from `registry.panel_feeds()`,
+        // so registering `npc.thinking` is what puts the thinking indicator in
+        // the manifest. This guards that (and that the npc module registers
+        // cleanly alongside the built-ins). Dialogue-only grounding is enough.
+        use mush_testkit::TestWorld;
+        let mut mods = server_modules();
+        mods.push(npc_module(None));
+        let tw = TestWorld::with_modules(mods);
+        let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
+        assert!(names.contains(&"npc"), "{names:?}");
+        assert!(
+            tw.registry()
+                .panel_feeds()
+                .iter()
+                .any(|(feed, _)| feed == "npc.thinking"),
+            "npc.thinking must be a registered panel feed (it joins the web manifest)"
+        );
+        // The @agent staff surface is live.
+        assert!(tw.registry().spec_of("@agent").is_some());
+    }
+
+    #[test]
+    fn npc_agent_adapter_only_grounds_when_wod_enabled() {
+        // The WoD grounding adapter is built only when "wod" is in the enabled
+        // rulesets; otherwise NPCs run dialogue-only (None).
+        assert!(npc_agent_adapter(&["wod".to_string()]).is_some());
+        assert!(npc_agent_adapter(&["  WoD ".to_string()]).is_some());
+        assert!(npc_agent_adapter(&[]).is_none());
+        assert!(npc_agent_adapter(&["btech".to_string()]).is_none());
     }
 
     #[test]

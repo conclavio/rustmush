@@ -219,6 +219,60 @@ pub fn resolve_pool(
     })
 }
 
+/// Resolve a pool expression for an **NPC ability** (`wod_roll`): like
+/// [`resolve_pool`], but every term must be a real trait on the NPC's own
+/// sheet — literal integers and `name:value` bonuses are rejected.
+///
+/// This is the over-claim fence (design 03 §7): because each term resolves to
+/// the dots actually recorded on the sheet, an NPC whose sheet says `Brawl 2`
+/// cannot manufacture a pool of 9 by naming `brawl:9` or `strength+brawl+7` —
+/// those are refused. A flat situational bonus rides the ability's separate,
+/// bounded `modifier` argument instead, never the pool expression.
+///
+/// # Errors
+///
+/// Returns a message if the expression is empty, names a term that is not a
+/// sheet trait (raw dice / named bonus), or names a trait the sheet does not
+/// have.
+pub fn resolve_sheet_pool(
+    schema: &SheetSchema,
+    doc: &SheetDoc,
+    expr: &str,
+) -> Result<ResolvedPool, String> {
+    let expr = expr.trim();
+    if expr.is_empty() {
+        return Err("empty pool: name traits like strength+brawl".to_string());
+    }
+    let mut terms = Vec::new();
+    let mut trait_fields = Vec::new();
+    for (sign, token) in split_terms(expr) {
+        if token.parse::<i32>().is_ok() {
+            return Err(format!(
+                "{token:?}: an NPC roll may only name traits on its own sheet, not raw dice"
+            ));
+        }
+        if token.contains(':') {
+            return Err(format!(
+                "{token:?}: named dice bonuses are not allowed in an NPC roll"
+            ));
+        }
+        let (label, dots, field) = resolve_trait(schema, doc, &token)?;
+        if let Some(f) = field {
+            trait_fields.push(f);
+        }
+        terms.push(PoolTerm {
+            label,
+            value: sign * dots,
+        });
+    }
+    let total = terms.iter().map(|t| t.value).sum();
+    Ok(ResolvedPool {
+        terms,
+        total,
+        trait_fields,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

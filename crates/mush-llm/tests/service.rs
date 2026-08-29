@@ -241,6 +241,49 @@ async fn per_actor_quota_enforced() {
 }
 
 #[tokio::test]
+async fn per_npc_limit_override_beats_the_default() {
+    // A generous per-NPC default; the call's own override (an NPC's
+    // `daily_tokens`) is the live ceiling — it both lowers (this test) and, for
+    // a plot-critical NPC, could raise the default.
+    let provider = Arc::new(MockProvider::new("openrouter"));
+    provider.set_default(Ok(mock::ok_response("ok", mock::usage(10, 10, None))));
+
+    let budgets = BudgetConfig {
+        per_npc_default: Some(BudgetLimit::tokens(1_000_000)),
+        ..Default::default()
+    };
+    let svc = LlmService::builder()
+        .global_enabled(true)
+        .provider("openrouter", provider.clone() as Arc<dyn LlmProvider>)
+        .route("npc_dialogue_minor", route("z-ai/glm-5.3", 100))
+        .budgets(budgets)
+        .build();
+
+    let chatty = ObjId(7);
+    // An override far below any real turn's estimate trips the NPC scope,
+    // even though the config default is generous.
+    let capped = ctx(LlmFeature::NpcDialogue(NpcTier::Minor))
+        .with_npc(chatty)
+        .with_npc_limit(BudgetLimit::tokens(1));
+    let err = svc.call(capped, req()).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            LlmError::BudgetExceeded {
+                scope: mush_llm::provider::BudgetScope::Npc
+            }
+        ),
+        "the per-NPC override tripped the NPC budget scope: {err:?}"
+    );
+    assert_eq!(provider.call_count(), 0, "refused before the provider");
+
+    // Another NPC with no override rides the generous default and succeeds.
+    let other = ctx(LlmFeature::NpcDialogue(NpcTier::Minor)).with_npc(ObjId(8));
+    svc.call(other, req()).await.unwrap();
+    assert_eq!(provider.call_count(), 1);
+}
+
+#[tokio::test]
 async fn retries_rate_limited_then_succeeds() {
     let provider = Arc::new(MockProvider::new("openrouter"));
     provider.push_error(LlmError::RateLimited { retry_after: None });

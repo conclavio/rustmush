@@ -123,6 +123,21 @@ pre-call, and staff hold a live kill switch (`@llm/disable`, `@llm/budget`, `@ll
 [docs/ops.md](docs/ops.md) for the full operator view and
 [mushd.toml.example](mushd.toml.example) for a ready `[llm]` block.
 
+**LLM NPC agents** (M8) turn a first-class `ObjKind::Npc` into an LLM-driven character. Staff
+`@agent/create <name>` one, `@agent/set <npc>/persona=…` (plus goals, knowledge, tier,
+fallback lines), and `@agent/sheet <npc>=<template>` gives it a real WoD sheet so it can roll
+its own dice (`wod_roll` — the engine rolls on the shared seeded RNG, so an NPC can never fake
+a result). When a **connected** player shares its room and speaks, the agent takes a turn off
+the world loop (rapid chatter coalesced, one call in flight, tier cooldowns) and acts through a
+small **typed action allowlist** — say / pose / move / look / remember / use_ability /
+do_nothing. That allowlist, re-validated in the world task, is the security boundary, *not* the
+prompt: player speech is delimited and escaped and framed as never-an-instruction, and a fully
+jailbroken NPC still can't run a command, read another player's data, or escalate. An NPC alone
+in a room costs nothing; a budget trip or `@llm/kill <npc>` degrades it to a canned fallback
+line. Tiers route to cheap models by default (`npc_dialogue_{major,minor,extra}`,
+`npc_summarize` in `[llm.routes]`); reserve `anthropic/claude-opus-5` for a promoted hero NPC.
+In-game reference: `help npc`.
+
 The web client is served by the same process on `[web].listen` (default
 `http://127.0.0.1:8080`): log in or register over `POST /api/auth/*`, then the SPA speaks
 JSON envelopes over `/ws`. Sessions are opaque 256-bit tokens stored server-side as SHA-256

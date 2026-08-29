@@ -85,12 +85,16 @@ pub(crate) fn register(reg: &mut Registrar<'_>, llm: Arc<LlmService>) -> Result<
                 "budget".into(),
                 "disable".into(),
                 "enable".into(),
+                "kill".into(),
+                "revive".into(),
             ],
             min_role: Role::Wizard,
             help: "@llm/budget -- today's LLM token/cost totals.\n\
                    @llm/log [<feature>] -- recent LLM calls (optionally one feature route).\n\
                    @llm/disable -- engage the global kill switch (stops all LLM calls).\n\
-                   @llm/enable -- lift the global kill switch."
+                   @llm/enable -- lift the global kill switch.\n\
+                   @llm/kill <npc> -- park one NPC agent (no wakes, no tokens).\n\
+                   @llm/revive <npc> -- wake a killed NPC agent."
                 .into(),
             ..CommandSpec::default()
         },
@@ -467,8 +471,17 @@ struct LlmStaffCmd {
     llm: Arc<LlmService>,
 }
 
+/// The NPC agent-profile attribute (owned by `mush-npc`). Kept as a local
+/// constant so worldgen needn't depend on `mush-npc`: `@llm/kill|revive` toggle
+/// only the `enabled` flag of this opaque JSON document — the one documented
+/// cross-module contract. Any other profile field is left untouched.
+const AGENT_PROFILE_ATTR: &str = "agent:profile";
+
 impl mush_core::CommandHandler for LlmStaffCmd {
     fn call(&self, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+        if ctx.switches.has("kill") || ctx.switches.has("revive") {
+            return llm_toggle_npc(ctx, ctx.switches.has("revive"));
+        }
         if ctx.switches.has("disable") {
             self.llm.kill_switch().set_global(true);
             ctx.out
@@ -545,6 +558,51 @@ impl mush_core::CommandHandler for LlmStaffCmd {
         }
         Ok(())
     }
+}
+
+/// `@llm/kill <npc>` / `@llm/revive <npc>` — the per-NPC LLM kill switch: flip
+/// the NPC's `agent:profile.enabled` flag (see [`AGENT_PROFILE_ATTR`]). A
+/// killed agent takes no turns and burns no tokens; the runtime re-reads the
+/// flag every tick, so no state push is needed.
+fn llm_toggle_npc(ctx: &mut Ctx<'_>, revive: bool) -> Result<(), CmdError> {
+    let spec = ctx.args.raw().trim().to_string();
+    if spec.is_empty() {
+        return Err(CmdError::msg(
+            "Usage: @llm/kill <npc>  (or @llm/revive <npc>).",
+        ));
+    }
+    let npc = match_object(ctx.w, ctx.actor, &spec)?;
+    if ctx.w.get(npc).is_none_or(|o| o.kind != ObjKind::Npc) {
+        return Err(CmdError::msg("That is not an NPC agent."));
+    }
+    // Read the opaque profile JSON (or start a minimal one), set only `enabled`.
+    let mut profile = ctx
+        .w
+        .attr(npc, AGENT_PROFILE_ATTR)
+        .and_then(mush_core::Attr::as_json)
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    match profile.as_object_mut() {
+        Some(obj) => {
+            obj.insert("enabled".to_string(), serde_json::Value::Bool(revive));
+        }
+        None => profile = serde_json::json!({ "enabled": revive }),
+    }
+    ctx.w
+        .set_attr(npc, AGENT_PROFILE_ATTR, Attr::json(profile, ctx.actor))?;
+    let name = ctx
+        .w
+        .get(npc)
+        .map_or_else(|| npc.to_string(), |o| o.name.clone());
+    ctx.out.info(
+        ctx.actor,
+        if revive {
+            format!("NPC {name} agent revived (LLM re-enabled).")
+        } else {
+            format!("NPC {name} agent killed (LLM disabled; no wakes, no tokens).")
+        },
+    );
+    Ok(())
 }
 
 // ----------------------------------------------------------------------

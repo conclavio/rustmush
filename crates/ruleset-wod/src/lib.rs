@@ -26,6 +26,7 @@
 //! adjust them; the dice RNG is seedable ([`WodRuleset::with_seed`]) for
 //! deterministic tests.
 
+pub mod agent;
 pub mod chargen;
 pub mod chargen_cmds;
 pub mod config;
@@ -42,22 +43,25 @@ pub mod xp;
 use std::sync::Arc;
 
 use mush_core::{
-    GameModule, JobQueueSpec, ModError, ModuleBootData, ModuleCtx, ObjId, PanelFeedHandle,
+    GameModule, JobQueueSpec, ModError, ModuleBootData, ModuleCtx, ObjId, Outbox, PanelFeedHandle,
     Registrar, Role, World,
 };
 use mush_jobs::register_payload_handler;
 use mush_ruleset::chargen::ChargenFlow;
 use mush_ruleset::schema::SheetSchema;
-use mush_ruleset::{AgentCapabilityProfile, AgentToolSpec, Ruleset, SheetDoc, SheetStore};
-use smol_str::SmolStr;
+use mush_ruleset::{
+    AbilityError, AbilityOutcome, AgentCapabilityProfile, Ruleset, SheetDoc, SheetStore,
+};
 
 use crate::chargen::WodChargen;
 use crate::config::WodConfig;
-use crate::schema::{ATTRIBUTES, KNOWLEDGES, SKILLS, TALENTS, Template};
+use crate::schema::Template;
 use crate::splats::{
     DEFAULT_TEMPLATES, Dispatch, Splat, TemplateSchemas, all_splats, schema_only_splats,
 };
 use crate::state::WodState;
+
+pub use crate::agent::{WOD_ROLL_ABILITY, agent_profile, wod_roll_tool_spec};
 
 /// The shared bundle captured by every WoD command closure: the multi-template
 /// [`Dispatch`] (per-template schemas + splat behaviours), the tunable config,
@@ -182,6 +186,51 @@ impl WodRuleset {
     pub fn schema_for(&self, doc: &SheetDoc) -> Arc<SheetSchema> {
         self.dispatch.schemas.schema_for_doc(doc)
     }
+
+    /// Give `obj` a fresh character sheet of `template` (default the empty
+    /// string ⇒ `mortal`) through the same validated retemplate path
+    /// `@sheet/set .../template=<id>` uses — the M8 `@agent/sheet` bootstrap so
+    /// an NPC has real traits for `wod_roll`. An existing sheet is re-shaped
+    /// (dots preserved where the templates share fields); a missing one starts
+    /// from the mortal default. Written as `by`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable message when the template id is unknown or the
+    /// validated write fails.
+    pub fn init_sheet(
+        &self,
+        w: &mut World,
+        obj: ObjId,
+        template: &str,
+        by: ObjId,
+    ) -> Result<String, String> {
+        let id = match template.trim().to_ascii_lowercase().as_str() {
+            "" => "mortal".to_string(),
+            other => other.to_string(),
+        };
+        if !self.dispatch.schemas.ids().iter().any(|t| t == &id) {
+            return Err(format!(
+                "unknown template {id:?}; choose one of: {}",
+                self.dispatch.schemas.ids().join(", ")
+            ));
+        }
+        let schema = self.dispatch.schemas.schema_for_id(&id);
+        let default = self.dispatch.schemas.default_schema();
+        let mut doc = SheetStore::new(default.clone())
+            .get(w, obj)
+            .unwrap_or_else(|| SheetDoc::new_default(&default));
+        crate::splats::retemplate(&mut doc, &schema, &id);
+        SheetStore::new(schema)
+            .put_by(w, obj, &doc, by)
+            .map_err(|es| {
+                es.iter()
+                    .map(std::string::ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })?;
+        Ok(format!("Gave the NPC a {id} sheet."))
+    }
 }
 
 impl Default for WodRuleset {
@@ -284,110 +333,17 @@ impl Ruleset for WodRuleset {
     }
 
     fn agent_profile(&self, sheet: &SheetDoc) -> AgentCapabilityProfile {
-        agent_profile(&self.dispatch.schemas.schema_for_doc(sheet), sheet)
-    }
-}
-
-/// Ground a sheet into an NPC capability profile: prose summary, notable
-/// stats, capability tags, and the `wod_roll` tool manifest. Real content —
-/// M8 NPCs roll from this.
-#[must_use]
-pub fn agent_profile(schema: &SheetSchema, sheet: &SheetDoc) -> AgentCapabilityProfile {
-    let template = sheet.text("template").unwrap_or("mortal").to_string();
-
-    // Notable attributes (>= 3) and abilities (>= 2), highest first.
-    let mut notable_attrs: Vec<(&str, i64)> = ATTRIBUTES
-        .iter()
-        .filter_map(|(id, label, _)| sheet.number(id).filter(|n| *n >= 3).map(|n| (*label, n)))
-        .collect();
-    notable_attrs.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
-    let mut notable_abils: Vec<(&str, i64)> = TALENTS
-        .iter()
-        .chain(SKILLS)
-        .chain(KNOWLEDGES)
-        .filter_map(|(id, label)| sheet.number(id).filter(|n| *n >= 2).map(|n| (*label, n)))
-        .collect();
-    notable_abils.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
-
-    let wp = sheet.number("willpower").unwrap_or(0);
-    let health = health_word(schema, sheet);
-
-    let mut summary = format!("A {template}.");
-    if let Some((label, n)) = notable_attrs.first() {
-        summary.push_str(&format!(" Best attribute {label} {n}."));
-    }
-    if !notable_abils.is_empty() {
-        let list: Vec<String> = notable_abils
-            .iter()
-            .take(3)
-            .map(|(l, n)| format!("{l} {n}"))
-            .collect();
-        summary.push_str(&format!(" Skilled at {}.", list.join(", ")));
-    }
-    summary.push_str(&format!(" Willpower {wp}. Currently {health}."));
-
-    let to_map = |pairs: &[(&str, i64)]| -> serde_json::Map<String, serde_json::Value> {
-        pairs
-            .iter()
-            .map(|(l, n)| ((*l).to_string(), serde_json::json!(n)))
-            .collect()
-    };
-    let stats = serde_json::json!({
-        "template": template,
-        "attributes": to_map(&notable_attrs),
-        "abilities": to_map(&notable_abils),
-        "willpower": wp,
-        "health": health,
-    });
-
-    let mut tags: Vec<SmolStr> = vec![SmolStr::new(format!("template:{template}"))];
-    for (label, n) in notable_abils.iter().take(4) {
-        if *n >= 3 {
-            tags.push(SmolStr::new(format!(
-                "skill:{}",
-                label.to_lowercase().replace(' ', "_")
-            )));
-        }
+        agent::agent_profile(&self.dispatch.schemas.schema_for_doc(sheet), sheet)
     }
 
-    AgentCapabilityProfile {
-        summary,
-        stats,
-        tags,
-        tools: vec![AgentToolSpec {
-            name: SmolStr::new("wod_roll"),
-            description: "Roll a Storyteller-System dice pool (attribute + ability + modifier) \
-                 against a difficulty. Returns successes / failure / botch."
-                .to_string(),
-            params_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "pool": { "type": "string", "description": "e.g. strength+brawl" },
-                    "difficulty": { "type": "integer", "minimum": 2, "maximum": 10 }
-                },
-                "required": ["pool"]
-            }),
-        }],
+    fn invoke_ability(
+        &self,
+        w: &mut World,
+        out: &mut Outbox,
+        npc: ObjId,
+        name: &str,
+        input: serde_json::Value,
+    ) -> Result<AbilityOutcome, AbilityError> {
+        agent::invoke(&self.dispatch, w, out, npc, name, input)
     }
-}
-
-/// The health status word for the deepest filled level.
-fn health_word(schema: &SheetSchema, sheet: &SheetDoc) -> String {
-    let marks = sheet.track("health").unwrap_or_default();
-    let filled = marks.iter().filter(|m| m.is_some()).count();
-    if filled == 0 {
-        return "unhurt".to_string();
-    }
-    let levels = schema
-        .field("health")
-        .and_then(|f| match &f.ty {
-            mush_ruleset::schema::FieldType::Track { levels, .. } => Some(levels.clone()),
-            _ => None,
-        })
-        .unwrap_or_default();
-    if levels.is_empty() {
-        return "wounded".to_string();
-    }
-    let idx = (filled - 1).min(levels.len() - 1);
-    levels[idx].label.to_lowercase()
 }

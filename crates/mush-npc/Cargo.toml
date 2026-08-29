@@ -9,10 +9,16 @@ description = "LLM NPC agents: AgentHost, stimuli, action tools, memory"
 [dependencies]
 mush-core.workspace = true
 mush-llm.workspace = true
+mush-ruleset.workspace = true
+mush-proto.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
+smol_str.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+mush-testkit.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 
 [lints]
 workspace = true

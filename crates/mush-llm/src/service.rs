@@ -93,6 +93,11 @@ pub struct CallCtx {
     pub actor: Option<ObjId>,
     /// The NPC, for per-NPC budget + audit (agent turns).
     pub npc: Option<ObjId>,
+    /// A per-NPC daily budget override (the NPC's `AgentProfile.daily_tokens`).
+    /// When set, it **replaces** the config `per_npc_default` ceiling for this
+    /// NPC — staff use it to cap a runaway agent or raise a plot-critical one.
+    /// Only meaningful together with [`CallCtx::npc`].
+    pub npc_limit: Option<crate::budget::BudgetLimit>,
     /// Priority.
     pub priority: Priority,
 }
@@ -105,6 +110,7 @@ impl CallCtx {
             feature,
             actor: None,
             npc: None,
+            npc_limit: None,
             priority,
         }
     }
@@ -120,6 +126,14 @@ impl CallCtx {
     #[must_use]
     pub fn with_npc(mut self, npc: ObjId) -> CallCtx {
         self.npc = Some(npc);
+        self
+    }
+
+    /// Set the per-NPC daily budget override (from the NPC's profile). Replaces
+    /// the config `per_npc_default` ceiling for this call's NPC scope.
+    #[must_use]
+    pub fn with_npc_limit(mut self, limit: crate::budget::BudgetLimit) -> CallCtx {
+        self.npc_limit = Some(limit);
         self
     }
 }
@@ -703,6 +717,10 @@ impl LlmService {
     }
 
     fn scope_limits(&self, ctx: &CallCtx, route_key: &str) -> ScopeLimits {
+        // The per-NPC ceiling: the call's own override (the NPC's profile
+        // `daily_tokens`) wins over the config `per_npc_default` — this is what
+        // makes `@agent/set <npc>/daily_tokens=N` a live containment lever.
+        let npc_limit = ctx.npc_limit.or(self.budgets.per_npc_default);
         ScopeLimits {
             global: self.budgets.global,
             feature: self
@@ -711,7 +729,7 @@ impl LlmService {
                 .get(route_key)
                 .map(|l| (route_key.to_string(), *l)),
             actor: ctx.actor.zip(self.budgets.per_actor_default),
-            npc: ctx.npc.zip(self.budgets.per_npc_default),
+            npc: ctx.npc.zip(npc_limit),
         }
     }
 

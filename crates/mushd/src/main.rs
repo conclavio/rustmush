@@ -200,6 +200,12 @@ async fn serve(config: Config) -> Result<(), String> {
     // data — all before the world task starts serving.
     let mut mods = modules::server_modules();
     mods.push(modules::worldgen_module(Arc::clone(&llm)));
+    // M8: the NPC agent module, grounded by the enabled ruleset's sheet +
+    // on-loop abilities (the WoD adapter when "wod" is on; dialogue-only
+    // otherwise).
+    let npc_grounding = modules::npc_agent_adapter(&config.rulesets.enabled)
+        .map(|a| a as Arc<dyn mush_npc::AgentGrounding>);
+    mods.push(modules::npc_module(npc_grounding));
     let rulesets = modules::ruleset_modules(&config.rulesets.enabled)
         .map_err(|e| format!("ruleset selection: {e}"))?;
     if !rulesets.is_empty() {

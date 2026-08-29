@@ -388,9 +388,17 @@ fn ruleset_trait_surface() {
     assert!(profile.tags.iter().any(|t| t == "combat:brawl"));
 
     // invoke_ability default rejects unknown abilities.
+    let mut tw = TestWorld::new();
+    let mut out = mush_core::Outbox::new();
     assert!(
-        toy.invoke_ability(GOD, "wod_roll", serde_json::json!({}))
-            .is_err()
+        toy.invoke_ability(
+            tw.world_mut(),
+            &mut out,
+            GOD,
+            "wod_roll",
+            serde_json::json!({})
+        )
+        .is_err()
     );
 }
 

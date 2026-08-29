@@ -622,8 +622,9 @@ fn attach_to_job(ctx: &mut Ctx<'_>, who: ObjId, id: u64, line: &str) -> Result<(
 
 /// Whether any of `fields` (ability ids) has *any* recorded specialty — the
 /// gate for the bare `/spec` switch (crib: 10-again needs an applicable
-/// specialty, not a free toggle).
-fn has_any_specialty(doc: &mush_ruleset::SheetDoc, fields: &[String]) -> bool {
+/// specialty, not a free toggle). Reused by the NPC `wod_roll` ability so an
+/// agent cannot claim a specialty it has not recorded.
+pub(crate) fn has_any_specialty(doc: &mush_ruleset::SheetDoc, fields: &[String]) -> bool {
     let Some(specs) = doc.map("specialties") else {
         return false;
     };

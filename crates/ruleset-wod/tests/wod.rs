@@ -1878,3 +1878,298 @@ fn sphere_xp_costs_affinity_vs_other() {
     assert_eq!(doc.map("spheres").unwrap()["Forces"], serde_json::json!(3));
     assert_eq!(doc.number("experience"), Some(36)); // 50 - 14
 }
+
+// ----------------------------------------------------------------------
+// M8: NPC agent grounding — splat-aware agent_profile + the wod_roll ability
+// ----------------------------------------------------------------------
+
+/// A splat sheet built with raw setters (agent_profile only reads it; the
+/// `template` field selects the active schema inside the trait method).
+fn splat_doc(rs: &WodRuleset, template: &str) -> SheetDoc {
+    let mut d = SheetDoc::new_default(rs.sheet_schema());
+    d.set_text("template", template);
+    d
+}
+
+#[test]
+fn agent_profile_grounds_a_vampire() {
+    let rs = WodRuleset::with_seed(S);
+    let mut d = splat_doc(&rs, "vampire");
+    d.set_number("strength", 4);
+    d.set_number("brawl", 3);
+    d.set_number("intimidation", 3);
+    d.set_text("clan", "brujah");
+    d.set_number("generation", 10);
+    d.map_set("disciplines", "Celerity", serde_json::json!(2));
+    d.map_set("disciplines", "Potence", serde_json::json!(1));
+    d.set_number("bloodpool", 8);
+    d.set_number("humanity", 6);
+    d.set_number("willpower", 5);
+
+    let p = rs.agent_profile(&d);
+    // Splat-aware prose: clan, disciplines, pools.
+    assert!(p.summary.contains("Brujah"), "summary: {}", p.summary);
+    assert!(p.summary.contains("Celerity 2"), "summary: {}", p.summary);
+    assert!(p.summary.contains("Blood pool 8"), "summary: {}", p.summary);
+    // Tags: splat + clan + a domain read.
+    assert!(p.tags.iter().any(|t| t == "vampire:brujah"));
+    assert!(p.tags.iter().any(|t| t == "splat:vampire"));
+    assert!(p.tags.iter().any(|t| t == "combat:brawl"));
+    // Trimmed stats carry the powers.
+    assert_eq!(p.stats["powers"]["clan"], serde_json::json!("brujah"));
+    assert_eq!(
+        p.stats["powers"]["disciplines"]["Celerity"],
+        serde_json::json!(2)
+    );
+    assert_eq!(p.stats["powers"]["bloodpool"], serde_json::json!(8));
+    // The stable tool manifest.
+    assert_eq!(p.tools.len(), 1);
+    assert_eq!(p.tools[0].name.as_str(), "wod_roll");
+    assert_eq!(
+        p.tools[0].params_schema["required"],
+        serde_json::json!(["pool_expr"])
+    );
+}
+
+#[test]
+fn agent_profile_grounds_a_mage() {
+    let rs = WodRuleset::with_seed(S);
+    let mut d = splat_doc(&rs, "mage");
+    d.set_text("affiliation", "order_of_hermes");
+    d.set_number("arete", 3);
+    d.map_set("spheres", "Forces", serde_json::json!(3));
+    d.map_set("spheres", "Prime", serde_json::json!(2));
+    d.set_number("quintessence", 5);
+    d.set_number("paradox", 1);
+
+    let p = rs.agent_profile(&d);
+    assert!(p.summary.contains("Arete 3"), "summary: {}", p.summary);
+    assert!(p.summary.contains("Forces 3"), "summary: {}", p.summary);
+    assert!(p.tags.iter().any(|t| t == "splat:mage"));
+    assert!(p.tags.iter().any(|t| t == "mage:order_of_hermes"));
+    assert_eq!(p.stats["powers"]["arete"], serde_json::json!(3));
+    assert_eq!(p.stats["powers"]["spheres"]["Forces"], serde_json::json!(3));
+}
+
+#[test]
+fn agent_profile_grounds_a_werewolf() {
+    let rs = WodRuleset::with_seed(S);
+    let mut d = splat_doc(&rs, "werewolf");
+    d.set_text("breed", "homid");
+    d.set_text("auspice", "ahroun");
+    d.set_text("tribe", "get_of_fenris");
+    d.set_number("rank", 2);
+    d.set_number("rage", 5);
+    d.set_number("gnosis", 3);
+    d.set_number("glory_perm", 2);
+
+    let p = rs.agent_profile(&d);
+    assert!(p.summary.contains("Rage 5"), "summary: {}", p.summary);
+    assert!(p.summary.contains("Gnosis 3"), "summary: {}", p.summary);
+    assert!(
+        p.summary.contains("Get Of Fenris"),
+        "summary: {}",
+        p.summary
+    );
+    assert!(p.tags.iter().any(|t| t == "splat:werewolf"));
+    assert!(p.tags.iter().any(|t| t == "werewolf:get_of_fenris"));
+    assert_eq!(p.stats["powers"]["rage"], serde_json::json!(5));
+    assert_eq!(p.stats["powers"]["renown"]["glory"], serde_json::json!(2));
+}
+
+/// Invoke the `wod_roll` ability against `npc` on `tw`'s world, returning the
+/// structured outcome and the events it emitted.
+fn wod_roll(
+    tw: &mut TestWorld,
+    npc: ObjId,
+    input: serde_json::Value,
+) -> Result<
+    (
+        mush_ruleset::AbilityOutcome,
+        Vec<(mush_core::Audience, mush_proto::OutputEvent)>,
+    ),
+    mush_ruleset::AbilityError,
+> {
+    // A fresh ruleset instance only supplies the (default) schema dispatch; the
+    // roll consumes the *world's* WodState RNG, so it stays deterministic.
+    let rs = WodRuleset::with_seed(S);
+    let mut out = mush_core::Outbox::new();
+    let outcome = rs.invoke_ability(tw.world_mut(), &mut out, npc, "wod_roll", input)?;
+    Ok((outcome, out.events().to_vec()))
+}
+
+#[test]
+fn wod_roll_ability_rolls_from_sheet_logs_and_emits() {
+    let (mut tw, _nick) = world(S);
+    let bart = tw.spawn_player("Bartender");
+    set(&mut tw, "@sheet/set Bartender/strength=3");
+    set(&mut tw, "@sheet/set Bartender/brawl=2");
+
+    let (outcome, events) = wod_roll(
+        &mut tw,
+        bart,
+        serde_json::json!({ "pool_expr": "strength+brawl" }),
+    )
+    .expect("wod_roll resolves");
+
+    // Uses the server RNG: matches a direct Owod20 roll on the same seed (pool
+    // 5, difficulty 6) — the model cannot fabricate the dice.
+    let expected = Owod20Pool::score(&faces(S, 0, 5), &Owod20Opts::new(6));
+    assert_eq!(
+        last_outcome(&tw, bart),
+        expected,
+        "the ability roll must match a direct Owod20Pool roll"
+    );
+
+    // Structured result exposes the polarity mush-npc's validator checks.
+    assert_eq!(outcome.ok, expected.successes() > 0);
+    let expected_polarity = if expected.is_botch() {
+        "botch"
+    } else if expected.successes() > 0 {
+        "success"
+    } else {
+        "failure"
+    };
+    assert_eq!(
+        outcome.data["polarity"],
+        serde_json::json!(expected_polarity)
+    );
+    assert_eq!(outcome.data["difficulty"], serde_json::json!(6));
+    assert_eq!(outcome.data["pool_size"], serde_json::json!(5));
+    assert_eq!(
+        outcome.data["successes"],
+        serde_json::json!(expected.successes())
+    );
+
+    // Broadcast to the room like a player roll, plus a wod.roll panel keyframe.
+    assert!(
+        events
+            .iter()
+            .any(|(_, ev)| mush_testkit::text_of(ev).contains("Bartender rolls")),
+        "the room must see the NPC's roll"
+    );
+    assert!(
+        events.iter().any(|(_, ev)| matches!(
+            ev,
+            mush_proto::OutputEvent::Panel { feed, .. } if feed.as_str() == "wod.roll"
+        )),
+        "a wod.roll panel keyframe must be emitted"
+    );
+}
+
+#[test]
+fn wod_roll_rejects_over_claimed_pools() {
+    let (mut tw, _nick) = world(S);
+    let bart = tw.spawn_player("Bartender");
+    set(&mut tw, "@sheet/set Bartender/strength=3");
+    set(&mut tw, "@sheet/set Bartender/brawl=2"); // Brawl 2 — cannot become 9.
+
+    // A raw-dice injection ("+7") is refused: the pool may only name sheet traits.
+    assert!(matches!(
+        wod_roll(
+            &mut tw,
+            bart,
+            serde_json::json!({ "pool_expr": "strength+brawl+7" })
+        ),
+        Err(mush_ruleset::AbilityError::Invalid(_))
+    ));
+    // A bare number is refused.
+    assert!(matches!(
+        wod_roll(&mut tw, bart, serde_json::json!({ "pool_expr": "9" })),
+        Err(mush_ruleset::AbilityError::Invalid(_))
+    ));
+    // A named-value bonus is refused.
+    assert!(matches!(
+        wod_roll(&mut tw, bart, serde_json::json!({ "pool_expr": "brawl:9" })),
+        Err(mush_ruleset::AbilityError::Invalid(_))
+    ));
+    // A power the mortal does not have is refused (no such trait on the sheet).
+    assert!(matches!(
+        wod_roll(
+            &mut tw,
+            bart,
+            serde_json::json!({ "pool_expr": "celerity+dexterity" })
+        ),
+        Err(mush_ruleset::AbilityError::Invalid(_))
+    ));
+    // An unknown ability name is rejected distinctly.
+    let rs = WodRuleset::with_seed(S);
+    let mut out = mush_core::Outbox::new();
+    assert!(matches!(
+        rs.invoke_ability(
+            tw.world_mut(),
+            &mut out,
+            bart,
+            "teleport",
+            serde_json::json!({})
+        ),
+        Err(mush_ruleset::AbilityError::Unknown(_))
+    ));
+    // None of the refusals logged a roll (the RNG stream is untouched).
+    assert!(
+        tw.world()
+            .module_state::<WodState>()
+            .unwrap()
+            .recent_logs(bart, 1)
+            .is_empty()
+    );
+}
+
+#[test]
+fn wod_roll_applies_wound_penalty() {
+    let (mut tw, _nick) = world(S);
+    let bart = tw.spawn_player("Bartender");
+    set(&mut tw, "@sheet/set Bartender/strength=3");
+    set(&mut tw, "@sheet/set Bartender/brawl=2");
+    // 4 lethal → Wounded (-2). Pool 5 - 2 = 3.
+    tw.run(GOD, "+harm Bartender=4L");
+
+    let (outcome, _events) = wod_roll(
+        &mut tw,
+        bart,
+        serde_json::json!({ "pool_expr": "strength+brawl" }),
+    )
+    .expect("wod_roll resolves");
+    let expected = Owod20Pool::score(&faces(S, 0, 3), &Owod20Opts::new(6));
+    assert_eq!(last_outcome(&tw, bart), expected);
+    assert_eq!(outcome.data["pool_size"], serde_json::json!(3));
+    assert_eq!(outcome.data["wound_penalty"], serde_json::json!(-2));
+}
+
+#[test]
+fn wod_roll_willpower_spend_is_bounded_to_the_npc_sheet() {
+    let (mut tw, _nick) = world(S);
+    let bart = tw.spawn_player("Bartender");
+    set(&mut tw, "@sheet/set Bartender/strength=3");
+    set(&mut tw, "@sheet/set Bartender/willpower=5");
+    set(&mut tw, "@sheet/set Bartender/willpower_temp=1");
+
+    // First spend: honored — matches a direct roll with the willpower option,
+    // and deducts the temporary point from the NPC's own sheet.
+    let (outcome, _) = wod_roll(
+        &mut tw,
+        bart,
+        serde_json::json!({ "pool_expr": "strength", "willpower": true }),
+    )
+    .expect("wod_roll resolves");
+    let expected = Owod20Pool::score(
+        &faces(S, 0, 3),
+        &Owod20Opts {
+            willpower: true,
+            ..Owod20Opts::new(6)
+        },
+    );
+    assert_eq!(last_outcome(&tw, bart), expected);
+    assert_eq!(outcome.data["willpower_applied"], serde_json::json!(true));
+    assert_eq!(read_sheet(&tw, bart).number("willpower_temp"), Some(0));
+
+    // Second spend: no temporary point left, so the request is silently not
+    // honored (the model cannot conjure an automatic success it hasn't got).
+    let (outcome, _) = wod_roll(
+        &mut tw,
+        bart,
+        serde_json::json!({ "pool_expr": "strength", "willpower": true }),
+    )
+    .expect("wod_roll resolves");
+    assert_eq!(outcome.data["willpower_applied"], serde_json::json!(false));
+}

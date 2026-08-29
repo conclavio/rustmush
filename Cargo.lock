@@ -1875,8 +1875,12 @@ version = "0.1.0"
 dependencies = [
  "mush-core",
  "mush-llm",
+ "mush-proto",
+ "mush-ruleset",
+ "mush-testkit",
  "serde",
  "serde_json",
+ "smol_str",
  "tokio",
  "tracing",
 ]
@@ -1998,6 +2002,7 @@ dependencies = [
  "mush-mail",
  "mush-net-ssh",
  "mush-net-web",
+ "mush-npc",
  "mush-proto",
  "mush-ruleset",
  "mush-script",

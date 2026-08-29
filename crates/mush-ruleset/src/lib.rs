@@ -50,7 +50,7 @@ pub mod schema;
 pub mod store;
 pub mod validate;
 
-use mush_core::{GameModule, ObjId};
+use mush_core::{GameModule, ObjId, Outbox, World};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
@@ -137,20 +137,38 @@ pub trait Ruleset: GameModule {
     /// tags, and a tool manifest placeholder.
     fn agent_profile(&self, sheet: &SheetDoc) -> AgentCapabilityProfile;
 
-    /// Invoke a named NPC ability (the validated `wod_roll`-style tool, real
-    /// in M8). The default rejects every ability; stub-friendly for M6a.
+    /// Invoke a named NPC ability the LLM agent requested (the validated
+    /// `wod_roll` tool, real in M8 — treaty ruling 6).
+    ///
+    /// This runs **in the world task**, re-validated against current state
+    /// after the agent's off-loop LLM turn (design 03 §6.4, §8): the LLM only
+    /// *requests* the ability by typed name + input; the deterministic engine
+    /// computes the outcome, never the model. The handler is handed the world
+    /// and the outbox so a real ability (a dice roll) reads the NPC's own
+    /// sheet, rolls through the shared server RNG, logs, and emits like a
+    /// player action — the security fence being that it may only touch
+    /// `npc`'s own sheet and never mutate other objects or bypass locks
+    /// (design 03 §7).
+    ///
+    /// `w`/`out` are the same borrows a
+    /// [`Ctx`](mush_core::Ctx) carries (`ctx.w`, `ctx.out`), so the M8 agent
+    /// host / driver calls this straight from its
+    /// [`AsyncCompletion`](mush_core::AsyncCompletion) re-entry. The default
+    /// rejects every ability (mortal / stub rulesets).
     ///
     /// # Errors
     ///
     /// Returns an [`AbilityError`] if the ability is unknown or the input is
-    /// invalid.
+    /// invalid (e.g. an over-claimed pool referencing traits not on the sheet).
     fn invoke_ability(
         &self,
+        w: &mut World,
+        out: &mut Outbox,
         npc: ObjId,
         name: &str,
         input: serde_json::Value,
     ) -> Result<AbilityOutcome, AbilityError> {
-        let _ = (npc, input);
+        let _ = (w, out, npc, input);
         Err(AbilityError::Unknown(name.to_string()))
     }
 }

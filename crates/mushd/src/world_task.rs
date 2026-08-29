@@ -268,7 +268,10 @@ pub struct ServerDeps {
     /// [`Effect::ModuleAsync`] (worldgen `@gen`) off the world loop and
     /// re-enter as [`WorldCommand::ModuleAsyncDone`]. `None` for the compat
     /// [`spawn`] and lightweight tests that boot no LLM-driven module — such
-    /// an effect is then logged and dropped, never a panic.
+    /// an effect is then logged and dropped, never a panic. The M8 NPC module
+    /// shares this same handle (its off-loop turn is driven from [`spawn_effects`]);
+    /// its on-loop ability execution goes through the module's grounding adapter,
+    /// not this struct.
     pub llm: Option<Arc<LlmService>>,
 }
 
@@ -1677,6 +1680,34 @@ fn spawn_effects(fx: &mut Effects, tx: &mpsc::WeakSender<WorldMsg>, llm: Option<
                                 correlation,
                                 "worldgen completion after shutdown dropped"
                             );
+                        }
+                    });
+                } else if module.as_str() == mush_npc::NS {
+                    // M8 NPC agent turn: run the bounded tool loop off-loop
+                    // against the shared LlmService, then re-enter with the
+                    // serialized TurnOutcome (abilities execute on-loop in the
+                    // module's completion, via its grounding adapter).
+                    let Some(llm) = llm.cloned() else {
+                        tracing::warn!(
+                            correlation,
+                            "npc Effect::ModuleAsync dropped: no LlmService on this world task"
+                        );
+                        continue;
+                    };
+                    tokio::spawn(async move {
+                        let result = mush_npc::run_npc_turn_async(&llm, &payload).await;
+                        let done = WorldCommand::ModuleAsyncDone {
+                            module,
+                            actor,
+                            correlation,
+                            payload: result,
+                        };
+                        if tx
+                            .send(WorldMsg::Inbound(Inbound::Apply(done)))
+                            .await
+                            .is_err()
+                        {
+                            tracing::debug!(correlation, "npc completion after shutdown dropped");
                         }
                     });
                 } else {
