@@ -623,6 +623,13 @@ impl Splat for Werewolf {
         ]
     }
 
+    fn wizard_splat_fields(&self) -> &'static [&'static str] {
+        // Breed / Auspice / Tribe drive every derived Garou trait at finalize
+        // (Rage, Gnosis, Willpower, Renown, free Gifts); there is no
+        // player-allocated splat pool.
+        &["breed", "auspice", "tribe"]
+    }
+
     fn on_field_changed(&self, doc: &mut SheetDoc, field: &str) {
         match field.to_ascii_lowercase().as_str() {
             "tribe" => doc.set_text("ban", tribe_of(doc).map_or("", |t| t.ban)),

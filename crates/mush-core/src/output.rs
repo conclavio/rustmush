@@ -234,6 +234,15 @@ pub fn room_view(w: &World, looker: ObjId, room: ObjId) -> Option<RoomView> {
             if o.flags.contains(Flags::GOING) {
                 continue;
             }
+            // Disconnected players stay in the room (they don't leave on
+            // logout) but are hidden from the `look` listing — nobody wants a
+            // room that reads as crowded with logged-off people, and this
+            // drops system objects like God from every room. NPCs are always
+            // present. Not waived for staff: a staffer wanting to see who's
+            // offline here uses `examine`, which lists raw contents.
+            if o.kind == ObjKind::Player && !w.is_connected(c) {
+                continue;
+            }
             if o.flags.contains(Flags::DARK) && !see_hidden && !perm::controls(w, looker, c) {
                 continue;
             }
@@ -370,6 +379,7 @@ mod tests {
     fn room_view_honors_dark_and_opaque() {
         let (mut w, nick, hall) = setup();
         w.move_to(nick, hall).unwrap();
+        w.set_connected(nick, true); // a listed player must be connected (see below)
         let ball = w.create(ObjKind::Thing, "ball", GOD, Some(hall)).unwrap();
         let exit = w.create(ObjKind::Exit, "north", GOD, Some(hall)).unwrap();
 
@@ -401,6 +411,51 @@ mod tests {
         w.set_flag(hall, Flags::DARK, true).unwrap();
         w.get_mut(outsider).unwrap().powers = Powers::SEE_HIDDEN;
         assert_eq!(room_view(&w, outsider, hall).unwrap().contents.len(), 2);
+    }
+
+    #[test]
+    fn room_view_hides_disconnected_players() {
+        let (mut w, nick, hall) = setup();
+        w.move_to(nick, hall).unwrap();
+        w.set_connected(nick, true);
+        let bob = w.create(ObjKind::Player, "Bob", GOD, Some(hall)).unwrap(); // offline
+        let npc = w.create(ObjKind::Npc, "Barkeep", GOD, Some(hall)).unwrap();
+        let mug = w.create(ObjKind::Thing, "mug", GOD, Some(hall)).unwrap();
+
+        // Nick (connected) looks: sees the connected... nothing of self; the
+        // NPC and the thing; NOT the offline Bob.
+        let names: Vec<_> = room_view(&w, nick, hall)
+            .unwrap()
+            .contents
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        assert!(names.contains(&"Barkeep".to_string()));
+        assert!(names.contains(&"mug".to_string()));
+        assert!(!names.contains(&"Bob".to_string()), "offline player hidden");
+
+        // Not waived for staff/controllers either — God's look also hides Bob
+        // (staff use `examine` to see who's offline in a room).
+        let god_names: Vec<_> = room_view(&w, GOD, hall)
+            .unwrap()
+            .contents
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        assert!(!god_names.contains(&"Bob".to_string()));
+        assert!(god_names.contains(&"Nick".to_string())); // connected player shows
+
+        // Bob reconnecting makes him appear.
+        w.set_connected(bob, true);
+        let names2: Vec<_> = room_view(&w, nick, hall)
+            .unwrap()
+            .contents
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        assert!(names2.contains(&"Bob".to_string()));
+        let _ = npc;
+        let _ = mug;
     }
 
     #[test]

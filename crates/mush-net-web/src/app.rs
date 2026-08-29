@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::extract::ConnectInfo;
-use axum::http::{HeaderValue, Request, header};
+use axum::http::{HeaderValue, Request, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router, extract::State};
@@ -21,6 +21,7 @@ use tower_http::trace::TraceLayer;
 use crate::config::WebConfig;
 use crate::hooks::{WEB_CONN_ID_BASE, WebHooks};
 use crate::ip::client_ip;
+use crate::metrics::Metrics;
 use crate::{assets, auth, ws};
 
 /// Shared state behind every handler.
@@ -32,6 +33,9 @@ pub(crate) struct AppState {
     pub started: Instant,
     /// Next WS conn id (starts at [`WEB_CONN_ID_BASE`]).
     pub next_conn: Arc<AtomicU64>,
+    /// The shared metrics registry (from [`WebHooks::metrics`]) read by
+    /// `/healthz` and `/metrics`.
+    pub metrics: Arc<Metrics>,
 }
 
 /// Builds the complete axum app. Public for tests and embedders; `mushd`
@@ -49,11 +53,14 @@ pub fn router(hooks: Arc<dyn WebHooks>, config: WebConfig) -> Router {
 type LimiterGc = Box<dyn Fn() + Send + Sync>;
 
 pub(crate) fn build(hooks: Arc<dyn WebHooks>, config: WebConfig) -> (Router, Option<LimiterGc>) {
+    let metrics = hooks.metrics();
+    let metrics_enabled = config.metrics_enabled;
     let state = AppState {
         hooks,
         config: Arc::new(config),
         started: Instant::now(),
         next_conn: Arc::new(AtomicU64::new(WEB_CONN_ID_BASE)),
+        metrics,
     };
 
     let auth_routes = Router::new()
@@ -62,14 +69,18 @@ pub(crate) fn build(hooks: Arc<dyn WebHooks>, config: WebConfig) -> (Router, Opt
         .route("/api/auth/logout", post(auth::logout));
     let (auth_routes, limiter_gc) = rate_limit(auth_routes, &state.config);
 
-    let app = security_headers(
-        auth_routes
-            .route("/healthz", get(healthz))
-            .route("/ws", get(ws::ws_route))
-            .fallback(assets::static_handler),
-    )
-    .layer(TraceLayer::new_for_http().make_span_with(scrubbed_span))
-    .with_state(state);
+    let mut ops = Router::new()
+        .route("/healthz", get(healthz))
+        .route("/ws", get(ws::ws_route));
+    if metrics_enabled {
+        // Gated behind `web.metrics_enabled` (opt-in, default off). Public-safe:
+        // non-sensitive aggregates only (see `metrics.rs`).
+        ops = ops.route("/metrics", get(metrics_endpoint));
+    }
+
+    let app = security_headers(auth_routes.merge(ops).fallback(assets::static_handler))
+        .layer(TraceLayer::new_for_http().make_span_with(scrubbed_span))
+        .with_state(state);
     (app, limiter_gc)
 }
 
@@ -209,12 +220,30 @@ fn scrubbed_span(request: &Request<Body>) -> tracing::Span {
     )
 }
 
-/// `GET /healthz` → `{"ok": true, "uptime_s": …}`.
+/// `GET /healthz` → enriched liveness JSON: `ok`, `uptime_s`, `version`,
+/// `connections`, `loop_lag_ms`, `world_loop_unixtime`, `store_ok`.
+/// Non-sensitive aggregates only. Read lock-free straight from the atomics —
+/// this endpoint is unauthenticated and unthrottled, so it must not take the
+/// LLM mutex or allocate a full snapshot per hit.
 async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
-    Json(serde_json::json!({
-        "ok": true,
-        "uptime_s": state.started.elapsed().as_secs(),
-    }))
+    let uptime = state.started.elapsed().as_secs();
+    Json(state.metrics.health_json(uptime, env!("CARGO_PKG_VERSION")))
+}
+
+/// `GET /metrics` → Prometheus text exposition. Registered only when
+/// `web.metrics_enabled` is set (opt-in, default off). Exposes only aggregate
+/// counters/gauges/histograms — never per-player data, keys, or tokens.
+async fn metrics_endpoint(State(state): State<AppState>) -> impl IntoResponse {
+    let uptime = state.started.elapsed().as_secs();
+    let body = state.metrics.snapshot().to_prometheus(uptime);
+    (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
+        )],
+        body,
+    )
 }
 
 /// Serves until the process ends. See

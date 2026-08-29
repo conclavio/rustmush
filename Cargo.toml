@@ -18,7 +18,10 @@ thiserror = "2"
 bitflags = { version = "2", features = ["serde"] }
 smol_str = { version = "0.3", features = ["serde"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# Daily-rotating, non-blocking file log appender (M9 observability). Pairs with
+# tracing-subscriber; pure Rust, no C toolchain.
+tracing-appender = "0.2"
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 # dice / rng
@@ -66,6 +69,9 @@ backon = "1"
 governor = "0.10"
 async-trait = "0.1"
 wiremock = "0.6"
+# property-based ("fuzz-style") testing — dev-dep only, cross-platform, runs
+# under `cargo test`. Hostile-input parser suites (M9 hardening) live behind it.
+proptest = "1"
 # .env loading for dev (mushd reads secrets from real env vars in prod; in dev
 # it loads C:/.../.env at boot). dotenvy is the actively-maintained successor to
 # the unmaintained `dotenv` crate; pure Rust, no C deps. Its safe `dotenv()`

@@ -22,6 +22,7 @@ tracing.workspace = true
 mush-testkit.workspace = true
 # The async defer-path tests await run_worldgen_async against a MockProvider.
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+proptest = { workspace = true }
 
 [lints]
 workspace = true

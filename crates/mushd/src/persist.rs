@@ -40,6 +40,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mush_core::{ObjId, World};
+use mush_net_web::Metrics;
 use mush_store::{ObjectStore, StoreError, WriteBatch};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -90,9 +91,10 @@ pub enum StoreJob {
 pub fn spawn_store_writer(
     store: Arc<dyn ObjectStore>,
     world: mpsc::WeakSender<WorldMsg>,
+    metrics: Arc<Metrics>,
 ) -> (mpsc::Sender<StoreJob>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel(WRITER_QUEUE);
-    let join = tokio::spawn(writer_loop(store, rx, world));
+    let join = tokio::spawn(writer_loop(store, rx, world, metrics));
     (tx, join)
 }
 
@@ -100,6 +102,7 @@ async fn writer_loop(
     store: Arc<dyn ObjectStore>,
     mut rx: mpsc::Receiver<StoreJob>,
     world: mpsc::WeakSender<WorldMsg>,
+    metrics: Arc<Metrics>,
 ) {
     tracing::info!("store writer running");
     let mut healthy = true;
@@ -107,6 +110,13 @@ async fn writer_loop(
         match job {
             StoreJob::Write { batch, notify } => {
                 let result = write_with_retry(&*store, batch, &mut healthy, &world).await;
+                // The batch has left the queue (acked or dropped): drop the
+                // depth the world task incremented on enqueue, and stamp the
+                // last-ack time on success (the metrics surface's store health).
+                metrics.add_store_write_queue_depth(-1);
+                if result.is_ok() {
+                    metrics.set_store_last_ack_unix(unix_now_s());
+                }
                 if let Some(notify) = notify {
                     // Forward the truth — a dropped batch must never ack as
                     // success (the ack gate for creations rides on this).

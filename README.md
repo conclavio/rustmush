@@ -58,7 +58,7 @@ $env:REDIS_URL = "redis://127.0.0.1:6379"; cargo test --workspace  # PowerShell
 ```
 
 Point `REDIS_URL` at a **disposable** instance: the gated tests wipe their key namespaces
-(they use logical dbs 9–15 plus the default db).
+(they use logical dbs 7–15 plus the default db).
 
 The web SPA builds with `npm install && npm run build` in `web/` (vitest: `npm test`).
 Debug server builds serve `web/dist` straight from disk (rebuild the SPA, refresh the
@@ -73,7 +73,7 @@ we don't redistribute it.
 Copy [mushd.toml.example](mushd.toml.example) to `mushd.toml`, adjust, and run `mushd`
 (`mushd --repl` gives an offline in-memory REPL). In-game `help` is two-layered: per-command
 usage comes from the command table, and prose topics (getting started, building, locks,
-channels, mail, jobs, admin, scripting, weather, worldgen, wod, rules-of-conduct) are markdown files
+channels, mail, jobs, admin, scripting, weather, worldgen, wod, chargen, rules-of-conduct) are markdown files
 loaded at boot from `[server].help_dir` (default `./docs/help` — edit or add `*.md` files there and
 restart to change them; `help <topic>` serves them, with exact command names taking
 precedence).
@@ -137,6 +137,31 @@ in a room costs nothing; a budget trip or `@llm/kill <npc>` degrades it to a can
 line. Tiers route to cheap models by default (`npc_dialogue_{major,minor,extra}`,
 `npc_summarize` in `[llm.routes]`); reserve `anthropic/claude-opus-5` for a promoted hero NPC.
 In-game reference: `help npc`.
+
+**Onboarding** (M9) wires new-player creation through to approved play. Chargen has a guided
+terminal **wizard** (`+chargen/wizard`) layered over the classic `+chargen`/`+stat` commands —
+same sheet, same point budget, step-by-step with a live budget and `~q` to save-and-resume
+(`help chargen`). An optional gate, `[onboarding].chargen_required` (**off by default**, so a
+fresh character plays immediately as before), holds a not-yet-approved character to a small
+command set (chargen / look / say / help; channel speech and movement are gated), places it in a
+`start_room_unapproved` chargen area, and drops it into the wizard on connect over **both** SSH
+and the web client. Submitting files a `wod-chargen` approval job; when a storyteller
+`+job/approve`s it the gate lifts and the
+character is moved to the live `start_room` with full access. See `[onboarding]` in
+[mushd.toml.example](mushd.toml.example).
+
+**Observability** (M9). `GET /healthz` returns a small liveness JSON (`ok`, `uptime_s`,
+`version`, `connections`, `loop_lag_ms`, `world_loop_unixtime`, `store_ok`) and `GET /metrics`
+serves Prometheus text (`[web].metrics_enabled`, **opt-in / off by default** since it binds this
+same possibly-public listener with no auth) — aggregate counters and gauges only (connections by
+transport, commands, world-loop lag with a p99 histogram, a loop liveness heartbeat, object
+counts, store-write health, NPC activity, and LLM calls/tokens/cost by feature), **never**
+per-player data, prompts, or
+keys. Staff `@stats` reads the same live registry (connected split, loop-lag p99, store queue
+depth, today's LLM spend). Structured logging is configured under `[log]`: `level` (a `tracing`
+env-filter, or `RUST_LOG`), `format` (`pretty` for the console or `json` for shipping), and
+`file` to also write daily-rotating logs under `<data_dir>/logs/`. See
+[docs/ops.md](docs/ops.md) for the operator view.
 
 The web client is served by the same process on `[web].listen` (default
 `http://127.0.0.1:8080`): log in or register over `POST /api/auth/*`, then the SPA speaks

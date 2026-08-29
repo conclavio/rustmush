@@ -156,6 +156,7 @@ async fn boot_server(dir: &Path) -> SocketAddr {
         engine,
         Arc::clone(&sessions),
         ServerDeps {
+            metrics: std::sync::Arc::new(mush_net_web::Metrics::new()),
             store: Arc::clone(&store),
             guard: Arc::new(IpGuard::new()),
             staff,

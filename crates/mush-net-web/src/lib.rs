@@ -15,7 +15,8 @@
 //! | `POST /api/auth/register` | `{account, password, char_name}` → same as login |
 //! | `POST /api/auth/logout` | `Authorization: Bearer` → 204 |
 //! | `GET /ws` | token via `Sec-WebSocket-Protocol: rustmush.v1.<token>` only, `?char=<key>`, optional `?resume=<last_seq>` |
-//! | `GET /healthz` | `{"ok": true, "uptime_s": …}` |
+//! | `GET /healthz` | `{ok, uptime_s, version, connections, loop_lag_ms, world_loop_unixtime, store_ok}` (lock-free read of the shared [`metrics::Metrics`]) |
+//! | `GET /metrics` | Prometheus text exposition; gated on `WebConfig::metrics_enabled` (opt-in, default off); non-sensitive aggregates only |
 //! | `/`, `/assets/*`, SPA deep links | embedded `web/dist` (rust-embed; disk in debug builds) |
 //!
 //! ## Security posture
@@ -58,6 +59,7 @@ mod auth;
 mod config;
 mod hooks;
 mod ip;
+pub mod metrics;
 mod ws;
 
 pub use app::{router, serve, serve_with_shutdown};
@@ -66,3 +68,4 @@ pub use hooks::{
     CharSummary, LoginErr, LoginOk, NewWebConn, RegisterErr, ResumeErr, ResumeOk, SessionStart,
     TokenIdentity, WEB_CONN_ID_BASE, WebHooks,
 };
+pub use metrics::{LlmFeatureStat, LlmTodaySpend, Metrics, MetricsSnapshot, WorldSample};

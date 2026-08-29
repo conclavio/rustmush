@@ -98,7 +98,11 @@ async fn boot(tag: &str, session_config: SessionConfig, auth_burst: u32) -> Rig 
 /// Boot with the wod ruleset loaded too (adds the `wod.sheet`/`wod.roll`
 /// feeds + `+chargen`/`+sheet` surface), for the sheet-over-web test.
 async fn boot_wod(tag: &str, session_config: SessionConfig, auth_burst: u32) -> Rig {
-    let wod = modules::ruleset_modules(&["wod".to_string()]).expect("wod ruleset");
+    let wod = modules::ruleset_modules(
+        &["wod".to_string()],
+        &ruleset_wod::OnboardingConfig::default(),
+    )
+    .expect("wod ruleset");
     boot_inner(tag, session_config, auth_burst, wod).await
 }
 
@@ -152,10 +156,15 @@ async fn boot_inner(
 
     let sessions = Arc::new(SessionManager::with_config(session_config));
     let guard = Arc::new(IpGuard::new());
+    // One shared registry across the world task and both transports, exactly
+    // as main.rs wires it — so /metrics, /healthz, and @stats reflect real
+    // state (connections by transport, commands, object counts, store health).
+    let metrics = std::sync::Arc::new(mush_net_web::Metrics::new());
     let handles = world_task::spawn_persist(
         engine,
         Arc::clone(&sessions),
         ServerDeps {
+            metrics: Arc::clone(&metrics),
             store: Arc::clone(&store),
             guard: Arc::clone(&guard),
             staff,
@@ -164,12 +173,15 @@ async fn boot_inner(
     );
     let accounts = Arc::new(Accounts::new(Arc::clone(&store), handles.handle.clone(), 3));
 
-    let ssh_bridge = Arc::new(SshBridge::new(
-        Arc::clone(&accounts),
-        Arc::clone(&sessions),
-        handles.handle.clone(),
-        Arc::clone(&guard),
-    ));
+    let ssh_bridge = Arc::new(
+        SshBridge::new(
+            Arc::clone(&accounts),
+            Arc::clone(&sessions),
+            handles.handle.clone(),
+            Arc::clone(&guard),
+        )
+        .with_metrics(Arc::clone(&metrics)),
+    );
     let ssh_listener = start_listener(
         "127.0.0.1:0".parse().unwrap(),
         &dir,
@@ -180,19 +192,25 @@ async fn boot_inner(
     .expect("ssh listener");
     let ssh = ssh_listener.addr();
 
-    let web_bridge: Arc<dyn mush_net_web::WebHooks> = Arc::new(WebBridge::new(
-        accounts,
-        sessions,
-        handles.handle.clone(),
-        guard,
-        store,
-        panels.clone(),
-    ));
+    let web_bridge: Arc<dyn mush_net_web::WebHooks> = Arc::new(
+        WebBridge::new(
+            accounts,
+            sessions,
+            handles.handle.clone(),
+            guard,
+            store,
+            panels.clone(),
+        )
+        .with_metrics(Arc::clone(&metrics)),
+    );
     let web_config = WebConfig {
         server_name: "rustmush e2e".to_string(),
         features,
         panels,
         auth_burst,
+        // This rig asserts `/metrics` reflects real state; it is opt-in
+        // (default off), so enable it here.
+        metrics_enabled: true,
         ..WebConfig::default()
     };
     let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
@@ -916,6 +934,112 @@ async fn spa_and_healthz_are_served() {
         .unwrap();
     assert_eq!(health["ok"], true);
     assert!(health["uptime_s"].is_u64());
+}
+
+/// Parse the value of a single Prometheus sample line, matched by its full
+/// `name{labels}` prefix (labels are part of the prefix). Panics if absent —
+/// callers assert presence.
+fn metric_value(text: &str, prefix: &str) -> f64 {
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix(prefix) {
+            // A metric line is `name{labels} <value>`; a HELP/TYPE line starts
+            // with '#', and a longer metric name (e.g. *_opened_total) fails the
+            // exact-prefix match, so `rest` here is the value (leading space).
+            if let Some(v) = rest.split_whitespace().next() {
+                return v
+                    .parse()
+                    .unwrap_or_else(|_| panic!("unparseable metric value in {line:?}"));
+            }
+        }
+    }
+    panic!("metric {prefix:?} not found in:\n{text}");
+}
+
+/// The observability deliverable end to end: with the one shared registry wired
+/// across the world task and both transports (as `main.rs` does), real activity
+/// — a live SSH connection and a handful of commands — shows up truthfully in
+/// `@stats`, `/healthz`, and `/metrics`, and no secret ever leaks into the
+/// metrics text.
+#[tokio::test(flavor = "multi_thread")]
+async fn metrics_healthz_and_stats_reflect_real_state() {
+    let rig = boot_wod("metrics-real", SessionConfig::default(), 0).await;
+    let (god_handle, mut god) = god_terminal(&rig).await;
+
+    // Real activity: a few commands (each bumps the world-loop command
+    // counter), then the staff-enriched @stats.
+    god.send_line("look").await;
+    god.send_line("WHO").await;
+    let mark = god.mark();
+    god.send_line("@stats").await;
+    god.expect_after(mark, "Connected:").await;
+    let block = strip_ansi(&god.seen[mark..]);
+    assert!(
+        block.contains("ssh 1"),
+        "@stats reflects the one live SSH connection: {block:?}"
+    );
+
+    let client = reqwest::Client::new();
+
+    // /healthz: alive, store healthy, exactly the one live connection.
+    let health: Value = client
+        .get(rig.url("/healthz"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(health["ok"], true);
+    assert_eq!(health["store_ok"], true);
+    assert_eq!(health["connections"].as_u64(), Some(1));
+    assert!(health["uptime_s"].is_u64());
+    assert!(health["loop_lag_ms"].is_u64());
+
+    // /metrics: the same live registry, in Prometheus text.
+    let resp = client.get(rig.url("/metrics")).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        ct.starts_with("text/plain"),
+        "prometheus content-type: {ct:?}"
+    );
+    let text = resp.text().await.unwrap();
+
+    assert!(
+        metric_value(&text, "mush_connections{transport=\"ssh\"}") >= 1.0,
+        "the one live SSH connection shows in /metrics:\n{text}"
+    );
+    assert!(
+        metric_value(&text, "mush_commands_total") >= 3.0,
+        "the world loop counted the commands run:\n{text}"
+    );
+    assert!(
+        metric_value(&text, "mush_objects{kind=\"room\"}") >= 1.0,
+        "Limbo shows in the object gauge:\n{text}"
+    );
+    assert!(
+        metric_value(&text, "mush_objects{kind=\"player\"}") >= 1.0,
+        "God shows in the object gauge:\n{text}"
+    );
+    assert_eq!(
+        metric_value(&text, "mush_store_read_only"),
+        0.0,
+        "the store is healthy (not in read-only mode):\n{text}"
+    );
+    // No secret material ever leaks into the metrics surface.
+    assert!(
+        !text.to_lowercase().contains("password") && !text.contains(GM_PASSWORD),
+        "metrics must never carry secrets"
+    );
+
+    let _ = god_handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
 }
 
 // ---------------------------------------------------------------------------

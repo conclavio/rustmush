@@ -27,6 +27,8 @@ use mush_proto::{Envelope, Query};
 use serde::Serialize;
 use tokio::sync::mpsc;
 
+use crate::metrics::Metrics;
+
 /// First conn id this crate hands out. `mush-net-ssh` allocates from 1
 /// upward; starting the web side at `2^32` keeps the two ranges disjoint in
 /// the binary's shared `ConnId` space.
@@ -233,4 +235,14 @@ pub trait WebHooks: Send + Sync {
     /// Release the slot claimed by
     /// [`connection_opened`](Self::connection_opened). Default: no-op.
     fn connection_closed(&self, _addr: IpAddr) {}
+
+    /// The shared in-process metrics registry the `/healthz` and `/metrics`
+    /// endpoints read. The binary hands the same `Arc<Metrics>` it publishes
+    /// into from the world task and the SSH transport, so both endpoints see
+    /// the whole server's numbers, not just the web side. Default: a fresh
+    /// empty registry (tests and embedders that do not wire metrics still get
+    /// well-formed, all-zero output).
+    fn metrics(&self) -> Arc<Metrics> {
+        Arc::new(Metrics::new())
+    }
 }

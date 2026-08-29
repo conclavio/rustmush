@@ -86,12 +86,18 @@ pub struct WebBridge<A: AuthBackend + 'static> {
     /// `connect_character`/`resume` until `disconnected` (or the boot
     /// itself).
     conn_tokens: Mutex<HashMap<u64, String>>,
+    /// Shared metrics registry — web transport connection counters, and the
+    /// registry the `/healthz` + `/metrics` endpoints read (via
+    /// [`WebHooks::metrics`]). Defaults to a throwaway registry (tests); the
+    /// real server injects the shared one via [`WebBridge::with_metrics`].
+    metrics: Arc<mush_net_web::Metrics>,
 }
 
 impl<A: AuthBackend + 'static> WebBridge<A> {
     /// Wire the bridge. `panels` is the panel manifest for `hello` /
     /// `PanelSubscribe` (boot wiring: the registry's panel feeds plus
-    /// `"who"` — see `main.rs`).
+    /// `"who"` — see `main.rs`). Metrics land in a throwaway registry until
+    /// [`WebBridge::with_metrics`] injects the server-wide one.
     pub fn new(
         accounts: Arc<A>,
         sessions: Arc<SessionManager>,
@@ -105,7 +111,16 @@ impl<A: AuthBackend + 'static> WebBridge<A> {
             store,
             panels,
             conn_tokens: Mutex::new(HashMap::new()),
+            metrics: Arc::new(mush_net_web::Metrics::new()),
         }
+    }
+
+    /// Point web connection counters — and the `/healthz` + `/metrics`
+    /// endpoints — at the shared metrics registry. Called by `mushd`.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Arc<mush_net_web::Metrics>) -> WebBridge<A> {
+        self.metrics = metrics;
+        self
     }
 
     /// The panel feed ids the server can publish — `mushd` copies these
@@ -667,11 +682,23 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
     // `connection_opened`/`connection_closed` — reused, not duplicated, so
     // one address's SSH and web connections share one cap.
     fn connection_opened(&self, addr: IpAddr) -> bool {
-        self.core.guard.conn_opened(addr)
+        let admitted = self.core.guard.conn_opened(addr);
+        // Count only admitted connections so the current-gauge balances with
+        // connection_closed (called once per admitted WS task; the crate
+        // contract guarantees the pairing).
+        if admitted {
+            self.metrics.web_connection_opened();
+        }
+        admitted
     }
 
     fn connection_closed(&self, addr: IpAddr) {
         self.core.guard.conn_closed(addr);
+        self.metrics.web_connection_closed();
+    }
+
+    fn metrics(&self) -> Arc<mush_net_web::Metrics> {
+        Arc::clone(&self.metrics)
     }
 }
 

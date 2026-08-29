@@ -59,6 +59,7 @@ pub struct MockState {
 
 pub struct MockWebHooks {
     state: Mutex<MockState>,
+    metrics: Arc<mush_net_web::Metrics>,
 }
 
 impl MockWebHooks {
@@ -79,7 +80,13 @@ impl MockWebHooks {
         );
         Self {
             state: Mutex::new(st),
+            metrics: Arc::new(mush_net_web::Metrics::new()),
         }
+    }
+
+    /// The shared metrics registry `/healthz` and `/metrics` read.
+    pub fn metrics_registry(&self) -> Arc<mush_net_web::Metrics> {
+        Arc::clone(&self.metrics)
     }
 
     pub fn login_ok(&self) -> LoginOk {
@@ -233,6 +240,10 @@ impl WebHooks for MockWebHooks {
         st.conn_closes.push(addr);
         st.live_conns = st.live_conns.saturating_sub(1);
     }
+
+    fn metrics(&self) -> Arc<mush_net_web::Metrics> {
+        Arc::clone(&self.metrics)
+    }
 }
 
 /// A stamped envelope as the session layer would emit (for replay / live
@@ -251,6 +262,9 @@ pub fn test_config() -> WebConfig {
     WebConfig {
         features: vec!["mail".into(), "channels".into()],
         panels: vec!["wod.sheet".into()],
+        // The HTTP tests exercise `/metrics`; it is opt-in (default off), so
+        // enable it here. `metrics_endpoint_off_when_disabled` flips it back.
+        metrics_enabled: true,
         ..WebConfig::default()
     }
 }

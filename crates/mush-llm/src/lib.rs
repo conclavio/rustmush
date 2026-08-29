@@ -52,7 +52,7 @@ pub mod mock;
 
 // -- curated re-exports (the surface worldgen/npc import) ------------------
 
-pub use audit::{AuditRecord, AuditSink, Outcome};
+pub use audit::{AuditRecord, AuditSink, FeatureTotals, Outcome};
 pub use budget::{BudgetLedger, BudgetLimit, Counters, ScopeLimits};
 pub use config::{
     BudgetConfig, CircuitBreakerConfig, ConcurrencyConfig, LlmConfig, ProviderConfig, ProviderKind,

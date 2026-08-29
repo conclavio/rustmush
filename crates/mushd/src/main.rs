@@ -20,9 +20,9 @@ use std::time::Duration;
 
 use mush_core::{ControlMsg, Engine, Inbound};
 use mush_llm::LlmService;
+use mush_net_web::Metrics;
 use mush_session::{SessionConfig, SessionManager};
 use mush_store::{InMemoryStore, ObjectStore, RedisStore, core_migrations, run_migrations};
-use tracing_subscriber::EnvFilter;
 
 use mushd::accounts::{Accounts, import_accounts_json};
 use mushd::config::{Config, StoreBackend};
@@ -59,11 +59,27 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+    // Config is loaded first because the `[log]` section drives the
+    // subscriber. Config::load's own tracing calls (before the subscriber is
+    // installed) are therefore uncaptured, but its errors go to stderr, so a
+    // bad config still reports cleanly.
+    let config_path = args
+        .iter()
+        .position(|a| a == "--config")
+        .and_then(|i| args.get(i + 1))
+        .map_or_else(|| PathBuf::from("mushd.toml"), PathBuf::from);
+    let config = match Config::load(&config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("mushd: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Structured logging per `[log]` (level/format + optional daily-rotating
+    // file output). The guard keeps the non-blocking file appender's worker
+    // alive for the whole process; it drops at the end of `main`.
+    let _log_guards = mushd::logging::init(&config.log, &config.server.data_dir);
 
     // Dev convenience: load `.env` from the working directory (or an ancestor)
     // into the process environment so LLM API keys resolve without exporting
@@ -78,19 +94,6 @@ fn main() -> ExitCode {
         Err(e) if e.not_found() => {}
         Err(e) => tracing::warn!(error = %e, "ignoring unreadable .env"),
     }
-
-    let config_path = args
-        .iter()
-        .position(|a| a == "--config")
-        .and_then(|i| args.get(i + 1))
-        .map_or_else(|| PathBuf::from("mushd.toml"), PathBuf::from);
-    let config = match Config::load(&config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("mushd: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -141,6 +144,13 @@ async fn serve(config: Config) -> Result<(), String> {
         "mushd {} starting",
         env!("CARGO_PKG_VERSION"),
     );
+
+    // The one shared metrics registry (PLAN "Observability"): the transports
+    // bump connection counters, the world task publishes the world-owned
+    // gauges + LLM/NPC aggregates each sample, the store writer stamps
+    // write-queue depth and last-ack age, and the web ingress serves it back
+    // over /healthz and /metrics.
+    let metrics = Arc::new(Metrics::new());
 
     // Store: connect (fail fast), migrate, one-time accounts.json import,
     // then load or seed the world — all before anything serves.
@@ -206,8 +216,9 @@ async fn serve(config: Config) -> Result<(), String> {
     let npc_grounding = modules::npc_agent_adapter(&config.rulesets.enabled)
         .map(|a| a as Arc<dyn mush_npc::AgentGrounding>);
     mods.push(modules::npc_module(npc_grounding));
-    let rulesets = modules::ruleset_modules(&config.rulesets.enabled)
-        .map_err(|e| format!("ruleset selection: {e}"))?;
+    let rulesets =
+        modules::ruleset_modules(&config.rulesets.enabled, &config.onboarding.to_ruleset())
+            .map_err(|e| format!("ruleset selection: {e}"))?;
     if !rulesets.is_empty() {
         tracing::info!(rulesets = ?config.rulesets.enabled, "rulesets enabled");
     }
@@ -267,6 +278,7 @@ async fn serve(config: Config) -> Result<(), String> {
             guard: Arc::clone(&guard),
             staff,
             llm: Some(Arc::clone(&llm)),
+            metrics: Arc::clone(&metrics),
         },
     );
     let world = handles.handle;
@@ -279,12 +291,15 @@ async fn serve(config: Config) -> Result<(), String> {
         world.clone(),
         config.game.max_characters as usize,
     ));
-    let bridge = Arc::new(SshBridge::new(
-        Arc::clone(&accounts),
-        Arc::clone(&sessions),
-        world.clone(),
-        Arc::clone(&guard),
-    ));
+    let bridge = Arc::new(
+        SshBridge::new(
+            Arc::clone(&accounts),
+            Arc::clone(&sessions),
+            world.clone(),
+            Arc::clone(&guard),
+        )
+        .with_metrics(Arc::clone(&metrics)),
+    );
     let listener = start_listener(listen, &data_dir, banner(&config.server.name), bridge)
         .await
         .map_err(|e| format!("SSH listener on {listen}: {e}"))?;
@@ -302,14 +317,17 @@ async fn serve(config: Config) -> Result<(), String> {
     web_config.features = features;
     web_config.panels = panels.clone();
     let web_listen = web_config.listen;
-    let web_bridge: Arc<dyn mush_net_web::WebHooks> = Arc::new(WebBridge::new(
-        Arc::clone(&accounts),
-        Arc::clone(&sessions),
-        world.clone(),
-        Arc::clone(&guard),
-        Arc::clone(&store),
-        panels,
-    ));
+    let web_bridge: Arc<dyn mush_net_web::WebHooks> = Arc::new(
+        WebBridge::new(
+            Arc::clone(&accounts),
+            Arc::clone(&sessions),
+            world.clone(),
+            Arc::clone(&guard),
+            Arc::clone(&store),
+            panels,
+        )
+        .with_metrics(Arc::clone(&metrics)),
+    );
     let (web_stop, web_stop_rx) = tokio::sync::oneshot::channel::<()>();
     let web_join = tokio::spawn(async move {
         // A web bind/serve failure is loud but non-fatal: SSH players keep

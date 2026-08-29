@@ -64,8 +64,9 @@ pub mod world;
 pub use attr::{Attr, AttrFlags, AttrMap, AttrValue, UncasedName};
 pub use clock::{CivilDate, GameClock, Season, TimeOfDay};
 pub use cmd::{
-    AliasOutcome, AliasStage, ArgShape, CmdError, CommandFallback, CommandHandler, CommandSpec,
-    Ctx, HelpTopic, LookupErr, ParsedArgs, Registry, RegistryError, SwitchSet, dispatch,
+    AliasOutcome, AliasStage, ArgShape, CmdError, CommandFallback, CommandGate, CommandHandler,
+    CommandSpec, Ctx, HelpTopic, LookupErr, ParsedArgs, Registry, RegistryError, SwitchSet,
+    dispatch,
 };
 pub use commands::{ignore_list, is_ignoring, narrative_actor, register_core_commands};
 pub use engine::{

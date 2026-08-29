@@ -244,13 +244,21 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                 connections: u8::try_from(connections).unwrap_or(u8::MAX),
             },
         );
-        self.world
-            .inbound(Inbound::Cmd {
-                conn: conn_id.0,
-                actor,
-                line: "look".to_string(),
-            })
-            .await;
+        // The initial look shows the player their room — UNLESS the `ConnUp`
+        // above dropped them into an input context (the chargen wizard's
+        // connect-time drop; or a mail compose that survived a linkdead drop,
+        // on reconnect). Dispatching "look" then would feed it to the context
+        // as body/input text (the wizard reads it as a bogus template name),
+        // so skip it and let the context's own prompt stand.
+        if !self.world.in_input_context(actor).await {
+            self.world
+                .inbound(Inbound::Cmd {
+                    conn: conn_id.0,
+                    actor,
+                    line: "look".to_string(),
+                })
+                .await;
+        }
         tracing::info!(conn = conn_id.0, %actor, account, "character connected");
         Ok(EnterOutcome { sess, resume_from })
     }
@@ -259,6 +267,20 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
     pub async fn line(&self, conn: ConnId, line: &str) -> LineOutcome {
         // Idle bookkeeping first — even a throttled keypress is activity.
         self.sessions.record_input(conn);
+        // Cheap byte-length reject BEFORE the O(n) `sanitize_line` scan: a
+        // frame whose byte length exceeds `MAX_LINE_CHARS * 4` (the max UTF-8
+        // bytes per char) cannot possibly be within the char cap, so drop it
+        // without scanning the whole (up to 64 KiB) frame. The SSH editor caps
+        // upstream; only the web path can deliver a frame this large here, so
+        // this bounds the sanitize cost a client can force per frame.
+        if line.len() > MAX_LINE_CHARS.saturating_mul(4) {
+            send_event_to_conn(
+                &self.sessions,
+                conn,
+                OutputEvent::Sys(RichText::tag("error", "Line too long.")),
+            );
+            return LineOutcome::Continue;
+        }
         let line = sanitize_line(line);
         // SSH's LineEditor never lets a submitted line grow past
         // `MAX_LINE_CHARS` (bell + drop beyond, mid-typing); the web path

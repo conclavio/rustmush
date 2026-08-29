@@ -63,7 +63,12 @@ impl<'r> RollCtx<'r> {
         if sides == 0 {
             0
         } else {
-            (self.rng.next_u32() % sides) as u16 + 1
+            // Form `1..=sides` in u32 and clamp into u16. For any die with at
+            // most u16::MAX faces this is exactly `(rng % sides) + 1`; the clamp
+            // only bites for an absurd die (> 65535 faces, reachable only if a
+            // caller sets `RollLimits.max_sides` far above the 1000 default),
+            // where it truncates instead of overflowing the old `as u16 + 1`.
+            ((self.rng.next_u32() % sides) + 1).min(u32::from(u16::MAX)) as u16
         }
     }
 }

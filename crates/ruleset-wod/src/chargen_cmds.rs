@@ -77,8 +77,12 @@ fn set_template(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     set_template_to(cmd, ctx, &id)
 }
 
-/// Start or resume chargen.
-fn start(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+/// Open (or resume) a chargen session for the actor: refuse an
+/// already-approved / submitted sheet, ensure an Unapproved sheet exists, open
+/// the [`WodState`] session, and re-hydrate the priority pools from the sheet
+/// (reboot-safe). Returns whether a session was **already** open. Emits no
+/// output. Shared by `+chargen` and the chargen wizard.
+pub(crate) fn open_chargen_session(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<bool, CmdError> {
     let actor = ctx.actor;
     let existing = cmd.read(ctx.w, actor);
     if let Some(doc) = &existing {
@@ -130,6 +134,13 @@ fn start(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             was
         })
         .unwrap_or(false);
+    Ok(already)
+}
+
+/// Start or resume chargen (`+chargen`).
+fn start(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    let already = open_chargen_session(cmd, ctx)?;
     if already {
         ctx.out.info(actor, "Resuming chargen.");
     } else {
@@ -159,6 +170,22 @@ fn set_priorities(cmd: &WodCmd, ctx: &mut Ctx<'_>, attributes: bool) -> Result<(
         )
     };
     let assignment = parse_priority_assignment(ctx.args.raw(), &names, tiers)?;
+    apply_priorities(cmd, ctx, attributes, assignment)?;
+    ctx.out.info(actor, "Priorities set.");
+    status(cmd, ctx)
+}
+
+/// Record a parsed priority assignment on the session **and** persist it onto
+/// the sheet (staff-only `chargen_pools`, so it survives a reboot and can be
+/// re-validated at approval time). Shared by `+chargen/attr|abil` and the
+/// chargen wizard.
+pub(crate) fn apply_priorities(
+    cmd: &WodCmd,
+    ctx: &mut Ctx<'_>,
+    attributes: bool,
+    assignment: Vec<(SmolStr, i32)>,
+) -> Result<(), CmdError> {
+    let actor = ctx.actor;
     {
         let st = ctx
             .state_mut::<WodState>()
@@ -172,8 +199,6 @@ fn set_priorities(cmd: &WodCmd, ctx: &mut Ctx<'_>, attributes: bool) -> Result<(
             session.abil_pools = assignment.clone();
         }
     }
-    // Persist the assignment onto the sheet (staff-only `chargen_pools`) so it
-    // survives a reboot and can be re-validated at approval time.
     let mut doc = cmd.read_or_default(ctx.w, actor);
     let store = cmd.store_for_doc(&doc);
     for (cat, n) in &assignment {
@@ -184,31 +209,54 @@ fn set_priorities(cmd: &WodCmd, ctx: &mut Ctx<'_>, attributes: bool) -> Result<(
     store
         .put_by(ctx.w, actor, &doc, actor)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
-    ctx.out.info(actor, "Priorities set.");
-    status(cmd, ctx)
+    Ok(())
 }
 
 /// `+stat <field>[:<key>]=<value>` during chargen.
 fn stat_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let actor = ctx.actor;
     require_chargen(ctx)?;
     let lhs = ctx.args.lhs().trim().to_string();
     let value_raw = ctx
         .args
         .rhs()
-        .ok_or_else(|| CmdError::msg("Usage: +stat <field>[:<key>]=<value>"))?;
+        .ok_or_else(|| CmdError::msg("Usage: +stat <field>[:<key>]=<value>"))?
+        .to_string();
     if lhs.is_empty() {
         return Err(CmdError::msg("Usage: +stat <field>[:<key>]=<value>"));
     }
     let (field, key) = match lhs.split_once(':') {
-        Some((f, k)) => (f.trim(), Some(k.trim())),
-        None => (lhs.as_str(), None),
+        Some((f, k)) => (f.trim().to_string(), Some(k.trim().to_string())),
+        None => (lhs.clone(), None),
     };
     // Changing the template re-shapes the sheet — route it through the same
     // path as +chargen/template.
     if field.eq_ignore_ascii_case("template") {
-        let id = value_raw.trim().to_string();
-        return set_template_to(cmd, ctx, &id);
+        return set_template_to(cmd, ctx, value_raw.trim());
+    }
+    apply_stat(cmd, ctx, &field, key.as_deref(), &value_raw)?;
+    status(cmd, ctx)
+}
+
+/// Apply one trait allocation to the in-progress sheet — the core of `+stat`,
+/// shared with the chargen wizard. Validates against the active splat's
+/// chargen rules (settable fields, locked fields, chargen ceilings), coerces
+/// the value for the field's type, persists, and lets the splat recompute
+/// derived fields. Emits a `Set …` confirmation but no budget display (the
+/// caller renders that). `template` is routed to [`apply_template`].
+///
+/// The caller is responsible for ensuring a chargen session is open
+/// (`+stat` checks `require_chargen`; the wizard opens one on entry).
+pub(crate) fn apply_stat(
+    cmd: &WodCmd,
+    ctx: &mut Ctx<'_>,
+    field: &str,
+    key: Option<&str>,
+    value_raw: &str,
+) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    if field.eq_ignore_ascii_case("template") {
+        apply_template(cmd, ctx, value_raw.trim())?;
+        return Ok(());
     }
     let mut doc = cmd.read_or_default(ctx.w, actor);
     let splat = cmd.splat_for_doc(&doc);
@@ -274,12 +322,17 @@ fn stat_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .put_by(ctx.w, actor, &doc, actor)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
     ctx.out.info(actor, format!("Set {audit}."));
-    status(cmd, ctx)
+    Ok(())
 }
 
-/// Set the template during chargen (shared by `+chargen/template` and
-/// `+stat template=`).
-fn set_template_to(cmd: &WodCmd, ctx: &mut Ctx<'_>, id: &str) -> Result<(), CmdError> {
+/// Re-shape the in-progress sheet to `id`'s template (the pure apply shared by
+/// `+chargen/template`, `+stat template=`, and the chargen wizard). Persists;
+/// emits no output. Returns the canonical (lowercased) template id.
+pub(crate) fn apply_template(
+    cmd: &WodCmd,
+    ctx: &mut Ctx<'_>,
+    id: &str,
+) -> Result<String, CmdError> {
     let actor = ctx.actor;
     let id = id.to_ascii_lowercase();
     if !cmd.schemas().ids().iter().any(|t| t == &id) {
@@ -294,13 +347,19 @@ fn set_template_to(cmd: &WodCmd, ctx: &mut Ctx<'_>, id: &str) -> Result<(), CmdE
     cmd.store_for_doc(&doc)
         .put_by(ctx.w, actor, &doc, actor)
         .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
-    ctx.out.info(actor, format!("Template set to {id}."));
+    Ok(id)
+}
+
+/// Set the template during chargen (shared by `+chargen/template` and
+/// `+stat template=`): [`apply_template`] plus the confirmation and budget.
+fn set_template_to(cmd: &WodCmd, ctx: &mut Ctx<'_>, id: &str) -> Result<(), CmdError> {
+    let id = apply_template(cmd, ctx, id)?;
+    ctx.out.info(ctx.actor, format!("Template set to {id}."));
     status(cmd, ctx)
 }
 
 /// `+spec <ability>=<specialty>` — record a specialty on an ability.
 fn spec_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let actor = ctx.actor;
     let ability = ctx.args.lhs().trim().to_string();
     let specialty = ctx
         .args
@@ -309,10 +368,27 @@ fn spec_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .filter(|s| !s.is_empty())
         .ok_or_else(|| CmdError::msg("Usage: +spec <ability>=<specialty>"))?
         .to_string();
+    apply_spec(cmd, ctx, &ability, &specialty)
+}
+
+/// Record a free-text specialty on an ability — the core of `+spec`, shared
+/// with the chargen wizard.
+pub(crate) fn apply_spec(
+    cmd: &WodCmd,
+    ctx: &mut Ctx<'_>,
+    ability: &str,
+    specialty: &str,
+) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    let ability = ability.trim();
+    let specialty = specialty.trim();
+    if specialty.is_empty() {
+        return Err(CmdError::msg("Usage: +spec <ability>=<specialty>"));
+    }
     let mut doc = cmd.read_or_default(ctx.w, actor);
     let schema = cmd.schema_for_doc(&doc);
     let fdef = schema
-        .field(&ability)
+        .field(ability)
         .ok_or_else(|| CmdError::msg(format!("No such ability: {ability}")))?;
     if !matches!(fdef.ty, FieldType::Dots { .. }) {
         return Err(CmdError::msg("Specialties attach to abilities/attributes."));
@@ -327,7 +403,7 @@ fn spec_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if list
         .iter()
         .filter_map(serde_json::Value::as_str)
-        .any(|s| s.eq_ignore_ascii_case(&specialty))
+        .any(|s| s.eq_ignore_ascii_case(specialty))
     {
         return Err(CmdError::msg("That specialty is already recorded."));
     }
@@ -344,8 +420,20 @@ fn spec_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-/// Show the live budget ledgers.
-fn status(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+/// The live budget for a chargen session: the ledgers (session priority pools
+/// plus the active splat's contribution, assessed against the sheet) and the
+/// outstanding [`ChargenIssue`]s. Shared by `+chargen/status` and the chargen
+/// wizard so both show the exact same numbers.
+pub(crate) fn budget_report(
+    cmd: &WodCmd,
+    ctx: &mut Ctx<'_>,
+) -> Result<
+    (
+        Vec<mush_ruleset::chargen::BudgetLedger>,
+        Vec<mush_ruleset::chargen::ChargenIssue>,
+    ),
+    CmdError,
+> {
     let actor = ctx.actor;
     let base = {
         let st = ctx
@@ -358,7 +446,15 @@ fn status(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     let doc = cmd.read_or_default(ctx.w, actor);
     let pools = assessment_pools(cmd, base, &doc);
-    let ls = ledgers(&cmd.config, &doc, &pools);
+    let ledgers = ledgers(&cmd.config, &doc, &pools);
+    let issues = crate::chargen::issues(&cmd.config, &doc, &pools);
+    Ok((ledgers, issues))
+}
+
+/// Show the live budget ledgers.
+fn status(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    let (ls, outstanding) = budget_report(cmd, ctx)?;
     ctx.out.sys_to_actor(actor, "wod", "Chargen budget:");
     for l in &ls {
         let over = if l.spent > l.total && l.name != "freebies" {
@@ -377,7 +473,6 @@ fn status(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             ),
         );
     }
-    let outstanding = crate::chargen::issues(&cmd.config, &doc, &pools);
     if outstanding.is_empty() {
         ctx.out
             .info(actor, "Budget balances. Ready for +chargen/submit.");
@@ -391,7 +486,7 @@ fn status(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 /// `+chargen/submit` — finalize, flip to Pending, open a wod-chargen job.
-fn submit(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+pub(crate) fn submit(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let actor = ctx.actor;
     // Refuse to re-submit an already-submitted (Pending) or approved sheet:
     // that would orphan the first job and open a second one for one character.
@@ -469,6 +564,7 @@ fn submit(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 pub(crate) fn chargen_approval(
     config: &WodConfig,
     dispatch: &Dispatch,
+    onboarding: &crate::onboarding::OnboardingConfig,
     ctx: &mut Ctx<'_>,
     job: &Job,
 ) -> Result<(), String> {
@@ -496,6 +592,9 @@ pub(crate) fn chargen_approval(
         .store_for_doc(&doc)
         .put_by(ctx.w, target, &doc, ctx.actor)
         .map_err(|es| fmt_errs(&es))?;
+    // Onboarding: lift the gate — move the newly-approved character to the live
+    // start room and re-render it (a no-op when chargen_required is off).
+    crate::onboarding::on_approved(onboarding, ctx, target);
     Ok(())
 }
 
@@ -510,7 +609,7 @@ fn payload_target(job: &Job) -> Result<ObjId, String> {
 
 /// Parse `cat=n cat=n cat=n`, requiring the exact category set and the exact
 /// tier multiset.
-fn parse_priority_assignment(
+pub(crate) fn parse_priority_assignment(
     raw: &str,
     names: &[&str],
     tiers: [i32; 3],
@@ -625,6 +724,7 @@ pub(crate) fn register(
         CommandSpec {
             name: "+chargen".into(),
             switches: vec![
+                "wizard".into(),
                 "status".into(),
                 "template".into(),
                 "attr".into(),
@@ -633,6 +733,7 @@ pub(crate) fn register(
             ],
             shape: ArgShape::Raw,
             help: "+chargen  --  Begin character generation (priority point-buy).\n\
+                   +chargen/wizard  --  Guided step-by-step character creation.\n\
                    +chargen/template <mortal|vampire|…>  --  Choose your splat (adds \
                    its traits to the sheet).\n\
                    +chargen/attr physical=7 social=5 mental=3  --  Assign attribute \
@@ -646,7 +747,12 @@ pub(crate) fn register(
         },
         {
             let cmd = Arc::clone(&cmd);
-            Arc::new(move |ctx: &mut Ctx<'_>| chargen_cmd(&cmd, ctx))
+            Arc::new(move |ctx: &mut Ctx<'_>| {
+                if ctx.switches.has("wizard") {
+                    return crate::wizard::start_wizard(Arc::clone(&cmd), ctx);
+                }
+                chargen_cmd(&cmd, ctx)
+            })
         },
     )?;
     reg.command(

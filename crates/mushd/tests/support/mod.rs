@@ -262,6 +262,7 @@ pub async fn boot_module_server(dir: &Path, server_name: &str, boss_password: &s
         engine,
         Arc::clone(&sessions),
         mushd::world_task::ServerDeps {
+            metrics: std::sync::Arc::new(mush_net_web::Metrics::new()),
             store: Arc::clone(&store),
             guard: Arc::new(mushd::ipguard::IpGuard::new()),
             staff,
@@ -345,6 +346,7 @@ pub async fn boot_worldgen_server(
         engine,
         Arc::clone(&sessions),
         mushd::world_task::ServerDeps {
+            metrics: std::sync::Arc::new(mush_net_web::Metrics::new()),
             store: Arc::clone(&store),
             guard: Arc::new(mushd::ipguard::IpGuard::new()),
             staff,

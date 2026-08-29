@@ -58,7 +58,7 @@ pub mod werewolf;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use mush_core::{Ctx, ModError, Registrar};
+use mush_core::{CmdError, Ctx, ModError, Registrar};
 use mush_ruleset::schema::{SchemaError, SheetSchema, SheetSchemaBuilder};
 use mush_ruleset::{SheetDoc, SheetStore};
 use smol_str::SmolStr;
@@ -152,6 +152,41 @@ pub(crate) trait Splat: Template {
     fn xp_max(&self, field: &str, key: Option<&str>) -> Option<i32> {
         let _ = (field, key);
         None
+    }
+
+    /// The sheet fields the chargen **wizard** prompts for in its splat step,
+    /// each set through the normal [`+stat`/`apply_stat`](crate::chargen_cmds)
+    /// path (so chargen caps apply): Vampire `["clan", "path"]`, Mage
+    /// `["affiliation", "arete"]`, Werewolf `["breed", "auspice", "tribe"]`.
+    /// Empty (the default, Mortal) means the wizard skips the splat step.
+    fn wizard_splat_fields(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// The name of this splat's chargen-allocatable **power-pool** map field
+    /// (Vampire `"disciplines"`, Mage `"spheres"`), or `None` (Werewolf /
+    /// Mortal — no player-allocated pool). The chargen wizard uses this to
+    /// route `<pool> <name>=<dots>` input to [`Splat::wizard_set_pool`].
+    fn wizard_pool_field(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// Set one entry of the wizard power pool (a Discipline / Sphere) to
+    /// `rating` dots during chargen, enforcing this splat's own rules (Mage
+    /// caps a Sphere at the current Arete). Called by the chargen wizard only
+    /// when [`Splat::wizard_pool_field`] is `Some`. Persists; emits no output.
+    /// Default: refuse (no pool).
+    fn wizard_set_pool(
+        &self,
+        cmd: &WodCmd,
+        ctx: &mut Ctx<'_>,
+        name: &str,
+        rating: i32,
+    ) -> Result<(), CmdError> {
+        let _ = (cmd, ctx, name, rating);
+        Err(CmdError::msg(
+            "This template has no chargen pool to allocate.",
+        ))
     }
 
     /// The XP cost to raise a splat-owned trait `from`→`to` on `doc` (Vampire:

@@ -59,6 +59,13 @@ pub struct WebConfig {
     /// Maximum inbound WS message size, bytes; oversize is a protocol
     /// error close.
     pub max_frame_bytes: usize,
+    /// Whether `GET /metrics` (Prometheus text exposition) is served.
+    /// Default **`false`**: the endpoint binds to this same (possibly public)
+    /// listener with no auth, so it is opt-in — an operator running Prometheus
+    /// sets it `true` and firewalls the path / keeps it behind the reverse
+    /// proxy. It exposes only non-sensitive aggregates (never per-player data
+    /// or keys). `/healthz` is always served.
+    pub metrics_enabled: bool,
 }
 
 impl Default for WebConfig {
@@ -77,6 +84,7 @@ impl Default for WebConfig {
             max_missed_pongs: 2,
             send_timeout_ms: 10_000,
             max_frame_bytes: 64 * 1024,
+            metrics_enabled: false,
         }
     }
 }

@@ -451,6 +451,112 @@ ride `obj:*` write-through and reload with the world. The reboot round trip is
 CI-tested against a live Redis
 (`crates/mushd/tests/persistence.rs::npc_agent_persistence_round_trip`).
 
+## Onboarding and chargen gating (M9): `[onboarding]`
+
+New-player creation runs through the same front door on both transports
+(`ssh create <account> <password>`, or web registration). By default a fresh
+character plays immediately — the pre-M9 behavior. The `[onboarding]` section
+turns on a **chargen-then-approval gate**:
+
+```toml
+[onboarding]
+chargen_required = true    # off by default
+start_room = 10            # #N the character is moved to once approved
+start_room_unapproved = 11 # #N the restricted chargen area (defaults to start_room)
+```
+
+Room ids are object numbers (`#N`); both default to `#0` (Limbo), so turning the
+flag on with no rooms configured still works — Limbo doubles as the chargen area
+and the restriction is enforced by the gate rather than by walls. What the gate
+does when `chargen_required = true`:
+
+- a newly created, not-yet-approved character is placed in `start_room_unapproved`
+  (the `ObjCreated` observer), **not** the live start room;
+- on connect it is greeted and dropped into the guided chargen **wizard**
+  (`+chargen/wizard`) — transport-agnostic, so SSH and the web client behave
+  identically;
+- it is held to a small allowlist — chargen (`+chargen`/`+stat`/`+spec`/`+sheet`),
+  `look`, `say`/`pose`, `help`, `who`, `quit`, and the OOC channel management verbs
+  — and everything else (moving onto the grid, exits, `home`, `+roll`, building)
+  is refused with a "finish creating your character" notice;
+- **staff (Builder and up) and already-approved characters bypass the gate.**
+
+`+chargen/submit` finalizes the sheet (re-validated), flips it to
+`Pending(job)`, and opens a `wod-chargen` approval job. When a storyteller
+`+job/approve <job>`s it, the handler stamps the sheet **Approved**, moves the
+character to `start_room`, and re-renders — the gate then passes on its own
+(the sheet is Approved), so nothing else has to be un-wired. Denying/bouncing the
+job leaves the character in chargen to keep editing.
+
+Persistence: the sheet is a `sheet:wod` **attribute on the player's object**, so
+it rides `obj:*` write-through; the approval job is a `mod:jobs:*` document. Both
+a submitted-but-Pending sheet **and** its later Approved stamp survive a reboot —
+CI-tested in memory and against a live Redis
+(`crates/mushd/tests/persistence.rs::onboarding_persistence_round_trip*`). The
+full new-player→wizard→submit→gate→approve→play journey over real SSH is
+`crates/mushd/tests/onboarding_e2e.rs`.
+
+## Observability (M9): metrics, health, structured logging
+
+**`GET /healthz`** (always served) returns a small liveness JSON — `ok`,
+`uptime_s`, `version`, `connections`, `loop_lag_ms`, `world_loop_unixtime`,
+`store_ok` — suitable for a load-balancer probe or an uptime check. It is read
+lock-free (no full metrics snapshot per hit), so it is safe to poll hard.
+
+**`GET /metrics`** serves Prometheus text (`Content-Type: text/plain;
+version=0.0.4`), gated on `[web].metrics_enabled` (**default `false` — opt-in**;
+set `true` to serve it). It is served on the **same `[web].listen`** socket with
+**no auth**, so enable it only when you will scrape it from your monitoring host
+over the private network or keep it behind the reverse proxy — an M8→M9 redeploy
+does **not** begin serving it unless you opt in. It exposes **only aggregates** —
+connections by transport, commands processed, world-loop lag (last/max gauges + a
+bucketed `mush_loop_lag_ms` histogram, p99 derived), a
+`mush_world_loop_last_iteration_unixtime` liveness heartbeat (alert on staleness:
+a loop wedged inside a handler freezes it while the lag gauge stays low),
+scheduler queue depth, object counts by kind, store
+read-only/write-queue-depth/last-ack, NPC active/thinking, and LLM
+calls/tokens/cost by feature and provider. It never carries per-player data,
+prompts, tokens, or API keys. Metric families are `mush_*` (e.g.
+`mush_connections{transport="ssh"}`, `mush_commands_total`,
+`mush_objects{kind="room"}`, `mush_store_read_only`).
+
+The registry is a single shared handle: the transports bump connection counters,
+the world loop feeds the lag histogram every iteration and publishes the
+world-owned gauges (object scan, NPC/LLM aggregates) throttled to ≤1/s, and the
+store writer stamps write-queue depth and last-ack age. Staff **`@stats`** reads
+the same live registry (connected split ssh/web, loop-lag p99, store write-queue
+depth, NPC active/thinking, today's LLM spend by feature). That `/metrics` +
+`/healthz` + `@stats` all reflect real state is CI-tested end-to-end in
+`crates/mushd/tests/web_e2e.rs::metrics_healthz_and_stats_reflect_real_state`.
+
+**Structured logging** is configured under `[log]`:
+
+```toml
+[log]
+level = "info"      # a tracing env-filter; empty = honor RUST_LOG, else "info".
+#                     e.g. "info,mush_llm=debug,mush_net_web=warn"
+format = "pretty"   # "pretty" (console) or "json" (one object/line, for shipping)
+file = false        # also write daily-rotating logs to <data_dir>/logs/mushd.log.YYYY-MM-DD
+```
+
+`format = "json"` emits one JSON object per line for a log shipper; `file = true`
+adds a **non-blocking, daily-rotating** file appender under `<data_dir>/logs/`
+(in addition to stdout), whose worker is held for the process lifetime. Log lines
+carry paths and counts only — never secrets (API keys are read by env-var name and
+never logged; raw tokens are never logged). An unknown `format` degrades to
+`pretty` with a warning rather than refusing to boot.
+
+Two operational tradeoffs of the file appender are **deliberate**:
+
+- **Lossy under pressure.** The non-blocking appender uses a bounded in-memory
+  channel and **drops** log lines rather than block the world loop when it
+  fills — so during an error storm some `info`/`warn` lines may be lost. This is
+  intentional (the hot path must never stall on disk); the durable trail that
+  matters — the LLM/staff **audit** — is a separate Redis stream, not this file.
+- **No built-in retention.** Daily rotation keeps files **forever**; nothing
+  prunes `<data_dir>/logs/`. Add external rotation — e.g. `logrotate`, or a cron
+  sweep like `find <data_dir>/logs -name 'mushd.log.*' -mtime +14 -delete`.
+
 ## Key layout reference
 
 All keys live in one Redis logical database (db 0 by default). From
@@ -477,7 +583,7 @@ and `ban:*` are read live and are safe to inspect
 
 Note for shared instances: the REDIS_URL-gated tests **wipe the `obj:*`,
 `account:*`, `ban:*`, `token:*`, `meta:*`, and `mod:*` namespaces** in logical dbs
-9–15 *and* in whatever database `REDIS_URL` itself points at (db 0 unless
+7–15 *and* in whatever database `REDIS_URL` itself points at (db 0 unless
 the URL says otherwise — mush-store's suite uses the URL as given). Never
 point `REDIS_URL` at an instance holding real data — module data (channels,
 mail, jobs) is wiped along with the world; use a disposable instance. The

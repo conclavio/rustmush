@@ -16,5 +16,9 @@ tracing.workspace = true
 futures.workspace = true
 getrandom.workspace = true
 
+[dev-dependencies]
+# Fuzz-style property tests for LineEditor::feed (hostile byte streams).
+proptest = { workspace = true }
+
 [lints]
 workspace = true

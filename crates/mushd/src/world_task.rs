@@ -77,6 +77,7 @@ use mush_core::{
     WorldEvent, is_ignoring, narrative_actor, register_core_commands, register_engine_commands,
 };
 use mush_llm::LlmService;
+use mush_net_web::{LlmFeatureStat, LlmTodaySpend, Metrics, WorldSample};
 use mush_proto::{OutputEvent, RichText};
 use mush_session::{CharKey, ConnId as SessConnId, DetachOutcome, DetachReason, SessionManager};
 use mush_store::{InMemoryStore, ObjectStore};
@@ -144,6 +145,18 @@ pub enum WorldMsg {
         /// The name to probe.
         name: String,
         /// `true` = free.
+        reply: oneshot::Sender<bool>,
+    },
+    /// Is this actor currently inside an input context (chargen wizard, mail
+    /// compose, ...)? The connect flow probes this after `ConnUp` so it can
+    /// skip the initial auto-`look` when a `Connected` hook has dropped the
+    /// player into a context (else the `look` is captured as context input —
+    /// e.g. fed to the chargen wizard as a bogus template name, or appended to
+    /// a mail body on reconnect).
+    InInputContext {
+        /// The actor to probe.
+        actor: ObjId,
+        /// `true` = inside a context.
         reply: oneshot::Sender<bool>,
     },
     /// Ordering barrier: replied to once every message queued before it has
@@ -241,6 +254,23 @@ impl WorldHandle {
         rx.await.unwrap_or(false)
     }
 
+    /// Whether `actor` is currently inside an input context (chargen wizard,
+    /// mail compose, ...). `false` when the world task is gone (conservative:
+    /// the caller then proceeds as if not in a context). Probed by the connect
+    /// flow to decide whether to send the initial auto-`look`.
+    pub async fn in_input_context(&self, actor: ObjId) -> bool {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(WorldMsg::InInputContext { actor, reply })
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        rx.await.unwrap_or(false)
+    }
+
     /// Round-trip barrier: resolves once everything sent through this handle
     /// before the call has been processed and its output delivered. `false`
     /// if the world task is gone.
@@ -273,11 +303,18 @@ pub struct ServerDeps {
     /// its on-loop ability execution goes through the module's grounding adapter,
     /// not this struct.
     pub llm: Option<Arc<LlmService>>,
+    /// The shared metrics registry (PLAN "Observability"): the world loop
+    /// records loop lag every iteration and publishes the world-owned gauges
+    /// (object counts, store health, scheduler depth, NPC + LLM aggregates)
+    /// each throttled sample; the store writer stamps write-queue depth and
+    /// last-ack age. Read back by `mush-net-web`'s `/healthz` + `/metrics`.
+    pub metrics: Arc<Metrics>,
 }
 
 impl ServerDeps {
     /// Throwaway deps for tests and the compat [`spawn`]: fresh in-memory
-    /// store, fresh guard, fresh (never-populated) staff queue, no LLM.
+    /// store, fresh guard, fresh (never-populated) staff queue, no LLM, and a
+    /// throwaway metrics registry.
     #[must_use]
     pub fn in_memory() -> ServerDeps {
         ServerDeps {
@@ -285,6 +322,7 @@ impl ServerDeps {
             guard: Arc::new(IpGuard::new()),
             staff: Arc::new(StaffQueue::new()),
             llm: None,
+            metrics: Arc::new(Metrics::new()),
         }
     }
 }
@@ -356,9 +394,14 @@ pub fn spawn_persist(
     let (tx, rx) = mpsc::channel(INBOUND_CAPACITY);
     let handle = WorldHandle { tx: tx.clone() };
     // The writer notifies health transitions through a weak sender so it
-    // can never keep the world channel alive on its own.
-    let (writer_tx, writer_join) =
-        persist::spawn_store_writer(Arc::clone(&deps.store), tx.downgrade());
+    // can never keep the world channel alive on its own. It also stamps the
+    // metrics registry (write-queue depth decrement + last-ack age) as it
+    // drains each batch.
+    let (writer_tx, writer_join) = persist::spawn_store_writer(
+        Arc::clone(&deps.store),
+        tx.downgrade(),
+        Arc::clone(&deps.metrics),
+    );
     // Sequential executor for staff store ops (@siteban set/clear/list):
     // ONE task draining ONE queue, so two staff commands issued in order
     // can never race each other in the store or the IpGuard mirror. It
@@ -417,10 +460,15 @@ async fn run(
     // deferred async work off-loop; cloned out of `deps` so the loop keeps
     // borrowing `deps` (staff queue) freely each iteration.
     let llm = deps.llm.clone();
+    let metrics = Arc::clone(&deps.metrics);
     let mut out = Outbox::new();
     let mut fx = Effects::new();
     let mut serial: u64 = 0;
     let mut health = StoreHealth::new();
+    // Throttle the world-owned metrics sample (object scan, NPC/LLM
+    // aggregation) so it never rides the hot path more than once a second.
+    // `None` forces a sample on the first iteration.
+    let mut last_sample: Option<Instant> = None;
     loop {
         let next_due = engine.sched.next_due();
         let wake = tokio::select! {
@@ -428,7 +476,14 @@ async fn run(
             () = sleep_until_unix_ms(next_due), if next_due.is_some() => Wake::Timer,
         };
         let iteration_start = Instant::now();
-        engine.set_now(unix_now_s());
+        let now_unix = unix_now_s();
+        engine.set_now(now_unix);
+        // Liveness heartbeat (PLAN "Observability"): stamp the loop's most
+        // recent iteration start every iteration, before the (possibly slow)
+        // step. A loop wedged inside a sync handler stops advancing this while
+        // `loop_lag_last_ms` freezes low — staleness of this gauge is what a
+        // scraper alerts on to tell "wedged" from "fast".
+        metrics.set_world_loop_iteration(now_unix);
         // Whose flood-exempt flag to re-sync after the step (the acting
         // player of a Cmd — the only path that pushes/pops input contexts).
         let mut flood_sync: Option<ObjId> = None;
@@ -436,6 +491,7 @@ async fn run(
             Wake::Msg(WorldMsg::Inbound(msg)) => {
                 if let Inbound::Cmd { actor, .. } = &msg {
                     flood_sync = Some(*actor);
+                    metrics.command_processed();
                 }
                 if health.read_only
                     && let Some(refused) = refuse_read_only(&engine.world, &msg)
@@ -476,8 +532,15 @@ async fn run(
                             // Flush the creation batch (durable) and defer
                             // the reply until the store acks — the whole
                             // point of the gate.
-                            match flush_dirty(&mut engine, &writer, &mut serial, true, &mut health)
-                                .await
+                            match flush_dirty(
+                                &mut engine,
+                                &writer,
+                                &mut serial,
+                                true,
+                                &mut health,
+                                &metrics,
+                            )
+                            .await
                             {
                                 FlushOutcome::Queued(Some(ack_rx)) => {
                                     tokio::spawn(async move {
@@ -516,6 +579,10 @@ async fn run(
                 let _ = reply.send(engine.world.resolve_player(&name).is_none());
                 StepOutcome::Continue
             }
+            Wake::Msg(WorldMsg::InInputContext { actor, reply }) => {
+                let _ = reply.send(engine.world.input_depth(actor) > 0);
+                StepOutcome::Continue
+            }
             Wake::Msg(WorldMsg::Barrier { reply }) => {
                 // Every earlier message was processed (and delivered) in its
                 // own iteration; reaching here *is* the barrier.
@@ -552,7 +619,16 @@ async fn run(
             // up to one ack round-trip — accepted.
             let resolved = resolve_sends(&engine.world, &mut out);
             spawn_effects(&mut fx, &tx, llm.as_ref());
-            match flush_dirty(&mut engine, &writer, &mut serial, true, &mut health).await {
+            match flush_dirty(
+                &mut engine,
+                &writer,
+                &mut serial,
+                true,
+                &mut health,
+                &metrics,
+            )
+            .await
+            {
                 FlushOutcome::Queued(Some(ack_rx)) => {
                     let sessions = Arc::clone(&sessions);
                     tokio::spawn(async move {
@@ -595,7 +671,15 @@ async fn run(
             // Write-through: one batch per processed message that dirtied
             // the world (fire-and-forget; the writer preserves order and
             // retries).
-            let _ = flush_dirty(&mut engine, &writer, &mut serial, false, &mut health).await;
+            let _ = flush_dirty(
+                &mut engine,
+                &writer,
+                &mut serial,
+                false,
+                &mut health,
+                &metrics,
+            )
+            .await;
         }
         // Staff ops the step's handlers queued. Local ops (@boot/@ps/@stats)
         // run inline here — the engine, scheduler, and session manager are
@@ -616,23 +700,45 @@ async fn run(
                 local_ops,
                 &mut out,
                 &mut fx,
+                llm.as_ref(),
+                &metrics,
             );
             deliver_and_police(&mut engine, &sessions, &mut out, &mut fx, &tx);
             spawn_effects(&mut fx, &tx, llm.as_ref());
-            let _ = flush_dirty(&mut engine, &writer, &mut serial, false, &mut health).await;
+            let _ = flush_dirty(
+                &mut engine,
+                &writer,
+                &mut serial,
+                false,
+                &mut health,
+                &metrics,
+            )
+            .await;
         }
         let staff_shutdown = run_staff_ops(&deps, &sessions, &writer, &staff_ops, store_ops).await;
         // Loop-lag watchdog (PLAN risk 2): the single-writer loop must stay
         // fast; a slow iteration means a slow sync handler or writer-queue
-        // backpressure. The engine mirrors the numbers for `@stats`.
+        // backpressure. The engine mirrors last/max for `@stats`; the metrics
+        // registry additionally feeds the p99 histogram (cheap — a few
+        // atomics every iteration).
         let lag = iteration_start.elapsed();
-        engine.record_loop_lag(u64::try_from(lag.as_millis()).unwrap_or(u64::MAX));
+        let lag_ms = u64::try_from(lag.as_millis()).unwrap_or(u64::MAX);
+        engine.record_loop_lag(lag_ms);
+        metrics.observe_loop_lag(lag_ms);
         if lag > LOOP_LAG_WARN {
-            tracing::warn!(
-                lag_ms = lag.as_millis() as u64,
-                "world loop iteration lagged"
-            );
+            tracing::warn!(lag_ms, "world loop iteration lagged");
         }
+        // Publish the world-owned gauges (throttled). Done at the end of the
+        // iteration so it reflects the just-applied state, and cheaply skipped
+        // when the last sample is under a second old.
+        maybe_publish_sample(
+            &engine,
+            &sessions,
+            &health,
+            llm.as_ref(),
+            &metrics,
+            &mut last_sample,
+        );
         if outcome == StepOutcome::Shutdown {
             tracing::info!("world task shut down cleanly");
             break;
@@ -645,7 +751,15 @@ async fn run(
             let outcome = engine.step(Inbound::Control(ControlMsg::Shutdown), &mut out, &mut fx);
             deliver_and_police(&mut engine, &sessions, &mut out, &mut fx, &tx);
             spawn_effects(&mut fx, &tx, llm.as_ref());
-            let _ = flush_dirty(&mut engine, &writer, &mut serial, false, &mut health).await;
+            let _ = flush_dirty(
+                &mut engine,
+                &writer,
+                &mut serial,
+                false,
+                &mut health,
+                &metrics,
+            )
+            .await;
             debug_assert_eq!(outcome, StepOutcome::Shutdown);
             tracing::info!("world task shut down cleanly");
             break;
@@ -809,6 +923,7 @@ async fn flush_dirty(
     serial: &mut u64,
     durable: bool,
     health: &mut StoreHealth,
+    metrics: &Metrics,
 ) -> FlushOutcome {
     let mut dirty = engine.world.take_dirty();
     // Module persistence ops (comsys/mail/jobs writes queued via
@@ -853,6 +968,9 @@ async fn flush_dirty(
         );
         return FlushOutcome::WriterGone;
     }
+    // The writer decrements this as it drains each batch; together they track
+    // the store write-queue depth for `/metrics` and `@stats`.
+    metrics.add_store_write_queue_depth(1);
     health.last_write_unix = Some(unix_now_s());
     FlushOutcome::Queued(receipt)
 }
@@ -861,6 +979,7 @@ async fn flush_dirty(
 /// world loop: they need the `Engine` (scheduler, world, loop-lag mirror)
 /// and the session manager, and never touch the store. Output rides the
 /// normal outbox; the caller delivers it right after.
+#[allow(clippy::too_many_arguments)]
 fn run_local_staff_ops(
     engine: &mut Engine,
     sessions: &Arc<SessionManager>,
@@ -869,6 +988,8 @@ fn run_local_staff_ops(
     ops: Vec<StaffOp>,
     out: &mut Outbox,
     fx: &mut Effects,
+    llm: Option<&Arc<LlmService>>,
+    metrics: &Metrics,
 ) {
     for op in ops {
         let actor = op.actor;
@@ -927,7 +1048,11 @@ fn run_local_staff_ops(
             }
             StaffOpKind::Stats => {
                 tracing::info!(%actor, "@stats requested");
-                out.info(actor, render_stats(engine, health, boot_unix, unix_now_s()));
+                let extra = stats_extra(metrics, llm);
+                out.info(
+                    actor,
+                    render_stats(engine, health, boot_unix, unix_now_s(), &extra),
+                );
             }
             // Store ops never reach here (see the partition in `run`).
             _ => {}
@@ -1020,33 +1145,234 @@ pub fn render_ps(engine: &Engine, now_ms: i64) -> String {
     text
 }
 
+/// Object counts by kind, plus a count of husks pending destruction.
+struct ObjectCounts {
+    rooms: usize,
+    exits: usize,
+    things: usize,
+    players: usize,
+    npcs: usize,
+    going: usize,
+}
+
+impl ObjectCounts {
+    fn total(&self) -> usize {
+        self.rooms + self.exits + self.things + self.players + self.npcs
+    }
+}
+
+/// Scan the world once for object counts by kind (GOING husks excluded from
+/// the kind tallies, counted separately). Shared by `@stats` and the metrics
+/// sample.
+fn object_counts(w: &World) -> ObjectCounts {
+    let mut c = ObjectCounts {
+        rooms: 0,
+        exits: 0,
+        things: 0,
+        players: 0,
+        npcs: 0,
+        going: 0,
+    };
+    for o in w.iter() {
+        if o.flags.contains(Flags::GOING) {
+            c.going += 1;
+            continue;
+        }
+        match o.kind {
+            ObjKind::Room => c.rooms += 1,
+            ObjKind::Exit => c.exits += 1,
+            ObjKind::Thing => c.things += 1,
+            ObjKind::Player => c.players += 1,
+            ObjKind::Npc => c.npcs += 1,
+        }
+    }
+    c
+}
+
+/// NPC agent runtime counts read from the module state slot: `active` = NPCs
+/// with a live runtime (stimulated at least once this boot), `thinking` = NPCs
+/// with an in-flight LLM turn. `(0, 0)` when the NPC module is not loaded.
+fn npc_counts(engine: &Engine) -> (i64, i64) {
+    match engine.world.module_state::<mush_npc::NpcHostState>() {
+        Some(h) => {
+            let active = h.runtimes.len() as i64;
+            let thinking = h.runtimes.values().filter(|rt| rt.in_flight).count() as i64;
+            (active, thinking)
+        }
+        None => (0, 0),
+    }
+}
+
+/// The per-`(feature, provider)` cumulative LLM stats + today's global spend,
+/// pulled from the service's audit aggregate and budget ledger. `None` when no
+/// LLM service is wired.
+struct LlmSample {
+    globally_disabled: bool,
+    features: Vec<LlmFeatureStat>,
+    today: LlmTodaySpend,
+}
+
+fn llm_sample(llm: Option<&Arc<LlmService>>) -> Option<LlmSample> {
+    let llm = llm?;
+    let features = llm
+        .audit_log()
+        .totals()
+        .into_iter()
+        .map(|t| LlmFeatureStat {
+            feature: t.feature,
+            provider: t.provider,
+            calls: t.calls,
+            refusals: t.refusals,
+            budget_trips: t.budget_trips,
+            disabled: t.disabled,
+            errors: t.errors,
+            input_tokens: t.input_tokens,
+            output_tokens: t.output_tokens,
+            cost_usd: t.cost_usd,
+        })
+        .collect();
+    let g = llm.ledger().global();
+    Some(LlmSample {
+        globally_disabled: llm.kill_switch().global_disabled(),
+        features,
+        today: LlmTodaySpend {
+            input_tokens: g.input_tokens,
+            output_tokens: g.output_tokens,
+            cost_usd: g.cost_usd,
+        },
+    })
+}
+
+/// Publish the world-owned gauges into the metrics registry, throttled to at
+/// most once a second so the object scan + NPC/LLM aggregation never rides the
+/// hot path. Called at the end of each world-loop iteration.
+fn maybe_publish_sample(
+    engine: &Engine,
+    sessions: &SessionManager,
+    health: &StoreHealth,
+    llm: Option<&Arc<LlmService>>,
+    metrics: &Metrics,
+    last_sample: &mut Option<Instant>,
+) {
+    const MIN_INTERVAL: Duration = Duration::from_secs(1);
+    let now = Instant::now();
+    if let Some(prev) = last_sample
+        && now.duration_since(*prev) < MIN_INTERVAL
+    {
+        return;
+    }
+    *last_sample = Some(now);
+
+    let counts = object_counts(&engine.world);
+    let (npc_active, npc_thinking) = npc_counts(engine);
+    metrics.publish_world(WorldSample {
+        sessions_current: sessions.session_count() as i64,
+        connections_current: sessions.connection_count() as i64,
+        scheduler_queue_depth: engine.sched.len() as i64,
+        rooms: counts.rooms as i64,
+        exits: counts.exits as i64,
+        things: counts.things as i64,
+        players: counts.players as i64,
+        npcs: counts.npcs as i64,
+        store_read_only: health.read_only,
+        npc_active,
+        npc_thinking,
+    });
+    if let Some(s) = llm_sample(llm) {
+        metrics.publish_llm(true, s.globally_disabled, s.features, s.today);
+    } else {
+        metrics.publish_llm(false, false, Vec::new(), LlmTodaySpend::default());
+    }
+}
+
+/// Extra aggregates threaded into the wizard `@stats` render beyond what the
+/// engine + store health carry: transport-split connection counts, the store
+/// write-queue depth, NPC runtime counts, and today's LLM spend.
+#[derive(Clone, Debug, Default)]
+pub struct StatsExtra {
+    /// Live SSH transport connections.
+    pub ssh_conns: i64,
+    /// Live web transport connections.
+    pub web_conns: i64,
+    /// Store write batches queued but not yet acked.
+    pub write_queue_depth: i64,
+    /// NPCs with a live runtime.
+    pub npc_active: i64,
+    /// NPCs with an in-flight LLM turn.
+    pub npc_thinking: i64,
+    /// Approximate p99 loop lag (ms) from the histogram.
+    pub lag_p99: u64,
+    /// Today's LLM spend, when a service is wired.
+    pub llm: Option<LlmStatsLine>,
+}
+
+/// Today's LLM spend for the `@stats` LLM line.
+#[derive(Clone, Debug)]
+pub struct LlmStatsLine {
+    /// Whether the global kill switch is engaged.
+    pub globally_disabled: bool,
+    /// Today's global input tokens.
+    pub today_input: u64,
+    /// Today's global output tokens.
+    pub today_output: u64,
+    /// Today's global cost, USD.
+    pub today_cost: f64,
+    /// Per-feature today spend `(feature, input, output, cost)`, only rows
+    /// with non-zero usage.
+    pub features: Vec<(String, u64, u64, f64)>,
+}
+
+/// Build the [`StatsExtra`] for a `@stats` render from the live registries.
+fn stats_extra(metrics: &Metrics, llm: Option<&Arc<LlmService>>) -> StatsExtra {
+    let snap = metrics.snapshot();
+    let llm_line = llm.map(|svc| {
+        let ledger = svc.ledger();
+        let g = ledger.global();
+        // Per-feature today spend: probe each route the audit aggregate has
+        // seen (cheap — a handful) against today's ledger.
+        let mut features = Vec::new();
+        for t in svc.audit_log().totals() {
+            let c = ledger.feature(&t.feature);
+            if c.input_tokens + c.output_tokens > 0 || c.cost_usd > 0.0 {
+                features.push((t.feature, c.input_tokens, c.output_tokens, c.cost_usd));
+            }
+        }
+        features.sort_by(|a, b| a.0.cmp(&b.0));
+        features.dedup_by(|a, b| a.0 == b.0);
+        LlmStatsLine {
+            globally_disabled: svc.kill_switch().global_disabled(),
+            today_input: g.input_tokens,
+            today_output: g.output_tokens,
+            today_cost: g.cost_usd,
+            features,
+        }
+    });
+    StatsExtra {
+        ssh_conns: snap.ssh_current,
+        web_conns: snap.web_current,
+        write_queue_depth: snap.store_write_queue_depth,
+        npc_active: snap.npc_active,
+        npc_thinking: snap.npc_thinking,
+        lag_p99: snap.loop_lag_p99_ms(),
+        llm: llm_line,
+    }
+}
+
 /// Render the wizard `@stats` report: uptime, object counts by kind,
-/// connected count, loop lag (last/max), store health (read-only mode +
-/// last-write age), and db size. Pure over its inputs — unit-testable.
+/// connected count (with SSH/web split), loop lag (last/max/p99), store health
+/// (read-only mode + last-write age + write-queue depth), NPC counts, today's
+/// LLM spend, and db size. Pure over its inputs — unit-testable.
 #[must_use]
 pub fn render_stats(
     engine: &Engine,
     health: &StoreHealth,
     boot_unix: i64,
     now_unix: i64,
+    extra: &StatsExtra,
 ) -> String {
     let w = &engine.world;
-    let (mut rooms, mut exits, mut things, mut players, mut npcs, mut going) =
-        (0usize, 0, 0, 0, 0, 0usize);
-    for o in w.iter() {
-        if o.flags.contains(Flags::GOING) {
-            going += 1;
-            continue;
-        }
-        match o.kind {
-            ObjKind::Room => rooms += 1,
-            ObjKind::Exit => exits += 1,
-            ObjKind::Thing => things += 1,
-            ObjKind::Player => players += 1,
-            ObjKind::Npc => npcs += 1,
-        }
-    }
-    let total = rooms + exits + things + players + npcs;
+    let counts = object_counts(w);
+    let total = counts.total();
     let connected = w.connected().count();
     let (lag_last, lag_max) = engine.loop_lag_ms();
     let uptime = (now_unix - boot_unix).max(0);
@@ -1065,15 +1391,46 @@ pub fn render_stats(
         human_duration(uptime)
     ));
     text.push_str(&format!(
-        "\nObjects: {total} ({rooms} rooms, {exits} exits, {things} things, \
-         {players} players, {npcs} NPCs)"
+        "\nObjects: {total} ({} rooms, {} exits, {} things, {} players, {} NPCs)",
+        counts.rooms, counts.exits, counts.things, counts.players, counts.npcs
     ));
-    if going > 0 {
-        text.push_str(&format!("\nPending destruction: {going}"));
+    if counts.going > 0 {
+        text.push_str(&format!("\nPending destruction: {}", counts.going));
     }
-    text.push_str(&format!("\nConnected: {connected}"));
-    text.push_str(&format!("\nLoop lag: last {lag_last}ms, max {lag_max}ms"));
-    text.push_str(&format!("\nStore: {store}; last write {write_age}"));
+    text.push_str(&format!(
+        "\nConnected: {connected} (ssh {}, web {})",
+        extra.ssh_conns, extra.web_conns
+    ));
+    text.push_str(&format!(
+        "\nLoop lag: last {lag_last}ms, max {lag_max}ms, p99 {}ms",
+        extra.lag_p99
+    ));
+    text.push_str(&format!(
+        "\nStore: {store}; last write {write_age}; write-queue {}",
+        extra.write_queue_depth
+    ));
+    text.push_str(&format!(
+        "\nNPC agents: {} active, {} thinking",
+        extra.npc_active, extra.npc_thinking
+    ));
+    if let Some(llm) = &extra.llm {
+        text.push_str(&format!(
+            "\nLLM today: {} in + {} out tokens, ${:.4} (kill switch: {})",
+            llm.today_input,
+            llm.today_output,
+            llm.today_cost,
+            if llm.globally_disabled {
+                "ENGAGED"
+            } else {
+                "off"
+            }
+        ));
+        for (feature, inp, out, cost) in &llm.features {
+            text.push_str(&format!(
+                "\n  {feature}: {inp} in + {out} out tokens, ${cost:.4}"
+            ));
+        }
+    }
     text.push_str(&format!(
         "\nDb size: {total} objects (next id #{})",
         w.next_id()

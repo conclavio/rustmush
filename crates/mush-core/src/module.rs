@@ -38,8 +38,8 @@ use smol_str::SmolStr;
 
 use crate::clock::{Season, TimeOfDay};
 use crate::cmd::{
-    AliasStage, CmdError, CommandFallback, CommandHandler, CommandSpec, Ctx, ParsedArgs, Registry,
-    SwitchSet,
+    AliasStage, CmdError, CommandFallback, CommandGate, CommandHandler, CommandSpec, Ctx,
+    ParsedArgs, Registry, SwitchSet,
 };
 use crate::engine::Deferred;
 use crate::obj::{GOD, ObjId, ObjKind};
@@ -1169,6 +1169,15 @@ impl<'a> Registrar<'a> {
     /// before `Huh?`, in registration order).
     pub fn command_fallback(&mut self, fallback: Arc<dyn CommandFallback>) {
         self.reg.add_command_fallback(fallback);
+    }
+
+    /// Append a pre-dispatch [`CommandGate`] (the onboarding gate — runs
+    /// before the alias stage and `home`/exits/commands, in registration
+    /// order, so it can gate channel broadcast and movement too). A module
+    /// registers one to restrict what an actor may run based on live world
+    /// state (e.g. an unapproved character held to the chargen command set).
+    pub fn command_gate(&mut self, gate: Arc<dyn CommandGate>) {
+        self.reg.add_command_gate(gate);
     }
 
     /// Register a marker flag (e.g. `"wod:kindred"`): settable via

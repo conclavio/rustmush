@@ -33,18 +33,20 @@ pub mod config;
 pub mod damage;
 pub mod dice;
 pub mod health;
+pub mod onboarding;
 pub mod roll;
 pub mod schema;
 pub mod sheet_cmds;
 pub mod splats;
 pub mod state;
+pub mod wizard;
 pub mod xp;
 
 use std::sync::Arc;
 
 use mush_core::{
-    GameModule, JobQueueSpec, ModError, ModuleBootData, ModuleCtx, ObjId, Outbox, PanelFeedHandle,
-    Registrar, Role, World,
+    GameModule, HookPoint, JobQueueSpec, ModError, ModuleBootData, ModuleCtx, ObjId, Outbox,
+    PanelFeedHandle, Registrar, Role, World, WorldEventKind,
 };
 use mush_jobs::register_payload_handler;
 use mush_ruleset::chargen::ChargenFlow;
@@ -55,6 +57,7 @@ use mush_ruleset::{
 
 use crate::chargen::WodChargen;
 use crate::config::WodConfig;
+use crate::onboarding::{OnboardingGate, OnboardingHook, OnboardingSpawn};
 use crate::schema::Template;
 use crate::splats::{
     DEFAULT_TEMPLATES, Dispatch, Splat, TemplateSchemas, all_splats, schema_only_splats,
@@ -62,6 +65,7 @@ use crate::splats::{
 use crate::state::WodState;
 
 pub use crate::agent::{WOD_ROLL_ABILITY, agent_profile, wod_roll_tool_spec};
+pub use crate::onboarding::OnboardingConfig;
 
 /// The shared bundle captured by every WoD command closure: the multi-template
 /// [`Dispatch`] (per-template schemas + splat behaviours), the tunable config,
@@ -126,6 +130,7 @@ pub struct WodRuleset {
     config: WodConfig,
     chargen: WodChargen,
     seed: Option<u64>,
+    onboarding: OnboardingConfig,
 }
 
 impl WodRuleset {
@@ -171,7 +176,17 @@ impl WodRuleset {
             config,
             chargen,
             seed,
+            onboarding: OnboardingConfig::default(),
         }
+    }
+
+    /// Set the onboarding configuration (the `chargen_required` gate + start
+    /// rooms). Off by default, for back-compat. The driver builds this from
+    /// `mushd.toml`'s `[onboarding]` section.
+    #[must_use]
+    pub fn onboarding(mut self, onboarding: OnboardingConfig) -> WodRuleset {
+        self.onboarding = onboarding;
+        self
     }
 
     /// A validating store over the default (mortal) schema (for tests / host
@@ -285,6 +300,26 @@ impl GameModule for WodRuleset {
         for splat in self.dispatch.splats.iter() {
             splat.register_commands(reg, Arc::clone(&cmd))?;
         }
+
+        // Onboarding (the `chargen_required` gate). All three seams are inert
+        // unless the config turns gating on, so a default game is unaffected.
+        reg.command_gate(Arc::new(OnboardingGate {
+            cfg: self.onboarding.clone(),
+            dispatch: Arc::clone(&self.dispatch),
+        }));
+        reg.hook(
+            HookPoint::Connected,
+            Arc::new(OnboardingHook {
+                cfg: self.onboarding.clone(),
+                cmd: Arc::clone(&cmd),
+            }),
+        );
+        reg.subscribe(
+            WorldEventKind::ObjCreated,
+            Arc::new(OnboardingSpawn {
+                cfg: self.onboarding.clone(),
+            }),
+        );
         Ok(())
     }
 
@@ -293,14 +328,17 @@ impl GameModule for WodRuleset {
         ctx: &mut ModuleCtx<'_>,
         _data: ModuleBootData,
     ) -> Result<(), ModError> {
-        // Chargen approval: re-validate the budget (template-aware), then
-        // stamp Approved.
+        // Chargen approval: re-validate the budget (template-aware), stamp
+        // Approved, then lift the onboarding gate (move to the live start room).
         let dispatch = Arc::clone(&self.dispatch);
         let config = self.config.clone();
+        let onboarding = self.onboarding.clone();
         register_payload_handler(
             ctx.w,
             chargen_cmds::CHARGEN_HANDLER,
-            Arc::new(move |ctx, job| chargen_cmds::chargen_approval(&config, &dispatch, ctx, job)),
+            Arc::new(move |ctx, job| {
+                chargen_cmds::chargen_approval(&config, &dispatch, &onboarding, ctx, job)
+            }),
         )
         .map_err(ModError::msg)?;
 

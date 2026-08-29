@@ -9,6 +9,12 @@ name = "rustmush dev"              # (M2)
 data_dir = "./data"                # (M2) host keys, logs (a leftover accounts.json is imported once)
 help_dir = "./docs/help"           # (M3) markdown help topics served by "help <topic>" (missing dir = no topics)
 
+[log]                              # (M9) structured logging + rotation
+# level = "info"                   # (M9) tracing env-filter; empty = honor RUST_LOG, else "info".
+#                                  #      e.g. "info,mush_llm=debug,mush_net_web=warn"
+# format = "pretty"                # (M9) "pretty" (console) or "json" (one object/line, for log shipping)
+# file = false                     # (M9) also write daily-rotating logs to <data_dir>/logs/ (mushd.log.YYYY-MM-DD)
+
 [store]
 store = "redis"                    # (M2) "redis" (authoritative) or "memory" (nothing survives restart)
 redis_url = "redis://127.0.0.1:6379"   # (M2)
@@ -23,13 +29,19 @@ listen = "127.0.0.1:8080"          # (M4) bind a public address or reverse-proxy
 #                                  # cargo feature; a reverse proxy is the usual prod setup)
 # auth_burst = 5                   # (M4) /api/auth/* rate limit: burst ...
 # auth_replenish_secs = 30         # (M4) ... and refill (one attempt per 30s per IP)
+# metrics_enabled = false          # (M9) serve GET /metrics (Prometheus text). Default OFF (opt-in):
+#                                  #      it binds this same (maybe public) listener with no auth,
+#                                  #      so turn it on only behind your reverse proxy / firewall.
+#                                  #      Exposes ONLY aggregate counters/gauges — never per-player
+#                                  #      data or keys. GET /healthz is always served (ok/uptime/
+#                                  #      version/connections/loop_lag_ms/world_loop_unixtime/store_ok).
 # Note: `features` / `panels` are filled from the module registry at boot —
 # do not set them here.
 
 [game]
-start_room = 0                     # (reserved — creation currently uses Limbo #0 regardless)
+# Onboarding / chargen gating (chargen_required + start rooms) lives in its own
+# [onboarding] section below — set it there, NOT here.
 guest_pool = 5                     # (reserved — guest pool is M3+)
-chargen_required = false           # (reserved — chargen gating is M6+)
 linkdead_grace_s = 300             # (M2)
 max_characters = 3                 # (M2) per-account character cap (newchar)
 ic_ratio = 1                       # (M5) IC seconds per OOC second (game-clock speed); 4 = an IC day every 6 real hours; read at boot
@@ -53,6 +65,18 @@ enabled = ["wod"]                  # (M6) oWoD20 — the only ruleset available 
 # selectable, and each player picks theirs during chargen with
 # "+chargen/template <mortal|vampire|mage|werewolf>". A character is exactly one
 # template, and its sheet carries only that splat's sections.
+
+[onboarding]                       # (M9) the chargen_required gate + start rooms
+# When off (the default), a fresh character plays immediately, exactly as
+# before. When on, a newly created, not-yet-approved character is placed in the
+# chargen area, dropped into the guided wizard on connect ("+chargen/wizard"),
+# and held to a restricted command set (chargen / look / say / help; channel
+# speech and movement are gated) until a storyteller approves its wod-chargen
+# job; approval then moves it to the live start room and grants full access.
+# Room ids are object numbers (#N).
+# chargen_required = false          # gate unapproved characters behind approval
+# start_room = 0                    # live start room approved characters land in (#0 = Limbo)
+# start_room_unapproved = 0         # restricted chargen area (defaults to start_room)
 
 [llm]                              # (M7) LLM layer: worldgen (@gen), budgets, kill switch
 # Master switch. FALSE by default so a keyless clone boots and passes tests;

@@ -53,6 +53,7 @@ pub mod bridge_common;
 pub mod config;
 pub mod help;
 pub mod ipguard;
+pub mod logging;
 pub mod modules;
 pub mod persist;
 pub mod repl;

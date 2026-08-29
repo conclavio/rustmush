@@ -73,6 +73,7 @@ async fn rig_with(config: SessionConfig) -> Rig {
         engine,
         Arc::clone(&sessions),
         ServerDeps {
+            metrics: std::sync::Arc::new(mush_net_web::Metrics::new()),
             store: Arc::clone(&store),
             guard: Arc::clone(&guard),
             staff,

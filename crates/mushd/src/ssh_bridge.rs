@@ -70,10 +70,15 @@ pub struct NewConn {
 /// M2 Redis store slots in without touching this file.
 pub struct SshBridge<A: AuthBackend + 'static> {
     core: GameBridge<A>,
+    /// Shared metrics registry — SSH transport connection counters. Defaults
+    /// to a throwaway registry (tests); the real server injects the shared one
+    /// via [`SshBridge::with_metrics`].
+    metrics: Arc<mush_net_web::Metrics>,
 }
 
 impl<A: AuthBackend + 'static> SshBridge<A> {
-    /// Wire the bridge.
+    /// Wire the bridge. Connection metrics land in a throwaway registry until
+    /// [`SshBridge::with_metrics`] injects the server-wide one.
     pub fn new(
         accounts: Arc<A>,
         sessions: Arc<SessionManager>,
@@ -82,7 +87,16 @@ impl<A: AuthBackend + 'static> SshBridge<A> {
     ) -> SshBridge<A> {
         SshBridge {
             core: GameBridge::new(accounts, sessions, world, guard),
+            metrics: Arc::new(mush_net_web::Metrics::new()),
         }
+    }
+
+    /// Point SSH connection counters at the shared metrics registry (the
+    /// same one the web ingress serves over `/metrics`). Called by `mushd`.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Arc<mush_net_web::Metrics>) -> SshBridge<A> {
+        self.metrics = metrics;
+        self
     }
 
     /// Check account credentials (welcome-screen `connect`, SSH password
@@ -289,11 +303,18 @@ mod net {
         }
 
         fn connection_opened(&self, addr: IpAddr) -> bool {
-            self.core.guard.conn_opened(addr)
+            let admitted = self.core.guard.conn_opened(addr);
+            // Count only admitted connections so the current-gauge stays
+            // balanced with connection_closed (only called for admitted ones).
+            if admitted {
+                self.metrics.ssh_connection_opened();
+            }
+            admitted
         }
 
         fn connection_closed(&self, addr: IpAddr) {
             self.core.guard.conn_closed(addr);
+            self.metrics.ssh_connection_closed();
         }
 
         fn caps_changed(&self, conn: u64, caps: ClientCaps) {

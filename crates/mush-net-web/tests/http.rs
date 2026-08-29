@@ -164,6 +164,9 @@ async fn blocked_ip_gets_403_before_auth() {
 #[tokio::test]
 async fn healthz_reports_ok_and_uptime() {
     let hooks = Arc::new(MockWebHooks::new());
+    // Publish a couple of values so the enriched fields are non-trivial.
+    hooks.metrics_registry().ssh_connection_opened();
+    hooks.metrics_registry().observe_loop_lag(9);
     let addr = spawn_server(hooks, test_config()).await;
 
     let resp = client()
@@ -175,6 +178,90 @@ async fn healthz_reports_ok_and_uptime() {
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["ok"], true);
     assert!(body["uptime_s"].is_u64());
+    // Enriched liveness fields (PLAN observability): version, connections,
+    // loop lag, store health.
+    assert!(body["version"].is_string());
+    assert_eq!(body["connections"], 1);
+    assert_eq!(body["loop_lag_ms"], 9);
+    assert_eq!(body["store_ok"], true);
+}
+
+#[tokio::test]
+async fn metrics_endpoint_exposes_prometheus_text_without_secrets() {
+    let hooks = Arc::new(MockWebHooks::new());
+    let m = hooks.metrics_registry();
+    m.ssh_connection_opened();
+    m.web_connection_opened();
+    m.command_processed();
+    m.observe_loop_lag(3);
+    m.publish_world(mush_net_web::WorldSample {
+        sessions_current: 1,
+        rooms: 4,
+        players: 2,
+        npc_active: 1,
+        ..Default::default()
+    });
+    let addr = spawn_server(hooks, test_config()).await;
+
+    let resp = client()
+        .get(format!("http://{addr}/metrics"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(ct.starts_with("text/plain"), "content-type: {ct}");
+    let body = resp.text().await.unwrap();
+    // Prometheus shape.
+    assert!(body.contains("# TYPE mush_connections gauge"));
+    assert!(body.contains("mush_connections{transport=\"ssh\"} 1"));
+    assert!(body.contains("mush_commands_total 1"));
+    assert!(body.contains("mush_objects{kind=\"room\"} 4"));
+    assert!(body.contains("mush_npc_active 1"));
+    // NEVER any per-player / secret material. ("token" appears in aggregate
+    // metric names like mush_llm_tokens_total, so the guard targets
+    // secret-shaped label keys and credential material.)
+    for forbidden in [
+        "token=\"",
+        "password",
+        "Bearer",
+        "account=\"",
+        "player=\"",
+        "ip=\"",
+        "actor=\"",
+        "Nick",
+    ] {
+        assert!(
+            !body.contains(forbidden),
+            "/metrics must not contain {forbidden:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn metrics_endpoint_off_when_disabled() {
+    let hooks = Arc::new(MockWebHooks::new());
+    let mut config = test_config();
+    config.metrics_enabled = false;
+    let addr = spawn_server(hooks, config).await;
+
+    // Disabled → the route is not registered, so the SPA fallback answers
+    // (404 when no embedded assets, never the metrics text).
+    let resp = client()
+        .get(format!("http://{addr}/metrics"))
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap_or_default();
+    assert!(
+        !body.contains("mush_connections"),
+        "metrics must not be served when disabled"
+    );
 }
 
 /// The SPA embed: tolerant of `web/dist` not being built (fresh clone), but

@@ -111,6 +111,7 @@ async fn boot_rig(
         engine,
         Arc::clone(&sessions),
         ServerDeps {
+            metrics: std::sync::Arc::new(mush_net_web::Metrics::new()),
             store: Arc::clone(store),
             guard: Arc::clone(guard),
             staff,
@@ -142,6 +143,7 @@ async fn boot_module_rig(
         engine,
         Arc::clone(&sessions),
         ServerDeps {
+            metrics: std::sync::Arc::new(mush_net_web::Metrics::new()),
             store: Arc::clone(store),
             guard: Arc::clone(guard),
             staff,
@@ -242,6 +244,7 @@ async fn boot_round_trip(store: Arc<dyn ObjectStore>) {
         engine2,
         Arc::clone(&sessions2),
         ServerDeps {
+            metrics: std::sync::Arc::new(mush_net_web::Metrics::new()),
             store: store2,
             guard: Arc::new(IpGuard::new()),
             staff: Arc::new(StaffQueue::new()),
@@ -385,6 +388,214 @@ async fn m5_module_persistence_round_trip_redis_gated() {
 }
 
 // ---------------------------------------------------------------------------
+// M9 onboarding persistence twin: a submitted chargen sheet is a `sheet:wod`
+// attribute on the player's obj doc (treaty ruling 7), so it rides obj:*
+// write-through; the `wod-chargen` approval JOB is a `jobs:*` module doc. This
+// proves BOTH the Pending sheet AND — after staff approval on a rebooted
+// server — the Approved sheet survive a reboot-from-store-alone. Exercised
+// in-memory (ungated) and against a live Redis.
+// ---------------------------------------------------------------------------
+
+/// The guided-wizard line sequence that builds a balanced vampire and submits
+/// it (the same allocation `onboarding_e2e` drives over SSH). Fed as ordinary
+/// input lines while the connect-time wizard context is on top of the stack.
+const VAMPIRE_WIZARD: &[&str] = &[
+    "vampire",
+    "next",
+    "concept=Jaded Detective",
+    "next",
+    "physical=7 social=5 mental=3",
+    "next",
+    "strength=4",
+    "dexterity=4",
+    "stamina=2",
+    "charisma=3",
+    "manipulation=3",
+    "appearance=2",
+    "perception=2",
+    "intelligence=2",
+    "wits=2",
+    "next",
+    "talents=13 skills=9 knowledges=5",
+    "next",
+    "brawl=3",
+    "alertness=3",
+    "subterfuge=3",
+    "intimidation=3",
+    "streetwise=1",
+    "firearms=3",
+    "drive=3",
+    "stealth=3",
+    "investigation=3",
+    "occult=2",
+    "next",
+    "Resources=3",
+    "Allies=2",
+    "next",
+    "clan=brujah",
+    "Celerity=2",
+    "Potence=1",
+    "next",
+    "conscience=4",
+    "self_control=3",
+    "courage=3",
+    "next", // Freebies (balanced — nothing to spend)
+    "next", // Review
+    "submit",
+];
+
+/// Extract the job id from a `Submitted for approval as job N.` line.
+fn parse_job_id(line: &str) -> u64 {
+    let idx = line.find("as job ").expect("submit line names a job");
+    let tail = &line[idx + "as job ".len()..];
+    tail.chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .expect("job id parses")
+}
+
+/// Boot a rig with the jobs + WoD(onboarding) modules, `chargen_required` on
+/// and both start rooms = Limbo (the distinct-room approval move is covered
+/// ungated by ruleset-wod's onboarding suite and by `onboarding_e2e`; this twin
+/// isolates sheet + approval *persistence*).
+async fn boot_onboarding_rig(
+    store: &Arc<dyn ObjectStore>,
+    guard: &Arc<IpGuard>,
+) -> (Arc<SessionManager>, PersistHandles) {
+    let world = load_or_seed_world(&**store).await.expect("boot world");
+    let staff = Arc::new(StaffQueue::new());
+    let mut registry = world_task::base_registry();
+    register_server_commands(&mut registry, &staff).unwrap();
+    let onboarding = ruleset_wod::OnboardingConfig {
+        chargen_required: true,
+        start_room: LIMBO,
+        start_room_unapproved: LIMBO,
+    };
+    let mods: Vec<Box<dyn mush_core::GameModule>> = vec![
+        Box::new(mush_jobs::JobsModule::new()),
+        Box::new(ruleset_wod::WodRuleset::new().onboarding(onboarding)),
+    ];
+    let mut engine = Engine::with_modules(world, registry, mods).expect("module registration");
+    mushd::modules::boot_modules(&mut engine, &**store)
+        .await
+        .expect("module boot");
+    let sessions = Arc::new(SessionManager::new());
+    let handles = world_task::spawn_persist(
+        engine,
+        Arc::clone(&sessions),
+        ServerDeps {
+            metrics: std::sync::Arc::new(mush_net_web::Metrics::new()),
+            store: Arc::clone(store),
+            guard: Arc::clone(guard),
+            staff,
+            llm: None,
+        },
+    );
+    (sessions, handles)
+}
+
+/// Read `who`'s WoD sheet from a bare-reloaded world (no task) — the
+/// reboot-from-store-alone assertion path.
+fn reloaded_sheet(world: &mush_core::World, who: ObjId) -> mush_ruleset::SheetDoc {
+    let attr = world
+        .attr(who, "sheet:wod")
+        .and_then(mush_core::Attr::as_json)
+        .expect("a persisted sheet:wod attr");
+    serde_json::from_value(attr.clone()).expect("sheet decodes")
+}
+
+async fn onboarding_round_trip(store: Arc<dyn ObjectStore>) {
+    let guard = Arc::new(IpGuard::new());
+
+    // --- first boot: a new player is dropped into the wizard, builds a ---
+    // --- vampire, and submits it for approval. ---------------------------
+    let (sessions, handles) = boot_onboarding_rig(&store, &guard).await;
+    let world = handles.handle.clone();
+    // The ack-gated create fires the ObjCreated observer (placed in the chargen
+    // area, = Limbo here) and lands the creation batch in the store.
+    let nick = world.create_player("Nick").await.expect("create Nick");
+    // Connecting drops Nick into the guided wizard (the Connected hook).
+    let mut nick_rx = attach_direct(&sessions, &world, 2, nick, "nick").await;
+    for line in VAMPIRE_WIZARD {
+        assert!(
+            world
+                .inbound(Inbound::Cmd {
+                    conn: 2,
+                    actor: nick,
+                    line: (*line).into(),
+                })
+                .await
+        );
+    }
+    let ev = expect_text(&mut nick_rx, "Submitted for approval as job").await;
+    let job = parse_job_id(&text_of(&ev));
+    // Fence: an ack-gated create returns only after every prior batch (the
+    // sheet-attr writes, the job doc) has certainly landed in the store.
+    world.create_player("Fence").await.expect("fence create");
+
+    // --- reboot #1 (store alone): the sheet is Pending, unapproved. -------
+    let reloaded = load_or_seed_world(&*store).await.expect("reload 1");
+    let doc = reloaded_sheet(&reloaded, nick);
+    assert!(
+        matches!(doc.approved, mush_ruleset::ApprovalState::Pending(j) if j == job),
+        "the submitted sheet survives a reboot still Pending (job {job}): {:?}",
+        doc.approved
+    );
+    assert_eq!(
+        doc.text("template"),
+        Some("vampire"),
+        "sheet content (template) survives the reboot"
+    );
+    assert_eq!(doc.text("clan"), Some("brujah"));
+
+    // --- reboot #2 (task): staff approve the persisted job. --------------
+    let (sessions2, handles2) = boot_onboarding_rig(&store, &guard).await;
+    let world2 = handles2.handle.clone();
+    let mut god_rx = attach_direct(&sessions2, &world2, 3, GOD, "god").await;
+    god_cmd(&world2, &format!("+job/approve {job}=Welcome aboard.")).await;
+    expect_text(&mut god_rx, "approved").await;
+    // Fence the approval's sheet-stamp write.
+    world2.create_player("Fence2").await.expect("fence2 create");
+
+    // --- reboot #3 (store alone): the approval survived. -----------------
+    let reloaded2 = load_or_seed_world(&*store).await.expect("reload 2");
+    let doc2 = reloaded_sheet(&reloaded2, nick);
+    assert!(
+        doc2.approved.is_approved(),
+        "the approval survives a reboot: {:?}",
+        doc2.approved
+    );
+}
+
+/// The onboarding twin over an in-memory store — ungated, so CI proves the
+/// sheet-attr + job-doc reload path without a live Redis.
+#[tokio::test(flavor = "multi_thread")]
+async fn onboarding_persistence_round_trip_in_memory() {
+    onboarding_round_trip(Arc::new(InMemoryStore::new())).await;
+}
+
+/// The onboarding twin over a live Redis — reboot-from-Redis-alone. Gated on
+/// `REDIS_URL`; runs in db 7 (dbs 8–15 and 0 are claimed by the other gated
+/// suites, which run in parallel).
+#[tokio::test(flavor = "multi_thread")]
+async fn onboarding_persistence_round_trip_redis_gated() {
+    let Some(url) = std::env::var("REDIS_URL").ok().filter(|s| !s.is_empty()) else {
+        eprintln!(
+            "skipping onboarding_persistence_round_trip_redis_gated: REDIS_URL not set \
+             (no live Redis on this machine)"
+        );
+        return;
+    };
+    let url = support::redis_url_with_db(&url, 7);
+    let store = mush_store::RedisStore::connect(&url)
+        .await
+        .expect("connect to REDIS_URL");
+    store.wipe_namespaces().await.expect("wipe test namespaces");
+    onboarding_round_trip(Arc::new(store)).await;
+}
+
+// ---------------------------------------------------------------------------
 // M7 worldgen persistence twin: a zone THEME is a plain object attribute
 // (`worldgen.theme`, treaty ruling 8), so it rides obj:* write-through; a
 // `@gen` DRAFT is a `worldgen:*` module doc, so it rides the module-op
@@ -460,6 +671,7 @@ async fn boot_worldgen_rig(
         engine,
         Arc::clone(&sessions),
         ServerDeps {
+            metrics: std::sync::Arc::new(mush_net_web::Metrics::new()),
             store: Arc::clone(store),
             guard: Arc::clone(guard),
             staff,
@@ -584,7 +796,13 @@ async fn boot_wod_rig(
     let mut registry = world_task::base_registry();
     register_server_commands(&mut registry, &staff).unwrap();
     let mut mods = mushd::modules::server_modules();
-    mods.extend(mushd::modules::ruleset_modules(&["wod".to_string()]).expect("wod ruleset"));
+    mods.extend(
+        mushd::modules::ruleset_modules(
+            &["wod".to_string()],
+            &ruleset_wod::OnboardingConfig::default(),
+        )
+        .expect("wod ruleset"),
+    );
     let mut engine =
         Engine::with_modules(world, registry, mods).expect("module + ruleset registration");
     mushd::modules::boot_modules(&mut engine, &**store)
@@ -595,6 +813,7 @@ async fn boot_wod_rig(
         engine,
         Arc::clone(&sessions),
         ServerDeps {
+            metrics: std::sync::Arc::new(mush_net_web::Metrics::new()),
             store: Arc::clone(store),
             guard: Arc::clone(guard),
             staff,
@@ -1412,6 +1631,7 @@ async fn boot_npc_rig(
         engine,
         Arc::clone(&sessions),
         ServerDeps {
+            metrics: std::sync::Arc::new(mush_net_web::Metrics::new()),
             store: Arc::clone(store),
             guard: Arc::clone(guard),
             staff,

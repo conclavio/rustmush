@@ -338,6 +338,7 @@ async fn boot_rig(store: &Arc<dyn ObjectStore>) -> (Arc<SessionManager>, Persist
         engine,
         Arc::clone(&sessions),
         ServerDeps {
+            metrics: std::sync::Arc::new(mush_net_web::Metrics::new()),
             store: Arc::clone(store),
             guard: Arc::new(IpGuard::new()),
             staff,

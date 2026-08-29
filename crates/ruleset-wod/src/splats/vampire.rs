@@ -381,6 +381,27 @@ impl Splat for Vampire {
         &["bloodpool", "humanity", "weakness", "generation"]
     }
 
+    fn wizard_splat_fields(&self) -> &'static [&'static str] {
+        &["clan", "path"]
+    }
+
+    fn wizard_pool_field(&self) -> Option<&'static str> {
+        Some("disciplines")
+    }
+
+    fn wizard_set_pool(
+        &self,
+        cmd: &WodCmd,
+        ctx: &mut Ctx<'_>,
+        name: &str,
+        rating: i32,
+    ) -> Result<(), CmdError> {
+        // Disciplines are not chargen-locked, so the ordinary +stat map path
+        // handles them (in-clan / out-of-clan is a costing concern, not a
+        // set-time one). Overflow beyond the 3-dot pool costs freebies.
+        crate::chargen_cmds::apply_stat(cmd, ctx, "disciplines", Some(name), &rating.to_string())
+    }
+
     fn on_field_changed(&self, doc: &mut SheetDoc, field: &str) {
         if field.eq_ignore_ascii_case("clan") {
             let text = clan_of(doc).map_or("", |c| c.weakness);

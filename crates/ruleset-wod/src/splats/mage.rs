@@ -303,6 +303,28 @@ impl Splat for Mage {
         field.eq_ignore_ascii_case("arete").then_some(3)
     }
 
+    fn wizard_splat_fields(&self) -> &'static [&'static str] {
+        // Affiliation (derives the affinity Sphere) and Arete (chargen-capped
+        // at 3); affinity is derived, Spheres are the wizard pool below.
+        &["affiliation", "arete"]
+    }
+
+    fn wizard_pool_field(&self) -> Option<&'static str> {
+        Some("spheres")
+    }
+
+    fn wizard_set_pool(
+        &self,
+        cmd: &WodCmd,
+        ctx: &mut Ctx<'_>,
+        name: &str,
+        rating: i32,
+    ) -> Result<(), CmdError> {
+        // Spheres are Arete-capped and chargen-locked from +stat, so route
+        // through the same validated setter `+sphere` uses.
+        apply_sphere(cmd, ctx, name, i64::from(rating)).map(|_| ())
+    }
+
     fn xp_target_cap(&self, doc: &SheetDoc, field: &str, _key: Option<&str>) -> Option<i32> {
         // A Sphere may never exceed the caster's current Arete — the same rule
         // `+sphere` enforces, applied to the `+xp/spend` path so a spend cannot
@@ -361,9 +383,9 @@ fn require_mage(cmd: &WodCmd, ctx: &Ctx<'_>) -> Result<SheetDoc, CmdError> {
 
 /// `+sphere` / `+spheres` (list) or `+sphere <name>=<0..5>` (rate, Arete-capped).
 fn sphere_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let mut doc = require_mage(cmd, ctx)?;
     let lhs = ctx.args.lhs().trim().to_string();
     if lhs.is_empty() {
+        let doc = require_mage(cmd, ctx)?;
         return sphere_list(ctx, &doc);
     }
     let rating: i64 = ctx
@@ -371,9 +393,26 @@ fn sphere_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .rhs()
         .and_then(|r| r.trim().parse().ok())
         .ok_or_else(|| CmdError::msg("Usage: +sphere <name>=<0..5>"))?;
-    let sphere = canonical_sphere(&lhs).ok_or_else(|| {
+    let (sphere, aff) = apply_sphere(cmd, ctx, &lhs, rating)?;
+    ctx.out
+        .sys_to_actor(ctx.actor, "wod", format!("{sphere} set to {rating}{aff}."));
+    Ok(())
+}
+
+/// Set one Sphere to `rating` for the acting mage, enforcing the Arete cap and
+/// the chargen-or-staff gate — the core of `+sphere`, shared with the chargen
+/// wizard. Returns the canonical Sphere name and an `" (affinity)"` suffix (or
+/// `""`). Persists; emits no output.
+pub(crate) fn apply_sphere(
+    cmd: &WodCmd,
+    ctx: &mut Ctx<'_>,
+    sphere_input: &str,
+    rating: i64,
+) -> Result<(&'static str, &'static str), CmdError> {
+    let mut doc = require_mage(cmd, ctx)?;
+    let sphere = canonical_sphere(sphere_input).ok_or_else(|| {
         CmdError::msg(format!(
-            "Unknown Sphere {lhs:?}. The nine are: {}.",
+            "Unknown Sphere {sphere_input:?}. The nine are: {}.",
             SPHERES.join(", ")
         ))
     })?;
@@ -410,9 +449,7 @@ fn sphere_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     } else {
         ""
     };
-    ctx.out
-        .sys_to_actor(ctx.actor, "wod", format!("{sphere} set to {rating}{aff}."));
-    Ok(())
+    Ok((sphere, aff))
 }
 
 /// List the nine Spheres and the current Arete.

@@ -15,5 +15,9 @@ smol_str.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+# Fuzz-style property tests for the lock-expression parser (round-trip).
+proptest = { workspace = true }
+
 [lints]
 workspace = true

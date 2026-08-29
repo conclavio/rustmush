@@ -82,7 +82,10 @@ pub fn server_modules() -> Vec<Box<dyn GameModule>> {
 /// An unknown id is a hard error (consistent with the rest of config: a
 /// silently-ignored typo is worse than not starting). The only id available
 /// in M6a is `"wod"` (oWoD20); duplicates are rejected too.
-pub fn ruleset_modules(enabled: &[String]) -> Result<Vec<Box<dyn GameModule>>, String> {
+pub fn ruleset_modules(
+    enabled: &[String],
+    onboarding: &ruleset_wod::OnboardingConfig,
+) -> Result<Vec<Box<dyn GameModule>>, String> {
     let mut seen: Vec<String> = Vec::new();
     let mut mods: Vec<Box<dyn GameModule>> = Vec::new();
     for id in enabled {
@@ -91,7 +94,11 @@ pub fn ruleset_modules(enabled: &[String]) -> Result<Vec<Box<dyn GameModule>>, S
             return Err(format!("[rulesets].enabled lists {id:?} more than once"));
         }
         match key.as_str() {
-            "wod" => mods.push(Box::new(ruleset_wod::WodRuleset::new())),
+            "wod" => {
+                mods.push(Box::new(
+                    ruleset_wod::WodRuleset::new().onboarding(onboarding.clone()),
+                ));
+            }
             _ => {
                 return Err(format!(
                     "[rulesets].enabled: unknown ruleset {id:?} (available: \"wod\")"
@@ -614,26 +621,44 @@ mod tests {
     #[test]
     fn ruleset_modules_selects_wod() {
         // "wod" resolves to the WoD ruleset module; the id survives boot.
-        let mods = ruleset_modules(&["wod".to_string()]).unwrap();
+        let mods = ruleset_modules(
+            &["wod".to_string()],
+            &ruleset_wod::OnboardingConfig::default(),
+        )
+        .unwrap();
         assert_eq!(mods.len(), 1);
         assert_eq!(mods[0].name(), "wod");
         // Case/whitespace-insensitive.
-        let mods = ruleset_modules(&["  WoD ".to_string()]).unwrap();
+        let mods = ruleset_modules(
+            &["  WoD ".to_string()],
+            &ruleset_wod::OnboardingConfig::default(),
+        )
+        .unwrap();
         assert_eq!(mods[0].name(), "wod");
         // Empty list is fine (a ruleset-less server).
-        assert!(ruleset_modules(&[]).unwrap().is_empty());
+        assert!(
+            ruleset_modules(&[], &ruleset_wod::OnboardingConfig::default())
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
     fn ruleset_modules_rejects_unknown_and_duplicate() {
         // `unwrap_err` needs `Debug` on the Ok value; `dyn GameModule` has
         // none, so match the error out by hand.
-        let err = match ruleset_modules(&["btech".to_string()]) {
+        let err = match ruleset_modules(
+            &["btech".to_string()],
+            &ruleset_wod::OnboardingConfig::default(),
+        ) {
             Err(e) => e,
             Ok(_) => panic!("unknown ruleset must be rejected"),
         };
         assert!(err.contains("unknown ruleset"), "{err}");
-        let err = match ruleset_modules(&["wod".to_string(), "wod".to_string()]) {
+        let err = match ruleset_modules(
+            &["wod".to_string(), "wod".to_string()],
+            &ruleset_wod::OnboardingConfig::default(),
+        ) {
             Err(e) => e,
             Ok(_) => panic!("duplicate ruleset must be rejected"),
         };
@@ -658,7 +683,13 @@ mod tests {
         );
         let mut mods = server_modules();
         mods.push(worldgen_module(Arc::clone(&llm)));
-        mods.extend(ruleset_modules(&["wod".to_string()]).unwrap());
+        mods.extend(
+            ruleset_modules(
+                &["wod".to_string()],
+                &ruleset_wod::OnboardingConfig::default(),
+            )
+            .unwrap(),
+        );
         let tw = TestWorld::with_modules(mods);
         let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
         assert_eq!(
@@ -719,7 +750,13 @@ mod tests {
         // payload handlers see a loaded jobs module).
         use mush_testkit::TestWorld;
         let mut mods = server_modules();
-        mods.extend(ruleset_modules(&["wod".to_string()]).unwrap());
+        mods.extend(
+            ruleset_modules(
+                &["wod".to_string()],
+                &ruleset_wod::OnboardingConfig::default(),
+            )
+            .unwrap(),
+        );
         let tw = TestWorld::with_modules(mods);
         let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
         assert_eq!(

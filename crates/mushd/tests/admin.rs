@@ -21,7 +21,8 @@ use tokio::sync::mpsc;
 use mushd::ipguard::IpGuard;
 use mushd::staff::{StaffQueue, register_server_commands};
 use mushd::world_task::{
-    self, PersistHandles, ServerDeps, StoreHealth, WorldHandle, char_key, render_ps, render_stats,
+    self, LlmStatsLine, PersistHandles, ServerDeps, StatsExtra, StoreHealth, WorldHandle, char_key,
+    render_ps, render_stats,
 };
 
 type EventRx = mpsc::Receiver<Arc<OutputEvent>>;
@@ -57,6 +58,7 @@ fn spawn_staffed(
         engine,
         Arc::clone(sessions),
         ServerDeps {
+            metrics: std::sync::Arc::new(mush_net_web::Metrics::new()),
             store: Arc::new(InMemoryStore::new()),
             guard: Arc::new(IpGuard::new()),
             staff,
@@ -356,27 +358,65 @@ fn render_stats_reports_counts_lag_and_store_health() {
         read_only: false,
         last_write_unix: Some(now - 5),
     };
+    // The enriched aggregates (M9 observability): transport-split connections,
+    // write-queue depth, NPC counts, p99 lag, and today's LLM spend.
+    let extra = StatsExtra {
+        ssh_conns: 3,
+        web_conns: 1,
+        write_queue_depth: 2,
+        npc_active: 4,
+        npc_thinking: 1,
+        lag_p99: 25,
+        llm: Some(LlmStatsLine {
+            globally_disabled: false,
+            today_input: 1200,
+            today_output: 340,
+            today_cost: 0.0567,
+            features: vec![("worldgen_room".to_string(), 1000, 200, 0.05)],
+        }),
+    };
     // Booted 1h 1m 1s ago.
-    let text = render_stats(&engine, &health, now - 3_661, now);
+    let text = render_stats(&engine, &health, now - 3_661, now, &extra);
     assert!(text.contains("Uptime: 1h 1m 1s"), "{text}");
     assert!(
         text.contains("Objects: 6 (2 rooms, 1 exits, 1 things, 2 players, 0 NPCs)"),
         "{text}"
     );
-    assert!(text.contains("Connected: 1"), "{text}");
-    assert!(text.contains("Loop lag: last 7ms, max 12ms"), "{text}");
-    assert!(text.contains("Store: healthy; last write 5s ago"), "{text}");
+    // The classic connected count survives; the transport split is appended.
+    assert!(text.contains("Connected: 1 (ssh 3, web 1)"), "{text}");
+    assert!(
+        text.contains("Loop lag: last 7ms, max 12ms, p99 25ms"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Store: healthy; last write 5s ago; write-queue 2"),
+        "{text}"
+    );
+    assert!(text.contains("NPC agents: 4 active, 1 thinking"), "{text}");
+    assert!(
+        text.contains("LLM today: 1200 in + 340 out tokens, $0.0567 (kill switch: off)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("worldgen_room: 1000 in + 200 out tokens, $0.0500"),
+        "{text}"
+    );
     assert!(text.contains("Db size: 6 objects"), "{text}");
 
-    // Read-only mode + no writes yet.
+    // Read-only mode + no writes yet, no LLM wired (mortals never see this
+    // form; the LLM block is simply absent).
     let health = StoreHealth::new();
     let ro = StoreHealth {
         read_only: true,
         ..health
     };
-    let text = render_stats(&engine, &ro, now, now);
+    let text = render_stats(&engine, &ro, now, now, &StatsExtra::default());
     assert!(text.contains("READ-ONLY"), "{text}");
     assert!(text.contains("no writes yet this boot"), "{text}");
+    assert!(
+        !text.contains("LLM today:"),
+        "no LLM line without a service"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

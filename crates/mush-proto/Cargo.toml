@@ -18,5 +18,9 @@ ts-rs = { workspace = true, optional = true }
 # web/src/lib/proto/, which is committed so web builds never need cargo.
 ts = ["dep:ts-rs"]
 
+[dev-dependencies]
+# Fuzz-style property tests for Envelope/ClientCommand JSON decode.
+proptest = { workspace = true }
+
 [lints]
 workspace = true

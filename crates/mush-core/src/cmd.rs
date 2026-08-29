@@ -6,17 +6,26 @@
 //! 0. the actor's input-context stack (mail compose, chargen, consoles) —
 //!    checked before everything else, with a hard `~q` escape
 //! 1. single-char prefixes — `"` say, `:` pose, `;` semipose, `\` @emit
-//! 2. the alias stage — registered [`AliasStage`] hooks (the comsys seam;
+//! 2. the command gates — registered [`CommandGate`]s (the onboarding gate).
+//!    Consulted **before** the alias stage so a gated actor cannot broadcast
+//!    on a channel through a per-player alias, and before exits/commands so
+//!    they cannot move onto the live grid. Skipped entirely when no gate is
+//!    registered (byte-identical default).
+//! 3. the alias stage — registered [`AliasStage`] hooks (the comsys seam;
 //!    empty in M0). **Prefix-expanded lines skip this stage**: the prefix
 //!    character already settled the line's meaning, so a channel alias
 //!    named `say`/`pose` can never capture `"hello`
-//! 3. the `home` keyword
-//! 4. exit match — room exits, then the room's zone's exits, then global
+//! 4. the `home` keyword
+//! 5. exit match — room exits, then the room's zone's exits, then global
 //!    exits on Limbo (the master room)
-//! 5. the command table — longest-unambiguous-prefix for bare verbs,
+//! 6. the command table — longest-unambiguous-prefix for bare verbs,
 //!    exact (case-insensitive) for `@`/`+` commands; `/switch` and arg
 //!    shapes are table-driven from the [`CommandSpec`]
-//! 6. `Huh?` — with a fuzzy (edit-distance) suggestion
+//! 7. `Huh?` — with a fuzzy (edit-distance) suggestion
+//!
+//! (Treaty ruling 5 fixes the relative order of aliases → exits → command
+//! table → `Huh?`; the input-context stack and the command-gate seam are
+//! additions in front of it.)
 //!
 //! Handlers are `Arc<dyn CommandHandler>` trait objects (treaty ruling 4)
 //! so modules can capture state; plain `fn` items work via the blanket impl.
@@ -314,6 +323,42 @@ pub trait AliasStage: Send + Sync {
     fn try_alias(&self, w: &mut World, actor: ObjId, line: &str, out: &mut Outbox) -> AliasOutcome;
 }
 
+/// A **pre-dispatch command gate**, consulted after single-char prefix
+/// expansion and **before** the alias stage, the `home` keyword, exit
+/// matching, and the command table. Every registered gate sees the
+/// (expanded) line's leading verb **and** the whole expanded line; the first
+/// to return `Err(reason)` refuses the line — dispatch shows the reason to
+/// the actor and stops.
+///
+/// This is the seam the **onboarding gate** hangs on: while
+/// `chargen_required` is set, a freshly-created, not-yet-approved character
+/// is held to a restricted command set (chargen, look, speech, help) and
+/// every other verb is refused. Running **before the alias stage** is
+/// load-bearing: a per-player comsys alias (`pub Hello`) would otherwise be
+/// fully handled by the alias stage and never reach the gate, letting a
+/// gated character broadcast game-wide. Running before exit matching lets
+/// the gate refuse movement even when an exit's name/alias collides with an
+/// allowlisted verb — which is why the gate is handed the whole `line` (to
+/// resolve it against [`find_exit`](crate::commands::movement::find_exit)),
+/// not just the leading verb. Prefix-expanded speech (`"`/`:`/`;`/`\`)
+/// reaches the gate as its expanded verb (`say`/`pose`/…), so a gate can
+/// wave room roleplay through while blocking movement, building, and channel
+/// broadcast. An actor inside an input context never reaches the gate (the
+/// stack is checked first), so a pushed chargen wizard is unaffected.
+///
+/// Gates are consulted in registration order and are **read-only over the
+/// world** — a gate decides, it never mutates. With no gate registered
+/// (the default), dispatch is byte-identical to before this seam existed.
+pub trait CommandGate: Send + Sync {
+    /// Decide whether `actor` may run the command whose leading verb is
+    /// `verb` (already prefix-expanded; switches stripped; original case).
+    /// `line` is the whole expanded, trimmed command line — the same query
+    /// dispatch will hand to exit matching — so a gate can refuse a line that
+    /// resolves to an exit. Return `Err(reason)` to refuse the whole line
+    /// with `reason` shown to the actor.
+    fn check(&self, w: &World, actor: ObjId, verb: &str, line: &str) -> Result<(), String>;
+}
+
 /// A **post-command-table** fallback matcher (design doc §3.1 "module
 /// fallback matchers"), consulted only when the command table produced
 /// [`LookupErr::NotFound`], **after** exits and built-in commands and
@@ -379,6 +424,9 @@ pub struct Registry {
     /// Lowercased name and alias → entry index.
     index: HashMap<String, usize>,
     alias_stages: Vec<Arc<dyn AliasStage>>,
+    /// Pre-dispatch command gates (the onboarding gate); consulted before the
+    /// alias stage and `home`/exits/commands, in registration order.
+    command_gates: Vec<Arc<dyn CommandGate>>,
     /// Post-command-table fallback matchers (object `$`-commands); consulted
     /// on [`LookupErr::NotFound`] before `Huh?`, in registration order.
     command_fallbacks: Vec<Arc<dyn CommandFallback>>,
@@ -435,6 +483,19 @@ impl Registry {
     /// Append an alias-stage hook (runs in registration order).
     pub fn add_alias_stage(&mut self, stage: Arc<dyn AliasStage>) {
         self.alias_stages.push(stage);
+    }
+
+    /// Append a pre-dispatch [`CommandGate`] (the onboarding gate). Runs in
+    /// registration order, before the alias stage and
+    /// `home`/exits/commands.
+    pub fn add_command_gate(&mut self, gate: Arc<dyn CommandGate>) {
+        self.command_gates.push(gate);
+    }
+
+    /// Number of registered command gates (tests/inspection).
+    #[must_use]
+    pub fn command_gate_count(&self) -> usize {
+        self.command_gates.len()
     }
 
     /// Append a post-command-table [`CommandFallback`] (object
@@ -663,7 +724,29 @@ pub fn dispatch(reg: &Registry, w: &mut World, actor: ObjId, line: &str, out: &m
         _ => trimmed.to_string(),
     };
 
-    // 2. Alias stage (comsys seam). Prefix-expanded lines skip it: the
+    // 2. Command gates (the onboarding gate). Consulted on the expanded
+    //    line's leading verb and whole line, BEFORE the alias stage and
+    //    before home/exits/commands — so a gate that holds an unapproved
+    //    character to a chargen command set blocks channel broadcast (a
+    //    per-player comsys alias would otherwise be fully handled by the
+    //    alias stage below and never reach the gate), movement (exit names,
+    //    `home`), and building. Speech has already been rewritten to
+    //    say/pose/… by the prefix expansion, so a gate sees it as a normal
+    //    verb it can wave through. Skipped entirely when no gate is
+    //    registered (the default) — dispatch is then byte-identical.
+    if !reg.command_gates.is_empty() {
+        let line = cur.trim();
+        let (head, _) = split_head(line);
+        let verb = head.split('/').next().unwrap_or("");
+        for gate in &reg.command_gates {
+            if let Err(reason) = gate.check(w, actor, verb, line) {
+                out.error(actor, reason);
+                return;
+            }
+        }
+    }
+
+    // 3. Alias stage (comsys seam). Prefix-expanded lines skip it: the
     //    prefix character already settled what the line means (room
     //    speech), and letting an alias named "say"/"pose" capture the
     //    synthetic verb would reroute private speech onto a channel the
@@ -682,19 +765,19 @@ pub fn dispatch(reg: &Registry, w: &mut World, actor: ObjId, line: &str, out: &m
         }
     }
 
-    // 3. HOME keyword.
+    // 4. HOME keyword.
     if cur.trim().eq_ignore_ascii_case("home") {
         movement::go_home(reg, w, actor, out);
         return;
     }
 
-    // 4. Exit match (room → zone → global) against the whole line.
+    // 5. Exit match (room → zone → global) against the whole line.
     if let Some(exit) = movement::find_exit(w, actor, cur.trim()) {
         movement::traverse_exit(reg, w, actor, exit, out);
         return;
     }
 
-    // 5. Command table.
+    // 6. Command table.
     let (head, rest) = split_head(&cur);
     let mut parts = head.split('/');
     let verb = parts.next().unwrap_or("");
@@ -959,6 +1042,135 @@ mod tests {
         assert!(out.events().iter().any(
             |(_, e)| matches!(e, mush_proto::OutputEvent::Sys(t) if t.to_plain_text() == "Sanctified.")
         ));
+    }
+
+    #[test]
+    fn command_gate_blocks_and_allows() {
+        use crate::obj::{GOD, LIMBO, ObjKind};
+        // A gate that allows only "look" and refuses everything else.
+        struct OnlyLook;
+        impl CommandGate for OnlyLook {
+            fn check(
+                &self,
+                _w: &World,
+                _actor: ObjId,
+                verb: &str,
+                _line: &str,
+            ) -> Result<(), String> {
+                if verb.eq_ignore_ascii_case("look") {
+                    Ok(())
+                } else {
+                    Err("blocked".to_string())
+                }
+            }
+        }
+        let mut w = World::new_minimal();
+        let ann = w.create(ObjKind::Player, "Ann", GOD, Some(LIMBO)).unwrap();
+        let mut reg = Registry::new();
+        reg.register(
+            spec("look", ArgShape::Raw),
+            Arc::new(|ctx: &mut Ctx<'_>| {
+                ctx.out.info(ctx.actor, "ok-look");
+                Ok(())
+            }),
+        )
+        .unwrap();
+        reg.register(
+            spec("pose", ArgShape::Raw),
+            Arc::new(|ctx: &mut Ctx<'_>| {
+                ctx.out.info(ctx.actor, "ok-pose");
+                Ok(())
+            }),
+        )
+        .unwrap();
+        reg.add_command_gate(Arc::new(OnlyLook));
+
+        let plain = |out: &Outbox| -> Vec<String> {
+            out.events()
+                .iter()
+                .filter_map(|(_, e)| match e {
+                    mush_proto::OutputEvent::Sys(t) => Some(t.to_plain_text()),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        // Allowed verb runs.
+        let mut out = Outbox::new();
+        dispatch(&reg, &mut w, ann, "look", &mut out);
+        assert_eq!(plain(&out), vec!["ok-look".to_string()]);
+
+        // A non-allowlisted command is refused with the gate's reason; its
+        // handler never runs.
+        let mut out = Outbox::new();
+        dispatch(&reg, &mut w, ann, "pose", &mut out);
+        assert_eq!(plain(&out), vec!["blocked".to_string()]);
+    }
+
+    #[test]
+    fn command_gate_runs_before_the_alias_stage() {
+        use crate::obj::{GOD, LIMBO, ObjKind};
+        // A gate refusing "pub" and an alias stage that would fully handle any
+        // line whose first word is "pub" (the comsys broadcast seam). The gate
+        // must win: an unapproved character cannot broadcast on a channel.
+        struct BlockPub;
+        impl CommandGate for BlockPub {
+            fn check(
+                &self,
+                _w: &World,
+                _actor: ObjId,
+                verb: &str,
+                _line: &str,
+            ) -> Result<(), String> {
+                if verb.eq_ignore_ascii_case("pub") {
+                    Err("gated".to_string())
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        struct PubChannel;
+        impl AliasStage for PubChannel {
+            fn try_alias(
+                &self,
+                _w: &mut World,
+                actor: ObjId,
+                line: &str,
+                out: &mut Outbox,
+            ) -> AliasOutcome {
+                if line.split_whitespace().next() == Some("pub") {
+                    out.info(actor, "broadcast");
+                    AliasOutcome::Handled
+                } else {
+                    AliasOutcome::NotMine
+                }
+            }
+        }
+        let mut w = World::new_minimal();
+        let ann = w.create(ObjKind::Player, "Ann", GOD, Some(LIMBO)).unwrap();
+        let mut reg = Registry::new();
+        reg.add_alias_stage(Arc::new(PubChannel));
+        reg.add_command_gate(Arc::new(BlockPub));
+
+        let plain = |out: &Outbox| -> Vec<String> {
+            out.events()
+                .iter()
+                .filter_map(|(_, e)| match e {
+                    mush_proto::OutputEvent::Sys(t) => Some(t.to_plain_text()),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        // The gate refuses "pub spam" before the alias stage ever sees it: the
+        // channel broadcast never happens.
+        let mut out = Outbox::new();
+        dispatch(&reg, &mut w, ann, "pub spam", &mut out);
+        assert_eq!(plain(&out), vec!["gated".to_string()]);
+        assert!(
+            !plain(&out).iter().any(|l| l == "broadcast"),
+            "the alias stage must not have run"
+        );
     }
 
     #[test]

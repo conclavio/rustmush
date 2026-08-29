@@ -19,6 +19,7 @@ tracing.workspace = true
 [dev-dependencies]
 mush-testkit.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+proptest = { workspace = true }
 
 [lints]
 workspace = true
