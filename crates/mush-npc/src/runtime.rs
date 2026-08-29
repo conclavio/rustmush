@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use mush_core::{ObjId, PanelFeedHandle};
 
+use crate::knowledge::LorePools;
 use crate::memory::{LongTermStore, MemoryBuffer};
 use crate::stimulus::Stimulus;
 
@@ -106,6 +107,9 @@ pub struct NpcHostState {
     pub runtimes: HashMap<ObjId, NpcRuntime>,
     /// Durable subject-keyed memories (layer 3), rebuilt from boot data.
     pub long_term: LongTermStore,
+    /// Shared world-knowledge lore pools (design: M10d), rebuilt from boot data
+    /// and mirrored by the persisted `lore:{slug}` documents.
+    pub lore_pools: LorePools,
     /// The `npc.thinking` panel feed handle (`None` in headless/test worlds).
     pub thinking: Option<PanelFeedHandle>,
     /// Tuning.
@@ -119,6 +123,7 @@ impl NpcHostState {
         NpcHostState {
             runtimes: HashMap::new(),
             long_term: LongTermStore::default(),
+            lore_pools: LorePools::default(),
             thinking: Some(thinking),
             config: NpcConfig::default(),
         }
@@ -130,6 +135,7 @@ impl NpcHostState {
         NpcHostState {
             runtimes: HashMap::new(),
             long_term: LongTermStore::default(),
+            lore_pools: LorePools::default(),
             thinking: None,
             config: NpcConfig::default(),
         }

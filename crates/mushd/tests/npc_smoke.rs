@@ -29,7 +29,7 @@
 use mush_core::ObjId;
 use mush_llm::{LlmConfig, LlmService};
 use mush_npc::{
-    AgentProfile, NpcAction, NpcTier, PresentPlayer, SceneView, StimulusLine, TurnKind,
+    AgentProfile, Familiarity, NpcAction, NpcTier, PresentPlayer, SceneView, StimulusLine, TurnKind,
     TurnOutcome, TurnSnapshot, run_npc_turn_async,
 };
 
@@ -103,11 +103,13 @@ async fn live_npc_dialogue_openrouter_smoke() {
             present: vec![PresentPlayer {
                 name: "Alice".into(),
                 short_desc: "a road-worn traveler in a wet cloak".into(),
+                familiarity: Familiarity::default(),
             }],
             time: "late evening".into(),
             weather: Some("rain".into()),
             exits: vec!["out".into()],
         },
+        knowledge: Vec::new(),
         summary: String::new(),
         recalled: Vec::new(),
         transcript: String::new(),

@@ -166,6 +166,14 @@ impl LongTermStore {
         self.records.insert((rec.npc, slug(&rec.subject)), rec);
     }
 
+    /// The durable record for `(npc, subject)`, if any (subject matched by the
+    /// same slug [`recall`](LongTermStore::recall) uses). Backs
+    /// [`familiarity_of`](crate::knowledge::familiarity_of).
+    #[must_use]
+    pub fn record_for(&self, npc: ObjId, subject: &str) -> Option<&MemoryRecord> {
+        self.records.get(&(npc, slug(subject)))
+    }
+
     /// The number of distinct durable-memory subjects recorded for `npc` (staff
     /// `@agent/show` uses this to report persisted memory).
     #[must_use]

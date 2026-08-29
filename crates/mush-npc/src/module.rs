@@ -21,6 +21,10 @@ use mush_proto::{NarrativeKind, OutputEvent, RichText};
 use smol_str::SmolStr;
 
 use crate::action::NpcAction;
+use crate::knowledge::{
+    Familiarity, KNOWLEDGE_ATTR, LoreEntry, LorePool, NpcKnowledge, Secrecy, familiarity_of,
+    pool_key,
+};
 use crate::memory::{MemoryRecord, record_key};
 use crate::profile::{AgentProfile, NS, PROFILE_ATTR, SUMMARY_ATTR, THINKING_FEED};
 use crate::runtime::NpcHostState;
@@ -110,6 +114,7 @@ impl GameModule for NpcModule {
                     "create".into(),
                     "set".into(),
                     "sheet".into(),
+                    "lore".into(),
                     "show".into(),
                     "poke".into(),
                     "enable".into(),
@@ -126,6 +131,10 @@ impl GameModule for NpcModule {
                        values; an empty value clears a field.\n\
                        @agent/sheet <npc>[=<template>] -- give it a ruleset sheet (default \
                        mortal) so it can roll; fill it in with @sheet/set afterwards.\n\
+                       @agent/lore <npc> -- list this NPC's world knowledge; \
+                       @agent/lore <npc>=<public|guarded|secret> [subject:] <fact> adds an \
+                       entry; =tags: <t1>; <t2> sets shared-pool tags; =del <n> / =clear \
+                       remove entries. See also @lore for the shared pools.\n\
                        @agent/show <npc> (or bare @agent <npc>) -- profile + runtime status.\n\
                        @agent/enable <npc> / @agent/disable <npc> -- wake or park the agent.\n\
                        @agent/poke <npc>=<note> -- prod the agent with an out-of-band note.\n\
@@ -134,6 +143,26 @@ impl GameModule for NpcModule {
                 ..CommandSpec::default()
             },
             Arc::new(move |ctx: &mut Ctx<'_>| cmd_agent(grounding.as_ref(), ctx)),
+        )?;
+
+        // Shared lore pools: authored once, drawn on by many NPCs via tags.
+        reg.command(
+            CommandSpec {
+                name: "@lore".into(),
+                shape: ArgShape::EqPair,
+                min_role: Role::Builder,
+                help: "@lore -- list every shared lore pool with its entry count.\n\
+                       @lore <tag> -- list one pool's entries.\n\
+                       @lore <tag>=<public|guarded|secret> [subject:] <fact> -- add an entry \
+                       to the pool (creating it if new). A SECRET entry is a staff-only \
+                       record NEVER sent to any NPC LLM.\n\
+                       @lore <tag>=del <n> -- delete pool entry #n (1-based).\n\
+                       @lore <tag>=clear -- delete the whole pool.\n\
+                       NPCs draw on a pool with @agent/lore <npc>=tags: <tag>. See help npc."
+                    .into(),
+                ..CommandSpec::default()
+            },
+            Arc::new(cmd_lore),
         )?;
         Ok(())
     }
@@ -144,11 +173,17 @@ impl GameModule for NpcModule {
         boot: ModuleBootData,
     ) -> Result<(), ModError> {
         let mut store = crate::memory::LongTermStore::default();
+        let mut pools = crate::knowledge::LorePools::default();
         for (key, value) in boot.kv {
             if key.starts_with("mem:") {
                 match serde_json::from_value::<MemoryRecord>(value) {
                     Ok(rec) => store.insert(rec),
                     Err(e) => tracing::error!(%key, error = %e, "npc: unparseable memory skipped"),
+                }
+            } else if key.starts_with("lore:") {
+                match serde_json::from_value::<LorePool>(value) {
+                    Ok(pool) => pools.insert(pool),
+                    Err(e) => tracing::error!(%key, error = %e, "npc: unparseable lore pool skipped"),
                 }
             } else {
                 tracing::warn!(%key, "npc: unknown persisted key ignored");
@@ -156,6 +191,7 @@ impl GameModule for NpcModule {
         }
         if let Some(h) = ctx.state_mut::<NpcHostState>() {
             h.long_term = store;
+            h.lore_pools = pools;
         }
         Ok(())
     }
@@ -576,6 +612,10 @@ fn cmd_agent(grounding: &dyn AgentGrounding, ctx: &mut Ctx<'_>) -> Result<(), Cm
         return agent_sheet(grounding, ctx, npc);
     }
 
+    if ctx.switches.has("lore") {
+        return agent_lore(ctx, npc);
+    }
+
     if ctx.switches.has("poke") {
         let note = ctx
             .args
@@ -661,6 +701,54 @@ fn cmd_agent(grounding: &dyn AgentGrounding, ctx: &mut Ctx<'_>) -> Result<(), Cm
             ctx.actor,
             format!("  Durable memories: {mem_subjects} {plural}."),
         );
+    }
+    // World / semantic knowledge (design: M10d): per-NPC lore + shared-pool tags.
+    let knowledge = read_knowledge(ctx.w, npc);
+    if !knowledge.lore.is_empty() || !knowledge.tags.is_empty() {
+        let (mut public, mut guarded, mut secret) = (0usize, 0usize, 0usize);
+        for e in &knowledge.lore {
+            match e.secrecy {
+                Secrecy::Public => public += 1,
+                Secrecy::Guarded => guarded += 1,
+                Secrecy::Secret => secret += 1,
+            }
+        }
+        let total = knowledge.lore.len();
+        let tags = if knowledge.tags.is_empty() {
+            "none".to_string()
+        } else {
+            knowledge.tags.join(", ")
+        };
+        ctx.out.info(
+            ctx.actor,
+            format!(
+                "  World knowledge: {total} {} ({public} public, {guarded} guarded, {secret} \
+                 secret); tags: {tags}.",
+                entries_word(total)
+            ),
+        );
+        if !knowledge.tags.is_empty() {
+            let pools: Vec<String> = ctx
+                .state::<NpcHostState>()
+                .map(|h| {
+                    knowledge
+                        .tags
+                        .iter()
+                        .filter_map(|t| {
+                            h.lore_pools
+                                .get(t)
+                                .map(|p| format!("{t} ({})", p.entries.len()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !pools.is_empty() {
+                ctx.out.info(
+                    ctx.actor,
+                    format!("  Shared lore: draws on pools {}.", pools.join(", ")),
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -775,6 +863,437 @@ fn agent_sheet(
     }
 }
 
+// ----------------------------------------------------------------------
+// @agent/lore + @lore staff surface (world / semantic knowledge, M10d)
+// ----------------------------------------------------------------------
+
+/// The staff-facing warning appended when a `SECRET` per-NPC entry is added:
+/// a Secret is a staff-only record that never reaches the NPC LLM (the
+/// load-bearing invariant), so it cannot influence the NPC on its own.
+const SECRET_NPC_WARNING: &str = "  Note: SECRET entries are stored as a staff-only record and are \
+     NEVER sent to the NPC LLM; this will not influence the NPC. Use scripted or staff events to \
+     act on it.";
+
+/// As [`SECRET_NPC_WARNING`], for a Secret entry added to a *shared* pool.
+const SECRET_POOL_WARNING: &str = "  Note: SECRET pool entries are a staff-only record and are \
+     NEVER sent to any NPC's LLM; they cannot influence an NPC. Use scripted or staff events to \
+     act on it.";
+
+/// `@agent/lore <npc>[=<op>]` — the per-NPC world-knowledge surface: list
+/// entries, add one, set shared-pool tags, delete one, or clear all entries
+/// (tags kept). Distinct from the terse `knows`/`does_not_know`
+/// [`KnowledgeBounds`](crate::profile::KnowledgeBounds) — this is graded,
+/// tiered, subject-keyed, provenance-tagged.
+fn agent_lore(ctx: &mut Ctx<'_>, npc: ObjId) -> Result<(), CmdError> {
+    let rhs = ctx.args.rhs().map(str::trim).unwrap_or("").to_string();
+    if rhs.is_empty() {
+        return agent_lore_list(ctx, npc);
+    }
+    if rhs.eq_ignore_ascii_case("clear") {
+        return agent_lore_clear(ctx, npc);
+    }
+    if let Some(rest) = strip_prefix_ci(&rhs, "tags:") {
+        return agent_lore_tags(ctx, npc, rest.trim());
+    }
+    if let Some(rest) = strip_word_ci(&rhs, "del") {
+        return agent_lore_del(ctx, npc, rest.trim());
+    }
+    let entry = parse_lore_spec(&rhs)?;
+    agent_lore_add(ctx, npc, entry)
+}
+
+/// List `npc`'s per-NPC world knowledge: numbered entries, its shared-pool
+/// tags, and a one-line note of how many pool entries those tags resolve.
+fn agent_lore_list(ctx: &mut Ctx<'_>, npc: ObjId) -> Result<(), CmdError> {
+    let knowledge = read_knowledge(ctx.w, npc);
+    let name = display_name(ctx.w, npc);
+    if knowledge.lore.is_empty() && knowledge.tags.is_empty() {
+        ctx.out.info(
+            ctx.actor,
+            format!(
+                "{name} has no world knowledge yet. Add some with \
+                 @agent/lore {name}=<tier> [subject:] <fact>."
+            ),
+        );
+        return Ok(());
+    }
+    ctx.out
+        .info(ctx.actor, format!("World knowledge for {name}:"));
+    if knowledge.lore.is_empty() {
+        ctx.out.info(ctx.actor, "  (no direct entries)");
+    } else {
+        for (i, e) in knowledge.lore.iter().enumerate() {
+            ctx.out
+                .info(ctx.actor, format!("  {}. {}", i + 1, render_lore_entry(e)));
+        }
+    }
+    if knowledge.tags.is_empty() {
+        ctx.out.info(ctx.actor, "  Tags: (none)");
+    } else {
+        ctx.out
+            .info(ctx.actor, format!("  Tags: {}", knowledge.tags.join(", ")));
+        let resolved = ctx
+            .state::<NpcHostState>()
+            .map(|h| h.lore_pools.resolve(&knowledge.tags).len())
+            .unwrap_or(0);
+        ctx.out.info(
+            ctx.actor,
+            format!(
+                "  Shared lore: {resolved} {} resolved from tagged pools.",
+                entries_word(resolved)
+            ),
+        );
+    }
+    Ok(())
+}
+
+/// Add one parsed [`LoreEntry`] to `npc`'s per-NPC knowledge, warning on a
+/// `SECRET` add that it will never reach the LLM.
+fn agent_lore_add(ctx: &mut Ctx<'_>, npc: ObjId, entry: LoreEntry) -> Result<(), CmdError> {
+    let secret = entry.secrecy == Secrecy::Secret;
+    let mut knowledge = read_knowledge(ctx.w, npc);
+    knowledge.lore.push(entry);
+    let idx = knowledge.lore.len();
+    store_knowledge(ctx, npc, &knowledge)?;
+    let name = display_name(ctx.w, npc);
+    ctx.out.info(
+        ctx.actor,
+        format!("Added world-knowledge entry #{idx} to {name}."),
+    );
+    if secret {
+        ctx.out.info(ctx.actor, SECRET_NPC_WARNING);
+    }
+    Ok(())
+}
+
+/// Set `npc`'s shared-pool tags (an empty list clears them), confirming which
+/// tags resolve to a defined pool and warning about any that do not.
+fn agent_lore_tags(ctx: &mut Ctx<'_>, npc: ObjId, list: &str) -> Result<(), CmdError> {
+    let tags = split_list(list);
+    let mut knowledge = read_knowledge(ctx.w, npc);
+    knowledge.tags = tags.clone();
+    store_knowledge(ctx, npc, &knowledge)?;
+    let name = display_name(ctx.w, npc);
+    if tags.is_empty() {
+        ctx.out
+            .info(ctx.actor, format!("Cleared shared-lore tags on {name}."));
+        return Ok(());
+    }
+    ctx.out.info(
+        ctx.actor,
+        format!("Set shared-lore tags on {name}: {}.", tags.join(", ")),
+    );
+    let (mut defined, mut undefined) = (Vec::new(), Vec::new());
+    if let Some(h) = ctx.state::<NpcHostState>() {
+        for t in &tags {
+            match h.lore_pools.get(t) {
+                Some(p) => defined.push(format!("{t} ({})", p.entries.len())),
+                None => undefined.push(t.clone()),
+            }
+        }
+    } else {
+        undefined = tags.clone();
+    }
+    if !defined.is_empty() {
+        ctx.out
+            .info(ctx.actor, format!("  Resolves pools: {}.", defined.join(", ")));
+    }
+    if !undefined.is_empty() {
+        ctx.out.info(
+            ctx.actor,
+            format!(
+                "  No pool defined yet for: {}. Author with @lore <tag>=<tier> [subject:] <fact>.",
+                undefined.join(", ")
+            ),
+        );
+    }
+    Ok(())
+}
+
+/// Delete `npc`'s per-NPC entry #n (1-based, as `@agent/lore <npc>` lists it).
+fn agent_lore_del(ctx: &mut Ctx<'_>, npc: ObjId, arg: &str) -> Result<(), CmdError> {
+    let n = parse_index(arg)?;
+    let mut knowledge = read_knowledge(ctx.w, npc);
+    let count = knowledge.lore.len();
+    if n == 0 || n > count {
+        return Err(CmdError::msg(format!(
+            "No entry #{n}. {} has {count} {}.",
+            display_name(ctx.w, npc),
+            entries_word(count)
+        )));
+    }
+    let removed = knowledge.lore.remove(n - 1);
+    store_knowledge(ctx, npc, &knowledge)?;
+    ctx.out.info(
+        ctx.actor,
+        format!(
+            "Deleted entry #{n} ({}) from {}.",
+            render_lore_entry(&removed),
+            display_name(ctx.w, npc)
+        ),
+    );
+    Ok(())
+}
+
+/// Clear all of `npc`'s per-NPC lore entries, leaving its shared-pool tags.
+fn agent_lore_clear(ctx: &mut Ctx<'_>, npc: ObjId) -> Result<(), CmdError> {
+    let mut knowledge = read_knowledge(ctx.w, npc);
+    let count = knowledge.lore.len();
+    knowledge.lore.clear();
+    store_knowledge(ctx, npc, &knowledge)?;
+    ctx.out.info(
+        ctx.actor,
+        format!(
+            "Cleared {count} world-knowledge {} from {} (tags kept).",
+            entries_word(count),
+            display_name(ctx.w, npc)
+        ),
+    );
+    Ok(())
+}
+
+/// `@lore [<tag>[=<op>]]` — the shared lore-pool surface: list all pools, list
+/// one, add an entry (creating the pool), delete an entry, or delete the pool.
+fn cmd_lore(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let tag = ctx.args.lhs().trim().to_string();
+    if tag.is_empty() {
+        return lore_list_all(ctx);
+    }
+    let rhs = ctx.args.rhs().map(str::trim).unwrap_or("").to_string();
+    if rhs.is_empty() {
+        return lore_show(ctx, &tag);
+    }
+    if rhs.eq_ignore_ascii_case("clear") {
+        return lore_clear(ctx, &tag);
+    }
+    if let Some(rest) = strip_word_ci(&rhs, "del") {
+        return lore_del(ctx, &tag, rest.trim());
+    }
+    let entry = parse_lore_spec(&rhs)?;
+    lore_add(ctx, &tag, entry)
+}
+
+/// List every shared lore pool with its entry count.
+fn lore_list_all(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let pools: Vec<(String, usize)> = ctx
+        .state::<NpcHostState>()
+        .map(|h| {
+            h.lore_pools
+                .tags_sorted()
+                .into_iter()
+                .map(|t| {
+                    let n = h.lore_pools.get(&t).map_or(0, |p| p.entries.len());
+                    (t, n)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if pools.is_empty() {
+        ctx.out.info(
+            ctx.actor,
+            "No shared lore pools defined. Create one with @lore <tag>=<tier> [subject:] <fact>.",
+        );
+        return Ok(());
+    }
+    ctx.out.info(ctx.actor, "Shared lore pools:");
+    for (t, n) in pools {
+        ctx.out
+            .info(ctx.actor, format!("  {t} — {n} {}.", entries_word(n)));
+    }
+    Ok(())
+}
+
+/// List one pool's entries (numbered, tiered, with subject/source).
+fn lore_show(ctx: &mut Ctx<'_>, tag: &str) -> Result<(), CmdError> {
+    let pool = ctx
+        .state::<NpcHostState>()
+        .and_then(|h| h.lore_pools.get(tag).cloned())
+        .ok_or_else(|| {
+            CmdError::msg(format!(
+                "No lore pool tagged {tag:?}. Create it with @lore {tag}=<tier> [subject:] <fact>."
+            ))
+        })?;
+    ctx.out.info(
+        ctx.actor,
+        format!(
+            "Lore pool {} — {} {}:",
+            pool.tag,
+            pool.entries.len(),
+            entries_word(pool.entries.len())
+        ),
+    );
+    for (i, e) in pool.entries.iter().enumerate() {
+        ctx.out
+            .info(ctx.actor, format!("  {}. {}", i + 1, render_lore_entry(e)));
+    }
+    Ok(())
+}
+
+/// Add one parsed [`LoreEntry`] to the pool `tag`, creating the pool if new.
+fn lore_add(ctx: &mut Ctx<'_>, tag: &str, entry: LoreEntry) -> Result<(), CmdError> {
+    let secret = entry.secrecy == Secrecy::Secret;
+    let mut pool = ctx
+        .state::<NpcHostState>()
+        .and_then(|h| h.lore_pools.get(tag).cloned())
+        .unwrap_or_else(|| LorePool {
+            tag: tag.to_string(),
+            entries: Vec::new(),
+        });
+    pool.entries.push(entry);
+    let idx = pool.entries.len();
+    let pool_tag = pool.tag.clone();
+    persist_pool(ctx, &pool);
+    ctx.out.info(
+        ctx.actor,
+        format!("Added entry #{idx} to lore pool {pool_tag}."),
+    );
+    if secret {
+        ctx.out.info(ctx.actor, SECRET_POOL_WARNING);
+    }
+    Ok(())
+}
+
+/// Delete pool `tag`'s entry #n (1-based).
+fn lore_del(ctx: &mut Ctx<'_>, tag: &str, arg: &str) -> Result<(), CmdError> {
+    let n = parse_index(arg)?;
+    let mut pool = ctx
+        .state::<NpcHostState>()
+        .and_then(|h| h.lore_pools.get(tag).cloned())
+        .ok_or_else(|| CmdError::msg(format!("No lore pool tagged {tag:?}.")))?;
+    let count = pool.entries.len();
+    if n == 0 || n > count {
+        return Err(CmdError::msg(format!(
+            "No entry #{n} in pool {} ({count} {}).",
+            pool.tag,
+            entries_word(count)
+        )));
+    }
+    let removed = pool.entries.remove(n - 1);
+    let pool_tag = pool.tag.clone();
+    persist_pool(ctx, &pool);
+    ctx.out.info(
+        ctx.actor,
+        format!(
+            "Deleted entry #{n} ({}) from pool {pool_tag}.",
+            render_lore_entry(&removed)
+        ),
+    );
+    Ok(())
+}
+
+/// Delete the whole pool `tag` (persisted doc + in-RAM view).
+fn lore_clear(ctx: &mut Ctx<'_>, tag: &str) -> Result<(), CmdError> {
+    if delete_pool(ctx, tag) {
+        ctx.out.info(
+            ctx.actor,
+            format!("Deleted lore pool {tag:?}. NPCs tagging it now resolve nothing for it."),
+        );
+    } else {
+        ctx.out
+            .info(ctx.actor, format!("No lore pool tagged {tag:?} to delete."));
+    }
+    Ok(())
+}
+
+/// Parse `@…/lore …=<tier> [subject:] <fact>` into a [`LoreEntry`]. `tier` is
+/// `public` | `guarded` | `secret` (case-insensitive); an optional leading
+/// `subject:` (text before the first colon) sets the subject and the rest is
+/// the fact. Both are trimmed; an empty fact is rejected. `source` is left
+/// empty (provenance is not set from this line). Shared by the per-NPC and pool
+/// add paths.
+fn parse_lore_spec(rhs: &str) -> Result<LoreEntry, CmdError> {
+    let rhs = rhs.trim();
+    let (tier_tok, rest) = rhs.split_once(char::is_whitespace).ok_or_else(|| {
+        CmdError::msg(
+            "Usage: ...=<tier> [subject:] <fact>. Tier is public, guarded, or secret.",
+        )
+    })?;
+    let secrecy = parse_secrecy(tier_tok)?;
+    let rest = rest.trim();
+    let (subject, fact) = match rest.split_once(':') {
+        Some((s, f)) => (s.trim().to_string(), f.trim().to_string()),
+        None => (String::new(), rest.to_string()),
+    };
+    if fact.is_empty() {
+        return Err(CmdError::msg("The fact can't be empty."));
+    }
+    Ok(LoreEntry {
+        subject,
+        fact,
+        secrecy,
+        source: String::new(),
+    })
+}
+
+/// Parse a secrecy tier word (case-insensitive).
+fn parse_secrecy(value: &str) -> Result<Secrecy, CmdError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "public" => Ok(Secrecy::Public),
+        "guarded" => Ok(Secrecy::Guarded),
+        "secret" => Ok(Secrecy::Secret),
+        other => Err(CmdError::msg(format!(
+            "Unknown tier {other:?}. Choose public, guarded, or secret."
+        ))),
+    }
+}
+
+/// A staff-facing one-line render of one [`LoreEntry`]: `[tier] subject: fact
+/// (source: …)`, omitting an empty subject/source.
+fn render_lore_entry(e: &LoreEntry) -> String {
+    let mut s = format!("[{}]", secrecy_label(e.secrecy));
+    let subject = e.subject.trim();
+    if !subject.is_empty() {
+        s.push_str(&format!(" {subject}:"));
+    }
+    s.push_str(&format!(" {}", e.fact.trim()));
+    let source = e.source.trim();
+    if !source.is_empty() {
+        s.push_str(&format!(" (source: {source})"));
+    }
+    s
+}
+
+fn secrecy_label(s: Secrecy) -> &'static str {
+    match s {
+        Secrecy::Public => "public",
+        Secrecy::Guarded => "guarded",
+        Secrecy::Secret => "secret",
+    }
+}
+
+/// "entry" / "entries" for a count.
+fn entries_word(n: usize) -> &'static str {
+    if n == 1 { "entry" } else { "entries" }
+}
+
+/// Parse a 1-based entry index from a delete argument.
+fn parse_index(s: &str) -> Result<usize, CmdError> {
+    s.trim()
+        .parse::<usize>()
+        .map_err(|_| CmdError::msg(format!("Expected an entry number, got {:?}.", s.trim())))
+}
+
+/// If `s` (after leading whitespace) begins with `prefix` case-insensitively,
+/// return the remainder after it; else `None`. Safe on non-ASCII input.
+fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    let s = s.trim_start();
+    let head = s.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix).then(|| &s[prefix.len()..])
+}
+
+/// If `s` (after leading whitespace) begins with the whole word `word`
+/// (case-insensitive), followed by whitespace or end-of-string, return the
+/// remainder after the word; else `None`.
+fn strip_word_ci<'a>(s: &'a str, word: &str) -> Option<&'a str> {
+    let s = s.trim_start();
+    let head = s.get(..word.len())?;
+    if !head.eq_ignore_ascii_case(word) {
+        return None;
+    }
+    let rest = &s[word.len()..];
+    (rest.is_empty() || rest.starts_with(char::is_whitespace)).then_some(rest)
+}
+
 /// Split a `;`- (or newline-) separated list value, trimming and dropping
 /// empties. An empty input yields an empty list (clears the field).
 fn split_list(value: &str) -> Vec<String> {
@@ -869,13 +1388,27 @@ fn build_dialogue_snapshot(
     batch: &[Stimulus],
     correlation: u64,
 ) -> TurnSnapshot {
-    let scene = build_scene(ctx, npc, room, present);
+    let mut scene = build_scene(ctx, npc, room, present);
     let agent_profile = grounding.profile(ctx.w, npc);
     let present_names: Vec<String> = present.iter().map(|&p| display_name(ctx.w, p)).collect();
 
     let (summary, transcript, recalled) = memory_context(ctx, npc, &present_names);
     let stimuli = batch.iter().map(|s| render_line(ctx.w, s)).collect();
     let actor = batch.iter().find_map(Stimulus::subject);
+
+    // World / semantic knowledge: per-NPC lore UNION resolved shared-pool
+    // entries, filtered to shareable (Public + Guarded) — a Secret entry never
+    // enters the snapshot (defense-in-depth layer (a)).
+    let knowledge = resolve_shareable_knowledge(ctx, npc);
+
+    // Per-asker Familiarity (volatile trust) is annotated onto each present
+    // player from durable memory, so the volatile user prompt can frame guarded
+    // sharing. `build_scene` has no state, so we set it here by name.
+    if let Some(h) = ctx.state::<NpcHostState>() {
+        for pp in &mut scene.present {
+            pp.familiarity = familiarity_of(&h.long_term, npc, &pp.name);
+        }
+    }
 
     TurnSnapshot {
         kind: TurnKind::Dialogue,
@@ -884,6 +1417,7 @@ fn build_dialogue_snapshot(
         profile: profile.clone(),
         agent_profile,
         scene,
+        knowledge,
         summary,
         recalled,
         transcript,
@@ -892,6 +1426,21 @@ fn build_dialogue_snapshot(
         fold_events: Vec::new(),
         seed: correlation,
     }
+}
+
+/// Resolve `npc`'s world knowledge for a turn: per-NPC [`LoreEntry`]s
+/// ([`KNOWLEDGE_ATTR`]) unioned with the entries of every shared pool it tags,
+/// then filtered to the **shareable** (Public + Guarded) entries. A
+/// [`Secrecy::Secret`](crate::knowledge::Secrecy::Secret) fact is dropped here
+/// so it never enters the [`TurnSnapshot`].
+fn resolve_shareable_knowledge(ctx: &Ctx<'_>, npc: ObjId) -> Vec<crate::knowledge::LoreEntry> {
+    let knowledge = read_knowledge(ctx.w, npc);
+    let mut all = knowledge.lore;
+    if let Some(h) = ctx.state::<NpcHostState>() {
+        all.extend(h.lore_pools.resolve(&knowledge.tags));
+    }
+    all.retain(|e| e.is_shareable());
+    all
 }
 
 fn build_summarize_snapshot(
@@ -912,6 +1461,7 @@ fn build_summarize_snapshot(
         profile: profile.clone(),
         agent_profile: None,
         scene,
+        knowledge: Vec::new(),
         summary,
         recalled: Vec::new(),
         transcript: String::new(),
@@ -933,6 +1483,10 @@ fn build_scene(ctx: &Ctx<'_>, npc: ObjId, room: ObjId, present: &[ObjId]) -> Sce
         .map(|&p| PresentPlayer {
             name: display_name(ctx.w, p),
             short_desc: attr_text(ctx.w, p, "short_desc").unwrap_or_default(),
+            // Volatile per-asker trust is filled in by the dialogue-snapshot
+            // builder (which has host state); the summarize path leaves the
+            // default (Stranger).
+            familiarity: Familiarity::default(),
         })
         .collect();
     let exits = ctx
@@ -1153,6 +1707,70 @@ fn store_profile(ctx: &mut Ctx<'_>, npc: ObjId, profile: &AgentProfile) -> Resul
     ctx.w
         .set_attr(npc, PROFILE_ATTR, Attr::json(value, ctx.actor))?;
     Ok(())
+}
+
+/// Read `npc`'s per-NPC world knowledge from [`KNOWLEDGE_ATTR`], defaulting to
+/// an empty document when absent or unparseable.
+fn read_knowledge(w: &World, npc: ObjId) -> NpcKnowledge {
+    w.attr(npc, KNOWLEDGE_ATTR)
+        .and_then(|a| a.as_json())
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default()
+}
+
+/// Persist `npc`'s per-NPC world knowledge to [`KNOWLEDGE_ATTR`] (JSON), like
+/// [`store_profile`] writes the profile. Wired by the M10d staff commands
+/// (`@agent/lore` add/tags/del/clear).
+fn store_knowledge(
+    ctx: &mut Ctx<'_>,
+    npc: ObjId,
+    knowledge: &NpcKnowledge,
+) -> Result<(), CmdError> {
+    let value = serde_json::to_value(knowledge)
+        .map_err(|e| CmdError::msg(format!("Could not serialize the knowledge: {e}")))?;
+    ctx.w
+        .set_attr(npc, KNOWLEDGE_ATTR, Attr::json(value, ctx.actor))?;
+    Ok(())
+}
+
+/// Persist a shared lore pool as the module doc keyed by [`pool_key`], AND
+/// mirror it into the in-RAM [`LorePools`] so the resolved view matches the
+/// write (the pattern `remember`/`persist_memory` follows for durable memory).
+/// Wired by the `@lore` staff commands.
+fn persist_pool(ctx: &mut Ctx<'_>, pool: &LorePool) {
+    if let Some(h) = ctx.state_mut::<NpcHostState>() {
+        h.lore_pools.set(pool.clone());
+    }
+    let value = match serde_json::to_value(pool) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(error = %e, "npc: could not serialize lore pool");
+            return;
+        }
+    };
+    ctx.persist(ModuleOp {
+        ns: SmolStr::new(NS),
+        op: ModuleWrite::JsonSet {
+            key: pool_key(&pool.tag),
+            value,
+        },
+    });
+}
+
+/// Delete a shared lore pool: remove the persisted doc AND drop it from the
+/// in-RAM [`LorePools`]. Returns whether a pool was present in RAM. Wired by
+/// `@lore <tag>=clear`.
+fn delete_pool(ctx: &mut Ctx<'_>, tag: &str) -> bool {
+    let removed = ctx
+        .state_mut::<NpcHostState>()
+        .is_some_and(|h| h.lore_pools.remove(tag));
+    ctx.persist(ModuleOp {
+        ns: SmolStr::new(NS),
+        op: ModuleWrite::Del {
+            key: pool_key(tag),
+        },
+    });
+    removed
 }
 
 // ----------------------------------------------------------------------

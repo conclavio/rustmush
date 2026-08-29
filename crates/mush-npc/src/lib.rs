@@ -98,6 +98,7 @@
 //!   scheduled; the tick fires only on real stimuli / pending summaries.
 
 mod action;
+mod knowledge;
 mod memory;
 mod module;
 mod profile;
@@ -109,6 +110,10 @@ mod turn;
 
 pub use action::{
     MAX_ACTIONS, MAX_ROUND_TRIPS, NpcAction, SAY_CAP, action_tools, parse_actions, sanitize_line,
+};
+pub use knowledge::{
+    Familiarity, KNOWLEDGE_ATTR, LoreEntry, LorePool, LorePools, NpcKnowledge, Secrecy,
+    familiarity_of, pool_key,
 };
 pub use memory::{
     BUFFER_CAP, LongTermStore, MemoryBuffer, MemoryEvent, MemoryRecall, MemoryRecord, record_key,

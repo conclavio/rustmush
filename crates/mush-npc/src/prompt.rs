@@ -9,6 +9,7 @@
 //! reduces embarrassment but is *not* the security boundary (that is the action
 //! allowlist).
 
+use crate::knowledge::{Familiarity, Secrecy};
 use crate::snapshot::{TurnKind, TurnSnapshot};
 
 /// The stable engine safety frame (design 03 §6.3 item 1 + §7). This is the
@@ -69,6 +70,13 @@ pub fn system_prompt(snap: &TurnSnapshot) -> String {
         ));
     }
 
+    // World / semantic knowledge (design: M10d), stable per-NPC across turns so
+    // it lives in the cacheable system prefix. Split into PUBLIC (shared freely)
+    // and GUARDED (held back for those the NPC trusts). Secret entries are
+    // filtered at the snapshot builder; skip them here too as belt-and-suspenders
+    // — a Secret must never reach a prompt.
+    render_world_knowledge(&mut s, snap);
+
     // Sheet summary from the ruleset (design 03 §6.3 item 3).
     if let Some(ap) = &snap.agent_profile
         && !ap.summary.trim().is_empty()
@@ -95,6 +103,71 @@ pub fn system_prompt(snap: &TurnSnapshot) -> String {
          [{\"action\":\"say\",\"text\":\"...\"}]. No prose outside the tools or JSON.",
     );
     s
+}
+
+/// Render the NPC's world knowledge into the stable system prefix (design:
+/// M10d). PUBLIC facts go under a "what you know about the world" heading;
+/// GUARDED facts go under a "guarded knowledge" heading whose intro frames the
+/// willingness rule (reveal only to people you know and trust). SECRET entries
+/// are skipped defensively even though the snapshot builder already filtered
+/// them out.
+fn render_world_knowledge(s: &mut String, snap: &TurnSnapshot) {
+    let public: Vec<&crate::knowledge::LoreEntry> = snap
+        .knowledge
+        .iter()
+        .filter(|e| e.secrecy == Secrecy::Public)
+        .collect();
+    let guarded: Vec<&crate::knowledge::LoreEntry> = snap
+        .knowledge
+        .iter()
+        .filter(|e| e.secrecy == Secrecy::Guarded)
+        .collect();
+
+    if !public.is_empty() {
+        s.push_str("\n== WHAT YOU KNOW ABOUT THE WORLD ==\n");
+        for e in public {
+            s.push_str(&render_lore_line(e));
+        }
+    }
+    if !guarded.is_empty() {
+        s.push_str(
+            "\n== GUARDED KNOWLEDGE ==\n\
+             You know these things but keep them close: reveal them only to people you \
+             actually know and trust, never to strangers, and never volunteer them \
+             unprompted.\n",
+        );
+        for e in guarded {
+            s.push_str(&render_lore_line(e));
+        }
+    }
+}
+
+/// One world-knowledge line: an optional subject prefix, the fact, and — when
+/// present — a brief provenance clause from `source`.
+fn render_lore_line(e: &crate::knowledge::LoreEntry) -> String {
+    let subject = e.subject.trim();
+    let fact = e.fact.trim();
+    let mut line = if subject.is_empty() {
+        format!("  - {fact}")
+    } else {
+        format!("  - {subject}: {fact}")
+    };
+    let source = e.source.trim();
+    if !source.is_empty() {
+        line.push_str(&format!(" (you know this as {source})"));
+    }
+    line.push('\n');
+    line
+}
+
+/// The bracketed familiarity tag appended to a present player in the user turn
+/// (design: M10d), driving the NPC's willingness to share guarded knowledge.
+fn familiarity_tag(f: Familiarity) -> &'static str {
+    match f {
+        Familiarity::Stranger => " [a stranger to you]",
+        Familiarity::Acquaintance => " [you have met them before]",
+        Familiarity::Known => " [you know them well]",
+    }
 }
 
 /// Build the volatile user turn: scene + memory + transcript + the escaped
@@ -124,10 +197,15 @@ pub fn user_prompt(snap: &TurnSnapshot) -> String {
     } else {
         s.push_str("Present:\n");
         for pp in &snap.scene.present {
+            let fam = familiarity_tag(pp.familiarity);
             if pp.short_desc.trim().is_empty() {
-                s.push_str(&format!("  - {}\n", pp.name));
+                s.push_str(&format!("  - {}{fam}\n", pp.name));
             } else {
-                s.push_str(&format!("  - {} — {}\n", pp.name, pp.short_desc.trim()));
+                s.push_str(&format!(
+                    "  - {} — {}{fam}\n",
+                    pp.name,
+                    pp.short_desc.trim()
+                ));
             }
         }
     }
@@ -246,6 +324,7 @@ fn escape_attr(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::knowledge::LoreEntry;
     use crate::profile::{AgentProfile, KnowledgeBounds, NpcTier};
     use crate::snapshot::{PresentPlayer, SceneView, StimulusLine, TurnSnapshot};
     use mush_core::ObjId;
@@ -271,11 +350,13 @@ mod tests {
                 present: vec![PresentPlayer {
                     name: "Alice".into(),
                     short_desc: "a traveler".into(),
+                    familiarity: Familiarity::Stranger,
                 }],
                 time: "evening".into(),
                 weather: None,
                 exits: vec!["out".into()],
             },
+            knowledge: Vec::new(),
             summary: String::new(),
             recalled: Vec::new(),
             transcript: String::new(),
@@ -289,6 +370,15 @@ mod tests {
             actor: Some(ObjId(2)),
             fold_events: Vec::new(),
             seed: 7,
+        }
+    }
+
+    fn lore(subject: &str, fact: &str, secrecy: Secrecy, source: &str) -> LoreEntry {
+        LoreEntry {
+            subject: subject.into(),
+            fact: fact.into(),
+            secrecy,
+            source: source.into(),
         }
     }
 
@@ -322,5 +412,93 @@ mod tests {
         let user = user_prompt(&s);
         assert!(user.contains("Fold the earlier events"));
         assert!(user.contains("Alice says"));
+    }
+
+    #[test]
+    fn public_world_knowledge_appears_in_system_prompt() {
+        let mut s = snap();
+        s.knowledge = vec![lore(
+            "the docks",
+            "smugglers land crates at midnight",
+            Secrecy::Public,
+            "years tending this bar",
+        )];
+        let sys = system_prompt(&s);
+        assert!(sys.contains("WHAT YOU KNOW ABOUT THE WORLD"));
+        assert!(sys.contains("smugglers land crates at midnight"));
+        // The subject prefix and the provenance clause both render.
+        assert!(sys.contains("the docks:"));
+        assert!(sys.contains("you know this as years tending this bar"));
+    }
+
+    #[test]
+    fn guarded_world_knowledge_renders_with_trust_framing() {
+        let mut s = snap();
+        s.knowledge = vec![lore(
+            "the sheriff",
+            "takes bribes from the Duke",
+            Secrecy::Guarded,
+            "",
+        )];
+        let sys = system_prompt(&s);
+        assert!(sys.contains("GUARDED KNOWLEDGE"));
+        // The willingness/trust framing is present.
+        assert!(sys.contains("keep them close"));
+        assert!(sys.contains("only to people you actually know and trust"));
+        assert!(sys.contains("takes bribes from the Duke"));
+    }
+
+    #[test]
+    fn secret_world_knowledge_never_reaches_any_prompt() {
+        // Even if a Secret entry slips into the snapshot's knowledge vec (the
+        // snapshot builder normally filters it), prompt.rs must skip it in BOTH
+        // the system and user prompts (defense in depth).
+        let mut s = snap();
+        s.knowledge = vec![
+            lore("", "the ale is watered", Secrecy::Public, ""),
+            lore(
+                "the vault",
+                "the code is seven-seven-three-one",
+                Secrecy::Secret,
+                "the Duke told me in confidence",
+            ),
+        ];
+        let sys = system_prompt(&s);
+        let user = user_prompt(&s);
+        assert!(sys.contains("the ale is watered"), "public still renders");
+        for needle in [
+            "seven-seven-three-one",
+            "the vault",
+            "the Duke told me in confidence",
+        ] {
+            assert!(
+                !sys.contains(needle),
+                "secret leaked into system prompt: {needle}"
+            );
+            assert!(
+                !user.contains(needle),
+                "secret leaked into user prompt: {needle}"
+            );
+        }
+    }
+
+    #[test]
+    fn familiarity_annotations_render_for_stranger_and_known() {
+        // Stranger (the default snapshot).
+        let user = user_prompt(&snap());
+        assert!(user.contains("Alice — a traveler [a stranger to you]"));
+
+        // Known.
+        let mut s = snap();
+        s.scene.present[0].familiarity = Familiarity::Known;
+        let user = user_prompt(&s);
+        assert!(user.contains("[you know them well]"));
+        assert!(!user.contains("[a stranger to you]"));
+
+        // Acquaintance.
+        let mut s = snap();
+        s.scene.present[0].familiarity = Familiarity::Acquaintance;
+        let user = user_prompt(&s);
+        assert!(user.contains("[you have met them before]"));
     }
 }

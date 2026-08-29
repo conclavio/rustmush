@@ -18,8 +18,9 @@ use mush_llm::{
     MockProvider, RouteConfig, StopReason, Usage,
 };
 use mush_npc::{
-    AgentGrounding, AgentProfile, NpcHostState, NpcModule, NpcTier, PROFILE_ATTR, SUMMARY_ATTR,
-    TurnKind, TurnSnapshot, run_npc_turn_async,
+    AgentGrounding, AgentProfile, Familiarity, LorePool, NpcHostState, NpcModule, NpcTier,
+    PROFILE_ATTR, SUMMARY_ATTR, Secrecy, TurnKind, TurnSnapshot, pool_key, run_npc_turn_async,
+    user_prompt,
 };
 use mush_ruleset::{AbilityError, AbilityOutcome, AgentCapabilityProfile, AgentToolSpec};
 use smol_str::SmolStr;
@@ -42,6 +43,18 @@ impl Rig {
     }
 
     fn with_module(module: Box<dyn mush_core::GameModule>) -> Rig {
+        Rig::with_module_boot(module, Default::default())
+    }
+
+    /// Boot a rig from persisted module boot data (feeds `on_world_loaded`).
+    fn with_boot(boot: std::collections::HashMap<SmolStr, mush_core::ModuleBootData>) -> Rig {
+        Rig::with_module_boot(Box::new(NpcModule::new()), boot)
+    }
+
+    fn with_module_boot(
+        module: Box<dyn mush_core::GameModule>,
+        boot: std::collections::HashMap<SmolStr, mush_core::ModuleBootData>,
+    ) -> Rig {
         let world = World::new_minimal();
         let mut reg = Registry::new();
         register_core_commands(&mut reg).expect("core cmds");
@@ -49,7 +62,7 @@ impl Rig {
         let mut out = Outbox::new();
         let mut fx = Effects::new();
         engine
-            .modules_loaded(Default::default(), &mut out, &mut fx)
+            .modules_loaded(boot, &mut out, &mut fx)
             .expect("module boot");
         Rig { engine }
     }
@@ -107,6 +120,28 @@ impl Rig {
             &mut fx,
         );
         out.take()
+    }
+
+    /// Run a staff command as `GOD` and return the plain-text Sys/Info lines it
+    /// produced (for asserting confirmations + errors).
+    fn staff(&mut self, line: &str) -> String {
+        let mut s = String::new();
+        for (_, ev) in self.run(GOD, line) {
+            if let mush_proto::OutputEvent::Sys(rt) = ev {
+                s.push_str(&rt.to_plain_text());
+                s.push('\n');
+            }
+        }
+        s
+    }
+
+    /// Drive one dialogue turn: `alice` says `line`, the window elapses, and the
+    /// single deferred snapshot is returned deserialized.
+    fn dialogue_snapshot(&mut self, alice: ObjId, at: i64, line: &str) -> TurnSnapshot {
+        self.run(alice, line);
+        self.set_now(at);
+        let (_, _corr, payload) = self.one_turn().expect("a dialogue turn fired");
+        serde_json::from_str(&payload).expect("snapshot deserializes")
     }
 
     /// Fire the npc coalescing tick and return the effects it deferred.
@@ -976,4 +1011,248 @@ async fn npc_thinking_keyframe_emitted_on_dialogue_start() {
         thinking,
         "npc.thinking keyframe emitted on dialogue-turn start"
     );
+}
+
+// ----------------------------------------------------------------------
+// M10d: world / semantic knowledge (per-NPC lore + shared pools + secrecy)
+// ----------------------------------------------------------------------
+
+/// Read an NPC's persisted [`NpcKnowledge`] straight from its attribute.
+fn read_knowledge_attr(rig: &Rig, npc: ObjId) -> mush_npc::NpcKnowledge {
+    rig.engine
+        .world
+        .attr(npc, mush_npc::KNOWLEDGE_ATTR)
+        .and_then(|a| a.as_json())
+        .map(|v| serde_json::from_value(v.clone()).expect("knowledge parses"))
+        .unwrap_or_default()
+}
+
+/// (1) `@agent/lore` add / list / del / clear round-trips through the attr,
+/// with the SECRET-add staff warning.
+#[tokio::test]
+async fn agent_lore_add_list_del_clear_round_trips() {
+    let mut rig = Rig::new();
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    rig.engine.world.move_to(GOD, bar).unwrap();
+    let npc = rig.npc("Bartender", bar, &profile(NpcTier::Minor));
+
+    let out = rig.staff("@agent/lore Bartender=public the ale is watered");
+    assert!(out.contains("Added world-knowledge entry #1"), "{out}");
+    rig.staff("@agent/lore Bartender=guarded the sheriff: takes bribes");
+    let out = rig.staff("@agent/lore Bartender=secret the vault: code is 1234");
+    assert!(out.contains("NEVER sent to the NPC LLM"), "secret warning: {out}");
+
+    // The attr holds all three, with parsed subject/tier.
+    let k = read_knowledge_attr(&rig, npc);
+    assert_eq!(k.lore.len(), 3);
+    assert_eq!(k.lore[0].secrecy, Secrecy::Public);
+    assert_eq!(k.lore[1].subject, "the sheriff");
+    assert_eq!(k.lore[1].fact, "takes bribes");
+    assert_eq!(k.lore[1].secrecy, Secrecy::Guarded);
+    assert_eq!(k.lore[2].secrecy, Secrecy::Secret);
+
+    // List renders them numbered and tiered.
+    let out = rig.staff("@agent/lore Bartender");
+    assert!(out.contains("1. [public]"), "{out}");
+    assert!(
+        out.contains("2. [guarded] the sheriff: takes bribes"),
+        "{out}"
+    );
+    assert!(out.contains("3. [secret]"), "{out}");
+
+    // Delete #2; indices renumber, the guarded entry is gone.
+    let out = rig.staff("@agent/lore Bartender=del 2");
+    assert!(out.contains("Deleted entry #2"), "{out}");
+    let k = read_knowledge_attr(&rig, npc);
+    assert_eq!(k.lore.len(), 2);
+    assert!(k.lore.iter().all(|e| e.subject != "the sheriff"));
+
+    // Out-of-range delete is rejected, store untouched.
+    let out = rig.staff("@agent/lore Bartender=del 9");
+    assert!(out.contains("No entry #9"), "{out}");
+    assert_eq!(read_knowledge_attr(&rig, npc).lore.len(), 2);
+
+    // Clear drops entries but keeps tags.
+    rig.staff("@agent/lore Bartender=tags: occult");
+    let out = rig.staff("@agent/lore Bartender=clear");
+    assert!(out.contains("Cleared 2 world-knowledge entries"), "{out}");
+    let k = read_knowledge_attr(&rig, npc);
+    assert!(k.lore.is_empty());
+    assert_eq!(k.tags, vec!["occult".to_string()]);
+}
+
+/// (2) `@agent/lore <npc>=tags:` sets tags; an authored `@lore` pool the NPC
+/// tags is RESOLVED into `snapshot.knowledge` on a dialogue turn.
+#[tokio::test]
+async fn shared_pool_resolves_into_dialogue_snapshot() {
+    let mut rig = Rig::new();
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    rig.engine.world.move_to(GOD, bar).unwrap();
+    let _npc = rig.npc("Bartender", bar, &profile(NpcTier::Minor));
+    let alice = rig.player("Alice", bar, true);
+
+    rig.staff("@lore occult=public vampires shun sunlight");
+    rig.staff("@lore occult=guarded the Prince rules this city");
+    let out = rig.staff("@agent/lore Bartender=tags: occult");
+    assert!(out.contains("Resolves pools: occult (2)"), "{out}");
+
+    let snap = rig.dialogue_snapshot(alice, 1002, "say tell me about vampires");
+    let facts: Vec<&str> = snap.knowledge.iter().map(|e| e.fact.as_str()).collect();
+    assert!(facts.contains(&"vampires shun sunlight"), "{facts:?}");
+    assert!(facts.contains(&"the Prince rules this city"), "{facts:?}");
+}
+
+/// (3) A SECRET per-NPC entry AND a SECRET pool entry are both absent from the
+/// built snapshot AND from its serialized JSON (the load-bearing invariant).
+#[tokio::test]
+async fn secret_lore_never_enters_the_snapshot() {
+    let mut rig = Rig::new();
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    rig.engine.world.move_to(GOD, bar).unwrap();
+    let _npc = rig.npc("Bartender", bar, &profile(NpcTier::Minor));
+    let alice = rig.player("Alice", bar, true);
+
+    rig.staff("@agent/lore Bartender=public the ale is watered");
+    rig.staff("@agent/lore Bartender=secret the vault code is SEVENSEVENTHREEONE");
+    rig.staff("@lore crypt=public the crypt is under the chapel");
+    rig.staff("@lore crypt=secret the relic is HIDDENBEHINDTHEALTAR");
+    rig.staff("@agent/lore Bartender=tags: crypt");
+
+    let snap = rig.dialogue_snapshot(alice, 1002, "say what do you know?");
+
+    // Both public facts survive; no Secret entry is present at all.
+    let facts: Vec<&str> = snap.knowledge.iter().map(|e| e.fact.as_str()).collect();
+    assert!(facts.contains(&"the ale is watered"), "{facts:?}");
+    assert!(facts.contains(&"the crypt is under the chapel"), "{facts:?}");
+    assert!(
+        snap.knowledge.iter().all(|e| e.secrecy != Secrecy::Secret),
+        "a Secret entry entered the snapshot"
+    );
+
+    // Defense in depth: the serialized payload that crosses the async boundary
+    // carries neither secret's text.
+    let json = serde_json::to_string(&snap).unwrap();
+    assert!(
+        !json.contains("SEVENSEVENTHREEONE"),
+        "per-NPC secret leaked into snapshot JSON"
+    );
+    assert!(
+        !json.contains("HIDDENBEHINDTHEALTAR"),
+        "pool secret leaked into snapshot JSON"
+    );
+}
+
+/// (4) Familiarity derived from durable memory is set per present player and
+/// reaches the user prompt; a never-met player is a Stranger.
+#[tokio::test]
+async fn familiarity_from_memory_reaches_the_user_prompt() {
+    let mut rig = Rig::new();
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    let npc = rig.npc("Bartender", bar, &profile(NpcTier::Minor));
+    let alice = rig.player("Alice", bar, true);
+    let _bob = rig.player("Bob", bar, true);
+
+    // Three durable notes about Alice ⇒ Known; nothing about Bob ⇒ Stranger.
+    {
+        let h = rig.host_mut();
+        h.long_term.remember(npc, "Alice", "tips well", 10);
+        h.long_term.remember(npc, "Alice", "owes for a drink", 20);
+        h.long_term.remember(npc, "Alice", "asked about the cellar", 30);
+    }
+
+    let snap = rig.dialogue_snapshot(alice, 1002, "say evening");
+    let fam = |name: &str| {
+        snap.scene
+            .present
+            .iter()
+            .find(|p| p.name == name)
+            .unwrap_or_else(|| panic!("{name} present"))
+            .familiarity
+    };
+    assert_eq!(fam("Alice"), Familiarity::Known);
+    assert_eq!(fam("Bob"), Familiarity::Stranger);
+
+    let user = user_prompt(&snap);
+    assert!(user.contains("[you know them well]"), "{user}");
+    assert!(user.contains("[a stranger to you]"), "{user}");
+}
+
+/// (5) Shared lore pools survive an `on_world_loaded` round-trip: author a pool,
+/// serialize it as persistence would, feed it back as boot data, and resolve it.
+#[tokio::test]
+async fn lore_pools_survive_on_world_loaded_round_trip() {
+    let mut rig = Rig::new();
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    rig.engine.world.move_to(GOD, bar).unwrap();
+    rig.staff("@lore docks=public smugglers land at midnight");
+    rig.staff("@lore docks=guarded the harbormaster looks the other way");
+
+    // The command mirrored the pool into RAM; capture it as the store would.
+    let pool: LorePool = rig
+        .host()
+        .lore_pools
+        .get("docks")
+        .expect("pool in RAM")
+        .clone();
+    assert_eq!(pool.entries.len(), 2);
+    let kv = vec![(pool_key(&pool.tag), serde_json::to_value(&pool).unwrap())];
+    let mut boot = std::collections::HashMap::new();
+    boot.insert(
+        SmolStr::new("npc"),
+        mush_core::ModuleBootData {
+            kv,
+            ..Default::default()
+        },
+    );
+
+    // A fresh server booted with only that boot data resolves the pool.
+    let mut rig2 = Rig::with_boot(boot);
+    rig2.set_now(1000);
+    let bar2 = rig2.room("Bar");
+    rig2.engine.world.move_to(GOD, bar2).unwrap();
+    let _npc = rig2.npc("Bartender", bar2, &profile(NpcTier::Minor));
+    let alice = rig2.player("Alice", bar2, true);
+    rig2.staff("@agent/lore Bartender=tags: docks");
+
+    let snap = rig2.dialogue_snapshot(alice, 1002, "say what's at the docks?");
+    let facts: Vec<&str> = snap.knowledge.iter().map(|e| e.fact.as_str()).collect();
+    assert!(facts.contains(&"smugglers land at midnight"), "{facts:?}");
+    assert!(
+        facts.contains(&"the harbormaster looks the other way"),
+        "{facts:?}"
+    );
+}
+
+/// The `@lore` top-level surface: list all pools, show one, and delete a pool
+/// (which drops it from the in-RAM view NPCs resolve).
+#[tokio::test]
+async fn lore_pool_surface_list_show_and_delete() {
+    let mut rig = Rig::new();
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    rig.engine.world.move_to(GOD, bar).unwrap();
+    rig.staff("@lore docks=public smugglers land at midnight");
+    rig.staff("@lore occult=guarded the Prince rules this city");
+
+    let out = rig.staff("@lore");
+    assert!(out.contains("docks — 1 entry"), "{out}");
+    assert!(out.contains("occult — 1 entry"), "{out}");
+
+    let out = rig.staff("@lore docks");
+    assert!(
+        out.contains("1. [public] smugglers land at midnight"),
+        "{out}"
+    );
+
+    let out = rig.staff("@lore docks=clear");
+    assert!(out.contains("Deleted lore pool"), "{out}");
+    assert!(rig.host().lore_pools.get("docks").is_none());
+    // Showing a missing pool errors cleanly.
+    let out = rig.staff("@lore docks");
+    assert!(out.contains("No lore pool tagged"), "{out}");
 }

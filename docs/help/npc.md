@@ -14,8 +14,8 @@ wake and no tokens. NPC agents need the server's LLM layer switched on
 (`[llm].enabled = true`); with it off, an NPC that is spoken to falls back to a
 canned line rather than erroring.
 
-Managing agents is Builder+ (`@agent`); the per-NPC and global kill switches
-are Wizard+ (`@llm`).
+Managing agents is Builder+ (`@agent`, `@lore`); the per-NPC and global kill
+switches are Wizard+ (`@llm`).
 
 ## Creating and configuring
 
@@ -58,6 +58,73 @@ actually has. It cannot manufacture dice it lacks; the engine rolls on the same
 seeded RNG and roll log players use, and shows the result to the room, so an
 NPC roll can never be faked.
 
+## World knowledge
+
+An NPC knows things two ways. **Episodic** memory is what it remembers
+*experiencing* — who it has met, what was said (the `remember` tool, the rolling
+summary, durable per-subject memories). **World** (or semantic) knowledge is what
+it knows by virtue of *who and where it is* — a bartender knows the local streets;
+an occult bookseller knows about vampires — whether or not it has ever met you.
+World knowledge is authored by staff; episodic memory accrues in play.
+
+World knowledge comes from two sources: **per-NPC lore** authored directly on one
+NPC, and shared **lore pools** authored once and drawn on by many NPCs via tags
+(so a whole district of NPCs can share "the streets" without retyping it).
+
+Every entry has a **secrecy tier** that governs whether — and how freely — it may
+be shared:
+
+  public    Shared freely with anyone.
+  guarded   Known, but held back: revealed only to people the NPC actually knows
+            and trusts, never volunteered to strangers.
+  secret    Plot-critical, staff-only. A SECRET entry is NEVER placed in any
+            prompt, snapshot, or anything the NPC's LLM sees — it cannot influence
+            the NPC on its own. It is a record for staff to act on through scripted
+            or staff events. (This is a hard, defense-in-depth guarantee: secrets
+            are filtered out when the turn is built and again when the prompt is
+            rendered.)
+
+**Willingness to share** a guarded fact depends on how well the NPC knows the
+asker. In this first cut that trust — *familiarity* — is derived from episodic
+memory: a player the NPC has never remembered is a *stranger*; one it has a
+durable memory of is an *acquaintance*; one it knows well (several durable
+memories) is *known*. Guarded facts lean toward the people it knows. (Staff-set
+disposition — liking or distrusting a specific player regardless of memory — is a
+planned future iteration.)
+
+### Authoring per-NPC lore (`@agent/lore`)
+
+  @agent/lore <npc>                         List this NPC's world knowledge + tags.
+  @agent/lore <npc>=<tier> [subject:] <fact>  Add an entry (tier = public|guarded|secret).
+  @agent/lore <npc>=tags: <t1>; <t2>        Set the shared-pool tags it draws on.
+  @agent/lore <npc>=del <n>                 Delete entry #n (1-based, as listed).
+  @agent/lore <npc>=clear                   Clear all entries (tags are kept).
+
+The optional `subject:` prefix (text before the first colon) names what the fact
+is about; the rest is the fact. Both are trimmed. Note the split is on the
+*first* colon, so a fact that itself contains one (a time like `5:00`, a ratio,
+a URL) is read as `subject: fact` — lead with an explicit `subject:` (or reword)
+when that is not what you want. Examples:
+
+  @agent/lore Bones=public the tap room closes at midnight
+  @agent/lore Bones=guarded the sheriff: takes bribes from the Duke
+  @agent/lore Bones=tags: streets; occult
+
+`@agent/show <npc>` reports a one-line summary of an NPC's world knowledge (how
+many entries at each tier, its tags, and which pools those tags resolve).
+
+### Authoring shared lore pools (`@lore`)
+
+  @lore                                 List every pool with its entry count.
+  @lore <tag>                           List one pool's entries.
+  @lore <tag>=<tier> [subject:] <fact>  Add an entry (creating the pool if new).
+  @lore <tag>=del <n>                   Delete pool entry #n.
+  @lore <tag>=clear                     Delete the whole pool.
+
+An NPC draws on a pool by tagging it (`@agent/lore <npc>=tags: <tag>`); the pool's
+public and guarded entries are unioned with the NPC's own lore each turn. A SECRET
+pool entry, like a secret per-NPC entry, is never sent to any NPC.
+
 ## Tiers, cost, and cooldowns
 
 Tier picks the LLM route, the default cooldown, and the budget posture:
@@ -97,4 +164,4 @@ audited (`@llm/log`).
 
 ## See also
 
-  @agent, @llm, @sheet, +roll, help worldgen
+  @agent, @lore, @llm, @sheet, +roll, help worldgen

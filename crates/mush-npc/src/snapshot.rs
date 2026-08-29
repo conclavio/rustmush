@@ -16,6 +16,7 @@ use mush_ruleset::{AbilityError, AbilityOutcome, AgentCapabilityProfile};
 use serde::{Deserialize, Serialize};
 
 use crate::action::NpcAction;
+use crate::knowledge::{Familiarity, LoreEntry};
 use crate::profile::AgentProfile;
 
 /// What kind of off-loop turn this is.
@@ -36,6 +37,12 @@ pub struct PresentPlayer {
     pub name: String,
     /// One-line short description (empty if none).
     pub short_desc: String,
+    /// How well the NPC knows this player, derived from episodic memory
+    /// (design: M10d). Volatile per-asker trust — drives whether a
+    /// [`Secrecy::Guarded`](crate::knowledge::Secrecy::Guarded) fact may be
+    /// shared. Set on the world loop at snapshot time.
+    #[serde(default)]
+    pub familiarity: Familiarity,
 }
 
 /// The public scene the NPC can perceive.
@@ -98,6 +105,15 @@ pub struct TurnSnapshot {
     pub agent_profile: Option<AgentCapabilityProfile>,
     /// The perceivable scene.
     pub scene: SceneView,
+    /// The resolved, **shareable** world knowledge for this turn (per-NPC lore
+    /// UNION shared-pool entries; design: M10d). Load-bearing invariant: this
+    /// holds only [`Secrecy::Public`](crate::knowledge::Secrecy::Public) and
+    /// [`Secrecy::Guarded`](crate::knowledge::Secrecy::Guarded) entries — a
+    /// [`Secrecy::Secret`](crate::knowledge::Secrecy::Secret) fact is filtered
+    /// out at the builder so it **never** enters a [`TurnSnapshot`] (nor its
+    /// serialized JSON), let alone a prompt.
+    #[serde(default)]
+    pub knowledge: Vec<LoreEntry>,
     /// The persisted rolling summary.
     #[serde(default)]
     pub summary: String,

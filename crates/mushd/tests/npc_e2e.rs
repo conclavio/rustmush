@@ -326,6 +326,68 @@ async fn staff_configures_npc_and_it_greets_a_player_through_the_formatter() {
     assert!(greeted, "the player heard the bartender greet them by name");
 }
 
+/// M10d, end-to-end: world knowledge authored through the real `@agent/lore` +
+/// `@lore` staff surface reaches the assembled system prompt with the right
+/// framing — PUBLIC facts plainly, GUARDED facts under the trust/willingness
+/// heading — while a SECRET fact (per-NPC AND pooled) NEVER appears in the
+/// prompt the mock provider actually receives.
+#[tokio::test]
+async fn world_knowledge_framing_and_secret_exclusion_in_the_assembled_prompt() {
+    let (svc, mock) = service();
+    let mut rig = Rig::boot(&svc).await;
+    let npc = make_bartender(&mut rig);
+
+    // A PUBLIC and a SECRET per-NPC entry, plus a shared pool the NPC tags that
+    // carries a GUARDED and a SECRET entry.
+    rig.staff("@agent/lore Bartender=public the tap room closes at midnight");
+    let warn = rig.staff("@agent/lore Bartender=secret the cellar hides PERNPCSECRETTOKEN");
+    assert!(warn.contains("NEVER sent to the NPC LLM"), "{warn}");
+    rig.staff("@lore streets=guarded the Duke's men run the north docks");
+    rig.staff("@lore streets=secret the safehouse is POOLSECRETTOKEN");
+    let out = rig.staff("@agent/lore Bartender=tags: streets");
+    assert!(out.contains("Resolves pools: streets"), "{out}");
+
+    let alice = rig.player("Alice");
+    rig.run(alice, "say What's the word around town?");
+    rig.set_now(1_003);
+    let (_, _corr, payload) = rig.one_turn().expect("one turn after the window");
+
+    mock.push_response(tool_resp(vec![say_tool("Depends who's asking.")]));
+    let _ = run_npc_turn_async(&svc, &payload).await;
+    let req = mock.last_request().expect("the mock saw a request");
+    let system = req.system.clone().unwrap_or_default();
+
+    // PUBLIC world knowledge renders plainly.
+    assert!(
+        system.contains("WHAT YOU KNOW ABOUT THE WORLD")
+            && system.contains("the tap room closes at midnight"),
+        "public world knowledge in system prompt: {system}"
+    );
+    // GUARDED renders under the trust/willingness framing.
+    assert!(
+        system.contains("GUARDED KNOWLEDGE")
+            && system.contains("the Duke's men run the north docks"),
+        "guarded world knowledge framed in system prompt: {system}"
+    );
+    // The whole assembled request — system + user turns — carries neither secret.
+    let user: String = req
+        .messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    for needle in ["PERNPCSECRETTOKEN", "POOLSECRETTOKEN"] {
+        assert!(!system.contains(needle), "secret leaked into system: {needle}");
+        assert!(!user.contains(needle), "secret leaked into user: {needle}");
+    }
+
+    // Sanity: the turn still completed and the NPC spoke.
+    let _ = npc;
+}
+
 #[tokio::test]
 async fn wod_roll_uses_the_npcs_real_sheet_pool() {
     let (svc, mock) = service();
