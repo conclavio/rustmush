@@ -39,7 +39,7 @@ use rhai::plugin::*;
 use rhai::{AST, Array, Dynamic, Engine as RhaiEngine, EvalAltResult, Position, Scope};
 use std::cell::{Cell, RefCell};
 
-use mush_core::module::{HookPoint, HookReg};
+use mush_core::module::{HookPoint, HookReg, perceives_via};
 use mush_core::{
     Attr, AttrFlags, AttrValue, Deferred, Flags, ObjId, ObjKind, Outbox, Powers, Registry, Role,
     ScheduledKind, World, match_object, perm,
@@ -131,6 +131,9 @@ pub struct ScriptState {
     pub(crate) owned_namespaces: Vec<SmolStr>,
     /// `MoveAttempt` hooks (snapshot at boot) consulted by `mush::move`.
     pub(crate) move_hooks: Vec<HookReg>,
+    /// `Perceive` hooks (snapshot at boot) consulted by [`owner_can_see`], so
+    /// scripts cannot see an object the look/output layer conceals (M11).
+    pub(crate) perceive_hooks: Vec<HookReg>,
     /// Dice PRNG state (xorshift64; deterministic across a boot).
     rng: u64,
 }
@@ -145,6 +148,7 @@ impl ScriptState {
             strikes: HashMap::new(),
             owned_namespaces: Vec::new(),
             move_hooks: Vec::new(),
+            perceive_hooks: Vec::new(),
             rng: 0x9E37_79B9_7F4A_7C15,
         }
     }
@@ -757,6 +761,12 @@ fn loc_of(obj: ObjId) -> Result<ObjId, Box<EvalAltResult>> {
 /// `GOING` husk, or a `DARK` object the owner neither controls nor holds
 /// `SEE_HIDDEN` for. Mirrors the per-object filter the look/output layer
 /// applies (`output::room_view`), so scripts cannot see what a look cannot.
+///
+/// Also honors the M11 per-observer projection gate: the `Perceive` hooks
+/// snapshotted at boot ([`ScriptState::perceive_hooks`]) are consulted
+/// through the one shared [`perceives_via`] predicate, so a subject the
+/// output layer conceals from `owner` is invisible to scripts too. A free
+/// pass (no snapshotted hook) leaves script visibility exactly as before.
 fn owner_can_see(w: &World, owner: ObjId, obj: ObjId) -> bool {
     let Some(o) = w.get(obj) else { return false };
     if o.flags.contains(Flags::GOING) {
@@ -765,6 +775,11 @@ fn owner_can_see(w: &World, owner: ObjId, obj: ObjId) -> bool {
     if o.flags.contains(Flags::DARK)
         && !perm::has_power(w, owner, Powers::SEE_HIDDEN)
         && !perm::controls(w, owner, obj)
+    {
+        return false;
+    }
+    if let Some(st) = w.module_state::<ScriptState>()
+        && !perceives_via(&st.perceive_hooks, w, owner, obj)
     {
         return false;
     }
@@ -1290,12 +1305,14 @@ pub(crate) fn recompile_object(w: &mut World, out: &mut Outbox, obj: ObjId) {
 }
 
 /// Snapshot the registry data the off-loop session needs (module-owned attr
-/// namespaces + `MoveAttempt` hooks) into the state slot at boot.
+/// namespaces + `MoveAttempt`/`Perceive` hooks) into the state slot at boot.
 pub(crate) fn snapshot_registry(w: &mut World, reg: &Registry) {
     let namespaces = reg.module_attr_namespaces();
     let move_hooks = reg.hooks(HookPoint::MoveAttempt).to_vec();
+    let perceive_hooks = reg.hooks(HookPoint::Perceive).to_vec();
     if let Some(st) = w.module_state_mut::<ScriptState>() {
         st.owned_namespaces = namespaces;
         st.move_hooks = move_hooks;
+        st.perceive_hooks = perceive_hooks;
     }
 }

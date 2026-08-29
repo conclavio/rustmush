@@ -430,6 +430,7 @@ fn run_tick(
                     Audience::Room {
                         room,
                         exclude: Vec::new(),
+                        subject: None,
                     },
                     data,
                 );

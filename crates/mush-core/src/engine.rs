@@ -1107,10 +1107,15 @@ impl Engine {
 
 /// Queue an unattributed narrative line "<Name><suffix>" to the actor's
 /// room, excluding the actor (connect/disconnect/linkdead announcements).
+///
+/// The line reveals `actor`, so it carries them as the M11 perception subject
+/// ([`Outbox::to_room_from`]): a concealed actor's connect/disconnect echo is
+/// gated from observers who cannot perceive them, exactly like their movement
+/// echoes. Free pass with no `Perceive` hook registered.
 fn announce_room(w: &World, actor: ObjId, suffix: &str, out: &mut Outbox) {
     if let Some(loc) = w.get(actor).and_then(|o| o.location) {
         let text = RichText::new().span(name_span(w, actor)).text(suffix);
-        out.to_room(loc, vec![actor], narrative_emit(text));
+        out.to_room_from(loc, vec![actor], actor, narrative_emit(text));
     }
 }
 
@@ -2036,7 +2041,8 @@ mod tests {
             aud,
             &Audience::Room {
                 room: LIMBO,
-                exclude: vec![nick]
+                exclude: vec![nick],
+                subject: Some(nick),
             }
         );
     }

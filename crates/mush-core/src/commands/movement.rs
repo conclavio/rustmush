@@ -83,7 +83,7 @@ pub fn traverse_exit(reg: &Registry, w: &mut World, actor: ObjId, exit: ObjId, o
             let text = RichText::new()
                 .span(name_span(w, actor))
                 .text(format!(" {of}"));
-            out.to_room(fr, vec![actor], narrative_emit(text));
+            out.to_room_from(fr, vec![actor], actor, narrative_emit(text));
         }
         return;
     }
@@ -110,7 +110,7 @@ pub fn traverse_exit(reg: &Registry, w: &mut World, actor: ObjId, exit: ObjId, o
         let leave = attr_text(w, exit, "osucc")
             .map_or_else(|| format!(" goes {exit_name}."), |m| format!(" {m}"));
         let text = RichText::new().span(name_span(w, actor)).text(leave);
-        out.to_room(fr, vec![actor], narrative_emit(text));
+        out.to_room_from(fr, vec![actor], actor, narrative_emit(text));
     }
     if let Some(s) = attr_text(w, exit, "succ") {
         out.info(actor, s);
@@ -118,7 +118,7 @@ pub fn traverse_exit(reg: &Registry, w: &mut World, actor: ObjId, exit: ObjId, o
     let arrive = attr_text(w, exit, "odrop")
         .map_or_else(|| " has arrived.".to_string(), |m| format!(" {m}"));
     let text = RichText::new().span(name_span(w, actor)).text(arrive);
-    out.to_room(dest, vec![actor], narrative_emit(text));
+    out.to_room_from(dest, vec![actor], actor, narrative_emit(text));
     show_room(reg, w, actor, dest, out);
     emit_world_event(
         reg,
@@ -165,12 +165,12 @@ pub fn go_home(reg: &Registry, w: &mut World, actor: ObjId, out: &mut Outbox) {
         let text = RichText::new()
             .span(name_span(w, actor))
             .text(" goes home.");
-        out.to_room(fr, vec![actor], narrative_emit(text));
+        out.to_room_from(fr, vec![actor], actor, narrative_emit(text));
     }
     let text = RichText::new()
         .span(name_span(w, actor))
         .text(" arrives home.");
-    out.to_room(home, vec![actor], narrative_emit(text));
+    out.to_room_from(home, vec![actor], actor, narrative_emit(text));
     show_room(reg, w, actor, home, out);
     emit_world_event(
         reg,

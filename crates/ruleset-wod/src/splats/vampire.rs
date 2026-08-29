@@ -175,6 +175,23 @@ pub fn clan_of(doc: &SheetDoc) -> Option<&'static ClanDef> {
     doc.text("clan").and_then(clan_def)
 }
 
+/// A sheet's dots in one Discipline (case-insensitive), `0` if absent.
+///
+/// The single reader for a Discipline rating off the `disciplines` map — used
+/// by the M11 perception vertical (Obfuscate as concealment strength, Auspex
+/// as the sense that pierces it) so a vampire and a ghoul, whose sheets carry
+/// the identical map, read the same way.
+#[must_use]
+pub fn discipline_rating(doc: &SheetDoc, discipline: &str) -> i32 {
+    doc.map("disciplines")
+        .and_then(|m| {
+            m.iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(discipline))
+                .and_then(|(_, v)| v.as_i64())
+        })
+        .unwrap_or(0) as i32
+}
+
 /// Whether `discipline` is in-clan for the sheet's clan (Caitiff: never).
 #[must_use]
 pub fn is_in_clan(doc: &SheetDoc, discipline: &str) -> bool {

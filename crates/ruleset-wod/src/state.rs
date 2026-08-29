@@ -67,6 +67,18 @@ pub struct WodState {
     logs: HashMap<ObjId, VecDeque<RollLogEntry>>,
     extended: HashMap<ObjId, ExtendedRoll>,
     chargen: HashMap<ObjId, ChargenSession>,
+    /// M11 concealment (Obfuscate): subject → the Obfuscate rating in force
+    /// when they cloaked (the difficulty basis for a piercing roll). A subject
+    /// absent here is not concealed and is perceived by everyone (the free
+    /// fast-path the `Perceive` hook takes). Volatile — never persisted.
+    concealed: HashMap<ObjId, i32>,
+    /// M11 pierced-verdict cache: `(observer, subject)` → whether `observer`
+    /// perceives the concealed `subject`. Rolled **once** (in the mutable
+    /// concealment paths — `+obfuscate` and the presence observer), never per
+    /// event; the read-only `Perceive` hook is a pure lookup here. Absent for a
+    /// concealed subject means *not yet rolled* and is treated as concealed
+    /// (fail-safe: never leak). Volatile.
+    pierced: HashMap<(ObjId, ObjId), bool>,
 }
 
 impl WodState {
@@ -88,6 +100,8 @@ impl WodState {
             logs: HashMap::new(),
             extended: HashMap::new(),
             chargen: HashMap::new(),
+            concealed: HashMap::new(),
+            pierced: HashMap::new(),
         }
     }
 
@@ -168,6 +182,75 @@ impl WodState {
     /// Close `who`'s chargen session.
     pub fn close_chargen(&mut self, who: ObjId) {
         self.chargen.remove(&who);
+    }
+
+    // ------------------------------------------------------------------
+    // M11 concealment (Obfuscate) + pierced-verdict cache
+    // ------------------------------------------------------------------
+
+    /// Mark `subject` concealed at Obfuscate `rating` (the difficulty basis for
+    /// a piercing roll). Idempotent: re-cloaking overwrites the rating. Does
+    /// **not** clear stale verdicts — the caller re-rolls present observers.
+    pub fn conceal(&mut self, subject: ObjId, rating: i32) {
+        self.concealed.insert(subject, rating.max(0));
+    }
+
+    /// Lift `subject`'s concealment and drop every pierced verdict about them,
+    /// so a later re-cloak starts from a clean slate (no stale verdict). Returns
+    /// whether they were concealed.
+    pub fn reveal(&mut self, subject: ObjId) -> bool {
+        let was = self.concealed.remove(&subject).is_some();
+        self.clear_perceptions_for_subject(subject);
+        was
+    }
+
+    /// Whether `subject` is currently concealed.
+    #[must_use]
+    pub fn is_concealed(&self, subject: ObjId) -> bool {
+        self.concealed.contains_key(&subject)
+    }
+
+    /// Whether anyone at all is concealed — the observer's free fast-path (no
+    /// concealment ⇒ no cache to maintain, no RNG touched).
+    #[must_use]
+    pub fn has_concealment(&self) -> bool {
+        !self.concealed.is_empty()
+    }
+
+    /// The Obfuscate rating `subject` cloaked at, if concealed.
+    #[must_use]
+    pub fn concealed_rating(&self, subject: ObjId) -> Option<i32> {
+        self.concealed.get(&subject).copied()
+    }
+
+    /// Whether `observer` perceives concealed `subject`: `Some(true)` pierced,
+    /// `Some(false)` failed, `None` not yet rolled.
+    #[must_use]
+    pub fn perception_verdict(&self, observer: ObjId, subject: ObjId) -> Option<bool> {
+        self.pierced.get(&(observer, subject)).copied()
+    }
+
+    /// Cache one `(observer, subject)` verdict.
+    pub fn set_perception(&mut self, observer: ObjId, subject: ObjId, pierced: bool) {
+        self.pierced.insert((observer, subject), pierced);
+    }
+
+    /// Drop every verdict about `subject` (they de-cloaked or moved rooms).
+    pub fn clear_perceptions_for_subject(&mut self, subject: ObjId) {
+        self.pierced.retain(|(_, s), _| *s != subject);
+    }
+
+    /// Drop every verdict held by `observer` (they moved / are being
+    /// re-evaluated in a new room).
+    pub fn clear_perceptions_by_observer(&mut self, observer: ObjId) {
+        self.pierced.retain(|(o, _), _| *o != observer);
+    }
+
+    /// Forget `who` entirely — as a concealed subject and as either side of any
+    /// verdict (on disconnect / destruction).
+    pub fn forget_actor(&mut self, who: ObjId) {
+        self.concealed.remove(&who);
+        self.pierced.retain(|(o, s), _| *o != who && *s != who);
     }
 }
 

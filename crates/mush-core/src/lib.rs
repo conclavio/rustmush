@@ -68,7 +68,9 @@ pub use cmd::{
     CommandSpec, Ctx, HelpTopic, LookupErr, ParsedArgs, Registry, RegistryError, SwitchSet,
     dispatch,
 };
-pub use commands::{ignore_list, is_ignoring, narrative_actor, register_core_commands};
+pub use commands::{
+    event_subject, ignore_list, is_ignoring, narrative_actor, register_core_commands,
+};
 pub use engine::{
     ControlMsg, Deferred, DisconnectKind, Effect, Effects, Engine, Inbound, StepOutcome,
     WorldCommand, register_engine_commands,
@@ -79,8 +81,9 @@ pub use matchit::{MatchErr, match_object};
 pub use module::{
     AsyncCompletion, ContextOutcome, EventHook, GameModule, HookPoint, InputContext, JobQueueSpec,
     Migration, ModError, ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, PanelFeedHandle,
-    QueryHandler, Registrar, Scene, SceneId, StackedContext, TickCadence, TickHandler,
-    WeatherQuery, WorldEvent, WorldEventKind, WorldObserver, WxSnapshot,
+    Perceive, QueryHandler, Registrar, Scene, SceneId, StackedContext, TickCadence, TickHandler,
+    WeatherQuery, WorldEvent, WorldEventKind, WorldObserver, WxSnapshot, can_perceive,
+    perceives_via,
 };
 pub use obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
 pub use output::{Audience, ConnId, Outbox, name_span, obj_ref, room_view};

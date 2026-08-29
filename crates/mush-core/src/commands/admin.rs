@@ -75,6 +75,33 @@ pub fn narrative_actor(ev: &OutputEvent) -> Option<ObjId> {
     }
 }
 
+/// The occupant a room-audience event would *reveal* — its perception
+/// subject — used by the world task's `Audience::Room` fan-out to apply the
+/// M11 per-observer projection gate ([`crate::module::can_perceive`]): a
+/// recipient who cannot perceive the subject is skipped for that event only.
+///
+/// Returns the attributed actor of a [`OutputEvent::Narrative`]
+/// (say/pose/semipose/`@emit`) — every room-audience line that reveals a
+/// specific character through its own wire `actor`. `None` for events with no
+/// attributed subject (weather, panels, unattributed system/ambient emits):
+/// those name no one and are delivered to the whole room exactly as before.
+///
+/// Movement/arrival/departure, take/drop/give, and connect/disconnect echoes
+/// are emitted as *unattributed* narratives ([`crate::commands::narrative_emit`],
+/// `actor: None`) so their wire form is unchanged, but they still reveal a
+/// mover: those carry their subject in the routing layer instead
+/// ([`crate::output::Outbox::to_room_from`] → `Audience::Room::subject`),
+/// which the fan-out consults *before* falling back to this extractor. Keeping
+/// the subject off the wire is what preserves byte-for-byte identical output
+/// when no `Perceive` hook is registered.
+#[must_use]
+pub fn event_subject(ev: &OutputEvent) -> Option<ObjId> {
+    match ev {
+        OutputEvent::Narrative { actor: Some(r), .. } => r.id.parse::<ObjId>().ok(),
+        _ => None,
+    }
+}
+
 /// Persist `who`'s mute list: a JSON attr for a non-empty list, attribute
 /// removal for an empty one.
 fn save_ignore_list(ctx: &mut Ctx<'_>, mut ids: Vec<ObjId>) -> Result<(), CmdError> {

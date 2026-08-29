@@ -34,6 +34,7 @@ pub mod damage;
 pub mod dice;
 pub mod health;
 pub mod onboarding;
+pub mod perception;
 pub mod roll;
 pub mod schema;
 pub mod sheet_cmds;
@@ -255,6 +256,12 @@ impl GameModule for WodRuleset {
         for splat in self.dispatch.splats.iter() {
             splat.register_commands(reg, Arc::clone(&cmd))?;
         }
+
+        // M11 per-observer projection: the Obfuscate-vs-Auspex perception gate
+        // (read-only Perceive hook + presence-tracking observer + +obfuscate).
+        // Purely additive — with nobody cloaked it hides no one and rolls no
+        // dice, so a game that never uses Obfuscate is byte-for-byte unchanged.
+        perception::register(reg, Arc::clone(&cmd))?;
 
         // Onboarding (the `chargen_required` gate). All three seams are inert
         // unless the config turns gating on, so a default game is unaffected.

@@ -408,6 +408,7 @@ impl WeatherCmd {
                 mush_core::Audience::Room {
                     room: room.room,
                     exclude: Vec::new(),
+                    subject: None,
                 },
                 panel_payload(&scan.zone_name, icon, temp),
             );

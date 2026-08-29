@@ -98,7 +98,7 @@ fn say_prefix_emits_room_narrative() {
         matches!(
             (a, e),
             (
-                Audience::Room { room, exclude },
+                Audience::Room { room, exclude, .. },
                 OutputEvent::Narrative { kind: NarrativeKind::Say, actor: Some(r), text },
             ) if *room == LIMBO
                 && exclude.is_empty()

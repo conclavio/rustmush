@@ -15,7 +15,7 @@ use mush_core::module::{AsyncCompletion, WorldEvent};
 use mush_core::{
     ArgShape, Attr, CmdError, CommandSpec, Ctx, Deferred, Effect, GameModule, ModError,
     ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, ObjId, ObjKind, Registrar, Role, TickCadence,
-    World, WorldEventKind, WorldObserver, obj_ref, perm,
+    World, WorldEventKind, WorldObserver, can_perceive, obj_ref, perm,
 };
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
 use smol_str::SmolStr;
@@ -241,6 +241,13 @@ fn on_said(ctx: &mut Ctx<'_>, who: ObjId, room: ObjId, kind: NarrativeKind, text
         if npc == who {
             continue;
         }
+        // M11 per-observer projection: an NPC that cannot perceive the speaker
+        // (a vampire Obfuscated past its Auspex) neither remembers nor wakes to
+        // the speech — true silence, exactly as for a player who fails to
+        // notice. Free pass with no concealment ruleset registered.
+        if !can_perceive(ctx.reg, ctx.w, npc, who) {
+            continue;
+        }
         let Some(profile) = read_profile(ctx.w, npc) else {
             continue;
         };
@@ -280,6 +287,10 @@ fn on_moved(ctx: &mut Ctx<'_>, who: ObjId, from: Option<ObjId>, to: ObjId) {
         if npc == who || !enabled_npc(ctx.w, npc) {
             continue;
         }
+        // M11: an unseen (Obfuscated) arrival triggers no stimulus.
+        if !can_perceive(ctx.reg, ctx.w, npc, who) {
+            continue;
+        }
         remember_and_enqueue(
             ctx,
             npc,
@@ -292,6 +303,9 @@ fn on_moved(ctx: &mut Ctx<'_>, who: ObjId, from: Option<ObjId>, to: ObjId) {
     if let Some(from) = from {
         for npc in npcs_in(ctx.w, from) {
             if npc == who || !enabled_npc(ctx.w, npc) {
+                continue;
+            }
+            if !can_perceive(ctx.reg, ctx.w, npc, who) {
                 continue;
             }
             remember_and_enqueue(
@@ -321,6 +335,10 @@ fn on_presence(ctx: &mut Ctx<'_>, who: ObjId, connected: bool) {
     };
     for npc in npcs_in(ctx.w, room) {
         if !enabled_npc(ctx.w, npc) {
+            continue;
+        }
+        // M11: a connect/disconnect by an unseen character wakes no NPC.
+        if !can_perceive(ctx.reg, ctx.w, npc, who) {
             continue;
         }
         remember_and_enqueue(ctx, npc, stim_line(who), &format!("{name} {verb}."), now);
@@ -1633,6 +1651,7 @@ fn emit_thinking(ctx: &mut Ctx<'_>, npc: ObjId, room: ObjId) {
         let aud = mush_core::Audience::Room {
             room,
             exclude: Vec::new(),
+            subject: None,
         };
         panel.keyframe_to(ctx, aud, data);
     }

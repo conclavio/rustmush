@@ -74,7 +74,8 @@ use mush_core::commands::movement::find_exit;
 use mush_core::{
     Audience, ControlMsg, DisconnectKind, Effect, Effects, Engine, Flags, Inbound, ObjId, ObjKind,
     Outbox, Registry, Role, ScheduledKind, StepOutcome, TickCadence, World, WorldCommand,
-    WorldEvent, is_ignoring, narrative_actor, register_core_commands, register_engine_commands,
+    WorldEvent, can_perceive, event_subject, is_ignoring, narrative_actor, register_core_commands,
+    register_engine_commands,
 };
 use mush_llm::LlmService;
 use mush_net_web::{LlmFeatureStat, LlmTodaySpend, Metrics, WorldSample};
@@ -617,7 +618,7 @@ async fn run(
             // (a handful of lines; drops are still counted by the session
             // layer). Later steps' output may overtake the held lines by
             // up to one ack round-trip — accepted.
-            let resolved = resolve_sends(&engine.world, &mut out);
+            let resolved = resolve_sends(&engine.registry, &engine.world, &mut out);
             spawn_effects(&mut fx, &tx, llm.as_ref());
             match flush_dirty(
                 &mut engine,
@@ -1757,12 +1758,12 @@ fn deliver_and_police(
     fx: &mut Effects,
     tx: &mpsc::WeakSender<WorldMsg>,
 ) {
-    let mut slow = deliver(&engine.world, sessions, out);
+    let mut slow = deliver(&engine.registry, &engine.world, sessions, out);
     while !slow.is_empty() {
         for conn in std::mem::take(&mut slow) {
             disconnect_slow_client(engine, sessions, conn, out, fx, tx);
         }
-        slow = deliver(&engine.world, sessions, out);
+        slow = deliver(&engine.registry, &engine.world, sessions, out);
     }
 }
 
@@ -1868,7 +1869,11 @@ enum SendTarget {
 /// actors*; the session manager later takes it from character to
 /// connections. Split from [`transmit`] so a durable-gated step can
 /// resolve now and deliver after the store ack.
-fn resolve_sends(world: &World, out: &mut Outbox) -> Vec<(SendTarget, Arc<OutputEvent>)> {
+fn resolve_sends(
+    reg: &Registry,
+    world: &World,
+    out: &mut Outbox,
+) -> Vec<(SendTarget, Arc<OutputEvent>)> {
     let mut sends = Vec::new();
     for (audience, event) in out.take() {
         let ev = Arc::new(event);
@@ -1879,7 +1884,11 @@ fn resolve_sends(world: &World, out: &mut Outbox) -> Vec<(SendTarget, Arc<Output
             Audience::Conn(conn) => {
                 sends.push((SendTarget::Conn(SessConnId(conn)), ev));
             }
-            Audience::Room { room, exclude } => {
+            Audience::Room {
+                room,
+                exclude,
+                subject: room_subject,
+            } => {
                 // `@ignore` room filtering happens HERE — the one place a
                 // Room audience resolves to listeners (treaty ruling 2's
                 // world half). An attributed narrative line (say/pose/
@@ -1887,12 +1896,27 @@ fn resolve_sends(world: &World, out: &mut Outbox) -> Vec<(SendTarget, Arc<Output
                 // skipped for that listener only; staff speakers are never
                 // filtered (mush_core::is_ignoring owns the policy).
                 let speaker = narrative_actor(&ev);
+                // M11 per-observer projection: the occupant this event would
+                // reveal (its subject). A recipient who cannot perceive that
+                // subject is skipped for THIS event only. The subject is the
+                // one the routing layer carried (movement/arrival/departure/
+                // item/connect echoes) or, failing that, the attributed actor
+                // of a narrative line (say/pose/@emit). Events with no subject
+                // (weather/panels) name no one and reach the whole room as
+                // before. Free pass with no Perceive hook registered, so
+                // hookless fan-out is byte-identical.
+                let subject = room_subject.or_else(|| event_subject(&ev));
                 for &occupant in world.contents_of(room) {
                     if exclude.contains(&occupant) || !world.is_connected(occupant) {
                         continue;
                     }
                     if let Some(speaker) = speaker
                         && is_ignoring(world, occupant, speaker)
+                    {
+                        continue;
+                    }
+                    if let Some(subject) = subject
+                        && !can_perceive(reg, world, occupant, subject)
                     {
                         continue;
                     }
@@ -1946,8 +1970,13 @@ fn transmit(
 }
 
 /// Resolve and transmit in one pass (the ordinary, un-gated path).
-fn deliver(world: &World, sessions: &SessionManager, out: &mut Outbox) -> Vec<SessConnId> {
-    transmit(sessions, resolve_sends(world, out))
+fn deliver(
+    reg: &Registry,
+    world: &World,
+    sessions: &SessionManager,
+    out: &mut Outbox,
+) -> Vec<SessConnId> {
+    transmit(sessions, resolve_sends(reg, world, out))
 }
 
 /// Spawn one detached task per drained [`Effect`]; each completion re-enters
@@ -2206,5 +2235,210 @@ mod tests {
         // Popped: the gate applies again.
         world.pop_input_context(GOD);
         assert!(refuse_read_only(&world, &cmd("@create orb")).is_some());
+    }
+
+    // ------------------------------------------------------------------
+    // M11 per-observer projection substrate (D1/D2/D3)
+    // ------------------------------------------------------------------
+
+    /// A dummy `Perceive` hook that conceals exactly one `(observer, subject)`
+    /// pair — the test double proving the game-agnostic projection substrate
+    /// works before any ruleset verdict (Obfuscate/Auspex) exists.
+    struct CloakPair {
+        observer: ObjId,
+        subject: ObjId,
+    }
+
+    impl mush_core::module::EventHook for CloakPair {
+        fn perceives(
+            &self,
+            _w: &World,
+            observer: ObjId,
+            subject: ObjId,
+        ) -> mush_core::module::Perceive {
+            if observer == self.observer && subject == self.subject {
+                mush_core::module::Perceive::Conceal
+            } else {
+                mush_core::module::Perceive::Abstain
+            }
+        }
+    }
+
+    /// The plain text of the `Contents:` line `examine` sent to `actor`
+    /// (empty when `examine` emitted none — i.e. every occupant was hidden).
+    fn examine_contents(out: &Outbox, actor: ObjId) -> String {
+        out.events()
+            .iter()
+            .find_map(|(aud, ev)| match (aud, ev) {
+                (Audience::Actor(a), OutputEvent::Sys(t)) if *a == actor => {
+                    let s = t.to_plain_text();
+                    s.starts_with("Contents:").then_some(s)
+                }
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// With a `Perceive` hook concealing (Alice, Wraith): the subject is
+    /// absent from Alice's `room_view`, `examine`, and the resolved
+    /// `Audience::Room` fan-out — while Bob, a different observer, perceives
+    /// Wraith through every one of those paths.
+    #[test]
+    fn perceive_substrate_gates_look_examine_and_fanout() {
+        use mush_core::module::{HookPoint, Registrar};
+        use mush_core::{dispatch, obj_ref, register_core_commands, room_view};
+        use mush_proto::{NarrativeKind, RichText};
+
+        let mut world = World::new_minimal();
+        let hall = world.create(ObjKind::Room, "Hall", GOD, None).unwrap();
+        let alice = world
+            .create(ObjKind::Player, "Alice", GOD, Some(hall))
+            .unwrap();
+        let bob = world.create(ObjKind::Player, "Bob", GOD, Some(hall)).unwrap();
+        let wraith = world
+            .create(ObjKind::Player, "Wraith", GOD, Some(hall))
+            .unwrap();
+        for p in [alice, bob, wraith] {
+            world.set_connected(p, true);
+        }
+        // Alice and Bob must be able to `examine` the room (Wizard).
+        world.set_flag(alice, Flags::WIZARD, true).unwrap();
+        world.set_flag(bob, Flags::WIZARD, true).unwrap();
+
+        let mut reg = Registry::new();
+        register_core_commands(&mut reg).unwrap();
+        Registrar::new(&mut reg, "cloaktest").hook(
+            HookPoint::Perceive,
+            Arc::new(CloakPair {
+                observer: alice,
+                subject: wraith,
+            }),
+        );
+
+        // D1: the gate itself. Only the one concealed pair fails.
+        assert!(!can_perceive(&reg, &world, alice, wraith));
+        assert!(can_perceive(&reg, &world, bob, wraith));
+        assert!(can_perceive(&reg, &world, alice, bob));
+        assert!(can_perceive(&reg, &world, wraith, wraith));
+
+        // D2(a): room_view drops the concealed occupant for Alice only.
+        let names = |looker| -> Vec<String> {
+            room_view(&reg, &world, looker, hall)
+                .unwrap()
+                .contents
+                .into_iter()
+                .map(|r| r.name)
+                .collect()
+        };
+        let alice_sees = names(alice);
+        assert!(
+            !alice_sees.contains(&"Wraith".to_string()),
+            "look leaked Wraith to Alice: {alice_sees:?}"
+        );
+        assert!(alice_sees.contains(&"Bob".to_string()));
+        assert!(
+            names(bob).contains(&"Wraith".to_string()),
+            "Bob must still perceive Wraith by look"
+        );
+
+        // D2(c): examine dumps raw contents — it too must drop Wraith for
+        // Alice while still listing him for Bob.
+        let mut out = Outbox::new();
+        dispatch(&reg, &mut world, alice, &format!("examine {hall}"), &mut out);
+        let alice_ex = examine_contents(&out, alice);
+        assert!(
+            !alice_ex.contains("Wraith"),
+            "examine leaked Wraith to Alice: {alice_ex:?}"
+        );
+        assert!(alice_ex.contains("Bob"), "examine still lists Bob: {alice_ex:?}");
+        let mut out = Outbox::new();
+        dispatch(&reg, &mut world, bob, &format!("examine {hall}"), &mut out);
+        assert!(
+            examine_contents(&out, bob).contains("Wraith"),
+            "Bob's examine must still show Wraith"
+        );
+
+        // D2(b)+D3: the live Room fan-out. Wraith speaks; the event's subject
+        // is Wraith, so Alice (who cannot perceive him) is dropped from the
+        // resolved recipients while Bob and Wraith himself receive it.
+        let mut out = Outbox::new();
+        dispatch(&reg, &mut world, wraith, "say boo", &mut out);
+        let sends = resolve_sends(&reg, &world, &mut out);
+        let recipients: std::collections::HashSet<ObjId> = sends
+            .iter()
+            .filter_map(|(t, _)| match t {
+                SendTarget::Char(ck) => Some(char_key_obj(*ck)),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !recipients.contains(&alice),
+            "cloaked Wraith's speech must not reach Alice: {recipients:?}"
+        );
+        assert!(recipients.contains(&bob), "Bob overhears Wraith");
+        assert!(recipients.contains(&wraith), "Wraith hears his own speech");
+
+        // D3: event_subject extracts the attributed actor and abstains on
+        // events that name no one.
+        assert_eq!(
+            event_subject(&OutputEvent::Narrative {
+                kind: NarrativeKind::Say,
+                actor: Some(obj_ref(&world, wraith)),
+                text: RichText::plain("hi"),
+            }),
+            Some(wraith)
+        );
+        assert_eq!(
+            event_subject(&OutputEvent::Narrative {
+                kind: NarrativeKind::Emit,
+                actor: None,
+                text: RichText::plain("mist swirls"),
+            }),
+            None
+        );
+        assert_eq!(
+            event_subject(&OutputEvent::Sys(RichText::plain("weather"))),
+            None
+        );
+    }
+
+    /// Invariant I1: with NO `Perceive` hook registered the fan-out is
+    /// byte-for-byte the old behavior — every connected, non-excluded,
+    /// non-ignoring occupant receives a room event, subject or not.
+    #[test]
+    fn perceive_substrate_is_a_free_pass_without_a_hook() {
+        use mush_core::{dispatch, register_core_commands, room_view};
+
+        let mut world = World::new_minimal();
+        let hall = world.create(ObjKind::Room, "Hall", GOD, None).unwrap();
+        let a = world.create(ObjKind::Player, "Ann", GOD, Some(hall)).unwrap();
+        let b = world.create(ObjKind::Player, "Bee", GOD, Some(hall)).unwrap();
+        for p in [a, b] {
+            world.set_connected(p, true);
+        }
+        let mut reg = Registry::new();
+        register_core_commands(&mut reg).unwrap();
+
+        // Everyone is perceivable; look lists the other occupant.
+        assert!(can_perceive(&reg, &world, a, b));
+        assert!(
+            room_view(&reg, &world, a, hall)
+                .unwrap()
+                .contents
+                .iter()
+                .any(|r| r.name == "Bee")
+        );
+
+        // A say reaches every connected occupant (speaker included).
+        let mut out = Outbox::new();
+        dispatch(&reg, &mut world, a, "say hi", &mut out);
+        let recipients: std::collections::HashSet<ObjId> = resolve_sends(&reg, &world, &mut out)
+            .iter()
+            .filter_map(|(t, _)| match t {
+                SendTarget::Char(ck) => Some(char_key_obj(*ck)),
+                _ => None,
+            })
+            .collect();
+        assert!(recipients.contains(&a) && recipients.contains(&b));
     }
 }

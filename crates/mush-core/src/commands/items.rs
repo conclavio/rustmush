@@ -61,7 +61,8 @@ fn get_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let text = RichText::new()
             .span(name_span(ctx.w, ctx.actor))
             .text(osucc);
-        ctx.out.to_room(loc, vec![ctx.actor], narrative_emit(text));
+        ctx.out
+            .to_room_from(loc, vec![ctx.actor], ctx.actor, narrative_emit(text));
     }
     Ok(())
 }
@@ -106,7 +107,8 @@ fn drop_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let text = RichText::new()
         .span(name_span(ctx.w, ctx.actor))
         .text(odrop);
-    ctx.out.to_room(loc, vec![ctx.actor], narrative_emit(text));
+    ctx.out
+        .to_room_from(loc, vec![ctx.actor], ctx.actor, narrative_emit(text));
     Ok(())
 }
 
@@ -165,8 +167,12 @@ fn give_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .text(format!(" gives {obj_disp} to "))
             .span(name_span(ctx.w, recipient))
             .text(".");
-        ctx.out
-            .to_room(loc, vec![ctx.actor, recipient], narrative_emit(text));
+        ctx.out.to_room_from(
+            loc,
+            vec![ctx.actor, recipient],
+            ctx.actor,
+            narrative_emit(text),
+        );
     }
     Ok(())
 }

@@ -9,6 +9,7 @@ use crate::attr::{AttrFlags, AttrValue};
 use crate::cmd::{CmdError, CommandSpec, Ctx, Registry, RegistryError};
 use crate::flags::{Flags, Role};
 use crate::matchit::{MatchErr, match_object};
+use crate::module::can_perceive;
 use crate::obj::{ObjId, ObjKind};
 use crate::output::{Outbox, name_span};
 use crate::perm;
@@ -28,11 +29,20 @@ fn look_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Ok(());
     }
     match match_object(ctx.w, ctx.actor, &q) {
-        Ok(target) => {
+        // M11 per-observer projection: a target the looker cannot perceive
+        // (a cloaked vampire) resolves to nothing — true silence, so `look
+        // <name>` and `look #dbref` cannot probe a concealed subject. The
+        // looker always perceives themselves. Free pass with no Perceive hook,
+        // so this is identical to today for a game without concealment.
+        Ok(target)
+            if target == ctx.actor || can_perceive(ctx.reg, ctx.w, ctx.actor, target) =>
+        {
             look_at(ctx.reg, ctx.w, ctx.actor, target, ctx.out);
             Ok(())
         }
-        Err(MatchErr::NoMatch) => {
+        // A matched-but-imperceptible target falls through exactly like a name
+        // that matched nothing: the `detail:` keyword fallback, then NoMatch.
+        Ok(_) | Err(MatchErr::NoMatch) => {
             // `look <keyword>`: room details stored as `detail:<keyword>`
             // attributes on the room (inheritable), then on the looker.
             let attr = format!("detail:{}", q.trim());
@@ -83,6 +93,9 @@ fn look_at(reg: &Registry, w: &World, looker: ObjId, target: ObjId, out: &mut Ou
         for &c in &o.contents {
             if w.get(c)
                 .is_some_and(|co| !co.flags.intersects(Flags::GOING | Flags::DARK))
+                // M11 per-observer projection: never list an occupant the
+                // looker cannot perceive (free pass with no Perceive hook).
+                && can_perceive(reg, w, looker, c)
             {
                 text = text.text(" ").span(name_span(w, c));
             }
@@ -94,6 +107,14 @@ fn look_at(reg: &Registry, w: &World, looker: ObjId, target: ObjId, out: &mut Ou
 fn examine_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let q = ctx.args.raw().to_string();
     let target = match_object(ctx.w, ctx.actor, if q.is_empty() { "me" } else { &q })?;
+    // M11 per-observer projection: a concealed target the examiner cannot
+    // perceive is unresolvable — the same NoMatch a non-existent name gives, so
+    // `examine <name>`/`examine #dbref` cannot confirm a cloaked subject's
+    // presence (even for a controller with no piercing sense). Self is always
+    // perceivable; free pass with no Perceive hook registered.
+    if target != ctx.actor && !can_perceive(ctx.reg, ctx.w, ctx.actor, target) {
+        return Err(MatchErr::NoMatch.into());
+    }
     let w = &*ctx.w;
     let o = w.get(target).ok_or(MatchErr::NoMatch)?;
     let header = RichText::new()
@@ -172,9 +193,19 @@ fn examine_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ctx.out
             .info(ctx.actor, format!("{name} [{}]: {value}", attr.owner));
     }
-    if !o.contents.is_empty() {
+    // M11 per-observer projection: `examine` dumps raw contents (offline
+    // players included), so it must also drop occupants the examiner cannot
+    // perceive, or a concealed subject would leak here. Free pass — hence
+    // byte-identical output — with no Perceive hook registered.
+    let visible: Vec<ObjId> = o
+        .contents
+        .iter()
+        .copied()
+        .filter(|&c| can_perceive(ctx.reg, w, ctx.actor, c))
+        .collect();
+    if !visible.is_empty() {
         let mut text = RichText::plain("Contents:");
-        for &c in &o.contents {
+        for c in visible {
             text = text.text(" ").span(name_span(w, c));
         }
         ctx.out.to_actor(ctx.actor, OutputEvent::Sys(text));

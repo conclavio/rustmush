@@ -9,8 +9,10 @@
 
 use mush_proto::{ExitRef, ObjRef, OutputEvent, RichText, RoomView, Span};
 
+use crate::cmd::Registry;
 use crate::engine::Deferred;
 use crate::flags::{Flags, Powers};
+use crate::module::can_perceive;
 use crate::obj::{ObjId, ObjKind};
 use crate::perm;
 use crate::world::World;
@@ -34,6 +36,18 @@ pub enum Audience {
         room: ObjId,
         /// Actors in the room who should *not* receive the event.
         exclude: Vec<ObjId>,
+        /// The occupant this room line *reveals* — its perception subject
+        /// (M11). The fan-out skips a recipient who cannot
+        /// [perceive](crate::module::can_perceive) this subject. `None` for
+        /// lines that name no one (weather, panels) — delivered to the whole
+        /// room. Movement/arrival/departure/take/drop/give/connect lines set
+        /// it to the acting mover so a concealed actor's echoes are gated even
+        /// though they ride an *unattributed* [`OutputEvent::Narrative`]
+        /// (`actor: None`) — the subject travels in the routing layer, so the
+        /// wire event is byte-for-byte unchanged when no hook is registered.
+        /// Attributed speech (say/pose/`@emit`) leaves this `None` and is
+        /// gated via [`crate::commands::event_subject`] on the event instead.
+        subject: Option<ObjId>,
     },
     /// Every connection on the game (`@wall`, shutdown notices).
     All,
@@ -76,9 +90,41 @@ impl Outbox {
         self.push(Audience::Conn(conn), event);
     }
 
-    /// Queue an event to everyone in `room` except `exclude`.
+    /// Queue an event to everyone in `room` except `exclude`. The line names
+    /// no perception subject in the routing layer (attributed speech is gated
+    /// via its event actor; see [`Audience::Room`]).
     pub fn to_room(&mut self, room: ObjId, exclude: Vec<ObjId>, event: OutputEvent) {
-        self.push(Audience::Room { room, exclude }, event);
+        self.push(
+            Audience::Room {
+                room,
+                exclude,
+                subject: None,
+            },
+            event,
+        );
+    }
+
+    /// Queue a room line that *reveals* `subject` — the acting mover of an
+    /// unattributed narrative (movement/arrival/departure/take/drop/give/
+    /// connect). The M11 fan-out skips any recipient who cannot
+    /// [perceive](crate::module::can_perceive) `subject`, so a concealed
+    /// actor's echoes are gated. Byte-for-byte identical to [`to_room`](Self::to_room)
+    /// when no `Perceive` hook is registered (the subject only affects routing).
+    pub fn to_room_from(
+        &mut self,
+        room: ObjId,
+        exclude: Vec<ObjId>,
+        subject: ObjId,
+        event: OutputEvent,
+    ) {
+        self.push(
+            Audience::Room {
+                room,
+                exclude,
+                subject: Some(subject),
+            },
+            event,
+        );
     }
 
     /// Queue an event to everyone connected.
@@ -208,9 +254,13 @@ pub fn name_span(w: &World, id: ObjId) -> Span {
 /// - `DARK` objects and exits are omitted individually;
 /// - `GOING` husks never appear;
 /// - all of the above are waived when the looker controls the room/object
-///   or holds the `SEE_HIDDEN` power.
+///   or holds the `SEE_HIDDEN` power;
+/// - an occupant the looker cannot [perceive](can_perceive) (the M11
+///   per-observer projection gate) is omitted — a free pass with no
+///   `Perceive` hook registered, so the listing is unchanged for a game
+///   without a concealment ruleset.
 #[must_use]
-pub fn room_view(w: &World, looker: ObjId, room: ObjId) -> Option<RoomView> {
+pub fn room_view(reg: &Registry, w: &World, looker: ObjId, room: ObjId) -> Option<RoomView> {
     let r = w.get(room)?;
     let see_hidden = perm::has_power(w, looker, Powers::SEE_HIDDEN);
     let inside = w.get(looker).and_then(|o| o.location) == Some(room);
@@ -244,6 +294,12 @@ pub fn room_view(w: &World, looker: ObjId, room: ObjId) -> Option<RoomView> {
                 continue;
             }
             if o.flags.contains(Flags::DARK) && !see_hidden && !perm::controls(w, looker, c) {
+                continue;
+            }
+            // M11 per-observer projection: hide an occupant this looker
+            // cannot perceive (Obfuscate vs Auspex, …). Free pass with no
+            // Perceive hook registered.
+            if !can_perceive(reg, w, looker, c) {
                 continue;
             }
             // Primary segment only: "lever;switch" renders as "lever",
@@ -349,6 +405,7 @@ mod tests {
 
     #[test]
     fn room_view_basics_and_desc() {
+        let reg = Registry::new();
         let (mut w, nick, hall) = setup();
         w.move_to(nick, hall).unwrap();
         w.set_attr(hall, "desc", Attr::text("A big hall.", GOD))
@@ -357,7 +414,7 @@ mod tests {
         w.add_alias(exit, "no").unwrap();
         let ball = w.create(ObjKind::Thing, "ball", GOD, Some(hall)).unwrap();
 
-        let rv = room_view(&w, nick, hall).unwrap();
+        let rv = room_view(&reg, &w, nick, hall).unwrap();
         assert_eq!(rv.name, "Hall");
         assert_eq!(rv.id, hall.to_string());
         assert_eq!(rv.desc.to_plain_text(), "A big hall.");
@@ -370,13 +427,14 @@ mod tests {
         assert_eq!(rv.exits[0].name, "north");
         assert_eq!(rv.exits[0].aliases, vec!["n".to_string(), "no".to_string()]);
         // Default desc when unset.
-        let rv0 = room_view(&w, nick, LIMBO).unwrap();
+        let rv0 = room_view(&reg, &w, nick, LIMBO).unwrap();
         assert_eq!(rv0.desc.to_plain_text(), "You see nothing special.");
-        assert!(room_view(&w, nick, ObjId(99)).is_none());
+        assert!(room_view(&reg, &w, nick, ObjId(99)).is_none());
     }
 
     #[test]
     fn room_view_honors_dark_and_opaque() {
+        let reg = Registry::new();
         let (mut w, nick, hall) = setup();
         w.move_to(nick, hall).unwrap();
         w.set_connected(nick, true); // a listed player must be connected (see below)
@@ -386,35 +444,36 @@ mod tests {
         // DARK object hidden from plain players, visible to God (controls).
         // (Hall holds Nick and the ball; the looker is never listed.)
         w.set_flag(ball, Flags::DARK, true).unwrap();
-        assert!(room_view(&w, nick, hall).unwrap().contents.is_empty());
-        assert_eq!(room_view(&w, GOD, hall).unwrap().contents.len(), 2);
+        assert!(room_view(&reg, &w, nick, hall).unwrap().contents.is_empty());
+        assert_eq!(room_view(&reg, &w, GOD, hall).unwrap().contents.len(), 2);
         w.set_flag(ball, Flags::DARK, false).unwrap();
 
         // DARK exit hidden.
         w.set_flag(exit, Flags::DARK, true).unwrap();
-        assert!(room_view(&w, nick, hall).unwrap().exits.is_empty());
+        assert!(room_view(&reg, &w, nick, hall).unwrap().exits.is_empty());
         w.set_flag(exit, Flags::DARK, false).unwrap();
 
         // DARK room hides all contents from non-controllers.
         w.set_flag(hall, Flags::DARK, true).unwrap();
-        assert!(room_view(&w, nick, hall).unwrap().contents.is_empty());
-        assert_eq!(room_view(&w, GOD, hall).unwrap().contents.len(), 2);
+        assert!(room_view(&reg, &w, nick, hall).unwrap().contents.is_empty());
+        assert_eq!(room_view(&reg, &w, GOD, hall).unwrap().contents.len(), 2);
         w.set_flag(hall, Flags::DARK, false).unwrap();
 
         // OPAQUE hides contents from outside lookers only.
         w.set_flag(hall, Flags::OPAQUE, true).unwrap();
-        assert_eq!(room_view(&w, nick, hall).unwrap().contents.len(), 1);
+        assert_eq!(room_view(&reg, &w, nick, hall).unwrap().contents.len(), 1);
         let outsider = w.create(ObjKind::Player, "Out", GOD, Some(LIMBO)).unwrap();
-        assert!(room_view(&w, outsider, hall).unwrap().contents.is_empty());
+        assert!(room_view(&reg, &w, outsider, hall).unwrap().contents.is_empty());
 
         // SEE_HIDDEN power waives DARK (and OPAQUE-from-outside).
         w.set_flag(hall, Flags::DARK, true).unwrap();
         w.get_mut(outsider).unwrap().powers = Powers::SEE_HIDDEN;
-        assert_eq!(room_view(&w, outsider, hall).unwrap().contents.len(), 2);
+        assert_eq!(room_view(&reg, &w, outsider, hall).unwrap().contents.len(), 2);
     }
 
     #[test]
     fn room_view_hides_disconnected_players() {
+        let reg = Registry::new();
         let (mut w, nick, hall) = setup();
         w.move_to(nick, hall).unwrap();
         w.set_connected(nick, true);
@@ -424,7 +483,7 @@ mod tests {
 
         // Nick (connected) looks: sees the connected... nothing of self; the
         // NPC and the thing; NOT the offline Bob.
-        let names: Vec<_> = room_view(&w, nick, hall)
+        let names: Vec<_> = room_view(&reg, &w, nick, hall)
             .unwrap()
             .contents
             .into_iter()
@@ -436,7 +495,7 @@ mod tests {
 
         // Not waived for staff/controllers either — God's look also hides Bob
         // (staff use `examine` to see who's offline in a room).
-        let god_names: Vec<_> = room_view(&w, GOD, hall)
+        let god_names: Vec<_> = room_view(&reg, &w, GOD, hall)
             .unwrap()
             .contents
             .into_iter()
@@ -447,7 +506,7 @@ mod tests {
 
         // Bob reconnecting makes him appear.
         w.set_connected(bob, true);
-        let names2: Vec<_> = room_view(&w, nick, hall)
+        let names2: Vec<_> = room_view(&reg, &w, nick, hall)
             .unwrap()
             .contents
             .into_iter()
@@ -460,13 +519,14 @@ mod tests {
 
     #[test]
     fn room_view_includes_zone() {
+        let reg = Registry::new();
         let (mut w, nick, hall) = setup();
         let zmo = w
             .create(ObjKind::Thing, "Downtown", GOD, Some(LIMBO))
             .unwrap();
         w.set_flag(zmo, Flags::ZONE_MASTER, true).unwrap();
         w.set_zone(hall, Some(zmo)).unwrap();
-        let rv = room_view(&w, nick, hall).unwrap();
+        let rv = room_view(&reg, &w, nick, hall).unwrap();
         assert_eq!(rv.zone.unwrap().name, "Downtown");
     }
 }

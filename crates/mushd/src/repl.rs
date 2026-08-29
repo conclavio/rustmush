@@ -11,7 +11,8 @@
 use std::io::Write as _;
 
 use mush_core::{
-    Audience, Effect, Effects, GOD, Inbound, Outbox, StepOutcome, World, WorldCommand,
+    Audience, Effect, Effects, GOD, Inbound, Outbox, Registry, StepOutcome, World, WorldCommand,
+    can_perceive, event_subject,
 };
 use mush_testkit::text_of;
 
@@ -80,7 +81,7 @@ pub fn run() {
                 &mut fx,
             );
         }
-        print_gods_view(&engine.world, &mut out);
+        print_gods_view(&engine.registry, &engine.world, &mut out);
         run_effects_sync(&mut engine, &mut fx, &mut out);
         if outcome == StepOutcome::Shutdown {
             break;
@@ -91,13 +92,23 @@ pub fn run() {
 /// Drain the outbox, printing every event whose audience reaches God: God's
 /// own actor stream, broadcasts, and events for God's room (unless
 /// excluded). `Conn` audiences other than the REPL's own never deliver.
-fn print_gods_view(world: &World, out: &mut Outbox) {
+fn print_gods_view(reg: &Registry, world: &World, out: &mut Outbox) {
     for (audience, event) in out.take() {
         let reaches = match &audience {
             Audience::Actor(a) => *a == GOD,
             Audience::All => true,
-            Audience::Room { room, exclude } => {
-                !exclude.contains(&GOD) && world.get(GOD).and_then(|o| o.location) == Some(*room)
+            Audience::Room {
+                room,
+                exclude,
+                subject,
+            } => {
+                // M11 per-observer projection: mirror the world task fan-out
+                // (free pass with no Perceive hook registered).
+                !exclude.contains(&GOD)
+                    && world.get(GOD).and_then(|o| o.location) == Some(*room)
+                    && subject
+                        .or_else(|| event_subject(&event))
+                        .is_none_or(|subj| can_perceive(reg, world, GOD, subj))
             }
             Audience::Conn(c) => *c == REPL_CONN,
         };
@@ -150,7 +161,7 @@ fn run_effects_sync(engine: &mut mush_core::Engine, fx: &mut Effects, out: &mut 
                     );
                 }
             }
-            print_gods_view(&engine.world, out);
+            print_gods_view(&engine.registry, &engine.world, out);
         }
     }
 }

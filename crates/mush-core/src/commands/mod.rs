@@ -17,7 +17,7 @@ pub mod look;
 pub mod movement;
 pub mod speech;
 
-pub use admin::{ignore_list, is_ignoring, narrative_actor};
+pub use admin::{event_subject, ignore_list, is_ignoring, narrative_actor};
 
 /// Register every core command into `reg`. Called once at boot (and by
 /// tests); collisions among core commands are a programming error surfaced
@@ -56,7 +56,7 @@ pub(crate) fn narrative_emit(text: RichText) -> OutputEvent {
 ///
 /// [`RoomView`]: mush_proto::RoomView
 pub(crate) fn show_room(reg: &Registry, w: &World, looker: ObjId, room: ObjId, out: &mut Outbox) {
-    if let Some(rv) = room_view(w, looker, room) {
+    if let Some(rv) = room_view(reg, w, looker, room) {
         out.to_actor(looker, OutputEvent::Room(rv));
         for line in crate::module::look_rendered_lines(reg, w, looker, room) {
             out.to_actor(looker, OutputEvent::Sys(line));

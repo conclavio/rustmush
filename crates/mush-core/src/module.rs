@@ -253,6 +253,13 @@ pub enum HookPoint {
     /// banners). Fires wherever a room render is shown: `look`, movement
     /// arrival, `@teleport`.
     LookRendered,
+    /// Read-only per-observer perception gate (the M11 projection seam):
+    /// consulted wherever the output layer decides whether one observer may
+    /// perceive one subject — the `look`/`examine` contents filters and the
+    /// live `Audience::Room` fan-out. First `Conceal` wins; with no hook
+    /// registered the gate is a free pass (behavior byte-for-byte identical
+    /// to a game with no concealment ruleset). See [`can_perceive`].
+    Perceive,
     /// An actor's session became live (first connection attached).
     Connected,
     /// An actor's session fully ended (clean quit or linkdead grace
@@ -263,6 +270,22 @@ pub enum HookPoint {
     /// A scene is ending via [`Ctx::end_scene`] (fires while the scene is
     /// still queryable).
     SceneEnded,
+}
+
+/// A [`EventHook::perceives`] verdict for one `(observer, subject)` pair.
+///
+/// The gate is *first-conceal-wins*: a hook returns [`Perceive::Conceal`] to
+/// hide the subject from that observer, or [`Perceive::Abstain`] (the
+/// default) to leave the decision to the other hooks / the base rules. A
+/// subject is perceived unless some hook actively conceals it, so a game with
+/// no perception hook registered never hides anyone (see [`can_perceive`]).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum Perceive {
+    /// This hook takes no position — defer to the remaining hooks.
+    #[default]
+    Abstain,
+    /// Hide `subject` from `observer`.
+    Conceal,
 }
 
 /// A module hook. Default methods are no-ops; a module implements only the
@@ -285,6 +308,17 @@ pub trait EventHook: Send + Sync {
     /// Extra lines appended after a room render for `looker`.
     fn look_rendered(&self, w: &World, looker: ObjId, room: ObjId) -> Vec<RichText> {
         Vec::new()
+    }
+
+    /// Whether `observer` should be prevented from perceiving `subject`
+    /// (the M11 per-observer projection gate). Read-only by contract — the
+    /// same `&World` is shared by the look path and the live fan-out, so the
+    /// verdict must be a cheap lookup, never a mutation (no rolling, no cache
+    /// writes; a ruleset rolls and caches in its mutable paths and only reads
+    /// the cache here). Default [`Perceive::Abstain`] leaves the subject
+    /// visible. See [`can_perceive`].
+    fn perceives(&self, w: &World, observer: ObjId, subject: ObjId) -> Perceive {
+        Perceive::Abstain
     }
 
     /// An actor connected (session became live).
@@ -1456,6 +1490,36 @@ pub fn check_move_attempt(
         h.hook.move_attempt(w, actor, exit, dest)?;
     }
     Ok(())
+}
+
+/// The shared perception decision over an explicit `Perceive`-hook slice:
+/// `observer` perceives `subject` unless some hook returns
+/// [`Perceive::Conceal`] (first-conceal-wins). An empty slice is a free pass
+/// (returns `true` without touching the world) — the fast path that keeps a
+/// hookless game byte-for-byte identical to today.
+///
+/// This is the ONE place the projection rule lives. [`can_perceive`] wraps it
+/// for callers holding a live [`Registry`]; the off-loop script runtime
+/// snapshots the same slice and calls this directly, so the two consumers can
+/// never drift.
+#[must_use]
+pub fn perceives_via(hooks: &[HookReg], w: &World, observer: ObjId, subject: ObjId) -> bool {
+    for h in hooks {
+        if h.hook.perceives(w, observer, subject) == Perceive::Conceal {
+            return false;
+        }
+    }
+    true
+}
+
+/// Whether `observer` may perceive `subject`, consulting every registered
+/// `Perceive` hook (first-conceal-wins; see [`perceives_via`]). Read-only
+/// `&World` so both the `look`/`examine` render path and the live
+/// `Audience::Room` fan-out can call it. With no `Perceive` hook registered
+/// this is a free pass, preserving today's behavior exactly.
+#[must_use]
+pub fn can_perceive(reg: &Registry, w: &World, observer: ObjId, subject: ObjId) -> bool {
+    perceives_via(reg.hooks(HookPoint::Perceive), w, observer, subject)
 }
 
 /// Collect every `LookRendered` hook's extra lines for a room render.

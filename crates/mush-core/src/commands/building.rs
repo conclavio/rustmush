@@ -539,12 +539,14 @@ fn teleport_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let text = RichText::new()
             .span(name_span(ctx.w, target))
             .text(" has left.");
-        ctx.out.to_room(fr, vec![target], narrative_emit(text));
+        ctx.out
+            .to_room_from(fr, vec![target], target, narrative_emit(text));
     }
     let text = RichText::new()
         .span(name_span(ctx.w, target))
         .text(" has arrived.");
-    ctx.out.to_room(dest, vec![target], narrative_emit(text));
+    ctx.out
+        .to_room_from(dest, vec![target], target, narrative_emit(text));
     if ctx.w.get(target).is_some_and(|o| o.kind.is_actor()) {
         show_room(ctx.reg, ctx.w, target, dest, ctx.out);
     }

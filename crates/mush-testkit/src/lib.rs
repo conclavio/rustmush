@@ -30,7 +30,8 @@ use std::collections::HashMap;
 
 use mush_core::{
     Audience, Effects, Engine, GOD, GameModule, Inbound, LIMBO, ModuleBootData, ModuleOp, ObjId,
-    ObjKind, Outbox, Registry, World, WorldEvent, register_core_commands,
+    ObjKind, Outbox, Registry, World, WorldEvent, can_perceive, event_subject,
+    register_core_commands,
 };
 use mush_proto::{NarrativeKind, ObjRef, OutputEvent, RichText, RoomView, WhoEntry};
 use smol_str::SmolStr;
@@ -256,11 +257,25 @@ impl TestWorld {
         let location = self.world().get(viewer).and_then(|o| o.location);
         events
             .iter()
-            .filter(|(aud, _)| match aud {
+            .filter(|(aud, ev)| match aud {
                 Audience::Actor(a) => *a == viewer,
                 Audience::All => self.world().is_connected(viewer),
-                Audience::Room { room, exclude } => {
-                    location == Some(*room) && !exclude.contains(&viewer)
+                Audience::Room {
+                    room,
+                    exclude,
+                    subject,
+                } => {
+                    // M11 per-observer projection: mirror the world task's
+                    // fan-out — a viewer who cannot perceive the event's
+                    // subject does not see it. The subject is the one carried
+                    // by the routing layer (movement/item/connect echoes) or
+                    // the attributed actor of a narrative line. Free pass with
+                    // no Perceive hook registered.
+                    location == Some(*room)
+                        && !exclude.contains(&viewer)
+                        && subject.or_else(|| event_subject(ev)).is_none_or(|subj| {
+                            can_perceive(&self.engine.registry, self.world(), viewer, subj)
+                        })
                 }
                 Audience::Conn(_) => false,
             })
@@ -594,6 +609,7 @@ mod tests {
                 Audience::Room {
                     room: LIMBO,
                     exclude: vec![alice],
+                    subject: None,
                 },
                 say("Alice", "limbo minus alice"),
             ),
