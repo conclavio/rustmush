@@ -1,0 +1,28 @@
+[Unit]
+Description=rustmush dev1 (oWoD) MUSH server — SSH 6789, HTTPS 6790
+After=network-online.target redis-dev1mush.service
+Wants=network-online.target
+Requires=redis-dev1mush.service
+Documentation=file:/opt/rustmush/dev1/build/deploy/dev1/README.md
+
+[Service]
+Type=simple
+User=mush
+Group=mush
+WorkingDirectory=/opt/rustmush/dev1
+# LLM API keys (ANTHROPIC_API_KEY / OPENROUTER_API_KEY). root-owned, mode 640,
+# injected by systemd — the mush user never reads the file, keys never logged.
+EnvironmentFile=/opt/rustmush/dev1/dev1.env
+ExecStart=/opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml
+Restart=on-failure
+RestartSec=5
+
+# Hardening: the service needs only its own tree + the loopback Redis.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/rustmush/dev1
+
+[Install]
+WantedBy=multi-user.target

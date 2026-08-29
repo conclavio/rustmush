@@ -1,0 +1,106 @@
+# rustmush dev1 production config. deploy.sh substitutes __EXTERNAL_IP__ with
+# the box's public IPv4 (never 0.0.0.0, never the tailscale address) before
+# installing this to /opt/rustmush/dev1/mushd.toml.
+
+[server]
+name = "rustmush dev1 (oWoD)"
+data_dir = "/opt/rustmush/dev1/data"
+help_dir = "/opt/rustmush/dev1/build/docs/help"
+
+[store]
+store = "redis"
+redis_url = "redis://127.0.0.1:6788"     # the dev1 instance — NOT the dev 6379
+
+[ssh]
+listen = "__EXTERNAL_IP__:6789"          # external IP only (off tailscale)
+
+[web]
+listen = "__EXTERNAL_IP__:6790"          # external IP only (off tailscale)
+[web.tls]                                # native HTTPS (self-signed for now)
+cert = "/opt/rustmush/dev1/tls/cert.pem"
+key = "/opt/rustmush/dev1/tls/key.pem"
+
+[game]
+linkdead_grace_s = 300
+max_characters = 3
+ic_ratio = 1
+ic_epoch = "2020-01-01 00:00"
+
+[rulesets]
+enabled = ["wod"]
+
+# --- LLM: enabled; keys come from the systemd EnvironmentFile (dev1.env) ---
+[llm]
+enabled = true
+
+[llm.providers.openrouter]
+kind = "openai"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+requests_per_minute = 60
+referer = "https://github.com/rustmush"
+title = "rustmush-dev1"
+
+[llm.providers.anthropic]
+kind = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key_env = "ANTHROPIC_API_KEY"
+requests_per_minute = 60
+anthropic_version = "2023-06-01"
+price_input_per_mtok = 5.0
+price_output_per_mtok = 25.0
+
+[llm.routes.worldgen_room]
+model = "z-ai/glm-5.3"
+max_tokens = 1500
+timeout_s = 90
+reasoning = "low"
+
+[llm.routes.worldgen_brief]
+model = "z-ai/glm-5.3-flash"
+max_tokens = 2000
+timeout_s = 120
+reasoning = "low"
+
+[llm.routes.ambience]
+model = "deepseek/deepseek-v4-flash-0731"
+max_tokens = 400
+timeout_s = 30
+reasoning = "off"
+
+[llm.routes.npc_dialogue_major]
+model = "z-ai/glm-5.3"
+max_tokens = 1024
+timeout_s = 30
+reasoning = "low"
+
+[llm.routes.npc_dialogue_minor]
+model = "z-ai/glm-5.3-flash"
+max_tokens = 1024
+timeout_s = 30
+reasoning = "low"
+
+[llm.routes.npc_dialogue_extra]
+model = "deepseek/deepseek-v4-flash-0731"
+max_tokens = 768
+timeout_s = 30
+reasoning = "off"
+
+[llm.routes.npc_summarize]
+model = "z-ai/glm-5.3-flash"
+max_tokens = 768
+timeout_s = 60
+reasoning = "off"
+
+[llm.concurrency]
+max_interactive = 8
+max_background = 3
+
+[llm.budgets]
+global = { tokens = 5_000_000, cost_usd = 5.0 }
+per_actor_default = { cost_usd = 1.0 }
+per_npc_default = { tokens = 200_000 }
+
+[llm.budgets.per_feature]
+worldgen_room = { cost_usd = 2.0 }
+npc_dialogue_major = { cost_usd = 1.0 }

@@ -11,6 +11,13 @@ description = "rustmush server binary: config, accounts, world task, SSH bridge,
 # it; main.rs is a thin front door that also preserves the M0 stdin REPL
 # behind --repl.
 
+[features]
+# Native HTTPS for the web ingress (axum-server + rustls/ring, no C toolchain).
+# Off by default (prod usually terminates TLS at a reverse proxy); enable for a
+# proxyless deploy that serves [web] over TLS from a cert/key on disk:
+#   cargo build --release -p mushd --features tls
+tls = ["mush-net-web/tls"]
+
 [dependencies]
 mush-core.workspace = true
 mush-proto.workspace = true
