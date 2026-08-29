@@ -38,6 +38,18 @@ export class SessionStore {
     return this.panels.find((p) => p.endsWith(".roll")) ?? null;
   }
 
+  /** Whether the worldgen draft-preview panel is available: `hello`
+   * advertises the `"worldgen"` feature and/or the `"worldgen.draft"` panel
+   * (fixed ids, unlike `sheetFeed`/`rollFeed` — the worldgen module isn't
+   * swapped per ruleset, so there's nothing to derive by suffix). Gates the
+   * Build tab; the client has no way to know the viewer's `BUILDER_LLM`
+   * power, so a non-builder still sees the tab and gets the refusal as a
+   * `Sys` line when they try `@gen` (docs/design/03 §5.4's gate rides the
+   * normal command-permission path server-side). */
+  get worldgenAvailable(): boolean {
+    return this.hasFeature("worldgen") || this.hasPanel("worldgen.draft");
+  }
+
   applyHello(d: { server: string; features: string[]; panels: string[] }): void {
     this.serverName = d.server;
     this.features = d.features;

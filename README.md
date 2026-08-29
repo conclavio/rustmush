@@ -58,7 +58,7 @@ $env:REDIS_URL = "redis://127.0.0.1:6379"; cargo test --workspace  # PowerShell
 ```
 
 Point `REDIS_URL` at a **disposable** instance: the gated tests wipe their key namespaces
-(they use logical dbs 11–15 plus the default db).
+(they use logical dbs 9–15 plus the default db).
 
 The web SPA builds with `npm install && npm run build` in `web/` (vitest: `npm test`).
 Debug server builds serve `web/dist` straight from disk (rebuild the SPA, refresh the
@@ -73,7 +73,7 @@ we don't redistribute it.
 Copy [mushd.toml.example](mushd.toml.example) to `mushd.toml`, adjust, and run `mushd`
 (`mushd --repl` gives an offline in-memory REPL). In-game `help` is two-layered: per-command
 usage comes from the command table, and prose topics (getting started, building, locks,
-channels, mail, jobs, admin, scripting, weather, wod, rules-of-conduct) are markdown files
+channels, mail, jobs, admin, scripting, weather, worldgen, wod, rules-of-conduct) are markdown files
 loaded at boot from `[server].help_dir` (default `./docs/help` — edit or add `*.md` files there and
 restart to change them; `help <topic>` serves them, with exact command names taking
 precedence).
@@ -106,6 +106,22 @@ is exactly one template whose sheet carries only that splat's sections and per-t
 (a vampire's Disciplines / Blood Pool, a mage's Spheres / Arete, a Garou's Rage / Gnosis /
 Gifts). Splat commands (`+disc`/`+blood`, `+cast`/`+sphere`, `+shift`/`+rage`, …) are always
 registered but self-gate on the actor's template and refuse everyone else.
+
+**LLM worldbuilding** (M7) is configured in `[llm]` and is **off by default**
+(`enabled = false`) — a keyless clone boots and `@gen` just answers "LLM features are
+disabled." A builder with the `BUILDER_LLM` power sets a **zone theme** (`@theme <zone>=<field>:<value>`
+— style, vocabulary, banned words, POV, length), then `@gen here=<prose>` drafts a room
+description in that theme, seeded with neighboring rooms' accepted descs for consistency. The
+call runs off the world loop (the game never blocks) and the draft comes back to review —
+`@gen/accept [fields]`, `@gen/edit`, `@gen/retry [guidance]`, `@gen/discard`; **nothing the
+LLM writes is ever auto-committed** (`help worldgen`). Providers are routed by **model-id
+prefix** (`anthropic/…` → the Anthropic Messages API; anything else, e.g. `z-ai/glm-5.3`, →
+OpenRouter); API keys resolve from env vars named in config (`api_key_env`), never inlined and
+never logged — in dev `mushd` loads them from a `.env` at boot, in prod set real env vars.
+Layered daily budgets (global / per-feature / per-builder, over tokens and USD) are enforced
+pre-call, and staff hold a live kill switch (`@llm/disable`, `@llm/budget`, `@llm/log`). See
+[docs/ops.md](docs/ops.md) for the full operator view and
+[mushd.toml.example](mushd.toml.example) for a ready `[llm]` block.
 
 The web client is served by the same process on `[web].listen` (default
 `http://127.0.0.1:8080`): log in or register over `POST /api/auth/*`, then the SPA speaks

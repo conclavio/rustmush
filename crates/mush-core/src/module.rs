@@ -562,6 +562,24 @@ pub trait QueryHandler: Send + Sync {
     ) -> Result<OutputEvent, RichText>;
 }
 
+/// Typed re-entry of a module's deferred async work
+/// ([`Effect::ModuleAsync`](crate::engine::Effect::ModuleAsync) →
+/// [`WorldCommand::ModuleAsyncDone`](crate::engine::WorldCommand::ModuleAsyncDone),
+/// treaty ruling 3). The driving loop runs the real future off the world
+/// loop (it holds the service handle — `mush-core` never does) and re-enters
+/// with the result `payload`; the engine routes it here, in the world task,
+/// with a full [`Ctx`] carrying the owning module's identity.
+///
+/// **Re-validate against current world state**: the world may have changed
+/// while the async work ran (the room was `@destroy`ed, the actor
+/// disconnected). Persistence goes through [`Ctx::persist`] as usual.
+pub trait AsyncCompletion: Send + Sync {
+    /// Apply one completion. `payload` is this module's own JSON (whatever it
+    /// serialized into the originating `Effect::ModuleAsync`); `correlation`
+    /// echoes the effect's id; `ctx.actor` is the triggering actor.
+    fn on_complete(&self, ctx: &mut Ctx<'_>, correlation: u64, payload: &str);
+}
+
 /// A module job queue declaration (chargen approval, XP spends, +requests).
 /// **Registry only in M3** — the jobs module consumes these.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -912,6 +930,8 @@ pub struct ModuleTables {
     migration_owners: HashMap<SmolStr, SmolStr>,
     /// The single registered weather provider (the reserved btech seam).
     weather: Option<(SmolStr, Arc<dyn WeatherQuery>)>,
+    /// module name → its async-completion handler (the LLM re-entry seam).
+    async_completions: HashMap<SmolStr, Arc<dyn AsyncCompletion>>,
     state_inits: Vec<StateInit>,
 }
 
@@ -1041,6 +1061,14 @@ impl Registry {
     #[must_use]
     pub fn weather_query(&self) -> Option<(&SmolStr, Arc<dyn WeatherQuery>)> {
         self.mods.weather.as_ref().map(|(m, p)| (m, Arc::clone(p)))
+    }
+
+    /// The async-completion handler registered by `module`, if any (the
+    /// engine routes [`WorldCommand::ModuleAsyncDone`](crate::engine::WorldCommand::ModuleAsyncDone)
+    /// here).
+    #[must_use]
+    pub fn async_completion(&self, module: &str) -> Option<Arc<dyn AsyncCompletion>> {
+        self.mods.async_completions.get(module).map(Arc::clone)
     }
 
     /// Drain the collected state-slot inits (the engine installs them on
@@ -1375,6 +1403,31 @@ impl<'a> Registrar<'a> {
         self.reg.tables_mut().weather = Some((self.module.clone(), provider));
         Ok(())
     }
+
+    /// Register this module's [`AsyncCompletion`] handler — the re-entry
+    /// point for its deferred async work
+    /// ([`Effect::ModuleAsync`](crate::engine::Effect::ModuleAsync)). A module
+    /// registers at most one; a second registration is a conflict.
+    pub fn async_completion(&mut self, handler: Arc<dyn AsyncCompletion>) -> Result<(), ModError> {
+        if self
+            .reg
+            .tables_mut()
+            .async_completions
+            .contains_key(&self.module)
+        {
+            return Err(ModError::Conflict {
+                module: self.module.clone(),
+                what: "async completion",
+                name: self.module.clone(),
+                owner: self.module.clone(),
+            });
+        }
+        self.reg
+            .tables_mut()
+            .async_completions
+            .insert(self.module.clone(), handler);
+        Ok(())
+    }
 }
 
 // ----------------------------------------------------------------------
@@ -1423,6 +1476,36 @@ pub fn emit_world_event(reg: &Registry, w: &mut World, out: &mut Outbox, ev: &Wo
         };
         obs.on_event(&mut ctx, ev);
     }
+}
+
+/// Route a [`WorldCommand::ModuleAsyncDone`](crate::engine::WorldCommand::ModuleAsyncDone)
+/// to `module`'s registered [`AsyncCompletion`] handler, in the world task,
+/// with a full [`Ctx`] carrying the module identity. A missing handler is
+/// logged and dropped (the completion arrived for a module that registered
+/// none — a programming error, never a crash).
+pub fn apply_async_completion(
+    reg: &Registry,
+    w: &mut World,
+    out: &mut Outbox,
+    module: SmolStr,
+    actor: ObjId,
+    correlation: u64,
+    payload: &str,
+) {
+    let Some(handler) = reg.async_completion(&module) else {
+        tracing::warn!(%module, correlation, "async completion for unregistered module dropped");
+        return;
+    };
+    let mut ctx = Ctx {
+        w,
+        actor,
+        switches: SwitchSet::default(),
+        args: ParsedArgs::default(),
+        out,
+        reg,
+        module: Some(module),
+    };
+    handler.on_complete(&mut ctx, correlation, payload);
 }
 
 /// Fire the `Connected` / `Disconnected` hooks for an actor.

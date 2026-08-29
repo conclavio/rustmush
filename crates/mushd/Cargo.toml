@@ -25,6 +25,11 @@ mush-script.workspace = true
 mush-weather.workspace = true
 # The M6 rulesets: config's [rulesets] selects which load (modules.rs).
 ruleset-wod.workspace = true
+# The M7 LLM layer + worldgen module: LlmService built from [llm] config,
+# WorldgenModule registered at boot, and run_worldgen_async driven off the
+# world loop from the Effect::ModuleAsync re-entry seam (world_task.rs).
+mush-llm.workspace = true
+mush-worldgen.workspace = true
 mush-testkit.workspace = true
 mush-net-ssh.workspace = true
 # The M4 web ingress; mushd implements its WebHooks (web_bridge.rs).
@@ -37,6 +42,8 @@ tracing-subscriber.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
+# Loads C:/.../.env at boot so LLM keys resolve in dev; prod uses real env vars.
+dotenvy.workspace = true
 argon2.workspace = true
 rand.workspace = true
 # Web session tokens: stored server-side as SHA-256 hashes (web_bridge).

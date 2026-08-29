@@ -135,6 +135,20 @@ fn run_effects_sync(engine: &mut mush_core::Engine, fx: &mut Effects, out: &mut 
                         fx,
                     );
                 }
+                // M7 LLM re-entry seam: the REPL has no `LlmService`, so an
+                // `Effect::ModuleAsync` cannot be run inline here. worldgen is
+                // not booted in the REPL, so this arm is unreachable in
+                // practice; it stays a no-op to keep the match exhaustive.
+                Effect::ModuleAsync {
+                    module,
+                    correlation,
+                    ..
+                } => {
+                    println!(
+                        "(repl: Effect::ModuleAsync from {module} #{correlation} dropped -- \
+                         no LLM service in the REPL)"
+                    );
+                }
             }
             print_gods_view(&engine.world, out);
         }

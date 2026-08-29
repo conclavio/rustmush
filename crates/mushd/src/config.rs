@@ -1,8 +1,7 @@
 //! `mushd.toml` configuration.
 //!
-//! M2 reads only the keys it uses; everything else in the file (e.g. the
-//! `[web]`, `[llm]` sections from `mushd.toml.example`) is tolerated and
-//! ignored until its milestone lands. Keys used now:
+//! Reads only the keys each milestone needs; any unknown section/key is
+//! tolerated and ignored. Keys used now:
 //!
 //! | key | default | meaning |
 //! |---|---|---|
@@ -19,6 +18,7 @@
 //! | `[game].ic_ratio` | `1` | IC seconds per OOC second (game-clock speed); read at boot |
 //! | `[game].ic_epoch` | `"2020-01-01 00:00"` | IC datetime at OOC unix 0 — calendar phase/start; read at boot |
 //! | `[rulesets].enabled` | `["wod"]` | ruleset module(s) to load; unknown ids are a hard boot error |
+//! | `[llm]` | `enabled = false` | M7 LLM layer (providers, routes, budgets); into [`mush_llm::LlmConfig`] |
 //!
 //! The `[web]` table deserializes straight into
 //! [`mush_net_web::WebConfig`] (every knob it documents — TLS material,
@@ -34,6 +34,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use mush_core::{CivilDate, GameClock};
+use mush_llm::LlmConfig;
 use mush_net_web::WebConfig;
 use serde::Deserialize;
 
@@ -239,6 +240,12 @@ pub struct Config {
     pub game: GameCfg,
     /// `[rulesets]` — which ruleset module(s) load (M6).
     pub rulesets: RulesetsCfg,
+    /// `[llm]` — the M7 LLM layer (providers, feature routes, budgets, kill
+    /// switch). Deserializes straight into [`mush_llm::LlmConfig`]; the whole
+    /// block defaults to `enabled = false` (a keyless clone still boots). API
+    /// keys are named by env var (`api_key_env`), never inlined — see
+    /// [`mush_llm::config`].
+    pub llm: LlmConfig,
 }
 
 impl Config {
@@ -421,6 +428,75 @@ mod tests {
         assert!(cfg.game.game_clock().is_ok());
         // The example enables the WoD ruleset.
         assert_eq!(cfg.rulesets.enabled, ["wod"]);
+        // The example's [llm] block parses into LlmConfig: disabled by default
+        // (keyless clone boots), both providers present with env-var-named
+        // keys (never inlined), and the starter routes wired.
+        assert!(!cfg.llm.enabled);
+        assert_eq!(cfg.llm.providers.len(), 2);
+        let openrouter = cfg
+            .llm
+            .providers
+            .get("openrouter")
+            .expect("openrouter provider");
+        assert_eq!(
+            openrouter.api_key_env.as_deref(),
+            Some("OPENROUTER_API_KEY")
+        );
+        assert_eq!(openrouter.kind, mush_llm::ProviderKind::Openai);
+        let anthropic = cfg
+            .llm
+            .providers
+            .get("anthropic")
+            .expect("anthropic provider");
+        assert_eq!(anthropic.api_key_env.as_deref(), Some("ANTHROPIC_API_KEY"));
+        assert_eq!(anthropic.kind, mush_llm::ProviderKind::Anthropic);
+        let room = cfg
+            .llm
+            .routes
+            .get("worldgen_room")
+            .expect("worldgen_room route");
+        assert_eq!(room.model, "z-ai/glm-5.3");
+        assert!(matches!(
+            room.reasoning_config(),
+            Some(mush_llm::ReasoningConfig::Effort(mush_llm::Effort::Low))
+        ));
+        // The Anthropic-direct critical route uses the model-prefix scheme.
+        assert_eq!(
+            cfg.llm
+                .routes
+                .get("npc_dialogue_major")
+                .expect("critical route")
+                .model,
+            "anthropic/claude-opus-5"
+        );
+    }
+
+    #[test]
+    fn llm_section_parses_and_defaults_disabled() {
+        // No [llm] table at all: LlmConfig defaults, disabled.
+        let cfg = Config::default();
+        assert!(!cfg.llm.enabled);
+        assert!(cfg.llm.providers.is_empty());
+        assert!(cfg.llm.routes.is_empty());
+        // A partial [llm] table: enabled + one route, keys named by env var.
+        let text = r#"
+            [llm]
+            enabled = true
+
+            [llm.providers.openrouter]
+            kind = "openai"
+            base_url = "https://openrouter.ai/api/v1"
+            api_key_env = "OPENROUTER_API_KEY"
+
+            [llm.routes.worldgen_room]
+            model = "z-ai/glm-5.3"
+            max_tokens = 1500
+            reasoning = "low"
+        "#;
+        let cfg: Config = toml::from_str(text).unwrap();
+        assert!(cfg.llm.enabled);
+        assert_eq!(cfg.llm.routes["worldgen_room"].max_tokens, 1500);
+        assert!(cfg.llm.providers["openrouter"].api_key_env.is_some());
     }
 
     #[test]

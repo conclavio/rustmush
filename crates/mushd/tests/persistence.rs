@@ -15,6 +15,10 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 use mush_core::{Engine, GOD, Inbound, LIMBO, ObjId, ObjKind};
+use mush_llm::{
+    CompletionResponse, ContentBlock, LlmProvider, LlmService, MockProvider, RouteConfig,
+    StopReason, Usage,
+};
 use mush_proto::{ClientCaps, ClientKind, ColorDepth, OutputEvent};
 use mush_session::{ConnId, ConnectionHandle, SessionManager};
 use mush_store::{
@@ -108,6 +112,7 @@ async fn boot_rig(
             store: Arc::clone(store),
             guard: Arc::clone(guard),
             staff,
+            llm: None,
         },
     );
     (sessions, handles)
@@ -138,6 +143,7 @@ async fn boot_module_rig(
             store: Arc::clone(store),
             guard: Arc::clone(guard),
             staff,
+            llm: None,
         },
     );
     (sessions, handles)
@@ -237,6 +243,7 @@ async fn boot_round_trip(store: Arc<dyn ObjectStore>) {
             store: store2,
             guard: Arc::new(IpGuard::new()),
             staff: Arc::new(StaffQueue::new()),
+            llm: None,
         },
     );
     let mut nick_rx = attach_direct(&sessions2, &handles2.handle, 7, nick, "nick").await;
@@ -376,6 +383,188 @@ async fn m5_module_persistence_round_trip_redis_gated() {
 }
 
 // ---------------------------------------------------------------------------
+// M7 worldgen persistence twin: a zone THEME is a plain object attribute
+// (`worldgen.theme`, treaty ruling 8), so it rides obj:* write-through; a
+// `@gen` DRAFT is a `worldgen:*` module doc, so it rides the module-op
+// write-through and is reloaded by `boot_modules` -> `on_world_loaded`. This
+// proves BOTH survive a reboot-from-store-alone and the reloaded draft still
+// accepts. The LLM is a network-free MockProvider injected as the world task's
+// service (never a real adapter/key) — the real async defer -> re-entry path.
+// ---------------------------------------------------------------------------
+
+/// A `worldgen_room` route the mock serves (any non-`anthropic/` model id
+/// derives to the `openrouter` provider the mock registers under).
+fn wg_service(mock: &Arc<MockProvider>) -> Arc<LlmService> {
+    let concrete = Arc::clone(mock);
+    let p: Arc<dyn LlmProvider> = concrete;
+    Arc::new(
+        LlmService::builder()
+            .route(
+                "worldgen_room",
+                RouteConfig {
+                    model: "z-ai/glm-5.3".into(),
+                    max_tokens: 1500,
+                    timeout_s: 60,
+                    reasoning: Some("low".into()),
+                    reasoning_max_tokens: None,
+                },
+            )
+            .provider("openrouter", p)
+            .global_enabled(true)
+            .build(),
+    )
+}
+
+/// A canned `submit_room` tool call carrying `desc`.
+fn wg_tool_resp(desc: &str) -> CompletionResponse {
+    CompletionResponse {
+        content: vec![ContentBlock::ToolUse {
+            id: "t1".into(),
+            name: "submit_room".into(),
+            input: serde_json::json!({ "desc": desc }),
+        }],
+        stop_reason: StopReason::ToolUse,
+        usage: Usage {
+            input_tokens: 120,
+            output_tokens: 60,
+            ..Usage::default()
+        },
+        model: "test/mock".into(),
+    }
+}
+
+/// Boot a full server rig with the built-in modules **plus the worldgen
+/// module** (backed by `llm`) and that same service on the world task, so a
+/// `@gen`'s deferred `Effect::ModuleAsync` runs off-loop through
+/// `run_worldgen_async` and re-enters — exactly as `main.rs` wires it.
+async fn boot_worldgen_rig(
+    store: &Arc<dyn ObjectStore>,
+    guard: &Arc<IpGuard>,
+    llm: Arc<LlmService>,
+) -> (Arc<SessionManager>, PersistHandles) {
+    let world = load_or_seed_world(&**store).await.expect("boot world");
+    let staff = Arc::new(StaffQueue::new());
+    let mut registry = world_task::base_registry();
+    register_server_commands(&mut registry, &staff).unwrap();
+    let mut mods = mushd::modules::server_modules();
+    mods.push(mushd::modules::worldgen_module(Arc::clone(&llm)));
+    let mut engine =
+        Engine::with_modules(world, registry, mods).expect("module + worldgen registration");
+    mushd::modules::boot_modules(&mut engine, &**store)
+        .await
+        .expect("module boot");
+    let sessions = Arc::new(SessionManager::new());
+    let handles = world_task::spawn_persist(
+        engine,
+        Arc::clone(&sessions),
+        ServerDeps {
+            store: Arc::clone(store),
+            guard: Arc::clone(guard),
+            staff,
+            llm: Some(llm),
+        },
+    );
+    (sessions, handles)
+}
+
+/// Set a zone theme, `@gen` a room draft (async), fence so both writes land,
+/// then reboot from the store alone and assert the theme resolves and the
+/// reloaded draft still accepts. Ungated + Redis-gated below.
+async fn worldgen_round_trip(store: Arc<dyn ObjectStore>) {
+    const DRAFT_DESC: &str =
+        "A wide plaza survives the reboot, its dry fountain choked with leaves.";
+    const THEME_STYLE: &str = "sun-bleached art-deco boardwalk";
+    let guard = Arc::new(IpGuard::new());
+
+    // --- first boot: theme a zone, generate + persist a draft. -----------
+    let mock = Arc::new(MockProvider::new("openrouter"));
+    mock.push_response(wg_tool_resp(DRAFT_DESC));
+    let llm = wg_service(&mock);
+    let (sessions, handles) = boot_worldgen_rig(&store, &guard, Arc::clone(&llm)).await;
+    let world = handles.handle.clone();
+    let mut god_rx = attach_direct(&sessions, &world, 1, GOD, "god").await;
+
+    // A Zone Master Object carrying the theme (a `worldgen.theme` obj attr).
+    god_cmd(&world, "@create Downtown").await;
+    god_cmd(&world, "@set Downtown=ZONE_MASTER").await;
+    god_cmd(
+        &world,
+        &format!("@theme Downtown=style_guide:{THEME_STYLE}"),
+    )
+    .await;
+    expect_text(&mut god_rx, "Theme style_guide set").await;
+
+    // A room in the zone (teleport in so `here` resolves), then @gen it — the
+    // MockProvider returns the canned draft through the real async path.
+    god_cmd(&world, "@dig/teleport Plaza").await;
+    god_cmd(&world, "@zone here=Downtown").await;
+    god_cmd(&world, "@gen here=A wide plaza with a dry fountain.").await;
+    // "Draft ready" is delivered in the same world-loop iteration that queues
+    // the draft's persist batch, so seeing it means the batch is queued.
+    expect_text(&mut god_rx, "Draft ready").await;
+
+    // Fence: an ack-gated create returns only once the strictly-ordered writer
+    // has acknowledged its batch — so the draft's fire-and-forget batch (queued
+    // before it) has certainly landed in the store.
+    world.create_player("Fence").await.expect("fence create");
+
+    // --- second boot: rebuild from the store alone. ----------------------
+    let mock2 = Arc::new(MockProvider::new("openrouter"));
+    let (sessions2, handles2) = boot_worldgen_rig(&store, &guard, wg_service(&mock2)).await;
+    let world2 = handles2.handle.clone();
+    let mut god_rx2 = attach_direct(&sessions2, &world2, 2, GOD, "god").await;
+
+    // The theme survived (an obj attribute on Downtown): it resolves for the
+    // reloaded Plaza, where God still stands (his teleport persisted).
+    god_cmd(&world2, "@theme/show here").await;
+    let ev = expect_text(&mut god_rx2, THEME_STYLE).await;
+    assert!(
+        text_of(&ev).contains(THEME_STYLE),
+        "reboot must resolve the persisted zone theme"
+    );
+
+    // The draft survived (a worldgen module doc reloaded by boot_modules ->
+    // on_world_loaded): accepting it commits the desc with NO new LLM call.
+    god_cmd(&world2, "@gen/accept").await;
+    expect_text(&mut god_rx2, "Accepted").await;
+    god_cmd(&world2, "look").await;
+    expect_text(&mut god_rx2, "survives the reboot").await;
+    assert_eq!(
+        mock2.call_count(),
+        0,
+        "reboot accept must not call the provider"
+    );
+}
+
+/// The worldgen round trip over an in-memory store — ungated, so CI proves the
+/// theme (obj attr) + draft (module doc) write-through and reload wiring
+/// without a live Redis.
+#[tokio::test(flavor = "multi_thread")]
+async fn worldgen_persistence_round_trip_in_memory() {
+    worldgen_round_trip(Arc::new(InMemoryStore::new())).await;
+}
+
+/// The same round trip over a live Redis — theme obj docs and worldgen module
+/// docs survive a reboot from Redis alone. Gated on `REDIS_URL`; runs in db 9
+/// (dbs 10–15 are claimed by the other gated tests, which run in parallel).
+#[tokio::test(flavor = "multi_thread")]
+async fn worldgen_persistence_round_trip_redis_gated() {
+    let Some(url) = std::env::var("REDIS_URL").ok().filter(|s| !s.is_empty()) else {
+        eprintln!(
+            "skipping worldgen_persistence_round_trip_redis_gated: REDIS_URL not set \
+             (no live Redis on this machine)"
+        );
+        return;
+    };
+    let url = support::redis_url_with_db(&url, 9);
+    let store = mush_store::RedisStore::connect(&url)
+        .await
+        .expect("connect to REDIS_URL");
+    store.wipe_namespaces().await.expect("wipe test namespaces");
+    worldgen_round_trip(Arc::new(store)).await;
+}
+
+// ---------------------------------------------------------------------------
 // M6a sheet-persistence twin: a WoD sheet is an object attribute (treaty
 // ruling 7), so it rides the SAME obj write-through as any @set and reloads
 // with the world — no module namespace, no separate boot load. This proves
@@ -407,6 +596,7 @@ async fn boot_wod_rig(
             store: Arc::clone(store),
             guard: Arc::clone(guard),
             staff,
+            llm: None,
         },
     );
     (sessions, handles)

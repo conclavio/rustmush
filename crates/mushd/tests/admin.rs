@@ -60,6 +60,7 @@ fn spawn_staffed(
             store: Arc::new(InMemoryStore::new()),
             guard: Arc::new(IpGuard::new()),
             staff,
+            llm: None,
         },
     )
 }

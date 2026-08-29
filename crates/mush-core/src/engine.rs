@@ -100,6 +100,13 @@ pub enum ControlMsg {
 /// include `NpcAct { .. }` (M8 agent actions), `WorldgenDraftReady { .. }`
 /// (M7 `@gen` drafts), and `AuthResult { .. }` (M2 login flows). Do not
 /// repurpose those names.
+///
+/// The generic [`WorldCommand::ModuleAsyncDone`] arm (paired with
+/// [`Effect::ModuleAsync`]) carries any of those as an **opaque module
+/// payload** so a module (worldgen in M7, npc in M8) owns its own re-entry
+/// shape without a new core arm per feature: the completion is routed to the
+/// module's registered [`AsyncCompletion`](crate::module::AsyncCompletion)
+/// handler, which decodes the payload and re-validates against current state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorldCommand {
     /// Completion of an [`Effect::SlowTest`]: the fake LLM "answered".
@@ -110,6 +117,20 @@ pub enum WorldCommand {
         correlation: u64,
         /// The produced text, emitted to the actor.
         text: String,
+    },
+    /// Typed completion of an [`Effect::ModuleAsync`] (treaty ruling 3):
+    /// routed in the world task to `module`'s registered
+    /// [`AsyncCompletion`](crate::module::AsyncCompletion) handler. `payload`
+    /// is module-owned JSON, carried as a `String` so the enum stays `Eq`.
+    ModuleAsyncDone {
+        /// The owning module (its [`GameModule::name`](crate::GameModule::name)).
+        module: SmolStr,
+        /// The triggering actor (the handler runs with this as `ctx.actor`).
+        actor: ObjId,
+        /// Correlation id echoed from the originating [`Effect::ModuleAsync`].
+        correlation: u64,
+        /// Opaque module-owned result payload (JSON as a string).
+        payload: String,
     },
 }
 
@@ -130,6 +151,23 @@ pub enum Effect {
         correlation: u64,
         /// How long the fake call takes.
         seconds: u64,
+    },
+    /// Opaque async work owned by a module (the M7+ LLM re-entry seam). The
+    /// driving loop routes it — by `module` name — to the runtime that holds
+    /// the real service handle (e.g. `mushd`'s `LlmService` for worldgen),
+    /// runs it off the world loop, and re-enters with
+    /// [`WorldCommand::ModuleAsyncDone`]. `mush-core` never interprets
+    /// `payload`; it is module-owned JSON carried as a `String` so the enum
+    /// stays `Eq`.
+    ModuleAsync {
+        /// The owning module (its [`GameModule::name`](crate::GameModule::name)).
+        module: SmolStr,
+        /// The triggering actor, echoed into the completion.
+        actor: ObjId,
+        /// Correlation id echoed into the completion.
+        correlation: u64,
+        /// Opaque module-owned request payload (JSON as a string).
+        payload: String,
     },
 }
 
@@ -946,6 +984,25 @@ impl Engine {
                 tracing::debug!(%actor, correlation, "slowtest completed");
                 out.info(actor, text);
             }
+            WorldCommand::ModuleAsyncDone {
+                module,
+                actor,
+                correlation,
+                payload,
+            } => {
+                // Disjoint field borrows (world mut, registry shared), the
+                // same shape emit_world_event uses. The handler re-validates
+                // against current state (treaty ruling 3).
+                module::apply_async_completion(
+                    &self.registry,
+                    &mut self.world,
+                    out,
+                    module,
+                    actor,
+                    correlation,
+                    &payload,
+                );
+            }
         }
     }
 
@@ -1608,11 +1665,14 @@ mod tests {
         );
         assert!(texts(&out).iter().any(|t| t == "Thinking..."));
         let effects = fx.drain();
-        let Effect::SlowTest {
+        let Some(Effect::SlowTest {
             actor,
             correlation,
             seconds,
-        } = effects.first().cloned().expect("one effect queued");
+        }) = effects.first().cloned()
+        else {
+            panic!("one SlowTest effect queued");
+        };
         assert_eq!((actor, seconds), (GOD, 3));
 
         // The loop would sleep, then re-enter with the typed completion.
@@ -1669,6 +1729,84 @@ mod tests {
                 actor: ObjId(99),
                 correlation: 7,
                 text: "ghost".into(),
+            }),
+            &mut out,
+            &mut fx,
+        );
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn module_async_done_routes_to_registered_completion_handler() {
+        use crate::module::{AsyncCompletion, GameModule, ModError, Registrar};
+        use std::sync::Arc;
+
+        // A tiny module whose completion handler echoes the payload to the
+        // actor and queues one persistence op — proving the world task's
+        // persist side-channel is live during re-entry.
+        struct EchoDone;
+        impl AsyncCompletion for EchoDone {
+            fn on_complete(&self, ctx: &mut Ctx<'_>, correlation: u64, payload: &str) {
+                if ctx.w.get(ctx.actor).is_none() {
+                    return; // re-validate (treaty ruling 3)
+                }
+                ctx.out
+                    .info(ctx.actor, format!("done #{correlation}: {payload}"));
+                ctx.persist(ModuleOp {
+                    ns: SmolStr::new("echo"),
+                    op: crate::module::ModuleWrite::JsonSet {
+                        key: SmolStr::new("last"),
+                        value: serde_json::json!({ "payload": payload }),
+                    },
+                });
+            }
+        }
+        struct EchoModule;
+        impl GameModule for EchoModule {
+            fn name(&self) -> &'static str {
+                "echo"
+            }
+            fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+                reg.async_completion(Arc::new(EchoDone))
+            }
+        }
+
+        let mut world = World::new_minimal();
+        world.set_now(1_000);
+        let mut registry = Registry::new();
+        register_core_commands(&mut registry).unwrap();
+        let mut engine = Engine::with_modules(world, registry, vec![Box::new(EchoModule)]).unwrap();
+
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Apply(WorldCommand::ModuleAsyncDone {
+                module: SmolStr::new("echo"),
+                actor: GOD,
+                correlation: 42,
+                payload: "hi".into(),
+            }),
+            &mut out,
+            &mut fx,
+        );
+        assert!(
+            out.events()
+                .iter()
+                .any(|(aud, e)| matches!(aud, Audience::Actor(a) if *a == GOD)
+                    && matches!(e, OutputEvent::Sys(t) if t.to_plain_text() == "done #42: hi"))
+        );
+        // The persist op reached the engine's module-op queue.
+        let ops = engine.take_module_ops();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].ns, "echo");
+
+        // A completion for an unregistered module is dropped, not a panic.
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Apply(WorldCommand::ModuleAsyncDone {
+                module: SmolStr::new("nobody"),
+                actor: GOD,
+                correlation: 1,
+                payload: "x".into(),
             }),
             &mut out,
             &mut fx,

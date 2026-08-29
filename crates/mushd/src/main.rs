@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mush_core::{ControlMsg, Engine, Inbound};
+use mush_llm::LlmService;
 use mush_session::{SessionConfig, SessionManager};
 use mush_store::{InMemoryStore, ObjectStore, RedisStore, core_migrations, run_migrations};
 use tracing_subscriber::EnvFilter;
@@ -63,6 +64,20 @@ fn main() -> ExitCode {
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
+
+    // Dev convenience: load `.env` from the working directory (or an ancestor)
+    // into the process environment so LLM API keys resolve without exporting
+    // them by hand. Production sets real env vars and ships no `.env`, so a
+    // missing file is normal and silently ignored. `dotenvy::dotenv()` does NOT
+    // override variables already set (real env wins), and never returns or logs
+    // a value. Called here — before the tokio runtime is built — so the
+    // (edition-2024-unsafe) `set_var` it performs internally runs
+    // single-threaded. Keys are read later by name in `LlmService::from_config`.
+    match dotenvy::dotenv() {
+        Ok(path) => tracing::info!(path = %path.display(), "loaded .env"),
+        Err(e) if e.not_found() => {}
+        Err(e) => tracing::warn!(error = %e, "ignoring unreadable .env"),
+    }
 
     let config_path = args
         .iter()
@@ -161,13 +176,30 @@ async fn serve(config: Config) -> Result<(), String> {
         Err(e) => tracing::warn!(error = %e, dir = %config.server.help_dir.display(),
             "help topics failed to load; continuing without them"),
     }
-    // Game modules: the built-ins (comsys, mail, jobs, weather, script) plus
-    // the config-selected rulesets ([rulesets].enabled — M6: "wod"), which
-    // register AFTER the built-ins so their commands/panels/job-queues wire
-    // cleanly and their approval payload handlers see a loaded jobs module.
-    // Then run each namespace's store migrations and hand each module its
-    // persisted boot data — all before the world task starts serving.
+    // M7 LLM service: built from [llm] config, resolving each provider's API
+    // key from its named env var (never inlined in config, never logged). A
+    // keyless clone still boots — `enabled` defaults false, and a provider
+    // whose key env-var is unset is skipped (routes to it fail fast). The
+    // worldgen module and the world task's `Effect::ModuleAsync` driver share
+    // this one handle.
+    let llm =
+        Arc::new(LlmService::from_config(&config.llm).map_err(|e| format!("llm config: {e}"))?);
+    tracing::info!(
+        enabled = config.llm.enabled,
+        providers = config.llm.providers.len(),
+        routes = config.llm.routes.len(),
+        "llm service built"
+    );
+
+    // Game modules: the built-ins (comsys, mail, jobs, weather, script), then
+    // the M7 worldgen module, then the config-selected rulesets
+    // ([rulesets].enabled — M6: "wod"). Everything after the built-ins
+    // registers cleanly against the one registry; rulesets go last so their
+    // approval payload handlers see a loaded jobs module. Then run each
+    // namespace's store migrations and hand each module its persisted boot
+    // data — all before the world task starts serving.
     let mut mods = modules::server_modules();
+    mods.push(modules::worldgen_module(Arc::clone(&llm)));
     let rulesets = modules::ruleset_modules(&config.rulesets.enabled)
         .map_err(|e| format!("ruleset selection: {e}"))?;
     if !rulesets.is_empty() {
@@ -228,6 +260,7 @@ async fn serve(config: Config) -> Result<(), String> {
             store: Arc::clone(&store),
             guard: Arc::clone(&guard),
             staff,
+            llm: Some(Arc::clone(&llm)),
         },
     );
     let world = handles.handle;

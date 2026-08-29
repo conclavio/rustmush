@@ -24,6 +24,7 @@ import { ScrollbackStore } from "./stores/scrollback.svelte";
 import { SessionStore } from "./stores/session.svelte";
 import { SheetStore } from "./stores/sheet.svelte";
 import { WhoStore } from "./stores/who.svelte";
+import { WorldgenStore } from "./stores/worldgen.svelte";
 import {
   applyTheme,
   loadThemeChoice,
@@ -31,6 +32,7 @@ import {
   toggledTheme,
   type ThemeChoice,
 } from "./theme";
+import { genAcceptLine, genDiscardLine, genRetryLine } from "./worldgen";
 import { WsClient, type EnvelopeOf } from "./ws";
 
 const TOKEN_KEY = "rustmush.token";
@@ -70,6 +72,7 @@ export class GameApp {
   mail = new MailStore();
   sheet = new SheetStore();
   rolls = new RollsStore();
+  worldgen = new WorldgenStore();
 
   screen = $state<Screen>("login");
   /** Login screen notice (e.g. "session expired"). */
@@ -221,6 +224,7 @@ export class GameApp {
     this.mail.clear();
     this.sheet.clear();
     this.rolls.clear();
+    this.worldgen.clear();
     this.session.clear();
     this.roomView = null;
     this.disconnectReason = null;
@@ -413,6 +417,8 @@ export class GameApp {
       }
     } else if (d.feed === this.session.rollFeed) {
       this.rolls.push(d.data);
+    } else if (d.feed === "worldgen.draft") {
+      this.worldgen.applyKeyframe(d.data);
     }
     // Unknown feeds (future modules): ignored — additive evolution.
   }
@@ -588,6 +594,39 @@ export class GameApp {
       this.#sheetRefreshTimer = null;
       this.refreshSheet();
     }, 350);
+  }
+
+  // -- worldgen -------------------------------------------------------------
+
+  /** `@gen/accept` — the panel's Accept button. Writes every field of the
+   * current draft through the normal attribute path and clears the draft.
+   * The server has no "cleared" push (see `WorldgenStore`'s docs), so the
+   * panel clears optimistically the moment the Line is sent. */
+  worldgenAccept(): void {
+    this.#sendGenLine(genAcceptLine());
+    this.worldgen.clear();
+  }
+
+  /** `@gen/discard` — the panel's Discard button. */
+  worldgenDiscard(): void {
+    this.#sendGenLine(genDiscardLine());
+    this.worldgen.clear();
+  }
+
+  /** `@gen/retry [guidance]` — the panel's Retry button (with the small
+   * guidance input, or none). Keeps the draft on screen, marked pending,
+   * until the regenerated one arrives (an off-loop LLM call — can take a
+   * few seconds). */
+  worldgenRetry(guidance: string): void {
+    this.#sendGenLine(genRetryLine(guidance));
+    this.worldgen.markPending();
+  }
+
+  #sendGenLine(line: string): void {
+    this.scrollback.pushText("ev-echo", `> ${line}`);
+    if (!this.client.sendLine(line)) {
+      this.scrollback.pushText("ev-sys ev-local", "Not connected — command dropped.");
+    }
   }
 
   // -- misc ---------------------------------------------------------------

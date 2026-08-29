@@ -19,7 +19,7 @@ npm run dev          # vite dev server; proxies /api and /ws to mushd
 ```
 npm run build      # typecheck (svelte-check) + vite build -> web/dist
 npm run check      # svelte-check only
-npm test           # vitest run (139 tests: ws, render, stores, auth, sheet, roll, ...)
+npm test           # vitest run (158 tests: ws, render, stores, auth, sheet, roll, worldgen, ...)
 npm run test:watch # vitest watch mode
 ```
 
@@ -65,12 +65,13 @@ src/
 │   ├── ChannelTabs.svelte    # tab bar: color chips + unread badges
 │   ├── ChannelView.svelte    # one channel's backlog/live view + alias input
 │   ├── WhoRail.svelte        # who table, idle ticking, refresh
-│   ├── RightPanel.svelte     # tabs: Mail / Room / Sheet / Rolls (each feature-gated)
+│   ├── RightPanel.svelte     # tabs: Mail / Room / Sheet / Rolls / Build (each feature-gated)
 │   ├── MailPanel.svelte      # folders + entries; open = `@mail <n>`
 │   ├── ComposeModal.svelte   # one-shot `@mail/quick`
 │   ├── RoomPanel.svelte      # latest RoomView; click-to-run exits
 │   ├── SheetPanel.svelte     # schema-driven character sheet (M6b — see below)
-│   └── RollsPanel.svelte     # wod.roll readout: dice, successes/1s, botch (M6b)
+│   ├── RollsPanel.svelte     # wod.roll readout: dice, successes/1s, botch (M6b)
+│   └── WorldgenPanel.svelte  # worldgen.draft preview: accept/retry/discard (M7 — see below)
 └── lib/
     ├── proto/                # GENERATED wire types (cargo gen-ts) — committed
     ├── ws.ts                 # WsClient: connect/send/dispatch/resume/keepalive/backoff
@@ -78,9 +79,10 @@ src/
     ├── render.ts             # pure span/line renderers (mirrors mush-ansi formatting)
     ├── sheet.ts               # sheet schema/doc types + rendering helpers (hand-written; see below)
     ├── roll.ts                # Owod20Outcome types + roll-readout formatting (hand-written)
+    ├── worldgen.ts             # worldgen.draft payload parsing + @gen/* Line builders (hand-written)
     ├── auth.ts               # /api/auth/* wrappers + friendly error mapping
     ├── theme.ts, storage.ts, history.ts
-    └── stores/               # rune stores: scrollback, channels, who, mail, session, sheet, rolls
+    └── stores/               # rune stores: scrollback, channels, who, mail, session, sheet, rolls, worldgen
 ```
 
 ## WsClient (`src/lib/ws.ts`)
@@ -215,6 +217,71 @@ unmount). Plus a manual "↻" refresh button. The real fix is a `wod.sheet`
 how `wod.roll` already pushes on every `+roll` — out of scope here (crosses
 into `crates/ruleset-wod`), but `SheetStore.applyDelta` is already written
 and tested for the day it lands.
+
+## Worldgen draft panel — Build tab (M7)
+
+The Build tab is the builder-facing preview for `@gen` (`crates/mush-worldgen`,
+design doc `docs/design/03-llm-integration.md` §5): a room description the
+LLM drafted from the builder's brief, shown side-by-side with the room's
+current desc, pending `@gen/accept|retry|discard`. **Nothing the model
+produces is ever written by the client** — every button sends the existing
+`@gen/*` command as a plain Line (same pattern as the mail panel's
+`@mail/quick`); only the server, via `@gen/accept`, ever commits a draft,
+and only through the ordinary attribute-set path.
+
+**Contract** (`$lib/worldgen.ts`'s `parseWorldgenDraft`, from
+`crates/mush-worldgen/src/commands.rs`'s `emit_draft_panel`, payload shape
+from `DraftPayload`/`StoredDraft` in `crates/mush-worldgen/src/data.rs`):
+
+```jsonc
+{
+  "room": "#42",                 // ObjId::to_string()
+  "room_name": "The Pawn Shop",
+  "builder": "#7",
+  "model": "claude-opus-5",
+  "current": { "desc": "…the room's desc attribute right now…" },
+  "proposed": {
+    "desc": "…generated desc…",
+    "short_desc": "a cramped pawn shop",
+    "details": [ { "keyword": "counter", "desc": "…" } ],
+    "exits": [ { "direction": "north", "name": "Out", "desc": "…", "transit_msg": "…" } ]
+  }
+}
+```
+
+`desc` is the model's only server-required field; everything else may be
+empty or absent and is parsed defensively (mirrors the sheet/roll panels'
+`str`/`obj` guards — never throws, degrades to empty on anything
+malformed). `desc` is the only field the server sends a `current`
+counterpart for, so that's the only side-by-side compare; `short_desc`,
+`details`, and `exits` render proposed-only.
+
+**Gating**: the Build tab is feature-gated on `SessionStore.worldgenAvailable`
+(`hello`'s `"worldgen"` feature or `"worldgen.draft"` panel) — fixed ids,
+unlike `sheetFeed`/`rollFeed`, since the worldgen module isn't swapped per
+ruleset. The client has no way to know a viewer's `BUILDER_LLM` power, so
+the tab shows for every viewer once worldgen is enabled server-side; a
+non-builder's `@gen` is simply refused, and the refusal rides `Sys` into
+scrollback like any other permission error — there is no separate
+client-side builder check.
+
+**No query, no delta — accept/discard clear optimistically**: unlike the
+sheet panel, there is no worldgen query handler to re-fetch the current
+draft on demand, and the server never pushes a "draft cleared" frame — a
+`worldgen.draft` keyframe only ever arrives when a fresh draft is *ready*.
+`@gen/accept` and `@gen/discard` both unconditionally clear the
+server-side draft (`commands.rs`'s `gen_accept`/`gen_discard` both call
+`clear_draft`), so `WorldgenStore.clear()` runs the instant the Line is
+sent rather than waiting for confirmation. `@gen/retry` is different: the
+old draft stays live server-side while the (off-loop, several-second) LLM
+call runs, so the panel keeps showing it too, marked `pending`, until the
+regenerated keyframe lands and clears the flag — matching what the server
+actually does (`WorldgenStore.markPending()`/`applyKeyframe()`).
+
+**Retry guidance**: the panel's Retry button opens a single-line optional
+input inline (not a modal); its text is appended verbatim to
+`@gen/retry <guidance>` (newlines collapsed, like the mail quick-send
+fields) or omitted entirely when left blank.
 
 ## Panel hydration (GameApp)
 

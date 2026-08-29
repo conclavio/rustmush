@@ -39,9 +39,12 @@
 //! surface; it has no store to load module data from).
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use mush_core::{Effects, Engine, GameModule, Migration, ModuleBootData, Outbox};
+use mush_llm::LlmService;
 use mush_store::{ModuleOp, ModuleWrite, ObjectStore, WriteBatch};
+use mush_worldgen::WorldgenModule;
 use smol_str::SmolStr;
 
 /// Reserved kv key per module namespace carrying `{"version": N}` — the
@@ -98,6 +101,22 @@ pub fn ruleset_modules(enabled: &[String]) -> Result<Vec<Box<dyn GameModule>>, S
         seen.push(key);
     }
     Ok(mods)
+}
+
+/// The M7 worldgen module, backed by the shared [`LlmService`] handle.
+///
+/// `main.rs` inserts it into the boot list **after** [`server_modules`] (so it
+/// registers after the built-ins) and before the config-selected
+/// [`ruleset_modules`]. It registers regardless of whether the LLM is enabled:
+/// with `[llm].enabled = false` the service's kill switch is engaged, so
+/// `@gen` still parses and defers, and the off-loop generator re-enters a
+/// "disabled" outcome (a keyless clone boots and its worldgen commands answer
+/// cleanly rather than 404). Its persistence namespace (`worldgen`) is disjoint
+/// from every other module's, and it loads its drafts through the same
+/// boot-data path as the rest ([`load_module_boot`]).
+#[must_use]
+pub fn worldgen_module(llm: Arc<LlmService>) -> Box<dyn GameModule> {
+    Box::new(WorldgenModule::new(llm))
 }
 
 /// Read one module's persisted boot data: every kv doc in its namespace
@@ -547,6 +566,44 @@ mod tests {
             Ok(_) => panic!("duplicate ruleset must be rejected"),
         };
         assert!(err.contains("more than once"), "{err}");
+    }
+
+    #[test]
+    fn worldgen_registers_in_the_full_boot_list() {
+        // main.rs's assembly: built-ins THEN worldgen THEN the config-selected
+        // ruleset, sharing one registry. Worldgen registers with a
+        // MockProvider-backed service (no network, no key); its @gen/@theme/@llm
+        // commands and the worldgen.draft panel feed must all wire in cleanly.
+        use mush_llm::{LlmService, MockProvider};
+        use mush_testkit::TestWorld;
+
+        let mock: Arc<dyn mush_llm::LlmProvider> = Arc::new(MockProvider::new("openrouter"));
+        let llm = Arc::new(
+            LlmService::builder()
+                .provider("openrouter", mock)
+                .global_enabled(false)
+                .build(),
+        );
+        let mut mods = server_modules();
+        mods.push(worldgen_module(Arc::clone(&llm)));
+        mods.extend(ruleset_modules(&["wod".to_string()]).unwrap());
+        let tw = TestWorld::with_modules(mods);
+        let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
+        assert_eq!(
+            names,
+            [
+                "comsys", "mail", "jobs", "weather", "script", "worldgen", "wod"
+            ]
+        );
+        assert!(tw.registry().spec_of("@gen").is_some());
+        assert!(tw.registry().spec_of("@theme").is_some());
+        assert!(tw.registry().spec_of("@llm").is_some());
+        assert!(
+            tw.registry()
+                .panel_feeds()
+                .iter()
+                .any(|(feed, _)| feed == "worldgen.draft")
+        );
     }
 
     #[test]

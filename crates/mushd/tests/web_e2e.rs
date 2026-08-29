@@ -159,6 +159,7 @@ async fn boot_inner(
             store: Arc::clone(&store),
             guard: Arc::clone(&guard),
             staff,
+            llm: None,
         },
     );
     let accounts = Arc::new(Accounts::new(Arc::clone(&store), handles.handle.clone(), 3));

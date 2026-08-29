@@ -341,6 +341,7 @@ async fn boot_rig(store: &Arc<dyn ObjectStore>) -> (Arc<SessionManager>, Persist
             store: Arc::clone(store),
             guard: Arc::new(IpGuard::new()),
             staff,
+            llm: None,
         },
     );
     (sessions, handles)

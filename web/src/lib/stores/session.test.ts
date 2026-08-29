@@ -27,3 +27,23 @@ describe("SessionStore.sheetFeed / rollFeed", () => {
     expect(s.rollFeed).toBe("btech.roll");
   });
 });
+
+describe("SessionStore.worldgenAvailable", () => {
+  it("true when the hello advertises the worldgen feature", () => {
+    const s = new SessionStore();
+    s.applyHello({ server: "rustmush", features: ["worldgen"], panels: [] });
+    expect(s.worldgenAvailable).toBe(true);
+  });
+
+  it("true when the hello advertises the worldgen.draft panel, feature absent", () => {
+    const s = new SessionStore();
+    s.applyHello({ server: "rustmush", features: [], panels: ["worldgen.draft"] });
+    expect(s.worldgenAvailable).toBe(true);
+  });
+
+  it("false when neither is advertised", () => {
+    const s = new SessionStore();
+    s.applyHello({ server: "rustmush", features: ["wod"], panels: ["comsys", "mail", "wod.sheet"] });
+    expect(s.worldgenAvailable).toBe(false);
+  });
+});

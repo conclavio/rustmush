@@ -76,10 +76,10 @@ pub use flags::{Flags, Powers, Role};
 pub use lock::{LockExpr, LockParseError, LockType, eval_lock, glob_match, parse_lock};
 pub use matchit::{MatchErr, match_object};
 pub use module::{
-    ContextOutcome, EventHook, GameModule, HookPoint, InputContext, JobQueueSpec, Migration,
-    ModError, ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, PanelFeedHandle, QueryHandler,
-    Registrar, Scene, SceneId, StackedContext, TickCadence, TickHandler, WeatherQuery, WorldEvent,
-    WorldEventKind, WorldObserver, WxSnapshot,
+    AsyncCompletion, ContextOutcome, EventHook, GameModule, HookPoint, InputContext, JobQueueSpec,
+    Migration, ModError, ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, PanelFeedHandle,
+    QueryHandler, Registrar, Scene, SceneId, StackedContext, TickCadence, TickHandler,
+    WeatherQuery, WorldEvent, WorldEventKind, WorldObserver, WxSnapshot,
 };
 pub use obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
 pub use output::{Audience, ConnId, Outbox, name_span, obj_ref, room_view};

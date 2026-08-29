@@ -265,6 +265,90 @@ pub async fn boot_module_server(dir: &Path, server_name: &str, boss_password: &s
             store: Arc::clone(&store),
             guard: Arc::new(mushd::ipguard::IpGuard::new()),
             staff,
+            llm: None,
+        },
+    );
+    let world = handles.handle;
+    let accounts = Arc::new(mushd::accounts::Accounts::new(
+        Arc::clone(&store),
+        world.clone(),
+        3,
+    ));
+    let bridge = Arc::new(mushd::ssh_bridge::SshBridge::new(
+        accounts,
+        Arc::clone(&sessions),
+        world,
+        Arc::new(mushd::ipguard::IpGuard::new()),
+    ));
+    mushd::ssh_bridge::start_listener(
+        "127.0.0.1:0".parse().unwrap(),
+        dir,
+        server_name.to_string(),
+        bridge,
+    )
+    .await
+    .expect("listener")
+    .addr()
+}
+
+/// Boot the full production wiring exactly like [`boot_module_server`], but
+/// with the M7 worldgen module registered against the supplied `llm` handle
+/// and that same handle installed on the world task's
+/// [`ServerDeps`](mushd::world_task::ServerDeps) — so a `@gen`'s deferred
+/// `Effect::ModuleAsync` is driven off-loop through `run_worldgen_async`
+/// against `llm` and re-enters as `WorldCommand::ModuleAsyncDone`, the real
+/// server's async path. Tests inject a `MockProvider`-backed service (no
+/// network, no key) and keep their own `Arc` to it to assert on the requests
+/// it received. Returns the bound SSH address.
+pub async fn boot_worldgen_server(
+    dir: &Path,
+    server_name: &str,
+    boss_password: &str,
+    llm: Arc<mush_llm::LlmService>,
+) -> SocketAddr {
+    use mush_session::{SessionConfig, SessionManager};
+
+    std::fs::create_dir_all(dir).unwrap();
+    let sessions = Arc::new(SessionManager::with_config(SessionConfig {
+        linkdead_grace: Duration::from_secs(120),
+        ..SessionConfig::default()
+    }));
+    let store: Arc<dyn mush_store::ObjectStore> = Arc::new(mush_store::InMemoryStore::new());
+    store
+        .create_account(mush_store::AccountRec {
+            name: "boss".to_string(),
+            argon2_hash: mushd::accounts::hash_password(boss_password).unwrap(),
+            created: 0,
+            characters: vec![mush_store::CharacterRef {
+                id: mush_core::GOD,
+                name: "God".to_string(),
+            }],
+        })
+        .await
+        .unwrap();
+
+    let staff = Arc::new(mushd::staff::StaffQueue::new());
+    let mut registry = mushd::world_task::base_registry();
+    mushd::staff::register_server_commands(&mut registry, &staff).unwrap();
+
+    let mut world = mush_core::World::new_minimal();
+    world.set_now(mushd::unix_now_s());
+    // main.rs boot order: built-ins, then worldgen (with the shared service).
+    let mut mods = mushd::modules::server_modules();
+    mods.push(mushd::modules::worldgen_module(Arc::clone(&llm)));
+    let mut engine = mush_core::Engine::with_modules(world, registry, mods).unwrap();
+    mushd::modules::boot_modules(&mut engine, &*store)
+        .await
+        .unwrap();
+
+    let handles = mushd::world_task::spawn_persist(
+        engine,
+        Arc::clone(&sessions),
+        mushd::world_task::ServerDeps {
+            store: Arc::clone(&store),
+            guard: Arc::new(mushd::ipguard::IpGuard::new()),
+            staff,
+            llm: Some(llm),
         },
     );
     let world = handles.handle;

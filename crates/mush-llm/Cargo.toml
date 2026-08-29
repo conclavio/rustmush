@@ -6,12 +6,40 @@ license.workspace = true
 authors.workspace = true
 description = "LLM provider layer: Anthropic + OpenAI-compatible adapters, routes, budgets, audit"
 
+[features]
+# The two wire adapters are feature-gated (design 03 §2): each pulls the HTTP
+# stack. `mock` gives a network-free provider for LlmService/worldgen tests and
+# is on by default so downstream test builds get it for free.
+default = ["anthropic", "openai", "mock"]
+anthropic = ["dep:reqwest", "dep:eventsource-stream"]
+openai = ["dep:reqwest", "dep:eventsource-stream"]
+mock = []
+
 [dependencies]
+# ObjId in CallCtx (treaty ruling 9: mush-llm → mush-core accepted).
 mush-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+smol_str.workspace = true
+# service.rs always needs these (retry schedule, per-provider QPS, async trait,
+# stream type, semaphores/time); the wire adapters add reqwest/eventsource.
+tokio = { workspace = true }
+futures.workspace = true
+async-trait.workspace = true
+backon.workspace = true
+governor.workspace = true
+sha2.workspace = true
+reqwest = { workspace = true, optional = true }
+eventsource-stream = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Wire tests stand up a local mock HTTP server and assert the OUTBOUND request
+# shape + parse canned responses. NO real network, NO real keys.
+wiremock.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+futures.workspace = true
 
 [lints]
 workspace = true

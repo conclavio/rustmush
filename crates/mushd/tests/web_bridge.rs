@@ -76,6 +76,7 @@ async fn rig_with(config: SessionConfig) -> Rig {
             store: Arc::clone(&store),
             guard: Arc::clone(&guard),
             staff,
+            llm: None,
         },
     );
     let accounts = Arc::new(Accounts::new(Arc::clone(&store), handles.handle.clone(), 3));

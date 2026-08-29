@@ -99,6 +99,7 @@ async fn boot_server(dir: &Path) -> SocketAddr {
             store: Arc::clone(&store),
             guard: Arc::new(IpGuard::new()),
             staff,
+            llm: None,
         },
     );
     let world = handles.handle;

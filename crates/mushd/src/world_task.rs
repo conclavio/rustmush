@@ -76,6 +76,7 @@ use mush_core::{
     Outbox, Registry, Role, ScheduledKind, StepOutcome, TickCadence, World, WorldCommand,
     WorldEvent, is_ignoring, narrative_actor, register_core_commands, register_engine_commands,
 };
+use mush_llm::LlmService;
 use mush_proto::{OutputEvent, RichText};
 use mush_session::{CharKey, ConnId as SessConnId, DetachOutcome, DetachReason, SessionManager};
 use mush_store::{InMemoryStore, ObjectStore};
@@ -262,17 +263,25 @@ pub struct ServerDeps {
     pub guard: Arc<IpGuard>,
     /// The queue `register_server_commands` handlers push into.
     pub staff: Arc<StaffQueue>,
+    /// The M7 LLM service handle. Present in the real server (built from
+    /// `[llm]` config); [`spawn_effects`] uses it to run a module's deferred
+    /// [`Effect::ModuleAsync`] (worldgen `@gen`) off the world loop and
+    /// re-enter as [`WorldCommand::ModuleAsyncDone`]. `None` for the compat
+    /// [`spawn`] and lightweight tests that boot no LLM-driven module — such
+    /// an effect is then logged and dropped, never a panic.
+    pub llm: Option<Arc<LlmService>>,
 }
 
 impl ServerDeps {
     /// Throwaway deps for tests and the compat [`spawn`]: fresh in-memory
-    /// store, fresh guard, fresh (never-populated) staff queue.
+    /// store, fresh guard, fresh (never-populated) staff queue, no LLM.
     #[must_use]
     pub fn in_memory() -> ServerDeps {
         ServerDeps {
             store: Arc::new(InMemoryStore::new()),
             guard: Arc::new(IpGuard::new()),
             staff: Arc::new(StaffQueue::new()),
+            llm: None,
         }
     }
 }
@@ -401,6 +410,10 @@ async fn run(
 ) {
     tracing::info!("world task running");
     let boot_unix = unix_now_s();
+    // The LLM service handle (built from [llm] config) that drives a module's
+    // deferred async work off-loop; cloned out of `deps` so the loop keeps
+    // borrowing `deps` (staff queue) freely each iteration.
+    let llm = deps.llm.clone();
     let mut out = Outbox::new();
     let mut fx = Effects::new();
     let mut serial: u64 = 0;
@@ -535,7 +548,7 @@ async fn run(
             // layer). Later steps' output may overtake the held lines by
             // up to one ack round-trip — accepted.
             let resolved = resolve_sends(&engine.world, &mut out);
-            spawn_effects(&mut fx, &tx);
+            spawn_effects(&mut fx, &tx, llm.as_ref());
             match flush_dirty(&mut engine, &writer, &mut serial, true, &mut health).await {
                 FlushOutcome::Queued(Some(ack_rx)) => {
                     let sessions = Arc::clone(&sessions);
@@ -575,7 +588,7 @@ async fn run(
             }
         } else {
             deliver_and_police(&mut engine, &sessions, &mut out, &mut fx, &tx);
-            spawn_effects(&mut fx, &tx);
+            spawn_effects(&mut fx, &tx, llm.as_ref());
             // Write-through: one batch per processed message that dirtied
             // the world (fire-and-forget; the writer preserves order and
             // retries).
@@ -602,7 +615,7 @@ async fn run(
                 &mut fx,
             );
             deliver_and_police(&mut engine, &sessions, &mut out, &mut fx, &tx);
-            spawn_effects(&mut fx, &tx);
+            spawn_effects(&mut fx, &tx, llm.as_ref());
             let _ = flush_dirty(&mut engine, &writer, &mut serial, false, &mut health).await;
         }
         let staff_shutdown = run_staff_ops(&deps, &sessions, &writer, &staff_ops, store_ops).await;
@@ -628,7 +641,7 @@ async fn run(
             // drain → BGSAVE) runs when this task's join resolves.
             let outcome = engine.step(Inbound::Control(ControlMsg::Shutdown), &mut out, &mut fx);
             deliver_and_police(&mut engine, &sessions, &mut out, &mut fx, &tx);
-            spawn_effects(&mut fx, &tx);
+            spawn_effects(&mut fx, &tx, llm.as_ref());
             let _ = flush_dirty(&mut engine, &writer, &mut serial, false, &mut health).await;
             debug_assert_eq!(outcome, StepOutcome::Shutdown);
             tracing::info!("world task shut down cleanly");
@@ -1584,7 +1597,7 @@ fn deliver(world: &World, sessions: &SessionManager, out: &mut Outbox) -> Vec<Se
 /// weak one), so the world task outlives every pending completion; once the
 /// last handle *and* the last effect are gone, the channel closes and the
 /// task ends.
-fn spawn_effects(fx: &mut Effects, tx: &mpsc::WeakSender<WorldMsg>) {
+fn spawn_effects(fx: &mut Effects, tx: &mpsc::WeakSender<WorldMsg>, llm: Option<&Arc<LlmService>>) {
     for effect in fx.drain() {
         match effect {
             Effect::SlowTest {
@@ -1614,6 +1627,65 @@ fn spawn_effects(fx: &mut Effects, tx: &mpsc::WeakSender<WorldMsg>) {
                         tracing::debug!(correlation, "slowtest completion after shutdown dropped");
                     }
                 });
+            }
+            // M7 LLM re-entry seam (mush-core `Effect::ModuleAsync`, treaty
+            // ruling 3): a module snapshotted context synchronously and
+            // deferred its async work; run it OFF the world loop against the
+            // service handle mushd holds, then re-enter as the typed
+            // `WorldCommand::ModuleAsyncDone`. Routing is by module name —
+            // mush-core never interprets the payload.
+            Effect::ModuleAsync {
+                module,
+                actor,
+                correlation,
+                payload,
+            } => {
+                let Some(tx) = tx.upgrade() else {
+                    tracing::debug!(%module, correlation, "world channel closing; module-async dropped");
+                    continue;
+                };
+                // worldgen `@gen`: run the LLM room generator off-loop and
+                // re-enter with the serialized GenOutcome. When the service is
+                // absent (repl / a test rig with no LLM) the effect is dropped
+                // — but the real server always constructs one, even when
+                // `[llm].enabled = false` (its kill switch is engaged, so the
+                // generator re-enters a "disabled" outcome instead). The
+                // `.as_str()` borrow ends with the condition, so `module` is
+                // free to move into the completion below.
+                if module.as_str() == mush_worldgen::NS {
+                    let Some(llm) = llm.cloned() else {
+                        tracing::warn!(
+                            correlation,
+                            "worldgen Effect::ModuleAsync dropped: no LlmService on this world task"
+                        );
+                        continue;
+                    };
+                    tokio::spawn(async move {
+                        let result = mush_worldgen::run_worldgen_async(&llm, &payload).await;
+                        let done = WorldCommand::ModuleAsyncDone {
+                            module,
+                            actor,
+                            correlation,
+                            payload: result,
+                        };
+                        if tx
+                            .send(WorldMsg::Inbound(Inbound::Apply(done)))
+                            .await
+                            .is_err()
+                        {
+                            tracing::debug!(
+                                correlation,
+                                "worldgen completion after shutdown dropped"
+                            );
+                        }
+                    });
+                } else {
+                    tracing::warn!(
+                        %module,
+                        correlation,
+                        "Effect::ModuleAsync for an unrouted module dropped"
+                    );
+                }
             }
         }
     }

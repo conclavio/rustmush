@@ -9,9 +9,19 @@ description = "LLM worldbuilding: themes, @gen draft/review pipeline"
 [dependencies]
 mush-core.workspace = true
 mush-llm.workspace = true
+mush-proto.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+smol_str.workspace = true
+sha2.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+# The in-process engine driver: boot the worldgen module, dispatch commands,
+# drive the Effects/Inbound re-entry path directly.
+mush-testkit.workspace = true
+# The async defer-path tests await run_worldgen_async against a MockProvider.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true

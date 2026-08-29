@@ -306,6 +306,79 @@ under the jobs module's `mod:jobs:*` namespace like any other queue. Do not
 hand-edit a `sheet:wod` attribute while the server runs (same rule as any
 `obj:*` write).
 
+## LLM layer (M7): worldgen, budgets, kill switch
+
+The `[llm]` block configures the multi-provider LLM layer that backs `@gen`
+(LLM-assisted room description — `help worldgen`) and, later, NPC agents. It is
+**off by default** (`enabled = false`): a keyless clone boots, worldgen commands
+still register, and `@gen` answers "LLM features are disabled." Turn it on only
+once a provider key is in the environment.
+
+### Providers and model-prefix routing
+
+Two wire protocols, one neutral layer. Which provider serves a call is decided by
+the **model-id prefix** on the route, not by naming a provider:
+
+- a model id `anthropic/<model>` → the provider registered as `anthropic` (the
+  `anthropic/` prefix is stripped; the Anthropic Messages API is used) — for
+  prompt-cached lore / critical scenes;
+- **any other** model id (e.g. `z-ai/glm-5.3`,
+  `deepseek/deepseek-v4-flash-0731`) → the provider registered as `openrouter`
+  (OpenAI-compatible, passed verbatim).
+
+Keep the two provider ids exactly `openrouter` and `anthropic`. The starter
+models in `mushd.toml.example` are OpenRouter reasoning models: `@gen`
+(`worldgen_room`) routes to `z-ai/glm-5.3` at `reasoning = "low"`. **These are
+reasoning models — `max_tokens` must leave headroom for reasoning tokens on top
+of the visible output**, or the reply comes back empty.
+
+### API keys: env vars, never config, never logs
+
+A key is **never** written in `mushd.toml`. Each provider names an environment
+variable (`api_key_env = "OPENROUTER_API_KEY"` / `"ANTHROPIC_API_KEY"`); `mushd`
+reads it at boot and never logs it, Debug-prints it, or puts it in a prompt.
+
+- **Production**: set the real env vars (systemd `Environment=` /
+  `EnvironmentFile=`, or your process manager). Ship no `.env`.
+- **Dev**: `mushd` loads a `.env` from the working directory (or an ancestor) at
+  boot — put `OPENROUTER_API_KEY=...` / `ANTHROPIC_API_KEY=...` there. Real env
+  vars always win (a var already set is never overridden), and a missing `.env`
+  is normal. Keep `.env` out of version control (it is `.gitignore`d).
+
+A provider whose key env-var is unset is **skipped**: any route to it fails fast
+with a clear staff-visible error, and the absence is logged by env-var *name*
+only — so a clone with only one key still runs the routes it can serve.
+
+### Budgets, concurrency, kill switch
+
+- `[llm.budgets]` — layered daily ceilings (UTC rollover), any of which may cap
+  tokens, USD cost, or both: `global`, `per_feature` (keyed by route), and
+  `per_actor_default` (the per-builder `BUILDER_LLM` quota). A call is refused
+  **pre-flight** if any applicable layer would be exceeded. OpenRouter reports
+  real spend (`usage.cost`); Anthropic cost is estimated from the route
+  provider's per-MTok prices.
+- `[llm.concurrency]` — `max_interactive` / `max_background` in-flight caps
+  (plus optional `[llm.retry]` / `[llm.circuit_breaker]`).
+- **Kill switch** — `[llm].enabled = false` disables everything; staff toggle it
+  live (no restart) with `@llm/disable` / `@llm/enable`, inspect spend with
+  `@llm/budget`, and read recent calls with `@llm/log [<feature>]` (Wizard).
+  Every call is metered, attributed to the triggering actor, and audited — the
+  prompt is stored only as a SHA-256 hash plus a ≤200-char summary, never the
+  full text.
+
+### Persistence
+
+Worldgen adds one module namespace, `mod:worldgen:*` — one
+`mod:worldgen:draft:{room}:{builder}` JSON doc per pending draft, written
+through like any module op and reloaded at boot (a draft survives a restart;
+accept it afterward). It registers no migrations. **Zone themes are not module
+docs** — a theme is a plain `worldgen.theme` attribute on the zone/room/`#0`
+object, so it rides `obj:*` write-through and reloads with the world. Both are
+CI-tested for the reboot round trip
+(`crates/mushd/tests/persistence.rs::worldgen_persistence_round_trip_*`).
+Nothing the LLM produces is ever auto-committed: `@gen` yields a draft the
+builder reviews and `@gen/accept`s through the ordinary attribute path.
+
 ## Key layout reference
 
 All keys live in one Redis logical database (db 0 by default). From
@@ -332,7 +405,7 @@ and `ban:*` are read live and are safe to inspect
 
 Note for shared instances: the REDIS_URL-gated tests **wipe the `obj:*`,
 `account:*`, `ban:*`, `token:*`, `meta:*`, and `mod:*` namespaces** in logical dbs
-11–15 *and* in whatever database `REDIS_URL` itself points at (db 0 unless
+9–15 *and* in whatever database `REDIS_URL` itself points at (db 0 unless
 the URL says otherwise — mush-store's suite uses the URL as given). Never
 point `REDIS_URL` at an instance holding real data — module data (channels,
 mail, jobs) is wiped along with the world; use a disposable instance. The

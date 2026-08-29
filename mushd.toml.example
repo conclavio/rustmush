@@ -54,11 +54,94 @@ enabled = ["wod"]                  # (M6) oWoD20 — the only ruleset available 
 # "+chargen/template <mortal|vampire|mage|werewolf>". A character is exactly one
 # template, and its sheet carries only that splat's sections.
 
-[llm]
-enabled = false                    # (reserved — LLM features are M7+)
-# [llm.providers.anthropic]
-# kind = "anthropic"
-# api_key = { env = "ANTHROPIC_API_KEY" }
-# [llm.routes.worldgen_room]
-# provider = "anthropic"
-# model = "claude-opus-5"
+[llm]                              # (M7) LLM layer: worldgen (@gen), budgets, kill switch
+# Master switch. FALSE by default so a keyless clone boots and passes tests;
+# worldgen commands still register, but @gen answers "LLM features are
+# disabled." Flip to true once at least one provider below has its API key in
+# the environment (see keys note under [llm.providers]).
+enabled = false
+
+# --- Providers -------------------------------------------------------------
+# Two wire protocols. Routing is by the MODEL-ID PREFIX on each route below,
+# NOT by naming a provider here: a model id "anthropic/<model>" goes to the
+# provider registered as `anthropic` (prefix stripped); ANY other model id
+# (e.g. "z-ai/glm-5.3") goes to the provider registered as `openrouter`,
+# verbatim. So keep these two ids exactly as written.
+#
+# API keys are NEVER inlined here. Each provider names an ENV VAR
+# (`api_key_env`); mushd reads it at boot and never logs the value. In dev,
+# mushd loads a `.env` in the working directory (real env vars win); in prod,
+# set real env vars (ANTHROPIC_API_KEY / OPENROUTER_API_KEY). A provider whose
+# key env-var is unset is skipped — any route to it then fails fast with a
+# clear staff-visible error, so a clone with only one key still runs the
+# routes it can serve.
+
+[llm.providers.openrouter]
+kind = "openai"                    # OpenAI-compatible chat-completions wire
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+requests_per_minute = 60           # per-provider QPS ceiling (governor)
+referer = "https://github.com/rustmush"   # OpenRouter attribution (HTTP-Referer)
+title = "rustmush"                 # OpenRouter attribution (X-Title)
+
+[llm.providers.anthropic]
+kind = "anthropic"                 # Anthropic Messages API (prompt-cached lore)
+base_url = "https://api.anthropic.com"
+api_key_env = "ANTHROPIC_API_KEY"
+requests_per_minute = 60
+anthropic_version = "2023-06-01"
+# Anthropic has no per-call cost field, so cost is ESTIMATED as tokens x these
+# per-MTok prices (OpenRouter reports real usage.cost instead — no estimate).
+price_input_per_mtok = 5.0
+price_output_per_mtok = 25.0
+
+# --- Feature routes --------------------------------------------------------
+# Each LLM feature maps to one route (route name == feature key). A route sets
+# the model, an output-token ceiling, a timeout, and the reasoning effort.
+# THESE ARE REASONING MODELS: max_tokens must leave headroom for reasoning
+# tokens on top of the visible output, or the answer comes back empty. The
+# starter models below are the user's validated OpenRouter set.
+
+[llm.routes.worldgen_room]         # @gen here=<prose> — single-room draft
+model = "z-ai/glm-5.3"
+max_tokens = 1500                  # room desc + reasoning headroom
+timeout_s = 90
+reasoning = "low"                  # low | medium | high | off
+
+[llm.routes.worldgen_brief]        # whole-building brief (M10 seam; route reserved now)
+model = "z-ai/glm-5.3-flash"
+max_tokens = 2000
+timeout_s = 120
+reasoning = "low"
+
+[llm.routes.ambience]              # weather/ambient flavor (M10)
+model = "deepseek/deepseek-v4-flash-0731"
+max_tokens = 400
+timeout_s = 30
+reasoning = "off"                  # deepseek: reasoning disabled -> clean short output
+
+[llm.routes.npc_dialogue_major]    # critical / cached path — Anthropic direct (M8)
+model = "anthropic/claude-opus-5"  # "anthropic/" prefix -> Anthropic, stripped
+max_tokens = 1024
+timeout_s = 30
+reasoning = "low"
+
+# --- Concurrency -----------------------------------------------------------
+[llm.concurrency]
+max_interactive = 8                # dialogue + single-room worldgen in flight
+max_background = 3                 # batch gen / summarization / ambience
+
+# --- Budgets (daily, UTC rollover) -----------------------------------------
+# Every layer that applies must pass a pre-call check; any layer may cap
+# tokens, cost (USD), or both. OpenRouter cost is real (usage.cost);
+# Anthropic cost is estimated from the per-MTok prices above.
+[llm.budgets]
+global = { tokens = 5_000_000, cost_usd = 5.0 }   # server-wide/day
+per_actor_default = { cost_usd = 1.0 }            # per builder/day (BUILDER_LLM quota)
+
+[llm.budgets.per_feature]
+worldgen_room = { cost_usd = 2.0 }
+
+# --- Reliability (optional; sane defaults shown) ---------------------------
+# [llm.retry]                      # min_delay_ms=500 max_delay_ms=30000 factor=2.0 max_retries=3 jitter=true
+# [llm.circuit_breaker]            # consecutive_failures=5 open_secs=60

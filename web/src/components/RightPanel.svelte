@@ -1,23 +1,28 @@
 <script lang="ts">
-  // Right rail: tabbed Mail / Room / Sheet / Rolls panels. Mail/Sheet/Rolls
-  // are gated on the server's hello features/panels — Sheet and Rolls key
-  // off any panel feed ending `.sheet`/`.roll` (SessionStore.sheetFeed /
-  // .rollFeed), never a hardcoded ruleset id, so this tab bar needs no
-  // change when Vampire/Mage/Werewolf (or a future ruleset) come online.
+  // Right rail: tabbed Mail / Room / Sheet / Rolls / Build panels.
+  // Mail/Sheet/Rolls/Build are gated on the server's hello features/panels —
+  // Sheet and Rolls key off any panel feed ending `.sheet`/`.roll`
+  // (SessionStore.sheetFeed / .rollFeed), never a hardcoded ruleset id, so
+  // this tab bar needs no change when Vampire/Mage/Werewolf (or a future
+  // ruleset) come online. Build (the worldgen draft preview) keys off the
+  // fixed `"worldgen"` feature/`"worldgen.draft"` panel — see
+  // SessionStore.worldgenAvailable.
   import type { GameApp } from "$lib/game.svelte";
 
   import MailPanel from "./MailPanel.svelte";
   import RollsPanel from "./RollsPanel.svelte";
   import RoomPanel from "./RoomPanel.svelte";
   import SheetPanel from "./SheetPanel.svelte";
+  import WorldgenPanel from "./WorldgenPanel.svelte";
 
   let { app, onCmd }: { app: GameApp; onCmd: (cmd: string) => void } = $props();
 
   const mailEnabled = $derived(app.session.hasFeature("mail") || app.session.hasPanel("mail"));
   const sheetEnabled = $derived(app.session.sheetFeed !== null);
   const rollsEnabled = $derived(app.session.rollFeed !== null);
+  const worldgenEnabled = $derived(app.session.worldgenAvailable);
 
-  type Tab = "mail" | "room" | "sheet" | "rolls";
+  type Tab = "mail" | "room" | "sheet" | "rolls" | "worldgen";
   let tab = $state<Tab>("room");
 
   // If mail turns out to be enabled once hello lands, prefer it as the
@@ -33,7 +38,8 @@
   const activeTab = $derived<Tab>(
     (tab === "mail" && !mailEnabled) ||
       (tab === "sheet" && !sheetEnabled) ||
-      (tab === "rolls" && !rollsEnabled)
+      (tab === "rolls" && !rollsEnabled) ||
+      (tab === "worldgen" && !worldgenEnabled)
       ? "room"
       : tab,
   );
@@ -89,6 +95,19 @@
         {#if app.rolls.entries.length > 0}<span class="badge">{app.rolls.entries.length}</span>{/if}
       </button>
     {/if}
+    {#if worldgenEnabled}
+      <button
+        type="button"
+        role="tab"
+        class="tab"
+        class:active={activeTab === "worldgen"}
+        aria-selected={activeTab === "worldgen"}
+        onclick={() => (tab = "worldgen")}
+      >
+        Build
+        {#if app.worldgen.draft !== null}<span class="badge">1</span>{/if}
+      </button>
+    {/if}
   </div>
 
   <div class="body">
@@ -98,6 +117,8 @@
       <SheetPanel {app} />
     {:else if activeTab === "rolls" && rollsEnabled}
       <RollsPanel {app} />
+    {:else if activeTab === "worldgen" && worldgenEnabled}
+      <WorldgenPanel {app} />
     {:else}
       <RoomPanel {app} {onCmd} />
     {/if}
