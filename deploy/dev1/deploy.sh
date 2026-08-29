@@ -17,10 +17,10 @@ if ! id mush >/dev/null 2>&1; then
   echo "created system user 'mush'"
 fi
 
-# 2. Directories.
+# 2. Directories. /var/log/redis is the SHARED redis log dir — it must stay
+# owned by redis (the dev instance logs there too); never chown it to mush.
 mkdir -p "$ROOT/data" "$ROOT/tls" /var/lib/redis-dev1mush /var/log/redis /run/redis-dev1mush
-chown -R redis:redis /var/lib/redis-dev1mush /run/redis-dev1mush
-chown mush:mush /var/log/redis 2>/dev/null || true
+chown redis:redis /var/lib/redis-dev1mush /run/redis-dev1mush /var/log/redis
 
 # 3. Second Redis config + unit.
 install -m 640 -o redis -g redis "$SELF/redis-dev1mush.conf" /etc/redis/redis-dev1mush.conf
