@@ -80,11 +80,21 @@ pub fn roll_temp(def: &WxStateDef, season: Season, rng: &mut WxRng) -> i16 {
 }
 
 /// Pick the line shown when a zone transitions `from → to`: a specific
-/// `"<from>-><to>"` pool wins, else the destination's generic pool, else a
-/// plain generated fallback (so a sparse climate file never produces silence
-/// on a real state change).
+/// `"<from>-><to>"` hand-written pool wins, else the merged pool of the
+/// destination's generic hand-written lines plus any **approved** generated
+/// variants (`extra`), else a plain generated fallback (so a sparse climate
+/// file never produces silence on a real state change).
+///
+/// `extra` is the approved-generated transition overlay for `to` (the M10
+/// flavor top-up) — an empty slice reproduces the deterministic M5 behavior.
 #[must_use]
-pub fn pick_transition_line(climate: &ClimateDef, from: &str, to: &str, rng: &mut WxRng) -> String {
+pub fn pick_transition_line(
+    climate: &ClimateDef,
+    from: &str,
+    to: &str,
+    extra: &[String],
+    rng: &mut WxRng,
+) -> String {
     let pair = SmolStr::new(format!("{from}->{to}"));
     if let Some(line) = climate
         .lines
@@ -94,44 +104,51 @@ pub fn pick_transition_line(climate: &ClimateDef, from: &str, to: &str, rng: &mu
     {
         return line;
     }
-    if let Some(line) = climate
-        .lines
-        .transition
-        .get(to)
-        .and_then(|pool| pick(pool, rng))
-    {
-        return line;
+    let mut pool: Vec<&str> = Vec::new();
+    if let Some(v) = climate.lines.transition.get(to) {
+        pool.extend(v.iter().map(String::as_str));
+    }
+    pool.extend(extra.iter().map(String::as_str));
+    if !pool.is_empty() {
+        let idx = rng.below(pool.len() as u32) as usize;
+        return pool[idx].to_string();
     }
     format!("The weather shifts to {to}.")
 }
 
-/// Pick one ambient line for a zone sitting in `state`: the merged pool of
-/// the state's ambient lines plus the generic season and time-of-day mood
-/// pools. `None` when every relevant pool is empty (the caller then emits
-/// nothing for this room this tick).
+/// Pick one ambient line for a zone sitting in `state`: the merged pool of the
+/// state's hand-written ambient lines, the generic season and time-of-day mood
+/// pools, and any **approved** generated variants (`extra`). `None` when every
+/// relevant pool is empty (the caller then emits nothing for this room this
+/// tick).
+///
+/// `extra` is the approved-generated ambient overlay for `state` (the M10
+/// flavor top-up) — an empty slice reproduces the deterministic M5 behavior.
 #[must_use]
 pub fn pick_ambient_line(
     climate: &ClimateDef,
     state: &str,
     season: Season,
     tod: TimeOfDay,
+    extra: &[String],
     rng: &mut WxRng,
 ) -> Option<String> {
-    let mut pool: Vec<&String> = Vec::new();
+    let mut pool: Vec<&str> = Vec::new();
     if let Some(v) = climate.lines.ambient.get(state) {
-        pool.extend(v);
+        pool.extend(v.iter().map(String::as_str));
     }
     if let Some(v) = climate.lines.ambient_season.get(season_key(season)) {
-        pool.extend(v);
+        pool.extend(v.iter().map(String::as_str));
     }
     if let Some(v) = climate.lines.ambient_tod.get(tod_key(tod)) {
-        pool.extend(v);
+        pool.extend(v.iter().map(String::as_str));
     }
+    pool.extend(extra.iter().map(String::as_str));
     if pool.is_empty() {
         return None;
     }
     let idx = rng.below(pool.len() as u32) as usize;
-    Some(pool[idx].clone())
+    Some(pool[idx].to_string())
 }
 
 /// Pick a random line from a pool, or `None` if empty.
@@ -263,7 +280,7 @@ rain = { rain = 100 }
         let c = temperate();
         let mut rng = WxRng::seeded(1);
         // overcast->rain has a specific pair line in the data file.
-        let line = pick_transition_line(&c, "overcast", "rain", &mut rng);
+        let line = pick_transition_line(&c, "overcast", "rain", &[], &mut rng);
         assert_eq!(line, "The drizzle thickens into steady rain.");
     }
 
@@ -271,7 +288,79 @@ rain = { rain = 100 }
     fn ambient_line_present_for_known_state() {
         let c = temperate();
         let mut rng = WxRng::seeded(2);
-        let line = pick_ambient_line(&c, "rain", Season::Autumn, TimeOfDay::Night, &mut rng);
+        let line = pick_ambient_line(&c, "rain", Season::Autumn, TimeOfDay::Night, &[], &mut rng);
         assert!(line.is_some());
+    }
+
+    /// A climate whose hand-written ambient/transition pools are empty, so the
+    /// only candidates are the approved-generated overlay (or the fallback).
+    fn barren() -> ClimateDef {
+        let toml = r#"
+id = "barren"
+[[states]]
+id = "clear"
+visibility = 100
+precip = 0
+wind = 10
+temp_band = [0, 20]
+[[states]]
+id = "rain"
+visibility = 60
+precip = 60
+wind = 40
+temp_band = [2, 18]
+[seasonal.winter]
+clear = { rain = 100 }
+rain = { rain = 100 }
+[seasonal.spring]
+clear = { rain = 100 }
+rain = { rain = 100 }
+[seasonal.summer]
+clear = { rain = 100 }
+rain = { rain = 100 }
+[seasonal.autumn]
+clear = { rain = 100 }
+rain = { rain = 100 }
+"#;
+        ClimateDef::parse("barren", toml).unwrap()
+    }
+
+    #[test]
+    fn approved_overlay_enters_the_ambient_pool() {
+        let c = barren();
+        let mut rng = WxRng::seeded(3);
+        // No hand-written ambient for "rain": empty overlay → nothing to show.
+        assert!(
+            pick_ambient_line(&c, "rain", Season::Autumn, TimeOfDay::Night, &[], &mut rng)
+                .is_none()
+        );
+        // With one approved line, selection draws it deterministically.
+        let extra = vec!["Generated rain hisses on the stones.".to_string()];
+        let got = pick_ambient_line(
+            &c,
+            "rain",
+            Season::Autumn,
+            TimeOfDay::Night,
+            &extra,
+            &mut rng,
+        );
+        assert_eq!(got.as_deref(), Some("Generated rain hisses on the stones."));
+    }
+
+    #[test]
+    fn approved_overlay_enters_the_transition_pool() {
+        let c = barren();
+        let mut rng = WxRng::seeded(4);
+        // No hand-written generic transition or pair for clear->rain: fallback.
+        assert_eq!(
+            pick_transition_line(&c, "clear", "rain", &[], &mut rng),
+            "The weather shifts to rain."
+        );
+        // A single approved variant wins over the fallback.
+        let extra = vec!["Generated: the first fat drops arrive.".to_string()];
+        assert_eq!(
+            pick_transition_line(&c, "clear", "rain", &extra, &mut rng),
+            "Generated: the first fat drops arrive."
+        );
     }
 }

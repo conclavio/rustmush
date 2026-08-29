@@ -476,3 +476,76 @@ async fn streaming_settles_budget_and_emits_done() {
     assert_eq!(g.output_tokens, 8);
     assert!((g.cost_usd - 0.00002).abs() < 1e-12);
 }
+
+/// M10c regression: the cost dashboard must attribute spend for features,
+/// builders, and NPCs that have NO configured per-scope cap. A "global-only"
+/// budget (a reasonable "cap the whole server" setup) once produced an empty
+/// "top builders" / "top NPCs" list and omitted every uncapped feature row,
+/// because the ledger only recorded a scope counter when that scope was
+/// capped. `scope_limits` now records every applicable scope regardless of
+/// cap, so the always-recorded audit and the ledger agree.
+#[tokio::test]
+async fn dashboard_attributes_uncapped_feature_and_spenders() {
+    let provider = Arc::new(MockProvider::new("openrouter"));
+    provider.set_default(Ok(mock::ok_response(
+        "ok",
+        mock::usage(100, 50, Some(0.02)),
+    )));
+
+    // Global-only cap: NO per_feature, per_actor_default, or per_npc_default.
+    let budgets = BudgetConfig {
+        global: Some(BudgetLimit::tokens(10_000_000)),
+        ..Default::default()
+    };
+    let svc = LlmService::builder()
+        .global_enabled(true)
+        .provider("openrouter", provider.clone() as Arc<dyn LlmProvider>)
+        .route("worldgen_brief", route("z-ai/glm-5.3", 64))
+        .route("ambience", route("z-ai/glm-5.3-flash", 64))
+        .route("npc_dialogue_major", route("z-ai/glm-5.3", 64))
+        .budgets(budgets)
+        .build();
+
+    let builder = ObjId(7);
+    let npc = ObjId(99);
+
+    // An uncapped feature, attributed to a builder.
+    svc.call(ctx(LlmFeature::WorldgenBrief).with_actor(builder), req())
+        .await
+        .unwrap();
+    // An uncapped NPC dialogue turn.
+    svc.call(
+        CallCtx::new(
+            LlmFeature::NpcDialogue(NpcTier::Major),
+            Priority::Background,
+        )
+        .with_npc(npc),
+        req(),
+    )
+    .await
+    .unwrap();
+
+    let dash = svc.dashboard();
+
+    // The uncapped-but-spent feature has a budget-vs-cap row (no cap, real spend).
+    let brief = dash
+        .budgets
+        .iter()
+        .find(|b| b.scope == "feature:worldgen_brief")
+        .expect("uncapped-but-spent feature must have a dashboard row");
+    assert_eq!(brief.tokens_cap, None, "the feature is uncapped");
+    assert_eq!(brief.input_tokens, 100);
+
+    // The builder appears in the top-spender list despite no per-actor cap.
+    assert!(
+        dash.top_actors.iter().any(|r| r.obj == builder),
+        "an uncapped builder's spend must still be attributed: {:?}",
+        dash.top_actors
+    );
+    // The NPC appears in the top-NPC list despite no per-NPC cap.
+    assert!(
+        dash.top_npcs.iter().any(|r| r.obj == npc),
+        "an uncapped NPC's spend must still be attributed: {:?}",
+        dash.top_npcs
+    );
+}

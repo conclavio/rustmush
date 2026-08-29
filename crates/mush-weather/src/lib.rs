@@ -39,6 +39,7 @@
 mod cell;
 mod climate;
 mod commands;
+mod flavor;
 mod machine;
 
 use std::collections::BTreeMap;
@@ -48,8 +49,8 @@ use std::time::Duration;
 use mush_core::output::display_name;
 use mush_core::{
     Audience, Ctx, EventHook, Flags, GameModule, HookPoint, ModError, ModuleBootData, ModuleCtx,
-    ObjId, ObjKind, PanelFeedHandle, Registrar, TickCadence, TickHandler, WeatherQuery, World,
-    WorldEvent, WorldEventKind, WxSnapshot,
+    ModuleOp, ModuleWrite, ObjId, ObjKind, PanelFeedHandle, Registrar, TickCadence, TickHandler,
+    WeatherQuery, World, WorldEvent, WorldEventKind, WxSnapshot,
 };
 use mush_proto::{OutputEvent, RichText};
 use smol_str::SmolStr;
@@ -58,7 +59,12 @@ pub use cell::{
     NS, WIND_MS_PER_UNIT, WeatherCell, WeatherState, WxRng, cell_key, delete_cell, persist_cell,
 };
 pub use climate::{ClimateDef, ClimateSet, LinePools, WxStateDef, season_key, tod_key};
+pub use flavor::{
+    FlavorBucket, FlavorGenOutcome, FlavorGenSnapshot, FlavorKey, FlavorLine, FlavorStore,
+    parse_flavor_key, run_weather_async,
+};
 
+use flavor::FlavorBucket as Bucket;
 use machine::{pick_ambient_line, pick_transition_line, roll_temp, roll_transition};
 
 /// The default coarse-tick interval: 300 s of OOC wall time. (The design
@@ -74,6 +80,11 @@ pub const DEFAULT_TICK: Duration = Duration::from_secs(300);
 /// jitter; empty rooms are skipped entirely.
 pub const DEFAULT_AMBIENT_PERMILLE: u32 = 100;
 
+/// The default number of generated variants `@weather/generate` requests per
+/// `(climate, state)` bucket (transition + ambient), per the PLAN's "~N
+/// (config, ~10)". Override via [`WeatherConfig::flavor_variants`].
+pub const DEFAULT_FLAVOR_VARIANTS: usize = 10;
+
 /// The prefix a `SHELTERED` room's muffled transition line carries, so
 /// "sees state changes, muffled" is observable (and testable).
 const MUFFLE_PREFIX: &str = "Through the windows, ";
@@ -86,6 +97,9 @@ pub struct WeatherConfig {
     /// Ambient-line probability per `OUTDOORS` occupied room per tick, in
     /// parts-per-thousand.
     pub ambient_permille: u32,
+    /// How many generated variants `@weather/generate` requests per bucket
+    /// (the M10 LLM flavor top-up). Defaults to [`DEFAULT_FLAVOR_VARIANTS`].
+    pub flavor_variants: usize,
 }
 
 impl Default for WeatherConfig {
@@ -93,6 +107,7 @@ impl Default for WeatherConfig {
         WeatherConfig {
             tick: DEFAULT_TICK,
             ambient_permille: DEFAULT_AMBIENT_PERMILLE,
+            flavor_variants: DEFAULT_FLAVOR_VARIANTS,
         }
     }
 }
@@ -124,6 +139,16 @@ impl WeatherModule {
     pub fn with_config(config: WeatherConfig) -> WeatherModule {
         let climates =
             ClimateSet::builtin().expect("shipped climate data files must parse (crate bug)");
+        WeatherModule {
+            climates: Arc::new(climates),
+            config,
+        }
+    }
+
+    /// A module over a caller-supplied [`ClimateSet`] (custom climate packs, or
+    /// tests that need a known set) and [`WeatherConfig`].
+    #[must_use]
+    pub fn with_climates(climates: ClimateSet, config: WeatherConfig) -> WeatherModule {
         WeatherModule {
             climates: Arc::new(climates),
             config,
@@ -188,7 +213,7 @@ impl GameModule for WeatherModule {
         // (deferred; see the crate docs) — a future binding reads the same
         // registered `WeatherQuery` provider.
         reg.script_api("weather")?;
-        commands::register(reg, Arc::clone(&self.climates), panel)?;
+        commands::register(reg, Arc::clone(&self.climates), panel, self.config)?;
         Ok(())
     }
 
@@ -199,33 +224,57 @@ impl GameModule for WeatherModule {
     ) -> Result<(), ModError> {
         let mut cells: BTreeMap<ObjId, WeatherCell> = BTreeMap::new();
         let mut orphans: Vec<ObjId> = Vec::new();
+        let mut flavor = FlavorStore::default();
+        let mut stale_flavor: Vec<FlavorKey> = Vec::new();
         for (key, value) in data.kv {
-            let Some(id) = key
+            if let Some(id) = key
                 .strip_prefix("cell:")
                 .and_then(|s| s.parse::<u32>().ok())
-            else {
-                continue; // tolerate unknown keys (future schema)
-            };
-            let cell = serde_json::from_value::<WeatherCell>(value)
-                .map_err(|e| ModError::msg(format!("weather: bad cell doc {key:?}: {e}")))?;
-            // Drop cells whose zone object is gone or whose climate no longer
-            // ships — keep the machine consistent with live data.
-            let zone_ok = ctx.w.get(ObjId(id)).is_some();
-            if !zone_ok || !self.climates.contains(&cell.climate) {
-                orphans.push(ObjId(id));
-                if !self.climates.contains(&cell.climate) {
-                    tracing::warn!(zone = id, climate = %cell.climate,
-                        "weather: dropping cell with unknown climate");
+            {
+                let cell = serde_json::from_value::<WeatherCell>(value)
+                    .map_err(|e| ModError::msg(format!("weather: bad cell doc {key:?}: {e}")))?;
+                // Drop cells whose zone object is gone or whose climate no
+                // longer ships — keep the machine consistent with live data.
+                let zone_ok = ctx.w.get(ObjId(id)).is_some();
+                if !zone_ok || !self.climates.contains(&cell.climate) {
+                    orphans.push(ObjId(id));
+                    if !self.climates.contains(&cell.climate) {
+                        tracing::warn!(zone = id, climate = %cell.climate,
+                            "weather: dropping cell with unknown climate");
+                    }
+                    continue;
                 }
+                cells.insert(ObjId(id), cell);
+            } else if let Some(fkey) = parse_flavor_key(&key) {
+                // The M10 flavor pool. Drop pools for a climate that no longer
+                // ships (its lines can never enter selection anyway).
+                let lines = serde_json::from_value::<Vec<FlavorLine>>(value)
+                    .map_err(|e| ModError::msg(format!("weather: bad flavor doc {key:?}: {e}")))?;
+                if !self.climates.contains(&fkey.climate) {
+                    stale_flavor.push(fkey);
+                    continue;
+                }
+                flavor.load_pool(fkey, lines);
+            } else {
+                // Tolerate unknown keys (future schema).
                 continue;
             }
-            cells.insert(ObjId(id), cell);
         }
+        flavor.recompute_next_id();
         if let Some(st) = ctx.w.module_state_mut::<WeatherState>() {
             st.cells = cells;
+            st.flavor = flavor;
         }
         for zone in orphans {
             ctx.persist(delete_cell(zone));
+        }
+        for fkey in stale_flavor {
+            ctx.persist(ModuleOp {
+                ns: SmolStr::new_static(NS),
+                op: ModuleWrite::Del {
+                    key: fkey.doc_key(),
+                },
+            });
         }
         Ok(())
     }
@@ -305,7 +354,12 @@ fn run_tick(
                     cell.temp = temp;
                     cell.since = now;
                     state_changed = true;
-                    let line = pick_transition_line(climate, &from, &to, &mut st.rng);
+                    // Merge the approved-generated transition overlay (M10
+                    // flavor top-up) into selection; empty ⇒ pure M5 behavior.
+                    let extra = st
+                        .flavor
+                        .approved_texts(&cell.climate, &to, Bucket::Transition);
+                    let line = pick_transition_line(climate, &from, &to, &extra, &mut st.rng);
                     for room in &scan.rooms {
                         let text = if room.sheltered {
                             muffle(&line)
@@ -331,6 +385,11 @@ fn run_tick(
             // double lines), only OUTDOORS + occupied rooms.
             if !state_changed {
                 let cur = cell.state.clone();
+                // The approved-generated ambient overlay is the same for every
+                // room in this cell this tick — look it up once.
+                let ambient_extra = st
+                    .flavor
+                    .approved_texts(&cell.climate, &cur, Bucket::Ambient);
                 for room in &scan.rooms {
                     if room.sheltered || !room.occupied {
                         continue;
@@ -338,7 +397,9 @@ fn run_tick(
                     if !st.rng.chance_permille(config.ambient_permille) {
                         continue;
                     }
-                    if let Some(line) = pick_ambient_line(climate, &cur, season, tod, &mut st.rng) {
+                    if let Some(line) =
+                        pick_ambient_line(climate, &cur, season, tod, &ambient_extra, &mut st.rng)
+                    {
                         emits.push(Emit::Weather {
                             room: room.room,
                             zone_name: scan.zone_name.clone(),

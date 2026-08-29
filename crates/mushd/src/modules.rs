@@ -53,16 +53,25 @@ use smol_str::SmolStr;
 pub const SCHEMA_KEY: &str = "schema";
 
 /// The built-in game modules a production `mushd` boots with, in
-/// registration order. Config-selected [`ruleset_modules`] are appended
-/// **after** these (see `main.rs`); hand the concatenation to
-/// [`Engine::with_modules`].
+/// registration order, with **default** module config. Config-selected
+/// [`ruleset_modules`] are appended **after** these (see `main.rs`); hand the
+/// concatenation to [`Engine::with_modules`].
 #[must_use]
 pub fn server_modules() -> Vec<Box<dyn GameModule>> {
+    server_modules_with(mush_weather::WeatherConfig::default())
+}
+
+/// [`server_modules`] with an explicit weather config (`[weather]` knobs —
+/// the M10 flavor-variant sizing). `main.rs` uses this so `[weather]` in
+/// `mushd.toml` actually reaches the module; every other caller (tests) takes
+/// the crate defaults via [`server_modules`].
+#[must_use]
+pub fn server_modules_with(weather: mush_weather::WeatherConfig) -> Vec<Box<dyn GameModule>> {
     vec![
         Box::new(mush_comsys::ComsysModule::new()),
         Box::new(mush_mail::MailModule),
         Box::new(mush_jobs::JobsModule::new()),
-        Box::new(mush_weather::WeatherModule::new()),
+        Box::new(mush_weather::WeatherModule::with_config(weather)),
         Box::new(mush_script::ScriptModule::new()),
     ]
 }
@@ -124,6 +133,18 @@ pub fn ruleset_modules(
 #[must_use]
 pub fn worldgen_module(llm: Arc<LlmService>) -> Box<dyn GameModule> {
     Box::new(WorldgenModule::new(llm))
+}
+
+/// [`worldgen_module`] with an explicit worldgen config (`[worldgen]` knobs —
+/// the M10 `@gen/building` room cap). `main.rs` uses this so `[worldgen]` in
+/// `mushd.toml` reaches the module; tests take the crate defaults via
+/// [`worldgen_module`].
+#[must_use]
+pub fn worldgen_module_with(
+    llm: Arc<LlmService>,
+    config: mush_worldgen::WorldgenConfig,
+) -> Box<dyn GameModule> {
+    Box::new(WorldgenModule::with_config(llm, config))
 }
 
 /// The M8 NPC agent module. Registered after worldgen and before the rulesets.

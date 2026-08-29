@@ -40,3 +40,28 @@ Setting a zone up, start to finish:
 Shipped climates: temperate-coastal, desert, arctic. Weather state is always
 deterministic; only the flavour text varies, drawn from the climate's line
 pools.
+
+## LLM flavour top-up (Royalty, needs `BUILDER_LLM`)
+
+The state machine (which weather happens, and when) is **always deterministic**
+— the LLM never touches it. What you *can* top up is the pool of **flavour
+lines** the machine draws from: the ambient drift and the transition lines. Each
+generated line lands **pending** and enters play only after staff approval, so
+nothing the model writes ever reaches players unreviewed.
+
+  @weather/generate [<climate>] [<state>]   Request flavour variants for a bucket.
+                                            No args = every in-use climate/state;
+                                            one = that climate; two = one bucket.
+  @weather/lines <climate> <state>          List built-in / pending / approved lines.
+  @weather/lines/approve <id>               Move a pending line into the live pool.
+  @weather/lines/reject <id>                Discard a pending line.
+
+`@weather/generate` never blocks: it fires one cheap off-loop call per
+`(climate, state)` bucket (metered and audited like all LLM calls — see
+`help llm`) and the pending lines arrive a moment later. How many variants it
+asks for per bucket is `[weather].flavor_variants` (default 10). Start to finish:
+
+  @weather/climate here=temperate-coastal
+  @weather/generate temperate-coastal rain     (pending lines arrive shortly)
+  @weather/lines temperate-coastal rain
+  @weather/lines/approve <id>                   (now it can appear in play)

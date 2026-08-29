@@ -628,6 +628,16 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                             SmolStr::new_static("mail.list"),
                             serde_json::json!({ "folder": null }),
                         ),
+                        // The M10c staff LLM cost dashboard: its keyframe is
+                        // the `llm.dashboard` query handler (same feed name),
+                        // which gates on Royalty and refuses non-staff itself
+                        // (the panel is advertised to every client — the
+                        // handler is the actual gate; see its doc). Without
+                        // this arm the subscribe would only ack, and the panel
+                        // would never receive its aggregates.
+                        "llm.dashboard" => {
+                            (SmolStr::new_static("llm.dashboard"), serde_json::json!({}))
+                        }
                         _ => {
                             self.direct_reply(
                                 conn_id,

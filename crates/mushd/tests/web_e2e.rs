@@ -106,6 +106,29 @@ async fn boot_wod(tag: &str, session_config: SessionConfig, auth_burst: u32) -> 
     boot_inner(tag, session_config, auth_burst, wod).await
 }
 
+/// Boot with the M7 worldgen module registered against a network-free
+/// MockProvider `LlmService` — so the staff `llm.dashboard` panel feed +
+/// query handler are advertised and answerable over the web (the M10c cost
+/// dashboard). No real key, no network; the dashboard query reads aggregates
+/// synchronously (no deferred call).
+async fn boot_llm(tag: &str, session_config: SessionConfig, auth_burst: u32) -> Rig {
+    let mock = Arc::new(mush_llm::MockProvider::new("openrouter"));
+    let provider: Arc<dyn mush_llm::LlmProvider> = mock;
+    let llm = Arc::new(
+        mush_llm::LlmService::builder()
+            .provider("openrouter", provider)
+            .global_enabled(true)
+            .build(),
+    );
+    boot_inner(
+        tag,
+        session_config,
+        auth_burst,
+        vec![modules::worldgen_module(llm)],
+    )
+    .await
+}
+
 async fn boot_inner(
     tag: &str,
     session_config: SessionConfig,
@@ -1334,5 +1357,101 @@ async fn kinfolk_sheet_routes_over_web() {
     assert_eq!(
         data["data"]["gifts"]["Persuasion"], 1,
         "the Gifts map rode the web sheet data: {data}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M10c: the staff LLM cost dashboard over the web (the `llm.dashboard` panel
+// feed). Subscribing routes to the query handler (a Panel keyframe for staff,
+// a Sys refusal for a mortal); the keyframe carries aggregates ONLY — never
+// any prompt text. This is the transport half of the `web_bridge`
+// PanelSubscribe routing that reaches the M10c query handler.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn llm_dashboard_over_web_is_staff_gated_and_carries_no_prompt_text() {
+    let rig = boot_llm("llm-dash", SessionConfig::default(), 0).await;
+
+    // The manifest advertises the feed (registered by the worldgen module).
+    // Log in as the seeded staff account (boss → God) over REST.
+    let login = post_json(
+        &rig.url("/api/auth/login"),
+        json!({"account": "boss", "password": GM_PASSWORD}),
+    )
+    .await;
+    assert_eq!(login.status(), 200, "boss login must succeed");
+    let body: Value = login.json().await.unwrap();
+    let god_token = body["token"].as_str().unwrap().to_string();
+    let god_key = body["characters"][0]["key"].as_u64().unwrap();
+
+    let mut god_ws = connect_ws(&rig, &god_token, god_key, "")
+        .await
+        .expect("staff ws connect");
+    let (_features, panels) = expect_hello(&mut god_ws).await;
+    assert!(
+        panels.iter().any(|p| p == "llm.dashboard"),
+        "the llm.dashboard panel feed must be advertised: {panels:?}"
+    );
+    expect_env(&mut god_ws, "Connected as God").await;
+
+    // Staff subscribe → a Panel keyframe of aggregates, NO prompt text.
+    send_cmd(
+        &mut god_ws,
+        &ClientCommand::Req {
+            id: 50,
+            q: Query::PanelSubscribe {
+                feed: "llm.dashboard".into(),
+            },
+        },
+    )
+    .await;
+    let env = expect_env(&mut god_ws, "[reply 50]").await;
+    let OutputEvent::Reply { id: 50, event } = &env.event else {
+        panic!("expected Reply 50, got {:?}", env.event);
+    };
+    let OutputEvent::Panel { feed, data, .. } = event.as_ref() else {
+        panic!("staff subscribe must yield a Panel keyframe, got {event:?}");
+    };
+    assert_eq!(feed, "llm.dashboard");
+    assert!(
+        data.get("budgets").is_some() && data.get("recent_calls").is_some(),
+        "the dashboard keyframe must carry the aggregate shape: {data}"
+    );
+    // Aggregates only: none of the audit's prompt/response text fields leak.
+    let whole = data.to_string();
+    for leaked in ["prompt_summary", "prompt_sha256", "response_summary"] {
+        assert!(
+            !whole.contains(leaked),
+            "the dashboard must carry NO prompt text; it leaked {leaked}:\n{whole}"
+        );
+    }
+
+    // A mortal subscribes to the same feed → a correlated Sys refusal (the
+    // handler is the gate; the feed is advertised to every client).
+    let (token, key) = register(&rig, "peon", "hunter42", "Peon").await;
+    let mut ws = connect_ws(&rig, &token, key, "").await.expect("mortal ws");
+    expect_hello(&mut ws).await;
+    expect_env(&mut ws, "Connected as Peon").await;
+    send_cmd(
+        &mut ws,
+        &ClientCommand::Req {
+            id: 51,
+            q: Query::PanelSubscribe {
+                feed: "llm.dashboard".into(),
+            },
+        },
+    )
+    .await;
+    let env = expect_env(&mut ws, "[reply 51]").await;
+    let OutputEvent::Reply { id: 51, event } = &env.event else {
+        panic!("expected Reply 51, got {:?}", env.event);
+    };
+    let OutputEvent::Sys(t) = event.as_ref() else {
+        panic!("a mortal subscribe must be refused with Sys, got {event:?}");
+    };
+    assert!(
+        t.to_plain_text().to_lowercase().contains("staff"),
+        "the refusal must say staff-only: {}",
+        t.to_plain_text()
     );
 }

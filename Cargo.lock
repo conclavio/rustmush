@@ -2000,12 +2000,14 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "mush-core",
+ "mush-llm",
  "mush-proto",
  "mush-store",
  "mush-testkit",
  "serde",
  "serde_json",
  "smol_str",
+ "tokio",
  "toml",
  "tracing",
 ]

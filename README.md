@@ -122,8 +122,13 @@ prefix** (`anthropic/…` → the Anthropic Messages API; anything else, e.g. `z
 OpenRouter); API keys resolve from env vars named in config (`api_key_env`), never inlined and
 never logged — in dev `mushd` loads them from a `.env` at boot, in prod set real env vars.
 Layered daily budgets (global / per-feature / per-builder, over tokens and USD) are enforced
-pre-call, and staff hold a live kill switch (`@llm/disable`, `@llm/budget`, `@llm/log`). See
-[docs/ops.md](docs/ops.md) for the full operator view and
+pre-call, and staff hold a live kill switch (`@llm/disable`, `@llm/budget`, `@llm/log`). **M10**
+adds whole-building generation (`@gen/building <entrance>=<prose>` — a reviewed brief, then a
+coherent room draft per room; `help worldgen`), an **LLM flavour top-up** for the deterministic
+weather machine (`@weather/generate` drafts extra ambient/transition lines that enter play only
+after `@weather/lines/approve`; `help weather`), and a staff **cost dashboard** (`@llm/dashboard`
+and the web **LLM** panel — budgets vs caps, top spenders, recent calls; aggregates only, never
+any prompt text; `help llm`). See [docs/ops.md](docs/ops.md) for the full operator view and
 [mushd.toml.example](mushd.toml.example) for a ready `[llm]` block.
 
 **LLM NPC agents** (M8) turn a first-class `ObjKind::Npc` into an LLM-driven character. Staff

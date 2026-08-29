@@ -22,6 +22,8 @@
 //! | `[game].ic_ratio` | `1` | IC seconds per OOC second (game-clock speed); read at boot |
 //! | `[game].ic_epoch` | `"2020-01-01 00:00"` | IC datetime at OOC unix 0 — calendar phase/start; read at boot |
 //! | `[rulesets].enabled` | `["wod"]` | ruleset module(s) to load; unknown ids are a hard boot error |
+//! | `[weather].flavor_variants` | `10` | M10 `@weather/generate` variants requested per (climate,state) bucket |
+//! | `[worldgen].batch_max_rooms` | `40` | M10 `@gen/building` interior-walk cap (rooms per batch) |
 //! | `[llm]` | `enabled = false` | M7 LLM layer (providers, routes, budgets); into [`mush_llm::LlmConfig`] |
 //!
 //! The `[web]` table deserializes straight into
@@ -234,6 +236,69 @@ impl Default for RulesetsCfg {
     }
 }
 
+/// `[weather]` section — the M10 weather LLM flavor top-up knobs.
+///
+/// The deterministic Markov machine (states/transitions/temperature) is
+/// unaffected by these; only the *generated flavor text* pool sizing is
+/// tuned here. `tick` / ambient probability keep their crate defaults (they
+/// are not surfaced as config knobs yet).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+pub struct WeatherCfg {
+    /// How many flavor variants `@weather/generate` requests per
+    /// `(climate, state)` bucket (transition + ambient). Defaults to the
+    /// crate's [`mush_weather::WeatherConfig`] default (10).
+    pub flavor_variants: usize,
+}
+
+impl Default for WeatherCfg {
+    fn default() -> Self {
+        WeatherCfg {
+            flavor_variants: mush_weather::WeatherConfig::default().flavor_variants,
+        }
+    }
+}
+
+impl WeatherCfg {
+    /// The module-facing [`mush_weather::WeatherConfig`], overriding only the
+    /// config-surfaced knobs and keeping the crate defaults for the rest.
+    #[must_use]
+    pub fn to_weather_config(&self) -> mush_weather::WeatherConfig {
+        mush_weather::WeatherConfig {
+            flavor_variants: self.flavor_variants,
+            ..mush_weather::WeatherConfig::default()
+        }
+    }
+}
+
+/// `[worldgen]` section — the M10 batch `@gen/building` knobs.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+pub struct WorldgenCfg {
+    /// The `@gen/building` interior-walk cap: the most rooms one batch will
+    /// describe. Defaults to the crate's [`mush_worldgen::WorldgenConfig`]
+    /// default (40).
+    pub batch_max_rooms: usize,
+}
+
+impl Default for WorldgenCfg {
+    fn default() -> Self {
+        WorldgenCfg {
+            batch_max_rooms: mush_worldgen::WorldgenConfig::default().batch_max_rooms,
+        }
+    }
+}
+
+impl WorldgenCfg {
+    /// The module-facing [`mush_worldgen::WorldgenConfig`].
+    #[must_use]
+    pub fn to_worldgen_config(&self) -> mush_worldgen::WorldgenConfig {
+        mush_worldgen::WorldgenConfig {
+            batch_max_rooms: self.batch_max_rooms,
+        }
+    }
+}
+
 /// Log output format.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum LogFormat {
@@ -366,6 +431,12 @@ pub struct Config {
     pub game: GameCfg,
     /// `[rulesets]` — which ruleset module(s) load (M6).
     pub rulesets: RulesetsCfg,
+    /// `[weather]` — the M10 weather LLM flavor top-up knobs (variants per
+    /// bucket). Off-config defaults match the crate.
+    pub weather: WeatherCfg,
+    /// `[worldgen]` — the M10 batch `@gen/building` knobs (max rooms per
+    /// batch). Off-config defaults match the crate.
+    pub worldgen: WorldgenCfg,
     /// `[onboarding]` — the `chargen_required` gate + start rooms (M9). Off by
     /// default; consumed by the WoD ruleset via [`OnboardingCfg::to_ruleset`].
     pub onboarding: OnboardingCfg,
@@ -498,6 +569,36 @@ mod tests {
     }
 
     #[test]
+    fn weather_and_worldgen_knobs_default_and_parse() {
+        // Config-less: both fall back to the crate defaults.
+        let cfg = Config::default();
+        assert_eq!(
+            cfg.weather.flavor_variants,
+            mush_weather::WeatherConfig::default().flavor_variants
+        );
+        assert_eq!(
+            cfg.worldgen.batch_max_rooms,
+            mush_worldgen::WorldgenConfig::default().batch_max_rooms
+        );
+        assert_eq!(cfg.weather.to_weather_config().flavor_variants, 10);
+        assert_eq!(cfg.worldgen.to_worldgen_config().batch_max_rooms, 40);
+
+        // Explicit overrides thread through to the module-facing configs.
+        let cfg: Config =
+            toml::from_str("[weather]\nflavor_variants = 6\n\n[worldgen]\nbatch_max_rooms = 12")
+                .unwrap();
+        assert_eq!(cfg.weather.flavor_variants, 6);
+        assert_eq!(cfg.weather.to_weather_config().flavor_variants, 6);
+        // The un-surfaced weather knobs keep their crate defaults.
+        assert_eq!(
+            cfg.weather.to_weather_config().tick,
+            mush_weather::WeatherConfig::default().tick
+        );
+        assert_eq!(cfg.worldgen.batch_max_rooms, 12);
+        assert_eq!(cfg.worldgen.to_worldgen_config().batch_max_rooms, 12);
+    }
+
+    #[test]
     fn onboarding_defaults_off_and_resolves_rooms() {
         // Default: off, both rooms fold to Limbo (#0).
         let cfg = Config::default();
@@ -615,6 +716,10 @@ mod tests {
         assert!(cfg.game.game_clock().is_ok());
         // The example enables the WoD ruleset.
         assert_eq!(cfg.rulesets.enabled, ["wod"]);
+        // The example's [weather]/[worldgen] sections parse (values are
+        // commented, so they resolve to the crate defaults).
+        assert_eq!(cfg.weather.flavor_variants, 10);
+        assert_eq!(cfg.worldgen.batch_max_rooms, 40);
         // The example's [llm] block parses into LlmConfig: disabled by default
         // (keyless clone boots), both providers present with env-var-named
         // keys (never inlined), and the starter routes wired.

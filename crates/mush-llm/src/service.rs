@@ -399,6 +399,22 @@ impl LlmService {
         &self.kill
     }
 
+    /// The safe cost/usage aggregate for the LLM dashboard (M10c): today's
+    /// budget-vs-cap by scope, top spenders, a best-effort 7-day series, and
+    /// a recent-calls tail. See [`crate::dashboard`] for the field-by-field
+    /// contract; this is the one place with both the ledger/audit AND the
+    /// configured routes + kill switch needed to assemble it.
+    #[must_use]
+    pub fn dashboard(&self) -> crate::dashboard::DashboardSnapshot {
+        crate::dashboard::build(
+            &self.ledger,
+            &self.audit,
+            &self.budgets,
+            self.routes.keys().cloned(),
+            self.kill.global_disabled(),
+        )
+    }
+
     /// A registered provider's capabilities (worldgen checks
     /// `forced_tool_choice` / `native_structured_output` before choosing its
     /// structured-output strategy). Resolves the provider the way `call` does.
@@ -721,15 +737,28 @@ impl LlmService {
         // `daily_tokens`) wins over the config `per_npc_default` — this is what
         // makes `@agent/set <npc>/daily_tokens=N` a live containment lever.
         let npc_limit = ctx.npc_limit.or(self.budgets.per_npc_default);
+        // Record a counter at EVERY applicable scope, capped or not (M10c). An
+        // uncapped scope carries `BudgetLimit::default()` — both axes `None`, so
+        // it never trips `pre_check` — but `settle` still accumulates its spend.
+        // Without this, `ledger.feature_totals()`/`top_actors()`/`top_npcs()`
+        // only ever saw *capped* scopes, so the cost dashboard's per-feature
+        // rows and top-spender lists silently omitted every feature/builder/NPC
+        // that spent under no configured cap (e.g. `worldgen_brief`, `ambience`,
+        // and — under a global-only cap config — every builder and NPC).
         ScopeLimits {
-            global: self.budgets.global,
-            feature: self
-                .budgets
-                .per_feature
-                .get(route_key)
-                .map(|l| (route_key.to_string(), *l)),
-            actor: ctx.actor.zip(self.budgets.per_actor_default),
-            npc: ctx.npc.zip(npc_limit),
+            global: Some(self.budgets.global.unwrap_or_default()),
+            feature: Some((
+                route_key.to_string(),
+                self.budgets
+                    .per_feature
+                    .get(route_key)
+                    .copied()
+                    .unwrap_or_default(),
+            )),
+            actor: ctx
+                .actor
+                .map(|a| (a, self.budgets.per_actor_default.unwrap_or_default())),
+            npc: ctx.npc.map(|n| (n, npc_limit.unwrap_or_default())),
         }
     }
 

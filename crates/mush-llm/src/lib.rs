@@ -35,6 +35,7 @@
 pub mod audit;
 pub mod budget;
 pub mod config;
+pub mod dashboard;
 pub mod provider;
 pub mod service;
 pub mod types;
@@ -52,12 +53,13 @@ pub mod mock;
 
 // -- curated re-exports (the surface worldgen/npc import) ------------------
 
-pub use audit::{AuditRecord, AuditSink, FeatureTotals, Outcome};
+pub use audit::{AuditRecord, AuditSink, DaySlice, FeatureTotals, Outcome};
 pub use budget::{BudgetLedger, BudgetLimit, Counters, ScopeLimits};
 pub use config::{
     BudgetConfig, CircuitBreakerConfig, ConcurrencyConfig, LlmConfig, ProviderConfig, ProviderKind,
     RetryConfig, RouteConfig,
 };
+pub use dashboard::{BudgetStatus, DashboardSnapshot, RecentCall, SpendRow};
 pub use provider::{BudgetScope, LlmError, LlmProvider, ProviderCaps, ProviderId};
 pub use service::{
     CallCtx, KillSwitch, LlmFeature, LlmService, LlmServiceBuilder, NpcTier, Priority,

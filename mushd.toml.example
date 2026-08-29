@@ -48,10 +48,26 @@ ic_ratio = 1                       # (M5) IC seconds per OOC second (game-clock 
 ic_epoch = "2020-01-01 00:00"      # (M5) IC datetime at OOC unix time 0 — the calendar's phase/start. "YYYY-MM-DD[ HH:MM[:SS]]".
 #                                  # IC time is a pure function of real time (survives restarts); it is NOT reset to this at each boot.
 
-# (M5) The scripting and weather modules are compiled in and always active —
-# there is nothing to configure here yet. Their sandbox budgets (mush-script)
-# and tick/ambient knobs (mush-weather) use built-in defaults; wiring them to
-# config is a later step. In-game: "help scripting" and "help weather".
+# (M5) The scripting and weather modules are compiled in and always active.
+# mush-script's sandbox budgets and mush-weather's tick/ambient knobs use
+# built-in defaults; wiring the rest to config is a later step. The M10 weather
+# flavor pool sizing IS configurable — see [weather] below. In-game: "help
+# scripting" and "help weather".
+
+[weather]                          # (M10) weather LLM flavor top-up
+# The deterministic Markov weather machine is unaffected by this; only the
+# staff-reviewed GENERATED flavor-text pool sizing is tuned here.
+# flavor_variants = 10             # (M10) how many variants @weather/generate requests per
+#                                  #       (climate, state) bucket (transition + ambient). Each
+#                                  #       is a cheap Ambience call; lines land PENDING and enter
+#                                  #       play only after "@weather/lines/approve". In-game:
+#                                  #       "help weather".
+
+[worldgen]                         # (M10) batch @gen/building
+# batch_max_rooms = 40             # (M10) the @gen/building interior-walk cap: the most rooms one
+#                                  #       batch describes (BFS from the entrance over interior
+#                                  #       exits). A larger building is refused with a note. In-game:
+#                                  #       "help worldgen".
 
 [rulesets]                         # (M6) which ruleset module(s) load
 # Every ruleset crate is compiled into mushd; this list SELECTS which ones

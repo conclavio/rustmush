@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::climate::WxStateDef;
+use crate::flavor::FlavorStore;
 
 /// The weather module's persistence namespace (`mod:weather:*`).
 pub const NS: &str = "weather";
@@ -144,6 +145,12 @@ pub struct WeatherState {
     pub rng: WxRng,
     /// Coarse ticks fired since boot (diagnostics / seed mixing).
     pub tick_count: u64,
+    /// The M10 LLM flavor top-up pool: staff-reviewable generated line
+    /// variants, mirrored to `flavor:*` documents. Only **approved** lines
+    /// enter the live selection pool; pending lines are never shown. Empty
+    /// (and inert) when the feature is unused — the hand-written lines carry
+    /// the weather unchanged (M5 behavior).
+    pub flavor: FlavorStore,
 }
 
 impl WeatherState {

@@ -50,6 +50,15 @@ export class SessionStore {
     return this.hasFeature("worldgen") || this.hasPanel("worldgen.draft");
   }
 
+  /** Whether the staff LLM cost dashboard tab should show at all. Same
+   * contract as `worldgenAvailable`: the panel is advertised whenever
+   * worldgen is loaded, regardless of the viewer's role — the client has
+   * no way to know that, so a non-staff viewer still sees the tab and gets
+   * the server's refusal rendered in it (`LlmDashboardStore.refused`). */
+  get llmDashboardAvailable(): boolean {
+    return this.hasPanel("llm.dashboard");
+  }
+
   applyHello(d: { server: string; features: string[]; panels: string[] }): void {
     this.serverName = d.server;
     this.features = d.features;

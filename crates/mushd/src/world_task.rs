@@ -2067,6 +2067,38 @@ fn spawn_effects(fx: &mut Effects, tx: &mpsc::WeakSender<WorldMsg>, llm: Option<
                             tracing::debug!(correlation, "npc completion after shutdown dropped");
                         }
                     });
+                } else if module.as_str() == mush_weather::NS {
+                    // M10 weather flavor top-up: `@weather/generate` runs the
+                    // off-loop flavor generator against the shared LlmService
+                    // (cheap Ambience route), then re-enters with the serialized
+                    // FlavorGenOutcome (PENDING lines stored on-loop in the
+                    // module's completion). Never blocks the tick.
+                    let Some(llm) = llm.cloned() else {
+                        tracing::warn!(
+                            correlation,
+                            "weather Effect::ModuleAsync dropped: no LlmService on this world task"
+                        );
+                        continue;
+                    };
+                    tokio::spawn(async move {
+                        let result = mush_weather::run_weather_async(&llm, &payload).await;
+                        let done = WorldCommand::ModuleAsyncDone {
+                            module,
+                            actor,
+                            correlation,
+                            payload: result,
+                        };
+                        if tx
+                            .send(WorldMsg::Inbound(Inbound::Apply(done)))
+                            .await
+                            .is_err()
+                        {
+                            tracing::debug!(
+                                correlation,
+                                "weather completion after shutdown dropped"
+                            );
+                        }
+                    });
                 } else {
                     tracing::warn!(
                         %module,

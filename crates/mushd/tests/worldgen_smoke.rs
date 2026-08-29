@@ -108,5 +108,11 @@ async fn live_worldgen_openrouter_smoke() {
         GenOutcome::Err {
             message, retryable, ..
         } => panic!("live @gen failed (retryable={retryable}): {message}"),
+        // This smoke test only ever requests a single-room draft (`GenKind::Room`
+        // via a bare `GenSnapshot`), never a batch brief — the brief variants
+        // are `@gen/building`'s (M10 batch generation), unreachable here.
+        GenOutcome::Brief { .. } | GenOutcome::BriefErr { .. } => {
+            panic!("unexpected brief outcome from a single-room @gen smoke request")
+        }
     }
 }

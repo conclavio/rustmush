@@ -9,6 +9,9 @@ description = "Zone weather state machines, climate data, ambience"
 [dependencies]
 mush-core.workspace = true
 mush-proto.workspace = true
+# M10 LLM flavor top-up: the off-loop generator calls LlmService (metered,
+# audited, gated). mush-llm → mush-core only; no cycle.
+mush-llm.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true
@@ -19,6 +22,8 @@ tracing.workspace = true
 mush-testkit.workspace = true
 mush-store.workspace = true
 futures.workspace = true
+# The flavor async-defer tests await run_weather_async against a MockProvider.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true

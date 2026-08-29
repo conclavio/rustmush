@@ -51,7 +51,9 @@ pub struct Counters {
 }
 
 impl Counters {
-    fn total_tokens(&self) -> u64 {
+    /// Input + output tokens.
+    #[must_use]
+    pub fn total_tokens(&self) -> u64 {
         self.input_tokens.saturating_add(self.output_tokens)
     }
 
@@ -259,6 +261,80 @@ impl BudgetLedger {
             .unwrap_or_default()
     }
 
+    /// Read the counters for one NPC.
+    #[must_use]
+    pub fn npc(&self, npc: ObjId) -> Counters {
+        let mut g = self.inner.lock().expect("budget lock");
+        self.roll(&mut g);
+        g.counters
+            .get(&ScopeKey::Npc(npc))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Every feature-scoped counter for today (UTC), keyed by route name —
+    /// the per-feature half of the cost dashboard's budget-vs-cap rows.
+    /// Unlike [`BudgetLedger::feature`] (one named route), this returns every
+    /// feature scope that has a recorded counter. The service records a counter
+    /// for every feature it calls, capped or not (see
+    /// [`LlmService::call`](crate::LlmService::call)'s `scope_limits`), so a
+    /// feature with no configured cap still shows up once it has spent.
+    #[must_use]
+    pub fn feature_totals(&self) -> Vec<(String, Counters)> {
+        let mut g = self.inner.lock().expect("budget lock");
+        self.roll(&mut g);
+        g.counters
+            .iter()
+            .filter_map(|(k, v)| match k {
+                ScopeKey::Feature(f) => Some((f.clone(), *v)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The top `n` actor (builder) scopes by cost today (UTC), descending
+    /// (ties broken by total tokens) — the dashboard's "top builders by
+    /// spend" rows. Aggregates only: counters, never prompt data.
+    #[must_use]
+    pub fn top_actors(&self, n: usize) -> Vec<(ObjId, Counters)> {
+        self.top_scope(n, |k| match k {
+            ScopeKey::Actor(a) => Some(*a),
+            _ => None,
+        })
+    }
+
+    /// The top `n` NPC scopes by cost today (UTC), descending — the
+    /// dashboard's "top NPCs by spend" rows.
+    #[must_use]
+    pub fn top_npcs(&self, n: usize) -> Vec<(ObjId, Counters)> {
+        self.top_scope(n, |k| match k {
+            ScopeKey::Npc(a) => Some(*a),
+            _ => None,
+        })
+    }
+
+    fn top_scope(
+        &self,
+        n: usize,
+        extract: impl Fn(&ScopeKey) -> Option<ObjId>,
+    ) -> Vec<(ObjId, Counters)> {
+        let mut g = self.inner.lock().expect("budget lock");
+        self.roll(&mut g);
+        let mut rows: Vec<(ObjId, Counters)> = g
+            .counters
+            .iter()
+            .filter_map(|(k, v)| extract(k).map(|id| (id, *v)))
+            .collect();
+        rows.sort_by(|a, b| {
+            b.1.cost_usd
+                .partial_cmp(&a.1.cost_usd)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| b.1.total_tokens().cmp(&a.1.total_tokens()))
+        });
+        rows.truncate(n);
+        rows
+    }
+
     /// Snapshot every scope's counters as `(wire-key, counters)` pairs for
     /// persistence (the documented store seam).
     #[must_use]
@@ -333,7 +409,7 @@ mod tests {
         };
         assert!(led.pre_check(&limits, 100).is_ok());
         led.settle(&limits, &usage(100, 100, Some(0.01)));
-        assert_eq!(led.global().total_tokens_for_test(), 200);
+        assert_eq!(led.global().total_tokens(), 200);
         // 200 used + 150 estimate > 300 → refuse (global).
         assert_eq!(led.pre_check(&limits, 150), Err(BudgetScope::Global));
     }
@@ -368,9 +444,56 @@ mod tests {
         assert_eq!(led.global().input_tokens, 0);
     }
 
-    impl Counters {
-        fn total_tokens_for_test(&self) -> u64 {
-            self.total_tokens()
-        }
+    #[test]
+    fn feature_totals_and_top_scopes_report_todays_spend() {
+        let led = BudgetLedger::new();
+        let alice = ObjId(10);
+        let bob = ObjId(11);
+        let npc = ObjId(20);
+
+        // worldgen_room: global + feature + actor(alice).
+        led.settle(
+            &ScopeLimits {
+                global: Some(BudgetLimit::tokens(1_000_000)),
+                feature: Some(("worldgen_room".to_string(), BudgetLimit::tokens(1_000_000))),
+                actor: Some((alice, BudgetLimit::tokens(1_000_000))),
+                ..Default::default()
+            },
+            &usage(100, 50, Some(0.05)),
+        );
+        // npc_dialogue_major: feature + actor(bob, smaller spend) + npc.
+        led.settle(
+            &ScopeLimits {
+                feature: Some((
+                    "npc_dialogue_major".to_string(),
+                    BudgetLimit::tokens(1_000_000),
+                )),
+                actor: Some((bob, BudgetLimit::tokens(1_000_000))),
+                npc: Some((npc, BudgetLimit::tokens(1_000_000))),
+                ..Default::default()
+            },
+            &usage(10, 10, Some(0.01)),
+        );
+
+        let features = led.feature_totals();
+        assert_eq!(features.len(), 2);
+        let wg = features
+            .iter()
+            .find(|(f, _)| f == "worldgen_room")
+            .expect("worldgen_room feature scope");
+        assert_eq!(wg.1.input_tokens, 100);
+
+        // Alice outspent Bob → sorted first.
+        let top_actors = led.top_actors(10);
+        assert_eq!(top_actors.len(), 2);
+        assert_eq!(top_actors[0].0, alice);
+        assert!((top_actors[0].1.cost_usd - 0.05).abs() < 1e-9);
+        assert_eq!(top_actors[1].0, bob);
+
+        let top_npcs = led.top_npcs(10);
+        assert_eq!(top_npcs, vec![(npc, led.npc(npc))]);
+
+        // `n` truncates.
+        assert_eq!(led.top_actors(1).len(), 1);
     }
 }

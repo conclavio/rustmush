@@ -106,6 +106,39 @@ pub struct FeatureTotals {
     pub cost_usd: f64,
 }
 
+/// One UTC-day, one `(feature, provider)` aggregate slice — the LLM cost
+/// dashboard's day-by-day series (M10c). Built by scanning the retained
+/// ring, so it is **best-effort**: a very busy server may have evicted rows
+/// older than the ring's capacity before the window closes (the documented
+/// path to an unbounded history is a persisted daily rollup — see the
+/// module docs). Aggregates only — no prompt text, no key, no per-player
+/// data beyond the feature/provider dimensions.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DaySlice {
+    /// UTC calendar day, `"YYYY-MM-DD"`.
+    pub day: String,
+    /// Feature route name.
+    pub feature: String,
+    /// Provider id.
+    pub provider: String,
+    /// Calls of any outcome.
+    pub calls: u64,
+    /// Calls the model refused.
+    pub refusals: u64,
+    /// Calls refused pre-flight by a budget ceiling.
+    pub budget_trips: u64,
+    /// Calls refused pre-flight by a kill switch.
+    pub disabled: u64,
+    /// Provider/transport errors.
+    pub errors: u64,
+    /// Input tokens consumed.
+    pub input_tokens: u64,
+    /// Output tokens consumed.
+    pub output_tokens: u64,
+    /// Cost consumed, USD.
+    pub cost_usd: f64,
+}
+
 /// The bounded in-memory audit ring plus a `tracing` mirror and a small
 /// cumulative aggregate (by feature route + provider) for the metrics surface.
 pub struct AuditSink {
@@ -222,6 +255,74 @@ impl AuditSink {
     pub fn is_empty(&self) -> bool {
         self.ring.lock().expect("audit lock").is_empty()
     }
+
+    /// Aggregate the retained ring into per-day, per-`(feature, provider)`
+    /// buckets covering the last `days` UTC days (today inclusive), sorted
+    /// oldest day first. See [`DaySlice`] for the best-effort caveat.
+    #[must_use]
+    pub fn daily_series(&self, days: u64) -> Vec<DaySlice> {
+        let days = days.max(1);
+        let today = now_unix() / 86_400;
+        let cutoff = today.saturating_sub(days - 1);
+        let mut buckets: BTreeMap<(u64, String, String), DaySlice> = BTreeMap::new();
+        {
+            let g = self.ring.lock().expect("audit lock");
+            for r in g.iter() {
+                let day = r.ts / 86_400;
+                if day < cutoff {
+                    continue;
+                }
+                let slice = buckets
+                    .entry((day, r.feature.clone(), r.provider.clone()))
+                    .or_insert_with(|| DaySlice {
+                        day: iso_date(day),
+                        feature: r.feature.clone(),
+                        provider: r.provider.clone(),
+                        ..DaySlice::default()
+                    });
+                slice.calls += 1;
+                match r.outcome {
+                    Outcome::Ok => {}
+                    Outcome::Refused => slice.refusals += 1,
+                    Outcome::Error => slice.errors += 1,
+                    Outcome::Budget => slice.budget_trips += 1,
+                    Outcome::Disabled => slice.disabled += 1,
+                }
+                slice.input_tokens = slice.input_tokens.saturating_add(r.input_tokens);
+                slice.output_tokens = slice.output_tokens.saturating_add(r.output_tokens);
+                if let Some(c) = r.cost_usd {
+                    slice.cost_usd += c;
+                }
+            }
+        }
+        let mut rows: Vec<DaySlice> = buckets.into_values().collect();
+        rows.sort_by(|a, b| {
+            a.day
+                .cmp(&b.day)
+                .then_with(|| a.feature.cmp(&b.feature))
+                .then_with(|| a.provider.cmp(&b.provider))
+        });
+        rows
+    }
+}
+
+/// UTC calendar date (`"YYYY-MM-DD"`) for a day number (days since the Unix
+/// epoch) — the days-from-civil inverse (Howard Hinnant's
+/// `civil_from_days`), exact and dependency-free. Mirrors `mush-mail`'s
+/// `civil_from_unix` (same math, from seconds); duplicated in miniature here
+/// rather than adding a cross-crate dependency for ~10 lines of arithmetic.
+fn iso_date(day: u64) -> String {
+    #[allow(clippy::cast_possible_wrap)]
+    let z = day as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097); // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365; // [0, 399]
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
 }
 
 /// Hex SHA-256 of a prompt (stable, non-reversible attribution key).
@@ -393,5 +494,107 @@ mod tests {
             .unwrap();
         assert_eq!(npc.calls, 1);
         assert_eq!(npc.provider, "anthropic");
+    }
+
+    #[test]
+    fn iso_date_matches_known_civil_dates() {
+        // Day 0 == the Unix epoch, 1970-01-01 (cross-checked against
+        // mush-mail's civil_from_unix(0)).
+        assert_eq!(iso_date(0), "1970-01-01");
+        // 2024-02-29 (leap day) is day 1_709_164_800 / 86_400.
+        assert_eq!(iso_date(1_709_164_800 / 86_400), "2024-02-29");
+        // A day after the leap day rolls the month.
+        assert_eq!(iso_date(1_709_164_800 / 86_400 + 1), "2024-03-01");
+    }
+
+    fn rec_at(ts: u64, feature: &str, provider: &str, outcome: Outcome, cost: f64) -> AuditRecord {
+        AuditRecord {
+            ts,
+            feature: feature.into(),
+            provider: provider.into(),
+            model: "m".into(),
+            actor: None,
+            npc: None,
+            prompt_sha256: String::new(),
+            prompt_summary: String::new(),
+            response_summary: String::new(),
+            input_tokens: 10,
+            output_tokens: 5,
+            cost_usd: Some(cost),
+            latency_ms: 0,
+            outcome,
+        }
+    }
+
+    #[test]
+    fn daily_series_buckets_by_utc_day_and_drops_older_rows() {
+        let sink = AuditSink::new(1024);
+        let today = now_unix() / 86_400;
+        let yesterday_ts = (today - 1) * 86_400;
+        let today_ts = today * 86_400;
+        let ancient_ts = (today.saturating_sub(30)) * 86_400; // outside a 7-day window
+
+        sink.record(rec_at(
+            yesterday_ts,
+            "worldgen_room",
+            "openrouter",
+            Outcome::Ok,
+            0.01,
+        ));
+        sink.record(rec_at(
+            today_ts,
+            "worldgen_room",
+            "openrouter",
+            Outcome::Ok,
+            0.02,
+        ));
+        sink.record(rec_at(
+            today_ts,
+            "worldgen_room",
+            "openrouter",
+            Outcome::Refused,
+            0.0,
+        ));
+        sink.record(rec_at(
+            today_ts,
+            "npc_dialogue_major",
+            "anthropic",
+            Outcome::Budget,
+            0.0,
+        ));
+        sink.record(rec_at(
+            ancient_ts,
+            "worldgen_room",
+            "openrouter",
+            Outcome::Ok,
+            9.0,
+        ));
+
+        let series = sink.daily_series(7);
+        // The 30-day-old row falls outside the window entirely.
+        assert!(series.iter().all(|s| (s.cost_usd - 9.0).abs() > 1e-9));
+        // Oldest day first.
+        assert!(series[0].day <= series.last().unwrap().day);
+
+        let today_wg = series
+            .iter()
+            .find(|s| s.feature == "worldgen_room" && s.day == iso_date(today))
+            .expect("today's worldgen_room bucket");
+        assert_eq!(today_wg.calls, 2);
+        assert_eq!(today_wg.refusals, 1);
+        assert!((today_wg.cost_usd - 0.02).abs() < 1e-9);
+
+        let yesterday_wg = series
+            .iter()
+            .find(|s| s.feature == "worldgen_room" && s.day == iso_date(today - 1))
+            .expect("yesterday's worldgen_room bucket");
+        assert_eq!(yesterday_wg.calls, 1);
+
+        let today_npc = series
+            .iter()
+            .find(|s| s.feature == "npc_dialogue_major")
+            .expect("today's npc bucket");
+        assert_eq!(today_npc.budget_trips, 1);
+        assert_eq!(today_npc.provider, "anthropic");
     }
 }

@@ -208,8 +208,11 @@ async fn serve(config: Config) -> Result<(), String> {
     // approval payload handlers see a loaded jobs module. Then run each
     // namespace's store migrations and hand each module its persisted boot
     // data — all before the world task starts serving.
-    let mut mods = modules::server_modules();
-    mods.push(modules::worldgen_module(Arc::clone(&llm)));
+    let mut mods = modules::server_modules_with(config.weather.to_weather_config());
+    mods.push(modules::worldgen_module_with(
+        Arc::clone(&llm),
+        config.worldgen.to_worldgen_config(),
+    ));
     // M8: the NPC agent module, grounded by the enabled ruleset's sheet +
     // on-loop abilities (the WoD adapter when "wod" is on; dialogue-only
     // otherwise).

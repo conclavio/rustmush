@@ -5,6 +5,8 @@
 
 id = "desert"
 name = "Arid Desert"
+# Prose style guide for the M10 LLM flavor generator (see temperate-coastal).
+style = "A harsh arid desert: blinding sun, bone-dry heat, vast open sky, sudden violent dust storms, bitter clear nights. Stark and elemental; emphasise light, heat, dust, and silence."
 
 [[states]]
 id = "clear"

@@ -64,6 +64,11 @@ pub struct ClimateDef {
     pub id: SmolStr,
     /// Human-facing name, e.g. `"Temperate Coastal"`.
     pub name: String,
+    /// A short prose style guide for the climate (mood, palette, typical
+    /// weather), fed to the M10 LLM flavor generator so generated variants
+    /// match the climate's voice. Optional in the data file (`style = "..."`);
+    /// empty when unset.
+    pub style: String,
     /// The weather states, in file order.
     pub states: Vec<WxStateDef>,
     /// Per-season transition matrices, keyed by season name
@@ -126,6 +131,8 @@ struct RawClimate {
     id: String,
     #[serde(default)]
     name: String,
+    #[serde(default)]
+    style: String,
     states: Vec<WxStateDef>,
     #[serde(default)]
     seasonal: BTreeMap<String, BTreeMap<String, BTreeMap<String, u32>>>,
@@ -254,6 +261,7 @@ impl ClimateDef {
         Ok(ClimateDef {
             id: SmolStr::new(&raw.id),
             name,
+            style: raw.style.trim().to_string(),
             states: raw.states,
             seasonal,
             tod,

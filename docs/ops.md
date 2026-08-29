@@ -240,7 +240,16 @@ The server logs `game clock installed` with the ratio and epoch at boot.
 per opted-in zone (see Migrations / Key layout). Staff drive it with the
 `@weather` family (Wizard/Royalty); rooms opt in with `OUTDOORS` / `SHELTERED`
 flags. Full operator + builder notes are in-game under `help weather`. The
-tick/ambient budgets are built-in defaults (not yet config-wired).
+tick/ambient probabilities are built-in defaults (not yet config-wired).
+
+The **weather LLM flavour top-up** (M10, `[weather]` in `mushd.toml`) never
+touches the state machine — only the *flavour text* it draws from. A `BUILDER_LLM`
+holder runs `@weather/generate [<climate>] [<state>]`, which fires one cheap
+off-loop Ambience call per bucket; the lines land **pending** and enter play only
+after `@weather/lines/approve`, persisted alongside the cells in the `weather`
+namespace (`flavor:{climate}:{state}:{transition|ambient}`). One knob:
+`[weather].flavor_variants` (default 10) — how many variants each call requests
+per bucket. Every call is metered/budgeted/audited like the rest of the LLM layer.
 
 **Scripting.** Builders attach sandboxed Rhai scripts to objects as `script:*`
 attributes (no separate store). Every run is bounded by operation, call-depth,
@@ -375,19 +384,31 @@ only — so a clone with only one key still runs the routes it can serve.
   Every call is metered, attributed to the triggering actor, and audited — the
   prompt is stored only as a SHA-256 hash plus a ≤200-char summary, never the
   full text.
+- **Cost dashboard** (M10) — `@llm/dashboard` (Royalty) and the web **LLM** panel
+  render the same aggregate over the audit/budget data: budgets vs their caps,
+  the top builders and NPCs by spend today, a short daily series, and the most
+  recent calls. It exposes **aggregates only** — feature/provider/model, token &
+  cost totals, latency, and which actor/NPC spent — and deliberately carries
+  **no prompt or response text** (not even the stored summary), so the panel can
+  be advertised to every web client while the server refuses the underlying
+  query to non-staff. `help llm` is the in-game topic.
 
 ### Persistence
 
 Worldgen adds one module namespace, `mod:worldgen:*` — one
-`mod:worldgen:draft:{room}:{builder}` JSON doc per pending draft, written
-through like any module op and reloaded at boot (a draft survives a restart;
-accept it afterward). It registers no migrations. **Zone themes are not module
-docs** — a theme is a plain `worldgen.theme` attribute on the zone/room/`#0`
-object, so it rides `obj:*` write-through and reloads with the world. Both are
-CI-tested for the reboot round trip
-(`crates/mushd/tests/persistence.rs::worldgen_persistence_round_trip_*`).
-Nothing the LLM produces is ever auto-committed: `@gen` yields a draft the
-builder reviews and `@gen/accept`s through the ordinary attribute path.
+`mod:worldgen:draft:{room}:{builder}` JSON doc per pending draft, plus (M10) one
+`mod:worldgen:building:{entrance}:{builder}` doc per whole-building batch —
+written through like any module op and reloaded at boot (drafts and batches
+survive a restart; accept them afterward). It registers no migrations. **Zone
+themes are not module docs** — a theme is a plain `worldgen.theme` attribute on
+the zone/room/`#0` object, so it rides `obj:*` write-through and reloads with the
+world. All are CI-tested for the reboot round trip
+(`crates/mushd/tests/persistence.rs::worldgen_persistence_round_trip_*` and
+`m10c_e2e.rs::m10c_persistence_twin_*`). Nothing the LLM produces is ever
+auto-committed: `@gen` and `@gen/building` yield drafts the builder reviews and
+`@gen/accept`s through the ordinary attribute path. One M10 knob:
+`[worldgen].batch_max_rooms` (default 40) caps how many rooms one `@gen/building`
+walk will describe.
 
 ## NPC agents (M8): tiers, cost, kill switch, injection posture
 

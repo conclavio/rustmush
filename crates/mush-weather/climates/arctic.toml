@@ -5,6 +5,8 @@
 
 id = "arctic"
 name = "Arctic Tundra"
+# Prose style guide for the M10 LLM flavor generator (see temperate-coastal).
+style = "A frozen tundra: brutal cold, driving snow and whiteout blizzards, brittle clear cold snaps, ice fog in the deep freeze. Spare and unforgiving; emphasise cold, wind, snow, and endless pale distance."
 
 [[states]]
 id = "clear"

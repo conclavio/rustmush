@@ -18,6 +18,7 @@ import {
 } from "./render";
 import { storageDel, storageGet, storageGetJson, storageSet, storageSetJson } from "./storage";
 import { ChannelsStore } from "./stores/channels.svelte";
+import { LlmDashboardStore } from "./stores/llm.svelte";
 import { MailStore } from "./stores/mail.svelte";
 import { RollsStore } from "./stores/rolls.svelte";
 import { ScrollbackStore } from "./stores/scrollback.svelte";
@@ -53,7 +54,8 @@ type PendingReq =
   | { kind: "comsys.state" }
   | { kind: "mail.list" }
   | { kind: "backlog"; channel: string }
-  | { kind: "sheet" };
+  | { kind: "sheet" }
+  | { kind: "llm_dashboard" };
 
 const HELP_LINES = [
   "Client commands (handled locally, never sent to the game):",
@@ -73,6 +75,7 @@ export class GameApp {
   sheet = new SheetStore();
   rolls = new RollsStore();
   worldgen = new WorldgenStore();
+  llm = new LlmDashboardStore();
 
   screen = $state<Screen>("login");
   /** Login screen notice (e.g. "session expired"). */
@@ -225,6 +228,7 @@ export class GameApp {
     this.sheet.clear();
     this.rolls.clear();
     this.worldgen.clear();
+    this.llm.clear();
     this.session.clear();
     this.roomView = null;
     this.disconnectReason = null;
@@ -383,6 +387,14 @@ export class GameApp {
         if (pending?.kind === "sheet") {
           this.sheet.markUnavailable();
         }
+        if (pending?.kind === "llm_dashboard") {
+          // A Sys reply to this Req is always a refusal (staff-only gate)
+          // or "no such panel" — never routed to scrollback (it would just
+          // be clutter for the common "you're not staff" case); the panel
+          // renders the message itself.
+          this.llm.markRefused(plainText(event.d));
+          return;
+        }
         this.scrollback.push("ev-sys", [renderRich(event.d)], ts);
         return;
       default:
@@ -419,6 +431,8 @@ export class GameApp {
       this.rolls.push(d.data);
     } else if (d.feed === "worldgen.draft") {
       this.worldgen.applyKeyframe(d.data);
+    } else if (d.feed === "llm.dashboard") {
+      this.llm.applyKeyframe(d.data);
     }
     // Unknown feeds (future modules): ignored — additive evolution.
   }
@@ -594,6 +608,21 @@ export class GameApp {
       this.#sheetRefreshTimer = null;
       this.refreshSheet();
     }, 350);
+  }
+
+  // -- llm dashboard ----------------------------------------------------------
+
+  /** Re-request the staff LLM cost dashboard — the panel's mount effect,
+   * its Refresh button, and its light visibility poll. No-op before the
+   * `llm.dashboard` panel is known (nothing to ask for). A non-staff
+   * viewer's request comes back as a polite refusal, not an error (see
+   * `LlmDashboardStore.markRefused`). */
+  refreshLlm(): void {
+    if (!this.session.llmDashboardAvailable) {
+      return;
+    }
+    this.llm.markRequested();
+    this.#req({ kind: "llm_dashboard" }, { t: "panel_subscribe", d: { feed: "llm.dashboard" } });
   }
 
   // -- worldgen -------------------------------------------------------------

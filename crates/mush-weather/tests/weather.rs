@@ -22,6 +22,7 @@ fn world(tick_secs: u64, ambient: u32) -> TestWorld {
     let module = WeatherModule::with_config(WeatherConfig {
         tick: Duration::from_secs(tick_secs),
         ambient_permille: ambient,
+        ..WeatherConfig::default()
     });
     TestWorld::with_modules(vec![Box::new(module)])
 }

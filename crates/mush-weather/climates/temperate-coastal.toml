@@ -7,6 +7,9 @@
 
 id = "temperate-coastal"
 name = "Temperate Coastal"
+# Prose style guide for the M10 LLM flavor generator (design 04 s10.4). Sets
+# the voice generated transition/ambient variants are written in.
+style = "A mild, damp maritime climate: soft grey light, salt air, drifting sea fog, changeable skies. Understated and atmospheric; favour restraint over drama."
 
 # --- states -----------------------------------------------------------------
 # visibility / precip / wind are 0..=100 scales; temp_band is [low, high] in C.

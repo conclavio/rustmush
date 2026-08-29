@@ -47,3 +47,17 @@ describe("SessionStore.worldgenAvailable", () => {
     expect(s.worldgenAvailable).toBe(false);
   });
 });
+
+describe("SessionStore.llmDashboardAvailable", () => {
+  it("true when the hello advertises the llm.dashboard panel", () => {
+    const s = new SessionStore();
+    s.applyHello({ server: "rustmush", features: ["worldgen"], panels: ["llm.dashboard"] });
+    expect(s.llmDashboardAvailable).toBe(true);
+  });
+
+  it("false when the panel is absent, even with worldgen otherwise available", () => {
+    const s = new SessionStore();
+    s.applyHello({ server: "rustmush", features: ["worldgen"], panels: ["worldgen.draft"] });
+    expect(s.llmDashboardAvailable).toBe(false);
+  });
+});
