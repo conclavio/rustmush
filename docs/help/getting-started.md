@@ -33,6 +33,12 @@ A few conventions you will see everywhere:
   *Name            A leading * looks a player up globally by name.
   me / here        Your own character / your current room.
 
+A full-screen option (SSH): if you connect over SSH with a normal terminal,
+"+tui" switches to an optional full-screen dashboard — your scrollback and
+command line in the middle, a live WHO rail, and switchable @mail / +intel
+widgets. "+notui" (or Ctrl-]) returns to the classic line view, which stays
+the default. See "help tui".
+
 Where to go next: "help movement" and "help communication" cover daily
 life; "help building" starts you on making rooms of your own; "help
 rules-of-conduct" covers expectations for play.

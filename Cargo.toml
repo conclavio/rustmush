@@ -37,6 +37,12 @@ fred = { version = "10.1", features = ["i-redis-json", "i-redisearch", "serde-js
 # default features pull aws-lc-sys (CMake/NASM C build); ring keeps the
 # workspace's no-C-toolchain-babysitting rule intact on Windows + Linux.
 russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
+# TUI (M15) — server-side ratatui over SSH. default-features=false drops the
+# bundled crossterm backend (no local tty here; mush-net-ssh ships a clean-room
+# SshBackend that writes VT100 into a Vec<u8>). Verified Aug 2026: 0.29.0 is the
+# current 0.29 line; the Backend trait is read from the registry source to
+# implement it exactly.
+ratatui = { version = "0.29", default-features = false }
 getrandom = "0.4"
 # web session tokens are stored as SHA-256 hashes (design 02 §6.2); 0.11.0
 # already in-tree transitively.

@@ -112,6 +112,17 @@ pub trait SshHooks: Send + Sync {
     /// One completed input line from a connected (in-game) connection.
     fn line(&self, conn: u64, line: String) -> BoxFuture<'_, ()>;
 
+    /// A read-only world query on behalf of a connected connection — the SSH
+    /// side of the structured `Inbound::Query` path (milestone M15). The
+    /// transport uses it to refresh TUI widgets (e.g. the WHO rail submits
+    /// `"who"`) without typing a command, so it must not stamp idle. The
+    /// binary maps `name` to its query handler and routes the reply back
+    /// through the same output queue as an [`OutputEvent`]. The default is a
+    /// no-op, so a binary without query support simply serves no widget data.
+    fn query(&self, _conn: u64, _name: String) -> BoxFuture<'_, ()> {
+        Box::pin(async {})
+    }
+
     /// The transport for `conn` is gone (only fired for connections that
     /// passed [`connect_character`](Self::connect_character); the binary
     /// detaches it — `DetachReason::Lost` unless it already detached).

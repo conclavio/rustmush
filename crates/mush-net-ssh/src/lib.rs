@@ -40,6 +40,7 @@ mod editor;
 mod hooks;
 mod hostkey;
 mod server;
+mod tui;
 mod welcome;
 
 pub use caps::{DEFAULT_HEIGHT, DEFAULT_WIDTH, detect_caps, detect_color_depth, detect_utf8};

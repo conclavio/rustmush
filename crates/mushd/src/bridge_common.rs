@@ -34,6 +34,7 @@ use mush_session::{
     ConnId, ConnectionHandle, DetachOutcome, DetachReason, FloodVerdict, SessId, SessionManager,
     sanitize_line,
 };
+use smol_str::SmolStr;
 
 use crate::accounts::{AuthBackend, AuthOutcome, CreateErr};
 use crate::ipguard::IpGuard;
@@ -326,6 +327,40 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             })
             .await;
         LineOutcome::Continue
+    }
+
+    /// A read-only world query from an attached connection — the shared half
+    /// of the SSH TUI's structured `Inbound::Query` path (milestone M15),
+    /// mirroring the web bridge's `request` seam. Unlike [`line`](Self::line)
+    /// this does **not** stamp idle (`record_input`): a background panel /
+    /// widget refresh is not the player typing, so a WHO-rail poll must never
+    /// reset the actor's idle time. It still shares the per-connection input
+    /// flood bucket ([`check_input`](SessionManager::check_input)) so a widget
+    /// cannot spam the world task past the throttle. A throttled or unattached
+    /// query is dropped silently (the widget simply keeps its last data).
+    ///
+    /// The engine answers with an [`OutputEvent::Reply`] addressed to `conn`
+    /// only, wrapping the query handler's event; permissions are evaluated as
+    /// the connection's own actor, so a widget can never read another actor's
+    /// data (invariant T3).
+    pub async fn query(&self, conn: u64, id: u64, name: SmolStr, args: serde_json::Value) {
+        let conn_id = ConnId(conn);
+        if self.sessions.check_input(conn_id) == FloodVerdict::Throttled {
+            return;
+        }
+        let Some(actor) = self.actor_of(conn_id) else {
+            tracing::warn!(conn, "query from unattached connection dropped");
+            return;
+        };
+        self.world
+            .inbound(Inbound::Query {
+                conn,
+                actor,
+                id,
+                name,
+                args,
+            })
+            .await;
     }
 
     /// The transport lost (or closed) a connection. (Its IP-guard slot is

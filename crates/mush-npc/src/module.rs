@@ -198,6 +198,14 @@ impl GameModule for NpcModule {
             },
             Arc::new(cmd_intel),
         )?;
+
+        // M15: the read-only `intel.list` hydration query behind the SSH TUI's
+        // +intel widget (and any future web panel). Same principal-scoped data
+        // as the `+intel` command; reading intel does not mutate, so — unlike
+        // `@mail` read — this stays a query. The "intel" panel feed names the
+        // keyframe it answers with.
+        reg.panel_feed("intel")?;
+        reg.query_handler("intel.list", Arc::new(crate::query::IntelListQuery))?;
         Ok(())
     }
 
@@ -644,8 +652,9 @@ fn cmd_intel(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-/// The human label for an [`IntelKind`] in the `+intel` render.
-fn intel_kind_label(kind: IntelKind) -> &'static str {
+/// The human label for an [`IntelKind`] in the `+intel` render (shared with
+/// the `intel.list` query handler so the command and the widget agree).
+pub(crate) fn intel_kind_label(kind: IntelKind) -> &'static str {
     match kind {
         IntelKind::Arrived => "arrived",
         IntelKind::Departed => "departed",

@@ -17,7 +17,9 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 use mush_net_ssh::{AuthResult, CharSummary, CreateErr, NewConn, SshConfig, SshHooks, SshServer};
-use mush_proto::{NarrativeKind, ObjRef, OutputEvent, RichText};
+use mush_proto::{
+    NarrativeKind, ObjRef, OutputEvent, PanelFrameKind, RichText, SmolStr, WhoEntry,
+};
 use russh::ChannelMsg;
 use tokio::sync::mpsc;
 
@@ -140,6 +142,51 @@ impl SshHooks for MockHooks {
         })
     }
 
+    fn query(&self, conn: u64, name: String) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            let Some(tx) = self.tx_of(conn) else {
+                return;
+            };
+            // The TUI widgets submit read-only queries; answer each with the
+            // Reply/Panel a real binary would (via the world's query handlers).
+            let ev = match name.as_str() {
+                "who" => OutputEvent::Who(vec![WhoEntry {
+                    name: "Alice".into(),
+                    alias: None,
+                    idle_s: 0,
+                    conn_s: 42,
+                    location: None,
+                    doing: None,
+                }]),
+                "mail.list" => OutputEvent::Panel {
+                    feed: SmolStr::new_static("mail"),
+                    kind: PanelFrameKind::Keyframe,
+                    data: serde_json::json!({
+                        "folder": "inbox",
+                        "entries": [
+                            { "index": 1, "status": "unread",
+                              "from": { "name": "Bento" }, "subject": "Welcome" }
+                        ],
+                    }),
+                },
+                "intel.list" => OutputEvent::Panel {
+                    feed: SmolStr::new_static("intel"),
+                    kind: PanelFrameKind::Keyframe,
+                    data: serde_json::json!({
+                        "count": 1,
+                        "records": [
+                            { "subject": "Mallory", "kind": "spoke",
+                              "detail": "plotting", "provenance": "seen by Snitch",
+                              "room": "Bar", "ts": 0 }
+                        ],
+                    }),
+                },
+                _ => return,
+            };
+            let _ = tx.send(Arc::new(ev)).await;
+        })
+    }
+
     fn disconnected(&self, conn: u64) -> BoxFuture<'_, ()> {
         Box::pin(async move {
             self.disconnects.lock().unwrap().push(conn);
@@ -254,6 +301,11 @@ impl Term {
     async fn send_line(&mut self, line: &str) {
         let bytes = format!("{line}\r").into_bytes();
         self.channel.data(&bytes[..]).await.expect("send line");
+    }
+
+    /// Send raw bytes (TUI hotkeys, e.g. Tab to cycle the secondary pane).
+    async fn send_bytes(&mut self, bytes: &[u8]) {
+        self.channel.data(bytes).await.expect("send bytes");
     }
 
     /// Wait for the server to close the channel/connection.
@@ -585,6 +637,103 @@ async fn account_username_password_auth_auto_connects() {
     term.expect("Welcome, zoe!").await;
     term.send_line("say hello").await;
     term.expect("Nick says, \"hello\"").await;
+
+    term.send_line("QUIT").await;
+    term.expect_close().await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+/// The M15 TUI plumbing end-to-end: `+tui` enters the full-screen ratatui
+/// frame (WHO rail + main frame + input line), a command typed inside it
+/// reaches the world and its output lands in the scrollback, and `+notui`
+/// restores byte-for-byte line mode (a subsequent `say` renders the classic
+/// way again).
+#[tokio::test]
+async fn tui_enter_shows_frame_then_notui_restores_line_mode() {
+    let hooks = Arc::new(MockHooks::default());
+    let addr = start_server("tui", Arc::clone(&hooks)).await;
+
+    let config = Arc::new(russh::client::Config::default());
+    let mut handle = russh::client::connect(config, addr, AcceptAll)
+        .await
+        .expect("connect");
+    assert!(
+        handle
+            .authenticate_none("play")
+            .await
+            .expect("auth-none")
+            .success()
+    );
+    let mut term = Term {
+        channel: open_shell_on(&handle).await,
+        seen: String::new(),
+    };
+    term.expect("Welcome to rustmush!").await;
+    term.send_line("create nick s3cretpw").await;
+    term.expect("Welcome, nick!").await;
+
+    // Enter the TUI: the frame carries the main-frame title, the WHO rail,
+    // and (after the auto-submitted `who` query replies) a listed player.
+    term.send_line("+tui").await;
+    term.expect("rustmush").await; // main-frame block title
+    term.expect("WHO").await; // rail block title
+    term.expect("Alice").await; // WHO rail entry from the query reply
+    // Entering the TUI switches to the alternate screen and hides the cursor.
+    assert!(
+        term.seen.contains("\u{1b}[?1049h"),
+        "expected the alternate-screen enter sequence"
+    );
+
+    // A command typed at the TUI input line reaches the world; its narrative
+    // reply is applied to the scrollback and repainted.
+    term.send_line("say hello").await;
+    term.expect("hello").await;
+    assert!(
+        hooks
+            .lines
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, l)| l == "say hello"),
+        "the TUI input line must forward commands to the world"
+    );
+
+    // Tab cycles the switchable secondary pane. First press opens the @mail
+    // widget, which submits the `mail.list` query; its Panel keyframe reply
+    // repaints the pane with the listed message.
+    term.send_bytes(&[0x09]).await;
+    term.expect("mail").await; // @mail pane title
+    term.expect("Bento").await; // sender from the mail.list reply
+
+    // Second press opens the +intel widget (submits `intel.list`); its reply
+    // repaints the pane with the filed record.
+    term.send_bytes(&[0x09]).await;
+    term.expect("intel").await; // +intel pane title
+    term.expect("Mallory").await; // subject from the intel.list reply
+
+    // The widget queries reached the world through the read-only query seam.
+    assert!(
+        hooks
+            .lines
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(_, l)| l != "mail.list" && l != "intel.list"),
+        "widget refreshes must go through hooks.query, never hooks.line"
+    );
+
+    // `+notui` leaves the alternate screen (restoring the cursor) and
+    // restores line mode; a fresh `say` renders the classic way again.
+    let before_notui = term.seen.len();
+    term.send_line("+notui").await;
+    term.send_line("say back").await;
+    term.expect("Nick says, \"back\"").await;
+    assert!(
+        term.seen[before_notui..].contains("\u{1b}[?1049l"),
+        "expected the alternate-screen leave sequence after +notui"
+    );
 
     term.send_line("QUIT").await;
     term.expect_close().await;

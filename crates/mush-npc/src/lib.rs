@@ -104,6 +104,7 @@ mod memory;
 mod module;
 mod profile;
 mod prompt;
+pub mod query;
 mod runtime;
 mod snapshot;
 mod stimulus;
@@ -124,6 +125,7 @@ pub use module::NpcModule;
 pub use profile::{
     AgentProfile, KnowledgeBounds, NS, NpcTier, PROFILE_ATTR, SUMMARY_ATTR, THINKING_FEED,
 };
+pub use query::IntelListQuery;
 pub use prompt::{ENGINE_FRAME, system_prompt, user_prompt};
 pub use runtime::{NpcConfig, NpcHostState, NpcRuntime};
 pub use snapshot::{

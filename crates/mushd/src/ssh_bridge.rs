@@ -41,6 +41,7 @@ use std::sync::Arc;
 use mush_core::ObjId;
 use mush_proto::{ClientCaps, OutputEvent};
 use mush_session::{ConnId, ConnectionHandle, SessionManager};
+use smol_str::SmolStr;
 use tokio::sync::mpsc;
 
 // The shared bridge vocabulary lives in bridge_common; re-exported here so
@@ -287,6 +288,40 @@ mod net {
                 // On `Close` (QUIT) the detach already dropped the output
                 // sender; the transport's pump closes the socket.
                 let _ = self.line(ConnId(conn), &line).await;
+            })
+        }
+
+        /// The SSH TUI's read-only query seam (milestone M15): the transport
+        /// asks for a widget's data by name and the reply lands on the same
+        /// output queue as an [`OutputEvent::Reply`]. Maps the widget's name
+        /// onto a registered query handler plus its args — the mirror of the
+        /// web bridge's `Req` → `Inbound::Query` path, but the SSH transport
+        /// carries only a name, so the (fixed) args live here. Unknown names
+        /// are dropped (no world round-trip). The correlation id is unused by
+        /// the TUI — it routes replies by the inner event's type — so a fixed
+        /// id is fine.
+        fn query(&self, conn: u64, name: String) -> BoxFuture<'_, ()> {
+            Box::pin(async move {
+                let mapped = match name.as_str() {
+                    // The WHO rail's periodic + on-open refresh.
+                    "who" => Some((SmolStr::new_static("who"), serde_json::json!({}))),
+                    // The @mail widget: list the inbox (folder null).
+                    "mail.list" => Some((
+                        SmolStr::new_static("mail.list"),
+                        serde_json::json!({ "folder": null }),
+                    )),
+                    // The +intel widget: the querying actor's own intel log.
+                    "intel.list" => {
+                        Some((SmolStr::new_static("intel.list"), serde_json::json!({})))
+                    }
+                    _ => {
+                        tracing::debug!(conn, name, "unknown TUI query name dropped");
+                        None
+                    }
+                };
+                if let Some((name, args)) = mapped {
+                    self.core.query(conn, 0, name, args).await;
+                }
             })
         }
 

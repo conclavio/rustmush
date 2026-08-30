@@ -53,9 +53,11 @@ use russh::server::{Auth, Config, Handler, Msg, Response, Server as _, Session};
 use russh::{Channel, ChannelId, Disconnect, MethodKind, MethodSet};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
+use tokio::sync::Notify;
 
 use crate::editor::{EchoMode, EditorAction, LineEditor};
 use crate::hooks::{AuthResult, CharSummary, NewConn, SshHooks};
+use crate::tui::TuiSession;
 use crate::welcome::{WelcomeCmd, parse_welcome};
 use crate::{caps, hostkey};
 
@@ -77,6 +79,11 @@ const PREAUTH_TIMEOUT: Duration = Duration::from_secs(120);
 /// peer behind a live TCP window) stalls `handle.data` on SSH window
 /// space; this bounds it so the pump can close the connection.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How often the TUI's WHO rail re-queries the world while `Mode::Tui` is
+/// active (design M15 D5: a read-only 3-5 s refresh that does *not* stamp
+/// idle — the pump submits the query, it never types the WHO command).
+const WHO_REFRESH: Duration = Duration::from_secs(4);
 
 const WELCOME_HELP: &str = "\
   connect <account> <password>   connect to an existing account\n\
@@ -261,6 +268,8 @@ impl russh::server::Server for Ingress {
                 width: 0,
                 height: 0,
                 mode: Mode::Welcome,
+                tui: None,
+                repaint: Arc::new(Notify::new()),
             })),
             route: Route::PreAuth,
             channel: None,
@@ -289,6 +298,11 @@ enum Mode {
     },
     /// Connected to a character; lines go to [`SshHooks::line`].
     InGame,
+    /// Full-screen ratatui TUI (milestone M15), entered from `InGame` with
+    /// `+tui` and left with `+notui` / the detach hotkey. Raw input drives
+    /// the TUI app (not the line editor) and the pump repaints frames; the
+    /// [`TuiSession`] itself lives in [`Shared::tui`].
+    Tui,
     /// `^D` quit confirmation; `prev` is restored on cancel.
     QuitConfirm { prev: Box<Mode> },
 }
@@ -318,6 +332,15 @@ struct Shared {
     width: u16,
     height: u16,
     mode: Mode,
+    /// Active TUI state while [`Mode::Tui`]; `None` in every other mode.
+    /// Reached under this same lock by both the input handler and the output
+    /// pump — rendering is synchronous, the async write happens after the
+    /// lock drops (invariant T2).
+    tui: Option<Box<TuiSession>>,
+    /// Signals the output pump to repaint the TUI without a world event
+    /// (resize, input edit). Only pulsed while `Mode::Tui`, so line mode is
+    /// never woken by it (invariant T1).
+    repaint: Arc<Notify>,
 }
 
 impl Shared {
@@ -478,6 +501,20 @@ impl ConnHandler {
         let mode = self.lock().mode.clone();
         match mode {
             Mode::InGame => {
+                // `+tui` is intercepted transport-side, before the world sees
+                // it (design M15 D2); every other line forwards unchanged, so
+                // a connection that never types `+tui` behaves exactly as
+                // today (invariant T1).
+                if line.trim().eq_ignore_ascii_case("+tui") {
+                    return self.enter_tui(session).await;
+                }
+                self.hooks.line(self.conn_id, line).await;
+                Ok(())
+            }
+            // Reached only if a line is submitted through the editor while in
+            // TUI mode (the normal TUI input path is `ConnHandler::data`);
+            // forward it so the world still sees the command.
+            Mode::Tui => {
                 self.hooks.line(self.conn_id, line).await;
                 Ok(())
             }
@@ -487,6 +524,100 @@ impl ConnHandler {
             }
             Mode::QuitConfirm { prev } => self.quit_confirm_line(session, *prev, &line).await,
         }
+    }
+
+    // ---- TUI (milestone M15) --------------------------------------------
+
+    /// Pulse the repaint signal so the output pump renders a fresh frame
+    /// without waiting for a world event (input edits, resize).
+    fn fire_repaint(&self) {
+        let notify = Arc::clone(&self.lock().repaint);
+        notify.notify_one();
+    }
+
+    /// `+tui`: build the [`TuiSession`], enter the alternate screen, paint the
+    /// first frame, and kick a WHO refresh. From here the output pump owns all
+    /// steady-state repaints (a single writer), so no frame races the enter.
+    async fn enter_tui(&mut self, session: &mut Session) -> Result<(), russh::Error> {
+        let Some(channel) = self.channel else {
+            return Ok(());
+        };
+        let bytes = {
+            let mut sh = self.lock();
+            let caps = sh.caps;
+            let mut tui = Box::new(TuiSession::new(caps));
+            let mut out = TuiSession::enter_bytes().to_vec();
+            out.extend_from_slice(&tui.paint());
+            sh.tui = Some(tui);
+            sh.mode = Mode::Tui;
+            out
+        };
+        session.data(channel, bytes)?;
+        // Read-only refresh; the reply's `Who` event lands on the pump, which
+        // repaints the rail. Does not stamp idle (design M15 D5).
+        self.hooks.query(self.conn_id, "who".to_owned()).await;
+        Ok(())
+    }
+
+    /// `+notui` / detach: leave the alternate screen, restore the cursor, drop
+    /// the TUI state, and hand the resumed line client its prompt back
+    /// (invariant T5 — never leave a client stuck on the alternate screen).
+    async fn leave_tui(&mut self, session: &mut Session) -> Result<(), russh::Error> {
+        let Some(channel) = self.channel else {
+            return Ok(());
+        };
+        let bytes = {
+            let mut sh = self.lock();
+            sh.tui = None;
+            sh.mode = Mode::InGame;
+            let mut out = TuiSession::leave_bytes().to_vec();
+            // Repaint the line editor's prompt + in-progress buffer so the
+            // resumed line client is not left on a blank line.
+            sh.editor.redraw(&mut out);
+            out
+        };
+        session.data(channel, bytes)
+    }
+
+    /// Raw input while in [`Mode::Tui`]: decode it into the TUI app, then
+    /// repaint / submit / detach. Painting is left to the pump (fired via the
+    /// repaint signal) so there is one steady-state frame writer.
+    async fn tui_data(&mut self, data: &[u8], session: &mut Session) -> Result<(), russh::Error> {
+        let result = {
+            let mut sh = self.lock();
+            match sh.tui.as_mut() {
+                Some(tui) => tui.feed_input(data),
+                None => return Ok(()),
+            }
+        };
+        if result.detach {
+            return self.leave_tui(session).await;
+        }
+        if !result.submit.is_empty() {
+            // Show the cleared input line immediately; the world's echo
+            // repaints again via the pump.
+            self.fire_repaint();
+            // A burst can carry more than one line (a multi-line paste); each
+            // is forwarded in order so none is dropped.
+            for line in result.submit {
+                // `+notui` typed at the TUI input line also detaches.
+                if line.trim().eq_ignore_ascii_case("+notui") {
+                    return self.leave_tui(session).await;
+                }
+                self.hooks.line(self.conn_id, line).await;
+            }
+            return Ok(());
+        }
+        if let Some(query) = result.query {
+            // Opening a widget submits its read-only refresh; the reply's
+            // Panel keyframe lands on the pump and repaints the pane. Like the
+            // WHO rail, this does not stamp idle (design M15 D5).
+            self.hooks.query(self.conn_id, query.to_owned()).await;
+        }
+        if result.redraw {
+            self.fire_repaint();
+        }
+        Ok(())
     }
 
     async fn welcome_line(
@@ -712,8 +843,20 @@ impl ConnHandler {
                     character = character.name,
                     "character connected"
                 );
-                self.lock().mode = Mode::InGame;
-                spawn_output_pump(rx, Arc::clone(&self.shared), session.handle(), channel);
+                let repaint = {
+                    let mut sh = self.lock();
+                    sh.mode = Mode::InGame;
+                    Arc::clone(&sh.repaint)
+                };
+                spawn_output_pump(
+                    rx,
+                    Arc::clone(&self.shared),
+                    session.handle(),
+                    channel,
+                    Arc::clone(&self.hooks),
+                    self.conn_id,
+                    repaint,
+                );
                 Ok(())
             }
             Err(why) => {
@@ -950,15 +1093,26 @@ impl Handler for ConnHandler {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         if self.channel == Some(channel) {
-            let caps = {
+            let (caps, is_tui) = {
                 let mut sh = self.lock();
                 sh.width = u16::try_from(col_width).unwrap_or(u16::MAX);
                 sh.height = u16::try_from(row_height).unwrap_or(u16::MAX);
                 sh.recompute_caps();
-                sh.caps
+                let caps = sh.caps;
+                // Reflow the TUI to the new geometry; the next repaint clears
+                // + redraws at the new size (invariant T4).
+                if let Some(tui) = sh.tui.as_mut() {
+                    tui.set_caps(caps);
+                }
+                (caps, matches!(sh.mode, Mode::Tui))
             };
             if self.connected.load(Ordering::SeqCst) {
                 self.hooks.caps_changed(self.conn_id, caps);
+            }
+            // Line mode pushes no bytes on resize (unchanged); TUI mode
+            // repaints so the frame reflows without a world event.
+            if is_tui {
+                self.fire_repaint();
             }
         }
         session.channel_success(channel)?;
@@ -1029,6 +1183,11 @@ impl Handler for ConnHandler {
         if self.channel != Some(channel) {
             return Ok(());
         }
+        // In TUI mode raw bytes drive the ratatui app (input line + nav
+        // hotkeys), not the line editor (design M15 D4).
+        if matches!(self.lock().mode, Mode::Tui) {
+            return self.tui_data(data, session).await;
+        }
         let (echo, actions) = {
             let mut sh = self.lock();
             let mut out = Vec::new();
@@ -1072,60 +1231,148 @@ impl Handler for ConnHandler {
 
 // ---- output pump --------------------------------------------------------
 
-/// Consume the binary's event queue for one connection: render through
-/// `mush-ansi` with the live caps and interleave with the line editor
-/// (erase the in-progress line, print the event, redraw prompt+buffer).
-/// Ends when the sender is dropped (session closed) or after a
-/// [`OutputEvent::Disconnect`], closing the transport either way.
+/// Render one event the classic line way: the exact erase/redraw dance the
+/// pump has always used around the line editor. Kept as a function so the
+/// TUI branch can sit beside it without perturbing a byte of line output
+/// (invariant T1).
+fn render_line_event(sh: &mut Shared, ev: &OutputEvent, theme: &AnsiTheme, bytes: &mut Vec<u8>) {
+    match ev {
+        OutputEvent::Prompt(spec) => {
+            sh.editor.set_mode(match spec.mode {
+                InputMode::Normal => EchoMode::Normal,
+                InputMode::Masked => EchoMode::Masked,
+                InputMode::NoEcho => EchoMode::NoEcho,
+            });
+            if spec.text.is_some() {
+                // Render the prompt once and store it; redraw re-prints it
+                // from here on.
+                let mut prompt = Vec::new();
+                mush_ansi::render(ev, &sh.caps, theme, &mut prompt);
+                sh.editor
+                    .set_prompt(String::from_utf8_lossy(&prompt).into_owned());
+            } else {
+                // `text: None` means "no prompt" (the normal in-game mode
+                // restored after an input context pops) — clear the stored
+                // prompt rather than keeping a stale "Mail>" on screen.
+                sh.editor.set_prompt(String::new());
+            }
+            sh.editor.redraw(bytes);
+        }
+        _ => {
+            let interrupted = sh.editor.has_visible_line();
+            if interrupted {
+                bytes.extend_from_slice(b"\r\x1b[K");
+            }
+            mush_ansi::render(ev, &sh.caps, theme, bytes);
+            if interrupted {
+                sh.editor.redraw(bytes);
+            }
+        }
+    }
+}
+
+/// Consume the binary's event queue for one connection. In line mode each
+/// event renders through `mush-ansi` and interleaves with the line editor,
+/// exactly as before. In [`Mode::Tui`] the pump instead applies every ready
+/// event to the [`TuiSession`] and repaints one coalesced ratatui frame; it
+/// also wakes on the repaint signal (resize / input) and on a WHO-refresh
+/// timer. Rendering is synchronous under the lock; the async write happens
+/// after the lock drops (invariant T2). Ends when the sender is dropped
+/// (session closed) or after a [`OutputEvent::Disconnect`], restoring the
+/// terminal first if a TUI was active (invariant T5).
 fn spawn_output_pump(
     mut rx: mpsc::Receiver<Arc<OutputEvent>>,
     shared: Arc<Mutex<Shared>>,
     handle: russh::server::Handle,
     channel: ChannelId,
+    hooks: Arc<dyn SshHooks>,
+    conn_id: u64,
+    repaint: Arc<Notify>,
 ) {
     tokio::spawn(async move {
         let theme = AnsiTheme::default();
-        while let Some(ev) = rx.recv().await {
-            let is_disconnect = matches!(&*ev, OutputEvent::Disconnect { .. });
+        let mut who_timer = tokio::time::interval(WHO_REFRESH);
+        who_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // The first interval tick fires immediately; swallow it so the timer
+        // does not kick a query before the connection even enters the TUI.
+        who_timer.tick().await;
+
+        enum Wake {
+            Event(Option<Arc<OutputEvent>>),
+            Repaint,
+            Tick,
+        }
+
+        loop {
+            let wake = tokio::select! {
+                biased;
+                ev = rx.recv() => Wake::Event(ev),
+                () = repaint.notified() => Wake::Repaint,
+                _ = who_timer.tick() => Wake::Tick,
+            };
+
+            // WHO refresh: submit a read-only query while a TUI is active
+            // (design M15 D5 — never types the WHO command, never stamps
+            // idle). No bytes here; the reply repaints via the event path.
+            if let Wake::Tick = wake {
+                let is_tui = matches!(
+                    shared.lock().expect("conn state poisoned").mode,
+                    Mode::Tui
+                );
+                if is_tui {
+                    hooks.query(conn_id, "who".to_owned()).await;
+                }
+                continue;
+            }
+
+            let mut done = false;
             let bytes = {
                 let mut sh = shared.lock().expect("conn state poisoned");
-                let mut bytes = Vec::new();
-                match &*ev {
-                    OutputEvent::Prompt(spec) => {
-                        sh.editor.set_mode(match spec.mode {
-                            InputMode::Normal => EchoMode::Normal,
-                            InputMode::Masked => EchoMode::Masked,
-                            InputMode::NoEcho => EchoMode::NoEcho,
-                        });
-                        if spec.text.is_some() {
-                            // Render the prompt once and store it; redraw
-                            // re-prints it from here on.
-                            let mut prompt = Vec::new();
-                            mush_ansi::render(&ev, &sh.caps, &theme, &mut prompt);
-                            sh.editor
-                                .set_prompt(String::from_utf8_lossy(&prompt).into_owned());
+                match wake {
+                    Wake::Repaint => {
+                        if matches!(sh.mode, Mode::Tui) {
+                            sh.tui.as_mut().map(|t| t.paint()).unwrap_or_default()
                         } else {
-                            // `text: None` means "no prompt" (the normal
-                            // in-game mode restored after an input context
-                            // pops) — clear the stored prompt rather than
-                            // keeping a stale "Mail>" on screen.
-                            sh.editor.set_prompt(String::new());
-                        }
-                        sh.editor.redraw(&mut bytes);
-                    }
-                    _ => {
-                        let interrupted = sh.editor.has_visible_line();
-                        if interrupted {
-                            bytes.extend_from_slice(b"\r\x1b[K");
-                        }
-                        mush_ansi::render(&ev, &sh.caps, &theme, &mut bytes);
-                        if interrupted {
-                            sh.editor.redraw(&mut bytes);
+                            Vec::new()
                         }
                     }
+                    // Sender dropped: the queue is closed, tear down.
+                    Wake::Event(None) => {
+                        done = true;
+                        Vec::new()
+                    }
+                    Wake::Event(Some(ev)) => {
+                        if matches!(&*ev, OutputEvent::Disconnect { .. }) {
+                            done = true;
+                        }
+                        match sh.mode {
+                            Mode::Tui => {
+                                // Coalesce: apply this event and every other
+                                // ready one, then paint a single frame.
+                                if let Some(t) = sh.tui.as_mut() {
+                                    t.apply_event(&ev);
+                                }
+                                while let Ok(next) = rx.try_recv() {
+                                    if matches!(&*next, OutputEvent::Disconnect { .. }) {
+                                        done = true;
+                                    }
+                                    if let Some(t) = sh.tui.as_mut() {
+                                        t.apply_event(&next);
+                                    }
+                                }
+                                sh.tui.as_mut().map(|t| t.paint()).unwrap_or_default()
+                            }
+                            _ => {
+                                let mut bytes = Vec::new();
+                                render_line_event(&mut sh, &ev, &theme, &mut bytes);
+                                bytes
+                            }
+                        }
+                    }
+                    Wake::Tick => Vec::new(), // handled above
                 }
-                bytes
             };
+
             if !bytes.is_empty() {
                 match tokio::time::timeout(WRITE_TIMEOUT, handle.data(channel, bytes)).await {
                     Ok(Ok(())) => {}
@@ -1139,10 +1386,25 @@ fn spawn_output_pump(
                     }
                 }
             }
-            if is_disconnect {
+            if done {
                 break;
             }
         }
+
+        // If the connection tore down while still on the alternate screen,
+        // restore it so the client is never stuck there (invariant T5).
+        let was_tui = matches!(
+            shared.lock().expect("conn state poisoned").mode,
+            Mode::Tui
+        );
+        if was_tui {
+            let _ = tokio::time::timeout(
+                WRITE_TIMEOUT,
+                handle.data(channel, TuiSession::leave_bytes().to_vec()),
+            )
+            .await;
+        }
+
         // Session closed (QUIT, @boot, linkdead sweep) or explicit
         // Disconnect event: close the transport.
         let _ = handle.close(channel).await;
