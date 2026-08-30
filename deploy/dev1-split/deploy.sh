@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 # Switch the dev1 instance to the SPLIT, hot-restartable deployment and (re)start
 # it. Run as root. The split runs ONE service — dev1mush-gateway — which owns the
-# SSH connections and spawns + supervises the mush-server child; a redeploy
+# SSH + WEB connections and spawns + supervises the mush-server child; a redeploy
 # SIGHUPs the gateway to restart ONLY the server child, so no player is dropped
-# (M16c). It reuses dev1's Redis (6788), config, TLS, and env from ../dev1.
+# (M16c/M16d). It reuses dev1's Redis (6788), config, TLS, and env from ../dev1.
 #
 # Idempotent: safe to re-run for a redeploy. On a redeploy it does the
 # hold-the-connections HOT restart (reload, not restart) — see step 9.
 #
-# NOTE (web): the gateway currently serves SSH only; the axum web ingress is not
-# yet wired into it. An instance that needs the web client (HTTPS :6790) must
-# stay on the all-in-one `mushd` (deploy/dev1). See README.md here.
+# NOTE (web): as of M16d the gateway ALSO serves the web client (HTTPS :6790) on
+# the same session layer as SSH, and web connections survive the hot restart too.
+# The gateway must be BUILT with `--features tls` to terminate HTTPS from the
+# on-disk cert/key (see README.md here for the build step). This deploy.sh only
+# installs config/units + (re)starts; it does not build.
 set -euo pipefail
 
 ROOT=/opt/rustmush/dev1
@@ -41,8 +43,8 @@ if [ -z "${EXT_IP:-}" ]; then echo "FATAL: could not resolve external IP" >&2; e
 echo "external IP: $EXT_IP  (ssh :6789, ipc :6794 localhost)"
 sed "s/__EXTERNAL_IP__/$EXT_IP/g" "$DEV1/mushd.toml" > "$ROOT/mushd.toml"
 
-# 5. TLS cert (kept even though the gateway does not yet serve web — harmless,
-#    and ready for when it does / if you run the all-in-one alongside).
+# 5. TLS cert — the gateway serves the web client (HTTPS :6790) and terminates
+#    TLS from this cert/key (M16d; gateway built with --features tls).
 if [ ! -f "$ROOT/tls/cert.pem" ]; then
   openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
     -keyout "$ROOT/tls/key.pem" -out "$ROOT/tls/cert.pem" \
@@ -89,4 +91,4 @@ else
 fi
 sleep 2
 systemctl --no-pager --lines=0 status dev1mush-gateway.service | head -4 || true
-echo "== done. ssh -p 6789 play@$EXT_IP  (hot-restart: systemctl reload dev1mush-gateway) =="
+echo "== done. ssh -p 6789 play@$EXT_IP  |  web https://$EXT_IP:6790  (hot-restart: systemctl reload dev1mush-gateway) =="

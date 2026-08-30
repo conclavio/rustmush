@@ -212,6 +212,7 @@ async fn two_process_connect_play_boot_disconnect() {
                 source: ServerSource::Connect(endpoint),
                 store: Some(gw_store),
                 ssh_ready: Some(ssh_tx),
+                web_ready: None,
                 restart_ready: None,
             },
         ))
@@ -307,6 +308,7 @@ async fn boot_split(
                 source: ServerSource::Connect(endpoint),
                 store: Some(gw_store),
                 ssh_ready: Some(ssh_tx),
+                web_ready: None,
                 restart_ready: None,
             },
         ))

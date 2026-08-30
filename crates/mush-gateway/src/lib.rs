@@ -41,15 +41,18 @@ use mush_ipc::{
     AttachRec, BoxRead, BoxWrite, DetachCause, FrameReader, GatewayLink, IPC_VERSION, IpcEndpoint,
     ServiceReq, ServiceResp, ToGateway, ToServer, WireInbound,
 };
+use mush_net_web::{WebConfig, WebHooks};
 use mush_proto::{OutputEvent, RichText};
 use mush_session::{CharKey, SessionConfig, SessionManager};
 use mush_store::ObjectStore;
+use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::accounts::Accounts;
 use crate::delivery::{SessionDelivery, char_key_obj};
 use crate::ssh_bridge::{SshBridge, start_listener};
+use crate::web_bridge::WebBridge;
 
 pub mod accounts;
 pub mod bridge_common;
@@ -133,6 +136,12 @@ pub struct GatewayOptions {
     /// Signalled with the bound SSH listen address once it is up (the test's
     /// SSH client connects there).
     pub ssh_ready: Option<oneshot::Sender<SocketAddr>>,
+    /// Signalled with the bound WEB listen address once the web listener is up
+    /// (the test's WS client connects there). `None` for callers that do not
+    /// need it (production reads the configured address). A web bind FAILURE
+    /// (W4) leaves this unsent — the sender drops and its receiver resolves to
+    /// `Err`, exactly as a never-bound listener would.
+    pub web_ready: Option<oneshot::Sender<SocketAddr>>,
     /// Signalled with a [`RestartTrigger`] once the supervisor is running (D1b).
     /// The restart-survival test holds the trigger to drive a deliberate
     /// restart; production wires it to a `SIGHUP` handler. `None` for callers
@@ -207,6 +216,21 @@ impl BoundaryHandle {
         self.restarting.load(Ordering::SeqCst)
     }
 }
+
+/// The web `hello` manifest the server advertises in its [`ToGateway::Hello`]:
+/// the per-module `features` (comsys as `"channels"`) and the panel-feed
+/// `panels` (module feeds plus `"who"`). Captured at the handshake and cached
+/// so [`serve`] can build the web client's `WebConfig`; a fresh Hello on a
+/// server RESTART re-delivers it and updates the cached copy.
+#[derive(Clone, Debug, Default)]
+struct HelloManifest {
+    features: Vec<String>,
+    panels: Vec<String>,
+}
+
+/// The shared, restart-surviving cache of the latest [`HelloManifest`] the
+/// server delivered.
+type ManifestCache = Arc<Mutex<HelloManifest>>;
 
 /// The gateway-side [`GatewayLink`]: serializes every gateway → server message
 /// onto the CURRENT boundary socket (via the swappable [`BoundaryHandle`]) and
@@ -322,6 +346,7 @@ async fn gateway_reader(
     pending: Arc<Mutex<Pending>>,
     to_server_tx: mpsc::UnboundedSender<ToServer>,
     sessions: Arc<SessionManager>,
+    manifest: ManifestCache,
 ) {
     loop {
         let msg = match reader.read::<ToGateway>().await {
@@ -374,8 +399,20 @@ async fn gateway_reader(
             } => {
                 close_web_sessions(&sessions, &to_server_tx, chars, notice.as_ref(), cause);
             }
-            ToGateway::Hello { proto, server, .. } => {
-                tracing::info!(proto, server, "late Hello (already handshaked)");
+            ToGateway::Hello {
+                proto,
+                server,
+                features,
+                panels,
+            } => {
+                // A steady-state Hello (a freshly (re)started server re-greets
+                // over its new boundary): refresh the cached manifest so it
+                // tracks the current server. The already-running web listener
+                // keeps its boot-time WebConfig snapshot; the cache update keeps
+                // the gateway's view current for any later read.
+                tracing::info!(proto, server, "late Hello (already handshaked); refreshing manifest");
+                *manifest.lock().expect("manifest cache poisoned") =
+                    HelloManifest { features, panels };
             }
             ToGateway::Bye => {
                 tracing::info!("server said Bye; closing boundary");
@@ -606,22 +643,32 @@ async fn connect_and_wire(
     endpoint: &IpcEndpoint,
     sessions: &Arc<SessionManager>,
     connect_timeout: Duration,
+    manifest: &ManifestCache,
 ) -> Result<WiredBoundary, String> {
     let (reader_half, writer_half) = connect_with_retry(endpoint, connect_timeout).await?;
 
-    // Handshake: the server greets with Hello before anything else.
+    // Handshake: the server greets with Hello before anything else. Capture its
+    // panel manifest into the shared cache so `serve` can build the web client's
+    // WebConfig (and a restart's fresh Hello refreshes it here again).
     let mut reader = FrameReader::new(reader_half);
     match reader
         .read::<ToGateway>()
         .await
         .map_err(|e| format!("reading Hello: {e}"))?
     {
-        Some(ToGateway::Hello { proto, server, .. }) => {
+        Some(ToGateway::Hello {
+            proto,
+            server,
+            features,
+            panels,
+        }) => {
             if proto != IPC_VERSION {
                 return Err(format!(
                     "ipc version mismatch: server speaks {proto}, gateway speaks {IPC_VERSION}"
                 ));
             }
+            *manifest.lock().expect("manifest cache poisoned") =
+                HelloManifest { features, panels };
             tracing::info!(proto, server, "handshake ok");
         }
         Some(other) => return Err(format!("expected Hello, got {other:?}")),
@@ -646,6 +693,7 @@ async fn connect_and_wire(
         pending,
         to_server_tx,
         Arc::clone(sessions),
+        Arc::clone(manifest),
     ));
     Ok(WiredBoundary {
         conn,
@@ -832,6 +880,7 @@ async fn supervise(
     mut restart_rx: mpsc::Receiver<()>,
     first_instance: LaunchedServer,
     first_wired: WiredBoundary,
+    manifest: ManifestCache,
 ) {
     let mut instance = first_instance;
     let mut wired = first_wired;
@@ -896,7 +945,9 @@ async fn supervise(
                     continue;
                 }
             };
-            match connect_and_wire(&new_instance.endpoint, &sessions, RECONNECT_TIMEOUT).await {
+            match connect_and_wire(&new_instance.endpoint, &sessions, RECONNECT_TIMEOUT, &manifest)
+                .await
+            {
                 Ok(w) => {
                     guard.record_success();
                     break Some((new_instance, w));
@@ -968,6 +1019,9 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
         linkdead_grace: Duration::from_secs(config.game.linkdead_grace_s),
         ..SessionConfig::default()
     }));
+    // The restart-surviving cache of the server's web `hello` manifest,
+    // populated at the first handshake below and refreshed on each restart.
+    let manifest: ManifestCache = Arc::new(Mutex::new(HelloManifest::default()));
 
     // Obtain + wire the FIRST server boundary. For a supervised source we launch
     // an instance and keep the launcher for respawns; for Connect we wire once.
@@ -993,8 +1047,13 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
             }
         };
     let first_instance = first_instance.expect("first instance set above");
-    let first_wired =
-        connect_and_wire(&first_instance.endpoint, &sessions, INITIAL_CONNECT_TIMEOUT).await?;
+    let first_wired = connect_and_wire(
+        &first_instance.endpoint,
+        &sessions,
+        INITIAL_CONNECT_TIMEOUT,
+        &manifest,
+    )
+    .await?;
     boundary.connect(Arc::clone(&first_wired.conn));
 
     // The gateway's own KV store (accounts/tokens/bans).
@@ -1017,7 +1076,7 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
         config.game.max_characters as usize,
     ));
     let bridge = Arc::new(SshBridge::with_link(
-        accounts,
+        Arc::clone(&accounts),
         Arc::clone(&sessions),
         Arc::clone(&link_dyn),
         Arc::clone(&guard),
@@ -1035,6 +1094,63 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
     if let Some(tx) = opts.ssh_ready {
         let _ = tx.send(addr);
     }
+
+    // The WEB listener (M16d): the SAME session manager, accounts, guard, store,
+    // and boundary link the SSH path uses — so a WS session attaches as a
+    // structured ConnectionHandle into the shared SessionManager and re-attaches
+    // for free across a server restart (build_attach_recs walks it, the
+    // ReAnnounce→ConnUp path re-drives it). The web `hello` manifest comes from
+    // the cache captured at the handshake, so web users see the SAME
+    // features/panels the all-in-one advertises. A web bind/serve failure is
+    // loud but NON-FATAL (W4): SSH players keep playing and the supervisor keeps
+    // running while the operator fixes the [web] config.
+    let (web_stop, web_join) = {
+        let (features, panels) = {
+            let m = manifest.lock().expect("manifest cache poisoned");
+            (m.features.clone(), m.panels.clone())
+        };
+        match WebConfig::deserialize(config.web.clone()) {
+            Ok(mut web_config) => {
+                web_config.server_name = format!(
+                    "{} (rustmush {})",
+                    config.server.name,
+                    env!("CARGO_PKG_VERSION")
+                );
+                web_config.features = features;
+                web_config.panels = panels.clone();
+                let web_bridge: Arc<dyn WebHooks> = Arc::new(WebBridge::with_link(
+                    Arc::clone(&accounts),
+                    Arc::clone(&sessions),
+                    Arc::clone(&link_dyn),
+                    Arc::clone(&guard),
+                    Arc::clone(&store),
+                    panels,
+                ));
+                let (web_stop, web_stop_rx) = oneshot::channel::<()>();
+                let web_ready = opts.web_ready;
+                let join = tokio::spawn(async move {
+                    if let Err(e) = mush_net_web::serve_with_shutdown_bound(
+                        web_bridge,
+                        web_config,
+                        web_ready,
+                        async move {
+                            let _ = web_stop_rx.await;
+                        },
+                    )
+                    .await
+                    {
+                        // Non-fatal: log and let SSH + the supervisor carry on.
+                        tracing::error!(error = %e, "web server failed; SSH continues");
+                    }
+                });
+                (Some(web_stop), Some(join))
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "[web] config invalid; web client disabled (SSH continues)");
+                (None, None)
+            }
+        }
+    };
 
     // The restart trigger (D1b): a channel the supervisor drains and a
     // `SIGHUP` handler / the test fills. Handed back through `restart_ready`.
@@ -1055,10 +1171,12 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
                 restart_rx,
                 first_instance,
                 first_wired,
+                Arc::clone(&manifest),
             ));
             let _ = tokio::signal::ctrl_c().await;
             tracing::info!("gateway shutting down");
             listener.stop_accepting();
+            stop_web(web_stop, web_join).await;
             sup.abort();
         }
         None => {
@@ -1071,9 +1189,25 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
             let _ = tokio::signal::ctrl_c().await;
             tracing::info!("gateway shutting down");
             listener.stop_accepting();
+            stop_web(web_stop, web_join).await;
         }
     }
     Ok(())
+}
+
+/// Stop the web listener gracefully at shutdown: fire its stop signal and wait a
+/// bounded window for the serve task to finish (in-flight requests drain). A
+/// no-op when the web listener never started (`[web]` config error / bind
+/// failure).
+async fn stop_web(web_stop: Option<oneshot::Sender<()>>, web_join: Option<JoinHandle<()>>) {
+    if let Some(stop) = web_stop {
+        let _ = stop.send(());
+    }
+    if let Some(join) = web_join
+        && tokio::time::timeout(Duration::from_secs(5), join).await.is_err()
+    {
+        tracing::warn!("web server did not stop in time; continuing shutdown");
+    }
 }
 
 /// Install the `SIGHUP` restart handler (D1b/D4): a deploy signals the running

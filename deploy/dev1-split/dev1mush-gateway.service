@@ -1,5 +1,5 @@
 [Unit]
-Description=rustmush dev1 (oWoD) — forked GATEWAY (hot-restartable server) — SSH 6789
+Description=rustmush dev1 (oWoD) — forked GATEWAY (hot-restartable server) — SSH 6789 + web 6790
 After=network-online.target redis-dev1mush.service
 Wants=network-online.target
 Requires=redis-dev1mush.service
@@ -16,18 +16,19 @@ WorkingDirectory=/opt/rustmush/dev1
 # makes the LLM calls) gets the keys without the file being read twice. Keys are
 # never logged by either half.
 EnvironmentFile=/opt/rustmush/dev1/dev1.env
-# The GATEWAY owns the SSH connections and spawns + supervises the mush-server
-# child (which it locates as a sibling of its own binary in target/release,
-# passing --config + --ipc). A server-child crash is handled IN-PROCESS
-# (auto-restart + re-attach, M16c) — never by systemd.
+# The GATEWAY owns the SSH + WEB (HTTPS :6790) connections and spawns +
+# supervises the mush-server child (which it locates as a sibling of its own
+# binary in target/release, passing --config + --ipc). A server-child crash is
+# handled IN-PROCESS (auto-restart + re-attach, M16c/M16d) — never by systemd.
+# The gateway binary must be built with `--features tls` to serve HTTPS here.
 ExecStart=/opt/rustmush/dev1/build/target/release/mush-gateway --config /opt/rustmush/dev1/mushd.toml
 # A deploy = build new binaries, then `systemctl reload` → SIGHUP → the gateway
-# restarts ONLY its server child from the fresh binary, HOLDING every SSH
-# connection (M16c). The gateway process itself is NOT restarted, so players are
-# never disconnected.
+# restarts ONLY its server child from the fresh binary, HOLDING every SSH AND web
+# connection (M16c/M16d). The gateway process itself is NOT restarted, so players
+# are never disconnected.
 ExecReload=/bin/kill -HUP $MAINPID
 # Restart the GATEWAY only if the gateway itself dies (that DOES drop players —
-# it owns the sockets). Server-child deaths never reach here.
+# it owns the SSH + web sockets). Server-child deaths never reach here.
 Restart=on-failure
 RestartSec=5
 # On stop, SIGTERM the gateway; it reaps the server child via kill_on_drop, and

@@ -13,6 +13,14 @@ description = "rustmush forked GATEWAY half (M16b): owns the connection listener
 name = "mush-gateway"
 path = "src/main.rs"
 
+[features]
+# Native HTTPS for the web ingress the gateway now serves (M16d). Forwards to
+# mush-net-web's own tls feature (axum-server + rustls/ring — no C toolchain).
+# Off by default (prod usually terminates TLS at a reverse proxy); enable it for
+# a proxyless split deploy that serves [web] over TLS from a cert/key on disk:
+#   cargo build --release -p mush-gateway --features tls
+tls = ["mush-net-web/tls"]
+
 [dependencies]
 mush-config.workspace = true
 mush-core.workspace = true

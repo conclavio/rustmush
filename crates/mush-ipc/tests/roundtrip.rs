@@ -222,6 +222,7 @@ fn every_to_gateway() -> Vec<ToGateway> {
             proto: IPC_VERSION,
             server: "mushd/0.1.0".to_string(),
             features: vec!["reattach".to_string(), "compression".to_string()],
+            panels: vec!["who".to_string(), "mail".to_string()],
         },
         ToGateway::Bye,
     ]
@@ -248,6 +249,7 @@ fn version_is_present_and_travels_in_hello() {
         proto: IPC_VERSION,
         server: "mushd".to_string(),
         features: vec![],
+        panels: vec![],
     };
     let bytes = encode_frame(&hello).unwrap();
     let (got, _): (ToGateway, usize) = decode_frame(&bytes).unwrap().unwrap();

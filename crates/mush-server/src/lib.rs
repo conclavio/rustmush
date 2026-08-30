@@ -169,6 +169,15 @@ pub async fn serve_with_store(
     };
     let (engine, staff) = build_engine(&config, &store).await?;
 
+    // The web hello manifest, collected while the registry is still in hand — a
+    // verbatim port of `mushd::main`'s assembly (crates/mushd/src/main.rs): every
+    // module-registered panel feed plus the engine-side "who", and one feature
+    // id per module (comsys advertises as "channels"). Shipped to the gateway in
+    // the boot [`ToGateway::Hello`] so the split gateway can build the web
+    // client's `hello` frame with the SAME features/panels the all-in-one
+    // advertises.
+    let (features, panels) = build_hello_manifest(&engine);
+
     // The server -> gateway boundary: every `ToGateway` the world loop (and the
     // request handlers) produce is queued here and drained to the socket by the
     // writer task. Unbounded so the world loop's `transmit` never awaits (D4);
@@ -214,9 +223,10 @@ pub async fn serve_with_store(
         .map_err(|e| format!("ipc accept: {e}"))?;
     tracing::info!("gateway connected");
 
-    // Writer: greet, then drain the world's output to the socket. Exits when
-    // every `to_gw_tx` (held by the world loop + request handlers) is dropped.
-    let writer_join = tokio::spawn(writer_loop(writer_half, to_gw_rx));
+    // Writer: greet (with the panel manifest), then drain the world's output to
+    // the socket. Exits when every `to_gw_tx` (held by the world loop + request
+    // handlers) is dropped.
+    let writer_join = tokio::spawn(writer_loop(writer_half, to_gw_rx, features, panels));
 
     // Reader: pump the gateway's `ToServer` traffic into the world. Runs until
     // the gateway closes the boundary (clean EOF) or a protocol fault.
@@ -237,16 +247,45 @@ pub async fn serve_with_store(
     Ok(())
 }
 
-/// The socket writer: send [`ToGateway::Hello`], then forward each queued
-/// message. On the channel closing (world gone) it sends a final
-/// [`ToGateway::Bye`] and returns.
-async fn writer_loop(mut w: BoxWrite, mut rx: mpsc::UnboundedReceiver<ToGateway>) {
+/// Build the web `hello` manifest from the booted engine — a verbatim port of
+/// `mushd::main`'s assembly: every module-registered panel feed plus the
+/// engine-side `"who"`, and one feature id per module (comsys advertises as
+/// `"channels"`). Returns `(features, panels)`.
+fn build_hello_manifest(engine: &Engine) -> (Vec<String>, Vec<String>) {
+    let mut panels: Vec<String> = engine
+        .registry
+        .panel_feeds()
+        .iter()
+        .map(|(feed, _)| feed.to_string())
+        .collect();
+    panels.push("who".to_string());
+    let features: Vec<String> = engine
+        .modules()
+        .iter()
+        .map(|m| match m.name() {
+            "comsys" => "channels".to_string(),
+            other => other.to_string(),
+        })
+        .collect();
+    (features, panels)
+}
+
+/// The socket writer: send [`ToGateway::Hello`] (carrying the panel manifest),
+/// then forward each queued message. On the channel closing (world gone) it
+/// sends a final [`ToGateway::Bye`] and returns.
+async fn writer_loop(
+    mut w: BoxWrite,
+    mut rx: mpsc::UnboundedReceiver<ToGateway>,
+    features: Vec<String>,
+    panels: Vec<String>,
+) {
     if let Err(e) = mush_ipc::write_frame(
         &mut w,
         &ToGateway::Hello {
             proto: IPC_VERSION,
             server: server_id(),
-            features: vec![],
+            features,
+            panels,
         },
     )
     .await

@@ -290,6 +290,7 @@ mod tests {
                     proto: IPC_VERSION,
                     server: "test".to_string(),
                     features: vec![],
+                    panels: vec![],
                 },
             )
             .await

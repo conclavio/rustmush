@@ -398,15 +398,27 @@ pub enum ToGateway {
         /// Why (drives the gateway's close-vs-linkdead policy — `Booted` here).
         cause: DetachCause,
     },
-    /// The server's opening handshake: its protocol version and advertised
-    /// features. Sent once when a gateway connects.
+    /// The server's opening handshake: its protocol version, advertised
+    /// features, and the web `hello` panel manifest. Sent once when a gateway
+    /// connects (and re-sent by a freshly (re)started server so the gateway can
+    /// refresh its cached manifest across a restart). Additive: `panels` was
+    /// added after `features` under the self-describing rmp codec, so both wire
+    /// halves rebuild together and [`IPC_VERSION`] stays the same.
     Hello {
         /// The server's [`IPC_VERSION`].
         proto: u32,
         /// A human-readable server identifier (build/version string).
         server: String,
-        /// Advertised optional features (additive capability negotiation).
+        /// Advertised optional features (additive capability negotiation) —
+        /// one id per loaded module (comsys advertises as `"channels"`). The
+        /// gateway copies these into the web `hello` frame's `features`.
         features: Vec<String>,
+        /// The web `hello` panel-feed manifest: every module-registered panel
+        /// feed plus the engine-side `"who"`. The gateway copies these into the
+        /// web `hello` frame's `panels` and the [`WebHooks`] panel routing.
+        ///
+        /// [`WebHooks`]: https://docs.rs/mush-net-web
+        panels: Vec<String>,
     },
     /// The server is shutting the boundary down cleanly.
     Bye,

@@ -19,12 +19,14 @@ Each instance can run one of **two ways**:
 - **all-in-one `mushd`** (the default, `dev1/` + `dev2/`) — one process serving
   SSH + the web client; a deploy = `systemctl restart`, which drops connections
   briefly.
-- **split, hot-restartable** ([`dev1-split/`](dev1-split/), M16c) — a
-  `mush-gateway` owns the SSH connections and supervises a `mush-server` child;
-  a deploy = `systemctl reload` → SIGHUP, which restarts only the server child
-  while **holding every SSH connection** (players resume mid-scene). The gateway
-  does **not** serve the web client yet, so instances whose players use the web
-  UI stay on the all-in-one. See [`dev1-split/README.md`](dev1-split/README.md)
+- **split, hot-restartable** ([`dev1-split/`](dev1-split/), M16c/M16d) — a
+  `mush-gateway` owns the SSH **and web** connections and supervises a
+  `mush-server` child; a deploy = `systemctl reload` → SIGHUP, which restarts
+  only the server child while **holding every SSH AND web connection** (players
+  resume mid-scene). As of M16d the gateway serves the web client (HTTPS) itself,
+  and WS connections survive the hot restart just like SSH — so the split is now
+  a full drop-in for the all-in-one, web included. Build the gateway with
+  `--features tls` for HTTPS. See [`dev1-split/README.md`](dev1-split/README.md)
   and `docs/ops.md` → "Hot-restart (split) deployment".
 
 Each new external port must be opened in **BOTH** ufw (`ufw allow <port>/tcp`, done by

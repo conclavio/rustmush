@@ -67,7 +67,7 @@ mod ws;
 /// public `mush_net_web::Metrics` path keep resolving unchanged.
 pub use mush_config::metrics;
 
-pub use app::{router, serve, serve_with_shutdown};
+pub use app::{router, serve, serve_with_shutdown, serve_with_shutdown_bound};
 pub use config::{TlsConfig, WebConfig};
 pub use hooks::{
     CharSummary, LoginErr, LoginOk, NewWebConn, RegisterErr, ResumeErr, ResumeOk, SessionStart,

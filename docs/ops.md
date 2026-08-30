@@ -667,7 +667,7 @@ hot-restart operational flow (and its accepted losses) is the next section.
 - **`mush-server`** owns the world: the single-writer world loop, persistence,
   modules, rulesets, the LLM layer, staff ops. It holds **no** connection
   listeners. It binds the `[ipc]` socket and waits for the gateway.
-- **`mush-gateway`** owns the front door: the SSH (and, later, web) listeners,
+- **`mush-gateway`** owns the front door: the SSH **and web** listeners,
   the session layer, account auth + the IP guard, and slow-client / link-dead
   policing (it owns the connection buffers). It **spawns and supervises** the
   `mush-server` child and talks to it over the `[ipc]` socket.
@@ -719,20 +719,22 @@ is supported for testing.
 The all-in-one `mushd` service (`deploy/README.md`) remains the default deploy;
 the split adds the **hot restart** below, and is proven by
 `crates/mush-gateway/tests/two_process_e2e.rs` +
-`crates/mush-gateway/tests/restart_survival.rs`.
+`crates/mush-gateway/tests/restart_survival.rs` (SSH), plus
+`crates/mush-gateway/tests/web_split_e2e.rs` +
+`crates/mush-gateway/tests/web_restart_survival.rs` (web).
 
 ## Hot-restart (split) deployment: restart the game, hold the connections
 
-The **split deployment** (M16c) is what makes a zero-drop deploy possible. One
-`mush-gateway` service owns the player SSH connections and the session layer and
-**spawns + supervises** a `mush-server` child over the `[ipc]` socket. Because
-the gateway (not the game process) holds the sockets, the server can be torn
-down and rebuilt underneath live players:
+The **split deployment** (M16c/M16d) is what makes a zero-drop deploy possible.
+One `mush-gateway` service owns the player SSH **and web** connections and the
+session layer and **spawns + supervises** a `mush-server` child over the `[ipc]`
+socket. Because the gateway (not the game process) holds the sockets, the server
+can be torn down and rebuilt underneath live players — on both transports:
 
 - **A deploy is a SIGHUP, not a restart.** Build the new binaries, then
   `systemctl reload <name>mush-gateway` (which sends `SIGHUP`). The gateway
   restarts **only its server child** from the fresh binary. It does **not**
-  restart itself, so no SSH connection is dropped. Players see a
+  restart itself, so no SSH **or web** connection is dropped. Players see a
   `GAME: The server is restarting; hold on…` line, then
   `GAME: Reconnected. Resuming where you left off.` and a fresh room render of
   wherever they were — mid-scene, no reconnect, no re-login.
@@ -772,15 +774,28 @@ compiled out. Restarts there are driven programmatically (the restart-survival
 test's `RestartTrigger` path). Production is Linux, where `SIGHUP` is the deploy
 signal.
 
-### Web client caveat
+### Web client (M16d): served by the gateway + survives the hot restart
 
-The gateway currently serves **SSH only** — the axum web ingress is not yet
-wired into `mush-gateway::serve`. So the connection-holding hot restart covers
-**SSH players**; an instance whose players use the **web client (HTTPS)** must
-stay on the all-in-one `mushd` for now. Web sessions already ride an all-in-one
-restart a different way: their tokens live in Redis (`token:*`) and the client
-reconnects and resumes after the process comes back (see "Shutdown and crash
-behavior" above). The hold-the-live-socket story is the SSH one.
+The gateway serves the **web client (HTTPS)** itself — the axum web ingress is
+wired into `mush-gateway::serve` on the SAME session layer, accounts, IP guard,
+store, and boundary link as SSH. It reads the same `[web]` block (`listen` +
+`[web.tls]`) from `mushd.toml` the all-in-one uses, so **build the gateway with
+`--features tls`** to terminate HTTPS from the on-disk cert/key. A WS player
+authenticates with a token and receives the SAME `hello` manifest the all-in-one
+advertises (who / channels / mail / `<ruleset>.sheet`) — carried from the
+server's boot `Hello` over the `[ipc]` boundary and cached in the gateway,
+refreshed on every server restart.
+
+Because a WS session attaches as a structured connection into the same
+transport-agnostic session manager an SSH session does, **the connection-holding
+hot restart covers web players too**: a WS connection is never sent a Close frame
+across a restart — it receives the "restarting" → "Reconnected" system lines and
+a fresh room render as ordinary envelopes, with the world intact from Redis, and
+keeps playing. Proven by `crates/mush-gateway/tests/web_restart_survival.rs`.
+
+A web **bind/serve failure is non-fatal**: the gateway logs it and keeps serving
+SSH (and supervising the server child), so a bad `[web]` config never takes the
+whole front door down.
 
 ### Accepted losses across a restart
 

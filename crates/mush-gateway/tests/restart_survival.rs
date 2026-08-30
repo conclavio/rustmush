@@ -232,6 +232,7 @@ async fn start_split(launcher: Box<dyn ServerLauncher>) -> (SocketAddr, RestartT
                 source: ServerSource::Restartable(launcher),
                 store: Some(gw_store),
                 ssh_ready: Some(ssh_tx),
+                web_ready: None,
                 restart_ready: Some(restart_tx),
             },
         ))
@@ -380,6 +381,7 @@ async fn server_restart_keeps_connections_and_world() {
                 source: ServerSource::Restartable(Box::new(launcher)),
                 store: Some(gw_store),
                 ssh_ready: Some(ssh_tx),
+                web_ready: None,
                 restart_ready: Some(restart_tx),
             },
         ))

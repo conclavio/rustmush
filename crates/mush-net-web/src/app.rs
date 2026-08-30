@@ -265,6 +265,22 @@ pub async fn serve_with_shutdown(
     config: WebConfig,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
+    serve_with_shutdown_bound(hooks, config, None, shutdown).await
+}
+
+/// Like [`serve_with_shutdown`], but signals `bound` with the actually-bound
+/// listen address once the listener is up (mirrors the SSH listener's
+/// ready-channel pattern). A caller that binds `127.0.0.1:0` reads the
+/// OS-assigned port back through it; the split gateway uses this to hand its
+/// integration tests the real web address. For the (rare, prod-only) native-TLS
+/// path the socket is bound inside `axum-server`, so `bound` is signalled with
+/// the configured `config.listen` before serving begins.
+pub async fn serve_with_shutdown_bound(
+    hooks: Arc<dyn WebHooks>,
+    config: WebConfig,
+    bound: Option<tokio::sync::oneshot::Sender<SocketAddr>>,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> std::io::Result<()> {
     let listen = config.listen;
     let tls = config.tls.clone();
     let (app, limiter_gc) = build(hooks, config);
@@ -286,7 +302,11 @@ pub async fn serve_with_shutdown(
     let result = match tls {
         None => {
             let listener = tokio::net::TcpListener::bind(listen).await?;
-            tracing::info!(%listen, "web server listening (http)");
+            let actual = listener.local_addr().unwrap_or(listen);
+            tracing::info!(listen = %actual, "web server listening (http)");
+            if let Some(tx) = bound {
+                let _ = tx.send(actual);
+            }
             axum::serve(
                 listener,
                 app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -294,7 +314,12 @@ pub async fn serve_with_shutdown(
             .with_graceful_shutdown(shutdown)
             .await
         }
-        Some(tls_config) => serve_tls(listen, tls_config, app, shutdown).await,
+        Some(tls_config) => {
+            if let Some(tx) = bound {
+                let _ = tx.send(listen);
+            }
+            serve_tls(listen, tls_config, app, shutdown).await
+        }
     };
     let _ = stop_gc.send(true);
     result
