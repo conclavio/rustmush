@@ -53,6 +53,12 @@ pub enum LlmFeature {
     WorldgenBrief,
     /// Ambient flavor text.
     Ambience,
+    /// The WoD Storyteller adjudication pass (M13): judge a freeform action
+    /// proposal and return a structured ruling (strong model).
+    StAdjudicate,
+    /// The WoD Storyteller interpretation pass (M13): narrate the engine's
+    /// logged dice outcome in-fiction (cheaper model).
+    StInterpret,
     /// A staff smoke/test call.
     StaffTool,
 }
@@ -70,6 +76,8 @@ impl LlmFeature {
             LlmFeature::WorldgenRoom => "worldgen_room",
             LlmFeature::WorldgenBrief => "worldgen_brief",
             LlmFeature::Ambience => "ambience",
+            LlmFeature::StAdjudicate => "st_adjudicate",
+            LlmFeature::StInterpret => "st_interpret",
             LlmFeature::StaffTool => "staff_tool",
         }
     }

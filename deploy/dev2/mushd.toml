@@ -92,6 +92,20 @@ max_tokens = 768
 timeout_s = 60
 reasoning = "off"
 
+# Storyteller adjudication (M13): judge freeform Mage workings, then narrate the
+# engine's already-thrown result. The LLM never rolls or sets the outcome.
+[llm.routes.st_adjudicate]
+model = "z-ai/glm-5.3"
+max_tokens = 1024
+timeout_s = 45
+reasoning = "low"
+
+[llm.routes.st_interpret]
+model = "z-ai/glm-5.3-flash"
+max_tokens = 768
+timeout_s = 30
+reasoning = "off"
+
 [llm.concurrency]
 max_interactive = 8
 max_background = 3

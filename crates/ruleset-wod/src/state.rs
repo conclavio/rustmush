@@ -58,6 +58,39 @@ impl ChargenSession {
     }
 }
 
+/// A Storyteller-adjudicated action awaiting the player's dice throw (M13).
+///
+/// Written into [`WodState::pending`] by the ruling completion once the ST has
+/// **accepted** a `+cast … proposing …` proposal and it has been re-validated
+/// against the live sheet. The next `+roll`/`+roll/silent` the actor makes
+/// consumes it exactly once: the roll is ST-authoritative — it runs the stored
+/// `pool` at the stored `difficulty` regardless of what the player typed — and
+/// then defers the interpretation pass. Volatile; never persisted; expires.
+#[derive(Clone, Debug)]
+pub struct PendingAction {
+    /// The ST-ruled pool expression (a trait expr resolved against the sheet).
+    pub pool: String,
+    /// The ST-ruled difficulty (already clamped to `2..=10`).
+    pub difficulty: u8,
+    /// The Spheres the ST validated for this working.
+    pub spheres: Vec<String>,
+    /// The Paradox the ST assigned on a failed / vulgar working (clamped).
+    pub paradox: i32,
+    /// The difficulty an observer rolls to witness the working (M13 task 2).
+    pub witness_difficulty: u8,
+    /// The player's original freeform proposal (carried into interpretation).
+    pub freeform: String,
+    /// Whether the working was flagged vulgar (`+cast/vulgar`).
+    pub vulgar: bool,
+    /// Correlation id of the originating ruling (audit / dedupe).
+    pub correlation: u64,
+    /// Mage working vs generic action — selects the roll phrasing and the
+    /// mechanical consequences applied at interpretation.
+    pub kind: crate::st::ActionKind,
+    /// Unix-seconds expiry: a `+roll` after this treats it as no pending.
+    pub expires_at: i64,
+}
+
 /// The WoD module state slot. `Clone` (world snapshots clone their state), so
 /// every field is cloneable — including the RNG (a snapshot shares the stream
 /// position, which is fine for inspection).
@@ -79,6 +112,17 @@ pub struct WodState {
     /// concealed subject means *not yet rolled* and is treated as concealed
     /// (fail-safe: never leak). Volatile.
     pierced: HashMap<(ObjId, ObjId), bool>,
+    /// M13 Storyteller adjudication: actor → the accepted, re-validated action
+    /// awaiting their dice throw. At most one per actor; a new proposal replaces
+    /// any prior; the actor's next `+roll` consumes it. Volatile.
+    pending: HashMap<ObjId, PendingAction>,
+    /// M13: actor → the correlation id of their most recently PROPOSED ruling
+    /// (`+cast … proposing …` / `+action`). A ruling completion may only mutate
+    /// `pending` when it carries this correlation, so a stale or out-of-order
+    /// ruling (an older proposal finishing after a newer one was proposed, or an
+    /// interpret completion arriving after a fresh proposal) cannot clobber the
+    /// newer pending. Volatile.
+    latest_proposal: HashMap<ObjId, u64>,
 }
 
 impl WodState {
@@ -102,6 +146,8 @@ impl WodState {
             chargen: HashMap::new(),
             concealed: HashMap::new(),
             pierced: HashMap::new(),
+            pending: HashMap::new(),
+            latest_proposal: HashMap::new(),
         }
     }
 
@@ -251,6 +297,58 @@ impl WodState {
     pub fn forget_actor(&mut self, who: ObjId) {
         self.concealed.remove(&who);
         self.pierced.retain(|(o, s), _| *o != who && *s != who);
+        self.pending.remove(&who);
+        self.latest_proposal.remove(&who);
+    }
+
+    // ------------------------------------------------------------------
+    // M13 Storyteller adjudication: pending actions
+    // ------------------------------------------------------------------
+
+    /// Stamp `who`'s accepted, re-validated pending action, replacing any prior
+    /// (a new proposal supersedes an old one).
+    pub fn set_pending(&mut self, who: ObjId, action: PendingAction) {
+        self.pending.insert(who, action);
+    }
+
+    /// Peek at `who`'s pending action (tests / re-entry guards); does not
+    /// consume or expire it.
+    #[must_use]
+    pub fn pending(&self, who: ObjId) -> Option<&PendingAction> {
+        self.pending.get(&who)
+    }
+
+    /// Consume `who`'s pending action if one is present and not past its
+    /// `expires_at` (relative to `now`, unix seconds). An expired pending is
+    /// dropped and `None` returned — so a stale `+roll` is a normal roll.
+    /// Consumes exactly once: the entry is removed either way.
+    pub fn take_pending(&mut self, who: ObjId, now: i64) -> Option<PendingAction> {
+        let action = self.pending.remove(&who)?;
+        if now > action.expires_at {
+            return None;
+        }
+        Some(action)
+    }
+
+    /// Drop `who`'s pending action, if any (replace-on-new-proposal, or the
+    /// completion's clear-before-decode guard).
+    pub fn clear_pending(&mut self, who: ObjId) {
+        self.pending.remove(&who);
+    }
+
+    /// Record `correlation` as `who`'s most recently proposed ruling. Called by
+    /// the `+cast … proposing` / `+action` handlers as they defer the ruling, so
+    /// only the ruling completion carrying this id may later mutate the pending.
+    pub fn note_proposal(&mut self, who: ObjId, correlation: u64) {
+        self.latest_proposal.insert(who, correlation);
+    }
+
+    /// The correlation id of `who`'s most recently proposed ruling, if any. A
+    /// ruling completion whose correlation differs is stale / out-of-order and
+    /// must not touch the pending.
+    #[must_use]
+    pub fn latest_proposal(&self, who: ObjId) -> Option<u64> {
+        self.latest_proposal.get(&who).copied()
     }
 }
 

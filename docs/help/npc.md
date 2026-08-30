@@ -184,4 +184,4 @@ audited (`@llm/log`).
 ## See also
 
   @agent, @lore, @llm, @sheet, +roll, +intel, help intel, help perception,
-  help worldgen
+  help action, help worldgen

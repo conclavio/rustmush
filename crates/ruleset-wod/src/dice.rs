@@ -232,8 +232,9 @@ pub fn resolve_pool(
 /// # Errors
 ///
 /// Returns a message if the expression is empty, names a term that is not a
-/// sheet trait (raw dice / named bonus), or names a trait the sheet does not
-/// have.
+/// sheet trait (raw dice / named bonus), names a trait the sheet does not have,
+/// or names the same trait more than once (a padded pool: `arete+arete` would
+/// otherwise double the dice past what the sheet holds).
 pub fn resolve_sheet_pool(
     schema: &SheetSchema,
     doc: &SheetDoc,
@@ -245,6 +246,7 @@ pub fn resolve_sheet_pool(
     }
     let mut terms = Vec::new();
     let mut trait_fields = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
     for (sign, token) in split_terms(expr) {
         if token.parse::<i32>().is_ok() {
             return Err(format!(
@@ -257,6 +259,18 @@ pub fn resolve_sheet_pool(
             ));
         }
         let (label, dots, field) = resolve_trait(schema, doc, &token)?;
+        // A sheet pool may sum each trait at most once — the same trait named
+        // twice (directly or via two tokens that resolve to it) is a padded
+        // pool that would inflate the dice past the sheet. Reject it.
+        let key = field
+            .clone()
+            .unwrap_or_else(|| label.to_ascii_lowercase());
+        if seen.contains(&key) {
+            return Err(format!(
+                "{label:?} is named more than once — a pool may sum each trait only once"
+            ));
+        }
+        seen.push(key);
         if let Some(f) = field {
             trait_fields.push(f);
         }
@@ -322,6 +336,18 @@ mod tests {
         let (schema, doc) = sheet();
         let r = resolve_pool(&schema, &doc, "resources").unwrap();
         assert_eq!(r.total, 3);
+    }
+
+    #[test]
+    fn sheet_pool_rejects_a_repeated_trait() {
+        let (schema, doc) = sheet();
+        // A padded pool that would otherwise double the dice past the sheet.
+        assert!(resolve_sheet_pool(&schema, &doc, "strength+strength").is_err());
+        // Exact-id and label forms of the same trait are also refused.
+        assert!(resolve_sheet_pool(&schema, &doc, "strength+Strength").is_err());
+        // A legitimate attribute + ability pool still resolves.
+        let ok = resolve_sheet_pool(&schema, &doc, "strength+brawl").unwrap();
+        assert_eq!(ok.total, 3 + 2);
     }
 
     #[test]

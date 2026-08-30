@@ -487,8 +487,19 @@ fn arete_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 /// `+cast <description> [vs <diff>]` (`/vulgar` flags Paradox risk) — roll Arete.
+///
+/// Two paths:
+/// - **Adjudicated (M13)**: `+cast <effect> proposing <sphere[, sphere…]>` hands
+///   the working to the LLM Storyteller for a ruling; the player then throws the
+///   dice with `+roll/silent`. Nothing is rolled here.
+/// - **Immediate (legacy)**: `+cast <description> [vs <diff>]` rolls the Arete
+///   pool at once (unchanged, so a game without the adjudicator still casts).
 fn cast_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let _doc = require_mage(cmd, ctx)?;
+    // The `proposing` keyword selects the adjudicated two-phase flow.
+    if let Some((effect, spheres_raw)) = split_proposing(ctx.args.raw()) {
+        return propose_cast(cmd, ctx, &effect, &spheres_raw);
+    }
     let (desc, diff) = split_vs(ctx.args.raw());
     let vulgar = ctx.switches.has("vulgar");
     let label = if vulgar {
@@ -522,6 +533,132 @@ fn cast_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         );
     }
     Ok(())
+}
+
+/// The M13 propose step: snapshot the mage's REAL traits + the freeform
+/// proposal and defer an ST ruling. Rolls nothing; a new proposal supersedes
+/// any prior pending action for the actor.
+fn propose_cast(
+    cmd: &WodCmd,
+    ctx: &mut Ctx<'_>,
+    effect: &str,
+    spheres_raw: &str,
+) -> Result<(), CmdError> {
+    let doc = require_mage(cmd, ctx)?;
+    if effect.trim().is_empty() {
+        return Err(CmdError::msg(
+            "Describe the effect you propose to work: +cast <effect> proposing <sphere[, sphere]>.",
+        ));
+    }
+    // Spheres list: strip a trailing `vs <n>` hint (the ST sets difficulty), then
+    // split on commas / whitespace.
+    let (spheres_part, _diff_hint) = split_vs(spheres_raw);
+    let proposed_spheres: Vec<String> = spheres_part
+        .split([',', ' ', '\t'])
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .collect();
+    if proposed_spheres.is_empty() {
+        return Err(CmdError::msg(
+            "Name the Sphere(s) you propose to use: +cast <effect> proposing <sphere[, sphere]>.",
+        ));
+    }
+
+    let vulgar = ctx.switches.has("vulgar");
+    let arete = doc.number("arete").unwrap_or(1) as i32;
+    let owned_spheres: Vec<(String, i32)> = doc
+        .map("spheres")
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| v.as_i64().map(|n| (k.clone(), n as i32)))
+                .filter(|(_, n)| *n > 0)
+                .collect()
+        })
+        .unwrap_or_default();
+    let schema = cmd.schema_for_doc(&doc);
+    let resolved_pool = crate::dice::resolve_sheet_pool(&schema, &doc, "arete")
+        .map(|r| r.total)
+        .unwrap_or(arete);
+
+    let actor = ctx.actor;
+    let correlation = ctx.w.next_correlation_id();
+    // A new proposal replaces any prior pending action and becomes the actor's
+    // latest proposal, so an out-of-order older ruling cannot clobber it (A4).
+    if let Some(st) = ctx.state_mut::<WodState>() {
+        st.clear_pending(actor);
+        st.note_proposal(actor, correlation);
+    }
+    let req = crate::st::StRequest::Ruling(crate::st::RulingRequest {
+        actor: ctx.actor,
+        freeform: effect.trim().to_string(),
+        proposed_spheres,
+        proposed_pool: "arete".to_string(),
+        arete,
+        owned_spheres,
+        resolved_pool,
+        vulgar,
+        correlation,
+        kind: crate::st::ActionKind::Mage,
+    });
+    crate::st::defer_ruling(ctx, ctx.actor, correlation, &req)?;
+    ctx.out.sys_to_actor(
+        ctx.actor,
+        "wod",
+        "You shape the working and present it to the Storyteller for judgment...",
+    );
+    Ok(())
+}
+
+/// Split a raw `+cast` arg on the ` proposing ` keyword (case-insensitive),
+/// returning `(effect, spheres_and_hint)` when present.
+fn split_proposing(raw: &str) -> Option<(String, String)> {
+    let lower = raw.to_ascii_lowercase();
+    let kw = " proposing ";
+    let idx = lower.find(kw)?;
+    let effect = raw[..idx].trim().to_string();
+    let rest = raw[idx + kw.len()..].trim().to_string();
+    Some((effect, rest))
+}
+
+/// The M13 sheet fence: every proposed Sphere must canonicalize, be owned at
+/// ≥ 1 dot, and sit within the Arete cap. Returns the canonical names.
+pub(crate) fn spheres_owned(
+    doc: &SheetDoc,
+    spheres: &[String],
+) -> Result<Vec<&'static str>, String> {
+    let arete = doc.number("arete").unwrap_or(1) as i32;
+    let map = doc.map("spheres");
+    let mut out = Vec::new();
+    for s in spheres {
+        let canon = canonical_sphere(s)
+            .ok_or_else(|| format!("{s:?} is not one of the nine Spheres"))?;
+        let dots = map
+            .and_then(|m| m.get(canon))
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0) as i32;
+        if dots < 1 {
+            return Err(format!("you do not have the {canon} Sphere"));
+        }
+        if dots > arete {
+            return Err(format!("your {canon} ({dots}) exceeds your Arete ({arete})"));
+        }
+        out.push(canon);
+    }
+    Ok(out)
+}
+
+/// Apply a Paradox delta to the acting mage's sheet (M13 completion). Clamped to
+/// `0..=100` by [`set_paradox`]. No-op (returns the current value) if the actor
+/// has no sheet.
+pub(crate) fn add_paradox(cmd: &WodCmd, ctx: &mut Ctx<'_>, delta: i32) -> Result<i32, CmdError> {
+    let Some(mut doc) = cmd.read(ctx.w, ctx.actor) else {
+        return Ok(0);
+    };
+    let cur = doc.number("paradox").unwrap_or(0) as i32;
+    let next = (cur + delta).max(0);
+    set_paradox(cmd, ctx, &mut doc, next)?;
+    Ok(next.min(100))
 }
 
 /// `+quint` / `+quint/gain <n>` / `+quint/spend <n>` — Quintessence (Avatar-capped).
@@ -785,7 +922,9 @@ pub(crate) fn register_commands(reg: &mut Registrar<'_>, cmd: Arc<WodCmd>) -> Re
             shape: ArgShape::Raw,
             help: "+cast <description> [vs <diff>]  --  Roll your Arete to work an effect \
                    (successes = magnitude; the effect is ST/player adjudicated).\n\
-                   +cast/vulgar <description> [vs <diff>]  --  Flag vulgar magick (Paradox risk)."
+                   +cast <effect> proposing <sphere[, sphere]>  --  Submit the working to the \
+                   Storyteller for a ruling; on approval, throw the dice with +roll/silent.\n\
+                   +cast/vulgar ...  --  Flag vulgar magick (Paradox risk)."
                 .into(),
             ..CommandSpec::default()
         },

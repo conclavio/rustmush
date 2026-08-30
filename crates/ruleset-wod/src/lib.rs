@@ -26,6 +26,7 @@
 //! adjust them; the dice RNG is seedable ([`WodRuleset::with_seed`]) for
 //! deterministic tests.
 
+pub mod action;
 pub mod agent;
 pub mod chargen;
 pub mod chargen_cmds;
@@ -39,6 +40,7 @@ pub mod roll;
 pub mod schema;
 pub mod sheet_cmds;
 pub mod splats;
+pub mod st;
 pub mod state;
 pub mod wizard;
 pub mod xp;
@@ -67,6 +69,7 @@ use crate::state::WodState;
 
 pub use crate::agent::{WOD_ROLL_ABILITY, agent_profile, wod_roll_tool_spec};
 pub use crate::onboarding::OnboardingConfig;
+pub use crate::st::{NS, run_st_async};
 
 /// The shared bundle captured by every WoD command closure: the multi-template
 /// [`Dispatch`] (per-template schemas + splat behaviours), the tunable config,
@@ -247,6 +250,7 @@ impl GameModule for WodRuleset {
         // web query), then the shared command sets.
         sheet_cmds::register(reg, Arc::clone(&cmd))?;
         roll::register(reg, Arc::clone(&cmd))?;
+        action::register(reg, Arc::clone(&cmd))?;
         damage::register(reg, Arc::clone(&cmd))?;
         chargen_cmds::register(reg, Arc::clone(&cmd))?;
         xp::register(reg, Arc::clone(&cmd))?;
@@ -262,6 +266,12 @@ impl GameModule for WodRuleset {
         // Purely additive — with nobody cloaked it hides no one and rolls no
         // dice, so a game that never uses Obfuscate is byte-for-byte unchanged.
         perception::register(reg, Arc::clone(&cmd))?;
+
+        // M13 Storyteller adjudication: the re-entry point for the two-phase
+        // `+cast … proposing …` flow (ruling + interpretation). Purely additive
+        // — nothing fires unless a mage proposes a working and the driver routes
+        // the deferred ST call.
+        reg.async_completion(Arc::new(st::WodCompletion::new(Arc::clone(&cmd))))?;
 
         // Onboarding (the `chargen_required` gate). All three seams are inert
         // unless the config turns gating on, so a default game is unaffected.

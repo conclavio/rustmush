@@ -2867,6 +2867,7 @@ dependencies = [
  "mush-core",
  "mush-dice",
  "mush-jobs",
+ "mush-llm",
  "mush-proto",
  "mush-ruleset",
  "mush-testkit",
@@ -2875,6 +2876,7 @@ dependencies = [
  "serde",
  "serde_json",
  "smol_str",
+ "tokio",
  "tracing",
 ]
 

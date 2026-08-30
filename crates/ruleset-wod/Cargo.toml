@@ -11,6 +11,7 @@ mush-ruleset.workspace = true
 mush-dice.workspace = true
 mush-core.workspace = true
 mush-jobs.workspace = true
+mush-llm.workspace = true
 mush-proto.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -22,6 +23,7 @@ tracing.workspace = true
 [dev-dependencies]
 mush-testkit.workspace = true
 mush-proto.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

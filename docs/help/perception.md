@@ -59,4 +59,9 @@ concealment hides *you from others*, it does not blind you.
     same as from anyone without the sense to pierce it. Broader staff-visibility
     tooling is future work.
 
-See also: `help wod`, `help +obfuscate`, `help +disc`.
+The same per-observer machinery drives the **silent witnesses** of an
+adjudicated `+action` / `+cast`: when you throw an adjudicated check, only
+onlookers who make a Perception + Awareness roll are told what you did, and
+everyone else gets true silence. See `help action`.
+
+See also: `help wod`, `help action`, `help +obfuscate`, `help +disc`.

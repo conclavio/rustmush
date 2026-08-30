@@ -49,6 +49,8 @@ Switches (put them on the verb, e.g. `+roll/wp ...`):
   /wp        Spend a point of temporary Willpower for one automatic success
              (a Willpower-boosted roll can never botch).
   /priv      Show the result only to you and the storytellers in the room.
+  /silent    Show the result only to you — no room line and no staff copy. Used
+             by the Storyteller adjudicator (see `help action`).
   /nowound   Ignore your wound penalty for this roll.
 
 Inline options (in the argument, after the pool):
@@ -64,6 +66,15 @@ Inline options (in the argument, after the pool):
 
 Your wound penalty (from damage on your Health track) is applied to every pool
 automatically, and a note is shown; use /nowound to skip it.
+
+For a freeform attempt whose difficulty is a judgement call — picking a lock,
+palming a card, slipping away unseen — propose it to the Storyteller instead:
+
+  +action <what you do> [using <pool>]
+
+The Storyteller sets the difficulty and how hard you are to notice, then you
+throw with `+roll/silent`; only onlookers who make a Perception + Awareness roll
+see what you did. See `help action`.
 
 ## Damage and health
 
@@ -156,6 +167,10 @@ of the wrong template.
   +cast <description> [vs <diff>]
                              Roll your Arete to work an effect; successes are
                              its magnitude. +cast/vulgar flags Paradox risk.
+  +cast <effect> proposing <sphere[, sphere…]>
+                             Submit the working to the Storyteller adjudicator:
+                             it rules on the Spheres and sets the difficulty,
+                             then you throw with +roll/silent. See `help action`.
   +quint                     Show/spend/gain Quintessence (capped by your Avatar).
   +paradox                   Show, accrue, or work off Paradox.
   +resonance                 List/set your Resonance traits.

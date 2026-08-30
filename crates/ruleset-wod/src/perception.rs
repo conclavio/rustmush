@@ -185,25 +185,43 @@ fn perception_roll(
     // Difficulty scales with the concealer's Obfuscate, clamped to the legal
     // oWoD 2..=10 band. Obfuscate 1 ⇒ diff 4, Obfuscate 5 ⇒ diff 8.
     let difficulty = (3 + obfuscate).clamp(2, 10) as u8;
+    let expr = format!("perception+awareness+auspex vs Obfuscate {obfuscate}");
+    sense_roll(st, observer, pool, difficulty, &expr, now).successes() > 0
+}
+
+/// The headless sensing-roll core: roll `pool` dice at `difficulty` on the
+/// shared seeded RNG, record a **private** roll-log entry (staff-auditable), and
+/// return the full [`Owod20Outcome`]. No sheet touch, no room output — the only
+/// side effects are the RNG draw and the log. Shared by the M11 concealment
+/// pierce ([`perception_roll`]) and the M13 silent-witness resolution
+/// ([`resolve_action_witnesses`]); every call advances the shared RNG, which is
+/// what keeps seeded tests deterministic.
+pub(crate) fn sense_roll(
+    st: &mut WodState,
+    observer: ObjId,
+    pool: i32,
+    difficulty: u8,
+    expr: &str,
+    now: i64,
+) -> mush_dice::owod20::Owod20Outcome {
     let opts = Owod20Opts::new(difficulty);
     let outcome = {
         let mut rctx = RollCtx::new(st.rng());
         Owod20Pool.roll(pool, &opts, &mut rctx)
     };
-    let pierced = outcome.successes() > 0;
     st.push_log(
         observer,
         RollLogEntry {
             who: observer,
-            expr: format!("perception+awareness+auspex vs Obfuscate {obfuscate}"),
+            expr: expr.to_string(),
             summary: outcome.summary(),
             difficulty: outcome.difficulty,
             ts: now,
             private: true,
-            outcome,
+            outcome: outcome.clone(),
         },
     );
-    pierced
+    outcome
 }
 
 /// Roll every observer present with `subject` against a veil of `rating` and
@@ -270,6 +288,58 @@ fn refresh_observer(cmd: &WodCmd, ctx: &mut Ctx<'_>, observer: ObjId) {
             st.set_perception(observer, s, pierced);
         }
     }
+}
+
+/// M13 silent per-perceiver witnesses. Every observer present with `actor` (a
+/// Player or NPC other than the actor) rolls **Perception + Awareness** on the
+/// shared seeded RNG against `witness_difficulty`; the ones with at least one
+/// success are returned. The caller pushes a tailored line ONLY to those
+/// winners — a loser receives no event at all (A5 true silence, no wire
+/// artifact).
+///
+/// Observers are gathered in the stable [`World::contents_of`] order and their
+/// sensing dots are read from the read-only `&World` FIRST; the mutable state
+/// slot is taken only for the rolls, so the borrow discipline matches
+/// [`refresh_subject`]. Each [`sense_roll`] advances the shared RNG, keeping
+/// seeded tests deterministic.
+pub(crate) fn resolve_action_witnesses(
+    cmd: &WodCmd,
+    ctx: &mut Ctx<'_>,
+    actor: ObjId,
+    witness_difficulty: u8,
+) -> Vec<ObjId> {
+    let Some(room) = ctx.w.get(actor).and_then(|o| o.location) else {
+        return Vec::new();
+    };
+    // Read every observer's Perception + Awareness from the read-only world
+    // first (auspex is irrelevant to noticing a mundane act), then take the
+    // mutable state slot for the rolls.
+    let observers: Vec<(ObjId, i32)> = ctx
+        .w
+        .contents_of(room)
+        .iter()
+        .copied()
+        .filter(|&o| o != actor && is_observer(ctx.w, o))
+        .map(|o| {
+            let (perception, awareness, _auspex) = observer_senses(cmd, ctx.w, o);
+            (o, perception + awareness)
+        })
+        .collect();
+    if observers.is_empty() {
+        return Vec::new();
+    }
+    let now = ctx.w.now();
+    let mut winners = Vec::new();
+    if let Some(st) = ctx.state_mut::<WodState>() {
+        for (o, pool) in observers {
+            let expr = format!("perception+awareness vs witness difficulty {witness_difficulty}");
+            let outcome = sense_roll(st, o, pool, witness_difficulty, &expr, now);
+            if outcome.successes() > 0 {
+                winners.push(o);
+            }
+        }
+    }
+    winners
 }
 
 // ----------------------------------------------------------------------

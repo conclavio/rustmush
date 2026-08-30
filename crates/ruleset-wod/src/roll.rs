@@ -276,6 +276,20 @@ struct Prepared {
 /// A single (non-contested) roll.
 fn single_roll(cmd: &WodCmd, ctx: &mut Ctx<'_>, args: &RollArgs) -> Result<(), CmdError> {
     let who = ctx.actor;
+    let silent = ctx.switches.has("silent");
+
+    // M13: an accepted Storyteller proposal makes the next roll ST-authoritative
+    // — the pool + difficulty come from the ruling, not from what the player
+    // typed. The +roll/silent is purely the trigger ("dice in your hands").
+    // Consumed exactly once; an expired pending is dropped (a normal roll).
+    let now = ctx.w.now();
+    let pending = ctx
+        .state_mut::<WodState>()
+        .and_then(|st| st.take_pending(who, now));
+    if let Some(p) = pending {
+        return pending_roll(cmd, ctx, who, &p);
+    }
+
     let priv_roll = ctx.switches.has("priv");
     let prep = prepare(
         cmd,
@@ -321,11 +335,101 @@ fn single_roll(cmd: &WodCmd, ctx: &mut Ctx<'_>, args: &RollArgs) -> Result<(), C
     };
 
     let line = render_roll(ctx, who, args, &prep, &outcome, ext_note.as_deref());
-    emit_roll(cmd, ctx, who, priv_roll, &line, &outcome);
+    emit_roll(cmd, ctx, who, priv_roll, silent, &line, &outcome);
 
     if let Some(job) = args.job {
         attach_to_job(ctx, who, job, &line)?;
     }
+    Ok(())
+}
+
+/// The M13 ST-authoritative roll: consume an accepted [`PendingAction`], roll
+/// the RULING's pool at the RULING's difficulty (re-resolved through
+/// [`resolve_sheet_pool`] so it can never exceed the sheet), log the outcome on
+/// the seeded RNG, show the caster their own throw (the room stays silent — the
+/// ST's interpretation delivers the in-fiction result), and defer the
+/// interpretation pass carrying the ENGINE's logged outcome.
+fn pending_roll(
+    cmd: &WodCmd,
+    ctx: &mut Ctx<'_>,
+    who: ObjId,
+    pending: &crate::state::PendingAction,
+) -> Result<(), CmdError> {
+    // Re-resolve the ST pool against the live sheet (the sheet fence). Fall back
+    // to the lenient resolver only if the sheet-only resolver cannot (e.g. a
+    // sheetless actor), never widening past the sheet for a real character.
+    let doc = cmd.read(ctx.w, who);
+    let resolved = match &doc {
+        Some(d) => crate::dice::resolve_sheet_pool(&cmd.schema_for_doc(d), d, &pending.pool)
+            .or_else(|_| resolve_for(cmd, ctx, who, &pending.pool)),
+        None => resolve_for(cmd, ctx, who, &pending.pool),
+    }
+    .map_err(CmdError::msg)?;
+
+    // Casting is an action: the wound penalty and Garou form delta apply.
+    let (wound, incap) = match &doc {
+        Some(d) => {
+            let track =
+                crate::health::HealthTrack::from_marks(&d.track("health").unwrap_or_default());
+            (
+                i32::from(cmd.store_for_doc(d).wound_penalty(d, "health")),
+                track.is_incapacitated(),
+            )
+        }
+        None => (0, false),
+    };
+    let form = doc.as_ref().map_or(0, |d| {
+        crate::splats::werewolf::current_form_pool_delta(d, &resolved.trait_fields)
+    });
+    let pool = (resolved.total + wound + form).max(1);
+    let opts = Owod20Opts::new(pending.difficulty);
+
+    let (log_label, verb) = match pending.kind {
+        crate::st::ActionKind::Mage => ("cast", "works the effect"),
+        crate::st::ActionKind::Generic => ("action", "attempts the action"),
+    };
+    let now = ctx.w.now();
+    let outcome = {
+        let st = ctx
+            .state_mut::<WodState>()
+            .ok_or_else(|| CmdError::msg("The WoD ruleset is not loaded."))?;
+        let outcome = {
+            let mut rctx = RollCtx::new(st.rng());
+            Owod20Pool.roll(pool, &opts, &mut rctx)
+        };
+        st.push_log(
+            who,
+            RollLogEntry {
+                who,
+                expr: format!("{log_label}: {}", pending.pool),
+                summary: outcome.summary(),
+                difficulty: outcome.difficulty,
+                ts: now,
+                private: true,
+                outcome: outcome.clone(),
+            },
+        );
+        outcome
+    };
+
+    // The actor sees their own throw (they threw the dice); the room gets no
+    // raw dice line — the result is narrated by the ST interpretation.
+    let name = name_of(ctx, who);
+    let mut line = format!(
+        "{name} {verb} ({pool} dice, diff {}) and {}",
+        pending.difficulty,
+        outcome.summary()
+    );
+    if wound < 0 {
+        line.push_str(&format!(" [wound {wound}]"));
+    }
+    if incap {
+        line.push_str(" [incapacitated]");
+    }
+    ctx.out.sys_to_actor(who, "wod", line);
+
+    // Defer the interpretation pass with the ENGINE's logged outcome + context.
+    crate::st::defer_interpret(ctx, who, pending, &outcome)?;
     Ok(())
 }
 
@@ -398,7 +502,7 @@ pub(crate) fn roll_expr(
     if incap {
         line.push_str(" [incapacitated]");
     }
-    emit_roll(cmd, ctx, who, false, &line, &outcome);
+    emit_roll(cmd, ctx, who, false, false, &line, &outcome);
     Ok(outcome)
 }
 
@@ -481,7 +585,15 @@ fn contested_roll(
         their_expr,
         out_b.summary(),
     );
-    emit_roll(cmd, ctx, actor, priv_roll, &line, &out_a);
+    emit_roll(
+        cmd,
+        ctx,
+        actor,
+        priv_roll,
+        ctx.switches.has("silent"),
+        &line,
+        &out_a,
+    );
     if let Some(job) = args.job {
         attach_to_job(ctx, actor, job, &line)?;
     }
@@ -523,15 +635,22 @@ fn render_roll(
 
 /// Deliver a roll line to the room (public) or the roller + in-room staff
 /// (private), always also pushing a `wod.roll` panel keyframe to the roller.
+///
+/// `silent` (the `/silent` switch) is stronger than `priv_roll`: the line goes
+/// to the roller alone — no room line and no staff copy — so no other observer
+/// receives any event at all.
 fn emit_roll(
     cmd: &WodCmd,
     ctx: &mut Ctx<'_>,
     who: ObjId,
     priv_roll: bool,
+    silent: bool,
     line: &str,
     outcome: &Owod20Outcome,
 ) {
-    if priv_roll {
+    if silent {
+        ctx.out.sys_to_actor(who, "wod", line);
+    } else if priv_roll {
         ctx.out.sys_to_actor(who, "wod", line);
         // In-room staff also see private rolls.
         if let Some(loc) = ctx.w.get(who).and_then(|o| o.location) {
@@ -680,6 +799,7 @@ pub(crate) fn register(
                 "spec".into(),
                 "wp".into(),
                 "priv".into(),
+                "silent".into(),
                 "nowound".into(),
                 "last".into(),
             ],
@@ -689,7 +809,8 @@ pub(crate) fn register(
                    or a plain number. Difficulty defaults to 6.\n\
                    Switches: /spec (10s count double — needs a specialty recorded \
                    on one of the pool's abilities), /wp (spend Willpower for +1 \
-                   success), /priv (result to you and staff only), /nowound (ignore \
+                   success), /priv (result to you and staff only), /silent (result \
+                   to you alone — no room line, no staff copy), /nowound (ignore \
                    the wound penalty).\n\
                    Inline options: vs <n> / diff <n>, mod <n>, spec <name> (a \
                    specialty on your sheet), ext <n> (extended toward n successes), \
