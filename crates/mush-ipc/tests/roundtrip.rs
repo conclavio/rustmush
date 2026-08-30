@@ -1,0 +1,391 @@
+//! D3: exhaustive codec round-trip coverage for the boundary protocol.
+//!
+//! Every [`ToServer`] and [`ToGateway`] variant must survive an
+//! encode→decode round trip byte-for-byte-equivalent (`PartialEq`), including
+//! the `serde_json::Value`-carrying arms ([`WireInbound::Query`],
+//! [`ToGateway::Deliver`] of an [`OutputEvent::Panel`]); a framed multi-message
+//! stream must decode in order; a truncated frame must read as
+//! needs-more-bytes, never a panic; and the version field must be present.
+
+use mush_core::{ControlMsg as CoreControl, DisconnectKind, Inbound, ObjId, WorldCommand};
+use mush_ipc::codec::{decode_frame, encode_frame_into};
+use mush_ipc::{
+    AttachRec, CreatePlayerError, DetachCause, FrameDecoder, IPC_VERSION, MAX_FRAME_LEN, ServiceReq,
+    ServiceResp, ToGateway, ToServer, WireInbound, WireInboundError, encode_frame,
+};
+use mush_proto::{OutputEvent, PanelFrameKind, RichText};
+
+/// Encode one message and decode it back, asserting equality.
+fn round_trip_to_server(msg: &ToServer) {
+    let bytes = encode_frame(msg).expect("encode ToServer");
+    let (got, consumed): (ToServer, usize) =
+        decode_frame(&bytes).expect("decode ToServer").expect("a whole frame");
+    assert_eq!(consumed, bytes.len(), "the frame consumes the whole buffer");
+    assert_eq!(&got, msg, "ToServer round-trips");
+}
+
+fn round_trip_to_gateway(msg: &ToGateway) {
+    let bytes = encode_frame(msg).expect("encode ToGateway");
+    let (got, consumed): (ToGateway, usize) =
+        decode_frame(&bytes).expect("decode ToGateway").expect("a whole frame");
+    assert_eq!(consumed, bytes.len(), "the frame consumes the whole buffer");
+    assert_eq!(&got, msg, "ToGateway round-trips");
+}
+
+/// One of every `ToServer` variant, including the `serde_json::Value` arm.
+fn every_to_server() -> Vec<ToServer> {
+    vec![
+        ToServer::Inbound(WireInbound::Cmd {
+            conn: 7,
+            actor: ObjId(42),
+            line: "look".to_string(),
+        }),
+        // The serde_json::Value-carrying inbound.
+        ToServer::Inbound(WireInbound::Query {
+            conn: 9,
+            actor: ObjId(3),
+            id: 1234,
+            name: "who".into(),
+            args: serde_json::json!({ "filter": "connected", "limit": 20, "flags": [1, 2, 3] }),
+        }),
+        ToServer::Inbound(WireInbound::ConnUp {
+            conn: 1,
+            actor: ObjId(2),
+            caps_structured: true,
+            from_linkdead: false,
+        }),
+        ToServer::Inbound(WireInbound::ConnDown {
+            conn: 1,
+            actor: ObjId(2),
+            reason: DisconnectKind::Lost,
+        }),
+        ToServer::Inbound(WireInbound::SessionGone { actor: ObjId(2) }),
+        ToServer::Attach {
+            conn: 5,
+            actor: ObjId(11),
+            account: Some("nick".to_string()),
+            char_name: "Wraith".to_string(),
+            caps_structured: true,
+        },
+        ToServer::Attach {
+            conn: 6,
+            actor: ObjId(12),
+            account: None,
+            char_name: "Anon".to_string(),
+            caps_structured: false,
+        },
+        ToServer::Detach {
+            conn: 5,
+            actor: ObjId(11),
+            reason: DisconnectKind::Quit,
+        },
+        ToServer::ReAnnounce(vec![
+            AttachRec {
+                conn: 5,
+                actor: ObjId(11),
+                account: Some("nick".to_string()),
+                char_name: "Wraith".to_string(),
+                caps_structured: true,
+            },
+            AttachRec {
+                conn: 6,
+                actor: ObjId(12),
+                account: None,
+                char_name: "Anon".to_string(),
+                caps_structured: false,
+            },
+        ]),
+        ToServer::ReAnnounce(vec![]),
+        // Each ServiceReq.
+        ToServer::Request {
+            id: 100,
+            req: ServiceReq::CreatePlayer {
+                name: "Newbie".to_string(),
+            },
+        },
+        ToServer::Request {
+            id: 101,
+            req: ServiceReq::NameFree {
+                name: "Wraith".to_string(),
+            },
+        },
+        ToServer::Request {
+            id: 102,
+            req: ServiceReq::InInputContext { actor: ObjId(11) },
+        },
+        ToServer::Request {
+            id: 103,
+            req: ServiceReq::Barrier,
+        },
+        ToServer::Control(CoreControl::Shutdown),
+        ToServer::Control(CoreControl::Dump),
+    ]
+}
+
+/// One of every `ToGateway` variant, including the `serde_json::Value` arm.
+fn every_to_gateway() -> Vec<ToGateway> {
+    use mush_ipc::SendTarget;
+    vec![
+        ToGateway::Deliver {
+            target: SendTarget::Char(42),
+            event: OutputEvent::Sys(RichText::plain("hello")),
+        },
+        ToGateway::Deliver {
+            target: SendTarget::Conn(7),
+            event: OutputEvent::Narrative {
+                kind: mush_proto::NarrativeKind::Say,
+                actor: None,
+                text: RichText::plain("boo"),
+            },
+        },
+        // The serde_json::Value-carrying delivery: a Panel keyframe.
+        ToGateway::Deliver {
+            target: SendTarget::All,
+            event: OutputEvent::Panel {
+                feed: "wod.roll".into(),
+                kind: PanelFrameKind::Keyframe,
+                data: serde_json::json!({
+                    "pool": 7,
+                    "successes": 3,
+                    "dice": [10, 8, 2, 6, 9, 1, 4],
+                    "botch": false,
+                }),
+            },
+        },
+        // Each ServiceResp.
+        ToGateway::Reply {
+            id: 100,
+            resp: ServiceResp::CreatePlayer(Ok(ObjId(99))),
+        },
+        ToGateway::Reply {
+            id: 100,
+            resp: ServiceResp::CreatePlayer(Err(CreatePlayerError::NameTaken)),
+        },
+        ToGateway::Reply {
+            id: 100,
+            resp: ServiceResp::CreatePlayer(Err(CreatePlayerError::World("boom".to_string()))),
+        },
+        ToGateway::Reply {
+            id: 100,
+            resp: ServiceResp::CreatePlayer(Err(CreatePlayerError::WorldGone)),
+        },
+        ToGateway::Reply {
+            id: 100,
+            resp: ServiceResp::CreatePlayer(Err(CreatePlayerError::StoreUnavailable)),
+        },
+        ToGateway::Reply {
+            id: 101,
+            resp: ServiceResp::NameFree(true),
+        },
+        ToGateway::Reply {
+            id: 102,
+            resp: ServiceResp::InInputContext(false),
+        },
+        ToGateway::Reply {
+            id: 103,
+            resp: ServiceResp::Barrier,
+        },
+        // Server → gateway session control.
+        ToGateway::SetFloodExempt {
+            char: 42,
+            exempt: true,
+        },
+        ToGateway::SetFloodExempt {
+            char: 42,
+            exempt: false,
+        },
+        ToGateway::CloseSession {
+            char: 11,
+            cause: DetachCause::Booted,
+        },
+        ToGateway::Detach {
+            conn: 5,
+            cause: DetachCause::Booted,
+        },
+        ToGateway::Detach {
+            conn: 6,
+            cause: DetachCause::SlowClient,
+        },
+        ToGateway::Hello {
+            proto: IPC_VERSION,
+            server: "mushd/0.1.0".to_string(),
+            features: vec!["reattach".to_string(), "compression".to_string()],
+        },
+        ToGateway::Bye,
+    ]
+}
+
+#[test]
+fn every_to_server_variant_round_trips() {
+    for msg in every_to_server() {
+        round_trip_to_server(&msg);
+    }
+}
+
+#[test]
+fn every_to_gateway_variant_round_trips() {
+    for msg in every_to_gateway() {
+        round_trip_to_gateway(&msg);
+    }
+}
+
+#[test]
+fn version_is_present_and_travels_in_hello() {
+    assert_eq!(IPC_VERSION, 1, "the boundary protocol version is pinned");
+    let hello = ToGateway::Hello {
+        proto: IPC_VERSION,
+        server: "mushd".to_string(),
+        features: vec![],
+    };
+    let bytes = encode_frame(&hello).unwrap();
+    let (got, _): (ToGateway, usize) = decode_frame(&bytes).unwrap().unwrap();
+    match got {
+        ToGateway::Hello { proto, .. } => assert_eq!(proto, IPC_VERSION),
+        other => panic!("expected Hello, got {other:?}"),
+    }
+}
+
+/// A framed stream of many messages decodes in order regardless of how the
+/// bytes are chunked into `feed` calls.
+#[test]
+fn framed_multi_message_stream_decodes_in_order() {
+    let all = every_to_server();
+
+    // One contiguous buffer holding every frame back-to-back.
+    let mut stream = Vec::new();
+    for msg in &all {
+        encode_frame_into(msg, &mut stream).unwrap();
+    }
+
+    // Feed the stream in awkward 3-byte chunks; the decoder must reassemble.
+    let mut dec = FrameDecoder::new();
+    let mut decoded: Vec<ToServer> = Vec::new();
+    let mut i = 0;
+    while i < stream.len() {
+        let end = (i + 3).min(stream.len());
+        dec.feed(&stream[i..end]);
+        i = end;
+        while let Some(msg) = dec.next_message::<ToServer>().unwrap() {
+            decoded.push(msg);
+        }
+    }
+    assert_eq!(decoded, all, "the whole stream decodes in order");
+    assert_eq!(dec.pending_len(), 0, "no bytes left buffered");
+}
+
+/// A truncated frame is needs-more-bytes, and completing it then decodes.
+#[test]
+fn partial_frame_is_needs_more_bytes_not_a_panic() {
+    let msg = ToServer::Inbound(WireInbound::Cmd {
+        conn: 1,
+        actor: ObjId(1),
+        line: "a reasonably long command line to make the body multi-byte".to_string(),
+    });
+    let full = encode_frame(&msg).unwrap();
+
+    // Every strict prefix is incomplete: decode_frame yields Ok(None).
+    for cut in 0..full.len() {
+        let partial = &full[..cut];
+        let got: Option<(ToServer, usize)> =
+            decode_frame(partial).expect("a truncated frame is not an error");
+        assert!(got.is_none(), "prefix of {cut} bytes must need more");
+    }
+
+    // Streaming: feed all-but-one byte, expect None, then the last byte yields it.
+    let mut dec = FrameDecoder::new();
+    dec.feed(&full[..full.len() - 1]);
+    assert!(
+        dec.next_message::<ToServer>().unwrap().is_none(),
+        "one byte short => needs more"
+    );
+    dec.feed(&full[full.len() - 1..]);
+    assert_eq!(dec.next_message::<ToServer>().unwrap(), Some(msg));
+}
+
+/// Fewer than the 4 length-prefix bytes is also needs-more-bytes.
+#[test]
+fn sub_prefix_buffer_needs_more_bytes() {
+    for buf in [&[][..], &[0][..], &[0, 0][..], &[0, 0, 0][..]] {
+        let got: Option<(ToServer, usize)> = decode_frame(buf).unwrap();
+        assert!(got.is_none());
+    }
+}
+
+/// An oversized length prefix is rejected before any allocation.
+#[test]
+fn oversized_length_prefix_is_rejected() {
+    let bogus = ((MAX_FRAME_LEN + 1) as u32).to_be_bytes();
+    let err = decode_frame::<ToServer>(&bogus).unwrap_err();
+    assert!(matches!(err, mush_ipc::CodecError::FrameTooLarge(_)));
+}
+
+/// WireInbound is exactly the cross-boundary subset: the five gateway-origin
+/// variants convert both ways; Apply and Control are structurally excluded.
+#[test]
+fn wire_inbound_is_the_cross_boundary_subset() {
+    let cases = [
+        Inbound::Cmd {
+            conn: 1,
+            actor: ObjId(2),
+            line: "look".to_string(),
+        },
+        Inbound::Query {
+            conn: 1,
+            actor: ObjId(2),
+            id: 5,
+            name: "who".into(),
+            args: serde_json::json!({}),
+        },
+        Inbound::ConnUp {
+            conn: 1,
+            actor: ObjId(2),
+            caps_structured: true,
+            from_linkdead: true,
+        },
+        Inbound::ConnDown {
+            conn: 1,
+            actor: ObjId(2),
+            reason: DisconnectKind::Boot,
+        },
+        Inbound::SessionGone { actor: ObjId(2) },
+    ];
+    for inbound in cases {
+        let wire = WireInbound::try_from(inbound.clone()).expect("crosses the boundary");
+        // And back — the conversion is lossless.
+        assert_eq!(Inbound::from(wire), inbound);
+    }
+
+    // The two server-internal variants are rejected with the right reason.
+    assert_eq!(
+        WireInbound::try_from(Inbound::Apply(WorldCommand::SlowTestDone {
+            actor: ObjId(1),
+            correlation: 0,
+            text: String::new(),
+        })),
+        Err(WireInboundError::Apply),
+    );
+    assert_eq!(
+        WireInbound::try_from(Inbound::Control(CoreControl::Shutdown)),
+        Err(WireInboundError::Control),
+    );
+}
+
+/// The bare `Inbound` (with its new derives) round-trips through the codec too,
+/// so the server-internal `Apply`/`Control` arms are still serde-complete
+/// (needed for any future in-process persistence of the queue).
+#[test]
+fn inbound_itself_round_trips_including_internal_arms() {
+    for inbound in [
+        Inbound::Apply(WorldCommand::ModuleAsyncDone {
+            module: "worldgen".into(),
+            actor: ObjId(3),
+            correlation: 9,
+            payload: r#"{"draft":"ok"}"#.to_string(),
+        }),
+        Inbound::Control(CoreControl::Dump),
+    ] {
+        let bytes = encode_frame(&inbound).unwrap();
+        let (got, _): (Inbound, usize) = decode_frame(&bytes).unwrap().unwrap();
+        assert_eq!(got, inbound);
+    }
+}

@@ -1,0 +1,22 @@
+[package]
+name = "mush-ipc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Gateway<->server boundary protocol (M16): directional message enums + length-prefixed MessagePack codec"
+
+# M16a: the future gateway pulls the Inbound/ObjId/Audience/OutputEvent
+# vocabulary through this crate WITHOUT the game-server deps, so the dependency
+# set is deliberately just mush-proto + mush-core (no store/modules/llm/net).
+[dependencies]
+mush-proto.workspace = true
+mush-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
+rmp-serde.workspace = true
+
+[lints]
+workspace = true

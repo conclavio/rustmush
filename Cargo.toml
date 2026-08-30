@@ -93,9 +93,15 @@ schemars = "1"
 ts-rs = { version = "12", features = ["serde-compat", "smol_str-impl", "serde-json-impl"] }
 # config
 toml = "0.8"
+# IPC framing (M16a): self-describing MessagePack for the gateway<->server
+# boundary protocol. Chosen over bincode because the boundary carries
+# serde_json::Value payloads (Inbound::Query, OutputEvent::Panel) that need a
+# self-describing format; rmp-serde is compact and version-tolerant.
+rmp-serde = "1"
 # workspace-internal
 mush-proto = { path = "crates/mush-proto" }
 mush-core = { path = "crates/mush-core" }
+mush-ipc = { path = "crates/mush-ipc" }
 mush-ansi = { path = "crates/mush-ansi" }
 mush-store = { path = "crates/mush-store" }
 mush-session = { path = "crates/mush-session" }

@@ -25,7 +25,8 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
-use mush_core::{DisconnectKind, Inbound, ObjId};
+use mush_core::{DisconnectKind, ObjId};
+use mush_ipc::{ServiceReq, ServiceResp, ToServer, WireInbound};
 // Shared with the SSH transport's own line cap (`mush-net-ssh::editor`) so
 // both agree on one bound (MEDIUM finding).
 use mush_net_ssh::MAX_LINE_CHARS;
@@ -38,6 +39,7 @@ use smol_str::SmolStr;
 
 use crate::accounts::{AuthBackend, AuthOutcome, CreateErr};
 use crate::ipguard::IpGuard;
+use crate::link::GatewayLink;
 use crate::world_task::{WorldHandle, char_key, char_key_obj, send_event_to_conn};
 
 /// One character offered on a character-select surface (welcome screen,
@@ -106,12 +108,18 @@ pub struct EnterOutcome {
 pub struct GameBridge<A: AuthBackend + 'static> {
     pub(crate) accounts: Arc<A>,
     pub(crate) sessions: Arc<SessionManager>,
-    pub(crate) world: WorldHandle,
+    /// The protocol-typed handle to the server half (M16a). The bridges speak
+    /// `mush-ipc` [`ToServer`]/[`ServiceReq`] through this trait object, never
+    /// the concrete [`WorldHandle`]; the in-process impl wraps the world-task
+    /// mpsc, and M16b swaps in a socket client.
+    pub(crate) link: Arc<dyn GatewayLink>,
     pub(crate) guard: Arc<IpGuard>,
 }
 
 impl<A: AuthBackend + 'static> GameBridge<A> {
-    /// Wire the core.
+    /// Wire the core. Takes the in-process [`WorldHandle`] and holds it behind
+    /// the [`GatewayLink`] trait, so every game-side call crosses the boundary
+    /// as a `mush-ipc` protocol message.
     pub fn new(
         accounts: Arc<A>,
         sessions: Arc<SessionManager>,
@@ -121,7 +129,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         GameBridge {
             accounts,
             sessions,
-            world,
+            link: Arc::new(world),
             guard,
         }
     }
@@ -224,13 +232,13 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         // World side: connection up (announces connect/reconnect), then an
         // initial look so the player sees where they are.
         if !self
-            .world
-            .inbound(Inbound::ConnUp {
+            .link
+            .to_server(ToServer::Inbound(WireInbound::ConnUp {
                 conn: conn_id.0,
                 actor,
                 caps_structured,
                 from_linkdead,
-            })
+            }))
             .await
         {
             self.sessions.detach(conn_id, DetachReason::Booted);
@@ -251,13 +259,16 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         // on reconnect). Dispatching "look" then would feed it to the context
         // as body/input text (the wizard reads it as a bogus template name),
         // so skip it and let the context's own prompt stand.
-        if !self.world.in_input_context(actor).await {
-            self.world
-                .inbound(Inbound::Cmd {
+        if !matches!(
+            self.link.request(ServiceReq::InInputContext { actor }).await,
+            Some(ServiceResp::InInputContext(true))
+        ) {
+            self.link
+                .to_server(ToServer::Inbound(WireInbound::Cmd {
                     conn: conn_id.0,
                     actor,
                     line: "look".to_string(),
-                })
+                }))
                 .await;
         }
         tracing::info!(conn = conn_id.0, %actor, account, "character connected");
@@ -319,12 +330,12 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             tracing::warn!(conn = conn.0, "line from unattached connection dropped");
             return LineOutcome::Continue;
         };
-        self.world
-            .inbound(Inbound::Cmd {
+        self.link
+            .to_server(ToServer::Inbound(WireInbound::Cmd {
                 conn: conn.0,
                 actor,
                 line: trimmed.to_string(),
-            })
+            }))
             .await;
         LineOutcome::Continue
     }
@@ -352,14 +363,14 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             tracing::warn!(conn, "query from unattached connection dropped");
             return;
         };
-        self.world
-            .inbound(Inbound::Query {
+        self.link
+            .to_server(ToServer::Inbound(WireInbound::Query {
                 conn,
                 actor,
                 id,
                 name,
                 args,
-            })
+            }))
             .await;
     }
 
@@ -377,12 +388,12 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             DetachOutcome::OthersRemain | DetachOutcome::Linkdead { .. } => {
                 // The engine announces "has gone link-dead." when this was
                 // the actor's last connection.
-                self.world
-                    .inbound(Inbound::ConnDown {
+                self.link
+                    .to_server(ToServer::Inbound(WireInbound::ConnDown {
                         conn: conn.0,
                         actor,
                         reason: DisconnectKind::Lost,
-                    })
+                    }))
                     .await;
             }
             DetachOutcome::Closed => {
@@ -390,14 +401,16 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                 // clean scoped cleanup for this connection, then a full
                 // disconnect (which the engine ignores if a fresh session's
                 // connections are live — treaty ruling 3 re-validation).
-                self.world
-                    .inbound(Inbound::ConnDown {
+                self.link
+                    .to_server(ToServer::Inbound(WireInbound::ConnDown {
                         conn: conn.0,
                         actor,
                         reason: DisconnectKind::Boot,
-                    })
+                    }))
                     .await;
-                self.world.inbound(Inbound::SessionGone { actor }).await;
+                self.link
+                    .to_server(ToServer::Inbound(WireInbound::SessionGone { actor }))
+                    .await;
             }
         }
         if let DetachOutcome::Linkdead { grace } = outcome {
@@ -432,14 +445,14 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
     ///    pump to close the socket after draining.
     pub(crate) async fn quit(&self, conn: ConnId) {
         if let Some(actor) = self.actor_of(conn) {
-            self.world
-                .inbound(Inbound::ConnDown {
+            self.link
+                .to_server(ToServer::Inbound(WireInbound::ConnDown {
                     conn: conn.0,
                     actor,
                     reason: DisconnectKind::Quit,
-                })
+                }))
                 .await;
-            self.world.barrier().await;
+            self.link.request(ServiceReq::Barrier).await;
         }
         send_event_to_conn(
             &self.sessions,
@@ -457,13 +470,14 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
     /// the session and [`SessionManager::take_expired`] skips it.
     pub(crate) fn arm_linkdead_reaper(&self, grace: std::time::Duration) {
         let sessions = Arc::clone(&self.sessions);
-        let world = self.world.clone();
+        let link = Arc::clone(&self.link);
         tokio::spawn(async move {
             tokio::time::sleep(grace).await;
             for expired in sessions.take_expired(Instant::now()) {
                 let actor = char_key_obj(expired.character);
                 tracing::info!(%actor, account = %expired.account, "linkdead grace expired");
-                world.inbound(Inbound::SessionGone { actor }).await;
+                link.to_server(ToServer::Inbound(WireInbound::SessionGone { actor }))
+                    .await;
             }
         });
     }

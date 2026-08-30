@@ -41,11 +41,13 @@ use std::sync::{Arc, OnceLock};
 use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use mush_core::ObjId;
+use mush_ipc::{CreatePlayerError, ServiceReq, ServiceResp};
 use mush_store::{AccountRec, CharacterRef, ObjectStore, StoreError};
 use serde::{Deserialize, Serialize};
 
+use crate::link::GatewayLink;
 use crate::unix_now_s;
-use crate::world_task::{CreatePlayerErr, WorldHandle};
+use crate::world_task::WorldHandle;
 
 /// Account names no one may register (routing usernames, staff identities).
 pub const RESERVED_NAMES: &[&str] = &["god", "play", "guest", "new", "root", "admin"];
@@ -156,7 +158,10 @@ pub trait AuthBackend: Send + Sync {
 /// handle for Player creation.
 pub struct Accounts {
     store: Arc<dyn ObjectStore>,
-    world: WorldHandle,
+    /// The protocol-typed handle to the server half (M16a): character
+    /// creation and name pre-checks cross the boundary as `mush-ipc`
+    /// [`ServiceReq`]s through this trait object, never by touching `World`.
+    link: Arc<dyn GatewayLink>,
     max_characters: usize,
 }
 
@@ -167,7 +172,7 @@ impl Accounts {
     pub fn new(store: Arc<dyn ObjectStore>, world: WorldHandle, max_characters: usize) -> Accounts {
         Accounts {
             store,
-            world,
+            link: Arc::new(world),
             max_characters,
         }
     }
@@ -191,9 +196,15 @@ impl Accounts {
         account: &str,
         char_name: &str,
     ) -> Result<CharSummary, CreateErr> {
-        let id = match self.world.create_player(char_name).await {
-            Ok(id) => id,
-            Err(CreatePlayerErr::NameTaken) => {
+        let id = match self
+            .link
+            .request(ServiceReq::CreatePlayer {
+                name: char_name.to_string(),
+            })
+            .await
+        {
+            Some(ServiceResp::CreatePlayer(Ok(id))) => id,
+            Some(ServiceResp::CreatePlayer(Err(CreatePlayerError::NameTaken))) => {
                 // The pre-check raced another create. The account (possibly
                 // freshly reserved, possibly character-less) stays — the
                 // store cannot delete accounts yet. Loud log, clear error.
@@ -204,7 +215,10 @@ impl Accounts {
                 );
                 return Err(CreateErr::CharacterNameTaken);
             }
-            Err(e) => return Err(CreateErr::World(e.to_string())),
+            Some(ServiceResp::CreatePlayer(Err(e))) => return Err(CreateErr::World(e.to_string())),
+            // The world is gone or answered unexpectedly: same failure the
+            // direct `WorldGone` path reported.
+            _ => return Err(CreateErr::World(CreatePlayerError::WorldGone.to_string())),
         };
         match self.store.link_character(account, id, char_name).await {
             Ok(()) => Ok(CharSummary {
@@ -264,7 +278,14 @@ impl AuthBackend for Accounts {
         validate_character_name(char_name)?;
         // Advisory pre-check: catch a taken character name BEFORE the
         // account record exists (the world create re-validates atomically).
-        if !self.world.name_free(char_name).await {
+        if !matches!(
+            self.link
+                .request(ServiceReq::NameFree {
+                    name: char_name.to_string(),
+                })
+                .await,
+            Some(ServiceResp::NameFree(true))
+        ) {
             return Err(CreateErr::CharacterNameTaken);
         }
         let hash = {
@@ -301,7 +322,14 @@ impl AuthBackend for Accounts {
         if rec.characters.len() >= self.max_characters {
             return Err(CreateErr::CharacterLimit);
         }
-        if !self.world.name_free(char_name).await {
+        if !matches!(
+            self.link
+                .request(ServiceReq::NameFree {
+                    name: char_name.to_string(),
+                })
+                .await,
+            Some(ServiceResp::NameFree(true))
+        ) {
             return Err(CreateErr::CharacterNameTaken);
         }
         self.create_and_link(account, char_name).await

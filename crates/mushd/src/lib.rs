@@ -35,6 +35,11 @@
 //!   ([`bridge_common::GameBridge`]): account auth/creation, session
 //!   attach/enter-game, line handling (sanitize/QUIT/flood), the
 //!   disconnect/linkdead flow — shared verbatim by both transports.
+//! - [`link`] — M16a: the gateway<->server boundary transport. The bridges
+//!   speak the `mush-ipc` protocol through [`link::GatewayLink`] (gateway →
+//!   server) and the world loop delivers through [`link::InProcessTransport`]
+//!   (server → gateway), so the seam is one socket-swap from the M16b fork
+//!   while the single binary behaves identically.
 //! - [`ssh_bridge`] — implements `mush_net_ssh::SshHooks` over the shared
 //!   core and starts the real SSH listener.
 //! - [`web_bridge`] — M4: implements `mush_net_web::WebHooks` over the
@@ -53,6 +58,7 @@ pub mod bridge_common;
 pub mod config;
 pub mod help;
 pub mod ipguard;
+pub mod link;
 pub mod logging;
 pub mod modules;
 pub mod persist;

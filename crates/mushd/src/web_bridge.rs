@@ -1,6 +1,6 @@
 //! The bridge between the web front end (`mush-net-web`: axum HTTP + WS)
 //! and the game: token auth, structured-session attachment, resume replay,
-//! input, and the `Req` → [`Inbound::Query`] hydration path — the
+//! input, and the `Req` → [`mush_core::Inbound::Query`] hydration path — the
 //! [`mush_net_web::WebHooks`] implementation.
 //!
 //! ## Division of labor (mirrors [`crate::ssh_bridge`])
@@ -50,7 +50,8 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
 use futures::future::BoxFuture;
-use mush_core::{DisconnectKind, Inbound, ObjId};
+use mush_core::{DisconnectKind, ObjId};
+use mush_ipc::{ServiceReq, ToServer, WireInbound};
 use mush_net_web::{
     CharSummary, LoginErr, LoginOk, NewWebConn, RegisterErr, ResumeErr, ResumeOk, SessionStart,
     TokenIdentity, WebHooks,
@@ -265,14 +266,14 @@ impl<A: AuthBackend + 'static> WebBridge<A> {
     async fn boot_conn(&self, conn: ConnId, why: &str) {
         if let Some(actor) = self.core.actor_of(conn) {
             self.core
-                .world
-                .inbound(Inbound::ConnDown {
+                .link
+                .to_server(ToServer::Inbound(WireInbound::ConnDown {
                     conn: conn.0,
                     actor,
                     reason: DisconnectKind::Boot,
-                })
+                }))
                 .await;
-            self.core.world.barrier().await;
+            self.core.link.request(ServiceReq::Barrier).await;
         }
         send_event_to_conn(
             &self.core.sessions,
@@ -508,13 +509,13 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
             // replay snapshot — never duplicated into it).
             if !self
                 .core
-                .world
-                .inbound(Inbound::ConnUp {
+                .link
+                .to_server(ToServer::Inbound(WireInbound::ConnUp {
                     conn: conn_id.0,
                     actor,
                     caps_structured: true,
                     from_linkdead,
-                })
+                }))
                 .await
             {
                 self.core
@@ -654,14 +655,14 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
             };
             if !self
                 .core
-                .world
-                .inbound(Inbound::Query {
+                .link
+                .to_server(ToServer::Inbound(WireInbound::Query {
                     conn,
                     actor,
                     id,
                     name,
                     args,
-                })
+                }))
                 .await
             {
                 self.direct_error_reply(conn_id, id, "The game is shutting down.");

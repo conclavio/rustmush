@@ -21,6 +21,10 @@ tls = ["mush-net-web/tls"]
 [dependencies]
 mush-core.workspace = true
 mush-proto.workspace = true
+# M16a: the gateway<->server boundary protocol. This stage only borrows
+# SendTarget (moved here from world_task); the runtime protocol refactor is M16a
+# task 2.
+mush-ipc.workspace = true
 mush-session.workspace = true
 mush-store.workspace = true
 # The M3 proving modules, wired at boot (modules.rs).

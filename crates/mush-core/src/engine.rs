@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use mush_proto::{OutputEvent, RichText};
+use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::cmd::{
@@ -50,7 +51,7 @@ const WAIT_QUEUE_MAX: u32 = 100;
 
 /// Why a connection went down — drives the engine's announcement and
 /// whether the actor fully disconnects at once.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DisconnectKind {
     /// Player-initiated clean close (`QUIT`): on the last connection the
     /// actor fully disconnects immediately ("has disconnected.").
@@ -82,7 +83,7 @@ impl std::fmt::Display for DisconnectKind {
 }
 
 /// Operator/driver control messages (SIGTERM, `@shutdown`, `@dump`).
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ControlMsg {
     /// Announce and stop the world loop.
     Shutdown,
@@ -107,7 +108,7 @@ pub enum ControlMsg {
 /// shape without a new core arm per feature: the completion is routed to the
 /// module's registered [`AsyncCompletion`](crate::module::AsyncCompletion)
 /// handler, which decodes the payload and re-validates against current state.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorldCommand {
     /// Completion of an [`Effect::SlowTest`]: the fake LLM "answered".
     SlowTestDone {
@@ -270,7 +271,7 @@ impl Effects {
 ///
 /// (`Eq` is deliberately not derived: [`Inbound::Query`] carries a
 /// `serde_json::Value`, which is only `PartialEq`.)
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Inbound {
     /// One input line from a live connection.
     Cmd {

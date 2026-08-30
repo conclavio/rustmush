@@ -86,6 +86,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::ipguard::IpGuard;
+use crate::link::InProcessTransport;
 use crate::persist::{self, StoreJob};
 use crate::staff::{StaffOp, StaffOpKind, StaffQueue};
 use crate::{unix_now_ms, unix_now_s};
@@ -120,6 +121,22 @@ pub enum CreatePlayerErr {
     /// refused up front instead of leaving the requester hanging.
     #[error("the database is temporarily unavailable; please try again shortly")]
     StoreUnavailable,
+}
+
+/// Widen the in-process [`CreatePlayerErr`] into the boundary-protocol
+/// [`mush_ipc::CreatePlayerError`] carried by
+/// [`ServiceResp::CreatePlayer`](mush_ipc::ServiceResp::CreatePlayer). The two
+/// mirror each other variant-for-variant (and share their `Display` text), so
+/// the reply crosses the seam without `mush-ipc` depending on `mushd`.
+impl From<CreatePlayerErr> for mush_ipc::CreatePlayerError {
+    fn from(e: CreatePlayerErr) -> mush_ipc::CreatePlayerError {
+        match e {
+            CreatePlayerErr::NameTaken => mush_ipc::CreatePlayerError::NameTaken,
+            CreatePlayerErr::World(s) => mush_ipc::CreatePlayerError::World(s),
+            CreatePlayerErr::WorldGone => mush_ipc::CreatePlayerError::WorldGone,
+            CreatePlayerErr::StoreUnavailable => mush_ipc::CreatePlayerError::StoreUnavailable,
+        }
+    }
 }
 
 /// Everything the world task can receive: engine inbound traffic plus typed
@@ -462,6 +479,11 @@ async fn run(
     // borrowing `deps` (staff queue) freely each iteration.
     let llm = deps.llm.clone();
     let metrics = Arc::clone(&deps.metrics);
+    // The server -> gateway delivery seam (M16a): every resolved
+    // `(SendTarget, OutputEvent)` pair is handed to this in-process transport,
+    // which maps it onto the shared `SessionManager`. `resolve_sends` (the
+    // World-reading half) stays server-side; this is the gateway consumer.
+    let gateway = InProcessTransport::new(Arc::clone(&sessions));
     let mut out = Outbox::new();
     let mut fx = Effects::new();
     let mut serial: u64 = 0;
@@ -498,8 +520,8 @@ async fn run(
                     && let Some(refused) = refuse_read_only(&engine.world, &msg)
                 {
                     let (actor, text) = refused;
-                    sessions.send_to_char(
-                        char_key(actor),
+                    gateway.deliver(
+                        SendTarget::Char(char_key(actor).0),
                         Arc::new(OutputEvent::Sys(RichText::tag("error", text))),
                     );
                     StepOutcome::Continue
@@ -591,7 +613,7 @@ async fn run(
                 StepOutcome::Continue
             }
             Wake::Msg(WorldMsg::StoreStatus { healthy, detail }) => {
-                apply_store_status(&engine.world, &sessions, &mut health, healthy, &detail);
+                apply_store_status(&engine.world, &gateway, &mut health, healthy, &detail);
                 StepOutcome::Continue
             }
             Wake::Timer => {
@@ -607,7 +629,9 @@ async fn run(
         // context their lines bypass the transport throttle (a pasted mail
         // body must not lose lines 31+ to the burst cap).
         if let Some(actor) = flood_sync {
-            sessions.set_flood_exempt(char_key(actor), engine.world.input_depth(actor) > 0);
+            // ToGateway::SetFloodExempt — driven across the seam rather than
+            // mutating the gateway's throttle directly (M16b: serialized).
+            gateway.set_flood_exempt(char_key(actor).0, engine.world.input_depth(actor) > 0);
         }
         if let Some(gate_actor) = engine.take_durable_gate() {
             // The step asked for the durable-ack output gate (mail send,
@@ -631,19 +655,19 @@ async fn run(
             .await
             {
                 FlushOutcome::Queued(Some(ack_rx)) => {
-                    let sessions = Arc::clone(&sessions);
+                    let gateway = gateway.clone();
                     tokio::spawn(async move {
                         match ack_rx.await {
                             Ok(Ok(_)) => {
-                                let _ = transmit(&sessions, resolved);
+                                let _ = gateway.transmit(resolved);
                             }
                             Ok(Err(e)) => {
                                 // The write was dropped (non-retryable):
                                 // deliver what happened in RAM, but never
                                 // pretend it is durable.
-                                let _ = transmit(&sessions, resolved);
+                                let _ = gateway.transmit(resolved);
                                 send_sys(
-                                    &sessions,
+                                    &gateway,
                                     gate_actor,
                                     &format!(
                                         "WARNING: the database write for your last \
@@ -660,14 +684,14 @@ async fn run(
                 }
                 // Nothing was actually dirty: nothing to gate on.
                 FlushOutcome::Clean | FlushOutcome::Queued(None) => {
-                    let _ = transmit(&sessions, resolved);
+                    let _ = gateway.transmit(resolved);
                 }
                 // The batch was DROPPED (writer gone, teardown): the write
                 // is not durable — never deliver the confirmation.
                 FlushOutcome::WriterGone => {}
             }
         } else {
-            deliver_and_police(&mut engine, &sessions, &mut out, &mut fx, &tx);
+            deliver_and_police(&mut engine, &gateway, &sessions, &mut out, &mut fx, &tx);
             spawn_effects(&mut fx, &tx, llm.as_ref());
             // Write-through: one batch per processed message that dirtied
             // the world (fire-and-forget; the writer preserves order and
@@ -704,7 +728,7 @@ async fn run(
                 llm.as_ref(),
                 &metrics,
             );
-            deliver_and_police(&mut engine, &sessions, &mut out, &mut fx, &tx);
+            deliver_and_police(&mut engine, &gateway, &sessions, &mut out, &mut fx, &tx);
             spawn_effects(&mut fx, &tx, llm.as_ref());
             let _ = flush_dirty(
                 &mut engine,
@@ -716,7 +740,7 @@ async fn run(
             )
             .await;
         }
-        let staff_shutdown = run_staff_ops(&deps, &sessions, &writer, &staff_ops, store_ops).await;
+        let staff_shutdown = run_staff_ops(&deps, &gateway, &writer, &staff_ops, store_ops).await;
         // Loop-lag watchdog (PLAN risk 2): the single-writer loop must stay
         // fast; a slow iteration means a slow sync handler or writer-queue
         // backpressure. The engine mirrors last/max for `@stats`; the metrics
@@ -750,7 +774,7 @@ async fn run(
             // identical; main's shutdown sequence (writer drain → store
             // drain → BGSAVE) runs when this task's join resolves.
             let outcome = engine.step(Inbound::Control(ControlMsg::Shutdown), &mut out, &mut fx);
-            deliver_and_police(&mut engine, &sessions, &mut out, &mut fx, &tx);
+            deliver_and_police(&mut engine, &gateway, &sessions, &mut out, &mut fx, &tx);
             spawn_effects(&mut fx, &tx, llm.as_ref());
             let _ = flush_dirty(
                 &mut engine,
@@ -857,7 +881,7 @@ fn refuse_read_only(world: &World, msg: &Inbound) -> Option<(ObjId, String)> {
 /// connected Wizards either way.
 fn apply_store_status(
     world: &World,
-    sessions: &SessionManager,
+    gateway: &InProcessTransport,
     health: &mut StoreHealth,
     healthy: bool,
     detail: &str,
@@ -868,7 +892,7 @@ fn apply_store_status(
             tracing::info!("store recovered; leaving read-only mode");
             broadcast_wizards(
                 world,
-                sessions,
+                gateway,
                 "GAME: store writes recovered; the world is writable again.",
             );
         }
@@ -877,7 +901,7 @@ fn apply_store_status(
         tracing::error!(detail, "store write failure; entering read-only mode");
         broadcast_wizards(
             world,
-            sessions,
+            gateway,
             &format!(
                 "GAME: store write failure ({detail}); mutating commands are \
                  paused until the store recovers."
@@ -886,12 +910,13 @@ fn apply_store_status(
     }
 }
 
-/// Send a Sys line to every connected Wizard-or-better.
-fn broadcast_wizards(world: &World, sessions: &SessionManager, text: &str) {
+/// Send a Sys line to every connected Wizard-or-better, each as a
+/// [`ToGateway::Deliver`](mush_ipc::ToGateway) through the seam.
+fn broadcast_wizards(world: &World, gateway: &InProcessTransport, text: &str) {
     let ev = Arc::new(OutputEvent::Sys(RichText::tag("system", text)));
     for actor in world.connected() {
         if world.get(actor).is_some_and(|o| o.role() >= Role::Wizard) {
-            sessions.send_to_char(char_key(actor), Arc::clone(&ev));
+            gateway.deliver(SendTarget::Char(char_key(actor).0), Arc::clone(&ev));
         }
     }
 }
@@ -1010,6 +1035,15 @@ fn run_local_staff_ops(
                 // The handler's Disconnect event was already delivered, so
                 // the target saw the message; dropping the handles closes
                 // the transports once their queues drain.
+                //
+                // M16b (unrouted boundary crossing): `session_of_char` +
+                // `close_session` read and mutate gateway-owned session state.
+                // This becomes a `ToGateway::CloseSession{char,
+                // DetachCause::Booted}`; the gateway closes the transports and
+                // reports each resulting `ConnDown(Boot)` back as a
+                // `ToServer::Inbound`, which the world steps exactly as the
+                // loop below does. Kept direct in M16a (shared manager →
+                // behaviour-identical).
                 let mut booted = 0u32;
                 if let Some(sess) = sessions.session_of_char(char_key(target)) {
                     for handle in sessions.close_session(sess) {
@@ -1267,6 +1301,10 @@ fn maybe_publish_sample(
     let counts = object_counts(&engine.world);
     let (npc_active, npc_thinking) = npc_counts(engine);
     metrics.publish_world(WorldSample {
+        // M16b (unrouted boundary read): `session_count`/`connection_count`
+        // read gateway-owned counters for the world gauge. Post-fork the
+        // gateway either publishes these two metrics itself or pushes the
+        // counts to the server (they are advisory gauges, not world state).
         sessions_current: sessions.session_count() as i64,
         connections_current: sessions.connection_count() as i64,
         scheduler_queue_depth: engine.sched.len() as i64,
@@ -1463,7 +1501,7 @@ fn human_duration(mut s: i64) -> String {
 /// requesting actor.
 async fn run_staff_ops(
     _deps: &ServerDeps,
-    sessions: &Arc<SessionManager>,
+    gateway: &InProcessTransport,
     writer: &mpsc::Sender<StoreJob>,
     staff_ops: &mpsc::Sender<StaffOp>,
     ops: Vec<StaffOp>,
@@ -1479,14 +1517,14 @@ async fn run_staff_ops(
             } => {
                 tracing::info!(%actor, %ip, ?until_unix, reason, "@siteban requested");
                 if staff_ops.send(op).await.is_err() {
-                    send_sys(sessions, actor, "@siteban failed: staff executor gone.");
+                    send_sys(gateway, actor, "@siteban failed: staff executor gone.");
                 }
             }
             StaffOpKind::ClearBan { ref ip } => {
                 tracing::info!(%actor, %ip, "@siteban/clear requested");
                 if staff_ops.send(op).await.is_err() {
                     send_sys(
-                        sessions,
+                        gateway,
                         actor,
                         "@siteban/clear failed: staff executor gone.",
                     );
@@ -1495,7 +1533,7 @@ async fn run_staff_ops(
             StaffOpKind::ListBans => {
                 tracing::info!(%actor, "@siteban list requested");
                 if staff_ops.send(op).await.is_err() {
-                    send_sys(sessions, actor, "@siteban failed: staff executor gone.");
+                    send_sys(gateway, actor, "@siteban failed: staff executor gone.");
                 }
             }
             StaffOpKind::NewPassword { target, .. } => {
@@ -1503,17 +1541,17 @@ async fn run_staff_ops(
                 // reaches a log (Secret redacts even derived Debug).
                 tracing::info!(%actor, %target, "@newpassword requested");
                 if staff_ops.send(op).await.is_err() {
-                    send_sys(sessions, actor, "@newpassword failed: staff executor gone.");
+                    send_sys(gateway, actor, "@newpassword failed: staff executor gone.");
                 }
             }
             StaffOpKind::Dump => {
                 tracing::info!(%actor, "@dump requested");
                 let writer = writer.clone();
-                let sessions = Arc::clone(sessions);
+                let gateway = gateway.clone();
                 tokio::spawn(async move {
                     let (done, done_rx) = oneshot::channel();
                     if writer.send(StoreJob::Bgsave { done }).await.is_err() {
-                        send_sys(&sessions, actor, "@dump failed: store writer gone.");
+                        send_sys(&gateway, actor, "@dump failed: store writer gone.");
                         return;
                     }
                     let text = match done_rx.await {
@@ -1521,7 +1559,7 @@ async fn run_staff_ops(
                         Ok(Err(e)) => format!("@dump failed: {e}"),
                         Err(_) => "@dump failed: store writer gone.".to_string(),
                     };
-                    send_sys(&sessions, actor, &text);
+                    send_sys(&gateway, actor, &text);
                 });
             }
             StaffOpKind::Shutdown => {
@@ -1546,9 +1584,11 @@ async fn run_staff_ops(
 /// authenticated and stay; boot them with `@boot` if needed). Returns the
 /// confirmation text for the requesting wizard; delivers the target's
 /// notification itself.
+#[allow(clippy::too_many_arguments)]
 async fn run_newpassword(
     store: &dyn ObjectStore,
     sessions: &SessionManager,
+    gateway: &InProcessTransport,
     world: &mpsc::WeakSender<WorldMsg>,
     target: ObjId,
     name: &str,
@@ -1599,7 +1639,7 @@ async fn run_newpassword(
     // Notify BEFORE booting, so a web-connected target actually sees why
     // their session is about to close.
     send_sys(
-        sessions,
+        gateway,
         target,
         &format!("GAME: Your password has been changed by {by}."),
     );
@@ -1609,6 +1649,17 @@ async fn run_newpassword(
     // is still up.
     let world = world.upgrade().map(|tx| WorldHandle { tx });
     let mut booted = 0u32;
+    // M16b (unrouted boundary crossing): the session *queries* and *control*
+    // below — `session_of_char`, `conns_of_session`, and the per-connection
+    // `detach(Booted)` — read and mutate gateway-owned session state that the
+    // forked server will not hold. This logout-everywhere becomes a
+    // `ToGateway::Detach{conn, DetachCause::Booted}` per structured connection
+    // (the gateway resolves the account's live web conns and reports each
+    // resulting `ConnDown` back), replacing this direct-`SessionManager` walk.
+    // The output sends (the notice above and the Disconnect below) already
+    // cross the seam via `gateway`. Kept direct in M16a: behaviour-identical
+    // on the shared manager, and the world round-trips (`inbound`/`barrier`)
+    // this interleaves belong to the gateway↔server ordering M16b designs.
     for ch in &account.characters {
         let Some(sess) = sessions.session_of_char(char_key(ch.id)) else {
             continue;
@@ -1627,15 +1678,14 @@ async fn run_newpassword(
                     .await;
                 world.barrier().await;
             }
-            send_event_to_conn(
-                sessions,
-                handle.id,
-                OutputEvent::Disconnect {
+            gateway.deliver(
+                SendTarget::Conn(handle.id.0),
+                Arc::new(OutputEvent::Disconnect {
                     reason: RichText::tag(
                         "system",
                         format!("Your password has been changed by {by}; please log in again."),
                     ),
-                },
+                }),
             );
             sessions.detach(handle.id, DetachReason::Booted);
             booted += 1;
@@ -1663,6 +1713,12 @@ async fn staff_ops_loop(
     world: mpsc::WeakSender<WorldMsg>,
     mut rx: mpsc::Receiver<StaffOp>,
 ) {
+    // The staff executor's server->gateway output (confirmations, the target's
+    // @newpassword notice) crosses the seam through this transport; M16b turns
+    // it into the socket writer. The raw `sessions` handle is still used for
+    // the session *control* ops @newpassword performs (session_of_char /
+    // conns_of_session / detach) — see the M16b note in `run_newpassword`.
+    let gateway = InProcessTransport::new(Arc::clone(&sessions));
     while let Some(op) = rx.recv().await {
         let actor = op.actor;
         let text = match op.kind {
@@ -1696,7 +1752,12 @@ async fn staff_ops_loop(
                 name,
                 by,
                 password,
-            } => run_newpassword(&*store, &sessions, &world, target, &name, &by, &password.0).await,
+            } => {
+                run_newpassword(
+                    &*store, &sessions, &gateway, &world, target, &name, &by, &password.0,
+                )
+                .await
+            }
             StaffOpKind::ListBans => match store.get_bans().await {
                 Ok(bans) if bans.is_empty() => "No active sitebans.".to_string(),
                 Ok(mut bans) => {
@@ -1720,14 +1781,16 @@ async fn staff_ops_loop(
             | StaffOpKind::Ps
             | StaffOpKind::Stats => continue,
         };
-        send_sys(&sessions, actor, &text);
+        send_sys(&gateway, actor, &text);
     }
     tracing::debug!("staff op executor drained and exiting");
 }
 
-fn send_sys(sessions: &SessionManager, actor: ObjId, text: &str) {
-    sessions.send_to_char(
-        char_key(actor),
+/// Send one system line to an actor as a [`ToGateway::Deliver`](mush_ipc::ToGateway)
+/// through the seam (staff-op confirmations, store-failure warnings).
+fn send_sys(gateway: &InProcessTransport, actor: ObjId, text: &str) {
+    gateway.deliver(
+        SendTarget::Char(char_key(actor).0),
         Arc::new(OutputEvent::Sys(RichText::tag("system", text))),
     );
 }
@@ -1751,19 +1814,29 @@ async fn sleep_until_unix_ms(due: Option<i64>) {
 /// the engine (we *are* the world task, so no channel round-trip — the
 /// resulting link-dead announcement is delivered in the same pass). Repeats
 /// until a delivery pass drops nothing.
+///
+/// M16b (straddling boundary): the slow-conn list is exactly what the
+/// gateway's `transmit` already returns, so slow-client policing moves
+/// *entirely* to the gateway side — it detaches the overflowed conn locally
+/// (it owns the throttle) and notifies the server via
+/// `ToServer::Detach{conn, DetachCause::SlowClient}` / the `ConnDown` arm,
+/// rather than the server reaching back into the gateway's `SessionManager`
+/// as [`disconnect_slow_client`] does here. In M16a the shared manager makes
+/// the reach-back behaviour-identical.
 fn deliver_and_police(
     engine: &mut Engine,
+    gateway: &InProcessTransport,
     sessions: &Arc<SessionManager>,
     out: &mut Outbox,
     fx: &mut Effects,
     tx: &mpsc::WeakSender<WorldMsg>,
 ) {
-    let mut slow = deliver(&engine.registry, &engine.world, sessions, out);
+    let mut slow = deliver(&engine.registry, &engine.world, gateway, out);
     while !slow.is_empty() {
         for conn in std::mem::take(&mut slow) {
             disconnect_slow_client(engine, sessions, conn, out, fx, tx);
         }
-        slow = deliver(&engine.registry, &engine.world, sessions, out);
+        slow = deliver(&engine.registry, &engine.world, gateway, out);
     }
 }
 
@@ -1779,6 +1852,12 @@ fn disconnect_slow_client(
     fx: &mut Effects,
     tx: &mpsc::WeakSender<WorldMsg>,
 ) {
+    // M16b (unrouted boundary crossing): `session_of_conn` / `character_of` /
+    // `detach` read and mutate gateway-owned session state. Per the
+    // `deliver_and_police` note this whole step moves to the gateway (which
+    // owns the slow-conn list) and notifies the server via `ToServer::Detach` /
+    // `ConnDown`. Kept server-side in M16a on the shared manager.
+    //
     // Resolve the actor before the detach forgets the mapping.
     let actor = sessions
         .session_of_conn(conn)
@@ -1811,6 +1890,14 @@ fn disconnect_slow_client(
 /// After `grace`, reap every expired link-dead session and send its
 /// `SessionGone` (the engine re-validates against live connections, so a
 /// reconnect that raced the reaper is never clobbered).
+///
+/// M16b (unrouted boundary crossing): `take_expired` drains gateway-owned
+/// session state. Link-dead reaping moves to the gateway (which owns the
+/// expiry timers), notifying the server with `ToServer::Inbound(SessionGone)`
+/// — the same arm this posts. The gateway-side twin already lives in
+/// `bridge_common::arm_linkdead_reaper` (routed via `link.to_server`); this
+/// server-side copy, armed from slow-client detach, folds into it in M16b.
+/// Kept here in M16a on the shared manager.
 fn arm_linkdead_reaper(
     sessions: &Arc<SessionManager>,
     tx: &mpsc::WeakSender<WorldMsg>,
@@ -1852,16 +1939,12 @@ fn create_player(engine: &mut Engine, name: &str) -> Result<ObjId, CreatePlayerE
     }
 }
 
-/// One fully resolved send target (world-side audience resolution already
-/// applied).
-enum SendTarget {
-    /// Every connection of one character.
-    Char(CharKey),
-    /// One specific connection.
-    Conn(SessConnId),
-    /// Everyone connected.
-    All,
-}
+// `SendTarget` (the fully resolved send destination) now lives in `mush-ipc`
+// as the server->gateway `Deliver` payload; its `Char`/`Conn` arms carry raw
+// `u64` routing keys (`mush-ipc` must not depend on `mush-session`). `mushd`
+// widens a `CharKey`/`SessConnId` in and out at the two boundary points below,
+// exactly as before.
+use mush_ipc::SendTarget;
 
 /// Resolve every queued audience against **current** world state into
 /// per-character (or per-connection) sends. The world half of treaty
@@ -1879,10 +1962,10 @@ fn resolve_sends(
         let ev = Arc::new(event);
         match audience {
             Audience::Actor(actor) => {
-                sends.push((SendTarget::Char(char_key(actor)), ev));
+                sends.push((SendTarget::Char(char_key(actor).0), ev));
             }
             Audience::Conn(conn) => {
-                sends.push((SendTarget::Conn(SessConnId(conn)), ev));
+                sends.push((SendTarget::Conn(conn), ev));
             }
             Audience::Room {
                 room,
@@ -1920,7 +2003,7 @@ fn resolve_sends(
                     {
                         continue;
                     }
-                    sends.push((SendTarget::Char(char_key(occupant)), Arc::clone(&ev)));
+                    sends.push((SendTarget::Char(char_key(occupant).0), Arc::clone(&ev)));
                 }
             }
             Audience::All => sends.push((SendTarget::All, ev)),
@@ -1929,54 +2012,19 @@ fn resolve_sends(
     sends
 }
 
-/// Hand resolved sends to the session manager. Returns the connections
-/// whose buffer overflowed (the event was dropped for them); the caller
-/// disconnects them as slow clients.
-fn transmit(
-    sessions: &SessionManager,
-    sends: Vec<(SendTarget, Arc<OutputEvent>)>,
-) -> Vec<SessConnId> {
-    let mut slow = Vec::new();
-    for (target, ev) in sends {
-        match target {
-            SendTarget::Char(ch) => {
-                let report = sessions.send_to_char(ch, ev);
-                if report.delivered == 0 && report.dropped.is_empty() {
-                    // Link-dead actor (or a race with a disconnect): the
-                    // event is lost. Resume buffers are an M2+ concern
-                    // (PLAN: mush-session "resume buffers"); make the loss
-                    // observable at least.
-                    tracing::debug!(
-                        char = ch.0,
-                        "output to actor with no live connections dropped"
-                    );
-                }
-                slow.extend(report.dropped);
-            }
-            SendTarget::Conn(conn) => {
-                // Pre-auth / connection-addressed events. An unknown conn is
-                // fine (it may have raced a disconnect).
-                let _ = sessions.send_to_conn(conn, ev);
-            }
-            SendTarget::All => {
-                let report = sessions.broadcast_all(ev);
-                slow.extend(report.dropped);
-            }
-        }
-    }
-    slow.sort_unstable();
-    slow.dedup();
-    slow
-}
-
-/// Resolve and transmit in one pass (the ordinary, un-gated path).
+/// Resolve (server side) and transmit (gateway side) in one pass — the
+/// ordinary, un-gated delivery path. `resolve_sends` reads `World` (the
+/// M11/M14 perception gating); the resolved `(SendTarget, OutputEvent)` pairs,
+/// each a [`ToGateway::Deliver`](mush_ipc::ToGateway), cross to the gateway via
+/// the in-process [`InProcessTransport`], which maps them onto the session
+/// manager and reports slow clients.
 fn deliver(
     reg: &Registry,
     world: &World,
-    sessions: &SessionManager,
+    gateway: &InProcessTransport,
     out: &mut Outbox,
 ) -> Vec<SessConnId> {
-    transmit(sessions, resolve_sends(reg, world, out))
+    gateway.transmit(resolve_sends(reg, world, out))
 }
 
 /// Spawn one detached task per drained [`Effect`]; each completion re-enters
@@ -2182,7 +2230,13 @@ pub fn char_key_obj(key: CharKey) -> ObjId {
 }
 
 /// Deliver one event straight to a connection, bypassing the world task
-/// (login screens, error notices). Used by the SSH bridge.
+/// (login screens, error notices).
+///
+/// This is a **gateway-side** helper: the SSH/web bridges own the
+/// [`SessionManager`] and call it before a connection has attached to an
+/// actor. Server-side (world-loop / staff-executor) code must instead emit
+/// [`InProcessTransport::deliver`]`(SendTarget::Conn(..), ..)` so the send
+/// crosses the boundary as a [`ToGateway::Deliver`](mush_ipc::ToGateway).
 pub fn send_event_to_conn(sessions: &SessionManager, conn: SessConnId, event: OutputEvent) {
     let _ = sessions.send_to_conn(conn, Arc::new(event));
 }
@@ -2396,7 +2450,7 @@ mod tests {
         let recipients: std::collections::HashSet<ObjId> = sends
             .iter()
             .filter_map(|(t, _)| match t {
-                SendTarget::Char(ck) => Some(char_key_obj(*ck)),
+                SendTarget::Char(ck) => Some(char_key_obj(CharKey(*ck))),
                 _ => None,
             })
             .collect();
@@ -2464,7 +2518,7 @@ mod tests {
         let recipients: std::collections::HashSet<ObjId> = resolve_sends(&reg, &world, &mut out)
             .iter()
             .filter_map(|(t, _)| match t {
-                SendTarget::Char(ck) => Some(char_key_obj(*ck)),
+                SendTarget::Char(ck) => Some(char_key_obj(CharKey(*ck))),
                 _ => None,
             })
             .collect();
