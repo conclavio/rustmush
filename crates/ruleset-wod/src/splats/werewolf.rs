@@ -52,6 +52,7 @@ use smol_str::SmolStr;
 
 use crate::WodCmd;
 use crate::config::WodConfig;
+use crate::perception::{ActPerceptibility, SenseChannel, default_perceptibility};
 use crate::schema::Template;
 use crate::splats::{Splat, is_template};
 
@@ -791,6 +792,8 @@ fn rage_frenzy(cmd: &WodCmd, ctx: &mut Ctx<'_>, doc: &SheetDoc) -> Result<(), Cm
         diff.unwrap_or(7),
         false,
         "resist frenzy",
+        None,
+        false,
     )?;
     let verdict = if out.is_botch() {
         "The Beast takes you utterly — you fall into frenzy (or the Thrall of the Wyrm)."
@@ -975,7 +978,25 @@ fn gift_roll(cmd: &WodCmd, ctx: &mut Ctx<'_>, doc: &SheetDoc) -> Result<(), CmdE
             "Give the Gift's pool, e.g. +gift/roll razor claws=dexterity+brawl vs 6.",
         ));
     }
-    crate::roll::roll_expr(cmd, ctx, ctx.actor, &expr, diff.unwrap_or(6), true, &gift)?;
+    // M14: a Gift is a power — route it through the director (perceived-or-not
+    // per onlooker) rather than broadcasting the raw dice line to the room.
+    let actor_name = ctx.w.get(ctx.actor).map_or_else(
+        || ctx.actor.to_string(),
+        |o| mush_core::output::primary_name(&o.name).to_string(),
+    );
+    let perc = gift_perceptibility(&gift, &actor_name)
+        .unwrap_or_else(|| default_perceptibility(format!("You see {actor_name} call on a Gift.")));
+    crate::roll::roll_expr(
+        cmd,
+        ctx,
+        ctx.actor,
+        &expr,
+        diff.unwrap_or(6),
+        true,
+        &gift,
+        Some(&perc),
+        false,
+    )?;
     Ok(())
 }
 
@@ -1037,6 +1058,35 @@ fn has_gift(doc: &SheetDoc, gift: &str) -> bool {
         m.iter()
             .any(|(k, v)| k.eq_ignore_ascii_case(gift) && v.as_i64().unwrap_or(0) > 0)
     })
+}
+
+/// The per-Gift perceptibility table (M14): Gifts are open-ended, so this
+/// curates a few emblematic ones and returns `None` for the rest — the direct
+/// `+gift/roll` path falls back to the moderate default, and the `None` result
+/// is also the "not a Gift" signal the NPC pool sniffer keys off. Overtly
+/// physical Gifts are Visual and widely noticed; stealth Gifts travel the
+/// Supernatural channel behind Auspex.
+#[must_use]
+pub(crate) fn gift_perceptibility(gift: &str, actor: &str) -> Option<ActPerceptibility> {
+    let g = gift.to_ascii_lowercase();
+    let perc = if g.contains("claws") || g.contains("razor") {
+        ActPerceptibility::new(
+            SenseChannel::Visual,
+            5,
+            None,
+            format!("You see {actor}'s claws lengthen into wicked talons."),
+        )
+    } else if g.contains("blur") || g.contains("silence") || g.contains("ignorance") {
+        ActPerceptibility::new(
+            SenseChannel::Supernatural,
+            8,
+            Some("Auspex"),
+            format!("You almost fail to notice {actor} slipping past unseen."),
+        )
+    } else {
+        return None;
+    };
+    Some(perc)
 }
 
 /// Validate + persist a splat pool scalar (Rage / Gnosis / a Renown field).

@@ -48,6 +48,36 @@ While you are cloaked from an observer, that observer:
 You always perceive yourself, and you still perceive everyone else normally —
 concealment hides *you from others*, it does not blind you.
 
+## Power use is perceived, not broadcast
+
+Using a supernatural power — a Vampire Discipline, a Mage working, a Werewolf
+Gift — runs through the *same* per-observer projection. When you invoke a
+power, the mechanical roll no longer floods the whole room with a raw dice
+line. Instead:
+
+  * **you** always perceive your own act;
+  * every other character present makes a single silent notice roll —
+    Perception + Awareness, plus **Auspex** for a numinous act — against a
+    difficulty set by how subtle the power is;
+  * a watcher who succeeds is shown a short in-fiction line describing what they
+    sensed; a watcher who fails is shown **nothing at all** — true silence, no
+    dice line, no tell.
+
+A **subtle** power (Dominate, Presence, Obfuscate, Auspex — anything that works
+on the mind or the senses) is *hard* to notice and can only be noticed at all
+by an observer with the right supernatural sense: without Auspex, a mundane
+onlooker makes no roll and never learns the power was used. A **vulgar** or
+overtly physical act (a blur of Celerity, a fireball) is *widely* read: it
+still emits a single obvious line to the whole room so no one is blind to it,
+and the sharpest-eyed onlookers additionally get the richer tailored line.
+
+NPCs are observers here too: a ghoul bartender with Auspex who notices a
+vampire bend someone's will can quietly file that as intel for its domitor (see
+`help intel`), while a mundane onlooker in the same room perceives nothing and
+files nothing. Plain `+roll` and non-power checks are unchanged — they read to
+the room exactly as before; only acts flagged as a *power* route through the
+director.
+
 ## Notes
 
   * Concealment is **volatile**: it does not survive a disconnect or a reboot.

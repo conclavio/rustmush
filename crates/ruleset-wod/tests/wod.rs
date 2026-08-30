@@ -1157,6 +1157,162 @@ fn disc_roll_builds_and_rolls_the_pool() {
     );
 }
 
+// ----------------------------------------------------------------------
+// M14 — power use routed through the per-observer perception director
+// ----------------------------------------------------------------------
+
+/// A subtle Discipline (Dominate: Supernatural channel, gated behind Auspex) is
+/// perceived by an Auspex-bearing, sharp-eyed onlooker, is NOT perceived by a
+/// mundane one, and NEVER reaches the room as a raw dice line. The actor always
+/// perceives their own act.
+#[test]
+fn subtle_dominate_seen_by_auspex_not_by_mundane_or_room() {
+    let (mut tw, nick) = world(S);
+    set(&mut tw, "@sheet/set Nick/template=vampire");
+    set(&mut tw, "@sheet/set Nick/manipulation=3");
+    set(&mut tw, "@sheet/set Nick/disciplines:Dominate=3");
+
+    // A sharp, Auspex-bearing witness (Kindred): can pierce the veil.
+    let seer = tw.spawn_player("Seer");
+    set(&mut tw, "@sheet/set Seer/template=vampire");
+    set(&mut tw, "@sheet/set Seer/perception=5");
+    set(&mut tw, "@sheet/set Seer/awareness=5");
+    set(&mut tw, "@sheet/set Seer/disciplines:Auspex=3");
+
+    // A mundane witness (no Auspex): cannot notice a subtle Discipline at all.
+    let rube = tw.spawn_player("Rube");
+    set(&mut tw, "@sheet/set Rube/perception=5");
+    set(&mut tw, "@sheet/set Rube/awareness=5");
+
+    let ev = tw.run(nick, "+disc/roll dominate+manipulation vs 6");
+
+    // V1: the actor always perceives their own act.
+    assert!(
+        tw.seen_by(&ev, nick).iter().any(|l| l.contains("discipline")),
+        "actor sees own act: {:?}",
+        tw.seen_by(&ev, nick)
+    );
+    // The Auspex witness perceives the tailored line — but NOT the raw dice line.
+    let seen = tw.seen_by(&ev, seer);
+    assert!(
+        seen.iter().any(|l| l.contains("bends another's will")),
+        "the Auspex witness notices: {seen:?}"
+    );
+    assert!(
+        !seen.iter().any(|l| l.contains("dice, diff")),
+        "no raw dice line leaks to a witness: {seen:?}"
+    );
+    // V1: the mundane witness gets nothing at all (required sense: Auspex).
+    assert!(
+        tw.seen_by(&ev, rube).is_empty(),
+        "the mundane witness gets true silence: {:?}",
+        tw.seen_by(&ev, rube)
+    );
+    // ...and no witness roll was even made for them (no RNG spent).
+    assert!(
+        tw.world()
+            .module_state::<WodState>()
+            .unwrap()
+            .recent_logs(rube, 1)
+            .is_empty(),
+        "a senseless observer advances no RNG"
+    );
+}
+
+/// V3 determinism: a subtle Discipline in a room of only mundane onlookers
+/// advances the seeded RNG for the actor's own throw ALONE — the required-sense
+/// early-return skips every senseless observer before any witness roll.
+#[test]
+fn subtle_power_spends_no_rng_on_a_mundane_room() {
+    let (mut tw, nick) = world(S);
+    set(&mut tw, "@sheet/set Nick/template=vampire");
+    set(&mut tw, "@sheet/set Nick/manipulation=3");
+    set(&mut tw, "@sheet/set Nick/disciplines:Dominate=3");
+    // Two mundane onlookers (no Auspex): gated out BEFORE any roll.
+    let ann = tw.spawn_player("Ann");
+    set(&mut tw, "@sheet/set Ann/perception=5");
+    let bob = tw.spawn_player("Bob");
+    set(&mut tw, "@sheet/set Bob/perception=5");
+
+    tw.run(nick, "+disc/roll dominate+manipulation vs 6");
+
+    // Nick's Dominate pool = manipulation 3 + Dominate 3 = 6 dice at diff 6; the
+    // witness phase spent no RNG, so the outcome is exactly the first six faces.
+    let expected = Owod20Pool::score(&faces(S, 0, 6), &Owod20Opts::new(6));
+    assert_eq!(last_outcome(&tw, nick), expected);
+    // Neither onlooker has a witness roll logged.
+    assert!(
+        tw.world()
+            .module_state::<WodState>()
+            .unwrap()
+            .recent_logs(ann, 1)
+            .is_empty()
+    );
+    assert!(
+        tw.world()
+            .module_state::<WodState>()
+            .unwrap()
+            .recent_logs(bob, 1)
+            .is_empty()
+    );
+}
+
+/// V2: a blatant/vulgar act still reads to the room-at-large — a bystander who
+/// makes no sense roll (no Perception) still sees the obvious-tier line.
+#[test]
+fn vulgar_cast_reads_to_the_room_at_large() {
+    let (mut tw, nick) = world(S);
+    set(&mut tw, "@sheet/set Nick/template=mage");
+    set(&mut tw, "@sheet/set Nick/arete=4");
+    let bystander = tw.spawn_player("Bystander"); // no perception
+
+    let ev = tw.run(nick, "+cast/vulgar Hurl a bolt of fire vs 6");
+
+    // The actor sees their own working, mechanics and all (the raw dice line).
+    assert!(
+        tw.seen_by(&ev, nick)
+            .iter()
+            .any(|l| l.to_lowercase().contains("vulgar magick"))
+    );
+    // The room-at-large sees the obvious-tier, IN-FICTION line even with no sense
+    // roll won — and NOT the raw mechanical dice string (that stays Actor-only).
+    let seen = tw.seen_by(&ev, bystander);
+    assert!(
+        seen.iter().any(|l| l.contains("a working takes shape")),
+        "a vulgar act reads to the room in fiction: {seen:?}"
+    );
+    assert!(
+        !seen.iter().any(|l| l.to_lowercase().contains("vulgar magick")
+            || l.contains("dice, diff")),
+        "the raw dice line never leaks to the room-at-large: {seen:?}"
+    );
+}
+
+/// A coincidental (non-vulgar) Discipline does NOT broadcast to the room: a
+/// mundane bystander present for a Celerity roll sees no raw dice line unless
+/// they make the (Visual) sense roll.
+#[test]
+fn coincidental_power_does_not_broadcast_the_dice_line() {
+    let (mut tw, nick) = world(S);
+    set(&mut tw, "@sheet/set Nick/template=vampire");
+    set(&mut tw, "@sheet/set Nick/dexterity=3");
+    set(&mut tw, "@sheet/set Nick/disciplines:Celerity=2");
+    let bystander = tw.spawn_player("Bystander");
+    // No Perception/Awareness: cannot make the Visual sense roll (pool 0).
+
+    let ev = tw.run(nick, "+disc/roll celerity+dexterity vs 6");
+    // The actor sees their own act.
+    assert!(tw.seen_by(&ev, nick).iter().any(|l| l.contains("discipline")));
+    // The oblivious bystander sees no raw dice line (no room broadcast).
+    assert!(
+        !tw.seen_by(&ev, bystander)
+            .iter()
+            .any(|l| l.contains("dice, diff")),
+        "no raw dice line broadcast to the room: {:?}",
+        tw.seen_by(&ev, bystander)
+    );
+}
+
 #[test]
 fn blood_spend_and_gain_are_bounded() {
     let (mut tw, nick) = world(S);
@@ -2054,6 +2210,136 @@ fn wod_roll_ability_rolls_from_sheet_logs_and_emits() {
             mush_proto::OutputEvent::Panel { feed, .. } if feed.as_str() == "wod.roll"
         )),
         "a wod.roll panel keyframe must be emitted"
+    );
+}
+
+/// V4: the NPC power path routes through the SAME director. A Discipline pool
+/// is projected per-observer (no room broadcast, mundane onlookers gated out);
+/// a mundane pool still broadcasts to the room like a player roll.
+#[test]
+fn wod_roll_power_pool_routes_through_the_director() {
+    let (mut tw, _nick) = world(S);
+    let vamp = tw.spawn_player("Vamp");
+    set(&mut tw, "@sheet/set Vamp/template=vampire");
+    set(&mut tw, "@sheet/set Vamp/strength=3");
+    set(&mut tw, "@sheet/set Vamp/brawl=2");
+    set(&mut tw, "@sheet/set Vamp/manipulation=3");
+    set(&mut tw, "@sheet/set Vamp/disciplines:Dominate=3");
+    let rube = tw.spawn_player("Onlooker"); // mundane: no Auspex
+
+    let has_room_line = |events: &[(mush_core::Audience, mush_proto::OutputEvent)]| {
+        events.iter().any(|(aud, ev)| {
+            matches!(aud, mush_core::Audience::Room { .. })
+                && mush_testkit::text_of(ev).contains("rolls")
+        })
+    };
+
+    // A subtle Discipline: no room broadcast, and the mundane onlooker is gated
+    // out before any witness roll (required sense: Auspex).
+    let (_o, ev_power) = wod_roll(
+        &mut tw,
+        vamp,
+        serde_json::json!({ "pool_expr": "dominate+manipulation" }),
+    )
+    .expect("power roll resolves");
+    assert!(
+        !has_room_line(&ev_power),
+        "an NPC's subtle power must not broadcast to the room: {ev_power:?}"
+    );
+    assert!(
+        tw.world()
+            .module_state::<WodState>()
+            .unwrap()
+            .recent_logs(rube, 1)
+            .is_empty(),
+        "a senseless onlooker advances no RNG on the NPC power path"
+    );
+
+    // A mundane pool still broadcasts to the room, exactly like a player roll.
+    let (_o2, ev_mundane) = wod_roll(
+        &mut tw,
+        vamp,
+        serde_json::json!({ "pool_expr": "strength+brawl" }),
+    )
+    .expect("mundane roll resolves");
+    assert!(
+        has_room_line(&ev_mundane),
+        "a mundane NPC roll broadcasts to the room: {ev_mundane:?}"
+    );
+}
+
+/// M14 D6 / V5 (NPC-actor branch): a POWER pool rolled by the NPC seam
+/// announces the director-resolved NPC witness set back to the caller via
+/// `data.power_use` (so `mush-npc` can emit `WorldEvent::PowerUsed` and file
+/// intel). An Auspex-bearing NPC witness is included; a mundane NPC (gated out
+/// of a subtle, Auspex-only Discipline) is not. A mundane pool announces nothing.
+#[test]
+fn wod_roll_power_pool_announces_npc_witnesses() {
+    let (mut tw, _nick) = world(S);
+    let vamp = tw.spawn_player("Vamp");
+    set(&mut tw, "@sheet/set Vamp/template=vampire");
+    set(&mut tw, "@sheet/set Vamp/strength=3");
+    set(&mut tw, "@sheet/set Vamp/brawl=2");
+    set(&mut tw, "@sheet/set Vamp/manipulation=3");
+    set(&mut tw, "@sheet/set Vamp/disciplines:Dominate=3");
+
+    // Two NPC onlookers co-located with the actor: one Auspex-bearing (a director
+    // winner against subtle Dominate), one mundane (gated out before any roll).
+    let room = tw.world().get(vamp).and_then(|o| o.location).expect("room");
+    let seer = tw
+        .world_mut()
+        .create(mush_core::ObjKind::Npc, "Seeress", GOD, Some(room))
+        .expect("npc seer");
+    set(&mut tw, "@sheet/set Seeress/template=vampire");
+    set(&mut tw, "@sheet/set Seeress/perception=5");
+    set(&mut tw, "@sheet/set Seeress/awareness=5");
+    set(&mut tw, "@sheet/set Seeress/disciplines:Auspex=5");
+    let dolt = tw
+        .world_mut()
+        .create(mush_core::ObjKind::Npc, "Dolt", GOD, Some(room))
+        .expect("npc dolt");
+    set(&mut tw, "@sheet/set Dolt/perception=5");
+    set(&mut tw, "@sheet/set Dolt/awareness=5");
+
+    // A subtle Discipline: the announcement names the Auspex NPC, never the mundane one.
+    let (outcome, _ev) = wod_roll(
+        &mut tw,
+        vamp,
+        serde_json::json!({ "pool_expr": "dominate+manipulation" }),
+    )
+    .expect("power roll resolves");
+    let power_use = outcome
+        .data
+        .get("power_use")
+        .expect("a power pool announces power_use");
+    let witnesses: Vec<u32> =
+        serde_json::from_value(power_use["witnesses"].clone()).expect("witness list");
+    assert!(
+        witnesses.contains(&seer.0),
+        "the Auspex NPC is a director winner: {witnesses:?}"
+    );
+    assert!(
+        !witnesses.contains(&dolt.0),
+        "the mundane NPC (no Auspex) is not a witness of a subtle power: {witnesses:?}"
+    );
+    assert!(
+        power_use["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("Dominate")),
+        "the detail names the power: {power_use}"
+    );
+
+    // A mundane pool routes to the room, not the director — no announcement.
+    let (mundane, _ev2) = wod_roll(
+        &mut tw,
+        vamp,
+        serde_json::json!({ "pool_expr": "strength+brawl" }),
+    )
+    .expect("mundane roll resolves");
+    assert!(
+        mundane.data.get("power_use").is_none(),
+        "a mundane NPC roll announces no power use: {}",
+        mundane.data
     );
 }
 

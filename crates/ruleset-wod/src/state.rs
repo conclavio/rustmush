@@ -78,6 +78,8 @@ pub struct PendingAction {
     pub paradox: i32,
     /// The difficulty an observer rolls to witness the working (M13 task 2).
     pub witness_difficulty: u8,
+    /// The sense channel an observer notices the working on (M14).
+    pub sense_channel: crate::perception::SenseChannel,
     /// The player's original freeform proposal (carried into interpretation).
     pub freeform: String,
     /// Whether the working was flagged vulgar (`+cast/vulgar`).

@@ -165,10 +165,12 @@ An NPC can be made an **informant** that quietly reports what it witnesses to a
 `loyal`, and optionally give it a `watch` list; it then files provenance-tagged
 **intel records** the principal pulls with `+intel`. Crucially, an informant can
 report only what its NPC actually *perceived* (see `help perception`): a subject
-it cannot sense produces no record. A pierced concealment is always reported; a
-watched subject's arrivals, departures, and speech are reported; ordinary
-unwatched traffic is not. The loop is opt-in and additive — an NPC with no
-principal set behaves exactly as before. Full details in `help intel`.
+it cannot sense produces no record. A pierced concealment and a witnessed
+**power use** (a Discipline, spell, or Gift the NPC noticed being worked) are
+always reported; a watched subject's arrivals, departures, and speech are
+reported; ordinary unwatched traffic is not. The loop is opt-in and additive —
+an NPC with no principal set behaves exactly as before. Full details in
+`help intel`.
 
 ## Safety
 

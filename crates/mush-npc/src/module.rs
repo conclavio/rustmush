@@ -88,6 +88,9 @@ impl GameModule for NpcModule {
         reg.subscribe(WorldEventKind::Moved, Arc::new(NpcObserver));
         reg.subscribe(WorldEventKind::Connected, Arc::new(NpcObserver));
         reg.subscribe(WorldEventKind::Disconnected, Arc::new(NpcObserver));
+        // M14 informant tie-in: a witnessed power use (already projected
+        // per-observer by the ruleset director) files intel for its witnesses.
+        reg.subscribe(WorldEventKind::PowerUsed, Arc::new(NpcObserver));
 
         // The coalescing/cooldown driver.
         reg.tick(
@@ -258,6 +261,12 @@ impl WorldObserver for NpcObserver {
             WorldEvent::Moved { who, from, to } => on_moved(ctx, *who, *from, *to),
             WorldEvent::Connected { who } => on_presence(ctx, *who, true),
             WorldEvent::Disconnected { who } => on_presence(ctx, *who, false),
+            WorldEvent::PowerUsed {
+                who,
+                room,
+                witnesses,
+                detail,
+            } => on_power_used(ctx, *who, *room, witnesses, detail),
             _ => {}
         }
     }
@@ -407,6 +416,29 @@ fn on_presence(ctx: &mut Ctx<'_>, who: ObjId, connected: bool) {
     }
 }
 
+/// M14 informant tie-in: file intel for every NPC that PERCEIVED a power use.
+///
+/// The ruleset's perception director already resolved `witnesses` (the
+/// onlookers who noticed the act) on the seeded RNG, so — unlike the
+/// movement/speech observers — there is deliberately **NO `can_perceive`
+/// re-gate** here: re-rolling would double-count perception and could diverge
+/// from what the director actually delivered to each witness. We file only for
+/// the NPCs in the carried set. [`file_intel`] treats [`IntelKind::PowerUse`] as
+/// inherently notable (filed regardless of the watch list, like a pierced
+/// concealment), so a witnessed power always reaches the informant's principal.
+/// `room` is carried for completeness; the room *name* an intel record stores is
+/// read from the informant's own location inside [`file_intel`].
+fn on_power_used(ctx: &mut Ctx<'_>, who: ObjId, _room: ObjId, witnesses: &[ObjId], detail: &str) {
+    for &npc in witnesses {
+        // Defensive: the director returns the NPC subset already, but never file
+        // for a non-NPC even if one were ever carried.
+        if ctx.w.get(npc).is_none_or(|o| o.kind != ObjKind::Npc) {
+            continue;
+        }
+        file_intel(ctx, npc, who, IntelKind::PowerUse, detail);
+    }
+}
+
 /// Push a transcript line into the NPC's buffer (flagging overflow) and enqueue
 /// the stimulus.
 fn remember_and_enqueue(ctx: &mut Ctx<'_>, npc: ObjId, stim: Stimulus, line: &str, now: i64) {
@@ -454,16 +486,19 @@ fn file_intel(ctx: &mut Ctx<'_>, npc: ObjId, subject: ObjId, kind: IntelKind, de
     if subject == npc || subject == principal {
         return; // never report the informant or the principal itself
     }
-    // Notability: a pierced concealment is always reported; otherwise the
-    // subject must be on the watch list.
+    // Notability: a pierced concealment and a witnessed power use are always
+    // reported; otherwise the subject must be on the watch list.
     let concealed = is_concealed(ctx.reg, ctx.w, subject);
-    if !concealed && !subject_on_watch(ctx.w, &profile, subject) {
+    let inherently_notable = matches!(kind, IntelKind::PowerUse);
+    if !concealed && !inherently_notable && !subject_on_watch(ctx.w, &profile, subject) {
         return;
     }
     // A pierced-concealment sighting is filed as `Concealed` with the base
     // detail annotated — the notable fact is that the informant saw someone
-    // trying not to be seen.
-    let (kind, detail) = if concealed {
+    // trying not to be seen. An inherently-notable kind (a witnessed power use)
+    // keeps its own kind even when the subject is also concealed: the fact worth
+    // reporting is the power, and its detail already names the act.
+    let (kind, detail) = if concealed && !inherently_notable {
         (
             IntelKind::Concealed,
             format!("{detail} (though they were trying to stay hidden)"),
@@ -617,6 +652,7 @@ fn intel_kind_label(kind: IntelKind) -> &'static str {
         IntelKind::Present => "present",
         IntelKind::Spoke => "spoke",
         IntelKind::Concealed => "concealed",
+        IntelKind::PowerUse => "poweruse",
     }
 }
 
@@ -883,6 +919,14 @@ fn apply_action(
             // to the room itself. The model only requested it.
             match grounding.invoke_ability(ctx.w, ctx.out, npc, name, input.clone()) {
                 Ok(outcome) => {
+                    // M14 D6 / V5: the ruleset's perception director already
+                    // projected any power use per-observer and returned the NPC
+                    // witness set in `outcome.data.power_use` (the registry-less
+                    // ability seam cannot emit a `WorldEvent` itself). We hold a
+                    // `Ctx`, so we announce it here — exactly as the player path
+                    // does after `roll_expr` — driving the informant loop for the
+                    // NPC-actor branch too (no NPC power use bypasses projection).
+                    announce_power_use(ctx, npc, room, &outcome);
                     record_self(ctx, npc, &format!("(used {name}: {})", outcome.summary))
                 }
                 Err(e) => {
@@ -892,6 +936,39 @@ fn apply_action(
         }
         NpcAction::DoNothing { .. } => {}
     }
+}
+
+/// If `outcome` declares a perceived power use (a ruleset ability that routed
+/// through the M14 perception director sets `data.power_use = { witnesses,
+/// detail }`), emit [`WorldEvent::PowerUsed`] carrying the director-resolved NPC
+/// witness set so [`on_power_used`] files intel for exactly those NPCs. A plain
+/// ability (a mundane roll, or a ruleset without the director) sets no such key
+/// and emits nothing. This is the NPC-actor mirror of the player path's emit in
+/// the ruleset's `roll_expr`.
+fn announce_power_use(
+    ctx: &mut Ctx<'_>,
+    npc: ObjId,
+    room: ObjId,
+    outcome: &mush_ruleset::AbilityOutcome,
+) {
+    let Some(pu) = outcome.data.get("power_use") else {
+        return;
+    };
+    let detail = pu
+        .get("detail")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("used a power")
+        .to_string();
+    let witnesses: Vec<ObjId> = pu
+        .get("witnesses")
+        .and_then(|w| serde_json::from_value(w.clone()).ok())
+        .unwrap_or_default();
+    ctx.emit_world_event(&WorldEvent::PowerUsed {
+        who: npc,
+        room,
+        witnesses,
+        detail,
+    });
 }
 
 // ----------------------------------------------------------------------

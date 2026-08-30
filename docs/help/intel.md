@@ -32,7 +32,8 @@ A record reads roughly:
             to stay hidden)  (witnessed directly by Bartender)
 
 The bracketed word is the kind of event: `arrived`, `departed`, `present`,
-`spoke`, or `concealed` (your asset caught someone trying to stay hidden).
+`spoke`, `concealed` (your asset caught someone trying to stay hidden), or
+`poweruse` (your asset perceived someone use a supernatural power).
 
 ## What triggers a report
 
@@ -42,12 +43,14 @@ An informant files an event when **all** of these hold:
 - the NPC is **loyal** (a resentful asset reports nothing) and **enabled**;
 - the NPC **perceived** the subject (the load-bearing rule above); and
 - the event is **reportable** — either the subject is on the NPC's **watch**
-  list, or the subject was under active concealment and the NPC **pierced** it.
+  list, or the event is inherently notable: the subject was under active
+  concealment and the NPC **pierced** it, or the NPC **perceived a power use**.
 
-A pierced concealment is *always* filed, watch list or not — catching someone who
-is trying not to be seen is inherently notable. With an empty watch list and an
-ordinary, unconcealed subject, nothing is filed, so the log stays signal-rich.
-An informant never reports on itself or on its own principal.
+A pierced concealment and a witnessed power use are *always* filed, watch list
+or not — catching someone trying not to be seen, or catching someone work a
+Discipline, spell, or Gift, is inherently notable. With an empty watch list and
+an ordinary, unconcealed subject, nothing is filed, so the log stays
+signal-rich. An informant never reports on itself or on its own principal.
 
 Each record carries a **provenance** string — a short "how the NPC knows" note
 (for now, "witnessed directly by <informant>"). This is the first seed of the
@@ -82,12 +85,17 @@ flags anyone trying to stay hidden:
 The loop is entirely opt-in and additive: an NPC with no principal set behaves
 exactly as it did before, files nothing, and costs nothing.
 
-## Not yet built
+## Power use
 
-Reporting on **power use** (an NPC noticing and relaying that someone worked a
-Discipline or cast a spell) is future work: it waits on the Storyteller
-perception-director that will adjudicate what a witness understands of an effect.
-Today an informant reports presence, movement, speech, and pierced concealment.
+An informant now also reports **power use**. When a character works a
+supernatural power — a Vampire Discipline, a Mage spell, a Werewolf Gift — the
+per-observer perception director decides which onlookers actually notice it
+(see `help perception`). An NPC informant that *does* notice files a `poweruse`
+record for its principal; one that does not — a mundane asset with no Auspex
+watching a subtle mental Discipline — perceives nothing and files nothing, the
+same load-bearing rule that governs everything else here. A witnessed power use
+is inherently notable, so it is filed whether or not the subject is on the watch
+list.
 
 ## See also
 

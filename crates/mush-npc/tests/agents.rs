@@ -283,6 +283,29 @@ impl Rig {
         out
     }
 
+    /// Emit a raw [`WorldEvent::PowerUsed`] through the registry (the same call
+    /// the ruleset director's caller makes), so the `npc` observer's
+    /// `on_power_used` files intel for the carried witness set.
+    fn power_used(&mut self, who: ObjId, room: ObjId, witnesses: &[ObjId], detail: &str) {
+        let ev = mush_core::module::WorldEvent::PowerUsed {
+            who,
+            room,
+            witnesses: witnesses.to_vec(),
+            detail: detail.to_string(),
+        };
+        let mut out = Outbox::new();
+        let mut ctx = Ctx {
+            w: &mut self.engine.world,
+            actor: who,
+            switches: SwitchSet::default(),
+            args: ParsedArgs::default(),
+            out: &mut out,
+            reg: &self.engine.registry,
+            module: Some(SmolStr::new("npc")),
+        };
+        ctx.emit_world_event(&ev);
+    }
+
     fn host(&self) -> &NpcHostState {
         self.engine.world.module_state::<NpcHostState>().unwrap()
     }
@@ -1503,6 +1526,123 @@ async fn perceived_concealed_subject_is_always_filed() {
         "{}",
         recs[0].detail
     );
+}
+
+/// M14 D6 / V5: `on_power_used` files an `IntelKind::PowerUse` record for EXACTLY
+/// the NPCs in the carried witness set (the director already resolved perception,
+/// so there is NO `can_perceive` re-gate). A power use is inherently notable, so
+/// it files even with an empty watch list; an NPC absent from the witness set
+/// files nothing.
+#[tokio::test]
+async fn power_use_files_intel_for_carried_witnesses_only() {
+    let mut rig = Rig::new();
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    let boss = rig.player("Boss", bar, true);
+    // A witnessing informant with an EMPTY watch list — a power use is filed
+    // regardless of the watch list (inherently notable).
+    let spy = rig.npc("Spy", bar, &informant(boss, true, &[]));
+    // A second informant NOT in the witness set: it must file nothing (the
+    // director's witness set — not co-location — drives filing; no re-gate).
+    let deaf = rig.npc("Deaf", bar, &informant(boss, true, &[]));
+    let vlad = rig.player("Vlad", bar, true);
+
+    rig.power_used(vlad, bar, &[spy], "used Dominate");
+
+    let recs = rig.host().intel.for_principal(boss);
+    assert_eq!(recs.len(), 1, "exactly one poweruse record filed");
+    assert_eq!(recs[0].kind, IntelKind::PowerUse);
+    assert_eq!(recs[0].subject, vlad);
+    assert_eq!(recs[0].informant, spy);
+    assert!(recs[0].detail.contains("Dominate"), "{}", recs[0].detail);
+    assert_eq!(
+        rig.host().intel.filed_by(deaf),
+        0,
+        "an NPC absent from the witness set files nothing"
+    );
+}
+
+/// A grounding whose `wod_roll` mimics the WoD director's NPC-actor return: it
+/// declares a perceived power use in `data.power_use`, naming every co-located
+/// NPC as a witness (the director's resolved winner set). Used to drive the
+/// NPC-actor branch of the informant tie-in through the real completion path.
+struct PowerGrounding;
+
+impl AgentGrounding for PowerGrounding {
+    fn profile(&self, _w: &World, _npc: ObjId) -> Option<AgentCapabilityProfile> {
+        None
+    }
+
+    fn invoke_ability(
+        &self,
+        w: &mut World,
+        _out: &mut Outbox,
+        npc: ObjId,
+        name: &str,
+        _input: serde_json::Value,
+    ) -> Result<AbilityOutcome, AbilityError> {
+        if name != "wod_roll" {
+            return Err(AbilityError::Unknown(name.to_string()));
+        }
+        let witnesses: Vec<ObjId> = w
+            .get(npc)
+            .and_then(|o| o.location)
+            .map(|room| {
+                w.contents_of(room)
+                    .iter()
+                    .copied()
+                    .filter(|&o| o != npc && w.get(o).is_some_and(|x| x.kind == ObjKind::Npc))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(AbilityOutcome {
+            ok: true,
+            summary: "used Dominate".into(),
+            data: serde_json::json!({
+                "power_use": { "witnesses": witnesses, "detail": "used Dominate" }
+            }),
+        })
+    }
+}
+
+/// M14 D6 / V5 (NPC-actor branch, end to end): an NPC that uses a power routes
+/// through the completion → `apply_action` → `announce_power_use`, which emits
+/// `WorldEvent::PowerUsed`; a co-located witnessing NPC informant then files a
+/// `poweruse` record for its principal. Closes the parallel NPC-power path (V4).
+#[tokio::test]
+async fn npc_actor_power_use_files_intel_for_a_witnessing_informant() {
+    let mut rig = Rig::with_grounding(Arc::new(PowerGrounding));
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    let boss = rig.player("Boss", bar, true);
+    let spy = rig.npc("Spy", bar, &informant(boss, true, &[])); // the witnessing informant
+    let caster = rig.npc("Caster", bar, &profile(NpcTier::Major)); // the NPC power user
+
+    // Drive Caster's UseAbility directly through the module completion (re-entry).
+    let payload = serde_json::json!({
+        "status": "ok",
+        "npc": caster,
+        "actions": [{
+            "action": {
+                "action": "use_ability",
+                "name": "wod_roll",
+                "input": { "pool_expr": "dominate+manipulation" }
+            }
+        }]
+    })
+    .to_string();
+    rig.complete(caster, 1, &payload);
+
+    let recs = rig.host().intel.for_principal(boss);
+    assert_eq!(
+        recs.len(),
+        1,
+        "the witnessing informant files the NPC-actor's power use"
+    );
+    assert_eq!(recs[0].kind, IntelKind::PowerUse);
+    assert_eq!(recs[0].subject, caster);
+    assert_eq!(recs[0].informant, spy);
+    assert!(recs[0].detail.contains("Dominate"), "{}", recs[0].detail);
 }
 
 /// P1 (the load-bearing property): a subject the NPC CANNOT perceive produces

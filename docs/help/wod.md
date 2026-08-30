@@ -148,7 +148,14 @@ of the wrong template.
   +disc                      List your Disciplines.
   +disc/roll <disc>+<trait> [vs <diff>]
                              Build and roll a Discipline pool, e.g.
-                             +disc/roll celerity+dexterity vs 6.
+                             +disc/roll celerity+dexterity vs 6. A Discipline is
+                             a *power*: it is not broadcast to the room as a raw
+                             dice line. Each onlooker perceives it — or not —
+                             per their senses. A subtle mental Discipline
+                             (Dominate, Presence) stays silent to the unaware
+                             and can only be noticed with Auspex; an overt one
+                             (Celerity, Potence) is widely seen. See
+                             `help perception`.
   +blood                     Show your Blood Pool.
   +blood/spend <n>           Spend blood; +blood/gain <n> to feed (capped by
                              your generation); +blood/heal [<n>] mends

@@ -398,6 +398,10 @@ fn disc_roll(cmd: &WodCmd, ctx: &mut Ctx<'_>, doc: &SheetDoc) -> Result<(), CmdE
             "Name a Discipline you have, e.g. +disc/roll potence+strength vs 6.",
         ));
     }
+    // M14: a ghoul's Discipline is a power too — route it through the director so
+    // it is perceived-or-not per onlooker, not broadcast to the room.
+    let actor_name = name_of(ctx, ctx.actor);
+    let perc = vampire::discipline_perceptibility_for_expr(doc, &expr, &actor_name);
     crate::roll::roll_expr(
         cmd,
         ctx,
@@ -406,6 +410,8 @@ fn disc_roll(cmd: &WodCmd, ctx: &mut Ctx<'_>, doc: &SheetDoc) -> Result<(), CmdE
         diff.unwrap_or(6),
         true,
         "discipline",
+        Some(&perc),
+        false,
     )?;
     Ok(())
 }

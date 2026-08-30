@@ -777,8 +777,24 @@ fn cantrip_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         difficulty = difficulty.saturating_sub(1).max(3);
     }
     // Roll the Art alone (the Realm gates what may be affected, verified above,
-    // but adds no dice — see the C20 note on this fn and the module docs).
-    crate::roll::roll_expr(cmd, ctx, ctx.actor, art_tok, difficulty, true, "cantrip")?;
+    // but adds no dice — see the C20 note on this fn and the module docs). M14: a
+    // cantrip is a power — route it through the director (perceived-or-not per
+    // onlooker) instead of broadcasting the raw dice line to the room.
+    let actor_name = name_of(ctx, ctx.actor);
+    let perc = crate::perception::default_perceptibility(format!(
+        "You feel the chill of the Dreaming as {actor_name} weaves a cantrip."
+    ));
+    crate::roll::roll_expr(
+        cmd,
+        ctx,
+        ctx.actor,
+        art_tok,
+        difficulty,
+        true,
+        "cantrip",
+        Some(&perc),
+        false,
+    )?;
     Ok(())
 }
 

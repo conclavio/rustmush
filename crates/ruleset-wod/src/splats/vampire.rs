@@ -32,6 +32,7 @@ use smol_str::SmolStr;
 
 use crate::WodCmd;
 use crate::config::{TraitKind, WodConfig};
+use crate::perception::{ActPerceptibility, SenseChannel, default_perceptibility};
 use crate::schema::Template;
 use crate::splats::ghoul;
 use crate::splats::{ChargenContribution, Splat, SplatPool, SplatPoolSource, is_template};
@@ -190,6 +191,127 @@ pub fn discipline_rating(doc: &SheetDoc, discipline: &str) -> i32 {
                 .and_then(|(_, v)| v.as_i64())
         })
         .unwrap_or(0) as i32
+}
+
+/// The per-Discipline perceptibility table (M14): how an onlooker notices a
+/// Discipline in use, and the line a successful witness perceives. Subtle
+/// mental/social Disciplines travel the **Supernatural** channel and are gated
+/// behind **Auspex** (only the preternaturally aware notice at all); overt
+/// physical Disciplines are **Visual** and widely noticed (low difficulty). Any
+/// canonical Discipline without a bespoke row falls back to the moderate default.
+///
+/// Returns `None` for a name that is not a canonical Discipline — the signal the
+/// NPC power path ([`power_perceptibility_for_pool`](crate::perception::power_perceptibility_for_pool))
+/// uses to tell a Discipline pool from a mundane one.
+#[must_use]
+pub(crate) fn discipline_perceptibility(name: &str, actor: &str) -> Option<ActPerceptibility> {
+    if !DISCIPLINES.iter().any(|d| d.eq_ignore_ascii_case(name)) {
+        return None;
+    }
+    let sup = SenseChannel::Supernatural;
+    let vis = SenseChannel::Visual;
+    let eq = |d: &str| name.eq_ignore_ascii_case(d);
+    let perc = if eq("Dominate") {
+        ActPerceptibility::new(
+            sup,
+            8,
+            Some("Auspex"),
+            format!("You sense an unseen pressure as {actor} bends another's will."),
+        )
+    } else if eq("Presence") {
+        ActPerceptibility::new(
+            sup,
+            7,
+            Some("Auspex"),
+            format!("You feel an unnatural magnetism radiating from {actor}."),
+        )
+    } else if eq("Dementation") {
+        ActPerceptibility::new(
+            sup,
+            8,
+            Some("Auspex"),
+            format!("A maddening whisper seems to trail from {actor}."),
+        )
+    } else if eq("Obfuscate") {
+        ActPerceptibility::new(
+            sup,
+            9,
+            Some("Auspex"),
+            format!("For an instant you glimpse {actor} where your eye insists no one stands."),
+        )
+    } else if eq("Auspex") {
+        ActPerceptibility::new(
+            sup,
+            8,
+            Some("Auspex"),
+            format!("You feel {actor}'s senses brush past the veil."),
+        )
+    } else if eq("Chimerstry") {
+        ActPerceptibility::new(
+            sup,
+            8,
+            Some("Auspex"),
+            format!("Something about {actor}'s handiwork rings false to your sharper sense."),
+        )
+    } else if eq("Celerity") {
+        ActPerceptibility::new(
+            vis,
+            5,
+            None,
+            format!("You see {actor} blur into impossible speed."),
+        )
+    } else if eq("Potence") {
+        ActPerceptibility::new(
+            vis,
+            5,
+            None,
+            format!("You watch {actor} strike with impossible strength."),
+        )
+    } else if eq("Protean") {
+        ActPerceptibility::new(vis, 5, None, format!("You see {actor}'s flesh warp inhumanly."))
+    } else if eq("Vicissitude") {
+        ActPerceptibility::new(
+            vis,
+            6,
+            None,
+            format!("You see flesh reshape at {actor}'s touch."),
+        )
+    } else if eq("Obtenebration") {
+        ActPerceptibility::new(
+            vis,
+            6,
+            None,
+            format!("You watch shadows crawl unnaturally toward {actor}."),
+        )
+    } else {
+        default_perceptibility(format!("You notice {actor} exert some preternatural power."))
+    };
+    Some(perc)
+}
+
+/// The perceptibility for a `+disc/roll` pool: the first Discipline the actor
+/// actually has whose name appears in `expr` selects the row (shared by the
+/// Kindred and ghoul `+disc/roll` paths); a pool naming no owned Discipline
+/// falls back to the default.
+#[must_use]
+pub(crate) fn discipline_perceptibility_for_expr(
+    doc: &SheetDoc,
+    expr: &str,
+    actor: &str,
+) -> ActPerceptibility {
+    let lower = expr.to_ascii_lowercase();
+    let name = doc.map("disciplines").and_then(|m| {
+        m.iter()
+            .filter(|(_, v)| v.as_i64().unwrap_or(0) > 0)
+            .map(|(k, _)| k.clone())
+            .find(|k| lower.contains(&k.to_ascii_lowercase()))
+    });
+    match name {
+        Some(n) => discipline_perceptibility(&n, actor).unwrap_or_else(|| {
+            default_perceptibility(format!("You notice {actor} exert some preternatural power."))
+        }),
+        None => default_perceptibility(format!("You notice {actor} exert some preternatural power.")),
+    }
 }
 
 /// Whether `discipline` is in-clan for the sheet's clan (Caitiff: never).
@@ -539,6 +661,11 @@ fn disc_roll(cmd: &WodCmd, ctx: &mut Ctx<'_>, doc: &SheetDoc) -> Result<(), CmdE
             "Name a Discipline you have, e.g. +disc/roll celerity+dexterity vs 6.",
         ));
     }
+    // M14: a Discipline is a power — route it through the perception director so
+    // each onlooker perceives-or-not (a subtle mental Discipline stays silent to
+    // the unaware), instead of broadcasting the raw dice line to the room.
+    let actor_name = name_of(ctx, ctx.actor);
+    let perc = discipline_perceptibility_for_expr(doc, &expr, &actor_name);
     crate::roll::roll_expr(
         cmd,
         ctx,
@@ -547,6 +674,8 @@ fn disc_roll(cmd: &WodCmd, ctx: &mut Ctx<'_>, doc: &SheetDoc) -> Result<(), CmdE
         diff.unwrap_or(6),
         true,
         "discipline",
+        Some(&perc),
+        false,
     )?;
     Ok(())
 }
@@ -646,7 +775,17 @@ fn frenzy_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     } else {
         ("self_control", "resist frenzy")
     };
-    let out = crate::roll::roll_expr(cmd, ctx, ctx.actor, virtue, diff.unwrap_or(6), false, label)?;
+    let out = crate::roll::roll_expr(
+        cmd,
+        ctx,
+        ctx.actor,
+        virtue,
+        diff.unwrap_or(6),
+        false,
+        label,
+        None,
+        false,
+    )?;
     let verdict = if out.is_botch() {
         "The Beast slips its leash — you succumb utterly."
     } else if out.successes() > 0 {

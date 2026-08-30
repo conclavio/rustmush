@@ -230,14 +230,45 @@ fn wod_roll(
         outcome
     };
 
-    // Emit to the room and the wod.roll panel, exactly like a player roll.
+    // Deliver the roll. A mundane pool broadcasts to the room + panel exactly
+    // like a player roll; a POWER pool (a Discipline/Gift named in the pool, or a
+    // mage working) is routed through the M14 perception director instead, so it
+    // is perceived-or-not per onlooker rather than broadcast (V4: the NPC path
+    // does not bypass projection).
     let expr_label = pool_label(&resolved);
     let line = render_line(w, npc, &expr_label, pool, wound, incap, &outcome);
-    emit(w, out, npc, &line, &outcome);
+    let npc_name = w
+        .get(npc)
+        .map_or_else(|| npc.to_string(), |o| primary_name(&o.name).to_string());
+    // A power pool routes through the M14 director (perceived-or-not per onlooker);
+    // a mundane pool broadcasts to the room. When the act was a power, announce the
+    // director-resolved NPC witness set back to the caller: the NPC ability seam is
+    // registry-less and cannot emit a `WorldEvent`, so `mush-npc`'s completion
+    // (which holds a `Ctx`) emits `WorldEvent::PowerUsed` for it (M14 D6 / V5), just
+    // as the player path does in `roll_expr`.
+    let power_use = match crate::perception::power_perceptibility_for_pool(&resolved, &npc_name) {
+        Some(perc) => {
+            emit_panel(out, npc, &line, &outcome);
+            let npc_winners =
+                crate::perception::project_perceptual_act(dispatch, w, out, npc, &perc, &line, false);
+            Some(json!({
+                "witnesses": npc_winners,
+                "detail": format!("used {expr_label}"),
+            }))
+        }
+        None => {
+            emit(w, out, npc, &line, &outcome);
+            None
+        }
+    };
 
-    Ok(build_outcome(
+    let mut ability = build_outcome(
         &args, difficulty, pool, wound, modifier, specialty, willpower, &resolved, &outcome,
-    ))
+    );
+    if let Some(power_use) = power_use {
+        ability.data["power_use"] = power_use;
+    }
+    Ok(ability)
 }
 
 /// A human/LLM label for the pool: its resolved trait labels joined (`"Strength+Brawl"`).
@@ -280,7 +311,8 @@ fn render_line(
     s
 }
 
-/// Broadcast the roll line to the NPC's room and push a `wod.roll` keyframe.
+/// Broadcast the roll line to the NPC's room and push a `wod.roll` keyframe —
+/// the mundane path, identical to a player `+roll`.
 fn emit(w: &World, out: &mut Outbox, npc: ObjId, line: &str, outcome: &Owod20Outcome) {
     if let Some(loc) = w.get(npc).and_then(|o| o.location) {
         out.to_room(
@@ -293,6 +325,12 @@ fn emit(w: &World, out: &mut Outbox, npc: ObjId, line: &str, outcome: &Owod20Out
             },
         );
     }
+    emit_panel(out, npc, line, outcome);
+}
+
+/// Push the `wod.roll` panel keyframe to the NPC (Actor-audience only — never a
+/// room leak). Used by both the mundane [`emit`] path and the M14 power path.
+fn emit_panel(out: &mut Outbox, npc: ObjId, line: &str, outcome: &Owod20Outcome) {
     out.push(
         Audience::Actor(npc),
         OutputEvent::Panel {

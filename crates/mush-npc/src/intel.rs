@@ -38,6 +38,11 @@ pub enum IntelKind {
     /// The informant pierced the subject's *active concealment* — a notable
     /// sighting of someone trying not to be seen.
     Concealed,
+    /// The informant perceived the subject *using a supernatural power* (a
+    /// Discipline / spell / Gift). Inherently notable — filed regardless of the
+    /// watch list, like [`IntelKind::Concealed`].
+    #[serde(rename = "poweruse")]
+    PowerUse,
 }
 
 /// One filed piece of intel: an informant's provenance-tagged report to its

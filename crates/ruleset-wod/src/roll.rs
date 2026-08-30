@@ -18,7 +18,7 @@
 
 use std::sync::Arc;
 
-use mush_core::{CmdError, Ctx, ObjId, Role, match_object, perm};
+use mush_core::{CmdError, Ctx, ObjId, Role, WorldEvent, match_object, perm};
 use mush_dice::RollCtx;
 use mush_dice::owod20::{Owod20Opts, Owod20Outcome, Owod20Pool, contest};
 use mush_dice::pool::PoolMechanic;
@@ -26,6 +26,7 @@ use mush_proto::{NarrativeKind, OutputEvent, RichText};
 
 use crate::WodCmd;
 use crate::dice::{ResolvedPool, resolve_pool};
+use crate::perception::ActPerceptibility;
 use crate::state::{RollLogEntry, WodState};
 
 /// Parsed `+roll` options (dispatch switches are read separately from `ctx`).
@@ -434,13 +435,24 @@ fn pending_roll(
 }
 
 /// Resolve `expr` against `who`'s active sheet, roll it at `difficulty`
-/// (optionally applying the wound penalty), log it, and emit the classic line
-/// to the room. The reusable roll path splat commands (`+disc/roll`,
-/// `+frenzy`) build on — no specialty/willpower/contested machinery.
+/// (optionally applying the wound penalty), log it, and deliver the result. The
+/// reusable roll path splat commands (`+disc/roll`, `+frenzy`, `+cast`,
+/// `+gift/roll`, `+cantrip`) build on — no specialty/willpower/contested
+/// machinery.
+///
+/// `perc` selects the delivery policy (M14):
+/// - `None` — a **mundane** roll: the classic line goes to the room (today's
+///   behavior, unchanged for `+frenzy`, `+rage/frenzy`, plain resistance rolls).
+/// - `Some(p)` — a **power** use: the roll is ACTOR-ONLY (no raw dice line to
+///   the room, only a per-actor `wod.roll` panel keyframe), then it is routed
+///   through [`project_perceptual_act`](crate::perception::project_perceptual_act)
+///   so each onlooker perceives-or-not per `p`. `vulgar` additionally emits an
+///   obvious-tier room-at-large line so a blatant act still reads to everyone.
 ///
 /// # Errors
 ///
 /// Returns a [`CmdError`] if the pool expression cannot be resolved.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn roll_expr(
     cmd: &WodCmd,
     ctx: &mut Ctx<'_>,
@@ -449,6 +461,8 @@ pub(crate) fn roll_expr(
     difficulty: u8,
     apply_wound: bool,
     label: &str,
+    perc: Option<&ActPerceptibility>,
+    vulgar: bool,
 ) -> Result<Owod20Outcome, CmdError> {
     let resolved = resolve_for(cmd, ctx, who, expr).map_err(CmdError::msg)?;
     let doc = cmd.read(ctx.w, who);
@@ -502,7 +516,45 @@ pub(crate) fn roll_expr(
     if incap {
         line.push_str(" [incapacitated]");
     }
-    emit_roll(cmd, ctx, who, false, false, &line, &outcome);
+    match perc {
+        // A power use: no raw dice line to the room. The actor still gets a
+        // `wod.roll` panel keyframe (they perceive their own act — that panel is
+        // Actor-audience, never a room leak); the director then projects the act
+        // per-observer and, if vulgar, emits the obvious-tier room line.
+        Some(p) => {
+            cmd.roll_feed.keyframe(
+                ctx,
+                serde_json::json!({
+                    "who": who.to_string(),
+                    "summary": line,
+                    "outcome": outcome,
+                }),
+            );
+            let npc_winners = crate::perception::project_perceptual_act(
+                cmd.dispatch.as_ref(),
+                ctx.w,
+                ctx.out,
+                who,
+                p,
+                &line,
+                vulgar,
+            );
+            // M14 D6: the director resolved which onlookers perceived the power;
+            // announce it so a witnessing NPC informant files intel. The event
+            // carries the director's NPC winner set — the informant loop files
+            // for exactly these, with NO perception re-gate.
+            if let Some(room) = ctx.w.get(who).and_then(|o| o.location) {
+                ctx.emit_world_event(&WorldEvent::PowerUsed {
+                    who,
+                    room,
+                    witnesses: npc_winners,
+                    detail: format!("used {label} ({expr})"),
+                });
+            }
+        }
+        // A mundane roll: the classic room-visible line (unchanged).
+        None => emit_roll(cmd, ctx, who, false, false, &line, &outcome),
+    }
     Ok(outcome)
 }
 

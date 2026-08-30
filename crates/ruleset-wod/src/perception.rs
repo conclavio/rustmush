@@ -36,14 +36,19 @@
 use std::sync::Arc;
 
 use mush_core::{
-    ArgShape, CmdError, CommandSpec, Ctx, EventHook, HookPoint, ModError, ObjId, ObjKind, Perceive,
-    Registrar, World, WorldEvent, WorldEventKind, WorldObserver,
+    ArgShape, CmdError, CommandSpec, Ctx, EventHook, HookPoint, ModError, ObjId, ObjKind, Outbox,
+    Perceive, Registrar, World, WorldEvent, WorldEventKind, WorldObserver, obj_ref,
 };
 use mush_dice::RollCtx;
 use mush_dice::owod20::{Owod20Opts, Owod20Pool};
 use mush_dice::pool::PoolMechanic;
+use mush_proto::{NarrativeKind, OutputEvent, RichText};
+use mush_ruleset::{SheetDoc, SheetStore};
+use serde::{Deserialize, Serialize};
 
 use crate::WodCmd;
+use crate::dice::ResolvedPool;
+use crate::splats::Dispatch;
 use crate::splats::vampire::discipline_rating;
 use crate::state::{RollLogEntry, WodState};
 
@@ -186,16 +191,20 @@ fn perception_roll(
     // oWoD 2..=10 band. Obfuscate 1 ⇒ diff 4, Obfuscate 5 ⇒ diff 8.
     let difficulty = (3 + obfuscate).clamp(2, 10) as u8;
     let expr = format!("perception+awareness+auspex vs Obfuscate {obfuscate}");
-    sense_roll(st, observer, pool, difficulty, &expr, now).successes() > 0
+    sense_roll(st, observer, pool, difficulty, &expr, now, true).successes() > 0
 }
 
 /// The headless sensing-roll core: roll `pool` dice at `difficulty` on the
-/// shared seeded RNG, record a **private** roll-log entry (staff-auditable), and
-/// return the full [`Owod20Outcome`]. No sheet touch, no room output — the only
-/// side effects are the RNG draw and the log. Shared by the M11 concealment
-/// pierce ([`perception_roll`]) and the M13 silent-witness resolution
-/// ([`resolve_action_witnesses`]); every call advances the shared RNG, which is
-/// what keeps seeded tests deterministic.
+/// shared seeded RNG and return the full [`Owod20Outcome`]. No sheet touch, no
+/// room output — the only side effects are the RNG draw and (when `log`) a
+/// **private** roll-log entry. Shared by the M11 concealment pierce
+/// ([`perception_roll`], which logs so staff can audit a pierce) and the M14
+/// silent-witness resolution ([`resolve_action_witnesses`], which passes
+/// `log = false`: a per-observer witness roll must leave **no** retrievable
+/// artifact, or a non-perceiver could read the witness difficulty (and that an
+/// act happened) out of their own `+roll/last` — the V1 no-leak invariant). The
+/// RNG draw happens either way, so seeded determinism is identical regardless of
+/// `log`.
 pub(crate) fn sense_roll(
     st: &mut WodState,
     observer: ObjId,
@@ -203,24 +212,27 @@ pub(crate) fn sense_roll(
     difficulty: u8,
     expr: &str,
     now: i64,
+    log: bool,
 ) -> mush_dice::owod20::Owod20Outcome {
     let opts = Owod20Opts::new(difficulty);
     let outcome = {
         let mut rctx = RollCtx::new(st.rng());
         Owod20Pool.roll(pool, &opts, &mut rctx)
     };
-    st.push_log(
-        observer,
-        RollLogEntry {
-            who: observer,
-            expr: expr.to_string(),
-            summary: outcome.summary(),
-            difficulty: outcome.difficulty,
-            ts: now,
-            private: true,
-            outcome: outcome.clone(),
-        },
-    );
+    if log {
+        st.push_log(
+            observer,
+            RollLogEntry {
+                who: observer,
+                expr: expr.to_string(),
+                summary: outcome.summary(),
+                difficulty: outcome.difficulty,
+                ts: now,
+                private: true,
+                outcome: outcome.clone(),
+            },
+        );
+    }
     outcome
 }
 
@@ -290,56 +302,259 @@ fn refresh_observer(cmd: &WodCmd, ctx: &mut Ctx<'_>, observer: ObjId) {
     }
 }
 
-/// M13 silent per-perceiver witnesses. Every observer present with `actor` (a
-/// Player or NPC other than the actor) rolls **Perception + Awareness** on the
-/// shared seeded RNG against `witness_difficulty`; the ones with at least one
-/// success are returned. The caller pushes a tailored line ONLY to those
-/// winners — a loser receives no event at all (A5 true silence, no wire
-/// artifact).
+// ----------------------------------------------------------------------
+// M14 — the perception director (per-observer silent projection of an act)
+// ----------------------------------------------------------------------
+
+/// The sensory channel an act travels on. [`SenseChannel::Visual`] is noticed
+/// with **Perception + Awareness**; [`SenseChannel::Supernatural`] adds the
+/// observer's **Auspex** (the preternatural sense) to that pool. Threaded
+/// through the adjudicated [`Ruling`](crate::st::Ruling) so a working can be
+/// flagged as perceptible only to those who can sense the numinous.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SenseChannel {
+    /// An overt, physical act — noticed with mundane Perception + Awareness.
+    #[default]
+    Visual,
+    /// A numinous act — Perception + Awareness + Auspex, and (optionally) gated
+    /// behind a `required_sense` so a mundane onlooker cannot notice at all.
+    Supernatural,
+}
+
+/// How perceptible one act is, and what a successful observer perceives — the
+/// ruleset-owned vocabulary M14 routes every **power use** through. Minimal and
+/// cross-system-ready: a channel, a witness difficulty, an optional gating
+/// sense, and the deterministic line a winner is shown.
+#[derive(Clone, Debug)]
+pub struct ActPerceptibility {
+    /// Whether noticing this act uses the numinous sense pool.
+    pub channel: SenseChannel,
+    /// The difficulty an onlooker rolls to notice the act.
+    pub difficulty: u8,
+    /// A sense (a Discipline/trait name, e.g. `"Auspex"`) an observer must have
+    /// at least one dot in to notice the act **at all**. `None` ⇒ anyone may try.
+    pub required_sense: Option<&'static str>,
+    /// The deterministic, in-fiction line a successful observer is shown.
+    pub witnessed: String,
+}
+
+impl ActPerceptibility {
+    /// A perceptibility with an explicit channel/difficulty/gate and line.
+    #[must_use]
+    pub fn new(
+        channel: SenseChannel,
+        difficulty: u8,
+        required_sense: Option<&'static str>,
+        witnessed: impl Into<String>,
+    ) -> ActPerceptibility {
+        ActPerceptibility {
+            channel,
+            difficulty,
+            required_sense,
+            witnessed: witnessed.into(),
+        }
+    }
+}
+
+/// The fallback perceptibility for a power lacking a table entry: an overt
+/// (Visual) act of moderate difficulty that anyone present may try to notice.
+#[must_use]
+pub(crate) fn default_perceptibility(witnessed: impl Into<String>) -> ActPerceptibility {
+    ActPerceptibility::new(SenseChannel::Visual, 6, None, witnessed)
+}
+
+/// Read `obj`'s sheet through the schema-agnostic default store (the same read
+/// [`WodCmd::read`] performs), so the witness core works from either the
+/// player path (`&WodCmd`) or the NPC path (`&Dispatch`).
+fn read_sheet(dispatch: &Dispatch, w: &World, obj: ObjId) -> Option<SheetDoc> {
+    SheetStore::new(dispatch.schemas.default_schema()).get(w, obj)
+}
+
+/// **The M14 perception director.** Route one perceptible act through a single
+/// per-observer projection policy:
+///
+/// 1. the **actor** always perceives their own act (`actor_line`);
+/// 2. every co-located observer silently rolls to notice it
+///    ([`resolve_action_witnesses`] with `perc`);
+/// 3. each **winner** is shown `perc.witnessed` — a **loser receives nothing at
+///    all** (true silence, no wire artifact, no room narrative, no panel);
+/// 4. if `vulgar`, a single obvious-tier line is ALSO emitted to the
+///    room-at-large (so a fireball still reads to everyone who is not already a
+///    tailored witness);
+/// 5. the NPC subset of the winner set is returned (M14 task 2 files intel for
+///    exactly these).
+///
+/// Operates on the low-level `(&Dispatch, &mut World, &mut Outbox)` so both the
+/// player power path (`roll_expr`) and the NPC power path (`agent::wod_roll`)
+/// share one policy — neither can bypass projection.
+pub(crate) fn project_perceptual_act(
+    dispatch: &Dispatch,
+    w: &mut World,
+    out: &mut Outbox,
+    actor: ObjId,
+    perc: &ActPerceptibility,
+    actor_line: &str,
+    vulgar: bool,
+) -> Vec<ObjId> {
+    // (1) The actor always perceives their own act.
+    out.sys_to_actor(actor, "wod", actor_line);
+
+    // (2)+(3) Silent per-observer witnesses; each winner gets the tailored line.
+    let winners = if perc.witnessed.trim().is_empty() || perc.difficulty == 0 {
+        Vec::new()
+    } else {
+        resolve_action_witnesses(dispatch, w, actor, perc)
+    };
+    for &win in &winners {
+        out.sys_to_actor(win, "wod", perc.witnessed.clone());
+    }
+
+    // (4) A blatant act still reads to the whole room: everyone who was not
+    // already a tailored witness sees the obvious-tier, in-fiction line (V2) —
+    // the `witnessed` description, NEVER the raw mechanical dice string
+    // (`actor_line`), which stays Actor-only. Winners already received that same
+    // line above (step 3), so they are excluded here to avoid a double delivery;
+    // the room is simply not blind to a fireball.
+    if vulgar
+        && !perc.witnessed.trim().is_empty()
+        && let Some(room) = w.get(actor).and_then(|o| o.location)
+    {
+        let mut exclude = Vec::with_capacity(winners.len() + 1);
+        exclude.push(actor);
+        exclude.extend_from_slice(&winners);
+        out.to_room_from(
+            room,
+            exclude,
+            actor,
+            OutputEvent::Narrative {
+                kind: NarrativeKind::Emit,
+                actor: Some(obj_ref(w, actor)),
+                text: RichText::plain(&perc.witnessed),
+            },
+        );
+    }
+
+    // (5) The NPC subset of the winner set. The player power callers
+    // (`roll_expr`, `apply_interpret`) — which hold a `Ctx` with the registry —
+    // announce these via `WorldEvent::PowerUsed` so a witnessing NPC informant
+    // files intel (M14 D6). The director itself carries no registry (it is
+    // shared with the registry-less NPC ability seam), so emission lives one
+    // level up in the callers that have one.
+    winners
+        .into_iter()
+        .filter(|&o| matches!(w.get(o).map(|x| x.kind), Some(ObjKind::Npc)))
+        .collect()
+}
+
+/// M13/M14 silent per-perceiver witnesses. Every observer present with `actor`
+/// (a Player or NPC other than the actor) rolls on the shared seeded RNG against
+/// `perc.difficulty`; the ones with at least one success are returned. The
+/// caller pushes a tailored line ONLY to those winners — a loser receives no
+/// event at all (A5 true silence, no wire artifact).
+///
+/// The pool is **Perception + Awareness**, plus the observer's **Auspex** when
+/// `perc.channel` is [`SenseChannel::Supernatural`]. When `perc.required_sense`
+/// is set, an observer lacking that sense (rating < 1) is skipped **before any
+/// roll** — mirroring [`perception_roll`]'s auspex-early-return, so a mundane
+/// crowded room advances ZERO RNG and a seeded game stays reproducible.
 ///
 /// Observers are gathered in the stable [`World::contents_of`] order and their
-/// sensing dots are read from the read-only `&World` FIRST; the mutable state
-/// slot is taken only for the rolls, so the borrow discipline matches
-/// [`refresh_subject`]. Each [`sense_roll`] advances the shared RNG, keeping
-/// seeded tests deterministic.
+/// sensing dots are read FIRST; the mutable state slot is taken only for the
+/// rolls. Each [`sense_roll`] advances the shared RNG, keeping seeded tests
+/// deterministic.
 pub(crate) fn resolve_action_witnesses(
-    cmd: &WodCmd,
-    ctx: &mut Ctx<'_>,
+    dispatch: &Dispatch,
+    w: &mut World,
     actor: ObjId,
-    witness_difficulty: u8,
+    perc: &ActPerceptibility,
 ) -> Vec<ObjId> {
-    let Some(room) = ctx.w.get(actor).and_then(|o| o.location) else {
+    let Some(room) = w.get(actor).and_then(|o| o.location) else {
         return Vec::new();
     };
-    // Read every observer's Perception + Awareness from the read-only world
-    // first (auspex is irrelevant to noticing a mundane act), then take the
-    // mutable state slot for the rolls.
-    let observers: Vec<(ObjId, i32)> = ctx
-        .w
-        .contents_of(room)
-        .iter()
-        .copied()
-        .filter(|&o| o != actor && is_observer(ctx.w, o))
-        .map(|o| {
-            let (perception, awareness, _auspex) = observer_senses(cmd, ctx.w, o);
-            (o, perception + awareness)
+    // Snapshot the room's contents (releases the `&World` borrow), then read each
+    // observer's sensing dots off the sheet before taking the mutable state slot.
+    let ids: Vec<ObjId> = w.contents_of(room).to_vec();
+    let observers: Vec<(ObjId, i32)> = ids
+        .into_iter()
+        .filter(|&o| o != actor && is_observer(w, o))
+        .filter_map(|o| {
+            let doc = read_sheet(dispatch, w, o);
+            // required_sense gate: no sense ⇒ cannot notice, and no roll is made
+            // (the mundane-room-advances-no-RNG invariant).
+            if let Some(sense) = perc.required_sense {
+                let rating = doc.as_ref().map_or(0, |d| discipline_rating(d, sense));
+                if rating < 1 {
+                    return None;
+                }
+            }
+            let (perception, awareness, auspex) = doc.as_ref().map_or((0, 0, 0), |d| {
+                (
+                    d.number("perception").unwrap_or(0) as i32,
+                    d.number("awareness").unwrap_or(0) as i32,
+                    discipline_rating(d, "Auspex"),
+                )
+            });
+            let mut pool = perception + awareness;
+            if perc.channel == SenseChannel::Supernatural {
+                pool += auspex;
+            }
+            Some((o, pool))
         })
         .collect();
     if observers.is_empty() {
         return Vec::new();
     }
-    let now = ctx.w.now();
+    let now = w.now();
     let mut winners = Vec::new();
-    if let Some(st) = ctx.state_mut::<WodState>() {
+    if let Some(st) = w.module_state_mut::<WodState>() {
         for (o, pool) in observers {
-            let expr = format!("perception+awareness vs witness difficulty {witness_difficulty}");
-            let outcome = sense_roll(st, o, pool, witness_difficulty, &expr, now);
+            let expr = format!(
+                "perception+awareness vs witness difficulty {}",
+                perc.difficulty
+            );
+            // `log = false`: leave NO per-observer roll-log entry. A witness roll
+            // that logged would let a non-perceiving observer read the act (and
+            // its witness difficulty) out of their own `+roll/last` — the V1 leak.
+            let outcome = sense_roll(st, o, pool, perc.difficulty, &expr, now, false);
             if outcome.successes() > 0 {
                 winners.push(o);
             }
         }
     }
     winners
+}
+
+/// Dispatch a resolved NPC pool to the power it names (if any), returning the
+/// [`ActPerceptibility`] to project it through. A discipline/gift named in the
+/// pool, or a mage working (the `arete` field), routes through the director;
+/// a mundane pool (`strength+brawl`) returns `None` and stays room-visible.
+#[must_use]
+pub(crate) fn power_perceptibility_for_pool(
+    resolved: &ResolvedPool,
+    actor_name: &str,
+) -> Option<ActPerceptibility> {
+    // A Discipline named in the pool (its map key rides a `PoolTerm::label`).
+    for term in &resolved.terms {
+        if let Some(p) = crate::splats::vampire::discipline_perceptibility(&term.label, actor_name) {
+            return Some(p);
+        }
+    }
+    // A Gift named in the pool.
+    for term in &resolved.terms {
+        if let Some(p) = crate::splats::werewolf::gift_perceptibility(&term.label, actor_name) {
+            return Some(p);
+        }
+    }
+    // A mage working rolls the Arete pool.
+    if resolved
+        .trait_fields
+        .iter()
+        .any(|f| f.eq_ignore_ascii_case("arete"))
+    {
+        return Some(crate::splats::mage::sphere_perceptibility(actor_name));
+    }
+    None
 }
 
 // ----------------------------------------------------------------------

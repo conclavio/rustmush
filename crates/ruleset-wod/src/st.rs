@@ -26,7 +26,7 @@
 
 use std::sync::Arc;
 
-use mush_core::{AsyncCompletion, CmdError, Ctx, Deferred, Effect, ObjId};
+use mush_core::{AsyncCompletion, CmdError, Ctx, Deferred, Effect, ObjId, WorldEvent};
 use mush_dice::owod20::Owod20Outcome;
 use mush_llm::{
     CallCtx, ChatMessage, CompletionRequest, CompletionResponse, LlmError, LlmFeature, LlmService,
@@ -37,6 +37,7 @@ use smol_str::SmolStr;
 
 use crate::WodCmd;
 use crate::dice::resolve_sheet_pool;
+use crate::perception::{ActPerceptibility, SenseChannel};
 use crate::splats::is_template;
 use crate::state::{PendingAction, WodState};
 
@@ -137,6 +138,9 @@ pub struct InterpretRequest {
     /// The difficulty an observer rolls to witness the action (M13 task 2).
     #[serde(default)]
     pub witness_difficulty: u8,
+    /// The sense channel the action is noticed on (M14).
+    #[serde(default)]
+    pub sense_channel: SenseChannel,
     /// The engine's logged outcome — the authoritative result the ST reads.
     pub outcome: Owod20Outcome,
     /// Correlation id.
@@ -177,6 +181,9 @@ pub struct Ruling {
     pub paradox: i32,
     /// The difficulty an observer rolls to witness the working (M13 task 2).
     pub witness_difficulty: u8,
+    /// The sense channel the working is noticed on (M14; defaults Visual).
+    #[serde(default)]
+    pub sense_channel: SenseChannel,
 }
 
 /// The ruling result: the ST's [`Ruling`] plus the echoed request context the
@@ -220,6 +227,9 @@ pub struct InterpretResult {
     pub successes: i32,
     /// The difficulty each present observer rolls to witness the action.
     pub witness_difficulty: u8,
+    /// The sense channel the action is noticed on (M14).
+    #[serde(default)]
+    pub sense_channel: SenseChannel,
     /// Mage working vs generic action (selects the mechanical consequences).
     pub kind: ActionKind,
     /// A hard failure of the ST call itself, if any (a fallback line is still set).
@@ -274,6 +284,7 @@ pub(crate) fn defer_interpret(
         paradox: pending.paradox,
         vulgar: pending.vulgar,
         witness_difficulty: pending.witness_difficulty,
+        sense_channel: pending.sense_channel,
         outcome: outcome.clone(),
         correlation,
         kind: pending.kind,
@@ -390,6 +401,7 @@ async fn run_interpret(llm: &LlmService, req: InterpretRequest) -> InterpretResu
                 botch,
                 successes,
                 witness_difficulty: req.witness_difficulty,
+                sense_channel: req.sense_channel,
                 kind: req.kind,
                 error: None,
             },
@@ -401,6 +413,7 @@ async fn run_interpret(llm: &LlmService, req: InterpretRequest) -> InterpretResu
                 botch,
                 successes,
                 witness_difficulty: req.witness_difficulty,
+                sense_channel: req.sense_channel,
                 kind: req.kind,
                 error: Some(format!("the Storyteller's narration was malformed: {e}")),
             },
@@ -413,6 +426,7 @@ async fn run_interpret(llm: &LlmService, req: InterpretRequest) -> InterpretResu
             botch,
             successes,
             witness_difficulty: req.witness_difficulty,
+            sense_channel: req.sense_channel,
             kind: req.kind,
             error: Some(e),
         },
@@ -1015,6 +1029,10 @@ impl WodCompletion {
             ActionKind::Generic => 0,
         };
         let witness_difficulty = ruling.witness_difficulty.clamp(2, 10);
+        // The sense channel defaults Visual; a vulgar working stays overt/Visual,
+        // and the adjudicated path never gates behind a required sense (that is a
+        // per-power concern of the direct power paths).
+        let sense_channel = ruling.sense_channel;
 
         let action = PendingAction {
             pool: pool.clone(),
@@ -1022,6 +1040,7 @@ impl WodCompletion {
             spheres,
             paradox,
             witness_difficulty,
+            sense_channel,
             freeform: r.freeform,
             vulgar: r.vulgar,
             correlation,
@@ -1058,7 +1077,45 @@ impl WodCompletion {
         } else {
             r.actor_result.trim().to_string()
         };
-        ctx.out.sys_to_actor(actor, "wod", line);
+
+        // A5 silent per-perceiver witnesses, now routed through the ONE M14
+        // director: the actor perceives their own result; each observer who makes
+        // their sense roll against the ruling's witness_difficulty gets the ST's
+        // per-witness line; everyone else receives NO event at all (true silence,
+        // no wire artifact, never routed through to_room). The adjudicated path
+        // passes vulgar=false — the ST narrates per-observer, so there is no
+        // third-person room text to broadcast to the room-at-large.
+        let perc = ActPerceptibility {
+            channel: r.sense_channel,
+            difficulty: r.witness_difficulty,
+            required_sense: None,
+            witnessed: r.witnessed.trim().to_string(),
+        };
+        let npc_winners = crate::perception::project_perceptual_act(
+            self.cmd.dispatch.as_ref(),
+            ctx.w,
+            ctx.out,
+            actor,
+            &perc,
+            &line,
+            false,
+        );
+
+        // M14 D6: announce the perceived power so a witnessing NPC informant
+        // files intel. The event carries the director's NPC winner set (the
+        // informant loop files for exactly these, with NO perception re-gate).
+        if let Some(room) = ctx.w.get(actor).and_then(|o| o.location) {
+            let word = match r.kind {
+                ActionKind::Mage => "worked a spell",
+                ActionKind::Generic => "used a power",
+            };
+            ctx.emit_world_event(&WorldEvent::PowerUsed {
+                who: actor,
+                room,
+                witnesses: npc_winners,
+                detail: word.to_string(),
+            });
+        }
 
         if apply_paradox {
             ctx.out.sys_to_actor(
@@ -1066,24 +1123,6 @@ impl WodCompletion {
                 "wod",
                 format!("Paradox gathers ({} point(s)).", r.paradox),
             );
-        }
-
-        // A5 silent per-perceiver witnesses: only observers who make their
-        // Perception + Awareness roll against the ruling's witness_difficulty get
-        // the in-fiction line — everyone else receives NO event at all (true
-        // silence, no wire artifact). Never routed through to_room.
-        let witnessed = r.witnessed.trim();
-        if !witnessed.is_empty() && r.witness_difficulty > 0 {
-            let winners = crate::perception::resolve_action_witnesses(
-                &self.cmd,
-                ctx,
-                actor,
-                r.witness_difficulty,
-            );
-            let line = witnessed.to_string();
-            for w in winners {
-                ctx.out.sys_to_actor(w, "wod", line.clone());
-            }
         }
     }
 }

@@ -59,6 +59,17 @@ pub fn canonical_sphere(token: &str) -> Option<&'static str> {
         .find(|s| s.eq_ignore_ascii_case(token))
 }
 
+/// The perceptibility of a Mage working (M14): an overt (Visual) act of
+/// moderate difficulty that anyone present may try to notice. Vulgar magick is
+/// flagged `vulgar` by the caller so it also reads to the room-at-large; the
+/// per-witness line here is what a sharp-eyed onlooker perceives.
+#[must_use]
+pub(crate) fn sphere_perceptibility(actor: &str) -> crate::perception::ActPerceptibility {
+    crate::perception::default_perceptibility(format!(
+        "You catch the air bend around {actor} as a working takes shape."
+    ))
+}
+
 /// One affiliation's crib entry: id, label, and the affinity Sphere its mages
 /// favour (empty for the "other" affiliations, whose affinity varies).
 pub struct TraditionDef {
@@ -508,8 +519,25 @@ fn cast_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         "coincidental magick"
     };
     // Casting is an action, so the wound penalty applies to the Arete pool
-    // (matching Discipline and Gift rolls).
-    let out = crate::roll::roll_expr(cmd, ctx, ctx.actor, "arete", diff.unwrap_or(6), true, label)?;
+    // (matching Discipline and Gift rolls). M14: a working is a power — route it
+    // through the director. Vulgar magick is blatant, so it also emits the
+    // obvious-tier room-at-large line (V2); coincidental magick stays per-witness.
+    let actor_name = ctx.w.get(ctx.actor).map_or_else(
+        || ctx.actor.to_string(),
+        |o| mush_core::output::primary_name(&o.name).to_string(),
+    );
+    let perc = sphere_perceptibility(&actor_name);
+    let out = crate::roll::roll_expr(
+        cmd,
+        ctx,
+        ctx.actor,
+        "arete",
+        diff.unwrap_or(6),
+        true,
+        label,
+        Some(&perc),
+        vulgar,
+    )?;
     let verdict = if out.is_botch() {
         "The Tapestry recoils — a Paradox backlash (the Storyteller adjudicates).".to_string()
     } else if out.successes() > 0 {

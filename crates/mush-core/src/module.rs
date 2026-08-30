@@ -387,6 +387,11 @@ pub enum WorldEventKind {
     /// mush-script recompiles an object's scripts when a `script:*`
     /// attribute changes.
     AttrSet,
+    /// A supernatural power was used and perceived (the M14 perception
+    /// director's informant tie-in): a Discipline / spell / Gift whose
+    /// per-observer projection has already resolved which onlookers noticed
+    /// it. Observers file intel for the carried witness set — no re-gate.
+    PowerUsed,
 }
 
 /// A world mutation, delivered to subscribed observers **post-mutation** in
@@ -449,6 +454,23 @@ pub enum WorldEvent {
         /// Who set it.
         setter: ObjId,
     },
+    /// `who` used a supernatural power in `room`, already projected
+    /// per-observer by the M14 perception director. `witnesses` is the
+    /// director-resolved set of **NPC** onlookers who *perceived* it — the
+    /// event exists to drive the informant loop, which files intel for exactly
+    /// these with **no** perception re-gate (re-rolling would double-count what
+    /// the director already delivered). `detail` is a short human description
+    /// of the act.
+    PowerUsed {
+        /// The power's user.
+        who: ObjId,
+        /// The room it happened in.
+        room: ObjId,
+        /// The NPC onlookers who perceived it (director-resolved winners).
+        witnesses: Vec<ObjId>,
+        /// A short description of the act ("used a Discipline (dominate)").
+        detail: String,
+    },
 }
 
 impl WorldEvent {
@@ -463,6 +485,7 @@ impl WorldEvent {
             WorldEvent::Connected { .. } => WorldEventKind::Connected,
             WorldEvent::Disconnected { .. } => WorldEventKind::Disconnected,
             WorldEvent::AttrSet { .. } => WorldEventKind::AttrSet,
+            WorldEvent::PowerUsed { .. } => WorldEventKind::PowerUsed,
         }
     }
 
@@ -473,7 +496,8 @@ impl WorldEvent {
             WorldEvent::Moved { who, .. }
             | WorldEvent::Said { who, .. }
             | WorldEvent::Connected { who }
-            | WorldEvent::Disconnected { who } => *who,
+            | WorldEvent::Disconnected { who }
+            | WorldEvent::PowerUsed { who, .. } => *who,
             WorldEvent::ObjCreated { creator, .. } => *creator,
             WorldEvent::ObjDestroyed { obj } | WorldEvent::AttrSet { obj, .. } => *obj,
         }
