@@ -30,20 +30,22 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use futures::future::BoxFuture;
 use mush_config::config::Config;
 use mush_config::ipguard::IpGuard;
 use mush_core::DisconnectKind;
 use mush_ipc::{
-    BoxRead, BoxWrite, DetachCause, FrameReader, GatewayLink, IPC_VERSION, IpcEndpoint, ServiceReq,
-    ServiceResp, ToGateway, ToServer, WireInbound,
+    AttachRec, BoxRead, BoxWrite, DetachCause, FrameReader, GatewayLink, IPC_VERSION, IpcEndpoint,
+    ServiceReq, ServiceResp, ToGateway, ToServer, WireInbound,
 };
+use mush_proto::{OutputEvent, RichText};
 use mush_session::{CharKey, SessionConfig, SessionManager};
 use mush_store::ObjectStore;
 use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
 
 use crate::accounts::Accounts;
 use crate::delivery::{SessionDelivery, char_key_obj};
@@ -57,16 +59,68 @@ pub mod web_bridge;
 
 /// Where the server half comes from.
 pub enum ServerSource {
-    /// Production: spawn a `mush-server` child process (the supervisor) and
-    /// connect to the `[ipc].listen` endpoint it binds.
+    /// Production: spawn + SUPERVISE a `mush-server` child process (D1). The
+    /// gateway launches the child, connects to the `[ipc].listen` endpoint it
+    /// binds, and on the child's exit (crash or deliberate restart) respawns it
+    /// — holding the player connections and re-attaching them (M16c).
     Spawn {
         /// The config path to pass the child (`--config`).
         config_path: PathBuf,
     },
-    /// Test / attach: connect to an already-running server at this endpoint,
-    /// spawning nothing (the two-process integration test runs the server as a
-    /// sibling tokio task).
+    /// Test / attach: connect to an already-running server at this endpoint
+    /// ONCE, spawning nothing and NOT supervising it (the M16b two-process
+    /// integration test runs the server as a sibling thread). The gateway does
+    /// not restart this server — it serves until Ctrl-C.
     Connect(IpcEndpoint),
+    /// Supervised + restartable: the gateway (re)launches the server through a
+    /// [`ServerLauncher`] and re-attaches held sessions across each restart
+    /// (M16c). Used by the restart-survival test (which launches the server as
+    /// a sibling thread on an ephemeral endpoint) and by any embedding that
+    /// wants the gateway to own the server lifecycle in-process.
+    Restartable(Box<dyn ServerLauncher>),
+}
+
+/// Launches a fresh server instance for the supervisor (D1). Each call boots a
+/// new server half and returns its live IPC endpoint plus a future that
+/// resolves once that instance has fully exited (so the supervisor knows the
+/// listen socket is released before it reconnects).
+pub trait ServerLauncher: Send + Sync {
+    /// Boot one server instance.
+    fn launch(&self) -> BoxFuture<'static, Result<LaunchedServer, String>>;
+}
+
+/// A freshly launched server instance the supervisor is watching (D1).
+pub struct LaunchedServer {
+    /// The IPC endpoint this instance is listening on.
+    pub endpoint: IpcEndpoint,
+    /// Resolves once this instance has fully exited (child reaped / server
+    /// thread returned). Awaited during a restart so the old listen socket is
+    /// released before the supervisor reconnects.
+    pub exited: BoxFuture<'static, ()>,
+}
+
+/// A programmatic restart trigger (D1b): a deliberate operator restart of the
+/// supervised server child, driven by a `SIGHUP` handler in production and by
+/// the restart-survival test directly. Cloneable; every clone signals the same
+/// supervisor. A no-op when the server is not supervised
+/// ([`ServerSource::Connect`]).
+#[derive(Clone)]
+pub struct RestartTrigger {
+    tx: mpsc::Sender<()>,
+}
+
+impl RestartTrigger {
+    /// Request a deliberate server restart. Returns `false` if the supervisor is
+    /// gone (gateway shutting down).
+    pub async fn restart(&self) -> bool {
+        self.tx.send(()).await.is_ok()
+    }
+
+    /// Non-blocking restart request (for signal handlers): `false` if the
+    /// supervisor is gone or a restart is already queued.
+    pub fn try_restart(&self) -> bool {
+        self.tx.try_send(()).is_ok()
+    }
 }
 
 /// Knobs for [`serve`].
@@ -79,6 +133,12 @@ pub struct GatewayOptions {
     /// Signalled with the bound SSH listen address once it is up (the test's
     /// SSH client connects there).
     pub ssh_ready: Option<oneshot::Sender<SocketAddr>>,
+    /// Signalled with a [`RestartTrigger`] once the supervisor is running (D1b).
+    /// The restart-survival test holds the trigger to drive a deliberate
+    /// restart; production wires it to a `SIGHUP` handler. `None` for callers
+    /// that do not need to trigger restarts (or non-supervised
+    /// [`ServerSource::Connect`], where it never fires).
+    pub restart_ready: Option<oneshot::Sender<RestartTrigger>>,
 }
 
 /// The shared table of parked service-request waiters, plus a `down` flag the
@@ -98,17 +158,68 @@ struct Pending {
     down: bool,
 }
 
-/// The gateway-side [`GatewayLink`]: serializes every gateway → server message
-/// onto the boundary socket and correlates [`ServiceReq`]/[`ServiceResp`] pairs
-/// by a monotonic id.
-pub struct SocketGatewayLink {
+/// One live server boundary: the current connection's `ToServer` writer inbox
+/// plus its own correlated-request table. Swapped as a unit each (re)connect so
+/// a stale reply table is never reused across a restart (M16c). A fresh table
+/// per connection means [`request`](SocketGatewayLink::request) and the reader's
+/// teardown drain always agree on the SAME table for one server lifetime.
+struct BoundaryConn {
     tx: mpsc::UnboundedSender<ToServer>,
     pending: Arc<Mutex<Pending>>,
+}
+
+/// The gateway's swappable pointer to the CURRENT server boundary, or `None`
+/// during a restart gap (D3). Cloned into [`SocketGatewayLink`] so every input
+/// path targets the live boundary — or rejects, when the server is down and the
+/// supervisor is respawning it. Held stable across restarts; only the inner
+/// [`BoundaryConn`] swaps, so the bridges never re-wire their `Arc<dyn
+/// GatewayLink>`.
+#[derive(Clone, Default)]
+struct BoundaryHandle {
+    inner: Arc<Mutex<Option<Arc<BoundaryConn>>>>,
+    /// Raised for the duration of a restart gap (server down, respawn in
+    /// progress), so the input path surfaces a clear "restarting" notice rather
+    /// than a generic drop.
+    restarting: Arc<AtomicBool>,
+}
+
+impl BoundaryHandle {
+    /// The current live boundary, or `None` during a restart gap.
+    fn current(&self) -> Option<Arc<BoundaryConn>> {
+        self.inner.lock().expect("boundary handle poisoned").clone()
+    }
+
+    /// Install a freshly (re)connected boundary and clear the restart gap.
+    fn connect(&self, conn: Arc<BoundaryConn>) {
+        *self.inner.lock().expect("boundary handle poisoned") = Some(conn);
+        self.restarting.store(false, Ordering::SeqCst);
+    }
+
+    /// Enter the restart gap: drop the live boundary and refuse input until the
+    /// next [`connect`](BoundaryHandle::connect).
+    fn enter_gap(&self) {
+        *self.inner.lock().expect("boundary handle poisoned") = None;
+        self.restarting.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether the boundary is currently in a restart gap.
+    fn is_restarting(&self) -> bool {
+        self.restarting.load(Ordering::SeqCst)
+    }
+}
+
+/// The gateway-side [`GatewayLink`]: serializes every gateway → server message
+/// onto the CURRENT boundary socket (via the swappable [`BoundaryHandle`]) and
+/// correlates [`ServiceReq`]/[`ServiceResp`] pairs by a monotonic id. A restart
+/// swaps the boundary underneath it; the bridges hold the same
+/// `Arc<dyn GatewayLink>` for the gateway's whole lifetime.
+pub struct SocketGatewayLink {
+    boundary: BoundaryHandle,
     next_id: AtomicU64,
 }
 
 impl SocketGatewayLink {
-    /// The shared pending-request table the reader task resolves replies into.
+    /// A fresh, empty pending-request table for one boundary connection.
     fn pending_table() -> Arc<Mutex<Pending>> {
         Arc::new(Mutex::new(Pending {
             waiters: HashMap::new(),
@@ -119,22 +230,34 @@ impl SocketGatewayLink {
 
 impl GatewayLink for SocketGatewayLink {
     fn to_server(&self, msg: ToServer) -> BoxFuture<'_, bool> {
-        let ok = self.tx.send(msg).is_ok();
+        // No live boundary (restart gap) → `false`, which the bridges map to the
+        // WorldGone rejection, exactly as at shutdown.
+        let ok = self
+            .boundary
+            .current()
+            .is_some_and(|c| c.tx.send(msg).is_ok());
         Box::pin(async move { ok })
     }
 
     fn request(&self, req: ServiceReq) -> BoxFuture<'_, Option<ServiceResp>> {
+        // Resolve the CURRENT boundary once; the whole request (park + send +
+        // teardown-drain) is scoped to that one connection's table, so a restart
+        // that swaps the boundary can never leave a waiter parked in a table the
+        // new connection's reader will never drain.
+        let Some(conn) = self.boundary.current() else {
+            return Box::pin(async move { None });
+        };
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (otx, orx) = oneshot::channel();
         // Park the waiter BEFORE sending so a fast reply can never race ahead
-        // of the registration — but only if the boundary is still up. The
+        // of the registration — but only if this boundary is still up. The
         // `down` check and the insert happen under the SAME lock the reader's
         // teardown drain takes, so a request can never slip into a table that
         // was already drained (which would then await a reply that can never
         // arrive). If the boundary is gone we skip the send entirely and
         // resolve to `None` (→ WorldGone), matching the in-process path.
         let registered = {
-            let mut p = self.pending.lock().expect("pending table poisoned");
+            let mut p = conn.pending.lock().expect("pending table poisoned");
             if p.down {
                 false
             } else {
@@ -142,8 +265,8 @@ impl GatewayLink for SocketGatewayLink {
                 true
             }
         };
-        let sent = registered && self.tx.send(ToServer::Request { id, req }).is_ok();
-        let pending = Arc::clone(&self.pending);
+        let sent = registered && conn.tx.send(ToServer::Request { id, req }).is_ok();
+        let pending = Arc::clone(&conn.pending);
         Box::pin(async move {
             if !sent {
                 if registered {
@@ -158,12 +281,31 @@ impl GatewayLink for SocketGatewayLink {
             orx.await.ok()
         })
     }
+
+    fn is_restarting(&self) -> bool {
+        self.boundary.is_restarting()
+    }
 }
 
 /// The socket writer: forward each queued [`ToServer`] to the server. Exits
-/// when every sender is dropped (gateway shutting down).
-async fn gateway_writer(mut w: BoxWrite, mut rx: mpsc::UnboundedReceiver<ToServer>) {
-    while let Some(msg) = rx.recv().await {
+/// when every sender is dropped (gateway shutting down), a write fails (server
+/// gone), or the supervisor fires `close` for a deliberate restart (D1) —
+/// dropping `w` on return sends the server EOF, so a still-live server shuts
+/// down cleanly and the gateway respawns it.
+async fn gateway_writer(
+    mut w: BoxWrite,
+    mut rx: mpsc::UnboundedReceiver<ToServer>,
+    mut close: oneshot::Receiver<()>,
+) {
+    loop {
+        let msg = tokio::select! {
+            m = rx.recv() => m,
+            _ = &mut close => {
+                tracing::info!("boundary writer closing (deliberate restart)");
+                return;
+            }
+        };
+        let Some(msg) = msg else { return };
         if let Err(e) = mush_ipc::write_frame(&mut w, &msg).await {
             tracing::warn!(error = %e, "ipc write to server failed; boundary down");
             return;
@@ -406,66 +548,66 @@ fn spawn_server_child(
         .map_err(|e| format!("spawning {}: {e}", server_bin.display()))
 }
 
-/// Wait on the `mush-server` child and log its exit (D3). Owning the child
-/// handle here keeps `kill_on_drop` armed for the gateway's whole lifetime; a
-/// child exit is logged with its status. M16b does NOT restart it — the
-/// WorldGone reject path already handles input in flight when the boundary
-/// drops — but the supervisor is structured so M16c can add restart + a
-/// `ReAnnounce` of the gateway's live attachments here.
-async fn supervise_child(mut child: tokio::process::Child) {
-    match child.wait().await {
-        Ok(status) => {
-            tracing::warn!(
-                %status,
-                "mush-server child exited; the boundary is down and in-flight \
-                 input is rejected (WorldGone). Restart + re-attach is M16c."
-            );
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "failed waiting on the mush-server child");
-        }
+/// The production [`ServerLauncher`]: spawn (and, on each restart, respawn) a
+/// `mush-server` CHILD PROCESS bound to the config's fixed `[ipc].listen`
+/// endpoint (D1). `kill_on_drop` is armed on the child so a gateway exit — or a
+/// dropped [`LaunchedServer::exited`] future — reaps it.
+struct SpawnLauncher {
+    config_path: PathBuf,
+    endpoint: IpcEndpoint,
+}
+
+impl ServerLauncher for SpawnLauncher {
+    fn launch(&self) -> BoxFuture<'static, Result<LaunchedServer, String>> {
+        let config_path = self.config_path.clone();
+        let endpoint = self.endpoint.clone();
+        Box::pin(async move {
+            let mut child = spawn_server_child(&config_path, &endpoint)?;
+            // Own the child in a task that resolves the `exited` future when it
+            // dies; `kill_on_drop` (set at spawn) reaps it if the future is
+            // dropped mid-restart.
+            let (exit_tx, exit_rx) = oneshot::channel();
+            tokio::spawn(async move {
+                match child.wait().await {
+                    Ok(status) => tracing::warn!(%status, "mush-server child exited"),
+                    Err(e) => tracing::warn!(error = %e, "waiting on mush-server child"),
+                }
+                let _ = exit_tx.send(());
+            });
+            Ok(LaunchedServer {
+                endpoint,
+                exited: Box::pin(async move {
+                    let _ = exit_rx.await;
+                }),
+            })
+        })
     }
 }
 
-/// The classic welcome banner.
-fn banner(name: &str) -> String {
-    format!(
-        "------------------------------------------------------------------\n\
-         \x20  {name}\n\
-         \x20  a rustmush server (forked gateway)\n\
-         \n\
-         \x20  Connect to an existing account, or create a new one:\n\
-         ------------------------------------------------------------------"
-    )
+/// One live, wired-up server boundary the supervisor is serving over.
+struct WiredBoundary {
+    /// The swappable unit installed into the [`BoundaryHandle`].
+    conn: Arc<BoundaryConn>,
+    /// The reader task; resolves when the boundary drops (server EOF / error /
+    /// Bye) — the auto-restart trigger (D1a).
+    down: JoinHandle<()>,
+    /// Fire to close the boundary writer for a DELIBERATE restart (D1b): the
+    /// server sees EOF and exits, and the supervisor respawns it.
+    close: oneshot::Sender<()>,
 }
 
-/// Run the gateway: obtain the server half (spawn or connect), handshake, wire
-/// the boundary client, then serve SSH connections until Ctrl-C or the server
-/// closes the boundary.
-///
-/// # Errors
-///
-/// Connect/handshake failures, a store open failure, or the SSH bind failing.
-pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
-    let endpoint = match &opts.source {
-        ServerSource::Connect(ep) => ep.clone(),
-        ServerSource::Spawn { .. } => config.ipc_endpoint().map_err(|e| e.to_string())?,
-    };
-
-    // Supervisor: spawn the server child first, so it is binding while we retry
-    // the connect, then hand it to a task that waits on its exit (D3). The
-    // supervisor task owns the child handle (kill_on_drop), so it stays alive
-    // for the gateway's lifetime and the child is killed if the gateway exits.
-    // M16b only logs a child exit; the in-flight input is already rejected via
-    // the WorldGone path (the boundary writer fails once the child is gone, so
-    // `SocketGatewayLink::to_server` returns false). Restart + re-attach is M16c.
-    if let ServerSource::Spawn { config_path } = &opts.source {
-        let child = spawn_server_child(config_path, &endpoint)?;
-        tokio::spawn(supervise_child(child));
-    }
-
-    let (reader_half, writer_half) =
-        connect_with_retry(&endpoint, Duration::from_secs(10)).await?;
+/// Connect to a (freshly launched) server endpoint, run the [`ToGateway::Hello`]
+/// handshake + [`IPC_VERSION`] check, and wire up the per-connection boundary:
+/// a fresh `ToServer` channel + reply table, a writer task, and a reader task
+/// routing `ToGateway` onto the gateway's stable [`SessionManager`]. Returns the
+/// swappable unit plus the reader's completion handle (the boundary-down
+/// signal) and the deliberate-close trigger.
+async fn connect_and_wire(
+    endpoint: &IpcEndpoint,
+    sessions: &Arc<SessionManager>,
+    connect_timeout: Duration,
+) -> Result<WiredBoundary, String> {
+    let (reader_half, writer_half) = connect_with_retry(endpoint, connect_timeout).await?;
 
     // Handshake: the server greets with Hello before anything else.
     let mut reader = FrameReader::new(reader_half);
@@ -486,33 +628,374 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
         None => return Err("server closed the boundary before Hello".to_string()),
     }
 
-    // The boundary client: writer drains ToServer, reader routes ToGateway.
     let (to_server_tx, to_server_rx) = mpsc::unbounded_channel::<ToServer>();
     let pending = SocketGatewayLink::pending_table();
-    let link = Arc::new(SocketGatewayLink {
+    let conn = Arc::new(BoundaryConn {
         tx: to_server_tx.clone(),
         pending: Arc::clone(&pending),
+    });
+    // D5: the reader's delivery transport self-polices slow clients and reaps
+    // link-dead sessions, feeding the resulting `ConnDown`/`SessionGone` back to
+    // THIS server over its own writer inbox.
+    let transport = SessionDelivery::new(Arc::clone(sessions), to_server_tx.clone());
+    let (close_tx, close_rx) = oneshot::channel();
+    tokio::spawn(gateway_writer(writer_half, to_server_rx, close_rx));
+    let down = tokio::spawn(gateway_reader(
+        reader,
+        transport,
+        pending,
+        to_server_tx,
+        Arc::clone(sessions),
+    ));
+    Ok(WiredBoundary {
+        conn,
+        down,
+        close: close_tx,
+    })
+}
+
+/// Build the gateway's full snapshot of held ONLINE attachments to replay to a
+/// freshly (re)started server (D2). One [`AttachRec`] per live connection of
+/// every non-linkdead session — a multi-connected session contributes one rec
+/// per connection so the server rebuilds `live_conns` exactly. Linkdead sessions
+/// (no live connection) are skipped: the server has no connection to render to,
+/// and the linkdead grace timer is gateway-resident and keeps ticking.
+fn build_attach_recs(sessions: &SessionManager) -> Vec<AttachRec> {
+    let mut recs = Vec::new();
+    for meta in sessions.who() {
+        if meta.linkdead || meta.conns == 0 {
+            continue;
+        }
+        let actor = char_key_obj(meta.character);
+        for handle in sessions.conns_of_session(meta.sess) {
+            recs.push(AttachRec {
+                conn: handle.id.0,
+                actor,
+                account: Some(meta.account.clone()),
+                // The gateway's SessionManager keys by CharKey, not name; the
+                // server resolves the real name from the reloaded world for its
+                // logs. Carry the account for the gateway's own trace only.
+                char_name: String::new(),
+                caps_structured: handle.caps().structured,
+            });
+        }
+    }
+    recs
+}
+
+/// The gap-start notice broadcast to every connected player when the server link
+/// drops (D3): a clear "restarting, hold on" system line. Input is refused for
+/// the duration of the gap (the WorldGone reject path), not dropped.
+fn restarting_notice() -> OutputEvent {
+    OutputEvent::Sys(RichText::tag(
+        "system",
+        "GAME: The server is restarting; hold on — you will not be disconnected.",
+    ))
+}
+
+/// The resync notice broadcast once the server is back and re-attached (D3),
+/// just before the server pushes each session its fresh room render (D2).
+fn reconnected_notice() -> OutputEvent {
+    OutputEvent::Sys(RichText::tag(
+        "system",
+        "GAME: Reconnected. Resuming where you left off.",
+    ))
+}
+
+/// The give-up notice when the crash-loop guard trips (R3): the server keeps
+/// dying, so the supervisor stops respawning and tells players.
+fn server_down_notice() -> OutputEvent {
+    OutputEvent::Sys(RichText::tag(
+        "error",
+        "GAME: The server is down and could not be restarted. Please try again later.",
+    ))
+}
+
+/// Broadcast one system line to every connected session.
+fn broadcast(sessions: &SessionManager, event: OutputEvent) {
+    let _ = sessions.broadcast_all(Arc::new(event));
+}
+
+/// The auto-restart crash-loop guard (R3/D1a): allow a bounded number of
+/// restarts within a rolling window, with growing backoff between consecutive
+/// restarts, and give up if the server keeps dying too fast. A restart that
+/// follows a healthy run (longer than the window since the last one) resets the
+/// backoff — a one-off crash after weeks of uptime is not a crash loop.
+struct CrashGuard {
+    /// Timestamps of recent respawn attempts (pruned to the window). Catches a
+    /// server that boots and crashes repeatedly FAST: each reconnect succeeds so
+    /// the consecutive-failure counter keeps resetting, but the attempts pile up
+    /// inside the wall-clock window.
+    recent: Vec<Instant>,
+    /// Consecutive fast attempts (for the growing backoff).
+    consecutive: u32,
+    /// Consecutive FAILED relaunch/reconnect attempts, counted independent of
+    /// wall-clock time and reset only by a successful reconnect. Catches a server
+    /// that never comes back — a pre-bind boot crash, or a relaunch whose connect
+    /// burns the full deadline each time, so the wall-clock window alone would
+    /// only ever hold a handful of timestamps and never trip.
+    consecutive_failures: u32,
+}
+
+/// Max respawn attempts allowed within [`CRASH_WINDOW`] before the guard gives
+/// up (the fast crash-then-recover loop).
+const MAX_RESTARTS_IN_WINDOW: usize = 5;
+/// Max CONSECUTIVE failed relaunch/reconnect attempts before the guard gives up,
+/// independent of how long each attempt took (the never-comes-back loop).
+const MAX_CONSECUTIVE_FAILURES: u32 = 5;
+/// The rolling window the crash-loop guard counts fast attempts over.
+const CRASH_WINDOW: Duration = Duration::from_secs(30);
+/// Base backoff between consecutive fast restarts (doubles up to the cap).
+const BACKOFF_BASE: Duration = Duration::from_millis(200);
+/// Cap on the per-restart backoff.
+const BACKOFF_CAP: Duration = Duration::from_secs(5);
+/// How long to wait for an old instance to fully exit before proceeding anyway
+/// (its `kill_on_drop` reaps a truly stuck child).
+const EXIT_WAIT: Duration = Duration::from_secs(5);
+/// Connect/handshake budget for the FIRST server boot in [`serve`]. Generous, so
+/// a slow first bind under heavy load (e.g. a full `cargo test --workspace` run
+/// on Windows) does not spuriously fail the whole gateway before it even binds
+/// the SSH listener.
+const INITIAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Connect/handshake budget for a RESPAWN in the supervisor. Shorter than the
+/// initial boot: a respawn that cannot connect should fail fast and count toward
+/// [`MAX_CONSECUTIVE_FAILURES`] rather than stalling the gap on a dead server.
+const RECONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+impl CrashGuard {
+    fn new() -> CrashGuard {
+        CrashGuard {
+            recent: Vec::new(),
+            consecutive: 0,
+            consecutive_failures: 0,
+        }
+    }
+
+    /// Whether the loop has tripped the guard and must give up. Trips on EITHER
+    /// too many fast attempts inside the wall-clock window OR too many
+    /// consecutive failed attempts (which may each burn the full connect
+    /// deadline, so they slip through the window).
+    fn tripped(&self) -> bool {
+        self.recent.len() > MAX_RESTARTS_IN_WINDOW
+            || self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES
+    }
+
+    /// Record that a respawn attempt is about to run (drives the window + the
+    /// growing backoff). Call once per attempt, before the launch.
+    fn record_attempt(&mut self) {
+        let now = Instant::now();
+        let healthy_gap = self
+            .recent
+            .last()
+            .is_none_or(|&last| now.duration_since(last) > CRASH_WINDOW);
+        if healthy_gap {
+            // A restart after a healthy run is not part of a loop.
+            self.consecutive = 0;
+        }
+        self.recent.retain(|&t| now.duration_since(t) <= CRASH_WINDOW);
+        self.recent.push(now);
+        self.consecutive = self.consecutive.saturating_add(1);
+    }
+
+    /// Record that the current attempt failed to bring a server back.
+    fn record_failure(&mut self) {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+    }
+
+    /// Record that a respawn succeeded — the server is back and re-attached. Only
+    /// the consecutive-failure streak resets; the wall-clock window keeps its
+    /// timestamps so a boot-then-crash loop still trips.
+    fn record_success(&mut self) {
+        self.consecutive_failures = 0;
+    }
+
+    /// The backoff to wait before the next respawn (grows with consecutive fast
+    /// restarts, capped).
+    fn backoff(&self) -> Duration {
+        let shift = self.consecutive.saturating_sub(1).min(5);
+        BACKOFF_BASE
+            .saturating_mul(1u32 << shift)
+            .min(BACKOFF_CAP)
+    }
+}
+
+/// The gateway supervisor loop (D1/D2/D3): serve over the current boundary until
+/// it drops (a server crash, D1a) or a deliberate restart is requested (D1b);
+/// then enter the gap (refuse input, tell players), respawn the server, then
+/// reconnect and re-attach the held sessions, and resume. Gives up (telling
+/// players) if the crash-loop guard trips (R3). Returns when the supervisor can
+/// no longer keep a server up.
+async fn supervise(
+    launcher: Box<dyn ServerLauncher>,
+    boundary: BoundaryHandle,
+    sessions: Arc<SessionManager>,
+    mut restart_rx: mpsc::Receiver<()>,
+    first_instance: LaunchedServer,
+    first_wired: WiredBoundary,
+) {
+    let mut instance = first_instance;
+    let mut wired = first_wired;
+    let mut guard = CrashGuard::new();
+    loop {
+        // --- SERVING: wait for a restart reason. ---
+        // `crashed` distinguishes an auto-restart (D1a: the boundary reader has
+        // already terminated, so `wired.down` is COMPLETE) from a deliberate
+        // restart (D1b: the reader is still running until we close the boundary).
+        // Re-polling a completed `JoinHandle` panics ("polled after completion"),
+        // so the gap below must NOT re-await `wired.down` in the crash case.
+        let crashed;
+        tokio::select! {
+            _ = &mut wired.down => {
+                crashed = true;
+                tracing::warn!("server boundary down (crash/exit); restarting + re-attaching");
+            }
+            reason = restart_rx.recv() => {
+                if reason.is_none() {
+                    // The trigger is gone (gateway shutting down): drop the
+                    // supervisor without touching the live server.
+                    return;
+                }
+                crashed = false;
+                tracing::info!("deliberate server restart requested");
+            }
+        }
+
+        // --- GAP (D3): refuse input, tell players, stop the old instance. ---
+        boundary.enter_gap();
+        broadcast(&sessions, restarting_notice());
+        // Close our boundary so a still-live server sees EOF and exits; a
+        // crashed server is already gone (this is then a no-op).
+        let _ = wired.close.send(());
+        // Wait for the reader task to end on the resulting EOF — but ONLY on a
+        // deliberate restart. On a crash the reader already terminated (that is
+        // what resolved `wired.down` in the select above), so re-awaiting the
+        // same completed handle would panic.
+        if !crashed {
+            let _ = (&mut wired.down).await;
+        }
+        // Let the old instance fully exit (release its listen socket) before we
+        // reconnect — bounded, since `kill_on_drop` backstops a stuck child.
+        let _ = tokio::time::timeout(EXIT_WAIT, instance.exited).await;
+
+        // --- RECONNECT: respawn + reconnect, retrying under the crash guard. ---
+        let reconnected = loop {
+            if guard.tripped() {
+                tracing::error!(
+                    "server restart loop tripped the crash-loop guard; giving up"
+                );
+                broadcast(&sessions, server_down_notice());
+                break None;
+            }
+            guard.record_attempt();
+            tokio::time::sleep(guard.backoff()).await;
+            let new_instance = match launcher.launch().await {
+                Ok(i) => i,
+                Err(e) => {
+                    guard.record_failure();
+                    tracing::error!(error = %e, "server relaunch failed; retrying");
+                    continue;
+                }
+            };
+            match connect_and_wire(&new_instance.endpoint, &sessions, RECONNECT_TIMEOUT).await {
+                Ok(w) => {
+                    guard.record_success();
+                    break Some((new_instance, w));
+                }
+                Err(e) => {
+                    guard.record_failure();
+                    tracing::error!(error = %e, "reconnect after restart failed; retrying");
+                    let _ = tokio::time::timeout(EXIT_WAIT, new_instance.exited).await;
+                }
+            }
+        };
+        let Some((new_instance, new_wired)) = reconnected else {
+            // The guard tripped: leave the boundary in the gap so input stays
+            // refused with a clear message, and stop supervising.
+            return;
+        };
+
+        // --- RESYNC (D2): boundary back up, re-attach every held session. ---
+        boundary.connect(Arc::clone(&new_wired.conn));
+        broadcast(&sessions, reconnected_notice());
+        let recs = build_attach_recs(&sessions);
+        if !recs.is_empty() {
+            let count = recs.len();
+            if new_wired.conn.tx.send(ToServer::ReAnnounce(recs)).is_ok() {
+                tracing::info!(count, "re-announced held sessions to the new server");
+            }
+        }
+        instance = new_instance;
+        wired = new_wired;
+    }
+}
+
+/// The classic welcome banner.
+fn banner(name: &str) -> String {
+    format!(
+        "------------------------------------------------------------------\n\
+         \x20  {name}\n\
+         \x20  a rustmush server (forked gateway)\n\
+         \n\
+         \x20  Connect to an existing account, or create a new one:\n\
+         ------------------------------------------------------------------"
+    )
+}
+
+/// Run the gateway: obtain the server half (spawn or connect), handshake, wire
+/// the boundary client, bring up the SSH listener, and serve until Ctrl-C.
+///
+/// For a SUPERVISED source ([`ServerSource::Spawn`]/[`ServerSource::Restartable`])
+/// the gateway holds the player connections across a server restart (M16c): on a
+/// server exit — a crash (D1a) or a deliberate [`RestartTrigger`] (D1b) — it
+/// respawns the server, re-attaches every held online session (D2), and resumes,
+/// telling players a "restarting"/"reconnected" line and refusing input for the
+/// gap (D3). [`ServerSource::Connect`] is NOT supervised: it wires the boundary
+/// once and serves until Ctrl-C, exactly as in M16b.
+///
+/// # Errors
+///
+/// Connect/handshake failures, a store open failure, or the SSH bind failing.
+pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
+    // The stable, restart-surviving core: the boundary handle (swapped per
+    // connection), the link the bridges hold, and the session manager. None of
+    // these are torn down across a server restart.
+    let boundary = BoundaryHandle::default();
+    let link = Arc::new(SocketGatewayLink {
+        boundary: boundary.clone(),
         next_id: AtomicU64::new(1),
     });
-
     let sessions = Arc::new(SessionManager::with_config(SessionConfig {
         linkdead_grace: Duration::from_secs(config.game.linkdead_grace_s),
         ..SessionConfig::default()
     }));
-    // D5: the gateway owns the connection buffers, so its delivery transport
-    // self-polices slow clients and reaps link-dead sessions, feeding the
-    // resulting `ConnDown`/`SessionGone` back to the server as inbound over the
-    // boundary writer.
-    let transport = SessionDelivery::new(Arc::clone(&sessions), to_server_tx.clone());
 
-    tokio::spawn(gateway_writer(writer_half, to_server_rx));
-    tokio::spawn(gateway_reader(
-        reader,
-        transport,
-        pending,
-        to_server_tx.clone(),
-        Arc::clone(&sessions),
-    ));
+    // Obtain + wire the FIRST server boundary. For a supervised source we launch
+    // an instance and keep the launcher for respawns; for Connect we wire once.
+    let (launcher, first_instance): (Option<Box<dyn ServerLauncher>>, Option<LaunchedServer>) =
+        match opts.source {
+            ServerSource::Connect(ep) => (None, Some(LaunchedServer {
+                endpoint: ep,
+                // Nothing to wait on — the sibling server owns its own lifecycle.
+                exited: Box::pin(std::future::pending()),
+            })),
+            ServerSource::Spawn { config_path } => {
+                let endpoint = config.ipc_endpoint().map_err(|e| e.to_string())?;
+                let launcher: Box<dyn ServerLauncher> = Box::new(SpawnLauncher {
+                    config_path,
+                    endpoint,
+                });
+                let inst = launcher.launch().await?;
+                (Some(launcher), Some(inst))
+            }
+            ServerSource::Restartable(launcher) => {
+                let inst = launcher.launch().await?;
+                (Some(launcher), Some(inst))
+            }
+        };
+    let first_instance = first_instance.expect("first instance set above");
+    let first_wired =
+        connect_and_wire(&first_instance.endpoint, &sessions, INITIAL_CONNECT_TIMEOUT).await?;
+    boundary.connect(Arc::clone(&first_wired.conn));
 
     // The gateway's own KV store (accounts/tokens/bans).
     let store = match opts.store {
@@ -553,14 +1036,75 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
         let _ = tx.send(addr);
     }
 
-    // Serve until Ctrl-C (SIGTERM handling + web ingress are follow-ups). The
-    // reader task independently logs a server-gone EOF; a full restart+re-attach
-    // supervisor loop is M16c.
-    let _ = tokio::signal::ctrl_c().await;
-    tracing::info!("gateway shutting down");
-    listener.stop_accepting();
+    // The restart trigger (D1b): a channel the supervisor drains and a
+    // `SIGHUP` handler / the test fills. Handed back through `restart_ready`.
+    let (restart_tx, restart_rx) = mpsc::channel::<()>(1);
+    let trigger = RestartTrigger { tx: restart_tx };
+    if let Some(tx) = opts.restart_ready {
+        let _ = tx.send(trigger.clone());
+    }
+    install_sighup_handler(trigger);
+
+    match launcher {
+        Some(launcher) => {
+            // Supervised: hold the connections across server restarts (M16c).
+            let sup = tokio::spawn(supervise(
+                launcher,
+                boundary,
+                Arc::clone(&sessions),
+                restart_rx,
+                first_instance,
+                first_wired,
+            ));
+            let _ = tokio::signal::ctrl_c().await;
+            tracing::info!("gateway shutting down");
+            listener.stop_accepting();
+            sup.abort();
+        }
+        None => {
+            // Non-supervised Connect (M16b): keep the first boundary alive (its
+            // `close` sender must not drop, or the writer would close) and serve
+            // until Ctrl-C. `first_instance.exited` is `pending`, so nothing
+            // respawns; a server-gone EOF surfaces as WorldGone on the next
+            // input, exactly as before.
+            let _keepalive = first_wired;
+            let _ = tokio::signal::ctrl_c().await;
+            tracing::info!("gateway shutting down");
+            listener.stop_accepting();
+        }
+    }
     Ok(())
 }
+
+/// Install the `SIGHUP` restart handler (D1b/D4): a deploy signals the running
+/// gateway to restart its supervised server child (rebuilding from the new
+/// binary) WITHOUT dropping player connections. Unix-only — `SIGHUP` does not
+/// exist on Windows, where restarts are driven programmatically via
+/// [`RestartTrigger`] (the restart-survival test's path) — so the handler is
+/// compiled out elsewhere and the trigger simply goes unused.
+#[cfg(unix)]
+fn install_sighup_handler(trigger: RestartTrigger) {
+    tokio::spawn(async move {
+        let mut hup = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot install SIGHUP handler; deploy-restart disabled");
+                return;
+            }
+        };
+        while hup.recv().await.is_some() {
+            tracing::info!("SIGHUP received; restarting the server child");
+            if !trigger.try_restart() {
+                tracing::warn!("SIGHUP restart dropped (supervisor gone or restart already queued)");
+            }
+        }
+    });
+}
+
+/// No-op on non-Unix (Windows dev/prod): `SIGHUP` is Linux-only; restarts there
+/// are driven programmatically through [`RestartTrigger`].
+#[cfg(not(unix))]
+fn install_sighup_handler(_trigger: RestartTrigger) {}
 
 /// Open the gateway's KV store from config (Redis, or in-memory for throwaway
 /// runs). Mirrors the server's opener but the gateway only ever touches
@@ -585,8 +1129,23 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use mush_ipc::WireInbound;
-    use mush_proto::{ClientCaps, ClientKind, ColorDepth, Envelope, OutputEvent, RichText};
+    use mush_proto::{ClientCaps, ClientKind, ColorDepth, Envelope};
     use mush_session::{ConnId, ConnectionHandle};
+
+    /// Build a link over a single, already-connected boundary (its own reply
+    /// table). The restart machinery swaps the boundary in production; these
+    /// unit tests exercise one boundary's request/teardown logic directly.
+    fn test_link(
+        tx: mpsc::UnboundedSender<ToServer>,
+        pending: Arc<Mutex<Pending>>,
+    ) -> SocketGatewayLink {
+        let boundary = BoundaryHandle::default();
+        boundary.connect(Arc::new(BoundaryConn { tx, pending }));
+        SocketGatewayLink {
+            boundary,
+            next_id: AtomicU64::new(1),
+        }
+    }
 
     fn ansi_caps(structured: bool) -> ClientCaps {
         ClientCaps {
@@ -679,11 +1238,7 @@ mod tests {
         // parking, testing nothing).
         let (tx, _rx) = mpsc::unbounded_channel::<ToServer>();
         let pending = SocketGatewayLink::pending_table();
-        let link = SocketGatewayLink {
-            tx,
-            pending: Arc::clone(&pending),
-            next_id: AtomicU64::new(1),
-        };
+        let link = test_link(tx, Arc::clone(&pending));
 
         // Park a request; nobody will ever send its Reply.
         let fut = link.request(ServiceReq::Barrier);
@@ -708,6 +1263,77 @@ mod tests {
         assert!(res.is_none(), "a torn-down request must resolve to None");
     }
 
+    /// The crash-loop guard (R3): a server that keeps dying fast trips the
+    /// guard. Called back-to-back (no healthy gap), the first
+    /// `MAX_RESTARTS_IN_WINDOW` restarts are allowed and the next is refused —
+    /// the supervisor then gives up and tells players rather than respawning
+    /// forever.
+    #[test]
+    fn crash_guard_trips_after_max_restarts_in_window() {
+        let mut guard = CrashGuard::new();
+        // Mirror the supervisor: check `tripped()` before each attempt, then
+        // record it. The attempt past MAX_RESTARTS_IN_WINDOW must trip.
+        for i in 0..=MAX_RESTARTS_IN_WINDOW {
+            assert!(
+                !guard.tripped(),
+                "restart {i} within the window must be allowed"
+            );
+            guard.record_attempt();
+        }
+        assert!(
+            guard.tripped(),
+            "the restart past MAX_RESTARTS_IN_WINDOW must trip the guard"
+        );
+    }
+
+    /// A server that never comes back — every relaunch/reconnect fails, each
+    /// possibly burning its full connect deadline so few timestamps land in the
+    /// wall-clock window — must still trip the guard on the consecutive-failure
+    /// count alone, and a successful reconnect resets that streak.
+    #[test]
+    fn crash_guard_trips_after_consecutive_failures() {
+        let mut guard = CrashGuard::new();
+        for i in 0..MAX_CONSECUTIVE_FAILURES {
+            assert!(!guard.tripped(), "failed attempt {i} must be allowed");
+            guard.record_attempt();
+            guard.record_failure();
+        }
+        assert!(
+            guard.tripped(),
+            "MAX_CONSECUTIVE_FAILURES failed attempts must trip the guard"
+        );
+        // A success clears the failure streak (and the window still holds only
+        // MAX_CONSECUTIVE_FAILURES == MAX_RESTARTS_IN_WINDOW timestamps, not more,
+        // so the window bound is not tripped either).
+        guard.record_success();
+        assert!(
+            !guard.tripped(),
+            "a successful reconnect must reset the consecutive-failure streak"
+        );
+    }
+
+    /// The guard's backoff grows with consecutive fast restarts and never
+    /// exceeds the cap — so a crash loop backs off instead of hot-spinning,
+    /// while a first restart is near-immediate.
+    #[test]
+    fn crash_guard_backoff_grows_then_caps() {
+        let mut guard = CrashGuard::new();
+        guard.record_attempt();
+        let first = guard.backoff();
+        assert_eq!(first, BACKOFF_BASE, "the first backoff is the base");
+        let mut prev = first;
+        // Drive several more consecutive restarts; each backoff is >= the last
+        // and clamped at the cap.
+        for _ in 0..10 {
+            guard.record_attempt();
+            let b = guard.backoff();
+            assert!(b >= prev, "backoff must not shrink across fast restarts");
+            assert!(b <= BACKOFF_CAP, "backoff must never exceed the cap");
+            prev = b;
+        }
+        assert_eq!(prev, BACKOFF_CAP, "sustained fast restarts reach the cap");
+    }
+
     /// A request issued *after* the boundary has already gone down must fail
     /// fast (never park), closing the race where the reader drains the table
     /// between a request's `down` check and its insert.
@@ -716,11 +1342,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel::<ToServer>();
         let pending = SocketGatewayLink::pending_table();
         pending.lock().unwrap().down = true;
-        let link = SocketGatewayLink {
-            tx,
-            pending: Arc::clone(&pending),
-            next_id: AtomicU64::new(1),
-        };
+        let link = test_link(tx, Arc::clone(&pending));
 
         let res = link.request(ServiceReq::NameFree { name: "x".into() }).await;
         assert!(res.is_none(), "a request past a down boundary must be None");

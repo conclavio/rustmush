@@ -143,8 +143,30 @@ async fn build_engine(
 /// Boot failures (store unreachable, bad config, module registration) and
 /// fatal I/O on the listener.
 pub async fn serve(config: Config, bound: Option<oneshot::Sender<IpcEndpoint>>) -> Result<(), String> {
+    serve_with_store(config, bound, None).await
+}
+
+/// Like [`serve`], but with a caller-supplied object store instead of opening
+/// one from config. `None` opens the configured backend (the [`serve`] path,
+/// unchanged). `Some(store)` reuses the given store — the restart-survival test
+/// passes ONE shared store across every server (re)boot so world objects +
+/// durable module state survive a restart exactly as they would on Redis (R1),
+/// without needing a live Redis on the dev box.
+///
+/// # Errors
+///
+/// Boot failures (store unreachable, bad config, module registration) and
+/// fatal I/O on the listener.
+pub async fn serve_with_store(
+    config: Config,
+    bound: Option<oneshot::Sender<IpcEndpoint>>,
+    store: Option<Arc<dyn ObjectStore>>,
+) -> Result<(), String> {
     let endpoint = config.ipc_endpoint().map_err(|e| e.to_string())?;
-    let store = open_store(&config).await?;
+    let store = match store {
+        Some(s) => s,
+        None => open_store(&config).await?,
+    };
     let (engine, staff) = build_engine(&config, &store).await?;
 
     // The server -> gateway boundary: every `ToGateway` the world loop (and the
@@ -269,9 +291,26 @@ async fn reader_loop(
                     let _ = tx.send(ToGateway::Reply { id, resp });
                 });
             }
-            // Session bookkeeping for M16c re-attach; the in-process server has
-            // no session mirror to rebuild yet, so accept and ignore.
-            ToServer::Attach { .. } | ToServer::Detach { .. } | ToServer::ReAnnounce(_) => {}
+            // M16c re-attach: the gateway replays its full held-online roster
+            // after (re)connecting to a freshly booted server. Rebuild each
+            // connection's world-side state as a SILENT ConnUp and push each
+            // session a fresh `look` (D2) — the reloaded world (objects +
+            // durable module state from Redis) is intact; only the RAM-only
+            // connection map needs restoring.
+            ToServer::ReAnnounce(recs) => {
+                let recs = recs
+                    .into_iter()
+                    .map(|r| world_task::ReAttachRec {
+                        conn: r.conn,
+                        actor: r.actor,
+                        caps_structured: r.caps_structured,
+                    })
+                    .collect();
+                world.reattach(recs).await;
+            }
+            // Per-connection session bookkeeping — the forked server keeps no
+            // session mirror (the gateway owns it), so accept and ignore.
+            ToServer::Attach { .. } | ToServer::Detach { .. } => {}
         }
     }
     Ok(())

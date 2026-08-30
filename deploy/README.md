@@ -14,6 +14,19 @@ A second instance **dev2** ([`dev2/`](dev2/)) runs **Shadowrun** (`[rulesets].en
 on ports **6791** (redis) / **6792** (ssh) / **6793** (https), `/opt/rustmush/dev2`.
 To add another, copy an instance directory, rename the units/config, and pick fresh ports.
 
+Each instance can run one of **two ways**:
+
+- **all-in-one `mushd`** (the default, `dev1/` + `dev2/`) — one process serving
+  SSH + the web client; a deploy = `systemctl restart`, which drops connections
+  briefly.
+- **split, hot-restartable** ([`dev1-split/`](dev1-split/), M16c) — a
+  `mush-gateway` owns the SSH connections and supervises a `mush-server` child;
+  a deploy = `systemctl reload` → SIGHUP, which restarts only the server child
+  while **holding every SSH connection** (players resume mid-scene). The gateway
+  does **not** serve the web client yet, so instances whose players use the web
+  UI stay on the all-in-one. See [`dev1-split/README.md`](dev1-split/README.md)
+  and `docs/ops.md` → "Hot-restart (split) deployment".
+
 Each new external port must be opened in **BOTH** ufw (`ufw allow <port>/tcp`, done by
 this deploy) **and** the Hostinger network ACL (done in the Hostinger panel — ufw alone
 is not enough for external reachability).

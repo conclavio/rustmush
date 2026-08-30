@@ -653,12 +653,14 @@ mail, jobs) is wiped along with the world; use a disposable instance. The
 RediSearch index only works on db 0, which is one more reason production
 uses a dedicated instance on db 0.
 
-## Forked gateway/server split (M16b preview): `[ipc]`
+## Forked gateway/server split: `[ipc]`
 
-Production still runs the **all-in-one `mushd`** binary (gateway + world in one
-process). M16b adds an *optional* two-binary split behind the same
-`mushd.toml`, for zero-downtime restarts later (M16c). It is not the default
-deploy yet — this section is the preview.
+The **default deploy is still the all-in-one `mushd`** binary (gateway + world
+in one process). The split is an *optional* two-binary deployment behind the
+same `mushd.toml` that unlocks the **hot restart** ("Hot-restart (split)
+deployment", below) — restarting the game server without dropping SSH players.
+This section covers the two binaries + the `[ipc]` boundary they share; the
+hot-restart operational flow (and its accepted losses) is the next section.
 
 **The two binaries.**
 
@@ -711,13 +713,108 @@ mush-gateway --config /etc/rustmush/mushd.toml
 `mush-gateway` locates the `mush-server` binary as a sibling of its own
 executable (same target/dir), spawns it with `--config` + `--ipc <addr>`,
 waits for the server's `Hello` handshake over the socket, then accepts SSH
-connections. If the server child exits, the gateway logs it and rejects
-in-flight input (the `WorldGone` path); **automatic restart + re-attach is
-M16c** — for now, restart the gateway to restart the pair. Running the server
-standalone (`mush-server --config … --ipc …`) is supported for testing.
+connections. Running the server standalone (`mush-server --config … --ipc …`)
+is supported for testing.
 
-**A full systemd split** (two units, socket ordering, restart policy) lands with
-M16c. Until then, keep deploying the all-in-one `mushd` service documented in
-`deploy/README.md`; the split is proven by
-`crates/mush-gateway/tests/two_process_e2e.rs` and safe to trial off the
-critical path.
+The all-in-one `mushd` service (`deploy/README.md`) remains the default deploy;
+the split adds the **hot restart** below, and is proven by
+`crates/mush-gateway/tests/two_process_e2e.rs` +
+`crates/mush-gateway/tests/restart_survival.rs`.
+
+## Hot-restart (split) deployment: restart the game, hold the connections
+
+The **split deployment** (M16c) is what makes a zero-drop deploy possible. One
+`mush-gateway` service owns the player SSH connections and the session layer and
+**spawns + supervises** a `mush-server` child over the `[ipc]` socket. Because
+the gateway (not the game process) holds the sockets, the server can be torn
+down and rebuilt underneath live players:
+
+- **A deploy is a SIGHUP, not a restart.** Build the new binaries, then
+  `systemctl reload <name>mush-gateway` (which sends `SIGHUP`). The gateway
+  restarts **only its server child** from the fresh binary. It does **not**
+  restart itself, so no SSH connection is dropped. Players see a
+  `GAME: The server is restarting; hold on…` line, then
+  `GAME: Reconnected. Resuming where you left off.` and a fresh room render of
+  wherever they were — mid-scene, no reconnect, no re-login.
+- **A server crash is handled in-process.** If the child dies on its own, the
+  gateway auto-respawns it and re-attaches every held session — the same
+  hold-the-connection path as a deliberate restart. A **crash-loop guard**
+  bounds this two ways: at most 5 respawn attempts in a 30s window (a server that
+  boots then dies fast), **and** at most 5 consecutive failed relaunch/reconnect
+  attempts counted independent of wall-clock time (a server that never comes
+  back — a pre-bind boot crash, or a relaunch whose connect burns its full
+  deadline each time, which a wall-clock window alone would let slip through
+  forever). Backoff grows between consecutive fast restarts. If either bound
+  trips the supervisor gives up and tells players `GAME: The server is down and
+  could not be restarted`, still without dropping them (input stays refused with
+  a clear message). A one-off crash after a long healthy run resets the counter —
+  it is not a loop; a successful reconnect resets the consecutive-failure streak.
+- **During the gap, input is refused, not dropped.** While the server is down
+  the gateway rejects commands with the "restarting" notice rather than hanging
+  or disconnecting; in-flight service requests fail fast (they do not wait for a
+  server that is gone). The connection itself is untouched.
+- **The world survives because it was never in RAM to lose.** The new server
+  reloads all world objects + durable module state from Redis on boot exactly as
+  any boot does (M2 write-through); the gateway-resident session ring and
+  per-session sequence numbers continue seamlessly, so no output is duplicated
+  or gapped across the restart.
+
+Set it up per instance with `deploy/<name>-split/` (the reference is
+`deploy/dev1-split/`, which switches dev1 to the split on the same ports/Redis).
+It runs **one** service, `<name>mush-gateway`, with `ExecReload=/bin/kill -HUP
+$MAINPID`. The LLM key `EnvironmentFile` is injected into the gateway and
+**inherited by the spawned server child**, so the game half still gets its keys.
+Full walkthrough (first switch, redeploy, switch back, adapting to another
+instance) is in `deploy/dev1-split/README.md`.
+
+**On Windows** there is no `SIGHUP`; the signal handler is `cfg(unix)`-gated and
+compiled out. Restarts there are driven programmatically (the restart-survival
+test's `RestartTrigger` path). Production is Linux, where `SIGHUP` is the deploy
+signal.
+
+### Web client caveat
+
+The gateway currently serves **SSH only** — the axum web ingress is not yet
+wired into `mush-gateway::serve`. So the connection-holding hot restart covers
+**SSH players**; an instance whose players use the **web client (HTTPS)** must
+stay on the all-in-one `mushd` for now. Web sessions already ride an all-in-one
+restart a different way: their tokens live in Redis (`token:*`) and the client
+reconnects and resumes after the process comes back (see "Shutdown and crash
+behavior" above). The hold-the-live-socket story is the SSH one.
+
+### Accepted losses across a restart
+
+A hot restart reloads the world from Redis, so **world objects and durable
+module state are never lost** (rooms, exits, sheets, mail, jobs, channels,
+NPC memories, worldgen drafts — everything that write-through persists). The
+**only** things that do not survive a server restart are the pieces of state
+that live in the server's RAM by design and were always documented as transient:
+
+- **In-progress input context** — anyone mid-`+chargen` **wizard**, mid-mail
+  **compose**, or in any other multi-line editor when the restart hits. The
+  input stack is per-actor world RAM; it is dropped and the player lands back at
+  the normal command prompt after the fresh look. Submitted/approved sheets and
+  sent mail are already persisted and survive — only the *unsubmitted, still-being-typed*
+  buffer is lost. (Practically: after the reconnect notice, re-open the editor
+  and continue.)
+- **`@wait` / scheduler timers** — pending `@wait` entries and other in-RAM
+  scheduled callbacks do not fire across the restart; they are not persisted.
+  Module *ticks* (weather, etc.) simply resume their cadence on the new server.
+- **In-flight LLM calls** — an `@gen`, NPC turn, or ST-adjudication that was
+  off-loop when the server went down is abandoned (its budget spend, if the
+  provider had already been billed, still counts). Re-issue it. The *results*
+  that had already landed (accepted drafts, remembered NPC facts) are persisted
+  and survive.
+- **Active scenes + per-scene ruleset state** — open scenes, their `SceneId`s
+  (they re-number from 0 on each boot), the per-`(scene, obj)` `RulesetStateStore`
+  (e.g. per-mech combat `heat`), and per-scene map blobs are transient world RAM,
+  rebuilt empty by `World::from_objects` on every boot. A scene in progress when
+  the restart hits is not rehydrated — its per-boot state snapshot is orphaned —
+  so **re-open the scene afterward**. Everything the ruleset persisted to durable
+  object state (sheets, XP, wounds recorded on the sheet) survives; only the
+  live, in-scene working state resets. (This has always reset on any reboot;
+  M16c just makes restarts a routine deploy step, so it belongs on this list.)
+
+Nothing else is silently lost. Announce a deploy anyway if players might be
+mid-chargen, mid-compose, or mid-scene, so they know to expect the dropped editor
+buffer or to re-open an active scene.

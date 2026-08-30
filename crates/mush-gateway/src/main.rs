@@ -46,6 +46,7 @@ fn main() -> ExitCode {
         source: ServerSource::Spawn { config_path },
         store: None,
         ssh_ready: None,
+        restart_ready: None,
     };
     match runtime.block_on(serve(config, opts)) {
         Ok(()) => ExitCode::SUCCESS,

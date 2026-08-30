@@ -808,9 +808,33 @@ impl Engine {
         from_linkdead: bool,
         out: &mut Outbox,
     ) {
+        self.conn_up_inner(conn, actor, caps_structured, from_linkdead, true, out);
+    }
+
+    /// The shared body of [`conn_up`](Self::conn_up) and
+    /// [`reattach`](Self::reattach): rebuild ALL per-connection bookkeeping —
+    /// the `conns` map, the live-connection count, `connected`/`session_start`,
+    /// and the input-context prompt re-sync. When `announce` is set (the normal
+    /// connect path) it additionally announces "has connected/reconnected" to
+    /// the room and, on a genuine world-side connect transition, fires the
+    /// connect hook and the [`WorldEvent::Connected`]. The silent re-attach path
+    /// (M16c) passes `announce = false` so a mass restart re-attach rebuilds
+    /// state WITHOUT spamming every room or re-firing Connected for the whole
+    /// game (invariant R2).
+    ///
+    /// Returns whether this was the actor's FIRST live connection (`n == 1`).
+    fn conn_up_inner(
+        &mut self,
+        conn: ConnId,
+        actor: ObjId,
+        caps_structured: bool,
+        from_linkdead: bool,
+        announce: bool,
+        out: &mut Outbox,
+    ) -> bool {
         if self.world.get(actor).is_none() {
             tracing::warn!(%actor, conn, "ConnUp for missing actor ignored");
-            return;
+            return false;
         }
         let prev = self.conns.insert(
             conn,
@@ -823,7 +847,7 @@ impl Engine {
             if p.actor == actor {
                 // Duplicate ConnUp for a tracked connection: caps updated,
                 // nothing else to do.
-                return;
+                return false;
             }
             // A conn id re-used for a different actor should not happen;
             // recover by releasing the old attachment.
@@ -851,25 +875,59 @@ impl Engine {
             let was_connected = self.world.is_connected(actor);
             self.world.set_connected(actor, true);
             self.world.session_start(actor);
-            let suffix = if from_linkdead {
-                " has reconnected."
-            } else {
-                " has connected."
-            };
-            announce_room(&self.world, actor, suffix, out);
-            // Hooks/observers fire on the world-side transition only — a
-            // link-dead revival never "connected" twice.
-            if !was_connected {
-                module::fire_conn_hook(&self.registry, &mut self.world, out, actor, true);
-                module::emit_world_event(
-                    &self.registry,
-                    &mut self.world,
-                    out,
-                    &WorldEvent::Connected { who: actor },
-                );
+            if announce {
+                let suffix = if from_linkdead {
+                    " has reconnected."
+                } else {
+                    " has connected."
+                };
+                announce_room(&self.world, actor, suffix, out);
+                // Hooks/observers fire on the world-side transition only — a
+                // link-dead revival never "connected" twice.
+                if !was_connected {
+                    module::fire_conn_hook(&self.registry, &mut self.world, out, actor, true);
+                    module::emit_world_event(
+                        &self.registry,
+                        &mut self.world,
+                        out,
+                        &WorldEvent::Connected { who: actor },
+                    );
+                }
             }
-        } else {
+        } else if announce {
             announce_room(&self.world, actor, " has reconnected.", out);
+        }
+        n == 1
+    }
+
+    /// Silent re-attach of a held connection after a server restart (M16c).
+    ///
+    /// Rebuilds the connection's world-side bookkeeping EXACTLY like
+    /// [`conn_up`](Self::conn_up) — the `conns` map, the live-connection count,
+    /// `connected`/`session_start`, the input-context prompt re-sync — but
+    /// WITHOUT the room "has connected/reconnected" announce, the connect hook,
+    /// or the [`WorldEvent::Connected`]: a mass re-attach of every held session
+    /// must not spam rooms or re-fire Connected for the whole game (R2). The
+    /// connect/session state, in-RAM after a boot, is reconstructed from the
+    /// gateway's held sessions; world objects + durable module state already
+    /// reloaded from the store on boot (R1).
+    ///
+    /// On the actor's FIRST re-attached connection — and only when it is not
+    /// sitting in an input context (post-restart contexts are empty, so this
+    /// normally proceeds) — it dispatches a fresh `look`, pushing the
+    /// reconnected player a current room render from the reloaded world (D2).
+    /// The render addresses the actor, so a multi-connected session renders once
+    /// and the gateway fans it out to every held connection.
+    pub fn reattach(
+        &mut self,
+        conn: ConnId,
+        actor: ObjId,
+        caps_structured: bool,
+        out: &mut Outbox,
+    ) {
+        let first = self.conn_up_inner(conn, actor, caps_structured, false, false, out);
+        if first && self.world.input_depth(actor) == 0 {
+            dispatch(&self.registry, &mut self.world, actor, "look", out);
         }
     }
 
@@ -1301,6 +1359,54 @@ mod tests {
         assert!(out.events().iter().all(
             |(aud, _)| matches!(aud, Audience::Room { exclude, .. } if exclude.contains(&nick))
         ));
+    }
+
+    #[test]
+    fn reattach_is_silent_and_rebuilds_state_then_looks() {
+        // M16c silent re-attach (R2): after a server restart the held
+        // connections are re-attached WITHOUT a room "has connected/reconnected"
+        // announce (and without re-firing Connected), but with the full
+        // connection state rebuilt and a fresh look pushed to the player.
+        let (mut engine, nick) = setup();
+        let (mut out, _fx) = (Outbox::new(), Effects::new());
+        engine.reattach(2, nick, false, &mut out);
+
+        // R2: no room connect/reconnect announce.
+        assert!(
+            !room_saw(&out, LIMBO, "has connected."),
+            "silent re-attach must not announce a connect: {:?}",
+            texts(&out)
+        );
+        assert!(
+            !room_saw(&out, LIMBO, "has reconnected."),
+            "silent re-attach must not announce a reconnect: {:?}",
+            texts(&out)
+        );
+        // State rebuilt exactly like `conn_up`: connected, one live connection,
+        // a session started, the conn mapped to the actor.
+        assert!(engine.world.is_connected(nick));
+        assert_eq!(engine.connections_of(nick), 1);
+        assert!(engine.world.session_stat(nick).is_some());
+        assert_eq!(engine.actor_of(2), Some(nick));
+        // The reconnected player is pushed a fresh room render (D2): the room
+        // title reaches them even though nothing was announced to the room.
+        assert!(
+            texts(&out).iter().any(|t| t.contains("Limbo")),
+            "re-attach must push a fresh look; got {:?}",
+            texts(&out)
+        );
+
+        // A SECOND held connection of the same actor re-attaches just as
+        // silently (no reconnect announce), and the live-connection count tracks
+        // it — a multi-connected session rebuilds correctly.
+        let (mut out2, _fx2) = (Outbox::new(), Effects::new());
+        engine.reattach(3, nick, false, &mut out2);
+        assert!(
+            !room_saw(&out2, LIMBO, "has reconnected."),
+            "second silent re-attach must stay silent: {:?}",
+            texts(&out2)
+        );
+        assert_eq!(engine.connections_of(nick), 2);
     }
 
     #[test]

@@ -33,4 +33,15 @@ pub trait GatewayLink: Send + Sync {
     /// delivered at all; per-request failure (e.g. player-creation refusal) is
     /// carried inside the returned [`ServiceResp`].
     fn request(&self, req: ServiceReq) -> BoxFuture<'_, Option<ServiceResp>>;
+
+    /// Whether the boundary is currently in a **restart gap** — the server is
+    /// down and the gateway is respawning + re-attaching it (M16c). The
+    /// in-process all-in-one link is never in this state (the default), so its
+    /// behaviour is unchanged; the split gateway's socket link reports `true`
+    /// between a server exit and the re-synced reconnect, letting the input path
+    /// surface a clear "restarting" notice instead of silently dropping the line
+    /// (a `to_server` during the gap resolves `false`, as at shutdown).
+    fn is_restarting(&self) -> bool {
+        false
+    }
 }

@@ -344,13 +344,30 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             tracing::warn!(conn = conn.0, "line from unattached connection dropped");
             return LineOutcome::Continue;
         };
-        self.link
+        let sent = self
+            .link
             .to_server(ToServer::Inbound(WireInbound::Cmd {
                 conn: conn.0,
                 actor,
                 line: trimmed.to_string(),
             }))
             .await;
+        // D3 (M16c): during a server-restart gap the boundary is down, so the
+        // send is refused (`false`). Surface a clear "restarting" notice instead
+        // of silently dropping the line — the connection is NOT dropped. The
+        // in-process all-in-one link never reports `is_restarting` (its default
+        // is `false`), so its behaviour is unchanged (a `false` there is a
+        // shutdown, already terminal).
+        if !sent && self.link.is_restarting() {
+            send_event_to_conn(
+                &self.sessions,
+                conn,
+                OutputEvent::Sys(RichText::tag(
+                    "system",
+                    "The server is restarting; hold on — your input was not sent.",
+                )),
+            );
+        }
         LineOutcome::Continue
     }
 

@@ -144,12 +144,39 @@ impl From<CreatePlayerErr> for mush_ipc::CreatePlayerError {
     }
 }
 
+/// One held connection to silently re-attach after a server restart (M16c).
+///
+/// Built by the boundary reader from a [`mush_ipc::AttachRec`]; carries only the
+/// fields [`Engine::reattach`](mush_core::Engine::reattach) needs. The character
+/// name / account on the wire record are for the gateway's own logging — the
+/// server resolves the actor's name from the reloaded world, so they are not
+/// carried here.
+#[derive(Clone, Debug)]
+pub struct ReAttachRec {
+    /// The physical connection id.
+    pub conn: u64,
+    /// The actor the connection is playing.
+    pub actor: ObjId,
+    /// Whether the client understands structured (JSON) events.
+    pub caps_structured: bool,
+}
+
 /// Everything the world task can receive: engine inbound traffic plus typed
 /// service requests from async subsystems that must not touch `World`.
 pub enum WorldMsg {
     /// Ordinary engine input (commands, connection lifecycle, applies,
     /// control).
     Inbound(Inbound),
+    /// Silent re-attach of the gateway's held online connections after a server
+    /// restart (M16c). Each rec is applied via
+    /// [`Engine::reattach`](mush_core::Engine::reattach) — a SILENT `ConnUp`
+    /// (no room announce, no connect hook, no `WorldEvent::Connected`) — then a
+    /// fresh per-session `look` renders the reloaded room. One world-loop
+    /// iteration rebuilds the whole live-connection map after a boot.
+    ReAttach {
+        /// The held connections to re-attach.
+        recs: Vec<ReAttachRec>,
+    },
     /// Create a Player object (account/character creation): the world task
     /// creates it in the start room, writes the creation batch through the
     /// store (`durable: true`), and replies with the new id **once the
@@ -239,6 +266,16 @@ impl WorldHandle {
     /// Send one engine inbound message; `false` if the world task is gone.
     pub async fn inbound(&self, msg: Inbound) -> bool {
         self.tx.send(WorldMsg::Inbound(msg)).await.is_ok()
+    }
+
+    /// Silently re-attach a batch of held connections after a server restart
+    /// (M16c): each rebuilds its world-side bookkeeping WITHOUT a connect
+    /// announce/hook/event, then the reloaded room is pushed to each reconnected
+    /// player (one render per session, fanned to its connections). Rebuilds
+    /// `connected`/`live_conns`/`session_start` for the whole held roster in one
+    /// world-loop iteration. Fire-and-forget; `false` if the world task is gone.
+    pub async fn reattach(&self, recs: Vec<ReAttachRec>) -> bool {
+        self.tx.send(WorldMsg::ReAttach { recs }).await.is_ok()
     }
 
     /// Ask the world task to create a Player named `name`. Resolves only
@@ -543,6 +580,20 @@ async fn run(
                 } else {
                     engine.step(msg, &mut out, &mut fx)
                 }
+            }
+            Wake::Msg(WorldMsg::ReAttach { recs }) => {
+                // M16c silent re-attach: rebuild every held connection's
+                // world-side state without a connect announce/hook/event, then
+                // the engine pushes each session a fresh `look` from the
+                // reloaded world. Its output is delivered by the normal
+                // `deliver` at the foot of the loop, so each reconnected player
+                // receives a current room render across the boundary.
+                let count = recs.len();
+                for rec in recs {
+                    engine.reattach(rec.conn, rec.actor, rec.caps_structured, &mut out);
+                }
+                tracing::info!(count, "re-attached held connections after restart");
+                StepOutcome::Continue
             }
             Wake::Msg(WorldMsg::CreatePlayer { name, reply }) => {
                 if health.read_only {

@@ -40,6 +40,19 @@ Server lifecycle:
   @shutdown         Graceful stop: announce, stop the world, drain all
                     pending writes, snapshot, exit. Wizard.
 
+Hot restart (split deployment): on a server that runs the forked
+gateway/server split, a deploy restarts the GAME server WITHOUT dropping
+your connection. You will see "GAME: The server is restarting; hold on"
+then "GAME: Reconnected" and a fresh look at your current room — you are
+not disconnected and do not log in again. During the brief gap commands
+are refused with that notice rather than lost. What DOESN'T survive the
+restart (re-do it afterward): an unsubmitted +chargen wizard or mail
+compose you were mid-typing, any pending @wait timers, an LLM action
+(@gen / NPC reply) that was still generating, and any ACTIVE SCENE plus its
+live per-scene ruleset state (e.g. combat heat) — re-open the scene after
+reconnect. Everything you had already saved — rooms, your sheet, sent mail,
+jobs — is intact. Operators: see docs/ops.md "Hot-restart (split) deployment".
+
 Powers (grantable to non-staff by Wizards, via @set): BOOT, EXAMINE_ALL,
 TEL_ANYWHERE, TEL_ANYTHING, CHOWN_ANY, COMSYS_ADMIN, BUILDER_LLM,
 SEE_HIDDEN. Wizards hold every power implicitly.
