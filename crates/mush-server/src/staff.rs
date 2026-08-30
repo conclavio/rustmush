@@ -300,7 +300,7 @@ fn newpassword_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError
     if perm::role_of(ctx.w, target) > perm::role_of(ctx.w, ctx.actor) {
         return Err(CmdError::msg("Permission denied."));
     }
-    crate::accounts::validate_password(password).map_err(|e| CmdError::msg(format!("{e}.")))?;
+    mush_config::accounts::validate_password(password).map_err(|e| CmdError::msg(format!("{e}.")))?;
     let name = ctx
         .w
         .get(target)

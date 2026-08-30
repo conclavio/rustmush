@@ -77,19 +77,24 @@ use mush_core::{
     WorldEvent, can_perceive, event_subject, is_ignoring, narrative_actor, register_core_commands,
     register_engine_commands,
 };
+use mush_config::ipguard::IpGuard;
+use mush_config::metrics::{LlmFeatureStat, LlmTodaySpend, Metrics, WorldSample};
 use mush_llm::LlmService;
-use mush_net_web::{LlmFeatureStat, LlmTodaySpend, Metrics, WorldSample};
 use mush_proto::{OutputEvent, RichText};
-use mush_session::{CharKey, ConnId as SessConnId, DetachReason, SessionManager};
 use mush_store::{InMemoryStore, ObjectStore};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-use crate::ipguard::IpGuard;
-use crate::link::InProcessTransport;
+use crate::gateway_sink::GatewaySink;
 use crate::persist::{self, StoreJob};
 use crate::staff::{StaffOp, StaffOpKind, StaffQueue};
-use crate::{unix_now_ms, unix_now_s};
+
+/// The server-side view of the delivery seam: an `Arc<dyn GatewaySink>` the
+/// world loop hands its resolved output and session-control to. The all-in-one
+/// binary passes an in-process sink (routes to the shared `SessionManager`); the
+/// forked server passes the socket sink (serializes `ToGateway` frames).
+pub type Gateway = std::sync::Arc<dyn GatewaySink>;
+use mush_config::{unix_now_ms, unix_now_s};
 
 /// Capacity of the world task's inbound channel.
 const INBOUND_CAPACITY: usize = 1024;
@@ -395,51 +400,30 @@ pub fn base_registry() -> Registry {
 /// in-memory persistence. Returns the handle everything sends through and
 /// the world join handle; the writer task is detached (its writes go to a
 /// store nobody reads).
-pub fn spawn(engine: Engine, sessions: Arc<SessionManager>) -> (WorldHandle, JoinHandle<()>) {
-    let handles = spawn_persist(engine, sessions, ServerDeps::in_memory());
-    (handles.handle, handles.world_join)
-}
-
-/// Spawn the world task and its store-writer. The world task exits when
-/// [`Inbound::Control`]`(Shutdown)` steps to [`StepOutcome::Shutdown`] or
-/// when every [`WorldHandle`] (and internal effect sender) is dropped; the
-/// writer drains its queue and exits after that.
-pub fn spawn_persist(
-    engine: Engine,
-    sessions: Arc<SessionManager>,
-    deps: ServerDeps,
-) -> PersistHandles {
-    // All-in-one (in-process) delivery: the server→gateway seam is the shared
-    // `SessionManager`, exactly as before M16b.
-    let gateway = InProcessTransport::new(Arc::clone(&sessions));
-    spawn_persist_with_gateway(engine, sessions, deps, gateway)
-}
-
-/// Like [`spawn_persist`] but with a caller-supplied server→gateway
-/// [`InProcessTransport`] (M16b). The all-in-one binary passes the
-/// [`InProcessTransport::new`] (shared `SessionManager`) variant via
-/// [`spawn_persist`]; the forked `mush-server` passes an
-/// [`InProcessTransport::new_socket`] whose output is serialized as
-/// [`ToGateway`](mush_ipc::ToGateway) frames onto the boundary. In socket mode
-/// `sessions` is a local (empty) manager: the world loop reads it only for
-/// metrics counts and the `@boot` walk (which branches to a fire-and-forget
-/// `CloseSession` when `gateway.is_socket()`).
+/// Spawn the world task and its store-writer with a caller-supplied server →
+/// gateway [`GatewaySink`] (M16b). The `make_gateway` factory is handed the
+/// world loop's inbound [`WeakSender`](mpsc::WeakSender) so the all-in-one
+/// in-process sink can wire its slow-client / link-dead policing feedback (a
+/// WEAK sender: the world loop owns the sink, so a strong handle would keep its
+/// own inbound channel alive and it could never shut down). The forked
+/// `mush-server` ignores it and returns the [`SocketSink`](crate::gateway_sink::SocketSink),
+/// whose output is serialized as [`ToGateway`](mush_ipc::ToGateway) frames onto
+/// the boundary.
+///
+/// The world task exits when [`Inbound::Control`]`(Shutdown)` steps to
+/// [`StepOutcome::Shutdown`] or when every [`WorldHandle`] (and internal effect
+/// sender) is dropped; the writer drains its queue and exits after that.
 pub fn spawn_persist_with_gateway(
     engine: Engine,
-    sessions: Arc<SessionManager>,
     deps: ServerDeps,
-    mut gateway: InProcessTransport,
+    make_gateway: impl FnOnce(mpsc::WeakSender<WorldMsg>) -> Gateway,
 ) -> PersistHandles {
     let (tx, rx) = mpsc::channel(INBOUND_CAPACITY);
     let handle = WorldHandle { tx: tx.clone() };
-    // D5: wire the all-in-one slow-client / link-dead policing feedback into the
-    // shared session-sink transport, now that the inbound queue exists. A
-    // `Sink::Session` gateway (all-in-one) starts policing overflowed
-    // connections back into this loop's own queue; a `Sink::Socket` gateway (the
-    // forked server) ignores this — its gateway process polices instead. A
-    // WEAK sender: the world loop owns this transport, so a strong handle here
-    // would keep its own inbound channel alive and it could never shut down.
-    gateway.with_local_feedback(tx.downgrade());
+    // Build the delivery sink now that the inbound queue exists: the all-in-one
+    // in-process sink wires its policing feedback onto this loop's own inbound
+    // queue via the weak sender; the socket sink ignores it.
+    let gateway = make_gateway(tx.downgrade());
     // The writer notifies health transitions through a weak sender so it
     // can never keep the world channel alive on its own. It also stamps the
     // metrics registry (write-queue depth decrement + last-ack age) as it
@@ -461,7 +445,6 @@ pub fn spawn_persist_with_gateway(
     tokio::spawn(staff_ops_loop(
         Arc::clone(&deps.store),
         Arc::clone(&deps.guard),
-        Arc::clone(&sessions),
         tx.downgrade(),
         staff_rx,
         gateway.clone(),
@@ -471,7 +454,6 @@ pub fn spawn_persist_with_gateway(
     // WorldHandle could never end the task.
     let world_join = tokio::spawn(run(
         engine,
-        sessions,
         rx,
         tx.downgrade(),
         writer_tx,
@@ -497,13 +479,12 @@ enum Wake {
 #[allow(clippy::too_many_arguments)] // the world loop threads its whole context
 async fn run(
     mut engine: Engine,
-    sessions: Arc<SessionManager>,
     mut rx: mpsc::Receiver<WorldMsg>,
     tx: mpsc::WeakSender<WorldMsg>,
     writer: mpsc::Sender<StoreJob>,
     deps: ServerDeps,
     staff_ops: mpsc::Sender<StaffOp>,
-    gateway: InProcessTransport,
+    gateway: Gateway,
 ) {
     tracing::info!("world task running");
     let boot_unix = unix_now_s();
@@ -555,7 +536,7 @@ async fn run(
                 {
                     let (actor, text) = refused;
                     gateway.deliver(
-                        SendTarget::Char(char_key(actor).0),
+                        SendTarget::Char(u64::from(actor.0)),
                         Arc::new(OutputEvent::Sys(RichText::tag("error", text))),
                     );
                     StepOutcome::Continue
@@ -665,7 +646,7 @@ async fn run(
         if let Some(actor) = flood_sync {
             // ToGateway::SetFloodExempt — driven across the seam rather than
             // mutating the gateway's throttle directly (M16b: serialized).
-            gateway.set_flood_exempt(char_key(actor).0, engine.world.input_depth(actor) > 0);
+            gateway.set_flood_exempt(u64::from(actor.0), engine.world.input_depth(actor) > 0);
         }
         if let Some(gate_actor) = engine.take_durable_gate() {
             // The step asked for the durable-ack output gate (mail send,
@@ -693,13 +674,13 @@ async fn run(
                     tokio::spawn(async move {
                         match ack_rx.await {
                             Ok(Ok(_)) => {
-                                let _ = gateway.transmit(resolved);
+                                gateway.transmit(resolved);
                             }
                             Ok(Err(e)) => {
                                 // The write was dropped (non-retryable):
                                 // deliver what happened in RAM, but never
                                 // pretend it is durable.
-                                let _ = gateway.transmit(resolved);
+                                gateway.transmit(resolved);
                                 send_sys(
                                     &gateway,
                                     gate_actor,
@@ -718,7 +699,7 @@ async fn run(
                 }
                 // Nothing was actually dirty: nothing to gate on.
                 FlushOutcome::Clean | FlushOutcome::Queued(None) => {
-                    let _ = gateway.transmit(resolved);
+                    gateway.transmit(resolved);
                 }
                 // The batch was DROPPED (writer gone, teardown): the write
                 // is not durable — never deliver the confirmation.
@@ -753,7 +734,6 @@ async fn run(
         if !local_ops.is_empty() {
             run_local_staff_ops(
                 &mut engine,
-                &sessions,
                 &gateway,
                 &health,
                 boot_unix,
@@ -793,7 +773,7 @@ async fn run(
         // when the last sample is under a second old.
         maybe_publish_sample(
             &engine,
-            &sessions,
+            &gateway,
             &health,
             llm.as_ref(),
             &metrics,
@@ -916,7 +896,7 @@ fn refuse_read_only(world: &World, msg: &Inbound) -> Option<(ObjId, String)> {
 /// connected Wizards either way.
 fn apply_store_status(
     world: &World,
-    gateway: &InProcessTransport,
+    gateway: &Gateway,
     health: &mut StoreHealth,
     healthy: bool,
     detail: &str,
@@ -947,11 +927,11 @@ fn apply_store_status(
 
 /// Send a Sys line to every connected Wizard-or-better, each as a
 /// [`ToGateway::Deliver`](mush_ipc::ToGateway) through the seam.
-fn broadcast_wizards(world: &World, gateway: &InProcessTransport, text: &str) {
+fn broadcast_wizards(world: &World, gateway: &Gateway, text: &str) {
     let ev = Arc::new(OutputEvent::Sys(RichText::tag("system", text)));
     for actor in world.connected() {
         if world.get(actor).is_some_and(|o| o.role() >= Role::Wizard) {
-            gateway.deliver(SendTarget::Char(char_key(actor).0), Arc::clone(&ev));
+            gateway.deliver(SendTarget::Char(u64::from(actor.0)), Arc::clone(&ev));
         }
     }
 }
@@ -1043,8 +1023,7 @@ async fn flush_dirty(
 #[allow(clippy::too_many_arguments)]
 fn run_local_staff_ops(
     engine: &mut Engine,
-    sessions: &Arc<SessionManager>,
-    gateway: &InProcessTransport,
+    gateway: &Gateway,
     health: &StoreHealth,
     boot_unix: i64,
     ops: Vec<StaffOp>,
@@ -1075,7 +1054,7 @@ fn run_local_staff_ops(
                 // was already delivered as a normal `Deliver` frame ahead of
                 // this, so socket FIFO ordering preserves "message then close".
                 if gateway.is_socket() {
-                    gateway.close_session(char_key(target).0, mush_ipc::DetachCause::Booted);
+                    gateway.close_session(u64::from(target.0), mush_ipc::DetachCause::Booted);
                     out.info(actor, format!("@boot: {name} booted."));
                     continue;
                 }
@@ -1095,19 +1074,17 @@ fn run_local_staff_ops(
                 // loop below does. Kept direct in M16a (shared manager →
                 // behaviour-identical).
                 let mut booted = 0u32;
-                if let Some(sess) = sessions.session_of_char(char_key(target)) {
-                    for handle in sessions.close_session(sess) {
-                        booted += 1;
-                        engine.step(
-                            Inbound::ConnDown {
-                                conn: handle.id.0,
-                                actor: target,
-                                reason: DisconnectKind::Boot,
-                            },
-                            out,
-                            fx,
-                        );
-                    }
+                for conn in gateway.close_char_connections(u64::from(target.0)) {
+                    booted += 1;
+                    engine.step(
+                        Inbound::ConnDown {
+                            conn,
+                            actor: target,
+                            reason: DisconnectKind::Boot,
+                        },
+                        out,
+                        fx,
+                    );
                 }
                 if booted == 0 {
                     // No live connections (linkdead, or a test world with
@@ -1333,7 +1310,7 @@ fn llm_sample(llm: Option<&Arc<LlmService>>) -> Option<LlmSample> {
 /// hot path. Called at the end of each world-loop iteration.
 fn maybe_publish_sample(
     engine: &Engine,
-    sessions: &SessionManager,
+    gateway: &Gateway,
     health: &StoreHealth,
     llm: Option<&Arc<LlmService>>,
     metrics: &Metrics,
@@ -1350,13 +1327,13 @@ fn maybe_publish_sample(
 
     let counts = object_counts(&engine.world);
     let (npc_active, npc_thinking) = npc_counts(engine);
+    // The session/connection gauges are gateway-owned: the in-process sink reads
+    // the shared manager, the socket sink reports `(0, 0)` (the gateway process
+    // publishes them post-fork). Advisory gauges, not world state.
+    let (sessions_current, connections_current) = gateway.session_counts();
     metrics.publish_world(WorldSample {
-        // M16b (unrouted boundary read): `session_count`/`connection_count`
-        // read gateway-owned counters for the world gauge. Post-fork the
-        // gateway either publishes these two metrics itself or pushes the
-        // counts to the server (they are advisory gauges, not world state).
-        sessions_current: sessions.session_count() as i64,
-        connections_current: sessions.connection_count() as i64,
+        sessions_current,
+        connections_current,
         scheduler_queue_depth: engine.sched.len() as i64,
         rooms: counts.rooms as i64,
         exits: counts.exits as i64,
@@ -1551,7 +1528,7 @@ fn human_duration(mut s: i64) -> String {
 /// requesting actor.
 async fn run_staff_ops(
     _deps: &ServerDeps,
-    gateway: &InProcessTransport,
+    gateway: &Gateway,
     writer: &mpsc::Sender<StoreJob>,
     staff_ops: &mpsc::Sender<StaffOp>,
     ops: Vec<StaffOp>,
@@ -1637,8 +1614,7 @@ async fn run_staff_ops(
 #[allow(clippy::too_many_arguments)]
 async fn run_newpassword(
     store: &dyn ObjectStore,
-    sessions: &SessionManager,
-    gateway: &InProcessTransport,
+    gateway: &Gateway,
     world: &mpsc::WeakSender<WorldMsg>,
     target: ObjId,
     name: &str,
@@ -1647,7 +1623,11 @@ async fn run_newpassword(
 ) -> String {
     let hash = {
         let password = password.to_string();
-        match tokio::task::spawn_blocking(move || crate::accounts::hash_password(&password)).await {
+        match tokio::task::spawn_blocking(move || {
+            mush_config::accounts::hash_password(&password)
+        })
+        .await
+        {
             Ok(Ok(h)) => h,
             Ok(Err(e)) => return format!("@newpassword failed: {e}."),
             Err(e) => return format!("@newpassword failed: hashing task failed: {e}."),
@@ -1713,7 +1693,7 @@ async fn run_newpassword(
         let chars: Vec<u64> = account
             .characters
             .iter()
-            .map(|c| char_key(c.id).0)
+            .map(|c| u64::from(c.id.0))
             .collect();
         gateway.close_web_sessions(chars, Some(notice), mush_ipc::DetachCause::Booted);
         return format!(
@@ -1724,32 +1704,27 @@ async fn run_newpassword(
             if revoked == 1 { "" } else { "s" },
         );
     }
-    // All-in-one: walk the shared manager directly (announce + bookkeeping
-    // through the world when the connection is still up).
+    // All-in-one: walk the shared manager (through the in-process sink) directly
+    // — announce + bookkeeping through the world when the connection is still
+    // up, then close each structured (web) connection.
     let world = world.upgrade().map(|tx| WorldHandle { tx });
+    let chars: Vec<u64> = account.characters.iter().map(|c| u64::from(c.id.0)).collect();
     let mut booted = 0u32;
-    for ch in &account.characters {
-        let Some(sess) = sessions.session_of_char(char_key(ch.id)) else {
-            continue;
-        };
-        for handle in sessions.conns_of_session(sess) {
-            if !handle.is_structured() {
-                continue;
-            }
-            if let Some(world) = &world {
-                world
-                    .inbound(Inbound::ConnDown {
-                        conn: handle.id.0,
-                        actor: ch.id,
-                        reason: DisconnectKind::Boot,
-                    })
-                    .await;
-                world.barrier().await;
-            }
-            gateway.deliver(SendTarget::Conn(handle.id.0), Arc::new(notice.clone()));
-            sessions.detach(handle.id, DetachReason::Booted);
-            booted += 1;
+    for (conn, char) in gateway.structured_conns_of(&chars) {
+        let actor = ObjId(u32::try_from(char).unwrap_or(u32::MAX));
+        if let Some(world) = &world {
+            world
+                .inbound(Inbound::ConnDown {
+                    conn,
+                    actor,
+                    reason: DisconnectKind::Boot,
+                })
+                .await;
+            world.barrier().await;
         }
+        gateway.deliver(SendTarget::Conn(conn), Arc::new(notice.clone()));
+        gateway.detach_conn_local(conn);
+        booted += 1;
     }
     format!(
         "@newpassword: Password for {name} (account {}) changed; \
@@ -1769,19 +1744,17 @@ async fn run_newpassword(
 async fn staff_ops_loop(
     store: Arc<dyn ObjectStore>,
     guard: Arc<IpGuard>,
-    sessions: Arc<SessionManager>,
     world: mpsc::WeakSender<WorldMsg>,
     mut rx: mpsc::Receiver<StaffOp>,
-    gateway: InProcessTransport,
+    gateway: Gateway,
 ) {
     // The staff executor's server->gateway output (confirmations, the target's
-    // @newpassword notice) crosses the seam through this `gateway` transport —
-    // the shared `SessionManager` in the all-in-one binary, the boundary socket
-    // in the forked server. The raw `sessions` handle is still used for the
-    // session *control* ops @newpassword performs (session_of_char /
-    // conns_of_session / detach) — in split mode that manager is empty (the
-    // gateway owns the real one); full @newpassword logout-everywhere over the
-    // seam is M16c (see the note in `run_newpassword`).
+    // @newpassword notice) crosses the seam through this `gateway` sink — the
+    // shared `SessionManager` in the all-in-one binary, the boundary socket in
+    // the forked server. The session *control* ops @newpassword performs
+    // (`structured_conns_of` / `detach_conn_local`) go through the same sink; in
+    // split mode they resolve on the gateway process (this sink emits a
+    // fire-and-forget `CloseWebSessions` instead).
     while let Some(op) = rx.recv().await {
         let actor = op.actor;
         let text = match op.kind {
@@ -1817,7 +1790,7 @@ async fn staff_ops_loop(
                 password,
             } => {
                 run_newpassword(
-                    &*store, &sessions, &gateway, &world, target, &name, &by, &password.0,
+                    &*store, &gateway, &world, target, &name, &by, &password.0,
                 )
                 .await
             }
@@ -1851,9 +1824,9 @@ async fn staff_ops_loop(
 
 /// Send one system line to an actor as a [`ToGateway::Deliver`](mush_ipc::ToGateway)
 /// through the seam (staff-op confirmations, store-failure warnings).
-fn send_sys(gateway: &InProcessTransport, actor: ObjId, text: &str) {
+fn send_sys(gateway: &Gateway, actor: ObjId, text: &str) {
     gateway.deliver(
-        SendTarget::Char(char_key(actor).0),
+        SendTarget::Char(u64::from(actor.0)),
         Arc::new(OutputEvent::Sys(RichText::tag("system", text))),
     );
 }
@@ -1911,7 +1884,7 @@ fn resolve_sends(
         let ev = Arc::new(event);
         match audience {
             Audience::Actor(actor) => {
-                sends.push((SendTarget::Char(char_key(actor).0), ev));
+                sends.push((SendTarget::Char(u64::from(actor.0)), ev));
             }
             Audience::Conn(conn) => {
                 sends.push((SendTarget::Conn(conn), ev));
@@ -1952,7 +1925,7 @@ fn resolve_sends(
                     {
                         continue;
                     }
-                    sends.push((SendTarget::Char(char_key(occupant).0), Arc::clone(&ev)));
+                    sends.push((SendTarget::Char(u64::from(occupant.0)), Arc::clone(&ev)));
                 }
             }
             Audience::All => sends.push((SendTarget::All, ev)),
@@ -1965,15 +1938,10 @@ fn resolve_sends(
 /// ordinary, un-gated delivery path. `resolve_sends` reads `World` (the
 /// M11/M14 perception gating); the resolved `(SendTarget, OutputEvent)` pairs,
 /// each a [`ToGateway::Deliver`](mush_ipc::ToGateway), cross to the gateway via
-/// the in-process [`InProcessTransport`], which maps them onto the session
-/// manager and reports slow clients.
-fn deliver(
-    reg: &Registry,
-    world: &World,
-    gateway: &InProcessTransport,
-    out: &mut Outbox,
-) -> Vec<SessConnId> {
-    gateway.transmit(resolve_sends(reg, world, out))
+/// the in-process sink, which maps them onto the session manager and reports
+/// slow clients (or the socket sink, which serializes them to the boundary).
+fn deliver(reg: &Registry, world: &World, gateway: &Gateway, out: &mut Outbox) {
+    gateway.transmit(resolve_sends(reg, world, out));
 }
 
 /// Spawn one detached task per drained [`Effect`]; each completion re-enters
@@ -2164,30 +2132,6 @@ fn spawn_effects(fx: &mut Effects, tx: &mpsc::WeakSender<WorldMsg>, llm: Option<
             }
         }
     }
-}
-
-/// Widen a core [`ObjId`] to the session layer's opaque [`CharKey`].
-#[must_use]
-pub fn char_key(id: ObjId) -> CharKey {
-    CharKey(u64::from(id.0))
-}
-
-/// Narrow a [`CharKey`] back to the core [`ObjId`] it was widened from.
-#[must_use]
-pub fn char_key_obj(key: CharKey) -> ObjId {
-    ObjId(u32::try_from(key.0).unwrap_or(u32::MAX))
-}
-
-/// Deliver one event straight to a connection, bypassing the world task
-/// (login screens, error notices).
-///
-/// This is a **gateway-side** helper: the SSH/web bridges own the
-/// [`SessionManager`] and call it before a connection has attached to an
-/// actor. Server-side (world-loop / staff-executor) code must instead emit
-/// [`InProcessTransport::deliver`]`(SendTarget::Conn(..), ..)` so the send
-/// crosses the boundary as a [`ToGateway::Deliver`](mush_ipc::ToGateway).
-pub fn send_event_to_conn(sessions: &SessionManager, conn: SessConnId, event: OutputEvent) {
-    let _ = sessions.send_to_conn(conn, Arc::new(event));
 }
 
 #[cfg(test)]
@@ -2399,7 +2343,7 @@ mod tests {
         let recipients: std::collections::HashSet<ObjId> = sends
             .iter()
             .filter_map(|(t, _)| match t {
-                SendTarget::Char(ck) => Some(char_key_obj(CharKey(*ck))),
+                SendTarget::Char(ck) => Some(ObjId(u32::try_from(*ck).unwrap_or(u32::MAX))),
                 _ => None,
             })
             .collect();
@@ -2467,7 +2411,7 @@ mod tests {
         let recipients: std::collections::HashSet<ObjId> = resolve_sends(&reg, &world, &mut out)
             .iter()
             .filter_map(|(t, _)| match t {
-                SendTarget::Char(ck) => Some(char_key_obj(CharKey(*ck))),
+                SendTarget::Char(ck) => Some(ObjId(u32::try_from(*ck).unwrap_or(u32::MAX))),
                 _ => None,
             })
             .collect();

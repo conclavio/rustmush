@@ -32,8 +32,8 @@ use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore};
 use russh::ChannelMsg;
 
 use mush_gateway::{GatewayOptions, ServerSource};
-use mushd::accounts::hash_password;
-use mushd::config::Config;
+use mush_config::accounts::hash_password;
+use mush_config::config::Config;
 
 const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 const GM_PASSWORD: &str = "gm-secret-1";

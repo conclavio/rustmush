@@ -1934,6 +1934,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "mush-config"
+version = "0.1.0"
+dependencies = [
+ "argon2 0.5.3",
+ "dashmap",
+ "mush-core",
+ "mush-ipc",
+ "mush-store",
+ "rand 0.9.5",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "mush-core"
 version = "0.1.0"
 dependencies = [
@@ -1964,16 +1984,33 @@ dependencies = [
 name = "mush-gateway"
 version = "0.1.0"
 dependencies = [
+ "argon2 0.5.3",
+ "axum",
+ "dashmap",
+ "fred",
  "futures",
+ "mush-ansi",
+ "mush-config",
  "mush-core",
  "mush-ipc",
+ "mush-net-ssh",
+ "mush-net-web",
  "mush-proto",
  "mush-server",
  "mush-session",
  "mush-store",
- "mushd",
+ "mush-testkit",
+ "rand 0.9.5",
+ "reqwest",
  "russh",
+ "serde",
+ "serde_json",
+ "sha2",
+ "smol_str",
+ "thiserror 2.0.20",
  "tokio",
+ "tokio-tungstenite 0.30.0",
+ "toml",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
@@ -1983,6 +2020,7 @@ dependencies = [
 name = "mush-ipc"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "mush-core",
  "mush-proto",
  "rmp-serde",
@@ -2062,6 +2100,7 @@ dependencies = [
  "axum",
  "axum-server",
  "futures",
+ "mush-config",
  "mush-proto",
  "reqwest",
  "rust-embed",
@@ -2132,14 +2171,31 @@ dependencies = [
 name = "mush-server"
 version = "0.1.0"
 dependencies = [
+ "futures",
+ "mush-comsys",
+ "mush-config",
  "mush-core",
  "mush-ipc",
+ "mush-jobs",
  "mush-llm",
+ "mush-mail",
+ "mush-npc",
  "mush-proto",
- "mush-session",
+ "mush-ruleset",
+ "mush-script",
  "mush-store",
- "mushd",
+ "mush-testkit",
+ "mush-weather",
+ "mush-worldgen",
+ "rand 0.9.5",
+ "ruleset-shadowrun",
+ "ruleset-wod",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "thiserror 2.0.20",
  "tokio",
+ "toml",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
@@ -2224,7 +2280,9 @@ dependencies = [
  "fred",
  "futures",
  "mush-comsys",
+ "mush-config",
  "mush-core",
+ "mush-gateway",
  "mush-ipc",
  "mush-jobs",
  "mush-llm",
@@ -2235,6 +2293,7 @@ dependencies = [
  "mush-proto",
  "mush-ruleset",
  "mush-script",
+ "mush-server",
  "mush-session",
  "mush-store",
  "mush-testkit",

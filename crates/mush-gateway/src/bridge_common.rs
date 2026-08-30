@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use mush_core::{DisconnectKind, ObjId};
-use mush_ipc::{ServiceReq, ServiceResp, ToServer, WireInbound};
+use mush_ipc::{GatewayLink, ServiceReq, ServiceResp, ToServer, WireInbound};
 // Shared with the SSH transport's own line cap (`mush-net-ssh::editor`) so
 // both agree on one bound (MEDIUM finding).
 use mush_net_ssh::MAX_LINE_CHARS;
@@ -37,10 +37,10 @@ use mush_session::{
 };
 use smol_str::SmolStr;
 
+use mush_config::ipguard::IpGuard;
+
 use crate::accounts::{AuthBackend, AuthOutcome, CreateErr};
-use crate::ipguard::IpGuard;
-use crate::link::GatewayLink;
-use crate::world_task::{WorldHandle, char_key, char_key_obj, send_event_to_conn};
+use crate::delivery::{char_key, char_key_obj, send_event_to_conn};
 
 /// One character offered on a character-select surface (welcome screen,
 /// web character picker). The `id` is a widened `ObjId`, opaque to
@@ -109,33 +109,29 @@ pub struct GameBridge<A: AuthBackend + 'static> {
     pub(crate) accounts: Arc<A>,
     pub(crate) sessions: Arc<SessionManager>,
     /// The protocol-typed handle to the server half (M16a). The bridges speak
-    /// `mush-ipc` [`ToServer`]/[`ServiceReq`] through this trait object, never
-    /// the concrete [`WorldHandle`]; the in-process impl wraps the world-task
-    /// mpsc, and M16b swaps in a socket client.
+    /// `mush-ipc` [`ToServer`]/[`ServiceReq`] through this trait object, never a
+    /// concrete world handle; the in-process impl wraps the world-task mpsc, and
+    /// M16b swaps in a socket client.
     pub(crate) link: Arc<dyn GatewayLink>,
     pub(crate) guard: Arc<IpGuard>,
 }
 
 impl<A: AuthBackend + 'static> GameBridge<A> {
-    /// Wire the core. Takes the in-process [`WorldHandle`] and holds it behind
-    /// the [`GatewayLink`] trait, so every game-side call crosses the boundary
-    /// as a `mush-ipc` protocol message.
+    /// Wire the core. Takes the in-process world handle (any [`GatewayLink`],
+    /// e.g. `mush_server::world_task::WorldHandle`) and holds it behind the
+    /// trait, so every game-side call crosses the boundary as a `mush-ipc`
+    /// protocol message.
     pub fn new(
         accounts: Arc<A>,
         sessions: Arc<SessionManager>,
-        world: WorldHandle,
+        world: impl GatewayLink + 'static,
         guard: Arc<IpGuard>,
     ) -> GameBridge<A> {
-        GameBridge {
-            accounts,
-            sessions,
-            link: Arc::new(world),
-            guard,
-        }
+        Self::with_link(accounts, sessions, Arc::new(world), guard)
     }
 
     /// Wire the core with an explicit [`GatewayLink`] (M16b). The all-in-one
-    /// [`new`](GameBridge::new) wraps an in-process [`WorldHandle`]; the forked
+    /// [`new`](GameBridge::new) wraps an in-process world handle; the forked
     /// `mush-gateway` passes a socket-client link that serializes every
     /// `mush-ipc` message to the server process.
     pub fn with_link(

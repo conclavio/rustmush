@@ -99,6 +99,7 @@ toml = "0.8"
 # self-describing format; rmp-serde is compact and version-tolerant.
 rmp-serde = "1"
 # workspace-internal
+mush-config = { path = "crates/mush-config" }
 mush-proto = { path = "crates/mush-proto" }
 mush-core = { path = "crates/mush-core" }
 mush-ipc = { path = "crates/mush-ipc" }

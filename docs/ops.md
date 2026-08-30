@@ -670,6 +670,17 @@ deploy yet — this section is the preview.
   policing (it owns the connection buffers). It **spawns and supervises** the
   `mush-server` child and talks to it over the `[ipc]` socket.
 
+The two halves are a **clean dependency split**: they depend on neither each
+other nor the other half's deps. The gateway links only connection-side crates
+(`mush-net-ssh` / `mush-net-web` / `mush-session`, plus a `mush-store` KV handle
+for `account:*` / `token:*` / `ban:*`) and pulls in **none** of the game stack
+(`mush-llm`, the modules, the rulesets, `mush-worldgen`, `mush-npc`). The server
+links the game stack and pulls in **none** of the net/session crates. All they
+share is the dep-light `mush-config` (the `mushd.toml` model, logging, IP guard,
+account helpers) and the `mush-ipc` boundary protocol; the all-in-one `mushd`
+binary depends on both halves and supplies the in-process glue. (`cargo tree -p
+mush-gateway` / `-p mush-server` are the regression check for this split.)
+
 Both read the **same `mushd.toml`** — each its own relevant sections plus the
 shared `[ipc]` one. Point both at the **same Redis** (`[store].redis_url`): the
 gateway touches only `account:*` / `token:*` / `ban:*`, the server owns

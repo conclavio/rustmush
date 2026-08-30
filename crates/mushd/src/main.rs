@@ -20,9 +20,11 @@ use std::time::Duration;
 
 use mush_core::{ControlMsg, Engine, Inbound};
 use mush_llm::LlmService;
-use mush_net_web::Metrics;
+use mush_net_web::{Metrics, WebConfig};
+use mush_server::config_ext::{llm_config, onboarding_ruleset, weather_config, worldgen_config};
 use mush_session::{SessionConfig, SessionManager};
 use mush_store::{InMemoryStore, ObjectStore, RedisStore, core_migrations, run_migrations};
+use serde::Deserialize;
 
 use mushd::accounts::{Accounts, import_accounts_json};
 use mushd::config::{Config, StoreBackend};
@@ -192,12 +194,13 @@ async fn serve(config: Config) -> Result<(), String> {
     // whose key env-var is unset is skipped (routes to it fail fast). The
     // worldgen module and the world task's `Effect::ModuleAsync` driver share
     // this one handle.
+    let llm_cfg = llm_config(&config.llm)?;
     let llm =
-        Arc::new(LlmService::from_config(&config.llm).map_err(|e| format!("llm config: {e}"))?);
+        Arc::new(LlmService::from_config(&llm_cfg).map_err(|e| format!("llm config: {e}"))?);
     tracing::info!(
-        enabled = config.llm.enabled,
-        providers = config.llm.providers.len(),
-        routes = config.llm.routes.len(),
+        enabled = llm_cfg.enabled,
+        providers = llm_cfg.providers.len(),
+        routes = llm_cfg.routes.len(),
         "llm service built"
     );
 
@@ -208,19 +211,21 @@ async fn serve(config: Config) -> Result<(), String> {
     // approval payload handlers see a loaded jobs module. Then run each
     // namespace's store migrations and hand each module its persisted boot
     // data — all before the world task starts serving.
-    let mut mods = modules::server_modules_with(config.weather.to_weather_config());
+    let mut mods = modules::server_modules_with(weather_config(&config.weather));
     mods.push(modules::worldgen_module_with(
         Arc::clone(&llm),
-        config.worldgen.to_worldgen_config(),
+        worldgen_config(&config.worldgen),
     ));
     // M8: the NPC agent module, grounded by the enabled ruleset's sheet +
     // on-loop abilities through the generic ruleset grounding adapter (WoD,
     // Shadowrun, …); dialogue-only when no ruleset is enabled.
     let npc_grounding = modules::npc_agent_adapter(&config.rulesets.enabled);
     mods.push(modules::npc_module(npc_grounding));
-    let rulesets =
-        modules::ruleset_modules(&config.rulesets.enabled, &config.onboarding.to_ruleset())
-            .map_err(|e| format!("ruleset selection: {e}"))?;
+    let rulesets = modules::ruleset_modules(
+        &config.rulesets.enabled,
+        &onboarding_ruleset(&config.onboarding),
+    )
+    .map_err(|e| format!("ruleset selection: {e}"))?;
     if !rulesets.is_empty() {
         tracing::info!(rulesets = ?config.rulesets.enabled, "rulesets enabled");
     }
@@ -310,7 +315,8 @@ async fn serve(config: Config) -> Result<(), String> {
     // world handle, same guard — plus the token store and the panel
     // manifest. Served by mush-net-web on its own task; stopped gracefully
     // in the shutdown tail.
-    let mut web_config = config.web.clone();
+    let mut web_config = WebConfig::deserialize(config.web.clone())
+        .map_err(|e| format!("[web] config: {e}"))?;
     web_config.server_name = format!(
         "{} (rustmush {})",
         config.server.name,

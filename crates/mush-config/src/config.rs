@@ -40,9 +40,13 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use mush_core::{CivilDate, GameClock};
-use mush_llm::LlmConfig;
-use mush_net_web::WebConfig;
 use serde::Deserialize;
+
+/// An empty inline TOML table, the default for the raw `[llm]`/`[web]` sections
+/// (deserialized into their typed forms by the crate that consumes them).
+fn empty_toml_table() -> toml::Value {
+    toml::Value::Table(toml::map::Map::new())
+}
 
 /// Errors loading `mushd.toml`.
 #[derive(Debug, thiserror::Error)]
@@ -201,20 +205,22 @@ impl Default for OnboardingCfg {
 }
 
 impl OnboardingCfg {
-    /// The ruleset-facing onboarding config: resolve the room ids and fold the
-    /// `start_room_unapproved` sentinel back to `start_room`.
+    /// The resolved live start room (`#N`).
     #[must_use]
-    pub fn to_ruleset(&self) -> ruleset_wod::OnboardingConfig {
-        let start_room = mush_core::ObjId(self.start_room);
-        let start_room_unapproved = if self.start_room_unapproved == u32::MAX {
-            start_room
+    pub fn start_room_id(&self) -> mush_core::ObjId {
+        mush_core::ObjId(self.start_room)
+    }
+
+    /// The resolved restricted chargen start room, folding the
+    /// `start_room_unapproved` sentinel (`u32::MAX`) back to [`start_room`].
+    ///
+    /// [`start_room`]: OnboardingCfg::start_room
+    #[must_use]
+    pub fn start_room_unapproved_id(&self) -> mush_core::ObjId {
+        if self.start_room_unapproved == u32::MAX {
+            self.start_room_id()
         } else {
             mush_core::ObjId(self.start_room_unapproved)
-        };
-        ruleset_wod::OnboardingConfig {
-            chargen_required: self.chargen_required,
-            start_room,
-            start_room_unapproved,
         }
     }
 }
@@ -255,26 +261,17 @@ impl Default for RulesetsCfg {
 pub struct WeatherCfg {
     /// How many flavor variants `@weather/generate` requests per
     /// `(climate, state)` bucket (transition + ambient). Defaults to the
-    /// crate's [`mush_weather::WeatherConfig`] default (10).
+    /// `mush-weather` crate default (10); the typed conversion into
+    /// `mush_weather::WeatherConfig` lives in `mush-server`.
     pub flavor_variants: usize,
 }
 
 impl Default for WeatherCfg {
     fn default() -> Self {
+        // Mirrors `mush_weather::WeatherConfig::default().flavor_variants`
+        // (kept as a literal so `mush-config` needs no `mush-weather` dep).
         WeatherCfg {
-            flavor_variants: mush_weather::WeatherConfig::default().flavor_variants,
-        }
-    }
-}
-
-impl WeatherCfg {
-    /// The module-facing [`mush_weather::WeatherConfig`], overriding only the
-    /// config-surfaced knobs and keeping the crate defaults for the rest.
-    #[must_use]
-    pub fn to_weather_config(&self) -> mush_weather::WeatherConfig {
-        mush_weather::WeatherConfig {
-            flavor_variants: self.flavor_variants,
-            ..mush_weather::WeatherConfig::default()
+            flavor_variants: 10,
         }
     }
 }
@@ -284,25 +281,17 @@ impl WeatherCfg {
 #[serde(default)]
 pub struct WorldgenCfg {
     /// The `@gen/building` interior-walk cap: the most rooms one batch will
-    /// describe. Defaults to the crate's [`mush_worldgen::WorldgenConfig`]
-    /// default (40).
+    /// describe. Defaults to the `mush-worldgen` crate default (40); the typed
+    /// conversion into `mush_worldgen::WorldgenConfig` lives in `mush-server`.
     pub batch_max_rooms: usize,
 }
 
 impl Default for WorldgenCfg {
     fn default() -> Self {
+        // Mirrors `mush_worldgen::WorldgenConfig::default().batch_max_rooms`
+        // (kept as a literal so `mush-config` needs no `mush-worldgen` dep).
         WorldgenCfg {
-            batch_max_rooms: mush_worldgen::WorldgenConfig::default().batch_max_rooms,
-        }
-    }
-}
-
-impl WorldgenCfg {
-    /// The module-facing [`mush_worldgen::WorldgenConfig`].
-    #[must_use]
-    pub fn to_worldgen_config(&self) -> mush_worldgen::WorldgenConfig {
-        mush_worldgen::WorldgenConfig {
-            batch_max_rooms: self.batch_max_rooms,
+            batch_max_rooms: 40,
         }
     }
 }
@@ -441,7 +430,7 @@ impl Default for IpcCfg {
 }
 
 /// The whole configuration (unknown sections/keys ignored).
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// `[server]`.
@@ -452,9 +441,12 @@ pub struct Config {
     pub store: StoreCfg,
     /// `[ssh]`.
     pub ssh: SshCfg,
-    /// `[web]` — passed to `mush-net-web` (M4); `features`/`panels` are
-    /// filled from the module registry at boot.
-    pub web: WebConfig,
+    /// `[web]` — the raw section, deserialized into `mush_net_web::WebConfig`
+    /// by the gateway / all-in-one binary that starts the web ingress (kept
+    /// untyped here so `mush-config` need not depend on `mush-net-web`);
+    /// `features`/`panels` are filled from the module registry at boot.
+    #[serde(default = "empty_toml_table")]
+    pub web: toml::Value,
     /// `[game]`.
     pub game: GameCfg,
     /// `[rulesets]` — which ruleset module(s) load (M6).
@@ -469,14 +461,35 @@ pub struct Config {
     /// default; consumed by the WoD ruleset via [`OnboardingCfg::to_ruleset`].
     pub onboarding: OnboardingCfg,
     /// `[llm]` — the M7 LLM layer (providers, feature routes, budgets, kill
-    /// switch). Deserializes straight into [`mush_llm::LlmConfig`]; the whole
-    /// block defaults to `enabled = false` (a keyless clone still boots). API
-    /// keys are named by env var (`api_key_env`), never inlined — see
-    /// [`mush_llm::config`].
-    pub llm: LlmConfig,
+    /// switch). The raw section, deserialized into `mush_llm::LlmConfig` by the
+    /// server / all-in-one binary (kept untyped here so `mush-config` need not
+    /// depend on `mush-llm`); the whole block defaults to `enabled = false` (a
+    /// keyless clone still boots). API keys are named by env var
+    /// (`api_key_env`), never inlined.
+    #[serde(default = "empty_toml_table")]
+    pub llm: toml::Value,
     /// `[ipc]` — the M16b forked gateway<->server boundary socket. Ignored by
     /// the all-in-one `mushd`; read by `mush-gateway`/`mush-server`.
     pub ipc: IpcCfg,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            server: ServerCfg::default(),
+            log: LogCfg::default(),
+            store: StoreCfg::default(),
+            ssh: SshCfg::default(),
+            web: empty_toml_table(),
+            game: GameCfg::default(),
+            rulesets: RulesetsCfg::default(),
+            weather: WeatherCfg::default(),
+            worldgen: WorldgenCfg::default(),
+            onboarding: OnboardingCfg::default(),
+            llm: empty_toml_table(),
+            ipc: IpcCfg::default(),
+        }
+    }
 }
 
 impl Config {
@@ -555,8 +568,6 @@ mod tests {
         assert_eq!(cfg.store.redis_url, "redis://127.0.0.1:6379");
         assert_eq!(cfg.store_backend().unwrap(), StoreBackend::Redis);
         assert_eq!(cfg.ssh_listen().unwrap().port(), 2222);
-        assert_eq!(cfg.web.listen.to_string(), "127.0.0.1:8080");
-        assert!(cfg.web.trusted_proxies.is_empty());
         // Game-clock defaults: 1:1 with OOC time, calendar phased to 2020.
         assert_eq!(cfg.game.ic_ratio, 1);
         assert_eq!(cfg.game.ic_epoch, "2020-01-01 00:00");
@@ -589,17 +600,6 @@ mod tests {
     }
 
     #[test]
-    fn web_metrics_enabled_defaults_off_and_parses() {
-        // Opt-in (M9): the endpoint binds the possibly-public web listener with
-        // no auth, so a redeploy must not begin serving it without an explicit
-        // opt-in.
-        let cfg = Config::default();
-        assert!(!cfg.web.metrics_enabled);
-        let cfg: Config = toml::from_str("[web]\nmetrics_enabled = true").unwrap();
-        assert!(cfg.web.metrics_enabled);
-    }
-
-    #[test]
     fn rulesets_default_and_parse() {
         // A config-less server loads WoD out of the box.
         let cfg = Config::default();
@@ -614,32 +614,18 @@ mod tests {
 
     #[test]
     fn weather_and_worldgen_knobs_default_and_parse() {
-        // Config-less: both fall back to the crate defaults.
+        // Config-less: both fall back to the crate defaults (mirrored as
+        // literals here; the typed conversion is covered in `mush-server`).
         let cfg = Config::default();
-        assert_eq!(
-            cfg.weather.flavor_variants,
-            mush_weather::WeatherConfig::default().flavor_variants
-        );
-        assert_eq!(
-            cfg.worldgen.batch_max_rooms,
-            mush_worldgen::WorldgenConfig::default().batch_max_rooms
-        );
-        assert_eq!(cfg.weather.to_weather_config().flavor_variants, 10);
-        assert_eq!(cfg.worldgen.to_worldgen_config().batch_max_rooms, 40);
+        assert_eq!(cfg.weather.flavor_variants, 10);
+        assert_eq!(cfg.worldgen.batch_max_rooms, 40);
 
-        // Explicit overrides thread through to the module-facing configs.
+        // Explicit overrides parse.
         let cfg: Config =
             toml::from_str("[weather]\nflavor_variants = 6\n\n[worldgen]\nbatch_max_rooms = 12")
                 .unwrap();
         assert_eq!(cfg.weather.flavor_variants, 6);
-        assert_eq!(cfg.weather.to_weather_config().flavor_variants, 6);
-        // The un-surfaced weather knobs keep their crate defaults.
-        assert_eq!(
-            cfg.weather.to_weather_config().tick,
-            mush_weather::WeatherConfig::default().tick
-        );
         assert_eq!(cfg.worldgen.batch_max_rooms, 12);
-        assert_eq!(cfg.worldgen.to_worldgen_config().batch_max_rooms, 12);
     }
 
     #[test]
@@ -647,28 +633,24 @@ mod tests {
         // Default: off, both rooms fold to Limbo (#0).
         let cfg = Config::default();
         assert!(!cfg.onboarding.chargen_required);
-        let r = cfg.onboarding.to_ruleset();
-        assert!(!r.chargen_required);
-        assert_eq!(r.start_room, mush_core::LIMBO);
-        assert_eq!(r.start_room_unapproved, mush_core::LIMBO);
+        assert_eq!(cfg.onboarding.start_room_id(), mush_core::LIMBO);
+        assert_eq!(cfg.onboarding.start_room_unapproved_id(), mush_core::LIMBO);
 
         // Explicit: gate on, a distinct start room, unapproved falls back to it
         // when unset.
         let cfg: Config =
             toml::from_str("[onboarding]\nchargen_required = true\nstart_room = 5").unwrap();
-        let r = cfg.onboarding.to_ruleset();
-        assert!(r.chargen_required);
-        assert_eq!(r.start_room, mush_core::ObjId(5));
-        assert_eq!(r.start_room_unapproved, mush_core::ObjId(5));
+        assert!(cfg.onboarding.chargen_required);
+        assert_eq!(cfg.onboarding.start_room_id(), mush_core::ObjId(5));
+        assert_eq!(cfg.onboarding.start_room_unapproved_id(), mush_core::ObjId(5));
 
         // Both rooms explicit.
         let cfg: Config = toml::from_str(
             "[onboarding]\nchargen_required = true\nstart_room = 5\nstart_room_unapproved = 9",
         )
         .unwrap();
-        let r = cfg.onboarding.to_ruleset();
-        assert_eq!(r.start_room, mush_core::ObjId(5));
-        assert_eq!(r.start_room_unapproved, mush_core::ObjId(9));
+        assert_eq!(cfg.onboarding.start_room_id(), mush_core::ObjId(5));
+        assert_eq!(cfg.onboarding.start_room_unapproved_id(), mush_core::ObjId(9));
     }
 
     #[test]
@@ -688,23 +670,6 @@ mod tests {
             cfg.game.game_clock(),
             Err(ConfigError::BadIcEpoch { .. })
         ));
-    }
-
-    #[test]
-    fn web_section_parses_into_webconfig() {
-        let text = r#"
-            [web]
-            listen = "0.0.0.0:9090"
-            trusted_proxies = ["127.0.0.1"]
-        "#;
-        let cfg: Config = toml::from_str(text).unwrap();
-        assert_eq!(cfg.web.listen.to_string(), "0.0.0.0:9090");
-        assert_eq!(
-            cfg.web.trusted_proxies,
-            ["127.0.0.1".parse::<std::net::IpAddr>().unwrap()]
-        );
-        // Rate-limit / WS tuning knobs keep their crate defaults.
-        assert_eq!(cfg.web.auth_burst, 5);
     }
 
     #[test]
@@ -764,88 +729,9 @@ mod tests {
         // commented, so they resolve to the crate defaults).
         assert_eq!(cfg.weather.flavor_variants, 10);
         assert_eq!(cfg.worldgen.batch_max_rooms, 40);
-        // The example's [llm] block parses into LlmConfig: disabled by default
-        // (keyless clone boots), both providers present with env-var-named
-        // keys (never inlined), and the starter routes wired.
-        assert!(!cfg.llm.enabled);
-        assert_eq!(cfg.llm.providers.len(), 2);
-        let openrouter = cfg
-            .llm
-            .providers
-            .get("openrouter")
-            .expect("openrouter provider");
-        assert_eq!(
-            openrouter.api_key_env.as_deref(),
-            Some("OPENROUTER_API_KEY")
-        );
-        assert_eq!(openrouter.kind, mush_llm::ProviderKind::Openai);
-        let anthropic = cfg
-            .llm
-            .providers
-            .get("anthropic")
-            .expect("anthropic provider");
-        assert_eq!(anthropic.api_key_env.as_deref(), Some("ANTHROPIC_API_KEY"));
-        assert_eq!(anthropic.kind, mush_llm::ProviderKind::Anthropic);
-        let room = cfg
-            .llm
-            .routes
-            .get("worldgen_room")
-            .expect("worldgen_room route");
-        assert_eq!(room.model, "z-ai/glm-5.3");
-        assert!(matches!(
-            room.reasoning_config(),
-            Some(mush_llm::ReasoningConfig::Effort(mush_llm::Effort::Low))
-        ));
-        // The M8 NPC dialogue tiers each resolve to a route; the default
-        // major route rides OpenRouter (anthropic/claude-opus-5 is reserved as
-        // a documented per-NPC override, not the default).
-        assert_eq!(
-            cfg.llm
-                .routes
-                .get("npc_dialogue_major")
-                .expect("npc_dialogue_major route")
-                .model,
-            "z-ai/glm-5.3"
-        );
-        assert_eq!(
-            cfg.llm.routes["npc_dialogue_minor"].model,
-            "z-ai/glm-5.3-flash"
-        );
-        assert_eq!(
-            cfg.llm.routes["npc_dialogue_extra"].model,
-            "deepseek/deepseek-v4-flash-0731"
-        );
-        assert!(cfg.llm.routes.contains_key("npc_summarize"));
-        // Per-NPC daily budget documented in the example.
-        assert!(cfg.llm.budgets.per_npc_default.is_some());
-    }
-
-    #[test]
-    fn llm_section_parses_and_defaults_disabled() {
-        // No [llm] table at all: LlmConfig defaults, disabled.
-        let cfg = Config::default();
-        assert!(!cfg.llm.enabled);
-        assert!(cfg.llm.providers.is_empty());
-        assert!(cfg.llm.routes.is_empty());
-        // A partial [llm] table: enabled + one route, keys named by env var.
-        let text = r#"
-            [llm]
-            enabled = true
-
-            [llm.providers.openrouter]
-            kind = "openai"
-            base_url = "https://openrouter.ai/api/v1"
-            api_key_env = "OPENROUTER_API_KEY"
-
-            [llm.routes.worldgen_room]
-            model = "z-ai/glm-5.3"
-            max_tokens = 1500
-            reasoning = "low"
-        "#;
-        let cfg: Config = toml::from_str(text).unwrap();
-        assert!(cfg.llm.enabled);
-        assert_eq!(cfg.llm.routes["worldgen_room"].max_tokens, 1500);
-        assert!(cfg.llm.providers["openrouter"].api_key_env.is_some());
+        // The example's [llm] block is captured raw here; its typed parse into
+        // `mush_llm::LlmConfig` is covered by the server crate that owns it.
+        assert!(cfg.llm.is_table());
     }
 
     #[test]

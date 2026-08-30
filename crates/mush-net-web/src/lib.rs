@@ -59,8 +59,13 @@ mod auth;
 mod config;
 mod hooks;
 mod ip;
-pub mod metrics;
 mod ws;
+
+/// The observability metrics registry moved to `mush-config` (the shared,
+/// dependency-light crate) so the forked `mush-server` can write it without
+/// depending on `mush-net-web`; re-exported here so `crate::metrics::…` and the
+/// public `mush_net_web::Metrics` path keep resolving unchanged.
+pub use mush_config::metrics;
 
 pub use app::{router, serve, serve_with_shutdown};
 pub use config::{TlsConfig, WebConfig};

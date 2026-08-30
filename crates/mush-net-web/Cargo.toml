@@ -12,6 +12,7 @@ description = "axum web server: token auth, WS envelope, embedded SPA"
 tls = ["dep:axum-server", "dep:rustls"]
 
 [dependencies]
+mush-config.workspace = true
 mush-proto.workspace = true
 axum.workspace = true
 tokio.workspace = true

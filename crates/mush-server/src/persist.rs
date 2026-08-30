@@ -40,12 +40,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mush_core::{ObjId, World};
-use mush_net_web::Metrics;
+use mush_config::metrics::Metrics;
 use mush_store::{ObjectStore, StoreError, WriteBatch};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-use crate::unix_now_s;
+use mush_config::unix_now_s;
 use crate::world_task::WorldMsg;
 
 /// Capacity of the writer's job queue. The world task `await`s its sends,

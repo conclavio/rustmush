@@ -19,6 +19,12 @@ description = "rustmush server binary: config, accounts, world task, SSH bridge,
 tls = ["mush-net-web/tls"]
 
 [dependencies]
+# M16b: mushd is the ALL-IN-ONE launcher — it depends on BOTH forked halves and
+# the shared config, and provides the in-process glue that runs them in one
+# process over a shared SessionManager.
+mush-gateway.workspace = true
+mush-server.workspace = true
+mush-config.workspace = true
 mush-core.workspace = true
 mush-proto.workspace = true
 # M16a: the gateway<->server boundary protocol. This stage only borrows

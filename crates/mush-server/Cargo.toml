@@ -6,26 +6,50 @@ license.workspace = true
 authors.workspace = true
 description = "rustmush forked SERVER half (M16b): owns the world task + persistence + modules + rulesets; speaks the mush-ipc boundary protocol over a socket to mush-gateway. Holds NO connection listeners."
 
-# M16b: the server half of the fork. It reuses the `mushd` library's world
-# task, persistence, modules, staff and config wiring, and adds the server-side
-# socket endpoint of the boundary protocol. It deliberately owns none of the
-# network ingress (SSH/web) — that lives in `mush-gateway`.
+# M16b: the server half of the fork. It owns the world task, persistence,
+# modules, staff executor and boot wiring, and adds the server-side socket
+# endpoint of the boundary protocol. It deliberately owns none of the network
+# ingress (SSH/web) — that lives in `mush-gateway` — and depends on neither the
+# net crates nor `mush-session`.
 [[bin]]
 name = "mush-server"
 path = "src/main.rs"
 
 [dependencies]
-mushd.workspace = true
+mush-config.workspace = true
 mush-core.workspace = true
 mush-proto.workspace = true
 mush-ipc.workspace = true
 mush-store.workspace = true
-mush-session.workspace = true
+# The M3 proving modules, wired at boot (modules.rs).
+mush-comsys.workspace = true
+mush-mail.workspace = true
+mush-jobs.workspace = true
+# The M5 scripting + weather modules.
+mush-script.workspace = true
+mush-weather.workspace = true
+# The M6 rulesets: config's [rulesets] selects which load (modules.rs).
+ruleset-wod.workspace = true
+# The M10b second ruleset (SR5).
+ruleset-shadowrun.workspace = true
+# The M7 LLM layer + worldgen module.
 mush-llm.workspace = true
+mush-worldgen.workspace = true
+# The M8 NPC agent module.
+mush-npc.workspace = true
+mush-ruleset.workspace = true
+mush-testkit.workspace = true
+futures.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+rand.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

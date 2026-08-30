@@ -34,21 +34,26 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
+use mush_config::config::Config;
+use mush_config::ipguard::IpGuard;
 use mush_core::DisconnectKind;
 use mush_ipc::{
-    BoxRead, BoxWrite, DetachCause, FrameReader, IPC_VERSION, IpcEndpoint, ServiceReq, ServiceResp,
-    ToGateway, ToServer, WireInbound,
+    BoxRead, BoxWrite, DetachCause, FrameReader, GatewayLink, IPC_VERSION, IpcEndpoint, ServiceReq,
+    ServiceResp, ToGateway, ToServer, WireInbound,
 };
 use mush_session::{CharKey, SessionConfig, SessionManager};
 use mush_store::ObjectStore;
 use tokio::sync::{mpsc, oneshot};
 
-use mushd::accounts::Accounts;
-use mushd::config::Config;
-use mushd::ipguard::IpGuard;
-use mushd::link::{GatewayLink, InProcessTransport};
-use mushd::ssh_bridge::{SshBridge, start_listener};
-use mushd::world_task::char_key_obj;
+use crate::accounts::Accounts;
+use crate::delivery::{SessionDelivery, char_key_obj};
+use crate::ssh_bridge::{SshBridge, start_listener};
+
+pub mod accounts;
+pub mod bridge_common;
+pub mod delivery;
+pub mod ssh_bridge;
+pub mod web_bridge;
 
 /// Where the server half comes from.
 pub enum ServerSource {
@@ -171,7 +176,7 @@ async fn gateway_writer(mut w: BoxWrite, mut rx: mpsc::UnboundedReceiver<ToServe
 /// [`ToGateway::Bye`]) or a protocol fault occurs.
 async fn gateway_reader(
     mut reader: FrameReader<BoxRead>,
-    transport: InProcessTransport,
+    transport: SessionDelivery,
     pending: Arc<Mutex<Pending>>,
     to_server_tx: mpsc::UnboundedSender<ToServer>,
     sessions: Arc<SessionManager>,
@@ -498,8 +503,7 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
     // self-polices slow clients and reaps link-dead sessions, feeding the
     // resulting `ConnDown`/`SessionGone` back to the server as inbound over the
     // boundary writer.
-    let mut transport = InProcessTransport::new(Arc::clone(&sessions));
-    transport.with_boundary_feedback(to_server_tx.clone());
+    let transport = SessionDelivery::new(Arc::clone(&sessions), to_server_tx.clone());
 
     tokio::spawn(gateway_writer(writer_half, to_server_rx));
     tokio::spawn(gateway_reader(
@@ -562,7 +566,7 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
 /// runs). Mirrors the server's opener but the gateway only ever touches
 /// account/token/ban keys.
 async fn open_store(config: &Config) -> Result<Arc<dyn ObjectStore>, String> {
-    use mushd::config::StoreBackend;
+    use mush_config::config::StoreBackend;
     match config.store_backend().map_err(|e| e.to_string())? {
         StoreBackend::Redis => {
             let url = &config.store.redis_url;

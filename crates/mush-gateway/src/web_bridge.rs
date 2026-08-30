@@ -61,11 +61,12 @@ use mush_session::{ConnId, ConnectionHandle, FloodVerdict, ReplayError, SessionM
 use mush_store::{ObjectStore, TokenRecord};
 use sha2::{Digest, Sha256};
 
+use mush_config::ipguard::IpGuard;
+use mush_config::unix_now_s;
+
 use crate::accounts::{AuthBackend, CreateErr};
 use crate::bridge_common::{AuthResult, GameBridge};
-use crate::ipguard::IpGuard;
-use crate::unix_now_s;
-use crate::world_task::{WorldHandle, char_key, send_event_to_conn};
+use crate::delivery::{char_key, send_event_to_conn};
 
 /// Web session lifetime: 7 days, sliding (each successful validation
 /// pushes expiry out to `now + TOKEN_TTL_S`).
@@ -102,27 +103,21 @@ impl<A: AuthBackend + 'static> WebBridge<A> {
     pub fn new(
         accounts: Arc<A>,
         sessions: Arc<SessionManager>,
-        world: WorldHandle,
+        world: impl mush_ipc::GatewayLink + 'static,
         guard: Arc<IpGuard>,
         store: Arc<dyn ObjectStore>,
         panels: Vec<String>,
     ) -> WebBridge<A> {
-        WebBridge {
-            core: GameBridge::new(accounts, sessions, world, guard),
-            store,
-            panels,
-            conn_tokens: Mutex::new(HashMap::new()),
-            metrics: Arc::new(mush_net_web::Metrics::new()),
-        }
+        Self::with_link(accounts, sessions, Arc::new(world), guard, store, panels)
     }
 
-    /// Wire the bridge with an explicit [`GatewayLink`](crate::link::GatewayLink)
+    /// Wire the bridge with an explicit [`GatewayLink`](mush_ipc::GatewayLink)
     /// (M16b): the forked `mush-gateway` passes a socket-client link instead of
-    /// an in-process [`WorldHandle`].
+    /// an in-process world handle.
     pub fn with_link(
         accounts: Arc<A>,
         sessions: Arc<SessionManager>,
-        link: Arc<dyn crate::link::GatewayLink>,
+        link: Arc<dyn mush_ipc::GatewayLink>,
         guard: Arc<IpGuard>,
         store: Arc<dyn ObjectStore>,
         panels: Vec<String>,

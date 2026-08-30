@@ -49,10 +49,10 @@ use tokio::sync::mpsc;
 // working unchanged.
 pub use crate::bridge_common::{AuthResult, CharSummary, ConnectErr, LineOutcome};
 
+use mush_config::ipguard::IpGuard;
+
 use crate::accounts::{AuthBackend, AuthOutcome, CreateErr};
 use crate::bridge_common::GameBridge;
-use crate::ipguard::IpGuard;
-use crate::world_task::WorldHandle;
 
 /// A freshly authenticated connection, handed over by the transport.
 #[derive(Debug)]
@@ -83,22 +83,19 @@ impl<A: AuthBackend + 'static> SshBridge<A> {
     pub fn new(
         accounts: Arc<A>,
         sessions: Arc<SessionManager>,
-        world: WorldHandle,
+        world: impl mush_ipc::GatewayLink + 'static,
         guard: Arc<IpGuard>,
     ) -> SshBridge<A> {
-        SshBridge {
-            core: GameBridge::new(accounts, sessions, world, guard),
-            metrics: Arc::new(mush_net_web::Metrics::new()),
-        }
+        Self::with_link(accounts, sessions, Arc::new(world), guard)
     }
 
     /// Wire the bridge with an explicit [`GatewayLink`] (M16b): the forked
     /// `mush-gateway` passes a socket-client link instead of an in-process
-    /// [`WorldHandle`].
+    /// world handle.
     pub fn with_link(
         accounts: Arc<A>,
         sessions: Arc<SessionManager>,
-        link: Arc<dyn crate::link::GatewayLink>,
+        link: Arc<dyn mush_ipc::GatewayLink>,
         guard: Arc<IpGuard>,
     ) -> SshBridge<A> {
         SshBridge {

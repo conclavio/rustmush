@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use mushd::config::Config;
+use mush_config::config::Config;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -39,7 +39,7 @@ fn main() -> ExitCode {
         config.ipc.listen = addr.clone();
     }
 
-    let _log_guards = mushd::logging::init(&config.log, &config.server.data_dir);
+    let _log_guards = mush_config::logging::init(&config.log, &config.server.data_dir);
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()

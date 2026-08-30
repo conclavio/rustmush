@@ -29,6 +29,9 @@
 
 use std::sync::Arc;
 
+use mush_config::accounts::import_accounts_json;
+use mush_config::config::{Config, StoreBackend};
+use mush_config::ipguard::IpGuard;
 use mush_core::{ControlMsg, Engine, Inbound};
 use mush_ipc::{
     BoxWrite, FrameReader, IPC_VERSION, IpcEndpoint, ServiceReq, ServiceResp, ToGateway, ToServer,
@@ -38,13 +41,21 @@ use mush_store::{InMemoryStore, ObjectStore, RedisStore, core_migrations, run_mi
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
-use mushd::accounts::import_accounts_json;
-use mushd::config::{Config, StoreBackend};
-use mushd::ipguard::IpGuard;
-use mushd::modules;
-use mushd::persist::load_or_seed_world;
-use mushd::staff::{StaffQueue, register_server_commands};
-use mushd::world_task::{self, ServerDeps, WorldHandle};
+pub mod accounts;
+pub mod config_ext;
+pub mod gateway_sink;
+pub mod help;
+pub mod modules;
+pub mod persist;
+pub mod staff;
+pub mod world_task;
+
+use crate::gateway_sink::SocketSink;
+use crate::persist::load_or_seed_world;
+use crate::staff::{StaffQueue, register_server_commands};
+use crate::world_task::{ServerDeps, WorldHandle};
+
+pub use gateway_sink::{GatewaySink, SocketSink as ServerSocketSink};
 
 /// A human-readable server identity string, sent in [`ToGateway::Hello`].
 fn server_id() -> String {
@@ -93,22 +104,25 @@ async fn build_engine(
     let mut registry = world_task::base_registry();
     register_server_commands(&mut registry, &staff)
         .map_err(|e| format!("server command registration: {e}"))?;
-    match mushd::help::load_help_topics(&mut registry, &config.server.help_dir) {
+    match crate::help::load_help_topics(&mut registry, &config.server.help_dir) {
         Ok(n) => tracing::info!(topics = n, "help topics loaded"),
         Err(e) => tracing::warn!(error = %e, "help topics failed to load; continuing"),
     }
+    let llm_config = crate::config_ext::llm_config(&config.llm)?;
     let llm =
-        Arc::new(LlmService::from_config(&config.llm).map_err(|e| format!("llm config: {e}"))?);
-    let mut mods = modules::server_modules_with(config.weather.to_weather_config());
+        Arc::new(LlmService::from_config(&llm_config).map_err(|e| format!("llm config: {e}"))?);
+    let mut mods = modules::server_modules_with(crate::config_ext::weather_config(&config.weather));
     mods.push(modules::worldgen_module_with(
         Arc::clone(&llm),
-        config.worldgen.to_worldgen_config(),
+        crate::config_ext::worldgen_config(&config.worldgen),
     ));
     let npc_grounding = modules::npc_agent_adapter(&config.rulesets.enabled);
     mods.push(modules::npc_module(npc_grounding));
-    let rulesets =
-        modules::ruleset_modules(&config.rulesets.enabled, &config.onboarding.to_ruleset())
-            .map_err(|e| format!("ruleset selection: {e}"))?;
+    let rulesets = modules::ruleset_modules(
+        &config.rulesets.enabled,
+        &crate::config_ext::onboarding_ruleset(&config.onboarding),
+    )
+    .map_err(|e| format!("ruleset selection: {e}"))?;
     mods.extend(rulesets);
     let mut engine = Engine::with_modules(world, registry, mods)
         .map_err(|e| format!("module registration: {e}"))?;
@@ -133,19 +147,14 @@ pub async fn serve(config: Config, bound: Option<oneshot::Sender<IpcEndpoint>>) 
     let store = open_store(&config).await?;
     let (engine, staff) = build_engine(&config, &store).await?;
 
-    // Session bookkeeping the world loop still reads (metrics counts, the
-    // in-process `@boot` walk) is a LOCAL, empty manager in split mode: the
-    // gateway process owns the real one. `@boot` branches to a fire-and-forget
-    // `CloseSession` when it sees the socket sink, so the empty manager is never
-    // walked for a real boot.
-    let sessions = Arc::new(mush_session::SessionManager::new());
-
     // The server -> gateway boundary: every `ToGateway` the world loop (and the
     // request handlers) produce is queued here and drained to the socket by the
     // writer task. Unbounded so the world loop's `transmit` never awaits (D4);
-    // real backpressure is the socket's, applied in the writer.
+    // real backpressure is the socket's, applied in the writer. The forked
+    // server holds no `SessionManager` — the gateway process owns it — so the
+    // world loop's session control (`@boot`, `@newpassword`) goes out as
+    // fire-and-forget `ToGateway` frames through the [`SocketSink`].
     let (to_gw_tx, to_gw_rx) = mpsc::unbounded_channel::<ToGateway>();
-    let gateway = mushd::link::InProcessTransport::new_socket(to_gw_tx.clone());
 
     let guard = Arc::new(IpGuard::new());
     let mut deps = ServerDeps::in_memory();
@@ -156,7 +165,12 @@ pub async fn serve(config: Config, bound: Option<oneshot::Sender<IpcEndpoint>>) 
     // to an orphan queue and never execute.
     deps.staff = staff;
 
-    let handles = world_task::spawn_persist_with_gateway(engine, sessions, deps, gateway);
+    let socket_tx = to_gw_tx.clone();
+    let handles = world_task::spawn_persist_with_gateway(engine, deps, move |_weak_inbound| {
+        // The forked server never polices (it owns no connection buffers), so it
+        // ignores the loop's inbound weak sender and just serializes to the boundary.
+        Arc::new(SocketSink::new(socket_tx))
+    });
     let world = handles.handle;
     let world_join = handles.world_join;
 

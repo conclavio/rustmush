@@ -1,0 +1,26 @@
+[package]
+name = "mush-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "rustmush shared runtime support (M16b): mushd.toml config model, logging setup, IP guard, and transport-agnostic account helpers. Dependency-light so neither forked half drags the other's deps through it."
+
+[dependencies]
+mush-core.workspace = true
+mush-ipc.workspace = true
+mush-store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+argon2.workspace = true
+rand.workspace = true
+tokio.workspace = true
+dashmap.workspace = true
+
+[lints]
+workspace = true

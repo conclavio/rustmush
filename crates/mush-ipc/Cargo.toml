@@ -22,6 +22,11 @@ rmp-serde.workspace = true
 # boundary. Kept dep-light — this crate still pulls no store/net/llm, only the
 # runtime it needs to move bytes.
 tokio.workspace = true
+# The object-safe `GatewayLink` trait returns `BoxFuture` (the workspace's
+# dyn-async idiom), so the bridges can hold an `Arc<dyn GatewayLink>` while its
+# one in-process implementor (`WorldHandle`) lives server-side and its socket
+# implementor lives gateway-side.
+futures.workspace = true
 
 [lints]
 workspace = true
