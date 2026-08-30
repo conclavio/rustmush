@@ -211,8 +211,46 @@ impl GameModule for ShadowrunRuleset {
     fn on_world_loaded(
         &mut self,
         ctx: &mut ModuleCtx<'_>,
-        _data: ModuleBootData,
+        data: ModuleBootData,
     ) -> Result<(), ModError> {
+        // M17 rehydrate: restore the one persisted subsystem — in-progress
+        // extended rolls — from the `mod:shadowrun:extended` doc, so a mid-scene hot
+        // restart keeps an accumulating extended test's successes. Runs BEFORE
+        // the world task spawns and the gateway re-attaches, so the restored
+        // state is in place before the first re-attached `+roll` continues.
+        // SR has NO fiction-critical scene state (no conceal/pending), so this
+        // is the only rehydration; the RNG, roll-log ring, and chargen are NOT
+        // persisted (re-seed / transient / re-derivable), so the slot is never
+        // replaced — only the extended field is.
+        let mut extended_doc = None;
+        for (key, value) in data.kv {
+            // The one persisted key; any other is tolerated (forward schema).
+            if key == "extended" {
+                extended_doc = Some(value);
+            }
+        }
+        // Phase 1 — decode + validate against the live world (immutable borrow).
+        let extended = match &extended_doc {
+            Some(v) => Some(
+                Sr5State::decode_extended(v, |id| ctx.w.get(id).is_some()).map_err(ModError::msg)?,
+            ),
+            None => None,
+        };
+        // Phase 2 — install into the slot (field only) and note a pruned doc so
+        // the store is re-written to match RAM.
+        let mut fixups = Vec::new();
+        if let Some(st) = ctx.w.module_state_mut::<Sr5State>()
+            && let Some((map, dropped)) = extended
+        {
+            st.install_extended(map);
+            if dropped {
+                fixups.push(st.extended_persist_op());
+            }
+        }
+        for op in fixups {
+            ctx.persist(op);
+        }
+
         let cmd = self
             .cmd
             .clone()

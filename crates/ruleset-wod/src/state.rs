@@ -3,22 +3,49 @@
 //!
 //! It carries the server dice RNG (seedable for deterministic tests), the
 //! **transient** per-character roll-log ring (staff-queryable via
-//! `+roll/last`, deliberately *not* persisted), any active extended rolls, and
-//! open chargen sessions. Sheets themselves persist as object attributes
-//! through [`SheetStore`](mush_ruleset::SheetStore); only this volatile
-//! session/roll bookkeeping lives here.
+//! `+roll/last`, deliberately *not* persisted), any active extended rolls, open
+//! chargen sessions, and the M11 concealment / M13 pending scene state. Sheets
+//! themselves persist as object attributes through
+//! [`SheetStore`](mush_ruleset::SheetStore).
+//!
+//! # M17 hot-restart persistence
+//!
+//! The **scene-invisible subset** — concealment (`concealed`) + its pierced
+//! verdicts (`pierced`), accepted-but-unthrown pendings (`pending`), and
+//! in-progress extended rolls (`extended`) — is mirrored whole-doc-per-subsystem
+//! to the `mod:wod:*` documents on every mutation (the `*_persist_op` builders,
+//! handed to [`Ctx::persist`](mush_core::Ctx::persist)) and re-hydrated at boot
+//! by [`WodRuleset::on_world_loaded`](crate::WodRuleset), so a mid-scene hot
+//! restart is invisible (a cloaked vampire stays hidden). The RNG (re-seeded on
+//! boot), the roll-log ring (deliberately transient), and chargen (a login-flow
+//! transient, re-derivable from the persisted sheet) are **not** persisted.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
-use mush_core::ObjId;
+use mush_core::{ModuleOp, ModuleWrite, ObjId};
 use mush_dice::owod20::{ExtendedRoll, Owod20Outcome};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 /// How many recent rolls to keep per character in the transient ring.
 pub const ROLL_LOG_CAP: usize = 20;
+
+/// The WoD module's persistence namespace (`mod:wod:*`) — the same routing name
+/// [`WodRuleset`](crate::WodRuleset) registers under. The scene-invisible subset
+/// of [`WodState`] (M17) is mirrored here whole-doc-per-subsystem, so a hot
+/// restart re-hydrates it before the first re-attached `look` renders. The RNG,
+/// the roll-log ring, and open chargen sessions are deliberately NOT persisted.
+const NS: &str = "wod";
+
+/// The `conceal` doc key: concealment ratings AND their pierced verdicts (they
+/// are always cleared together, so co-locating keeps them consistent).
+const KEY_CONCEAL: &str = "conceal";
+/// The `pending` doc key: accepted-but-unthrown M13 actions, per actor.
+const KEY_PENDING: &str = "pending";
+/// The `extended` doc key: in-progress extended rolls, per actor.
+const KEY_EXTENDED: &str = "extended";
 
 /// One entry in a character's roll-log ring / the `wod.roll` panel feed.
 #[derive(Clone, Debug, Serialize)]
@@ -65,8 +92,10 @@ impl ChargenSession {
 /// against the live sheet. The next `+roll`/`+roll/silent` the actor makes
 /// consumes it exactly once: the roll is ST-authoritative — it runs the stored
 /// `pool` at the stored `difficulty` regardless of what the player typed — and
-/// then defers the interpretation pass. Volatile; never persisted; expires.
-#[derive(Clone, Debug)]
+/// then defers the interpretation pass. Expires; persisted across a hot restart
+/// (M17) so an accepted-but-unthrown ruling survives and the next `+roll` still
+/// consumes it as ST-authoritative.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PendingAction {
     /// The ST-ruled pool expression (a trait expr resolved against the sheet).
     pub pool: String,
@@ -93,30 +122,77 @@ pub struct PendingAction {
     pub expires_at: i64,
 }
 
+// ----------------------------------------------------------------------
+// M17 persisted docs (the scene-invisible subset, whole-doc-per-subsystem)
+// ----------------------------------------------------------------------
+
+/// The `conceal` doc: every concealed subject with its Obfuscate rating and the
+/// per-observer pierced verdicts about them. Object ids are the map keys (JSON
+/// stringifies them). Rating and verdicts are always mutated and cleared as a
+/// unit, so persisting them as one document keeps them consistent on reload.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct ConcealDoc {
+    #[serde(default)]
+    subjects: BTreeMap<u32, ConcealEntry>,
+}
+
+/// One concealed subject's persisted state: the rating they cloaked at, and the
+/// `(observer → pierced?)` verdicts rolled about them.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct ConcealEntry {
+    rating: i32,
+    #[serde(default)]
+    verdicts: BTreeMap<u32, bool>,
+}
+
+/// A `JsonSet` op for a whole subsystem document (WoD data is plain — it
+/// serializes infallibly).
+fn json_set(key: &'static str, value: serde_json::Value) -> ModuleOp {
+    ModuleOp {
+        ns: SmolStr::new_static(NS),
+        op: ModuleWrite::JsonSet {
+            key: SmolStr::new_static(key),
+            value,
+        },
+    }
+}
+
 /// The WoD module state slot. `Clone` (world snapshots clone their state), so
 /// every field is cloneable — including the RNG (a snapshot shares the stream
 /// position, which is fine for inspection).
 #[derive(Clone, Debug)]
 pub struct WodState {
+    /// The server dice RNG. NOT persisted — re-seeded from the OS on boot
+    /// (persisting a stream position is undesirable).
     rng: ChaCha8Rng,
+    /// The transient per-character roll-log ring. NOT persisted (deliberately
+    /// transient; it re-hydrates empty on a restart).
     logs: HashMap<ObjId, VecDeque<RollLogEntry>>,
+    /// In-progress extended rolls. Persisted across a hot restart (M17, the
+    /// `extended` doc) so an accumulating roll keeps its successes.
     extended: HashMap<ObjId, ExtendedRoll>,
+    /// Open chargen sessions. NOT persisted (a login-flow transient, re-derivable
+    /// from the persisted sheet).
     chargen: HashMap<ObjId, ChargenSession>,
     /// M11 concealment (Obfuscate): subject → the Obfuscate rating in force
     /// when they cloaked (the difficulty basis for a piercing roll). A subject
     /// absent here is not concealed and is perceived by everyone (the free
-    /// fast-path the `Perceive` hook takes). Volatile — never persisted.
+    /// fast-path the `Perceive` hook takes). Persisted across a hot restart
+    /// (M17, the `conceal` doc) so a cloaked vampire does not pop into view.
     concealed: HashMap<ObjId, i32>,
     /// M11 pierced-verdict cache: `(observer, subject)` → whether `observer`
     /// perceives the concealed `subject`. Rolled **once** (in the mutable
     /// concealment paths — `+obfuscate` and the presence observer), never per
     /// event; the read-only `Perceive` hook is a pure lookup here. Absent for a
     /// concealed subject means *not yet rolled* and is treated as concealed
-    /// (fail-safe: never leak). Volatile.
+    /// (fail-safe: never leak). Persisted WITH `concealed` (the `conceal` doc)
+    /// so who-sees-whom does not flip on reload.
     pierced: HashMap<(ObjId, ObjId), bool>,
     /// M13 Storyteller adjudication: actor → the accepted, re-validated action
     /// awaiting their dice throw. At most one per actor; a new proposal replaces
-    /// any prior; the actor's next `+roll` consumes it. Volatile.
+    /// any prior; the actor's next `+roll` consumes it. Persisted across a hot
+    /// restart (M17, the `pending` doc); an entry past its `expires_at` is
+    /// dropped on reload.
     pending: HashMap<ObjId, PendingAction>,
     /// M13: actor → the correlation id of their most recently PROPOSED ruling
     /// (`+cast … proposing …` / `+action`). A ruling completion may only mutate
@@ -351,6 +427,167 @@ impl WodState {
     #[must_use]
     pub fn latest_proposal(&self, who: ObjId) -> Option<u64> {
         self.latest_proposal.get(&who).copied()
+    }
+
+    // ------------------------------------------------------------------
+    // M17 write-through: whole-doc persist ops per subsystem
+    //
+    // Each mutation call site re-serializes the affected subsystem's WHOLE
+    // document and hands the op to `ctx.persist(...)`, which rides the same
+    // atomic per-command `WriteBatch` as the object writes. Small, low-frequency
+    // maps: the whole-doc rewrite avoids per-key Del bookkeeping / drift.
+    // ------------------------------------------------------------------
+
+    /// A `JsonSet` mirroring the concealment set AND the pierced verdicts (one
+    /// document; they are always mutated and cleared together). Emit after every
+    /// change to `concealed` / `pierced` — the `+obfuscate` cloak/reveal, the
+    /// presence-observer maintenance, and the move-driven verdict clears.
+    #[must_use]
+    pub fn conceal_persist_op(&self) -> ModuleOp {
+        let mut subjects: BTreeMap<u32, ConcealEntry> = BTreeMap::new();
+        for (&subject, &rating) in &self.concealed {
+            subjects.insert(subject.0, ConcealEntry {
+                rating,
+                verdicts: BTreeMap::new(),
+            });
+        }
+        // Attach each verdict to its (concealed) subject. Verdicts only ever
+        // exist for a concealed subject, so any without a subject entry — there
+        // should be none — are simply not carried, matching the RAM invariant.
+        for (&(observer, subject), &pierced) in &self.pierced {
+            if let Some(entry) = subjects.get_mut(&subject.0) {
+                entry.verdicts.insert(observer.0, pierced);
+            }
+        }
+        let doc = ConcealDoc { subjects };
+        json_set(KEY_CONCEAL, serde_json::to_value(&doc).expect("conceal doc serializes"))
+    }
+
+    /// A `JsonSet` mirroring every actor's [`PendingAction`]. Emit after every
+    /// `set_pending` / `clear_pending` / `take_pending`.
+    #[must_use]
+    pub fn pending_persist_op(&self) -> ModuleOp {
+        let doc: BTreeMap<u32, &PendingAction> =
+            self.pending.iter().map(|(k, v)| (k.0, v)).collect();
+        json_set(KEY_PENDING, serde_json::to_value(&doc).expect("pending doc serializes"))
+    }
+
+    /// A `JsonSet` mirroring every actor's in-progress [`ExtendedRoll`]. Emit
+    /// after every `extended_for` / `clear_extended`.
+    #[must_use]
+    pub fn extended_persist_op(&self) -> ModuleOp {
+        let doc: BTreeMap<u32, &ExtendedRoll> =
+            self.extended.iter().map(|(k, v)| (k.0, v)).collect();
+        json_set(KEY_EXTENDED, serde_json::to_value(&doc).expect("extended doc serializes"))
+    }
+
+    // ------------------------------------------------------------------
+    // M17 rehydrate: a two-phase decode → install so the world (validation) and
+    // the state slot (install) borrows never overlap. `decode_*` is pure and
+    // validates each referenced object against a liveness predicate; `install_*`
+    // writes the decoded maps into the slot's fields ONLY (the register-time
+    // RNG, the transient roll-log ring, and chargen are never touched). A decode
+    // that dropped an orphan/expired entry flags it so the caller re-persists.
+    // ------------------------------------------------------------------
+
+    /// Decode + validate a persisted `conceal` doc against a liveness predicate,
+    /// returning the restored `(concealed, pierced)` maps and whether any orphan
+    /// was dropped (⇒ the caller re-persists so the store matches RAM). Takes no
+    /// `self`, so the caller validates against the world *before* borrowing the
+    /// state slot to [`install_conceal`](WodState::install_conceal) — keeping the
+    /// world and slot borrows disjoint.
+    #[allow(clippy::type_complexity)]
+    pub fn decode_conceal(
+        value: &serde_json::Value,
+        live: impl Fn(ObjId) -> bool,
+    ) -> Result<(HashMap<ObjId, i32>, HashMap<(ObjId, ObjId), bool>, bool), String> {
+        let doc: ConcealDoc =
+            serde_json::from_value(value.clone()).map_err(|e| format!("bad conceal doc: {e}"))?;
+        let mut concealed = HashMap::new();
+        let mut pierced = HashMap::new();
+        let mut dropped = false;
+        for (sid, entry) in doc.subjects {
+            let subject = ObjId(sid);
+            if !live(subject) {
+                dropped = true;
+                continue;
+            }
+            concealed.insert(subject, entry.rating.max(0));
+            for (oid, verdict) in entry.verdicts {
+                let observer = ObjId(oid);
+                if live(observer) {
+                    pierced.insert((observer, subject), verdict);
+                } else {
+                    dropped = true;
+                }
+            }
+        }
+        Ok((concealed, pierced, dropped))
+    }
+
+    /// Decode + validate a persisted `pending` doc, dropping any whose actor is
+    /// gone or whose `expires_at` is already past `now`. Pure (see
+    /// [`decode_conceal`](WodState::decode_conceal)).
+    pub fn decode_pending(
+        value: &serde_json::Value,
+        now: i64,
+        live: impl Fn(ObjId) -> bool,
+    ) -> Result<(HashMap<ObjId, PendingAction>, bool), String> {
+        let doc: BTreeMap<u32, PendingAction> =
+            serde_json::from_value(value.clone()).map_err(|e| format!("bad pending doc: {e}"))?;
+        let mut pending = HashMap::new();
+        let mut dropped = false;
+        for (aid, action) in doc {
+            let actor = ObjId(aid);
+            if !live(actor) || now > action.expires_at {
+                dropped = true;
+                continue;
+            }
+            pending.insert(actor, action);
+        }
+        Ok((pending, dropped))
+    }
+
+    /// Decode + validate a persisted `extended` doc, dropping any whose actor is
+    /// gone. Pure (see [`decode_conceal`](WodState::decode_conceal)).
+    pub fn decode_extended(
+        value: &serde_json::Value,
+        live: impl Fn(ObjId) -> bool,
+    ) -> Result<(HashMap<ObjId, ExtendedRoll>, bool), String> {
+        let doc: BTreeMap<u32, ExtendedRoll> =
+            serde_json::from_value(value.clone()).map_err(|e| format!("bad extended doc: {e}"))?;
+        let mut extended = HashMap::new();
+        let mut dropped = false;
+        for (aid, roll) in doc {
+            let actor = ObjId(aid);
+            if live(actor) {
+                extended.insert(actor, roll);
+            } else {
+                dropped = true;
+            }
+        }
+        Ok((extended, dropped))
+    }
+
+    /// Install a decoded `conceal` doc into the slot (fields only — the
+    /// register-time RNG, the roll-log ring, and chargen are never touched).
+    pub fn install_conceal(
+        &mut self,
+        concealed: HashMap<ObjId, i32>,
+        pierced: HashMap<(ObjId, ObjId), bool>,
+    ) {
+        self.concealed = concealed;
+        self.pierced = pierced;
+    }
+
+    /// Install a decoded `pending` doc into the slot (fields only).
+    pub fn install_pending(&mut self, pending: HashMap<ObjId, PendingAction>) {
+        self.pending = pending;
+    }
+
+    /// Install a decoded `extended` doc into the slot (fields only).
+    pub fn install_extended(&mut self, extended: HashMap<ObjId, ExtendedRoll>) {
+        self.extended = extended;
     }
 }
 

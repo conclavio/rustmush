@@ -298,8 +298,74 @@ impl GameModule for WodRuleset {
     fn on_world_loaded(
         &mut self,
         ctx: &mut ModuleCtx<'_>,
-        _data: ModuleBootData,
+        data: ModuleBootData,
     ) -> Result<(), ModError> {
+        // M17 rehydrate: restore the scene-invisible subset of WodState from the
+        // `mod:wod:*` docs, so a mid-scene hot restart is invisible (a cloaked
+        // vampire stays cloaked, an accepted-but-unthrown ruling survives, an
+        // in-progress extended roll keeps its accumulated successes). Runs BEFORE
+        // the world task spawns and the gateway re-attaches, so the restored
+        // state is in place before the first re-attached `look` renders. The RNG,
+        // the roll-log ring, and chargen are NOT persisted (re-seed / transient /
+        // re-derivable), so the slot is never replaced — only these fields are.
+        let mut conceal_doc = None;
+        let mut pending_doc = None;
+        let mut extended_doc = None;
+        for (key, value) in data.kv {
+            match key.as_str() {
+                "conceal" => conceal_doc = Some(value),
+                "pending" => pending_doc = Some(value),
+                "extended" => extended_doc = Some(value),
+                // Tolerate unknown keys (forward schema).
+                _ => {}
+            }
+        }
+        let now = ctx.w.now();
+        // Phase 1 — decode + validate against the live world (immutable borrow;
+        // each decode borrow ends before the next statement).
+        let conceal = match &conceal_doc {
+            Some(v) => Some(WodState::decode_conceal(v, |id| ctx.w.get(id).is_some()).map_err(ModError::msg)?),
+            None => None,
+        };
+        let pending = match &pending_doc {
+            Some(v) => {
+                Some(WodState::decode_pending(v, now, |id| ctx.w.get(id).is_some()).map_err(ModError::msg)?)
+            }
+            None => None,
+        };
+        let extended = match &extended_doc {
+            Some(v) => {
+                Some(WodState::decode_extended(v, |id| ctx.w.get(id).is_some()).map_err(ModError::msg)?)
+            }
+            None => None,
+        };
+        // Phase 2 — install into the slot (fields only) and note any doc that was
+        // pruned so the store is re-written to match RAM.
+        let mut fixups = Vec::new();
+        if let Some(st) = ctx.w.module_state_mut::<WodState>() {
+            if let Some((concealed, pierced, dropped)) = conceal {
+                st.install_conceal(concealed, pierced);
+                if dropped {
+                    fixups.push(st.conceal_persist_op());
+                }
+            }
+            if let Some((map, dropped)) = pending {
+                st.install_pending(map);
+                if dropped {
+                    fixups.push(st.pending_persist_op());
+                }
+            }
+            if let Some((map, dropped)) = extended {
+                st.install_extended(map);
+                if dropped {
+                    fixups.push(st.extended_persist_op());
+                }
+            }
+        }
+        for op in fixups {
+            ctx.persist(op);
+        }
+
         // Chargen approval: re-validate the budget (template-aware), stamp
         // Approved, then lift the onboarding gate (move to the live start room).
         let dispatch = Arc::clone(&self.dispatch);

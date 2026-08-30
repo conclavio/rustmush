@@ -63,6 +63,12 @@ fn action_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         st.clear_pending(actor);
         st.note_proposal(actor, correlation);
     }
+    // A superseded pending was just cleared; write the pending doc through so it
+    // does not resurrect on a hot restart (M17). `latest_proposal` is not
+    // persisted (it is re-derivable transient bookkeeping).
+    if let Some(op) = ctx.state::<WodState>().map(WodState::pending_persist_op) {
+        ctx.persist(op);
+    }
     let req = StRequest::Ruling(RulingRequest {
         actor,
         freeform: freeform.trim().to_string(),

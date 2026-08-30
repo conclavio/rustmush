@@ -6,19 +6,50 @@
 //! Sheets persist as object attributes through
 //! [`SheetStore`](mush_ruleset::SheetStore); only this volatile session/roll
 //! bookkeeping lives here (mirroring `ruleset-wod`'s `WodState`).
+//!
+//! # M17 hot-restart persistence
+//!
+//! SR5 has **no** fiction-critical scene state (no Obfuscate concealment, no ST
+//! pending actions — initiative + Edge/Drain live on the persisted sheet), so
+//! for parity with `ruleset-wod` it persists exactly **one** subsystem: the
+//! in-progress extended rolls (`extended`), mirrored whole-doc to the
+//! `mod:shadowrun:extended` document on every mutation (the [`Sr5State::extended_persist_op`]
+//! builder, handed to [`Ctx::persist`](mush_core::Ctx::persist)) and re-hydrated
+//! at boot by [`ShadowrunRuleset::on_world_loaded`](crate::ShadowrunRuleset), so
+//! a mid-scene hot restart keeps an accumulating extended test's successes. The
+//! RNG (re-seeded on boot), the roll-log ring (deliberately transient), and
+//! chargen (a login-flow transient, re-derivable from the persisted sheet) are
+//! **not** persisted.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
-use mush_core::ObjId;
+use mush_core::{ModuleOp, ModuleWrite, ObjId};
 use mush_dice::sr5::{Sr5Extended, Sr5Outcome};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use serde::Serialize;
+use smol_str::SmolStr;
 
 use crate::data::Priority;
 
 /// How many recent rolls to keep per character in the transient ring.
 pub const ROLL_LOG_CAP: usize = 20;
+
+/// The SR5 module's persistence namespace (`mod:shadowrun:*`). This MUST equal
+/// [`ShadowrunRuleset::name`](crate::ShadowrunRuleset)'s `GameModule::name()`:
+/// the boot loader reads a module's docs via `module_json_list(module.name())`
+/// (see `mush-server` `load_one`), so a doc written under any other namespace
+/// would never be read back on a restart. (`ruleset-wod` gets `"wod"` for free
+/// because its module name is already `"wod"`; SR's module name is
+/// `"shadowrun"`, so this is `"shadowrun"`, NOT `"sr"`.) The only persisted
+/// subsystem (M17) — in-progress extended rolls — is mirrored here whole-doc, so
+/// a hot restart re-hydrates it before the first re-attached `+roll` continues
+/// an extended test. The RNG, the roll-log ring, and open chargen sessions are
+/// deliberately NOT persisted.
+const NS: &str = "shadowrun";
+
+/// The `extended` doc key: in-progress extended rolls, per actor.
+const KEY_EXTENDED: &str = "extended";
 
 /// One entry in a character's roll-log ring / the `sr.roll` panel feed.
 #[derive(Clone, Debug, Serialize)]
@@ -50,6 +81,18 @@ pub struct ChargenSession {
     /// The five priority-category assignments: `[(category, letter), …]`
     /// (metatype / attributes / magic / skills / resources).
     pub priorities: Vec<(String, Priority)>,
+}
+
+/// A `JsonSet` op for the extended-rolls document (SR data is plain — it
+/// serializes infallibly).
+fn json_set(key: &'static str, value: serde_json::Value) -> ModuleOp {
+    ModuleOp {
+        ns: SmolStr::new_static(NS),
+        op: ModuleWrite::JsonSet {
+            key: SmolStr::new_static(key),
+            value,
+        },
+    }
 }
 
 impl ChargenSession {
@@ -153,6 +196,57 @@ impl Sr5State {
     /// Clear `who`'s extended roll.
     pub fn clear_extended(&mut self, who: ObjId) {
         self.extended.remove(&who);
+    }
+
+    // ------------------------------------------------------------------
+    // M17 write-through + rehydrate: the extended-rolls document.
+    //
+    // The extended map is small and low-frequency, so — mirroring
+    // `ruleset-wod` — each mutation re-serializes the WHOLE document and hands
+    // the op to `ctx.persist(...)`, which rides the same atomic per-command
+    // `WriteBatch` as the object writes. This avoids per-key Del bookkeeping /
+    // drift. Only extended is persisted; the RNG, the roll-log ring, and chargen
+    // are re-seeded / transient / re-derivable.
+    // ------------------------------------------------------------------
+
+    /// A `JsonSet` mirroring every actor's in-progress [`Sr5Extended`]. Emit
+    /// after every `extended_for` / `clear_extended`.
+    #[must_use]
+    pub fn extended_persist_op(&self) -> ModuleOp {
+        let doc: BTreeMap<u32, &Sr5Extended> =
+            self.extended.iter().map(|(k, v)| (k.0, v)).collect();
+        json_set(KEY_EXTENDED, serde_json::to_value(&doc).expect("extended doc serializes"))
+    }
+
+    /// Decode + validate a persisted `extended` doc against a liveness
+    /// predicate, dropping any whose actor is gone (⇒ the caller re-persists so
+    /// the store matches RAM). Takes no `self`, so the caller validates against
+    /// the world *before* borrowing the state slot to
+    /// [`install_extended`](Sr5State::install_extended) — keeping the world and
+    /// slot borrows disjoint (mirroring `ruleset-wod`).
+    pub fn decode_extended(
+        value: &serde_json::Value,
+        live: impl Fn(ObjId) -> bool,
+    ) -> Result<(HashMap<ObjId, Sr5Extended>, bool), String> {
+        let doc: BTreeMap<u32, Sr5Extended> =
+            serde_json::from_value(value.clone()).map_err(|e| format!("bad extended doc: {e}"))?;
+        let mut extended = HashMap::new();
+        let mut dropped = false;
+        for (aid, roll) in doc {
+            let actor = ObjId(aid);
+            if live(actor) {
+                extended.insert(actor, roll);
+            } else {
+                dropped = true;
+            }
+        }
+        Ok((extended, dropped))
+    }
+
+    /// Install a decoded `extended` doc into the slot (this field only — the
+    /// register-time RNG, the roll-log ring, and chargen are never touched).
+    pub fn install_extended(&mut self, extended: HashMap<ObjId, Sr5Extended>) {
+        self.extended = extended;
     }
 
     /// The open chargen session for `who`, if any.

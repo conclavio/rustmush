@@ -284,9 +284,19 @@ fn single_roll(cmd: &WodCmd, ctx: &mut Ctx<'_>, args: &RollArgs) -> Result<(), C
     // typed. The +roll/silent is purely the trigger ("dice in your hands").
     // Consumed exactly once; an expired pending is dropped (a normal roll).
     let now = ctx.w.now();
-    let pending = ctx
-        .state_mut::<WodState>()
-        .and_then(|st| st.take_pending(who, now));
+    let (pending, had_pending) = match ctx.state_mut::<WodState>() {
+        Some(st) => {
+            let had = st.pending(who).is_some();
+            (st.take_pending(who, now), had)
+        }
+        None => (None, false),
+    };
+    // `take_pending` removes the entry whether or not it was still live, so any
+    // prior pending (consumed here, or dropped as expired) must be written
+    // through so the store no longer holds it after a hot restart (M17).
+    if had_pending && let Some(op) = ctx.state::<WodState>().map(WodState::pending_persist_op) {
+        ctx.persist(op);
+    }
     if let Some(p) = pending {
         return pending_roll(cmd, ctx, who, &p);
     }
@@ -334,6 +344,14 @@ fn single_roll(cmd: &WodCmd, ctx: &mut Ctx<'_>, args: &RollArgs) -> Result<(), C
         );
         (outcome, ext_note)
     };
+
+    // An extended roll accumulated into the slot: write-through the doc so the
+    // in-progress total survives a hot restart (M17).
+    if args.ext_target.is_some()
+        && let Some(op) = ctx.state::<WodState>().map(WodState::extended_persist_op)
+    {
+        ctx.persist(op);
+    }
 
     let line = render_roll(ctx, who, args, &prep, &outcome, ext_note.as_deref());
     emit_roll(cmd, ctx, who, priv_roll, silent, &line, &outcome);

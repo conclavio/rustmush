@@ -368,6 +368,14 @@ fn single_roll(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>, args: &RollArgs) -> Result<(), C
         (outcome, ext_note)
     };
 
+    // An extended roll accumulated into the slot: write-through the doc so the
+    // in-progress total survives a hot restart (M17).
+    if args.ext_target.is_some()
+        && let Some(op) = ctx.state::<Sr5State>().map(Sr5State::extended_persist_op)
+    {
+        ctx.persist(op);
+    }
+
     let line = render_roll(ctx, who, &resolved, &prep, &outcome, ext_note.as_deref());
     emit_roll(cmd, ctx, who, priv_roll, &line, &outcome);
     Ok(())

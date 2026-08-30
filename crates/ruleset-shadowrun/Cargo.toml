@@ -20,6 +20,8 @@ rand_chacha.workspace = true
 
 [dev-dependencies]
 mush-testkit.workspace = true
+mush-store.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

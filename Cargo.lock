@@ -3141,12 +3141,14 @@ dependencies = [
  "mush-jobs",
  "mush-proto",
  "mush-ruleset",
+ "mush-store",
  "mush-testkit",
  "rand 0.9.5",
  "rand_chacha 0.9.0",
  "serde",
  "serde_json",
  "smol_str",
+ "tokio",
 ]
 
 [[package]]
@@ -3159,6 +3161,7 @@ dependencies = [
  "mush-llm",
  "mush-proto",
  "mush-ruleset",
+ "mush-store",
  "mush-testkit",
  "rand 0.9.5",
  "rand_chacha 0.9.0",

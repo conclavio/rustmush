@@ -737,7 +737,10 @@ can be torn down and rebuilt underneath live players — on both transports:
   restart itself, so no SSH **or web** connection is dropped. Players see a
   `GAME: The server is restarting; hold on…` line, then
   `GAME: Reconnected. Resuming where you left off.` and a fresh room render of
-  wherever they were — mid-scene, no reconnect, no re-login.
+  wherever they were — mid-scene, no reconnect, no re-login. The WoD/SR ruleset
+  working state that shapes that render survives the restart (M17): a cloaked
+  vampire stays cloaked, an accepted ST ruling still awaits its throw, an
+  extended roll keeps its progress (see *Accepted losses across a restart*).
 - **A server crash is handled in-process.** If the child dies on its own, the
   gateway auto-respawns it and re-attaches every held session — the same
   hold-the-connection path as a deliberate restart. A **crash-loop guard**
@@ -820,16 +823,32 @@ that live in the server's RAM by design and were always documented as transient:
   provider had already been billed, still counts). Re-issue it. The *results*
   that had already landed (accepted drafts, remembered NPC facts) are persisted
   and survive.
-- **Active scenes + per-scene ruleset state** — open scenes, their `SceneId`s
-  (they re-number from 0 on each boot), the per-`(scene, obj)` `RulesetStateStore`
-  (e.g. per-mech combat `heat`), and per-scene map blobs are transient world RAM,
-  rebuilt empty by `World::from_objects` on every boot. A scene in progress when
-  the restart hits is not rehydrated — its per-boot state snapshot is orphaned —
-  so **re-open the scene afterward**. Everything the ruleset persisted to durable
-  object state (sheets, XP, wounds recorded on the sheet) survives; only the
-  live, in-scene working state resets. (This has always reset on any reboot;
-  M16c just makes restarts a routine deploy step, so it belongs on this list.)
+- **WoD / SR ruleset working state survives (M17).** The live, fiction-critical
+  scene state the WoD and Shadowrun rulesets keep in their in-RAM state slots is
+  now mirrored to their own module namespace (`mod:wod:*` / `mod:shadowrun:*`) on
+  every mutation — the same atomic per-command write-through as object writes —
+  and re-hydrated at boot **before** the first re-attached `look` renders. So a
+  mid-scene restart is invisible where it matters most: an Obfuscate-cloaked
+  vampire **stays hidden** (concealment ratings + the per-observer pierced
+  verdicts survive), an accepted-but-unthrown Storyteller ruling (M13 pending)
+  survives and the next `+roll` still consumes it as ST-authoritative, and an
+  in-progress **extended roll** (WoD and SR) keeps its accumulated successes.
+  Orphaned entries (an object destroyed while the server was down) and expired
+  pendings are dropped on reload, not resurrected. Re-seeded/transient bits are
+  **not** persisted and are accepted losses: the dice RNG re-seeds from the OS,
+  the per-character roll-log ring (`+roll/last`) comes back empty, and any open
+  `+chargen` input context is dropped (re-derivable from the persisted sheet).
+- **BattleTech scenes + the per-`(scene, obj)` scene registry — future.** Open
+  scenes, their `SceneId`s (they re-number from 0 on each boot), the per-`(scene,
+  obj)` `RulesetStateStore` (e.g. per-mech combat `heat`), and per-scene map
+  blobs are still transient world RAM, rebuilt empty by `World::from_objects` on
+  every boot. This is the reserved BattleTech seam (it purges stale scene
+  documents on boot by design); scene-registry rehydration for actual btech
+  scenes lands **with BattleTech**. Until then, a btech scene in progress when a
+  restart hits is not rehydrated — **re-open it afterward**. Everything the
+  ruleset persisted to durable object state (sheets, XP, wounds recorded on the
+  sheet) survives regardless; only this per-scene combat working state resets.
 
 Nothing else is silently lost. Announce a deploy anyway if players might be
-mid-chargen, mid-compose, or mid-scene, so they know to expect the dropped editor
-buffer or to re-open an active scene.
+mid-chargen, mid-compose, or mid-btech-scene, so they know to expect the dropped
+editor buffer or to re-open an active BattleTech scene.

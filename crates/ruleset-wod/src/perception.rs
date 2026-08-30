@@ -107,6 +107,8 @@ impl WorldObserver for PerceptionObserver {
             return;
         }
         match *ev {
+            // (each arm below mutates the pierced-verdict cache; the single
+            // `persist_conceal` after the match write-throughs the whole doc)
             WorldEvent::Moved { who, .. } => {
                 // `who` as a concealed subject that changed rooms: its old
                 // verdicts are stale, re-roll the room it is now in.
@@ -143,6 +145,18 @@ impl WorldObserver for PerceptionObserver {
             }
             _ => {}
         }
+        // Write-through the (mutated) conceal doc once, after the burst.
+        persist_conceal(ctx);
+    }
+}
+
+/// Mirror the concealment set + pierced verdicts (the one `conceal` doc) to the
+/// store, so a hot restart re-hydrates who-is-cloaked and who-sees-whom before
+/// the first re-attached `look` renders (M17). Called once after each burst of
+/// concealment mutation, never per-verdict.
+fn persist_conceal(ctx: &mut Ctx<'_>) {
+    if let Some(op) = ctx.state::<WodState>().map(WodState::conceal_persist_op) {
+        ctx.persist(op);
     }
 }
 
@@ -582,6 +596,8 @@ fn obfuscate_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             }
             // Roll everyone present now to notice (once).
             refresh_subject(cmd, ctx, actor, obf);
+            // Persist the cloak + the fresh verdicts as one doc (M17).
+            persist_conceal(ctx);
             ctx.out.sys_to_actor(
                 actor,
                 "wod",
@@ -594,6 +610,10 @@ fn obfuscate_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             let was = ctx
                 .state_mut::<WodState>()
                 .is_some_and(|st| st.reveal(actor));
+            // Reveal dropped the cloak + every verdict about the actor; mirror it.
+            if was {
+                persist_conceal(ctx);
+            }
             let msg = if was {
                 "You let the shadows fall away and step back into view."
             } else {

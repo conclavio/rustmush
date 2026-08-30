@@ -937,6 +937,12 @@ impl WodCompletion {
         if let Some(st) = ctx.state_mut::<WodState>() {
             st.clear_pending(actor);
         }
+        // Write the cleared pending through: on a reject / error path the actor
+        // ends with no pending, and that must survive a hot restart (M17). The
+        // accept path below sets + re-persists a fresh pending.
+        if let Some(op) = ctx.state::<WodState>().map(WodState::pending_persist_op) {
+            ctx.persist(op);
+        }
         // Mage rulings require the actor to still be Awakened; generic rulings
         // only require a live sheet (checked below when the doc is read).
         if kind == ActionKind::Mage && !is_template(&self.cmd, ctx, "mage") {
@@ -1049,6 +1055,11 @@ impl WodCompletion {
         };
         if let Some(st) = ctx.state_mut::<WodState>() {
             st.set_pending(actor, action);
+        }
+        // Write the accepted pending through so the next +roll still consumes it
+        // as ST-authoritative after a mid-scene hot restart (M17).
+        if let Some(op) = ctx.state::<WodState>().map(WodState::pending_persist_op) {
+            ctx.persist(op);
         }
         ctx.out.sys_to_actor(
             actor,
