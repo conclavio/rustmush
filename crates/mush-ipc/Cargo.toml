@@ -17,6 +17,11 @@ serde_json.workspace = true
 smol_str.workspace = true
 thiserror.workspace = true
 rmp-serde.workspace = true
+# M16b: the async socket transport (TcpStream on Windows/localhost, UnixStream
+# on Linux prod) that carries the length-prefixed frames across a process
+# boundary. Kept dep-light — this crate still pulls no store/net/llm, only the
+# runtime it needs to move bytes.
+tokio.workspace = true
 
 [lints]
 workspace = true

@@ -80,7 +80,7 @@ use mush_core::{
 use mush_llm::LlmService;
 use mush_net_web::{LlmFeatureStat, LlmTodaySpend, Metrics, WorldSample};
 use mush_proto::{OutputEvent, RichText};
-use mush_session::{CharKey, ConnId as SessConnId, DetachOutcome, DetachReason, SessionManager};
+use mush_session::{CharKey, ConnId as SessConnId, DetachReason, SessionManager};
 use mush_store::{InMemoryStore, ObjectStore};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -409,8 +409,37 @@ pub fn spawn_persist(
     sessions: Arc<SessionManager>,
     deps: ServerDeps,
 ) -> PersistHandles {
+    // All-in-one (in-process) delivery: the server→gateway seam is the shared
+    // `SessionManager`, exactly as before M16b.
+    let gateway = InProcessTransport::new(Arc::clone(&sessions));
+    spawn_persist_with_gateway(engine, sessions, deps, gateway)
+}
+
+/// Like [`spawn_persist`] but with a caller-supplied server→gateway
+/// [`InProcessTransport`] (M16b). The all-in-one binary passes the
+/// [`InProcessTransport::new`] (shared `SessionManager`) variant via
+/// [`spawn_persist`]; the forked `mush-server` passes an
+/// [`InProcessTransport::new_socket`] whose output is serialized as
+/// [`ToGateway`](mush_ipc::ToGateway) frames onto the boundary. In socket mode
+/// `sessions` is a local (empty) manager: the world loop reads it only for
+/// metrics counts and the `@boot` walk (which branches to a fire-and-forget
+/// `CloseSession` when `gateway.is_socket()`).
+pub fn spawn_persist_with_gateway(
+    engine: Engine,
+    sessions: Arc<SessionManager>,
+    deps: ServerDeps,
+    mut gateway: InProcessTransport,
+) -> PersistHandles {
     let (tx, rx) = mpsc::channel(INBOUND_CAPACITY);
     let handle = WorldHandle { tx: tx.clone() };
+    // D5: wire the all-in-one slow-client / link-dead policing feedback into the
+    // shared session-sink transport, now that the inbound queue exists. A
+    // `Sink::Session` gateway (all-in-one) starts policing overflowed
+    // connections back into this loop's own queue; a `Sink::Socket` gateway (the
+    // forked server) ignores this — its gateway process polices instead. A
+    // WEAK sender: the world loop owns this transport, so a strong handle here
+    // would keep its own inbound channel alive and it could never shut down.
+    gateway.with_local_feedback(tx.downgrade());
     // The writer notifies health transitions through a weak sender so it
     // can never keep the world channel alive on its own. It also stamps the
     // metrics registry (write-queue depth decrement + last-ack age) as it
@@ -435,6 +464,7 @@ pub fn spawn_persist(
         Arc::clone(&sessions),
         tx.downgrade(),
         staff_rx,
+        gateway.clone(),
     ));
     // The loop keeps only a weak sender for effect completions — holding a
     // strong one would keep its own channel open forever, so dropping every
@@ -447,6 +477,7 @@ pub fn spawn_persist(
         writer_tx,
         deps,
         staff_tx,
+        gateway,
     ));
     PersistHandles {
         handle,
@@ -463,6 +494,7 @@ enum Wake {
 }
 
 #[allow(clippy::too_many_lines)] // the world loop is one cohesive state machine
+#[allow(clippy::too_many_arguments)] // the world loop threads its whole context
 async fn run(
     mut engine: Engine,
     sessions: Arc<SessionManager>,
@@ -471,6 +503,7 @@ async fn run(
     writer: mpsc::Sender<StoreJob>,
     deps: ServerDeps,
     staff_ops: mpsc::Sender<StaffOp>,
+    gateway: InProcessTransport,
 ) {
     tracing::info!("world task running");
     let boot_unix = unix_now_s();
@@ -479,11 +512,12 @@ async fn run(
     // borrowing `deps` (staff queue) freely each iteration.
     let llm = deps.llm.clone();
     let metrics = Arc::clone(&deps.metrics);
-    // The server -> gateway delivery seam (M16a): every resolved
-    // `(SendTarget, OutputEvent)` pair is handed to this in-process transport,
-    // which maps it onto the shared `SessionManager`. `resolve_sends` (the
-    // World-reading half) stays server-side; this is the gateway consumer.
-    let gateway = InProcessTransport::new(Arc::clone(&sessions));
+    // The server -> gateway delivery seam (M16a/M16b): every resolved
+    // `(SendTarget, OutputEvent)` pair is handed to this transport. In the
+    // all-in-one binary it maps onto the shared `SessionManager`; in the forked
+    // server it serializes each pair as a `ToGateway` frame onto the boundary
+    // socket (passed in by `spawn_persist_with_gateway`). `resolve_sends` (the
+    // World-reading half) stays server-side either way.
     let mut out = Outbox::new();
     let mut fx = Effects::new();
     let mut serial: u64 = 0;
@@ -691,7 +725,7 @@ async fn run(
                 FlushOutcome::WriterGone => {}
             }
         } else {
-            deliver_and_police(&mut engine, &gateway, &sessions, &mut out, &mut fx, &tx);
+            deliver(&engine.registry, &engine.world, &gateway, &mut out);
             spawn_effects(&mut fx, &tx, llm.as_ref());
             // Write-through: one batch per processed message that dirtied
             // the world (fire-and-forget; the writer preserves order and
@@ -720,6 +754,7 @@ async fn run(
             run_local_staff_ops(
                 &mut engine,
                 &sessions,
+                &gateway,
                 &health,
                 boot_unix,
                 local_ops,
@@ -728,7 +763,7 @@ async fn run(
                 llm.as_ref(),
                 &metrics,
             );
-            deliver_and_police(&mut engine, &gateway, &sessions, &mut out, &mut fx, &tx);
+            deliver(&engine.registry, &engine.world, &gateway, &mut out);
             spawn_effects(&mut fx, &tx, llm.as_ref());
             let _ = flush_dirty(
                 &mut engine,
@@ -774,7 +809,7 @@ async fn run(
             // identical; main's shutdown sequence (writer drain → store
             // drain → BGSAVE) runs when this task's join resolves.
             let outcome = engine.step(Inbound::Control(ControlMsg::Shutdown), &mut out, &mut fx);
-            deliver_and_police(&mut engine, &gateway, &sessions, &mut out, &mut fx, &tx);
+            deliver(&engine.registry, &engine.world, &gateway, &mut out);
             spawn_effects(&mut fx, &tx, llm.as_ref());
             let _ = flush_dirty(
                 &mut engine,
@@ -1009,6 +1044,7 @@ async fn flush_dirty(
 fn run_local_staff_ops(
     engine: &mut Engine,
     sessions: &Arc<SessionManager>,
+    gateway: &InProcessTransport,
     health: &StoreHealth,
     boot_unix: i64,
     ops: Vec<StaffOp>,
@@ -1029,6 +1065,20 @@ fn run_local_staff_ops(
                     .world
                     .get(target)
                     .map_or_else(|| target.to_string(), |o| o.name.clone());
+                // Split mode (M16b): the forked server holds no `SessionManager`,
+                // so it cannot walk `char`'s connections. Emit a fire-and-forget
+                // `ToGateway::CloseSession` — the gateway resolves the char to
+                // its live connections, drops them, and reports each resulting
+                // `ConnDown(Boot)` back as inbound, which the world then steps
+                // exactly as the in-process loop below does. The world loop
+                // never blocks on a reply (D4). The target's Disconnect message
+                // was already delivered as a normal `Deliver` frame ahead of
+                // this, so socket FIFO ordering preserves "message then close".
+                if gateway.is_socket() {
+                    gateway.close_session(char_key(target).0, mush_ipc::DetachCause::Booted);
+                    out.info(actor, format!("@boot: {name} booted."));
+                    continue;
+                }
                 // Close the whole session: every connection handle comes
                 // back so each ConnDown(Boot) can be fed to the engine
                 // (announce + world-side disconnect on the last one).
@@ -1644,22 +1694,40 @@ async fn run_newpassword(
         &format!("GAME: Your password has been changed by {by}."),
     );
     // The tokens are dead; so are the live connections they opened. Every
-    // structured (web) connection on any of the account's characters is
-    // booted — cleanly, through the world (announce + bookkeeping) when it
-    // is still up.
+    // structured (web) connection on any of the account's characters is booted.
+    let notice = OutputEvent::Disconnect {
+        reason: RichText::tag(
+            "system",
+            format!("Your password has been changed by {by}; please log in again."),
+        ),
+    };
+    // Split mode (M16b): the forked server holds no `SessionManager`, so it
+    // cannot walk the account's connections. Emit ONE account/char-addressed
+    // fire-and-forget `ToGateway::CloseWebSessions` — the gateway resolves each
+    // character to its live structured connections on its own manager, delivers
+    // the notice, drops them, and reports each `ConnDown(Boot)` back as inbound,
+    // which the world steps exactly as the in-process walk below does. No
+    // reverse query, and this runs on the staff-op task — never the world loop
+    // (D4).
+    if gateway.is_socket() {
+        let chars: Vec<u64> = account
+            .characters
+            .iter()
+            .map(|c| char_key(c.id).0)
+            .collect();
+        gateway.close_web_sessions(chars, Some(notice), mush_ipc::DetachCause::Booted);
+        return format!(
+            "@newpassword: Password for {name} (account {}) changed; \
+             {revoked} web session token{} revoked; any live web connections \
+             were logged out.",
+            account.name,
+            if revoked == 1 { "" } else { "s" },
+        );
+    }
+    // All-in-one: walk the shared manager directly (announce + bookkeeping
+    // through the world when the connection is still up).
     let world = world.upgrade().map(|tx| WorldHandle { tx });
     let mut booted = 0u32;
-    // M16b (unrouted boundary crossing): the session *queries* and *control*
-    // below — `session_of_char`, `conns_of_session`, and the per-connection
-    // `detach(Booted)` — read and mutate gateway-owned session state that the
-    // forked server will not hold. This logout-everywhere becomes a
-    // `ToGateway::Detach{conn, DetachCause::Booted}` per structured connection
-    // (the gateway resolves the account's live web conns and reports each
-    // resulting `ConnDown` back), replacing this direct-`SessionManager` walk.
-    // The output sends (the notice above and the Disconnect below) already
-    // cross the seam via `gateway`. Kept direct in M16a: behaviour-identical
-    // on the shared manager, and the world round-trips (`inbound`/`barrier`)
-    // this interleaves belong to the gateway↔server ordering M16b designs.
     for ch in &account.characters {
         let Some(sess) = sessions.session_of_char(char_key(ch.id)) else {
             continue;
@@ -1678,15 +1746,7 @@ async fn run_newpassword(
                     .await;
                 world.barrier().await;
             }
-            gateway.deliver(
-                SendTarget::Conn(handle.id.0),
-                Arc::new(OutputEvent::Disconnect {
-                    reason: RichText::tag(
-                        "system",
-                        format!("Your password has been changed by {by}; please log in again."),
-                    ),
-                }),
-            );
+            gateway.deliver(SendTarget::Conn(handle.id.0), Arc::new(notice.clone()));
             sessions.detach(handle.id, DetachReason::Booted);
             booted += 1;
         }
@@ -1712,13 +1772,16 @@ async fn staff_ops_loop(
     sessions: Arc<SessionManager>,
     world: mpsc::WeakSender<WorldMsg>,
     mut rx: mpsc::Receiver<StaffOp>,
+    gateway: InProcessTransport,
 ) {
     // The staff executor's server->gateway output (confirmations, the target's
-    // @newpassword notice) crosses the seam through this transport; M16b turns
-    // it into the socket writer. The raw `sessions` handle is still used for
-    // the session *control* ops @newpassword performs (session_of_char /
-    // conns_of_session / detach) — see the M16b note in `run_newpassword`.
-    let gateway = InProcessTransport::new(Arc::clone(&sessions));
+    // @newpassword notice) crosses the seam through this `gateway` transport —
+    // the shared `SessionManager` in the all-in-one binary, the boundary socket
+    // in the forked server. The raw `sessions` handle is still used for the
+    // session *control* ops @newpassword performs (session_of_char /
+    // conns_of_session / detach) — in split mode that manager is empty (the
+    // gateway owns the real one); full @newpassword logout-everywhere over the
+    // seam is M16c (see the note in `run_newpassword`).
     while let Some(op) = rx.recv().await {
         let actor = op.actor;
         let text = match op.kind {
@@ -1806,120 +1869,6 @@ async fn sleep_until_unix_ms(due: Option<i64>) {
     let Some(due) = due else { return };
     let delta = due.saturating_sub(unix_now_ms()).max(0);
     tokio::time::sleep(Duration::from_millis(u64::try_from(delta).unwrap_or(0))).await;
-}
-
-/// Deliver the outbox, then apply the slow-client policy (design 02 §8.4):
-/// every connection whose buffer overflowed is detached as
-/// [`DetachReason::SlowClient`] and its `ConnDown` is fed straight back into
-/// the engine (we *are* the world task, so no channel round-trip — the
-/// resulting link-dead announcement is delivered in the same pass). Repeats
-/// until a delivery pass drops nothing.
-///
-/// M16b (straddling boundary): the slow-conn list is exactly what the
-/// gateway's `transmit` already returns, so slow-client policing moves
-/// *entirely* to the gateway side — it detaches the overflowed conn locally
-/// (it owns the throttle) and notifies the server via
-/// `ToServer::Detach{conn, DetachCause::SlowClient}` / the `ConnDown` arm,
-/// rather than the server reaching back into the gateway's `SessionManager`
-/// as [`disconnect_slow_client`] does here. In M16a the shared manager makes
-/// the reach-back behaviour-identical.
-fn deliver_and_police(
-    engine: &mut Engine,
-    gateway: &InProcessTransport,
-    sessions: &Arc<SessionManager>,
-    out: &mut Outbox,
-    fx: &mut Effects,
-    tx: &mpsc::WeakSender<WorldMsg>,
-) {
-    let mut slow = deliver(&engine.registry, &engine.world, gateway, out);
-    while !slow.is_empty() {
-        for conn in std::mem::take(&mut slow) {
-            disconnect_slow_client(engine, sessions, conn, out, fx, tx);
-        }
-        slow = deliver(&engine.registry, &engine.world, gateway, out);
-    }
-}
-
-/// Detach one overflowed connection and tell the engine. Dropping the
-/// session's sender also makes the transport's output pump close the socket
-/// once it drains (the pump additionally bounds each write with a timeout,
-/// so a wedged transport cannot hold the queue open forever).
-fn disconnect_slow_client(
-    engine: &mut Engine,
-    sessions: &Arc<SessionManager>,
-    conn: SessConnId,
-    out: &mut Outbox,
-    fx: &mut Effects,
-    tx: &mpsc::WeakSender<WorldMsg>,
-) {
-    // M16b (unrouted boundary crossing): `session_of_conn` / `character_of` /
-    // `detach` read and mutate gateway-owned session state. Per the
-    // `deliver_and_police` note this whole step moves to the gateway (which
-    // owns the slow-conn list) and notifies the server via `ToServer::Detach` /
-    // `ConnDown`. Kept server-side in M16a on the shared manager.
-    //
-    // Resolve the actor before the detach forgets the mapping.
-    let actor = sessions
-        .session_of_conn(conn)
-        .and_then(|s| sessions.character_of(s))
-        .map(char_key_obj);
-    let Some(outcome) = sessions.detach(conn, DetachReason::SlowClient) else {
-        return; // already detached (duplicate report or concurrent close)
-    };
-    tracing::warn!(%conn, "slow client disconnected (output buffer overflow)");
-    let Some(actor) = actor else { return };
-    let reason = match outcome {
-        // Session already gone underneath us: clean full disconnect.
-        DetachOutcome::Closed => DisconnectKind::Boot,
-        DetachOutcome::OthersRemain | DetachOutcome::Linkdead { .. } => DisconnectKind::Lost,
-    };
-    engine.step(
-        Inbound::ConnDown {
-            conn: conn.0,
-            actor,
-            reason,
-        },
-        out,
-        fx,
-    );
-    if let DetachOutcome::Linkdead { grace } = outcome {
-        arm_linkdead_reaper(sessions, tx, grace);
-    }
-}
-
-/// After `grace`, reap every expired link-dead session and send its
-/// `SessionGone` (the engine re-validates against live connections, so a
-/// reconnect that raced the reaper is never clobbered).
-///
-/// M16b (unrouted boundary crossing): `take_expired` drains gateway-owned
-/// session state. Link-dead reaping moves to the gateway (which owns the
-/// expiry timers), notifying the server with `ToServer::Inbound(SessionGone)`
-/// — the same arm this posts. The gateway-side twin already lives in
-/// `bridge_common::arm_linkdead_reaper` (routed via `link.to_server`); this
-/// server-side copy, armed from slow-client detach, folds into it in M16b.
-/// Kept here in M16a on the shared manager.
-fn arm_linkdead_reaper(
-    sessions: &Arc<SessionManager>,
-    tx: &mpsc::WeakSender<WorldMsg>,
-    grace: Duration,
-) {
-    let sessions = Arc::clone(sessions);
-    let tx = tx.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(grace).await;
-        for expired in sessions.take_expired(Instant::now()) {
-            let actor = char_key_obj(expired.character);
-            tracing::info!(%actor, account = %expired.account, "linkdead grace expired");
-            let Some(tx) = tx.upgrade() else { return };
-            if tx
-                .send(WorldMsg::Inbound(Inbound::SessionGone { actor }))
-                .await
-                .is_err()
-            {
-                return;
-            }
-        }
-    });
 }
 
 /// Create a Player in the start room (Limbo). Players own themselves.

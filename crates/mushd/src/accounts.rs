@@ -177,6 +177,23 @@ impl Accounts {
         }
     }
 
+    /// Wire the store to an explicit [`GatewayLink`] (M16b): the forked
+    /// `mush-gateway` passes a socket-client link so Player creation crosses to
+    /// the server process as a `mush-ipc` [`ServiceReq`], never touching a local
+    /// `World`.
+    #[must_use]
+    pub fn with_link(
+        store: Arc<dyn ObjectStore>,
+        link: Arc<dyn GatewayLink>,
+        max_characters: usize,
+    ) -> Accounts {
+        Accounts {
+            store,
+            link,
+            max_characters,
+        }
+    }
+
     /// Fetch an account doc, mapping store failures to a logged `None`
     /// (auth paths fail closed and uniform).
     async fn fetch(&self, account: &str) -> Option<AccountRec> {

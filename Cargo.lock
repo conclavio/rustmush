@@ -1961,6 +1961,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "mush-gateway"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "mush-core",
+ "mush-ipc",
+ "mush-proto",
+ "mush-server",
+ "mush-session",
+ "mush-store",
+ "mushd",
+ "russh",
+ "tokio",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "mush-ipc"
 version = "0.1.0"
 dependencies = [
@@ -1971,6 +1990,7 @@ dependencies = [
  "serde_json",
  "smol_str",
  "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]
@@ -2106,6 +2126,23 @@ dependencies = [
  "rhai",
  "smol_str",
  "tracing",
+]
+
+[[package]]
+name = "mush-server"
+version = "0.1.0"
+dependencies = [
+ "mush-core",
+ "mush-ipc",
+ "mush-llm",
+ "mush-proto",
+ "mush-session",
+ "mush-store",
+ "mushd",
+ "tokio",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
 ]
 
 [[package]]

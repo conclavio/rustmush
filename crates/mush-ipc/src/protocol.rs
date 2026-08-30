@@ -367,14 +367,35 @@ pub enum ToGateway {
         /// Why (drives the gateway's close-vs-linkdead policy).
         cause: DetachCause,
     },
-    /// Detach one specific connection (`@newpassword` logout-everywhere, or
-    /// slow-client policing). Like [`CloseSession`](ToGateway::CloseSession)
-    /// but connection-scoped; the gateway reports the resulting
-    /// [`ConnDown`](WireInbound::ConnDown) back to the server.
+    /// Detach one specific connection (slow-client policing). Like
+    /// [`CloseSession`](ToGateway::CloseSession) but connection-scoped; the
+    /// gateway reports the resulting [`ConnDown`](WireInbound::ConnDown) back to
+    /// the server.
     Detach {
         /// The physical connection to detach.
         conn: u64,
         /// Why (drives the gateway's close-vs-linkdead policy).
+        cause: DetachCause,
+    },
+    /// Account-addressed logout-everywhere (`@newpassword`): close every
+    /// **structured** (web/token-authenticated) connection of the listed
+    /// characters. SSH sessions are session-authenticated and survive. This is
+    /// the split-mode replacement for the forked server's in-process walk of a
+    /// `SessionManager` it does not hold (D4): the server names only the
+    /// characters, and the gateway resolves each to its live connections on its
+    /// own manager, delivers `notice` (if any) to each structured connection,
+    /// drops it, and reports the resulting
+    /// [`ConnDown`](WireInbound::ConnDown) back as inbound. Fire-and-forget —
+    /// the world loop never awaits a reply.
+    CloseWebSessions {
+        /// The characters whose structured connections to close (widened
+        /// `ObjId`s, as [`SendTarget::Char`](crate::SendTarget::Char)).
+        chars: Vec<u64>,
+        /// A farewell event delivered to each structured connection just before
+        /// it is dropped (the `@newpassword` "log in again" notice). `None`
+        /// closes without a message.
+        notice: Option<OutputEvent>,
+        /// Why (drives the gateway's close-vs-linkdead policy — `Booted` here).
         cause: DetachCause,
     },
     /// The server's opening handshake: its protocol version and advertised

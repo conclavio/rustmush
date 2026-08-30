@@ -92,6 +92,21 @@ impl<A: AuthBackend + 'static> SshBridge<A> {
         }
     }
 
+    /// Wire the bridge with an explicit [`GatewayLink`] (M16b): the forked
+    /// `mush-gateway` passes a socket-client link instead of an in-process
+    /// [`WorldHandle`].
+    pub fn with_link(
+        accounts: Arc<A>,
+        sessions: Arc<SessionManager>,
+        link: Arc<dyn crate::link::GatewayLink>,
+        guard: Arc<IpGuard>,
+    ) -> SshBridge<A> {
+        SshBridge {
+            core: GameBridge::with_link(accounts, sessions, link, guard),
+            metrics: Arc::new(mush_net_web::Metrics::new()),
+        }
+    }
+
     /// Point SSH connection counters at the shared metrics registry (the
     /// same one the web ingress serves over `/metrics`). Called by `mushd`.
     #[must_use]

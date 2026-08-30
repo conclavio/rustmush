@@ -1,0 +1,39 @@
+[package]
+name = "mush-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "rustmush forked GATEWAY half (M16b): owns the connection listeners (SSH/web), the session manager, accounts/ipguard, and SUPERVISES the mush-server child. Speaks the mush-ipc boundary protocol over a socket. Holds NO world/store-object/module code."
+
+# M16b: the gateway half of the fork. It owns the network ingress + session
+# layer + account auth, and spawns/supervises the server child. It reuses the
+# `mushd` library's bridges/accounts/session wiring and adds the gateway-side
+# socket client of the boundary protocol.
+[[bin]]
+name = "mush-gateway"
+path = "src/main.rs"
+
+[dependencies]
+mushd.workspace = true
+mush-core.workspace = true
+mush-proto.workspace = true
+mush-ipc.workspace = true
+mush-session.workspace = true
+# The gateway's own Redis KV handle for account:*/token:*/ban:* (auth, tokens,
+# sitebans). It does NOT pull the world/object store schema, modules, or llm.
+mush-store.workspace = true
+futures.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+
+[dev-dependencies]
+mush-store.workspace = true
+russh.workspace = true
+mush-server.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

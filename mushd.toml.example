@@ -22,6 +22,13 @@ redis_url = "redis://127.0.0.1:6379"   # (M2)
 [ssh]
 listen = "0.0.0.0:2222"            # (M2)
 
+[ipc]                              # (M16b) forked gateway<->server boundary socket
+listen = "127.0.0.1:6791"          #   mush-gateway connects here; mush-server binds it.
+#                                  #   A localhost TCP address works everywhere (Windows too);
+#                                  #   on Linux a filesystem path selects a Unix-domain socket,
+#                                  #   e.g. listen = "/run/rustmush/ipc.sock".
+#                                  #   The all-in-one `mushd` binary ignores this section.
+
 [web]                              # (M4) HTTP + WebSocket client (mush-net-web)
 listen = "127.0.0.1:8080"          # (M4) bind a public address or reverse-proxy to it
 # trusted_proxies = ["127.0.0.1"]  # (M4) honor X-Forwarded-For from these proxies only

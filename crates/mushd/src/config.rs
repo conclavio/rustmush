@@ -86,6 +86,14 @@ pub enum ConfigError {
         /// The offending value.
         value: String,
     },
+    /// `[ipc].listen` is not a valid boundary endpoint (M16b).
+    #[error("invalid [ipc].listen {value:?}: {detail}")]
+    BadIpcListen {
+        /// The offending value.
+        value: String,
+        /// The parse detail.
+        detail: String,
+    },
 }
 
 /// Which [`mush_store::ObjectStore`] implementation to boot with.
@@ -412,6 +420,26 @@ impl GameCfg {
     }
 }
 
+/// `[ipc]` section (M16b): where the forked gateway<->server boundary socket
+/// lives. Read by `mush-gateway` (the supervisor connects here after spawning
+/// the server child) and `mush-server` (it binds here). The all-in-one `mushd`
+/// ignores it. A localhost TCP address works everywhere (the Windows dev path);
+/// a filesystem path selects a Unix-domain socket where available (Linux prod).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+pub struct IpcCfg {
+    /// The boundary socket address/path. Default `127.0.0.1:6791`.
+    pub listen: String,
+}
+
+impl Default for IpcCfg {
+    fn default() -> Self {
+        IpcCfg {
+            listen: "127.0.0.1:6791".to_string(),
+        }
+    }
+}
+
 /// The whole configuration (unknown sections/keys ignored).
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
@@ -446,6 +474,9 @@ pub struct Config {
     /// keys are named by env var (`api_key_env`), never inlined — see
     /// [`mush_llm::config`].
     pub llm: LlmConfig,
+    /// `[ipc]` — the M16b forked gateway<->server boundary socket. Ignored by
+    /// the all-in-one `mushd`; read by `mush-gateway`/`mush-server`.
+    pub ipc: IpcCfg,
 }
 
 impl Config {
@@ -480,6 +511,19 @@ impl Config {
                 addr: self.ssh.listen.clone(),
                 source,
             })
+    }
+
+    /// The parsed `[ipc].listen` boundary endpoint (M16b).
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::BadIpcListen`] when the value is neither a socket address
+    /// nor (where supported) a usable Unix path.
+    pub fn ipc_endpoint(&self) -> Result<mush_ipc::IpcEndpoint, ConfigError> {
+        mush_ipc::IpcEndpoint::parse(&self.ipc.listen).map_err(|msg| ConfigError::BadIpcListen {
+            value: self.ipc.listen.clone(),
+            detail: msg,
+        })
     }
 
     /// The validated `[store].store` backend selection.

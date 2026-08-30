@@ -116,6 +116,26 @@ impl<A: AuthBackend + 'static> WebBridge<A> {
         }
     }
 
+    /// Wire the bridge with an explicit [`GatewayLink`](crate::link::GatewayLink)
+    /// (M16b): the forked `mush-gateway` passes a socket-client link instead of
+    /// an in-process [`WorldHandle`].
+    pub fn with_link(
+        accounts: Arc<A>,
+        sessions: Arc<SessionManager>,
+        link: Arc<dyn crate::link::GatewayLink>,
+        guard: Arc<IpGuard>,
+        store: Arc<dyn ObjectStore>,
+        panels: Vec<String>,
+    ) -> WebBridge<A> {
+        WebBridge {
+            core: GameBridge::with_link(accounts, sessions, link, guard),
+            store,
+            panels,
+            conn_tokens: Mutex::new(HashMap::new()),
+            metrics: Arc::new(mush_net_web::Metrics::new()),
+        }
+    }
+
     /// Point web connection counters — and the `/healthz` + `/metrics`
     /// endpoints — at the shared metrics registry. Called by `mushd`.
     #[must_use]

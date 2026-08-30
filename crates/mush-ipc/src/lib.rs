@@ -49,10 +49,14 @@
 //! pulling the game server.
 
 pub mod codec;
+pub mod io;
 mod protocol;
 mod target;
 
 pub use codec::{CodecError, FrameDecoder, MAX_FRAME_LEN, decode_frame, encode_frame};
+pub use io::{
+    BoxRead, BoxWrite, FrameReader, IpcEndpoint, IpcListener, connect, listen, write_frame,
+};
 pub use protocol::{
     AttachRec, ControlMsg, CreatePlayerError, DetachCause, IPC_VERSION, ServiceReq, ServiceResp,
     ToGateway, ToServer, WireInbound, WireInboundError,

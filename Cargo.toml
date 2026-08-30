@@ -121,6 +121,11 @@ ruleset-wod = { path = "crates/ruleset-wod" }
 ruleset-btech = { path = "crates/ruleset-btech" }
 ruleset-shadowrun = { path = "crates/ruleset-shadowrun" }
 mush-testkit = { path = "crates/mush-testkit" }
+# M16b: the all-in-one server library reused by both forked halves, plus the
+# two forked binaries.
+mushd = { path = "crates/mushd" }
+mush-gateway = { path = "crates/mush-gateway" }
+mush-server = { path = "crates/mush-server" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

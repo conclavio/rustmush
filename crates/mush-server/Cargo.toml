@@ -1,0 +1,34 @@
+[package]
+name = "mush-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "rustmush forked SERVER half (M16b): owns the world task + persistence + modules + rulesets; speaks the mush-ipc boundary protocol over a socket to mush-gateway. Holds NO connection listeners."
+
+# M16b: the server half of the fork. It reuses the `mushd` library's world
+# task, persistence, modules, staff and config wiring, and adds the server-side
+# socket endpoint of the boundary protocol. It deliberately owns none of the
+# network ingress (SSH/web) — that lives in `mush-gateway`.
+[[bin]]
+name = "mush-server"
+path = "src/main.rs"
+
+[dependencies]
+mushd.workspace = true
+mush-core.workspace = true
+mush-proto.workspace = true
+mush-ipc.workspace = true
+mush-store.workspace = true
+mush-session.workspace = true
+mush-llm.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

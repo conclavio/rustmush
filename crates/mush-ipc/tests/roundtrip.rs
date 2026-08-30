@@ -206,6 +206,18 @@ fn every_to_gateway() -> Vec<ToGateway> {
             conn: 6,
             cause: DetachCause::SlowClient,
         },
+        ToGateway::CloseWebSessions {
+            chars: vec![11, 12, 13],
+            notice: Some(OutputEvent::Disconnect {
+                reason: RichText::tag("system", "log in again"),
+            }),
+            cause: DetachCause::Booted,
+        },
+        ToGateway::CloseWebSessions {
+            chars: vec![],
+            notice: None,
+            cause: DetachCause::Booted,
+        },
         ToGateway::Hello {
             proto: IPC_VERSION,
             server: "mushd/0.1.0".to_string(),

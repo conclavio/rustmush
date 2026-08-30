@@ -134,6 +134,24 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         }
     }
 
+    /// Wire the core with an explicit [`GatewayLink`] (M16b). The all-in-one
+    /// [`new`](GameBridge::new) wraps an in-process [`WorldHandle`]; the forked
+    /// `mush-gateway` passes a socket-client link that serializes every
+    /// `mush-ipc` message to the server process.
+    pub fn with_link(
+        accounts: Arc<A>,
+        sessions: Arc<SessionManager>,
+        link: Arc<dyn GatewayLink>,
+        guard: Arc<IpGuard>,
+    ) -> GameBridge<A> {
+        GameBridge {
+            accounts,
+            sessions,
+            link,
+            guard,
+        }
+    }
+
     /// The actor a connection is playing, if attached.
     pub fn actor_of(&self, conn: ConnId) -> Option<ObjId> {
         self.sessions

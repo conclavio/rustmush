@@ -652,3 +652,61 @@ point `REDIS_URL` at an instance holding real data — module data (channels,
 mail, jobs) is wiped along with the world; use a disposable instance. The
 RediSearch index only works on db 0, which is one more reason production
 uses a dedicated instance on db 0.
+
+## Forked gateway/server split (M16b preview): `[ipc]`
+
+Production still runs the **all-in-one `mushd`** binary (gateway + world in one
+process). M16b adds an *optional* two-binary split behind the same
+`mushd.toml`, for zero-downtime restarts later (M16c). It is not the default
+deploy yet — this section is the preview.
+
+**The two binaries.**
+
+- **`mush-server`** owns the world: the single-writer world loop, persistence,
+  modules, rulesets, the LLM layer, staff ops. It holds **no** connection
+  listeners. It binds the `[ipc]` socket and waits for the gateway.
+- **`mush-gateway`** owns the front door: the SSH (and, later, web) listeners,
+  the session layer, account auth + the IP guard, and slow-client / link-dead
+  policing (it owns the connection buffers). It **spawns and supervises** the
+  `mush-server` child and talks to it over the `[ipc]` socket.
+
+Both read the **same `mushd.toml`** — each its own relevant sections plus the
+shared `[ipc]` one. Point both at the **same Redis** (`[store].redis_url`): the
+gateway touches only `account:*` / `token:*` / `ban:*`, the server owns
+`obj:*` / `mod:*` / `meta:*`, so a shared instance is correct — and required,
+e.g. for `@newpassword` (the server reads the account records the gateway
+wrote).
+
+**The `[ipc]` section** (ignored by all-in-one `mushd`):
+
+```toml
+[ipc]
+listen = "127.0.0.1:6791"     # localhost TCP: works everywhere (incl. Windows dev)
+# listen = "/run/rustmush/ipc.sock"   # Linux prod: a Unix-domain socket path
+```
+
+A value that parses as a socket address is TCP; on Unix anything else is a
+filesystem path for a Unix-domain socket (bind removes a stale socket file
+first). Keep the TCP form bound to `127.0.0.1` — the boundary is unauthenticated
+and must never be exposed off-box.
+
+**Running the split (manual, M16b):**
+
+```sh
+# one config, two readers; the gateway spawns the server child itself
+mush-gateway --config /etc/rustmush/mushd.toml
+```
+
+`mush-gateway` locates the `mush-server` binary as a sibling of its own
+executable (same target/dir), spawns it with `--config` + `--ipc <addr>`,
+waits for the server's `Hello` handshake over the socket, then accepts SSH
+connections. If the server child exits, the gateway logs it and rejects
+in-flight input (the `WorldGone` path); **automatic restart + re-attach is
+M16c** — for now, restart the gateway to restart the pair. Running the server
+standalone (`mush-server --config … --ipc …`) is supported for testing.
+
+**A full systemd split** (two units, socket ordering, restart policy) lands with
+M16c. Until then, keep deploying the all-in-one `mushd` service documented in
+`deploy/README.md`; the split is proven by
+`crates/mush-gateway/tests/two_process_e2e.rs` and safe to trial off the
+critical path.
