@@ -37,10 +37,11 @@ install -m 640 -o redis -g redis "$DEV1/redis-dev1mush.conf" /etc/redis/redis-de
 install -m 644 "$DEV1/redis-dev1mush.service" /etc/systemd/system/redis-dev1mush.service
 
 # 4. Resolve the EXTERNAL IPv4 and render mushd.toml (the same file the all-in-one
-#    uses; its [ipc] boundary port is localhost-only and needs no substitution).
+#    uses; its [ipc] boundary is a unix socket in /run/rustmush and needs no
+#    substitution — the RuntimeDirectory in the gateway unit provides that dir).
 EXT_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[0-9.]+' | head -1)"
 if [ -z "${EXT_IP:-}" ]; then echo "FATAL: could not resolve external IP" >&2; exit 1; fi
-echo "external IP: $EXT_IP  (ssh :6789, ipc :6794 localhost)"
+echo "external IP: $EXT_IP  (ssh :6789, ipc unix /run/rustmush/dev1.sock)"
 sed "s/__EXTERNAL_IP__/$EXT_IP/g" "$DEV1/mushd.toml" > "$ROOT/mushd.toml"
 
 # 5. TLS cert — the gateway serves the web client (HTTPS :6790) and terminates

@@ -97,8 +97,13 @@ Copy this dir, then in the copies:
 - rename the unit `dev2mush-gateway.service`, repoint `WorkingDirectory` /
   `EnvironmentFile` / `ExecStart` / `ReadWritePaths` at `/opt/rustmush/dev2`,
   and its `Requires`/`After` at `redis-dev2mush.service`;
+- give it its **own** `RuntimeDirectory` (e.g. `rustmush-dev2`) in the unit, so
+  the two instances' IPC sockets do not share a dir;
 - in `deploy.sh` set `ROOT=/opt/rustmush/dev2`, `DEV1=$SELF/../dev2`, the
   redis port (6791), and the unit names;
-- give the instance its **own** `[ipc].listen` localhost port in its
-  `mushd.toml` (dev1 uses `127.0.0.1:6794`) so two split instances on one box
-  do not collide on the boundary socket.
+- give the instance its **own** `[ipc].listen` **unix socket path** in its
+  `mushd.toml` inside that RuntimeDirectory (dev1 uses
+  `/run/rustmush/dev1.sock`; a dev2-split would use e.g.
+  `/run/rustmush-dev2/dev2.sock`) so two split instances on one box do not
+  collide on the boundary socket. The unix socket keeps the unauthenticated
+  boundary reachable only by the service user (see `../../docs/ops.md`).

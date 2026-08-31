@@ -694,14 +694,29 @@ wrote).
 
 ```toml
 [ipc]
-listen = "127.0.0.1:6791"     # localhost TCP: works everywhere (incl. Windows dev)
-# listen = "/run/rustmush/ipc.sock"   # Linux prod: a Unix-domain socket path
+# listen = "127.0.0.1:6791"   # localhost TCP: works everywhere (incl. Windows dev)
+listen = "/run/rustmush/dev1.sock"   # Linux prod: a Unix-domain socket path
 ```
 
 A value that parses as a socket address is TCP; on Unix anything else is a
-filesystem path for a Unix-domain socket (bind removes a stale socket file
-first). Keep the TCP form bound to `127.0.0.1` — the boundary is unauthenticated
-and must never be exposed off-box.
+filesystem path for a Unix-domain socket (`listen()` removes a stale socket file
+first). **Prefer the Unix-socket form on Linux prod** — the boundary is
+unauthenticated (the server trusts whatever connects to assert authenticated
+sessions), and a `127.0.0.1` TCP port is connectable by *any* local process,
+which could impersonate the gateway. A socket in a mode-0750 directory restricts
+that to the service user. Never expose the boundary off-box either way.
+
+**systemd + the Unix socket — the gotcha:** the socket lives under `/run`, but a
+hardened unit (`ProtectSystem=strict`) mounts `/run` **read-only in the service
+namespace**, so the server cannot bind the socket (or unlink a stale one) — you
+get `Read-only file system (os error 30)`, or `Address already in use` if a
+stale file remains. The fix is **not** `ReadWritePaths` (which needs the dir to
+pre-exist, and `/run` is tmpfs) — use **`RuntimeDirectory=rustmush`** (+
+`RuntimeDirectoryMode=0750`): systemd creates `/run/rustmush` owned by the
+service user, makes it writable in the sandbox, and removes it on stop (no stale
+socket survives a restart). `dev1mush-gateway.service` does exactly this.
+Changing `RuntimeDirectory` needs a full `systemctl restart` (not `reload`), as
+the dir is set up at service start.
 
 **Running the split (manual, M16b):**
 

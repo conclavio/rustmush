@@ -35,9 +35,23 @@ RestartSec=5
 # the control-group sweep catches any straggler.
 KillMode=mixed
 
+# The gateway<->server IPC UNIX SOCKET lives at /run/rustmush/dev1.sock.
+# RuntimeDirectory makes systemd create /run/rustmush owned by the mush user and
+# — crucially — WRITABLE inside the service namespace despite ProtectSystem=strict
+# below (which otherwise mounts /run read-only, so the server could neither bind
+# the socket nor unlink a stale one → "Read-only file system" / "Address already
+# in use"). systemd also removes the dir on stop, so no stale socket survives a
+# restart. Mode 0750 → only the mush user (and root) can reach the socket: the
+# access control that stands in for authentication on the trusted local boundary
+# (a localhost TCP port would let ANY local process impersonate the gateway and
+# assert sessions). Rename this per instance (a dev2-split needs its own dir).
+RuntimeDirectory=rustmush
+RuntimeDirectoryMode=0750
+
 # Hardening: the service needs only its own tree + the loopback Redis + the
-# loopback IPC boundary. PrivateTmp is shared with the spawned server child
-# (same unit / cgroup), which is correct — both halves see the same private tmp.
+# /run/rustmush IPC socket (provided by RuntimeDirectory above). PrivateTmp is
+# shared with the spawned server child (same unit / cgroup), which is correct —
+# both halves see the same private tmp.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

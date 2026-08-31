@@ -16,10 +16,15 @@ listen = "__EXTERNAL_IP__:6789"          # external IP only (off tailscale)
 
 # The forked gateway<->server boundary socket (M16c). IGNORED by the all-in-one
 # `mushd`; read by `mush-gateway`/`mush-server` in the split (hot-restart)
-# deployment — see deploy/dev1-split/. localhost-bound: the boundary is
-# unauthenticated and must never leave the box (no ufw/ACL opening for it).
+# deployment — see deploy/dev1-split/. The boundary is UNAUTHENTICATED (the
+# server trusts whatever connects to assert authenticated sessions), so it must
+# never be reachable off-box. A UNIX SOCKET (not a localhost TCP port) is used so
+# only the mush user can connect — a 127.0.0.1 port would let ANY local process
+# impersonate the gateway. The socket lives in /run/rustmush, which the gateway's
+# systemd unit provides via `RuntimeDirectory=rustmush` (mode 0750). On Windows
+# dev / a portable setup use a TCP addr instead, e.g. "127.0.0.1:6794".
 [ipc]
-listen = "127.0.0.1:6794"                # dev1's private boundary port
+listen = "/run/rustmush/dev1.sock"       # dev1's private boundary (unix socket)
 
 [web]
 listen = "__EXTERNAL_IP__:6790"          # external IP only (off tailscale)
