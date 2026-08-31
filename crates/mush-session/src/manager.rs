@@ -757,6 +757,16 @@ impl SessionManager {
         }
     }
 
+    /// Whether `character` is currently [flood-exempt](Self::set_flood_exempt)
+    /// (sitting in an input context — mail compose, chargen). The split
+    /// gateway's M18 input-shed consults this so an input-context paste is never
+    /// shed, mirroring how [`check_input_at`](Self::check_input_at) lets it
+    /// bypass the throttle.
+    #[must_use]
+    pub fn is_char_flood_exempt(&self, character: CharKey) -> bool {
+        !self.flood_exempt.is_empty() && self.flood_exempt.contains_key(&character)
+    }
+
     /// Mark (or clear) a character as flood-exempt: their input lines
     /// bypass the per-connection throttle while set. The world task sets
     /// this while the character sits in an input context (mail compose,

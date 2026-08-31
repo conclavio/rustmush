@@ -18,10 +18,14 @@
 //! depends on both halves.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use mush_config::metrics::Metrics;
 use mush_ipc::{DetachCause, SendTarget, ToGateway};
 use mush_proto::OutputEvent;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::Notify;
+use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::error::TrySendError;
 
 /// The world loop's output + session-control sink (see the module docs).
 ///
@@ -88,23 +92,129 @@ pub trait GatewaySink: Send + Sync {
 /// [`ToGateway`] frame onto `tx`, drained to the boundary socket by the writer
 /// task. Holds no `SessionManager` (the gateway process owns it), so it never
 /// polices and the session-walk / count methods are empty.
+///
+/// # Bounded delivery (M18)
+///
+/// `tx` is a **bounded** channel ([`Config::ipc_to_gw_cap`]). Every `ToGateway`
+/// frame is must-deliver (a `Deliver` keyframe, a correlated `Reply`, sticky
+/// `SetFloodExempt` state, or a security `CloseSession`/`CloseWebSessions`), so
+/// there is NEVER a per-message drop: on a `Full` channel the whole boundary is
+/// torn down instead (the M16c supervisor re-attach re-renders every session,
+/// healing the loss). The world loop is the producer and must never `.await`
+/// the boundary (D4), so [`send`](SocketSink::send) uses `try_send` and the
+/// teardown decision + the socket drop live entirely in the writer task, which
+/// waits on [`teardown`](SocketSink::teardown).
+///
+/// [`Config::ipc_to_gw_cap`]: mush_config::config::Config::ipc_to_gw_cap
 #[derive(Clone)]
 pub struct SocketSink {
-    tx: UnboundedSender<ToGateway>,
+    tx: Sender<ToGateway>,
+    /// Shared metrics registry — the same one the world loop reads for `@stats`.
+    /// Records the `to_gw` queue high-water on every send.
+    metrics: Arc<Metrics>,
+    /// One-shot teardown trigger the writer task waits on. Notified the first
+    /// time (and every subsequent time) `try_send` sees a `Full` channel; the
+    /// writer returns, drops its socket half, and the boundary EOFs — the
+    /// existing supervise → GAP → relaunch → ReAnnounce → re-attach path heals it.
+    teardown: Arc<Notify>,
+    /// Count of frames that hit a full `to_gw` and forced a teardown. Drives the
+    /// warn-once-per-crossing latch and gives tests a deterministic handle.
+    overflow: Arc<AtomicU64>,
+    /// Edge latch for the high-water warn: set when depth first crosses the
+    /// threshold, cleared when it drops back below (so the warn is per-crossing,
+    /// never per-push).
+    hw_warned: Arc<AtomicBool>,
+    /// The channel capacity (`to_gw_cap`), for the depth gauge + high-water.
+    cap: usize,
+    /// High-water warn threshold, percent of `cap` (edge-gated).
+    high_water_pct: u8,
 }
 
 impl SocketSink {
-    /// Wrap the boundary writer's inbox.
+    /// Wrap the boundary writer's inbox. `tx` is the bounded `to_gw` sender;
+    /// `teardown` is the SAME [`Notify`] the writer task waits on; `metrics` is
+    /// the world loop's registry; `cap`/`high_water_pct` come from `[ipc]`.
     #[must_use]
-    pub fn new(tx: UnboundedSender<ToGateway>) -> SocketSink {
-        SocketSink { tx }
+    pub fn new(
+        tx: Sender<ToGateway>,
+        metrics: Arc<Metrics>,
+        teardown: Arc<Notify>,
+        cap: usize,
+        high_water_pct: u8,
+    ) -> SocketSink {
+        SocketSink {
+            tx,
+            metrics,
+            teardown,
+            overflow: Arc::new(AtomicU64::new(0)),
+            hw_warned: Arc::new(AtomicBool::new(false)),
+            cap,
+            high_water_pct,
+        }
+    }
+
+    /// Enqueue one must-deliver `ToGateway` frame with `try_send` (never
+    /// blocks, never awaits — D4). On success it observes the queue depth for
+    /// the high-water gauge + edge-gated warn. On `Full` it never drops-and-
+    /// continues: it counts the overflow, records the high-water at `cap`, logs
+    /// a warn once per crossing, and notifies the writer to TEAR THE BOUNDARY
+    /// DOWN (the re-attach heals the lost frame). On `Closed` the boundary is
+    /// already gone (the writer returned and dropped the receiver), so it is
+    /// silently ignored — matching the pre-M18 `let _ = send(..)`.
+    pub(crate) fn send(&self, msg: ToGateway) {
+        match self.tx.try_send(msg) {
+            Ok(()) => {
+                let depth = self.cap.saturating_sub(self.tx.capacity()) as u64;
+                self.metrics.observe_ipc_to_gw_depth(depth);
+                let threshold =
+                    self.cap.saturating_mul(self.high_water_pct as usize) / 100;
+                if threshold > 0 && depth >= threshold as u64 {
+                    if !self.hw_warned.swap(true, Ordering::Relaxed) {
+                        tracing::warn!(
+                            dir = "to_gw",
+                            queue_len = depth,
+                            cap = self.cap,
+                            "ipc queue high-water crossed"
+                        );
+                    }
+                } else {
+                    self.hw_warned.store(false, Ordering::Relaxed);
+                }
+            }
+            Err(TrySendError::Full(_)) => {
+                let prev = self.overflow.fetch_add(1, Ordering::Relaxed);
+                self.metrics.ipc_to_gw_overflow();
+                self.metrics.observe_ipc_to_gw_depth(self.cap as u64);
+                if prev == 0 {
+                    tracing::warn!(
+                        dir = "to_gw",
+                        cap = self.cap,
+                        "ipc queue overflow; tearing down boundary"
+                    );
+                }
+                self.teardown.notify_one();
+            }
+            Err(TrySendError::Closed(_)) => {
+                // The boundary is already torn down; the supervisor re-attach
+                // re-renders every session, so a frame lost here is recovered.
+            }
+        }
+    }
+
+    /// Total frames that hit a full `to_gw` and forced a teardown, since boot.
+    /// Test-only observation handle (the surfaced production signals are the
+    /// warn log + the `to_gw` high-water gauge reaching `cap`).
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn overflow_count(&self) -> u64 {
+        self.overflow.load(Ordering::Relaxed)
     }
 }
 
 impl GatewaySink for SocketSink {
     fn transmit(&self, sends: Vec<(SendTarget, Arc<OutputEvent>)>) {
         for (target, ev) in sends {
-            let _ = self.tx.send(ToGateway::Deliver {
+            self.send(ToGateway::Deliver {
                 target,
                 event: (*ev).clone(),
             });
@@ -112,7 +222,7 @@ impl GatewaySink for SocketSink {
     }
 
     fn set_flood_exempt(&self, char: u64, exempt: bool) {
-        let _ = self.tx.send(ToGateway::SetFloodExempt { char, exempt });
+        self.send(ToGateway::SetFloodExempt { char, exempt });
     }
 
     fn is_socket(&self) -> bool {
@@ -120,11 +230,11 @@ impl GatewaySink for SocketSink {
     }
 
     fn close_session(&self, char: u64, cause: DetachCause) {
-        let _ = self.tx.send(ToGateway::CloseSession { char, cause });
+        self.send(ToGateway::CloseSession { char, cause });
     }
 
     fn close_web_sessions(&self, chars: Vec<u64>, notice: Option<OutputEvent>, cause: DetachCause) {
-        let _ = self.tx.send(ToGateway::CloseWebSessions {
+        self.send(ToGateway::CloseWebSessions {
             chars,
             notice,
             cause,
@@ -143,5 +253,120 @@ impl GatewaySink for SocketSink {
 
     fn session_counts(&self) -> (i64, i64) {
         (0, 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mush_ipc::ServiceResp;
+    use tokio::sync::mpsc;
+
+    /// A sink over a fresh bounded channel whose receiver is NEVER polled — so
+    /// the channel fills at exactly `cap` and the next send overflows. Returns
+    /// the held receiver (keep it alive to stay `Full`, not `Closed`), the
+    /// shared teardown the writer would wait on, and the metrics registry.
+    fn sink(
+        cap: usize,
+    ) -> (
+        SocketSink,
+        mpsc::Receiver<ToGateway>,
+        Arc<Notify>,
+        Arc<Metrics>,
+    ) {
+        let (tx, rx) = mpsc::channel::<ToGateway>(cap);
+        let metrics = Arc::new(Metrics::new());
+        let teardown = Arc::new(Notify::new());
+        let s = SocketSink::new(tx, Arc::clone(&metrics), Arc::clone(&teardown), cap, 80);
+        (s, rx, teardown, metrics)
+    }
+
+    fn exempt() -> ToGateway {
+        ToGateway::SetFloodExempt {
+            char: 1,
+            exempt: true,
+        }
+    }
+
+    /// A full `to_gw` NEVER silently drops (I1): the overflowing frame counts,
+    /// records the high-water at cap, and signals the writer to tear the
+    /// boundary down — the writer's `teardown.notified()` becomes ready.
+    #[tokio::test]
+    async fn full_to_gw_tears_down_never_drops_silently() {
+        let cap = 4;
+        let (s, _rx, teardown, metrics) = sink(cap);
+        // Fill exactly to capacity — at cap is not yet an overflow.
+        for _ in 0..cap {
+            s.send(exempt());
+        }
+        assert_eq!(s.overflow_count(), 0, "at capacity is not an overflow");
+        // The next must-deliver frame triggers a teardown, not a per-message drop.
+        s.send(exempt());
+        assert_eq!(s.overflow_count(), 1);
+        // notify_one stored a permit, so the writer's wait resolves immediately.
+        tokio::time::timeout(std::time::Duration::from_secs(1), teardown.notified())
+            .await
+            .expect("teardown must be signalled on to_gw overflow");
+        // The high-water reached cap and surfaces via @stats / /metrics.
+        assert_eq!(metrics.snapshot().ipc_queue_high_water_to_gw, cap as u64);
+        // The overflow is counted in the shared registry (surfaced via @stats /
+        // /metrics), not only in the SocketSink's local latch counter.
+        assert_eq!(metrics.snapshot().ipc_to_gw_overflow_total, 1);
+    }
+
+    /// A correlated `Reply` is must-deliver too: on a full channel it must tear
+    /// down, never be dropped (a dropped `Reply` would hang its `ServiceReq`
+    /// oneshot — I1).
+    #[tokio::test]
+    async fn reply_frame_tears_down_on_full() {
+        let cap = 1;
+        let (s, _rx, teardown, _m) = sink(cap);
+        s.send(exempt()); // fills the single slot
+        s.send(ToGateway::Reply {
+            id: 7,
+            resp: ServiceResp::NameFree(true),
+        });
+        assert_eq!(s.overflow_count(), 1);
+        tokio::time::timeout(std::time::Duration::from_secs(1), teardown.notified())
+            .await
+            .expect("a full channel must tear down rather than drop a Reply");
+    }
+
+    /// After the boundary is torn down the receiver is dropped, so `try_send`
+    /// returns `Closed`: that is silently ignored (the re-attach heals the loss)
+    /// and is NOT counted as an overflow nor a fresh teardown.
+    #[tokio::test]
+    async fn closed_channel_is_ignored_not_a_teardown() {
+        let (s, rx, teardown, _m) = sink(4);
+        drop(rx); // receiver gone → every send is Closed
+        for _ in 0..10 {
+            s.send(exempt());
+        }
+        assert_eq!(s.overflow_count(), 0, "Closed is not an overflow");
+        // The teardown is not signalled by a Closed send.
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), teardown.notified())
+                .await
+                .is_err(),
+            "Closed must not trigger a teardown notify"
+        );
+    }
+
+    /// The high-water warn is edge-gated: the depth gauge tracks true occupancy
+    /// (it rises as the un-drained channel fills). Below cap there is no
+    /// overflow and no teardown.
+    #[tokio::test]
+    async fn high_water_tracks_true_occupancy_below_cap() {
+        let cap = 8;
+        let (s, _rx, _teardown, metrics) = sink(cap);
+        for _ in 0..(cap - 1) {
+            s.send(exempt());
+        }
+        assert_eq!(s.overflow_count(), 0);
+        // Depth reached cap-1 (nothing drained), recorded as the high-water.
+        assert_eq!(
+            metrics.snapshot().ipc_queue_high_water_to_gw,
+            (cap - 1) as u64
+        );
     }
 }

@@ -34,7 +34,8 @@ use mush_core::{DisconnectKind, ObjId};
 use mush_ipc::{SendTarget, ToServer, WireInbound};
 use mush_proto::OutputEvent;
 use mush_session::{CharKey, ConnId, DetachOutcome, DetachReason, SessionManager};
-use tokio::sync::mpsc::UnboundedSender;
+
+use crate::ToServerTx;
 
 /// Widen a core [`ObjId`] to the session layer's opaque [`CharKey`].
 #[must_use]
@@ -171,14 +172,16 @@ where
 pub struct SessionDelivery {
     sessions: Arc<SessionManager>,
     /// Where policed connections' `ConnDown`/`SessionGone` are posted: the
-    /// boundary writer, crossing back to the forked server as inbound.
-    boundary: UnboundedSender<ToServer>,
+    /// boundary writer, crossing back to the forked server as inbound. The
+    /// wrapper bumps the shared `to_server` depth gauge on every post (M18), so
+    /// policed feedback counts toward the queue occupancy like any producer.
+    boundary: ToServerTx,
 }
 
 impl SessionDelivery {
     /// Wrap the gateway's session manager and the boundary writer's inbox.
     #[must_use]
-    pub fn new(sessions: Arc<SessionManager>, boundary: UnboundedSender<ToServer>) -> SessionDelivery {
+    pub(crate) fn new(sessions: Arc<SessionManager>, boundary: ToServerTx) -> SessionDelivery {
         SessionDelivery { sessions, boundary }
     }
 

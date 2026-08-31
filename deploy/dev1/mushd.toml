@@ -25,6 +25,12 @@ listen = "__EXTERNAL_IP__:6789"          # external IP only (off tailscale)
 # dev / a portable setup use a TCP addr instead, e.g. "127.0.0.1:6794".
 [ipc]
 listen = "/run/rustmush/dev1.sock"       # dev1's private boundary (unix socket)
+# M18 boundary bounding (DoS/robustness; defaults shown). Old configs without
+# these keys keep the defaults.
+# to_server_cap = 1024        # gateway->server queue; over cap, INPUT (Cmd/Query) is shed + logged
+# to_gw_cap = 8192            # server->gateway queue; over cap, the boundary is torn down (re-attach heals)
+# write_timeout_ms = 5000     # per-frame IPC write timeout; a wedged peer past this tears the boundary down
+# high_water_warn_pct = 80    # edge-gated high-water warn threshold (percent of a queue's cap)
 
 [web]
 listen = "__EXTERNAL_IP__:6790"          # external IP only (off tailscale)

@@ -123,6 +123,25 @@ pub struct Metrics {
     npc_active: AtomicI64,
     npc_thinking: AtomicI64,
 
+    // -- IPC boundary bounding (M18; event-driven, always live) --
+    /// Input frames (`Cmd`/`Query`) shed gateway->server when `to_server` is
+    /// full (monotonic counter).
+    ipc_frames_shed_total: AtomicU64,
+    /// IPC write_frame calls that timed out on a wedged peer, either direction
+    /// (monotonic counter).
+    ipc_write_timeouts_total: AtomicU64,
+    /// Server->gateway (`to_gw`) overflow events: a must-deliver frame hit a
+    /// full queue and forced a whole-boundary teardown (never a per-message
+    /// drop). Monotonic counter — the surfaced signal for the teardown class
+    /// that the write-timeout counter does not cover.
+    ipc_to_gw_overflow_total: AtomicU64,
+    /// High-water mark of the gateway->server (`to_server`) queue depth
+    /// (`fetch_max` gauge).
+    ipc_queue_high_water_to_server: AtomicU64,
+    /// High-water mark of the server->gateway (`to_gw`) queue depth
+    /// (`fetch_max` gauge).
+    ipc_queue_high_water_to_gw: AtomicU64,
+
     // -- LLM (published each sample) --
     llm: Mutex<LlmMetrics>,
 }
@@ -261,6 +280,47 @@ impl Metrics {
         self.store_last_ack_unix.store(unix_s, Ordering::Relaxed);
     }
 
+    // -- IPC boundary bounding (M18) --------------------------------------
+
+    /// Count one input frame shed gateway->server (the `to_server` queue was
+    /// full). Monotonic; the shed site also logs a warn.
+    pub fn ipc_frame_shed(&self) {
+        self.ipc_frames_shed_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Count one IPC `write_frame` timeout on a wedged peer (either writer).
+    /// Monotonic; the timeout site also logs a warn and tears the boundary down.
+    pub fn ipc_write_timeout(&self) {
+        self.ipc_write_timeouts_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Count one server->gateway (`to_gw`) overflow: a must-deliver frame hit a
+    /// full queue and forced a boundary teardown. Monotonic; the overflow site
+    /// also logs a warn and notifies the writer to tear down.
+    pub fn ipc_to_gw_overflow(&self) {
+        self.ipc_to_gw_overflow_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a gateway->server (`to_server`) queue occupancy observation,
+    /// keeping the high-water mark (`fetch_max`).
+    pub fn observe_ipc_to_server_depth(&self, depth: u64) {
+        self.ipc_queue_high_water_to_server
+            .fetch_max(depth, Ordering::Relaxed);
+    }
+
+    /// Record a server->gateway (`to_gw`) queue occupancy observation, keeping
+    /// the high-water mark (`fetch_max`).
+    pub fn observe_ipc_to_gw_depth(&self, depth: u64) {
+        self.ipc_queue_high_water_to_gw
+            .fetch_max(depth, Ordering::Relaxed);
+    }
+
+    /// Total input frames shed gateway->server since boot.
+    #[must_use]
+    pub fn ipc_frames_shed_total(&self) -> u64 {
+        self.ipc_frames_shed_total.load(Ordering::Relaxed)
+    }
+
     /// Replace the LLM aggregate (world task on each sample).
     pub fn publish_llm(
         &self,
@@ -325,6 +385,13 @@ impl Metrics {
             store_last_ack_unix: self.store_last_ack_unix.load(Ordering::Relaxed),
             npc_active: self.npc_active.load(Ordering::Relaxed),
             npc_thinking: self.npc_thinking.load(Ordering::Relaxed),
+            ipc_frames_shed_total: self.ipc_frames_shed_total.load(Ordering::Relaxed),
+            ipc_write_timeouts_total: self.ipc_write_timeouts_total.load(Ordering::Relaxed),
+            ipc_to_gw_overflow_total: self.ipc_to_gw_overflow_total.load(Ordering::Relaxed),
+            ipc_queue_high_water_to_server: self
+                .ipc_queue_high_water_to_server
+                .load(Ordering::Relaxed),
+            ipc_queue_high_water_to_gw: self.ipc_queue_high_water_to_gw.load(Ordering::Relaxed),
             llm_enabled: g.enabled,
             llm_globally_disabled: g.globally_disabled,
             llm_features: g.features.clone(),
@@ -413,6 +480,16 @@ pub struct MetricsSnapshot {
     pub npc_active: i64,
     /// NPCs with an in-flight turn.
     pub npc_thinking: i64,
+    /// Input frames shed gateway->server since boot (M18).
+    pub ipc_frames_shed_total: u64,
+    /// IPC write timeouts on a wedged peer since boot (M18).
+    pub ipc_write_timeouts_total: u64,
+    /// Server->gateway (`to_gw`) overflow teardowns since boot (M18).
+    pub ipc_to_gw_overflow_total: u64,
+    /// High-water mark of the gateway->server (`to_server`) queue depth (M18).
+    pub ipc_queue_high_water_to_server: u64,
+    /// High-water mark of the server->gateway (`to_gw`) queue depth (M18).
+    pub ipc_queue_high_water_to_gw: u64,
     /// Whether an LLM service is configured.
     pub llm_enabled: bool,
     /// Whether the global LLM kill switch is engaged.
@@ -564,6 +641,43 @@ impl MetricsSnapshot {
             "gauge",
             "Unix time of the last acknowledged store write (0 = none yet).",
             &[(&[], self.store_last_ack_unix as f64)],
+        );
+
+        // IPC boundary bounding (M18). The high-water gauge is labeled by
+        // direction — never per-player or secret (mirrors the store block).
+        metric(
+            &mut o,
+            "mush_ipc_frames_shed_total",
+            "counter",
+            "Input frames shed gateway->server when the to_server queue was full.",
+            &[(&[], self.ipc_frames_shed_total as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_ipc_write_timeouts_total",
+            "counter",
+            "IPC write_frame calls that timed out on a wedged peer (either direction).",
+            &[(&[], self.ipc_write_timeouts_total as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_ipc_to_gw_overflow_total",
+            "counter",
+            "Server->gateway (to_gw) overflow teardowns: a must-deliver frame hit a full queue.",
+            &[(&[], self.ipc_to_gw_overflow_total as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_ipc_queue_high_water",
+            "gauge",
+            "High-water mark of an IPC boundary queue's depth, by direction.",
+            &[
+                (
+                    &[("dir", "to_server")],
+                    self.ipc_queue_high_water_to_server as f64,
+                ),
+                (&[("dir", "to_gw")], self.ipc_queue_high_water_to_gw as f64),
+            ],
         );
 
         // NPC agents.
@@ -857,6 +971,55 @@ mod tests {
         assert_eq!(m.snapshot().loop_lag_p99_ms(), 1000);
         // Empty: zero.
         assert_eq!(Metrics::new().snapshot().loop_lag_p99_ms(), 0);
+    }
+
+    #[test]
+    fn ipc_bounding_counters_and_high_water() {
+        let m = Metrics::new();
+        // Fresh registry: all IPC bounding metrics zero.
+        let s = m.snapshot();
+        assert_eq!(s.ipc_frames_shed_total, 0);
+        assert_eq!(s.ipc_write_timeouts_total, 0);
+        assert_eq!(s.ipc_to_gw_overflow_total, 0);
+        assert_eq!(s.ipc_queue_high_water_to_server, 0);
+        assert_eq!(s.ipc_queue_high_water_to_gw, 0);
+
+        // Counters are monotonic.
+        for _ in 0..3 {
+            m.ipc_frame_shed();
+        }
+        m.ipc_write_timeout();
+        m.ipc_write_timeout();
+        m.ipc_to_gw_overflow();
+
+        // High-water keeps the max, not the last observation.
+        m.observe_ipc_to_server_depth(5);
+        m.observe_ipc_to_server_depth(12);
+        m.observe_ipc_to_server_depth(7);
+        m.observe_ipc_to_gw_depth(4000);
+        m.observe_ipc_to_gw_depth(1000);
+
+        let s = m.snapshot();
+        assert_eq!(s.ipc_frames_shed_total, 3);
+        assert_eq!(m.ipc_frames_shed_total(), 3);
+        assert_eq!(s.ipc_write_timeouts_total, 2);
+        assert_eq!(s.ipc_to_gw_overflow_total, 1);
+        assert_eq!(s.ipc_queue_high_water_to_server, 12);
+        assert_eq!(s.ipc_queue_high_water_to_gw, 4000);
+
+        // Prometheus renders them, with the high-water labeled by direction
+        // and no secret label.
+        let text = s.to_prometheus(1);
+        assert!(text.contains("# TYPE mush_ipc_frames_shed_total counter"));
+        assert!(text.contains("mush_ipc_frames_shed_total 3"));
+        assert!(text.contains("mush_ipc_write_timeouts_total 2"));
+        assert!(text.contains("mush_ipc_to_gw_overflow_total 1"));
+        assert!(text.contains("# TYPE mush_ipc_queue_high_water gauge"));
+        assert!(text.contains("mush_ipc_queue_high_water{dir=\"to_server\"} 12"));
+        assert!(text.contains("mush_ipc_queue_high_water{dir=\"to_gw\"} 4000"));
+        for forbidden in ["player=\"", "account=\"", "token=\"", "ip=\"", "actor=\""] {
+            assert!(!text.contains(forbidden));
+        }
     }
 
     #[test]

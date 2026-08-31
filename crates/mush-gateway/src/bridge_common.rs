@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use mush_core::{DisconnectKind, ObjId};
-use mush_ipc::{GatewayLink, ServiceReq, ServiceResp, ToServer, WireInbound};
+use mush_ipc::{GatewayLink, InputSend, ServiceReq, ServiceResp, ToServer, WireInbound};
 // Shared with the SSH transport's own line cap (`mush-net-ssh::editor`) so
 // both agree on one bound (MEDIUM finding).
 use mush_net_ssh::MAX_LINE_CHARS;
@@ -344,29 +344,45 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             tracing::warn!(conn = conn.0, "line from unattached connection dropped");
             return LineOutcome::Continue;
         };
-        let sent = self
+        match self
             .link
-            .to_server(ToServer::Inbound(WireInbound::Cmd {
+            .to_server_input(ToServer::Inbound(WireInbound::Cmd {
                 conn: conn.0,
                 actor,
                 line: trimmed.to_string(),
             }))
-            .await;
-        // D3 (M16c): during a server-restart gap the boundary is down, so the
-        // send is refused (`false`). Surface a clear "restarting" notice instead
-        // of silently dropping the line — the connection is NOT dropped. The
-        // in-process all-in-one link never reports `is_restarting` (its default
-        // is `false`), so its behaviour is unchanged (a `false` there is a
-        // shutdown, already terminal).
-        if !sent && self.link.is_restarting() {
-            send_event_to_conn(
-                &self.sessions,
-                conn,
-                OutputEvent::Sys(RichText::tag(
-                    "system",
-                    "The server is restarting; hold on — your input was not sent.",
-                )),
-            );
+            .await
+        {
+            InputSend::Sent => {}
+            // M18 input-shed: the gateway->server queue is full (a wedged or slow
+            // server), so this Cmd was dropped with a logged warn + counter bump.
+            // Tell the player it did not land — the connection is NOT dropped.
+            // Distinct from the restart-gap and shutdown cases below.
+            InputSend::Shed => {
+                send_event_to_conn(
+                    &self.sessions,
+                    conn,
+                    OutputEvent::Sys(RichText::tag("system", "The server is busy; try again.")),
+                );
+            }
+            // D3 (M16c): during a server-restart gap the boundary is down, so the
+            // send is refused. Surface a clear "restarting" notice instead of
+            // silently dropping the line — the connection is NOT dropped. The
+            // in-process all-in-one link never reports `is_restarting` (its
+            // default is `false`) and never sheds, so its behaviour is unchanged
+            // (a `Gone` there is a shutdown, already terminal — stay silent).
+            InputSend::Gone => {
+                if self.link.is_restarting() {
+                    send_event_to_conn(
+                        &self.sessions,
+                        conn,
+                        OutputEvent::Sys(RichText::tag(
+                            "system",
+                            "The server is restarting; hold on — your input was not sent.",
+                        )),
+                    );
+                }
+            }
         }
         LineOutcome::Continue
     }

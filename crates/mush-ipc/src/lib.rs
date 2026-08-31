@@ -55,7 +55,7 @@ mod protocol;
 mod target;
 
 pub use codec::{CodecError, FrameDecoder, MAX_FRAME_LEN, decode_frame, encode_frame};
-pub use link::GatewayLink;
+pub use link::{GatewayLink, InputSend};
 pub use io::{
     BoxRead, BoxWrite, FrameReader, IpcEndpoint, IpcListener, connect, listen, write_frame,
 };

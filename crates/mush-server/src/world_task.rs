@@ -1419,6 +1419,16 @@ pub struct StatsExtra {
     pub npc_thinking: i64,
     /// Approximate p99 loop lag (ms) from the histogram.
     pub lag_p99: u64,
+    /// Input frames shed gateway->server since boot (M18 IPC bounding).
+    pub ipc_frames_shed: u64,
+    /// IPC write timeouts on a wedged peer since boot (M18).
+    pub ipc_write_timeouts: u64,
+    /// Server->gateway (`to_gw`) overflow teardowns since boot (M18).
+    pub ipc_to_gw_overflow: u64,
+    /// High-water mark of the gateway->server (`to_server`) queue depth (M18).
+    pub ipc_hw_to_server: u64,
+    /// High-water mark of the server->gateway (`to_gw`) queue depth (M18).
+    pub ipc_hw_to_gw: u64,
     /// Today's LLM spend, when a service is wired.
     pub llm: Option<LlmStatsLine>,
 }
@@ -1471,6 +1481,11 @@ fn stats_extra(metrics: &Metrics, llm: Option<&Arc<LlmService>>) -> StatsExtra {
         npc_active: snap.npc_active,
         npc_thinking: snap.npc_thinking,
         lag_p99: snap.loop_lag_p99_ms(),
+        ipc_frames_shed: snap.ipc_frames_shed_total,
+        ipc_write_timeouts: snap.ipc_write_timeouts_total,
+        ipc_to_gw_overflow: snap.ipc_to_gw_overflow_total,
+        ipc_hw_to_server: snap.ipc_queue_high_water_to_server,
+        ipc_hw_to_gw: snap.ipc_queue_high_water_to_gw,
         llm: llm_line,
     }
 }
@@ -1529,6 +1544,14 @@ pub fn render_stats(
     text.push_str(&format!(
         "\nNPC agents: {} active, {} thinking",
         extra.npc_active, extra.npc_thinking
+    ));
+    text.push_str(&format!(
+        "\nIPC boundary: {} frames shed, {} write timeouts, {} to_gw overflows; high-water to_server {}, to_gw {}",
+        extra.ipc_frames_shed,
+        extra.ipc_write_timeouts,
+        extra.ipc_to_gw_overflow,
+        extra.ipc_hw_to_server,
+        extra.ipc_hw_to_gw
     ));
     if let Some(llm) = &extra.llm {
         text.push_str(&format!(

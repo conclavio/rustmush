@@ -367,6 +367,11 @@ fn render_stats_reports_counts_lag_and_store_health() {
         npc_active: 4,
         npc_thinking: 1,
         lag_p99: 25,
+        ipc_frames_shed: 7,
+        ipc_write_timeouts: 2,
+        ipc_to_gw_overflow: 3,
+        ipc_hw_to_server: 900,
+        ipc_hw_to_gw: 4096,
         llm: Some(LlmStatsLine {
             globally_disabled: false,
             today_input: 1200,
@@ -393,6 +398,12 @@ fn render_stats_reports_counts_lag_and_store_health() {
         "{text}"
     );
     assert!(text.contains("NPC agents: 4 active, 1 thinking"), "{text}");
+    assert!(
+        text.contains(
+            "IPC boundary: 7 frames shed, 2 write timeouts, 3 to_gw overflows; high-water to_server 900, to_gw 4096"
+        ),
+        "{text}"
+    );
     assert!(
         text.contains("LLM today: 1200 in + 340 out tokens, $0.0567 (kill switch: off)"),
         "{text}"

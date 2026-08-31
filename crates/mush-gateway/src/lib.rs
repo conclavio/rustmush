@@ -36,10 +36,11 @@ use std::time::{Duration, Instant};
 use futures::future::BoxFuture;
 use mush_config::config::Config;
 use mush_config::ipguard::IpGuard;
+use mush_config::metrics::Metrics;
 use mush_core::DisconnectKind;
 use mush_ipc::{
-    AttachRec, BoxRead, BoxWrite, DetachCause, FrameReader, GatewayLink, IPC_VERSION, IpcEndpoint,
-    ServiceReq, ServiceResp, ToGateway, ToServer, WireInbound,
+    AttachRec, BoxRead, BoxWrite, DetachCause, FrameReader, GatewayLink, IPC_VERSION, InputSend,
+    IpcEndpoint, ServiceReq, ServiceResp, ToGateway, ToServer, WireInbound,
 };
 use mush_net_web::{WebConfig, WebHooks};
 use mush_proto::{OutputEvent, RichText};
@@ -50,7 +51,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::accounts::Accounts;
-use crate::delivery::{SessionDelivery, char_key_obj};
+use crate::delivery::{SessionDelivery, char_key, char_key_obj};
 use crate::ssh_bridge::{SshBridge, start_listener};
 use crate::web_bridge::WebBridge;
 
@@ -167,13 +168,99 @@ struct Pending {
     down: bool,
 }
 
+/// A `to_server` sender paired with the shared external depth gauge (M18). The
+/// channel stays UNBOUNDED (a single FIFO the must-deliver frames can never be
+/// blocked on — `ConnUp` must precede a conn's `Cmd`s), but every enqueue bumps
+/// `depth` and [`gateway_writer`] decrements it after each successful
+/// `write_frame`, so `depth` tracks the queue's TRUE occupancy. The
+/// [`SocketGatewayLink`] input-shed reads it to decide whether to drop a
+/// `Cmd`/`Query`; every send also records the `to_server` high-water gauge with
+/// an edge-gated warn. Cloned into every producer (the link, the delivery
+/// transport, the reader's session-control helpers) so they all bump the SAME
+/// gauge.
+#[derive(Clone)]
+pub(crate) struct ToServerTx {
+    tx: mpsc::UnboundedSender<ToServer>,
+    /// Shared external depth gauge: `+1` per enqueue here, `-1` per successful
+    /// write in [`gateway_writer`].
+    depth: Arc<AtomicU64>,
+    /// The world loop's registry (records the `to_server` high-water).
+    metrics: Arc<Metrics>,
+    /// Edge latch for the high-water warn (per-crossing, never per-push).
+    hw_warned: Arc<AtomicBool>,
+    /// `[ipc].to_server_cap` — the high-water threshold base.
+    cap: usize,
+    /// `[ipc].high_water_warn_pct` — percent of `cap` at which a crossing warns.
+    high_water_pct: u8,
+}
+
+impl ToServerTx {
+    /// Wrap a fresh boundary's `to_server` sender with a zeroed depth gauge.
+    fn new(
+        tx: mpsc::UnboundedSender<ToServer>,
+        depth: Arc<AtomicU64>,
+        metrics: Arc<Metrics>,
+        cap: usize,
+        high_water_pct: u8,
+    ) -> ToServerTx {
+        ToServerTx {
+            tx,
+            depth,
+            metrics,
+            hw_warned: Arc::new(AtomicBool::new(false)),
+            cap,
+            high_water_pct,
+        }
+    }
+
+    /// The current queue occupancy (frames enqueued but not yet written).
+    fn depth(&self) -> u64 {
+        self.depth.load(Ordering::Relaxed)
+    }
+
+    /// Enqueue one MUST-DELIVER frame: bump the gauge (recording the high-water),
+    /// then send. Returns `false` only when the receiver is gone (boundary down),
+    /// in which case the gauge bump is undone so it never leaks. NEVER sheds — the
+    /// input-shed decision lives in [`SocketGatewayLink`] and only touches
+    /// `Cmd`/`Query`.
+    pub(crate) fn send(&self, msg: ToServer) -> bool {
+        let depth = self.depth.fetch_add(1, Ordering::Relaxed) + 1;
+        self.observe_depth(depth);
+        if self.tx.send(msg).is_ok() {
+            true
+        } else {
+            self.depth.fetch_sub(1, Ordering::Relaxed);
+            false
+        }
+    }
+
+    /// Record a queue-occupancy observation into the high-water gauge and fire an
+    /// edge-gated warn on a NEW crossing of `high_water_pct` of `cap`.
+    fn observe_depth(&self, depth: u64) {
+        self.metrics.observe_ipc_to_server_depth(depth);
+        let threshold = self.cap.saturating_mul(self.high_water_pct as usize) / 100;
+        if threshold > 0 && depth >= threshold as u64 {
+            if !self.hw_warned.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    dir = "to_server",
+                    queue_len = depth,
+                    cap = self.cap,
+                    "ipc queue high-water crossed"
+                );
+            }
+        } else {
+            self.hw_warned.store(false, Ordering::Relaxed);
+        }
+    }
+}
+
 /// One live server boundary: the current connection's `ToServer` writer inbox
 /// plus its own correlated-request table. Swapped as a unit each (re)connect so
 /// a stale reply table is never reused across a restart (M16c). A fresh table
 /// per connection means [`request`](SocketGatewayLink::request) and the reader's
 /// teardown drain always agree on the SAME table for one server lifetime.
 struct BoundaryConn {
-    tx: mpsc::UnboundedSender<ToServer>,
+    tx: ToServerTx,
     pending: Arc<Mutex<Pending>>,
 }
 
@@ -240,6 +327,15 @@ type ManifestCache = Arc<Mutex<HelloManifest>>;
 pub struct SocketGatewayLink {
     boundary: BoundaryHandle,
     next_id: AtomicU64,
+    /// The gateway's session manager — consulted by the input-shed to never drop
+    /// a flood-exempt (input-context) connection's `Cmd`/`Query` (M18), mirroring
+    /// how such a paste bypasses the flood throttle.
+    sessions: Arc<SessionManager>,
+    /// The shared registry: the input-shed bumps `ipc_frames_shed_total` and the
+    /// `to_server` high-water here.
+    metrics: Arc<Metrics>,
+    /// `[ipc].to_server_cap`: at/over this depth a `Cmd`/`Query` is shed (M18).
+    to_server_cap: usize,
 }
 
 impl SocketGatewayLink {
@@ -250,17 +346,77 @@ impl SocketGatewayLink {
             down: false,
         }))
     }
+
+    /// Whether `msg` is a flood-exempt connection's input (an input-context
+    /// paste — mail/chargen). Such input bypasses the input-shed exactly as it
+    /// bypasses the flood throttle. Only `Cmd`/`Query` carry an actor to check;
+    /// everything else returns `false` (it is not sheddable anyway).
+    fn is_input_exempt(&self, msg: &ToServer) -> bool {
+        let actor = match msg {
+            ToServer::Inbound(WireInbound::Cmd { actor, .. })
+            | ToServer::Inbound(WireInbound::Query { actor, .. }) => *actor,
+            _ => return false,
+        };
+        self.sessions.is_char_flood_exempt(char_key(actor))
+    }
+
+    /// The shared send + input-shed decision behind both
+    /// [`to_server`](GatewayLink::to_server) and
+    /// [`to_server_input`](GatewayLink::to_server_input) (M18). ONLY
+    /// `Cmd`/`Query` are sheddable: at/over `to_server_cap` (and not flood-exempt)
+    /// they are DROPPED — counted, logged, high-water recorded — and never
+    /// enqueued. Every must-deliver frame (lifecycle, control, `ReAnnounce`, ...)
+    /// always enqueues (I1). A missing boundary (restart gap / shutdown) resolves
+    /// to [`InputSend::Gone`].
+    fn classify_send(&self, msg: ToServer) -> InputSend {
+        let Some(conn) = self.boundary.current() else {
+            return InputSend::Gone;
+        };
+        let sheddable = matches!(
+            &msg,
+            ToServer::Inbound(WireInbound::Cmd { .. })
+                | ToServer::Inbound(WireInbound::Query { .. })
+        );
+        if sheddable {
+            let depth = conn.tx.depth();
+            if depth >= self.to_server_cap as u64 && !self.is_input_exempt(&msg) {
+                let is_cmd = matches!(&msg, ToServer::Inbound(WireInbound::Cmd { .. }));
+                self.metrics.ipc_frame_shed();
+                // Record the true occupancy that triggered the shed.
+                self.metrics.observe_ipc_to_server_depth(depth);
+                tracing::warn!(
+                    dir = "to_server",
+                    queue_len = depth,
+                    cap = self.to_server_cap,
+                    dropped_total = self.metrics.ipc_frames_shed_total(),
+                    kind = if is_cmd { "cmd" } else { "query" },
+                    "ipc queue full; shedding input frame"
+                );
+                return InputSend::Shed;
+            }
+        }
+        if conn.tx.send(msg) {
+            InputSend::Sent
+        } else {
+            InputSend::Gone
+        }
+    }
 }
 
 impl GatewayLink for SocketGatewayLink {
     fn to_server(&self, msg: ToServer) -> BoxFuture<'_, bool> {
-        // No live boundary (restart gap) → `false`, which the bridges map to the
-        // WorldGone rejection, exactly as at shutdown.
-        let ok = self
-            .boundary
-            .current()
-            .is_some_and(|c| c.tx.send(msg).is_ok());
-        Box::pin(async move { ok })
+        // A shed `Cmd`/`Query` or a missing boundary (restart gap / shutdown)
+        // resolves `false`, which the bridges map to the WorldGone / busy
+        // rejection; only [`InputSend::Sent`] counts as delivered.
+        let sent = matches!(self.classify_send(msg), InputSend::Sent);
+        Box::pin(async move { sent })
+    }
+
+    fn to_server_input(&self, msg: ToServer) -> BoxFuture<'_, InputSend> {
+        // The input path wants the precise outcome (Sent / Shed / Gone) so the
+        // bridge can pick the right player-facing notice.
+        let outcome = self.classify_send(msg);
+        Box::pin(async move { outcome })
     }
 
     fn request(&self, req: ServiceReq) -> BoxFuture<'_, Option<ServiceResp>> {
@@ -289,7 +445,9 @@ impl GatewayLink for SocketGatewayLink {
                 true
             }
         };
-        let sent = registered && conn.tx.send(ToServer::Request { id, req }).is_ok();
+        // A `ServiceReq` is MUST-DELIVER (it has a parked oneshot); it always
+        // enqueues through `ToServerTx::send` and is never shed (I1).
+        let sent = registered && conn.tx.send(ToServer::Request { id, req });
         let pending = Arc::clone(&conn.pending);
         Box::pin(async move {
             if !sent {
@@ -320,6 +478,9 @@ async fn gateway_writer(
     mut w: BoxWrite,
     mut rx: mpsc::UnboundedReceiver<ToServer>,
     mut close: oneshot::Receiver<()>,
+    depth: Arc<AtomicU64>,
+    metrics: Arc<Metrics>,
+    write_timeout: Duration,
 ) {
     loop {
         let msg = tokio::select! {
@@ -330,9 +491,29 @@ async fn gateway_writer(
             }
         };
         let Some(msg) = msg else { return };
-        if let Err(e) = mush_ipc::write_frame(&mut w, &msg).await {
-            tracing::warn!(error = %e, "ipc write to server failed; boundary down");
-            return;
+        // Each write is bounded by `write_timeout` (M18): a connected-but-not-
+        // draining server is wedged, so we count it, warn, and return — dropping
+        // `w` EOFs the boundary into the supervisor's relaunch/re-attach heal.
+        // Never skip-a-message-and-continue: the socket buffer is full, so the
+        // next write blocks too and skipping could drop a must-deliver frame.
+        match tokio::time::timeout(write_timeout, mush_ipc::write_frame(&mut w, &msg)).await {
+            Ok(Ok(())) => {
+                // The frame left our queue; drop the external depth gauge to
+                // track true occupancy for the input-shed / high-water.
+                depth.fetch_sub(1, Ordering::Relaxed);
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "ipc write to server failed; boundary down");
+                return;
+            }
+            Err(_) => {
+                metrics.ipc_write_timeout();
+                tracing::warn!(
+                    timeout_ms = write_timeout.as_millis() as u64,
+                    "ipc write timed out; peer wedged, tearing down boundary"
+                );
+                return;
+            }
         }
     }
 }
@@ -344,7 +525,7 @@ async fn gateway_reader(
     mut reader: FrameReader<BoxRead>,
     transport: SessionDelivery,
     pending: Arc<Mutex<Pending>>,
-    to_server_tx: mpsc::UnboundedSender<ToServer>,
+    to_server_tx: ToServerTx,
     sessions: Arc<SessionManager>,
     manifest: ManifestCache,
 ) {
@@ -452,7 +633,7 @@ fn cause_to_kind(cause: DetachCause) -> DisconnectKind {
 /// `@boot` in split mode). Dropping the returned handles closes the transports.
 fn close_char_sessions(
     sessions: &SessionManager,
-    to_server_tx: &mpsc::UnboundedSender<ToServer>,
+    to_server_tx: &ToServerTx,
     char: u64,
     cause: DetachCause,
 ) {
@@ -476,7 +657,7 @@ fn close_char_sessions(
 /// reporting its `ConnDown` back to the server.
 fn detach_one_conn(
     sessions: &SessionManager,
-    to_server_tx: &mpsc::UnboundedSender<ToServer>,
+    to_server_tx: &ToServerTx,
     conn: u64,
     cause: DetachCause,
 ) {
@@ -508,7 +689,7 @@ fn detach_one_conn(
 /// `SessionManager`, so the server never needs a reverse session query (D4).
 fn close_web_sessions(
     sessions: &SessionManager,
-    to_server_tx: &mpsc::UnboundedSender<ToServer>,
+    to_server_tx: &ToServerTx,
     chars: Vec<u64>,
     notice: Option<&mush_proto::OutputEvent>,
     cause: DetachCause,
@@ -633,6 +814,28 @@ struct WiredBoundary {
     close: oneshot::Sender<()>,
 }
 
+/// The M18 IPC-bounding knobs + shared metrics threaded into every (re)wired
+/// boundary: the input-shed cap, the high-water warn threshold, the per-frame
+/// write timeout, and the registry the shed/timeout/high-water counters land in.
+/// Cloned per (re)connect; the registry `Arc` is shared with the SSH/web bridges
+/// so `/metrics` + `/healthz` + `@stats` all reflect the same numbers.
+#[derive(Clone)]
+struct BoundaryTuning {
+    metrics: Arc<Metrics>,
+    to_server_cap: usize,
+    high_water_pct: u8,
+    write_timeout: Duration,
+}
+
+/// The restart-surviving context every (re)connect needs: the shared Hello
+/// manifest cache and the [`BoundaryTuning`]. Threaded through the supervisor so
+/// each respawn wires its fresh boundary the same way.
+#[derive(Clone)]
+struct BoundaryEnv {
+    manifest: ManifestCache,
+    tuning: BoundaryTuning,
+}
+
 /// Connect to a (freshly launched) server endpoint, run the [`ToGateway::Hello`]
 /// handshake + [`IPC_VERSION`] check, and wire up the per-connection boundary:
 /// a fresh `ToServer` channel + reply table, a writer task, and a reader task
@@ -643,8 +846,9 @@ async fn connect_and_wire(
     endpoint: &IpcEndpoint,
     sessions: &Arc<SessionManager>,
     connect_timeout: Duration,
-    manifest: &ManifestCache,
+    env: &BoundaryEnv,
 ) -> Result<WiredBoundary, String> {
+    let manifest = &env.manifest;
     let (reader_half, writer_half) = connect_with_retry(endpoint, connect_timeout).await?;
 
     // Handshake: the server greets with Hello before anything else. Capture its
@@ -675,7 +879,18 @@ async fn connect_and_wire(
         None => return Err("server closed the boundary before Hello".to_string()),
     }
 
-    let (to_server_tx, to_server_rx) = mpsc::unbounded_channel::<ToServer>();
+    let (raw_tx, to_server_rx) = mpsc::unbounded_channel::<ToServer>();
+    // The shared external depth gauge for this boundary (M18): every producer
+    // bumps it on enqueue; the writer decrements it after each successful write,
+    // so it tracks TRUE queue occupancy for the input-shed + high-water gauge.
+    let depth = Arc::new(AtomicU64::new(0));
+    let to_server_tx = ToServerTx::new(
+        raw_tx,
+        Arc::clone(&depth),
+        Arc::clone(&env.tuning.metrics),
+        env.tuning.to_server_cap,
+        env.tuning.high_water_pct,
+    );
     let pending = SocketGatewayLink::pending_table();
     let conn = Arc::new(BoundaryConn {
         tx: to_server_tx.clone(),
@@ -686,7 +901,14 @@ async fn connect_and_wire(
     // THIS server over its own writer inbox.
     let transport = SessionDelivery::new(Arc::clone(sessions), to_server_tx.clone());
     let (close_tx, close_rx) = oneshot::channel();
-    tokio::spawn(gateway_writer(writer_half, to_server_rx, close_rx));
+    tokio::spawn(gateway_writer(
+        writer_half,
+        to_server_rx,
+        close_rx,
+        depth,
+        Arc::clone(&env.tuning.metrics),
+        env.tuning.write_timeout,
+    ));
     let down = tokio::spawn(gateway_reader(
         reader,
         transport,
@@ -880,7 +1102,7 @@ async fn supervise(
     mut restart_rx: mpsc::Receiver<()>,
     first_instance: LaunchedServer,
     first_wired: WiredBoundary,
-    manifest: ManifestCache,
+    env: BoundaryEnv,
 ) {
     let mut instance = first_instance;
     let mut wired = first_wired;
@@ -945,9 +1167,7 @@ async fn supervise(
                     continue;
                 }
             };
-            match connect_and_wire(&new_instance.endpoint, &sessions, RECONNECT_TIMEOUT, &manifest)
-                .await
-            {
+            match connect_and_wire(&new_instance.endpoint, &sessions, RECONNECT_TIMEOUT, &env).await {
                 Ok(w) => {
                     guard.record_success();
                     break Some((new_instance, w));
@@ -971,7 +1191,7 @@ async fn supervise(
         let recs = build_attach_recs(&sessions);
         if !recs.is_empty() {
             let count = recs.len();
-            if new_wired.conn.tx.send(ToServer::ReAnnounce(recs)).is_ok() {
+            if new_wired.conn.tx.send(ToServer::ReAnnounce(recs)) {
                 tracing::info!(count, "re-announced held sessions to the new server");
             }
         }
@@ -1011,17 +1231,36 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
     // connection), the link the bridges hold, and the session manager. None of
     // these are torn down across a server restart.
     let boundary = BoundaryHandle::default();
-    let link = Arc::new(SocketGatewayLink {
-        boundary: boundary.clone(),
-        next_id: AtomicU64::new(1),
-    });
     let sessions = Arc::new(SessionManager::with_config(SessionConfig {
         linkdead_grace: Duration::from_secs(config.game.linkdead_grace_s),
         ..SessionConfig::default()
     }));
+    // The shared metrics registry (M18): the gateway constructs it (unlike the
+    // all-in-one, which passes the world loop's own) so the input-shed, the
+    // write-timeout, and the `to_server` high-water land in the SAME registry the
+    // web ingress serves over `/metrics` + `/healthz` and the SSH/web bridges
+    // count connections into.
+    let metrics = Arc::new(Metrics::new());
+    let link = Arc::new(SocketGatewayLink {
+        boundary: boundary.clone(),
+        next_id: AtomicU64::new(1),
+        sessions: Arc::clone(&sessions),
+        metrics: Arc::clone(&metrics),
+        to_server_cap: config.ipc_to_server_cap(),
+    });
     // The restart-surviving cache of the server's web `hello` manifest,
     // populated at the first handshake below and refreshed on each restart.
     let manifest: ManifestCache = Arc::new(Mutex::new(HelloManifest::default()));
+    // The M18 boundary tuning + manifest, threaded into every (re)connect.
+    let env = BoundaryEnv {
+        manifest: Arc::clone(&manifest),
+        tuning: BoundaryTuning {
+            metrics: Arc::clone(&metrics),
+            to_server_cap: config.ipc_to_server_cap(),
+            high_water_pct: config.ipc_high_water_warn_pct(),
+            write_timeout: Duration::from_millis(config.ipc_write_timeout_ms()),
+        },
+    };
 
     // Obtain + wire the FIRST server boundary. For a supervised source we launch
     // an instance and keep the launcher for respawns; for Connect we wire once.
@@ -1051,7 +1290,7 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
         &first_instance.endpoint,
         &sessions,
         INITIAL_CONNECT_TIMEOUT,
-        &manifest,
+        &env,
     )
     .await?;
     boundary.connect(Arc::clone(&first_wired.conn));
@@ -1075,12 +1314,15 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
         Arc::clone(&link_dyn),
         config.game.max_characters as usize,
     ));
-    let bridge = Arc::new(SshBridge::with_link(
-        Arc::clone(&accounts),
-        Arc::clone(&sessions),
-        Arc::clone(&link_dyn),
-        Arc::clone(&guard),
-    ));
+    let bridge = Arc::new(
+        SshBridge::with_link(
+            Arc::clone(&accounts),
+            Arc::clone(&sessions),
+            Arc::clone(&link_dyn),
+            Arc::clone(&guard),
+        )
+        .with_metrics(Arc::clone(&metrics)),
+    );
 
     let data_dir = config.server.data_dir.clone();
     std::fs::create_dir_all(&data_dir)
@@ -1118,14 +1360,17 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
                 );
                 web_config.features = features;
                 web_config.panels = panels.clone();
-                let web_bridge: Arc<dyn WebHooks> = Arc::new(WebBridge::with_link(
-                    Arc::clone(&accounts),
-                    Arc::clone(&sessions),
-                    Arc::clone(&link_dyn),
-                    Arc::clone(&guard),
-                    Arc::clone(&store),
-                    panels,
-                ));
+                let web_bridge: Arc<dyn WebHooks> = Arc::new(
+                    WebBridge::with_link(
+                        Arc::clone(&accounts),
+                        Arc::clone(&sessions),
+                        Arc::clone(&link_dyn),
+                        Arc::clone(&guard),
+                        Arc::clone(&store),
+                        panels,
+                    )
+                    .with_metrics(Arc::clone(&metrics)),
+                );
                 let (web_stop, web_stop_rx) = oneshot::channel::<()>();
                 let web_ready = opts.web_ready;
                 let join = tokio::spawn(async move {
@@ -1171,7 +1416,7 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
                 restart_rx,
                 first_instance,
                 first_wired,
-                Arc::clone(&manifest),
+                env,
             ));
             let _ = tokio::signal::ctrl_c().await;
             tracing::info!("gateway shutting down");
@@ -1262,23 +1507,79 @@ mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
 
+    use mush_core::ObjId;
     use mush_ipc::WireInbound;
     use mush_proto::{ClientCaps, ClientKind, ColorDepth, Envelope};
     use mush_session::{ConnId, ConnectionHandle};
 
+    /// A test [`ToServerTx`] over `tx` with a throwaway registry, the given
+    /// input-shed `cap`, and `depth` frames pre-charged onto the gauge (to force
+    /// or avoid the input-shed). Returns the wrapper and its registry.
+    fn test_tx(
+        tx: mpsc::UnboundedSender<ToServer>,
+        cap: usize,
+        depth: u64,
+    ) -> (ToServerTx, Arc<Metrics>) {
+        let metrics = Arc::new(Metrics::new());
+        let gauge = Arc::new(AtomicU64::new(depth));
+        (
+            ToServerTx::new(tx, gauge, Arc::clone(&metrics), cap, 80),
+            metrics,
+        )
+    }
+
     /// Build a link over a single, already-connected boundary (its own reply
     /// table). The restart machinery swaps the boundary in production; these
-    /// unit tests exercise one boundary's request/teardown logic directly.
+    /// unit tests exercise one boundary's request/teardown logic directly. The
+    /// input-shed cap is `usize::MAX` (nothing sheds), so the request/teardown
+    /// tests are unaffected by M18.
     fn test_link(
         tx: mpsc::UnboundedSender<ToServer>,
         pending: Arc<Mutex<Pending>>,
     ) -> SocketGatewayLink {
+        let (to_server, metrics) = test_tx(tx, usize::MAX, 0);
         let boundary = BoundaryHandle::default();
-        boundary.connect(Arc::new(BoundaryConn { tx, pending }));
+        boundary.connect(Arc::new(BoundaryConn {
+            tx: to_server,
+            pending,
+        }));
         SocketGatewayLink {
             boundary,
             next_id: AtomicU64::new(1),
+            sessions: Arc::new(SessionManager::new()),
+            metrics,
+            to_server_cap: usize::MAX,
         }
+    }
+
+    /// Build a link whose boundary's `to_server` gauge is FORCED at/over `cap`
+    /// (M18), sharing `sessions` (for the flood-exempt bypass) and one registry.
+    /// Returns the link, the writer-side receiver, and the registry.
+    fn shedding_link(
+        sessions: Arc<SessionManager>,
+        cap: usize,
+    ) -> (
+        SocketGatewayLink,
+        mpsc::UnboundedReceiver<ToServer>,
+        Arc<Metrics>,
+    ) {
+        let (tx, rx) = mpsc::unbounded_channel::<ToServer>();
+        // Pre-charge the gauge to `cap` so the very next Cmd/Query is at/over it.
+        let (to_server, metrics) = test_tx(tx, cap, cap as u64);
+        let pending = SocketGatewayLink::pending_table();
+        let boundary = BoundaryHandle::default();
+        boundary.connect(Arc::new(BoundaryConn {
+            tx: to_server,
+            pending,
+        }));
+        let link = SocketGatewayLink {
+            boundary,
+            next_id: AtomicU64::new(1),
+            sessions,
+            metrics: Arc::clone(&metrics),
+            to_server_cap: cap,
+        };
+        (link, rx, metrics)
     }
 
     fn ansi_caps(structured: bool) -> ClientCaps {
@@ -1319,7 +1620,8 @@ mod tests {
         sessions.attach(ssh, CharKey(char), "boss".to_string());
         sessions.attach(web, CharKey(char), "boss".to_string());
 
-        let (to_server_tx, mut to_server_rx) = mpsc::unbounded_channel::<ToServer>();
+        let (to_server_raw, mut to_server_rx) = mpsc::unbounded_channel::<ToServer>();
+        let (to_server_tx, _metrics) = test_tx(to_server_raw, usize::MAX, 0);
         let notice = OutputEvent::Disconnect {
             reason: RichText::tag("system", "log in again"),
         };
@@ -1487,6 +1789,164 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "nothing should have been queued to the writer for a down boundary"
+        );
+    }
+
+    // ---- M18 gateway->server input-shed --------------------------------------
+
+    fn cmd(actor: ObjId, line: &str) -> ToServer {
+        ToServer::Inbound(WireInbound::Cmd {
+            conn: 1,
+            actor,
+            line: line.to_string(),
+        })
+    }
+
+    fn query(actor: ObjId) -> ToServer {
+        ToServer::Inbound(WireInbound::Query {
+            conn: 1,
+            actor,
+            id: 9,
+            name: "who".into(),
+            args: serde_json::json!({}),
+        })
+    }
+
+    /// The input-shed (M18): with the `to_server` gauge forced at/over cap, a
+    /// `Cmd` is shed (`Shed` + counter++ + nothing enqueued) and a `Query` is
+    /// shed too — but every MUST-DELIVER frame (`ConnDown`, `ConnUp`, a
+    /// `ServiceReq`) STILL enqueues (I1). `to_server` maps the shed to `false`.
+    #[tokio::test]
+    async fn input_shed_drops_cmd_query_but_never_must_deliver() {
+        let sessions = Arc::new(SessionManager::new());
+        let (link, mut rx, metrics) = shedding_link(Arc::clone(&sessions), 8);
+        let actor = ObjId(7);
+
+        // A Cmd at/over cap is shed: Shed outcome, counter bump, nothing queued.
+        assert_eq!(link.to_server_input(cmd(actor, "say hi")).await, InputSend::Shed);
+        assert_eq!(metrics.ipc_frames_shed_total(), 1);
+        // `to_server` surfaces the shed as `false` (→ bridge "busy" notice).
+        assert!(!link.to_server(cmd(actor, "say hi")).await);
+        assert_eq!(metrics.ipc_frames_shed_total(), 2);
+        // A Query is shed too (silent at the bridge, but counted here).
+        assert_eq!(link.to_server_input(query(actor)).await, InputSend::Shed);
+        assert_eq!(metrics.ipc_frames_shed_total(), 3);
+        assert!(rx.try_recv().is_err(), "shed frames must never enqueue");
+
+        // MUST-DELIVER lifecycle frames STILL enqueue at/over cap (I1).
+        assert!(
+            link.to_server(ToServer::Inbound(WireInbound::ConnDown {
+                conn: 1,
+                actor,
+                reason: DisconnectKind::Lost,
+            }))
+            .await
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ToServer::Inbound(WireInbound::ConnDown { .. }))
+        ));
+        assert!(
+            link.to_server(ToServer::Inbound(WireInbound::ConnUp {
+                conn: 1,
+                actor,
+                caps_structured: false,
+                from_linkdead: false,
+            }))
+            .await
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ToServer::Inbound(WireInbound::ConnUp { .. }))
+        ));
+
+        // A ServiceReq (CreatePlayer) is must-deliver: it enqueues synchronously
+        // even over cap (a dropped ServiceReq would hang its oneshot — I1).
+        let fut = link.request(ServiceReq::CreatePlayer { name: "neo".into() });
+        assert!(matches!(rx.try_recv(), Ok(ToServer::Request { .. })));
+        drop(fut); // never resolves (no reply); we only assert it enqueued.
+
+        // The shed counter never moved for the must-deliver frames.
+        assert_eq!(metrics.ipc_frames_shed_total(), 3);
+    }
+
+    /// A flood-exempt connection's input (an input-context paste — mail/chargen)
+    /// is NEVER shed, even with the gauge over cap — mirroring how it bypasses
+    /// the flood throttle.
+    #[tokio::test]
+    async fn flood_exempt_input_is_never_shed() {
+        let sessions = Arc::new(SessionManager::new());
+        let actor = ObjId(7);
+        sessions.set_flood_exempt(char_key(actor), true);
+        let (link, mut rx, metrics) = shedding_link(Arc::clone(&sessions), 8);
+
+        // Over cap, but flood-exempt → enqueued, not shed.
+        assert_eq!(link.to_server_input(cmd(actor, "pasted line")).await, InputSend::Sent);
+        assert_eq!(metrics.ipc_frames_shed_total(), 0);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ToServer::Inbound(WireInbound::Cmd { .. }))
+        ));
+    }
+
+    /// A minimal [`AuthBackend`] for the bridge-level notice test.
+    /// [`GameBridge::line`] never touches the backend, so every method is a stub.
+    struct FakeAuth;
+    impl crate::accounts::AuthBackend for FakeAuth {
+        async fn verify(&self, _a: &str, _p: &str) -> crate::accounts::AuthOutcome {
+            crate::accounts::AuthOutcome::BadCredentials
+        }
+        async fn characters(&self, _a: &str) -> Vec<crate::accounts::CharSummary> {
+            Vec::new()
+        }
+        async fn create(
+            &self,
+            _a: &str,
+            _p: &str,
+            _c: &str,
+        ) -> Result<crate::accounts::CharSummary, crate::accounts::CreateErr> {
+            Err(crate::accounts::CreateErr::Io("test".into()))
+        }
+        async fn create_character(
+            &self,
+            _a: &str,
+            _c: &str,
+        ) -> Result<crate::accounts::CharSummary, crate::accounts::CreateErr> {
+            Err(crate::accounts::CreateErr::Io("test".into()))
+        }
+    }
+
+    /// End-to-end (M18): a shed `Cmd` through the shared [`GameBridge::line`]
+    /// surfaces the "The server is busy; try again." Sys notice to the player,
+    /// and the connection is NOT closed (`LineOutcome::Continue`).
+    #[tokio::test]
+    async fn line_shed_emits_busy_notice() {
+        use crate::bridge_common::{GameBridge, LineOutcome};
+        use mush_config::ipguard::IpGuard;
+
+        let sessions = Arc::new(SessionManager::new());
+        // Attach an ANSI connection so `actor_of` resolves and the notice has a
+        // live connection to reach.
+        let (ssh_tx, mut ssh_rx) = mpsc::channel::<Arc<OutputEvent>>(8);
+        let ssh = ConnectionHandle::new(ConnId(1), addr(1), ansi_caps(false), ssh_tx);
+        sessions.attach(ssh, CharKey(7), "boss".to_string());
+
+        let (link, _rx, _metrics) = shedding_link(Arc::clone(&sessions), 8);
+        let link_dyn: Arc<dyn GatewayLink> = Arc::new(link);
+        let bridge = GameBridge::with_link(
+            Arc::new(FakeAuth),
+            Arc::clone(&sessions),
+            link_dyn,
+            Arc::new(IpGuard::new()),
+        );
+
+        assert_eq!(bridge.line(ConnId(1), "hello").await, LineOutcome::Continue);
+
+        let ev = ssh_rx.try_recv().expect("a notice must reach the connection");
+        let rendered = format!("{ev:?}");
+        assert!(
+            matches!(&*ev, OutputEvent::Sys(_)) && rendered.contains("busy"),
+            "the shed must surface the busy notice, got {rendered}"
         );
     }
 }

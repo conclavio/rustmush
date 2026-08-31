@@ -29,15 +29,19 @@
 
 use std::sync::Arc;
 
+use std::time::Duration;
+
 use mush_config::accounts::import_accounts_json;
 use mush_config::config::{Config, StoreBackend};
 use mush_config::ipguard::IpGuard;
+use mush_config::metrics::Metrics;
 use mush_core::{ControlMsg, Engine, Inbound};
 use mush_ipc::{
     BoxWrite, FrameReader, IPC_VERSION, IpcEndpoint, ServiceReq, ServiceResp, ToGateway, ToServer,
 };
 use mush_llm::LlmService;
 use mush_store::{InMemoryStore, ObjectStore, RedisStore, core_migrations, run_migrations};
+use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
@@ -180,12 +184,19 @@ pub async fn serve_with_store(
 
     // The server -> gateway boundary: every `ToGateway` the world loop (and the
     // request handlers) produce is queued here and drained to the socket by the
-    // writer task. Unbounded so the world loop's `transmit` never awaits (D4);
-    // real backpressure is the socket's, applied in the writer. The forked
-    // server holds no `SessionManager` — the gateway process owns it — so the
-    // world loop's session control (`@boot`, `@newpassword`) goes out as
-    // fire-and-forget `ToGateway` frames through the [`SocketSink`].
-    let (to_gw_tx, to_gw_rx) = mpsc::unbounded_channel::<ToGateway>();
+    // writer task. BOUNDED (M18, `[ipc].to_gw_cap`): every `to_gw` frame is
+    // must-deliver, so it is NEVER per-message dropped — on overflow the whole
+    // boundary is torn down (the M16c supervisor re-attach re-renders every
+    // session, healing the loss). The world loop's `transmit` still never awaits
+    // the boundary (D4): the [`SocketSink`] uses `try_send`, and the teardown
+    // decision + socket drop live in the writer task, which waits on `teardown`.
+    // The forked server holds no `SessionManager` — the gateway process owns it —
+    // so the world loop's session control (`@boot`, `@newpassword`) goes out as
+    // fire-and-forget `ToGateway` frames through the [`SocketSink`] too.
+    let to_gw_cap = config.ipc_to_gw_cap();
+    let write_timeout = Duration::from_millis(config.ipc_write_timeout_ms());
+    let high_water_pct = config.ipc_high_water_warn_pct();
+    let (to_gw_tx, to_gw_rx) = mpsc::channel::<ToGateway>(to_gw_cap);
 
     let guard = Arc::new(IpGuard::new());
     let mut deps = ServerDeps::in_memory();
@@ -196,11 +207,27 @@ pub async fn serve_with_store(
     // to an orphan queue and never execute.
     deps.staff = staff;
 
-    let socket_tx = to_gw_tx.clone();
+    // Cloned out BEFORE `deps` is moved into the world spawn: the writer task and
+    // the [`SocketSink`] stamp shed/timeout/high-water onto the SAME registry the
+    // world loop reads for `@stats` (never a second registry). `teardown` is the
+    // one-shot the [`SocketSink`] notifies on overflow and the writer waits on.
+    let metrics = Arc::clone(&deps.metrics);
+    let teardown = Arc::new(Notify::new());
+    let sink = SocketSink::new(
+        to_gw_tx.clone(),
+        Arc::clone(&metrics),
+        Arc::clone(&teardown),
+        to_gw_cap,
+        high_water_pct,
+    );
+    // The reader's detached `Reply` sends ride the SAME sink (shared teardown +
+    // overflow counter) so a full channel tears the boundary down there too — a
+    // dropped `Reply` would hang its `ServiceReq` oneshot (I1).
+    let reply_sink = sink.clone();
     let handles = world_task::spawn_persist_with_gateway(engine, deps, move |_weak_inbound| {
         // The forked server never polices (it owns no connection buffers), so it
         // ignores the loop's inbound weak sender and just serializes to the boundary.
-        Arc::new(SocketSink::new(socket_tx))
+        Arc::new(sink)
     });
     let world = handles.handle;
     let world_join = handles.world_join;
@@ -225,12 +252,22 @@ pub async fn serve_with_store(
 
     // Writer: greet (with the panel manifest), then drain the world's output to
     // the socket. Exits when every `to_gw_tx` (held by the world loop + request
-    // handlers) is dropped.
-    let writer_join = tokio::spawn(writer_loop(writer_half, to_gw_rx, features, panels));
+    // handlers) is dropped, OR early on a per-frame write timeout / a `teardown`
+    // notification (a `to_gw` overflow) — either drops the writer's socket half,
+    // EOFing the boundary into the supervise → relaunch → re-attach heal (M18).
+    let writer_join = tokio::spawn(writer_loop(
+        writer_half,
+        to_gw_rx,
+        features,
+        panels,
+        Arc::clone(&metrics),
+        Arc::clone(&teardown),
+        write_timeout,
+    ));
 
     // Reader: pump the gateway's `ToServer` traffic into the world. Runs until
     // the gateway closes the boundary (clean EOF) or a protocol fault.
-    let reader_result = reader_loop(reader_half, world.clone(), to_gw_tx.clone()).await;
+    let reader_result = reader_loop(reader_half, world.clone(), reply_sink).await;
     match reader_result {
         Ok(()) => tracing::info!("gateway disconnected (clean EOF)"),
         Err(e) => tracing::warn!(error = %e, "ipc reader ended on error"),
@@ -273,13 +310,31 @@ fn build_hello_manifest(engine: &Engine) -> (Vec<String>, Vec<String>) {
 /// The socket writer: send [`ToGateway::Hello`] (carrying the panel manifest),
 /// then forward each queued message. On the channel closing (world gone) it
 /// sends a final [`ToGateway::Bye`] and returns.
+///
+/// Two M18 teardown paths return early, each dropping `w` (the boundary EOFs,
+/// which the gateway supervisor heals via relaunch → ReAnnounce → re-attach):
+///
+/// - **write timeout** — each [`write_frame`](mush_ipc::write_frame) is wrapped
+///   in `write_timeout`; a connected-but-not-draining peer that blocks past it
+///   is wedged, so we count it (`ipc_write_timeouts_total`), warn, and return.
+/// - **`to_gw` overflow** — the [`SocketSink`] `notify`s `teardown` when it hits
+///   a full channel; the drain `select!` takes that arm and returns.
+///
+/// Never skip-a-message-and-continue: a full socket buffer means the next write
+/// blocks too, and skipping could drop a keyframe — the boundary teardown +
+/// re-attach is the correct heal.
 async fn writer_loop(
     mut w: BoxWrite,
-    mut rx: mpsc::UnboundedReceiver<ToGateway>,
+    mut rx: mpsc::Receiver<ToGateway>,
     features: Vec<String>,
     panels: Vec<String>,
+    metrics: Arc<Metrics>,
+    teardown: Arc<Notify>,
+    write_timeout: Duration,
 ) {
-    if let Err(e) = mush_ipc::write_frame(
+    // The Hello must reach the gateway before any frame; honor the write
+    // timeout so a peer that never reads cannot wedge the handshake forever.
+    if !write_or_teardown(
         &mut w,
         &ToGateway::Hello {
             proto: IPC_VERSION,
@@ -287,19 +342,72 @@ async fn writer_loop(
             features,
             panels,
         },
+        &metrics,
+        write_timeout,
+        "failed to send Hello; boundary down",
     )
     .await
     {
-        tracing::warn!(error = %e, "failed to send Hello; boundary down");
         return;
     }
-    while let Some(msg) = rx.recv().await {
-        if let Err(e) = mush_ipc::write_frame(&mut w, &msg).await {
-            tracing::warn!(error = %e, "ipc write failed; boundary down");
-            return;
+    loop {
+        tokio::select! {
+            msg = rx.recv() => match msg {
+                Some(msg) => {
+                    if !write_or_teardown(
+                        &mut w,
+                        &msg,
+                        &metrics,
+                        write_timeout,
+                        "ipc write failed; boundary down",
+                    )
+                    .await
+                    {
+                        return;
+                    }
+                }
+                // Every `to_gw_tx` dropped (world gone): clean shutdown.
+                None => break,
+            },
+            // A `to_gw` overflow: the sink notified us. Drop `w` (return) to EOF
+            // the boundary — the supervisor re-attach re-renders every session.
+            () = teardown.notified() => {
+                tracing::warn!(dir = "to_gw", "ipc queue overflow; tearing down boundary");
+                return;
+            }
         }
     }
-    let _ = mush_ipc::write_frame(&mut w, &ToGateway::Bye).await;
+    // Best-effort Bye on a clean shutdown — timeout-guarded so a wedged peer
+    // cannot hang the exit.
+    let _ = tokio::time::timeout(write_timeout, mush_ipc::write_frame(&mut w, &ToGateway::Bye)).await;
+}
+
+/// Write one frame under `write_timeout`. Returns `true` on success; on a write
+/// error or an elapsed timeout it logs a warn (counting the timeout as an
+/// `ipc_write_timeouts_total`) and returns `false` so the caller tears the
+/// boundary down by returning (dropping the socket).
+async fn write_or_teardown(
+    w: &mut BoxWrite,
+    msg: &ToGateway,
+    metrics: &Metrics,
+    write_timeout: Duration,
+    err_context: &str,
+) -> bool {
+    match tokio::time::timeout(write_timeout, mush_ipc::write_frame(w, msg)).await {
+        Ok(Ok(())) => true,
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "{err_context}");
+            false
+        }
+        Err(_) => {
+            metrics.ipc_write_timeout();
+            tracing::warn!(
+                timeout_ms = write_timeout.as_millis() as u64,
+                "ipc write timed out; peer wedged, tearing down boundary"
+            );
+            false
+        }
+    }
 }
 
 /// The socket reader: decode each [`ToServer`] frame and drive the world.
@@ -311,7 +419,7 @@ async fn writer_loop(
 async fn reader_loop(
     r: mush_ipc::BoxRead,
     world: WorldHandle,
-    to_gw_tx: mpsc::UnboundedSender<ToGateway>,
+    reply_sink: SocketSink,
 ) -> std::io::Result<()> {
     let mut reader = FrameReader::new(r);
     while let Some(msg) = reader.read::<ToServer>().await? {
@@ -324,10 +432,14 @@ async fn reader_loop(
             }
             ToServer::Request { id, req } => {
                 let world = world.clone();
-                let tx = to_gw_tx.clone();
+                // The `Reply` is must-deliver: `SocketSink::send` tries the
+                // bounded `to_gw` and, on a full channel, tears the boundary
+                // down rather than dropping it (a dropped Reply would hang the
+                // caller's oneshot — I1).
+                let sink = reply_sink.clone();
                 tokio::spawn(async move {
                     let resp = handle_request(&world, req).await;
-                    let _ = tx.send(ToGateway::Reply { id, resp });
+                    sink.send(ToGateway::Reply { id, resp });
                 });
             }
             // M16c re-attach: the gateway replays its full held-online roster
@@ -371,5 +483,112 @@ async fn handle_request(world: &WorldHandle, req: ServiceReq) -> ServiceResp {
             world.barrier().await;
             ServiceResp::Barrier
         }
+    }
+}
+
+#[cfg(test)]
+mod writer_tests {
+    //! Deterministic proofs of the two M18 server->gateway teardown paths in
+    //! [`writer_loop`] (section B teardown-notify + section C write timeout),
+    //! isolated from a live world/gateway. The re-attach *survival* that rides
+    //! these teardowns is proven by the gateway `restart_survival` suite (any
+    //! boundary EOF — which a teardown produces by dropping the writer's socket
+    //! half — heals via supervise -> relaunch -> ReAnnounce -> re-attach).
+
+    use std::io;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use std::time::Duration;
+
+    use tokio::io::AsyncWrite;
+
+    use super::{Arc, BoxWrite, Metrics, Notify, ToGateway, mpsc, writer_loop};
+
+    /// An [`AsyncWrite`] whose writes NEVER complete — a connected peer that is
+    /// not draining. Every `write_frame` against it pends until the writer's
+    /// timeout elapses.
+    struct WedgedWriter;
+
+    impl AsyncWrite for WedgedWriter {
+        fn poll_write(self: Pin<&mut Self>, _: &mut Context<'_>, _: &[u8]) -> Poll<io::Result<usize>> {
+            Poll::Pending
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    /// A `to_gw` overflow notifies `teardown`; the writer's drain `select!` takes
+    /// that arm and returns (dropping its socket half → boundary EOF). The peer
+    /// here drains fine, so no write times out — only the teardown ends it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn teardown_notify_returns_the_writer() {
+        let (a, b) = tokio::io::duplex(64 * 1024);
+        // Drain the peer end so the Hello + any frame never blocks.
+        let drain = tokio::spawn(async move {
+            let mut b = b;
+            let mut buf = [0u8; 4096];
+            loop {
+                use tokio::io::AsyncReadExt;
+                if b.read(&mut buf).await.unwrap_or(0) == 0 {
+                    break;
+                }
+            }
+        });
+        let (_tx, rx) = mpsc::channel::<ToGateway>(8);
+        let metrics = Arc::new(Metrics::new());
+        let teardown = Arc::new(Notify::new());
+        let w: BoxWrite = Box::new(a);
+        let join = tokio::spawn(writer_loop(
+            w,
+            rx,
+            vec![],
+            vec![],
+            Arc::clone(&metrics),
+            Arc::clone(&teardown),
+            Duration::from_secs(30),
+        ));
+        // Simulate the SocketSink hitting a full channel.
+        teardown.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), join)
+            .await
+            .expect("writer must return on a teardown notify")
+            .expect("writer join");
+        // No frame ever timed out — the teardown, not a wedged write, ended it.
+        assert_eq!(metrics.snapshot().ipc_write_timeouts_total, 0);
+        drain.abort();
+    }
+
+    /// A wedged peer (writes never complete) trips the per-frame write timeout:
+    /// the writer counts it (`ipc_write_timeouts_total`), warns, and returns —
+    /// tearing the boundary down rather than blocking forever. The Hello write
+    /// is the first to hit the wedged socket, so the timeout fires there.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wedged_peer_trips_the_write_timeout() {
+        let (_tx, rx) = mpsc::channel::<ToGateway>(8);
+        let metrics = Arc::new(Metrics::new());
+        let teardown = Arc::new(Notify::new());
+        let w: BoxWrite = Box::new(WedgedWriter);
+        let join = tokio::spawn(writer_loop(
+            w,
+            rx,
+            vec![],
+            vec![],
+            Arc::clone(&metrics),
+            Arc::clone(&teardown),
+            Duration::from_millis(100),
+        ));
+        tokio::time::timeout(Duration::from_secs(5), join)
+            .await
+            .expect("writer must return after the write timeout")
+            .expect("writer join");
+        assert_eq!(
+            metrics.snapshot().ipc_write_timeouts_total,
+            1,
+            "the wedged write must be counted"
+        );
     }
 }

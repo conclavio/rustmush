@@ -17,6 +17,24 @@ use futures::future::BoxFuture;
 
 use crate::{ServiceReq, ServiceResp, ToServer};
 
+/// The outcome of an input-path (`Cmd`/`Query`) send through [`GatewayLink`]
+/// ([`to_server_input`](GatewayLink::to_server_input)). Distinguishes the M18
+/// gateway->server input-shed from a boundary-gone failure so the input bridge
+/// can surface the right player-facing signal (a "server busy" notice on a shed
+/// `Cmd`; silence on a shed `Query`; the "restarting" notice on a gap).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputSend {
+    /// Enqueued to the server.
+    Sent,
+    /// Dropped by the M18 input-shed: the gateway->server (`to_server`) queue
+    /// was at/over its cap (a wedged or slow server). Only live input
+    /// (`Cmd`/`Query`) is ever shed; every must-deliver frame always enqueues.
+    Shed,
+    /// The boundary is gone — a restart gap
+    /// ([`is_restarting`](GatewayLink::is_restarting)) or a terminal shutdown.
+    Gone,
+}
+
 /// The gateway's protocol-typed handle to the server half.
 ///
 /// Object-safe (returns [`BoxFuture`], the workspace's `dyn`-async idiom) so the
@@ -27,6 +45,22 @@ pub trait GatewayLink: Send + Sync {
     /// operator [`ToServer::Control`]. Resolves to `false` when the server is
     /// gone (shutdown in progress).
     fn to_server(&self, msg: ToServer) -> BoxFuture<'_, bool>;
+
+    /// Send one **input-path** [`ToServer`] (`Cmd`/`Query`), reporting whether it
+    /// was enqueued, SHED by the M18 input-shed (a full `to_server` queue), or
+    /// dropped because the boundary is GONE. Only the split gateway's socket link
+    /// ever sheds; the in-process all-in-one link maps its plain
+    /// [`to_server`](GatewayLink::to_server) bool onto [`InputSend::Sent`] /
+    /// [`InputSend::Gone`] and never returns [`InputSend::Shed`] (this default).
+    fn to_server_input(&self, msg: ToServer) -> BoxFuture<'_, InputSend> {
+        Box::pin(async move {
+            if self.to_server(msg).await {
+                InputSend::Sent
+            } else {
+                InputSend::Gone
+            }
+        })
+    }
 
     /// Issue a correlated service request ([`ServiceReq`]) and await its
     /// [`ServiceResp`]. Resolves to `None` only when the request could not be

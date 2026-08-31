@@ -696,7 +696,30 @@ wrote).
 [ipc]
 # listen = "127.0.0.1:6791"   # localhost TCP: works everywhere (incl. Windows dev)
 listen = "/run/rustmush/dev1.sock"   # Linux prod: a Unix-domain socket path
+
+# M18 boundary bounding (DoS/robustness; defaults shown, all #[serde(default)]
+# so an older [ipc] with only `listen` still parses and keeps these defaults):
+# to_server_cap = 1024        # gateway->server queue depth; over cap, an INPUT frame
+#                             #   (Cmd/Query) is shed (must-deliver frames are never shed),
+#                             #   logged at warn + counted. Flood-exempt input (mail/chargen
+#                             #   paste) bypasses the shed.
+# to_gw_cap = 8192            # server->gateway queue depth; every frame is must-deliver, so
+#                             #   over cap the whole boundary is torn down — the supervisor
+#                             #   re-attach re-renders every session and heals the loss.
+# write_timeout_ms = 5000     # per-frame IPC write timeout; a connected-but-not-draining
+#                             #   ("wedged") peer past this tears the boundary down.
+# high_water_warn_pct = 80    # edge-gated high-water warn threshold, percent of a queue's cap.
 ```
+
+Every shed, teardown, and write timeout logs at `warn` and increments a counter
+surfaced on `/metrics` (`mush_ipc_frames_shed_total`, `mush_ipc_write_timeouts_total`,
+`mush_ipc_to_gw_overflow_total`, and the `mush_ipc_queue_high_water{dir="to_server"|"to_gw"}`
+gauge) and on the wizard `@stats` `IPC boundary:` line — so you can tell when the
+boundary is shedding or tearing down. (These IPC counters are on `/metrics` +
+`@stats`, not the minimal `/healthz` liveness JSON.) In the split, the forked
+`mush-server` serves no HTTP, so its `to_gw`/write-timeout counters reach an
+operator through `@stats`; the gateway's `to_server` shed + write-timeout
+counters also reach the gateway process `/metrics`.
 
 A value that parses as a socket address is TCP; on Unix anything else is a
 filesystem path for a Unix-domain socket (`listen()` removes a stale socket file

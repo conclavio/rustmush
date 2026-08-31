@@ -51,7 +51,7 @@ use std::sync::{Arc, Mutex};
 
 use futures::future::BoxFuture;
 use mush_core::{DisconnectKind, ObjId};
-use mush_ipc::{ServiceReq, ToServer, WireInbound};
+use mush_ipc::{InputSend, ServiceReq, ToServer, WireInbound};
 use mush_net_web::{
     CharSummary, LoginErr, LoginOk, NewWebConn, RegisterErr, ResumeErr, ResumeOk, SessionStart,
     TokenIdentity, WebHooks,
@@ -668,10 +668,10 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                     }
                 }
             };
-            if !self
+            match self
                 .core
                 .link
-                .to_server(ToServer::Inbound(WireInbound::Query {
+                .to_server_input(ToServer::Inbound(WireInbound::Query {
                     conn,
                     actor,
                     id,
@@ -680,7 +680,13 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                 }))
                 .await
             {
-                self.direct_error_reply(conn_id, id, "The game is shutting down.");
+                // A shed Query stays SILENT — the widget keeps its last data
+                // (matching the flood-drop path); only the shed counter + warn
+                // fire, inside the link.
+                InputSend::Sent | InputSend::Shed => {}
+                InputSend::Gone => {
+                    self.direct_error_reply(conn_id, id, "The game is shutting down.");
+                }
             }
         })
     }

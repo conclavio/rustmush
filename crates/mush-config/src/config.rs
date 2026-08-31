@@ -419,12 +419,32 @@ impl GameCfg {
 pub struct IpcCfg {
     /// The boundary socket address/path. Default `127.0.0.1:6791`.
     pub listen: String,
+    /// Max frames queued gateway->server (`to_server`) before an INPUT frame
+    /// (`Cmd`/`Query`) is shed with a logged warn + counter bump (M18 DoS
+    /// hardening). Must-deliver frames are never shed. Default `1024`.
+    pub to_server_cap: usize,
+    /// Max frames queued server->gateway (`to_gw`) before an overflow tears
+    /// the boundary down (every `to_gw` frame is must-deliver, so it is never
+    /// per-message dropped; the supervisor re-attach heals the loss). Default
+    /// `8192`.
+    pub to_gw_cap: usize,
+    /// Per-frame IPC write timeout, milliseconds. A connected-but-not-draining
+    /// peer past this is treated as wedged and the boundary is torn down.
+    /// Default `5000`.
+    pub write_timeout_ms: u64,
+    /// The high-water threshold (percent of a queue's cap) at which a crossing
+    /// logs an edge-gated warn. Default `80`.
+    pub high_water_warn_pct: u8,
 }
 
 impl Default for IpcCfg {
     fn default() -> Self {
         IpcCfg {
             listen: "127.0.0.1:6791".to_string(),
+            to_server_cap: 1024,
+            to_gw_cap: 8192,
+            write_timeout_ms: 5000,
+            high_water_warn_pct: 80,
         }
     }
 }
@@ -539,6 +559,31 @@ impl Config {
         })
     }
 
+    /// The `[ipc].to_server_cap` bound (M18): gateway->server input-shed cap.
+    #[must_use]
+    pub fn ipc_to_server_cap(&self) -> usize {
+        self.ipc.to_server_cap
+    }
+
+    /// The `[ipc].to_gw_cap` bound (M18): server->gateway teardown cap.
+    #[must_use]
+    pub fn ipc_to_gw_cap(&self) -> usize {
+        self.ipc.to_gw_cap
+    }
+
+    /// The `[ipc].write_timeout_ms` per-frame IPC write timeout (M18).
+    #[must_use]
+    pub fn ipc_write_timeout_ms(&self) -> u64 {
+        self.ipc.write_timeout_ms
+    }
+
+    /// The `[ipc].high_water_warn_pct` edge-gated high-water warn threshold
+    /// (M18), clamped to `1..=100`.
+    #[must_use]
+    pub fn ipc_high_water_warn_pct(&self) -> u8 {
+        self.ipc.high_water_warn_pct.clamp(1, 100)
+    }
+
     /// The validated `[store].store` backend selection.
     pub fn store_backend(&self) -> Result<StoreBackend, ConfigError> {
         match self.store.store.to_lowercase().as_str() {
@@ -651,6 +696,41 @@ mod tests {
         .unwrap();
         assert_eq!(cfg.onboarding.start_room_id(), mush_core::ObjId(5));
         assert_eq!(cfg.onboarding.start_room_unapproved_id(), mush_core::ObjId(9));
+    }
+
+    #[test]
+    fn ipc_caps_default_and_back_compat() {
+        // Config-less: the M18 bounds fall back to their defaults.
+        let cfg = Config::default();
+        assert_eq!(cfg.ipc_to_server_cap(), 1024);
+        assert_eq!(cfg.ipc_to_gw_cap(), 8192);
+        assert_eq!(cfg.ipc_write_timeout_ms(), 5000);
+        assert_eq!(cfg.ipc_high_water_warn_pct(), 80);
+
+        // Back-compat: an old [ipc] with only `listen` (no M18 keys) still
+        // parses and yields the defaults.
+        let cfg: Config = toml::from_str("[ipc]\nlisten = \"127.0.0.1:6799\"").unwrap();
+        assert_eq!(cfg.ipc.listen, "127.0.0.1:6799");
+        assert_eq!(cfg.ipc_to_server_cap(), 1024);
+        assert_eq!(cfg.ipc_to_gw_cap(), 8192);
+        assert_eq!(cfg.ipc_write_timeout_ms(), 5000);
+        assert_eq!(cfg.ipc_high_water_warn_pct(), 80);
+
+        // Explicit overrides parse.
+        let cfg: Config = toml::from_str(
+            "[ipc]\nlisten = \"127.0.0.1:6799\"\nto_server_cap = 16\nto_gw_cap = 32\nwrite_timeout_ms = 250\nhigh_water_warn_pct = 90",
+        )
+        .unwrap();
+        assert_eq!(cfg.ipc_to_server_cap(), 16);
+        assert_eq!(cfg.ipc_to_gw_cap(), 32);
+        assert_eq!(cfg.ipc_write_timeout_ms(), 250);
+        assert_eq!(cfg.ipc_high_water_warn_pct(), 90);
+
+        // An out-of-range warn pct clamps into 1..=100.
+        let cfg: Config = toml::from_str("[ipc]\nhigh_water_warn_pct = 0").unwrap();
+        assert_eq!(cfg.ipc_high_water_warn_pct(), 1);
+        let cfg: Config = toml::from_str("[ipc]\nhigh_water_warn_pct = 200").unwrap();
+        assert_eq!(cfg.ipc_high_water_warn_pct(), 100);
     }
 
     #[test]
