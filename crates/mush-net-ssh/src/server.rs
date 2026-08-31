@@ -443,9 +443,15 @@ fn is_front_door(user: &str) -> bool {
         || user.eq_ignore_ascii_case("new")
 }
 
-/// Methods a rejected client should try next.
+/// Methods a rejected client can still try next. Includes `PublicKey` so a
+/// client that probes with `none` first (as OpenSSH does, to discover the
+/// method list) learns public-key auth is available and offers its key —
+/// without it, `ssh -i key <account>@host` never even attempts the key and
+/// falls straight to password. Keyboard-interactive + password remain the
+/// fallback for accounts with no registered key.
 fn interactive_methods() -> MethodSet {
     let mut m = MethodSet::empty();
+    m.push(MethodKind::PublicKey);
     m.push(MethodKind::KeyboardInteractive);
     m.push(MethodKind::Password);
     m
@@ -1086,7 +1092,7 @@ impl Handler for ConnHandler {
             return Ok(reject_toward_interactive());
         }
         let Ok(openssh) = key.to_openssh() else {
-            self.hooks.auth_failed(self.addr);
+            // A malformed offer is not a ban-worthy failure (see below).
             return Ok(reject_toward_interactive());
         };
         match self.hooks.auth_account_key(account_user, &openssh).await {
@@ -1101,10 +1107,15 @@ impl Handler for ConnHandler {
                 };
                 Ok(Auth::Accept)
             }
-            AuthResult::BadCreds => {
-                self.hooks.auth_failed(self.addr);
-                Ok(reject_toward_interactive())
-            }
+            // Deliberately NOT counted as an auth failure. russh reached this
+            // arm only after cryptographically verifying the client OWNS the
+            // offered key, so a miss means "a key I hold is not registered
+            // here" — normal client behavior (ssh-agents offer every loaded
+            // key), not an attack. Counting it would let a user with a few
+            // agent keys trip the 5-failures tempban on a single connect.
+            // Password failures remain the ban trigger; per-connection key
+            // spray is already bounded by the SSH MaxAuthTries limit.
+            AuthResult::BadCreds => Ok(reject_toward_interactive()),
             AuthResult::Banned => Ok(Auth::reject()),
         }
     }

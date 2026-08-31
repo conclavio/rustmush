@@ -740,6 +740,75 @@ async fn pubkey_auth_lands_in_game() {
         .await;
 }
 
+/// Regression (M19 deploy): a real OpenSSH client probes with `none` FIRST to
+/// discover the method list, so the reject MUST advertise `publickey` — else
+/// `ssh -i key <account>@host` never offers the key and drops to password.
+/// (The other pubkey tests offer the key directly, bypassing this discovery
+/// step, so they cannot catch a missing advertisement.) Also asserts that an
+/// unregistered-but-owned key offer is NOT counted as an auth failure (so an
+/// ssh-agent with several keys cannot self-trip the tempban).
+#[tokio::test]
+async fn auth_none_advertises_publickey_and_key_miss_is_not_counted() {
+    let hooks = Arc::new(MockHooks::default());
+    hooks.seed_account(
+        "nick",
+        "pw123",
+        vec![CharSummary {
+            key: 7,
+            name: "Nick".to_owned(),
+        }],
+    );
+    hooks.register_key("nick", &public_line(TEST_PRIV));
+    let addr = start_server("pk-discovery", Arc::clone(&hooks)).await;
+
+    let config = Arc::new(russh::client::Config::default());
+    let mut handle = russh::client::connect(config, addr, AcceptAll)
+        .await
+        .expect("connect");
+
+    // The none-probe an OpenSSH client does first: the server must offer
+    // publickey (so the client goes on to sign its key) plus the password
+    // fallback.
+    let none = handle.authenticate_none("nick").await.expect("auth-none");
+    match none {
+        russh::client::AuthResult::Failure {
+            remaining_methods, ..
+        } => {
+            assert!(
+                remaining_methods.contains(&russh::MethodKind::PublicKey),
+                "publickey must be advertised after the none-probe (else ssh -i never offers the key)"
+            );
+            assert!(
+                remaining_methods.contains(&russh::MethodKind::Password),
+                "password fallback must remain advertised"
+            );
+        }
+        other => panic!("expected a Failure with a method list, got {other:?}"),
+    }
+
+    // A wrong key the client provably owns is not ban-worthy.
+    let wrong = handle
+        .authenticate_publickey("nick", signing_key(WRONG_PRIV))
+        .await
+        .expect("auth attempt");
+    assert!(!wrong.success(), "an unregistered key must not authenticate");
+    assert_eq!(
+        hooks.auth_failures.load(Ordering::Relaxed),
+        0,
+        "an unregistered-but-owned key offer must NOT count toward the tempban"
+    );
+
+    // The registered key still authenticates on the same connection.
+    let ok = handle
+        .authenticate_publickey("nick", signing_key(TEST_PRIV))
+        .await
+        .expect("auth attempt");
+    assert!(ok.success(), "the registered key authenticates");
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
 /// `ssh -i key account+char@game` direct-enters the named character (the
 /// zero-step login), skipping the character-select screen — and only ever a
 /// character the authenticated account owns.
