@@ -1668,6 +1668,14 @@ async fn run_staff_ops(
                     send_sys(gateway, actor, "@sshkey failed: staff executor gone.");
                 }
             }
+            StaffOpKind::NewChar { ref name, .. } => {
+                // Audit: actor + the requested name (both public). The account
+                // is resolved store-side in the executor (invariant N1).
+                tracing::info!(%actor, name, "@newchar requested");
+                if staff_ops.send(op).await.is_err() {
+                    send_sys(gateway, actor, "@newchar failed: staff executor gone.");
+                }
+            }
             StaffOpKind::Dump => {
                 tracing::info!(%actor, "@dump requested");
                 let writer = writer.clone();
@@ -1970,6 +1978,98 @@ async fn run_del_sshkey(store: &dyn ObjectStore, actor: ObjId, which: &str) -> S
     }
 }
 
+/// Execute `@newchar <Name>`: create ONE more character on the CALLER's own
+/// account (self-service; M20). Runs entirely off the world loop:
+///
+/// 1. Resolve the caller's OWN account with the same `list_accounts` scan
+///    `@newpassword`/`@sshkey` use, keyed on `actor` — so it can only ever
+///    touch the caller's own account (invariant N1).
+/// 2. Enforce the `[game].max_characters` cap and an advisory world-name
+///    pre-check BEFORE anything is created (N2). The cap check shares the same
+///    accepted TOCTOU as the gateway `create_character` path: two concurrent
+///    `@newchar`s at cap-1 on the same account can both pass (the append is
+///    unconditional), overshooting the cap by one — it takes the account
+///    holder racing themselves and the only damage is one extra character.
+/// 3. Create the Player through the established durable, ack-gated server
+///    create path ([`WorldHandle::create_player`], the same `WorldMsg::
+///    CreatePlayer` route account creation uses) — which emits `ObjCreated`
+///    (comsys auto-join) and waits for the store to acknowledge the creation
+///    batch — then link it into the account doc (N3).
+///
+/// **Create-then-link ordering / orphan window:** identical to the gateway
+/// `create_character` flow (`mush-gateway`'s `accounts::create_and_link`). The
+/// Player is created (and durably persisted) BEFORE the account link; if the
+/// link write then fails, a created-but-unlinked Player is left behind (the
+/// store has no account-delete yet). That is the SAME accepted, loudly-logged
+/// orphan window as `create_character` — no worse — and the pre-checks make it
+/// a genuine store failure, not a normal path. The confirmation is returned
+/// only after the link write returns (N3, ack-gated). The caller is NOT
+/// switched to the new character (N4): they keep playing their current one.
+async fn run_newchar(
+    store: &dyn ObjectStore,
+    world: &mpsc::WeakSender<WorldMsg>,
+    actor: ObjId,
+    name: &str,
+    max_characters: usize,
+) -> String {
+    // (1) Resolve the caller's OWN account (N1). `account_of_actor` is the
+    // same scan @sshkey/@newpassword use, keyed on the caller.
+    let account = match account_of_actor(store, actor).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return "@newchar: your character is not linked to an account.".to_string(),
+        Err(e) => return format!("@newchar failed: {e}"),
+    };
+    // (2) Cap check BEFORE any create (N2).
+    if account.characters.len() >= max_characters {
+        return format!(
+            "@newchar: you already have the maximum of {max_characters} characters."
+        );
+    }
+    // The world handle for the durable, ack-gated create path. A dropped world
+    // (teardown) means we cannot create; fail closed rather than orphan.
+    let Some(world) = world.upgrade().map(|tx| WorldHandle { tx }) else {
+        return "@newchar failed: the world is shutting down.".to_string();
+    };
+    // Advisory name pre-check BEFORE create (N2); the create re-checks atomically.
+    if !world.name_free(name).await {
+        return format!("@newchar: the name {name:?} is already taken.");
+    }
+    // (3) Create through the established server create path — durable + ack-gated,
+    // and it emits ObjCreated (comsys auto-join) exactly like account creation.
+    let id = match world.create_player(name).await {
+        Ok(id) => id,
+        // The pre-check raced another create; no second Player is made (the world
+        // create rejects the duplicate atomically) — so this never orphans.
+        Err(CreatePlayerErr::NameTaken) => {
+            return format!("@newchar: the name {name:?} is already taken.");
+        }
+        Err(e) => return format!("@newchar failed: {e}"),
+    };
+    // Link it into the account doc. On failure the Player exists but is
+    // unlinked — the SAME accepted, logged orphan window as create_character.
+    match store.link_character(&account.name, id, name).await {
+        Ok(()) => {
+            tracing::info!(account = %account.name, %id, name, "@newchar created + linked");
+            format!(
+                "@newchar: created {name} ({id}) on your account. To play it, reconnect and \
+                 pick it at the character-select screen, or `ssh {}+{name}@<host>` to jump \
+                 straight in. It starts unapproved; chargen runs the first time you play it.",
+                account.name
+            )
+        }
+        Err(e) => {
+            tracing::error!(
+                account = %account.name, %id, name, error = %e,
+                "@newchar: Player created but linking to the account failed; Player left unlinked"
+            );
+            format!(
+                "@newchar: created the character, but linking it to your account failed: {e}. \
+                 Please contact staff."
+            )
+        }
+    }
+}
+
 /// The sequential staff-op executor: one task, one queue, ops applied to
 /// the store (and mirrored into the [`IpGuard`]) strictly in the order
 /// staff issued them — a `@siteban/clear` can never lose to the `@siteban`
@@ -2055,6 +2155,11 @@ async fn staff_ops_loop(
                 actor: subject,
                 which,
             } => run_del_sshkey(&*store, subject, &which).await,
+            StaffOpKind::NewChar {
+                actor: subject,
+                name,
+                max_characters,
+            } => run_newchar(&*store, &world, subject, &name, max_characters).await,
             // Dump/Shutdown and the local ops never enter this queue (see
             // run_staff_ops / run_local_staff_ops).
             StaffOpKind::Dump

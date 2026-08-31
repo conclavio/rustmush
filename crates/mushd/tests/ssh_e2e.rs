@@ -445,6 +445,90 @@ async fn m19_sshkey_command_registers_key_e2e() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The M20 `@newchar` journey over the REAL bridge: a player creates a
+/// second (well, third) character on their own account in-game, and a FRESH
+/// connection can reach it both at the character-select screen and directly
+/// via `<account>+<NewName>`.
+///
+/// `duo` starts with Nick + Ada (2 chars) and `TEST_PRIV`'s public key
+/// registered; the cap is 3 (the harness default). A password login as Nick:
+///
+/// - `@newchar 9bad` (starts with a digit) and `@newchar Nick` (already held)
+///   are refused up front — no character is created (N2).
+/// - `@newchar Casey` creates the third character (ack-gated confirmation, N3).
+/// - `@newchar Dana` now hits the cap of 3 and is refused (N2) — the caller is
+///   still Nick throughout (no mid-session switch, N4).
+/// - A FRESH password login lands on a char-select that now lists Casey, and
+///   picking it connects (N4, char-select).
+/// - A FRESH `ssh -i key duo+Casey@game` authenticates by key and direct-enters
+///   Casey (N4, `<account>+<name>` login) — proving the account link is live.
+#[tokio::test(flavor = "multi_thread")]
+async fn m20_newchar_creates_playable_second_character_e2e() {
+    let dir = scratch_dir("newchar");
+    // seed_key = true (register TEST_PRIV so duo+Casey works), with_staff = true
+    // (wire the staff-op executor @newchar needs); cap is the harness default 3.
+    let addr = boot_duo_server(&dir, true, true).await;
+    let config = Arc::new(russh::client::Config::default());
+
+    // --- password login as Nick; the account has Nick + Ada (2 of 3). -----
+    let (nick_handle, mut nick) =
+        password_into_char(addr, &config, "duo", GM_PASSWORD, "Nick").await;
+
+    // --- a bad name is refused up front; nothing is created (N2). ---------
+    let m = nick.mark();
+    nick.send_line("@newchar 9bad").await;
+    nick.expect_after(m, "character names start with a letter").await;
+
+    // --- a name already held is refused up front (N2). --------------------
+    let m = nick.mark();
+    nick.send_line("@newchar Ada").await;
+    nick.expect_after(m, "already taken").await;
+
+    // --- @newchar Casey: the third character is created (ack-gated, N3). --
+    let m = nick.mark();
+    nick.send_line("@newchar Casey").await;
+    nick.expect_after(m, "created Casey").await;
+    nick.expect_after(m, "duo+Casey").await;
+
+    // --- @newchar Dana now hits the cap of 3 and is refused (N2). ---------
+    let m = nick.mark();
+    nick.send_line("@newchar Dana").await;
+    nick.expect_after(m, "maximum of 3 characters").await;
+
+    // The caller was never switched mid-session (N4): Nick is still in play.
+    let m = nick.mark();
+    nick.send_line("say still nick").await;
+    nick.expect_after(m, "Nick says, \"still nick\"").await;
+
+    // --- a FRESH password login lands on a char-select listing Casey and
+    //     can connect it (N4, char-select). --------------------------------
+    let (casey_handle, mut casey) =
+        password_into_char(addr, &config, "duo", GM_PASSWORD, "Casey").await;
+    casey.expect("Connected as Casey").await;
+    casey.expect("Limbo(#0)").await;
+
+    // --- a FRESH `ssh -i key duo+Casey@game` direct-enters Casey (N4,
+    //     `<account>+<name>` login) — the account link is live. ------------
+    let mut hk = russh::client::connect(Arc::clone(&config), addr, AcceptAll)
+        .await
+        .expect("connect");
+    assert!(
+        hk.authenticate_publickey("duo+Casey", signing_key(TEST_PRIV))
+            .await
+            .expect("auth")
+            .success(),
+        "the newly created character must be reachable via <account>+<name> pubkey login"
+    );
+    let mut tk = shell_term(&hk).await;
+    tk.expect("Connected as Casey").await;
+    tk.expect("Limbo(#0)").await;
+
+    for h in [nick_handle, casey_handle, hk] {
+        let _ = h.disconnect(russh::Disconnect::ByApplication, "", "").await;
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 struct AcceptAll;
 
 impl russh::client::Handler for AcceptAll {

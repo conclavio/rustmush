@@ -22,10 +22,10 @@ use ratatui::buffer::Cell;
 use ratatui::layout::{Position, Size};
 use ratatui::style::{Color, Modifier};
 
-/// Enter the alternate screen and hide the cursor. Emitted on `+tui`.
+/// Enter the alternate screen and hide the cursor. Emitted on `@tui`.
 pub const ENTER_ALT_SCREEN: &[u8] = b"\x1b[?1049h\x1b[?25l";
 
-/// Show the cursor and leave the alternate screen. Emitted on `+notui`, on a
+/// Show the cursor and leave the alternate screen. Emitted on `@notui`, on a
 /// `Disconnect`, and best-effort when a TUI connection tears down — so no
 /// client is ever left stuck on the alternate screen (invariant T5).
 pub const LEAVE_ALT_SCREEN: &[u8] = b"\x1b[?25h\x1b[?1049l\x1b[0m";
@@ -34,7 +34,7 @@ pub const LEAVE_ALT_SCREEN: &[u8] = b"\x1b[?25h\x1b[?1049l\x1b[0m";
 /// `width * height` cell buffer (twice — front and back), so a client that
 /// reports a window size in the tens of thousands (a pty/window-change request
 /// carries up to `u16::MAX` each) would OOM-abort the shared server process on
-/// `+tui` or the next resize paint. Clamp well beyond any real terminal so the
+/// `@tui` or the next resize paint. Clamp well beyond any real terminal so the
 /// allocation stays bounded (invariant T4).
 const MAX_WIDTH: u16 = 400;
 /// Upper bound on reported terminal rows; see [`MAX_WIDTH`].

@@ -1027,9 +1027,9 @@ async fn account_username_password_auth_auto_connects() {
         .await;
 }
 
-/// The M15 TUI plumbing end-to-end: `+tui` enters the full-screen ratatui
+/// The M15 TUI plumbing end-to-end: `@tui` enters the full-screen ratatui
 /// frame (WHO rail + main frame + input line), a command typed inside it
-/// reaches the world and its output lands in the scrollback, and `+notui`
+/// reaches the world and its output lands in the scrollback, and `@notui`
 /// restores byte-for-byte line mode (a subsequent `say` renders the classic
 /// way again).
 #[tokio::test]
@@ -1058,7 +1058,7 @@ async fn tui_enter_shows_frame_then_notui_restores_line_mode() {
 
     // Enter the TUI: the frame carries the main-frame title, the WHO rail,
     // and (after the auto-submitted `who` query replies) a listed player.
-    term.send_line("+tui").await;
+    term.send_line("@tui").await;
     term.expect("rustmush").await; // main-frame block title
     term.expect("WHO").await; // rail block title
     term.expect("Alice").await; // WHO rail entry from the query reply
@@ -1106,15 +1106,15 @@ async fn tui_enter_shows_frame_then_notui_restores_line_mode() {
         "widget refreshes must go through hooks.query, never hooks.line"
     );
 
-    // `+notui` leaves the alternate screen (restoring the cursor) and
+    // `@notui` leaves the alternate screen (restoring the cursor) and
     // restores line mode; a fresh `say` renders the classic way again.
     let before_notui = term.seen.len();
-    term.send_line("+notui").await;
+    term.send_line("@notui").await;
     term.send_line("say back").await;
     term.expect("Nick says, \"back\"").await;
     assert!(
         term.seen[before_notui..].contains("\u{1b}[?1049l"),
-        "expected the alternate-screen leave sequence after +notui"
+        "expected the alternate-screen leave sequence after @notui"
     );
 
     term.send_line("QUIT").await;

@@ -32,7 +32,7 @@ use mushd::ipguard::IpGuard;
 use mushd::modules;
 use mushd::persist::load_or_seed_world;
 use mushd::ssh_bridge::{SshBridge, start_listener};
-use mushd::staff::{StaffQueue, register_server_commands};
+use mushd::staff::{StaffQueue, register_server_commands_with_cap};
 use mushd::web_bridge::WebBridge;
 use mushd::world_task::{self, ServerDeps};
 use mushd::{repl, unix_now_s};
@@ -181,7 +181,7 @@ async fn serve(config: Config) -> Result<(), String> {
     // drains), plus the markdown help topics.
     let staff = Arc::new(StaffQueue::new());
     let mut registry = world_task::base_registry();
-    register_server_commands(&mut registry, &staff)
+    register_server_commands_with_cap(&mut registry, &staff, config.game.max_characters as usize)
         .map_err(|e| format!("server command registration: {e}"))?;
     match mushd::help::load_help_topics(&mut registry, &config.server.help_dir) {
         Ok(n) => tracing::info!(topics = n, "help topics loaded"),

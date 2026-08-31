@@ -1,10 +1,10 @@
-# The Full-Screen TUI (`+tui`)
+# The Full-Screen TUI (`@tui`)
 
 Most players use rustmush as a classic scrolling line client: you type a
 command, the world answers, the text rolls up the screen. That line mode is
 the **default** and is not going anywhere.
 
-`+tui` is an optional, full-screen alternative for terminal clients — a
+`@tui` is an optional, full-screen alternative for terminal clients — a
 proof-of-concept dashboard rendered server-side over your SSH connection. It
 splits the screen into panes: your normal scrollback and command line in the
 middle, a live WHO rail down the side, and a switchable widget pane for
@@ -13,18 +13,18 @@ reaches the same world; the TUI is only a different way to *see* it.
 
 ## Launching and leaving
 
-  +tui        Switch this connection into the full-screen TUI. Your terminal
+  @tui        Switch this connection into the full-screen TUI. Your terminal
               flips to its alternate screen and the dashboard paints.
-  +notui      Leave the TUI and return to ordinary line mode. Your terminal's
+  @notui      Leave the TUI and return to ordinary line mode. Your terminal's
               normal screen (and scrollback) comes back untouched.
-  Ctrl-]      A hotkey that also detaches — the same as `+notui`.
+  Ctrl-]      A hotkey that also detaches — the same as `@notui`.
 
-Line mode is unaffected by any of this: a connection that never types `+tui`
+Line mode is unaffected by any of this: a connection that never types `@tui`
 behaves exactly as it always has, byte for byte. If your connection drops
 while the TUI is open, the alternate screen is restored for you, so you are
 never left stuck on a blank full-screen buffer.
 
-You need a real interactive terminal (a PTY) for `+tui`; it does nothing over
+You need a real interactive terminal (a PTY) for `@tui`; it does nothing over
 a non-interactive pipe.
 
 ## The layout
@@ -45,7 +45,7 @@ a non-interactive pipe.
   PgUp / PgDn  Scroll the main-frame scrollback up / down a page.
   Up / Down    Scroll the scrollback one line.
   Tab          Cycle the widget pane: off -> @mail -> +intel -> off.
-  Ctrl-]       Detach (return to line mode), same as `+notui`.
+  Ctrl-]       Detach (return to line mode), same as `@notui`.
 
 Password and hidden prompts (login, chargen) are honored on the TUI input
 line just as in line mode — your typing is masked or not echoed as the game
@@ -73,7 +73,7 @@ the main frame always has room; widen the window to bring them back.
 The TUI is deliberately a first cut. The plumbing is real — it is a genuine
 third renderer of the same event stream that drives line mode and the web
 client — but the layout, styling, key bindings, and widget set are expected to
-grow and change. Line mode remains the supported default; treat `+tui` as a
+grow and change. Line mode remains the supported default; treat `@tui` as a
 preview.
 
 ## See also

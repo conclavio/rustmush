@@ -3,10 +3,10 @@
 //! (line = `mush-ansi`, web = JSON, TUI = ratatui).
 //!
 //! This module lives entirely in the transport layer: it never touches the
-//! single-writer world. `+tui` flips the connection into [`Mode::Tui`], the
+//! single-writer world. `@tui` flips the connection into [`Mode::Tui`], the
 //! output pump applies each event to a [`TuiApp`] and repaints one coalesced
 //! frame through a clean-room [`SshBackend`], and raw input is decoded into
-//! the app's input line / navigation. `+notui` (or the detach hotkey) flips
+//! the app's input line / navigation. `@notui` (or the detach hotkey) flips
 //! back to line mode, which is byte-for-byte unaffected when a connection
 //! never enters the TUI (invariant T1).
 //!

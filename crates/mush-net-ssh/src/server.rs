@@ -300,7 +300,7 @@ enum Mode {
     /// Connected to a character; lines go to [`SshHooks::line`].
     InGame,
     /// Full-screen ratatui TUI (milestone M15), entered from `InGame` with
-    /// `+tui` and left with `+notui` / the detach hotkey. Raw input drives
+    /// `@tui` and left with `@notui` / the detach hotkey. Raw input drives
     /// the TUI app (not the line editor) and the pump repaints frames; the
     /// [`TuiSession`] itself lives in [`Shared::tui`].
     Tui,
@@ -532,11 +532,11 @@ impl ConnHandler {
         let mode = self.lock().mode.clone();
         match mode {
             Mode::InGame => {
-                // `+tui` is intercepted transport-side, before the world sees
+                // `@tui` is intercepted transport-side, before the world sees
                 // it (design M15 D2); every other line forwards unchanged, so
-                // a connection that never types `+tui` behaves exactly as
+                // a connection that never types `@tui` behaves exactly as
                 // today (invariant T1).
-                if line.trim().eq_ignore_ascii_case("+tui") {
+                if line.trim().eq_ignore_ascii_case("@tui") {
                     return self.enter_tui(session).await;
                 }
                 self.hooks.line(self.conn_id, line).await;
@@ -566,7 +566,7 @@ impl ConnHandler {
         notify.notify_one();
     }
 
-    /// `+tui`: build the [`TuiSession`], enter the alternate screen, paint the
+    /// `@tui`: build the [`TuiSession`], enter the alternate screen, paint the
     /// first frame, and kick a WHO refresh. From here the output pump owns all
     /// steady-state repaints (a single writer), so no frame races the enter.
     async fn enter_tui(&mut self, session: &mut Session) -> Result<(), russh::Error> {
@@ -590,7 +590,7 @@ impl ConnHandler {
         Ok(())
     }
 
-    /// `+notui` / detach: leave the alternate screen, restore the cursor, drop
+    /// `@notui` / detach: leave the alternate screen, restore the cursor, drop
     /// the TUI state, and hand the resumed line client its prompt back
     /// (invariant T5 — never leave a client stuck on the alternate screen).
     async fn leave_tui(&mut self, session: &mut Session) -> Result<(), russh::Error> {
@@ -631,8 +631,8 @@ impl ConnHandler {
             // A burst can carry more than one line (a multi-line paste); each
             // is forwarded in order so none is dropped.
             for line in result.submit {
-                // `+notui` typed at the TUI input line also detaches.
-                if line.trim().eq_ignore_ascii_case("+notui") {
+                // `@notui` typed at the TUI input line also detaches.
+                if line.trim().eq_ignore_ascii_case("@notui") {
                     return self.leave_tui(session).await;
                 }
                 self.hooks.line(self.conn_id, line).await;

@@ -56,7 +56,7 @@ pub mod world_task;
 
 use crate::gateway_sink::SocketSink;
 use crate::persist::load_or_seed_world;
-use crate::staff::{StaffQueue, register_server_commands};
+use crate::staff::{StaffQueue, register_server_commands_with_cap};
 use crate::world_task::{ServerDeps, WorldHandle};
 
 pub use gateway_sink::{GatewaySink, SocketSink as ServerSocketSink};
@@ -106,7 +106,7 @@ async fn build_engine(
 
     let staff = Arc::new(StaffQueue::new());
     let mut registry = world_task::base_registry();
-    register_server_commands(&mut registry, &staff)
+    register_server_commands_with_cap(&mut registry, &staff, config.game.max_characters as usize)
         .map_err(|e| format!("server command registration: {e}"))?;
     match crate::help::load_help_topics(&mut registry, &config.server.help_dir) {
         Ok(n) => tracing::info!(topics = n, "help topics loaded"),

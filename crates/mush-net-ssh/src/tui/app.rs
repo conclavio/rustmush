@@ -47,7 +47,7 @@ pub struct InputResult {
     /// accumulates rather than collapsing to the last — dropping earlier lines
     /// would silently swallow typed commands.
     pub submit: Vec<String>,
-    /// Leave the TUI (the detach hotkey or `+notui`, resolved by the caller).
+    /// Leave the TUI (the detach hotkey or `@notui`, resolved by the caller).
     pub detach: bool,
     /// A read-only widget query the transport should submit via `hooks.query`
     /// (e.g. `"mail.list"` / `"intel.list"` when a pane is opened). Read-only,

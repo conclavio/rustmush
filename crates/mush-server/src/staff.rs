@@ -114,6 +114,26 @@ pub enum StaffOpKind {
         /// Public (never a secret), so it may appear in `Debug`/logs.
         which: String,
     },
+    /// `@newchar <Name>` — create one MORE character on the CALLER's own
+    /// account (self-service; M20). The whole flow runs store-side/off-loop
+    /// so the world loop never blocks on a store read: the owning account is
+    /// resolved by scanning for the one that lists `actor` (so it can only
+    /// ever touch the caller's own account — invariant N1), the cap and the
+    /// world name index are checked BEFORE anything is created (N2), then the
+    /// Player is created through the established durable, ack-gated server
+    /// create path and linked into the account doc (N3). The confirmation
+    /// gates on the store link write.
+    NewChar {
+        /// The requesting character; the owning account is resolved
+        /// store-side by scanning for the account that lists it.
+        actor: ObjId,
+        /// The validated (command-time) name for the new character. The
+        /// world create re-checks it atomically for a duplicate.
+        name: String,
+        /// The `[game].max_characters` per-account cap, enforced off-loop
+        /// before the new Player is created.
+        max_characters: usize,
+    },
     /// `@ps` — render the scheduler (pending `@wait`s, module ticks,
     /// counts) to the requesting wizard.
     Ps,
@@ -440,6 +460,49 @@ fn sshkey_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Err(CmdError::msg(USAGE))
 }
 
+/// `@newchar <Name>` — create one more character on the CALLER's OWN account
+/// (self-service; M20). The syntactic name check runs here for a fast, friendly
+/// refusal, with an advisory in-loop duplicate check against the world's name
+/// index (the world is at hand); the authoritative account resolution, cap
+/// enforcement, durable create, and account link all run off-loop in the staff
+/// executor (a store read must never happen on the world loop), so the command
+/// handler only validates and queues. No output on success — the confirmation
+/// is ack-gated on the store link write (N3), like `@newpassword`/`@sshkey`.
+fn newchar_cmd(
+    queue: &StaffQueue,
+    max_characters: usize,
+    ctx: &mut Ctx<'_>,
+) -> Result<(), CmdError> {
+    const USAGE: &str =
+        "Usage: @newchar <Name>  --  create one more character on your own account.";
+    let name = ctx.args.raw().trim().to_string();
+    if name.is_empty() {
+        return Err(CmdError::msg(USAGE));
+    }
+    // Validate the name up front for a fast, friendly refusal (N2). The
+    // executor's world create re-checks the name atomically before creating,
+    // so a duplicate can never produce a second Player.
+    mush_config::accounts::validate_character_name(&name)
+        .map_err(|e| CmdError::msg(format!("{e}.")))?;
+    // Advisory in-loop duplicate check: the world holds the global actor-name
+    // index, so a taken name gets a sharper message without a store round-trip.
+    // (Authoritative rejection is still the executor's atomic create.)
+    if ctx.w.resolve_player(&name).is_some() {
+        return Err(CmdError::msg(format!(
+            "{name:?} is already taken. Pick another name."
+        )));
+    }
+    queue.push(StaffOp {
+        actor: ctx.actor,
+        kind: StaffOpKind::NewChar {
+            actor: ctx.actor,
+            name,
+            max_characters,
+        },
+    });
+    Ok(())
+}
+
 fn ps_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     queue.push(StaffOp {
         actor: ctx.actor,
@@ -488,13 +551,33 @@ fn dump_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-/// Register the server-owned staff commands into the world's registry.
-/// Call after `register_core_commands` / `register_engine_commands`; pass
-/// the same `queue` to the world task so it can drain what the handlers
-/// push.
+/// The per-account character cap used when a caller registers the staff
+/// commands without threading `[game].max_characters` explicitly (tests and
+/// compat wiring). Mirrors `mush_config::GameCfg::default().max_characters`;
+/// the real binaries call [`register_server_commands_with_cap`] with the
+/// configured value instead.
+const DEFAULT_MAX_CHARACTERS: usize = 3;
+
+/// Register the server-owned staff commands into the world's registry with the
+/// default per-account character cap ([`DEFAULT_MAX_CHARACTERS`]). Convenience
+/// wrapper over [`register_server_commands_with_cap`] for tests and compat
+/// wiring; the real binaries pass the configured `[game].max_characters`.
 pub fn register_server_commands(
     reg: &mut Registry,
     queue: &Arc<StaffQueue>,
+) -> Result<(), RegistryError> {
+    register_server_commands_with_cap(reg, queue, DEFAULT_MAX_CHARACTERS)
+}
+
+/// Register the server-owned staff commands into the world's registry.
+/// Call after `register_core_commands` / `register_engine_commands`; pass
+/// the same `queue` to the world task so it can drain what the handlers
+/// push. `max_characters` is the `[game].max_characters` per-account cap the
+/// `@newchar` command enforces.
+pub fn register_server_commands_with_cap(
+    reg: &mut Registry,
+    queue: &Arc<StaffQueue>,
+    max_characters: usize,
 ) -> Result<(), RegistryError> {
     let q = Arc::clone(queue);
     reg.register(
@@ -599,6 +682,28 @@ pub fn register_server_commands(
             ..CommandSpec::default()
         },
         Arc::new(move |ctx: &mut Ctx<'_>| sshkey_cmd(&q, ctx)),
+    )?;
+    let q = Arc::clone(queue);
+    let cap = max_characters;
+    reg.register(
+        CommandSpec {
+            name: "@newchar".into(),
+            // A single character name; Raw so it is taken verbatim (trimmed).
+            shape: ArgShape::Raw,
+            // Self-service: any player may create another character on their
+            // OWN account (invariant N1 is enforced by the store-side account
+            // scan in the executor).
+            min_role: Role::Player,
+            help: "@newchar <Name>  --  Create one MORE character on your own account, up \
+                   to the per-account limit. The new character starts in Limbo, unapproved \
+                   (chargen runs the first time you play it); you keep playing your current \
+                   character. To play the new one, reconnect and pick it at the \
+                   character-select screen, or `ssh <account>+<Name>@game` to jump straight \
+                   in. Acts only on your own account."
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(move |ctx: &mut Ctx<'_>| newchar_cmd(&q, cap, ctx)),
     )?;
     let q = Arc::clone(queue);
     reg.register(
@@ -993,6 +1098,58 @@ mod tests {
     fn sshkey_del_requires_an_argument() {
         let (mut engine, queue) = engine_with_staff();
         let out = run(&mut engine, GOD, "@sshkey/del");
+        assert!(sys_texts(&out).iter().any(|t| t.contains("Usage")));
+        assert!(queue.drain().is_empty());
+    }
+
+    #[test]
+    fn newchar_validates_and_queues_for_the_caller() {
+        let (mut engine, queue) = engine_with_staff();
+        // Self-service: a mortal may create another character on their account.
+        let nick = engine
+            .world
+            .create(ObjKind::Player, "Nick", GOD, Some(LIMBO))
+            .unwrap();
+
+        // A valid, free name queues a NewChar carrying the caller + the cap.
+        let out = run(&mut engine, nick, "@newchar Casey");
+        assert!(sys_texts(&out).is_empty(), "no echo on success: {:?}", sys_texts(&out));
+        let ops = queue.drain();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].actor, nick);
+        assert_eq!(
+            ops[0].kind,
+            StaffOpKind::NewChar {
+                actor: nick,
+                name: "Casey".to_string(),
+                // engine_with_staff registers with the default cap.
+                max_characters: DEFAULT_MAX_CHARACTERS,
+            }
+        );
+
+        // An invalid name is refused up front — nothing is queued (N2).
+        let out = run(&mut engine, nick, "@newchar 9bad");
+        assert!(
+            sys_texts(&out)
+                .iter()
+                .any(|t| t.contains("character names start with a letter")),
+            "{:?}",
+            sys_texts(&out)
+        );
+        assert!(queue.drain().is_empty());
+
+        // A name already held by an actor is refused up front (advisory dup
+        // check), so no op is queued (N2). `Nick` exists.
+        let out = run(&mut engine, nick, "@newchar Nick");
+        assert!(
+            sys_texts(&out).iter().any(|t| t.contains("already taken")),
+            "{:?}",
+            sys_texts(&out)
+        );
+        assert!(queue.drain().is_empty());
+
+        // Bare @newchar is a usage error, nothing queued.
+        let out = run(&mut engine, nick, "@newchar");
         assert!(sys_texts(&out).iter().any(|t| t.contains("Usage")));
         assert!(queue.drain().is_empty());
     }
