@@ -21,7 +21,9 @@ use mush_core::{
 
 use crate::migrate::{Migration, run_migrations};
 use crate::store::ObjectStore;
-use crate::types::{AccountRec, ModuleOp, ModuleWrite, StoreError, TokenRecord, WriteBatch};
+use crate::types::{
+    AccountRec, ModuleOp, ModuleWrite, SshKeyRec, StoreError, TokenRecord, WriteBatch,
+};
 
 fn now_unix() -> i64 {
     SystemTime::now()
@@ -163,6 +165,7 @@ pub async fn account_reserve_race(store: &dyn ObjectStore) {
         argon2_hash: hash.to_string(),
         created: now_unix(),
         characters: vec![],
+        ssh_keys: vec![],
     };
     let (a, b) = futures::join!(
         store.create_account(rec("hash-a")),
@@ -205,6 +208,7 @@ pub async fn account_lifecycle(store: &dyn ObjectStore) {
             argon2_hash: "$argon2id$fake".to_string(),
             created,
             characters: vec![],
+            ssh_keys: vec![],
         })
         .await
         .expect("create");
@@ -216,6 +220,7 @@ pub async fn account_lifecycle(store: &dyn ObjectStore) {
                     argon2_hash: "other".to_string(),
                     created,
                     characters: vec![],
+                    ssh_keys: vec![],
                 })
                 .await,
             Err(StoreError::AccountExists)
@@ -252,6 +257,7 @@ pub async fn account_lifecycle(store: &dyn ObjectStore) {
             argon2_hash: "h".to_string(),
             created,
             characters: vec![],
+            ssh_keys: vec![],
         })
         .await
         .expect("second account");
@@ -286,6 +292,7 @@ pub async fn account_password_update(store: &dyn ObjectStore) {
             argon2_hash: "$argon2id$old".to_string(),
             created,
             characters: vec![],
+            ssh_keys: vec![],
         })
         .await
         .expect("create");
@@ -310,6 +317,90 @@ pub async fn account_password_update(store: &dyn ObjectStore) {
     assert_eq!(rec.name, "Nick", "display case untouched");
     assert_eq!(rec.created, created, "created untouched");
     assert_eq!(rec.characters.len(), 1, "characters untouched");
+}
+
+/// `set_account_ssh_keys` (`@sshkey/add|del`): whole-array replace that
+/// round-trips (set, then replace with a different array), reports `false`
+/// for an unknown account (never an error), and leaves the rest of the
+/// account doc untouched. The field is additive `#[serde(default)]`, so a
+/// store whose account doc lacks `ssh_keys` still deserializes and is
+/// writable (the Redis half proves the missing-`$.ssh_keys`-path case
+/// directly in `tests/redis_suite.rs`).
+pub async fn account_ssh_keys_update(store: &dyn ObjectStore) {
+    let key = |fp: &str| SshKeyRec {
+        openssh: format!("ssh-ed25519 AAAA{fp} nick@box"),
+        fingerprint: format!("SHA256:{fp}"),
+        added: 1_700_000_000,
+    };
+
+    assert!(
+        !store
+            .set_account_ssh_keys("nobody", &[key("aaa")])
+            .await
+            .expect("unknown account is not an error"),
+        "unknown account must report false"
+    );
+
+    let created = now_unix();
+    store
+        .create_account(AccountRec {
+            name: "Nick".to_string(),
+            argon2_hash: "$argon2id$keep".to_string(),
+            created,
+            characters: vec![],
+            ssh_keys: vec![],
+        })
+        .await
+        .expect("create");
+    store
+        .link_character("nick", ObjId(7), "Nicky")
+        .await
+        .expect("link");
+
+    // First set: two keys (case-insensitive account lookup).
+    let first = vec![key("one"), key("two")];
+    assert!(
+        store
+            .set_account_ssh_keys("NICK", &first)
+            .await
+            .expect("set"),
+        "existing account must report true"
+    );
+    let rec = store
+        .get_account("nick")
+        .await
+        .expect("get")
+        .expect("exists");
+    assert_eq!(rec.ssh_keys, first, "keys round-trip");
+    assert_eq!(rec.argon2_hash, "$argon2id$keep", "hash untouched");
+    assert_eq!(rec.name, "Nick", "display case untouched");
+    assert_eq!(rec.created, created, "created untouched");
+    assert_eq!(rec.characters.len(), 1, "characters untouched");
+
+    // Replace: a different, single-key array wholly supplants the first.
+    let second = vec![key("three")];
+    assert!(
+        store
+            .set_account_ssh_keys("nick", &second)
+            .await
+            .expect("replace"),
+    );
+    let rec = store
+        .get_account("nick")
+        .await
+        .expect("get")
+        .expect("exists");
+    assert_eq!(rec.ssh_keys, second, "replace is a whole-array swap");
+    assert_eq!(rec.characters.len(), 1, "characters still untouched");
+
+    // Clear: an empty slice empties the array.
+    assert!(store.set_account_ssh_keys("nick", &[]).await.expect("clear"));
+    let rec = store
+        .get_account("nick")
+        .await
+        .expect("get")
+        .expect("exists");
+    assert!(rec.ssh_keys.is_empty(), "empty slice clears the keys");
 }
 
 /// Active, permanent, and already-expired bans; clear semantics.

@@ -335,6 +335,7 @@ async fn boot_load(tag: &str, send_queue: usize, send_timeout_ms: u64) -> Rig {
                 id: GOD,
                 name: "God".to_string(),
             }],
+            ssh_keys: vec![],
         })
         .await
         .unwrap();

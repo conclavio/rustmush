@@ -35,6 +35,11 @@ async fn account_password_update() {
 }
 
 #[tokio::test]
+async fn account_ssh_keys_update() {
+    suite::account_ssh_keys_update(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
 async fn ban_expiry() {
     suite::ban_expiry(&InMemoryStore::new()).await;
 }

@@ -30,6 +30,9 @@ mush-ansi.workspace = true
 mush-session.workspace = true
 mush-net-ssh.workspace = true
 mush-net-web.workspace = true
+# Public-key auth (M19): parse offered/stored OpenSSH public keys and compare
+# by key material for `verify_pubkey`. russh re-exports the `ssh-key` types.
+russh.workspace = true
 # The gateway's own Redis KV handle for account:*/token:*/ban:* (auth, tokens,
 # sitebans). It does NOT pull the world/object store schema, modules, or llm.
 mush-store.workspace = true
@@ -49,7 +52,6 @@ smol_str.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-russh.workspace = true
 mush-server.workspace = true
 mush-testkit.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

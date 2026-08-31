@@ -24,11 +24,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use mush_core::GOD;
+use mush_core::{GOD, LIMBO, ObjKind};
 use mush_session::{SessionConfig, SessionManager};
 use russh::ChannelMsg;
 
-use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore};
+use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore, SshKeyRec};
 use mushd::accounts::{Accounts, hash_password};
 use mushd::ipguard::IpGuard;
 use mushd::ssh_bridge::{SshBridge, start_listener};
@@ -63,6 +63,7 @@ async fn boot_server(dir: &std::path::Path) -> SocketAddr {
                 id: GOD,
                 name: "God".to_string(),
             }],
+            ssh_keys: vec![],
         })
         .await
         .unwrap();
@@ -82,6 +83,366 @@ async fn boot_server(dir: &std::path::Path) -> SocketAddr {
     .await
     .expect("listener")
     .addr()
+}
+
+// ---- public-key auth e2e (M19) ------------------------------------------
+
+/// A fixed ed25519 private key (test-only). Its public half is registered on
+/// the seeded account; the client authenticates with the private key.
+const TEST_PRIV: &str = "\
+-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACAimbLmJ8+bw424vILUEi+XY4bI9f/KJQPsh5DzC6fyogAAAKANWMViDVjF
+YgAAAAtzc2gtZWQyNTUxOQAAACAimbLmJ8+bw424vILUEi+XY4bI9f/KJQPsh5DzC6fyog
+AAAEAxj4SkgEcYjlGJjsCyLFctOcsJ/hm6ZWXlqQgTZw5esSKZsuYnz5vDjbi8gtQSL5dj
+hsj1/8olA+yHkPMLp/KiAAAAFmxvb3BiYWNrLXRlc3RAcnVzdG11c2gBAgMEBQYH
+-----END OPENSSH PRIVATE KEY-----
+";
+
+/// A second, unregistered ed25519 private key — must fall to password.
+const WRONG_PRIV: &str = "\
+-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACDIklxIsFZ/Zadggeq52MwqDO/a/eFZXR/6b4VgHPcERwAAAJi9ZbfhvWW3
+4QAAAAtzc2gtZWQyNTUxOQAAACDIklxIsFZ/Zadggeq52MwqDO/a/eFZXR/6b4VgHPcERw
+AAAEAlMRUdks8bgtY+gCvj5eL0OLVEDFKWe3JfaP4GX7rTlsiSXEiwVn9lp2CB6rnYzCoM
+79r94VldH/pvhWAc9wRHAAAADndyb25nQHJ1c3RtdXNoAQIDBAUGBw==
+-----END OPENSSH PRIVATE KEY-----
+";
+
+fn priv_key(pem: &str) -> russh::keys::PrivateKey {
+    russh::keys::PrivateKey::from_openssh(pem).expect("parse test private key")
+}
+
+fn public_line(pem: &str) -> String {
+    priv_key(pem)
+        .public_key()
+        .to_openssh()
+        .expect("render public key")
+}
+
+fn signing_key(pem: &str) -> russh::keys::PrivateKeyWithHashAlg {
+    russh::keys::PrivateKeyWithHashAlg::new(Arc::new(priv_key(pem)), None)
+}
+
+/// Boot full production wiring with a `duo` account that owns two real
+/// characters (Nick, Ada). `seed_key` controls whether `TEST_PRIV`'s public key
+/// is registered up front (stage-2 path) or the account starts keyless so the
+/// in-game `@sshkey` command can add one; `with_staff` wires the staff-op
+/// executor (via `spawn_persist`) that the `@sshkey`/`@newpassword` commands
+/// need — the stage-2 pubkey journey drives no server commands, so it uses the
+/// leaner `spawn`.
+async fn boot_duo_server(dir: &std::path::Path, seed_key: bool, with_staff: bool) -> SocketAddr {
+    std::fs::create_dir_all(dir).unwrap();
+    let sessions = Arc::new(SessionManager::with_config(SessionConfig {
+        linkdead_grace: Duration::from_secs(120),
+        ..SessionConfig::default()
+    }));
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+
+    // Build the engine and its two characters. When the staff executor is
+    // wanted, the registry also carries the server-side commands (@sshkey).
+    let mut world = mush_core::World::new_minimal();
+    world.set_now(mushd::unix_now_s());
+    let staff = Arc::new(mushd::staff::StaffQueue::new());
+    let mut registry = mushd::world_task::base_registry();
+    if with_staff {
+        mushd::staff::register_server_commands(&mut registry, &staff).unwrap();
+    }
+    let mut engine = mush_core::Engine::new(world, registry);
+    let nick = engine
+        .world
+        .create(ObjKind::Player, "Nick", GOD, Some(LIMBO))
+        .unwrap();
+    let ada = engine
+        .world
+        .create(ObjKind::Player, "Ada", GOD, Some(LIMBO))
+        .unwrap();
+
+    store
+        .create_account(AccountRec {
+            name: "duo".to_string(),
+            argon2_hash: hash_password(GM_PASSWORD).unwrap(),
+            created: 0,
+            characters: vec![
+                CharacterRef {
+                    id: nick,
+                    name: "Nick".to_string(),
+                },
+                CharacterRef {
+                    id: ada,
+                    name: "Ada".to_string(),
+                },
+            ],
+            ssh_keys: vec![],
+        })
+        .await
+        .unwrap();
+    if seed_key {
+        // Register the public key via the stage-1 store method (the same write
+        // `@sshkey/add` performs), proving the gateway reads it fresh per auth.
+        let publine = public_line(TEST_PRIV);
+        let key = SshKeyRec {
+            openssh: publine.clone(),
+            fingerprint: russh::keys::ssh_key::PublicKey::from_openssh(&publine)
+                .unwrap()
+                .fingerprint(russh::keys::HashAlg::Sha256)
+                .to_string(),
+            added: 0,
+        };
+        assert!(store.set_account_ssh_keys("duo", &[key]).await.unwrap());
+    }
+
+    let world = if with_staff {
+        mushd::world_task::spawn_persist(
+            engine,
+            Arc::clone(&sessions),
+            mushd::world_task::ServerDeps {
+                metrics: Arc::new(mush_net_web::Metrics::new()),
+                store: Arc::clone(&store),
+                guard: Arc::new(IpGuard::new()),
+                staff,
+                llm: None,
+            },
+        )
+        .handle
+    } else {
+        world_task::spawn(engine, Arc::clone(&sessions)).0
+    };
+    let accounts = Arc::new(Accounts::new(store, world.clone(), 3));
+    let bridge = Arc::new(SshBridge::new(
+        accounts,
+        Arc::clone(&sessions),
+        world,
+        Arc::new(IpGuard::new()),
+    ));
+    start_listener(
+        "127.0.0.1:0".parse().unwrap(),
+        dir,
+        "Welcome to the e2e MUSH!".to_string(),
+        bridge,
+    )
+    .await
+    .expect("listener")
+    .addr()
+}
+
+/// The stage-2 harness: `duo` with `TEST_PRIV`'s public key already registered.
+async fn boot_pubkey_server(dir: &std::path::Path) -> SocketAddr {
+    boot_duo_server(dir, true, false).await
+}
+
+/// Open a PTY shell on an already-authenticated handle.
+async fn shell_term(handle: &russh::client::Handle<AcceptAll>) -> Term {
+    let channel = handle.channel_open_session().await.expect("open channel");
+    channel
+        .request_pty(true, "xterm-256color", 80, 24, 0, 0, &[])
+        .await
+        .expect("pty");
+    channel.request_shell(true).await.expect("shell");
+    Term {
+        channel,
+        seen: String::new(),
+    }
+}
+
+/// The M19 public-key journey over the REAL bridge (gateway `verify_pubkey`
+/// + server `auth_publickey`/`_offered` + `+char` parse):
+///
+/// - `ssh -i key duo+Ada@game` authenticates by key alone and direct-enters
+///   the named owned character (skips char-select).
+/// - `ssh -i key duo@game` (no `+char`) authenticates by key and lands on the
+///   two-character select screen.
+/// - `ssh -i wrongkey duo@game` fails public-key auth and falls back to the
+///   account password, which succeeds.
+/// - `ssh -i key duo+Ghost@game` (a character the account does not own) falls
+///   to this account's own char-select — never enters another account.
+#[tokio::test(flavor = "multi_thread")]
+async fn m19_pubkey_and_plus_char_journey() {
+    let dir = scratch_dir("pubkey");
+    let addr = boot_pubkey_server(&dir).await;
+    let config = Arc::new(russh::client::Config::default());
+
+    // --- key + `+Ada`: zero-step direct-enter of the named owned char. ----
+    let mut h1 = russh::client::connect(Arc::clone(&config), addr, AcceptAll)
+        .await
+        .expect("connect");
+    assert!(
+        h1.authenticate_publickey("duo+Ada", signing_key(TEST_PRIV))
+            .await
+            .expect("auth")
+            .success(),
+        "a registered key must authenticate"
+    );
+    let mut t1 = shell_term(&h1).await;
+    t1.expect("Connected as Ada (account duo, 1 connection).")
+        .await;
+    t1.expect("Limbo(#0)").await;
+
+    // --- key, no `+char`: lands on the two-character select screen. -------
+    let mut h2 = russh::client::connect(Arc::clone(&config), addr, AcceptAll)
+        .await
+        .expect("connect");
+    assert!(
+        h2.authenticate_publickey("duo", signing_key(TEST_PRIV))
+            .await
+            .expect("auth")
+            .success()
+    );
+    let mut t2 = shell_term(&h2).await;
+    t2.expect("Characters on duo:").await;
+    t2.expect("Nick").await;
+    t2.expect("Ada").await;
+
+    // --- wrong key: public-key auth fails, password fallback succeeds. ----
+    let mut h3 = russh::client::connect(Arc::clone(&config), addr, AcceptAll)
+        .await
+        .expect("connect");
+    assert!(
+        !h3.authenticate_publickey("duo", signing_key(WRONG_PRIV))
+            .await
+            .expect("auth")
+            .success(),
+        "an unregistered key must not authenticate"
+    );
+    assert!(
+        h3.authenticate_password("duo", GM_PASSWORD)
+            .await
+            .expect("auth")
+            .success(),
+        "password fallback must survive a key miss"
+    );
+    let mut t3 = shell_term(&h3).await;
+    t3.expect("Characters on duo:").await;
+
+    // --- key + unowned `+Ghost`: falls to this account's own char-select. -
+    let mut h4 = russh::client::connect(Arc::clone(&config), addr, AcceptAll)
+        .await
+        .expect("connect");
+    assert!(
+        h4.authenticate_publickey("duo+Ghost", signing_key(TEST_PRIV))
+            .await
+            .expect("auth")
+            .success()
+    );
+    let mut t4 = shell_term(&h4).await;
+    t4.expect("Characters on duo:").await;
+    t4.expect("Nick").await;
+    // Picking an owned character from the menu still connects.
+    t4.send_line("Nick").await;
+    t4.expect("Connected as Nick (account duo, 1 connection).")
+        .await;
+
+    for h in [h1, h2, h3, h4] {
+        let _ = h.disconnect(russh::Disconnect::ByApplication, "", "").await;
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Log in by password (landing on the char-select) and connect the named
+/// owned character, returning its live terminal.
+async fn password_into_char(
+    addr: SocketAddr,
+    config: &Arc<russh::client::Config>,
+    account: &str,
+    password: &str,
+    character: &str,
+) -> (russh::client::Handle<AcceptAll>, Term) {
+    let mut handle = russh::client::connect(Arc::clone(config), addr, AcceptAll)
+        .await
+        .expect("connect");
+    assert!(
+        handle
+            .authenticate_password(account, password)
+            .await
+            .expect("auth")
+            .success(),
+        "password login must succeed"
+    );
+    let mut term = shell_term(&handle).await;
+    term.expect(&format!("Characters on {account}:")).await;
+    term.send_line(character).await;
+    term.expect(&format!("Connected as {character}")).await;
+    (handle, term)
+}
+
+/// The M19 section-D journey: the in-game `@sshkey` command drives real SSH
+/// public-key auth end to end.
+///
+/// - `duo` starts with NO registered keys; a password login as Nick runs
+///   `@sshkey/list` (empty), then `@sshkey/add <public line>`.
+/// - A FRESH `ssh -i key duo+Ada@game` now authenticates by that key alone and
+///   direct-enters Ada — proving the gateway read the freshly written key (S4)
+///   and that `@sshkey` reached the caller's own account (S5).
+/// - `@sshkey/list` shows the fingerprint + comment; `@sshkey/del 1` removes it.
+/// - A FRESH key connection then FAILS public-key auth (falls back to password).
+#[tokio::test(flavor = "multi_thread")]
+async fn m19_sshkey_command_registers_key_e2e() {
+    let dir = scratch_dir("sshkey-cmd");
+    let addr = boot_duo_server(&dir, false, true).await;
+    let config = Arc::new(russh::client::Config::default());
+
+    // --- password login as Nick; the account has no keys yet. -------------
+    let (nick_handle, mut nick) =
+        password_into_char(addr, &config, "duo", GM_PASSWORD, "Nick").await;
+    let m = nick.mark();
+    nick.send_line("@sshkey/list").await;
+    nick.expect_after(m, "no registered SSH keys").await;
+
+    // --- add the public key in-game (ack-gated confirmation). -------------
+    let publine = public_line(TEST_PRIV);
+    let m = nick.mark();
+    nick.send_line(&format!("@sshkey/add {publine}")).await;
+    nick.expect_after(m, "key SHA256:").await;
+    nick.expect_after(m, "added").await;
+
+    // --- a FRESH key connection now authenticates (S4) and direct-enters. -
+    let mut hk = russh::client::connect(Arc::clone(&config), addr, AcceptAll)
+        .await
+        .expect("connect");
+    assert!(
+        hk.authenticate_publickey("duo+Ada", signing_key(TEST_PRIV))
+            .await
+            .expect("auth")
+            .success(),
+        "the just-added key must authenticate on the next connection"
+    );
+    let mut tk = shell_term(&hk).await;
+    tk.expect("Connected as Ada (account duo, 1 connection).").await;
+
+    // --- list shows the fingerprint + comment; then delete it. ------------
+    let m = nick.mark();
+    nick.send_line("@sshkey/list").await;
+    nick.expect_after(m, "SHA256:").await;
+    nick.expect_after(m, "loopback-test@rustmush").await;
+
+    let m = nick.mark();
+    nick.send_line("@sshkey/del 1").await;
+    nick.expect_after(m, "removed key SHA256:").await;
+
+    // --- after deletion a FRESH key connection FAILS public-key auth. -----
+    let mut hg = russh::client::connect(Arc::clone(&config), addr, AcceptAll)
+        .await
+        .expect("connect");
+    assert!(
+        !hg.authenticate_publickey("duo", signing_key(TEST_PRIV))
+            .await
+            .expect("auth")
+            .success(),
+        "a removed key must no longer authenticate"
+    );
+    // Password fallback still works after the key miss.
+    assert!(
+        hg.authenticate_password("duo", GM_PASSWORD)
+            .await
+            .expect("auth")
+            .success()
+    );
+
+    for h in [nick_handle, hk, hg] {
+        let _ = h.disconnect(russh::Disconnect::ByApplication, "", "").await;
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 struct AcceptAll;

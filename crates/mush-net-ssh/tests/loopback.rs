@@ -31,10 +31,15 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(15);
 struct MockHooks {
     /// account (lowercase) -> (password, characters)
     accounts: Mutex<HashMap<String, (String, Vec<CharSummary>)>>,
+    /// account (lowercase) -> registered OpenSSH public-key lines (M19).
+    ssh_keys: Mutex<HashMap<String, Vec<String>>>,
     /// Output queues by conn id (dropping one closes that connection).
     txs: Mutex<HashMap<u64, mpsc::Sender<Arc<OutputEvent>>>>,
     lines: Mutex<Vec<(u64, String)>>,
     disconnects: Mutex<Vec<u64>>,
+    /// (conn id, character key) for each character actually connected — lets a
+    /// test prove which character `account+char` direct-entered.
+    connected_chars: Mutex<Vec<(u64, u64)>>,
     auth_failures: AtomicUsize,
     next_char_key: AtomicUsize,
 }
@@ -45,6 +50,17 @@ impl MockHooks {
             .lock()
             .unwrap()
             .insert(name.to_ascii_lowercase(), (password.to_owned(), chars));
+    }
+
+    /// Register an OpenSSH public-key line on an account (the stage-1 store
+    /// method's effect, here in the mock).
+    fn register_key(&self, name: &str, openssh: &str) {
+        self.ssh_keys
+            .lock()
+            .unwrap()
+            .entry(name.to_ascii_lowercase())
+            .or_default()
+            .push(openssh.to_owned());
     }
 
     fn tx_of(&self, conn: u64) -> Option<mpsc::Sender<Arc<OutputEvent>>> {
@@ -105,14 +121,52 @@ impl SshHooks for MockHooks {
         })
     }
 
+    fn auth_account_key<'a>(
+        &'a self,
+        account: &'a str,
+        openssh_key: &'a str,
+    ) -> BoxFuture<'a, AuthResult> {
+        Box::pin(async move {
+            use russh::keys::ssh_key::PublicKey;
+            let key = account.to_ascii_lowercase();
+            // Parse the offered key; compare by key material, never raw string.
+            let Ok(offered) = PublicKey::from_openssh(openssh_key) else {
+                return AuthResult::BadCreds;
+            };
+            let accounts = self.accounts.lock().unwrap();
+            let Some((_, chars)) = accounts.get(&key) else {
+                return AuthResult::BadCreds;
+            };
+            let stored = self.ssh_keys.lock().unwrap();
+            let matched = stored.get(&key).is_some_and(|lines| {
+                lines.iter().any(|line| {
+                    PublicKey::from_openssh(line)
+                        .is_ok_and(|pk| pk.key_data() == offered.key_data())
+                })
+            });
+            if matched {
+                AuthResult::Ok {
+                    account: key.clone(),
+                    characters: chars.clone(),
+                }
+            } else {
+                AuthResult::BadCreds
+            }
+        })
+    }
+
     fn connect_character<'a>(
         &'a self,
         conn: NewConn,
         account: &'a str,
-        _character: u64,
+        character: u64,
     ) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
             let tx = conn.tx.clone();
+            self.connected_chars
+                .lock()
+                .unwrap()
+                .push((conn.id, character));
             self.txs.lock().unwrap().insert(conn.id, conn.tx);
             let ev = Arc::new(OutputEvent::Sys(RichText::plain(format!(
                 "Welcome, {account}!"
@@ -594,6 +648,265 @@ async fn char_select_menu_newchar_and_cap() {
         let _ = h.disconnect(russh::Disconnect::ByApplication, "", "").await;
     }
 }
+
+// ---- public-key auth fixtures (M19) -------------------------------------
+
+/// A fixed ed25519 OpenSSH **private** key (test-only; generated once with
+/// `ssh-keygen -t ed25519`). Embedding a fixed pair keeps the loopback test
+/// deterministic — no RNG, no filesystem. The matching public line is
+/// derived at runtime via [`priv_key`]`.public_key()`.
+const TEST_PRIV: &str = "\
+-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACAimbLmJ8+bw424vILUEi+XY4bI9f/KJQPsh5DzC6fyogAAAKANWMViDVjF
+YgAAAAtzc2gtZWQyNTUxOQAAACAimbLmJ8+bw424vILUEi+XY4bI9f/KJQPsh5DzC6fyog
+AAAEAxj4SkgEcYjlGJjsCyLFctOcsJ/hm6ZWXlqQgTZw5esSKZsuYnz5vDjbi8gtQSL5dj
+hsj1/8olA+yHkPMLp/KiAAAAFmxvb3BiYWNrLXRlc3RAcnVzdG11c2gBAgMEBQYH
+-----END OPENSSH PRIVATE KEY-----
+";
+
+/// A second, unrelated ed25519 private key — never registered, so it must
+/// fall through public-key auth to the password fallback.
+const WRONG_PRIV: &str = "\
+-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACDIklxIsFZ/Zadggeq52MwqDO/a/eFZXR/6b4VgHPcERwAAAJi9ZbfhvWW3
+4QAAAAtzc2gtZWQyNTUxOQAAACDIklxIsFZ/Zadggeq52MwqDO/a/eFZXR/6b4VgHPcERw
+AAAEAlMRUdks8bgtY+gCvj5eL0OLVEDFKWe3JfaP4GX7rTlsiSXEiwVn9lp2CB6rnYzCoM
+79r94VldH/pvhWAc9wRHAAAADndyb25nQHJ1c3RtdXNoAQIDBAUGBw==
+-----END OPENSSH PRIVATE KEY-----
+";
+
+fn priv_key(pem: &str) -> russh::keys::PrivateKey {
+    russh::keys::PrivateKey::from_openssh(pem).expect("parse test private key")
+}
+
+/// The OpenSSH public-key line ("type base64 comment") for a private key —
+/// what the account registers via `@sshkey/add` / the stage-1 store method.
+fn public_line(pem: &str) -> String {
+    priv_key(pem)
+        .public_key()
+        .to_openssh()
+        .expect("render public key")
+}
+
+/// Wrap a private key for russh's `authenticate_publickey` (ed25519 ignores
+/// the hash-alg argument).
+fn signing_key(pem: &str) -> russh::keys::PrivateKeyWithHashAlg {
+    russh::keys::PrivateKeyWithHashAlg::new(Arc::new(priv_key(pem)), None)
+}
+
+/// A stored ed25519 key authenticates and lands in game with no password:
+/// `ssh -i key nick@game` → auto-connect (single character).
+#[tokio::test]
+async fn pubkey_auth_lands_in_game() {
+    let hooks = Arc::new(MockHooks::default());
+    hooks.seed_account(
+        "nick",
+        "pw123",
+        vec![CharSummary {
+            key: 7,
+            name: "Nick".to_owned(),
+        }],
+    );
+    hooks.register_key("nick", &public_line(TEST_PRIV));
+    let addr = start_server("pubkey", Arc::clone(&hooks)).await;
+
+    let config = Arc::new(russh::client::Config::default());
+    let mut handle = russh::client::connect(config, addr, AcceptAll)
+        .await
+        .expect("connect");
+    let auth = handle
+        .authenticate_publickey("nick", signing_key(TEST_PRIV))
+        .await
+        .expect("auth attempt");
+    assert!(auth.success(), "a registered key must authenticate");
+    // Not one failure was counted on the happy path.
+    assert_eq!(hooks.auth_failures.load(Ordering::Relaxed), 0);
+
+    let mut term = Term {
+        channel: open_shell_on(&handle).await,
+        seen: String::new(),
+    };
+    // Single character → auto-connect, straight into the game.
+    term.expect("Welcome, nick!").await;
+    term.send_line("say hi").await;
+    term.expect("Nick says, \"hi\"").await;
+
+    term.send_line("QUIT").await;
+    term.expect_close().await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+/// `ssh -i key account+char@game` direct-enters the named character (the
+/// zero-step login), skipping the character-select screen — and only ever a
+/// character the authenticated account owns.
+#[tokio::test]
+async fn pubkey_plus_char_direct_enters_owned_character() {
+    let hooks = Arc::new(MockHooks::default());
+    hooks.seed_account(
+        "duo",
+        "pw123",
+        vec![
+            CharSummary {
+                key: 7,
+                name: "Zoe".to_owned(),
+            },
+            CharSummary {
+                key: 8,
+                name: "Max".to_owned(),
+            },
+        ],
+    );
+    hooks.register_key("duo", &public_line(TEST_PRIV));
+    let addr = start_server("pubkey-plus", Arc::clone(&hooks)).await;
+
+    let config = Arc::new(russh::client::Config::default());
+    let mut handle = russh::client::connect(config, addr, AcceptAll)
+        .await
+        .expect("connect");
+    let auth = handle
+        .authenticate_publickey("duo+Max", signing_key(TEST_PRIV))
+        .await
+        .expect("auth attempt");
+    assert!(auth.success());
+
+    let mut term = Term {
+        channel: open_shell_on(&handle).await,
+        seen: String::new(),
+    };
+    // Direct-enter: the game greeting, never the numbered select menu.
+    term.expect("Welcome, duo!").await;
+    assert!(
+        !strip_ansi(&term.seen).contains("Characters on duo:"),
+        "a matching +char must skip the character-select screen"
+    );
+    // Prove it entered Max (key 8), not Zoe.
+    let connected = hooks.connected_chars.lock().unwrap().clone();
+    assert_eq!(
+        connected.iter().map(|(_, k)| *k).collect::<Vec<_>>(),
+        vec![8],
+        "the +char must direct-enter the named owned character (Max=8)"
+    );
+
+    term.send_line("QUIT").await;
+    term.expect_close().await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+/// A `+char` that the account does NOT own (typo, or a cross-account name)
+/// falls to *this account's* character-select screen — never auto-enters and
+/// never reveals another account (invariant S2).
+#[tokio::test]
+async fn pubkey_plus_unowned_char_falls_to_char_select() {
+    let hooks = Arc::new(MockHooks::default());
+    hooks.seed_account(
+        "duo",
+        "pw123",
+        vec![
+            CharSummary {
+                key: 7,
+                name: "Zoe".to_owned(),
+            },
+            CharSummary {
+                key: 8,
+                name: "Max".to_owned(),
+            },
+        ],
+    );
+    hooks.register_key("duo", &public_line(TEST_PRIV));
+    let addr = start_server("pubkey-unowned", Arc::clone(&hooks)).await;
+
+    let config = Arc::new(russh::client::Config::default());
+    let mut handle = russh::client::connect(config, addr, AcceptAll)
+        .await
+        .expect("connect");
+    // "Ghost" belongs to no one on this account.
+    let auth = handle
+        .authenticate_publickey("duo+Ghost", signing_key(TEST_PRIV))
+        .await
+        .expect("auth attempt");
+    assert!(auth.success());
+
+    let mut term = Term {
+        channel: open_shell_on(&handle).await,
+        seen: String::new(),
+    };
+    // Lands on this account's own select screen; no character auto-entered.
+    term.expect("Characters on duo:").await;
+    term.expect("1) Zoe").await;
+    term.expect("2) Max").await;
+    assert!(
+        hooks.connected_chars.lock().unwrap().is_empty(),
+        "an unowned +char must not connect any character"
+    );
+
+    // Picking an owned character from the menu still works.
+    term.send_line("1").await;
+    term.expect("Welcome, duo!").await;
+
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+/// A wrong (unregistered) key does not grant access and does not kill the
+/// fallback: public-key auth fails, then password auth on the same handle
+/// succeeds (invariant S1 — a key miss rejects toward password, never a hard
+/// reject).
+#[tokio::test]
+async fn wrong_pubkey_falls_back_to_password() {
+    let hooks = Arc::new(MockHooks::default());
+    hooks.seed_account(
+        "nick",
+        "pw123",
+        vec![CharSummary {
+            key: 7,
+            name: "Nick".to_owned(),
+        }],
+    );
+    // Only the correct key is registered.
+    hooks.register_key("nick", &public_line(TEST_PRIV));
+    let addr = start_server("pubkey-wrong", Arc::clone(&hooks)).await;
+
+    let config = Arc::new(russh::client::Config::default());
+    let mut handle = russh::client::connect(config, addr, AcceptAll)
+        .await
+        .expect("connect");
+
+    // The wrong key is refused (russh verified its signature; our lookup finds
+    // no match) and the client is steered toward password.
+    let auth = handle
+        .authenticate_publickey("nick", signing_key(WRONG_PRIV))
+        .await
+        .expect("auth attempt");
+    assert!(!auth.success(), "an unregistered key must not authenticate");
+
+    // Password fallback on the same handle still works.
+    let auth = handle
+        .authenticate_password("nick", "pw123")
+        .await
+        .expect("auth attempt");
+    assert!(auth.success(), "password fallback must survive a key miss");
+
+    let mut term = Term {
+        channel: open_shell_on(&handle).await,
+        seen: String::new(),
+    };
+    term.expect("Welcome, nick!").await;
+
+    term.send_line("QUIT").await;
+    term.expect_close().await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+// ---- account-username password auth (M2) --------------------------------
 
 #[tokio::test]
 async fn account_username_password_auth_auto_connects() {

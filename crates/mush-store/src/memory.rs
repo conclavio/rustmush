@@ -28,8 +28,9 @@ use mush_core::{Obj, ObjId};
 
 use crate::store::ObjectStore;
 use crate::types::{
-    AccountRec, BanRec, CharacterRef, ModuleWrite, StoreError, TokenRecord, WorldSnapshot,
-    WriteBatch, WriteReceipt, validate_module_key, validate_module_ns, validate_module_op,
+    AccountRec, BanRec, CharacterRef, ModuleWrite, SshKeyRec, StoreError, TokenRecord,
+    WorldSnapshot, WriteBatch, WriteReceipt, validate_module_key, validate_module_ns,
+    validate_module_op,
     validate_token_hash,
 };
 
@@ -322,6 +323,28 @@ impl ObjectStore for InMemoryStore {
             };
             let mut rec: AccountRec = serde_json::from_str(doc)?;
             rec.argon2_hash = argon2_hash.to_string();
+            let doc = serde_json::to_string(&rec)?;
+            inner.accounts.insert(key, doc);
+            Ok(true)
+        })
+    }
+
+    fn set_account_ssh_keys<'a>(
+        &'a self,
+        account: &'a str,
+        keys: &'a [SshKeyRec],
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        Box::pin(async move {
+            let key = account.to_lowercase();
+            let mut inner = self.lock()?;
+            let Some(doc) = inner.accounts.get(&key) else {
+                return Ok(false);
+            };
+            // Round-trip through AccountRec so a doc that predates the
+            // ssh_keys field (deserialized via #[serde(default)]) is written
+            // back with the new array.
+            let mut rec: AccountRec = serde_json::from_str(doc)?;
+            rec.ssh_keys = keys.to_vec();
             let doc = serde_json::to_string(&rec)?;
             inner.accounts.insert(key, doc);
             Ok(true)

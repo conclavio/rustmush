@@ -39,6 +39,10 @@ mush-worldgen.workspace = true
 mush-npc.workspace = true
 mush-ruleset.workspace = true
 mush-testkit.workspace = true
+# M19: parse/normalize/fingerprint OpenSSH public keys for `@sshkey` (the
+# command validates the pasted line before it ever touches the store). Same
+# crate + version the gateway uses via russh's re-export.
+ssh-key.workspace = true
 futures.workspace = true
 tokio.workspace = true
 tracing.workspace = true

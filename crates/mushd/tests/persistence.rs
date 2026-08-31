@@ -1309,6 +1309,14 @@ impl ObjectStore for FlakyStore {
         self.inner.set_account_password(account, argon2_hash)
     }
 
+    fn set_account_ssh_keys<'a>(
+        &'a self,
+        account: &'a str,
+        keys: &'a [mush_store::SshKeyRec],
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        self.inner.set_account_ssh_keys(account, keys)
+    }
+
     fn set_ban<'a>(
         &'a self,
         ip: &'a str,

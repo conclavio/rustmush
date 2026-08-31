@@ -148,6 +148,24 @@ pub struct CharacterRef {
     pub name: String,
 }
 
+/// One SSH public key authorized on an account (`@sshkey/add`).
+///
+/// `openssh` is the normalized `"type base64 comment"` line, kept for
+/// display in `@sshkey/list`. `fingerprint` is the `"SHA256:..."` digest —
+/// a stable, comment-independent identity used to compare offered keys and
+/// to target `@sshkey/del` by fingerprint. All three fields are public
+/// (there is no secret in a public key), so `AccountRec`'s `Debug` prints
+/// them unredacted.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SshKeyRec {
+    /// The normalized OpenSSH public-key line (`type base64 comment`).
+    pub openssh: String,
+    /// The `SHA256:...` fingerprint (comment-independent identity).
+    pub fingerprint: String,
+    /// Unix seconds when the key was added.
+    pub added: i64,
+}
+
 /// One account document (`account:{lowername}` in Redis).
 ///
 /// The store holds the argon2id PHC hash opaquely; hashing and verification
@@ -168,6 +186,9 @@ pub struct AccountRec {
     /// Characters linked to this account.
     #[serde(default)]
     pub characters: Vec<CharacterRef>,
+    /// SSH public keys authorized to log in to this account.
+    #[serde(default)]
+    pub ssh_keys: Vec<SshKeyRec>,
 }
 
 impl std::fmt::Debug for AccountRec {
@@ -177,6 +198,7 @@ impl std::fmt::Debug for AccountRec {
             .field("argon2_hash", &"<redacted>")
             .field("created", &self.created)
             .field("characters", &self.characters)
+            .field("ssh_keys", &self.ssh_keys)
             .finish()
     }
 }
@@ -296,11 +318,18 @@ mod tests {
             argon2_hash: "$argon2id$v=19$m=19456,t=2,p=1$secret".into(),
             created: 1,
             characters: vec![],
+            ssh_keys: vec![SshKeyRec {
+                openssh: "ssh-ed25519 AAAApub nick@box".into(),
+                fingerprint: "SHA256:pub".into(),
+                added: 2,
+            }],
         };
         let debug = format!("{rec:?}");
         assert!(!debug.contains("argon2id"), "hash leaked: {debug}");
         assert!(debug.contains("<redacted>"));
         assert!(debug.contains("Nick"));
+        // ssh_keys are public data — printed, not redacted.
+        assert!(debug.contains("SHA256:pub"), "ssh_keys should show: {debug}");
     }
 
     #[test]

@@ -63,6 +63,9 @@ redis_gated!(account_lifecycle, store, {
 redis_gated!(account_password_update, store, {
     suite::account_password_update(&store).await;
 });
+redis_gated!(account_ssh_keys_update, store, {
+    suite::account_ssh_keys_update(&store).await;
+});
 redis_gated!(ban_expiry, store, {
     suite::ban_expiry(&store).await;
 });
@@ -162,6 +165,7 @@ redis_gated!(link_character_rejects_non_array_characters, store, {
             argon2_hash: "h".into(),
             created: 1,
             characters: vec![],
+            ssh_keys: vec![],
         })
         .await
         .expect("create account");
@@ -181,6 +185,55 @@ redis_gated!(link_character_rejects_non_array_characters, store, {
         matches!(err, StoreError::Corrupt(_)),
         "expected Corrupt, got {err:?}"
     );
+});
+
+redis_gated!(set_account_ssh_keys_on_legacy_doc, store, {
+    use fred::interfaces::RedisJsonInterface;
+    use mush_store::SshKeyRec;
+
+    // Simulate an account doc that predates the ssh_keys field: write the
+    // root JSON with no `ssh_keys` key at all. set_account_ssh_keys must
+    // still place the array (its `$.ssh_keys` path does not yet exist, so
+    // an XX set would have failed — the whole point of the create-or-replace
+    // gate).
+    let _: Option<String> = store
+        .client()
+        .json_set(
+            "account:legacy",
+            "$",
+            r#"{"name":"Legacy","argon2_hash":"$argon2id$x","created":1,"characters":[]}"#,
+            None,
+        )
+        .await
+        .expect("write legacy account doc");
+
+    // It deserializes (additive #[serde(default)]) with an empty key list.
+    let rec = store
+        .get_account("legacy")
+        .await
+        .expect("get")
+        .expect("exists");
+    assert!(rec.ssh_keys.is_empty(), "legacy doc has no keys");
+
+    let keys = vec![SshKeyRec {
+        openssh: "ssh-ed25519 AAAAlegacy nick@box".into(),
+        fingerprint: "SHA256:legacy".into(),
+        added: 42,
+    }];
+    assert!(
+        store
+            .set_account_ssh_keys("legacy", &keys)
+            .await
+            .expect("set on legacy doc must succeed"),
+        "existing legacy account must report true"
+    );
+    let rec = store
+        .get_account("legacy")
+        .await
+        .expect("get")
+        .expect("exists");
+    assert_eq!(rec.ssh_keys, keys, "keys written onto a pre-field doc");
+    assert_eq!(rec.name, "Legacy", "rest of the doc intact");
 });
 
 redis_gated!(ban_native_ttl, store, {

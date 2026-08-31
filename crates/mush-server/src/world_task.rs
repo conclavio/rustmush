@@ -81,7 +81,7 @@ use mush_config::ipguard::IpGuard;
 use mush_config::metrics::{LlmFeatureStat, LlmTodaySpend, Metrics, WorldSample};
 use mush_llm::LlmService;
 use mush_proto::{OutputEvent, RichText};
-use mush_store::{InMemoryStore, ObjectStore};
+use mush_store::{AccountRec, InMemoryStore, ObjectStore, SshKeyRec};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
@@ -1645,6 +1645,29 @@ async fn run_staff_ops(
                     send_sys(gateway, actor, "@newpassword failed: staff executor gone.");
                 }
             }
+            StaffOpKind::AddSshKey {
+                ref fingerprint, ..
+            } => {
+                // Audit: actor + fingerprint (public data). The raw pasted
+                // line never reached this op — the command handler validated
+                // and normalized it, queuing only the public key (S7).
+                tracing::info!(%actor, fingerprint, "@sshkey/add requested");
+                if staff_ops.send(op).await.is_err() {
+                    send_sys(gateway, actor, "@sshkey failed: staff executor gone.");
+                }
+            }
+            StaffOpKind::ListSshKeys { .. } => {
+                tracing::info!(%actor, "@sshkey/list requested");
+                if staff_ops.send(op).await.is_err() {
+                    send_sys(gateway, actor, "@sshkey failed: staff executor gone.");
+                }
+            }
+            StaffOpKind::DelSshKey { ref which, .. } => {
+                tracing::info!(%actor, which, "@sshkey/del requested");
+                if staff_ops.send(op).await.is_err() {
+                    send_sys(gateway, actor, "@sshkey failed: staff executor gone.");
+                }
+            }
             StaffOpKind::Dump => {
                 tracing::info!(%actor, "@dump requested");
                 let writer = writer.clone();
@@ -1810,6 +1833,143 @@ async fn run_newpassword(
     )
 }
 
+/// Per-account cap on registered SSH public keys.
+const SSH_KEYS_PER_ACCOUNT: usize = 10;
+
+/// Resolve the account that lists `actor` among its characters — the same
+/// scan `@newpassword` does, but keyed on the CALLER, so `@sshkey` can only
+/// ever read/modify the caller's OWN account (invariant S5). `Ok(None)` means
+/// the character is linked to no account (a built-in like `#1` in a bare
+/// world); `Err` is a store failure.
+async fn account_of_actor(
+    store: &dyn ObjectStore,
+    actor: ObjId,
+) -> Result<Option<AccountRec>, String> {
+    match store.list_accounts().await {
+        Ok(accounts) => Ok(accounts
+            .into_iter()
+            .find(|a| a.characters.iter().any(|c| c.id == actor))),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// The OpenSSH comment (everything after `type base64`), or a placeholder.
+fn ssh_comment(openssh: &str) -> &str {
+    openssh
+        .splitn(3, char::is_whitespace)
+        .nth(2)
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .unwrap_or("(no comment)")
+}
+
+/// Execute `@sshkey/add`: resolve the caller's account, dedupe by fingerprint,
+/// enforce the per-account cap, append the (already validated + normalized)
+/// public key, and write it through. The gateway reads the account fresh per
+/// auth, so the key authenticates on the very next `ssh -i` (invariant S4).
+async fn run_add_sshkey(
+    store: &dyn ObjectStore,
+    actor: ObjId,
+    openssh: &str,
+    fingerprint: &str,
+) -> String {
+    let account = match account_of_actor(store, actor).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return "@sshkey: your character is not linked to an account.".to_string(),
+        Err(e) => return format!("@sshkey/add failed: {e}"),
+    };
+    let mut keys = account.ssh_keys.clone();
+    if keys.iter().any(|k| k.fingerprint == fingerprint) {
+        return format!("@sshkey: that key is already registered ({fingerprint}).");
+    }
+    if keys.len() >= SSH_KEYS_PER_ACCOUNT {
+        return format!(
+            "@sshkey: your account already has the maximum of {SSH_KEYS_PER_ACCOUNT} keys; \
+             remove one with @sshkey/del first."
+        );
+    }
+    keys.push(SshKeyRec {
+        openssh: openssh.to_string(),
+        fingerprint: fingerprint.to_string(),
+        added: unix_now_s(),
+    });
+    match store.set_account_ssh_keys(&account.name, &keys).await {
+        Ok(true) => {
+            // Audit: account + fingerprint (public); never the raw input (S7).
+            tracing::info!(account = %account.name, fingerprint, "@sshkey/add applied");
+            format!(
+                "@sshkey: key {fingerprint} added. You can now log in with \
+                 `ssh -i <your key> {}@game`.",
+                account.name
+            )
+        }
+        Ok(false) => format!(
+            "@sshkey/add failed: account {} vanished mid-update.",
+            account.name
+        ),
+        Err(e) => format!("@sshkey/add failed: {e}"),
+    }
+}
+
+/// Execute `@sshkey/list`: render the caller's account's keys as
+/// `index) SHA256:fp  <comment>  (added <date>)`.
+async fn run_list_sshkeys(store: &dyn ObjectStore, actor: ObjId) -> String {
+    let account = match account_of_actor(store, actor).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return "@sshkey: your character is not linked to an account.".to_string(),
+        Err(e) => return format!("@sshkey/list failed: {e}"),
+    };
+    if account.ssh_keys.is_empty() {
+        return "@sshkey: you have no registered SSH keys. Add one with \
+                @sshkey/add <public key line>."
+            .to_string();
+    }
+    let mut text = format!("SSH keys on account {}:", account.name);
+    for (i, k) in account.ssh_keys.iter().enumerate() {
+        text.push_str(&format!(
+            "\n  {}) {}  {}  (added {})",
+            i + 1,
+            k.fingerprint,
+            ssh_comment(&k.openssh),
+            mush_mail::format_datetime(k.added),
+        ));
+    }
+    text
+}
+
+/// Execute `@sshkey/del <index-or-fingerprint>`: remove one key from the
+/// caller's account by 1-based list index or by exact `SHA256:...`
+/// fingerprint, then write the remaining set back.
+async fn run_del_sshkey(store: &dyn ObjectStore, actor: ObjId, which: &str) -> String {
+    let account = match account_of_actor(store, actor).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return "@sshkey: your character is not linked to an account.".to_string(),
+        Err(e) => return format!("@sshkey/del failed: {e}"),
+    };
+    let mut keys = account.ssh_keys.clone();
+    // Prefer a 1-based index; fall back to a fingerprint match.
+    let idx = match which.parse::<usize>() {
+        Ok(n) if n >= 1 && n <= keys.len() => Some(n - 1),
+        Ok(_) => None,
+        Err(_) => keys.iter().position(|k| k.fingerprint == which),
+    };
+    let Some(idx) = idx else {
+        return format!("@sshkey: no key matches {which:?}. Use @sshkey/list to see them.");
+    };
+    let removed = keys.remove(idx);
+    match store.set_account_ssh_keys(&account.name, &keys).await {
+        Ok(true) => {
+            tracing::info!(account = %account.name, fingerprint = %removed.fingerprint, "@sshkey/del applied");
+            format!("@sshkey: removed key {}.", removed.fingerprint)
+        }
+        Ok(false) => format!(
+            "@sshkey/del failed: account {} vanished mid-update.",
+            account.name
+        ),
+        Err(e) => format!("@sshkey/del failed: {e}"),
+    }
+}
+
 /// The sequential staff-op executor: one task, one queue, ops applied to
 /// the store (and mirrored into the [`IpGuard`]) strictly in the order
 /// staff issued them — a `@siteban/clear` can never lose to the `@siteban`
@@ -1883,6 +2043,18 @@ async fn staff_ops_loop(
                 }
                 Err(e) => format!("@siteban list failed: {e}"),
             },
+            StaffOpKind::AddSshKey {
+                actor: subject,
+                openssh,
+                fingerprint,
+            } => run_add_sshkey(&*store, subject, &openssh, &fingerprint).await,
+            StaffOpKind::ListSshKeys { actor: subject } => {
+                run_list_sshkeys(&*store, subject).await
+            }
+            StaffOpKind::DelSshKey {
+                actor: subject,
+                which,
+            } => run_del_sshkey(&*store, subject, &which).await,
             // Dump/Shutdown and the local ops never enter this queue (see
             // run_staff_ops / run_local_staff_ops).
             StaffOpKind::Dump

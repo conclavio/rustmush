@@ -241,6 +241,31 @@ mod net {
             })
         }
 
+        fn auth_account_key<'a>(
+            &'a self,
+            account: &'a str,
+            openssh_key: &'a str,
+        ) -> BoxFuture<'a, net_ssh::AuthResult> {
+            Box::pin(async move {
+                match self.core.accounts.verify_pubkey(account, openssh_key).await {
+                    AuthOutcome::Ok {
+                        account,
+                        characters,
+                    } => net_ssh::AuthResult::Ok {
+                        account,
+                        characters: characters
+                            .into_iter()
+                            .map(|c| net_ssh::CharSummary {
+                                key: u64::from(c.id.0),
+                                name: c.name,
+                            })
+                            .collect(),
+                    },
+                    AuthOutcome::BadCredentials => net_ssh::AuthResult::BadCreds,
+                }
+            })
+        }
+
         fn create_account<'a>(
             &'a self,
             account: &'a str,

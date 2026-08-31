@@ -169,6 +169,7 @@ impl SshServer {
         let key = hostkey::load_or_generate(&cfg.host_key_path)?;
         let mut methods = MethodSet::empty();
         methods.push(MethodKind::None);
+        methods.push(MethodKind::PublicKey);
         methods.push(MethodKind::Password);
         methods.push(MethodKind::KeyboardInteractive);
         let config = Arc::new(Config {
@@ -313,10 +314,15 @@ enum Route {
     PreAuth,
     /// Front-door username: welcome screen, in-band connect/create.
     Welcome,
-    /// `<account>` username authenticated via [`SshHooks::auth_account`].
+    /// `<account>` username authenticated via [`SshHooks::auth_account`]
+    /// (password/keyboard-interactive) or [`SshHooks::auth_account_key`]
+    /// (public key). `requested_char` carries the `+<char>` part of an
+    /// `account+char` username (M19); it can only ever select a character
+    /// this authenticated account owns (enforced in `enter_account`).
     Account {
         account: String,
         characters: Vec<CharSummary>,
+        requested_char: Option<String>,
     },
 }
 
@@ -414,6 +420,21 @@ fn strip_verb<'a>(line: &'a str, verb: &str) -> Option<&'a str> {
     }
 }
 
+/// Split an account-path SSH username into its account and optional
+/// requested-character parts on the **first** `+` (M19 direct-character
+/// login: `ssh account+char@game`). Account and character names forbid `+`
+/// (see the name validators in `mush-config`), so the split is unambiguous;
+/// a trailing/empty character part (`account+`) is treated as no request.
+/// The returned account part is what all auth uses; the character part only
+/// ever selects a character the authenticated account *owns*.
+fn split_account_user(user: &str) -> (&str, Option<&str>) {
+    match user.split_once('+') {
+        Some((account, character)) if !character.is_empty() => (account, Some(character)),
+        Some((account, _)) => (account, None),
+        None => (user, None),
+    }
+}
+
 /// `play` / `guest` / `new` — the auth-none front door (M1: all three
 /// alias to the welcome screen).
 fn is_front_door(user: &str) -> bool {
@@ -471,7 +492,10 @@ impl ConnHandler {
     }
 
     async fn verify_account(&mut self, user: &str, password: &str) -> Auth {
-        match self.hooks.auth_account(user, password).await {
+        // The username may be `<account>` or `<account>+<char>` (M19): auth
+        // always uses the account part; the character part rides the route.
+        let (account_user, requested_char) = split_account_user(user);
+        match self.hooks.auth_account(account_user, password).await {
             AuthResult::Ok {
                 account,
                 characters,
@@ -479,6 +503,7 @@ impl ConnHandler {
                 self.route = Route::Account {
                     account,
                     characters,
+                    requested_char: requested_char.map(str::to_owned),
                 };
                 Auth::Accept
             }
@@ -684,7 +709,11 @@ impl ConnHandler {
             AuthResult::Ok {
                 account,
                 characters,
-            } => self.enter_account(session, account, characters).await,
+            } => {
+                // The welcome-screen `connect` never carries a `+char`
+                // (account names forbid `+`), so no character is requested.
+                self.enter_account(session, account, characters, None).await
+            }
         }
     }
 
@@ -716,15 +745,38 @@ impl ConnHandler {
         }
     }
 
-    /// Route an authenticated account: one character auto-connects, any
-    /// other count (including zero) lands on the character-select screen,
-    /// where `newchar <Name>` is also available (M2).
+    /// Route an authenticated account. When the username carried a
+    /// `+<char>` request (M19) that names a character this account owns,
+    /// connect straight to it (the zero-step login). Otherwise the classic
+    /// M2 behavior: one character auto-connects, any other count (including
+    /// zero) lands on the character-select screen, where `newchar <Name>` is
+    /// also available.
+    ///
+    /// Security (invariant S2): a `+<char>` can only ever select a character
+    /// in `chars` — this account's own list. A non-owned or mistyped request
+    /// falls to *this account's* character-select screen; it never targets
+    /// or reveals another account's character.
     async fn enter_account(
         &mut self,
         session: &mut Session,
         account: String,
         chars: Vec<CharSummary>,
+        requested_char: Option<String>,
     ) -> Result<(), russh::Error> {
+        if let Some(want) = requested_char {
+            if let Some(c) = chars.iter().find(|c| c.name.eq_ignore_ascii_case(&want)) {
+                let c = c.clone();
+                return self.do_connect(session, &account, &c).await;
+            }
+            // Requested a character this account does not own (typo, or a
+            // cross-account name): fall to this account's own char-select,
+            // never auto-enter and never reveal another account.
+            self.lock().mode = Mode::CharSelect {
+                account: account.clone(),
+                chars: chars.clone(),
+            };
+            return self.print_char_select(session, &account, &chars);
+        }
         if chars.len() == 1 {
             let c = chars[0].clone();
             return self.do_connect(session, &account, &c).await;
@@ -942,7 +994,7 @@ impl Handler for ConnHandler {
         if self.hooks.is_ip_blocked(self.addr) {
             return Ok(Auth::reject());
         }
-        if is_front_door(user) {
+        if is_front_door(split_account_user(user).0) {
             self.route = Route::Welcome;
             return Ok(Auth::Accept);
         }
@@ -961,7 +1013,7 @@ impl Handler for ConnHandler {
         if self.hooks.is_ip_blocked(self.addr) {
             return Ok(Auth::reject());
         }
-        if is_front_door(user) {
+        if is_front_door(split_account_user(user).0) {
             self.route = Route::Welcome;
             return Ok(Auth::Accept);
         }
@@ -983,21 +1035,78 @@ impl Handler for ConnHandler {
 
     async fn auth_publickey_offered(
         &mut self,
-        _user: &str,
-        _key: &russh::keys::ssh_key::PublicKey,
+        user: &str,
+        key: &russh::keys::ssh_key::PublicKey,
     ) -> Result<Auth, Self::Error> {
-        // Public-key auth lands with in-game @sshkey registration (M2/M3);
-        // steer clients to password/keyboard-interactive without burning
-        // signature verification.
-        Ok(reject_toward_interactive())
+        // The QUERY phase (M19): russh has NOT verified a signature yet, so
+        // this callback must never grant access or set the route — it only
+        // decides whether to ask the client to sign this key (`Auth::Accept`)
+        // or to fall toward password (`reject_toward_interactive`). Access is
+        // granted only in `auth_publickey`, after the signature is verified.
+        if !self.counted {
+            return Err(russh::Error::Disconnect);
+        }
+        if self.hooks.is_ip_blocked(self.addr) {
+            return Ok(Auth::reject());
+        }
+        let (account_user, _) = split_account_user(user);
+        if is_front_door(account_user) {
+            // The front door authenticates with no key; steer to the welcome
+            // path's password/none flow.
+            return Ok(reject_toward_interactive());
+        }
+        let Ok(openssh) = key.to_openssh() else {
+            return Ok(reject_toward_interactive());
+        };
+        match self.hooks.auth_account_key(account_user, &openssh).await {
+            AuthResult::Ok { .. } => Ok(Auth::Accept),
+            // No matching key / unknown account / banned: fall to password —
+            // never a hard reject that would kill the fallback. No failure is
+            // counted here (the client has not attempted a signed auth yet).
+            _ => Ok(reject_toward_interactive()),
+        }
     }
 
     async fn auth_publickey(
         &mut self,
-        _user: &str,
-        _key: &russh::keys::ssh_key::PublicKey,
+        user: &str,
+        key: &russh::keys::ssh_key::PublicKey,
     ) -> Result<Auth, Self::Error> {
-        Ok(reject_toward_interactive())
+        // The AUTHORITATIVE callback (M19): russh has ALREADY verified the
+        // signature, so this is the only place public-key access is granted.
+        // Same pre-checks as the password path.
+        if !self.counted {
+            return Err(russh::Error::Disconnect);
+        }
+        if self.hooks.is_ip_blocked(self.addr) {
+            return Ok(Auth::reject());
+        }
+        let (account_user, requested_char) = split_account_user(user);
+        if is_front_door(account_user) {
+            return Ok(reject_toward_interactive());
+        }
+        let Ok(openssh) = key.to_openssh() else {
+            self.hooks.auth_failed(self.addr);
+            return Ok(reject_toward_interactive());
+        };
+        match self.hooks.auth_account_key(account_user, &openssh).await {
+            AuthResult::Ok {
+                account,
+                characters,
+            } => {
+                self.route = Route::Account {
+                    account,
+                    characters,
+                    requested_char: requested_char.map(str::to_owned),
+                };
+                Ok(Auth::Accept)
+            }
+            AuthResult::BadCreds => {
+                self.hooks.auth_failed(self.addr);
+                Ok(reject_toward_interactive())
+            }
+            AuthResult::Banned => Ok(Auth::reject()),
+        }
     }
 
     async fn channel_open_session(
@@ -1149,7 +1258,11 @@ impl Handler for ConnHandler {
             Route::Account {
                 account,
                 characters,
-            } => self.enter_account(session, account, characters).await,
+                requested_char,
+            } => {
+                self.enter_account(session, account, characters, requested_char)
+                    .await
+            }
         }
     }
 

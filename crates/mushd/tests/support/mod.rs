@@ -238,6 +238,7 @@ pub async fn boot_module_server(dir: &Path, server_name: &str, boss_password: &s
                 id: mush_core::GOD,
                 name: "God".to_string(),
             }],
+            ssh_keys: vec![],
         })
         .await
         .unwrap();
@@ -324,6 +325,7 @@ pub async fn boot_worldgen_server(
                 id: mush_core::GOD,
                 name: "God".to_string(),
             }],
+            ssh_keys: vec![],
         })
         .await
         .unwrap();

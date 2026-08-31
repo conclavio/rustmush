@@ -158,6 +158,7 @@ async fn seeded_gw_store() -> Arc<dyn ObjectStore> {
                 id: GOD,
                 name: "God".to_string(),
             }],
+            ssh_keys: vec![],
         })
         .await
         .unwrap();

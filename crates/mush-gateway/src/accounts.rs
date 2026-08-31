@@ -75,6 +75,22 @@ pub trait AuthBackend: Send + Sync {
     /// Check credentials. Internally CPU-heavy (argon2id, run on the
     /// blocking pool); callers just await.
     fn verify(&self, account: &str, password: &str) -> impl Future<Output = AuthOutcome> + Send;
+    /// Authenticate an account by an offered SSH public key (M19). The
+    /// offered key arrives as an OpenSSH `"type base64 comment"` line;
+    /// implementors parse it and each of the account's registered keys and
+    /// compare by key material (never raw string), returning
+    /// [`AuthOutcome::Ok`] on a match and [`AuthOutcome::BadCredentials`] on
+    /// an unknown account *or* no match (uniform — no existence oracle). A
+    /// public key holds no secret, so there is no argon2/dummy-burn timing
+    /// concern here. The default rejects, so a backend that has not wired
+    /// key auth safely falls back to password.
+    fn verify_pubkey(
+        &self,
+        _account: &str,
+        _offered_openssh: &str,
+    ) -> impl Future<Output = AuthOutcome> + Send {
+        async { AuthOutcome::BadCredentials }
+    }
     /// The characters on an account (empty for unknown accounts).
     fn characters(&self, account: &str) -> impl Future<Output = Vec<CharSummary>> + Send;
     /// Create an account with its first character. The Player object is
@@ -220,6 +236,34 @@ impl AuthBackend for Accounts {
         }
     }
 
+    async fn verify_pubkey(&self, account: &str, offered_openssh: &str) -> AuthOutcome {
+        use russh::keys::ssh_key::PublicKey;
+        // Read the account FRESH per attempt (no cache), so an in-game
+        // `@sshkey/add` authenticates on the very next `ssh -i` (invariant
+        // S4). Unknown account and no-match both return BadCredentials with
+        // no observable early branch (invariant S1) — a public key holds no
+        // secret, so there is no argon2/dummy-burn timing to preserve.
+        let Some(rec) = self.fetch(account).await else {
+            return AuthOutcome::BadCredentials;
+        };
+        let Ok(offered) = PublicKey::from_openssh(offered_openssh) else {
+            return AuthOutcome::BadCredentials;
+        };
+        // Compare by key material (comment-independent), never by raw string.
+        let matched = rec.ssh_keys.iter().any(|stored| {
+            PublicKey::from_openssh(&stored.openssh)
+                .is_ok_and(|pk| pk.key_data() == offered.key_data())
+        });
+        if matched {
+            AuthOutcome::Ok {
+                account: rec.name,
+                characters: rec.characters.into_iter().map(Into::into).collect(),
+            }
+        } else {
+            AuthOutcome::BadCredentials
+        }
+    }
+
     async fn characters(&self, account: &str) -> Vec<CharSummary> {
         self.fetch(account)
             .await
@@ -257,6 +301,7 @@ impl AuthBackend for Accounts {
             argon2_hash: hash,
             created: unix_now_s(),
             characters: Vec::new(),
+            ssh_keys: Vec::new(),
         };
         match self.store.create_account(rec).await {
             Ok(()) => {}
@@ -293,5 +338,100 @@ impl AuthBackend for Accounts {
             return Err(CreateErr::CharacterNameTaken);
         }
         self.create_and_link(account, char_name).await
+    }
+}
+
+#[cfg(test)]
+mod pubkey_tests {
+    use super::*;
+    use futures::future::BoxFuture;
+    use mush_ipc::ToServer;
+    use mush_store::{InMemoryStore, SshKeyRec};
+
+    // A fixed ed25519 public line (its private half drives the mush-net-ssh
+    // loopback e2e). Comparison is by key material, so a copy under a
+    // different comment must still match.
+    const PUB_A: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICKZsuYnz5vDjbi8gtQSL5djhsj1/8olA+yHkPMLp/Ki loopback-test@rustmush";
+    const PUB_A_RENAMED: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICKZsuYnz5vDjbi8gtQSL5djhsj1/8olA+yHkPMLp/Ki someone@elsewhere";
+    // A different key entirely.
+    const PUB_B: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMiSXEiwVn9lp2CB6rnYzCoM79r94VldH/pvhWAc9wRH wrong@rustmush";
+
+    /// verify_pubkey never touches the world link; a no-op stub suffices.
+    struct NoLink;
+    impl GatewayLink for NoLink {
+        fn to_server(&self, _msg: ToServer) -> BoxFuture<'_, bool> {
+            Box::pin(async { false })
+        }
+        fn request(&self, _req: ServiceReq) -> BoxFuture<'_, Option<ServiceResp>> {
+            Box::pin(async { None })
+        }
+    }
+
+    fn fp(line: &str) -> String {
+        russh::keys::ssh_key::PublicKey::from_openssh(line)
+            .unwrap()
+            .fingerprint(russh::keys::HashAlg::Sha256)
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn verify_pubkey_matches_by_key_material_uniform_on_miss() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+        store
+            .create_account(AccountRec {
+                name: "Nick".into(),
+                argon2_hash: "x".into(),
+                created: unix_now_s(),
+                characters: Vec::new(),
+                ssh_keys: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let accounts = Accounts::with_link(Arc::clone(&store), Arc::new(NoLink), 3);
+
+        // No keys registered yet: even the eventual "right" key is refused.
+        assert_eq!(
+            accounts.verify_pubkey("nick", PUB_A).await,
+            AuthOutcome::BadCredentials
+        );
+
+        // Register PUB_A; the next verify reads the account FRESH (S4).
+        let rec = SshKeyRec {
+            openssh: PUB_A.into(),
+            fingerprint: fp(PUB_A),
+            added: unix_now_s(),
+        };
+        assert!(
+            store.set_account_ssh_keys("nick", &[rec]).await.unwrap(),
+            "the account exists, so the write reports true"
+        );
+
+        // Exact line matches; the SAME key under a different comment matches
+        // too — comment-independent key_data compare (S1). The account name
+        // comes back in its display case.
+        assert!(matches!(
+            accounts.verify_pubkey("nick", PUB_A).await,
+            AuthOutcome::Ok { ref account, .. } if account == "Nick"
+        ));
+        assert!(matches!(
+            accounts.verify_pubkey("nick", PUB_A_RENAMED).await,
+            AuthOutcome::Ok { .. }
+        ));
+
+        // A different key does not match; an unknown account and a malformed
+        // offered line are the SAME BadCredentials (no existence oracle, no
+        // panic).
+        assert_eq!(
+            accounts.verify_pubkey("nick", PUB_B).await,
+            AuthOutcome::BadCredentials
+        );
+        assert_eq!(
+            accounts.verify_pubkey("ghost", PUB_A).await,
+            AuthOutcome::BadCredentials
+        );
+        assert_eq!(
+            accounts.verify_pubkey("nick", "not-a-key").await,
+            AuthOutcome::BadCredentials
+        );
     }
 }

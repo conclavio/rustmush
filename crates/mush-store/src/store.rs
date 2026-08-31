@@ -37,7 +37,8 @@ use futures::future::BoxFuture;
 use mush_core::ObjId;
 
 use crate::types::{
-    AccountRec, BanRec, StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt,
+    AccountRec, BanRec, SshKeyRec, StoreError, TokenRecord, WorldSnapshot, WriteBatch,
+    WriteReceipt,
 };
 
 /// Persistent storage for the world, accounts, sitebans, and store metadata.
@@ -102,6 +103,18 @@ pub trait ObjectStore: Send + Sync {
         &'a self,
         account: &'a str,
         argon2_hash: &'a str,
+    ) -> BoxFuture<'a, Result<bool, StoreError>>;
+
+    /// Replace an account's authorized SSH public keys wholesale
+    /// (`@sshkey/add|del`). Atomic per call. Returns whether the account
+    /// existed — `Ok(false)` for an unknown name, never an error. The field
+    /// is additive (`#[serde(default)]`), so accounts whose stored doc
+    /// predates `ssh_keys` are written correctly (the missing `$.ssh_keys`
+    /// path is created, not required to exist).
+    fn set_account_ssh_keys<'a>(
+        &'a self,
+        account: &'a str,
+        keys: &'a [SshKeyRec],
     ) -> BoxFuture<'a, Result<bool, StoreError>>;
 
     // ------------------------------------------------------------------

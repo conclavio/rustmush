@@ -78,6 +78,24 @@ pub trait SshHooks: Send + Sync {
     fn auth_account<'a>(&'a self, account: &'a str, password: &'a str)
     -> BoxFuture<'a, AuthResult>;
 
+    /// Authenticate an account by an offered SSH public key (M19). The
+    /// transport passes the offered key already rendered as an OpenSSH
+    /// `"type base64 comment"` line (russh types are quarantined in this
+    /// crate — the hook never sees a russh `PublicKey`). The binary matches
+    /// it against the account's registered keys by key material (never by
+    /// raw string), returning [`AuthResult::Ok`] on a match and
+    /// [`AuthResult::BadCreds`] on an unknown account *or* no matching key
+    /// (uniform — no account-existence oracle). The default rejects with
+    /// `BadCreds`, so a binary that has not wired public-key auth safely
+    /// falls back to password.
+    fn auth_account_key<'a>(
+        &'a self,
+        _account: &'a str,
+        _openssh_key: &'a str,
+    ) -> BoxFuture<'a, AuthResult> {
+        Box::pin(async { AuthResult::BadCreds })
+    }
+
     /// Create a new account (this also creates the account's first,
     /// same-named character).
     fn create_account<'a>(

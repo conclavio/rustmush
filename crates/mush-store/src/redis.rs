@@ -82,8 +82,9 @@ use fred::types::{Key, RespVersion, Value};
 
 use crate::store::ObjectStore;
 use crate::types::{
-    AccountRec, BanRec, CharacterRef, ModuleWrite, StoreError, TokenRecord, WorldSnapshot,
-    WriteBatch, WriteReceipt, validate_module_key, validate_module_ns, validate_module_op,
+    AccountRec, BanRec, CharacterRef, ModuleWrite, SshKeyRec, StoreError, TokenRecord,
+    WorldSnapshot, WriteBatch, WriteReceipt, validate_module_key, validate_module_ns,
+    validate_module_op,
     validate_token_hash,
 };
 
@@ -693,6 +694,33 @@ impl ObjectStore for RedisStore {
                 ))),
                 Err(e) => Err(e.into()),
             }
+        })
+    }
+
+    fn set_account_ssh_keys<'a>(
+        &'a self,
+        account: &'a str,
+        keys: &'a [SshKeyRec],
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        Box::pin(async move {
+            let key = account_key(account);
+            // Unlike set_account_password, XX is wrong here: account docs
+            // created before ssh_keys existed have no $.ssh_keys path, so an
+            // XX set (path-must-exist) would fail on exactly the back-compat
+            // case this method must serve. Instead confirm the account key
+            // exists, then set the whole array WITHOUT XX — Redis creates the
+            // path when its parent (the doc root) is present. serde_json emits
+            // `[]` for an empty slice, clearing the keys.
+            let exists: i64 = self.client.exists(key.as_str()).await?;
+            if exists == 0 {
+                return Ok(false);
+            }
+            let value = serde_json::to_string(keys)?;
+            let _: Option<String> = self
+                .client
+                .json_set(key.as_str(), "$.ssh_keys", value, None)
+                .await?;
+            Ok(true)
         })
     }
 

@@ -87,6 +87,7 @@ async fn boot(tag: &str, chargen_required: bool) -> Server {
                 id: GOD,
                 name: "God".to_string(),
             }],
+            ssh_keys: vec![],
         })
         .await
         .unwrap();

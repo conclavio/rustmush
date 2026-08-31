@@ -135,6 +135,7 @@ pub async fn import_accounts_json(
                     name: c.name,
                 })
                 .collect(),
+            ssh_keys: Vec::new(),
         };
         match store.create_account(account).await {
             Ok(()) => imported += 1,
@@ -359,6 +360,7 @@ mod tests {
                 argon2_hash: "store-copy".into(),
                 created: 1,
                 characters: vec![],
+                ssh_keys: vec![],
             })
             .await
             .unwrap();

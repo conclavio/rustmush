@@ -23,6 +23,7 @@ use mush_core::{
     perm,
 };
 use mush_proto::{OutputEvent, RichText};
+use ssh_key::{HashAlg, PublicKey};
 
 /// One queued staff operation, tagged with the requesting actor (who gets
 /// the confirmation once the store acks).
@@ -83,6 +84,35 @@ pub enum StaffOpKind {
         by: String,
         /// The new password — redacted from `Debug` so no log can leak it.
         password: Secret,
+    },
+    /// `@sshkey/add <openssh public line>` — register an SSH public key on
+    /// the CALLER's account (self-service). The line is validated and
+    /// normalized at command time, so only the parsed public key and its
+    /// fingerprint (both public data) ride the op: a mistakenly-pasted
+    /// PRIVATE key can never reach the queue, a log, or the store.
+    AddSshKey {
+        /// The requesting character; the owning account is resolved
+        /// store-side by scanning for the account that lists it.
+        actor: ObjId,
+        /// The normalized `"type base64 comment"` public-key line.
+        openssh: String,
+        /// The `SHA256:...` fingerprint (public identity, safe to log).
+        fingerprint: String,
+    },
+    /// `@sshkey/list` — list the caller's account's registered keys.
+    ListSshKeys {
+        /// The requesting character (account resolved store-side).
+        actor: ObjId,
+    },
+    /// `@sshkey/del <index-or-fingerprint>` — remove one key from the
+    /// caller's account by 1-based list index or by `SHA256:...`
+    /// fingerprint.
+    DelSshKey {
+        /// The requesting character (account resolved store-side).
+        actor: ObjId,
+        /// The user's selector: a 1-based index or a fingerprint string.
+        /// Public (never a secret), so it may appear in `Debug`/logs.
+        which: String,
     },
     /// `@ps` — render the scheduler (pending `@wait`s, module ticks,
     /// counts) to the requesting wizard.
@@ -323,6 +353,93 @@ fn newpassword_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError
     Ok(())
 }
 
+/// Does `s` look like a PRIVATE key someone pasted by mistake? Detects PEM
+/// / OpenSSH private-key markers (`-----BEGIN ... PRIVATE KEY-----`, covering
+/// `OPENSSH`/`RSA`/`EC`/generic) and the PuTTY `.ppk` header. Content-free:
+/// only the presence of a marker matters, never the bytes around it.
+fn looks_like_private_key(s: &str) -> bool {
+    const MARKERS: &[&str] = &["PRIVATE KEY-----", "PuTTY-User-Key-File"];
+    MARKERS.iter().any(|m| s.contains(m))
+}
+
+/// `@sshkey/add|list|del` — self-service management of the CALLER's account
+/// SSH public keys. `add` validates + normalizes the pasted line HERE (before
+/// anything is queued, logged, or stored) so a private-key paste is caught and
+/// the raw input never leaves this function; only the parsed public key and its
+/// fingerprint ride the op. The account is resolved store-side from `ctx.actor`
+/// (invariant S5: only ever the caller's own account).
+fn sshkey_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    const USAGE: &str =
+        "Usage: @sshkey/add <ssh public key line>, @sshkey/list, or @sshkey/del <index-or-fingerprint>.";
+    if ctx.switches.has("add") {
+        let line = ctx.args.raw().trim();
+        if line.is_empty() {
+            return Err(CmdError::msg(
+                "Usage: @sshkey/add <ssh public key line> -- paste the one line from your \
+                 .pub file (it starts with ssh-ed25519 / ssh-rsa / ecdsa-...).",
+            ));
+        }
+        // Private-key guard FIRST, before any parse: never echo the input.
+        if looks_like_private_key(line) {
+            // Log a generic reason only — never the pasted bytes (S7).
+            tracing::warn!(actor = %ctx.actor, "@sshkey/add rejected: private-key paste");
+            return Err(CmdError::msg(
+                "That looks like a PRIVATE key. Keep it secret -- never paste or share it. \
+                 I need your PUBLIC key: the .pub file (it starts with ssh-ed25519 / ssh-rsa / \
+                 ecdsa-...), e.g. the output of `cat ~/.ssh/id_ed25519.pub`.",
+            ));
+        }
+        // Parse + normalize here; a failure is reported without echoing input.
+        let key = PublicKey::from_openssh(line).map_err(|_| {
+            tracing::warn!(actor = %ctx.actor, "@sshkey/add rejected: not a public key");
+            CmdError::msg(
+                "That is not a valid OpenSSH public key. Paste the single line from your \
+                 .pub file (it starts with ssh-ed25519 / ssh-rsa / ecdsa-...).",
+            )
+        })?;
+        let openssh = key.to_openssh().map_err(|_| {
+            tracing::warn!(actor = %ctx.actor, "@sshkey/add rejected: not a public key");
+            CmdError::msg("That is not a valid OpenSSH public key.")
+        })?;
+        let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
+        // Only the parsed public key + fingerprint (public data) are queued.
+        queue.push(StaffOp {
+            actor: ctx.actor,
+            kind: StaffOpKind::AddSshKey {
+                actor: ctx.actor,
+                openssh,
+                fingerprint,
+            },
+        });
+        return Ok(());
+    }
+    if ctx.switches.has("del") {
+        let which = ctx.args.raw().trim().to_string();
+        if which.is_empty() {
+            return Err(CmdError::msg(
+                "Usage: @sshkey/del <index-or-fingerprint> -- see @sshkey/list for both.",
+            ));
+        }
+        queue.push(StaffOp {
+            actor: ctx.actor,
+            kind: StaffOpKind::DelSshKey {
+                actor: ctx.actor,
+                which,
+            },
+        });
+        return Ok(());
+    }
+    // `/list`, or a bare `@sshkey`, lists; anything else is a usage error.
+    if ctx.switches.has("list") || ctx.args.raw().trim().is_empty() {
+        queue.push(StaffOp {
+            actor: ctx.actor,
+            kind: StaffOpKind::ListSshKeys { actor: ctx.actor },
+        });
+        return Ok(());
+    }
+    Err(CmdError::msg(USAGE))
+}
+
 fn ps_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     queue.push(StaffOp {
         actor: ctx.actor,
@@ -460,6 +577,28 @@ pub fn register_server_commands(
             ..CommandSpec::default()
         },
         Arc::new(move |ctx: &mut Ctx<'_>| newpassword_cmd(&q, ctx)),
+    )?;
+    let q = Arc::clone(queue);
+    reg.register(
+        CommandSpec {
+            name: "@sshkey".into(),
+            switches: vec!["add".into(), "list".into(), "del".into()],
+            // Raw so a base64 key line with '=' padding is not split as EqPair.
+            shape: ArgShape::Raw,
+            // Self-service: any player manages the keys on their OWN account.
+            min_role: Role::Player,
+            help: "@sshkey/add <ssh public key line>  --  Authorize an SSH public key on \
+                   your account, so `ssh -i <key> <account>@game` logs you in with no \
+                   password. Paste the ONE line from your .pub file (starts with \
+                   ssh-ed25519 / ssh-rsa / ecdsa-...); never paste your private key. \
+                   @sshkey/list shows your registered keys (index, fingerprint, comment, \
+                   date); @sshkey/del <index-or-fingerprint> removes one. Acts only on \
+                   your own account. See also `account+character@game` to log a key \
+                   straight into one character."
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(move |ctx: &mut Ctx<'_>| sshkey_cmd(&q, ctx)),
     )?;
     let q = Arc::clone(queue);
     reg.register(
@@ -740,6 +879,122 @@ mod tests {
                 kind: StaffOpKind::Stats
             }]
         );
+    }
+
+    // A fixed ed25519 public line (shared with the gateway/loopback tests).
+    const PUB_LINE: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICKZsuYnz5vDjbi8gtQSL5djhsj1/8olA+yHkPMLp/Ki loopback-test@rustmush";
+
+    fn sys_texts(out: &Outbox) -> Vec<String> {
+        out.events()
+            .iter()
+            .filter_map(|(_, e)| match e {
+                OutputEvent::Sys(t) => Some(t.to_plain_text()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sshkey_add_validates_and_queues_only_the_public_key() {
+        let (mut engine, queue) = engine_with_staff();
+        // A mortal (self-service): min_role Player lets anyone manage their own.
+        let nick = engine
+            .world
+            .create(ObjKind::Player, "Nick", GOD, Some(LIMBO))
+            .unwrap();
+
+        let out = run(&mut engine, nick, &format!("@sshkey/add {PUB_LINE}"));
+        assert!(sys_texts(&out).is_empty(), "no echo on success: {out:?}", out = sys_texts(&out));
+        let ops = queue.drain();
+        assert_eq!(ops.len(), 1);
+        let want_fp = PublicKey::from_openssh(PUB_LINE)
+            .unwrap()
+            .fingerprint(HashAlg::Sha256)
+            .to_string();
+        match &ops[0].kind {
+            StaffOpKind::AddSshKey {
+                actor,
+                openssh,
+                fingerprint,
+            } => {
+                assert_eq!(*actor, nick);
+                assert_eq!(fingerprint, &want_fp);
+                // The queued line is the NORMALIZED public key, not raw input.
+                assert!(openssh.starts_with("ssh-ed25519 "));
+                assert!(!openssh.contains("PRIVATE"));
+            }
+            other => panic!("expected AddSshKey, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sshkey_add_rejects_private_key_paste_without_echoing_it() {
+        let (mut engine, queue) = engine_with_staff();
+        // A realistic private-key blob (its bytes must never surface).
+        let privkey = "-----BEGIN OPENSSH PRIVATE KEY-----\n\
+                       b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAAB-secret-material\n\
+                       -----END OPENSSH PRIVATE KEY-----";
+        let out = run(&mut engine, GOD, &format!("@sshkey/add {privkey}"));
+        let texts = sys_texts(&out);
+        assert!(
+            texts.iter().any(|t| t.contains("PRIVATE key") && t.contains("PUBLIC key")),
+            "specific private-key guidance expected: {texts:?}"
+        );
+        // The raw secret bytes must appear in NO reply.
+        assert!(
+            texts.iter().all(|t| !t.contains("secret-material")),
+            "the pasted private key must never be echoed: {texts:?}"
+        );
+        assert!(queue.drain().is_empty(), "a private-key paste queues nothing");
+    }
+
+    #[test]
+    fn sshkey_add_rejects_garbage() {
+        let (mut engine, queue) = engine_with_staff();
+        let out = run(&mut engine, GOD, "@sshkey/add this is not a key");
+        assert!(
+            sys_texts(&out)
+                .iter()
+                .any(|t| t.contains("not a valid OpenSSH public key")),
+            "{:?}",
+            sys_texts(&out)
+        );
+        assert!(queue.drain().is_empty());
+    }
+
+    #[test]
+    fn sshkey_list_and_del_queue() {
+        let (mut engine, queue) = engine_with_staff();
+        run(&mut engine, GOD, "@sshkey/list");
+        run(&mut engine, GOD, "@sshkey"); // bare == list
+        run(&mut engine, GOD, "@sshkey/del 1");
+        run(&mut engine, GOD, "@sshkey/del SHA256:abc");
+        let ops = queue.drain();
+        assert_eq!(ops.len(), 4);
+        assert_eq!(ops[0].kind, StaffOpKind::ListSshKeys { actor: GOD });
+        assert_eq!(ops[1].kind, StaffOpKind::ListSshKeys { actor: GOD });
+        assert_eq!(
+            ops[2].kind,
+            StaffOpKind::DelSshKey {
+                actor: GOD,
+                which: "1".to_string()
+            }
+        );
+        assert_eq!(
+            ops[3].kind,
+            StaffOpKind::DelSshKey {
+                actor: GOD,
+                which: "SHA256:abc".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn sshkey_del_requires_an_argument() {
+        let (mut engine, queue) = engine_with_staff();
+        let out = run(&mut engine, GOD, "@sshkey/del");
+        assert!(sys_texts(&out).iter().any(|t| t.contains("Usage")));
+        assert!(queue.drain().is_empty());
     }
 
     #[test]

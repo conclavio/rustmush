@@ -3,7 +3,10 @@
 A modern MUSH server in Rust — the TinyMUX/TinyMUSH/RhostMUSH tradition, rebuilt:
 
 - **SSH access, not telnet** (`ssh play@yourgame`) — russh-based, with a classic welcome screen,
-  account wizard, guest pool, and public-key logins.
+  account wizard, guest pool, and public-key logins. Register a key in-game with
+  `@sshkey/add <your .pub line>` (see `help sshkey`), then `ssh -i <key> <account>@game` logs in
+  with no password and `ssh -i <key> <account>+<character>@game` drops straight into that
+  character. Login is by account on every surface.
 - **Native web client** — Svelte SPA speaking a structured JSON protocol over WebSocket
   (scrollback + input center; channel tabs, character sheet, mail, who, map panels). Not a
   terminal emulator.

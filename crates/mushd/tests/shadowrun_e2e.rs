@@ -98,6 +98,7 @@ async fn boot_server(dir: &Path, seed: u64) -> SocketAddr {
                 id: GOD,
                 name: "God".to_string(),
             }],
+            ssh_keys: vec![],
         })
         .await
         .unwrap();
