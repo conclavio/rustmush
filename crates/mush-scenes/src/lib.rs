@@ -45,12 +45,13 @@ use mush_core::module::{
     WorldEventKind,
 };
 use mush_core::output::display_name;
-use mush_core::{Ctx, ObjId, ObjKind, Role, World, perm};
-use mush_proto::{OutputEvent, RichText};
+use mush_core::{Ctx, ModuleOp, ObjId, ObjKind, Role, World, is_log_key, perm};
+use mush_proto::{NarrativeKind, OutputEvent, RichText};
+use smol_str::SmolStr;
 
 pub use data::{
-    KIND_TIMESTOP, NS, PauseReason, SceneMode, SceneRecord, SceneStatus, SceneUid, ScenesState,
-    scene_key,
+    KIND_TIMESTOP, NS, PauseReason, SceneEvent, SceneEventKind, SceneMode, SceneRecord, SceneStatus,
+    SceneUid, ScenesState, scene_key,
 };
 
 use data::{persist_scene, META_KEY};
@@ -87,6 +88,19 @@ impl GameModule for ScenesModule {
         reg.state(ScenesState::default());
         reg.hook(HookPoint::MoveAttempt, Arc::new(TimestopMoveGate));
         reg.subscribe(WorldEventKind::ObjDestroyed, Arc::new(on_obj_destroyed));
+        // The event log: IC narrative and room join/leave inside an active
+        // scene are recorded to its ledger (lifecycle events are recorded by
+        // the commands themselves). `Said` is subscribed per flavor.
+        for kind in [
+            NarrativeKind::Say,
+            NarrativeKind::Pose,
+            NarrativeKind::SemiPose,
+            NarrativeKind::Emit,
+            NarrativeKind::Spoof,
+        ] {
+            reg.subscribe(WorldEventKind::Said { kind }, Arc::new(on_said));
+        }
+        reg.subscribe(WorldEventKind::Moved, Arc::new(on_moved));
         commands::register(reg)?;
         Ok(())
     }
@@ -263,6 +277,111 @@ pub(crate) fn announce_scene(ctx: &mut Ctx<'_>, room: ObjId, text: impl Into<Str
     );
 }
 
+/// Append one event to a scene's immutable log and queue its persist op.
+///
+/// **Contract:** the event must already have happened — append only on the
+/// success path. Lifecycle callers append after their mutation + persist; the
+/// observers append for `Said`/`Moved` world events, which the dispatch layer
+/// emits *terminally* (as the last act before a handler returns `Ok`), so an
+/// observed event never rides a command that then fails. This matters because
+/// the append advances in-RAM ledger state that is **not** rolled back on a
+/// handler `Err` (only the deferred persist op is truncated) — a later
+/// successful append's whole-chunk rewrite would otherwise resurrect a
+/// phantom entry to disk. Any future command that emits `Said`/`Moved` must
+/// keep that emit terminal.
+pub(crate) fn record_scene_event(ctx: &mut Ctx<'_>, scene: SceneUid, ev: SceneEvent) {
+    let value = serde_json::to_value(&ev).expect("scene event serializes");
+    let op = {
+        let Some(st) = ctx.w.module_state_mut::<ScenesState>() else {
+            return;
+        };
+        let (_seq, op) = st.events.append(&scene.to_string(), value);
+        op
+    };
+    ctx.persist(ModuleOp {
+        ns: SmolStr::new_static(NS),
+        op,
+    });
+}
+
+/// Whether a narrative flavor is IC (recorded) rather than OOC/private.
+fn is_ic_narrative(kind: NarrativeKind) -> bool {
+    matches!(
+        kind,
+        NarrativeKind::Say
+            | NarrativeKind::Pose
+            | NarrativeKind::SemiPose
+            | NarrativeKind::Emit
+            | NarrativeKind::Spoof
+    )
+}
+
+/// A short label for a narrative flavor, for the event detail.
+fn narr_label(kind: NarrativeKind) -> &'static str {
+    match kind {
+        NarrativeKind::Say => "say",
+        NarrativeKind::Pose => "pose",
+        NarrativeKind::SemiPose => "semipose",
+        NarrativeKind::Emit => "emit",
+        NarrativeKind::Spoof => "spoof",
+        NarrativeKind::Page => "page",
+        NarrativeKind::Ooc => "ooc",
+        NarrativeKind::Whisper => "whisper",
+    }
+}
+
+/// The `Active` scene anchored to `room`, cloned (releasing the state borrow so
+/// the caller may then record into it).
+fn active_scene_at(w: &World, room: ObjId) -> Option<SceneRecord> {
+    w.module_state::<ScenesState>()
+        .and_then(|st| st.active_scene_at(room))
+        .filter(|s| s.status == SceneStatus::Active)
+        .cloned()
+}
+
+/// `Said` observer: record IC narrative spoken in an active scene's anchor room
+/// as a `Said` event. OOC / page / whisper are never recorded.
+fn on_said(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
+    let WorldEvent::Said { who, room, kind, text } = ev else {
+        return;
+    };
+    if !is_ic_narrative(*kind) {
+        return;
+    }
+    let Some(s) = active_scene_at(ctx.w, *room) else {
+        return;
+    };
+    let detail = serde_json::json!({ "narr": narr_label(*kind), "text": text });
+    let event = SceneEvent::new(&s, ctx.w.now(), SceneEventKind::Said, Some(*who), detail);
+    record_scene_event(ctx, s.id, event);
+}
+
+/// `Moved` observer: record entries into / exits from an active scene's anchor
+/// room (participants are frozen, so these are non-participants or staff coming
+/// and going — context for the transcript).
+fn on_moved(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
+    let WorldEvent::Moved { who, from, to } = ev else {
+        return;
+    };
+    // A no-op move (e.g. `@teleport X=<the room X is already in>`) still emits
+    // Moved with from == to; skip it so the anchor doesn't log a bogus
+    // arrival-and-departure for the same actor.
+    if *from == Some(*to) {
+        return;
+    }
+    let now = ctx.w.now();
+    if let Some(s) = active_scene_at(ctx.w, *to) {
+        let event = SceneEvent::new(&s, now, SceneEventKind::Joined, Some(*who), serde_json::json!({}));
+        record_scene_event(ctx, s.id, event);
+    }
+    if let Some(from) = *from
+        && let Some(s) = active_scene_at(ctx.w, from)
+    {
+        let event = SceneEvent::new(&s, now, SceneEventKind::Left, Some(*who), serde_json::json!({}));
+        record_scene_event(ctx, s.id, event);
+    }
+}
+
 /// Rebuild [`ScenesState`] from persisted boot data. Every non-closed scene
 /// rehydrates as `Paused(ServerRestart)` (turns never auto-advance across a
 /// restart) with its exclusive members re-published to the core index, so the
@@ -274,7 +393,7 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
         std::collections::BTreeMap::new();
     let mut next_from_meta: Option<u64> = None;
 
-    for (key, value) in data.kv {
+    for (key, value) in &data.kv {
         if key == META_KEY {
             next_from_meta = value
                 .get("next_scene_uid")
@@ -283,7 +402,7 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
             let id = id
                 .parse::<u64>()
                 .map_err(|_| ModError::msg(format!("scenes: bad scene key {key:?}")))?;
-            let mut rec = serde_json::from_value::<SceneRecord>(value)
+            let mut rec = serde_json::from_value::<SceneRecord>(value.clone())
                 .map_err(|e| ModError::msg(format!("scenes: bad scene doc {key:?}: {e}")))?;
             if rec.id != SceneUid(id) {
                 return Err(ModError::msg(format!(
@@ -298,6 +417,8 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
                 rec.pause_reason = Some(PauseReason::ServerRestart);
             }
             scenes.insert(rec.id, rec);
+        } else if is_log_key(key) {
+            // Event-log chunk docs are rehydrated into the ledger below.
         } else {
             tracing::warn!(%key, "scenes: unknown persisted key ignored");
         }
@@ -307,7 +428,34 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
         .unwrap_or_else(|| scenes.keys().last().map_or(0, |id| id.0 + 1))
         .max(scenes.keys().last().map_or(0, |id| id.0 + 1));
 
-    let st = ScenesState { scenes, next_scene_uid };
+    // Rehydrate the event-log open tail — but only for scenes that still hold
+    // members. A Closed scene's log is immutable history on disk that nothing
+    // in RAM appends to or reads (`active_scene_of` excludes closed scenes), so
+    // restoring its tail would be permanent dead RAM that grows with every
+    // finished scene. (The deferred boot store-read seam makes even this
+    // request-driven; for now, filter closed scenes out.)
+    let live_uids: std::collections::BTreeSet<String> = scenes
+        .values()
+        .filter(|s| s.status.holds_members())
+        .map(|s| s.id.0.to_string())
+        .collect();
+    let live_log_kv: Vec<(SmolStr, serde_json::Value)> = data
+        .kv
+        .iter()
+        .filter(|(k, _)| {
+            k.strip_prefix("log:")
+                .and_then(|rest| rest.split(':').next())
+                .is_some_and(|id| live_uids.contains(id))
+        })
+        .cloned()
+        .collect();
+    let mut events = mush_core::Ledger::new();
+    events.restore_from_kv(&live_log_kv);
+    let st = ScenesState {
+        scenes,
+        next_scene_uid,
+        events,
+    };
     // Re-persist any scene we paused for the restart, and re-publish every held
     // member to the core exclusive-scene index so the room stays frozen.
     let changed: Vec<SceneRecord> = st

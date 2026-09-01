@@ -18,7 +18,7 @@
 
 use std::collections::BTreeSet;
 
-use mush_core::{Deferred, ModuleOp, ModuleWrite, ObjId, Outbox};
+use mush_core::{Deferred, Ledger, ModuleOp, ModuleWrite, ObjId, Outbox};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use std::collections::BTreeMap;
@@ -211,6 +211,80 @@ impl SceneRecord {
     }
 }
 
+/// What kind of thing one [`SceneEvent`] records. Cut 1 records the scene's
+/// **structural** timeline (lifecycle + turns) plus **IC narrative** (speech
+/// and poses) and room join/leave — the deterministic, no-LLM transcript. Dice
+/// rolls and other mechanical outcomes join once commands route through the
+/// turn.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SceneEventKind {
+    /// The scene began.
+    Started,
+    /// Turn advanced (possibly a new round).
+    TurnAdvanced,
+    /// Turn advancement was paused.
+    Paused,
+    /// The scene resumed.
+    Resumed,
+    /// A participant was released from the freeze without ending the scene.
+    Released,
+    /// The scene ended.
+    Ended,
+    /// A participant spoke / posed (IC narrative).
+    Said,
+    /// Someone entered the scene's anchor room during play.
+    Joined,
+    /// Someone left the scene's anchor room during play.
+    Left,
+}
+
+/// One immutable entry in a scene's event log — a **semantic** record of what
+/// happened, never rendered output. The witness set is captured **at event
+/// time** (it is the audience the event was delivered to) and never
+/// recalculated, so a later reader sees who actually perceived it. The
+/// ledger assigns the sequence number; this is the payload it stores.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SceneEvent {
+    /// The kind of event.
+    pub kind: SceneEventKind,
+    /// Who acted (speaker, mover, facilitator), if applicable.
+    #[serde(default)]
+    pub actor: Option<ObjId>,
+    /// The scene-local IC timestamp when it occurred (`scene_ic_time`).
+    pub ic_time: i64,
+    /// Wall-clock time (unix seconds).
+    pub at: i64,
+    /// Who perceived it — captured at event time, never recomputed.
+    #[serde(default)]
+    pub witnesses: Vec<ObjId>,
+    /// Kind-specific detail (`{"text": ..., "narr": "say"}`, `{"round": N}`, …).
+    #[serde(default)]
+    pub detail: serde_json::Value,
+}
+
+impl SceneEvent {
+    /// Build an event stamped with the scene's current fictional time and its
+    /// present membership as the witness set.
+    #[must_use]
+    pub fn new(
+        s: &SceneRecord,
+        at: i64,
+        kind: SceneEventKind,
+        actor: Option<ObjId>,
+        detail: serde_json::Value,
+    ) -> SceneEvent {
+        SceneEvent {
+            kind,
+            actor,
+            ic_time: s.scene_ic_time(),
+            at,
+            witnesses: s.members().collect(),
+            detail,
+        }
+    }
+}
+
 /// The live scenes state, held in a module state slot on the `World`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ScenesState {
@@ -218,6 +292,10 @@ pub struct ScenesState {
     pub scenes: BTreeMap<SceneUid, SceneRecord>,
     /// The durable-id allocator resume point (persisted in the meta doc).
     pub next_scene_uid: u64,
+    /// The per-scene immutable event logs, keyed by the scene's durable id
+    /// (stringified). Chunked, append-only, idempotent — the ledger substrate.
+    /// Only each log's open tail lives here; sealed history is on disk.
+    pub events: Ledger,
 }
 
 impl ScenesState {

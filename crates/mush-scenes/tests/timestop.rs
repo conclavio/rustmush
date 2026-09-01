@@ -11,8 +11,10 @@ use mush_core::{
     GOD, ModuleBootData, ModuleOp, ObjId, ObjKind, Outbox, Registry, Role, World, WorldEvent,
     register_core_commands, register_engine_commands,
 };
-use mush_proto::OutputEvent;
-use mush_scenes::{PauseReason, SceneStatus, ScenesModule, ScenesState, NS};
+use mush_proto::{NarrativeKind, OutputEvent};
+use mush_scenes::{
+    PauseReason, SceneEvent, SceneEventKind, SceneStatus, SceneUid, ScenesModule, ScenesState, NS,
+};
 use mush_store::{InMemoryStore, ObjectStore, WriteBatch};
 use smol_str::SmolStr;
 
@@ -316,6 +318,186 @@ fn release_frees_one_participant_without_ending_the_scene() {
 }
 
 // ----------------------------------------------------------------------
+// Event log
+// ----------------------------------------------------------------------
+
+fn log_entries(engine: &Engine, uid: SceneUid) -> Vec<SceneEvent> {
+    scenes(engine)
+        .events
+        .open_entries(&uid.to_string())
+        .iter()
+        .map(|e| serde_json::from_value::<SceneEvent>(e.value.clone()).unwrap())
+        .collect()
+}
+
+fn kinds(engine: &Engine, uid: SceneUid) -> Vec<SceneEventKind> {
+    log_entries(engine, uid).into_iter().map(|e| e.kind).collect()
+}
+
+/// Emit a raw speech event (to exercise OOC exclusion without an OOC command).
+fn emit_said(engine: &mut Engine, who: ObjId, room: ObjId, kind: NarrativeKind, text: &str) {
+    let mut out = Outbox::new();
+    emit_world_event(
+        &engine.registry,
+        &mut engine.world,
+        &mut out,
+        &WorldEvent::Said { who, room, kind, text: text.into() },
+    );
+}
+
+/// Emit a raw Moved event.
+fn emit_moved(engine: &mut Engine, who: ObjId, from: Option<ObjId>, to: ObjId) {
+    let mut out = Outbox::new();
+    emit_world_event(
+        &engine.registry,
+        &mut engine.world,
+        &mut out,
+        &WorldEvent::Moved { who, from, to },
+    );
+}
+
+#[test]
+fn no_op_move_records_no_join_or_leave() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    let uid = scenes(&r.engine).active_scene_of(r.nick).unwrap().id;
+    let before = log_entries(&r.engine, uid).len();
+    // A no-op move (from == to == the anchor) must not log an arrival+departure.
+    emit_moved(&mut r.engine, r.ann, Some(r.bar), r.bar);
+    assert_eq!(
+        log_entries(&r.engine, uid).len(),
+        before,
+        "a from==to move records nothing"
+    );
+}
+
+#[test]
+fn staff_can_read_a_scene_by_standing_in_the_room() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    run(&mut r.engine, r.nick, "say hi");
+    // A wizard who is NOT a participant walks in and reads the scene.
+    let wiz = r.engine.world.create(ObjKind::Player, "Wiz", GOD, Some(r.bar)).unwrap();
+    r.engine.world.get_mut(wiz).unwrap().flags.insert(mush_core::Flags::WIZARD);
+    r.engine.world.set_connected(wiz, true);
+    let out = run(&mut r.engine, wiz, "+scene");
+    assert!(texts(&out).contains("Participants"), "staff reads +scene by room: {}", texts(&out));
+    let out = run(&mut r.engine, wiz, "+timestop/log");
+    assert!(texts(&out).contains("event"), "staff reads the log by room: {}", texts(&out));
+}
+
+#[test]
+fn lifecycle_events_are_recorded_in_order() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    let uid = scenes(&r.engine).active_scene_of(r.nick).unwrap().id;
+    run(&mut r.engine, r.nick, "+timestop/next");
+    run(&mut r.engine, r.nick, "+timestop/pause");
+    run(&mut r.engine, r.nick, "+timestop/resume");
+    run(&mut r.engine, r.nick, "+timestop/end");
+    assert_eq!(
+        kinds(&r.engine, uid),
+        vec![
+            SceneEventKind::Started,
+            SceneEventKind::TurnAdvanced,
+            SceneEventKind::Paused,
+            SceneEventKind::Resumed,
+            SceneEventKind::Ended,
+        ]
+    );
+    // Sequence numbers are gap-free.
+    let seqs: Vec<u64> = scenes(&r.engine)
+        .events
+        .open_entries(&uid.to_string())
+        .iter()
+        .map(|e| e.seq)
+        .collect();
+    assert_eq!(seqs, vec![0, 1, 2, 3, 4]);
+}
+
+#[test]
+fn ic_speech_is_recorded_ooc_is_not() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    let uid = scenes(&r.engine).active_scene_of(r.nick).unwrap().id;
+    // A participant speaks IC.
+    run(&mut r.engine, r.nick, "say the prince is dead");
+    // Raw OOC / page speech in the same room must NOT be recorded.
+    emit_said(&mut r.engine, r.nick, r.bar, NarrativeKind::Ooc, "brb coffee");
+    emit_said(&mut r.engine, r.nick, r.bar, NarrativeKind::Page, "secret");
+
+    let said: Vec<SceneEvent> = log_entries(&r.engine, uid)
+        .into_iter()
+        .filter(|e| e.kind == SceneEventKind::Said)
+        .collect();
+    assert_eq!(said.len(), 1, "only the IC line is recorded");
+    assert_eq!(said[0].actor, Some(r.nick));
+    assert_eq!(said[0].detail["text"], "the prince is dead");
+    assert_eq!(said[0].detail["narr"], "say");
+    // Witnesses were captured (the scene members).
+    assert!(said[0].witnesses.contains(&r.nick));
+}
+
+#[test]
+fn speech_while_paused_or_outside_the_anchor_is_not_recorded() {
+    let mut r = rig();
+    // Another room with a player.
+    let lounge = r.engine.world.create(ObjKind::Room, "Lounge", GOD, None).unwrap();
+    let zoe = r.engine.world.create(ObjKind::Player, "Zoe", GOD, Some(lounge)).unwrap();
+    r.engine.world.set_connected(zoe, true);
+    r.engine.world.set_live_conns(zoe, 1);
+
+    run(&mut r.engine, r.nick, "+timestop");
+    let uid = scenes(&r.engine).active_scene_of(r.nick).unwrap().id;
+    // Speech in a different room: not this scene's.
+    run(&mut r.engine, zoe, "say unrelated");
+    // Pause, then speak in the anchor: paused scenes don't record.
+    run(&mut r.engine, r.nick, "+timestop/pause");
+    run(&mut r.engine, r.nick, "say while paused");
+
+    let said = log_entries(&r.engine, uid)
+        .into_iter()
+        .filter(|e| e.kind == SceneEventKind::Said)
+        .count();
+    assert_eq!(said, 0, "no speech recorded from another room or while paused");
+}
+
+#[test]
+fn timestop_log_renders_the_timeline() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    run(&mut r.engine, r.nick, "say hello there");
+    run(&mut r.engine, r.nick, "+timestop/next");
+    let out = run(&mut r.engine, r.ann, "+timestop/log"); // any participant can read
+    let t = texts(&out);
+    assert!(t.contains("The scene began"), "{t}");
+    assert!(t.contains("Nick [say]: hello there"), "{t}");
+    assert!(t.contains("Round"), "{t}");
+}
+
+#[test]
+fn arrivals_into_the_anchor_are_recorded() {
+    let mut r = rig();
+    // A wanderer outside the scene room.
+    let hall = r.engine.world.create(ObjKind::Room, "Hall", GOD, None).unwrap();
+    let exit = r.engine.world.create(ObjKind::Exit, "in", GOD, Some(hall)).unwrap();
+    r.engine.world.link_exit(exit, Some(r.bar)).unwrap();
+    let wanderer = r.engine.world.create(ObjKind::Player, "Wanda", GOD, Some(hall)).unwrap();
+    r.engine.world.set_connected(wanderer, true);
+    r.engine.world.set_live_conns(wanderer, 1);
+
+    run(&mut r.engine, r.nick, "+timestop");
+    let uid = scenes(&r.engine).active_scene_of(r.nick).unwrap().id;
+    // A non-participant walks into the scene room (not frozen — freeze only
+    // blocks participants leaving).
+    run(&mut r.engine, wanderer, "in");
+    let joined = log_entries(&r.engine, uid)
+        .into_iter()
+        .any(|e| e.kind == SceneEventKind::Joined && e.actor == Some(wanderer));
+    assert!(joined, "an arrival into the anchor is recorded");
+}
+
+// ----------------------------------------------------------------------
 // Persistence round trip
 // ----------------------------------------------------------------------
 
@@ -368,6 +550,9 @@ fn scene_survives_restart_rehydrating_paused_and_still_frozen() {
     let s = scenes(&engine2).scenes.values().next().expect("scene rehydrated");
     assert_eq!(s.status, SceneStatus::Paused);
     assert_eq!(s.pause_reason, Some(PauseReason::ServerRestart));
+    // The event log's tail survived (Started + TurnAdvanced were recorded).
+    let events = scenes(&engine2).events.open_entries(&s.id.to_string());
+    assert!(events.len() >= 2, "the event log rehydrated: {events:?}");
     // Rig dbrefs: Limbo #0, God #1, bar #2, Nick #3, Ann #4, Barkeep #5.
     // After one /next the turn advanced Nick -> Ann (#4); that state persists.
     assert_eq!(s.current_actor(), Some(ObjId(4)), "turn state (Ann) preserved");

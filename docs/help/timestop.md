@@ -18,6 +18,9 @@ While a timestop is running:
   began plus the rounds elapsed — a fight played out over several real days is
   still only seconds of in-character time, and the outside world's clock keeps
   running normally.
+- **Everything is recorded.** The scene keeps an immutable event log — who
+  spoke, whose turn it was, who arrived, when it paused. `+timestop/log` shows
+  the timeline. (OOC, pages, and whispers are never recorded.)
 
 A scene has a durable number (`scene #N`) and **survives a server restart**: if
 the game bounces mid-scene, the timestop comes back **paused**, exactly where it
@@ -30,6 +33,8 @@ themselves across a restart.
                       facilitator. Everyone present (players and NPCs) becomes a
                       participant, in dbref order.
   +timestop/who       Show the scene here: round, whose turn, participants.
+  +timestop/log       Show the scene's recorded timeline (speech, turns,
+                      arrivals) — a plain transcript of what happened.
   +timestop/next      (facilitator/staff) Advance to the next participant's
                       turn; wrapping past the last starts a new round.
   +timestop/pause     (facilitator/staff) Freeze turn advancement.
@@ -46,11 +51,14 @@ drive or end any scene.
 
 ## Not yet
 
-This first cut gives you the turn-based *envelope* — the freeze, the initiative
-order, the durable/restart-safe record. It does not yet route dice or other
-mechanical commands through the turn (an out-of-turn `+roll` is not rejected),
-record an immutable transcript, or roll system initiative automatically. Those
-build onto the same scene next.
+This cut gives you the turn-based *envelope* — the freeze, the initiative
+order, the durable/restart-safe record, and the recorded transcript. It does
+not yet route dice or other mechanical commands through the turn (an out-of-turn
+`+roll` is not rejected), roll system initiative automatically, or build
+perspective-filtered recaps of what each character perceived. `+timestop/log`
+currently shows a scene's recent events; reading the full history of a long,
+finished scene arrives with the recap tools. Those build onto the same scene
+next.
 
 ## See also
 

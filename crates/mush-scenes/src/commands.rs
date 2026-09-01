@@ -14,9 +14,22 @@ use mush_core::{
 };
 
 use crate::data::{
-    DEFAULT_ROUND_SECONDS, KIND_TIMESTOP, PauseReason, SceneMode, SceneRecord, SceneStatus,
-    ScenesState, persist_meta, persist_scene,
+    DEFAULT_ROUND_SECONDS, KIND_TIMESTOP, PauseReason, SceneEvent, SceneEventKind, SceneMode,
+    SceneRecord, SceneStatus, ScenesState, persist_meta, persist_scene,
 };
+
+/// Record one lifecycle event into `s`'s log (stamped with the current wall
+/// time, `s`'s scene-local IC time, and its present membership as witnesses).
+fn log_event(
+    ctx: &mut Ctx<'_>,
+    s: &SceneRecord,
+    kind: SceneEventKind,
+    actor: Option<ObjId>,
+    detail: serde_json::Value,
+) {
+    let now = ctx.w.now();
+    crate::record_scene_event(ctx, s.id, SceneEvent::new(s, now, kind, actor, detail));
+}
 
 fn state<'a>(ctx: &'a mut Ctx<'_>) -> &'a mut ScenesState {
     ctx.w
@@ -71,6 +84,8 @@ fn turn_line(w: &World, s: &SceneRecord) -> String {
 fn cmd_timestop(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if ctx.switches.has("who") {
         show_scene(ctx)
+    } else if ctx.switches.has("log") {
+        timestop_log(ctx)
     } else if ctx.switches.has("next") {
         timestop_next(ctx)
     } else if ctx.switches.has("pause") {
@@ -165,6 +180,15 @@ fn timestop_start(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let next_uid = state_ref(ctx).next_scene_uid;
     persist_scene(ctx.out, &rec);
     persist_meta(ctx.out, next_uid);
+    log_event(
+        ctx,
+        &rec,
+        SceneEventKind::Started,
+        Some(actor),
+        serde_json::json!({
+            "participants": rec.participants.iter().map(|o| o.0).collect::<Vec<_>>()
+        }),
+    );
 
     let order: Vec<String> = rec
         .participants
@@ -211,6 +235,21 @@ fn driver_scene(ctx: &Ctx<'_>) -> Result<SceneRecord, CmdError> {
     Ok(s)
 }
 
+/// The scene the actor may READ here (`+scene`, `/who`, `/log`): their own
+/// scene, or — for staff — the scene anchored to the room they stand in. No
+/// facilitator gate; reads are open to any member (and to staff by room, the
+/// same recovery-visibility the driver gate grants).
+fn readable_scene(ctx: &Ctx<'_>) -> Option<SceneRecord> {
+    let actor = ctx.actor;
+    state_ref(ctx).active_scene_of(actor).cloned().or_else(|| {
+        if !is_staff(ctx.w, actor) {
+            return None;
+        }
+        let room = ctx.w.get(actor).and_then(|o| o.location)?;
+        state_ref(ctx).active_scene_at(room).cloned()
+    })
+}
+
 fn timestop_next(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let s = driver_scene(ctx)?;
     if s.status != SceneStatus::Active {
@@ -226,6 +265,13 @@ fn timestop_next(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     persist_scene(ctx.out, &updated);
     announce(ctx, anchor, turn_line(ctx.w, &updated));
+    log_event(
+        ctx,
+        &updated,
+        SceneEventKind::TurnAdvanced,
+        updated.current_actor(),
+        serde_json::json!({ "round": updated.round }),
+    );
     Ok(())
 }
 
@@ -243,6 +289,7 @@ fn timestop_pause(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     persist_scene(ctx.out, &updated);
     announce(ctx, anchor, format!("The timestop (scene #{}) is paused.", updated.id));
+    log_event(ctx, &updated, SceneEventKind::Paused, Some(ctx.actor), serde_json::json!({}));
     Ok(())
 }
 
@@ -264,6 +311,7 @@ fn timestop_resume(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         anchor,
         format!("The timestop (scene #{}) resumes. {}", updated.id, turn_line(ctx.w, &updated)),
     );
+    log_event(ctx, &updated, SceneEventKind::Resumed, Some(ctx.actor), serde_json::json!({}));
     Ok(())
 }
 
@@ -318,6 +366,10 @@ fn timestop_release(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             format!("{name} is released from the timestop (scene #{}).", updated.id)
         },
     );
+    log_event(ctx, &updated, SceneEventKind::Released, Some(who), serde_json::json!({}));
+    if closed {
+        log_event(ctx, &updated, SceneEventKind::Ended, Some(ctx.actor), serde_json::json!({}));
+    }
     Ok(())
 }
 
@@ -343,16 +395,81 @@ fn timestop_end(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         anchor,
         format!("Time resumes — the timestop (scene #{}) ends.", updated.id),
     );
+    log_event(ctx, &updated, SceneEventKind::Ended, Some(ctx.actor), serde_json::json!({}));
     Ok(())
 }
 
 // ----------------------------------------------------------------------
-// +scene  (read-only)
+// +scene  (read-only)  +  +timestop/log
 // ----------------------------------------------------------------------
 
+/// Render one recorded [`SceneEvent`] to a one-line summary.
+fn render_event(w: &World, ev: &SceneEvent) -> String {
+    let who = ev.actor.map_or_else(String::new, |a| display_name(w, a));
+    let s = |k: &str| ev.detail.get(k).and_then(|v| v.as_str()).unwrap_or("");
+    match ev.kind {
+        SceneEventKind::Started => "The scene began.".to_string(),
+        SceneEventKind::TurnAdvanced => {
+            let round = ev.detail.get("round").and_then(serde_json::Value::as_u64).unwrap_or(0);
+            format!("Round {round} — {who}'s turn.")
+        }
+        SceneEventKind::Paused => "The scene was paused.".to_string(),
+        SceneEventKind::Resumed => "The scene resumed.".to_string(),
+        SceneEventKind::Released => format!("{who} was released from the scene."),
+        SceneEventKind::Ended => "The scene ended.".to_string(),
+        SceneEventKind::Said => format!("{who} [{}]: {}", s("narr"), s("text")),
+        SceneEventKind::Joined => format!("{who} arrives."),
+        SceneEventKind::Left => format!("{who} leaves."),
+    }
+}
+
+/// `+timestop/log` — the recent (RAM-resident tail) events of the scene you are
+/// in, as a deterministic mechanical timeline. Older, sealed history needs the
+/// store-read seam (a later prerequisite); for a normal-length scene the tail
+/// is the whole log.
+fn timestop_log(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let Some(s) = readable_scene(ctx) else {
+        to_actor(ctx, "You are not in a scene.");
+        return Ok(());
+    };
+    let log_id = s.id.to_string();
+    // Distinguish "nothing recorded" from "the open tail rolled over" — the
+    // total is the ledger's sequence count, not just the RAM tail's length.
+    let total = state_ref(ctx).events.next_seq(&log_id);
+    if total == 0 {
+        to_actor(ctx, format!("Scene #{} has no recorded events yet.", s.id));
+        return Ok(());
+    }
+    let entries = state_ref(ctx).events.open_entries(&log_id).to_vec();
+    let lines: Vec<String> = entries
+        .iter()
+        .filter_map(|e| {
+            serde_json::from_value::<SceneEvent>(e.value.clone())
+                .ok()
+                .map(|ev| format!("  {:>3}. {}", e.seq, render_event(ctx.w, &ev)))
+        })
+        .collect();
+    let omitted = total.saturating_sub(lines.len() as u64);
+    let header = if omitted > 0 {
+        format!(
+            "Scene #{} — showing {} of {} events ({} earlier not shown here):",
+            s.id,
+            lines.len(),
+            total,
+            omitted
+        )
+    } else {
+        format!("Scene #{} — {} event(s):", s.id, lines.len())
+    };
+    to_actor(ctx, header);
+    for line in lines {
+        to_actor(ctx, line);
+    }
+    Ok(())
+}
+
 fn show_scene(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let actor = ctx.actor;
-    let Some(s) = state_ref(ctx).active_scene_of(actor).cloned() else {
+    let Some(s) = readable_scene(ctx) else {
         to_actor(ctx, "You are not in a scene.");
         return Ok(());
     };
@@ -393,6 +510,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             shape: ArgShape::Raw,
             switches: vec![
                 "who".into(),
+                "log".into(),
                 "next".into(),
                 "pause".into(),
                 "resume".into(),
@@ -404,6 +522,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    their own, and initiative order + rounds are tracked. You become its \
                    facilitator.\n\
                    +timestop/who   --  Show the scene here (round, whose turn, order).\n\
+                   +timestop/log   --  Show the scene's recorded event timeline (speech, turns, \
+                   arrivals) — a deterministic transcript of what happened.\n\
                    +timestop/next  --  (facilitator/staff) Advance to the next turn; wrapping \
                    past the last starts a new round.\n\
                    +timestop/pause , +timestop/resume  --  Freeze / unfreeze turn advancement.\n\
