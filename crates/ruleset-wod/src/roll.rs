@@ -354,11 +354,14 @@ fn single_roll(cmd: &WodCmd, ctx: &mut Ctx<'_>, args: &RollArgs) -> Result<(), C
     }
 
     let line = render_roll(ctx, who, args, &prep, &outcome, ext_note.as_deref());
-    emit_roll(cmd, ctx, who, priv_roll, silent, &line, &outcome);
+    let public_room = emit_roll(cmd, ctx, who, priv_roll, silent, &line, &outcome);
 
     if let Some(job) = args.job {
         attach_to_job(ctx, who, job, &line)?;
     }
+    // Terminal: record the roll into the scene log only now that all fallible
+    // work has succeeded.
+    record_public_roll(ctx, who, public_room, &line);
     Ok(())
 }
 
@@ -570,8 +573,12 @@ pub(crate) fn roll_expr(
                 });
             }
         }
-        // A mundane roll: the classic room-visible line (unchanged).
-        None => emit_roll(cmd, ctx, who, false, false, &line, &outcome),
+        // A mundane roll: the classic room-visible line (unchanged). Power
+        // commands are not scene-recorded in cut 1 (a separate integration), so
+        // the public room is discarded — emit_roll no longer touches the ledger.
+        None => {
+            let _ = emit_roll(cmd, ctx, who, false, false, &line, &outcome);
+        }
     }
     Ok(outcome)
 }
@@ -655,7 +662,7 @@ fn contested_roll(
         their_expr,
         out_b.summary(),
     );
-    emit_roll(
+    let public_room = emit_roll(
         cmd,
         ctx,
         actor,
@@ -667,6 +674,7 @@ fn contested_roll(
     if let Some(job) = args.job {
         attach_to_job(ctx, actor, job, &line)?;
     }
+    record_public_roll(ctx, actor, public_room, &line);
     Ok(())
 }
 
@@ -717,7 +725,12 @@ fn emit_roll(
     silent: bool,
     line: &str,
     outcome: &Owod20Outcome,
-) {
+) -> Option<ObjId> {
+    // The room a public roll was shown in, if any — the caller emits the
+    // `Rolled` scene event only AFTER its remaining fallible work (job attach)
+    // succeeds, so a failed command never leaves a phantom entry in the scene
+    // ledger (the ledger's append-only-on-success contract).
+    let mut public_room: Option<ObjId> = None;
     if silent {
         ctx.out.sys_to_actor(who, "wod", line);
     } else if priv_roll {
@@ -746,6 +759,7 @@ fn emit_roll(
                 text: RichText::plain(line),
             },
         );
+        public_room = Some(loc);
     } else {
         ctx.out.sys_to_actor(who, "wod", line);
     }
@@ -758,6 +772,22 @@ fn emit_roll(
             "outcome": outcome,
         }),
     );
+    public_room
+}
+
+/// Record a public roll as a mechanical scene event — the general `Rolled` seam
+/// an active scene folds into its log. Called **terminally**, after all fallible
+/// work in the command has succeeded, so a failed `+roll` never records a
+/// phantom entry (the ledger's append-only-on-success contract). A no-op when
+/// the roll was not public (silent/private) — `public_room` is then `None`.
+fn record_public_roll(ctx: &mut Ctx<'_>, who: ObjId, public_room: Option<ObjId>, summary: &str) {
+    if let Some(room) = public_room {
+        ctx.emit_world_event(&WorldEvent::Rolled {
+            who,
+            room,
+            summary: summary.to_string(),
+        });
+    }
 }
 
 /// `+roll/last [<target>]` — replay recent rolls (own, or a target's for staff).
@@ -861,7 +891,7 @@ pub(crate) fn register(
     reg: &mut mush_core::Registrar<'_>,
     cmd: Arc<WodCmd>,
 ) -> Result<(), mush_core::ModError> {
-    use mush_core::{ArgShape, CommandSpec};
+    use mush_core::{ArgShape, CommandSpec, SceneClass};
     reg.command(
         CommandSpec {
             name: "+roll".into(),
@@ -874,6 +904,9 @@ pub(crate) fn register(
                 "last".into(),
             ],
             shape: ArgShape::Raw,
+            // In a turn-based scene (a timestop), rolling is a mechanical
+            // action gated to the roller's turn. (Outside a scene, unchanged.)
+            scene_class: SceneClass::Turn,
             help: "+roll <pool> [vs <diff>]  --  Roll a Storyteller pool. <pool> is \
                    a trait expression resolved against your sheet (strength+brawl+2) \
                    or a plain number. Difficulty defaults to 6.\n\

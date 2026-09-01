@@ -233,6 +233,8 @@ pub enum SceneEventKind {
     Ended,
     /// A participant spoke / posed (IC narrative).
     Said,
+    /// A mechanical action resolved on a participant's turn (a dice roll).
+    Rolled,
     /// Someone entered the scene's anchor room during play.
     Joined,
     /// Someone left the scene's anchor room during play.

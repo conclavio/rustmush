@@ -25,7 +25,8 @@
 use std::sync::Arc;
 
 use mush_core::{
-    CommandGate, Ctx, EventHook, LIMBO, ObjId, ObjKind, Role, World, WorldEvent, WorldObserver,
+    CommandGate, Ctx, EventHook, LIMBO, ObjId, ObjKind, Registry, Role, World, WorldEvent,
+    WorldObserver,
     perm,
 };
 use mush_ruleset::ApprovalState;
@@ -113,7 +114,14 @@ pub(crate) struct OnboardingGate {
 }
 
 impl CommandGate for OnboardingGate {
-    fn check(&self, w: &World, actor: ObjId, verb: &str, line: &str) -> Result<(), String> {
+    fn check(
+        &self,
+        w: &World,
+        _reg: &Registry,
+        actor: ObjId,
+        verb: &str,
+        line: &str,
+    ) -> Result<(), String> {
         if !gated(&self.cfg, &self.dispatch, w, actor) {
             return Ok(());
         }

@@ -45,7 +45,9 @@ use mush_core::module::{
     WorldEventKind,
 };
 use mush_core::output::display_name;
-use mush_core::{Ctx, ModuleOp, ObjId, ObjKind, Role, World, is_log_key, perm};
+use mush_core::{
+    CommandGate, Ctx, ModuleOp, ObjId, ObjKind, Registry, Role, SceneClass, World, is_log_key, perm,
+};
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
 use smol_str::SmolStr;
 
@@ -101,6 +103,10 @@ impl GameModule for ScenesModule {
             reg.subscribe(WorldEventKind::Said { kind }, Arc::new(on_said));
         }
         reg.subscribe(WorldEventKind::Moved, Arc::new(on_moved));
+        // Mechanical resolutions (dice rolls) recorded into the scene log.
+        reg.subscribe(WorldEventKind::Rolled, Arc::new(on_rolled));
+        // Turn-gating: a mechanical command runs only on the actor's turn.
+        reg.command_gate(Arc::new(TurnGate));
         commands::register(reg)?;
         Ok(())
     }
@@ -390,6 +396,81 @@ fn on_said(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     };
     let detail = serde_json::json!({ "narr": narr_label(*kind), "text": text });
     let event = SceneEvent::new(&s, ctx.w.now(), SceneEventKind::Said, Some(*who), detail);
+    record_scene_event(ctx, s.id, event);
+}
+
+/// The turn gate: inside an **active turn-based** scene, a command declared
+/// [`SceneClass::Turn`] (a mechanical action — a ruleset's `+roll`, an attack)
+/// runs only for the participant whose turn it is. Everything else — speech,
+/// poses, OOC, inspection, safety — is [`SceneClass::Free`] and always passes.
+/// This is the general seam: rulesets tag their mechanical commands and need no
+/// scene awareness; a paused scene blocks mechanical actions entirely.
+struct TurnGate;
+
+impl CommandGate for TurnGate {
+    fn check(
+        &self,
+        w: &World,
+        reg: &Registry,
+        actor: ObjId,
+        verb: &str,
+        _line: &str,
+    ) -> Result<(), String> {
+        let Some(scene) = w
+            .module_state::<ScenesState>()
+            .and_then(|st| st.active_scene_of(actor))
+        else {
+            return Ok(());
+        };
+        if scene.mode != SceneMode::TurnBased {
+            return Ok(());
+        }
+        // Resolve the verb exactly as dispatch will (lookup honors the prefix
+        // rules, so an abbreviation can't slip a Turn command past the gate);
+        // Free is the default for anything that doesn't resolve to a command.
+        let class = reg
+            .lookup(verb)
+            .map_or(SceneClass::Free, |(spec, _)| spec.scene_class);
+        if class != SceneClass::Turn {
+            return Ok(());
+        }
+        if scene.status == SceneStatus::Paused {
+            return Err(format!(
+                "The timestop (scene #{}) is paused — mechanical actions wait for it to resume.",
+                scene.id
+            ));
+        }
+        if !scene.participants.contains(&actor) {
+            // In the scene as an observer — no turn to take.
+            return Err(
+                "You are observing this scene, not participating — you have no turn to act on."
+                    .to_string(),
+            );
+        }
+        if scene.current_actor() != Some(actor) {
+            let whose = scene
+                .current_actor()
+                .map_or_else(|| "no one".to_string(), |a| display_name(w, a));
+            return Err(format!(
+                "It is not your turn in the scene — it is {whose}'s (round {}). \
+                 Wait, or ask the facilitator to advance the turn.",
+                scene.round
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// `Rolled` observer: record a mechanical resolution into an active scene's log.
+fn on_rolled(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
+    let WorldEvent::Rolled { who, room, summary } = ev else {
+        return;
+    };
+    let Some(s) = active_scene_at(ctx.w, *room) else {
+        return;
+    };
+    let detail = serde_json::json!({ "summary": summary });
+    let event = SceneEvent::new(&s, ctx.w.now(), SceneEventKind::Rolled, Some(*who), detail);
     record_scene_event(ctx, s.id, event);
 }
 

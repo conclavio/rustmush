@@ -71,6 +71,22 @@ pub enum ArgShape {
 /// from files, `@command/override` tooling — without `Box::leak` tricks.
 /// Compiled-in call sites stay literal-friendly via `.into()`.
 ///
+/// How a command relates to a turn-based scene (a timestop). Declared per
+/// command so the scene system can enforce turn order **generally** — any
+/// ruleset marks its mechanical commands [`Turn`](SceneClass::Turn) and the
+/// scene gate does the rest, with no ruleset↔scene coupling.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum SceneClass {
+    /// Always allowed, turn or not (speech, poses, OOC, inspection, safety) —
+    /// the default.
+    #[default]
+    Free,
+    /// A mechanical action (`+roll`, an attack) that, inside a **turn-based**
+    /// scene, only the participant whose turn it is may run. Outside a scene it
+    /// behaves normally.
+    Turn,
+}
+
 /// `CommandSpec` implements [`Default`]; registration sites are expected to
 /// use struct-update syntax (`..CommandSpec::default()`) so that adding new
 /// spec fields later is a non-breaking change (the module API freezes in
@@ -94,6 +110,8 @@ pub struct CommandSpec {
     pub lock: Option<LockExpr>,
     /// One-paragraph usage help, rendered by `help <cmd>`.
     pub help: String,
+    /// Turn-based-scene relationship (default [`SceneClass::Free`]).
+    pub scene_class: SceneClass,
 }
 
 impl Default for CommandSpec {
@@ -109,6 +127,7 @@ impl Default for CommandSpec {
             power: None,
             lock: None,
             help: String::new(),
+            scene_class: SceneClass::Free,
         }
     }
 }
@@ -354,9 +373,18 @@ pub trait CommandGate: Send + Sync {
     /// `verb` (already prefix-expanded; switches stripped; original case).
     /// `line` is the whole expanded, trimmed command line — the same query
     /// dispatch will hand to exit matching — so a gate can refuse a line that
-    /// resolves to an exit. Return `Err(reason)` to refuse the whole line
-    /// with `reason` shown to the actor.
-    fn check(&self, w: &World, actor: ObjId, verb: &str, line: &str) -> Result<(), String>;
+    /// resolves to an exit. `reg` is the live registry, so a gate can resolve
+    /// the verb to its [`CommandSpec`] (e.g. to read [`SceneClass`]) — read-only.
+    /// Return `Err(reason)` to refuse the whole line with `reason` shown to the
+    /// actor.
+    fn check(
+        &self,
+        w: &World,
+        reg: &Registry,
+        actor: ObjId,
+        verb: &str,
+        line: &str,
+    ) -> Result<(), String>;
 }
 
 /// A **post-command-table** fallback matcher (design doc §3.1 "module
@@ -739,7 +767,7 @@ pub fn dispatch(reg: &Registry, w: &mut World, actor: ObjId, line: &str, out: &m
         let (head, _) = split_head(line);
         let verb = head.split('/').next().unwrap_or("");
         for gate in &reg.command_gates {
-            if let Err(reason) = gate.check(w, actor, verb, line) {
+            if let Err(reason) = gate.check(w, reg, actor, verb, line) {
                 out.error(actor, reason);
                 return;
             }
@@ -1053,6 +1081,7 @@ mod tests {
             fn check(
                 &self,
                 _w: &World,
+                _reg: &Registry,
                 _actor: ObjId,
                 verb: &str,
                 _line: &str,
@@ -1118,6 +1147,7 @@ mod tests {
             fn check(
                 &self,
                 _w: &World,
+                _reg: &Registry,
                 _actor: ObjId,
                 verb: &str,
                 _line: &str,

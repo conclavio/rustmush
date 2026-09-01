@@ -404,6 +404,7 @@ fn render_event(w: &World, ev: &SceneEvent) -> String {
         SceneEventKind::Released => format!("{who} was released from the scene."),
         SceneEventKind::Ended => "The scene ended.".to_string(),
         SceneEventKind::Said => format!("{who} [{}]: {}", s("narr"), s("text")),
+        SceneEventKind::Rolled => format!("{who} rolled: {}", s("summary")),
         SceneEventKind::Joined => format!("{who} arrives."),
         SceneEventKind::Left => format!("{who} leaves."),
     }
@@ -481,6 +482,7 @@ fn recap_line(ctx: &Ctx<'_>, ev: &SceneEvent) -> Option<String> {
             "emit" | "spoof" => s("text"),
             _ => format!("{who}: {}", s("text")),
         }),
+        SceneEventKind::Rolled => Some(format!("{who} rolls — {}", s("summary"))),
         SceneEventKind::Joined => Some(format!("{who} arrives.")),
         SceneEventKind::Left => Some(format!("{who} departs.")),
         SceneEventKind::Ended => Some("The scene ends.".to_string()),

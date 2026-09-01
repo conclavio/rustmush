@@ -66,8 +66,8 @@ pub use attr::{Attr, AttrFlags, AttrMap, AttrValue, UncasedName};
 pub use clock::{CivilDate, GameClock, Season, TimeOfDay};
 pub use cmd::{
     AliasOutcome, AliasStage, ArgShape, CmdError, CommandFallback, CommandGate, CommandHandler,
-    CommandSpec, Ctx, HelpTopic, LookupErr, ParsedArgs, Registry, RegistryError, SwitchSet,
-    dispatch,
+    CommandSpec, Ctx, HelpTopic, LookupErr, ParsedArgs, Registry, RegistryError, SceneClass,
+    SwitchSet, dispatch,
 };
 pub use commands::{
     event_subject, ignore_list, is_ignoring, narrative_actor, register_core_commands,

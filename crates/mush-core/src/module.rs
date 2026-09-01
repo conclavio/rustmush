@@ -392,6 +392,9 @@ pub enum WorldEventKind {
     /// per-observer projection has already resolved which onlookers noticed
     /// it. Observers file intel for the carried witness set — no re-gate.
     PowerUsed,
+    /// A mechanical action (a dice roll) resolved — the scene system records
+    /// it into the active scene's event log.
+    Rolled,
 }
 
 /// A world mutation, delivered to subscribed observers **post-mutation** in
@@ -471,6 +474,17 @@ pub enum WorldEvent {
         /// A short description of the act ("used a Discipline (dominate)").
         detail: String,
     },
+    /// `who` resolved a mechanical action (a dice roll) in `room` — the general
+    /// seam a scene records into its event log. Rulesets emit it after a roll;
+    /// the scene system logs it. `summary` is the human one-liner.
+    Rolled {
+        /// Who rolled.
+        who: ObjId,
+        /// The room it happened in.
+        room: ObjId,
+        /// A short human summary of the result.
+        summary: String,
+    },
 }
 
 impl WorldEvent {
@@ -486,6 +500,7 @@ impl WorldEvent {
             WorldEvent::Disconnected { .. } => WorldEventKind::Disconnected,
             WorldEvent::AttrSet { .. } => WorldEventKind::AttrSet,
             WorldEvent::PowerUsed { .. } => WorldEventKind::PowerUsed,
+            WorldEvent::Rolled { .. } => WorldEventKind::Rolled,
         }
     }
 
@@ -497,7 +512,8 @@ impl WorldEvent {
             | WorldEvent::Said { who, .. }
             | WorldEvent::Connected { who }
             | WorldEvent::Disconnected { who }
-            | WorldEvent::PowerUsed { who, .. } => *who,
+            | WorldEvent::PowerUsed { who, .. }
+            | WorldEvent::Rolled { who, .. } => *who,
             WorldEvent::ObjCreated { creator, .. } => *creator,
             WorldEvent::ObjDestroyed { obj } | WorldEvent::AttrSet { obj, .. } => *obj,
         }

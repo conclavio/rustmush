@@ -14,6 +14,11 @@ While a timestop is running:
   drives it.
 - **Turns and rounds are tracked.** Participants act in order; when everyone
   has acted the round advances.
+- **Mechanical actions wait for your turn.** Dice (`+roll`) and other
+  mechanical commands only work on the participant's own turn while the scene
+  is turn-based; speech, poses, and OOC are always free. A paused scene blocks
+  mechanical actions until it resumes. Each public roll is recorded in the
+  scene's log and recap.
 - **The scene keeps its own clock.** IC time inside the scene is the moment it
   began plus the rounds elapsed — a fight played out over several real days is
   still only seconds of in-character time, and the outside world's clock keeps

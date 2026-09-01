@@ -5,11 +5,14 @@
 
 use std::collections::HashMap;
 
+use std::sync::Arc;
+
 use mush_core::engine::{Effects, Engine, Inbound};
-use mush_core::module::emit_world_event;
+use mush_core::module::{GameModule, ModError, Registrar, emit_world_event};
 use mush_core::{
-    GOD, ModuleBootData, ModuleOp, ObjId, ObjKind, Outbox, Registry, Role, World, WorldEvent,
-    register_core_commands, register_engine_commands,
+    ArgShape, CmdError, CommandSpec, Ctx, GOD, ModuleBootData, ModuleOp, ObjId, ObjKind, Outbox,
+    Registry, Role, SceneClass, World, WorldEvent, register_core_commands,
+    register_engine_commands,
 };
 use mush_proto::{NarrativeKind, OutputEvent};
 use mush_scenes::{
@@ -30,6 +33,32 @@ struct Rig {
     nick: ObjId,
     ann: ObjId,
     npc: ObjId,
+}
+
+/// A module providing a `Turn`-class mechanical command and a `Free` one, to
+/// exercise the general turn-gating seam without pulling in a whole ruleset.
+struct RollTestModule;
+
+impl GameModule for RollTestModule {
+    fn name(&self) -> &'static str {
+        "rolltest"
+    }
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.command(
+            CommandSpec {
+                name: "+testroll".into(),
+                shape: ArgShape::None,
+                scene_class: SceneClass::Turn,
+                ..CommandSpec::default()
+            },
+            Arc::new(|ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+                let actor = ctx.actor;
+                ctx.out.sys_to_actor(actor, "test", "you rolled");
+                Ok(())
+            }),
+        )?;
+        Ok(())
+    }
 }
 
 fn rig() -> Rig {
@@ -53,6 +82,7 @@ fn rig() -> Rig {
         vec![
             Box::new(mush_canon::CanonModule::new()),
             Box::new(ScenesModule::new()),
+            Box::new(RollTestModule),
         ],
     )
     .unwrap();
@@ -526,6 +556,105 @@ fn ending_a_scene_records_a_canon_event() {
     r.engine.world.set_connected(outsider, true);
     let t = texts(&run(&mut r.engine, outsider, "+chronicle"));
     assert!(!t.contains("A scene concluded"), "restricted canon leaked: {t}");
+}
+
+/// Emit a raw mechanical roll event (simulating a ruleset's public +roll).
+fn emit_rolled(engine: &mut Engine, who: ObjId, room: ObjId, summary: &str) {
+    let mut out = Outbox::new();
+    emit_world_event(
+        &engine.registry,
+        &mut engine.world,
+        &mut out,
+        &WorldEvent::Rolled { who, room, summary: summary.into() },
+    );
+}
+
+#[test]
+fn turn_class_commands_are_gated_to_the_current_actor() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop"); // order [Nick, Ann, Barkeep], turn Nick
+    // Nick (current turn) may run the mechanical command.
+    let out = run(&mut r.engine, r.nick, "+testroll");
+    assert!(texts(&out).contains("you rolled"), "current actor rolls: {}", texts(&out));
+    // Ann (not her turn) is blocked with a turn message.
+    let out = run(&mut r.engine, r.ann, "+testroll");
+    assert!(texts(&out).contains("not your turn"), "out-of-turn blocked: {}", texts(&out));
+    // Free commands (speech) are never gated.
+    let out = run(&mut r.engine, r.ann, "say i wait");
+    assert!(!texts(&out).contains("not your turn"), "speech is Free: {}", texts(&out));
+    // Advance the turn to Ann: now she may roll and Nick may not.
+    run(&mut r.engine, r.nick, "+timestop/next");
+    assert!(texts(&run(&mut r.engine, r.ann, "+testroll")).contains("you rolled"));
+    assert!(texts(&run(&mut r.engine, r.nick, "+testroll")).contains("not your turn"));
+}
+
+#[test]
+fn an_observer_is_told_they_have_no_turn_not_wait_your_turn() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    let uid = scenes(&r.engine).active_scene_of(r.nick).unwrap().id;
+    // Inject an observer (cut 1 has no join-as-observer command, so this is a
+    // latent path — but the gate must handle it: an observer has no turn).
+    let watcher = r.engine.world.create(ObjKind::Player, "Watcher", GOD, Some(r.bar)).unwrap();
+    r.engine.world.set_connected(watcher, true);
+    r.engine
+        .world
+        .module_state_mut::<ScenesState>()
+        .unwrap()
+        .scenes
+        .get_mut(&uid)
+        .unwrap()
+        .observers
+        .push(watcher);
+    r.engine.world.set_exclusive_scene_member(watcher);
+    let out = run(&mut r.engine, watcher, "+testroll");
+    let t = texts(&out);
+    assert!(t.contains("observing"), "observer gets a coherent message: {t}");
+    assert!(!t.contains("not your turn"), "not the wait-your-turn message: {t}");
+}
+
+#[test]
+fn a_paused_scene_blocks_mechanical_actions_entirely() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    run(&mut r.engine, r.nick, "+timestop/pause");
+    // Even the current actor cannot roll while paused.
+    let out = run(&mut r.engine, r.nick, "+testroll");
+    assert!(texts(&out).contains("paused"), "paused blocks rolls: {}", texts(&out));
+}
+
+#[test]
+fn turn_gating_does_not_touch_actors_outside_a_scene() {
+    let mut r = rig();
+    // No timestop running: the mechanical command is ungated.
+    let out = run(&mut r.engine, r.nick, "+testroll");
+    assert!(texts(&out).contains("you rolled"), "ungated outside a scene: {}", texts(&out));
+}
+
+#[test]
+fn a_public_roll_is_recorded_into_the_scene_log() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    let uid = scenes(&r.engine).active_scene_of(r.nick).unwrap().id;
+    emit_rolled(&mut r.engine, r.nick, r.bar, "Nick rolls 5 vs 6: 2 successes");
+    let rolled: Vec<_> = log_entries(&r.engine, uid)
+        .into_iter()
+        .filter(|e| e.kind == SceneEventKind::Rolled)
+        .collect();
+    assert_eq!(rolled.len(), 1, "the roll is a scene event");
+    assert_eq!(rolled[0].actor, Some(r.nick));
+    assert!(rolled[0].detail["summary"].as_str().unwrap().contains("2 successes"));
+    // It shows in the recap and the log.
+    let out = run(&mut r.engine, r.nick, "+recap");
+    assert!(texts(&out).contains("Nick rolls — Nick rolls 5 vs 6: 2 successes"), "{}", texts(&out));
+    // A roll in another room is not this scene's.
+    let hall = r.engine.world.create(ObjKind::Room, "Hall", GOD, None).unwrap();
+    emit_rolled(&mut r.engine, r.nick, hall, "unrelated");
+    let rolled = log_entries(&r.engine, uid)
+        .into_iter()
+        .filter(|e| e.kind == SceneEventKind::Rolled)
+        .count();
+    assert_eq!(rolled, 1, "a roll elsewhere is not recorded here");
 }
 
 #[test]
