@@ -181,24 +181,40 @@ async fn write_with_retry(
                 // simply gone — log the affected keys so an operator can
                 // repair by hand.
                 if !batch.module_ops.is_empty() {
-                    let keys: Vec<String> = batch
-                        .module_ops
-                        .iter()
-                        .map(|op| {
-                            let key = match &op.op {
-                                mush_store::ModuleWrite::JsonSet { key, .. }
-                                | mush_store::ModuleWrite::Del { key }
-                                | mush_store::ModuleWrite::StreamAppend { key, .. } => key,
-                            };
-                            format!("mod:{}:{}", op.ns, key)
-                        })
-                        .collect();
+                    let mut keys: Vec<String> = Vec::new();
+                    let mut ledger_keys: Vec<String> = Vec::new();
+                    for op in &batch.module_ops {
+                        let key = match &op.op {
+                            mush_store::ModuleWrite::JsonSet { key, .. }
+                            | mush_store::ModuleWrite::Del { key }
+                            | mush_store::ModuleWrite::StreamAppend { key, .. } => key,
+                        };
+                        let full = format!("mod:{}:{}", op.ns, key);
+                        if mush_core::is_log_key(key) {
+                            ledger_keys.push(full.clone());
+                        }
+                        keys.push(full);
+                    }
                     tracing::error!(
                         serial = batch.serial,
                         ?keys,
                         "dropped batch carried module ops that will NOT self-heal \
                          (deletes may resurrect at next boot; stream appends are lost)"
                     );
+                    if !ledger_keys.is_empty() {
+                        // Authoritative-ledger breach: an open-chunk rewrite
+                        // self-heals on the log's next append, but a dropped
+                        // seal-and-roll-over op strands that chunk's entries —
+                        // the in-RAM ledger has already advanced to the next
+                        // chunk and will never re-persist the sealed one.
+                        tracing::error!(
+                            serial = batch.serial,
+                            ?ledger_keys,
+                            "DROPPED BATCH CARRIED AUTHORITATIVE LEDGER APPENDS — event history \
+                             may be permanently lost; audit the affected log(s) and mark any \
+                             dependent scene/canon record damaged"
+                        );
+                    }
                 }
                 tracing::error!(
                     serial = batch.serial, error = %e,

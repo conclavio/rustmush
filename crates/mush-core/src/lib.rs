@@ -52,6 +52,7 @@ pub mod cmd;
 pub mod commands;
 pub mod engine;
 pub mod flags;
+pub mod ledger;
 pub mod lock;
 pub mod matchit;
 pub mod module;
@@ -76,6 +77,7 @@ pub use engine::{
     WorldCommand, register_engine_commands,
 };
 pub use flags::{Flags, Powers, Role};
+pub use ledger::{Ledger, LedgerChunk, LedgerEntry, chunk_key, is_log_key};
 pub use lock::{LockExpr, LockParseError, LockType, eval_lock, glob_match, parse_lock};
 pub use matchit::{MatchErr, match_object};
 pub use module::{

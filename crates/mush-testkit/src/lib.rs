@@ -233,6 +233,21 @@ impl TestWorld {
         self.engine.take_module_ops()
     }
 
+    /// Drain the whole write batch a command produced — the dirty object set
+    /// **and** the module ops — exactly as the world task folds them into one
+    /// `WriteBatch` per step. The boundary rig for ledger consumers: assert
+    /// that a command's world mutation and its ledger append land in the SAME
+    /// drained batch, so they commit atomically (see
+    /// [`WriteBatchView::asserts_atomic_with_ledger`]).
+    ///
+    /// Draining is destructive (it clears both the dirty set and the op
+    /// queue), so call it once per command you are asserting on.
+    pub fn drain_write_batch(&mut self) -> WriteBatchView {
+        let dirty = self.engine.world.take_dirty();
+        let module_ops = self.engine.take_module_ops();
+        WriteBatchView { dirty, module_ops }
+    }
+
     /// Hand each module its persisted boot data (reboot tests): a thin
     /// forward to [`Engine::modules_loaded`], with output discarded.
     ///
@@ -311,6 +326,74 @@ impl TestWorld {
 impl Default for TestWorld {
     fn default() -> Self {
         TestWorld::new()
+    }
+}
+
+/// A modeled view of the single `WriteBatch` a command produced — the dirty
+/// object ids the persistence layer would upsert, plus the module ops queued
+/// in the same step. Because the world task folds exactly these two into one
+/// batch per command, anything present here commits **atomically**. The
+/// boundary rig for ledger consumers (returned by
+/// [`TestWorld::drain_write_batch`]).
+#[derive(Clone, Debug, Default)]
+pub struct WriteBatchView {
+    /// Objects mutated this command (upserted by the persistence layer).
+    pub dirty: std::collections::BTreeSet<ObjId>,
+    /// Module persistence ops queued this command.
+    pub module_ops: Vec<ModuleOp>,
+}
+
+impl WriteBatchView {
+    /// The ledger-chunk ops in this batch (`log:*` `JsonSet`s), as
+    /// `(namespace, log_id, chunk)` with the decoded chunk document.
+    #[must_use]
+    pub fn ledger_appends(&self) -> Vec<(SmolStr, SmolStr, mush_core::LedgerChunk)> {
+        self.module_ops
+            .iter()
+            .filter_map(|op| match &op.op {
+                mush_core::ModuleWrite::JsonSet { key, value }
+                    if mush_core::is_log_key(key) =>
+                {
+                    // `log:{id}:{chunk}` — the log id is everything between the
+                    // prefix and the final `:` segment.
+                    let rest = key.strip_prefix("log:")?;
+                    let (log_id, _) = rest.rsplit_once(':')?;
+                    let chunk = serde_json::from_value::<mush_core::LedgerChunk>(value.clone()).ok()?;
+                    Some((op.ns.clone(), SmolStr::new(log_id), chunk))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Whether this batch appended to the given `(namespace, log_id)` — i.e.
+    /// the command produced at least one ledger op for that log.
+    #[must_use]
+    pub fn appended_to(&self, ns: &str, log_id: &str) -> bool {
+        self.ledger_appends()
+            .iter()
+            .any(|(n, id, _)| n == ns && id == log_id)
+    }
+
+    /// Assert the atomic pairing a ledger consumer must maintain: `obj` was
+    /// mutated **and** an entry was appended to `(ns, log_id)` in this one
+    /// batch — so the mutation and its record commit together or not at all.
+    ///
+    /// # Panics
+    ///
+    /// Panics (with a diagnostic) if either half is missing — which is exactly
+    /// the mutate-without-recording (or record-without-mutating) divergence the
+    /// ledger substrate exists to prevent.
+    pub fn asserts_atomic_with_ledger(&self, obj: ObjId, ns: &str, log_id: &str) {
+        let dirtied = self.dirty.contains(&obj);
+        let recorded = self.appended_to(ns, log_id);
+        assert!(
+            dirtied && recorded,
+            "write-batch boundary violated: object {obj} dirtied={dirtied}, \
+             ledger {ns}:{log_id} appended={recorded} — a mutation and its \
+             ledger entry must land in ONE batch (ops: {:?})",
+            self.module_ops
+        );
     }
 }
 

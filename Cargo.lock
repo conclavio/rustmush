@@ -2250,6 +2250,7 @@ version = "0.1.0"
 dependencies = [
  "mush-core",
  "mush-proto",
+ "serde_json",
  "smol_str",
 ]
 
