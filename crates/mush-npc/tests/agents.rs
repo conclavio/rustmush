@@ -22,6 +22,7 @@ use mush_npc::{
     NpcModule, NpcTier, PROFILE_ATTR, SUMMARY_ATTR, Secrecy, TurnKind, TurnSnapshot, intel_key,
     pool_key, run_npc_turn_async, user_prompt,
 };
+use mush_faction::Principal;
 use mush_ruleset::{AbilityError, AbilityOutcome, AgentCapabilityProfile, AgentToolSpec};
 use smol_str::SmolStr;
 
@@ -1354,7 +1355,7 @@ fn attr_flag(w: &World, obj: ObjId, name: &str) -> bool {
 fn informant(principal: ObjId, loyal: bool, watch: &[&str]) -> AgentProfile {
     AgentProfile {
         persona: "a watchful informant".into(),
-        principal: Some(principal),
+        principal: Some(Principal::Character(principal)),
         loyal,
         watch: watch.iter().map(|s| s.to_string()).collect(),
         ..AgentProfile::default()
@@ -1374,7 +1375,7 @@ async fn informant_files_watched_subject_speech() {
 
     rig.run(bob, "say the shipment lands at midnight");
 
-    let recs = rig.host().intel.for_principal(boss);
+    let recs = rig.host().intel.for_principal(Principal::Character(boss));
     assert_eq!(recs.len(), 1, "one record filed for the principal");
     let r = &recs[0];
     assert_eq!(r.informant, spy);
@@ -1410,7 +1411,7 @@ async fn informant_files_watched_subject_arrival() {
 
     rig.run(bob, "bar"); // traverse into the Bar
 
-    let recs = rig.host().intel.for_principal(boss);
+    let recs = rig.host().intel.for_principal(Principal::Character(boss));
     assert_eq!(recs.len(), 1, "arrival filed");
     assert_eq!(recs[0].kind, IntelKind::Arrived);
     assert_eq!(recs[0].subject, bob);
@@ -1430,7 +1431,7 @@ async fn unwatched_ordinary_subject_is_not_filed() {
     rig.run(bob, "say just passing through");
 
     assert!(
-        rig.host().intel.for_principal(boss).is_empty(),
+        rig.host().intel.for_principal(Principal::Character(boss)).is_empty(),
         "an unwatched, non-notable subject files nothing"
     );
 }
@@ -1491,7 +1492,7 @@ async fn never_reports_principal_or_self() {
 
     rig.run(boss, "say I am here");
     assert!(
-        rig.host().intel.for_principal(boss).is_empty(),
+        rig.host().intel.for_principal(Principal::Character(boss)).is_empty(),
         "the principal is never a subject of its own intel"
     );
 }
@@ -1518,7 +1519,7 @@ async fn perceived_concealed_subject_is_always_filed() {
 
     rig.run(bob, "say you shouldn't be able to see me");
 
-    let recs = rig.host().intel.for_principal(boss);
+    let recs = rig.host().intel.for_principal(Principal::Character(boss));
     assert_eq!(recs.len(), 1, "a pierced concealment is always filed");
     assert_eq!(recs[0].kind, IntelKind::Concealed);
     assert!(
@@ -1549,7 +1550,7 @@ async fn power_use_files_intel_for_carried_witnesses_only() {
 
     rig.power_used(vlad, bar, &[spy], "used Dominate");
 
-    let recs = rig.host().intel.for_principal(boss);
+    let recs = rig.host().intel.for_principal(Principal::Character(boss));
     assert_eq!(recs.len(), 1, "exactly one poweruse record filed");
     assert_eq!(recs[0].kind, IntelKind::PowerUse);
     assert_eq!(recs[0].subject, vlad);
@@ -1633,7 +1634,7 @@ async fn npc_actor_power_use_files_intel_for_a_witnessing_informant() {
     .to_string();
     rig.complete(caster, 1, &payload);
 
-    let recs = rig.host().intel.for_principal(boss);
+    let recs = rig.host().intel.for_principal(Principal::Character(boss));
     assert_eq!(
         recs.len(),
         1,
@@ -1667,7 +1668,7 @@ async fn unperceived_subject_is_never_filed() {
     rig.run(bob, "say can you hear me?");
 
     assert!(
-        rig.host().intel.for_principal(boss).is_empty(),
+        rig.host().intel.for_principal(Principal::Character(boss)).is_empty(),
         "an informant files nothing about a subject it could not perceive (P1)"
     );
 }
@@ -1685,9 +1686,9 @@ async fn intel_survives_on_world_loaded_round_trip() {
     rig.run(bob, "say the vault code is on the ledger");
 
     // Capture the log as persistence would serialize it.
-    let recs: Vec<IntelRecord> = rig.host().intel.for_principal(boss).to_vec();
+    let recs: Vec<IntelRecord> = rig.host().intel.for_principal(Principal::Character(boss)).to_vec();
     assert_eq!(recs.len(), 1);
-    let kv = vec![(intel_key(boss), serde_json::to_value(&recs).unwrap())];
+    let kv = vec![(intel_key(Principal::Character(boss)), serde_json::to_value(&recs).unwrap())];
     let mut boot = std::collections::HashMap::new();
     boot.insert(
         SmolStr::new("npc"),
@@ -1699,7 +1700,7 @@ async fn intel_survives_on_world_loaded_round_trip() {
 
     // A fresh server booted with only that boot data reloads the log.
     let rig2 = Rig::with_boot(boot);
-    let reloaded = rig2.host().intel.for_principal(boss);
+    let reloaded = rig2.host().intel.for_principal(Principal::Character(boss));
     assert_eq!(reloaded.len(), 1, "the intel doc reloaded");
     assert_eq!(reloaded[0].subject, bob);
     assert_eq!(reloaded[0].kind, IntelKind::Spoke);
@@ -1723,14 +1724,14 @@ async fn filing_does_not_leak_across_principals() {
     rig.run(target, "say nothing to see here");
 
     // Each principal got exactly one record; neither sees the other's.
-    assert_eq!(rig.host().intel.for_principal(boss_a).len(), 1);
-    assert_eq!(rig.host().intel.for_principal(boss_b).len(), 1);
+    assert_eq!(rig.host().intel.for_principal(Principal::Character(boss_a)).len(), 1);
+    assert_eq!(rig.host().intel.for_principal(Principal::Character(boss_b)).len(), 1);
     assert!(
         rig.host()
             .intel
-            .for_principal(boss_a)
+            .for_principal(Principal::Character(boss_a))
             .iter()
-            .all(|r| r.principal == boss_a)
+            .all(|r| r.principal == Principal::Character(boss_a))
     );
 }
 
@@ -1752,7 +1753,7 @@ async fn agent_set_and_show_informant_fields() {
 
     // The profile persisted the resolved principal id + lowercased watch list.
     let p = read_profile_attr(&rig, npc);
-    assert_eq!(p.principal, Some(boss));
+    assert_eq!(p.principal, Some(Principal::Character(boss)));
     assert!(!p.loyal);
     assert_eq!(p.watch, vec!["bob".to_string(), "the docks".to_string()]);
 
@@ -1858,11 +1859,11 @@ async fn intel_pull_clear_empties_the_log() {
     let _spy = rig.npc("Spy", bar, &informant(boss, true, &["bob"]));
     let bob = rig.player("Bob", bar, true);
     rig.run(bob, "say something worth filing");
-    assert_eq!(rig.host().intel.for_principal(boss).len(), 1);
+    assert_eq!(rig.host().intel.for_principal(Principal::Character(boss)).len(), 1);
 
     let out = rig.actor_sys(boss, "+intel/clear");
-    assert!(out.contains("Cleared 1 intel record"), "{out}");
-    assert!(rig.host().intel.for_principal(boss).is_empty());
+    assert!(out.contains("Cleared 1 personal intel record"), "{out}");
+    assert!(rig.host().intel.for_principal(Principal::Character(boss)).is_empty());
 
     let out = rig.actor_sys(boss, "+intel");
     assert!(out.contains("no intel on file"), "{out}");
@@ -1894,4 +1895,155 @@ async fn agent_show_reports_filed_count() {
 
     let out = rig.staff("@agent/show Spy");
     assert!(out.contains("Intel filed: 1 record"), "{out}");
+}
+
+/// M21: an informant whose principal is a FACTION files into the faction's
+/// shared pool; `+intel` merges the pool for members whose level passes the
+/// faction's `intel_level` gate, tags those lines with the faction name, and
+/// keeps them from everyone below the gate.
+#[tokio::test]
+async fn informant_files_to_faction_pool_gated_by_clearance() {
+    let mut rig = Rig::new();
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    let officer = rig.player("Officer", bar, true);
+    let mook = rig.player("Mook", bar, true);
+
+    // Faction "Undertow": the pool is readable at level 2+.
+    let mut fs = mush_faction::FactionState::default();
+    let fid = fs.alloc_faction_id();
+    let mut f = mush_faction::Faction::new(fid, "Undertow");
+    f.intel_level = 2;
+    fs.factions.insert(fid, f);
+    for (who, level) in [(officer, 2u8), (mook, 1u8)] {
+        fs.members.insert(
+            (who, fid),
+            mush_faction::FactionMembership {
+                character: who,
+                faction: fid,
+                title: SmolStr::default(),
+                level,
+                visibility: mush_faction::Visibility::Public,
+                since: 0,
+            },
+        );
+    }
+    rig.engine.world.module_state_insert(fs);
+
+    let profile = AgentProfile {
+        persona: "a gang lookout".into(),
+        principal: Some(Principal::faction(fid)),
+        loyal: true,
+        watch: vec!["bob".to_string()],
+        ..AgentProfile::default()
+    };
+    rig.npc("Lookout", bar, &profile);
+    let bob = rig.player("Bob", bar, true);
+
+    rig.run(bob, "say the cameras go dark friday");
+
+    // Filed in the faction pool, not in any character's bucket.
+    let pool = Principal::faction(fid);
+    assert_eq!(rig.host().intel.for_principal(pool).len(), 1);
+    assert!(
+        rig.host()
+            .intel
+            .for_principal(Principal::Character(officer))
+            .is_empty()
+    );
+
+    // The cleared member reads it via +intel, tagged with the faction name.
+    let out = rig.actor_sys(officer, "+intel");
+    assert!(out.contains("cameras go dark friday"), "{out}");
+    assert!(out.contains("[to Undertow]"), "{out}");
+
+    // The under-cleared member sees nothing of the pool, and clearing their
+    // personal log never touches the shared pool.
+    let out = rig.actor_sys(mook, "+intel");
+    assert!(out.contains("no intel on file"), "{out}");
+    let _ = rig.actor_sys(officer, "+intel/clear");
+    assert_eq!(
+        rig.host().intel.for_principal(pool).len(),
+        1,
+        "+intel/clear must not wipe the shared faction pool"
+    );
+}
+
+/// M21 leak review: `@agent` is Builder-gated, below the faction registry's
+/// staff bar, so its faction lookups and labels must re-apply the
+/// hidden-faction projection — no existence oracle, no name leak.
+#[tokio::test]
+async fn hidden_factions_never_leak_through_agent_commands() {
+    let mut rig = Rig::new();
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    rig.engine.world.move_to(GOD, bar).unwrap();
+    let builder = rig.player("Bella", bar, true);
+    rig.engine
+        .world
+        .get_mut(builder)
+        .unwrap()
+        .flags
+        .insert(mush_core::Flags::BUILDER);
+
+    // A hidden faction the builder is not a member of.
+    let mut fs = mush_faction::FactionState::default();
+    let fid = fs.alloc_faction_id();
+    let mut f = mush_faction::Faction::new(fid, "Black Hand");
+    f.hidden = true;
+    fs.factions.insert(fid, f);
+    rig.engine.world.module_state_insert(fs);
+
+    rig.npc("Spider", bar, &AgentProfile::default());
+
+    // The Builder's probe answers exactly like a missing faction.
+    let out = rig.actor_sys(builder, "@agent/set Spider/principal=faction:Black Hand");
+    assert!(out.contains("No such faction."), "{out}");
+    assert!(
+        !out.contains("Black Hand") || !out.contains("Set principal"),
+        "hidden faction must not bind for a Builder: {out}"
+    );
+
+    // Faction staff (GOD) bind it fine — case-insensitively.
+    let out = rig.staff("@agent/set Spider/principal=FACTION:black hand");
+    assert!(out.contains("faction Black Hand"), "{out}");
+
+    // The Builder viewing the profile sees a masked label, never the name;
+    // staff see the real name.
+    let out = rig.actor_sys(builder, "@agent Spider");
+    assert!(out.contains("an undisclosed faction"), "{out}");
+    assert!(!out.contains("Black Hand"), "hidden name leaked: {out}");
+    let out = rig.staff("@agent Spider");
+    assert!(out.contains("faction Black Hand"), "{out}");
+}
+
+/// M21: an informant whose faction principal no longer exists files nothing —
+/// a destroyed faction's pool is readable by no one, so filing into it would
+/// only churn an orphaned doc.
+#[tokio::test]
+async fn informant_stops_filing_when_principal_faction_is_gone() {
+    let mut rig = Rig::new();
+    rig.set_now(1000);
+    let bar = rig.room("Bar");
+    // Faction state present, but faction #0 does not exist (destroyed).
+    rig.engine
+        .world
+        .module_state_insert(mush_faction::FactionState::default());
+    let profile = AgentProfile {
+        persona: "a gang lookout".into(),
+        principal: Some(Principal::faction(mush_faction::FactionId(0))),
+        loyal: true,
+        watch: vec!["bob".to_string()],
+        ..AgentProfile::default()
+    };
+    rig.npc("Lookout", bar, &profile);
+    let bob = rig.player("Bob", bar, true);
+    rig.run(bob, "say the shipment lands friday");
+    assert!(
+        rig.host()
+            .intel
+            .for_principal(Principal::faction(mush_faction::FactionId(0)))
+            .is_empty(),
+        "no filing into a dead faction's pool"
+    );
 }

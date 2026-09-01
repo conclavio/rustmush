@@ -1,7 +1,8 @@
 # Informants and Intel
 
 Some NPC agents are **informants**: staff can set an NPC to quietly report what
-it witnesses to a **principal** (its domitor, patron, or employer — a player).
+it witnesses to a **principal** — a player (its domitor, patron, or employer),
+or a **faction**, whose shared pool the faction's cleared members read.
 The NPC files short, provenance-tagged **intel records**; the principal pulls
 them on demand with `+intel`. Nothing is ever pushed at you — you debrief your
 assets when you want to.
@@ -16,15 +17,19 @@ produces no record. Your asset never invents intel.
 
   +intel              List everything your informants have filed FOR YOU,
                       newest first: the subject, what happened, where, how it
-                      is known, and how long ago.
+                      is known, and how long ago. If your rank in a faction
+                      clears you to read its shared pool, those records appear
+                      too, tagged `[to <faction>]`.
   +intel <subject>    Show only what has been filed about one subject (by name,
                       or a dbref like #42). A subject who has since left is still
                       findable by the name your asset recorded.
-  +intel/clear        Clear your own intel log.
+  +intel/clear        Clear your own personal log. Faction pools are shared —
+                      they are never cleared from here.
 
-You only ever see records filed for you. Two principals running assets in the
-same room keep entirely separate logs; there is no way to read another player's
-intel.
+You only ever see records filed for you, plus the faction pools your rank
+entitles you to (each faction sets the membership level its pool opens at).
+Two principals running assets in the same room keep entirely separate logs;
+there is no way to read another player's intel.
 
 A record reads roughly:
 
@@ -65,6 +70,12 @@ Set the informant fields on the NPC's profile with `@agent/set` (Builder+):
                                       character at set-time; an empty value
                                       (`principal=`) clears it — the NPC then
                                       files nothing.
+  @agent/set <npc>/principal=faction:<name>
+                                      Report to a FACTION's shared pool
+                                      instead: members whose level passes the
+                                      faction's intel gate read it via +intel.
+                                      A gang's lookout reports to the gang;
+                                      a ghoul still reports to its domitor.
   @agent/set <npc>/loyal=<yes|no>     The willingness gate. yes (default): a
                                       loyal asset files what it perceives. no:
                                       it reports nothing, however much it sees.
@@ -99,4 +110,4 @@ list.
 
 ## See also
 
-  +intel, help npc, help perception, @agent
+  +intel, help npc, help perception, help faction, @agent

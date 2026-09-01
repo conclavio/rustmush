@@ -23,6 +23,8 @@ mush-ipc.workspace = true
 mush-store.workspace = true
 # The M3 proving modules, wired at boot (modules.rs).
 mush-comsys.workspace = true
+# The M21 faction registry.
+mush-faction.workspace = true
 mush-mail.workspace = true
 mush-jobs.workspace = true
 # The M5 scripting + weather modules.

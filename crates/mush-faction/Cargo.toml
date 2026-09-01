@@ -1,0 +1,24 @@
+[package]
+name = "mush-faction"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Faction registry: organizations, membership, structure edges, resources, territory"
+
+[dependencies]
+mush-core.workspace = true
+mush-comsys.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+futures.workspace = true
+mush-proto.workspace = true
+mush-store.workspace = true
+mush-testkit.workspace = true
+
+[lints]
+workspace = true

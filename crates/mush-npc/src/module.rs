@@ -14,14 +14,16 @@ use mush_core::commands::movement::{find_exit, traverse_exit};
 use mush_core::module::{AsyncCompletion, WorldEvent};
 use mush_core::{
     ArgShape, Attr, CmdError, CommandSpec, Ctx, Deferred, Effect, GameModule, ModError,
-    ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, ObjId, ObjKind, Registrar, Role, TickCadence,
-    World, WorldEventKind, WorldObserver, can_perceive, is_concealed, obj_ref, perm,
+    ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, ObjId, ObjKind, Powers, Registrar, Role,
+    TickCadence, World, WorldEventKind, WorldObserver, can_perceive, is_concealed, obj_ref, perm,
 };
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
 use smol_str::SmolStr;
 
+use mush_faction::{FactionId, FactionState, Principal};
+
 use crate::action::NpcAction;
-use crate::intel::{IntelKind, IntelRecord, IntelStore, intel_key};
+use crate::intel::{IntelKind, IntelRecord, IntelStore, intel_key, parse_intel_key_id};
 use crate::knowledge::{
     Familiarity, KNOWLEDGE_ATTR, LoreEntry, LorePool, NpcKnowledge, Secrecy, familiarity_of,
     pool_key,
@@ -131,7 +133,8 @@ impl GameModule for NpcModule {
                        @agent/set <npc>/<field>=<value> -- edit the profile. Fields: \
                        persona, background, speech, goals, fallback, knows, does_not_know, \
                        tier (major|minor|extra), cooldown (seconds), daily_tokens, enabled, \
-                       principal (a character name; who this NPC reports intel to — empty \
+                       principal (who this NPC reports intel to: a character name, or \
+                       faction:<name> for a faction's shared pool — empty \
                        clears), loyal (yes|no; the willingness gate), watch (\";\"-separated \
                        names/topics of interest). \
                        List fields (goals/fallback/knows/does_not_know/watch) take \
@@ -185,11 +188,14 @@ impl GameModule for NpcModule {
                 switches: vec!["clear".into()],
                 help: "+intel  --  Debrief your informants: list the intel your NPC assets have \
                        filed FOR YOU, newest first (subject, what happened, where, and how long \
-                       ago). Nothing is pushed to you — you pull it here.\n\
+                       ago), plus your factions' shared pools when your rank clears you to read \
+                       them (those lines are tagged [to <faction>]). Nothing is pushed to you — \
+                       you pull it here.\n\
                        +intel <subject>  --  Show only what has been filed about one subject \
                        (by name, or a dbref like #42).\n\
-                       +intel/clear  --  Clear your own intel log.\n\
-                       An asset reports to you only if staff set it to (its principal is you), it \
+                       +intel/clear  --  Clear your own personal log (faction pools are shared \
+                       and are not cleared).\n\
+                       An asset reports only if staff set its principal (you, or a faction), it \
                        is willing (loyal) and active, and it actually PERCEIVED the subject. It \
                        files a watched subject's arrivals/departures and speech, and always \
                        flags anyone it catches trying to stay hidden. See help intel."
@@ -229,10 +235,13 @@ impl GameModule for NpcModule {
                     Err(e) => tracing::error!(%key, error = %e, "npc: unparseable lore pool skipped"),
                 }
             } else if let Some(id) = key.strip_prefix("intel:") {
-                match (id.parse::<u32>(), serde_json::from_value::<Vec<IntelRecord>>(value)) {
-                    (Ok(principal), Ok(records)) => intel.load(ObjId(principal), records),
-                    (Err(e), _) => {
-                        tracing::error!(%key, error = %e, "npc: bad intel principal key skipped")
+                match (
+                    parse_intel_key_id(id),
+                    serde_json::from_value::<Vec<IntelRecord>>(value),
+                ) {
+                    (Some(principal), Ok(records)) => intel.load(principal, records),
+                    (None, _) => {
+                        tracing::error!(%key, "npc: bad intel principal key skipped")
                     }
                     (_, Err(e)) => {
                         tracing::error!(%key, error = %e, "npc: unparseable intel skipped")
@@ -491,8 +500,21 @@ fn file_intel(ctx: &mut Ctx<'_>, npc: ObjId, subject: ObjId, kind: IntelKind, de
     if !profile.loyal || !profile.enabled {
         return; // resentful or parked ⇒ files nothing
     }
-    if subject == npc || subject == principal {
-        return; // never report the informant or the principal itself
+    if subject == npc || principal == Principal::Character(subject) {
+        return; // never report the informant or the (character) principal itself
+    }
+    // A faction principal must still exist: after @faction/destroy the pool
+    // is readable by no one (can_read_intel fails for a missing faction), so
+    // filing into it would only churn an orphaned doc forever.
+    if let Principal::Faction { faction } = principal {
+        let live = ctx
+            .w
+            .module_state::<FactionState>()
+            .is_some_and(|st| st.factions.contains_key(&faction));
+        if !live {
+            tracing::debug!(npc = npc.0, faction = faction.0, "npc: intel principal faction gone; not filing");
+            return;
+        }
     }
     // Notability: a pierced concealment and a witnessed power use are always
     // reported; otherwise the subject must be on the watch list.
@@ -539,6 +561,41 @@ fn file_intel(ctx: &mut Ctx<'_>, npc: ObjId, subject: ObjId, kind: IntelKind, de
     }
 }
 
+/// Whether `who` clears the faction registry's own staff bar (mirrors
+/// `mush-faction`'s admin check): the `FACTION_ADMIN` power or Royalty+.
+/// `@agent` is Builder-gated, which sits BELOW that bar — so every faction
+/// name this module renders or resolves must re-apply the hidden-faction
+/// projection, or `@agent` becomes an existence oracle the faction module
+/// itself carefully refuses to be.
+fn is_faction_staff(w: &World, who: ObjId) -> bool {
+    perm::has_power(w, who, Powers::FACTION_ADMIN) || perm::has_role(w, who, Role::Royalty)
+}
+
+/// Label for a [`Principal`] as shown to `viewer`: the character's name and
+/// dbref, or the faction's name — but a faction the viewer could not see in
+/// `+factions` (hidden, and they are neither a member nor faction staff) is
+/// rendered as "an undisclosed faction", and a dangling id shows its number
+/// to faction staff only.
+fn principal_label(w: &World, viewer: ObjId, p: Principal) -> String {
+    match p {
+        Principal::Character(id) => format!("{} (#{})", display_name(w, id), id.0),
+        Principal::Faction { faction } => {
+            let staff = is_faction_staff(w, viewer);
+            match w
+                .module_state::<FactionState>()
+                .and_then(|st| st.factions.get(&faction).map(|f| (st, f)))
+            {
+                Some((st, f)) if st.faction_listed(viewer, staff, f) => {
+                    format!("faction {}", f.name)
+                }
+                Some(_) => "an undisclosed faction".to_string(),
+                None if staff => format!("faction #{faction} (no longer exists)"),
+                None => "an undisclosed faction".to_string(),
+            }
+        }
+    }
+}
+
 /// Whether `subject` (by primary name, dbref, or alias) is on `profile`'s
 /// watch list. The watch entries are stored lowercased; comparisons are
 /// case-insensitive. An empty watch list matches nothing.
@@ -573,27 +630,58 @@ fn cmd_intel(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let actor = ctx.actor;
 
     if ctx.switches.has("clear") {
+        // Clears the PERSONAL bucket only. Faction pools are shared — one
+        // member must not be able to wipe the whole faction's memory.
         let dropped = ctx
             .state_mut::<NpcHostState>()
-            .map_or(0, |h| h.intel.clear_for(actor));
+            .map_or(0, |h| h.intel.clear_for(Principal::Character(actor)));
         clear_intel(ctx, actor);
         ctx.out.sys_to_actor(
             actor,
             "intel",
-            format!("Cleared {dropped} intel {}.", records_word(dropped)),
+            format!(
+                "Cleared {dropped} personal intel {} (faction pools are shared and stay).",
+                records_word(dropped)
+            ),
         );
         return Ok(());
     }
 
-    // Snapshot the actor's own records (release the state borrow before we emit
-    // and before any `match_object` read of the world).
-    let records: Vec<IntelRecord> = ctx
+    // The faction pools this actor is cleared to read (M21: a member whose
+    // level passes the faction's intel_level). Snapshot before touching the
+    // NPC state so the borrows never overlap.
+    let readable_pools: Vec<(FactionId, SmolStr)> = readable_intel_pools(ctx.w, actor);
+
+    // Snapshot the actor's own records plus every readable pool's, tagging
+    // pool records with the faction name. Merged, oldest-first by timestamp.
+    let mut records: Vec<(IntelRecord, Option<SmolStr>)> = ctx
         .state::<NpcHostState>()
-        .map(|h| h.intel.for_principal(actor).to_vec())
+        .map(|h| {
+            let mut v: Vec<(IntelRecord, Option<SmolStr>)> = h
+                .intel
+                .for_principal(Principal::Character(actor))
+                .iter()
+                .cloned()
+                .map(|r| (r, None))
+                .collect();
+            for (fid, fname) in &readable_pools {
+                v.extend(
+                    h.intel
+                        .for_principal(Principal::faction(*fid))
+                        .iter()
+                        .cloned()
+                        .map(|r| (r, Some(fname.clone()))),
+                );
+            }
+            v
+        })
         .unwrap_or_default();
+    records.sort_by_key(|(r, _)| r.ts);
 
     let arg = ctx.args.raw().trim().to_string();
-    let (records, filter): (Vec<IntelRecord>, Option<String>) = if arg.is_empty() {
+    let (records, filter): (Vec<(IntelRecord, Option<SmolStr>)>, Option<String>) = if arg
+        .is_empty()
+    {
         (records, None)
     } else {
         // Resolve the subject to an id when we can (so `#42` or a present name
@@ -603,7 +691,7 @@ fn cmd_intel(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let needle = arg.to_lowercase();
         let filtered = records
             .into_iter()
-            .filter(|r| {
+            .filter(|(r, _)| {
                 by_id == Some(r.subject) || r.subject_name.to_lowercase().contains(&needle)
             })
             .collect();
@@ -629,17 +717,21 @@ fn cmd_intel(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     ctx.out.sys_to_actor(actor, "intel", header);
 
     let now = ctx.w.now();
-    for r in records.iter().rev() {
+    for (r, pool) in records.iter().rev() {
         let room = if r.room_name.trim().is_empty() {
             String::new()
         } else {
             format!(" in {}", r.room_name)
         };
+        let via = pool
+            .as_ref()
+            .map(|f| format!("  [to {f}]"))
+            .unwrap_or_default();
         ctx.out.sys_to_actor(
             actor,
             "intel",
             format!(
-                "  {:>4} ago  {} [{}]{}: {}  ({})",
+                "  {:>4} ago  {} [{}]{}: {}  ({}){via}",
                 fmt_ago(now, r.ts),
                 r.subject_name,
                 intel_kind_label(r.kind),
@@ -650,6 +742,20 @@ fn cmd_intel(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         );
     }
     Ok(())
+}
+
+/// The faction intel pools `actor` may read: every faction where they hold a
+/// membership whose level passes the faction's `intel_level`. Empty when the
+/// faction module is not loaded.
+fn readable_intel_pools(w: &World, actor: ObjId) -> Vec<(FactionId, SmolStr)> {
+    w.module_state::<FactionState>()
+        .map(|fs| {
+            fs.memberships_of(actor)
+                .filter(|m| fs.can_read_intel(actor, m.faction))
+                .filter_map(|m| fs.factions.get(&m.faction).map(|f| (f.id, f.name.clone())))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The human label for an [`IntelKind`] in the `+intel` render (shared with
@@ -690,6 +796,7 @@ fn fmt_ago(now: i64, ts: i64) -> String {
 /// cleared from the in-RAM [`IntelStore`] by the caller). Mirrors
 /// [`delete_pool`]'s persistence shape.
 fn clear_intel(ctx: &mut Ctx<'_>, principal: ObjId) {
+    let principal = Principal::Character(principal);
     ctx.persist(ModuleOp {
         ns: SmolStr::new(NS),
         op: ModuleWrite::Del {
@@ -1069,7 +1176,7 @@ fn cmd_agent(grounding: &dyn AgentGrounding, ctx: &mut Ctx<'_>) -> Result<(), Cm
     // Informant loop (M12): who this NPC reports to, whether it is willing, and
     // what it watches for.
     if let Some(principal) = profile.principal {
-        let pname = display_name(ctx.w, principal);
+        let plabel = principal_label(ctx.w, ctx.actor, principal);
         let watch = if profile.watch.is_empty() {
             "only notable events (pierced concealment)".to_string()
         } else {
@@ -1078,8 +1185,7 @@ fn cmd_agent(grounding: &dyn AgentGrounding, ctx: &mut Ctx<'_>) -> Result<(), Cm
         ctx.out.info(
             ctx.actor,
             format!(
-                "  Informant: reports to {pname} (#{}); {}; watching {watch}.",
-                principal.0,
+                "  Informant: reports to {plabel}; {}; watching {watch}.",
                 if profile.loyal {
                     "loyal"
                 } else {
@@ -1240,8 +1346,35 @@ fn agent_set(ctx: &mut Ctx<'_>, npc: ObjId, lhs: &str) -> Result<(), CmdError> {
         "principal" => {
             profile.principal = if value.is_empty() {
                 None
+            } else if let Some(fname) = strip_prefix_ci(&value, "faction:") {
+                // A faction pool: intel lands in the faction's shared store,
+                // read via +intel by members passing its intel_level.
+                //
+                // The lookup honors the hidden-faction projection: to a
+                // setter who could not see the faction in +factions, it is
+                // indistinguishable from a missing one — otherwise this
+                // Builder-gated command is an existence oracle over the
+                // registry's secret societies.
+                let staff = is_faction_staff(ctx.w, ctx.actor);
+                let fid = ctx
+                    .w
+                    .module_state::<FactionState>()
+                    .and_then(|st| {
+                        st.faction_by_name(fname.trim())
+                            .filter(|f| st.faction_listed(ctx.actor, staff, f))
+                            .map(|f| f.id)
+                    })
+                    .ok_or_else(|| {
+                        CmdError::msg(
+                            "No such faction. (To bind a character whose name begins with \
+                             \"faction:\", use their #dbref.)",
+                        )
+                    })?;
+                Some(Principal::faction(fid))
             } else {
-                Some(mush_core::match_object(ctx.w, ctx.actor, &value)?)
+                Some(Principal::Character(mush_core::match_object(
+                    ctx.w, ctx.actor, &value,
+                )?))
             };
         }
         "loyal" => profile.loyal = parse_bool(&value)?,
@@ -1269,8 +1402,8 @@ fn agent_set(ctx: &mut Ctx<'_>, npc: ObjId, lhs: &str) -> Result<(), CmdError> {
         } else if let Some(principal) = set_principal {
             // Echo the resolved target so staff can confirm the name bound to
             // the intended object (a mis-binding is otherwise silent).
-            let pname = display_name(ctx.w, principal);
-            format!("Set {field} on {name} to {pname} (#{}).", principal.0)
+            let plabel = principal_label(ctx.w, ctx.actor, principal);
+            format!("Set {field} on {name} to {plabel}.")
         } else {
             format!("Set {field} on {name}.")
         },
@@ -2154,7 +2287,7 @@ fn persist_memory(ctx: &mut Ctx<'_>, rec: &MemoryRecord) {
 /// [`intel_key`] (whole-doc `JsonSet` on each file, like a memory subject doc).
 /// The in-RAM [`IntelStore`] was already updated by
 /// [`IntelStore::file`](crate::intel::IntelStore::file); this mirrors it durably.
-fn persist_intel(ctx: &mut Ctx<'_>, principal: ObjId, records: &[IntelRecord]) {
+fn persist_intel(ctx: &mut Ctx<'_>, principal: Principal, records: &[IntelRecord]) {
     let value = match serde_json::to_value(records) {
         Ok(v) => v,
         Err(e) => {

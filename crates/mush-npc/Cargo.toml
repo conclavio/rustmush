@@ -8,6 +8,7 @@ description = "LLM NPC agents: AgentHost, stimuli, action tools, memory"
 
 [dependencies]
 mush-core.workspace = true
+mush-faction.workspace = true
 mush-llm.workspace = true
 mush-ruleset.workspace = true
 mush-proto.workspace = true

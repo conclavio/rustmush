@@ -73,6 +73,8 @@ bitflags::bitflags! {
         const BUILDER_LLM  = 1 << 6;
         /// Sees DARK/hidden objects and players.
         const SEE_HIDDEN   = 1 << 7;
+        /// May administer factions (`@faction`, `@region`).
+        const FACTION_ADMIN = 1 << 8;
     }
 }
 

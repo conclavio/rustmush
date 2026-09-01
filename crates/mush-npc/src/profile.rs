@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use mush_core::ObjId;
+use mush_faction::Principal;
 use mush_llm::{LlmFeature, NpcTier as LlmNpcTier};
 use serde::{Deserialize, Serialize};
 
@@ -119,10 +119,12 @@ pub struct AgentProfile {
     /// Canned lines the NPC degrades to on a budget trip / provider refusal /
     /// disabled service (design 03 §6.6 — never an error to players).
     pub fallback_lines: Vec<String>,
-    /// The M12 informant loop: who this NPC reports intel to (a domitor /
-    /// employer). `None` (the default) means the NPC files nothing — the loop
+    /// The M12 informant loop: who this NPC reports intel to — a character
+    /// (domitor / employer; the M12 original, wire-compatible as a bare
+    /// dbref) or a faction, whose clearance-gated pool members read via
+    /// `+intel`. `None` (the default) means the NPC files nothing — the loop
     /// is entirely opt-in and additive.
-    pub principal: Option<ObjId>,
+    pub principal: Option<Principal>,
     /// The willingness gate. `true` (default): a loyal informant files what it
     /// perceives to its `principal`. `false`: a resentful asset that reports
     /// nothing, however much it sees.
@@ -221,16 +223,30 @@ mod tests {
     #[test]
     fn informant_fields_round_trip_through_serde() {
         let p = AgentProfile {
-            principal: Some(mush_core::ObjId(42)),
+            principal: Some(Principal::Character(mush_core::ObjId(42))),
             loyal: false,
             watch: vec!["alice".into(), "the docks".into()],
             ..AgentProfile::default()
         };
         let json = serde_json::to_string(&p).unwrap();
         let back: AgentProfile = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.principal, Some(mush_core::ObjId(42)));
+        assert_eq!(back.principal, Some(Principal::Character(mush_core::ObjId(42))));
         assert!(!back.loyal);
         assert_eq!(back.watch, vec!["alice".to_string(), "the docks".to_string()]);
+    }
+
+    #[test]
+    fn m12_era_profile_docs_still_load() {
+        // Before M21 the persisted form was a bare dbref number; it must keep
+        // deserializing as a character principal.
+        let p: AgentProfile = serde_json::from_str(r#"{"principal": 42}"#).unwrap();
+        assert_eq!(p.principal, Some(Principal::Character(mush_core::ObjId(42))));
+        // The faction form round-trips.
+        let p: AgentProfile = serde_json::from_str(r#"{"principal": {"faction": 3}}"#).unwrap();
+        assert_eq!(
+            p.principal,
+            Some(Principal::faction(mush_faction::FactionId(3)))
+        );
     }
 
     #[test]

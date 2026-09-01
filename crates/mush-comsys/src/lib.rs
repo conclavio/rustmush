@@ -52,6 +52,7 @@
 //! [`AliasStage`]: mush_core::AliasStage
 //! [`WorldEvent::ObjCreated`]: mush_core::WorldEvent
 
+pub mod api;
 mod commands;
 mod data;
 mod query;

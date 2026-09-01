@@ -1981,6 +1981,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "mush-faction"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "mush-comsys",
+ "mush-core",
+ "mush-proto",
+ "mush-store",
+ "mush-testkit",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "tracing",
+]
+
+[[package]]
 name = "mush-gateway"
 version = "0.1.0"
 dependencies = [
@@ -2119,6 +2135,7 @@ name = "mush-npc"
 version = "0.1.0"
 dependencies = [
  "mush-core",
+ "mush-faction",
  "mush-llm",
  "mush-proto",
  "mush-ruleset",
@@ -2175,6 +2192,7 @@ dependencies = [
  "mush-comsys",
  "mush-config",
  "mush-core",
+ "mush-faction",
  "mush-ipc",
  "mush-jobs",
  "mush-llm",

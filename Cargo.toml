@@ -122,6 +122,7 @@ mush-ruleset = { path = "crates/mush-ruleset" }
 mush-dice = { path = "crates/mush-dice" }
 mush-jobs = { path = "crates/mush-jobs" }
 mush-comsys = { path = "crates/mush-comsys" }
+mush-faction = { path = "crates/mush-faction" }
 mush-mail = { path = "crates/mush-mail" }
 mush-weather = { path = "crates/mush-weather" }
 ruleset-wod = { path = "crates/ruleset-wod" }
