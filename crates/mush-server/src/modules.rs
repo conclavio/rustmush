@@ -71,6 +71,7 @@ pub fn server_modules_with(weather: mush_weather::WeatherConfig) -> Vec<Box<dyn 
     vec![
         Box::new(mush_comsys::ComsysModule::new()),
         Box::new(mush_faction::FactionModule::new()),
+        Box::new(mush_scenes::ScenesModule::new()),
         Box::new(mush_mail::MailModule),
         Box::new(mush_jobs::JobsModule::new()),
         Box::new(mush_weather::WeatherModule::with_config(weather)),
@@ -690,13 +691,16 @@ mod tests {
 
     #[test]
     fn server_modules_register_without_collision() {
-        // The full production list (comsys, faction, mail, jobs, weather,
-        // script) shares one registry: registration must not collide, and
-        // every module must be present in boot order.
+        // The full production list (comsys, faction, scenes, mail, jobs,
+        // weather, script) shares one registry: registration must not collide,
+        // and every module must be present in boot order.
         use mush_testkit::TestWorld;
         let tw = TestWorld::with_modules(server_modules());
         let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
-        assert_eq!(names, ["comsys", "faction", "mail", "jobs", "weather", "script"]);
+        assert_eq!(
+            names,
+            ["comsys", "faction", "scenes", "mail", "jobs", "weather", "script"]
+        );
     }
 
     #[test]
@@ -803,7 +807,8 @@ mod tests {
         assert_eq!(
             names,
             [
-                "comsys", "faction", "mail", "jobs", "weather", "script", "worldgen", "wod"
+                "comsys", "faction", "scenes", "mail", "jobs", "weather", "script", "worldgen",
+                "wod"
             ]
         );
         assert!(tw.registry().spec_of("@gen").is_some());
@@ -914,7 +919,7 @@ mod tests {
         let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
         assert_eq!(
             names,
-            ["comsys", "faction", "mail", "jobs", "weather", "script", "wod"]
+            ["comsys", "faction", "scenes", "mail", "jobs", "weather", "script", "wod"]
         );
         // The ruleset's surface is live: +roll / +sheet registered, the
         // wod.roll panel feed present, and the chargen/xp job queues too.

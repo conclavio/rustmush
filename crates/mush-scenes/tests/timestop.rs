@@ -1,0 +1,387 @@
+//! End-to-end timestop tests through the real `Engine`: start + membership
+//! freeze, the movement veto, turn/round advancement and the scene-local
+//! clock, facilitator gating, end + release, and the durable persistence
+//! round trip (drain ops -> InMemoryStore -> reboot -> rehydrated paused).
+
+use std::collections::HashMap;
+
+use mush_core::engine::{Effects, Engine, Inbound};
+use mush_core::module::emit_world_event;
+use mush_core::{
+    GOD, ModuleBootData, ModuleOp, ObjId, ObjKind, Outbox, Registry, Role, World, WorldEvent,
+    register_core_commands, register_engine_commands,
+};
+use mush_proto::OutputEvent;
+use mush_scenes::{PauseReason, SceneStatus, ScenesModule, ScenesState, NS};
+use mush_store::{InMemoryStore, ObjectStore, WriteBatch};
+use smol_str::SmolStr;
+
+// ----------------------------------------------------------------------
+// Harness
+// ----------------------------------------------------------------------
+
+/// A world with two connected players (Nick, Ann) and one NPC (Barkeep) in a
+/// bar room, the scenes module loaded (first boot).
+struct Rig {
+    engine: Engine,
+    bar: ObjId,
+    nick: ObjId,
+    ann: ObjId,
+    npc: ObjId,
+}
+
+fn rig() -> Rig {
+    let mut world = World::new_minimal();
+    world.set_now(1_000);
+    let bar = world.create(ObjKind::Room, "The Tap Room", GOD, None).unwrap();
+    let nick = world.create(ObjKind::Player, "Nick", GOD, Some(bar)).unwrap();
+    let ann = world.create(ObjKind::Player, "Ann", GOD, Some(bar)).unwrap();
+    let npc = world.create(ObjKind::Npc, "Barkeep", GOD, Some(bar)).unwrap();
+    world.set_connected(nick, true);
+    world.set_connected(ann, true);
+    world.set_live_conns(nick, 1);
+    world.set_live_conns(ann, 1);
+
+    let mut registry = Registry::new();
+    register_core_commands(&mut registry).unwrap();
+    register_engine_commands(&mut registry).unwrap();
+    let mut engine =
+        Engine::with_modules(world, registry, vec![Box::new(ScenesModule::new())]).unwrap();
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine.modules_loaded(HashMap::new(), &mut out, &mut fx).unwrap();
+    let _ = engine.take_module_ops();
+    Rig { engine, bar, nick, ann, npc }
+}
+
+fn run(engine: &mut Engine, actor: ObjId, line: &str) -> Outbox {
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine.step(
+        Inbound::Cmd { conn: 1, actor, line: line.into() },
+        &mut out,
+        &mut fx,
+    );
+    out
+}
+
+fn scenes(engine: &Engine) -> &ScenesState {
+    engine.world.module_state::<ScenesState>().expect("scenes state")
+}
+
+/// Destroy an object the way a command would: mutate the world, then emit the
+/// `ObjDestroyed` world event so module observers (the scenes cleanup) run.
+fn destroy(engine: &mut Engine, obj: ObjId) {
+    engine.world.destroy(obj).unwrap();
+    let mut out = Outbox::new();
+    emit_world_event(
+        &engine.registry,
+        &mut engine.world,
+        &mut out,
+        &WorldEvent::ObjDestroyed { obj },
+    );
+}
+
+fn texts(out: &Outbox) -> String {
+    out.events()
+        .iter()
+        .filter_map(|(_, e)| match e {
+            OutputEvent::Sys(t) => Some(t.to_plain_text()),
+            OutputEvent::Narrative { text, .. } => Some(text.to_plain_text()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+// ----------------------------------------------------------------------
+// Tests
+// ----------------------------------------------------------------------
+
+#[test]
+fn start_freezes_members_and_blocks_movement() {
+    let mut r = rig();
+    // A second room to try to escape to.
+    let alley = r.engine.world.create(ObjKind::Room, "Alley", GOD, None).unwrap();
+    let exit = r.engine.world.create(ObjKind::Exit, "out", GOD, Some(r.bar)).unwrap();
+    r.engine.world.link_exit(exit, Some(alley)).unwrap();
+
+    let out = run(&mut r.engine, r.nick, "+timestop");
+    assert!(texts(&out).contains("a timestop begins"), "{}", texts(&out));
+
+    // All three present objects are frozen in the core index.
+    for who in [r.nick, r.ann, r.npc] {
+        assert!(r.engine.world.in_exclusive_scene(who), "{who} should be frozen");
+    }
+    // The scene exists, active, turn order = players (dbref) then npc.
+    let s = scenes(&r.engine).active_scene_at(r.bar).unwrap();
+    assert_eq!(s.status, SceneStatus::Active);
+    assert_eq!(s.participants, vec![r.nick, r.ann, r.npc]);
+    assert_eq!(s.current_actor(), Some(r.nick));
+
+    // A participant cannot walk out.
+    let out = run(&mut r.engine, r.ann, "out");
+    assert!(texts(&out).contains("cannot leave"), "movement not vetoed: {}", texts(&out));
+    assert_eq!(r.engine.world.get(r.ann).and_then(|o| o.location), Some(r.bar));
+}
+
+#[test]
+fn wizard_bypasses_the_movement_freeze() {
+    let mut r = rig();
+    let alley = r.engine.world.create(ObjKind::Room, "Alley", GOD, None).unwrap();
+    let exit = r.engine.world.create(ObjKind::Exit, "out", GOD, Some(r.bar)).unwrap();
+    r.engine.world.link_exit(exit, Some(alley)).unwrap();
+    // Make Ann a wizard.
+    r.engine.world.get_mut(r.ann).unwrap().flags.insert(mush_core::Flags::WIZARD);
+
+    run(&mut r.engine, r.nick, "+timestop");
+    let out = run(&mut r.engine, r.ann, "out");
+    assert!(!texts(&out).contains("cannot leave"), "wizard should pass: {}", texts(&out));
+    assert_eq!(r.engine.world.get(r.ann).and_then(|o| o.location), Some(alley));
+}
+
+#[test]
+fn turns_advance_rounds_wrap_and_the_scene_clock_tracks_rounds() {
+    let mut r = rig();
+    let ic_at_start = r.engine.world.game_now_unix();
+    run(&mut r.engine, r.nick, "+timestop");
+
+    // Nick (facilitator) advances the turn: Nick -> Ann.
+    run(&mut r.engine, r.nick, "+timestop/next");
+    let s = scenes(&r.engine).active_scene_of(r.nick).unwrap();
+    assert_eq!(s.current_actor(), Some(r.ann));
+    assert_eq!(s.round, 1);
+    assert_eq!(s.scene_ic_time(), ic_at_start, "round 1 is still the frozen start");
+
+    // Ann -> Barkeep, then wrap to round 2 (Nick), advancing the scene clock.
+    run(&mut r.engine, r.nick, "+timestop/next"); // Ann -> Barkeep
+    run(&mut r.engine, r.nick, "+timestop/next"); // Barkeep -> wrap, round 2, Nick
+    let s = scenes(&r.engine).active_scene_of(r.nick).unwrap();
+    assert_eq!(s.round, 2);
+    assert_eq!(s.current_actor(), Some(r.nick));
+    assert_eq!(
+        s.scene_ic_time(),
+        ic_at_start + i64::from(s.round_seconds),
+        "round 2 advances the scene-local IC clock by one round"
+    );
+}
+
+#[test]
+fn only_the_facilitator_or_staff_drives() {
+    let mut r = rig();
+    // Nick starts (facilitator). Ann is a participant but not facilitator.
+    run(&mut r.engine, r.nick, "+timestop");
+    let out = run(&mut r.engine, r.ann, "+timestop/next");
+    assert!(texts(&out).contains("facilitator"), "{}", texts(&out));
+    // Ann can still read it.
+    let out = run(&mut r.engine, r.ann, "+scene");
+    assert!(texts(&out).contains("turn order") || texts(&out).contains("Participants"));
+    // Staff (GOD is in Limbo — move to bar first so active_scene_of finds them?
+    // GOD is not a participant, so /next as GOD fails "not in a scene").
+    assert!(!mush_core::perm::has_role(&r.engine.world, r.ann, Role::Royalty));
+}
+
+#[test]
+fn end_releases_the_freeze() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    assert!(r.engine.world.in_exclusive_scene(r.nick));
+    let out = run(&mut r.engine, r.nick, "+timestop/end");
+    assert!(texts(&out).contains("ends"), "{}", texts(&out));
+    // Everyone released.
+    for who in [r.nick, r.ann, r.npc] {
+        assert!(!r.engine.world.in_exclusive_scene(who), "{who} should be released");
+    }
+    // The record is retained, Closed.
+    let closed = scenes(&r.engine).scenes.values().next().unwrap();
+    assert_eq!(closed.status, SceneStatus::Closed);
+    // Movement works again.
+    assert!(scenes(&r.engine).active_scene_of(r.nick).is_none());
+}
+
+#[test]
+fn cannot_start_two_scenes_in_a_room() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    let out = run(&mut r.engine, r.ann, "+timestop");
+    assert!(texts(&out).contains("already running"), "{}", texts(&out));
+}
+
+#[test]
+fn npc_participant_is_suppressed_from_free_running_turns() {
+    // The core index is what the NPC wake loop reads; assert the bit is set
+    // (the mush-npc suppression check keys on exactly this).
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    assert!(
+        r.engine.world.in_exclusive_scene(r.npc),
+        "an NPC caught in a timestop must be flagged so its wake loop suppresses it"
+    );
+    run(&mut r.engine, r.nick, "+timestop/end");
+    assert!(!r.engine.world.in_exclusive_scene(r.npc));
+}
+
+#[test]
+fn destroying_a_participant_releases_them_and_keeps_the_scene() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop"); // Nick facilitator, [Nick, Ann, Barkeep]
+    // Destroy a non-facilitator participant.
+    destroy(&mut r.engine, r.ann);
+    assert!(!r.engine.world.in_exclusive_scene(r.ann), "destroyed member released");
+    let s = scenes(&r.engine).active_scene_of(r.nick).unwrap();
+    assert_eq!(s.participants, vec![r.nick, r.npc], "ghost dropped from turn order");
+    assert_eq!(s.facilitator, r.nick, "facilitator unchanged");
+    // Nick and the npc stay frozen.
+    assert!(r.engine.world.in_exclusive_scene(r.nick));
+    assert!(r.engine.world.in_exclusive_scene(r.npc));
+}
+
+#[test]
+fn destroying_the_facilitator_hands_off_to_a_surviving_player() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop"); // Nick facilitator
+    // Destroy the facilitator (e.g. a chargen alt purge). Ann (a player) should
+    // inherit facilitation — not the NPC — so the scene isn't stranded.
+    destroy(&mut r.engine, r.nick);
+    assert!(!r.engine.world.in_exclusive_scene(r.nick));
+    let s = scenes(&r.engine).active_scene_of(r.ann).unwrap();
+    assert_eq!(s.facilitator, r.ann, "a surviving PLAYER inherits facilitation");
+    // Ann can now drive it.
+    let out = run(&mut r.engine, r.ann, "+timestop/next");
+    assert!(!texts(&out).contains("facilitator"), "new facilitator drives: {}", texts(&out));
+}
+
+#[test]
+fn destroying_the_last_participant_closes_and_releases() {
+    let mut r = rig();
+    // A scene of just Nick + the NPC.
+    r.engine.world.set_connected(r.ann, false); // Ann won't be a participant
+    run(&mut r.engine, r.nick, "+timestop"); // [Nick, Barkeep]
+    destroy(&mut r.engine, r.npc); // [Nick]
+    destroy(&mut r.engine, r.nick); // []
+    // Scene closed, everyone released.
+    let closed = scenes(&r.engine).scenes.values().next().unwrap();
+    assert_eq!(closed.status, SceneStatus::Closed);
+    assert!(r.engine.world.exclusive_scene_members().next().is_none(), "index fully drained");
+}
+
+#[test]
+fn staff_can_end_a_scene_they_are_not_in_by_standing_in_the_room() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    // A wizard who was NOT a participant walks into the room.
+    let wiz = r.engine.world.create(ObjKind::Player, "Wiz", GOD, Some(r.bar)).unwrap();
+    r.engine.world.get_mut(wiz).unwrap().flags.insert(mush_core::Flags::WIZARD);
+    r.engine.world.set_connected(wiz, true);
+    // They are not frozen (staff bypass) and can end the scene by room.
+    assert!(!r.engine.world.in_exclusive_scene(wiz));
+    let out = run(&mut r.engine, wiz, "+timestop/end");
+    assert!(texts(&out).contains("ends"), "staff recovery by room: {}", texts(&out));
+    assert!(!r.engine.world.in_exclusive_scene(r.nick), "everyone released");
+}
+
+#[test]
+fn royalty_staff_are_not_frozen() {
+    let mut r = rig();
+    let alley = r.engine.world.create(ObjKind::Room, "Alley", GOD, None).unwrap();
+    let exit = r.engine.world.create(ObjKind::Exit, "out", GOD, Some(r.bar)).unwrap();
+    r.engine.world.link_exit(exit, Some(alley)).unwrap();
+    // Make Ann Royalty (staff, but below Wizard).
+    r.engine.world.get_mut(r.ann).unwrap().flags.insert(mush_core::Flags::ROYALTY);
+
+    run(&mut r.engine, r.nick, "+timestop");
+    // Ann (Royalty) is a participant but staff are never frozen — she can leave.
+    let out = run(&mut r.engine, r.ann, "out");
+    assert!(!texts(&out).contains("cannot leave"), "royalty should pass: {}", texts(&out));
+    assert_eq!(r.engine.world.get(r.ann).and_then(|o| o.location), Some(alley));
+}
+
+#[test]
+fn release_frees_one_participant_without_ending_the_scene() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    // The facilitator releases Ann.
+    let out = run(&mut r.engine, r.nick, "+timestop/release Ann");
+    assert!(texts(&out).contains("released"), "{}", texts(&out));
+    assert!(!r.engine.world.in_exclusive_scene(r.ann), "Ann freed");
+    // The scene continues with Nick + Barkeep still frozen.
+    assert!(r.engine.world.in_exclusive_scene(r.nick));
+    let s = scenes(&r.engine).active_scene_of(r.nick).unwrap();
+    assert_eq!(s.status, SceneStatus::Active);
+    assert!(!s.participants.contains(&r.ann));
+    // A released player can now walk out (needs an exit) — assert the freeze
+    // bit is gone, which the move gate keys on.
+    assert!(!r.engine.world.in_exclusive_scene(r.ann));
+    // The facilitator cannot /release themselves.
+    let out = run(&mut r.engine, r.nick, "+timestop/release Nick");
+    assert!(texts(&out).contains("+timestop/end"), "{}", texts(&out));
+}
+
+// ----------------------------------------------------------------------
+// Persistence round trip
+// ----------------------------------------------------------------------
+
+fn reboot(store: &InMemoryStore) -> Engine {
+    let kv = futures::executor::block_on(async { store.module_json_list(NS).await.unwrap() });
+    let boot = ModuleBootData {
+        kv: kv.into_iter().map(|(k, v)| (SmolStr::new(k), v)).collect(),
+        streams: HashMap::new(),
+    };
+    let mut world = World::new_minimal();
+    world.set_now(2_000);
+    let bar = world.create(ObjKind::Room, "The Tap Room", GOD, None).unwrap();
+    // Recreate the same players/npc at the same dbrefs (deterministic creation
+    // order matches the original rig).
+    let nick = world.create(ObjKind::Player, "Nick", GOD, Some(bar)).unwrap();
+    world.create(ObjKind::Player, "Ann", GOD, Some(bar)).unwrap();
+    world.create(ObjKind::Npc, "Barkeep", GOD, Some(bar)).unwrap();
+    world.set_connected(nick, true);
+
+    let mut registry = Registry::new();
+    register_core_commands(&mut registry).unwrap();
+    register_engine_commands(&mut registry).unwrap();
+    let mut engine =
+        Engine::with_modules(world, registry, vec![Box::new(ScenesModule::new())]).unwrap();
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine
+        .modules_loaded(HashMap::from([(SmolStr::new(NS), boot)]), &mut out, &mut fx)
+        .unwrap();
+    engine
+}
+
+#[test]
+fn scene_survives_restart_rehydrating_paused_and_still_frozen() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    run(&mut r.engine, r.nick, "+timestop/next"); // advance so round/turn state is non-trivial
+    let ops: Vec<ModuleOp> = r.engine.take_module_ops();
+
+    let store = InMemoryStore::new();
+    futures::executor::block_on(async {
+        store
+            .write(WriteBatch { serial: 1, module_ops: ops, ..WriteBatch::default() })
+            .await
+            .unwrap();
+    });
+    let engine2 = reboot(&store);
+
+    // The scene rehydrated, paused by the restart, and its members are frozen
+    // again in the fresh world's core index.
+    let s = scenes(&engine2).scenes.values().next().expect("scene rehydrated");
+    assert_eq!(s.status, SceneStatus::Paused);
+    assert_eq!(s.pause_reason, Some(PauseReason::ServerRestart));
+    // Rig dbrefs: Limbo #0, God #1, bar #2, Nick #3, Ann #4, Barkeep #5.
+    // After one /next the turn advanced Nick -> Ann (#4); that state persists.
+    assert_eq!(s.current_actor(), Some(ObjId(4)), "turn state (Ann) preserved");
+    for who in s.participants.clone() {
+        assert!(engine2.world.in_exclusive_scene(who), "{who} refrozen after restart");
+    }
+
+    // The facilitator resumes it; turns advance again.
+    let mut engine2 = engine2;
+    let nick = engine2.world.resolve_player("Nick").unwrap();
+    let out = run(&mut engine2, nick, "+timestop/resume");
+    assert!(texts(&out).contains("resumes"), "{}", texts(&out));
+    assert_eq!(
+        scenes(&engine2).active_scene_of(nick).unwrap().status,
+        SceneStatus::Active
+    );
+}

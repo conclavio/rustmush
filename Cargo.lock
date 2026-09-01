@@ -2174,6 +2174,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "mush-scenes"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "mush-core",
+ "mush-proto",
+ "mush-store",
+ "mush-testkit",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "tracing",
+]
+
+[[package]]
 name = "mush-script"
 version = "0.1.0"
 dependencies = [
@@ -2200,6 +2215,7 @@ dependencies = [
  "mush-npc",
  "mush-proto",
  "mush-ruleset",
+ "mush-scenes",
  "mush-script",
  "mush-store",
  "mush-testkit",

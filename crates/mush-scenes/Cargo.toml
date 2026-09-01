@@ -1,0 +1,23 @@
+[package]
+name = "mush-scenes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Durable narrative scenes and the timestop turn-based driver"
+
+[dependencies]
+mush-core.workspace = true
+mush-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+mush-store.workspace = true
+mush-testkit.workspace = true
+futures.workspace = true
+
+[lints]
+workspace = true

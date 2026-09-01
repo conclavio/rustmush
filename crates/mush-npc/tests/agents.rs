@@ -2047,3 +2047,35 @@ async fn informant_stops_filing_when_principal_faction_is_gone() {
         "no filing into a dead faction's pool"
     );
 }
+
+/// M22 timestop suppression: an NPC flagged as an exclusive-scene participant
+/// (the core index a timestop maintains) does not fire free-running dialogue
+/// turns — it would act only when handed a scene turn. Clearing the flag lets
+/// it wake again.
+#[tokio::test]
+async fn exclusive_scene_participant_is_suppressed_from_wakes() {
+    let mut rig = Rig::new();
+    rig.set_now(0);
+    let bar = rig.room("Bar");
+    let npc = rig.npc("Bartender", bar, &profile(NpcTier::Major)); // short cooldown
+    let alice = rig.player("Alice", bar, true);
+
+    // Freeze the NPC into an exclusive scene (what a timestop does).
+    rig.engine.world.set_exclusive_scene_member(npc);
+
+    rig.run(alice, "say evening");
+    rig.set_now(2);
+    assert!(
+        rig.one_turn().is_none(),
+        "a timestopped NPC must not fire a free-running dialogue turn"
+    );
+
+    // Release it; a fresh line now wakes it as normal.
+    rig.engine.world.clear_exclusive_scene_member(npc);
+    rig.run(alice, "say still there?");
+    rig.set_now(5);
+    assert!(
+        rig.one_turn().is_some(),
+        "once released the NPC wakes on player speech again"
+    );
+}

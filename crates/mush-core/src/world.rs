@@ -105,6 +105,13 @@ pub struct World {
     /// Actors currently marked connected (transient session state for WHO
     /// and routing; never persisted, never dirty-tracked).
     connected: BTreeSet<ObjId>,
+    /// Objects locked into an **exclusive** scene (a turn-based timestop): a
+    /// transient index a scene driver maintains so core flows can ask "is this
+    /// object in a turn-based scene?" without depending on the driver's module
+    /// (the driver owns the rich record; core owns only this membership bit).
+    /// The movement gate and the NPC wake loop consult it; the driver rebuilds
+    /// it on boot from its persisted scene records. Never persisted here.
+    exclusive_scene: BTreeSet<ObjId>,
     /// Per-actor session timing (transient, like `connected`).
     session_stats: HashMap<ObjId, SessionStat>,
     /// Live transport connections per actor, mirrored in by the engine
@@ -431,6 +438,39 @@ impl World {
     /// The persistence layer treats an id whose slot is `None` as a delete.
     pub fn take_dirty(&mut self) -> BTreeSet<ObjId> {
         std::mem::take(&mut self.dirty)
+    }
+
+    // ------------------------------------------------------------------
+    // Exclusive-scene membership (the timestop index)
+    // ------------------------------------------------------------------
+
+    /// Whether `obj` is locked into an exclusive turn-based scene. Core flows
+    /// consult this — the movement gate refuses to let a participant wander
+    /// off, and the NPC wake loop suppresses free-running turns for a
+    /// participant so it acts only on its scene turn. The scene driver owns the
+    /// rich record and maintains this bit via
+    /// [`World::set_exclusive_scene_member`] / [`World::clear_exclusive_scene_member`].
+    #[must_use]
+    pub fn in_exclusive_scene(&self, obj: ObjId) -> bool {
+        self.exclusive_scene.contains(&obj)
+    }
+
+    /// All objects currently in an exclusive scene, in id order.
+    pub fn exclusive_scene_members(&self) -> impl Iterator<Item = ObjId> + '_ {
+        self.exclusive_scene.iter().copied()
+    }
+
+    /// Mark `obj` a member of an exclusive scene (idempotent). The scene driver
+    /// calls this when it freezes membership, and again on boot when it
+    /// rehydrates active scenes. Transient — never persisted by core.
+    pub fn set_exclusive_scene_member(&mut self, obj: ObjId) {
+        self.exclusive_scene.insert(obj);
+    }
+
+    /// Clear `obj`'s exclusive-scene membership (idempotent). The driver calls
+    /// this when the scene releases the object (ends, or drops a participant).
+    pub fn clear_exclusive_scene_member(&mut self, obj: ObjId) {
+        self.exclusive_scene.remove(&obj);
     }
 
     // ------------------------------------------------------------------

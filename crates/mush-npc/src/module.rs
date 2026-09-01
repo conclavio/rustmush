@@ -857,6 +857,19 @@ impl NpcTick {
             (has_mailbox, rt.summarize_pending, ready)
         };
 
+        // A participant in an exclusive turn-based scene (a timestop) acts only
+        // when handed its scene turn, never on free-running stimuli — otherwise
+        // recorded scene speech would keep triggering autonomous dialogue turns
+        // inside the frozen scene. Drop the pending dialogue batch; a cheap
+        // background summarize may still fold memory.
+        if ctx.w.in_exclusive_scene(npc) {
+            drop_mailbox(ctx, npc);
+            if summarize {
+                self.fire_summarize(ctx, npc, &profile, room, &present, now);
+            }
+            return;
+        }
+
         // No players present: never fire a paid *dialogue* turn into an empty
         // room. Drop the pending dialogue batch unconditionally (its stimuli are
         // stale — the players who caused them have left); only a cheap

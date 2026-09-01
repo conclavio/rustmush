@@ -25,6 +25,8 @@ mush-store.workspace = true
 mush-comsys.workspace = true
 # The M21 faction registry.
 mush-faction.workspace = true
+# The M22 durable scenes + timestop driver.
+mush-scenes.workspace = true
 mush-mail.workspace = true
 mush-jobs.workspace = true
 # The M5 scripting + weather modules.
