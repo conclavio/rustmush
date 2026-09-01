@@ -8,6 +8,7 @@ description = "Durable narrative scenes and the timestop turn-based driver"
 
 [dependencies]
 mush-core.workspace = true
+mush-canon.workspace = true
 mush-proto.workspace = true
 serde.workspace = true
 serde_json.workspace = true

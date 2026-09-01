@@ -71,6 +71,7 @@ pub fn server_modules_with(weather: mush_weather::WeatherConfig) -> Vec<Box<dyn 
     vec![
         Box::new(mush_comsys::ComsysModule::new()),
         Box::new(mush_faction::FactionModule::new()),
+        Box::new(mush_canon::CanonModule::new()),
         Box::new(mush_scenes::ScenesModule::new()),
         Box::new(mush_mail::MailModule),
         Box::new(mush_jobs::JobsModule::new()),
@@ -699,7 +700,7 @@ mod tests {
         let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
         assert_eq!(
             names,
-            ["comsys", "faction", "scenes", "mail", "jobs", "weather", "script"]
+            ["comsys", "faction", "canon", "scenes", "mail", "jobs", "weather", "script"]
         );
     }
 
@@ -807,8 +808,8 @@ mod tests {
         assert_eq!(
             names,
             [
-                "comsys", "faction", "scenes", "mail", "jobs", "weather", "script", "worldgen",
-                "wod"
+                "comsys", "faction", "canon", "scenes", "mail", "jobs", "weather", "script",
+                "worldgen", "wod"
             ]
         );
         assert!(tw.registry().spec_of("@gen").is_some());
@@ -919,7 +920,7 @@ mod tests {
         let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
         assert_eq!(
             names,
-            ["comsys", "faction", "scenes", "mail", "jobs", "weather", "script", "wod"]
+            ["comsys", "faction", "canon", "scenes", "mail", "jobs", "weather", "script", "wod"]
         );
         // The ruleset's surface is live: +roll / +sheet registered, the
         // wod.roll panel feed present, and the chargen/xp job queues too.

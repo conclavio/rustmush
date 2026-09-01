@@ -1919,6 +1919,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "mush-canon"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "mush-core",
+ "mush-proto",
+ "mush-store",
+ "mush-testkit",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "tracing",
+]
+
+[[package]]
 name = "mush-comsys"
 version = "0.1.0"
 dependencies = [
@@ -2178,6 +2193,7 @@ name = "mush-scenes"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "mush-canon",
  "mush-core",
  "mush-proto",
  "mush-store",
@@ -2204,6 +2220,7 @@ name = "mush-server"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "mush-canon",
  "mush-comsys",
  "mush-config",
  "mush-core",

@@ -1,6 +1,6 @@
 # rustmush design documents
 
-These five documents were produced by parallel design passes (2026-08-27) and reconciled by a
+The first five documents were produced by parallel design passes (2026-08-27) and reconciled by a
 critique pass. They are the *reference* design; where they conflict with each other, the rulings in
 [`../PLAN.md`](../PLAN.md) ("Treaty rulings") are binding.
 
@@ -11,6 +11,11 @@ critique pass. They are the *reference* design; where they conflict with each ot
 | [03-llm-integration.md](03-llm-integration.md) | Provider adapters, budgets/audit, worldgen pipeline, NPC agents |
 | [04-game-systems.md](04-game-systems.md) | Ruleset API, dice, WoD, BattleTech seams, comsys, mail, weather, jobs |
 | [05-critique.md](05-critique.md) | Cross-doc contradictions, gaps, risks, milestone plan |
+| [06-object-behaviors-spatial-domains.md](06-object-behaviors-spatial-domains.md) | First-class object behavior, nested spatial relationships, simulation domains, and the BattleTech implementation path |
+
+`06-object-behaviors-spatial-domains.md` is a later, implementation-informed draft produced by the
+dedicated BattleTech design conversation deferred in `PLAN.md`. For its subject area, prefer it over
+the earlier BattleTech sketches while it proceeds through review.
 
 ## Superseded decisions
 

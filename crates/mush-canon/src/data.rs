@@ -1,0 +1,277 @@
+//! The canon event ledger data model (design:
+//! `docs/scenes_factions_knowledge.md` §5).
+//!
+//! Canon events are the durable **consequences** selected from scene and world
+//! activity — the things that *became true*, as opposed to the full transcript
+//! of what occurred (that is the per-scene event log). Not every scene event
+//! becomes canon: "Alice said the Prince is dead" is canonical as an *utterance*
+//! recorded in the scene log, but "the Prince is dead" is canon only if
+//! separately established. Domain modules emit canon events explicitly alongside
+//! their state mutations, via [`crate::commit`].
+//!
+//! ## Immutability + retcons
+//!
+//! The ledger is append-only (the chunked [`Ledger`] substrate). A **retcon**
+//! never rewrites history — it *appends* a new canon event that `supersedes` an
+//! earlier one. "Current" canon is therefore **derived**: an event is current
+//! unless some later event supersedes its id. This preserves the audit trail
+//! (you can always see what was retconned and why) and keeps every derived
+//! artifact's source ids valid.
+
+use mush_core::{Deferred, Ledger, ModuleOp, ModuleWrite, ObjId, Outbox};
+use serde::{Deserialize, Serialize};
+use smol_str::SmolStr;
+use std::collections::BTreeSet;
+
+/// The canon persistence namespace (`mod:canon:*`).
+pub const NS: &str = "canon";
+
+/// The kv key of the canon meta document (the id allocator resume point).
+pub const META_KEY: &str = "meta";
+
+/// The single ledger log id all canon events share (the world chronicle).
+pub const LOG: &str = "canon";
+
+/// A durable canon-event id: a monotonic per-world counter, **never reused**
+/// (the allocator resume point persists in the meta doc). Derived artifacts
+/// (beliefs, recaps, clocks) reference canon by this id, so it must be stable.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CanonId(pub u64);
+
+impl std::fmt::Display for CanonId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Who may learn a canon event — the epistemic gate on the chronicle. The
+/// event's *existence and summary* are gated here; the finer perception of its
+/// details is the recap/belief layer's job.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CanonScope {
+    /// Common knowledge — anyone may see it in the chronicle.
+    #[default]
+    Public,
+    /// Only the entities involved (and staff) may see it.
+    Restricted,
+    /// Staff only — the fact exists; the world has to discover it.
+    Secret,
+}
+
+impl CanonScope {
+    /// Parse a staff-typed scope name.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<CanonScope> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "public" => Some(CanonScope::Public),
+            "restricted" | "restrict" | "entities" => Some(CanonScope::Restricted),
+            "secret" | "staff" => Some(CanonScope::Secret),
+            _ => None,
+        }
+    }
+
+    /// Staff-facing label.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            CanonScope::Public => "public",
+            CanonScope::Restricted => "restricted",
+            CanonScope::Secret => "secret",
+        }
+    }
+}
+
+/// What a module hands [`crate::commit`] to record a consequence. The id,
+/// wall-clock time, and status are filled in by the ledger.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CanonDraft {
+    /// Module-defined kind, e.g. `"scene.concluded"`, `"faction.control"`.
+    pub kind: SmolStr,
+    /// A one-line human summary (the chronicle line).
+    pub summary: String,
+    /// Who/what the event is about (drives `Restricted` visibility and lookup).
+    pub entities: Vec<ObjId>,
+    /// Who may learn it.
+    pub scope: CanonScope,
+    /// The IC timestamp it occurred at (the caller supplies it: a scene passes
+    /// its scene-local time, a world event the global IC clock).
+    pub ic_time: i64,
+    /// Free-form provenance ("scene:5"), for tracing back to the source.
+    pub source: String,
+    /// Kind-specific structured detail.
+    pub detail: serde_json::Value,
+}
+
+/// One recorded canon event — the payload stored in the ledger. `supersedes` is
+/// `Some` only for a retcon; `status` is **derived** at read time (an event is
+/// superseded iff a later event supersedes its id), never mutated in place.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CanonEvent {
+    /// Durable id.
+    pub id: CanonId,
+    /// Module-defined kind.
+    pub kind: SmolStr,
+    /// One-line summary.
+    pub summary: String,
+    /// Entities involved.
+    #[serde(default)]
+    pub entities: Vec<ObjId>,
+    /// Visibility gate.
+    #[serde(default)]
+    pub scope: CanonScope,
+    /// IC timestamp of occurrence.
+    pub ic_time: i64,
+    /// Wall-clock record time (unix seconds).
+    pub at: i64,
+    /// Provenance.
+    #[serde(default)]
+    pub source: String,
+    /// If this event is a retcon, the id it supersedes.
+    #[serde(default)]
+    pub supersedes: Option<CanonId>,
+    /// Retcon reason (empty for a normal event).
+    #[serde(default)]
+    pub reason: String,
+    /// Kind-specific detail.
+    #[serde(default)]
+    pub detail: serde_json::Value,
+}
+
+impl CanonEvent {
+    /// Whether `viewer` (with `staff` privilege) may see this event's existence
+    /// in the chronicle, per its [`CanonScope`].
+    #[must_use]
+    pub fn visible_to(&self, viewer: ObjId, staff: bool) -> bool {
+        match self.scope {
+            CanonScope::Public => true,
+            CanonScope::Restricted => staff || self.entities.contains(&viewer),
+            CanonScope::Secret => staff,
+        }
+    }
+}
+
+/// The live canon state, held in a module state slot on the `World`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CanonState {
+    /// The single append-only chronicle log (chunked; only the open tail in
+    /// RAM — deep history pages in via the store-read seam once built).
+    pub ledger: Ledger,
+    /// The durable-id allocator resume point (persisted in the meta doc).
+    pub next_canon_id: u64,
+}
+
+impl CanonState {
+    /// Allocate the next canon id (callers persist the meta doc).
+    pub fn alloc_id(&mut self) -> CanonId {
+        let id = CanonId(self.next_canon_id);
+        self.next_canon_id += 1;
+        id
+    }
+
+    /// The canon events currently in RAM (the ledger's open tail), decoded.
+    #[must_use]
+    pub fn recent(&self) -> Vec<CanonEvent> {
+        self.ledger
+            .open_entries(LOG)
+            .iter()
+            .filter_map(|e| serde_json::from_value::<CanonEvent>(e.value.clone()).ok())
+            .collect()
+    }
+
+    /// The set of ids superseded by a retcon **within the RAM tail** — used to
+    /// mark current-vs-retconned in the chronicle. (Full-history supersession
+    /// resolution needs the store-read seam.)
+    #[must_use]
+    pub fn superseded_in_tail(&self) -> BTreeSet<CanonId> {
+        self.recent()
+            .iter()
+            .filter_map(|e| e.supersedes)
+            .collect()
+    }
+}
+
+// ----------------------------------------------------------------------
+// Persistence
+// ----------------------------------------------------------------------
+
+/// Queue one canon write on the outbox deferred side-channel.
+pub(crate) fn push_op(out: &mut Outbox, op: ModuleWrite) {
+    out.defer(Deferred::Persist(ModuleOp {
+        ns: SmolStr::new_static(NS),
+        op,
+    }));
+}
+
+/// Mirror the meta document (the id allocator resume point).
+pub(crate) fn persist_meta(out: &mut Outbox, next_canon_id: u64) {
+    push_op(
+        out,
+        ModuleWrite::JsonSet {
+            key: SmolStr::new_static(META_KEY),
+            value: serde_json::json!({ "next_canon_id": next_canon_id }),
+        },
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ev(id: u64, scope: CanonScope, entities: &[u32]) -> CanonEvent {
+        CanonEvent {
+            id: CanonId(id),
+            kind: SmolStr::new("test"),
+            summary: format!("event {id}"),
+            entities: entities.iter().map(|&e| ObjId(e)).collect(),
+            scope,
+            ic_time: 100,
+            at: 1000,
+            source: String::new(),
+            supersedes: None,
+            reason: String::new(),
+            detail: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn scope_visibility() {
+        let pub_e = ev(0, CanonScope::Public, &[2]);
+        let restricted = ev(1, CanonScope::Restricted, &[2]);
+        let secret = ev(2, CanonScope::Secret, &[2]);
+        // Public: everyone.
+        assert!(pub_e.visible_to(ObjId(9), false));
+        // Restricted: only entities or staff.
+        assert!(restricted.visible_to(ObjId(2), false));
+        assert!(!restricted.visible_to(ObjId(9), false));
+        assert!(restricted.visible_to(ObjId(9), true));
+        // Secret: staff only.
+        assert!(!secret.visible_to(ObjId(2), false));
+        assert!(secret.visible_to(ObjId(2), true));
+    }
+
+    #[test]
+    fn id_allocation_is_monotonic() {
+        let mut st = CanonState::default();
+        assert_eq!(st.alloc_id(), CanonId(0));
+        assert_eq!(st.alloc_id(), CanonId(1));
+        assert_eq!(st.next_canon_id, 2);
+    }
+
+    #[test]
+    fn recent_and_superseded_derive_from_the_tail() {
+        let mut st = CanonState::default();
+        let _ = st.alloc_id(); // 0
+        let _ = st.alloc_id(); // 1
+        // Append event 0, then a retcon (event 1 supersedes 0).
+        let (_, op0) = st.ledger.append(LOG, serde_json::to_value(ev(0, CanonScope::Public, &[])).unwrap());
+        let mut retcon = ev(1, CanonScope::Public, &[]);
+        retcon.supersedes = Some(CanonId(0));
+        let (_, op1) = st.ledger.append(LOG, serde_json::to_value(&retcon).unwrap());
+        let _ = (op0, op1);
+        let recent = st.recent();
+        assert_eq!(recent.len(), 2);
+        assert_eq!(st.superseded_in_tail(), BTreeSet::from([CanonId(0)]));
+    }
+}

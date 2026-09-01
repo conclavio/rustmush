@@ -244,6 +244,7 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
                         record.id
                     ),
                 );
+                emit_scene_concluded(ctx, &record);
             }
             Plan::Shrink { record, new_facilitator } => {
                 if let Some(st) = ctx.w.module_state_mut::<ScenesState>() {
@@ -265,6 +266,42 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
             }
         }
     }
+}
+
+/// Record a concluded scene as a durable **canon** event — the fact that a
+/// scene occurred (its participants, room, and round span) becomes part of the
+/// world chronicle, the seam richer consequences (deaths, obligations, faction
+/// changes) will plug into. Restricted scope: the participants and staff know
+/// it happened. A no-op if the canon module is not loaded.
+pub(crate) fn emit_scene_concluded(ctx: &mut Ctx<'_>, rec: &SceneRecord) {
+    // A scene whose last participant vanished (all destroyed) records nothing —
+    // there is no living entity for it to concern, and "0 participants" is not a
+    // meaningful chronicle line.
+    if rec.participants.is_empty() {
+        return;
+    }
+    let room_name = display_name(ctx.w, rec.anchor);
+    let n = rec.participants.len();
+    let summary = format!(
+        "A scene concluded in {room_name} ({n} participant{}, {} round{}).",
+        if n == 1 { "" } else { "s" },
+        rec.round,
+        if rec.round == 1 { "" } else { "s" }
+    );
+    let draft = mush_canon::CanonDraft {
+        kind: SmolStr::new_static("scene.concluded"),
+        summary,
+        entities: rec.participants.clone(),
+        scope: mush_canon::CanonScope::Restricted,
+        ic_time: rec.scene_ic_time(),
+        source: format!("scene:{}", rec.id),
+        detail: serde_json::json!({
+            "scene": rec.id.0,
+            "rounds": rec.round,
+            "anchor": rec.anchor.0,
+        }),
+    };
+    let _ = mush_canon::commit(ctx, draft);
 }
 
 /// Announce a system line to everyone in `room` (shared by the observer and,

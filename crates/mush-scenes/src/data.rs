@@ -319,6 +319,25 @@ impl ScenesState {
             .find(|s| s.status.holds_members() && s.anchor == room)
     }
 
+    /// The most recent scene (any status, **including Closed**) `obj` is a
+    /// member of — for READ commands, so a scene stays reviewable right after
+    /// it ends. Highest durable id wins (the current or most-recently-finished
+    /// scene). Its transcript is readable while its log tail is in RAM.
+    #[must_use]
+    pub fn latest_scene_of(&self, obj: ObjId) -> Option<&SceneRecord> {
+        self.scenes
+            .values()
+            .rev()
+            .find(|s| s.members().any(|m| m == obj))
+    }
+
+    /// The most recent scene (any status) anchored to `room` — the staff
+    /// read fallback (highest id wins).
+    #[must_use]
+    pub fn latest_scene_at(&self, room: ObjId) -> Option<&SceneRecord> {
+        self.scenes.values().rev().find(|s| s.anchor == room)
+    }
+
     /// Allocate the next durable scene id (callers persist the meta doc).
     pub fn alloc_uid(&mut self) -> SceneUid {
         let id = SceneUid(self.next_scene_uid);

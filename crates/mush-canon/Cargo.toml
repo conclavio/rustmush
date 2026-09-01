@@ -1,0 +1,23 @@
+[package]
+name = "mush-canon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "The canon event ledger: durable, append-only world consequences and retcons"
+
+[dependencies]
+mush-core.workspace = true
+mush-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+mush-store.workspace = true
+mush-testkit.workspace = true
+futures.workspace = true
+
+[lints]
+workspace = true

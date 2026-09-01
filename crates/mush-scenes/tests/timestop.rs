@@ -47,8 +47,15 @@ fn rig() -> Rig {
     let mut registry = Registry::new();
     register_core_commands(&mut registry).unwrap();
     register_engine_commands(&mut registry).unwrap();
-    let mut engine =
-        Engine::with_modules(world, registry, vec![Box::new(ScenesModule::new())]).unwrap();
+    let mut engine = Engine::with_modules(
+        world,
+        registry,
+        vec![
+            Box::new(mush_canon::CanonModule::new()),
+            Box::new(ScenesModule::new()),
+        ],
+    )
+    .unwrap();
     let (mut out, mut fx) = (Outbox::new(), Effects::new());
     engine.modules_loaded(HashMap::new(), &mut out, &mut fx).unwrap();
     let _ = engine.take_module_ops();
@@ -495,6 +502,61 @@ fn arrivals_into_the_anchor_are_recorded() {
         .into_iter()
         .any(|e| e.kind == SceneEventKind::Joined && e.actor == Some(wanderer));
     assert!(joined, "an arrival into the anchor is recorded");
+}
+
+#[test]
+fn ending_a_scene_records_a_canon_event() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    run(&mut r.engine, r.nick, "+timestop/end");
+    // The conclusion is a durable canon event naming the participants.
+    let canon = r.engine.world.module_state::<mush_canon::CanonState>().unwrap();
+    let concluded: Vec<_> = canon
+        .recent()
+        .into_iter()
+        .filter(|e| e.kind == "scene.concluded")
+        .collect();
+    assert_eq!(concluded.len(), 1, "one scene.concluded event");
+    assert!(concluded[0].entities.contains(&r.nick));
+    // A participant sees it in the chronicle (Restricted scope).
+    let t = texts(&run(&mut r.engine, r.nick, "+chronicle"));
+    assert!(t.contains("A scene concluded"), "{t}");
+    // A non-participant does not.
+    let outsider = r.engine.world.create(ObjKind::Player, "Outsider", GOD, Some(r.bar)).unwrap();
+    r.engine.world.set_connected(outsider, true);
+    let t = texts(&run(&mut r.engine, outsider, "+chronicle"));
+    assert!(!t.contains("A scene concluded"), "restricted canon leaked: {t}");
+}
+
+#[test]
+fn a_just_closed_scene_is_still_recappable() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    run(&mut r.engine, r.nick, "say for the record");
+    run(&mut r.engine, r.nick, "+timestop/end");
+    // The scene closed, but its transcript is still in RAM — the natural moment
+    // to review it (right after it ends) must work.
+    let out = run(&mut r.engine, r.nick, "+recap");
+    assert!(texts(&out).contains("for the record"), "closed-scene recap: {}", texts(&out));
+    let out = run(&mut r.engine, r.nick, "+timestop/log");
+    assert!(texts(&out).contains("for the record"), "closed-scene log: {}", texts(&out));
+    let out = run(&mut r.engine, r.nick, "+scene");
+    assert!(texts(&out).contains("closed"), "closed-scene status: {}", texts(&out));
+}
+
+#[test]
+fn recap_renders_the_witnessed_narrative() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    run(&mut r.engine, r.nick, "say hello all");
+    run(&mut r.engine, r.nick, ":waves");
+    run(&mut r.engine, r.nick, "+timestop/next");
+    let out = run(&mut r.engine, r.ann, "+recap");
+    let t = texts(&out);
+    assert!(t.contains("The scene begins"), "{t}");
+    assert!(t.contains("Nick says, \"hello all\""), "{t}");
+    assert!(t.contains("Nick waves"), "pose rendered: {t}");
+    assert!(t.contains("round"), "round divider: {t}");
 }
 
 // ----------------------------------------------------------------------

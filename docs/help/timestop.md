@@ -35,6 +35,10 @@ themselves across a restart.
   +timestop/who       Show the scene here: round, whose turn, participants.
   +timestop/log       Show the scene's recorded timeline (speech, turns,
                       arrivals) — a plain transcript of what happened.
+  +recap              A narrative recap of the scene, told as the events you
+                      witnessed (speech, arrivals, the rounds). When the scene
+                      concludes it is also recorded in the world chronicle
+                      (see help chronicle).
   +timestop/next      (facilitator/staff) Advance to the next participant's
                       turn; wrapping past the last starts a new round.
   +timestop/pause     (facilitator/staff) Freeze turn advancement.

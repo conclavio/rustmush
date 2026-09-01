@@ -235,18 +235,19 @@ fn driver_scene(ctx: &Ctx<'_>) -> Result<SceneRecord, CmdError> {
     Ok(s)
 }
 
-/// The scene the actor may READ here (`+scene`, `/who`, `/log`): their own
-/// scene, or — for staff — the scene anchored to the room they stand in. No
-/// facilitator gate; reads are open to any member (and to staff by room, the
-/// same recovery-visibility the driver gate grants).
+/// The scene the actor may READ here (`+scene`, `/who`, `/log`, `+recap`): the
+/// most recent scene they are a member of — **including one that just closed**,
+/// so the transcript stays reviewable right after it ends — or, for staff, the
+/// most recent scene anchored to the room they stand in. No facilitator gate;
+/// reads are open to any member.
 fn readable_scene(ctx: &Ctx<'_>) -> Option<SceneRecord> {
     let actor = ctx.actor;
-    state_ref(ctx).active_scene_of(actor).cloned().or_else(|| {
+    state_ref(ctx).latest_scene_of(actor).cloned().or_else(|| {
         if !is_staff(ctx.w, actor) {
             return None;
         }
         let room = ctx.w.get(actor).and_then(|o| o.location)?;
-        state_ref(ctx).active_scene_at(room).cloned()
+        state_ref(ctx).latest_scene_at(room).cloned()
     })
 }
 
@@ -333,43 +334,27 @@ fn timestop_release(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             "The facilitator ends the scene with +timestop/end, not /release.",
         ));
     }
-    let now = ctx.w.now();
-    let (anchor, updated, found, closed) = {
+    // The facilitator always remains a participant (they cannot release
+    // themselves — that is `/end`), so a release can never empty the scene:
+    // there is no close path here.
+    let (anchor, updated, found) = {
         let st = state(ctx);
         let rec = st.scenes.get_mut(&s.id).expect("resolved above");
         let found = rec.remove_member(who);
-        let closed = found && rec.participants.is_empty();
-        if closed {
-            rec.status = SceneStatus::Closed;
-            rec.pause_reason = None;
-            rec.ended_at = Some(now);
-        }
-        (rec.anchor, rec.clone(), found, closed)
+        (rec.anchor, rec.clone(), found)
     };
     if !found {
         return Err(CmdError::msg("They are not in this scene."));
     }
     ctx.w.clear_exclusive_scene_member(who);
-    if closed {
-        for m in updated.members().collect::<Vec<_>>() {
-            ctx.w.clear_exclusive_scene_member(m);
-        }
-    }
     persist_scene(ctx.out, &updated);
     let name = display_name(ctx.w, who);
     announce(
         ctx,
         anchor,
-        if closed {
-            format!("{name} leaves — the timestop (scene #{}) ends.", updated.id)
-        } else {
-            format!("{name} is released from the timestop (scene #{}).", updated.id)
-        },
+        format!("{name} is released from the timestop (scene #{}).", updated.id),
     );
     log_event(ctx, &updated, SceneEventKind::Released, Some(who), serde_json::json!({}));
-    if closed {
-        log_event(ctx, &updated, SceneEventKind::Ended, Some(ctx.actor), serde_json::json!({}));
-    }
     Ok(())
 }
 
@@ -396,11 +381,12 @@ fn timestop_end(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         format!("Time resumes — the timestop (scene #{}) ends.", updated.id),
     );
     log_event(ctx, &updated, SceneEventKind::Ended, Some(ctx.actor), serde_json::json!({}));
+    crate::emit_scene_concluded(ctx, &updated);
     Ok(())
 }
 
 // ----------------------------------------------------------------------
-// +scene  (read-only)  +  +timestop/log
+// +scene  (read-only)  +  +timestop/log  +  +recap
 // ----------------------------------------------------------------------
 
 /// Render one recorded [`SceneEvent`] to a one-line summary.
@@ -437,7 +423,16 @@ fn timestop_log(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // total is the ledger's sequence count, not just the RAM tail's length.
     let total = state_ref(ctx).events.next_seq(&log_id);
     if total == 0 {
-        to_actor(ctx, format!("Scene #{} has no recorded events yet.", s.id));
+        let msg = if s.status == SceneStatus::Closed {
+            format!(
+                "Scene #{}'s transcript is archived; reading a finished scene from a prior \
+                 session needs the archive (not yet built).",
+                s.id
+            )
+        } else {
+            format!("Scene #{} has no recorded events yet.", s.id)
+        };
+        to_actor(ctx, msg);
         return Ok(());
     }
     let entries = state_ref(ctx).events.open_entries(&log_id).to_vec();
@@ -464,6 +459,82 @@ fn timestop_log(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     to_actor(ctx, header);
     for line in lines {
         to_actor(ctx, line);
+    }
+    Ok(())
+}
+
+/// Render one witnessed [`SceneEvent`] as a line of narrative prose, or `None`
+/// to omit purely structural events from the recap.
+fn recap_line(ctx: &Ctx<'_>, ev: &SceneEvent) -> Option<String> {
+    let who = ev.actor.map_or_else(String::new, |a| display_name(ctx.w, a));
+    let s = |k: &str| ev.detail.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    match ev.kind {
+        SceneEventKind::Started => Some("The scene begins.".to_string()),
+        SceneEventKind::TurnAdvanced => {
+            let r = ev.detail.get("round").and_then(serde_json::Value::as_u64).unwrap_or(0);
+            Some(format!("-- round {r} --"))
+        }
+        SceneEventKind::Said => Some(match s("narr").as_str() {
+            "say" => format!("{who} says, \"{}\"", s("text")),
+            "pose" => format!("{who} {}", s("text")),
+            "semipose" => format!("{who}{}", s("text")),
+            "emit" | "spoof" => s("text"),
+            _ => format!("{who}: {}", s("text")),
+        }),
+        SceneEventKind::Joined => Some(format!("{who} arrives.")),
+        SceneEventKind::Left => Some(format!("{who} departs.")),
+        SceneEventKind::Ended => Some("The scene ends.".to_string()),
+        // Pause/resume/release are operational, not narrative.
+        SceneEventKind::Paused | SceneEventKind::Resumed | SceneEventKind::Released => None,
+    }
+}
+
+/// `+recap` — a narrative recap of the scene you are in, filtered to the events
+/// **you witnessed** (a personal recap; staff see everything). Distinct from
+/// `+timestop/log`, which is the raw mechanical timeline. Reads the RAM-resident
+/// tail; a finished scene from a prior session needs the archive (store-read
+/// seam), not yet built.
+fn scene_recap(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    let Some(s) = readable_scene(ctx) else {
+        to_actor(ctx, "You are not in a scene.");
+        return Ok(());
+    };
+    let staff = is_staff(ctx.w, actor);
+    let log_id = s.id.to_string();
+    let total = state_ref(ctx).events.next_seq(&log_id);
+    if total == 0 {
+        let msg = if s.status == SceneStatus::Closed {
+            "That scene's transcript is archived; reading a finished scene from a prior session \
+             needs the archive (not yet built)."
+        } else {
+            "Nothing has happened yet."
+        };
+        to_actor(ctx, format!("Recap of {} (scene #{}): {msg}", s.title, s.id));
+        return Ok(());
+    }
+    let entries = state_ref(ctx).events.open_entries(&log_id).to_vec();
+    let omitted = total.saturating_sub(entries.len() as u64);
+    let lines: Vec<String> = entries
+        .iter()
+        .filter_map(|e| serde_json::from_value::<SceneEvent>(e.value.clone()).ok())
+        // Personal recap: only what this viewer perceived (all events, for
+        // staff). The witness set was frozen when each event was recorded.
+        .filter(|ev| staff || ev.actor == Some(actor) || ev.witnesses.contains(&actor))
+        .filter_map(|ev| recap_line(ctx, &ev))
+        .collect();
+    to_actor(
+        ctx,
+        format!("Recap of {} (scene #{}) — as you witnessed it:", s.title, s.id),
+    );
+    if omitted > 0 {
+        to_actor(ctx, format!("  (… {omitted} earlier event(s) not shown here …)"));
+    }
+    if lines.is_empty() {
+        to_actor(ctx, "  (nothing you witnessed)");
+    }
+    for l in lines {
+        to_actor(ctx, format!("  {l}"));
     }
     Ok(())
 }
@@ -548,6 +619,18 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             ..CommandSpec::default()
         },
         Arc::new(show_scene),
+    )?;
+    reg.command(
+        CommandSpec {
+            name: "+recap".into(),
+            shape: ArgShape::None,
+            help: "+recap  --  A narrative recap of the scene you are in, told as the events you \
+                   witnessed: speech, arrivals, the rounds. (The raw mechanical timeline is \
+                   +timestop/log.)"
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(scene_recap),
     )?;
     Ok(())
 }
