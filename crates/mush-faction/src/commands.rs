@@ -273,6 +273,17 @@ fn faction_destroy(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         persist_control(ctx.out, *region, recs);
     }
     persist_del(ctx.out, fac_key(id));
+    // Prune the faction's simulation state (fronts + clocks) so it leaves no
+    // dangling sim docs — the second state slot the FactionState cascade above
+    // doesn't touch.
+    let sim_dels = ctx
+        .w
+        .module_state_mut::<crate::SimState>()
+        .map(|s| crate::sim::prune_faction(s, id))
+        .unwrap_or_default();
+    for key in sim_dels {
+        crate::sim::persist_del(ctx.out, key);
+    }
     for (chan, who) in channel_leavers {
         mush_comsys::api::force_leave(ctx, who, chan);
     }
@@ -1140,6 +1151,15 @@ fn region_destroy(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     persist_del(ctx.out, region_key(r.id));
     persist_del(ctx.out, control_key(r.id));
+    // Detach any clock consequence that would flip this now-gone region.
+    let changed = ctx
+        .w
+        .module_state_mut::<crate::SimState>()
+        .map(|s| crate::sim::detach_region(s, r.id))
+        .unwrap_or_default();
+    for c in &changed {
+        crate::sim::persist_clock(ctx.out, c);
+    }
     info(ctx, format!("Destroyed region {}.", r.name));
     Ok(())
 }

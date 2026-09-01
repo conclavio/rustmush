@@ -95,9 +95,9 @@ Discovery happens in play.
   @faction/uncontrol <region>=<f>/<kind>
   @faction/contest <region>=<holder>/<kind>/<challenger>   (toggle)
 
-In this first cut control records are staff-set. The faction *simulation* —
-fronts and clocks that advance from scene outcomes and flip control
-deterministically — arrives with the canon ledger.
+Control records are staff-set, and the faction **simulation** (fronts and
+clocks) can flip them: a clock that fills on scene outcomes seizes a region for
+its faction. See `help clocks`.
 
 ## NPCs reporting to factions
 

@@ -2000,6 +2000,7 @@ name = "mush-faction"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "mush-canon",
  "mush-comsys",
  "mush-core",
  "mush-proto",

@@ -115,9 +115,18 @@ impl GameModule for CanonModule {
 ///
 /// Call this on the **success path**, after the mutation the event records has
 /// committed to happening (the same ledger transaction discipline as the scene
-/// log).
+/// log). This is now doubly load-bearing: the `CanonRecorded` event below runs
+/// its observers **synchronously**, and a faction clock's observer can flip
+/// territory, complete a clock, and append further canon — all on the caller's
+/// write batch. If the command later returns `Err`, dispatch truncates every
+/// deferred persist but does **not** roll back RAM, so those observer mutations
+/// would diverge from the store until reboot. Commit must therefore be the last
+/// mutating act on any path that can still fail — treat it as terminal.
 pub fn commit(ctx: &mut Ctx<'_>, draft: CanonDraft) -> Option<CanonId> {
     let now = ctx.w.now();
+    // Captured for the observable `CanonRecorded` event emitted below.
+    let kind = draft.kind.to_string();
+    let entities = draft.entities.clone();
     let (id, next, op) = {
         let st = ctx.w.module_state_mut::<CanonState>()?;
         let id = st.alloc_id();
@@ -140,6 +149,18 @@ pub fn commit(ctx: &mut Ctx<'_>, draft: CanonDraft) -> Option<CanonId> {
     };
     push_op(ctx.out, op);
     persist_meta(ctx.out, next);
+    // Announce the recording so consequence-driven simulation (faction clocks)
+    // can react. A no-op for anyone not subscribed. Retcons deliberately do NOT
+    // emit this — they are meta-events, not new consequences. Observers run
+    // synchronously and may themselves commit canon, re-entering here; keeping
+    // this chain finite is each observer's responsibility (the faction clock
+    // observer reserves its consequence kind and never re-advances a completed
+    // clock — see mush_faction::on_canon_recorded).
+    ctx.emit_world_event(&mush_core::WorldEvent::CanonRecorded {
+        canon_id: id.0,
+        kind,
+        entities,
+    });
     Some(id)
 }
 

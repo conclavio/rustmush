@@ -395,6 +395,10 @@ pub enum WorldEventKind {
     /// A mechanical action (a dice roll) resolved — the scene system records
     /// it into the active scene's event log.
     Rolled,
+    /// A canon event was recorded — the general seam by which the world's
+    /// consequences drive further simulation (faction clocks advancing from
+    /// scene outcomes). Observers react to the carried kind/entities.
+    CanonRecorded,
 }
 
 /// A world mutation, delivered to subscribed observers **post-mutation** in
@@ -485,6 +489,17 @@ pub enum WorldEvent {
         /// A short human summary of the result.
         summary: String,
     },
+    /// A canon event was just recorded (by the canon module). The general seam
+    /// for consequence-driven simulation: a faction clock watching a canon
+    /// `kind` advances when one is recorded involving its members.
+    CanonRecorded {
+        /// The canon event's durable id.
+        canon_id: u64,
+        /// Its module-defined kind (`"scene.concluded"`, …).
+        kind: String,
+        /// The entities it concerns.
+        entities: Vec<ObjId>,
+    },
 }
 
 impl WorldEvent {
@@ -501,6 +516,7 @@ impl WorldEvent {
             WorldEvent::AttrSet { .. } => WorldEventKind::AttrSet,
             WorldEvent::PowerUsed { .. } => WorldEventKind::PowerUsed,
             WorldEvent::Rolled { .. } => WorldEventKind::Rolled,
+            WorldEvent::CanonRecorded { .. } => WorldEventKind::CanonRecorded,
         }
     }
 
@@ -516,6 +532,8 @@ impl WorldEvent {
             | WorldEvent::Rolled { who, .. } => *who,
             WorldEvent::ObjCreated { creator, .. } => *creator,
             WorldEvent::ObjDestroyed { obj } | WorldEvent::AttrSet { obj, .. } => *obj,
+            // A system consequence — no single actor; observers run as GOD.
+            WorldEvent::CanonRecorded { entities, .. } => entities.first().copied().unwrap_or(GOD),
         }
     }
 }

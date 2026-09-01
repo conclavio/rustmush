@@ -9,6 +9,7 @@ description = "Faction registry: organizations, membership, structure edges, res
 [dependencies]
 mush-core.workspace = true
 mush-comsys.workspace = true
+mush-canon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true
