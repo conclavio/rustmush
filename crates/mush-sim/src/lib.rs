@@ -14,6 +14,7 @@ pub mod boot;
 pub mod commands;
 pub mod data;
 pub mod graph;
+pub mod links;
 pub mod transition;
 
 use std::sync::Arc;
@@ -27,11 +28,12 @@ use mush_proto::RichText;
 
 pub use data::{
     CapacitySpec, DEFAULT_RECOVERY_ROOM, Derived, DomainClock, DomainId, DomainRecord, DomainStatus,
-    EgressSpec, HostMounts, InteriorSpaceRecord, MAX_SPATIAL_DEPTH, MountId, MountSpec, NS,
-    PASSIVE_DRIVER, PlacementRecord, Presence, RulesValue, SlotId, SpaceAnchor, SpatialParent,
-    SpatialState, UnplacedInfo,
+    EgressSpec, HostAssignments, HostMounts, HostStations, InteriorSpaceRecord, MAX_SPATIAL_DEPTH,
+    MountId, MountSpec, NS, PASSIVE_DRIVER, PlacementRecord, Presence, RulesValue, SlotId,
+    SpaceAnchor, SpatialParent, SpatialState, StationAssignment, StationId, StationSpec,
+    UnplacedInfo, role_priority,
 };
-pub use graph::{effective_domain, presence, project, verify_indexes, verify_projections};
+pub use graph::{effective_domain, presence, project, space_domain, verify_indexes, verify_projections};
 pub use transition::{Plan, SpatialError, Transition, apply, plan, run};
 
 /// Module configuration.
@@ -177,6 +179,11 @@ impl DestroyGate for StructuralDestroyGate {
                 return Err(format!("{} carries occupied interior(s) {}; empty them first.", name(w, target), occupied.join(", ")));
             }
         }
+        if let Some(a) = st.assignments.get(&target)
+            && !a.seats.is_empty()
+        {
+            return Err(format!("{} has {} crewed station(s); @spatial/unassign first.", name(w, target), a.seats.len()));
+        }
         let deps = st.children_of(target).len();
         if deps > 0 {
             return Err(format!("{} still has {deps} placed dependent(s); move them first.", name(w, target)));
@@ -240,6 +247,13 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     let riding_spaces: Vec<ObjId> = st.derived.anchored_spaces.get(&obj).map(|s| s.iter().copied().collect()).unwrap_or_default();
     let dependents: Vec<ObjId> = st.children_of(obj).iter().copied().collect();
     let was_placed = st.placements.contains_key(&obj);
+    // Units this actor (if it is one) crews — its seats die with it.
+    let actor_seats: Vec<ObjId> = st
+        .derived
+        .assignments_by_actor
+        .get(&obj)
+        .map(|us| us.iter().copied().collect())
+        .unwrap_or_default();
     // Live domains whose presentation room IS the husk (excluding one this husk
     // also hosts, handled above): their directs now project into a dead room.
     let orphaned_domains: Vec<DomainId> = st
@@ -252,6 +266,23 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
         .iter()
         .flat_map(|d| st.derived.domain_direct.get(d).into_iter().flatten().copied())
         .collect();
+    // Every actor whose crew link must be re-derived: the FULL subtree of every
+    // quarantine root (Quarantine unplaces subtrees, so a crewed grandchild is
+    // disturbed too), plus the husk's own crew (its seat record dies).
+    let crew_refresh: std::collections::BTreeSet<ObjId> = {
+        let mut set = std::collections::BTreeSet::new();
+        for root in dependents.iter().chain(direct_in_hosted.iter()).chain(directs_of_orphaned.iter()) {
+            for unit in st.subtree(*root) {
+                if let Some(a) = st.assignments.get(&unit) {
+                    set.extend(a.seats.values().map(|seat| seat.actor));
+                }
+            }
+        }
+        if let Some(a) = st.assignments.get(&obj) {
+            set.extend(a.seats.values().map(|seat| seat.actor));
+        }
+        set
+    };
 
     // Quarantine dependents (occupants/attachments) and direct participants of
     // a lost domain; interior/attached records under OTHER hosts stay intact.
@@ -302,9 +333,33 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
         s.placements.remove(&obj);
         dels.push(data::placement_key(obj));
     }
+    // The husk's own control surface dies with it.
+    if s.stations.remove(&obj).is_some() {
+        dels.push(data::stations_key(obj));
+    }
+    if s.assignments.remove(&obj).is_some() {
+        dels.push(data::assignment_key(obj));
+    }
+    // If the husk was an ACTOR, drop its seat from every unit it crewed.
+    for unit in &actor_seats {
+        if let Some(ha) = s.assignments.get_mut(unit) {
+            ha.seats.retain(|_, seat| seat.actor != obj);
+            let rec = ha.clone();
+            if rec.seats.is_empty() {
+                s.assignments.remove(unit);
+            }
+            data::persist_assignments(ctx.out, &rec);
+        }
+    }
     s.derived = graph::rebuild(s);
     for k in dels {
         data::persist_del(ctx.out, k);
+    }
+    // Re-derive control links for every affected actor (World::destroy already
+    // scrubbed links whose actor/subject is the husk; a merely-quarantined unit
+    // must also stop granting control).
+    for actor in crew_refresh {
+        links::refresh_actor_links(ctx.w, actor);
     }
 }
 

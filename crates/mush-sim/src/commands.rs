@@ -11,11 +11,14 @@ use mush_core::{
 use smol_str::SmolStr;
 
 use crate::data::{
-    CapacitySpec, DomainClock, DomainId, DomainRecord, DomainStatus, HostMounts, MountId, MountSpec, PASSIVE_DRIVER, RECOVERY_LOG, RulesValue, SlotId,
-    SpaceAnchor, SpatialParent, SpatialState, persist_domain, persist_meta, persist_mounts,
-    persist_space, persist_del, space_key,
+    CapacitySpec, DomainClock, DomainId, DomainRecord, DomainStatus, HostAssignments, HostMounts,
+    HostStations, MountId, MountSpec, PASSIVE_DRIVER, RECOVERY_LOG, RulesValue, SlotId, SpaceAnchor,
+    SpatialParent, SpatialState, StationAssignment, StationId, StationSpec, persist_assignments,
+    persist_del, persist_domain, persist_meta, persist_mounts, persist_space, persist_stations,
+    space_key,
 };
 use crate::graph::{effective_domain, presence, project, verify_indexes, verify_projections};
+use crate::links::{refresh_actor_links, refresh_unit_actors};
 use crate::transition::{Transition, run};
 
 fn is_admin(w: &mush_core::World, who: ObjId) -> bool {
@@ -314,6 +317,18 @@ fn cmd_spatial(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         spatial_mount(ctx)
     } else if sw.has("unmount") {
         spatial_unmount(ctx)
+    } else if sw.has("station") {
+        spatial_station(ctx)
+    } else if sw.has("unstation") {
+        spatial_unstation(ctx)
+    } else if sw.has("assign") {
+        spatial_assign(ctx)
+    } else if sw.has("unassign") {
+        spatial_unassign(ctx)
+    } else if sw.has("egress") {
+        spatial_egress(ctx)
+    } else if sw.has("detach") {
+        spatial_detach(ctx)
     } else if sw.has("quarantine") {
         spatial_quarantine_list(ctx)
     } else if sw.has("recover") {
@@ -445,6 +460,8 @@ fn spatial_place(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     let desc = describe_parent(ctx, &parent);
     run(ctx, &Transition::Place { obj, parent }).map_err(sim_err)?;
+    // A (re-)placed unit grants control to its crew again.
+    refresh_unit_actors(ctx.w, obj);
     info(ctx, format!("Placed {} {desc}.", display_name(ctx.w, obj)));
     Ok(())
 }
@@ -454,6 +471,8 @@ fn spatial_unplace(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let reason = ctx.args.rhs().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("staff unplace").to_string();
     let keep = ctx.switches.has("keep");
     run(ctx, &Transition::Unplace { obj, reason, by: Some(ctx.actor), keep }).map_err(sim_err)?;
+    // An unplaced unit stops granting control to its crew.
+    refresh_unit_actors(ctx.w, obj);
     info(ctx, format!("Unplaced {}.", display_name(ctx.w, obj)));
     Ok(())
 }
@@ -702,6 +721,183 @@ fn spatial_log(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+// ----------------------------------------------------------------------
+// Stations, assignments (cut 2)
+// ----------------------------------------------------------------------
+
+fn spatial_station(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let host = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
+    let rhs = rhs_required(ctx, "@spatial/station <host>=<station>,<role>[,space:<room>]")?;
+    let (parts, _) = split_rhs(&rhs);
+    let station = parts.first().and_then(|s| StationId::new(s)).ok_or_else(|| CmdError::msg("Which station?"))?;
+    let role = parts.get(1).cloned().filter(|r| !r.is_empty()).ok_or_else(|| CmdError::msg("Give a role (pilot, gunner, ...)."))?;
+    let mut space: Option<ObjId> = None;
+    for part in parts.iter().skip(2) {
+        if let Some(room) = part.strip_prefix("space:") {
+            space = Some(match_object(ctx.w, ctx.actor, room.trim())?);
+        } else {
+            return Err(CmdError::msg(format!("Unknown station option `{part}`.")));
+        }
+    }
+    if ctx.w.get(host).is_none_or(|o| o.flags.contains(Flags::GOING)) {
+        return Err(CmdError::msg("No such host."));
+    }
+    let rec = {
+        let s = st_mut(ctx);
+        let hs = s.stations.entry(host).or_insert_with(|| HostStations { host, stations: Default::default() });
+        hs.stations.insert(
+            station.clone(),
+            StationSpec { role: SmolStr::new(&role), space, policy: RulesValue { schema: SmolStr::new_static(PASSIVE_DRIVER), version: 1, data: serde_json::Value::Null } },
+        );
+        hs.clone()
+    };
+    persist_stations(ctx.out, &rec);
+    // A redefined role changes link priority; refresh any assigned crew.
+    refresh_unit_actors(ctx.w, host);
+    info(ctx, format!("Station `{station}` ({role}) set on {}.", display_name(ctx.w, host)));
+    Ok(())
+}
+
+fn spatial_unstation(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let host = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
+    let station = StationId::new(&rhs_required(ctx, "@spatial/unstation <host>=<station>")?).ok_or_else(|| CmdError::msg("Which station?"))?;
+    if st(ctx).assignments.get(&host).is_some_and(|a| a.seats.contains_key(&station)) {
+        return Err(CmdError::msg("Someone holds that station; @spatial/unassign first."));
+    }
+    let rec = {
+        let s = st_mut(ctx);
+        let hs = s.stations.get_mut(&host).ok_or_else(|| CmdError::msg("No such station."))?;
+        if hs.stations.remove(&station).is_none() {
+            return Err(CmdError::msg("No such station."));
+        }
+        let rec = hs.clone();
+        if rec.stations.is_empty() {
+            s.stations.remove(&host);
+        }
+        rec
+    };
+    persist_stations(ctx.out, &rec);
+    info(ctx, format!("Station `{station}` removed from {}.", display_name(ctx.w, host)));
+    Ok(())
+}
+
+fn spatial_assign(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let host = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
+    let rhs = rhs_required(ctx, "@spatial/assign <host>=<station>,<actor>")?;
+    let (parts, _) = split_rhs(&rhs);
+    let station = parts.first().and_then(|s| StationId::new(s)).ok_or_else(|| CmdError::msg("Which station?"))?;
+    let actor = match_object(ctx.w, ctx.actor, parts.get(1).map(String::as_str).unwrap_or(""))?;
+    if ctx.w.get(actor).is_none_or(|o| o.flags.contains(Flags::GOING)) {
+        return Err(CmdError::msg("No such actor."));
+    }
+    if !st(ctx).stations.get(&host).is_some_and(|hs| hs.stations.contains_key(&station)) {
+        return Err(CmdError::msg("That host has no such station (@spatial/station first)."));
+    }
+    let now = ctx.w.now();
+    {
+        let s = st_mut(ctx);
+        if let Some(a) = s.assignments.get(&host)
+            && a.seats.get(&station).is_some_and(|seat| seat.actor != actor)
+        {
+            return Err(CmdError::msg("That station is already held; @spatial/unassign first."));
+        }
+        let ha = s.assignments.entry(host).or_insert_with(|| HostAssignments { host, seats: Default::default() });
+        ha.seats.insert(station.clone(), StationAssignment { actor, assigned_at: now });
+        let rec = ha.clone();
+        s.derived = crate::graph::rebuild(s);
+        persist_assignments(ctx.out, &rec);
+    }
+    refresh_actor_links(ctx.w, actor);
+    info(ctx, format!("{} now holds `{station}` on {}.", display_name(ctx.w, actor), display_name(ctx.w, host)));
+    Ok(())
+}
+
+fn spatial_unassign(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let host = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
+    let station = StationId::new(&rhs_required(ctx, "@spatial/unassign <host>=<station>")?).ok_or_else(|| CmdError::msg("Which station?"))?;
+    let former = {
+        let s = st_mut(ctx);
+        let ha = s.assignments.get_mut(&host).ok_or_else(|| CmdError::msg("No assignments on that host."))?;
+        let asg = ha.seats.remove(&station).ok_or_else(|| CmdError::msg("No one holds that station."))?;
+        let rec = ha.clone();
+        if rec.seats.is_empty() {
+            s.assignments.remove(&host);
+        }
+        s.derived = crate::graph::rebuild(s);
+        persist_assignments(ctx.out, &rec);
+        asg.actor
+    };
+    refresh_actor_links(ctx.w, former);
+    info(ctx, format!("{} no longer holds `{station}` on {}.", display_name(ctx.w, former), display_name(ctx.w, host)));
+    Ok(())
+}
+
+// ----------------------------------------------------------------------
+// egress / detach (cut 2) -- Place with a computed parent
+// ----------------------------------------------------------------------
+
+/// The Direct parent an occupant egresses to: the space's effective domain
+/// (read from the OCCUPANT while still inside) plus the chosen egress pose.
+fn egress_parent(ctx: &Ctx<'_>, unit: ObjId, egress_id: Option<&str>) -> Result<SpatialParent, CmdError> {
+    let s = st(ctx);
+    let SpatialParent::Interior { space, .. } = s.parent_of(unit) else {
+        return Err(CmdError::msg(format!("{} is not inside anything.", display_name(ctx.w, unit))));
+    };
+    let domain = effective_domain(s, unit).ok_or_else(|| CmdError::msg("That space has no domain to egress onto (it is unanchored)."))?;
+    let rec = s.spaces.get(&space);
+    let pose = match egress_id {
+        Some(id) => Some(rec.and_then(|r| r.egresses.get(id)).ok_or_else(|| CmdError::msg(format!("No egress `{id}` on that space.")))?.to_pose.clone()),
+        None => match rec.map(|r| &r.egresses) {
+            Some(e) if e.len() == 1 => Some(e.values().next().unwrap().to_pose.clone()),
+            Some(e) if e.len() > 1 => return Err(CmdError::msg("Which egress? Several are defined.")),
+            _ => None,
+        },
+    };
+    let pose = pose.flatten().unwrap_or(RulesValue { schema: SmolStr::new_static(PASSIVE_DRIVER), version: 1, data: serde_json::Value::Null });
+    Ok(SpatialParent::Direct { domain, pose })
+}
+
+fn spatial_egress(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let unit = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
+    let egress_id = ctx.args.rhs().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let parent = egress_parent(ctx, unit, egress_id.as_deref())?;
+    run(ctx, &Transition::Place { obj: unit, parent }).map_err(sim_err)?;
+    info(ctx, format!("{} egressed.", display_name(ctx.w, unit)));
+    Ok(())
+}
+
+/// The parent a detached child takes: the host's OWN parent (become its sibling).
+fn detach_parent(ctx: &Ctx<'_>, host: ObjId) -> Result<SpatialParent, CmdError> {
+    match st(ctx).parent_of(host) {
+        SpatialParent::Interior { space, .. } => Ok(SpatialParent::Interior { space, slot: None }),
+        p @ (SpatialParent::Direct { .. } | SpatialParent::Attached { .. }) => Ok(p),
+        SpatialParent::Unplaced => Err(CmdError::msg("The host is not placed; move it first.")),
+    }
+}
+
+fn spatial_detach(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let child = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
+    let SpatialParent::Attached { host, .. } = st(ctx).parent_of(child) else {
+        return Err(CmdError::msg(format!("{} is not attached to anything.", display_name(ctx.w, child))));
+    };
+    let parent = detach_parent(ctx, host)?;
+    run(ctx, &Transition::Place { obj: child, parent }).map_err(sim_err)?;
+    info(ctx, format!("Detached {}.", display_name(ctx.w, child)));
+    Ok(())
+}
+
+/// Player-facing `egress` / `disembark`: leave the interior you are in.
+pub(crate) fn egress_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if !matches!(st(ctx).parent_of(ctx.actor), SpatialParent::Interior { .. }) {
+        return Err(CmdError::msg("You are not inside anything."));
+    }
+    let actor = ctx.actor;
+    let parent = egress_parent(ctx, actor, None)?;
+    run(ctx, &Transition::Place { obj: actor, parent }).map_err(sim_err)?;
+    info(ctx, "You egress.");
+    Ok(())
+}
+
 /// Register `@domain` and `@spatial`.
 pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.command(
@@ -725,7 +921,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             shape: ArgShape::EqPair,
             switches: [
                 "place", "domain", "interior", "attached", "unplace", "keep", "space", "unspace", "slot",
-                "mount", "unmount", "quarantine", "recover", "validate", "tree", "log",
+                "mount", "unmount", "station", "unstation", "assign", "unassign", "egress",
+                "detach", "quarantine", "recover", "validate", "tree", "log",
             ]
             .iter()
             .copied()
@@ -739,11 +936,26 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @spatial/unplace[/keep] <obj>[=<reason>]\n\
                    @spatial/space <room>=fixed:<domain>|moving:<host>|unanchored   @spatial/unspace <room>\n\
                    @spatial/slot <space>=<slot>[,<max>]   @spatial/mount <host>=<mount>[,<max>][,exposed]   @spatial/unmount <host>=<mount>\n\
+                   @spatial/station <host>=<station>,<role>[,space:<room>]   @spatial/unstation <host>=<station>\n\
+                   @spatial/assign <host>=<station>,<actor>   @spatial/unassign <host>=<station>\n\
+                   @spatial/egress <unit>[=<egress>]   @spatial/detach <child>   (embark/attach/transfer = @spatial/place/*)\n\
                    @spatial/quarantine   @spatial/recover <obj>   @spatial/validate   @spatial/log"
                 .into(),
             ..CommandSpec::default()
         },
         Arc::new(cmd_spatial),
+    )?;
+    reg.command(
+        CommandSpec {
+            name: "egress".into(),
+            aliases: vec!["disembark".into()],
+            shape: ArgShape::Raw,
+            help: "egress  --  Leave the interior space you are placed inside, onto the surrounding \
+                   simulation domain (a mech egressing a dropship bay, a trooper leaving an APC)."
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(egress_cmd),
     )?;
     Ok(())
 }

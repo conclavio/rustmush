@@ -47,6 +47,11 @@ pub struct SlotId(SmolStr);
 #[serde(transparent)]
 pub struct MountId(SmolStr);
 
+/// A control-station name on a host (lowercased).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct StationId(SmolStr);
+
 macro_rules! name_id {
     ($t:ident) => {
         impl $t {
@@ -71,6 +76,7 @@ macro_rules! name_id {
 }
 name_id!(SlotId);
 name_id!(MountId);
+name_id!(StationId);
 
 // ----------------------------------------------------------------------
 // Records
@@ -287,6 +293,57 @@ pub struct HostMounts {
     pub mounts: BTreeMap<MountId, MountSpec>,
 }
 
+/// A control station on a host (design §5.6). Cut 2 stations are CONTROL
+/// positions only (pilot/gunner): an assignment grants the unit as a command
+/// subject. Passengers and cargo are ordinary interior slots, never stations.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StationSpec {
+    /// The role (`"pilot"`, `"gunner"`, …) — descriptive; drives link priority.
+    pub role: SmolStr,
+    /// The backing cockpit room, if any (reserved: cut 2 does not auto-embark).
+    pub space: Option<ObjId>,
+    /// Opaque ruleset policy (unused in cut 2).
+    pub policy: RulesValue,
+}
+
+/// A host's control stations, keyed by id (`stations:<host>`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HostStations {
+    /// The host unit.
+    pub host: ObjId,
+    /// Stations by id.
+    pub stations: BTreeMap<StationId, StationSpec>,
+}
+
+/// Who holds a control station (design §5.6). One actor per station in cut 2.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StationAssignment {
+    /// The occupying actor.
+    pub actor: ObjId,
+    /// Unix seconds.
+    pub assigned_at: i64,
+}
+
+/// A host's current station assignments (`assignment:<host>`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostAssignments {
+    /// The host unit.
+    pub host: ObjId,
+    /// Station → who holds it.
+    pub seats: BTreeMap<StationId, StationAssignment>,
+}
+
+/// Command-subject priority for a control role (higher wins among an actor's
+/// links; `pilot` > `gunner` > anything else).
+#[must_use]
+pub fn role_priority(role: &str) -> u16 {
+    match role {
+        "pilot" => 2,
+        "gunner" => 1,
+        _ => 0,
+    }
+}
+
 /// Derived tactical presence (design §5.3). Computed, never stored.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Presence {
@@ -322,6 +379,8 @@ pub struct Derived {
     pub anchored_spaces: BTreeMap<ObjId, BTreeSet<ObjId>>,
     /// Domain → spaces fixed in it.
     pub spaces_in_domain: BTreeMap<DomainId, BTreeSet<ObjId>>,
+    /// Actor → the units it holds a control station on.
+    pub assignments_by_actor: BTreeMap<ObjId, BTreeSet<ObjId>>,
 }
 
 /// The module's state slot: the durable records, the allocator, the recovery
@@ -336,6 +395,10 @@ pub struct SpatialState {
     pub spaces: BTreeMap<ObjId, InteriorSpaceRecord>,
     /// Mount definitions by host.
     pub mounts: BTreeMap<ObjId, HostMounts>,
+    /// Control-station definitions by host.
+    pub stations: BTreeMap<ObjId, HostStations>,
+    /// Station assignments by host.
+    pub assignments: BTreeMap<ObjId, HostAssignments>,
     /// Domain id allocator resume point.
     pub next_domain_id: u64,
     /// Where quarantined/unplaced objects are projected (design D4 item 3).
@@ -353,6 +416,8 @@ impl Default for SpatialState {
             placements: BTreeMap::new(),
             spaces: BTreeMap::new(),
             mounts: BTreeMap::new(),
+            stations: BTreeMap::new(),
+            assignments: BTreeMap::new(),
             next_domain_id: 0,
             recovery_room: DEFAULT_RECOVERY_ROOM,
             recovery: Ledger::default(),
@@ -369,6 +434,8 @@ impl PartialEq for SpatialState {
             && self.placements == other.placements
             && self.spaces == other.spaces
             && self.mounts == other.mounts
+            && self.stations == other.stations
+            && self.assignments == other.assignments
             && self.next_domain_id == other.next_domain_id
             && self.recovery_room == other.recovery_room
             && self.derived == other.derived
@@ -517,6 +584,16 @@ pub fn space_key(obj: ObjId) -> SmolStr {
 pub fn mounts_key(host: ObjId) -> SmolStr {
     SmolStr::new(format!("mounts:{}", host.0))
 }
+/// Key of a stations doc.
+#[must_use]
+pub fn stations_key(host: ObjId) -> SmolStr {
+    SmolStr::new(format!("stations:{}", host.0))
+}
+/// Key of an assignments doc.
+#[must_use]
+pub fn assignment_key(host: ObjId) -> SmolStr {
+    SmolStr::new(format!("assignment:{}", host.0))
+}
 
 pub(crate) fn push_op(out: &mut Outbox, op: ModuleWrite) {
     out.defer(Deferred::Persist(ModuleOp {
@@ -544,6 +621,20 @@ pub(crate) fn persist_mounts(out: &mut Outbox, m: &HostMounts) {
         persist_del(out, mounts_key(m.host));
     } else {
         json_set(out, mounts_key(m.host), m);
+    }
+}
+pub(crate) fn persist_stations(out: &mut Outbox, s: &HostStations) {
+    if s.stations.is_empty() {
+        persist_del(out, stations_key(s.host));
+    } else {
+        json_set(out, stations_key(s.host), s);
+    }
+}
+pub(crate) fn persist_assignments(out: &mut Outbox, a: &HostAssignments) {
+    if a.seats.is_empty() {
+        persist_del(out, assignment_key(a.host));
+    } else {
+        json_set(out, assignment_key(a.host), a);
     }
 }
 pub(crate) fn persist_meta(out: &mut Outbox, next_domain_id: u64) {

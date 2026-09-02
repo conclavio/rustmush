@@ -199,7 +199,25 @@ pub fn rebuild(st: &SpatialState) -> Derived {
             }
         }
     }
+    for a in st.assignments.values() {
+        for seat in a.seats.values() {
+            d.assignments_by_actor.entry(seat.actor).or_default().insert(a.host);
+        }
+    }
     d
+}
+
+/// The domain a space belongs to, read from its anchor (not `effective_domain`,
+/// which short-circuits to `None` on the space itself): `FixedDomain` → that
+/// domain; `MovingObject` → the host's effective domain (nested carriers); a
+/// dangling/`Unanchored` space → `None`.
+#[must_use]
+pub fn space_domain(st: &SpatialState, space: ObjId) -> Option<DomainId> {
+    match &st.spaces.get(&space)?.anchor {
+        SpaceAnchor::FixedDomain { domain, .. } => st.domains.contains_key(domain).then_some(*domain),
+        SpaceAnchor::MovingObject { host } => effective_domain(st, *host),
+        SpaceAnchor::Unanchored => None,
+    }
 }
 
 /// Recompute the indexes and compare to the maintained ones.

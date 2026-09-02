@@ -13,9 +13,9 @@ use mush_core::{Flags, ModError, ModuleBootData, ModuleCtx, ObjId, is_log_key};
 use smol_str::SmolStr;
 
 use crate::data::{
-    DomainRecord, DomainStatus, HostMounts, InteriorSpaceRecord, META_KEY, PlacementRecord,
-    SpaceAnchor, SpatialParent, SpatialState, UnplacedInfo, persist_del, persist_placement,
-    persist_space, placement_key,
+    DomainRecord, DomainStatus, HostAssignments, HostMounts, HostStations, InteriorSpaceRecord,
+    META_KEY, PlacementRecord, SpaceAnchor, SpatialParent, SpatialState, UnplacedInfo,
+    persist_assignments, persist_del, persist_placement, persist_space, placement_key,
 };
 use crate::graph::{ancestors, project, rebuild};
 
@@ -30,6 +30,7 @@ pub(crate) fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData, recovery_
     let mut meta_next: Option<u64> = None;
     let mut placements: BTreeMap<ObjId, PlacementRecord> = BTreeMap::new();
     let mut unreadable: Vec<ObjId> = Vec::new();
+    let mut raw_assignments: Vec<HostAssignments> = Vec::new();
     let mut log_docs: Vec<(SmolStr, serde_json::Value)> = Vec::new();
 
     for (key, value) in data.kv {
@@ -59,6 +60,17 @@ pub(crate) fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData, recovery_
             let m: HostMounts = serde_json::from_value(value)
                 .map_err(|e| ModError::msg(format!("sim: bad mounts doc {key:?}: {e}")))?;
             st.mounts.insert(m.host, m);
+        } else if key.starts_with("stations:") {
+            // Container-like (a unit's control surface): a corrupt doc fails boot.
+            let hs: HostStations = serde_json::from_value(value)
+                .map_err(|e| ModError::msg(format!("sim: bad stations doc {key:?}: {e}")))?;
+            st.stations.insert(hs.host, hs);
+        } else if key.starts_with("assignment:") {
+            // Recoverable (a pilot re-boards): a corrupt doc is dropped, not fatal.
+            match serde_json::from_value::<HostAssignments>(value) {
+                Ok(ha) => raw_assignments.push(ha),
+                Err(e) => tracing::error!(%key, error = %e, "sim: unparseable assignment doc dropped"),
+            }
         } else if let Some(rest) = key.strip_prefix("placement:") {
             match serde_json::from_value::<PlacementRecord>(value) {
                 Ok(p) => {
@@ -189,9 +201,36 @@ pub(crate) fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData, recovery_
         }
     }
 
+    // Assignments: drop a seat whose actor is gone and drop a whole doc whose
+    // host is gone; persist any doc we prune. Station DEFS (container-like) are
+    // trusted as loaded.
+    let live = |id: ObjId| ctx.w.get(id).is_some_and(|o| !o.flags.contains(Flags::GOING));
+    let mut assigned_actors: BTreeSet<ObjId> = BTreeSet::new();
+    for mut ha in raw_assignments {
+        if !live(ha.host) {
+            persist_del(ctx.out, crate::data::assignment_key(ha.host));
+            continue;
+        }
+        let before = ha.seats.len();
+        ha.seats.retain(|_, seat| live(seat.actor));
+        if ha.seats.len() != before {
+            persist_assignments(ctx.out, &ha);
+        }
+        if ha.seats.is_empty() {
+            continue;
+        }
+        assigned_actors.extend(ha.seats.values().map(|seat| seat.actor));
+        st.assignments.insert(ha.host, ha);
+    }
+    st.derived = rebuild(&st);
+
     *ctx.w
         .module_state_mut::<SpatialState>()
         .expect("sim state slot installed at registration") = st;
+    // Republish control links from the installed assignments (M27 owner-republish).
+    for actor in assigned_actors {
+        crate::links::refresh_actor_links(ctx.w, actor);
+    }
     Ok(quarantined)
 }
 
