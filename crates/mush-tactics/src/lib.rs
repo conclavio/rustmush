@@ -45,6 +45,13 @@ use mush_core::{
 use mush_proto::RichText;
 use smol_str::SmolStr;
 
+pub mod mobility;
+
+pub use mobility::{
+    LocomotionId, MediumId, MobilityError, MobilityMode, MobilityModeId, MobilityProfile,
+    MobilityRegistry, MobilityTag, MobilityVocabulary, ModeRules, ModeState,
+};
+
 /// The module id (also its persistence namespace).
 pub const NS: &str = "tactics";
 
