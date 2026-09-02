@@ -12,10 +12,12 @@ critique pass. They are the *reference* design; where they conflict with each ot
 | [04-game-systems.md](04-game-systems.md) | Ruleset API, dice, WoD, TacSim seams, comsys, mail, weather, jobs |
 | [05-critique.md](05-critique.md) | Cross-doc contradictions, gaps, risks, milestone plan |
 | [06-object-behaviors-spatial-domains.md](06-object-behaviors-spatial-domains.md) | First-class object behavior, nested spatial relationships, simulation domains, and the TacSim implementation path |
+| [07-npc-control-and-tactical-ai.md](07-npc-control-and-tactical-ai.md) | Link-loss automation, allegiance, typed orders, hybrid tactical AI, belief state, and NPC mobility |
+| [08-economy-organizations-ownership.md](08-economy-organizations-ownership.md) | Cross-ruleset economy, first-class organizations, scoped authorization, asset ownership/custody, contracts, housing, and production |
 
-`06-object-behaviors-spatial-domains.md` is a later, implementation-informed draft produced by the
-dedicated TacSim design conversation deferred in `PLAN.md`. For its subject area, prefer it over
-the earlier TacSim sketches while it proceeds through review.
+`06-object-behaviors-spatial-domains.md` and its later companion proposals are
+implementation-informed drafts produced by dedicated design conversations deferred in `PLAN.md`.
+For their subject areas, prefer them over the earlier sketches while they proceed through review.
 
 ## Superseded decisions
 
