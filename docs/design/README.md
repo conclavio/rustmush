@@ -9,13 +9,13 @@ critique pass. They are the *reference* design; where they conflict with each ot
 | [01-server-core.md](01-server-core.md) | Object model, world task, command dispatch, module API, scheduler |
 | [02-connectivity.md](02-connectivity.md) | SSH (russh), session layer, web server, WS protocol, frontend |
 | [03-llm-integration.md](03-llm-integration.md) | Provider adapters, budgets/audit, worldgen pipeline, NPC agents |
-| [04-game-systems.md](04-game-systems.md) | Ruleset API, dice, WoD, MechWarrior seams, comsys, mail, weather, jobs |
+| [04-game-systems.md](04-game-systems.md) | Ruleset API, dice, WoD, TacSim seams, comsys, mail, weather, jobs |
 | [05-critique.md](05-critique.md) | Cross-doc contradictions, gaps, risks, milestone plan |
-| [06-object-behaviors-spatial-domains.md](06-object-behaviors-spatial-domains.md) | First-class object behavior, nested spatial relationships, simulation domains, and the MechWarrior implementation path |
+| [06-object-behaviors-spatial-domains.md](06-object-behaviors-spatial-domains.md) | First-class object behavior, nested spatial relationships, simulation domains, and the TacSim implementation path |
 
 `06-object-behaviors-spatial-domains.md` is a later, implementation-informed draft produced by the
-dedicated MechWarrior design conversation deferred in `PLAN.md`. For its subject area, prefer it over
-the earlier MechWarrior sketches while it proceeds through review.
+dedicated TacSim design conversation deferred in `PLAN.md`. For its subject area, prefer it over
+the earlier TacSim sketches while it proceeds through review.
 
 ## Superseded decisions
 

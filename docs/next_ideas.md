@@ -98,7 +98,7 @@ These are perfect persistent-game primitives, particularly for Vampire and Shado
 
 NPCs can understand and negotiate them, but the engine owns their lifecycle. They also create story hooks naturally.
 
-> **2026-09-01:** obligations need faction-to-faction endpoints, not only character-to-character — a MechWarrior merc contract is exactly a typed obligation between factions (the `ContractedTo` edge plus this primitive), and Camarilla boon-credit doubles as a faction-scoped standing currency (see `scenes_factions_knowledge.md` §3.3).
+> **2026-09-01:** obligations need faction-to-faction endpoints, not only character-to-character — a TacSim merc contract is exactly a typed obligation between factions (the `ContractedTo` edge plus this primitive), and Camarilla boon-credit doubles as a faction-scoped standing currency (see `scenes_factions_knowledge.md` §3.3).
 
 ### 8. “Director” rather than omnipotent AI Storyteller
 
@@ -227,7 +227,7 @@ Let rulesets add modes to the common scene system:
 
 - WoD social conflict, extended actions, chases, combat, frenzy.
 - Shadowrun legwork, matrix, astral, vehicle, combat.
-- MechWarrior strategic, tactical, repair, and economic phases.
+- TacSim strategic, tactical, repair, and economic phases.
 
 Each mode supplies its own structured panels, actions, cadence, and observability while sharing participants, transcripts, permissions, and persistence.
 

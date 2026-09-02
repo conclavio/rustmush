@@ -1,7 +1,7 @@
 # Deploying rustmush
 
 Instances are named and isolated so several can run on one box (a WoD one, a
-MechWarrior one, …). Each instance `<name>` gets:
+TacSim one, …). Each instance `<name>` gets:
 
 - systemd services `<name>mush.service` + `redis-<name>mush.service`
 - working tree `/opt/rustmush/<name>` (build under `.../build`)

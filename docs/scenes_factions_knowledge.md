@@ -6,7 +6,7 @@ A Timestop is then:
 
 > Promotion of ambient room play into an exclusive, recorded, ruleset-driven, turn-based scene.
 
-That generalizes cleanly to freeform recorded scenes, Shadowrun initiative, chases, downtime, and eventually MechWarrior without making every conversation heavyweight.
+That generalizes cleanly to freeform recorded scenes, Shadowrun initiative, chases, downtime, and eventually TacSim without making every conversation heavyweight.
 
 ```mermaid
 flowchart TD
@@ -112,7 +112,7 @@ Keep ruleset-specific initiative and combat state in the existing ruleset-state 
 
 **Global IC clock.** Already built and already ratio-scaled: `GameClock { ic_ratio, epoch_offset }` with `ic = epoch_offset + now × ic_ratio` ([clock.rs](</C:/Users/faeni/cc/rustmush/crates/mush-core/src/clock.rs:44>)), configured from `mushd.toml [game]`. This is the classic WoD-MUSH convention — IC runs at a multiple of real time so nocturnal PCs can play during the RL day and long campaigns don't take literal months — and it stays a pure function of wall time, which scenes must not break for the rest of the game.
 
-**Scene-local IC time.** A turn-based scene decouples from that clock the moment it begins. Rule: `event.ic_time = scene.ic_started_at + rounds_elapsed × ic_round_seconds`, where `ic_started_at` is captured from the global clock at `+timestop` and the ruleset supplies the round duration (3 IC seconds for a WoD combat turn; Shadowrun and MechWarrior declare their own). Freeform and downtime scenes just stamp the global clock per event. Consequences:
+**Scene-local IC time.** A turn-based scene decouples from that clock the moment it begins. Rule: `event.ic_time = scene.ic_started_at + rounds_elapsed × ic_round_seconds`, where `ic_started_at` is captured from the global clock at `+timestop` and the ruleset supplies the round duration (3 IC seconds for a WoD combat turn; Shadowrun and TacSim declare their own). Freeform and downtime scenes just stamp the global clock per event. Consequences:
 
 - A timestop played across three real days occupies seconds-to-minutes of IC time, while the global clock keeps running for everyone else. That is correct — the fiction is that the fight took thirty seconds.
 - Canon ordering uses `(ic_time, recorded_at)`. Two scenes played concurrently in real time may interleave IC timestamps; when relative order matters, the explicit "scene X precedes scene Y" canon assertion is the tool, not clock forensics.
@@ -191,7 +191,7 @@ struct TurnView {
 }
 ```
 
-The WoD driver can use ordinary initiative; Shadowrun can expose initiative passes; MechWarrior can use `Realtime` instead.
+The WoD driver can use ordinary initiative; Shadowrun can expose initiative passes; TacSim can use `Realtime` instead.
 
 Every actionable turn gets a token:
 
@@ -347,7 +347,7 @@ Note that `Belief.holder` is deliberately not restricted to characters: **factio
 
 ## 3. Factions — first-class, then fronts and clocks (REWRITTEN 2026-09-01)
 
-The original sketch attached `Front.faction: FactionId` to a type this document never defined. Fixing that turned out to be the most consequential revision: factions are the central organizing concept in all three game lines — MechWarrior house/clan/merc unit; the Camarilla and several *independent* anarch gangs, with sub-factions inside each; Shadowrun crews, corps, and gangs — and the faction is also the natural generalization of the M12 NPC reporting `principal`. The system splits cleanly in two: a **registry** (cheap, zero scene/canon dependency — build first) and a **simulation** (fronts, clocks, contested territory — needs the canon ledger).
+The original sketch attached `Front.faction: FactionId` to a type this document never defined. Fixing that turned out to be the most consequential revision: factions are the central organizing concept in all three game lines — TacSim house/clan/merc unit; the Camarilla and several *independent* anarch gangs, with sub-factions inside each; Shadowrun crews, corps, and gangs — and the faction is also the natural generalization of the M12 NPC reporting `principal`. The system splits cleanly in two: a **registry** (cheap, zero scene/canon dependency — build first) and a **simulation** (fronts, clocks, contested territory — needs the canon ledger).
 
 ### 3.1 The faction record (registry)
 
@@ -363,9 +363,9 @@ struct Faction {
 }
 ```
 
-Resources are **typed pools, never one influence scalar** — WoD wants Influence-Police/Media/etc., herd, boon-credit; Shadowrun wants nuyen, gear, contacts; MechWarrior wants C-bills and dropship capacity. Core owns the pool mechanics (bounded, cause-stamped mutations — the same discipline as `ClockCause` below); rulesets declare the vocabulary and what fills or drains each pool. The litmus test for core vs. `ruleset_ext`: if a mechanic changes *how control or standing changes*, it's ruleset; if it changes *what is recorded*, it's core.
+Resources are **typed pools, never one influence scalar** — WoD wants Influence-Police/Media/etc., herd, boon-credit; Shadowrun wants nuyen, gear, contacts; TacSim wants C-bills and dropship capacity. Core owns the pool mechanics (bounded, cause-stamped mutations — the same discipline as `ClockCause` below); rulesets declare the vocabulary and what fills or drains each pool. The litmus test for core vs. `ruleset_ext`: if a mechanic changes *how control or standing changes*, it's ruleset; if it changes *what is recorded*, it's core.
 
-A faction must be able to exist and act with **zero PCs** — MechWarrior Great Houses and the offscreen Sabbat are factions before they are rosters.
+A faction must be able to exist and act with **zero PCs** — TacSim Great Houses and the offscreen Sabbat are factions before they are rosters.
 
 ### 3.2 Structure: typed edges, not tiers
 
@@ -373,7 +373,7 @@ Hard tiers (Sect > Clan > Coterie as schema) encode V20's shape into core and di
 
 - `ChapterOf` — Court of Chicago → Camarilla; planetary garrison → House Davion. Implies representation and *default* stance inheritance.
 - `SubordinateTo` — lance → company; coterie sworn to the Prince.
-- `ContractedTo` — merc unit → House; runner crew → Johnson's corp. Time-boxed, links to an obligation object (a MechWarrior contract *is* a typed faction-to-faction obligation).
+- `ContractedTo` — merc unit → House; runner crew → Johnson's corp. Time-boxed, links to an obligation object (a TacSim contract *is* a typed faction-to-faction obligation).
 - `FrontFor` — Setite temple → Followers of Set. **Secret by default**: the public-facing node is real and joinable; the edge is the secret. This one edge type buys cults, shell corps, and infiltration packs.
 
 Rivalry, war, and alliance live in the **relationship matrix** (directed, asymmetric, public-stance vs. private-stance — the Camarilla is publicly neutral toward the Giovanni and privately hostile), not in the structure graph. Three guardrails against the classic pathologies:

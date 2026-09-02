@@ -762,7 +762,7 @@ mod tests {
         // `unwrap_err` needs `Debug` on the Ok value; `dyn GameModule` has
         // none, so match the error out by hand.
         let err = match ruleset_modules(
-            &["mechwarrior".to_string()],
+            &["tacsim".to_string()],
             &ruleset_wod::OnboardingConfig::default(),
         ) {
             Err(e) => e,
@@ -899,7 +899,7 @@ mod tests {
         );
         assert!(npc_agent_adapter(&["  Shadowrun ".to_string()]).is_some());
         assert!(npc_agent_adapter(&[]).is_none());
-        assert!(npc_agent_adapter(&["mechwarrior".to_string()]).is_none());
+        assert!(npc_agent_adapter(&["tacsim".to_string()]).is_none());
     }
 
     #[test]

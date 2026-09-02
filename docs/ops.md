@@ -876,17 +876,17 @@ that live in the server's RAM by design and were always documented as transient:
   **not** persisted and are accepted losses: the dice RNG re-seeds from the OS,
   the per-character roll-log ring (`+roll/last`) comes back empty, and any open
   `+chargen` input context is dropped (re-derivable from the persisted sheet).
-- **MechWarrior scenes + the per-`(scene, obj)` scene registry — future.** Open
+- **TacSim scenes + the per-`(scene, obj)` scene registry — future.** Open
   scenes, their `SceneId`s (they re-number from 0 on each boot), the per-`(scene,
   obj)` `RulesetStateStore` (e.g. per-mech combat `heat`), and per-scene map
   blobs are still transient world RAM, rebuilt empty by `World::from_objects` on
-  every boot. This is the reserved MechWarrior seam (it purges stale scene
+  every boot. This is the reserved TacSim seam (it purges stale scene
   documents on boot by design); scene-registry rehydration for actual tactics
-  scenes lands **with MechWarrior**. Until then, a tactics scene in progress when a
+  scenes lands **with TacSim**. Until then, a tactics scene in progress when a
   restart hits is not rehydrated — **re-open it afterward**. Everything the
   ruleset persisted to durable object state (sheets, XP, wounds recorded on the
   sheet) survives regardless; only this per-scene combat working state resets.
 
 Nothing else is silently lost. Announce a deploy anyway if players might be
 mid-chargen, mid-compose, or mid-tactics-scene, so they know to expect the dropped
-editor buffer or to re-open an active MechWarrior scene.
+editor buffer or to re-open an active TacSim scene.

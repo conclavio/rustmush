@@ -2,12 +2,12 @@
 
 **Status:** Draft 0.1 for design review  
 **Scope:** Object-attached game behavior, controllable units, maps/domains, interiors,
-transport, attachments, deterministic ticking, and the MechWarrior first vertical slice  
+transport, attachments, deterministic ticking, and the TacSim first vertical slice  
 **Applies to:** `mush-core`, a proposed `mush-sim` foundation crate, `mush-scenes`,
 `mush-proto`, and `mush-tactics`
 
-This document starts the dedicated MechWarrior design conversation deferred by
-`docs/PLAN.md`. It defines a generic model first and uses MechWarrior as its initial proving
+This document starts the dedicated TacSim design conversation deferred by
+`docs/PLAN.md`. It defines a generic model first and uses TacSim as its initial proving
 system. The model must also support Shadowrun vehicles, drones, ships, mounts, static weapon
 platforms, and other rulesets without putting any of those rules into `mush-core`.
 
@@ -41,13 +41,13 @@ tables, or code are part of this specification.
    between maps without rewriting every descendant's position.
 6. Keep durable narrative scenes distinct from persistent spatial domains while allowing a scene
    to bind to a domain and journal its mechanical events.
-7. Keep generic infrastructure independent of MechWarrior rules and data.
+7. Keep generic infrastructure independent of TacSim rules and data.
 8. Preserve the single-writer `World` architecture, write-through command atomicity, bounded work,
    transport-neutral output, and module isolation already implemented by RustMUSH.
 
 ## 2. Non-goals for the first vertical slice
 
-- A complete MechWarrior rules implementation.
+- A complete TacSim rules implementation.
 - Reproducing another server's binary formats, commands byte-for-byte, formulas, or internal data
   structures.
 - Arbitrary user-loaded native plugins. Modules remain statically linked Rust crates.
@@ -110,17 +110,30 @@ It does not know what a mech, vehicle, hex, weapon, or line of sight is.
 Other ruleset crates may depend on `mush-sim`. `mush-sim` depends on `mush-core` and
 `mush-proto`, never on a ruleset.
 
-### 3.3 `mush-tactics`
+### 3.3 `mush-tactics` (generic tactical layer) and `ruleset-tacsim` (setting rules)
 
-`mush-tactics` registers MechWarrior behavior types and a domain driver. It owns all MechWarrior
-semantics, including:
+`mush-tactics` is the reusable, ruleset-independent tactical engine on top of `mush-sim`. It owns
+the generic machinery, never any setting's rules:
 
-- unit classes and templates;
+- the `TacticalUnit` composition — body model, mobility, footprint, stations, equipment, and
+  tactical role — a unit is composed capabilities, never a subclass (a 'Mech, tank, aerospace
+  fighter, and taxi are all `TacticalUnit`s);
+- `MobilityProfile` with registered mode/medium/locomotion ids for multimodal units, leaving
+  terrain-cost and kinematics maths to the ruleset;
+- contacts, formations, missions, transport, and the NPC-controller / legal-action-projection seam;
+- the domain-driver interface and the rendering projection tactical views consume.
+
+`ruleset-tacsim` is the game ruleset adapter — deliberately generic (our own rules, trademark-free;
+not any published system). It registers the concrete setting data and formulas through
+`mush-tactics`:
+
+- unit classes, templates, and construction;
 - hex-map terrain and coordinate data;
-- movement modes, heading, speed, elevation, and heat;
-- armor, internals, sensors, contacts, weapons, and damage;
-- MechWarrior-specific validation for bays, mounts, and deployment;
-- the rendering projection used by tactical views.
+- armor, internals, heat, sensors, weapons, and damage formulas;
+- initiative / turn structure and to-hit / gunnery rolls;
+- bay, mount, and deployment validation rules.
+
+`warfare` (the future campaign tier — supply, patrols, territory) sits above both.
 
 ### 3.4 `mush-scenes`
 
@@ -133,10 +146,10 @@ Examples:
 - A persistent world map may exist for months and host many engagement scenes over time.
 - A freeform bar scene needs no simulation domain.
 - A WoD Timestop is a turn-based scene in an ordinary room.
-- A MechWarrior engagement is a real-time scene bound to a fixed-step domain.
+- A TacSim engagement is a real-time scene bound to a fixed-step domain.
 
 The boot-scoped `mush_core::SceneId`, per-scene state store, and map blob currently exercised by the
-MechWarrior stub are prototype seams, not the final durable spatial model. The stub stays green while
+TacSim stub are prototype seams, not the final durable spatial model. The stub stays green while
 the new APIs are built, then migrates to them. The durable `mush-scenes::SceneUid` remains the
 narrative identity.
 
@@ -248,7 +261,7 @@ Initial dispatch order:
 7. `Huh?`.
 
 This preserves current command and exit behavior. A behavior command cannot shadow a core verb,
-staff command, or exit. MechWarrior verbs are nevertheless object-scoped: if no reachable object
+staff command, or exit. TacSim verbs are nevertheless object-scoped: if no reachable object
 provides `startup`, the command does not exist for that actor.
 
 **Grounding:** the `CommandFallback` characterization is accurate — it is `&mut World` + `&mut Outbox`,
@@ -351,7 +364,7 @@ pub struct RulesValue {
 }
 ```
 
-For example, a MechWarrior direct pose may contain hex coordinates, elevation, facing, and posture.
+For example, a TacSim direct pose may contain hex coordinates, elevation, facing, and posture.
 Another system may use metric coordinates, zones, lanes, or abstract range bands.
 
 There is no independently authoritative `unit.map_id` plus `map.members` list. The placement graph
@@ -880,7 +893,7 @@ A partially understood domain never resumes ticking.
 Ruleset logic emits semantic views, not terminal escape sequences or HTML.
 
 This is the layer that will make or break the tactical experience, and it deserves its own sustained
-effort. The projections a MechWarrior engagement actually needs are richer than a single map frame:
+effort. The projections a TacSim engagement actually needs are richer than a single map frame:
 
 - **unit status** — the operated unit's heat, movement, weapon-by-weapon status, ammunition, and
   armor/internals by location, as a live self-updating panel;
@@ -1080,7 +1093,7 @@ requirements and the public, player-visible behavior the project chooses to supp
 - Write expected behavior and tests from this specification before implementing each subsystem.
 - Record the origin and license of imported map, unit, rules, art, and text data separately from the
   server-code design.
-- Treat permission to implement or distribute MechWarrior game content, trademarks, and rules data
+- Treat permission to implement or distribute any published system's game content, trademarks, and rules data (TacSim is our own generic ruleset)
   as a separate question from permission to use any existing server source.
 
 If a formally clean-room implementation is required, source-exposed specification authors and
@@ -1120,9 +1133,9 @@ assignment scenarios work without a ruleset-specific tick.
 
 **Exit criterion:** deterministic trace/replay and restart tests pass under load with bounded memory.
 
-### Phase D: MechWarrior movement slice
+### Phase D: TacSim movement slice
 
-- Replace the toy MechWarrior stub state with `tactics.map`, `tactics.unit`, and `tactics.unit` behavior.
+- Replace the toy TacSim stub state with `tactics.map`, `tactics.unit`, and `tactics.unit` behavior.
 - Add a hex pose/map schema, startup state, heading, desired/current speed, and movement.
 - Add `STARTUP`, `SHUTDOWN`, `HEADING`, `SPEED`, `TACTICAL`, and map `VIEW` as behavior commands.
 - Add control leases (§8.1). The deterministic link-loss fallback controller that rides those leases
@@ -1135,7 +1148,7 @@ automation phases.)
 
 ### Phase E: transport and nested locality
 
-- Add MechWarrior bay, mount, embark/egress, carrier transfer, battle armor, infantry cargo, and
+- Add TacSim bay, mount, embark/egress, carrier transfer, battle armor, infantry cargo, and
   destruction policies.
 - Add cross-domain connectors and subtree transfer commits.
 
@@ -1153,10 +1166,10 @@ NPC pilots, salience activation, and the optional flash-model route. They follow
 driver first — that is the reusable spine, and it is mostly grounded in existing machinery (the
 `Scheduler`, tick cadences, the `MoveAttempt` veto, the transient scene-state/map-blob store). Then
 pull the **mobility / route-interception** case (companion §9) *forward* as the second cross-ruleset
-proving ground, ahead of the full MechWarrior combat slice: it is the "no free teleport, routes are
+proving ground, ahead of the full TacSim combat slice: it is the "no free teleport, routes are
 legible" payoff, it is genuinely cross-system (dropships and Uber-for-WoD alike), and it exercises
 coarse legs, connectors, fog-of-war, and promotion-to-live without needing a combat stack. Only then
-harden Phase C's full fixed-step determinism/replay and build Phase D's MechWarrior hex slice, with
+harden Phase C's full fixed-step determinism/replay and build Phase D's TacSim hex slice, with
 the presentation workstream (§10) running alongside D rather than after it.
 
 ---
@@ -1180,7 +1193,7 @@ the presentation workstream (§10) running alongside D rather than after it.
 - Maps/domains have durable identities and own deterministic ticking.
 - Narrative scenes and simulation domains remain separate but bindable.
 - Real-time state uses compact tick commits plus checkpoints, not per-unit full writes.
-- MechWarrior is the first driver, not the generic data model.
+- TacSim is the first driver, not the generic data model.
 
 The following decision records (D1–D8) resolve the foundation's open questions. Their recommended
 choices are the normative defaults for this draft; deployments may tune values only where a decision

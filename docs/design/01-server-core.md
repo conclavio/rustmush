@@ -1,4 +1,4 @@
-# rustmush â€” Server Core Architecture & Design
+# rustmush — Server Core Architecture & Design
 
 **Area:** Server core (workspace layout, object model, command dispatch, async architecture, persistence, scripting, output pipeline)
 **Status:** Design for implementation. Planning-phase document; no code written.
@@ -11,58 +11,58 @@ Virtual workspace at repo root. All crates under `crates/`. Prefix `mush-` for l
 
 ```
 rustmush/
-â”œâ”€â”€ Cargo.toml                  # [workspace], shared [workspace.dependencies] + lints
-â”œâ”€â”€ crates/
-â”‚   â”œâ”€â”€ mush-core/              # THE hub: object model, World, command registry,
-â”‚   â”‚                           #   module API, events, scheduler types, output model,
-â”‚   â”‚                           #   ANSI renderer. No I/O, no tokio dependency in types.
-â”‚   â”œâ”€â”€ mush-proto/             # Wire types: JSON event schema for the web client,
-â”‚   â”‚                           #   serde only. Leaf crate (core depends on NOTHING else;
-â”‚   â”‚                           #   proto depends only on serde/serde_json).
-â”‚   â”œâ”€â”€ mush-db/                # Persistence: rusqlite, migrations, dirty-flush task,
-â”‚   â”‚                           #   snapshot/backup. Depends: mush-core.
-â”‚   â”œâ”€â”€ mush-script/            # mlua/Luau embedding, sandbox, hook plumbing.
-â”‚   â”‚                           #   Depends: mush-core.
-â”‚   â”œâ”€â”€ mush-llm/               # Provider trait + Anthropic + OpenAI-compatible clients.
-â”‚   â”‚                           #   (LLM agent owns internals.) Depends: mush-core (types only).
-â”‚   â”œâ”€â”€ mush-agents/            # NPC minds + worldbuilder orchestration.
-â”‚   â”‚                           #   Depends: mush-core, mush-llm.
-â”‚   â”œâ”€â”€ mush-net/               # SSH (russh) + WebSocket transports, session mgmt.
-â”‚   â”‚                           #   (Connectivity agent owns internals.)
-â”‚   â”‚                           #   Depends: mush-core, mush-proto.
-â”‚   â”œâ”€â”€ mush-sys-comsys/        # Channel system module.   Depends: mush-core.
-â”‚   â”œâ”€â”€ mush-sys-mail/          # @mail module.            Depends: mush-core.
-â”‚   â”œâ”€â”€ mush-sys-weather/       # Weather module.          Depends: mush-core.
-â”‚   â”œâ”€â”€ mush-mod-wod/           # World of Darkness ruleset module. Depends: mush-core.
-â”‚   â”œâ”€â”€ mush-mod-tactics/         # MechWarrior ruleset (later; crate reserved).
-â”‚   â”œâ”€â”€ mush-testkit/           # In-process world driver for integration tests of
-â”‚   â”‚                           #   modules (fake connections, scripted input/output).
-â”‚   â””â”€â”€ mushd/                  # Binary: config load, wiring, main(). Depends on all.
-â””â”€â”€ web/                        # Web client (TypeScript, not in cargo workspace;
+├── Cargo.toml                  # [workspace], shared [workspace.dependencies] + lints
+├── crates/
+│   ├── mush-core/              # THE hub: object model, World, command registry,
+│   │                           #   module API, events, scheduler types, output model,
+│   │                           #   ANSI renderer. No I/O, no tokio dependency in types.
+│   ├── mush-proto/             # Wire types: JSON event schema for the web client,
+│   │                           #   serde only. Leaf crate (core depends on NOTHING else;
+│   │                           #   proto depends only on serde/serde_json).
+│   ├── mush-db/                # Persistence: rusqlite, migrations, dirty-flush task,
+│   │                           #   snapshot/backup. Depends: mush-core.
+│   ├── mush-script/            # mlua/Luau embedding, sandbox, hook plumbing.
+│   │                           #   Depends: mush-core.
+│   ├── mush-llm/               # Provider trait + Anthropic + OpenAI-compatible clients.
+│   │                           #   (LLM agent owns internals.) Depends: mush-core (types only).
+│   ├── mush-agents/            # NPC minds + worldbuilder orchestration.
+│   │                           #   Depends: mush-core, mush-llm.
+│   ├── mush-net/               # SSH (russh) + WebSocket transports, session mgmt.
+│   │                           #   (Connectivity agent owns internals.)
+│   │                           #   Depends: mush-core, mush-proto.
+│   ├── mush-sys-comsys/        # Channel system module.   Depends: mush-core.
+│   ├── mush-sys-mail/          # @mail module.            Depends: mush-core.
+│   ├── mush-sys-weather/       # Weather module.          Depends: mush-core.
+│   ├── mush-mod-wod/           # World of Darkness ruleset module. Depends: mush-core.
+│   ├── ruleset-tacsim/           # TacSim ruleset (later; crate reserved).
+│   ├── mush-testkit/           # In-process world driver for integration tests of
+│   │                           #   modules (fake connections, scripted input/output).
+│   └── mushd/                  # Binary: config load, wiring, main(). Depends on all.
+└── web/                        # Web client (TypeScript, not in cargo workspace;
                                 #   codegen of TS types from mush-proto via schemars/ts-rs)
 ```
 
 **Dependency graph (arrows = depends-on):**
 
 ```
-mushd â†’ {mush-net, mush-db, mush-script, mush-agents, all mush-sys-*, mush-mod-*}
-mush-net    â†’ mush-core, mush-proto
-mush-db     â†’ mush-core
-mush-script â†’ mush-core
-mush-agents â†’ mush-core, mush-llm
-mush-llm    â†’ mush-core
-mush-sys-*, mush-mod-* â†’ mush-core   (DB access via handle passed through module API,
+mushd → {mush-net, mush-db, mush-script, mush-agents, all mush-sys-*, mush-mod-*}
+mush-net    → mush-core, mush-proto
+mush-db     → mush-core
+mush-script → mush-core
+mush-agents → mush-core, mush-llm
+mush-llm    → mush-core
+mush-sys-*, mush-mod-* → mush-core   (DB access via handle passed through module API,
                                       not a direct mush-db dependency)
-mush-core   â†’ mush-proto
-mush-proto  â†’ (serde only)
+mush-core   → mush-proto
+mush-proto  → (serde only)
 ```
 
 **Hard rules for other agents:**
 - `mush-core` never depends on tokio *types* in its public API for world logic (it may use `tokio::sync::mpsc` sender handles behind the `Outbox`/`Effects` abstractions; keep `World` itself runtime-agnostic and fully unit-testable synchronously).
 - Modules (`mush-sys-*`, `mush-mod-*`) talk to the world ONLY through the `mush-core` module API (Section 7). They never import `mush-db`, `mush-net`, or each other.
-- `mush-proto` is the single source of truth for the web wire format. `mush-core::output` types convert into `mush-proto` types via `From` impls that live in `mush-core` (allowed because core â†’ proto).
+- `mush-proto` is the single source of truth for the web wire format. `mush-core::output` types convert into `mush-proto` types via `From` impls that live in `mush-core` (allowed because core → proto).
 
-**Key workspace dependencies** (versions verified current as of Aug 2026): `tokio 1.x` (full), `rusqlite 0.40` (`bundled` feature â€” compiles SQLite from source, no system dep on Windows or Linux), `rusqlite_migration 2.5`, `mlua 0.11/0.12` (`luau` + `vendored`), `russh 0.60` (in mush-net), `axum 0.8` (mush-net), `serde 1`, `serde_json 1`, `bitflags 2`, `smol_str`, `thiserror 2`, `tracing 0.1`, `reqwest 0.12` (mush-llm, `rustls-tls` to avoid OpenSSL pain on Windows).
+**Key workspace dependencies** (versions verified current as of Aug 2026): `tokio 1.x` (full), `rusqlite 0.40` (`bundled` feature — compiles SQLite from source, no system dep on Windows or Linux), `rusqlite_migration 2.5`, `mlua 0.11/0.12` (`luau` + `vendored`), `russh 0.60` (in mush-net), `axum 0.8` (mush-net), `serde 1`, `serde_json 1`, `bitflags 2`, `smol_str`, `thiserror 2`, `tracing 0.1`, `reqwest 0.12` (mush-llm, `rustls-tls` to avoid OpenSSL pain on Windows).
 
 **Plugin linkage decision: static.** Modules are compiled-in crates registered in `mushd::main` behind cargo features (`--no-default-features --features wod` style). *Rejected:* dynamic `libloading` plugins (no stable Rust ABI; a crash story and a versioning story we don't need for a project where the operator compiles the server) and WASM component plugins (real isolation, but massive interface tax against a rich in-memory world; revisit only if third-party untrusted plugins ever matter).
 
@@ -97,7 +97,7 @@ pub struct Obj {
     pub location: Option<ObjId>,         // None for rooms; exit: source room
     pub destination: Option<ObjId>,      // exits only
     pub home: Option<ObjId>,
-    pub zone: Option<ObjId>,             // â†’ Zone Master Object (Section 2.6)
+    pub zone: Option<ObjId>,             // → Zone Master Object (Section 2.6)
     pub parent: Option<ObjId>,           // @parent chain, attribute inheritance
     pub contents: Vec<ObjId>,            // maintained inverse of location
     pub exits: Vec<ObjId>,               // rooms: maintained inverse
@@ -113,7 +113,7 @@ pub struct Obj {
 
 ### 2.3 Attributes
 
-Two value forms â€” classic text for the MUSH feel, structured JSON for sheets/agent config so rulesets don't serialize into strings:
+Two value forms — classic text for the MUSH feel, structured JSON for sheets/agent config so rulesets don't serialize into strings:
 
 ```rust
 pub struct Attr {
@@ -128,8 +128,8 @@ pub enum AttrValue { Text(String), Json(serde_json::Value) }
 /// registered (Section 7) so `@set` can enforce ownership of a namespace.
 pub struct AttrMap(BTreeMap<UncasedName, Attr>);
 
-impl Obj { /* attr lookup walks self â†’ parent chain (bounded depth 10),
-              honoring NO_INHERIT â€” this is how @parent-based prototype
+impl Obj { /* attr lookup walks self → parent chain (bounded depth 10),
+              honoring NO_INHERIT — this is how @parent-based prototype
               objects work without softcode */ }
 ```
 
@@ -149,7 +149,7 @@ bitflags! { pub struct Powers: u32 {   // Rhost-style granular powers, grantable
     const CHOWN_ANY; const COMSYS_ADMIN; const BUILDER_LLM; const SEE_HIDDEN; } }
 ```
 
-Permission checks are centralized in `mush_core::perm` (`can_examine(w, who, what)`, `can_modify`, `controls`) â€” command handlers never hand-roll flag math. `controls()` = God âˆ¨ Wizard âˆ¨ owner âˆ¨ zone-control (Section 2.6).
+Permission checks are centralized in `mush_core::perm` (`can_examine(w, who, what)`, `can_modify`, `controls`) — command handlers never hand-roll flag math. `controls()` = God ∨ Wizard ∨ owner ∨ zone-control (Section 2.6).
 
 ### 2.5 Locks
 
@@ -169,15 +169,15 @@ pub fn eval_lock(w: &World, expr: &LockExpr, who: ObjId, depth: u8) -> bool;
 ### 2.6 Zones (theming + delegated admin)
 
 A zone is any Thing flagged `ZONE_MASTER`; objects point at it via `zone`. Three consumers:
-1. **Theming (LLM):** ZMO attributes `theme:prose`, `theme:palette`, `theme:era` are read by the worldbuilder so generated @descs stay consistent per neighborhood. Zones nest via the ZMO's own `zone` field (district â†’ city), and the worldbuilder walks the chain to build its style context.
-2. **Delegated control:** the ZMO's `Zone` lock grants `controls()` over member objects â€” zone-wizards without global WIZARD.
+1. **Theming (LLM):** ZMO attributes `theme:prose`, `theme:palette`, `theme:era` are read by the worldbuilder so generated @descs stay consistent per neighborhood. Zones nest via the ZMO's own `zone` field (district → city), and the worldbuilder walks the chain to build its style context.
+2. **Delegated control:** the ZMO's `Zone` lock grants `controls()` over member objects — zone-wizards without global WIZARD.
 3. **Zone commands/hooks:** scripts and module behavior attached to a ZMO apply to all member rooms (e.g. weather region = zone).
 
 ### 2.7 World
 
 ```rust
 pub struct World {
-    objs: Vec<Option<Obj>>,                 // dense by ObjId (no recycling â†’ index = id)
+    objs: Vec<Option<Obj>>,                 // dense by ObjId (no recycling → index = id)
     next_id: u32,
     player_index: HashMap<UncasedName, ObjId>,   // names + aliases
     zone_members: HashMap<ObjId, HashSet<ObjId>>, // maintained index
@@ -187,7 +187,7 @@ pub struct World {
 }
 ```
 
-Entirely in RAM. All mutation goes through `World` methods (`move_to`, `set_attr`, `create`, â€¦) that maintain inverse indexes and mark dirty â€” handlers never poke fields directly.
+Entirely in RAM. All mutation goes through `World` methods (`move_to`, `set_attr`, `create`, …) that maintain inverse indexes and mark dirty — handlers never poke fields directly.
 
 ---
 
@@ -197,19 +197,19 @@ Entirely in RAM. All mutation goes through `World` methods (`move_to`, `set_attr
 
 ```
 raw line
-  â†’ single-char alias expansion:  "  â†’ say, :/; â†’ pose (;=nospace), \\ â†’ @emit, ' â†’ whisper? (config)
-  â†’ HOME keyword
-  â†’ exact/prefix match against EXITS here (room exits, then zone exits, then master-room globals)
-  â†’ command table lookup (longest-prefix on registered names, e.g. "l" â†’ look; @-cmds require exact or unambiguous)
-  â†’ module fallback matchers (registered, e.g. comsys "chanalias <msg>" pattern)
-  â†’ Huh?  (echoed only to actor; logged with fuzzy suggestion)
+  → single-char alias expansion:  "  → say, :/; → pose (;=nospace), \\ → @emit, ' → whisper? (config)
+  → HOME keyword
+  → exact/prefix match against EXITS here (room exits, then zone exits, then master-room globals)
+  → command table lookup (longest-prefix on registered names, e.g. "l" → look; @-cmds require exact or unambiguous)
+  → module fallback matchers (registered, e.g. comsys "chanalias <msg>" pattern)
+  → Huh?  (echoed only to actor; logged with fuzzy suggestion)
 ```
 
 Exits before commands (classic order) so `north` always moves even if a module registers a `north` command.
 
 ### 3.2 Grammar & registry
 
-MUSH surface: `@dig/teleport Grand Hall = north;n,south;s` â€” verb, `/switches`, arg text split by `=` and `,` per the command's declared shape. Parsing of the arg shape is table-driven, not per-handler string surgery:
+MUSH surface: `@dig/teleport Grand Hall = north;n,south;s` — verb, `/switches`, arg text split by `=` and `,` per the command's declared shape. Parsing of the arg shape is table-driven, not per-handler string surgery:
 
 ```rust
 pub enum ArgShape { None, Raw, EqPair, EqPairList /* rhs split on , */, EqPairSemi /* ; aliases */ }
@@ -222,7 +222,7 @@ pub struct CommandSpec {
     pub min_role: Role,                  // plus optional Powers requirement
     pub handler: CmdHandler,
 }
-pub type CmdHandler = fn(&mut Ctx<'_>) -> Result<(), CmdError>;   // SYNC â€” see Section 4
+pub type CmdHandler = fn(&mut Ctx<'_>) -> Result<(), CmdError>;   // SYNC — see Section 4
 ```
 
 ```rust
@@ -247,7 +247,7 @@ pub struct Ctx<'w> {
 
 ### 4.1 Recommendation: single-writer world task (message-passing), not locks
 
-One tokio task owns `World` outright â€” zero locks on game state. Everything else (SSH sessions, WebSocket sessions, LLM calls, DB flusher, script timers) is a separate task communicating over channels.
+One tokio task owns `World` outright — zero locks on game state. Everything else (SSH sessions, WebSocket sessions, LLM calls, DB flusher, script timers) is a separate task communicating over channels.
 
 Rationale: at MU*-scale (hundreds of players, text-rate input) game logic is trivially single-core; every classic server (TinyMUX, Rhost, PennMUSH) is effectively single-threaded game logic, which is precisely why MUSH semantics (strict global event ordering: everyone sees the same things in the same order) are what veterans expect. A `RwLock<World>` invites held-across-await deadlocks and write starvation; sharded/per-room locking buys throughput nobody needs at the cost of cross-room invariants (movement touches two rooms atomically). *Rejected:* actor-per-object (ordering nightmares, and MUSH commands routinely touch 3+ objects transactionally); sharded `dashmap` world (same, plus iteration pain for `@find`/who-lists).
 
@@ -267,7 +267,7 @@ loop {
         Some(msg) = inbound.recv() => world.handle(msg, &mut outbox, &mut effects),
         _ = sched.sleep_until_next() => world.fire_due(&mut outbox, &mut effects),
     }
-    outbox.drain_to_router();      // â†’ per-connection mpsc senders (mush-net owns delivery)
+    outbox.drain_to_router();      // → per-connection mpsc senders (mush-net owns delivery)
     effects.spawn_all(&handle);    // launch deferred futures
     persist.send_dirty(world.take_dirty());   // non-blocking; DB task owns writes
 }
@@ -275,7 +275,7 @@ loop {
 
 ### 4.2 Slow work: the `Effects` two-phase pattern
 
-Handlers are **sync** and must return in â‰ª1ms. Anything slow (LLM call, bcrypt at login, big DB query for @mail search) is deferred:
+Handlers are **sync** and must return in ≪1ms. Anything slow (LLM call, bcrypt at login, big DB query for @mail search) is deferred:
 
 ```rust
 // inside a handler:
@@ -289,7 +289,7 @@ ctx.fx.defer(async move {
 });
 ```
 
-`Effects::defer` boxes the continuation as `Inbound::Apply`. This is the **only** sanctioned way modules/agents touch the world from async code â€” it makes LLM latency invisible to the game loop and forces the re-validation step that prevents stale-world bugs.
+`Effects::defer` boxes the continuation as `Inbound::Apply`. This is the **only** sanctioned way modules/agents touch the world from async code — it makes LLM latency invisible to the game loop and forces the re-validation step that prevents stale-world bugs.
 
 ### 4.3 Scheduler (`@wait`, ticks, NPC thinks)
 
@@ -306,7 +306,7 @@ pub enum ScheduledKind {
 pub struct Scheduler { heap: BinaryHeap<(Reverse<Instant>, u64 /*seq*/, ScheduledKind)>, /* + cancel set */ }
 ```
 
-Long `@wait`s (> 5 min) and recurring module ticks are also journaled to SQLite so they survive restart; sub-minute ones are accepted as lost-on-crash. NPC think cadence is owned by `mush-agents` (it enqueues the next think when handling the current one â€” natural backpressure if the LLM is slow).
+Long `@wait`s (> 5 min) and recurring module ticks are also journaled to SQLite so they survive restart; sub-minute ones are accepted as lost-on-crash. NPC think cadence is owned by `mush-agents` (it enqueues the next think when handling the current one — natural backpressure if the LLM is slow).
 
 ---
 
@@ -315,8 +315,8 @@ Long `@wait`s (> 5 min) and recurring module ticks are also journaled to SQLite 
 ### 5.1 Engine: SQLite via `rusqlite` (bundled) + `rusqlite_migration`
 
 - **Why SQLite:** single file, zero ops, perfect at hundreds-of-players scale, real SQL for the things that want queries (mail folders, channel history, logs), WAL mode for concurrent read (backup/stats tools), and the `bundled` feature gives identical behavior on Windows and Linux with no system libraries.
-- **Why `rusqlite` not `sqlx`:** the world task is a single synchronous writer with a dedicated DB thread â€” async DB access buys nothing and `sqlx`'s compile-time-checked queries fight the module-supplied-migrations design. `rusqlite` 0.40 is current and actively maintained; `rusqlite_migration` 2.5 handles versioned migrations.
-- *Rejected:* **Postgres** (ops burden and no single-binary story for hobbyist operators; nothing here needs it), **sled** (still "beta champagne", storage rewrite perpetually in progress â€” not a base for a game DB), **redb** (genuinely solid and stable, but KV-only; we'd reimplement mail/channel/log querying that SQL gives for free).
+- **Why `rusqlite` not `sqlx`:** the world task is a single synchronous writer with a dedicated DB thread — async DB access buys nothing and `sqlx`'s compile-time-checked queries fight the module-supplied-migrations design. `rusqlite` 0.40 is current and actively maintained; `rusqlite_migration` 2.5 handles versioned migrations.
+- *Rejected:* **Postgres** (ops burden and no single-binary story for hobbyist operators; nothing here needs it), **sled** (still "beta champagne", storage rewrite perpetually in progress — not a base for a game DB), **redb** (genuinely solid and stable, but KV-only; we'd reimplement mail/channel/log querying that SQL gives for free).
 
 ### 5.2 RAM-authoritative + write-behind journal
 
@@ -327,14 +327,14 @@ pub enum Persist {
     Upsert(ObjSnapshot),          // serialized full object (core cols + attrs delta)
     Delete(ObjId),
     Module(Box<dyn FnOnce(&mut rusqlite::Connection) -> rusqlite::Result<()> + Send>),
-    Checkpoint { reason: CheckpointReason },   // SQLite backup API â†’ snapshots/mush-YYYYMMDD-HHMM.db
+    Checkpoint { reason: CheckpointReason },   // SQLite backup API → snapshots/mush-YYYYMMDD-HHMM.db
     Flush(oneshot::Sender<()>),   // barrier: used by @dump, shutdown, mail-send durability
 }
 ```
 
-Dirty objects flush every 2s (config) batched in one transaction. Ops that must not be lost (character creation, @mail send, purchases of any future kind) send `Flush` and the handler's confirmation output is deferred behind it via `Effects`. Crash window: â‰¤ flush interval, an accepted MU*-standard tradeoff (far better than classic hourly @dumps).
+Dirty objects flush every 2s (config) batched in one transaction. Ops that must not be lost (character creation, @mail send, purchases of any future kind) send `Flush` and the handler's confirmation output is deferred behind it via `Effects`. Crash window: ≤ flush interval, an accepted MU*-standard tradeoff (far better than classic hourly @dumps).
 
-**Snapshots:** SQLite online backup API to timestamped files hourly + on `@dump` + on clean shutdown; retention config (e.g. 24 hourly / 14 daily). A snapshot is a complete, copyable single file â€” the whole backup story.
+**Snapshots:** SQLite online backup API to timestamped files hourly + on `@dump` + on clean shutdown; retention config (e.g. 24 hourly / 14 daily). A snapshot is a complete, copyable single file — the whole backup story.
 
 ### 5.3 Schema (v1)
 
@@ -356,7 +356,7 @@ Modules contribute migrations through the registry (`Registry::migrations("comsy
 
 ## 6. Output Pipeline (coordinate-level; transports owned by connectivity agent)
 
-Every player-visible emission is an `OutEvent` â€” semantic first, rendered per-connection last.
+Every player-visible emission is an `OutEvent` — semantic first, rendered per-connection last.
 
 ```rust
 // mush-core::output
@@ -374,18 +374,18 @@ pub enum OutEvent {
     Room  (RoomView),           // structured look: name, desc, contents, exits, zone theme hints
     Channel{ chan: SmolStr, speaker: String, text: RichText },
     Page  { from: String, text: RichText },
-    Typed { tag: SmolStr, payload: serde_json::Value },  // module â†’ web panel ("wod.sheet", "mail.unread")
+    Typed { tag: SmolStr, payload: serde_json::Value },  // module → web panel ("wod.sheet", "mail.unread")
     Prompt(PromptState),
 }
 ```
 
-- **ANSI path (SSH):** `mush_core::output::ansi::render(&OutEvent, &Theme, width) -> String`. Pure function in core (testable, shared). `Theme` maps `StyleClass â†’ ansi16/256/truecolor` per client caps; wraps to client width; `Typed` events degrade to a text fallback the emitting module supplies (or are dropped if marked panel-only).
-- **JSON path (web):** `mush-proto` defines the wire enum (`{"t":"say","speaker":"#42","name":"Nick","text":[...spans]}`); `From<OutEvent>` in core. Spans keep their semantic classes so the web client themes them in CSS. `Typed` passes through verbatim â€” this is how the sheet/mail/map panels are fed without core knowing about them.
-- **Routing:** `Outbox` collects `(Audience, OutEvent)` â€” `Audience::{Conn(ConnId), Actor(ObjId), Room{room, exclude}, Channel(SmolStr), All}`. The world task resolves audiences to connection ids and hands `(ConnId, OutEvent)` to the router channel; **mush-net owns everything after that** (rendering choice per connection, buffering, backpressure/slow-client policy).
+- **ANSI path (SSH):** `mush_core::output::ansi::render(&OutEvent, &Theme, width) -> String`. Pure function in core (testable, shared). `Theme` maps `StyleClass → ansi16/256/truecolor` per client caps; wraps to client width; `Typed` events degrade to a text fallback the emitting module supplies (or are dropped if marked panel-only).
+- **JSON path (web):** `mush-proto` defines the wire enum (`{"t":"say","speaker":"#42","name":"Nick","text":[...spans]}`); `From<OutEvent>` in core. Spans keep their semantic classes so the web client themes them in CSS. `Typed` passes through verbatim — this is how the sheet/mail/map panels are fed without core knowing about them.
+- **Routing:** `Outbox` collects `(Audience, OutEvent)` — `Audience::{Conn(ConnId), Actor(ObjId), Room{room, exclude}, Channel(SmolStr), All}`. The world task resolves audiences to connection ids and hands `(ConnId, OutEvent)` to the router channel; **mush-net owns everything after that** (rendering choice per connection, buffering, backpressure/slow-client policy).
 
 ---
 
-## 7. Module API (`mush-core::module`) â€” the boundary other agents build against
+## 7. Module API (`mush-core::module`) — the boundary other agents build against
 
 ```rust
 pub trait GameModule: Send {
@@ -399,16 +399,16 @@ impl Registry {
     pub fn marker_flag(&mut self, name: &str);                 // "wod:kindred"
     pub fn attr_namespace(&mut self, ns: &str);                // owns "wod:*" attrs
     pub fn migrations(&mut self, ns: &str, ms: Vec<Migration>);
-    pub fn tick(&mut self, tag: &str, every: Duration);        // â†’ ScheduledKind::ModuleTick
+    pub fn tick(&mut self, tag: &str, every: Duration);        // → ScheduledKind::ModuleTick
     pub fn subscribe(&mut self, ev: WorldEventKind, f: WorldEventFn);
         // WorldEvent: Moved{who,from,to}, Said{..}, Connected, Disconnected,
-        // ObjCreated/Destroyed â€” sync observers running in the world task
+        // ObjCreated/Destroyed — sync observers running in the world task
     pub fn state<T: Any + Send>(&mut self, init: T);           // typed module state slot in World
     pub fn db(&self) -> DbHandle;                              // Persist::Module sender, namespaced
 }
 ```
 
-Comsys, mail, weather, and the WoD ruleset are all *just modules* â€” if the module API can't express them, it gets fixed before MechWarrior ever starts.
+Comsys, mail, weather, and the WoD ruleset are all *just modules* — if the module API can't express them, it gets fixed before TacSim ever starts.
 
 ---
 
@@ -418,22 +418,22 @@ Comsys, mail, weather, and the WoD ruleset are all *just modules* â€” if th
 
 Rationale:
 - **Luau is sandboxed by design** (built for Roblox user scripts): no `io`/`os`/`require` by default, `Lua::sandbox(true)` mode, VM interrupt callback for CPU budgets, `set_memory_limit` for RAM caps. This is exactly the "builder-authored scripts are untrusted" story, off the shelf.
-- Lua is the MUD/MU* modding lingua franca â€” builders are far more likely to know it; enormous documentation surface.
+- Lua is the MUD/MU* modding lingua franca — builders are far more likely to know it; enormous documentation surface.
 - Coroutines map naturally onto multi-step NPC/trigger behavior later.
-- mlua is actively maintained (0.11.6 â†’ 0.12 line current, mlua-rs org) and vendors the Luau build â€” works on MSVC Windows and Linux (verify Luau C++ build in CI on day one; this is the top build risk).
+- mlua is actively maintained (0.11.6 → 0.12 line current, mlua-rs org) and vendors the Luau build — works on MSVC Windows and Linux (verify Luau C++ build in CI on day one; this is the top build risk).
 
-*Rejected:* **Rhai** â€” genuinely attractive (pure Rust, no C++ build, built-in `max_operations`/depth limits), and it was a close call; rejected on interpreter speed (AST-walking, matters for per-line listen hooks), no coroutines, and an unfamiliar language for the builder audience. **Full trust Lua 5.4 via mlua** â€” instruction-count hooks can meter CPU, but the stdlib-stripping and sandbox burden lands on us instead of on Luau's design.
+*Rejected:* **Rhai** — genuinely attractive (pure Rust, no C++ build, built-in `max_operations`/depth limits), and it was a close call; rejected on interpreter speed (AST-walking, matters for per-line listen hooks), no coroutines, and an unfamiliar language for the builder audience. **Full trust Lua 5.4 via mlua** — instruction-count hooks can meter CPU, but the stdlib-stripping and sandbox burden lands on us instead of on Luau's design.
 
 ### 8.2 Sandbox contract
 
 - One Luau VM per script **owner** (cheap; isolates memory accounting and blast radius), scripts stored in `script:*` attributes on objects, compiled on load, cached.
-- Budgets per invocation: interrupt callback trips at N VM steps (~default 500k), wall-clock backstop 50ms, memory cap 16MB/VM (all config). Overrun â†’ script aborted, error to owner, offending hook auto-disabled after 3 strikes (`HALTED` flag on the object).
+- Budgets per invocation: interrupt callback trips at N VM steps (~default 500k), wall-clock backstop 50ms, memory cap 16MB/VM (all config). Overrun → script aborted, error to owner, offending hook auto-disabled after 3 strikes (`HALTED` flag on the object).
 - API surface (`mush.*` table, userdata-backed, every call permission-checked **as the script's owner**): `get_attr/set_attr`, `name/loc/contents`, `emit(target|room, richtext)`, `move(obj, dest)`, `schedule(secs, fnname)`, `match(str)`, dice utils. No network, no filesystem, no LLM (LLM access is command/agent-level, not script-level, v1).
-- Scripts run **synchronously in the world task** within budget â€” they see a consistent world and their effects are ordered like any command. The budget is what makes this safe.
+- Scripts run **synchronously in the world task** within budget — they see a consistent world and their effects are ordered like any command. The budget is what makes this safe.
 
 ### 8.3 Hook points
 
-`on_command(pattern)` (the no-softcode replacement for `$`-commands on objects), `on_enter`/`on_leave` (room triggers), `on_use`, `on_hear(pattern)` (listen â€” powers scripted-NPC reflexes without LLM), `on_timer`, `on_connect`/`on_disconnect` (player objects, staff-gated). Hook registration is data (attribute presence), discovered by `mush-script` at load and on attribute change events.
+`on_command(pattern)` (the no-softcode replacement for `$`-commands on objects), `on_enter`/`on_leave` (room triggers), `on_use`, `on_hear(pattern)` (listen — powers scripted-NPC reflexes without LLM), `on_timer`, `on_connect`/`on_disconnect` (player objects, staff-gated). Hook registration is data (attribute presence), discovered by `mush-script` at load and on attribute change events.
 
 ---
 
@@ -444,20 +444,20 @@ Rationale:
 3. **Module API + built-ins (wk 5-8):** Registry finalized; comsys and @mail built as modules (they are the API's proving ground); locks, zones, powers; output pipeline with ANSI renderer + proto JSON.
 4. **Scripting (wk 8-10):** mush-script, sandbox budgets, hooks; weather module implemented *using* module ticks + zone theming attrs.
 5. **LLM seams (wk 10+):** `Effects`-based integration points for worldbuilder (`@llm/desc here=<prose>` reading zone theme chain) and `NpcThink` scheduling for `mush-agents` (internals owned by LLM agent).
-6. **WoD module**, then MechWarrior later â€” tactics is the module-boundary stress test (hex state = module `state<T>` + `Typed` panel events).
+6. **WoD module**, then TacSim later — tactics is the module-boundary stress test (hex state = module `state<T>` + `Typed` panel events).
 
 ## 10. Risks
 
-- **mlua/Luau C++ vendored build on Windows MSVC** â€” mitigate: CI matrix from day 1; fallback path is mlua/Lua 5.4-vendored with hook-based metering (API identical), Rhai as the nuclear option.
-- **Single-writer loop stalls** from a pathological script or handler â€” mitigate: budgets (8.2), handlers-must-defer rule (4.2), loop-lag watchdog metric from Phase 2.
-- **Module API ossifying wrong** â€” mitigate: comsys/mail/weather built as modules *before* declaring v1; no external module stability promise until WoD ships.
-- **Output schema churn vs web client** â€” mitigate: `mush-proto` versioned envelope (`{"v":1,...}`) and TS type generation from day one.
+- **mlua/Luau C++ vendored build on Windows MSVC** — mitigate: CI matrix from day 1; fallback path is mlua/Lua 5.4-vendored with hook-based metering (API identical), Rhai as the nuclear option.
+- **Single-writer loop stalls** from a pathological script or handler — mitigate: budgets (8.2), handlers-must-defer rule (4.2), loop-lag watchdog metric from Phase 2.
+- **Module API ossifying wrong** — mitigate: comsys/mail/weather built as modules *before* declaring v1; no external module stability promise until WoD ships.
+- **Output schema churn vs web client** — mitigate: `mush-proto` versioned envelope (`{"v":1,...}`) and TS type generation from day one.
 
 ## Key rejected alternatives (summary)
 
-1. **ECS (bevy_ecs/hecs) object model** â€” MU* objects are heterogeneous attribute bags with almost no per-frame system iteration; ECS adds indirection and buys nothing here.
-2. **`RwLock`/sharded world with async handlers** â€” ordering and cross-object atomicity pain for throughput no MU* needs; single-writer matches genre semantics exactly.
-3. **sqlx/Postgres and sled** â€” see 5.1; SQLite+rusqlite wins on ops story and maintenance status.
-4. **Dynamic (`libloading`) or WASM plugins** â€” no stable ABI / heavy interface tax; static crate modules behind cargo features instead.
+1. **ECS (bevy_ecs/hecs) object model** — MU* objects are heterogeneous attribute bags with almost no per-frame system iteration; ECS adds indirection and buys nothing here.
+2. **`RwLock`/sharded world with async handlers** — ordering and cross-object atomicity pain for throughput no MU* needs; single-writer matches genre semantics exactly.
+3. **sqlx/Postgres and sled** — see 5.1; SQLite+rusqlite wins on ops story and maintenance status.
+4. **Dynamic (`libloading`) or WASM plugins** — no stable ABI / heavy interface tax; static crate modules behind cargo features instead.
 
 Sources: [mlua (GitHub)](https://github.com/mlua-rs/mlua), [mlua docs.rs 0.11.6](https://docs.rs/crate/mlua/latest), [rhai (GitHub)](https://github.com/rhaiscript/rhai), [redb (GitHub)](https://github.com/cberner/redb), [sled (GitHub)](https://github.com/spacejam/sled), [rusqlite (crates.io)](https://crates.io/crates/rusqlite), [rusqlite_migration docs](https://docs.rs/crate/rusqlite_migration/latest), [russh (GitHub)](https://github.com/Eugeny/russh)

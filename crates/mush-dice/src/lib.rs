@@ -6,7 +6,7 @@
 //! 1. A **generic expression evaluator** ([`expr`] + [`parser`]): a small
 //!    `winnow` grammar over `NdS` dice with optional keep-highest / keep-lowest,
 //!    `+`/`-` modifier chains, and parentheses. Serves generic staff rolls, the
-//!    Rhai `mush::dice` binding, and MechWarrior's `2d6` later.
+//!    Rhai `mush::dice` binding, and TacSim's `2d6` later.
 //! 2. **Pool mechanics** ([`pool::PoolMechanic`]): a trait each ruleset
 //!    implements. [`owod20::Owod20Pool`] is the Classic World of Darkness 20th
 //!    Anniversary (V20/M20/W20) Storyteller-System d10 pool: an ST difficulty,
