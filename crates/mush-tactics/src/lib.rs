@@ -46,31 +46,36 @@ use mush_proto::RichText;
 use smol_str::SmolStr;
 
 pub mod mobility;
+pub mod module;
 pub mod unit;
 
 pub use mobility::{
     LocomotionId, MediumId, MobilityError, MobilityMode, MobilityModeId, MobilityProfile,
     MobilityRegistry, MobilityTag, MobilityVocabulary, ModeRules, ModeState,
 };
+pub use module::{TacticsModule, UnitStore};
 pub use unit::{
     apply, CapabilityId, CapabilityInit, CapabilityKey, CellAddr, CellId, CellSpec, ComponentId,
     ComponentSpec, ConditionId, DefinitionRef, FacetId, FacetSpec, InstallPoint, InstallSlotId,
     InstalledComponent, Journal, JournalEntry, RulesValue, ScalarCell, SectionId, SectionSpec,
-    SectionState, TacticalUnit, UnitError, UnitMutationOp, UnitMutationPlan, UnitSpec,
+    SectionState, TacticalUnit, UnitCatalog, UnitCatalogBuilder, UnitError, UnitMutationOp,
+    UnitMutationPlan, UnitSpec,
 };
 
 /// The module id (also its persistence namespace).
-pub const NS: &str = "tactics";
+// NOTE (M33): the REAL `TacticsModule` (module.rs) owns NS "tactics"; this
+// standing seam-test stub moved to "tacseam" so both can load in one Engine.
+pub const NS: &str = "tacseam";
 
 /// The registered marker flag: a room carrying it refuses all movement
-/// into it (`@set here=tactics:hexlock`).
-pub const HEXLOCK_MARKER: &str = "tactics:hexlock";
+/// into it (`@set here=tacseam:hexlock`).
+pub const HEXLOCK_MARKER: &str = "tacseam:hexlock";
 
 /// The scene kind `+btest/start` opens.
-pub const SCENE_KIND: &str = "tactics.battle";
+pub const SCENE_KIND: &str = "tacseam.battle";
 
 /// The panel feed id (design §6.2's reserved `tactics.map`).
-pub const MAP_FEED: &str = "tactics.map";
+pub const MAP_FEED: &str = "tacseam.map";
 
 /// The sub-second periodic tick's tag and period.
 pub const PULSE_TICK: &str = "pulse";

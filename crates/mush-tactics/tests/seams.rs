@@ -215,10 +215,10 @@ fn hexlock_marker_vetoes_movement_and_teleport() {
         .id;
 
     // The marker is registered: settable through plain @set.
-    let events = tw.run(GOD, &format!("@set #{}=tactics:hexlock", arena.0));
+    let events = tw.run(GOD, &format!("@set #{}=tacseam:hexlock", arena.0));
     assert_actor_saw(&events, GOD, "Set.");
-    let (canonical, owner) = tw.registry().marker_owner("TACTICS:HEXLOCK").unwrap();
-    assert_eq!((canonical.as_str(), owner.as_str()), ("tactics:hexlock", NS));
+    let (canonical, owner) = tw.registry().marker_owner("TACSEAM:HEXLOCK").unwrap();
+    assert_eq!((canonical.as_str(), owner.as_str()), ("tacseam:hexlock", NS));
 
     // Exit traversal is vetoed with the themed message; nobody moves.
     let events = tw.run(pilot, "enter");
@@ -231,7 +231,7 @@ fn hexlock_marker_vetoes_movement_and_teleport() {
     assert_eq!(tw.world().get(GOD).unwrap().location, Some(LIMBO));
 
     // Clearing the marker restores movement.
-    let events = tw.run(GOD, &format!("@set #{}=!tactics:hexlock", arena.0));
+    let events = tw.run(GOD, &format!("@set #{}=!tacseam:hexlock", arena.0));
     assert_actor_saw(&events, GOD, "Cleared.");
     tw.run(pilot, "enter");
     assert_eq!(tw.world().get(pilot).unwrap().location, Some(arena));

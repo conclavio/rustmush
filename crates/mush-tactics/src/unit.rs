@@ -328,8 +328,11 @@ pub struct InstalledComponent {
     /// Its opaque condition.
     pub condition: ConditionId,
     /// An optional detachable, ownable economic asset this component IS (major
-    /// tradeable kit); minor internal parts leave this `None`. An inert pointer
-    /// in M32 — no economy logic; the M33 `ObjDestroyed` scrub nulls it.
+    /// tradeable kit); minor internal parts leave this `None`. An INERT pointer
+    /// with no reader yet — the scrub that nulls it when the asset object dies is
+    /// DEFERRED to the economy/ownership cut that first gives `asset` meaning and
+    /// can reconcile custody (the M33 review confirmed deferral is safe while the
+    /// pointer is inert).
     #[serde(default)]
     pub asset: Option<ObjId>,
 }
@@ -620,6 +623,26 @@ impl TacticalUnit {
     /// All capability keys (ordered).
     pub fn capabilities(&self) -> impl Iterator<Item = &CapabilityKey> {
         self.capabilities.keys()
+    }
+    /// All sections (ordered by id) — for inspection/rendering.
+    pub fn sections(&self) -> impl Iterator<Item = (&SectionId, &SectionState)> {
+        self.sections.iter()
+    }
+    /// All cells (ordered by address) — for inspection/rendering.
+    pub fn cells(&self) -> impl Iterator<Item = (&CellAddr, &ScalarCell)> {
+        self.cells.iter()
+    }
+    /// All installed components (ordered by id) — for inspection/rendering.
+    pub fn components(&self) -> impl Iterator<Item = (&ComponentId, &InstalledComponent)> {
+        self.components.iter()
+    }
+
+    /// Normalize a due mobility transition (M31 `settle`) — call before ANY
+    /// whole-unit serialize so a due-but-unsettled `Switching` never persists.
+    pub fn settle_mobility(&mut self, now: i64) {
+        if let Some(m) = &mut self.mobility {
+            m.settle(now);
+        }
     }
 
     // --- the damage pipeline (private per-op applier used by `apply`) ---
@@ -950,6 +973,73 @@ pub struct UnitSpec {
     pub rules: RulesValue,
 }
 
+/// A ruleset-registered catalog of `UnitSpec`s by definition id, composed at
+/// module construction (builder → freeze, like M31's `MobilityVocabulary`). The
+/// engine ships the MECHANISM empty; a ruleset (or dev/test wiring) seeds the
+/// specs — no concrete spec is baked into the engine crate.
+#[derive(Clone, Debug, Default)]
+pub struct UnitCatalog {
+    specs: BTreeMap<SmolStr, UnitSpec>,
+}
+
+impl UnitCatalog {
+    /// The spec registered under `def_id`, if any.
+    #[must_use]
+    pub fn get(&self, def_id: &str) -> Option<&UnitSpec> {
+        self.specs.get(def_id)
+    }
+    /// The registered definition ids (ordered).
+    pub fn ids(&self) -> impl Iterator<Item = &SmolStr> {
+        self.specs.keys()
+    }
+    /// Whether the catalog holds no specs.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.specs.is_empty()
+    }
+}
+
+/// Builder for a [`UnitCatalog`]: each added spec's mobility modes are validated
+/// against a [`MobilityRegistry`](crate::mobility::MobilityRegistry) before the
+/// catalog is frozen (closing the gap that `from_spec` does not registry-check
+/// an embedded profile).
+#[derive(Clone, Debug, Default)]
+pub struct UnitCatalogBuilder {
+    specs: BTreeMap<SmolStr, UnitSpec>,
+}
+
+impl UnitCatalogBuilder {
+    /// A fresh, empty builder.
+    #[must_use]
+    pub fn new() -> UnitCatalogBuilder {
+        UnitCatalogBuilder::default()
+    }
+    /// Register `spec`, validating each of its mobility modes against
+    /// `mobility_reg` (a mode referencing an undeclared atom is refused here, at
+    /// wiring time, rather than silently at create).
+    ///
+    /// # Errors
+    /// [`UnitError::Mobility`] if a mobility mode references an undeclared atom.
+    pub fn add(
+        &mut self,
+        spec: UnitSpec,
+        mobility_reg: &crate::mobility::MobilityRegistry,
+    ) -> Result<&mut UnitCatalogBuilder, UnitError> {
+        if let Some(m) = &spec.mobility {
+            for mode in m.modes() {
+                mobility_reg.validate_mode(mode)?;
+            }
+        }
+        self.specs.insert(spec.definition.id.clone(), spec);
+        Ok(self)
+    }
+    /// Freeze into an immutable, runtime-shareable catalog.
+    #[must_use]
+    pub fn freeze(self) -> UnitCatalog {
+        UnitCatalog { specs: self.specs }
+    }
+}
+
 // ----------------------------------------------------------------------
 
 /// Why a tactical-unit construction or mutation was refused. Carries the
@@ -968,6 +1058,9 @@ pub enum UnitError {
     /// A unit had no sections.
     #[error("a tactical unit must have at least one section")]
     EmptyUnit,
+    /// A catalog spec's mobility mode referenced an undeclared atom.
+    #[error("mobility: {0}")]
+    Mobility(#[from] crate::mobility::MobilityError),
     /// Two sections shared an id.
     #[error("duplicate section {0}")]
     DuplicateSection(SectionId),
