@@ -6,8 +6,10 @@
 use std::sync::Arc;
 
 use mush_core::{
-    BehaviorBinding, BehaviorId, BehaviorSpec, DestroyGate, DestroyPolicy, Flags, GOD, LIMBO, ObjId,
-    ObjKind, Outbox, Registry, Role, World, dispatch, register_core_commands,
+    ArgShape, BehaviorBinding, BehaviorCommand, BehaviorId, BehaviorSpec, BehaviorTarget, CmdError,
+    CommandReach, CommandSpec, CommandSubjectLink, Ctx, DestroyGate, DestroyPolicy, Flags, GOD,
+    LIMBO, ModError, ObjId, ObjKind, Outbox, Registrar, Registry, Role, World, dispatch,
+    register_core_commands,
 };
 use mush_proto::OutputEvent;
 
@@ -377,4 +379,222 @@ fn empty_behaviors_are_omitted_from_json() {
         !json.contains("behaviors"),
         "empty behavior map should be skipped in the persisted doc: {json}"
     );
+}
+
+// ---------------------------------------------------------------------
+// Contextual commands (cut 2: design 06 §4.3-4.4)
+// ---------------------------------------------------------------------
+
+fn echo(ctx: &mut Ctx<'_>, t: &BehaviorTarget) -> Result<(), CmdError> {
+    let who = ctx.actor;
+    let module = ctx.module.clone();
+    ctx.out.info(who, format!("ran on {} via {:?} as {:?}", t.subject, t.reach, module));
+    Ok(())
+}
+
+fn verb_spec(id: &str, verb: &str, reach: Option<Vec<CommandReach>>) -> BehaviorSpec {
+    let cmd = BehaviorCommand::new(
+        CommandSpec { name: verb.into(), shape: ArgShape::None, ..CommandSpec::default() },
+        Arc::new(echo),
+    );
+    let cmd = match reach { Some(r) => cmd.with_reach(r), None => cmd };
+    BehaviorSpec::new(bid(id)).with_command(cmd)
+}
+
+/// `test.console` supplies `startup` (default reach); `test.beacon` supplies an
+/// ambient-only `beacon`. Registered through a Registrar so core stamps `owner`.
+fn console_game() -> Game {
+    let mut g = Game::new();
+    let mut r = Registrar::new(&mut g.reg, "vehicle");
+    r.behavior(verb_spec("test.console", "startup", None)).unwrap();
+    r.behavior(verb_spec("test.beacon", "beacon", Some(vec![CommandReach::Ambient]))).unwrap();
+    g
+}
+
+fn bind(g: &mut Game, obj: ObjId, behavior: &str) {
+    g.w.attach_behavior(obj, bid(behavior), BehaviorBinding { schema_version: 1, attached_by: GOD, attached_at: 0 }).unwrap();
+}
+
+fn carried(g: &mut Game, name: &str) -> ObjId {
+    let c = g.thing(name, g.bob);
+    g.w.move_to(c, g.bob).unwrap();
+    bind(g, c, "test.console");
+    c
+}
+
+#[test]
+fn carried_console_supplies_the_verb_with_owner_as_module() {
+    let mut g = console_game();
+    let c = carried(&mut g, "Console");
+    let t = texts(&g.run(g.bob, "startup"));
+    assert!(t.contains(&format!("ran on {c}")) && t.contains("Carried"), "{t}");
+    assert!(t.contains("Some(\"vehicle\")"), "ctx.module is the behavior owner: {t}");
+    // An actor who can reach no console gets the ordinary Huh?.
+    assert!(texts(&g.run(g.ann, "startup")).contains("Huh?"));
+}
+
+#[test]
+fn two_carried_consoles_are_ambiguous_until_one_is_removed() {
+    let mut g = console_game();
+    let a = carried(&mut g, "Alpha");
+    let b = carried(&mut g, "Beta");
+    let t = texts(&g.run(g.bob, "startup"));
+    assert!(t.contains("Ambiguous") && t.contains("Alpha") && t.contains("Beta"), "{t}");
+    g.w.detach_behavior(b, &bid("test.console")).unwrap();
+    assert!(texts(&g.run(g.bob, "startup")).contains(&format!("ran on {a}")));
+}
+
+#[test]
+fn behavior_verbs_are_exact_only_and_a_later_global_verb_shadows_them() {
+    let mut g = console_game();
+    carried(&mut g, "Console");
+    assert!(texts(&g.run(g.bob, "startu")).contains("Huh?"), "no prefix matching");
+    assert!(texts(&g.run(g.bob, "STARTUP")).contains("ran on"), "case-insensitive exact");
+    g.reg
+        .register(
+            CommandSpec { name: "startup".into(), ..CommandSpec::default() },
+            Arc::new(|ctx: &mut Ctx<'_>| { ctx.out.info(ctx.actor, "global startup"); Ok(()) }),
+        )
+        .unwrap();
+    let t = texts(&g.run(g.bob, "startup"));
+    assert!(t.contains("global startup") && !t.contains("ran on"), "global wins: {t}");
+}
+
+#[test]
+fn registration_rejects_global_collisions_duplicates_and_empty_verbs() {
+    let mut g = Game::new();
+    let mut r = Registrar::new(&mut g.reg, "vehicle");
+    let err = r.behavior(verb_spec("test.bad", "look", None)).unwrap_err();
+    assert!(matches!(err, ModError::Conflict { what: "behavior command", .. }), "core `look`: {err}");
+    let dup = BehaviorSpec::new(bid("test.dup"))
+        .with_command(BehaviorCommand::new(CommandSpec { name: "ping".into(), ..CommandSpec::default() }, Arc::new(echo)))
+        .with_command(BehaviorCommand::new(CommandSpec { name: "PING".into(), ..CommandSpec::default() }, Arc::new(echo)));
+    let err = r.behavior(dup).unwrap_err();
+    assert!(err.to_string().contains("twice"), "duplicate verb (case-insensitive): {err}");
+    let empty = BehaviorSpec::new(bid("test.empty"))
+        .with_command(BehaviorCommand::new(CommandSpec::default(), Arc::new(echo)));
+    let err = r.behavior(empty).unwrap_err();
+    assert!(err.to_string().contains("empty name"), "empty verb: {err}");
+    assert!(r.behavior(verb_spec("test.ok", "zap", None)).is_ok());
+}
+
+#[test]
+fn operated_link_outranks_carried_and_ambient_is_the_room_by_opt_in() {
+    let mut g = console_game();
+    let c = carried(&mut g, "Carried");
+    let remote = g.thing("Remote", g.bob); // in the room, not carried: unreachable without a link
+    bind(&mut g, remote, "test.console");
+    assert!(texts(&g.run(g.bob, "startup")).contains(&format!("ran on {c}")));
+    g.w.publish_command_subject(CommandSubjectLink {
+        actor: g.bob, subject: remote, relation: "pilot".into(), owner: "vehicle".into(), priority: 0,
+    });
+    let t = texts(&g.run(g.bob, "startup"));
+    assert!(t.contains(&format!("ran on {remote}")) && t.contains("Operated"), "{t}");
+    // Ambient reach is the containing ROOM itself, never objects in it.
+    bind(&mut g, LIMBO, "test.beacon");
+    let t = texts(&g.run(g.bob, "beacon"));
+    assert!(t.contains("ran on #0") && t.contains("Ambient"), "{t}");
+    assert_eq!(g.w.retract_command_subjects("vehicle", Some(g.bob)), 1);
+    assert!(texts(&g.run(g.bob, "startup")).contains(&format!("ran on {c}")));
+}
+
+#[test]
+fn destroying_a_subject_scrubs_its_links() {
+    let mut g = console_game();
+    let remote = g.thing("Remote", g.bob);
+    bind(&mut g, remote, "test.console");
+    g.w.publish_command_subject(CommandSubjectLink {
+        actor: g.bob, subject: remote, relation: "pilot".into(), owner: "vehicle".into(), priority: 0,
+    });
+    assert_eq!(g.w.command_subjects_of(g.bob).len(), 1);
+    g.w.destroy(remote).unwrap();
+    assert!(g.w.command_subjects_of(g.bob).is_empty(), "link scrubbed with the subject");
+}
+
+// ---------------------------------------------------------------------
+// Review fixes: prefix shadowing, reach sets, link priority, folding, no fall-through
+// ---------------------------------------------------------------------
+
+#[test]
+fn a_bare_prefix_of_a_global_is_refused_at_registration() {
+    let mut g = Game::new();
+    let mut r = Registrar::new(&mut g.reg, "vehicle");
+    // `thin` is a strict prefix of core `think`: dispatch would run `think`.
+    let err = r.behavior(verb_spec("test.thin", "thin", None)).unwrap_err();
+    assert!(matches!(err, ModError::Conflict { what: "behavior command", .. }), "{err}");
+    // `g` prefixes several bare globals: dispatch refuses it as ambiguous first.
+    let err = r.behavior(verb_spec("test.g", "g", None)).unwrap_err();
+    assert!(err.to_string().contains("ambiguous prefix"), "{err}");
+    // A `+`/`@` verb never prefix-matches, so only an exact hit collides.
+    assert!(r.behavior(verb_spec("test.plus", "+startup", None)).is_ok());
+}
+
+#[test]
+fn a_linked_subject_keeps_its_carried_only_verbs() {
+    let mut g = console_game();
+    let mut r = Registrar::new(&mut g.reg, "vehicle");
+    r.behavior(verb_spec("test.stowable", "stow", Some(vec![CommandReach::Carried]))).unwrap();
+    drop(r);
+    let bob = g.bob;
+    let c = carried(&mut g, "Console");
+    bind(&mut g, c, "test.stowable");
+    assert!(texts(&g.run(bob, "stow")).contains("Carried"));
+    g.w.publish_command_subject(CommandSubjectLink {
+        actor: bob, subject: c, relation: "pilot".into(), owner: "vehicle".into(), priority: 0,
+    });
+    let t = texts(&g.run(bob, "stow"));
+    assert!(t.contains(&format!("ran on {c}")) && t.contains("Carried"), "linked AND carried: {t}");
+    assert!(texts(&g.run(bob, "startup")).contains("Operated"), "default-reach verb ranks Operated");
+}
+
+#[test]
+fn link_priority_forms_subtiers_and_equal_priority_is_ambiguous() {
+    let mut g = console_game();
+    let bob = g.bob;
+    let a = g.thing("Alpha", bob);
+    bind(&mut g, a, "test.console");
+    let b = g.thing("Beta", bob);
+    bind(&mut g, b, "test.console");
+    let link = |s: ObjId, p: u16| CommandSubjectLink {
+        actor: bob, subject: s, relation: "remote".into(), owner: "vehicle".into(), priority: p,
+    };
+    g.w.publish_command_subject(link(a, 5));
+    g.w.publish_command_subject(link(b, 0));
+    let t = texts(&g.run(bob, "startup"));
+    assert!(t.contains(&format!("ran on {a}")) && !t.contains("Ambiguous"), "higher priority wins: {t}");
+    g.w.publish_command_subject(link(b, 5));
+    let t = texts(&g.run(bob, "startup"));
+    assert!(t.contains("Ambiguous") && t.contains("Alpha") && t.contains("Beta"), "{t}");
+}
+
+#[test]
+fn an_ambiguous_tier_never_falls_through() {
+    let mut g = console_game();
+    let bob = g.bob;
+    let a = g.thing("Alpha", bob);
+    bind(&mut g, a, "test.console");
+    let b = g.thing("Beta", bob);
+    bind(&mut g, b, "test.console");
+    let _c = carried(&mut g, "Carried"); // would answer alone
+    for s in [a, b] {
+        g.w.publish_command_subject(CommandSubjectLink {
+            actor: bob, subject: s, relation: "remote".into(), owner: "vehicle".into(), priority: 0,
+        });
+    }
+    let t = texts(&g.run(bob, "startup"));
+    assert!(t.contains("Ambiguous") && t.contains("Alpha") && t.contains("Beta"), "{t}");
+    assert!(!t.contains("ran on"), "the carried console must not answer for an ambiguous higher tier: {t}");
+}
+
+#[test]
+fn verbs_fold_case_like_the_global_table() {
+    let mut g = console_game();
+    let mut r = Registrar::new(&mut g.reg, "vehicle");
+    r.behavior(verb_spec("test.umlaut", "Über", None)).unwrap();
+    drop(r);
+    let bob = g.bob;
+    let c = carried(&mut g, "Console");
+    bind(&mut g, c, "test.umlaut");
+    assert!(texts(&g.run(bob, "über")).contains(&format!("ran on {c}")));
+    assert!(texts(&g.run(bob, "ÜBER")).contains(&format!("ran on {c}")));
 }

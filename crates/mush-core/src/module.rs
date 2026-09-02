@@ -1290,16 +1290,27 @@ impl<'a> Registrar<'a> {
         &mut self,
         mut spec: crate::behavior::BehaviorSpec,
     ) -> Result<(), ModError> {
-        let name = SmolStr::new(spec.id.as_str());
         spec.owner = self.module.clone();
-        self.reg
-            .register_behavior(spec)
-            .map_err(|owner| ModError::Conflict {
-                module: self.module.clone(),
-                what: "behavior",
-                name,
-                owner,
-            })
+        let module = self.module.clone();
+        self.reg.register_behavior(spec).map_err(|e| {
+            use crate::behavior::BehaviorRegError as E;
+            match e {
+                E::Owned { id, owner } => ModError::Conflict {
+                    module: module.clone(),
+                    what: "behavior",
+                    name: SmolStr::new(id),
+                    owner,
+                },
+                E::VerbCollision { id, verb, owner } => ModError::Conflict {
+                    module: module.clone(),
+                    what: "behavior command",
+                    name: SmolStr::new(format!("{id}:{verb}")),
+                    owner,
+                },
+                // Not a "registered by" conflict — report the error's own words.
+                other => ModError::msg(format!("module {module}: {other}")),
+            }
+        })
     }
 
     /// Register a pre-destroy [`DestroyGate`](crate::behavior::DestroyGate)

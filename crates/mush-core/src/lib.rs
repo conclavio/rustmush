@@ -65,8 +65,9 @@ pub mod world;
 
 pub use attr::{Attr, AttrFlags, AttrMap, AttrValue, UncasedName};
 pub use behavior::{
-    BINDING_SCHEMA_VERSION, BehaviorBinding, BehaviorId, BehaviorIdError, BehaviorSpec,
-    DestroyGate, DestroyPolicy,
+    BINDING_SCHEMA_VERSION, BehaviorBinding, BehaviorCommand, BehaviorCommandHandler, BehaviorId,
+    BehaviorIdError, BehaviorRegError, BehaviorResolution, BehaviorSpec, BehaviorTarget,
+    CommandReach, DestroyGate, DestroyPolicy, MAX_CARRIED_SCAN, resolve_behavior_command,
 };
 pub use clock::{CivilDate, GameClock, Season, TimeOfDay};
 pub use cmd::{
@@ -95,4 +96,4 @@ pub use module::{
 pub use obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
 pub use output::{Audience, ConnId, Outbox, name_span, obj_ref, room_view};
 pub use sched::{ScheduledKind, Scheduler, TimerId};
-pub use world::{SessionStat, World, WorldError};
+pub use world::{CommandSubjectLink, MAX_CONTAINMENT_DEPTH, SessionStat, World, WorldError};

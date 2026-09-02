@@ -414,7 +414,7 @@ impl CommandGate for TurnGate {
         reg: &Registry,
         actor: ObjId,
         verb: &str,
-        _line: &str,
+        line: &str,
     ) -> Result<(), String> {
         let Some(scene) = w
             .module_state::<ScenesState>()
@@ -425,12 +425,36 @@ impl CommandGate for TurnGate {
         if scene.mode != SceneMode::TurnBased {
             return Ok(());
         }
-        // Resolve the verb exactly as dispatch will (lookup honors the prefix
-        // rules, so an abbreviation can't slip a Turn command past the gate);
-        // Free is the default for anything that doesn't resolve to a command.
-        let class = reg
-            .lookup(verb)
-            .map_or(SceneClass::Free, |(spec, _)| spec.scene_class);
+        // Resolve the verb exactly as dispatch will: the global table first
+        // (lookup honors the prefix rules, so an abbreviation can't slip a Turn
+        // command past the gate), then — only when that misses — the actor's
+        // reachable behavior commands (a mech's FIRE is a Turn command supplied
+        // by the object, never in the global table). They are ordinary
+        // CommandSpecs carrying a scene_class: one turn engine, not two. No
+        // match or an ambiguous match reads as Free (dispatch refuses or Huh?s
+        // it anyway).
+        // Exits and `home` resolve BEFORE the command table in dispatch and are
+        // always Free — check them first so a Turn-class behavior verb that
+        // happens to share an exit's name can never block a legal move.
+        let trimmed = line.trim();
+        if trimmed.eq_ignore_ascii_case("home")
+            || mush_core::commands::movement::find_exit(w, actor, trimmed).is_some()
+        {
+            return Ok(());
+        }
+        let class = match reg.lookup(verb) {
+            Ok((spec, _)) => spec.scene_class,
+            // An ambiguous global prefix is refused by dispatch before the
+            // behavior stage, so it is Free here too.
+            Err(mush_core::LookupErr::Ambiguous(_)) => SceneClass::Free,
+            Err(mush_core::LookupErr::NotFound) => match mush_core::resolve_behavior_command(reg, w, actor, verb) {
+                mush_core::BehaviorResolution::One { target, index } => reg
+                    .behavior_spec(&target.behavior)
+                    .and_then(|b| b.commands.get(index))
+                    .map_or(SceneClass::Free, |c| c.spec.scene_class),
+                _ => SceneClass::Free,
+            },
+        };
         if class != SceneClass::Turn {
             return Ok(());
         }

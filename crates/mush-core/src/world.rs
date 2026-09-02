@@ -30,6 +30,30 @@ use crate::obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
 /// Maximum `@parent` hops for attribute inheritance lookups.
 pub const MAX_PARENT_DEPTH: usize = 10;
 
+/// Maximum hops up the `location` chain when finding an object's containing
+/// room (design 06 §4.3, "bounded location chain").
+pub const MAX_CONTAINMENT_DEPTH: usize = 8;
+
+/// A published "actor operates subject" link (design 06 §4.4) — how a pilot in
+/// a cockpit gets the vehicle as a command subject, or a rigger a remote drone.
+/// Transient and rebuildable: the publishing `owner` module holds the
+/// authoritative assignment and republishes on boot; core never persists it.
+/// Keyed on `(actor, subject, owner)`; within an actor's list, higher
+/// `priority` wins.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommandSubjectLink {
+    /// The operating actor.
+    pub actor: ObjId,
+    /// The operated object.
+    pub subject: ObjId,
+    /// The relation (`"pilot"`, `"gunner"`, `"remote"`, …) — descriptive.
+    pub relation: SmolStr,
+    /// The module that published it (responsible for republish/removal).
+    pub owner: SmolStr,
+    /// Higher wins among an actor's links.
+    pub priority: u16,
+}
+
 /// Errors from [`World`] mutators.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum WorldError {
@@ -113,6 +137,12 @@ pub struct World {
     /// The movement gate and the NPC wake loop consult it; the driver rebuilds
     /// it on boot from its persisted scene records. Never persisted here.
     exclusive_scene: BTreeSet<ObjId>,
+    /// Published command-subject links (design 06 §4.4): per actor, the objects
+    /// it operates (a pilot's mech, a rigger's drone), highest priority first.
+    /// A transient, rebuildable index: the owning module holds the authoritative
+    /// assignment and republishes on boot; never persisted here. Scrubbed by
+    /// [`World::destroy`] in both roles.
+    command_subject_links: HashMap<ObjId, Vec<CommandSubjectLink>>,
     /// Per-actor session timing (transient, like `connected`).
     session_stats: HashMap<ObjId, SessionStat>,
     /// Live transport connections per actor, mirrored in by the engine
@@ -517,6 +547,82 @@ impl World {
     }
 
     // ------------------------------------------------------------------
+    // Command-subject links (design 06 §4.4; transient, rebuildable)
+    // ------------------------------------------------------------------
+
+    /// Publish (upsert) a command-subject link. Keyed on `(actor, subject,
+    /// owner)`: republishing replaces the relation and priority. A no-op if
+    /// either object does not exist. Never persisted — the owner republishes
+    /// on boot from its own records.
+    pub fn publish_command_subject(&mut self, link: CommandSubjectLink) {
+        if self.get(link.actor).is_none() || self.get(link.subject).is_none() {
+            return;
+        }
+        let list = self.command_subject_links.entry(link.actor).or_default();
+        list.retain(|l| !(l.subject == link.subject && l.owner == link.owner));
+        list.push(link);
+        list.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.subject.cmp(&b.subject)));
+    }
+
+    /// Retract links published by `owner` — for one `actor`, or for every
+    /// actor when `None`. Returns how many were removed.
+    pub fn retract_command_subjects(&mut self, owner: &str, actor: Option<ObjId>) -> usize {
+        let keys: Vec<ObjId> = match actor {
+            Some(a) => vec![a],
+            None => self.command_subject_links.keys().copied().collect(),
+        };
+        let mut removed = 0;
+        for a in keys {
+            if let Some(list) = self.command_subject_links.get_mut(&a) {
+                let before = list.len();
+                list.retain(|l| l.owner != owner);
+                removed += before - list.len();
+                if list.is_empty() {
+                    self.command_subject_links.remove(&a);
+                }
+            }
+        }
+        removed
+    }
+
+    /// The links published for `actor`, highest priority first (empty when
+    /// none).
+    #[must_use]
+    pub fn command_subjects_of(&self, actor: ObjId) -> &[CommandSubjectLink] {
+        self.command_subject_links
+            .get(&actor)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// Drop every link in which `obj` is the actor or the subject. Called by
+    /// [`World::destroy`] so a dead dbref never lingers as a command subject.
+    fn remove_command_subject_links_for_obj(&mut self, obj: ObjId) {
+        self.command_subject_links.remove(&obj);
+        self.command_subject_links.retain(|_, list| {
+            list.retain(|l| l.subject != obj);
+            !list.is_empty()
+        });
+    }
+
+    /// The room containing `id`: walk `location` upward, bounded by
+    /// [`MAX_CONTAINMENT_DEPTH`], until a [`Room`](ObjKind::Room). A room's
+    /// containing room is itself. `None` if the chain ends or the bound is hit.
+    /// Follows only `location` — never `parent`, `zone`, or `home`.
+    #[must_use]
+    pub fn containing_room(&self, id: ObjId) -> Option<ObjId> {
+        let mut cur = id;
+        for _ in 0..=MAX_CONTAINMENT_DEPTH {
+            let o = self.get(cur)?;
+            if o.kind == ObjKind::Room {
+                return Some(cur);
+            }
+            cur = o.location?;
+        }
+        None
+    }
+
+    // ------------------------------------------------------------------
     // Connection state (transient session bookkeeping)
     // ------------------------------------------------------------------
 
@@ -711,6 +817,7 @@ impl World {
         self.live_conns.remove(&id);
         self.session_stats.remove(&id);
         self.input_stacks.clear(id);
+        self.remove_command_subject_links_for_obj(id);
         for s in self.scenes.values_mut() {
             s.members.remove(&id);
         }

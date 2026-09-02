@@ -30,8 +30,9 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::cmd::{ArgShape, CmdError, CommandSpec, Ctx, Registry, RegistryError};
-use crate::flags::Role;
+use crate::flags::{Flags, Role};
 use crate::matchit::match_object;
+use crate::module::can_perceive;
 use crate::obj::{ObjId, ObjKind};
 use crate::perm;
 use crate::world::World;
@@ -179,6 +180,10 @@ pub struct BehaviorSpec {
     pub min_role: Role,
     /// One-line help shown by `@behavior/list`.
     pub help: String,
+    /// Contextual commands this behavior contributes (design §4.3): ordinary
+    /// [`CommandSpec`]s that exist only for an actor who can reach an object
+    /// carrying the behavior — never in the global table.
+    pub commands: Vec<BehaviorCommand>,
 }
 
 impl BehaviorSpec {
@@ -194,8 +199,339 @@ impl BehaviorSpec {
             destroy: DestroyPolicy::Allow,
             min_role: Role::Builder,
             help: String::new(),
+            commands: Vec::new(),
         }
     }
+
+    /// Add a contextual command (builder style).
+    #[must_use]
+    pub fn with_command(mut self, cmd: BehaviorCommand) -> BehaviorSpec {
+        self.commands.push(cmd);
+        self
+    }
+}
+
+// ----------------------------------------------------------------------
+// Contextual commands (design §4.3) and their subjects (§4.4)
+// ----------------------------------------------------------------------
+
+/// How a command subject was reached from the actor — the resolution tier it
+/// was found at. A [`BehaviorCommand`] declares which reaches it accepts, so a
+/// room-wide `beacon` can opt into [`Ambient`](CommandReach::Ambient) while a
+/// cockpit `startup` stays confined to what the actor operates, is, is inside
+/// of, or carries.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum CommandReach {
+    /// An object the actor operates through a published
+    /// [`CommandSubjectLink`](crate::world::CommandSubjectLink) — a pilot's
+    /// mech, a rigger's drone. Highest priority.
+    Operated,
+    /// The actor object itself.
+    Actor,
+    /// The actor's immediate container when it is not a room (a cockpit).
+    Container,
+    /// An object the actor carries (one level; never nested).
+    Carried,
+    /// The containing room. Only for commands that opt in.
+    Ambient,
+}
+
+impl CommandReach {
+    /// The default reach set for a behavior command: everything except
+    /// [`Ambient`](CommandReach::Ambient), which must be opted into.
+    #[must_use]
+    pub fn default_set() -> Vec<CommandReach> {
+        vec![
+            CommandReach::Operated,
+            CommandReach::Actor,
+            CommandReach::Container,
+            CommandReach::Carried,
+        ]
+    }
+}
+
+/// What a behavior command was invoked on: the resolved subject, the behavior
+/// that supplied the verb, and how the subject was reached. Handed to
+/// [`BehaviorCommandHandler::call`] alongside the ordinary [`Ctx`] (whose
+/// `module` is the behavior's owner), so `Ctx` itself needs no new field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BehaviorTarget {
+    /// The object whose behavior supplied the command.
+    pub subject: ObjId,
+    /// The behavior that supplied it.
+    pub behavior: BehaviorId,
+    /// The tier the subject was resolved at.
+    pub reach: CommandReach,
+}
+
+/// A handler for a contextual behavior command: like
+/// [`CommandHandler`](crate::cmd::CommandHandler) but also given the
+/// [`BehaviorTarget`]. Plain `fn`s and closures implement it via the blanket
+/// impl.
+pub trait BehaviorCommandHandler: Send + Sync {
+    /// Run the command on `target`.
+    fn call(&self, ctx: &mut Ctx<'_>, target: &BehaviorTarget) -> Result<(), CmdError>;
+}
+
+impl<F> BehaviorCommandHandler for F
+where
+    F: Fn(&mut Ctx<'_>, &BehaviorTarget) -> Result<(), CmdError> + Send + Sync,
+{
+    fn call(&self, ctx: &mut Ctx<'_>, target: &BehaviorTarget) -> Result<(), CmdError> {
+        self(ctx, target)
+    }
+}
+
+/// A contextual command a behavior contributes (design §4.3). `spec` is an
+/// ordinary [`CommandSpec`] — switches, argument shape, role/power/lock, help,
+/// and [`SceneClass`](crate::cmd::SceneClass) all apply exactly as for a global
+/// command — but the verb is **never** in the global table: it exists only for
+/// an actor who can reach an object carrying the behavior, and it can never
+/// shadow a core verb, a staff command, or an exit (dispatch consults it only
+/// after those have all missed).
+#[derive(Clone)]
+pub struct BehaviorCommand {
+    /// The spec. Name and aliases match exactly (case-insensitively); there is
+    /// no prefix matching at this stage.
+    pub spec: CommandSpec,
+    /// The reaches at which a subject may supply this command.
+    pub reach: Vec<CommandReach>,
+    /// The handler.
+    pub handler: Arc<dyn BehaviorCommandHandler>,
+}
+
+impl BehaviorCommand {
+    /// A command with the default reach set (everything except ambient).
+    pub fn new(spec: CommandSpec, handler: Arc<dyn BehaviorCommandHandler>) -> BehaviorCommand {
+        BehaviorCommand {
+            spec,
+            reach: CommandReach::default_set(),
+            handler,
+        }
+    }
+
+    /// Replace the reach set.
+    #[must_use]
+    pub fn with_reach(mut self, reach: Vec<CommandReach>) -> BehaviorCommand {
+        self.reach = reach;
+        self
+    }
+}
+
+/// Why a behavior registration was refused.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum BehaviorRegError {
+    /// Another module already owns this behavior id.
+    #[error("behavior `{id}` is already owned by module {owner}")]
+    Owned {
+        /// The behavior id.
+        id: String,
+        /// The current owner.
+        owner: SmolStr,
+    },
+    /// A contextual command has an empty name.
+    #[error("behavior `{id}` declares a command with an empty name")]
+    EmptyVerb {
+        /// The behavior id.
+        id: String,
+    },
+    /// A contextual command verb or alias appears twice within the spec.
+    #[error("behavior `{id}` declares the command verb {verb:?} twice")]
+    DuplicateVerb {
+        /// The behavior id.
+        id: String,
+        /// The duplicated verb (lowercased).
+        verb: String,
+    },
+    /// A contextual command verb collides with an existing global command. A
+    /// global verb always wins at dispatch, so the behavior verb would be dead
+    /// — refusing here makes that loud at boot.
+    #[error("behavior `{id}` command {verb:?} collides with the global command owned by {owner}")]
+    VerbCollision {
+        /// The behavior id.
+        id: String,
+        /// The colliding verb (lowercased).
+        verb: String,
+        /// Who owns the global command (`core` for built-ins).
+        owner: SmolStr,
+    },
+}
+
+/// The outcome of resolving a verb against an actor's reachable subjects.
+#[derive(Clone, Debug)]
+pub enum BehaviorResolution {
+    /// No reachable subject supplies the verb.
+    None,
+    /// Exactly one candidate at the winning tier.
+    One {
+        /// The subject, behavior, and reach.
+        target: BehaviorTarget,
+        /// Index into the behavior spec's `commands`.
+        index: usize,
+    },
+    /// Two or more candidates at the winning tier — nothing runs.
+    Ambiguous(Vec<BehaviorTarget>),
+}
+
+/// Maximum behavior-bearing carried objects scanned at the Carried tier
+/// (bounded work). Carried objects with no behaviors do not count toward it,
+/// so a bound console is never hidden behind a pile of ordinary props.
+pub const MAX_CARRIED_SCAN: usize = 64;
+
+/// One reachable subject: every tier it was found at (highest first) and, for
+/// a subject first reached through a link, that link's priority.
+struct Candidate {
+    subject: ObjId,
+    /// Reaches this subject was found at, highest tier first.
+    reaches: Vec<CommandReach>,
+    /// The link priority when first reached as Operated — a sub-tier.
+    priority: Option<u16>,
+}
+
+/// The ordering key for "the first tier with a hit wins": the subject's highest
+/// reach, then (within Operated) the link priority, so higher-priority links
+/// form their own sub-tier and ambiguity arises only among equals.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct TierKey {
+    reach: CommandReach,
+    priority: Option<u16>,
+}
+
+fn push_candidate(cands: &mut Vec<Candidate>, id: ObjId, reach: CommandReach, priority: Option<u16>) {
+    if let Some(c) = cands.iter_mut().find(|c| c.subject == id) {
+        if !c.reaches.contains(&reach) {
+            c.reaches.push(reach);
+        }
+    } else {
+        cands.push(Candidate {
+            subject: id,
+            reaches: vec![reach],
+            priority,
+        });
+    }
+}
+
+/// Resolve `verb` against the subjects `actor` can reach (design §4.3).
+///
+/// Tiers, highest first: Operated (published links — higher `priority` forms a
+/// higher sub-tier), Actor, Container (the immediate non-room container),
+/// Carried (one level; only behavior-bearing objects count toward
+/// [`MAX_CARRIED_SCAN`]), then Ambient (the containing room) for commands that
+/// opt in. A subject reachable at several tiers is ranked by its highest tier
+/// but stays eligible for a command through *any* of its reaches — linking a
+/// carried console does not silently remove its carried-only verbs — and the
+/// highest reach the command accepts is what its handler sees. The first tier
+/// with any match wins; two or more matches in that tier are ambiguous and
+/// nothing runs — resolution never falls through to a lower tier. Matching is
+/// exact on name or alias, case-insensitive with the same Unicode folding the
+/// global table uses; there is no prefix matching (the global table owns prefix
+/// semantics, and this stage only ever sees verbs it did not resolve).
+///
+/// Read-only over the world, so the scene turn-gate can classify a behavior
+/// verb's [`SceneClass`](crate::cmd::SceneClass) with it before dispatch.
+///
+/// Leak guard: any subject other than the actor must be perceivable by the
+/// actor (`can_perceive`), so a concealed carried, ambient, or remotely linked
+/// object cannot answer. `GOING` husks and bindings whose behavior is
+/// unregistered are inert.
+#[must_use]
+pub fn resolve_behavior_command(
+    reg: &Registry,
+    w: &World,
+    actor: ObjId,
+    verb: &str,
+) -> BehaviorResolution {
+    if verb.is_empty() {
+        return BehaviorResolution::None;
+    }
+    let Some(actor_obj) = w.get(actor) else {
+        return BehaviorResolution::None;
+    };
+
+    // Candidates in tier order; a repeated subject keeps its first (highest)
+    // position and accumulates the lower reaches it was also found at.
+    let mut candidates: Vec<Candidate> = Vec::new();
+    for link in w.command_subjects_of(actor) {
+        push_candidate(&mut candidates, link.subject, CommandReach::Operated, Some(link.priority));
+    }
+    push_candidate(&mut candidates, actor, CommandReach::Actor, None);
+    if let Some(loc) = actor_obj.location
+        && w.get(loc).is_some_and(|o| o.kind != ObjKind::Room)
+    {
+        push_candidate(&mut candidates, loc, CommandReach::Container, None);
+    }
+    let carried = w
+        .contents_of(actor)
+        .iter()
+        .copied()
+        .filter(|&c| w.get(c).is_some_and(|o| !o.behaviors.is_empty()))
+        .take(MAX_CARRIED_SCAN);
+    for c in carried {
+        push_candidate(&mut candidates, c, CommandReach::Carried, None);
+    }
+    if let Some(room) = w.containing_room(actor) {
+        push_candidate(&mut candidates, room, CommandReach::Ambient, None);
+    }
+
+    let verb_lc = verb.to_lowercase();
+    let mut current: Option<TierKey> = None;
+    let mut hits: Vec<(BehaviorTarget, usize)> = Vec::new();
+    for cand in &candidates {
+        let key = TierKey {
+            reach: cand.reaches.first().copied().unwrap_or(CommandReach::Actor),
+            priority: cand.priority,
+        };
+        if let Some(k) = current
+            && k != key
+            && !hits.is_empty()
+        {
+            break;
+        }
+        current = Some(key);
+        let subject = cand.subject;
+        let Some(obj) = w.get(subject) else {
+            continue;
+        };
+        if obj.flags.contains(Flags::GOING) {
+            continue;
+        }
+        if subject != actor && !can_perceive(reg, w, actor, subject) {
+            continue;
+        }
+        for bid in obj.behaviors.keys() {
+            let Some(spec) = reg.behavior_spec(bid) else {
+                continue;
+            };
+            for (i, cmd) in spec.commands.iter().enumerate() {
+                // Eligible through any reach this subject was found at; the
+                // handler sees the highest one the command accepts.
+                let Some(&reach) = cand.reaches.iter().find(|r| cmd.reach.contains(r)) else {
+                    continue;
+                };
+                let matches = cmd.spec.name.to_lowercase() == verb_lc
+                    || cmd.spec.aliases.iter().any(|a| a.to_lowercase() == verb_lc);
+                if matches {
+                    hits.push((
+                        BehaviorTarget {
+                            subject,
+                            behavior: bid.clone(),
+                            reach,
+                        },
+                        i,
+                    ));
+                }
+            }
+        }
+    }
+
+    if hits.is_empty() {
+        return BehaviorResolution::None;
+    }
+    if hits.len() == 1 {
+        let (target, index) = hits.remove(0);
+        return BehaviorResolution::One { target, index };
+    }
+    BehaviorResolution::Ambiguous(hits.into_iter().map(|(t, _)| t).collect())
 }
 
 // ----------------------------------------------------------------------

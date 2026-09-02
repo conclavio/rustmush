@@ -57,6 +57,26 @@ impl GameModule for RollTestModule {
                 Ok(())
             }),
         )?;
+        // A Turn-class CONTEXTUAL command supplied by an object (a mech's
+        // `fire`): never in the global table, gated by the same turn seam.
+        reg.behavior(
+            mush_core::BehaviorSpec::new(mush_core::BehaviorId::new("rolltest.mech").unwrap())
+                .with_command(mush_core::BehaviorCommand::new(
+                    CommandSpec {
+                        name: "fire".into(),
+                        shape: ArgShape::None,
+                        scene_class: SceneClass::Turn,
+                        ..CommandSpec::default()
+                    },
+                    Arc::new(
+                        |ctx: &mut Ctx<'_>, t: &mush_core::BehaviorTarget| -> Result<(), CmdError> {
+                            let actor = ctx.actor;
+                            ctx.out.sys_to_actor(actor, "test", format!("you fire {}", t.subject));
+                            Ok(())
+                        },
+                    ),
+                )),
+        )?;
         Ok(())
     }
 }
@@ -760,4 +780,35 @@ fn scene_survives_restart_rehydrating_paused_and_still_frozen() {
         scenes(&engine2).active_scene_of(nick).unwrap().status,
         SceneStatus::Active
     );
+}
+
+#[test]
+fn behavior_turn_commands_are_gated_like_globals_and_exits_stay_free() {
+    let mut r = rig();
+    // Ann carries a mech bound with the Turn-class `fire` behavior command.
+    let mech = r.engine.world.create(ObjKind::Thing, "Mech", GOD, Some(r.ann)).unwrap();
+    r.engine
+        .world
+        .attach_behavior(
+            mech,
+            mush_core::BehaviorId::new("rolltest.mech").unwrap(),
+            mush_core::BehaviorBinding { schema_version: 1, attached_by: GOD, attached_at: 0 },
+        )
+        .unwrap();
+    run(&mut r.engine, r.nick, "+timestop"); // [Nick, Ann, Barkeep], Nick's turn
+    let out = run(&mut r.engine, r.ann, "fire");
+    assert!(texts(&out).contains("not your turn"), "{}", texts(&out));
+    run(&mut r.engine, r.nick, "+timestop/next"); // Ann's turn
+    let out = run(&mut r.engine, r.ann, "fire");
+    assert!(texts(&out).contains(&format!("you fire {mech}")), "{}", texts(&out));
+
+    // An exit sharing the verb's name is a MOVE: the turn gate must classify it
+    // Free (the timestop movement gate is what stops it, not the turn rule).
+    let hall = r.engine.world.create(ObjKind::Room, "Hall", GOD, None).unwrap();
+    let ex = r.engine.world.create(ObjKind::Exit, "fire", GOD, Some(r.bar)).unwrap();
+    r.engine.world.link_exit(ex, Some(hall)).unwrap();
+    run(&mut r.engine, r.nick, "+timestop/next"); // Barkeep's turn: Ann is off-turn
+    let out = run(&mut r.engine, r.ann, "fire");
+    let t = texts(&out);
+    assert!(t.contains("caught in") && !t.contains("not your turn"), "exit read as Free: {t}");
 }

@@ -27,6 +27,31 @@ always gets to validate.
 Behavior ids are namespaced, lowercase, dotted: `sim.domain`, `btech.mech`,
 `shadowrun.vehicle`. Exactly one module owns each id.
 
+## Contextual commands
+
+A behavior can contribute **commands that exist only near the object**. A
+console offers `startup`; a mech offers `heading` and `fire`. These verbs are
+never global — type `startup` with no console reachable and you get the usual
+`Huh?` — so a behavior can never shadow a core command, a staff command, or an
+exit; those always win.
+
+What counts as "reachable", in priority order:
+
+  1. an object you're **operating** through an assignment (a pilot's mech,
+     a rigger's drone), even if it's elsewhere;
+  2. yourself;
+  3. the thing you're **inside** (a cockpit), when it isn't a room;
+  4. things you **carry**;
+  5. the **room** you're in — only for commands that opt in, such as a map's
+     `view`.
+
+The nearest tier that answers wins. If two objects at the same tier both offer
+the verb, the game refuses and names them rather than guessing — drop or set
+down one, and it resolves. Verbs must be typed exactly (no abbreviations at this
+stage); behaviors declare short aliases where pilots need them. Every such
+command is gated like a normal one — switches, rank, powers, locks, and turn
+order inside a timestop all apply.
+
 ## Destruction
 
 Some behaviors **refuse `@destroy`** while attached — a structural host like a

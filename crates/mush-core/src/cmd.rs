@@ -37,14 +37,17 @@ use smol_str::SmolStr;
 
 use mush_proto::OutputEvent;
 
-use crate::behavior::{BehaviorId, BehaviorSpec, DestroyGate, DestroyPolicy};
+use crate::behavior::{
+    BehaviorId, BehaviorRegError, BehaviorResolution, BehaviorSpec, DestroyGate, DestroyPolicy,
+    resolve_behavior_command,
+};
 use crate::commands::movement;
 use crate::flags::{Powers, Role};
 use crate::lock::{LockExpr, MAX_LOCK_DEPTH, eval_lock};
 use crate::matchit::MatchErr;
 use crate::module::{ContextOutcome, ModuleTables, restored_prompt};
 use crate::obj::ObjId;
-use crate::output::Outbox;
+use crate::output::{Outbox, display_name};
 use crate::perm;
 use crate::world::{World, WorldError};
 
@@ -533,12 +536,67 @@ impl Registry {
         self.command_gates.len()
     }
 
-    /// Register a behavior type (design §4.2). On success the id is owned by
-    /// `spec.owner`. Returns `Err(existing_owner)` if another module already
-    /// registered this id.
-    pub fn register_behavior(&mut self, spec: BehaviorSpec) -> Result<(), SmolStr> {
+    /// Register a behavior type (design §4.2) with its contextual commands
+    /// (§4.3). Exactly one module owns an id. Each command's name and aliases
+    /// must be unique within the spec and must not resolve against the
+    /// existing global table **the way dispatch resolves a verb** — an exact
+    /// name/alias hit, or, for a bare verb, a prefix of one or more bare global
+    /// names. Any of those means the global stage would claim the verb first
+    /// (or refuse it as ambiguous) and the behavior verb would be dead; failing
+    /// here makes that loud at boot. (The reverse order — a global verb
+    /// registered *after* a behavior verb — shadows it silently: global wins by
+    /// design.)
+    pub fn register_behavior(&mut self, spec: BehaviorSpec) -> Result<(), BehaviorRegError> {
         if let Some(existing) = self.behaviors.get(&spec.id) {
-            return Err(existing.owner.clone());
+            return Err(BehaviorRegError::Owned {
+                id: spec.id.to_string(),
+                owner: existing.owner.clone(),
+            });
+        }
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for cmd in &spec.commands {
+            let mut verbs: Vec<String> = vec![cmd.spec.name.to_lowercase()];
+            verbs.extend(cmd.spec.aliases.iter().map(|a| a.to_lowercase()));
+            for v in verbs {
+                if v.is_empty() {
+                    return Err(BehaviorRegError::EmptyVerb {
+                        id: spec.id.to_string(),
+                    });
+                }
+                // Resolve exactly as dispatch will: exact hit, or (bare verbs)
+                // a unique or ambiguous prefix of bare global names.
+                match self.lookup_idx(&v) {
+                    Err(LookupErr::NotFound) => {}
+                    Ok(idx) => {
+                        let owner = self.entries[idx]
+                            .module
+                            .clone()
+                            .unwrap_or_else(|| SmolStr::new_static("core"));
+                        return Err(BehaviorRegError::VerbCollision {
+                            id: spec.id.to_string(),
+                            verb: v,
+                            owner,
+                        });
+                    }
+                    Err(LookupErr::Ambiguous(names)) => {
+                        let names: Vec<&str> = names.iter().map(SmolStr::as_str).collect();
+                        return Err(BehaviorRegError::VerbCollision {
+                            id: spec.id.to_string(),
+                            verb: v,
+                            owner: SmolStr::new(format!(
+                                "(an ambiguous prefix of {})",
+                                names.join(", ")
+                            )),
+                        });
+                    }
+                }
+                if !seen.insert(v.clone()) {
+                    return Err(BehaviorRegError::DuplicateVerb {
+                        id: spec.id.to_string(),
+                        verb: v,
+                    });
+                }
+            }
         }
         self.behaviors.insert(spec.id.clone(), spec);
         Ok(())
@@ -899,7 +957,53 @@ pub fn dispatch(reg: &Registry, w: &mut World, actor: ObjId, line: &str, out: &m
     let switch_names: Vec<&str> = parts.filter(|s| !s.is_empty()).collect();
     match reg.lookup_full(verb) {
         Err(LookupErr::NotFound) => {
-            // Post-command-table fallbacks (object `$`-commands): a
+            // 5. Behavior commands on reachable subjects (design 06 §4.3).
+            // Consulted only after `home`, exits, and the global table have all
+            // missed, so a behavior verb can never shadow a core verb, a staff
+            // command, or an exit. The first tier with a match wins; an
+            // ambiguous tier refuses and never falls through.
+            match resolve_behavior_command(reg, w, actor, verb) {
+                BehaviorResolution::One { target, index } => {
+                    let Some(bspec) = reg.behavior_spec(&target.behavior) else {
+                        huh(reg, actor, verb, out);
+                        return;
+                    };
+                    let Some(cmd) = bspec.commands.get(index) else {
+                        huh(reg, actor, verb, out);
+                        return;
+                    };
+                    if let Some((args, switches)) =
+                        gate_spec(w, actor, &cmd.spec, &switch_names, rest, out)
+                    {
+                        let handler = Arc::clone(&cmd.handler);
+                        let module = Some(bspec.owner.clone());
+                        run_handler(reg, w, actor, switches, args, module, out, |ctx| {
+                            handler.call(ctx, &target)
+                        });
+                    }
+                    return;
+                }
+                BehaviorResolution::Ambiguous(targets) => {
+                    let names: Vec<String> = targets
+                        .iter()
+                        .map(|t| {
+                            format!(
+                                "{} ({}, via {})",
+                                display_name(w, t.subject),
+                                t.subject,
+                                t.behavior
+                            )
+                        })
+                        .collect();
+                    out.error(
+                        actor,
+                        format!("Ambiguous \"{verb}\": could mean {}.", names.join(" or ")),
+                    );
+                    return;
+                }
+                BehaviorResolution::None => {}
+            }
+            // 6. Post-command-table fallbacks (object `$`-commands): a
             // fallback that claims the whole line ends dispatch before
             // `Huh?`. They run against the full post-alias line.
             let line = cur.trim().to_string();
@@ -921,51 +1025,10 @@ pub fn dispatch(reg: &Registry, w: &mut World, actor: ObjId, line: &str, out: &m
             );
         }
         Ok((spec, handler, module)) => {
-            for s in &switch_names {
-                if !spec.switches.iter().any(|k| k.eq_ignore_ascii_case(s)) {
-                    out.error(actor, format!("Unknown switch \"/{s}\" for {}.", spec.name));
-                    return;
-                }
-            }
-            if perm::role_of(w, actor) < spec.min_role {
-                out.error(actor, "Permission denied.");
-                return;
-            }
-            if let Some(p) = spec.power
-                && !perm::has_power(w, actor, p)
-            {
-                out.error(actor, "Permission denied.");
-                return;
-            }
-            if let Some(lock) = &spec.lock
-                && !eval_lock(w, lock, actor, MAX_LOCK_DEPTH)
-            {
-                out.error(actor, "Permission denied.");
-                return;
-            }
-            let args = ParsedArgs::parse(spec.shape, rest);
-            let switches = SwitchSet::from_names(switch_names.iter().copied());
-            // Snapshot the deferred queue so an Err can discard everything
-            // this handler deferred: queued persistence ops must never
-            // commit for a command that reported failure (world mutations
-            // made before the error remain best-effort — handlers
-            // validate-then-apply).
-            let deferred_before = out.deferred().len();
-            let result = {
-                let mut ctx = Ctx {
-                    w,
-                    actor,
-                    switches,
-                    args,
-                    out,
-                    reg,
-                    module,
-                };
-                handler.call(&mut ctx)
-            };
-            if let Err(e) = result {
-                out.truncate_deferred(deferred_before);
-                out.error(actor, e.to_string());
+            if let Some((args, switches)) = gate_spec(w, actor, spec, &switch_names, rest, out) {
+                run_handler(reg, w, actor, switches, args, module, out, |ctx| {
+                    handler.call(ctx)
+                });
             }
         }
     }
@@ -976,6 +1039,81 @@ fn split_head(s: &str) -> (&str, &str) {
     match s.find(char::is_whitespace) {
         Some(i) => (&s[..i], s[i..].trim_start()),
         None => (s, ""),
+    }
+}
+
+/// Validate `spec`'s switches, role, power, and lock for `actor`. On refusal
+/// the error is queued to `out` and `None` is returned; on success, the parsed
+/// arguments and switch set. Shared by the global command table and the
+/// behavior-command stage so both gate identically.
+fn gate_spec(
+    w: &World,
+    actor: ObjId,
+    spec: &CommandSpec,
+    switch_names: &[&str],
+    rest: &str,
+    out: &mut Outbox,
+) -> Option<(ParsedArgs, SwitchSet)> {
+    for s in switch_names {
+        if !spec.switches.iter().any(|k| k.eq_ignore_ascii_case(s)) {
+            out.error(actor, format!("Unknown switch \"/{s}\" for {}.", spec.name));
+            return None;
+        }
+    }
+    if perm::role_of(w, actor) < spec.min_role {
+        out.error(actor, "Permission denied.");
+        return None;
+    }
+    if let Some(p) = spec.power
+        && !perm::has_power(w, actor, p)
+    {
+        out.error(actor, "Permission denied.");
+        return None;
+    }
+    if let Some(lock) = &spec.lock
+        && !eval_lock(w, lock, actor, MAX_LOCK_DEPTH)
+    {
+        out.error(actor, "Permission denied.");
+        return None;
+    }
+    Some((
+        ParsedArgs::parse(spec.shape, rest),
+        SwitchSet::from_names(switch_names.iter().copied()),
+    ))
+}
+
+/// Run a handler body under a fresh [`Ctx`] with the deferred-queue
+/// discipline: everything the handler deferred is discarded if it returns
+/// `Err` (queued persistence must never commit for a command that reported
+/// failure; world mutations made before the error remain best-effort —
+/// handlers validate-then-apply).
+#[allow(clippy::too_many_arguments)]
+fn run_handler(
+    reg: &Registry,
+    w: &mut World,
+    actor: ObjId,
+    switches: SwitchSet,
+    args: ParsedArgs,
+    module: Option<SmolStr>,
+    out: &mut Outbox,
+    body: impl FnOnce(&mut Ctx<'_>) -> Result<(), CmdError>,
+) {
+    let deferred_before = out.deferred().len();
+    let result = {
+        let mut ctx = Ctx {
+            w,
+            actor,
+            switches,
+            args,
+            out,
+            reg,
+            module,
+        };
+        body(&mut ctx)
+    };
+    if let Err(e) = result {
+        out.truncate_deferred(deferred_before);
+        out.error(actor, e.to_string());
     }
 }
 
