@@ -524,6 +524,14 @@ pub async fn serde_obj_round_trip(store: &dyn ObjectStore) {
             flags: AttrFlags::HIDDEN | AttrFlags::WIZARD_ONLY,
         },
     );
+    o.behaviors.insert(
+        mush_core::BehaviorId::new("btech.mech").unwrap(),
+        mush_core::BehaviorBinding {
+            schema_version: 1,
+            attached_by: GOD,
+            attached_at: 1_700_000_500,
+        },
+    );
     o.modified = 1_700_000_777;
 
     store

@@ -678,9 +678,20 @@ fn destroy_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             "That object is marked SAFE.  Clear the flag, or use @destroy/override (wizards).",
         ));
     }
-    ctx.w.destroy(target)?;
+    // Pre-destroy veto (design D8): behaviors and registered structural
+    // dependents refuse here, at the command layer, before `World::destroy`
+    // marks the husk GOING — so `World` stays observer-free and a domain host is
+    // refused before its exit cascade can begin.
+    if let Err(reason) = ctx.reg.check_destroy(ctx.w, ctx.actor, target) {
+        return Err(CmdError::msg(reason));
+    }
+    let destroyed = ctx.w.destroy(target)?;
     ctx.out.info(ctx.actor, "Destroyed.");
-    ctx.emit_world_event(&WorldEvent::ObjDestroyed { obj: target });
+    // One ObjDestroyed per husk — the target and any exits taken with it — so
+    // module cleanup observers fire for cascaded exits too, not just the target.
+    for obj in destroyed {
+        ctx.emit_world_event(&WorldEvent::ObjDestroyed { obj });
+    }
     Ok(())
 }
 

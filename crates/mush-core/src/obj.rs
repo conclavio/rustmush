@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::attr::AttrMap;
+use crate::behavior::{BehaviorBinding, BehaviorId};
 use crate::flags::{Flags, Powers, Role};
 use crate::lock::{LockExpr, LockType};
 
@@ -146,6 +147,11 @@ pub struct Obj {
     pub locks: BTreeMap<LockType, LockExpr>,
     /// Attribute map (case-insensitive names).
     pub attrs: AttrMap,
+    /// Durable, typed behavior bindings (see [`crate::behavior`]). Empty for
+    /// almost every object — heavy behavior state lives in the owning module's
+    /// namespace, not here — and omitted from the persisted JSON when empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub behaviors: BTreeMap<BehaviorId, BehaviorBinding>,
     /// Unix seconds at creation.
     pub created: i64,
     /// Unix seconds of last mutation (maintained by `World` mutators).
@@ -177,6 +183,7 @@ impl Obj {
             markers: BTreeSet::new(),
             locks: BTreeMap::new(),
             attrs: AttrMap::new(),
+            behaviors: BTreeMap::new(),
             created: now,
             modified: now,
         }

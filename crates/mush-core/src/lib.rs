@@ -47,6 +47,7 @@
 //!   ticks.
 
 pub mod attr;
+pub mod behavior;
 pub mod clock;
 pub mod cmd;
 pub mod commands;
@@ -63,6 +64,10 @@ pub mod sched;
 pub mod world;
 
 pub use attr::{Attr, AttrFlags, AttrMap, AttrValue, UncasedName};
+pub use behavior::{
+    BINDING_SCHEMA_VERSION, BehaviorBinding, BehaviorId, BehaviorIdError, BehaviorSpec,
+    DestroyGate, DestroyPolicy,
+};
 pub use clock::{CivilDate, GameClock, Season, TimeOfDay};
 pub use cmd::{
     AliasOutcome, AliasStage, ArgShape, CmdError, CommandFallback, CommandGate, CommandHandler,

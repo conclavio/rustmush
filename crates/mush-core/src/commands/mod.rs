@@ -30,6 +30,7 @@ pub fn register_core_commands(reg: &mut Registry) -> Result<(), RegistryError> {
     building::register(reg)?;
     info::register(reg)?;
     admin::register(reg)?;
+    crate::behavior::register(reg)?;
     Ok(())
 }
 

@@ -1282,6 +1282,33 @@ impl<'a> Registrar<'a> {
         self.reg.add_command_gate(gate);
     }
 
+    /// Register a typed behavior (design §4.2) owned by this module — the
+    /// declaration bound to objects via `@behavior/add`. The id must be unique
+    /// across modules; a collision is a [`ModError::Conflict`]. `spec.owner` is
+    /// overwritten with this module's identity.
+    pub fn behavior(
+        &mut self,
+        mut spec: crate::behavior::BehaviorSpec,
+    ) -> Result<(), ModError> {
+        let name = SmolStr::new(spec.id.as_str());
+        spec.owner = self.module.clone();
+        self.reg
+            .register_behavior(spec)
+            .map_err(|owner| ModError::Conflict {
+                module: self.module.clone(),
+                what: "behavior",
+                name,
+                owner,
+            })
+    }
+
+    /// Register a pre-destroy [`DestroyGate`](crate::behavior::DestroyGate)
+    /// (design D8): a structural-dependency veto consulted at the command layer
+    /// before `@destroy` mutates anything. `World` itself stays observer-free.
+    pub fn destroy_gate(&mut self, gate: Arc<dyn crate::behavior::DestroyGate>) {
+        self.reg.add_destroy_gate(gate);
+    }
+
     /// Register a marker flag (e.g. `"wod:kindred"`): settable via
     /// `@set <target>=[!]<name>`, shown by `examine`, matchable by
     /// `flag^` locks.

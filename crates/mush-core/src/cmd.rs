@@ -37,6 +37,7 @@ use smol_str::SmolStr;
 
 use mush_proto::OutputEvent;
 
+use crate::behavior::{BehaviorId, BehaviorSpec, DestroyGate, DestroyPolicy};
 use crate::commands::movement;
 use crate::flags::{Powers, Role};
 use crate::lock::{LockExpr, MAX_LOCK_DEPTH, eval_lock};
@@ -462,6 +463,12 @@ pub struct Registry {
     pub(crate) mods: ModuleTables,
     /// Prose help topics by lowercased name (sorted for listings).
     help_topics: BTreeMap<SmolStr, HelpTopic>,
+    /// Registered behavior types by id (design §4.2); exactly one module owns
+    /// each id.
+    behaviors: HashMap<BehaviorId, BehaviorSpec>,
+    /// Pre-destroy veto gates (design D8), consulted by [`Registry::check_destroy`]
+    /// at the command layer.
+    destroy_gates: Vec<Arc<dyn DestroyGate>>,
 }
 
 impl Registry {
@@ -524,6 +531,86 @@ impl Registry {
     #[must_use]
     pub fn command_gate_count(&self) -> usize {
         self.command_gates.len()
+    }
+
+    /// Register a behavior type (design §4.2). On success the id is owned by
+    /// `spec.owner`. Returns `Err(existing_owner)` if another module already
+    /// registered this id.
+    pub fn register_behavior(&mut self, spec: BehaviorSpec) -> Result<(), SmolStr> {
+        if let Some(existing) = self.behaviors.get(&spec.id) {
+            return Err(existing.owner.clone());
+        }
+        self.behaviors.insert(spec.id.clone(), spec);
+        Ok(())
+    }
+
+    /// The registration for a behavior id, if one exists.
+    #[must_use]
+    pub fn behavior_spec(&self, id: &BehaviorId) -> Option<&BehaviorSpec> {
+        self.behaviors.get(id)
+    }
+
+    /// Append a pre-destroy [`DestroyGate`] (design D8), consulted by
+    /// [`check_destroy`](Registry::check_destroy) in registration order.
+    pub fn add_destroy_gate(&mut self, gate: Arc<dyn DestroyGate>) {
+        self.destroy_gates.push(gate);
+    }
+
+    /// The pre-destroy veto (design D8): refuse destroying `target` if it — or
+    /// any exit that `World::destroy` would take with it — carries a
+    /// [`DestroyPolicy::Refuse`] behavior, or if any registered [`DestroyGate`]
+    /// refuses. Returns `Err(reason)` on the first refusal.
+    ///
+    /// Called by `@destroy` **before** any mutation; `World::destroy` itself
+    /// never consults this (it stays observer-free), so programmatic callers
+    /// must validate first. The veto covers the whole cascade set — the target
+    /// plus a room's exits (contents are sent home, not destroyed; exits have no
+    /// exits, so one level suffices) — so an exit's veto is not bypassed when its
+    /// room is destroyed.
+    ///
+    /// A binding whose behavior is **unregistered** (its module absent) is inert
+    /// here: a `Refuse` host loses protection only when the module that cared is
+    /// not loaded to enforce it. This is deliberate — a removed module must not
+    /// leave objects permanently undestroyable.
+    pub fn check_destroy(&self, w: &World, actor: ObjId, target: ObjId) -> Result<(), String> {
+        self.check_one_destroy(w, actor, target, true)?;
+        let exits: Vec<ObjId> = w.get(target).map(|o| o.exits.clone()).unwrap_or_default();
+        for e in exits {
+            self.check_one_destroy(w, actor, e, false)?;
+        }
+        Ok(())
+    }
+
+    /// One object's contribution to the destroy veto (behavior policies then
+    /// gates). `is_target` only shapes the refusal message.
+    fn check_one_destroy(
+        &self,
+        w: &World,
+        actor: ObjId,
+        id: ObjId,
+        is_target: bool,
+    ) -> Result<(), String> {
+        if let Some(obj) = w.get(id) {
+            for bid in obj.behaviors.keys() {
+                if self.behaviors.get(bid).map(|s| s.destroy) == Some(DestroyPolicy::Refuse) {
+                    return Err(if is_target {
+                        format!(
+                            "That object carries the `{bid}` behavior, which refuses \
+                             destruction. Remove it first (@behavior/remove) or use recovery."
+                        )
+                    } else {
+                        format!(
+                            "Destroying that would also destroy {id}, which carries the \
+                             `{bid}` behavior that refuses destruction. Remove it first."
+                        )
+                    });
+                }
+            }
+        }
+        for gate in &self.destroy_gates {
+            gate.check(w, self, actor, id)?;
+        }
+        Ok(())
     }
 
     /// Append a post-command-table [`CommandFallback`] (object

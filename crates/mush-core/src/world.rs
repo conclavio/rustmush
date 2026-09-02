@@ -21,6 +21,7 @@ use mush_proto::PromptSpec;
 use smol_str::SmolStr;
 
 use crate::attr::{Attr, AttrFlags, UncasedName};
+use crate::behavior::{BehaviorBinding, BehaviorId};
 use crate::clock::{GameClock, Season, TimeOfDay};
 use crate::flags::Flags;
 use crate::module::{InputContext, InputStacks, ModuleStateMap, Scene, SceneId, StateInit};
@@ -381,6 +382,48 @@ impl World {
         self.objs.get_mut(id.0 as usize).and_then(Option::as_mut)
     }
 
+    /// Attach a typed behavior binding (see [`crate::behavior`]), overwriting any
+    /// existing binding for the same id, and mark the object dirty. This is the
+    /// raw mutator; policy checks (kind, conflicts, permission) live at the
+    /// command layer, which has the [`Registry`](crate::cmd::Registry).
+    pub fn attach_behavior(
+        &mut self,
+        id: ObjId,
+        behavior: BehaviorId,
+        binding: BehaviorBinding,
+    ) -> Result<(), WorldError> {
+        self.ensure(id)?;
+        if let Some(o) = self.slot_mut(id) {
+            o.behaviors.insert(behavior, binding);
+        }
+        self.touch_modified(id);
+        Ok(())
+    }
+
+    /// Remove a behavior binding, returning whether it was present. Marks the
+    /// object dirty only when something was removed.
+    pub fn detach_behavior(
+        &mut self,
+        id: ObjId,
+        behavior: &BehaviorId,
+    ) -> Result<bool, WorldError> {
+        self.ensure(id)?;
+        let removed = self
+            .slot_mut(id)
+            .is_some_and(|o| o.behaviors.remove(behavior).is_some());
+        if removed {
+            self.touch_modified(id);
+        }
+        Ok(removed)
+    }
+
+    /// Whether `id` carries `behavior`.
+    #[must_use]
+    pub fn has_behavior(&self, id: ObjId, behavior: &BehaviorId) -> bool {
+        self.get(id)
+            .is_some_and(|o| o.behaviors.contains_key(behavior))
+    }
+
     /// Iterate all live objects in id order.
     pub fn iter(&self) -> impl Iterator<Item = &Obj> {
         self.objs.iter().filter_map(Option::as_ref)
@@ -632,9 +675,14 @@ impl World {
     /// their homes (or Limbo), its exits destroyed with it. The husk stays
     /// resolvable (flagged `GOING`) until [`World::sweep`] tombstones it.
     ///
-    /// `#0` and `#1` are protected. Destroying an already-`GOING` object is
-    /// a no-op.
-    pub fn destroy(&mut self, id: ObjId) -> Result<(), WorldError> {
+    /// Returns every id newly marked `GOING` — the object plus any exits taken
+    /// with it — so the command layer can emit one `ObjDestroyed` per husk (the
+    /// module-cleanup backstop). An already-`GOING` object yields an empty vec.
+    ///
+    /// `#0` and `#1` are protected. This is observer-free and does **not**
+    /// consult the pre-destroy veto ([`Registry::check_destroy`](crate::cmd::Registry::check_destroy));
+    /// the veto lives at the command layer.
+    pub fn destroy(&mut self, id: ObjId) -> Result<Vec<ObjId>, WorldError> {
         if id == GOD || id == LIMBO {
             return Err(WorldError::Protected(id));
         }
@@ -650,7 +698,7 @@ impl World {
             )
         };
         if going {
-            return Ok(());
+            return Ok(Vec::new());
         }
 
         if let Some(o) = self.slot_mut(id) {
@@ -712,11 +760,14 @@ impl World {
             }
         }
         // A destroyed room takes its exits with it.
+        let mut destroyed = vec![id];
         for e in exits {
-            let _ = self.destroy(e);
+            if let Ok(sub) = self.destroy(e) {
+                destroyed.extend(sub);
+            }
         }
         self.touch_modified(id);
-        Ok(())
+        Ok(destroyed)
     }
 
     /// Remove every `GOING` object, leaving permanent tombstones (their ids
