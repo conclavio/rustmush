@@ -2235,6 +2235,7 @@ dependencies = [
  "mush-ruleset",
  "mush-scenes",
  "mush-script",
+ "mush-sim",
  "mush-store",
  "mush-testkit",
  "mush-weather",
@@ -2261,6 +2262,22 @@ dependencies = [
  "dashmap",
  "mush-proto",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "mush-sim"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "mush-core",
+ "mush-proto",
+ "mush-store",
+ "mush-testkit",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "thiserror 2.0.20",
  "tracing",
 ]
 

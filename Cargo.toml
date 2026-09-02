@@ -124,6 +124,7 @@ mush-jobs = { path = "crates/mush-jobs" }
 mush-comsys = { path = "crates/mush-comsys" }
 mush-faction = { path = "crates/mush-faction" }
 mush-scenes = { path = "crates/mush-scenes" }
+mush-sim = { path = "crates/mush-sim" }
 mush-canon = { path = "crates/mush-canon" }
 mush-mail = { path = "crates/mush-mail" }
 mush-weather = { path = "crates/mush-weather" }

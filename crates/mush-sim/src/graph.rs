@@ -1,0 +1,233 @@
+//! Pure graph semantics over [`SpatialState`] (design §5.2–§5.3): the ONE
+//! ancestor relation used for acyclicity and depth, effective domain,
+//! presence, projection (design D1), and the derived-index rebuild/verify.
+
+use std::collections::BTreeSet;
+
+use mush_core::{ObjId, World};
+
+use crate::data::{
+    Derived, DomainId, MAX_SPATIAL_DEPTH, Presence, SpaceAnchor, SpatialParent, SpatialState,
+};
+use crate::transition::SpatialError;
+
+/// The structural parent OBJECT of `obj` per the ancestor relation:
+/// Interior → the space; Attached → the host; Direct → the domain host.
+#[must_use]
+pub fn parent_object(st: &SpatialState, obj: ObjId) -> Option<ObjId> {
+    match st.parent_of(obj) {
+        SpatialParent::Direct { domain, .. } => st.domains.get(&domain).map(|d| d.host),
+        SpatialParent::Interior { space, .. } => Some(space),
+        SpatialParent::Attached { host, .. } => Some(host),
+        SpatialParent::Unplaced => None,
+    }
+}
+
+/// The anchor edge of a space: MovingObject → host; FixedDomain → domain host.
+#[must_use]
+pub fn anchor_object(st: &SpatialState, space: ObjId) -> Option<ObjId> {
+    match &st.spaces.get(&space)?.anchor {
+        SpaceAnchor::MovingObject { host } => Some(*host),
+        SpaceAnchor::FixedDomain { domain, .. } => st.domains.get(domain).map(|d| d.host),
+        SpaceAnchor::Unanchored => None,
+    }
+}
+
+/// The next ancestor of `x`: its placement parent if placed, else — for a
+/// space — its anchor edge.
+#[must_use]
+pub fn next_ancestor(st: &SpatialState, x: ObjId) -> Option<ObjId> {
+    if st.is_placed(x) {
+        parent_object(st, x)
+    } else {
+        anchor_object(st, x)
+    }
+}
+
+/// Every ancestor of `start` (excluding it), nearest first, via
+/// [`next_ancestor`]. `Cycle` on a revisit; `TooDeep` past
+/// [`MAX_SPATIAL_DEPTH`].
+pub fn ancestors(st: &SpatialState, start: ObjId) -> Result<Vec<ObjId>, SpatialError> {
+    let mut seen = BTreeSet::from([start]);
+    let mut out = Vec::new();
+    let mut cur = start;
+    while let Some(n) = next_ancestor(st, cur) {
+        if !seen.insert(n) {
+            return Err(SpatialError::Cycle { obj: start, via: n });
+        }
+        out.push(n);
+        if out.len() > MAX_SPATIAL_DEPTH {
+            return Err(SpatialError::TooDeep { obj: start });
+        }
+        cur = n;
+    }
+    Ok(out)
+}
+
+/// The effective domain of `obj` (design §5.3), bounded.
+#[must_use]
+pub fn effective_domain(st: &SpatialState, obj: ObjId) -> Option<DomainId> {
+    let mut cur = obj;
+    for _ in 0..=MAX_SPATIAL_DEPTH {
+        match st.parent_of(cur) {
+            SpatialParent::Direct { domain, .. } => return Some(domain),
+            SpatialParent::Interior { space, .. } => match &st.spaces.get(&space)?.anchor {
+                SpaceAnchor::FixedDomain { domain, .. } => return Some(*domain),
+                SpaceAnchor::MovingObject { host } => cur = *host,
+                SpaceAnchor::Unanchored => return None,
+            },
+            SpatialParent::Attached { host, .. } => cur = host,
+            SpatialParent::Unplaced => {
+                if cur == obj {
+                    // The object itself is unplaced: no effective domain.
+                    return None;
+                }
+                // An intermediate unplaced SPACE still contributes its anchor
+                // edge (a bay riding a carrier that is itself a riding bay).
+                match st.spaces.get(&cur).map(|s| s.anchor.clone()) {
+                    Some(SpaceAnchor::FixedDomain { domain, .. }) => return Some(domain),
+                    Some(SpaceAnchor::MovingObject { host }) if host != cur => cur = host,
+                    _ => return None,
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Derived presence (design §5.3): Direct → Independent; Attached → exposed
+/// per the mount; Interior → Suppressed; Unplaced → none.
+#[must_use]
+pub fn presence(st: &SpatialState, obj: ObjId) -> Option<Presence> {
+    match st.parent_of(obj) {
+        SpatialParent::Direct { .. } => Some(Presence::Independent),
+        SpatialParent::Interior { .. } => Some(Presence::Suppressed),
+        SpatialParent::Attached { host, mount, .. } => {
+            let exposed = st
+                .mounts
+                .get(&host)
+                .and_then(|m| m.mounts.get(&mount))
+                .is_some_and(|m| m.exposed);
+            Some(if exposed { Presence::DerivedExposed } else { Presence::Suppressed })
+        }
+        SpatialParent::Unplaced => None,
+    }
+}
+
+/// Where `obj`'s `Obj.location` must be for its placement (design D1):
+/// Direct → the domain's presentation room; Interior → the space; Attached
+/// exposed → the host's projected location (falling back to the host's actual
+/// location); Attached suppressed → the host itself; Unplaced → the recovery
+/// room when quarantined, else `None` (left where it is).
+#[must_use]
+pub fn project(st: &SpatialState, w: &World, obj: ObjId) -> Option<ObjId> {
+    let mut cur = obj;
+    for _ in 0..=MAX_SPATIAL_DEPTH {
+        match st.parent_of(cur) {
+            SpatialParent::Direct { domain, .. } => {
+                return st.domains.get(&domain).map(|d| d.presentation_location);
+            }
+            SpatialParent::Interior { space, .. } => return Some(space),
+            SpatialParent::Attached { host, .. } => {
+                if presence(st, cur) == Some(Presence::DerivedExposed) {
+                    // Follow the host's projection; if the host has none, its
+                    // real location.
+                    if st.is_placed(host) {
+                        cur = host;
+                        continue;
+                    }
+                    return w.get(host).and_then(|o| o.location);
+                }
+                return Some(host);
+            }
+            SpatialParent::Unplaced => {
+                return if st.is_quarantined(cur) { Some(st.recovery_room) } else { None };
+            }
+        }
+    }
+    None
+}
+
+/// Rebuild every derived index from the records.
+#[must_use]
+pub fn rebuild(st: &SpatialState) -> Derived {
+    let mut d = Derived::default();
+    for dom in st.domains.values() {
+        if dom.status != crate::data::DomainStatus::Retired {
+            d.domain_by_host.insert(dom.host, dom.id);
+            d.presentation_of
+                .entry(dom.presentation_location)
+                .or_default()
+                .insert(dom.id);
+        }
+    }
+    for p in st.placements.values() {
+        match &p.parent {
+            SpatialParent::Direct { domain, .. } => {
+                d.domain_direct.entry(*domain).or_default().insert(p.object);
+            }
+            SpatialParent::Interior { space, .. } => {
+                d.children.entry(*space).or_default().insert(p.object);
+            }
+            SpatialParent::Attached { host, .. } => {
+                d.children.entry(*host).or_default().insert(p.object);
+            }
+            SpatialParent::Unplaced => {}
+        }
+    }
+    for s in st.spaces.values() {
+        match &s.anchor {
+            SpaceAnchor::MovingObject { host } => {
+                d.anchored_spaces.entry(*host).or_default().insert(s.object);
+            }
+            SpaceAnchor::FixedDomain { domain, .. } => {
+                d.spaces_in_domain.entry(*domain).or_default().insert(s.object);
+            }
+            SpaceAnchor::Unanchored => {}
+        }
+    }
+    // Locality and projection need the children index above, but only the
+    // records, so compute them straight from the records.
+    for p in st.placements.values() {
+        if let Some(dom) = effective_domain(st, p.object) {
+            d.local_objects.entry(dom).or_default().insert(p.object);
+            if matches!(
+                presence(st, p.object),
+                Some(Presence::Independent | Presence::DerivedExposed)
+            ) {
+                d.projected.entry(dom).or_default().insert(p.object);
+            }
+        }
+    }
+    d
+}
+
+/// Recompute the indexes and compare to the maintained ones.
+pub fn verify_indexes(st: &SpatialState) -> Result<(), String> {
+    let fresh = rebuild(st);
+    if fresh == st.derived {
+        Ok(())
+    } else {
+        Err(format!(
+            "derived indexes drifted from the records:\n maintained: {:?}\n fresh: {:?}",
+            st.derived, fresh
+        ))
+    }
+}
+
+/// Every placed or quarantined object whose `Obj.location` disagrees with its
+/// projection: `(object, expected, actual)`.
+#[must_use]
+pub fn verify_projections(st: &SpatialState, w: &World) -> Vec<(ObjId, ObjId, Option<ObjId>)> {
+    let mut bad = Vec::new();
+    for &obj in st.placements.keys() {
+        if let Some(expected) = project(st, w, obj) {
+            let actual = w.get(obj).and_then(|o| o.location);
+            if actual != Some(expected) {
+                bad.push((obj, expected, actual));
+            }
+        }
+    }
+    bad
+}
+

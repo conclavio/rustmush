@@ -73,6 +73,7 @@ pub fn server_modules_with(weather: mush_weather::WeatherConfig) -> Vec<Box<dyn 
         Box::new(mush_faction::FactionModule::new()),
         Box::new(mush_canon::CanonModule::new()),
         Box::new(mush_scenes::ScenesModule::new()),
+        Box::new(mush_sim::SimulationModule::new()),
         Box::new(mush_mail::MailModule),
         Box::new(mush_jobs::JobsModule::new()),
         Box::new(mush_weather::WeatherModule::with_config(weather)),
@@ -700,7 +701,7 @@ mod tests {
         let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
         assert_eq!(
             names,
-            ["comsys", "faction", "canon", "scenes", "mail", "jobs", "weather", "script"]
+            ["comsys", "faction", "canon", "scenes", "sim", "mail", "jobs", "weather", "script"]
         );
     }
 
@@ -808,7 +809,7 @@ mod tests {
         assert_eq!(
             names,
             [
-                "comsys", "faction", "canon", "scenes", "mail", "jobs", "weather", "script",
+                "comsys", "faction", "canon", "scenes", "sim", "mail", "jobs", "weather", "script",
                 "worldgen", "wod"
             ]
         );
@@ -920,7 +921,7 @@ mod tests {
         let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
         assert_eq!(
             names,
-            ["comsys", "faction", "canon", "scenes", "mail", "jobs", "weather", "script", "wod"]
+            ["comsys", "faction", "canon", "scenes", "sim", "mail", "jobs", "weather", "script", "wod"]
         );
         // The ruleset's surface is live: +roll / +sheet registered, the
         // wod.roll panel feed present, and the chargen/xp job queues too.

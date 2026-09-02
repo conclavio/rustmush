@@ -27,6 +27,7 @@ mush-comsys.workspace = true
 mush-faction.workspace = true
 # The M22 durable scenes + timestop driver, and the canon event ledger.
 mush-scenes.workspace = true
+mush-sim.workspace = true
 mush-canon.workspace = true
 mush-mail.workspace = true
 mush-jobs.workspace = true
