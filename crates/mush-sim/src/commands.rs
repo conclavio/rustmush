@@ -261,7 +261,31 @@ fn domain_present(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if ctx.w.get(room).is_none_or(|o| o.kind != ObjKind::Room || o.flags.contains(Flags::GOING)) {
         return Err(CmdError::msg("The presentation location must be a live room."));
     }
-    // Re-point, then re-project every direct participant.
+    // Plan: compute every re-projection under the NEW presentation room, and
+    // validate them all BEFORE mutating — a refused move leaves the record and
+    // the projections untouched (validate-then-apply, like the transitions).
+    let moves: Vec<(ObjId, ObjId)> = {
+        let s = st(ctx);
+        let mut post = s.clone();
+        if let Some(d) = post.domains.get_mut(&id) {
+            d.presentation_location = room;
+        }
+        post.derived = crate::graph::rebuild(&post);
+        let directs: Vec<ObjId> = post.derived.domain_direct.get(&id).map(|x| x.iter().copied().collect()).unwrap_or_default();
+        directs
+            .iter()
+            .flat_map(|root| post.subtree(*root))
+            .filter_map(|o| project(&post, ctx.w, o).map(|dest| (o, dest)))
+            .collect()
+    };
+    for (obj, dest) in &moves {
+        if ctx.w.get(*obj).and_then(|o| o.location) != Some(*dest) {
+            ctx.w
+                .can_move_to(*obj, *dest)
+                .map_err(|e| CmdError::msg(format!("Cannot re-project {}: {e}", display_name(ctx.w, *obj))))?;
+        }
+    }
+    // Apply: re-point the record, then perform the pre-validated moves.
     let rec = {
         let s = st_mut(ctx);
         let d = s.domains.get_mut(&id).ok_or_else(|| CmdError::msg("No such domain."))?;
@@ -272,24 +296,9 @@ fn domain_present(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         rec
     };
     persist_domain(ctx.out, &rec);
-    // Every direct participant AND its attached/interior subtree may project
-    // through the presentation room (exposed riders follow their host).
-    let moves: Vec<(ObjId, ObjId)> = {
-        let s = st(ctx);
-        s.derived
-            .domain_direct
-            .get(&id)
-            .into_iter()
-            .flat_map(|x| x.iter().copied())
-            .flat_map(|root| s.subtree(root))
-            .filter_map(|o| project(s, ctx.w, o).map(|dest| (o, dest)))
-            .collect()
-    };
     for (obj, dest) in moves {
-        if ctx.w.get(obj).and_then(|o| o.location) != Some(dest)
-            && let Err(e) = ctx.w.move_to(obj, dest)
-        {
-            info(ctx, format!("Could not re-project {}: {e}", display_name(ctx.w, obj)));
+        if ctx.w.get(obj).and_then(|o| o.location) != Some(dest) {
+            let _ = ctx.w.move_to(obj, dest);
         }
     }
     info(ctx, format!("Domain #{} now presents in {}.", id, display_name(ctx.w, room)));

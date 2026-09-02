@@ -153,7 +153,13 @@ impl SimState {
     pub fn clocks_watching(&self, kind: &str) -> Vec<ClockId> {
         self.clocks
             .values()
-            .filter(|c| !c.completed && c.advance_on.as_deref() == Some(kind))
+            .filter(|c| {
+                !c.completed
+                    && c.advance_on.as_deref() == Some(kind)
+                    // A resolved (staff-closed) front freezes its clocks: they
+                    // must not advance or fire a consequence afterward.
+                    && self.fronts.get(&c.front).is_none_or(|f| !f.resolved)
+            })
             .map(|c| c.id)
             .collect()
     }
@@ -366,5 +372,18 @@ mod tests {
         }
         assert_eq!(st.clocks_watching("scene.concluded"), vec![c1.id]);
         assert!(st.clocks_watching("nothing").is_empty());
+
+        // A clock whose owning front is RESOLVED is frozen: never watched.
+        st.fronts.insert(
+            FrontId(7),
+            Front { id: FrontId(7), faction: FactionId(0), title: "closed".into(), resolved: true },
+        );
+        let mut c4 = clock(4, 0);
+        c4.id = st.alloc_clock_id();
+        c4.front = FrontId(7);
+        let c4id = c4.id;
+        st.clocks.insert(c4id, c4);
+        assert!(!st.clocks_watching("scene.concluded").contains(&c4id), "resolved front freezes its clock");
+        assert_eq!(st.clocks_watching("scene.concluded"), vec![c1.id], "only the live front's clock advances");
     }
 }

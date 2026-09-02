@@ -499,6 +499,31 @@ impl SpatialState {
         self.derived.children.get(&obj).unwrap_or(&EMPTY)
     }
 
+    /// Every DIRECT structural descendant of `obj` — the complete inverse of
+    /// `graph::next_ancestor`, not just the placement-`children` index: the
+    /// Interior occupants + Attached units (`children_of`), plus — if `obj`
+    /// hosts a domain — that domain's Direct participants and its FixedDomain
+    /// spaces, plus any spaces riding `obj` (MovingObject). `subtree` /
+    /// `subtree_height` walk THIS, so they match the ancestor relation the
+    /// acyclicity/depth checks use; `children_of` stays the placement-only
+    /// dependents query.
+    #[must_use]
+    pub fn descendant_edges(&self, obj: ObjId) -> BTreeSet<ObjId> {
+        let mut out: BTreeSet<ObjId> = self.children_of(obj).iter().copied().collect();
+        if let Some(&d) = self.derived.domain_by_host.get(&obj) {
+            if let Some(directs) = self.derived.domain_direct.get(&d) {
+                out.extend(directs.iter().copied());
+            }
+            if let Some(spaces) = self.derived.spaces_in_domain.get(&d) {
+                out.extend(spaces.iter().copied());
+            }
+        }
+        if let Some(spaces) = self.derived.anchored_spaces.get(&obj) {
+            out.extend(spaces.iter().copied());
+        }
+        out
+    }
+
     /// `obj` plus every transitive structural descendant, in BFS order.
     #[must_use]
     pub fn subtree(&self, obj: ObjId) -> Vec<ObjId> {
@@ -506,7 +531,7 @@ impl SpatialState {
         let mut i = 0;
         while i < out.len() {
             let cur = out[i];
-            for &c in self.children_of(cur) {
+            for c in self.descendant_edges(cur) {
                 if !out.contains(&c) {
                     out.push(c);
                 }
@@ -529,7 +554,7 @@ impl SpatialState {
             if depth >= MAX_SPATIAL_DEPTH {
                 continue;
             }
-            for &c in self.children_of(cur) {
+            for c in self.descendant_edges(cur) {
                 if seen.insert(c) {
                     stack.push((c, depth + 1));
                 }

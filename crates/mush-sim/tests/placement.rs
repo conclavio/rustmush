@@ -860,3 +860,27 @@ fn non_ascii_anchor_input_is_rejected_not_panicking() {
     }
     assert!(!state(&tw).spaces.contains_key(&_fx.hangar));
 }
+
+#[test]
+fn subtree_and_depth_walk_includes_domain_directs_not_just_placement_children() {
+    // A Thing that BOTH hosts its own domain AND is itself a placed participant
+    // — the case where `children` (placement-only) under-counts descendants.
+    let mut tw = boot();
+    let fx = fixture(&mut tw);
+    let hq = tw.world_mut().create(ObjKind::Thing, "HQ", GOD, Some(LIMBO)).unwrap();
+    let stage = tw.world_mut().create(ObjKind::Room, "Stage", GOD, None).unwrap();
+    bind(&mut tw, hq, "sim.domain");
+    bind(&mut tw, hq, "sim.participant");
+    ok(&mut tw, "@domain/create Field=sim.passive");
+    ok(&mut tw, &format!("@domain/create #{}=sim.passive,#{}", hq.0, stage.0));
+    ok(&mut tw, "@spatial/place/domain Atlas=1"); // mech Direct in HQ's own domain
+    ok(&mut tw, &format!("@spatial/place/domain #{}=0", hq.0)); // HQ Direct in the outer domain
+    let st = state(&tw);
+    // The complete ancestry-inverse sees the mech as a descendant of HQ...
+    assert!(st.descendant_edges(hq).contains(&fx.mech), "domain directs are descendants of the host");
+    assert!(st.subtree(hq).contains(&fx.mech), "subtree is complete");
+    assert!(st.subtree_height(hq) >= 1, "height counts the hosted domain's directs");
+    // ...but `children_of` stays the placement-only dependents index.
+    assert!(!st.children_of(hq).contains(&fx.mech));
+    check_invariants(&tw);
+}

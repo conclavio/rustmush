@@ -55,20 +55,31 @@ pub(crate) fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData, recovery_
         } else if key.starts_with("space:") {
             let s: InteriorSpaceRecord = serde_json::from_value(value)
                 .map_err(|e| ModError::msg(format!("sim: bad space doc {key:?}: {e}")))?;
+            if parse_id(&key, "space:") != Some(u64::from(s.object.0)) {
+                return Err(ModError::msg(format!("sim: doc {key:?} claims space {}", s.object)));
+            }
             st.spaces.insert(s.object, s);
         } else if key.starts_with("mounts:") {
             let m: HostMounts = serde_json::from_value(value)
                 .map_err(|e| ModError::msg(format!("sim: bad mounts doc {key:?}: {e}")))?;
+            if parse_id(&key, "mounts:") != Some(u64::from(m.host.0)) {
+                return Err(ModError::msg(format!("sim: doc {key:?} claims host {}", m.host)));
+            }
             st.mounts.insert(m.host, m);
         } else if key.starts_with("stations:") {
-            // Container-like (a unit's control surface): a corrupt doc fails boot.
+            // Container-like (a unit's control surface): a corrupt or
+            // key/embedded-host-mismatched doc fails boot.
             let hs: HostStations = serde_json::from_value(value)
                 .map_err(|e| ModError::msg(format!("sim: bad stations doc {key:?}: {e}")))?;
+            if parse_id(&key, "stations:") != Some(u64::from(hs.host.0)) {
+                return Err(ModError::msg(format!("sim: doc {key:?} claims host {}", hs.host)));
+            }
             st.stations.insert(hs.host, hs);
         } else if key.starts_with("assignment:") {
             // Recoverable (a pilot re-boards): a corrupt doc is dropped, not fatal.
             match serde_json::from_value::<HostAssignments>(value) {
-                Ok(ha) => raw_assignments.push(ha),
+                Ok(ha) if parse_id(&key, "assignment:") == Some(u64::from(ha.host.0)) => raw_assignments.push(ha),
+                Ok(ha) => tracing::error!(%key, host = %ha.host, "sim: assignment doc key/host mismatch dropped"),
                 Err(e) => tracing::error!(%key, error = %e, "sim: unparseable assignment doc dropped"),
             }
         } else if let Some(rest) = key.strip_prefix("placement:") {
@@ -211,8 +222,11 @@ pub(crate) fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData, recovery_
             persist_del(ctx.out, crate::data::assignment_key(ha.host));
             continue;
         }
+        let host = ha.host;
         let before = ha.seats.len();
-        ha.seats.retain(|_, seat| live(seat.actor));
+        ha.seats.retain(|sid, seat| {
+            live(seat.actor) && st.stations.get(&host).is_some_and(|hs| hs.stations.contains_key(sid))
+        });
         if ha.seats.len() != before {
             persist_assignments(ctx.out, &ha);
         }

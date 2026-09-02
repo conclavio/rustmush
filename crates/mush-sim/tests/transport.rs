@@ -485,3 +485,33 @@ fn egress_refuses_unanchored_and_reports_unknown_egress() {
     ok(&mut tw, "@spatial/egress Atlas");
     assert!(matches!(state(&tw).parent_of(fx.mech), SpatialParent::Direct { domain: mush_sim::DomainId(0), .. }));
 }
+
+#[test]
+fn boot_drops_assignment_whose_station_is_gone() {
+    let mut tw = boot();
+    let fx = fixture(&mut tw);
+    ok(&mut tw, "@domain/create Field=sim.passive");
+    ok(&mut tw, "@spatial/place/domain Atlas=0");
+    ok(&mut tw, "@spatial/station Atlas=pilot,pilot");
+    ok(&mut tw, &format!("@spatial/assign Atlas=pilot,#{}", fx.pilot.0));
+    let mut kv = fold_kv(&mut tw);
+    // The station definition vanishes but the assignment doc remains.
+    kv.retain(|(k, _)| k.as_str() != format!("stations:{}", fx.mech.0));
+    let (tw2, fx2) = reboot_with(kv);
+    assert!(!state(&tw2).assignments.contains_key(&fx2.mech), "a seat for a gone station is dropped at boot");
+    assert!(subjects(&tw2, fx2.pilot).is_empty(), "no stale control link");
+}
+
+#[test]
+#[should_panic(expected = "claims host")]
+fn boot_fails_on_stations_key_host_mismatch() {
+    let mut tw = boot();
+    let _fx = fixture(&mut tw);
+    tw.modules_loaded(HashMap::from([(
+        SmolStr::new("sim"),
+        ModuleBootData {
+            kv: vec![(SmolStr::new("stations:5"), serde_json::json!({ "host": 6, "stations": {} }))],
+            streams: HashMap::new(),
+        },
+    )]));
+}
