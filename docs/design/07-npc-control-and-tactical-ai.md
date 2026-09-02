@@ -460,7 +460,7 @@ recommended **second** proving ground for the whole model (see doc 06's sequenci
 exercises coarse legs, connector crossings, fog-of-war, and promotion-to-live without needing a
 combat stack. Examples include a WoD black car or rideshare, a Shadowrun taxi, corporate car,
 GridGuide vehicle, courier, ambulance, or smuggling transport. Calling a car creates a transport
-mission; it does not summon or teleport an object.
+mission; it does not summon or teleport an object. **The interceptable-passage substrate — the durable `Journey` (a plain object advancing room-to-room over a `Coarse` sweep, legible and interceptable, destination hidden) — shipped in M30 (`mush-sim` `route.rs`, design 06 §6.8); this `MobilityJob` service layers dispatch, contracts, and NPC drivers on top of it.**
 
 ```rust
 pub struct MobilityJob {

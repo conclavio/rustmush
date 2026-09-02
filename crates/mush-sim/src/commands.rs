@@ -19,6 +19,8 @@ use crate::data::{
 };
 use crate::graph::{effective_domain, presence, project, verify_indexes, verify_projections};
 use crate::links::{refresh_actor_links, refresh_unit_actors};
+use crate::route::{self, Journey, JourneyStatus, Leg, RouteState};
+use mush_core::can_perceive;
 use crate::transition::{Transition, run};
 
 fn is_admin(w: &mush_core::World, who: ObjId) -> bool {
@@ -907,6 +909,207 @@ pub(crate) fn egress_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+// ----------------------------------------------------------------------
+// Journeys — @route / +intercept (mobility, route.rs)
+// ----------------------------------------------------------------------
+
+fn rs_ref<'a>(ctx: &'a Ctx<'_>) -> &'a RouteState {
+    ctx.w.module_state::<RouteState>().expect("route state slot installed at registration")
+}
+fn rs_mut<'a>(ctx: &'a mut Ctx<'_>) -> &'a mut RouteState {
+    ctx.w.module_state_mut::<RouteState>().expect("route state slot installed at registration")
+}
+
+/// Why a would-be traveler is not eligible for a route (it must be a plain,
+/// un-placed object — a traveler is EITHER on a journey OR sim-placed).
+fn route_ineligible(ctx: &Ctx<'_>, obj: ObjId) -> Option<String> {
+    let name = display_name(ctx.w, obj);
+    match ctx.w.get(obj) {
+        None => return Some("No such object.".into()),
+        Some(o) if o.flags.contains(Flags::GOING) => return Some(format!("{name} is being destroyed.")),
+        Some(o) if matches!(o.kind, ObjKind::Room | ObjKind::Exit) => return Some(format!("{name} cannot travel a route.")),
+        _ => {}
+    }
+    if rs_ref(ctx).journeys.contains_key(&obj) {
+        return Some(format!("{name} is already on a route (@route/abort first)."));
+    }
+    let st = st(ctx);
+    if st.is_placed(obj) || st.is_quarantined(obj) {
+        return Some(format!("{name} is placed in the simulation; unplace it before routing it."));
+    }
+    if st.domain_of_host(obj).is_some() || st.spaces.contains_key(&obj) || st.mounts.contains_key(&obj) || st.stations.contains_key(&obj) {
+        return Some(format!("{name} is simulation infrastructure and cannot travel a route."));
+    }
+    None
+}
+
+fn cmd_route(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    require_admin(ctx)?;
+    let sw = &ctx.switches;
+    if sw.has("show") {
+        route_show(ctx)
+    } else if sw.has("pause") {
+        route_ctl(ctx, true)
+    } else if sw.has("resume") {
+        route_ctl(ctx, false)
+    } else if sw.has("abort") {
+        route_abort(ctx)
+    } else if ctx.args.lhs().trim().is_empty() {
+        route_list(ctx)
+    } else {
+        route_create(ctx)
+    }
+}
+
+fn route_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let traveler = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
+    if let Some(why) = route_ineligible(ctx, traveler) {
+        return Err(CmdError::msg(why));
+    }
+    let rhs = rhs_required(ctx, "@route <traveler>=<room>[:secs] <room>[:secs] ...")?;
+    let mut legs: Vec<Leg> = Vec::new();
+    for tok in rhs.split_whitespace() {
+        let (room_ref, secs) = match tok.rsplit_once(':') {
+            Some((r, n)) if n.parse::<u32>().is_ok() => (r, n.parse::<u32>().unwrap()),
+            _ => (tok, route::DEFAULT_TRAVEL_S),
+        };
+        if secs < 1 {
+            return Err(CmdError::msg("A leg must take at least 1 second."));
+        }
+        let room = match_object(ctx.w, ctx.actor, room_ref)?;
+        if ctx.w.get(room).is_none_or(|o| o.kind != ObjKind::Room || o.flags.contains(Flags::GOING)) {
+            return Err(CmdError::msg(format!("`{room_ref}` is not a live room.")));
+        }
+        // Authoring-time enterability check (the sweep bypasses gates later).
+        ctx.w.can_move_to(traveler, room).map_err(|e| CmdError::msg(format!("cannot route through {}: {e}", display_name(ctx.w, room))))?;
+        legs.push(Leg { to: room, travel_s: secs });
+    }
+    if legs.is_empty() {
+        return Err(CmdError::msg("A route needs at least one room."));
+    }
+    let now = ctx.w.now();
+    let destination = legs.last().unwrap().to;
+    let j = Journey {
+        traveler,
+        legs,
+        cursor: 0,
+        started_at: now,
+        status: JourneyStatus::Traveling,
+        paused_at: None,
+        grace_until: 0,
+        destination,
+        by: ctx.actor,
+    };
+    route::persist_journey(ctx.out, &j);
+    let n = j.legs.len();
+    rs_mut(ctx).journeys.insert(traveler, j);
+    info(ctx, format!("{} sets out on a {}-leg route to {}.", display_name(ctx.w, traveler), n, display_name(ctx.w, destination)));
+    Ok(())
+}
+
+fn route_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let traveler = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
+    let lines: Vec<String> = {
+        let rs = rs_ref(ctx);
+        let j = rs.journeys.get(&traveler).ok_or_else(|| CmdError::msg("It is not on a route."))?;
+        let mut v = vec![format!(
+            "{}: {:?}, leg {}/{}, heading for {}.",
+            display_name(ctx.w, traveler), j.status, j.cursor, j.legs.len(), display_name(ctx.w, j.destination)
+        )];
+        for (i, leg) in j.legs.iter().enumerate() {
+            let mark = if i < j.cursor { "*" } else { " " };
+            v.push(format!("  {mark} {} ({}s)", display_name(ctx.w, leg.to), leg.travel_s));
+        }
+        if let Some(nd) = j.next_due() {
+            v.push(format!("  next hop due at {} (now {}).", nd, ctx.w.now()));
+        }
+        v
+    };
+    for l in lines {
+        info(ctx, l);
+    }
+    Ok(())
+}
+
+fn route_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let lines: Vec<String> = rs_ref(ctx)
+        .journeys
+        .values()
+        .map(|j| format!("  {} — {:?}, leg {}/{} to {}", display_name(ctx.w, j.traveler), j.status, j.cursor, j.legs.len(), display_name(ctx.w, j.destination)))
+        .collect();
+    if lines.is_empty() {
+        info(ctx, "No active routes.");
+    } else {
+        info(ctx, "Routes:");
+        for l in lines {
+            info(ctx, l);
+        }
+    }
+    Ok(())
+}
+
+fn route_ctl(ctx: &mut Ctx<'_>, pausing: bool) -> Result<(), CmdError> {
+    let traveler = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
+    let now = ctx.w.now();
+    let rec = {
+        let rs = rs_mut(ctx);
+        if pausing {
+            route::pause(rs, traveler, now)
+        } else {
+            route::resume(rs, traveler, now)
+        }
+        .map_err(CmdError::msg)?;
+        rs.journeys.get(&traveler).cloned()
+    };
+    if let Some(j) = rec {
+        route::persist_journey(ctx.out, &j);
+    }
+    info(ctx, format!("{} {}.", display_name(ctx.w, traveler), if pausing { "halted" } else { "resumes its route" }));
+    Ok(())
+}
+
+fn route_abort(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let traveler = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
+    if rs_mut(ctx).journeys.remove(&traveler).is_none() {
+        return Err(CmdError::msg("It is not on a route."));
+    }
+    route::persist_journey_del(ctx.out, traveler);
+    info(ctx, format!("{}'s route is cancelled.", display_name(ctx.w, traveler)));
+    Ok(())
+}
+
+/// Player-facing `+intercept` / `waylay`: stop a traveler passing through your
+/// room. Requires co-location and perception; anti-grief grace after a resume.
+pub(crate) fn intercept_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let traveler = match_object(ctx.w, ctx.actor, ctx.args.raw().trim())?;
+    let here = ctx.w.get(ctx.actor).and_then(|o| o.location);
+    let there = ctx.w.get(traveler).and_then(|o| o.location);
+    if here.is_none() || here != there {
+        return Err(CmdError::msg("That is not here."));
+    }
+    if !can_perceive(ctx.reg, ctx.w, ctx.actor, traveler) {
+        return Err(CmdError::msg("You don't see it."));
+    }
+    let now = ctx.w.now();
+    let rec = {
+        let rs = rs_mut(ctx);
+        route::pause(rs, traveler, now).map_err(CmdError::msg)?;
+        rs.journeys.get(&traveler).cloned()
+    };
+    if let Some(j) = &rec {
+        route::persist_journey(ctx.out, j);
+    }
+    let room = here.unwrap();
+    let text = mush_proto::RichText::new()
+        .span(mush_core::output::name_span(ctx.w, ctx.actor))
+        .text(" waylays ")
+        .span(mush_core::output::name_span(ctx.w, traveler))
+        .text("!");
+    ctx.out.to_room_from(room, vec![], ctx.actor, mush_proto::OutputEvent::Narrative { kind: mush_proto::NarrativeKind::Emit, actor: None, text });
+    ctx.out.sys_to_actor(ctx.actor, "sim", format!("You stop {}.", display_name(ctx.w, traveler)));
+    Ok(())
+}
+
 /// Register `@domain` and `@spatial`.
 pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.command(
@@ -965,6 +1168,28 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             ..CommandSpec::default()
         },
         Arc::new(egress_cmd),
+    )?;
+    reg.command(
+        CommandSpec {
+            name: "@route".into(),
+            shape: ArgShape::EqPair,
+            switches: ["show", "pause", "resume", "abort"].iter().copied().map(SmolStr::new).collect(),
+            help: "@route  --  (staff) Send a plain object along a legible, interceptable route of rooms.\n                   @route <traveler>=<room>[:secs] <room>[:secs] ...   (default 30s/leg)\n                   @route/show <traveler>   @route/pause|/resume|/abort <traveler>   @route (no arg: list)"
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(cmd_route),
+    )?;
+    reg.command(
+        CommandSpec {
+            name: "+intercept".into(),
+            aliases: vec!["waylay".into()],
+            shape: ArgShape::Raw,
+            help: "+intercept <traveler>  --  Stop a traveler passing through your room (you must be here to see it)."
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(intercept_cmd),
     )?;
     Ok(())
 }

@@ -15,14 +15,17 @@ pub mod commands;
 pub mod data;
 pub mod graph;
 pub mod links;
+pub mod route;
 pub mod transition;
 
 use std::sync::Arc;
 
+use std::time::Duration;
+
 use mush_core::{
     BehaviorId, BehaviorSpec, Ctx, DestroyGate, DestroyPolicy, DetachGate, EventHook, GameModule,
     HookPoint, ModError, ModuleBootData, ModuleCtx, ObjId, ObjKind, Registrar, Registry, Role,
-    World, WorldEvent, WorldEventKind,
+    TickCadence, World, WorldEvent, WorldEventKind,
 };
 use mush_proto::RichText;
 
@@ -34,6 +37,7 @@ pub use data::{
     UnplacedInfo, role_priority,
 };
 pub use graph::{effective_domain, presence, project, space_domain, verify_indexes, verify_projections};
+pub use route::{Journey, JourneyStatus, Leg, RouteState};
 pub use transition::{Plan, SpatialError, Transition, apply, plan, run};
 
 /// Module configuration.
@@ -139,17 +143,25 @@ fn placed_or_quarantined(w: &World, obj: ObjId) -> Option<String> {
 
 impl EventHook for PlacementGate {
     fn move_attempt(&self, w: &mut World, actor: ObjId, _exit: Option<ObjId>, _dest: ObjId) -> Result<(), RichText> {
-        match placed_or_quarantined(w, actor) {
+        match gate_reason(w, actor) {
             Some(reason) => Err(RichText::tag("error", reason)),
             None => Ok(()),
         }
     }
     fn carry_attempt(&self, w: &mut World, _mover: ObjId, obj: ObjId, _dest: ObjId) -> Result<(), RichText> {
-        match placed_or_quarantined(w, obj) {
+        match gate_reason(w, obj) {
             Some(reason) => Err(RichText::tag("error", reason)),
             None => Ok(()),
         }
     }
+}
+
+/// The full movement veto: a traveling object (route.rs) OR a placed/
+/// quarantined sim object moves only through its sanctioned mover.
+fn gate_reason(w: &World, obj: ObjId) -> Option<String> {
+    w.module_state::<route::RouteState>()
+        .and_then(|rs| route::traveling_reason(rs, w, obj))
+        .or_else(|| placed_or_quarantined(w, obj))
 }
 
 /// The structural destroy veto (design D4/D8), independent of bindings.
@@ -232,6 +244,7 @@ fn name(w: &World, id: ObjId) -> String {
 fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     let WorldEvent::ObjDestroyed { obj } = ev else { return };
     let obj = *obj;
+    route::on_traveler_destroyed(ctx, obj);
     let Some(st) = state(ctx.w) else { return };
     // Snapshot what to do from the records BEFORE mutating.
     let hosted: Option<DomainId> = st.domain_of_host(obj).map(|d| d.id);
@@ -370,6 +383,7 @@ impl GameModule for SimulationModule {
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.state(SpatialState::new(self.config.recovery_room));
+        reg.state(route::RouteState::default());
         reg.behavior(domain_spec())?;
         reg.behavior(interior_spec())?;
         reg.behavior(participant_spec())?;
@@ -378,12 +392,15 @@ impl GameModule for SimulationModule {
         reg.destroy_gate(Arc::new(StructuralDestroyGate));
         reg.detach_gate(Arc::new(SimDetachGate));
         reg.subscribe(WorldEventKind::ObjDestroyed, Arc::new(on_obj_destroyed));
+        reg.tick(route::SWEEP_TAG, TickCadence::Coarse(Duration::from_secs(route::SWEEP_SECS)), Arc::new(route::sweep))?;
         commands::register(reg)?;
         Ok(())
     }
 
-    fn on_world_loaded(&mut self, ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModError> {
+    fn on_world_loaded(&mut self, ctx: &mut ModuleCtx<'_>, mut data: ModuleBootData) -> Result<(), ModError> {
+        let journeys = boot::extract_journeys(&mut data);
         let q = boot::load_boot(ctx, data, self.config.recovery_room)?;
+        boot::install_journeys(ctx, journeys);
         if q > 0 {
             tracing::warn!(quarantined = q, "sim: boot quarantined placements; see @spatial/quarantine");
         }

@@ -665,6 +665,36 @@ private state to work around registration.
 
 ---
 
+### 6.8 Journeys — legible mobility over a coarse clock (SHIPPED, M30)
+
+Independent of `DomainClock` (still `Passive`-only), `mush-sim` provides a **Journey**: a plain object
+follows an ordered path of ordinary rooms over a `Coarse` sweep, one room at a time, so it is legible
+to co-present observers and interceptable by them — the "no free teleport, routes are watchable"
+substrate (doc 07 §9). It is deliberately NOT a placement-graph citizen: a traveler is a plain
+(un-placed) object, `Obj.location` is written by the sweep, and it never touches `SpatialState`.
+
+- **Seconds, not milliseconds.** A tick can read only `world.now()` (unix seconds); each leg's
+  `travel_s` is both its travel time and its dwell — the window in which a co-present watcher can
+  waylay it.
+- **The never-skip invariant is scoped to LIVE advancement.** While the server runs at wall-clock
+  pace a passage visits and narrates every room in order (never a skip, never instantaneous
+  relocation). A catch-up after downtime is not a skipped *opportunity* — no live observer existed —
+  so the sweep advances the cursor to the object's correct current position in ONE move and
+  suppresses the stale intervening narration. That single-move design also bounds a catch-up to one
+  relocation per journey per sweep (no storm).
+- **Gated.** A traveling object cannot be walked, `@teleport`ed, or carried by others (the movement
+  gate vetoes travelers too); it moves only via the sweep, an interception pause, or staff
+  `@route/abort`. Destroying the traveler or a leg room ends the journey; a route restored from a
+  reboot continues from where it was.
+- **Staff-authored (cut 1).** `@route` is `SIM_ADMIN`/Royalty and validates each leg's enterability up
+  front; player-owned routing needs an authoring-time lock check and is deferred. `+intercept` is
+  player-facing but reveals only presence, never the destination.
+
+The record reserves an explicit `destination` for a later typed `KnownPlaceRef`; `mush-tactics`'
+`MobilityProfile` (modes/speeds) and doc 07 §9's `MobilityJob` dispatch service layer on top.
+
+---
+
 ## 7. Atomic transitions
 
 All structural changes go through `mush-sim`; rulesets validate policy through the domain driver.

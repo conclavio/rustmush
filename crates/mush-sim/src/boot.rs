@@ -301,3 +301,47 @@ fn validate_live(ctx: &ModuleCtx<'_>, st: &SpatialState, rec: &PlacementRecord) 
     }
     None
 }
+
+
+/// Pull `journey:*` docs out of the boot kv (so `load_boot` does not warn on
+/// them) and parse them; validation against placement happens in
+/// [`install_journeys`] after the spatial state has loaded.
+pub(crate) fn extract_journeys(data: &mut ModuleBootData) -> Vec<crate::route::Journey> {
+    let mut out = Vec::new();
+    data.kv.retain(|(key, value)| {
+        if key.starts_with("journey:") {
+            match serde_json::from_value::<crate::route::Journey>(value.clone()) {
+                Ok(j) => out.push(j),
+                Err(e) => tracing::error!(%key, error = %e, "sim: unparseable journey doc dropped"),
+            }
+            false
+        } else {
+            true
+        }
+    });
+    out
+}
+
+/// Install the journeys whose traveler is live and NOT a placed sim object
+/// (a traveler is EITHER on a journey OR sim-placed, never both); drop the
+/// rest with a durable delete.
+pub(crate) fn install_journeys(ctx: &mut ModuleCtx<'_>, journeys: Vec<crate::route::Journey>) {
+    let mut rs = crate::route::RouteState::default();
+    let placed: std::collections::BTreeSet<ObjId> = ctx
+        .w
+        .module_state::<SpatialState>()
+        .map(|st| st.placements.keys().copied().collect())
+        .unwrap_or_default();
+    for j in journeys {
+        let live = ctx.w.get(j.traveler).is_some_and(|o| !o.flags.contains(Flags::GOING));
+        if live && !placed.contains(&j.traveler) {
+            rs.journeys.insert(j.traveler, j);
+        } else {
+            tracing::warn!(traveler = %j.traveler, "sim: journey dropped at boot (traveler gone or placed)");
+            crate::route::persist_journey_del(ctx.out, j.traveler);
+        }
+    }
+    if let Some(slot) = ctx.w.module_state_mut::<crate::route::RouteState>() {
+        *slot = rs;
+    }
+}
