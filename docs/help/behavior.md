@@ -1,7 +1,7 @@
 # Object behaviors
 
 A **behavior** is typed, module-defined capability attached to an ordinary
-object. A plain crate becomes a `btech.mech`; a room becomes a `sim.domain`.
+object. A plain crate becomes a `tactics.unit`; a room becomes a `sim.domain`.
 The behavior is what tells a module "this object is one of mine, treat it
 accordingly" — so simulation, vehicles, and other systems ride on ordinary
 objects instead of a separate object type.
@@ -24,7 +24,7 @@ sensibly coexist on the same object are refused. A raw `@set` never attaches a
 behavior; the lifecycle-aware commands above are the only way, so the module
 always gets to validate.
 
-Behavior ids are namespaced, lowercase, dotted: `sim.domain`, `btech.mech`,
+Behavior ids are namespaced, lowercase, dotted: `sim.domain`, `tactics.unit`,
 `shadowrun.vehicle`. Exactly one module owns each id.
 
 ## Contextual commands

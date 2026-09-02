@@ -2,10 +2,10 @@
 //! pre-destroy veto seam (decision D8).
 //!
 //! An ordinary [`Obj`](crate::obj::Obj) can carry typed, durable **behavior
-//! bindings** — `sim.domain`, `btech.mech`, `shadowrun.vehicle` — declaring that
+//! bindings** — `sim.domain`, `tactics.unit`, `shadowrun.vehicle` — declaring that
 //! a module's behavior applies to it. The binding itself is a lightweight marker
 //! ([`BehaviorBinding`]); large or hot behavior state lives in the owning
-//! module's persisted namespace (e.g. `mod:btech:unit:123`), never on the object.
+//! module's persisted namespace (e.g. `mod:tactics:unit:123`), never on the object.
 //!
 //! A module registers a [`BehaviorSpec`] through the
 //! [`Registrar`](crate::module::Registrar) — one module owns each id — declaring
@@ -45,7 +45,7 @@ use crate::world::World;
 pub const BEHAVIOR_ID_MAX: usize = 64;
 
 /// A validated, namespaced behavior identifier such as `sim.domain` or
-/// `btech.mech`: two or more `.`-separated segments of `[a-z0-9_]`.
+/// `tactics.unit`: two or more `.`-separated segments of `[a-z0-9_]`.
 ///
 /// Serializes transparently as its string form, so it is a valid JSON map key
 /// on [`Obj::behaviors`](crate::obj::Obj::behaviors). Construct through
@@ -714,7 +714,7 @@ pub(crate) fn register(reg: &mut Registry) -> Result<(), RegistryError> {
             shape: ArgShape::EqPair,
             min_role: Role::Builder,
             help: "@behavior/add <object>=<id>  --  Attach a typed behavior \
-                   (e.g. `btech.mech`) to an object you control. \
+                   (e.g. `tactics.unit`) to an object you control. \
                    @behavior/remove <object>=<id> detaches it. \
                    @behavior/list <object> shows what an object carries. \
                    Behaviors are registered by modules; some require higher rank \
@@ -733,7 +733,7 @@ mod tests {
 
     #[test]
     fn behavior_id_validation() {
-        for ok in ["sim.domain", "btech.mech", "a.b.c", "x9.y_z"] {
+        for ok in ["sim.domain", "tactics.unit", "a.b.c", "x9.y_z"] {
             assert!(BehaviorId::new(ok).is_ok(), "{ok} should be valid");
         }
         for bad in ["", "nodot", "sim.", ".domain", "Sim.Domain", "sim domain", "sim..d", "a-b.c"] {

@@ -215,7 +215,7 @@ pub enum OutputEvent {
     /// registered for the feed; the ANSI renderer calls the module's
     /// registered text-fallback renderer.
     Panel {
-        /// Panel feed id, e.g. `"wod.roll"`, `"btech.map"`.
+        /// Panel feed id, e.g. `"wod.roll"`, `"tactics.map"`.
         feed: SmolStr,
         /// Snapshot vs. incremental frame.
         kind: PanelFrameKind,

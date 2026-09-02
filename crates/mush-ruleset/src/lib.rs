@@ -1,6 +1,6 @@
 //! # mush-ruleset — the ruleset plugin framework
 //!
-//! The reusable machinery every game ruleset (oWoD20 next, BattleTech later)
+//! The reusable machinery every game ruleset (oWoD20 next, MechWarrior later)
 //! plugs into: a declarative, **composable** [`SheetSchema`], a validating
 //! [`SheetStore`] over object attributes, a chargen state machine with
 //! point-budget accounting, and generic `+sheet` / `@sheet/set` commands plus
@@ -68,7 +68,7 @@ pub use schema::{
 pub use store::{MigrateFn, SHEET_ATTR_NS, SheetStore, sheet_attr_name};
 pub use validate::{SheetError, validate};
 
-/// A ruleset identifier — the interned short id (`"wod"`, `"btech"`), also
+/// A ruleset identifier — the interned short id (`"wod"`, `"mechwarrior"`), also
 /// the module name and the `sheet:<id>` storage suffix.
 pub type RulesetId = SmolStr;
 

@@ -34,7 +34,7 @@
 //!   and [`Registrar`] (commands, alias stages, marker flags, attr
 //!   namespaces, ticks, hooks, observers, state slots, panel feeds, query
 //!   handlers, job queues, script-api reservations, migrations), module
-//!   persistence ops ([`ModuleOp`]), scenes ([`SceneId`], the btech seam),
+//!   persistence ops ([`ModuleOp`]), scenes ([`SceneId`], the tactics seam),
 //!   and the input-context stack.
 //!
 //! And the async seam (still fully sync in here — the tokio loop lives in

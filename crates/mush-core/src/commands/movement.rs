@@ -93,7 +93,7 @@ pub fn traverse_exit(reg: &Registry, w: &mut World, actor: ObjId, exit: ObjId, o
         return;
     };
 
-    // Module veto (btech hex movement, wod barriers): the reason is shown
+    // Module veto (tactics hex movement, wod barriers): the reason is shown
     // to the mover, the room sees nothing.
     if let Err(reason) = check_move_attempt(reg, w, actor, Some(exit), dest) {
         out.to_actor(actor, OutputEvent::Sys(reason));

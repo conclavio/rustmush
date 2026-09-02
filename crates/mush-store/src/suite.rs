@@ -525,7 +525,7 @@ pub async fn serde_obj_round_trip(store: &dyn ObjectStore) {
         },
     );
     o.behaviors.insert(
-        mush_core::BehaviorId::new("btech.mech").unwrap(),
+        mush_core::BehaviorId::new("tactics.unit").unwrap(),
         mush_core::BehaviorBinding {
             schema_version: 1,
             attached_by: GOD,

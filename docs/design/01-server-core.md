@@ -34,7 +34,7 @@ rustmush/
 â”‚   â”œâ”€â”€ mush-sys-mail/          # @mail module.            Depends: mush-core.
 â”‚   â”œâ”€â”€ mush-sys-weather/       # Weather module.          Depends: mush-core.
 â”‚   â”œâ”€â”€ mush-mod-wod/           # World of Darkness ruleset module. Depends: mush-core.
-â”‚   â”œâ”€â”€ mush-mod-btech/         # BattleTech ruleset (later; crate reserved).
+â”‚   â”œâ”€â”€ mush-mod-tactics/         # MechWarrior ruleset (later; crate reserved).
 â”‚   â”œâ”€â”€ mush-testkit/           # In-process world driver for integration tests of
 â”‚   â”‚                           #   modules (fake connections, scripted input/output).
 â”‚   â””â”€â”€ mushd/                  # Binary: config load, wiring, main(). Depends on all.
@@ -408,7 +408,7 @@ impl Registry {
 }
 ```
 
-Comsys, mail, weather, and the WoD ruleset are all *just modules* â€” if the module API can't express them, it gets fixed before BattleTech ever starts.
+Comsys, mail, weather, and the WoD ruleset are all *just modules* â€” if the module API can't express them, it gets fixed before MechWarrior ever starts.
 
 ---
 
@@ -444,7 +444,7 @@ Rationale:
 3. **Module API + built-ins (wk 5-8):** Registry finalized; comsys and @mail built as modules (they are the API's proving ground); locks, zones, powers; output pipeline with ANSI renderer + proto JSON.
 4. **Scripting (wk 8-10):** mush-script, sandbox budgets, hooks; weather module implemented *using* module ticks + zone theming attrs.
 5. **LLM seams (wk 10+):** `Effects`-based integration points for worldbuilder (`@llm/desc here=<prose>` reading zone theme chain) and `NpcThink` scheduling for `mush-agents` (internals owned by LLM agent).
-6. **WoD module**, then BattleTech later â€” btech is the module-boundary stress test (hex state = module `state<T>` + `Typed` panel events).
+6. **WoD module**, then MechWarrior later â€” tactics is the module-boundary stress test (hex state = module `state<T>` + `Typed` panel events).
 
 ## 10. Risks
 

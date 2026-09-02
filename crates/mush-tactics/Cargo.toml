@@ -1,10 +1,10 @@
 [package]
-name = "ruleset-btech"
+name = "mush-tactics"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "BattleTech ruleset stub: seam test for reserved core extension points"
+description = "mush-tactics: the tactical-simulation layer, standing seam test for reserved core extension points"
 
 [dependencies]
 mush-ruleset.workspace = true

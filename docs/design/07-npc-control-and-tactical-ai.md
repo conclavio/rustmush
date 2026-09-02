@@ -559,7 +559,7 @@ These extend doc 06 §14. They assume its foundation scenarios (1–13) already 
 
 These follow doc 06's Phases A–E. Note the sequencing recommendation in doc 06 §16: the mobility
 slice (§9) is pulled **forward** as the second cross-ruleset proving ground, ahead of the full
-BattleTech tactical combat, because it validates the generic layer (coarse legs, connectors,
+MechWarrior tactical combat, because it validates the generic layer (coarse legs, connectors,
 fog-of-war, promotion) without a combat stack.
 
 ### Phase F: tactical interaction and scenes

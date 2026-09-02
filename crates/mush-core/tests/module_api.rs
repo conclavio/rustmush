@@ -4,7 +4,7 @@
 //! coarse/fast/scene ticks, the MoveAttempt veto, LookRendered, world-event
 //! observers, state slots, panel frames, persistence ops, scenes, and the
 //! input-context stack. This suite is the M3 milestone's contract: if the
-//! API can't express the toy, it can't express comsys/mail/btech either.
+//! API can't express the toy, it can't express comsys/mail/tactics either.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -727,7 +727,7 @@ fn weather_query_seam_registers_and_conflicts() {
     let mut reg = Registry::new();
     let mut one = Registrar::new(&mut reg, "weather");
     one.weather_query(Arc::new(Wx)).unwrap();
-    let mut two = Registrar::new(&mut reg, "btech");
+    let mut two = Registrar::new(&mut reg, "tactics");
     assert!(matches!(
         two.weather_query(Arc::new(Wx)),
         Err(ModError::Conflict {

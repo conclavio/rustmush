@@ -32,7 +32,7 @@
 //!   feed emits `{zone, state, temp, icon}` keyframe/delta frames.
 //! - **Query seam**: the reserved [`WeatherQuery`] provider (design 04
 //!   §10.5) exposes a [`WxSnapshot`] per room for rulesets (WoD perception,
-//!   btech to-hit). Rhai `mush::weather(zone)` is **deferred** — the name is
+//!   tactics to-hit). Rhai `mush::weather(zone)` is **deferred** — the name is
 //!   reserved via `script_api("weather")`, and a future binding calls the
 //!   same [`mush_core::Registry::weather_query`] provider.
 

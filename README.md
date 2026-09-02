@@ -18,7 +18,7 @@ A modern MUSH server in Rust — the TinyMUX/TinyMUSH/RhostMUSH tradition, rebui
 - **Ruleset modules** — two full game systems on one plugin API: Classic World of Darkness
   20th Anniversary (oWoD20 — the Storyteller System, Vampire/Mage/Werewolf templates) and
   **Shadowrun 5th Edition** (SR5 — the d6 hit pool, Limits, Edge, priority chargen), proving
-  the API scales across very different dice engines; BattleTech (btmux-style) seams reserved
+  the API scales across very different dice engines; MechWarrior (btmux-style) seams reserved
   and CI-tested from day one. Config selects which **one** ruleset loads. Built-ins: comsys,
   @mail, weather, jobs.
 - **Redis 8 persistence** — RedisJSON object documents with write-through per-command

@@ -2296,6 +2296,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "mush-tactics"
+version = "0.1.0"
+dependencies = [
+ "mush-core",
+ "mush-dice",
+ "mush-proto",
+ "mush-ruleset",
+ "mush-testkit",
+ "serde",
+ "serde_json",
+ "smol_str",
+]
+
+[[package]]
 name = "mush-testkit"
 version = "0.1.0"
 dependencies = [
@@ -3187,20 +3201,6 @@ checksum = "72f81bee8c8ef9b577d1681a70ebbc962c232461e397b22c208c43c04b67a155"
 dependencies = [
  "rmp",
  "serde",
-]
-
-[[package]]
-name = "ruleset-btech"
-version = "0.1.0"
-dependencies = [
- "mush-core",
- "mush-dice",
- "mush-proto",
- "mush-ruleset",
- "mush-testkit",
- "serde",
- "serde_json",
- "smol_str",
 ]
 
 [[package]]

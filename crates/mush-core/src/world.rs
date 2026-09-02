@@ -1202,7 +1202,7 @@ impl World {
     }
 
     // ------------------------------------------------------------------
-    // Scenes (transient; the btech seam)
+    // Scenes (transient; the tactics seam)
     // ------------------------------------------------------------------
 
     /// Create a scene (no hooks fire here — [`Ctx::start_scene`] is the

@@ -3,7 +3,7 @@
 //!
 //! A **scene** is an explicit, durable envelope around play — the opposite of
 //! the core [`Scene`](mush_core::Scene), which is a transient per-boot runtime
-//! handle for the btech seam. A durable scene has a stable id that never
+//! handle for the tactics seam. A durable scene has a stable id that never
 //! restarts, survives reboots (rehydrating as
 //! [`Paused`](SceneStatus::Paused)`(`[`ServerRestart`](PauseReason::ServerRestart)`)`),
 //! and records who is in it, whose turn it is, and its own fictional clock.

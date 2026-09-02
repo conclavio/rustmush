@@ -129,7 +129,7 @@ mush-canon = { path = "crates/mush-canon" }
 mush-mail = { path = "crates/mush-mail" }
 mush-weather = { path = "crates/mush-weather" }
 ruleset-wod = { path = "crates/ruleset-wod" }
-ruleset-btech = { path = "crates/ruleset-btech" }
+mush-tactics = { path = "crates/mush-tactics" }
 ruleset-shadowrun = { path = "crates/ruleset-shadowrun" }
 mush-testkit = { path = "crates/mush-testkit" }
 # M16b: the all-in-one server library reused by both forked halves, plus the

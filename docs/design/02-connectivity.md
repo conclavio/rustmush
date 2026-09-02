@@ -150,15 +150,15 @@ pub enum ClientCommand {
 
 Opinion: keep the structured surface *tiny*. A MUSH is command-driven; the web UI's buttons mostly just submit `Line("@mail/read 3")` under the hood, which keeps web and SSH behavior identical and testable through one parser. `Req` exists only for panel hydration (populating the mail list on login without spamming scrollback).
 
-### 3.4 Module extensibility (WoD now, BattleTech later)
+### 3.4 Module extensibility (WoD now, MechWarrior later)
 
 `SheetUpdate` and `MapUpdate` carry a module discriminator and an opaque JSON payload:
 
 ```rust
-pub struct SheetUpdate { pub module: SmolStr /* "wod" | "btech" */, pub data: serde_json::Value }
+pub struct SheetUpdate { pub module: SmolStr /* "wod" | "tactics" */, pub data: serde_json::Value }
 ```
 
-The connectivity layer never interprets these; the web client lazy-loads a panel component per module id, and the ANSI renderer calls back into the module's registered `fn render_text(&Value, &ClientCaps) -> RichText`. This is the module boundary for connectivity: **modules ship (a) a text renderer registered with `ansi`, and (b) a Svelte panel component keyed by module id.** Hex maps in BattleTech become `MapUpdate { module: "btech", data: {hexes: [...]} }` with a canvas-based panel â€” no protocol change.
+The connectivity layer never interprets these; the web client lazy-loads a panel component per module id, and the ANSI renderer calls back into the module's registered `fn render_text(&Value, &ClientCaps) -> RichText`. This is the module boundary for connectivity: **modules ship (a) a text renderer registered with `ansi`, and (b) a Svelte panel component keyed by module id.** Hex maps in MechWarrior become `MapUpdate { module: "tactics", data: {hexes: [...]} }` with a canvas-based panel â€” no protocol change.
 
 ---
 
@@ -420,7 +420,7 @@ Verified current: Svelte 5.55.x with runes is stable and mainstream. Rationale: 
 - One `WsClient` module: connect/auth/resume/backoff, dispatches envelopes to a per-event-type registry.
 - Rune stores per domain: `scrollback` (capped ring, 5k entries, virtualized list), `channels` (Map<channel, messages> + unread counts), `mail`, `who`, `sheet`, `map`, `session`.
 - Command input: history (â†‘/â†“), local echo of the typed command into scrollback (styled `tag:"input-echo"`), `/`-prefixed client-local commands (`/clear`, `/font`), everything else â†’ `Line`.
-- Module panels: `Sheet`/`Map` payloads route by `module` id to dynamically imported components (`wod/SheetPanel.svelte`; later `btech/HexMap.svelte` on canvas).
+- Module panels: `Sheet`/`Map` payloads route by `module` id to dynamically imported components (`wod/SheetPanel.svelte`; later `tactics/HexMap.svelte` on canvas).
 
 ### 7.3 Layout
 

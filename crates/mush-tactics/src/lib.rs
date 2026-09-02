@@ -1,8 +1,8 @@
-//! # ruleset-btech — the standing seam test (design doc 04 §6.3)
+//! # mush-tactics — the standing seam test (design doc 04 §6.3)
 //!
-//! A **toy** BattleTech module whose only job is to exercise every core
+//! A **toy** tactical module whose only job is to exercise every core
 //! extension point the real engine (M10+) will need, so those seams can
-//! never silently rot (PLAN: "btech stub crate green in CI — stays green
+//! never silently rot (PLAN: "tactics stub crate green in CI — stays green
 //! forever after"; treaty ruling 4's standing acceptance test). It is not
 //! wired into a production `mushd`; its integration tests construct it via
 //! [`Engine::with_modules`](mush_core::engine::Engine::with_modules) —
@@ -14,14 +14,14 @@
 //! 1. **Sub-second periodic tick** — the `pulse` tick at
 //!    [`TickCadence::Fast`]`(250ms)`, re-armed by the scheduler each fire.
 //! 2. **Scene lifecycle + dynamic per-scene ticker** — `+btest/start`
-//!    opens a `btech.battle` [`Scene`](mush_core::Scene) and starts the
+//!    opens a `tactics.battle` [`Scene`](mush_core::Scene) and starts the
 //!    `battle` [`TickCadence::Scene`] tick for it; `+btest/stop` ends the
 //!    scene (the ticker dies with it); a `SceneEnded` hook cleans up.
 //! 3. **`RulesetStateStore` + `MapBlob`** — every battle tick bumps each
 //!    member's `heat` in the per-`(scene, obj)` state store (each change
 //!    persists a whole-scene snapshot [`ModuleOp`](mush_core::ModuleOp)),
 //!    and `+btest/start` stores a small hex map blob core never interprets.
-//! 4. **Panel keyframe/delta frames** — the `btech.map` feed emits one
+//! 4. **Panel keyframe/delta frames** — the `tactics.map` feed emits one
 //!    keyframe at battle start and a delta per tick.
 //! 5. **`MoveAttempt` veto** — rooms flagged with the registered
 //!    [`HEXLOCK_MARKER`] marker refuse entry (exit traversal *and*
@@ -46,17 +46,17 @@ use mush_proto::RichText;
 use smol_str::SmolStr;
 
 /// The module id (also its persistence namespace).
-pub const NS: &str = "btech";
+pub const NS: &str = "tactics";
 
 /// The registered marker flag: a room carrying it refuses all movement
-/// into it (`@set here=btech:hexlock`).
-pub const HEXLOCK_MARKER: &str = "btech:hexlock";
+/// into it (`@set here=tactics:hexlock`).
+pub const HEXLOCK_MARKER: &str = "tactics:hexlock";
 
 /// The scene kind `+btest/start` opens.
-pub const SCENE_KIND: &str = "btech.battle";
+pub const SCENE_KIND: &str = "tactics.battle";
 
-/// The panel feed id (design §6.2's reserved `btech.map`).
-pub const MAP_FEED: &str = "btech.map";
+/// The panel feed id (design §6.2's reserved `tactics.map`).
+pub const MAP_FEED: &str = "tactics.map";
 
 /// The sub-second periodic tick's tag and period.
 pub const PULSE_TICK: &str = "pulse";
@@ -75,7 +75,7 @@ pub const HEXLOCK_MSG: &str = "The hex grid flares crimson: that ground is conte
 /// In-RAM working state (a [`Registrar::state`] slot). Everything that
 /// must survive a reboot rides [`ModuleOp`](mush_core::ModuleOp)s instead.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct BtechState {
+pub struct TacticsState {
     /// Fires of the `pulse` fast tick since boot.
     pub pulses: u64,
     /// Active test battles: starter → scene.
@@ -85,23 +85,23 @@ pub struct BtechState {
 /// The stub module. Hand to
 /// [`Engine::with_modules`](mush_core::engine::Engine::with_modules).
 #[derive(Debug, Default)]
-pub struct BtechStub;
+pub struct TacticsStub;
 
-impl BtechStub {
+impl TacticsStub {
     /// A fresh stub.
     #[must_use]
-    pub fn new() -> BtechStub {
-        BtechStub
+    pub fn new() -> TacticsStub {
+        TacticsStub
     }
 }
 
-impl GameModule for BtechStub {
+impl GameModule for TacticsStub {
     fn name(&self) -> &'static str {
         NS
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
-        reg.state(BtechState::default());
+        reg.state(TacticsState::default());
         reg.marker_flag(HEXLOCK_MARKER)?;
         reg.hook(HookPoint::MoveAttempt, Arc::new(HexLock));
         reg.hook(HookPoint::SceneEnded, Arc::new(SceneJanitor));
@@ -121,7 +121,7 @@ impl GameModule for BtechStub {
             PULSE_TICK,
             TickCadence::Fast(PULSE_PERIOD),
             Arc::new(|ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>| {
-                if let Some(st) = ctx.state_mut::<BtechState>() {
+                if let Some(st) = ctx.state_mut::<TacticsState>() {
                     st.pulses += 1;
                 }
             }),
@@ -148,10 +148,10 @@ impl GameModule for BtechStub {
                 name: "+btest".into(),
                 switches: vec!["start".into(), "stop".into(), "status".into()],
                 shape: ArgShape::Raw,
-                help: "+btest/start | /stop | /status  --  The BattleTech seam test. \
+                help: "+btest/start | /stop | /status  --  The tactical seam test. \
                        /start opens a toy battle scene around you: a 2x2 hex map blob \
                        is stored, a per-scene reactor tick (250ms) starts bumping your \
-                       heat, and the btech.map panel streams a keyframe then deltas. \
+                       heat, and the tactics.map panel streams a keyframe then deltas. \
                        /status reports your heat and the module pulse count; /stop \
                        ends the scene (state and map are deleted from the store)."
                     .into(),
@@ -210,7 +210,7 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     let obj = *obj;
     // Battles the husk STARTED end outright.
     let started: Vec<SceneId> = ctx
-        .state::<BtechState>()
+        .state::<TacticsState>()
         .map(|st| {
             st.battles
                 .iter()
@@ -225,7 +225,7 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     // Battles it merely fought in: the world already removed it from the
     // member set; end any battle scene that emptied out.
     let emptied: Vec<SceneId> = ctx
-        .state::<BtechState>()
+        .state::<TacticsState>()
         .map(|st| st.battles.values().copied().collect::<Vec<_>>())
         .unwrap_or_default()
         .into_iter()
@@ -259,13 +259,13 @@ impl EventHook for HexLock {
     }
 }
 
-/// Drops ended scenes from [`BtechState::battles`] — however the scene
+/// Drops ended scenes from [`TacticsState::battles`] — however the scene
 /// ended (also exercises the `SceneEnded` hook seam).
 struct SceneJanitor;
 
 impl EventHook for SceneJanitor {
     fn scene_ended(&self, ctx: &mut Ctx<'_>, scene: SceneId) {
-        if let Some(st) = ctx.state_mut::<BtechState>() {
+        if let Some(st) = ctx.state_mut::<TacticsState>() {
             st.battles.retain(|_, s| *s != scene);
         }
     }
@@ -315,7 +315,7 @@ fn btest_cmd(feed: &PanelFeedHandle, ctx: &mut Ctx<'_>) -> Result<(), CmdError> 
     let actor = ctx.actor;
     if ctx.switches.has("start") {
         let already = ctx
-            .state::<BtechState>()
+            .state::<TacticsState>()
             .is_some_and(|st| st.battles.contains_key(&actor));
         if already {
             return Err(CmdError::msg(
@@ -326,7 +326,7 @@ fn btest_cmd(feed: &PanelFeedHandle, ctx: &mut Ctx<'_>) -> Result<(), CmdError> 
         ctx.set_map_blob(scene, toy_map())?;
         ctx.scene_state_set(scene, actor, serde_json::json!({ "heat": 0 }))?;
         ctx.scene_tick_start(scene, BATTLE_TICK, BATTLE_PERIOD)?;
-        if let Some(st) = ctx.state_mut::<BtechState>() {
+        if let Some(st) = ctx.state_mut::<TacticsState>() {
             st.battles.insert(actor, scene);
         }
         feed.keyframe_to(
@@ -346,7 +346,7 @@ fn btest_cmd(feed: &PanelFeedHandle, ctx: &mut Ctx<'_>) -> Result<(), CmdError> 
     }
     if ctx.switches.has("stop") {
         let scene = ctx
-            .state::<BtechState>()
+            .state::<TacticsState>()
             .and_then(|st| st.battles.get(&actor).copied())
             .ok_or_else(|| CmdError::msg("You are not in a test battle."))?;
         ctx.end_scene(scene); // SceneJanitor drops the state entry
@@ -358,7 +358,7 @@ fn btest_cmd(feed: &PanelFeedHandle, ctx: &mut Ctx<'_>) -> Result<(), CmdError> 
     }
     if ctx.switches.has("status") {
         let (pulses, scene) = ctx
-            .state::<BtechState>()
+            .state::<TacticsState>()
             .map(|st| (st.pulses, st.battles.get(&actor).copied()))
             .unwrap_or((0, None));
         let battle = match scene {

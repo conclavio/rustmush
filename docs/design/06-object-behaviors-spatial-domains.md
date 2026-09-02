@@ -2,12 +2,12 @@
 
 **Status:** Draft 0.1 for design review  
 **Scope:** Object-attached game behavior, controllable units, maps/domains, interiors,
-transport, attachments, deterministic ticking, and the BattleTech first vertical slice  
+transport, attachments, deterministic ticking, and the MechWarrior first vertical slice  
 **Applies to:** `mush-core`, a proposed `mush-sim` foundation crate, `mush-scenes`,
-`mush-proto`, and `ruleset-btech`
+`mush-proto`, and `mush-tactics`
 
-This document starts the dedicated BattleTech design conversation deferred by
-`docs/PLAN.md`. It defines a generic model first and uses BattleTech as its initial proving
+This document starts the dedicated MechWarrior design conversation deferred by
+`docs/PLAN.md`. It defines a generic model first and uses MechWarrior as its initial proving
 system. The model must also support Shadowrun vehicles, drones, ships, mounts, static weapon
 platforms, and other rulesets without putting any of those rules into `mush-core`.
 
@@ -41,13 +41,13 @@ tables, or code are part of this specification.
    between maps without rewriting every descendant's position.
 6. Keep durable narrative scenes distinct from persistent spatial domains while allowing a scene
    to bind to a domain and journal its mechanical events.
-7. Keep generic infrastructure independent of BattleTech rules and data.
+7. Keep generic infrastructure independent of MechWarrior rules and data.
 8. Preserve the single-writer `World` architecture, write-through command atomicity, bounded work,
    transport-neutral output, and module isolation already implemented by RustMUSH.
 
 ## 2. Non-goals for the first vertical slice
 
-- A complete BattleTech rules implementation.
+- A complete MechWarrior rules implementation.
 - Reproducing another server's binary formats, commands byte-for-byte, formulas, or internal data
   structures.
 - Arbitrary user-loaded native plugins. Modules remain statically linked Rust crates.
@@ -110,16 +110,16 @@ It does not know what a mech, vehicle, hex, weapon, or line of sight is.
 Other ruleset crates may depend on `mush-sim`. `mush-sim` depends on `mush-core` and
 `mush-proto`, never on a ruleset.
 
-### 3.3 `ruleset-btech`
+### 3.3 `mush-tactics`
 
-`ruleset-btech` registers BattleTech behavior types and a domain driver. It owns all BattleTech
+`mush-tactics` registers MechWarrior behavior types and a domain driver. It owns all MechWarrior
 semantics, including:
 
 - unit classes and templates;
 - hex-map terrain and coordinate data;
 - movement modes, heading, speed, elevation, and heat;
 - armor, internals, sensors, contacts, weapons, and damage;
-- BattleTech-specific validation for bays, mounts, and deployment;
+- MechWarrior-specific validation for bays, mounts, and deployment;
 - the rendering projection used by tactical views.
 
 ### 3.4 `mush-scenes`
@@ -133,10 +133,10 @@ Examples:
 - A persistent world map may exist for months and host many engagement scenes over time.
 - A freeform bar scene needs no simulation domain.
 - A WoD Timestop is a turn-based scene in an ordinary room.
-- A BattleTech engagement is a real-time scene bound to a fixed-step domain.
+- A MechWarrior engagement is a real-time scene bound to a fixed-step domain.
 
 The boot-scoped `mush_core::SceneId`, per-scene state store, and map blob currently exercised by the
-BattleTech stub are prototype seams, not the final durable spatial model. The stub stays green while
+MechWarrior stub are prototype seams, not the final durable spatial model. The stub stays green while
 the new APIs are built, then migrates to them. The durable `mush-scenes::SceneUid` remains the
 narrative identity.
 
@@ -184,13 +184,13 @@ pub struct Obj {
 - `sim.participant`
 - `sim.interior`
 - `sim.control_station`
-- `btech.map`
-- `btech.unit`
-- `btech.mech`
+- `tactics.map`
+- `tactics.unit`
+- `tactics.unit`
 - `shadowrun.vehicle`
 
 The binding declares that behavior exists on the object. Large or frequently changing behavior
-state remains in the owning module's persisted namespace, for example `mod:btech:unit:123`.
+state remains in the owning module's persisted namespace, for example `mod:tactics:unit:123`.
 Markers remain lightweight flags and are not used as a substitute for behavior lifecycle.
 
 **Grounding:** `Obj` is persisted as one whole-object JSON doc (`obj:{id}`) and deep-cloned each
@@ -248,7 +248,7 @@ Initial dispatch order:
 7. `Huh?`.
 
 This preserves current command and exit behavior. A behavior command cannot shadow a core verb,
-staff command, or exit. BattleTech verbs are nevertheless object-scoped: if no reachable object
+staff command, or exit. MechWarrior verbs are nevertheless object-scoped: if no reachable object
 provides `startup`, the command does not exist for that actor.
 
 **Grounding:** the `CommandFallback` characterization is accurate — it is `&mut World` + `&mut Outbox`,
@@ -351,7 +351,7 @@ pub struct RulesValue {
 }
 ```
 
-For example, a BattleTech direct pose may contain hex coordinates, elevation, facing, and posture.
+For example, a MechWarrior direct pose may contain hex coordinates, elevation, facing, and posture.
 Another system may use metric coordinates, zones, lanes, or abstract range bands.
 
 There is no independently authoritative `unit.map_id` plus `map.members` list. The placement graph
@@ -512,7 +512,7 @@ pub struct DomainId(pub u64);
 pub struct DomainRecord {
     pub id: DomainId,
     pub host: ObjId,
-    pub driver: SmolStr,       // e.g. "btech.hex"
+    pub driver: SmolStr,       // e.g. "tactics.hex"
     pub schema_version: u32,
     pub status: DomainStatus,
     pub clock: DomainClock,
@@ -521,7 +521,7 @@ pub struct DomainRecord {
 ```
 
 The host is the MUSH room or object carrying `sim.domain` plus a ruleset behavior such as
-`btech.map`. One host has one domain in the first implementation. Multiple domains may be hosted by
+`tactics.map`. One host has one domain in the first implementation. Multiple domains may be hosted by
 separate interior/map objects.
 
 ### 6.2 Clock modes
@@ -552,7 +552,7 @@ read wall time to resolve mechanics.
 **Grounding:** the scheduler already exists. `mush-core`'s `Scheduler` is a min-heap keyed by
 absolute deadlines whose `next_due()` is exactly "the next due instant," and the world task already
 drives it via a `select!` over the command channel and a sleep-until-deadline. Periodic work already
-flows through `reg.tick` with `Coarse`/`Fast`/`Scene` cadences (the btech seam stub already ticks a
+flows through `reg.tick` with `Coarse`/`Fast`/`Scene` cadences (the tactics seam stub already ticks a
 toy domain at 250 ms this way). Build `FixedStep` on `Scheduler`; do not invent a new timer. What is
 genuinely net-new is the *durability* of scheduled state (the scheduler is in-RAM today, so pending
 work is lost on restart) and the tick-commit/replay layer of §6.6 and §9.3 — not the scheduling.
@@ -824,9 +824,9 @@ mod:sim:domain:<domain-id>:commits
 Ruleset data stays under its own namespace:
 
 ```text
-mod:btech:map:<domain-id>
-mod:btech:unit:<obj-id>
-mod:btech:domain:<domain-id>:runtime
+mod:tactics:map:<domain-id>
+mod:tactics:unit:<obj-id>
+mod:tactics:domain:<domain-id>:runtime
 ```
 
 Exact Redis key spelling may change during implementation, but identity, ownership, and atomicity
@@ -880,7 +880,7 @@ A partially understood domain never resumes ticking.
 Ruleset logic emits semantic views, not terminal escape sequences or HTML.
 
 This is the layer that will make or break the tactical experience, and it deserves its own sustained
-effort. The projections a BattleTech engagement actually needs are richer than a single map frame:
+effort. The projections a MechWarrior engagement actually needs are richer than a single map frame:
 
 - **unit status** — the operated unit's heat, movement, weapon-by-weapon status, ammunition, and
   armor/internals by location, as a live self-updating panel;
@@ -904,7 +904,7 @@ is supplied by a reachable map/domain behavior and is permission-gated. The rend
 game rules.
 
 **Grounding — this is a major, mostly-unbuilt workstream, not a thin projection.** The one-protocol
-`OutputEvent`/`Panel` design is real (one semantic event, multiple renderers), and a `btech.map`
+`OutputEvent`/`Panel` design is real (one semantic event, multiple renderers), and a `tactics.map`
 `Panel` feed already exists in the seam stub. But today a *generic* module `Panel` feed renders on
 **web only**: the SSH line renderer drops panel frames silently, the SSH TUI renders only a few
 hardcoded built-in panels (mail/intel/who) via query replies, and the promised text-fallback
@@ -1062,7 +1062,7 @@ belief, group control, and mobility) move to the companion document's testing se
 (`docs/design/07-npc-control-and-tactical-ai.md`, §10), since they exercise the control-automation
 and tactical-AI layer rather than this foundation.
 
-The existing `ruleset-btech` seam tests remain green throughout. Once the real domain APIs cover
+The existing `mush-tactics` seam tests remain green throughout. Once the real domain APIs cover
 their purpose, rewrite those tests against the new generic surface rather than deleting the standing
 coverage.
 
@@ -1080,7 +1080,7 @@ requirements and the public, player-visible behavior the project chooses to supp
 - Write expected behavior and tests from this specification before implementing each subsystem.
 - Record the origin and license of imported map, unit, rules, art, and text data separately from the
   server-code design.
-- Treat permission to implement or distribute BattleTech game content, trademarks, and rules data
+- Treat permission to implement or distribute MechWarrior game content, trademarks, and rules data
   as a separate question from permission to use any existing server source.
 
 If a formally clean-room implementation is required, source-exposed specification authors and
@@ -1120,14 +1120,14 @@ assignment scenarios work without a ruleset-specific tick.
 
 **Exit criterion:** deterministic trace/replay and restart tests pass under load with bounded memory.
 
-### Phase D: BattleTech movement slice
+### Phase D: MechWarrior movement slice
 
-- Replace the toy BattleTech stub state with `btech.map`, `btech.unit`, and `btech.mech` behavior.
+- Replace the toy MechWarrior stub state with `tactics.map`, `tactics.unit`, and `tactics.unit` behavior.
 - Add a hex pose/map schema, startup state, heading, desired/current speed, and movement.
 - Add `STARTUP`, `SHUTDOWN`, `HEADING`, `SPEED`, `TACTICAL`, and map `VIEW` as behavior commands.
 - Add control leases (§8.1). The deterministic link-loss fallback controller that rides those leases
   is companion-doc work and is not required for this slice.
-- Emit visibility-filtered `btech.map` keyframes and deltas.
+- Emit visibility-filtered `tactics.map` keyframes and deltas.
 
 **Exit criterion:** the first five acceptance scenarios work through SSH line mode and one structured
 panel client. (The link-loss/reclaim scenarios are in the companion document, gated on its
@@ -1135,7 +1135,7 @@ automation phases.)
 
 ### Phase E: transport and nested locality
 
-- Add BattleTech bay, mount, embark/egress, carrier transfer, battle armor, infantry cargo, and
+- Add MechWarrior bay, mount, embark/egress, carrier transfer, battle armor, infantry cargo, and
   destruction policies.
 - Add cross-domain connectors and subtree transfer commits.
 
@@ -1153,10 +1153,10 @@ NPC pilots, salience activation, and the optional flash-model route. They follow
 driver first — that is the reusable spine, and it is mostly grounded in existing machinery (the
 `Scheduler`, tick cadences, the `MoveAttempt` veto, the transient scene-state/map-blob store). Then
 pull the **mobility / route-interception** case (companion §9) *forward* as the second cross-ruleset
-proving ground, ahead of the full BattleTech combat slice: it is the "no free teleport, routes are
+proving ground, ahead of the full MechWarrior combat slice: it is the "no free teleport, routes are
 legible" payoff, it is genuinely cross-system (dropships and Uber-for-WoD alike), and it exercises
 coarse legs, connectors, fog-of-war, and promotion-to-live without needing a combat stack. Only then
-harden Phase C's full fixed-step determinism/replay and build Phase D's BattleTech hex slice, with
+harden Phase C's full fixed-step determinism/replay and build Phase D's MechWarrior hex slice, with
 the presentation workstream (§10) running alongside D rather than after it.
 
 ---
@@ -1180,7 +1180,7 @@ the presentation workstream (§10) running alongside D rather than after it.
 - Maps/domains have durable identities and own deterministic ticking.
 - Narrative scenes and simulation domains remain separate but bindable.
 - Real-time state uses compact tick commits plus checkpoints, not per-unit full writes.
-- BattleTech is the first driver, not the generic data model.
+- MechWarrior is the first driver, not the generic data model.
 
 The following decision records (D1–D8) resolve the foundation's open questions. Their recommended
 choices are the normative defaults for this draft; deployments may tune values only where a decision
@@ -1245,7 +1245,7 @@ pub struct CapacitySpec {
 ```
 
 Measures are namespaced and registered with a fixed scale, for example `core.count`,
-`si.mass_g`, `btech.bay_slots`, or `shadowrun.seats`. The generic layer only sums and compares
+`si.mass_g`, `tactics.bay_slots`, or `shadowrun.seats`. The generic layer only sums and compares
 matching measure IDs and never uses floating point. Physical SI measures are encouraged when the
 ruleset genuinely has them, not required. Irregular constraints such as BattleMech repair state,
 door geometry, or a rigger interface remain driver validators which run before the generic atomic

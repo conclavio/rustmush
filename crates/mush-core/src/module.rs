@@ -19,12 +19,12 @@
 //!   current `WriteBatch` (write-through, same atomicity as object writes);
 //! - typed state via [`Registrar::state`] slots living on the
 //!   [`World`](crate::world::World);
-//! - scenes (the BattleTech seam) via [`Ctx::start_scene`] /
+//! - scenes (the tactical seam) via [`Ctx::start_scene`] /
 //!   [`Ctx::end_scene`] / scene ticks / the per-scene state store and map
 //!   blob.
 //!
 //! Comsys, mail, and jobs are built on this API first (M3) as its proving
-//! ground; the btech stub keeps the scene/tick/veto seams green forever.
+//! ground; the tactics stub keeps the scene/tick/veto seams green forever.
 
 use std::any::{Any, TypeId};
 use std::collections::{BTreeSet, HashMap};
@@ -150,7 +150,7 @@ pub struct ModuleBootData {
 }
 
 // ----------------------------------------------------------------------
-// Scenes (the btech seam)
+// Scenes (the tactics seam)
 // ----------------------------------------------------------------------
 
 /// Identifier for one active scene (per-battle instance, roll-log scene,
@@ -166,7 +166,7 @@ impl fmt::Display for SceneId {
 }
 
 /// One active scene: an object set bound to a ruleset-defined kind.
-/// WoD uses scenes lightly (roll logs, beat awards); btech binds a hex map
+/// WoD uses scenes lightly (roll logs, beat awards); tactics binds a hex map
 /// and a fast ticker to one.
 ///
 /// **Boot contract**: scenes are transient world state and scene ids
@@ -174,13 +174,13 @@ impl fmt::Display for SceneId {
 /// the scene's persisted `scene:{id}:*` documents behind. A module that
 /// persists scene state MUST purge stale `scene:*` keys from its namespace
 /// in [`GameModule::on_world_loaded`] (queue `Del` ops for them), or the
-/// next boot's scene #0 interleaves with the orphan's keys. The btech stub
+/// next boot's scene #0 interleaves with the orphan's keys. The tactics stub
 /// demonstrates the pattern.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Scene {
     /// The scene's id.
     pub id: SceneId,
-    /// Module-defined kind, e.g. `"btech.battle"`.
+    /// Module-defined kind, e.g. `"tactics.battle"`.
     pub kind: SmolStr,
     /// The persistence namespace the scene's state/map documents live in —
     /// the module that created the scene (recorded at
@@ -588,7 +588,7 @@ pub struct PanelFeedHandle {
 }
 
 impl PanelFeedHandle {
-    /// The feed id (e.g. `"btech.map"`).
+    /// The feed id (e.g. `"tactics.map"`).
     #[must_use]
     pub fn feed(&self) -> &str {
         &self.feed
@@ -634,7 +634,7 @@ impl PanelFeedHandle {
 /// One weather observation for a room's zone — the reserved `WeatherQuery`
 /// payload (design doc 04 §10.5). Fields are deliberately few and physical:
 /// the weather module (M5) fills them from its state machine; consumers
-/// (WoD perception modifiers, btech to-hit modifiers) read, never mutate.
+/// (WoD perception modifiers, tactics to-hit modifiers) read, never mutate.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WxSnapshot {
     /// The machine state name, e.g. `"clear"`, `"rain"`, `"snow"`.
@@ -649,7 +649,7 @@ pub struct WxSnapshot {
     pub temperature: f32,
 }
 
-/// The reserved environment-query seam (PLAN's btech seam list; design doc
+/// The reserved environment-query seam (PLAN's tactics seam list; design doc
 /// 04 §10.5): rulesets read weather snapshots through this trait, never
 /// through the weather module directly. The weather module (M5) registers
 /// the single provider via [`Registrar::weather_query`]; consumers reach it
@@ -772,7 +772,7 @@ pub enum ContextOutcome {
 }
 
 /// A pushed input mode capturing an actor's raw lines before normal
-/// dispatch — mail compose, chargen wizards, the btech unit console.
+/// dispatch — mail compose, chargen wizards, the tactics unit console.
 ///
 /// The stack is checked **before everything else** in dispatch (even
 /// prefix characters), with one hard escape: a lone `~q` always pops the
@@ -1050,7 +1050,7 @@ pub struct ModuleTables {
     migrations: HashMap<SmolStr, Vec<Migration>>,
     /// migration namespace → the one module that owns its migration set.
     migration_owners: HashMap<SmolStr, SmolStr>,
-    /// The single registered weather provider (the reserved btech seam).
+    /// The single registered weather provider (the reserved tactics seam).
     weather: Option<(SmolStr, Arc<dyn WeatherQuery>)>,
     /// module name → its async-completion handler (the LLM re-entry seam).
     async_completions: HashMap<SmolStr, Arc<dyn AsyncCompletion>>,

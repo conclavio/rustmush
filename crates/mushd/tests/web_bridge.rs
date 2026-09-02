@@ -623,7 +623,7 @@ async fn requests_round_trip_to_correlated_replies() {
             1_300,
             11,
             Query::PanelSubscribe {
-                feed: "btech.map".into(),
+                feed: "tactics.map".into(),
             },
         )
         .await;

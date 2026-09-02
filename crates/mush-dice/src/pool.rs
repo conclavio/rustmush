@@ -3,7 +3,7 @@
 //! A pool mechanic turns a dice *pool size* plus ruleset options into a
 //! serializable, provenance-carrying outcome. Rulesets implement one of these
 //! per system: [`crate::owod20::Owod20Pool`] here, `GunneryRoll` in
-//! `ruleset-btech` later.
+//! `mush-tactics` later.
 
 use serde::Serialize;
 

@@ -1,6 +1,6 @@
 # rustmush â€” Game Systems & Built-ins Design
 
-**Area:** Ruleset plugin API, dice engine, World of Darkness module, BattleTech boundary, comsys, @mail, weather, staff tooling (jobs/notes).
+**Area:** Ruleset plugin API, dice engine, World of Darkness module, MechWarrior boundary, comsys, @mail, weather, staff tooling (jobs/notes).
 **Status:** Design, planning phase. Assumes companion docs cover: core object DB/persistence, command parser/dispatcher, SSH + WebSocket transport and the JSON event protocol, Lua scripting sandbox, and the LLM provider layer. Where this doc needs those, it names the interface it expects and flags it as a cross-area contract.
 
 ---
@@ -8,7 +8,7 @@
 ## 1. Design principles
 
 1. **Rulesets are compiled-in Rust crates behind a trait, not dynamically loaded.** One binary, one workspace, feature-flag optional rulesets. (Justification in Â§3.1.)
-2. **The core knows nothing about d10s or hexes.** It knows: sheets are versioned, schema-described documents attached to objects; rulesets register commands, tick handlers, event hooks, and web panel feeds; rulesets may own opaque per-scene state. Everything WoD-shaped lives in `ruleset-wod`; everything hex-shaped will live in `ruleset-btech`.
+2. **The core knows nothing about d10s or hexes.** It knows: sheets are versioned, schema-described documents attached to objects; rulesets register commands, tick handlers, event hooks, and web panel feeds; rulesets may own opaque per-scene state. Everything WoD-shaped lives in `ruleset-wod`; everything hex-shaped will live in `mush-tactics`.
 3. **Every random outcome flows through one dice engine** with an injectable RNG, so tests are deterministic, rolls are loggable/auditable, and LLM NPCs can only *request* rolls â€” never invent results.
 4. **The web client is fed structured events, never scraped text.** Comsys, mail, weather, and rulesets each own a namespaced event vocabulary; the terminal rendering of the same event is produced server-side from the structured form.
 5. **LLM output is flavor, never state.** Weather states, roll results, sheet values, and damage are deterministic; LLMs narrate around them (weather ambience, NPC dialogue) and act through validated tools.
@@ -27,12 +27,12 @@ rustmush/
     mush-mail/         # @mail
     mush-weather/      # weather cells, climate tables, ambience
     ruleset-wod/       # Chronicles of Darkness 2e (oWoD variant later)
-    ruleset-btech/     # reserved; created as an empty seam-test crate in phase 1 (see Â§6.5)
+    mush-tactics/     # reserved; created as an empty seam-test crate in phase 1 (see Â§6.5)
 ```
 
 Dependency direction: `ruleset-*` â†’ `mush-ruleset` + `mush-dice` + core crates. `mush-comsys` / `mush-mail` / `mush-weather` / `mush-jobs` depend only on core crates (they are built-ins, not rulesets â€” they exist on every game regardless of ruleset). `mush-dice` depends on nothing but `rand` + parser deps, so it's unit-testable in isolation and reusable from Lua bindings.
 
-**Crates (versions verified Aug 2026):** `serde` 1, `serde_json` 1, `thiserror` 2, `rand` 0.9 + `rand_chacha` 0.9 (seedable RNG for tests/replays), `winnow` 0.7 for the dice grammar ([winnow](https://crates.io/crates/winnow)), `schemars` 1.2 for emitting JSON Schema of sheet documents to the web client ([schemars](https://crates.io/crates/schemars/versions)), `smol_str` for interned short strings, `hexx` 0.24 for BattleTech hex math when that phase arrives â€” actively maintained as of Feb 2026 ([hexx](https://lib.rs/crates/hexx), [repo](https://github.com/ManevilleF/hexx)).
+**Crates (versions verified Aug 2026):** `serde` 1, `serde_json` 1, `thiserror` 2, `rand` 0.9 + `rand_chacha` 0.9 (seedable RNG for tests/replays), `winnow` 0.7 for the dice grammar ([winnow](https://crates.io/crates/winnow)), `schemars` 1.2 for emitting JSON Schema of sheet documents to the web client ([schemars](https://crates.io/crates/schemars/versions)), `smol_str` for interned short strings, `hexx` 0.24 for MechWarrior hex math when that phase arrives â€” actively maintained as of Feb 2026 ([hexx](https://lib.rs/crates/hexx), [repo](https://github.com/ManevilleF/hexx)).
 
 ---
 
@@ -47,7 +47,7 @@ Rejected: **dynamic loading via `libloading`** â€” Rust has no stable ABI; 
 ### 3.2 Core traits
 
 ```rust
-pub type RulesetId = smol_str::SmolStr;       // "wod", "btech"
+pub type RulesetId = smol_str::SmolStr;       // "wod", "mechwarrior"
 
 pub trait Ruleset: Send + Sync + 'static {
     fn id(&self) -> RulesetId;
@@ -79,7 +79,7 @@ impl RulesetRegistrar<'_> {
     /// collisions with core verbs; rulesets conventionally use +prefixed verbs.
     pub fn command(&mut self, spec: CommandSpec, h: Arc<dyn CommandHandler>);
 
-    /// Periodic work. Cadence is per-handler; BattleTech needs sub-second later,
+    /// Periodic work. Cadence is per-handler; MechWarrior needs sub-second later,
     /// so the enum carries Duration from day one even though WoD uses Coarse.
     pub fn tick(&mut self, cadence: TickCadence, h: Arc<dyn TickHandler>);
 
@@ -87,7 +87,7 @@ impl RulesetRegistrar<'_> {
     pub fn hook(&mut self, point: HookPoint, h: Arc<dyn EventHook>);
 
     /// Reserve a namespaced web-panel event channel, e.g. "wod.sheet",
-    /// "btech.map". The web protocol routes `panel.<name>.*` frames.
+    /// "tactics.map". The web protocol routes `panel.<name>.*` frames.
     pub fn panel_feed(&mut self, name: &str) -> PanelFeedHandle;
 
     /// Expose read-only functions into the Lua sandbox under rs.<id>.*
@@ -99,13 +99,13 @@ impl RulesetRegistrar<'_> {
 
 pub enum TickCadence {
     Coarse(std::time::Duration),   // >= 1s; weather, regen, upkeep
-    Fast(std::time::Duration),     // sub-second; reserved for btech (Â§6)
+    Fast(std::time::Duration),     // sub-second; reserved for tactics (Â§6)
     Scene,                         // per-scene ticker, started on demand (Â§6)
 }
 
 pub enum HookPoint {
     CharacterCreated, CharacterConnected, CharacterDisconnected,
-    MoveAttempt,        // veto-capable: btech movement rules, wod barriers
+    MoveAttempt,        // veto-capable: tactics movement rules, wod barriers
     LookRendered,       // append ruleset lines to room desc (weather uses core version of this)
     SheetChanged,       // ruleset reacts to staff edits
     SceneStarted, SceneEnded,
@@ -202,7 +202,7 @@ Two layers: a **generic expression evaluator** and **pool mechanics** plugged pe
 
 ### 4.1 Generic expressions
 
-Grammar (winnow 0.7): `NdS[!][kh N|kl N][+|- mod]`, integers, `+`/`-` chains, parentheses. Examples: `3d6+2`, `2d10kh1`, `1d20+5`, `4d6kh3`. This serves BattleTech (`2d6` cluster/to-hit), misc staff rolls, and Lua's `rs.dice.roll("3d6")`.
+Grammar (winnow 0.7): `NdS[!][kh N|kl N][+|- mod]`, integers, `+`/`-` chains, parentheses. Examples: `3d6+2`, `2d10kh1`, `1d20+5`, `4d6kh3`. This serves MechWarrior (`2d6` cluster/to-hit), misc staff rolls, and Lua's `rs.dice.roll("3d6")`.
 
 ```rust
 pub fn parse(expr: &str) -> Result<DiceExpr, DiceParseError>;
@@ -229,7 +229,7 @@ pub trait PoolMechanic: Send + Sync {
 }
 ```
 
-`ruleset-wod` implements `CofdPool` (and later `Owod20Pool`); `ruleset-btech` implements `GunneryRoll` etc. Every outcome carries the full `Vec<DieRecord>` so terminal, web, and logs render from the same truth.
+`ruleset-wod` implements `CofdPool` (and later `Owod20Pool`); `mush-tactics` implements `GunneryRoll` etc. Every outcome carries the full `Vec<DieRecord>` so terminal, web, and logs render from the same truth.
 
 ---
 
@@ -310,37 +310,37 @@ pub struct AgentCapabilityProfile {
 
 ---
 
-## 6. BattleTech module boundary (design now, build later)
+## 6. MechWarrior module boundary (design now, build later)
 
 ### 6.1 What btmux does (the requirements bar)
 
 Hex maps with terrain types and elevation per hex; unit templates (mech/vehicle/infantry variants with tonnage, movement curves, armor/internal structure by location, weapon inventories with range brackets and ammo); movement modes (walk/run/jump) resolved in real time; heat scale with shutdown/ammo-risk thresholds; weapon attacks with to-hit math (movement of both parties, range, terrain, heat) and hit-location tables; damage transfer (armor â†’ internal â†’ crit rolls â†’ location destruction cascade); per-unit real-time state (facing, speed, heat, target lock) advanced continuously, not per-command.
 
-### 6.2 Core facilities btech needs that WoD does not
+### 6.2 Core facilities tactics needs that WoD does not
 
 | Need | Reserved extension point |
 |---|---|
 | Sub-second combat tick | `TickCadence::Fast(Duration)` + `TickCadence::Scene` already in the enum (Â§3.2). **Cross-area contract:** the event loop must support dynamic timer registration/deregistration at runtime, per scene. |
-| Per-battle instances | `SceneId` in core: a scene binds an object set + a ruleset + optional ticker. `HookPoint::SceneStarted/Ended` exists now; WoD uses scenes lightly (roll logs, beat awards), btech uses them heavily. |
+| Per-battle instances | `SceneId` in core: a scene binds an object set + a ruleset + optional ticker. `HookPoint::SceneStarted/Ended` exists now; WoD uses scenes lightly (roll logs, beat awards), tactics uses them heavily. |
 | Per-unit mutable state | `RulesetStateStore`: core-provided keyed blob store `(SceneId, ObjId, RulesetId) -> Value` with in-memory working set + periodic persistence. Units are ordinary objects; their combat state lives here, not in attributes. |
 | Map storage | `MapBlob` per scene: ruleset-defined binary/CBOR blob, core provides CRUD + snapshot persistence. Core never interprets it. |
-| Web map panel | `panel_feed("btech.map")` reserved via the existing registrar call. **Cross-area contract with the web protocol:** panel frames support (a) namespaced event types `panel.<feed>.<evt>`, (b) client capability negotiation (unknown feeds ignored gracefully), (c) a delta+keyframe pattern (full map on subscribe, hex/unit deltas after) â€” the protocol must not assume every event is self-contained prose-adjacent JSON. |
-| Command context capture | When piloting, bare input (`heading 120`, `fire 1`) routes to the unit, not the room. Same "input context stack" the parser area builds for mail compose and chargen â€” btech pushes a `UnitConsole` context. Reserve it now. |
-| Movement veto/override | `HookPoint::MoveAttempt` (veto-capable) exists now â€” btech replaces room-exit movement with hex movement inside scenes. |
-| Environment queries | `WeatherQuery` (Â§10.5) â€” btech reads visibility/precipitation for to-hit mods. |
+| Web map panel | `panel_feed("tactics.map")` reserved via the existing registrar call. **Cross-area contract with the web protocol:** panel frames support (a) namespaced event types `panel.<feed>.<evt>`, (b) client capability negotiation (unknown feeds ignored gracefully), (c) a delta+keyframe pattern (full map on subscribe, hex/unit deltas after) â€” the protocol must not assume every event is self-contained prose-adjacent JSON. |
+| Command context capture | When piloting, bare input (`heading 120`, `fire 1`) routes to the unit, not the room. Same "input context stack" the parser area builds for mail compose and chargen â€” tactics pushes a `UnitConsole` context. Reserve it now. |
+| Movement veto/override | `HookPoint::MoveAttempt` (veto-capable) exists now â€” tactics replaces room-exit movement with hex movement inside scenes. |
+| Environment queries | `WeatherQuery` (Â§10.5) â€” tactics reads visibility/precipitation for to-hit mods. |
 
 ### 6.3 No-breaking-changes checklist
 
-The following must be true in phase 1 even though only WoD ships, and is verified by a **stub `ruleset-btech` crate** containing a toy ruleset (one fast ticker, one scene type, one panel feed emitting deltas, one `MoveAttempt` veto) kept compiling and integration-tested from the start:
+The following must be true in phase 1 even though only WoD ships, and is verified by a **stub `mush-tactics` crate** containing a toy ruleset (one fast ticker, one scene type, one panel feed emitting deltas, one `MoveAttempt` veto) kept compiling and integration-tested from the start:
 
 1. `TickCadence` has `Fast`/`Scene` variants and the scheduler honors dynamic add/remove.
 2. `SceneId` exists in core object model; hooks fire.
 3. `RulesetStateStore` and `MapBlob` APIs exist (backed naively at first).
 4. Web protocol has panel namespacing + capability negotiation + delta frames.
 5. Parser has an input context stack.
-6. `Ruleset::register` is the *only* wiring point â€” adding btech touches config and `Cargo.toml`, zero core code.
+6. `Ruleset::register` is the *only* wiring point â€” adding tactics touches config and `Cargo.toml`, zero core code.
 
-Hex math itself (`hexx`), heat curves, hit tables: entirely internal to `ruleset-btech`, no reservation needed.
+Hex math itself (`hexx`), heat curves, hit tables: entirely internal to `mush-tactics`, no reservation needed.
 
 ---
 
@@ -466,13 +466,13 @@ pub trait WeatherQuery: Send + Sync {
 }
 ```
 
-Exposed on `WorldCtx` and to Lua as `rs.weather.current(zone)`. WoD uses visibility for perception-roll modifiers via an optional `+roll` auto-modifier; btech will map `visibility/precip` onto to-hit modifiers. Rulesets read snapshots; they never mutate weather.
+Exposed on `WorldCtx` and to Lua as `rs.weather.current(zone)`. WoD uses visibility for perception-roll modifiers via an optional `+roll` auto-modifier; tactics will map `visibility/precip` onto to-hit modifiers. Rulesets read snapshots; they never mutate weather.
 
 ---
 
 ## 11. Phased implementation
 
-**Phase 1 â€” skeleton + seams:** `mush-ruleset` traits, `SheetSchema`/`SheetDoc`, registrar, `mush-dice` (grammar + generic eval, seeded-RNG golden tests), stub `ruleset-btech` seam test (Â§6.3), `mush-jobs` core. *Exit: toy ruleset registers a command and a fast ticker; sheets round-trip with validation and migration.*
+**Phase 1 â€” skeleton + seams:** `mush-ruleset` traits, `SheetSchema`/`SheetDoc`, registrar, `mush-dice` (grammar + generic eval, seeded-RNG golden tests), stub `mush-tactics` seam test (Â§6.3), `mush-jobs` core. *Exit: toy ruleset registers a command and a fast ticker; sheets round-trip with validation and migration.*
 
 **Phase 2 â€” comsys + mail:** full Â§7/Â§8 including web feeds and unread cursors; input context stack lands (parser area) for mail compose. *Exit: two clients chat on a colored channel with web tabs + backlog; mail with folders/quotas/notifications.*
 
@@ -484,12 +484,12 @@ Exposed on `WorldCtx` and to Lua as `rs.weather.current(zone)`. WoD uses visibil
 
 **Phase 6 â€” NPC grounding:** `agent_profile`, `wod_roll` agent tool, narration/outcome consistency check with the LLM area.
 
-**Phase 7+ â€” btech:** grow the stub crate: hexx maps, unit templates, scene tickers, map panel deltas â€” touching only reserved seams (that's the acceptance test of this whole design).
+**Phase 7+ â€” tactics:** grow the stub crate: hexx maps, unit templates, scene tickers, map panel deltas â€” touching only reserved seams (that's the acceptance test of this whole design).
 
 ## 12. Risks
 
 - **Schema expressiveness creep:** CofD conditions/tilts and per-template powers will pressure `FieldType` toward a type system. Mitigation: `List<Text>`/`Map` escape hatches plus ruleset-side interpretation; resist adding computed logic beyond `DerivedExpr`.
-- **The btech seams are speculative:** reserved APIs nobody exercises rot. Mitigation is structural â€” the stub seam-test crate runs in CI from phase 1.
+- **The tactics seams are speculative:** reserved APIs nobody exercises rot. Mitigation is structural â€” the stub seam-test crate runs in CI from phase 1.
 - **Cross-area contract density:** this area leans on the parser's input context stack, the protocol's panel namespacing/deltas, and the event loop's dynamic timers. Each is called out above; they need to be in those areas' phase-1 scope or phases 2/7 here slip.
 - **Weather/comsys spam and LLM flavor quality:** both are tuning problems; defaults above (jittered ambience, empty-room suppression, staff-reviewable line cache) are the guardrails.
 

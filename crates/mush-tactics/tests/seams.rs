@@ -1,26 +1,26 @@
 //! The standing seam test (design doc 04 §6.3): every reserved core
-//! extension point the real btech engine will need, proven through the toy
-//! [`BtechStub`] over the real [`Engine`] via `mush-testkit`. This file is
+//! extension point the real tactics engine will need, proven through the toy
+//! [`TacticsStub`] over the real [`Engine`] via `mush-testkit`. This file is
 //! the acceptance test of treaty ruling 4 — it stays green forever.
 
 use mush_core::{Audience, GOD, LIMBO, ModuleWrite, SceneId};
 use mush_proto::{OutputEvent, PanelFrameKind};
 use mush_testkit::{TestWorld, assert_actor_saw};
-use ruleset_btech::{
-    BATTLE_TICK, BtechState, BtechStub, HEXLOCK_MSG, MAP_FEED, NS, PULSE_TICK, SCENE_KIND,
+use mush_tactics::{
+    BATTLE_TICK, TacticsState, TacticsStub, HEXLOCK_MSG, MAP_FEED, NS, PULSE_TICK, SCENE_KIND,
 };
 
-fn btech_world() -> TestWorld {
-    TestWorld::with_modules(vec![Box::new(BtechStub::new())])
+fn tactics_world() -> TestWorld {
+    TestWorld::with_modules(vec![Box::new(TacticsStub::new())])
 }
 
 fn pulses(tw: &TestWorld) -> u64 {
-    tw.world().module_state::<BtechState>().unwrap().pulses
+    tw.world().module_state::<TacticsState>().unwrap().pulses
 }
 
 fn active_battle(tw: &TestWorld, who: mush_core::ObjId) -> Option<SceneId> {
     tw.world()
-        .module_state::<BtechState>()
+        .module_state::<TacticsState>()
         .unwrap()
         .battles
         .get(&who)
@@ -53,7 +53,7 @@ fn panel_frames(
 
 #[test]
 fn fast_tick_fires_at_250ms_cadence() {
-    let mut tw = btech_world();
+    let mut tw = tactics_world();
     assert_eq!(pulses(&tw), 0);
     // Armed one period after construction (now = 0).
     tw.fire_due(249);
@@ -82,7 +82,7 @@ fn fast_tick_fires_at_250ms_cadence() {
 
 #[test]
 fn battle_scene_ticks_state_persists_and_panels_stream() {
-    let mut tw = btech_world();
+    let mut tw = tactics_world();
     let pilot = tw.spawn_player("Natasha");
     tw.take_module_ops(); // discard fixture noise
 
@@ -103,7 +103,7 @@ fn battle_scene_ticks_state_persists_and_panels_stream() {
     );
 
     // The map blob and the initial state snapshot were persisted as module
-    // ops under ns "btech" — write-through, same channel as everything.
+    // ops under ns "tactics" — write-through, same channel as everything.
     let ops = tw.take_module_ops();
     assert!(ops.iter().all(|op| op.ns == NS));
     let map_key = format!("scene:{}:map", scene.0);
@@ -186,14 +186,14 @@ fn battle_scene_ticks_state_persists_and_panels_stream() {
     );
 
     // The battle ticker is gone with the scene: later fires change nothing.
-    let before = tw.world().module_state::<BtechState>().unwrap().clone();
+    let before = tw.world().module_state::<TacticsState>().unwrap().clone();
     tw.fire_due(750);
     assert!(
         tw.take_module_ops().is_empty(),
         "no scene writes after stop"
     );
     assert_eq!(
-        tw.world().module_state::<BtechState>().unwrap().battles,
+        tw.world().module_state::<TacticsState>().unwrap().battles,
         before.battles
     );
 }
@@ -204,7 +204,7 @@ fn battle_scene_ticks_state_persists_and_panels_stream() {
 
 #[test]
 fn hexlock_marker_vetoes_movement_and_teleport() {
-    let mut tw = btech_world();
+    let mut tw = tactics_world();
     let pilot = tw.spawn_player("Natasha");
     tw.run(GOD, "@dig Arena=enter;in,out;o");
     let arena = tw
@@ -215,10 +215,10 @@ fn hexlock_marker_vetoes_movement_and_teleport() {
         .id;
 
     // The marker is registered: settable through plain @set.
-    let events = tw.run(GOD, &format!("@set #{}=btech:hexlock", arena.0));
+    let events = tw.run(GOD, &format!("@set #{}=tactics:hexlock", arena.0));
     assert_actor_saw(&events, GOD, "Set.");
-    let (canonical, owner) = tw.registry().marker_owner("BTECH:HEXLOCK").unwrap();
-    assert_eq!((canonical.as_str(), owner.as_str()), ("btech:hexlock", NS));
+    let (canonical, owner) = tw.registry().marker_owner("TACTICS:HEXLOCK").unwrap();
+    assert_eq!((canonical.as_str(), owner.as_str()), ("tactics:hexlock", NS));
 
     // Exit traversal is vetoed with the themed message; nobody moves.
     let events = tw.run(pilot, "enter");
@@ -231,7 +231,7 @@ fn hexlock_marker_vetoes_movement_and_teleport() {
     assert_eq!(tw.world().get(GOD).unwrap().location, Some(LIMBO));
 
     // Clearing the marker restores movement.
-    let events = tw.run(GOD, &format!("@set #{}=!btech:hexlock", arena.0));
+    let events = tw.run(GOD, &format!("@set #{}=!tactics:hexlock", arena.0));
     assert_actor_saw(&events, GOD, "Cleared.");
     tw.run(pilot, "enter");
     assert_eq!(tw.world().get(pilot).unwrap().location, Some(arena));
@@ -245,8 +245,8 @@ fn hexlock_marker_vetoes_movement_and_teleport() {
 fn stub_wires_through_registration_alone() {
     // Constructing the engine with the module is ALL the wiring there is:
     // the feed, marker, ticks, and command all exist afterwards — no core
-    // code knows btech.
-    let tw = btech_world();
+    // code knows tactics.
+    let tw = tactics_world();
     assert!(
         tw.registry()
             .panel_feeds()
@@ -255,7 +255,7 @@ fn stub_wires_through_registration_alone() {
     );
     assert!(tw.registry().tick_reg(NS, BATTLE_TICK).is_some());
     assert!(tw.registry().spec_of("+btest").is_some());
-    assert!(tw.world().module_state::<BtechState>().is_some());
+    assert!(tw.world().module_state::<TacticsState>().is_some());
 }
 
 // ---------------------------------------------------------------------
@@ -268,7 +268,7 @@ fn stub_wires_through_registration_alone() {
 /// stub's `ObjDestroyed` observer is the documented pattern.
 #[test]
 fn destroying_the_starter_ends_the_battle_and_its_ticker() {
-    let mut tw = btech_world();
+    let mut tw = tactics_world();
     let pilot = tw.spawn_player("Natasha");
     tw.run(pilot, "+btest/start");
     let scene = active_battle(&tw, pilot).expect("battle open");
@@ -281,7 +281,7 @@ fn destroying_the_starter_ends_the_battle_and_its_ticker() {
     );
     assert!(
         tw.world()
-            .module_state::<BtechState>()
+            .module_state::<TacticsState>()
             .unwrap()
             .battles
             .is_empty(),
@@ -314,7 +314,7 @@ fn boot_purges_stale_scene_documents() {
     use mush_core::ModuleBootData;
     use smol_str::SmolStr;
 
-    let mut tw = btech_world();
+    let mut tw = tactics_world();
     tw.take_module_ops();
     let boot = HashMap::from([(
         SmolStr::new(NS),
@@ -347,12 +347,12 @@ fn boot_purges_stale_scene_documents() {
     );
 }
 
-/// The reserved `WeatherQuery` seam (PLAN's btech seam list): registered
+/// The reserved `WeatherQuery` seam (PLAN's tactics seam list): registered
 /// through the registrar, discoverable through the registry, readable end
 /// to end.
 #[test]
 fn weather_query_seam_is_registered_and_readable() {
-    let tw = btech_world();
+    let tw = tactics_world();
     let (owner, provider) = tw
         .registry()
         .weather_query()

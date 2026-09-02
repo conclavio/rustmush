@@ -81,7 +81,7 @@ name_id!(MountId);
 /// needs. The passive driver stores it verbatim.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RulesValue {
-    /// The schema id (`"btech.hex"`, …).
+    /// The schema id (`"tactics.hex"`, …).
     pub schema: SmolStr,
     /// Schema version.
     pub version: u32,
