@@ -83,11 +83,11 @@ name_id!(StationId);
 // ----------------------------------------------------------------------
 
 /// An opaque, schema-tagged value whose interpretation belongs to a domain
-/// driver (design §5.1): a hex pose, a berth transform, whatever the ruleset
-/// needs. The passive driver stores it verbatim.
+/// driver (design §5.1): a Cartesian pose, a berth transform, whatever the
+/// ruleset needs. The passive driver stores it verbatim.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RulesValue {
-    /// The schema id (`"tactics.hex"`, …).
+    /// The schema id (`"tactics.pose"`, …).
     pub schema: SmolStr,
     /// Schema version.
     pub version: u32,
@@ -480,6 +480,23 @@ impl SpatialState {
             .get(&obj)
             .and_then(|p| p.unplaced.as_ref())
             .is_some_and(|u| u.quarantined)
+    }
+
+    /// Whether `obj` is bound into the simulation in ANY way: placed,
+    /// quarantined, or acting as infrastructure (a domain host, an interior
+    /// space, a mount host, or a station host). A route traveler must be bound
+    /// in NONE of these (the EITHER-journey-OR-sim-placed invariant). This is
+    /// the single predicate `route_ineligible` (create) and `install_journeys`
+    /// (boot) share, so the two never disagree — note `is_placed` checks the
+    /// record's PARENT, so a lingering `Unplaced` record is correctly NOT bound.
+    #[must_use]
+    pub fn is_sim_bound(&self, obj: ObjId) -> bool {
+        self.is_placed(obj)
+            || self.is_quarantined(obj)
+            || self.domain_of_host(obj).is_some()
+            || self.spaces.contains_key(&obj)
+            || self.mounts.contains_key(&obj)
+            || self.stations.contains_key(&obj)
     }
 
     /// The domain a host object carries, if any (non-retired).

@@ -136,9 +136,14 @@ pub(crate) fn persist_journey(out: &mut mush_core::Outbox, j: &Journey) {
     }));
 }
 pub(crate) fn persist_journey_del(out: &mut mush_core::Outbox, traveler: ObjId) {
+    persist_key_del(out, journey_key(traveler));
+}
+/// Delete a raw journey doc key (used at boot to purge an unparseable doc so it
+/// does not re-error on every subsequent boot).
+pub(crate) fn persist_key_del(out: &mut mush_core::Outbox, key: SmolStr) {
     out.defer(Deferred::Persist(ModuleOp {
         ns: SmolStr::new_static("sim"),
-        op: ModuleWrite::Del { key: journey_key(traveler) },
+        op: ModuleWrite::Del { key },
     }));
 }
 
@@ -268,12 +273,12 @@ pub(crate) fn on_traveler_destroyed(ctx: &mut Ctx<'_>, obj: ObjId) {
 
 /// Pause `traveler`'s journey (an interception). Returns the room it was
 /// stopped in on success.
-pub(crate) fn pause(rs: &mut RouteState, traveler: ObjId, now: i64) -> Result<(), String> {
+pub(crate) fn pause(rs: &mut RouteState, traveler: ObjId, now: i64, enforce_grace: bool) -> Result<(), String> {
     let j = rs.journeys.get_mut(&traveler).ok_or("It is not going anywhere.")?;
     if j.status != JourneyStatus::Traveling {
         return Err("It is already stopped.".into());
     }
-    if now < j.grace_until {
+    if enforce_grace && now < j.grace_until {
         return Err("It slips past before you can act — try again in a moment.".into());
     }
     j.status = JourneyStatus::Paused;

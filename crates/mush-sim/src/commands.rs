@@ -1054,7 +1054,7 @@ fn route_ctl(ctx: &mut Ctx<'_>, pausing: bool) -> Result<(), CmdError> {
     let rec = {
         let rs = rs_mut(ctx);
         if pausing {
-            route::pause(rs, traveler, now)
+            route::pause(rs, traveler, now, false)
         } else {
             route::resume(rs, traveler, now)
         }
@@ -1093,7 +1093,7 @@ pub(crate) fn intercept_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let now = ctx.w.now();
     let rec = {
         let rs = rs_mut(ctx);
-        route::pause(rs, traveler, now).map_err(CmdError::msg)?;
+        route::pause(rs, traveler, now, true).map_err(CmdError::msg)?;
         rs.journeys.get(&traveler).cloned()
     };
     if let Some(j) = &rec {
@@ -1105,6 +1105,12 @@ pub(crate) fn intercept_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .text(" waylays ")
         .span(mush_core::output::name_span(ctx.w, traveler))
         .text("!");
+    // NOTE (epistemic layer): this names `traveler` to the whole room, gated on
+    // the interceptor as subject. A concealed traveler's name/presence would
+    // leak to occupants who cannot perceive it. When per-observer name
+    // projection exists (Obfuscate/Umbra/&c.), this fan-out must project the
+    // traveler per observer instead of naming it uniformly. Harmless today —
+    // no concealment mechanic renders yet.
     ctx.out.to_room_from(room, vec![], ctx.actor, mush_proto::OutputEvent::Narrative { kind: mush_proto::NarrativeKind::Emit, actor: None, text });
     ctx.out.sys_to_actor(ctx.actor, "sim", format!("You stop {}.", display_name(ctx.w, traveler)));
     Ok(())

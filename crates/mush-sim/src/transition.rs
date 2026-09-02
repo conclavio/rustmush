@@ -91,6 +91,10 @@ pub enum SpatialError {
     /// The object is not placed / not a spatial entity.
     #[error("{0} is not placed")]
     NotPlaced(ObjId),
+    /// The object is on a route: it is EITHER traveling OR sim-placed, never
+    /// both (the mirror of `route_ineligible`).
+    #[error("{0} is en route; @route/abort it before placing it in the simulation")]
+    EnRoute(ObjId),
     /// A projection move would be refused by the world.
     #[error("cannot project {obj} into {dest}: {reason}")]
     Projection {
@@ -232,6 +236,17 @@ fn projections_for(
 }
 
 /// Plan `t` against `st`/`w`. Pure: nothing is mutated.
+/// Refuse to sim-bind an object that is mid-journey — the placement-side half
+/// of the EITHER-journey-OR-sim-placed invariant (`route_ineligible` is the
+/// route-side half). Enforced in the validate stage, so a refusal mutates
+/// nothing.
+fn route_free(w: &World, obj: ObjId) -> Result<(), SpatialError> {
+    if w.module_state::<crate::route::RouteState>().is_some_and(|rs| rs.is_traveling(obj)) {
+        return Err(SpatialError::EnRoute(obj));
+    }
+    Ok(())
+}
+
 pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, SpatialError> {
     let mut plan = Plan::default();
     match t {
@@ -239,6 +254,7 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
             let obj = *obj;
             live(w, obj)?;
             needs(w, obj, "sim.participant")?;
+            route_free(w, obj)?;
             let parent_obj = match parent {
                 SpatialParent::Direct { domain, .. } => {
                     let d = st.domains.get(domain).ok_or(SpatialError::NoSuchDomain(*domain))?;
@@ -384,6 +400,7 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
         Transition::Space { space, anchor } => {
             let space = *space;
             live(w, space)?;
+            route_free(w, space)?;
             // The base record: keep an existing one's compartments/rooms, or a
             // fresh Unanchored shell whose sole room is the space itself.
             let base = st.spaces.get(&space).cloned().unwrap_or_else(|| InteriorSpaceRecord {

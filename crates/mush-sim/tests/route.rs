@@ -205,3 +205,170 @@ fn a_route_survives_a_reboot_and_continues() {
     sweep_at(&mut tw2, 1010);
     assert_eq!(loc(&tw2, fx2.car), Some(fx2.r2), "resumed from where it was");
 }
+
+// ---------------------------------------------------------------------------
+// M30 hardening regressions (verify workflow wk6x3a1o0)
+// ---------------------------------------------------------------------------
+
+fn bind() -> mush_core::BehaviorBinding {
+    mush_core::BehaviorBinding { schema_version: 1, attached_by: GOD, attached_at: 0 }
+}
+/// Fold this world's pending sim module writes into a boot kv (last-write-wins).
+fn fold_ops(tw: &mut TestWorld) -> Vec<(smol_str::SmolStr, serde_json::Value)> {
+    let mut kv: Vec<(smol_str::SmolStr, serde_json::Value)> = Vec::new();
+    for op in tw.take_module_ops() {
+        match op.op {
+            mush_core::ModuleWrite::JsonSet { key, value } => {
+                kv.retain(|(k, _)| *k != key);
+                kv.push((key, value));
+            }
+            mush_core::ModuleWrite::Del { key } => kv.retain(|(k, _)| *k != key),
+            mush_core::ModuleWrite::StreamAppend { .. } => {}
+        }
+    }
+    kv
+}
+fn boot_data(kv: Vec<(smol_str::SmolStr, serde_json::Value)>) -> std::collections::HashMap<smol_str::SmolStr, mush_core::ModuleBootData> {
+    std::collections::HashMap::from([(smol_str::SmolStr::new("sim"), mush_core::ModuleBootData { kv, streams: std::collections::HashMap::new() })])
+}
+
+#[test]
+fn placing_a_traveling_object_into_the_sim_is_refused() {
+    // Cluster A: the placement side mirrors route_ineligible — a live traveler
+    // cannot be sim-placed (EITHER journey OR sim-placed, never both).
+    let mut tw = boot();
+    tw.set_now(1000);
+    let fx = fixture(&mut tw);
+    let part = mush_core::BehaviorId::new("sim.participant").unwrap();
+    let dom = mush_core::BehaviorId::new("sim.domain").unwrap();
+    tw.world_mut().attach_behavior(fx.car, part, bind()).unwrap();
+    tw.world_mut().attach_behavior(fx.start, dom, bind()).unwrap();
+    ok(&mut tw, GOD, &format!("@domain/create #{}=sim.passive", fx.start.0));
+    route3(&mut tw, &fx);
+    let t = texts(&tw.run(GOD, &format!("@spatial/place/domain #{}=0", fx.car.0)));
+    assert!(t.contains("en route"), "placing a traveler is refused: {t}");
+    assert!(status(&tw, fx.car).is_some(), "the journey is untouched");
+}
+
+#[test]
+fn a_reboot_keeps_a_journey_whose_traveler_has_a_lingering_unplaced_record() {
+    // Cluster B regression: create-eligibility and boot-eligibility must agree.
+    // An object placed then UNPLACED keeps an `Unplaced` placement record
+    // (is_placed()==false, but placements.contains_key()==true), so it is
+    // routable — its journey must SURVIVE reboot, not be dropped + doc-deleted.
+    let part = mush_core::BehaviorId::new("sim.participant").unwrap();
+    let dom = mush_core::BehaviorId::new("sim.domain").unwrap();
+    let mut tw = boot();
+    tw.set_now(1000);
+    let fx = fixture(&mut tw);
+    tw.world_mut().attach_behavior(fx.car, part, bind()).unwrap();
+    tw.world_mut().attach_behavior(fx.start, dom, bind()).unwrap();
+    ok(&mut tw, GOD, &format!("@domain/create #{}=sim.passive", fx.start.0));
+    ok(&mut tw, GOD, &format!("@spatial/place/domain #{}=0", fx.car.0));
+    ok(&mut tw, GOD, &format!("@spatial/unplace #{}", fx.car.0)); // lingering Unplaced record
+    route3(&mut tw, &fx);
+    assert_eq!(status(&tw, fx.car), Some(JourneyStatus::Traveling));
+    let kv = fold_ops(&mut tw);
+    let mut tw2 = boot();
+    tw2.set_now(1000);
+    let fx2 = fixture(&mut tw2);
+    tw2.world_mut().attach_behavior(fx2.car, mush_core::BehaviorId::new("sim.participant").unwrap(), bind()).unwrap();
+    tw2.world_mut().attach_behavior(fx2.start, mush_core::BehaviorId::new("sim.domain").unwrap(), bind()).unwrap();
+    tw2.modules_loaded(boot_data(kv));
+    assert_eq!(
+        status(&tw2, fx2.car),
+        Some(JourneyStatus::Traveling),
+        "journey survived despite the traveler's lingering Unplaced record"
+    );
+}
+
+#[test]
+fn a_reboot_round_trips_route_state_including_a_paused_journey() {
+    // Findings 0/15: full RouteState field-for-field round-trip, and a Paused
+    // journey restores as Paused (never silently promoted to Traveling).
+    let mut tw = boot();
+    tw.set_now(1000);
+    let fx = fixture(&mut tw);
+    route3(&mut tw, &fx); // car: 3 legs
+    let van = tw.world_mut().create(ObjKind::Thing, "Van", GOD, Some(fx.start)).unwrap();
+    ok(&mut tw, GOD, &format!("@route #{}=#{}:5 #{}:5", van.0, fx.r1.0, fx.r2.0));
+    sweep_at(&mut tw, 1005); // both advance to r1
+    ok(&mut tw, GOD, &format!("@route/pause #{}", van.0));
+    assert_eq!(status(&tw, van), Some(JourneyStatus::Paused));
+    let before = rstate(&tw).clone();
+    let kv = fold_ops(&mut tw);
+    let mut tw2 = boot();
+    tw2.set_now(1005);
+    let fx2 = fixture(&mut tw2);
+    let van2 = tw2.world_mut().create(ObjKind::Thing, "Van", GOD, Some(fx2.r1)).unwrap();
+    tw2.modules_loaded(boot_data(kv));
+    assert_eq!(*rstate(&tw2), before, "RouteState round-trips field-for-field across reboot");
+    assert_eq!(status(&tw2, van2), Some(JourneyStatus::Paused), "the paused journey restored as Paused");
+}
+
+#[test]
+fn resume_grace_blocks_player_reinterception_but_not_staff_pause() {
+    // Findings 9/11/16: RESUME_GRACE_S stops a player re-waylaying immediately,
+    // but staff @route/pause bypasses the anti-grief window.
+    let mut tw = boot();
+    tw.set_now(1000);
+    let fx = fixture(&mut tw);
+    route3(&mut tw, &fx);
+    let ann = tw.spawn_player("Ann");
+    tw.world_mut().move_to(ann, fx.r1).unwrap();
+    sweep_at(&mut tw, 1005); // car -> r1, where Ann waits
+    ok(&mut tw, ann, &format!("+intercept #{}", fx.car.0));
+    assert_eq!(status(&tw, fx.car), Some(JourneyStatus::Paused));
+    ok(&mut tw, GOD, &format!("@route/resume #{}", fx.car.0)); // grace_until = now + 5
+    // Player re-intercept within the grace window is refused.
+    let ev = tw.run(ann, &format!("+intercept #{}", fx.car.0));
+    assert!(has_error(&ev), "re-intercept within grace is refused: {}", texts(&ev));
+    assert_eq!(status(&tw, fx.car), Some(JourneyStatus::Traveling), "still traveling after the refused re-intercept");
+    // Staff @route/pause bypasses the grace.
+    ok(&mut tw, GOD, &format!("@route/pause #{}", fx.car.0));
+    assert_eq!(status(&tw, fx.car), Some(JourneyStatus::Paused), "staff can re-halt within the resume grace");
+}
+
+#[test]
+fn an_unenterable_leg_aborts_and_retires_the_journey() {
+    // Finding 10: the move_to-fails branch (a leg's destination became
+    // unenterable mid-route). We force `can_move_to` to fail by making the next
+    // leg room a descendant of the traveler (a cycle) — the realistic trigger is
+    // a leg room that vanished across a reboot; the failure mode is the same.
+    let mut tw = boot();
+    tw.set_now(1000);
+    let fx = fixture(&mut tw);
+    route3(&mut tw, &fx);
+    sweep_at(&mut tw, 1005); // -> r1
+    assert_eq!(loc(&tw, fx.car), Some(fx.r1));
+    // Put r2 inside the car, so the sweep's move_to(car, r2) is a cycle -> Err.
+    tw.world_mut().move_to(fx.r2, fx.car).unwrap();
+    let _ = sweep_at(&mut tw, 1010);
+    assert!(status(&tw, fx.car).is_none(), "journey aborted + retired when its next leg was unenterable");
+    assert_eq!(loc(&tw, fx.car), Some(fx.r1), "the car stays where it was");
+}
+
+#[test]
+fn abort_cancels_and_a_second_route_is_refused_while_one_is_active() {
+    // Finding 8: the already-routed refusal arm and the @route/abort transition.
+    let mut tw = boot();
+    tw.set_now(1000);
+    let fx = fixture(&mut tw);
+    route3(&mut tw, &fx);
+    let t = texts(&tw.run(GOD, &format!("@route #{}=#{}:5", fx.car.0, fx.r1.0)));
+    assert!(t.contains("already on a route"), "a second route on the same traveler is refused: {t}");
+    ok(&mut tw, GOD, &format!("@route/abort #{}", fx.car.0));
+    assert!(status(&tw, fx.car).is_none(), "aborted journey retired");
+    route3(&mut tw, &fx); // a fresh route is now accepted
+    assert_eq!(status(&tw, fx.car), Some(JourneyStatus::Traveling));
+}
+
+#[test]
+fn route_refuses_a_room_or_exit_traveler() {
+    // Finding 8: the Room/Exit kind refusal arm.
+    let mut tw = boot();
+    tw.set_now(1000);
+    let fx = fixture(&mut tw);
+    let t = texts(&tw.run(GOD, &format!("@route #{}=#{}:5", fx.r1.0, fx.r2.0)));
+    assert!(t.contains("cannot travel a route"), "a room cannot be routed: {t}");
+}

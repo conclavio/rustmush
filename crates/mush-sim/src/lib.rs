@@ -398,9 +398,9 @@ impl GameModule for SimulationModule {
     }
 
     fn on_world_loaded(&mut self, ctx: &mut ModuleCtx<'_>, mut data: ModuleBootData) -> Result<(), ModError> {
-        let journeys = boot::extract_journeys(&mut data);
+        let (journeys, dead_journeys) = boot::extract_journeys(&mut data);
         let q = boot::load_boot(ctx, data, self.config.recovery_room)?;
-        boot::install_journeys(ctx, journeys);
+        boot::install_journeys(ctx, journeys, dead_journeys);
         if q > 0 {
             tracing::warn!(quarantined = q, "sim: boot quarantined placements; see @spatial/quarantine");
         }

@@ -306,38 +306,49 @@ fn validate_live(ctx: &ModuleCtx<'_>, st: &SpatialState, rec: &PlacementRecord) 
 /// Pull `journey:*` docs out of the boot kv (so `load_boot` does not warn on
 /// them) and parse them; validation against placement happens in
 /// [`install_journeys`] after the spatial state has loaded.
-pub(crate) fn extract_journeys(data: &mut ModuleBootData) -> Vec<crate::route::Journey> {
+pub(crate) fn extract_journeys(data: &mut ModuleBootData) -> (Vec<crate::route::Journey>, Vec<smol_str::SmolStr>) {
     let mut out = Vec::new();
+    let mut dead = Vec::new();
     data.kv.retain(|(key, value)| {
         if key.starts_with("journey:") {
             match serde_json::from_value::<crate::route::Journey>(value.clone()) {
                 Ok(j) => out.push(j),
-                Err(e) => tracing::error!(%key, error = %e, "sim: unparseable journey doc dropped"),
+                Err(e) => {
+                    tracing::error!(%key, error = %e, "sim: unparseable journey doc dropped");
+                    dead.push(key.clone());
+                }
             }
             false
         } else {
             true
         }
     });
-    out
+    (out, dead)
 }
 
 /// Install the journeys whose traveler is live and NOT a placed sim object
 /// (a traveler is EITHER on a journey OR sim-placed, never both); drop the
 /// rest with a durable delete.
-pub(crate) fn install_journeys(ctx: &mut ModuleCtx<'_>, journeys: Vec<crate::route::Journey>) {
+pub(crate) fn install_journeys(
+    ctx: &mut ModuleCtx<'_>,
+    journeys: Vec<crate::route::Journey>,
+    dead: Vec<smol_str::SmolStr>,
+) {
+    // Purge docs that could not be parsed, so they don't re-error every boot.
+    for key in dead {
+        crate::route::persist_key_del(ctx.out, key);
+    }
     let mut rs = crate::route::RouteState::default();
-    let placed: std::collections::BTreeSet<ObjId> = ctx
-        .w
-        .module_state::<SpatialState>()
-        .map(|st| st.placements.keys().copied().collect())
-        .unwrap_or_default();
     for j in journeys {
         let live = ctx.w.get(j.traveler).is_some_and(|o| !o.flags.contains(Flags::GOING));
-        if live && !placed.contains(&j.traveler) {
+        // Boot-eligibility MUST equal create-eligibility (is_sim_bound), or a
+        // legitimately-routed object with a lingering Unplaced record would be
+        // dropped AND its doc deleted on reboot.
+        let bound = ctx.w.module_state::<SpatialState>().is_some_and(|st| st.is_sim_bound(j.traveler));
+        if live && !bound {
             rs.journeys.insert(j.traveler, j);
         } else {
-            tracing::warn!(traveler = %j.traveler, "sim: journey dropped at boot (traveler gone or placed)");
+            tracing::warn!(traveler = %j.traveler, "sim: journey dropped at boot (traveler gone or sim-bound)");
             crate::route::persist_journey_del(ctx.out, j.traveler);
         }
     }
