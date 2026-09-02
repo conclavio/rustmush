@@ -6,9 +6,9 @@
 use std::sync::Arc;
 
 use mush_core::{
-    ArgShape, BehaviorBinding, BehaviorCommand, BehaviorId, BehaviorSpec, BehaviorTarget, CmdError,
-    CommandReach, CommandSpec, CommandSubjectLink, Ctx, DestroyGate, DestroyPolicy, Flags, GOD,
-    LIMBO, ModError, ObjId, ObjKind, Outbox, Registrar, Registry, Role, World, dispatch,
+    ArgShape, BehaviorBinding, BehaviorCommand, BehaviorId, BehaviorSpec, BehaviorTarget, ChannelId,
+    CmdError, CommandReach, CommandSpec, CommandSubjectLink, Ctx, DestroyGate, DestroyPolicy, Flags,
+    GOD, LIMBO, ModError, ObjId, ObjKind, Outbox, Registrar, Registry, Role, World, dispatch,
     register_core_commands,
 };
 use mush_proto::OutputEvent;
@@ -486,7 +486,7 @@ fn operated_link_outranks_carried_and_ambient_is_the_room_by_opt_in() {
     bind(&mut g, remote, "test.console");
     assert!(texts(&g.run(g.bob, "startup")).contains(&format!("ran on {c}")));
     g.w.publish_command_subject(CommandSubjectLink {
-        actor: g.bob, subject: remote, relation: "pilot".into(), owner: "vehicle".into(), priority: 0,
+        actor: g.bob, subject: remote, relation: "pilot".into(), owner: "vehicle".into(), priority: 0, channels: Default::default(),
     });
     let t = texts(&g.run(g.bob, "startup"));
     assert!(t.contains(&format!("ran on {remote}")) && t.contains("Operated"), "{t}");
@@ -504,7 +504,7 @@ fn destroying_a_subject_scrubs_its_links() {
     let remote = g.thing("Remote", g.bob);
     bind(&mut g, remote, "test.console");
     g.w.publish_command_subject(CommandSubjectLink {
-        actor: g.bob, subject: remote, relation: "pilot".into(), owner: "vehicle".into(), priority: 0,
+        actor: g.bob, subject: remote, relation: "pilot".into(), owner: "vehicle".into(), priority: 0, channels: Default::default(),
     });
     assert_eq!(g.w.command_subjects_of(g.bob).len(), 1);
     g.w.destroy(remote).unwrap();
@@ -540,7 +540,7 @@ fn a_linked_subject_keeps_its_carried_only_verbs() {
     bind(&mut g, c, "test.stowable");
     assert!(texts(&g.run(bob, "stow")).contains("Carried"));
     g.w.publish_command_subject(CommandSubjectLink {
-        actor: bob, subject: c, relation: "pilot".into(), owner: "vehicle".into(), priority: 0,
+        actor: bob, subject: c, relation: "pilot".into(), owner: "vehicle".into(), priority: 0, channels: Default::default(),
     });
     let t = texts(&g.run(bob, "stow"));
     assert!(t.contains(&format!("ran on {c}")) && t.contains("Carried"), "linked AND carried: {t}");
@@ -556,7 +556,7 @@ fn link_priority_forms_subtiers_and_equal_priority_is_ambiguous() {
     let b = g.thing("Beta", bob);
     bind(&mut g, b, "test.console");
     let link = |s: ObjId, p: u16| CommandSubjectLink {
-        actor: bob, subject: s, relation: "remote".into(), owner: "vehicle".into(), priority: p,
+        actor: bob, subject: s, relation: "remote".into(), owner: "vehicle".into(), priority: p, channels: Default::default(),
     };
     g.w.publish_command_subject(link(a, 5));
     g.w.publish_command_subject(link(b, 0));
@@ -578,7 +578,7 @@ fn an_ambiguous_tier_never_falls_through() {
     let _c = carried(&mut g, "Carried"); // would answer alone
     for s in [a, b] {
         g.w.publish_command_subject(CommandSubjectLink {
-            actor: bob, subject: s, relation: "remote".into(), owner: "vehicle".into(), priority: 0,
+            actor: bob, subject: s, relation: "remote".into(), owner: "vehicle".into(), priority: 0, channels: Default::default(),
         });
     }
     let t = texts(&g.run(bob, "startup"));
@@ -691,4 +691,103 @@ fn can_move_to_mirrors_move_to_checks_without_mutating() {
     assert!(g.w.can_move_to(bag, ObjId(9999)).is_err(), "missing dest");
     assert!(g.w.can_move_to(bag, g.bob).is_ok());
     assert_eq!(g.w.get(bag).and_then(|o| o.location), Some(LIMBO), "no mutation");
+}
+
+// ---------------------------------------------------------------------
+// F3: control-channel authorization
+// ---------------------------------------------------------------------
+
+fn chan_spec(id: &str, verb: &str, channel: &str) -> BehaviorSpec {
+    let cmd = BehaviorCommand::new(
+        CommandSpec { name: verb.into(), shape: ArgShape::None, ..CommandSpec::default() },
+        Arc::new(echo),
+    )
+    .with_channel(ChannelId::new(channel).unwrap());
+    BehaviorSpec::new(bid(id)).with_command(cmd)
+}
+fn chans(names: &[&str]) -> std::collections::BTreeSet<ChannelId> {
+    names.iter().map(|c| ChannelId::new(c).unwrap()).collect()
+}
+fn link(actor: ObjId, subject: ObjId, owner: &str, priority: u16, channels: &[&str]) -> CommandSubjectLink {
+    CommandSubjectLink {
+        actor,
+        subject,
+        relation: "pilot".into(),
+        owner: owner.into(),
+        priority,
+        channels: chans(channels),
+    }
+}
+
+#[test]
+fn a_channelled_command_resolves_only_with_the_granted_channel() {
+    let mut g = Game::new();
+    let mut r = Registrar::new(&mut g.reg, "vehicle");
+    r.behavior(chan_spec("test.drive", "drive", "movement")).unwrap();
+    drop(r);
+    let bob = g.bob;
+    let mech = g.thing("Mech", bob);
+    bind(&mut g, mech, "test.drive");
+    // A gunner-style link (weapons only) cannot drive — the command does not resolve.
+    g.w.publish_command_subject(link(bob, mech, "sim", 1, &["weapons"]));
+    assert!(texts(&g.run(bob, "drive")).contains("Huh?"), "no movement channel: no resolution");
+    // A pilot-style link (movement) authorizes it (republish replaces the link).
+    g.w.publish_command_subject(link(bob, mech, "sim", 2, &["movement"]));
+    assert!(
+        texts(&g.run(bob, "drive")).contains(&format!("ran on {mech}")),
+        "movement channel: resolves at Operated"
+    );
+}
+
+#[test]
+fn channels_union_across_multiple_owner_links() {
+    let mut g = Game::new();
+    let mut r = Registrar::new(&mut g.reg, "vehicle");
+    r.behavior(chan_spec("test.drive", "drive", "movement")).unwrap();
+    drop(r);
+    let bob = g.bob;
+    let mech = g.thing("Mech", bob);
+    bind(&mut g, mech, "test.drive");
+    // `sim` grants weapons; a `rigging` module grants movement — the union authorizes.
+    g.w.publish_command_subject(link(bob, mech, "sim", 1, &["weapons"]));
+    g.w.publish_command_subject(link(bob, mech, "rigging", 0, &["movement"]));
+    assert!(
+        texts(&g.run(bob, "drive")).contains(&format!("ran on {mech}")),
+        "channels union across owner links"
+    );
+}
+
+#[test]
+fn a_channelled_command_must_be_operated_exclusive() {
+    let mut g = Game::new();
+    let mut r = Registrar::new(&mut g.reg, "vehicle");
+    // Manually pair a required channel with a non-Operated reach — registration
+    // must refuse it (else a Carried/Container/Ambient reach bypasses the gate).
+    let mut cmd = BehaviorCommand::new(
+        CommandSpec { name: "drive".into(), shape: ArgShape::None, ..CommandSpec::default() },
+        Arc::new(echo),
+    )
+    .with_reach(vec![CommandReach::Operated, CommandReach::Carried]);
+    cmd.required_channel = Some(ChannelId::new("movement").unwrap());
+    let err = r.behavior(BehaviorSpec::new(bid("test.bad")).with_command(cmd)).unwrap_err();
+    assert!(err.to_string().contains("Operated-exclusive"), "{err}");
+}
+
+#[test]
+fn a_channel_denied_candidate_drops_before_ambiguity() {
+    let mut g = Game::new();
+    let mut r = Registrar::new(&mut g.reg, "vehicle");
+    r.behavior(chan_spec("test.drive", "drive", "movement")).unwrap();
+    drop(r);
+    let bob = g.bob;
+    let a = g.thing("Alpha", bob);
+    let b = g.thing("Beta", bob);
+    bind(&mut g, a, "test.drive");
+    bind(&mut g, b, "test.drive");
+    // Two SAME-priority Operated links; only Alpha grants movement. Beta is
+    // dropped BEFORE ambiguity counting, so this resolves to Alpha, not Ambiguous.
+    g.w.publish_command_subject(link(bob, a, "sim", 0, &["movement"]));
+    g.w.publish_command_subject(link(bob, b, "sim", 0, &[]));
+    let t = texts(&g.run(bob, "drive"));
+    assert!(t.contains(&format!("ran on {a}")) && !t.contains("Ambiguous"), "denied Beta drops: {t}");
 }

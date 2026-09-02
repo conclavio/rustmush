@@ -4,8 +4,10 @@
 use std::sync::Arc;
 
 use mush_core::output::display_name;
+use std::collections::BTreeSet;
+
 use mush_core::{
-    ArgShape, CmdError, CommandSpec, Ctx, Flags, ModError, ObjId, ObjKind, Powers, Registrar, Role,
+    ArgShape, ChannelId, CmdError, CommandSpec, Ctx, Flags, ModError, ObjId, ObjKind, Powers, Registrar, Role,
     match_object, perm,
 };
 use smol_str::SmolStr;
@@ -14,6 +16,7 @@ use crate::data::{
     CapacitySpec, DomainClock, DomainId, DomainRecord, DomainStatus, HostAssignments, HostMounts,
     HostStations, MountId, MountSpec, PASSIVE_DRIVER, RECOVERY_LOG, RulesValue, SlotId, SpaceAnchor,
     SpatialParent, SpatialState, StationAssignment, StationId, StationSpec, persist_assignments,
+    persist_control_gen,
     persist_del, persist_domain, persist_meta, persist_mounts, persist_space, persist_stations,
     space_key,
 };
@@ -46,6 +49,31 @@ fn st<'a>(ctx: &'a Ctx<'_>) -> &'a SpatialState {
 
 fn st_mut<'a>(ctx: &'a mut Ctx<'_>) -> &'a mut SpatialState {
     ctx.w.module_state_mut::<SpatialState>().expect("sim state slot installed at registration")
+}
+
+/// The @spatial/station authoring default priority for a role (the demoted
+/// former engine `role_priority` — now an overridable convenience, not engine
+/// logic). Staff may pass `priority:<n>` to override.
+fn default_station_priority(role: &str) -> u16 {
+    match role {
+        "pilot" => 2,
+        "gunner" => 1,
+        _ => 0,
+    }
+}
+
+/// Bump a unit's control epoch + persist it, but ONLY if the object is actually a
+/// control host (has stations or assignments) — so a plain placed object never
+/// grows a spurious `cgen:` doc.
+fn bump_if_control_host(ctx: &mut Ctx<'_>, unit: ObjId) {
+    let is_host = {
+        let s = st(ctx);
+        s.stations.contains_key(&unit) || s.assignments.contains_key(&unit)
+    };
+    if is_host {
+        let g = st_mut(ctx).bump_control_gen(unit);
+        persist_control_gen(ctx.out, unit, g);
+    }
 }
 
 fn rhs_required(ctx: &Ctx<'_>, usage: &str) -> Result<String, CmdError> {
@@ -336,6 +364,8 @@ fn cmd_spatial(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         spatial_assign(ctx)
     } else if sw.has("unassign") {
         spatial_unassign(ctx)
+    } else if sw.has("authority") {
+        spatial_authority(ctx)
     } else if sw.has("egress") {
         spatial_egress(ctx)
     } else if sw.has("detach") {
@@ -473,6 +503,7 @@ fn spatial_place(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     run(ctx, &Transition::Place { obj, parent }).map_err(sim_err)?;
     // A (re-)placed unit grants control to its crew again.
     refresh_unit_actors(ctx.w, obj);
+    bump_if_control_host(ctx, obj);
     info(ctx, format!("Placed {} {desc}.", display_name(ctx.w, obj)));
     Ok(())
 }
@@ -484,6 +515,7 @@ fn spatial_unplace(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     run(ctx, &Transition::Unplace { obj, reason, by: Some(ctx.actor), keep }).map_err(sim_err)?;
     // An unplaced unit stops granting control to its crew.
     refresh_unit_actors(ctx.w, obj);
+    bump_if_control_host(ctx, obj);
     info(ctx, format!("Unplaced {}.", display_name(ctx.w, obj)));
     Ok(())
 }
@@ -743,13 +775,22 @@ fn spatial_station(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let station = parts.first().and_then(|s| StationId::new(s)).ok_or_else(|| CmdError::msg("Which station?"))?;
     let role = parts.get(1).cloned().filter(|r| !r.is_empty()).ok_or_else(|| CmdError::msg("Give a role (pilot, gunner, ...)."))?;
     let mut space: Option<ObjId> = None;
+    let mut channels: BTreeSet<ChannelId> = BTreeSet::new();
+    let mut priority: Option<u16> = None;
     for part in parts.iter().skip(2) {
         if let Some(room) = part.strip_prefix("space:") {
             space = Some(match_object(ctx.w, ctx.actor, room.trim())?);
+        } else if let Some(pr) = part.strip_prefix("priority:") {
+            priority = Some(pr.trim().parse().map_err(|_| CmdError::msg("priority: must be a number 0-65535."))?);
+        } else if let Some(cs) = part.strip_prefix("channels:") {
+            for c in cs.split(['+', ',']).map(str::trim).filter(|s| !s.is_empty()) {
+                channels.insert(ChannelId::new(c).ok_or_else(|| CmdError::msg(format!("Bad channel `{c}`.")))?);
+            }
         } else {
             return Err(CmdError::msg(format!("Unknown station option `{part}`.")));
         }
     }
+    let priority = priority.unwrap_or_else(|| default_station_priority(&role));
     if ctx.w.get(host).is_none_or(|o| o.flags.contains(Flags::GOING)) {
         return Err(CmdError::msg("No such host."));
     }
@@ -758,14 +799,31 @@ fn spatial_station(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let hs = s.stations.entry(host).or_insert_with(|| HostStations { host, stations: Default::default() });
         hs.stations.insert(
             station.clone(),
-            StationSpec { role: SmolStr::new(&role), space, policy: RulesValue { schema: SmolStr::new_static(PASSIVE_DRIVER), version: 1, data: serde_json::Value::Null } },
+            StationSpec {
+                role: SmolStr::new(&role),
+                channels: channels.clone(),
+                priority,
+                space,
+                policy: RulesValue { schema: SmolStr::new_static(PASSIVE_DRIVER), version: 1, data: serde_json::Value::Null },
+            },
         );
         hs.clone()
     };
     persist_stations(ctx.out, &rec);
-    // A redefined role changes link priority; refresh any assigned crew.
+    let g = st_mut(ctx).bump_control_gen(host);
+    persist_control_gen(ctx.out, host, g);
+    // A redefined station changes priority/channels; refresh any assigned crew.
     refresh_unit_actors(ctx.w, host);
-    info(ctx, format!("Station `{station}` ({role}) set on {}.", display_name(ctx.w, host)));
+    // Non-fatal authoring lint: a granted channel no command requires is likely a
+    // typo — but stay quiet until channelled commands exist.
+    let required = ctx.reg.required_channels();
+    if !required.is_empty() {
+        let unknown: Vec<String> = channels.iter().filter(|c| !required.contains(*c)).map(ToString::to_string).collect();
+        if !unknown.is_empty() {
+            info(ctx, format!("Note: no registered command requires channel(s): {}.", unknown.join(", ")));
+        }
+    }
+    info(ctx, format!("Station `{station}` ({role}, priority {priority}) set on {}.", display_name(ctx.w, host)));
     Ok(())
 }
 
@@ -816,7 +874,9 @@ fn spatial_assign(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ha.seats.insert(station.clone(), StationAssignment { actor, assigned_at: now });
         let rec = ha.clone();
         s.derived = crate::graph::rebuild(s);
+        let g = s.bump_control_gen(host);
         persist_assignments(ctx.out, &rec);
+        persist_control_gen(ctx.out, host, g);
     }
     refresh_actor_links(ctx.w, actor);
     info(ctx, format!("{} now holds `{station}` on {}.", display_name(ctx.w, actor), display_name(ctx.w, host)));
@@ -835,11 +895,48 @@ fn spatial_unassign(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             s.assignments.remove(&host);
         }
         s.derived = crate::graph::rebuild(s);
+        let g = s.bump_control_gen(host);
         persist_assignments(ctx.out, &rec);
+        persist_control_gen(ctx.out, host, g);
         asg.actor
     };
     refresh_actor_links(ctx.w, former);
     info(ctx, format!("{} no longer holds `{station}` on {}.", display_name(ctx.w, former), display_name(ctx.w, host)));
+    Ok(())
+}
+
+/// `@spatial/authority <actor>` — the read-only inspector: what the actor's
+/// derived control links grant (subject, relation, priority, granted channels)
+/// and each unit's current control epoch. Diagnoses fail-safe-open channel typos.
+fn spatial_authority(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let actor = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
+    let lines: Vec<String> = {
+        let s = st(ctx);
+        ctx.w
+            .command_subjects_of(actor)
+            .iter()
+            .map(|l| {
+                let ch: Vec<&str> = l.channels.iter().map(mush_core::ChannelId::as_str).collect();
+                let chans = if ch.is_empty() { "none".to_string() } else { ch.join("+") };
+                format!(
+                    "  {} — {} (priority {}, channels: {}, epoch {})",
+                    display_name(ctx.w, l.subject),
+                    l.relation,
+                    l.priority,
+                    chans,
+                    s.control_generation(l.subject),
+                )
+            })
+            .collect()
+    };
+    if lines.is_empty() {
+        info(ctx, format!("{} operates nothing.", display_name(ctx.w, actor)));
+    } else {
+        info(ctx, format!("{} operates:", display_name(ctx.w, actor)));
+        for l in lines {
+            info(ctx, l);
+        }
+    }
     Ok(())
 }
 
@@ -1139,7 +1236,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             shape: ArgShape::EqPair,
             switches: [
                 "place", "domain", "interior", "attached", "unplace", "keep", "space", "unspace", "slot",
-                "mount", "unmount", "station", "unstation", "assign", "unassign", "egress",
+                "mount", "unmount", "station", "unstation", "assign", "unassign", "authority", "egress",
                 "detach", "quarantine", "recover", "validate", "tree", "log",
             ]
             .iter()

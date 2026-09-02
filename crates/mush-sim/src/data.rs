@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use mush_core::{Deferred, Ledger, ModuleOp, ModuleWrite, ObjId, Outbox, LIMBO};
+use mush_core::{ChannelId, Deferred, Ledger, ModuleOp, ModuleWrite, ObjId, Outbox, LIMBO};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
@@ -298,8 +298,18 @@ pub struct HostMounts {
 /// subject. Passengers and cargo are ordinary interior slots, never stations.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StationSpec {
-    /// The role (`"pilot"`, `"gunner"`, …) — descriptive; drives link priority.
+    /// The role (`"pilot"`, `"gunner"`, …) — a DESCRIPTIVE label; the engine no
+    /// longer derives anything from it (priority/channels are explicit data).
     pub role: SmolStr,
+    /// Control channels this station GRANTS its holder — the capability that
+    /// authorizes the unit's channelled commands. Explicit (empty until
+    /// authored); the engine only does set-membership, names are ruleset doctrine.
+    #[serde(default)]
+    pub channels: BTreeSet<ChannelId>,
+    /// Dispatch priority (higher wins among an actor's links). Authoring seeds a
+    /// role default when omitted; the ENGINE no longer knows pilot/gunner.
+    #[serde(default)]
+    pub priority: u16,
     /// The backing cockpit room, if any (reserved: cut 2 does not auto-embark).
     pub space: Option<ObjId>,
     /// Opaque ruleset policy (unused in cut 2).
@@ -333,16 +343,8 @@ pub struct HostAssignments {
     pub seats: BTreeMap<StationId, StationAssignment>,
 }
 
-/// Command-subject priority for a control role (higher wins among an actor's
-/// links; `pilot` > `gunner` > anything else).
-#[must_use]
-pub fn role_priority(role: &str) -> u16 {
-    match role {
-        "pilot" => 2,
-        "gunner" => 1,
-        _ => 0,
-    }
-}
+// (Control-role priority is no longer an engine function: `StationSpec.priority`
+// is authored data — the @spatial/station default seeds pilot=2/gunner=1.)
 
 /// Derived tactical presence (design §5.3). Computed, never stored.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -399,6 +401,11 @@ pub struct SpatialState {
     pub stations: BTreeMap<ObjId, HostStations>,
     /// Station assignments by host.
     pub assignments: BTreeMap<ObjId, HostAssignments>,
+    /// Per-unit control lease epoch (`control_generation`): bumped whenever a
+    /// unit's control surface changes, so a future queued human/NPC/LLM intent
+    /// captured `(subject, gen)` can detect it was issued under stale control.
+    /// A SECONDARY guard behind the execution-time channel/link re-check.
+    pub control_gen: BTreeMap<ObjId, u64>,
     /// Domain id allocator resume point.
     pub next_domain_id: u64,
     /// Where quarantined/unplaced objects are projected (design D4 item 3).
@@ -418,6 +425,7 @@ impl Default for SpatialState {
             mounts: BTreeMap::new(),
             stations: BTreeMap::new(),
             assignments: BTreeMap::new(),
+            control_gen: BTreeMap::new(),
             next_domain_id: 0,
             recovery_room: DEFAULT_RECOVERY_ROOM,
             recovery: Ledger::default(),
@@ -436,6 +444,7 @@ impl PartialEq for SpatialState {
             && self.mounts == other.mounts
             && self.stations == other.stations
             && self.assignments == other.assignments
+            && self.control_gen == other.control_gen
             && self.next_domain_id == other.next_domain_id
             && self.recovery_room == other.recovery_room
             && self.derived == other.derived
@@ -457,6 +466,21 @@ impl SpatialState {
         let id = DomainId(self.next_domain_id);
         self.next_domain_id += 1;
         id
+    }
+
+    /// Advance a unit's control epoch (a control change); returns the new value.
+    /// Callers persist it via [`persist_control_gen`]. Monotonic across reboot.
+    pub fn bump_control_gen(&mut self, unit: ObjId) -> u64 {
+        let g = self.control_gen.entry(unit).or_insert(0);
+        *g += 1;
+        *g
+    }
+
+    /// The current control epoch for `unit` (0 if never changed). A queued intent
+    /// captures this at issue and compares with `==` at execution.
+    #[must_use]
+    pub fn control_generation(&self, unit: ObjId) -> u64 {
+        self.control_gen.get(&unit).copied().unwrap_or(0)
     }
 
     /// The placement parent of `obj` (`Unplaced` when absent or unplaced).
@@ -690,6 +714,15 @@ pub(crate) fn persist_meta(out: &mut Outbox, next_domain_id: u64) {
 }
 pub(crate) fn persist_del(out: &mut Outbox, key: SmolStr) {
     push_op(out, ModuleWrite::Del { key });
+}
+
+/// The doc key of a unit's control epoch (`cgen:<unit>`).
+#[must_use]
+pub fn cgen_key(unit: ObjId) -> SmolStr {
+    SmolStr::new(format!("cgen:{}", unit.0))
+}
+pub(crate) fn persist_control_gen(out: &mut Outbox, unit: ObjId, generation: u64) {
+    push_op(out, ModuleWrite::JsonSet { key: cgen_key(unit), value: serde_json::json!(generation) });
 }
 
 /// The default recovery room when none is configured.

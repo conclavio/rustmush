@@ -82,6 +82,14 @@ pub(crate) fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData, recovery_
                 Ok(ha) => tracing::error!(%key, host = %ha.host, "sim: assignment doc key/host mismatch dropped"),
                 Err(e) => tracing::error!(%key, error = %e, "sim: unparseable assignment doc dropped"),
             }
+        } else if let Some(rest) = key.strip_prefix("cgen:") {
+            // A unit's control epoch (monotonic across reboot). Unreadable = drop.
+            match (rest.parse::<u32>(), value.as_u64()) {
+                (Ok(n), Some(g)) => {
+                    st.control_gen.insert(ObjId(n), g);
+                }
+                _ => tracing::error!(%key, "sim: unparseable control-gen doc dropped"),
+            }
         } else if let Some(rest) = key.strip_prefix("placement:") {
             match serde_json::from_value::<PlacementRecord>(value) {
                 Ok(p) => {

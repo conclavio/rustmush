@@ -515,3 +515,147 @@ fn boot_fails_on_stations_key_host_mismatch() {
         },
     )]));
 }
+
+// ---------------------------------------------------------------------
+// F3: control channels, authority union, and the control-epoch lease
+// ---------------------------------------------------------------------
+
+fn channels_of(tw: &TestWorld, actor: ObjId, subject: ObjId) -> Vec<String> {
+    tw.world()
+        .command_subjects_of(actor)
+        .iter()
+        .find(|l| l.subject == subject)
+        .map(|l| l.channels.iter().map(|c| c.as_str().to_string()).collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_station_grants_channels_and_priority_defaults_by_role() {
+    let mut tw = boot();
+    let fx = fixture(&mut tw);
+    ok(&mut tw, "@domain/create Field=sim.passive");
+    ok(&mut tw, "@spatial/place/domain Atlas=0");
+    let ann = fx.pilot;
+    // pilot grants movement (priority defaults to 2); gunner grants weapons (1).
+    ok(&mut tw, "@spatial/station Atlas=cockpit,pilot,channels:movement");
+    ok(&mut tw, "@spatial/station Atlas=gun,gunner,channels:weapons");
+    ok(&mut tw, &format!("@spatial/assign Atlas=cockpit,#{}", ann.0));
+    ok(&mut tw, &format!("@spatial/assign Atlas=gun,#{}", ann.0));
+    // The actor's single link UNIONS both seats' channels; relation = the
+    // max-priority seat (pilot), priority = 2.
+    let mut chans = channels_of(&tw, ann, fx.mech);
+    chans.sort();
+    assert_eq!(chans, vec!["movement".to_string(), "weapons".to_string()], "channels union across seats");
+    let link = tw.world().command_subjects_of(ann)[0].clone();
+    assert_eq!(link.relation.as_str(), "pilot", "relation = max-priority seat");
+    assert_eq!(link.priority, 2, "pilot's default priority");
+}
+
+#[test]
+fn explicit_station_priority_overrides_the_role_default() {
+    let mut tw = boot();
+    let fx = fixture(&mut tw);
+    ok(&mut tw, "@domain/create Field=sim.passive");
+    ok(&mut tw, "@spatial/place/domain Atlas=0");
+    ok(&mut tw, "@spatial/station Atlas=cockpit,gunner,priority:9");
+    ok(&mut tw, &format!("@spatial/assign Atlas=cockpit,#{}", fx.pilot.0));
+    assert_eq!(tw.world().command_subjects_of(fx.pilot)[0].priority, 9, "explicit priority wins over role default");
+}
+
+#[test]
+fn control_epoch_bumps_on_assign_unassign_and_survives_reboot() {
+    let mut tw = boot();
+    let fx = fixture(&mut tw);
+    ok(&mut tw, "@domain/create Field=sim.passive");
+    ok(&mut tw, "@spatial/place/domain Atlas=0");
+    ok(&mut tw, "@spatial/station Atlas=cockpit,pilot,channels:movement");
+    let g0 = state(&tw).control_generation(fx.mech);
+    ok(&mut tw, &format!("@spatial/assign Atlas=cockpit,#{}", fx.pilot.0));
+    let g1 = state(&tw).control_generation(fx.mech);
+    assert!(g1 > g0, "assign bumps the control epoch ({g0} -> {g1})");
+    ok(&mut tw, "@spatial/unassign Atlas=cockpit");
+    let g2 = state(&tw).control_generation(fx.mech);
+    assert!(g2 > g1, "unassign bumps the control epoch ({g1} -> {g2})");
+    // Monotonic across reboot.
+    let kv = fold_kv(&mut tw);
+    let (tw2, fx2) = reboot_with(kv);
+    assert_eq!(state(&tw2).control_generation(fx2.mech), g2, "epoch persists across reboot");
+}
+
+#[test]
+fn the_authority_inspector_shows_granted_channels() {
+    let mut tw = boot();
+    let fx = fixture(&mut tw);
+    ok(&mut tw, "@domain/create Field=sim.passive");
+    ok(&mut tw, "@spatial/place/domain Atlas=0");
+    ok(&mut tw, "@spatial/station Atlas=cockpit,pilot,channels:movement");
+    ok(&mut tw, &format!("@spatial/assign Atlas=cockpit,#{}", fx.pilot.0));
+    let t = say(&mut tw, &format!("@spatial/authority #{}", fx.pilot.0));
+    assert!(t.contains("movement") && t.contains("pilot"), "inspector shows channels + relation: {t}");
+}
+
+#[test]
+fn a_legacy_m29_station_doc_without_channels_or_priority_loads() {
+    // A pre-F3 stations doc has role/space/policy but NO channels/priority; the
+    // #[serde(default)] fields must let it load (empty channels, priority 0).
+    let mut tw = boot();
+    let fx = fixture(&mut tw);
+    let _ = tw.take_module_ops();
+    let key = SmolStr::new(format!("stations:{}", fx.mech.0));
+    let doc = serde_json::json!({
+        "host": fx.mech.0,
+        "stations": {
+            "cockpit": { "role": "pilot", "space": null, "policy": { "schema": "sim.passive", "version": 1, "data": null } }
+        }
+    });
+    let (tw2, fx2) = reboot_with(vec![(key, doc)]);
+    let st = state(&tw2);
+    let hs = st.stations.get(&fx2.mech).expect("legacy station doc loaded");
+    let spec = hs.stations.get(&mush_sim::StationId::new("cockpit").unwrap()).unwrap();
+    assert!(spec.channels.is_empty(), "legacy station grants no channels");
+    assert_eq!(spec.priority, 0, "legacy station defaults to priority 0");
+}
+
+#[test]
+fn the_control_epoch_bumps_at_every_control_change_site() {
+    let mut tw = boot();
+    let fx = fixture(&mut tw);
+    ok(&mut tw, "@domain/create Field=sim.passive");
+    // A plain placed participant (no station) grows NO cgen doc and stays at 0.
+    let _ = tw.take_module_ops();
+    ok(&mut tw, "@spatial/place/domain Atlas=0");
+    assert_eq!(state(&tw).control_generation(fx.mech), 0, "a plain placed object has no epoch");
+    assert!(
+        !tw.take_module_ops().iter().any(|o| matches!(&o.op, ModuleWrite::JsonSet { key, .. } if key.starts_with("cgen:"))),
+        "no cgen doc for a non-host object"
+    );
+    // Defining, redefining, unplacing, and replacing a control host each bump.
+    ok(&mut tw, "@spatial/station Atlas=cockpit,pilot,channels:movement");
+    let a = state(&tw).control_generation(fx.mech);
+    assert!(a > 0, "station define bumps");
+    ok(&mut tw, "@spatial/station Atlas=cockpit,pilot,priority:5");
+    let b = state(&tw).control_generation(fx.mech);
+    assert!(b > a, "station redefine bumps");
+    ok(&mut tw, "@spatial/unplace Atlas");
+    let c = state(&tw).control_generation(fx.mech);
+    assert!(c > b, "unplace of a control host bumps");
+    ok(&mut tw, "@spatial/place/domain Atlas=0");
+    assert!(state(&tw).control_generation(fx.mech) > c, "re-place of a control host bumps");
+}
+
+#[test]
+fn destroying_a_crew_actor_bumps_its_unit_epoch() {
+    let mut tw = boot();
+    let fx = fixture(&mut tw);
+    ok(&mut tw, "@domain/create Field=sim.passive");
+    ok(&mut tw, "@spatial/place/domain Atlas=0");
+    ok(&mut tw, "@spatial/station Atlas=cockpit,pilot,channels:movement");
+    ok(&mut tw, &format!("@spatial/assign Atlas=cockpit,#{}", fx.pilot.0));
+    let g = state(&tw).control_generation(fx.mech);
+    // Destroying the pilot vacates its seat: the unit's control changed -> bump.
+    tw.world_mut().destroy(fx.pilot).unwrap();
+    let mut out = Outbox::new();
+    let mut fxx = Effects::new();
+    tw.engine_mut().emit_world_event(&WorldEvent::ObjDestroyed { obj: fx.pilot }, &mut out, &mut fxx);
+    assert!(state(&tw).control_generation(fx.mech) > g, "destroying a crew actor bumps its unit's epoch");
+}

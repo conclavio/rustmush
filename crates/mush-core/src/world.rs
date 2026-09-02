@@ -52,6 +52,11 @@ pub struct CommandSubjectLink {
     pub owner: SmolStr,
     /// Higher wins among an actor's links.
     pub priority: u16,
+    /// The control channels this link GRANTS the actor over the subject. The
+    /// publisher unions an actor's seats before publishing; the resolver unions
+    /// across multiple owners' links. Transient (republished at boot), so it is
+    /// never serialized.
+    pub channels: std::collections::BTreeSet<super::behavior::ChannelId>,
 }
 
 /// Errors from [`World`] mutators.

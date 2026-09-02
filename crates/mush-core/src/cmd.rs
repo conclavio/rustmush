@@ -558,6 +558,15 @@ impl Registry {
         }
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         for cmd in &spec.commands {
+            // A channelled command MUST be Operated-exclusive, or a non-Operated
+            // reach (Container/Carried/Ambient) would resolve it with the channel
+            // gate never firing — an authority bypass.
+            if cmd.required_channel.is_some() && cmd.reach.as_slice() != [crate::behavior::CommandReach::Operated] {
+                return Err(BehaviorRegError::ChannelledNotOperated {
+                    id: spec.id.to_string(),
+                    verb: cmd.spec.name.to_lowercase(),
+                });
+            }
             let mut verbs: Vec<String> = vec![cmd.spec.name.to_lowercase()];
             verbs.extend(cmd.spec.aliases.iter().map(|a| a.to_lowercase()));
             for v in verbs {
@@ -609,6 +618,16 @@ impl Registry {
     #[must_use]
     pub fn behavior_spec(&self, id: &BehaviorId) -> Option<&BehaviorSpec> {
         self.behaviors.get(id)
+    }
+
+    /// Every control channel any registered behavior command requires — the set
+    /// an authoring lint checks a station's granted channels against.
+    #[must_use]
+    pub fn required_channels(&self) -> std::collections::BTreeSet<crate::behavior::ChannelId> {
+        self.behaviors
+            .values()
+            .flat_map(|spec| spec.commands.iter().filter_map(|c| c.required_channel.clone()))
+            .collect()
     }
 
     /// Append a pre-destroy [`DestroyGate`] (design D8), consulted by

@@ -34,7 +34,7 @@ pub use data::{
     EgressSpec, HostAssignments, HostMounts, HostStations, InteriorSpaceRecord, MAX_SPATIAL_DEPTH,
     MountId, MountSpec, NS, PASSIVE_DRIVER, PlacementRecord, Presence, RulesValue, SlotId,
     SpaceAnchor, SpatialParent, SpatialState, StationAssignment, StationId, StationSpec,
-    UnplacedInfo, role_priority,
+    UnplacedInfo, cgen_key,
 };
 pub use graph::{effective_domain, presence, project, space_domain, verify_indexes, verify_projections};
 pub use route::{Journey, JourneyStatus, Leg, RouteState};
@@ -353,7 +353,13 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     if s.assignments.remove(&obj).is_some() {
         dels.push(data::assignment_key(obj));
     }
-    // If the husk was an ACTOR, drop its seat from every unit it crewed.
+    // The husk's own control epoch dies with it (a reused ObjId starts clean;
+    // the epoch is only a SECONDARY guard behind the link/channel re-check).
+    if s.control_gen.remove(&obj).is_some() {
+        dels.push(data::cgen_key(obj));
+    }
+    // If the husk was an ACTOR, drop its seat from every unit it crewed and bump
+    // each such unit's control epoch (its crew changed).
     for unit in &actor_seats {
         if let Some(ha) = s.assignments.get_mut(unit) {
             ha.seats.retain(|_, seat| seat.actor != obj);
@@ -363,6 +369,8 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
             }
             data::persist_assignments(ctx.out, &rec);
         }
+        let g = s.bump_control_gen(*unit);
+        data::persist_control_gen(ctx.out, *unit, g);
     }
     s.derived = graph::rebuild(s);
     for k in dels {

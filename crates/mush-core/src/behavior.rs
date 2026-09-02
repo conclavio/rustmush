@@ -23,6 +23,7 @@
 //! Programmatic `World::destroy` bypasses the veto by design (validate before you
 //! mutate).
 
+use std::collections::BTreeSet;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -250,6 +251,57 @@ impl CommandReach {
     }
 }
 
+/// A control **channel** — the capability axis of operated control. A station
+/// GRANTS a set of channels; a [`BehaviorCommand`] REQUIRES one; the resolver
+/// gates on set-membership. The engine only compares ids: the NAMES
+/// (`movement`, `weapons`, `sensors`, …) are ruleset/authoring doctrine, so NO
+/// channel-name constant lives in `mush-core`. Canonical: trim + lowercase +
+/// non-empty over `[a-z0-9_.-]`, so `Movement` and `movement` never mismatch.
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "SmolStr", into = "SmolStr")]
+pub struct ChannelId(SmolStr);
+
+impl ChannelId {
+    /// Validate and canonicalize; `None` if empty or containing a character
+    /// outside `[a-z0-9_.-]` (after trim + lowercase).
+    #[must_use]
+    pub fn new(s: impl AsRef<str>) -> Option<ChannelId> {
+        let t = s.as_ref().trim().to_ascii_lowercase();
+        if t.is_empty()
+            || !t.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'.' || b == b'-')
+        {
+            return None;
+        }
+        Some(ChannelId(SmolStr::new(t)))
+    }
+    /// The canonical channel id.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl TryFrom<SmolStr> for ChannelId {
+    type Error = String;
+    fn try_from(s: SmolStr) -> Result<ChannelId, String> {
+        ChannelId::new(&s).ok_or_else(|| format!("invalid channel id {s:?}"))
+    }
+}
+impl From<ChannelId> for SmolStr {
+    fn from(c: ChannelId) -> SmolStr {
+        c.0
+    }
+}
+impl std::fmt::Display for ChannelId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::fmt::Debug for ChannelId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ChannelId({:?})", self.0)
+    }
+}
+
 /// What a behavior command was invoked on: the resolved subject, the behavior
 /// that supplied the verb, and how the subject was reached. Handed to
 /// [`BehaviorCommandHandler::call`] alongside the ordinary [`Ctx`] (whose
@@ -296,6 +348,10 @@ pub struct BehaviorCommand {
     pub spec: CommandSpec,
     /// The reaches at which a subject may supply this command.
     pub reach: Vec<CommandReach>,
+    /// The control channel this command requires, if any. A channelled command
+    /// is `Operated`-EXCLUSIVE (enforced at registration) and resolves only when
+    /// the actor's control link to the subject GRANTS the channel.
+    pub required_channel: Option<ChannelId>,
     /// The handler.
     pub handler: Arc<dyn BehaviorCommandHandler>,
 }
@@ -306,6 +362,7 @@ impl BehaviorCommand {
         BehaviorCommand {
             spec,
             reach: CommandReach::default_set(),
+            required_channel: None,
             handler,
         }
     }
@@ -314,6 +371,15 @@ impl BehaviorCommand {
     #[must_use]
     pub fn with_reach(mut self, reach: Vec<CommandReach>) -> BehaviorCommand {
         self.reach = reach;
+        self
+    }
+
+    /// Require a control `channel` (and, implicitly, `Operated`-exclusive reach,
+    /// checked at registration).
+    #[must_use]
+    pub fn with_channel(mut self, channel: ChannelId) -> BehaviorCommand {
+        self.required_channel = Some(channel);
+        self.reach = vec![CommandReach::Operated];
         self
     }
 }
@@ -341,6 +407,16 @@ pub enum BehaviorRegError {
         /// The behavior id.
         id: String,
         /// The duplicated verb (lowercased).
+        verb: String,
+    },
+    /// A channelled command declared a reach other than exactly `[Operated]`:
+    /// control authority is only meaningful for a subject operated through a
+    /// station link, and any other reach would bypass the channel gate.
+    #[error("behavior `{id}` command {verb:?} requires a channel but is not Operated-exclusive")]
+    ChannelledNotOperated {
+        /// The behavior id.
+        id: String,
+        /// The offending verb (lowercased).
         verb: String,
     },
     /// A contextual command verb collides with an existing global command. A
@@ -386,6 +462,9 @@ struct Candidate {
     reaches: Vec<CommandReach>,
     /// The link priority when first reached as Operated — a sub-tier.
     priority: Option<u16>,
+    /// The UNION of granted channels across every Operated link to this subject
+    /// (multi-owner authority composes at the gate).
+    channels: BTreeSet<ChannelId>,
 }
 
 /// The ordering key for "the first tier with a hit wins": the subject's highest
@@ -397,16 +476,25 @@ struct TierKey {
     priority: Option<u16>,
 }
 
-fn push_candidate(cands: &mut Vec<Candidate>, id: ObjId, reach: CommandReach, priority: Option<u16>) {
+fn push_candidate(
+    cands: &mut Vec<Candidate>,
+    id: ObjId,
+    reach: CommandReach,
+    priority: Option<u16>,
+    channels: &BTreeSet<ChannelId>,
+) {
     if let Some(c) = cands.iter_mut().find(|c| c.subject == id) {
         if !c.reaches.contains(&reach) {
             c.reaches.push(reach);
         }
+        // Channels UNION across all Operated links to this subject.
+        c.channels.extend(channels.iter().cloned());
     } else {
         cands.push(Candidate {
             subject: id,
             reaches: vec![reach],
             priority,
+            channels: channels.clone(),
         });
     }
 }
@@ -451,14 +539,17 @@ pub fn resolve_behavior_command(
     // Candidates in tier order; a repeated subject keeps its first (highest)
     // position and accumulates the lower reaches it was also found at.
     let mut candidates: Vec<Candidate> = Vec::new();
+    // Operated links FIRST, so a subject's channel union is complete before any
+    // non-Operated reach for the same subject is considered.
+    let no_channels = BTreeSet::new();
     for link in w.command_subjects_of(actor) {
-        push_candidate(&mut candidates, link.subject, CommandReach::Operated, Some(link.priority));
+        push_candidate(&mut candidates, link.subject, CommandReach::Operated, Some(link.priority), &link.channels);
     }
-    push_candidate(&mut candidates, actor, CommandReach::Actor, None);
+    push_candidate(&mut candidates, actor, CommandReach::Actor, None, &no_channels);
     if let Some(loc) = actor_obj.location
         && w.get(loc).is_some_and(|o| o.kind != ObjKind::Room)
     {
-        push_candidate(&mut candidates, loc, CommandReach::Container, None);
+        push_candidate(&mut candidates, loc, CommandReach::Container, None, &no_channels);
     }
     let carried = w
         .contents_of(actor)
@@ -467,10 +558,10 @@ pub fn resolve_behavior_command(
         .filter(|&c| w.get(c).is_some_and(|o| !o.behaviors.is_empty()))
         .take(MAX_CARRIED_SCAN);
     for c in carried {
-        push_candidate(&mut candidates, c, CommandReach::Carried, None);
+        push_candidate(&mut candidates, c, CommandReach::Carried, None, &no_channels);
     }
     if let Some(room) = w.containing_room(actor) {
-        push_candidate(&mut candidates, room, CommandReach::Ambient, None);
+        push_candidate(&mut candidates, room, CommandReach::Ambient, None, &no_channels);
     }
 
     let verb_lc = verb.to_lowercase();
@@ -508,6 +599,15 @@ pub fn resolve_behavior_command(
                 let Some(&reach) = cand.reaches.iter().find(|r| cmd.reach.contains(r)) else {
                     continue;
                 };
+                // Control-channel gate: a channelled command (Operated-exclusive)
+                // resolves only if the actor's control over this subject GRANTS
+                // the channel. A denial drops this candidate BEFORE ambiguity
+                // counting — it never becomes a hit and never causes ambiguity.
+                if let Some(ch) = &cmd.required_channel
+                    && !cand.channels.contains(ch)
+                {
+                    continue;
+                }
                 let matches = cmd.spec.name.to_lowercase() == verb_lc
                     || cmd.spec.aliases.iter().any(|a| a.to_lowercase() == verb_lc);
                 if matches {

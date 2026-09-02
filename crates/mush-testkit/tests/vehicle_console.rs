@@ -159,6 +159,7 @@ fn pilot_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         relation: SmolStr::new_static("pilot"),
         owner: SmolStr::new_static(NS),
         priority: 0,
+        channels: Default::default(),
     });
     ctx.persist(ModuleOp {
         ns: SmolStr::new_static(NS),
@@ -251,6 +252,7 @@ impl GameModule for ConsoleModule {
                 relation: SmolStr::new_static("pilot"),
                 owner: SmolStr::new_static(NS),
                 priority: 0,
+                channels: Default::default(),
             });
         }
         Ok(())
