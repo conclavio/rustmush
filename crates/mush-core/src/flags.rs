@@ -75,6 +75,8 @@ bitflags::bitflags! {
         const SEE_HIDDEN   = 1 << 7;
         /// May administer factions (`@faction`, `@region`).
         const FACTION_ADMIN = 1 << 8;
+        /// May administer the spatial simulation (`@domain`, `@spatial`).
+        const SIM_ADMIN = 1 << 9;
     }
 }
 

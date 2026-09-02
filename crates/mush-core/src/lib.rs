@@ -67,7 +67,8 @@ pub use attr::{Attr, AttrFlags, AttrMap, AttrValue, UncasedName};
 pub use behavior::{
     BINDING_SCHEMA_VERSION, BehaviorBinding, BehaviorCommand, BehaviorCommandHandler, BehaviorId,
     BehaviorIdError, BehaviorRegError, BehaviorResolution, BehaviorSpec, BehaviorTarget,
-    CommandReach, DestroyGate, DestroyPolicy, MAX_CARRIED_SCAN, resolve_behavior_command,
+    CommandReach, DestroyGate, DestroyPolicy, DetachGate, MAX_CARRIED_SCAN,
+    resolve_behavior_command,
 };
 pub use clock::{CivilDate, GameClock, Season, TimeOfDay};
 pub use cmd::{

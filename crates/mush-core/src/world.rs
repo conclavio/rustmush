@@ -622,6 +622,32 @@ impl World {
         None
     }
 
+    /// Whether [`World::move_to`]`(obj, dest)` would succeed — exactly its
+    /// validation (both exist; `dest` is neither `obj` nor transitively inside
+    /// it) with no mutation. A caller that must not half-apply (a spatial
+    /// transition projecting several objects at once) pre-validates every move
+    /// with this, after which `move_to` cannot fail.
+    pub fn can_move_to(&self, obj: ObjId, dest: ObjId) -> Result<(), WorldError> {
+        self.ensure(obj)?;
+        self.ensure(dest)?;
+        if obj == dest {
+            return Err(WorldError::Cycle { obj, dest });
+        }
+        let mut cur = Some(dest);
+        let mut hops = 0usize;
+        while let Some(c) = cur {
+            if c == obj {
+                return Err(WorldError::Cycle { obj, dest });
+            }
+            cur = self.get(c).and_then(|o| o.location);
+            hops += 1;
+            if hops > self.objs.len() {
+                break; // pre-existing cycle above us; don't loop forever
+            }
+        }
+        Ok(())
+    }
+
     // ------------------------------------------------------------------
     // Connection state (transient session bookkeeping)
     // ------------------------------------------------------------------
@@ -902,23 +928,7 @@ impl World {
     /// contains. Exits land in `dest.exits` (relinking their source room);
     /// everything else lands in `dest.contents`.
     pub fn move_to(&mut self, obj: ObjId, dest: ObjId) -> Result<(), WorldError> {
-        self.ensure(obj)?;
-        self.ensure(dest)?;
-        if obj == dest {
-            return Err(WorldError::Cycle { obj, dest });
-        }
-        let mut cur = Some(dest);
-        let mut hops = 0usize;
-        while let Some(c) = cur {
-            if c == obj {
-                return Err(WorldError::Cycle { obj, dest });
-            }
-            cur = self.get(c).and_then(|o| o.location);
-            hops += 1;
-            if hops > self.objs.len() {
-                break; // pre-existing cycle above us; don't loop forever
-            }
-        }
+        self.can_move_to(obj, dest)?;
 
         let (kind, old_loc) = {
             let o = self.get(obj).ok_or(WorldError::NoSuchObj(obj))?;

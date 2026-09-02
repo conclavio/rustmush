@@ -12,6 +12,7 @@ use crate::cmd::{ArgShape, CmdError, CommandSpec, Ctx, Registry, RegistryError};
 use crate::flags::Flags;
 use crate::lock::{LockType, MAX_LOCK_DEPTH, eval_lock};
 use crate::matchit::match_object;
+use crate::module::check_carry_attempt;
 use crate::obj::ObjKind;
 use crate::output::{display_name, name_span};
 
@@ -51,6 +52,8 @@ fn get_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             attr_text(ctx.w, target, "fail").unwrap_or_else(|| "You can't pick that up.".into());
         return Err(CmdError::msg(fail));
     }
+    check_carry_attempt(ctx.reg, ctx.w, ctx.actor, target, ctx.actor)
+        .map_err(|r| CmdError::msg(r.to_plain_text()))?;
     ctx.w.move_to(target, ctx.actor)?;
     let name = display_name(ctx.w, target);
     let succ = attr_text(ctx.w, target, "succ").unwrap_or_else(|| format!("You take {name}."));
@@ -98,6 +101,8 @@ fn drop_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .flatten()
         .filter(|&h| ctx.w.get(h).is_some());
     let dest = sticky_home.unwrap_or(loc);
+    check_carry_attempt(ctx.reg, ctx.w, ctx.actor, target, dest)
+        .map_err(|r| CmdError::msg(r.to_plain_text()))?;
     ctx.w.move_to(target, dest)?;
     let name = display_name(ctx.w, target);
     let msg = attr_text(ctx.w, target, "drop").unwrap_or_else(|| format!("You drop {name}."));
@@ -152,6 +157,8 @@ fn give_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     {
         return Err(CmdError::msg("They don't want that."));
     }
+    check_carry_attempt(ctx.reg, ctx.w, ctx.actor, obj, recipient)
+        .map_err(|r| CmdError::msg(r.to_plain_text()))?;
     ctx.w.move_to(obj, recipient)?;
     let obj_disp = display_name(ctx.w, obj);
     let who_disp = display_name(ctx.w, recipient);

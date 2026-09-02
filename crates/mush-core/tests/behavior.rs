@@ -598,3 +598,97 @@ fn verbs_fold_case_like_the_global_table() {
     assert!(texts(&g.run(bob, "über")).contains(&format!("ran on {c}")));
     assert!(texts(&g.run(bob, "ÜBER")).contains(&format!("ran on {c}")));
 }
+
+// ---------------------------------------------------------------------
+// Core seams for the spatial graph: detach gate, carry gate, can_move_to
+// ---------------------------------------------------------------------
+
+/// Refuses detaching `test.fragile` from anything named "Anchor".
+struct KeepFragileOnAnchor;
+impl mush_core::DetachGate for KeepFragileOnAnchor {
+    fn check(&self, w: &World, _reg: &Registry, _actor: ObjId, obj: ObjId, behavior: &BehaviorId) -> Result<(), String> {
+        if behavior == &bid("test.fragile") && w.get(obj).is_some_and(|o| o.name == "Anchor") {
+            Err("The anchor still holds a live domain; retire it first.".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn a_detach_gate_can_refuse_behavior_remove() {
+    let mut g = Game::new();
+    g.reg.add_detach_gate(Arc::new(KeepFragileOnAnchor));
+    let a = g.thing("Anchor", g.bob);
+    g.run(g.bob, "@behavior/add Anchor=test.fragile");
+    let t = texts(&g.run(g.bob, "@behavior/remove Anchor=test.fragile"));
+    assert!(t.contains("retire it first"), "{t}");
+    assert!(g.has(a, "test.fragile"), "binding survived the refused remove");
+    let w = g.thing("Widget", g.bob);
+    g.run(g.bob, "@behavior/add Widget=test.fragile");
+    g.run(g.bob, "@behavior/remove Widget=test.fragile");
+    assert!(!g.has(w, "test.fragile"), "other objects unaffected");
+}
+
+/// Vetoes carrying anything named "Bolted"; vetoes MOVING into anything named "Vault".
+struct BoltedAndVault;
+impl mush_core::EventHook for BoltedAndVault {
+    fn carry_attempt(&self, w: &mut World, _mover: ObjId, obj: ObjId, _dest: ObjId) -> Result<(), mush_proto::RichText> {
+        if w.get(obj).is_some_and(|o| o.name == "Bolted") {
+            Err(mush_proto::RichText::tag("error", "It is bolted down."))
+        } else {
+            Ok(())
+        }
+    }
+    fn move_attempt(&self, w: &mut World, _actor: ObjId, _exit: Option<ObjId>, dest: ObjId) -> Result<(), mush_proto::RichText> {
+        if w.get(dest).is_some_and(|o| o.name == "Vault") {
+            Err(mush_proto::RichText::tag("error", "The vault is sealed."))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn carry_gate_covers_get_and_drop_and_the_move_gate_never_fires_on_a_carry() {
+    let mut g = Game::new();
+    {
+        let mut r = Registrar::new(&mut g.reg, "test");
+        r.hook(mush_core::HookPoint::CarryAttempt, Arc::new(BoltedAndVault));
+        r.hook(mush_core::HookPoint::MoveAttempt, Arc::new(BoltedAndVault));
+    }
+    let bob = g.bob;
+    let bolted = g.thing("Bolted", bob);
+    let t = texts(&g.run(bob, "get Bolted"));
+    assert!(t.contains("bolted down"), "{t}");
+    assert_eq!(g.w.get(bolted).and_then(|o| o.location), Some(LIMBO), "get refused, no move");
+    // A plain thing can be dropped inside the Vault: the MOVE gate (which vetoes
+    // that destination) is deliberately not consulted for carry moves.
+    let vault = g.w.create(ObjKind::Room, "Vault", GOD, None).unwrap();
+    let wrench = g.thing("Wrench", bob);
+    g.w.move_to(bob, vault).unwrap();
+    g.w.move_to(wrench, bob).unwrap();
+    let t = texts(&g.run(bob, "drop Wrench"));
+    assert!(!t.contains("sealed"), "drop must not trigger the move gate: {t}");
+    assert_eq!(g.w.get(wrench).and_then(|o| o.location), Some(vault));
+    // ...but walking INTO the vault is still vetoed by the move gate.
+    g.w.move_to(bob, LIMBO).unwrap();
+    let ex = g.w.create(ObjKind::Exit, "vaultdoor", GOD, Some(LIMBO)).unwrap();
+    g.w.link_exit(ex, Some(vault)).unwrap();
+    let t = texts(&g.run(bob, "vaultdoor"));
+    assert!(t.contains("sealed"), "{t}");
+    assert_eq!(g.w.get(bob).and_then(|o| o.location), Some(LIMBO));
+}
+
+#[test]
+fn can_move_to_mirrors_move_to_checks_without_mutating() {
+    let mut g = Game::new();
+    let bag = g.thing("Bag", g.bob);
+    let pouch = g.thing("Pouch", g.bob);
+    g.w.move_to(pouch, bag).unwrap();
+    assert!(g.w.can_move_to(bag, pouch).is_err(), "cycle: bag into its own pouch");
+    assert!(g.w.can_move_to(bag, bag).is_err(), "self");
+    assert!(g.w.can_move_to(bag, ObjId(9999)).is_err(), "missing dest");
+    assert!(g.w.can_move_to(bag, g.bob).is_ok());
+    assert_eq!(g.w.get(bag).and_then(|o| o.location), Some(LIMBO), "no mutation");
+}

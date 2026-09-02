@@ -551,6 +551,25 @@ pub trait DestroyGate: Send + Sync {
     -> Result<(), String>;
 }
 
+/// A pre-detach veto: consulted by `@behavior/remove` before a binding is
+/// detached, so a module can refuse stripping a behavior its own records still
+/// depend on (a live domain's `sim.domain`, a placed unit's `sim.participant`).
+/// Without it the documented `@behavior/remove` escape hatch could orphan live
+/// structural state. Read-only over the world; `World::detach_behavior` itself
+/// never consults it. Registered via
+/// [`Registrar::detach_gate`](crate::module::Registrar::detach_gate).
+pub trait DetachGate: Send + Sync {
+    /// Return `Err(reason)` to refuse removing `behavior` from `obj`.
+    fn check(
+        &self,
+        w: &World,
+        reg: &Registry,
+        actor: ObjId,
+        obj: ObjId,
+        behavior: &BehaviorId,
+    ) -> Result<(), String>;
+}
+
 // ----------------------------------------------------------------------
 // Commands: @behavior/add|remove|list
 // ----------------------------------------------------------------------
@@ -634,6 +653,11 @@ fn behavior_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .map_err(|e| CmdError::msg(e.to_string()))?;
         ctx.out.info(ctx.actor, format!("Attached `{id}`."));
     } else {
+        // A module may refuse stripping a binding its records still depend on
+        // (a live domain's `sim.domain`), so the escape hatch stays honest.
+        if let Err(reason) = ctx.reg.check_detach(ctx.w, ctx.actor, target, &id) {
+            return Err(CmdError::msg(reason));
+        }
         let removed = ctx
             .w
             .detach_behavior(target, &id)

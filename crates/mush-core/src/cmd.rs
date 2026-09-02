@@ -39,7 +39,7 @@ use mush_proto::OutputEvent;
 
 use crate::behavior::{
     BehaviorId, BehaviorRegError, BehaviorResolution, BehaviorSpec, DestroyGate, DestroyPolicy,
-    resolve_behavior_command,
+    DetachGate, resolve_behavior_command,
 };
 use crate::commands::movement;
 use crate::flags::{Powers, Role};
@@ -472,6 +472,9 @@ pub struct Registry {
     /// Pre-destroy veto gates (design D8), consulted by [`Registry::check_destroy`]
     /// at the command layer.
     destroy_gates: Vec<Arc<dyn DestroyGate>>,
+    /// Pre-detach veto gates, consulted by `@behavior/remove` via
+    /// [`Registry::check_detach`].
+    detach_gates: Vec<Arc<dyn DetachGate>>,
 }
 
 impl Registry {
@@ -612,6 +615,29 @@ impl Registry {
     /// [`check_destroy`](Registry::check_destroy) in registration order.
     pub fn add_destroy_gate(&mut self, gate: Arc<dyn DestroyGate>) {
         self.destroy_gates.push(gate);
+    }
+
+    /// Append a pre-detach [`DetachGate`], consulted by
+    /// [`check_detach`](Registry::check_detach) in registration order.
+    pub fn add_detach_gate(&mut self, gate: Arc<dyn DetachGate>) {
+        self.detach_gates.push(gate);
+    }
+
+    /// The pre-detach veto: refuse removing `behavior` from `obj` if any
+    /// registered [`DetachGate`] objects. Called by `@behavior/remove` before
+    /// the binding is detached; `World::detach_behavior` itself never consults
+    /// it (programmatic callers validate first).
+    pub fn check_detach(
+        &self,
+        w: &World,
+        actor: ObjId,
+        obj: ObjId,
+        behavior: &BehaviorId,
+    ) -> Result<(), String> {
+        for gate in &self.detach_gates {
+            gate.check(w, self, actor, obj, behavior)?;
+        }
+        Ok(())
     }
 
     /// The pre-destroy veto (design D8): refuse destroying `target` if it — or

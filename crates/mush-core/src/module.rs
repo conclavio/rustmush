@@ -249,6 +249,13 @@ pub enum HookPoint {
     /// emit [`WorldEvent::Moved`]). An `Err(reason)` blocks the move and
     /// shows the reason to the mover.
     MoveAttempt,
+    /// Veto-capable: consulted by `get`, `drop`, and `give` **before** the
+    /// carried object moves. Deliberately separate from `MoveAttempt`: those
+    /// are actor-enters-destination moves that emit [`WorldEvent::Moved`];
+    /// carry moves emit no event, and a hook that vetoes *destinations* (a
+    /// hex-locked room) must not fire when someone drops a wrench there.
+    /// `Err(reason)` blocks the carry and shows the reason to the mover.
+    CarryAttempt,
     /// Append lines to a rendered room view (weather ambience, scene
     /// banners). Fires wherever a room render is shown: `look`, movement
     /// arrival, `@teleport`.
@@ -300,6 +307,19 @@ pub trait EventHook: Send + Sync {
         w: &mut World,
         actor: ObjId,
         exit: Option<ObjId>,
+        dest: ObjId,
+    ) -> Result<(), RichText> {
+        Ok(())
+    }
+
+    /// Veto a carry attempt: `mover` is picking up, dropping, or giving `obj`
+    /// so that it lands in `dest` (the mover, a room, or a recipient). Return
+    /// `Err(reason)` to block; the reason is shown to the mover.
+    fn carry_attempt(
+        &self,
+        w: &mut World,
+        mover: ObjId,
+        obj: ObjId,
         dest: ObjId,
     ) -> Result<(), RichText> {
         Ok(())
@@ -1320,6 +1340,15 @@ impl<'a> Registrar<'a> {
         self.reg.add_destroy_gate(gate);
     }
 
+    /// Register a [`DetachGate`](crate::behavior::DetachGate): a veto consulted
+    /// by `@behavior/remove` before a binding is detached, so a module can
+    /// refuse stripping a behavior its records still depend on (a live domain's
+    /// `sim.domain`). Keeps the documented `@behavior/remove` escape hatch from
+    /// orphaning live structural state.
+    pub fn detach_gate(&mut self, gate: Arc<dyn crate::behavior::DetachGate>) {
+        self.reg.add_detach_gate(gate);
+    }
+
     /// Register a marker flag (e.g. `"wod:kindred"`): settable via
     /// `@set <target>=[!]<name>`, shown by `examine`, matchable by
     /// `flag^` locks.
@@ -1594,6 +1623,21 @@ pub fn check_move_attempt(
 ) -> Result<(), RichText> {
     for h in reg.hooks(HookPoint::MoveAttempt) {
         h.hook.move_attempt(w, actor, exit, dest)?;
+    }
+    Ok(())
+}
+
+/// Consult every `CarryAttempt` hook for `mover` moving `obj` into `dest`
+/// (`get`/`drop`/`give`); the first veto wins.
+pub fn check_carry_attempt(
+    reg: &Registry,
+    w: &mut World,
+    mover: ObjId,
+    obj: ObjId,
+    dest: ObjId,
+) -> Result<(), RichText> {
+    for h in reg.hooks(HookPoint::CarryAttempt) {
+        h.hook.carry_attempt(w, mover, obj, dest)?;
     }
     Ok(())
 }
