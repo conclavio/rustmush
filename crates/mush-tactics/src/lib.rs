@@ -46,10 +46,17 @@ use mush_proto::RichText;
 use smol_str::SmolStr;
 
 pub mod mobility;
+pub mod unit;
 
 pub use mobility::{
     LocomotionId, MediumId, MobilityError, MobilityMode, MobilityModeId, MobilityProfile,
     MobilityRegistry, MobilityTag, MobilityVocabulary, ModeRules, ModeState,
+};
+pub use unit::{
+    apply, CapabilityId, CapabilityInit, CapabilityKey, CellAddr, CellId, CellSpec, ComponentId,
+    ComponentSpec, ConditionId, DefinitionRef, FacetId, FacetSpec, InstallPoint, InstallSlotId,
+    InstalledComponent, Journal, JournalEntry, RulesValue, ScalarCell, SectionId, SectionSpec,
+    SectionState, TacticalUnit, UnitError, UnitMutationOp, UnitMutationPlan, UnitSpec,
 };
 
 /// The module id (also its persistence namespace).
