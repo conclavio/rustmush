@@ -5,7 +5,7 @@ use mush_core::{
     PerceivedRef, PrincipalId, RequestUid, RevisionSet, ScopedIdempotencyKey,
     StagedActionPersistence,
 };
-use mush_server::action_coordinator::{ActionCoordinator, ActionPreflight};
+use mush_server::action_coordinator::{ActionCoordinator, ActionPreflight, SemanticActionStatus};
 use mush_server::modules::boot_modules;
 use mush_store::{AuthoritativeStore, InMemoryStore};
 use mush_tactics::{BRACE_ACTION_ID, TacticsModule};
@@ -158,6 +158,35 @@ async fn real_provider_is_exactly_once_and_hydrates_before_the_next_action() {
         .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
         .await
         .unwrap();
+
+    match ActionCoordinator::semantic_status(
+        &store,
+        &PrincipalId::Object { id: GOD },
+        envelope.idempotency(),
+        envelope.ingress_hash(),
+    )
+    .await
+    .unwrap()
+    {
+        SemanticActionStatus::Finalized(status) => {
+            assert_eq!(status.token(), bundle.token());
+            assert_eq!(status.outcome().data()["revision"], 1);
+        }
+        other => panic!("eligible viewer did not receive semantic status: {other:?}"),
+    }
+    assert!(matches!(
+        ActionCoordinator::semantic_status(
+            &store,
+            &PrincipalId::Object {
+                id: mush_core::LIMBO
+            },
+            envelope.idempotency(),
+            envelope.ingress_hash(),
+        )
+        .await
+        .unwrap(),
+        SemanticActionStatus::Forbidden
+    ));
 
     match ActionCoordinator::preflight(&store, envelope.clone())
         .await

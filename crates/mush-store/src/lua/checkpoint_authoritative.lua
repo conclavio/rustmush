@@ -3,9 +3,10 @@
 -- so a concurrent or externally clobbered witness can never be overwritten.
 --
 -- KEYS: intent, receipt, idempotency binding, pending set, retained count,
--- retained bytes, retained generation.
+-- retained bytes, retained generation, then every exact terminal outbox item.
 -- ARGV: exact intent doc, exact prior receipt doc, compact checkpoint receipt,
--- exact binding doc, token, exact intent bytes.
+-- exact binding doc, token, exact intent bytes, outbox count, then each exact
+-- terminal outbox document.
 
 local function key_type(key)
   local result = redis.call('TYPE', key)
@@ -61,6 +62,16 @@ local retained_bytes = tonumber(bytes_doc or '')
 if not retained_count or not retained_bytes or not intent_bytes or
    retained_count < 1 or retained_bytes < intent_bytes then
   return 'CORRUPT_COUNTER'
+end
+
+local outbox_count = tonumber(ARGV[7])
+if not outbox_count or outbox_count < 0 or outbox_count ~= (#KEYS - 7) then
+  return 'CORRUPT_ARGUMENTS'
+end
+for index = 1, outbox_count do
+  if redis.call('GET', KEYS[7 + index]) ~= ARGV[7 + index] then
+    return 'OUTBOX_PENDING'
+  end
 end
 
 local generation_type = key_type(KEYS[7])

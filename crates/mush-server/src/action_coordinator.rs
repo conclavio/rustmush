@@ -9,7 +9,8 @@
 use mush_core::{
     ActionInvocation, ActionProviderPrepareError, AuthoritativeBundle, AuthoritativeBundleDraft,
     CanonicalHash, CanonicalHashError, CommitToken, DefinitionRef, Engine, GuardSet,
-    IngressEnvelope, MAX_AUTHORITATIVE_BUNDLE_BYTES, PreparedCausalRef, StagePreparedActionError,
+    IngressEnvelope, MAX_AUTHORITATIVE_BUNDLE_BYTES, PreparedCausalRef, PrincipalId,
+    ScopedIdempotencyKey, StagePreparedActionError,
 };
 use mush_store::{AuthoritativeReceipt, AuthoritativeStore, IdempotencyStatus, StoreError};
 use serde_json::json;
@@ -32,6 +33,23 @@ pub enum ActionPreflight {
     /// without invoking the provider or RNG again.
     Finalized(Box<AuthoritativeReceipt>),
     /// The scoped key is already bound to different canonical ingress.
+    Conflict,
+}
+
+/// Viewer-projected semantic status. Unauthorized callers never receive the
+/// existence, token, action identity, or outcome of another principal's key.
+#[derive(Debug)]
+pub enum SemanticActionStatus {
+    Forbidden,
+    Retired {
+        minimum_accepted_epoch: u64,
+    },
+    Vacant,
+    Pending {
+        token: CommitToken,
+        bundle_hash: CanonicalHash,
+    },
+    Finalized(Box<AuthoritativeReceipt>),
     Conflict,
 }
 
@@ -61,6 +79,43 @@ pub struct StagedAuthoritativeAction {
 pub struct ActionCoordinator;
 
 impl ActionCoordinator {
+    /// Authorized semantic `action/status` lookup. Finalized outcomes are
+    /// returned only to an event-time eligible witness.
+    pub async fn semantic_status(
+        store: &dyn AuthoritativeStore,
+        viewer: &PrincipalId,
+        key: &ScopedIdempotencyKey,
+        ingress_hash: CanonicalHash,
+    ) -> Result<SemanticActionStatus, StoreError> {
+        if &key.scope().principal != viewer {
+            return Ok(SemanticActionStatus::Forbidden);
+        }
+        Ok(
+            match store
+                .authoritative_idempotency_status(key, ingress_hash)
+                .await?
+            {
+                IdempotencyStatus::Retired {
+                    minimum_accepted_epoch,
+                } => SemanticActionStatus::Retired {
+                    minimum_accepted_epoch,
+                },
+                IdempotencyStatus::Vacant => SemanticActionStatus::Vacant,
+                IdempotencyStatus::PendingExact { token, bundle_hash } => {
+                    SemanticActionStatus::Pending { token, bundle_hash }
+                }
+                IdempotencyStatus::FinalizedExact(receipt) => {
+                    if receipt.eligible_witnesses().contains(viewer) {
+                        SemanticActionStatus::Finalized(receipt)
+                    } else {
+                        SemanticActionStatus::Forbidden
+                    }
+                }
+                IdempotencyStatus::Conflict => SemanticActionStatus::Conflict,
+            },
+        )
+    }
+
     /// Look up exact durable idempotency before any parser, resolver, provider,
     /// truth read or RNG is allowed to run.
     pub async fn preflight(

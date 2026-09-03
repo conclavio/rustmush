@@ -32,9 +32,10 @@ use mush_core::{
 use crate::store::{AuthoritativeStore, ObjectStore};
 use crate::types::{
     AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeEpochRetirement,
-    AuthoritativeIntentPage, AuthoritativeReceipt, AuthoritativeRetentionUsage,
-    AuthoritativeScanCursor, BanRec, BundleStatus, CharacterRef, IdempotencyStatus, IntentReceipt,
-    MAX_AUTHORITATIVE_DISCOVERY_PAGE, MAX_RETAINED_AUTHORITATIVE_BYTES,
+    AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult, AuthoritativeOutboxRecord,
+    AuthoritativeReceipt, AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec,
+    BundleStatus, CharacterRef, IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
+    MAX_PENDING_AUTHORITATIVE_OUTBOX, MAX_RETAINED_AUTHORITATIVE_BYTES,
     MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleWrite, PendingAuthoritativeIntent, SshKeyRec,
     StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt, validate_module_key,
     validate_module_ns, validate_module_op, validate_token_hash,
@@ -79,6 +80,11 @@ struct Inner {
     /// Durable per-scope retry horizon. Epochs below this watermark can never
     /// become vacant again after their compact receipts are removed.
     authoritative_minimum_epochs: BTreeMap<IdempotencyScope, u64>,
+    /// Stable durable-delivery records, independently addressable by their
+    /// parent-token/ordinal hash.
+    authoritative_outbox: BTreeMap<CanonicalHash, String>,
+    /// Non-terminal delivery accelerator, materialized with finalization.
+    authoritative_outbox_pending: BTreeSet<CanonicalHash>,
     /// Independently enumerable recovery index. Later fault tests deliberately
     /// damage this index and prove exhaustive intent discovery repairs it.
     authoritative_pending: BTreeSet<CommitToken>,
@@ -202,6 +208,63 @@ fn decode_checkpoint_receipt(doc: &str) -> Result<AuthoritativeReceipt, StoreErr
     Ok(receipt)
 }
 
+fn decode_outbox_record(doc: &str) -> Result<AuthoritativeOutboxRecord, StoreError> {
+    let record: AuthoritativeOutboxRecord = serde_json::from_str(doc)
+        .map_err(|error| StoreError::AuthoritativeCorrupt(error.to_string()))?;
+    record.validate()?;
+    let canonical = serde_json::to_string(&record)
+        .map_err(|error| StoreError::AuthoritativeCorrupt(error.to_string()))?;
+    if canonical != doc {
+        return Err(StoreError::AuthoritativeCorrupt(
+            "authoritative outbox record is not in canonical storage form".to_owned(),
+        ));
+    }
+    Ok(record)
+}
+
+fn expected_outbox_records(
+    bundle: &AuthoritativeBundle,
+) -> Result<Vec<AuthoritativeOutboxRecord>, StoreError> {
+    bundle
+        .durable_outbox()
+        .iter()
+        .cloned()
+        .map(|intent| AuthoritativeOutboxRecord::new(bundle.token(), bundle.bundle_hash(), intent))
+        .collect()
+}
+
+fn validate_bundle_outbox(inner: &Inner, bundle: &AuthoritativeBundle) -> Result<(), StoreError> {
+    for expected in expected_outbox_records(bundle)? {
+        let doc = inner
+            .authoritative_outbox
+            .get(&expected.item_id())
+            .ok_or_else(|| {
+                StoreError::AuthoritativeCorrupt(
+                    "finalized action is missing a durable outbox record".to_owned(),
+                )
+            })?;
+        let record = decode_outbox_record(doc)?;
+        if record.parent_token() != expected.parent_token()
+            || record.parent_bundle_hash() != expected.parent_bundle_hash()
+            || record.intent() != expected.intent()
+        {
+            return Err(StoreError::AuthoritativeCorrupt(
+                "durable outbox record disagrees with its parent action".to_owned(),
+            ));
+        }
+        if record.state().is_terminal()
+            == inner
+                .authoritative_outbox_pending
+                .contains(&record.item_id())
+        {
+            return Err(StoreError::AuthoritativeCorrupt(
+                "durable outbox pending index disagrees with item state".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_receipt_binding(
     inner: &Inner,
     stored_token: CommitToken,
@@ -266,6 +329,7 @@ fn validate_retained_intent(
             "finalized receipt disagrees with its retained intent".to_owned(),
         ));
     }
+    validate_bundle_outbox(inner, intent)?;
     Ok(Some(receipt))
 }
 
@@ -675,6 +739,10 @@ impl AuthoritativeStore for InMemoryStore {
             let planned = plan_replay(&bundle)?;
             let receipt = AuthoritativeReceipt::new(&bundle);
             let receipt_doc = serde_json::to_string(&receipt)?;
+            let outbox_records = expected_outbox_records(&bundle)?
+                .into_iter()
+                .map(|record| Ok((record.item_id(), serde_json::to_string(&record)?)))
+                .collect::<Result<Vec<_>, StoreError>>()?;
 
             let mut inner = self.lock()?;
             if inner.authoritative_intents.get(&token) != Some(&intent_doc) {
@@ -701,11 +769,43 @@ impl AuthoritativeStore for InMemoryStore {
                 ));
             }
             validate_replay_recovery(&inner, &bundle)?;
+            let new_outbox = outbox_records
+                .iter()
+                .filter(|(item_id, _)| !inner.authoritative_outbox.contains_key(item_id))
+                .count();
+            let attempted_outbox = inner
+                .authoritative_outbox_pending
+                .len()
+                .checked_add(new_outbox)
+                .ok_or_else(|| {
+                    StoreError::AuthoritativeCorrupt(
+                        "durable outbox item count overflowed".to_owned(),
+                    )
+                })?;
+            if attempted_outbox > MAX_PENDING_AUTHORITATIVE_OUTBOX {
+                return Err(StoreError::AuthoritativeOutboxCapacity {
+                    pending: attempted_outbox,
+                    max_pending: MAX_PENDING_AUTHORITATIVE_OUTBOX,
+                });
+            }
+            for (item_id, doc) in &outbox_records {
+                if inner
+                    .authoritative_outbox
+                    .get(item_id)
+                    .is_some_and(|existing| existing != doc)
+                {
+                    return Err(StoreError::AuthoritativeOutboxConflict);
+                }
+            }
             apply_replay(&mut inner, &planned);
             if !replay_matches(&inner, &planned) {
                 return Err(StoreError::AuthoritativeCorrupt(
                     "authoritative replay readback mismatch".to_owned(),
                 ));
+            }
+            for (item_id, doc) in outbox_records {
+                inner.authoritative_outbox.insert(item_id, doc);
+                inner.authoritative_outbox_pending.insert(item_id);
             }
             inner.authoritative_receipts.insert(token, receipt_doc);
             inner.authoritative_pending.remove(&token);
@@ -740,11 +840,23 @@ impl AuthoritativeStore for InMemoryStore {
             if bundle.bundle_hash() != expected_bundle_hash {
                 return Err(StoreError::AuthoritativeTokenConflict);
             }
-            if !bundle.durable_outbox().is_empty() {
-                return Err(StoreError::AuthoritativeOutboxPending);
-            }
             let receipt = validate_retained_intent(&inner, token, &bundle)?
                 .ok_or(StoreError::AuthoritativeNotFinalized)?;
+            for expected in expected_outbox_records(&bundle)? {
+                let record = decode_outbox_record(
+                    inner
+                        .authoritative_outbox
+                        .get(&expected.item_id())
+                        .ok_or_else(|| {
+                            StoreError::AuthoritativeCorrupt(
+                                "finalized action is missing a durable outbox record".to_owned(),
+                            )
+                        })?,
+                )?;
+                if !record.state().is_terminal() {
+                    return Err(StoreError::AuthoritativeOutboxPending);
+                }
+            }
             validate_receipt_binding(&inner, token, &receipt)?;
             let checkpoint_doc = serde_json::to_string(&receipt)?;
             inner.authoritative_receipts.insert(token, checkpoint_doc);
@@ -755,6 +867,126 @@ impl AuthoritativeStore for InMemoryStore {
                 released_intent_bytes: intent_doc.len(),
                 resumed: false,
             })
+        })
+    }
+
+    fn pending_authoritative_outbox(
+        &self,
+    ) -> BoxFuture<'_, Result<Vec<AuthoritativeOutboxRecord>, StoreError>> {
+        Box::pin(async move {
+            let inner = self.lock()?;
+            if inner.authoritative_outbox_pending.len() > MAX_PENDING_AUTHORITATIVE_OUTBOX {
+                return Err(StoreError::AuthoritativeCorrupt(format!(
+                    "durable outbox pending index contains {} items; maximum is {MAX_PENDING_AUTHORITATIVE_OUTBOX}",
+                    inner.authoritative_outbox_pending.len()
+                )));
+            }
+            let mut records = Vec::with_capacity(inner.authoritative_outbox_pending.len());
+            for item_id in &inner.authoritative_outbox_pending {
+                let doc = inner.authoritative_outbox.get(item_id).ok_or_else(|| {
+                    StoreError::AuthoritativeCorrupt(
+                        "durable outbox pending index names a missing item".to_owned(),
+                    )
+                })?;
+                let record = decode_outbox_record(doc)?;
+                if record.item_id() != *item_id || record.state().is_terminal() {
+                    return Err(StoreError::AuthoritativeCorrupt(
+                        "durable outbox pending index disagrees with item state".to_owned(),
+                    ));
+                }
+                let receipt = inner
+                    .authoritative_receipts
+                    .get(&record.parent_token())
+                    .ok_or_else(|| {
+                        StoreError::AuthoritativeCorrupt(
+                            "durable outbox item has no finalized parent".to_owned(),
+                        )
+                    })
+                    .and_then(|doc| decode_receipt(doc))?;
+                if receipt.bundle_hash() != record.parent_bundle_hash() {
+                    return Err(StoreError::AuthoritativeCorrupt(
+                        "durable outbox item disagrees with its finalized parent".to_owned(),
+                    ));
+                }
+                records.push(record);
+            }
+            Ok(records)
+        })
+    }
+
+    fn begin_authoritative_outbox_attempt(
+        &self,
+        item_id: CanonicalHash,
+        expected_payload_hash: CanonicalHash,
+        expected_attempts: u32,
+    ) -> BoxFuture<'_, Result<AuthoritativeOutboxRecord, StoreError>> {
+        Box::pin(async move {
+            let mut inner = self.lock()?;
+            let doc = inner
+                .authoritative_outbox
+                .get(&item_id)
+                .ok_or(StoreError::AuthoritativeOutboxMissing)?;
+            let record = decode_outbox_record(doc)?;
+            if record.intent().payload_hash() != expected_payload_hash
+                || record.state().is_terminal()
+            {
+                return Err(StoreError::AuthoritativeOutboxConflict);
+            }
+            if expected_attempts < u32::MAX && record.attempts() == expected_attempts + 1 {
+                return Ok(record);
+            }
+            let next = record.start_attempt(expected_attempts)?;
+            inner
+                .authoritative_outbox
+                .insert(item_id, serde_json::to_string(&next)?);
+            inner.authoritative_outbox_pending.insert(item_id);
+            Ok(next)
+        })
+    }
+
+    fn complete_authoritative_outbox_attempt(
+        &self,
+        item_id: CanonicalHash,
+        expected_payload_hash: CanonicalHash,
+        expected_attempt: u32,
+        result: AuthoritativeOutboxAttemptResult,
+    ) -> BoxFuture<'_, Result<AuthoritativeOutboxRecord, StoreError>> {
+        Box::pin(async move {
+            let mut inner = self.lock()?;
+            let doc = inner
+                .authoritative_outbox
+                .get(&item_id)
+                .ok_or(StoreError::AuthoritativeOutboxMissing)?;
+            let record = decode_outbox_record(doc)?;
+            if record.intent().payload_hash() != expected_payload_hash {
+                return Err(StoreError::AuthoritativeOutboxConflict);
+            }
+            let terminal_retry = matches!(
+                (record.state(), &result),
+                (
+                    crate::types::AuthoritativeOutboxState::Delivered,
+                    AuthoritativeOutboxAttemptResult::Delivered
+                )
+            ) || matches!(
+                (record.state(), &result),
+                (
+                    crate::types::AuthoritativeOutboxState::DeadLetter { error: stored },
+                    AuthoritativeOutboxAttemptResult::DeadLetter { error }
+                ) if stored == error
+            );
+            if terminal_retry && record.attempts() == expected_attempt {
+                return Ok(record);
+            }
+            let next = record.complete_attempt(expected_attempt, result)?;
+            inner
+                .authoritative_outbox
+                .insert(item_id, serde_json::to_string(&next)?);
+            if next.state().is_terminal() {
+                inner.authoritative_outbox_pending.remove(&item_id);
+            } else {
+                inner.authoritative_outbox_pending.insert(item_id);
+            }
+            Ok(next)
         })
     }
 
@@ -1479,8 +1711,9 @@ mod tests {
     use crate::types::{ModuleOp, WriteBatch};
     use mush_core::{
         AuthoritativeBundleDraft, AuthoritativeKey, CanonicalId, DefinitionDescriptor,
-        DefinitionId, DefinitionKind, DefinitionRegistryBuilder, IdempotencyKey, IdempotencyScope,
-        OwnerId, PreparedCausalRef, PrincipalId, RequestUid, RulesValue, World,
+        DefinitionId, DefinitionKind, DefinitionRegistryBuilder, DurableOutboxIntent,
+        IdempotencyKey, IdempotencyScope, OwnerId, PreparedCausalRef, PrincipalId, RequestUid,
+        RulesValue, World,
     };
 
     fn append(ns: &str, key: &str, value: serde_json::Value, maxlen: u32) -> ModuleOp {
@@ -1667,6 +1900,7 @@ mod tests {
             object_id,
             next_id,
             0,
+            vec![],
         )
     }
 
@@ -1677,6 +1911,7 @@ mod tests {
         object_id: ObjId,
         next_id: Option<u32>,
         epoch: u64,
+        durable_outbox: Vec<DurableOutboxIntent>,
     ) -> AuthoritativeBundle {
         let owner = OwnerId::new("toy").unwrap();
         let mut definitions = DefinitionRegistryBuilder::new();
@@ -1746,7 +1981,7 @@ mod tests {
             outcome: RulesValue::new(outcome_definition, serde_json::json!({ "ok": true }))
                 .unwrap(),
             eligible_witnesses: vec![principal],
-            durable_outbox: vec![],
+            durable_outbox,
         })
         .unwrap()
     }
@@ -2199,10 +2434,113 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn durable_outbox_is_finalization_gated_retryable_and_blocks_checkpoint() {
+        let store = InMemoryStore::new();
+        seed_minimal_world(&store).await;
+        let intent = DurableOutboxIntent::new(
+            0,
+            OwnerId::new("toy").unwrap(),
+            CanonicalId::new("webhook").unwrap(),
+            serde_json::json!({"event": "braced"}),
+        )
+        .unwrap();
+        let payload_hash = intent.payload_hash();
+        let bundle =
+            authoritative_bundle_for_epoch(111, 112, 113, ObjId(2), Some(3), 0, vec![intent]);
+        let token = bundle.token();
+        let hash = bundle.bundle_hash();
+        store.reserve_authoritative_intent(bundle).await.unwrap();
+        assert!(
+            store
+                .pending_authoritative_outbox()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        store.reconcile_authoritative(token, hash).await.unwrap();
+
+        let pending = store.pending_authoritative_outbox().await.unwrap();
+        assert_eq!(pending.len(), 1);
+        let item_id = pending[0].item_id();
+        assert_eq!(pending[0].attempts(), 0);
+        assert!(matches!(
+            store.checkpoint_authoritative(token, hash).await,
+            Err(StoreError::AuthoritativeOutboxPending)
+        ));
+
+        let first = store
+            .begin_authoritative_outbox_attempt(item_id, payload_hash, 0)
+            .await
+            .unwrap();
+        assert_eq!(first.attempts(), 1);
+        assert_eq!(
+            store
+                .begin_authoritative_outbox_attempt(item_id, payload_hash, 0)
+                .await
+                .unwrap(),
+            first,
+            "lost begin acknowledgement joins the same attempt"
+        );
+        let retry = store
+            .complete_authoritative_outbox_attempt(
+                item_id,
+                payload_hash,
+                1,
+                AuthoritativeOutboxAttemptResult::Retry {
+                    error: "temporary outage".to_owned(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(retry.attempts(), 1);
+        assert!(!retry.state().is_terminal());
+
+        let second = store
+            .begin_authoritative_outbox_attempt(item_id, payload_hash, 1)
+            .await
+            .unwrap();
+        assert_eq!(second.attempts(), 2);
+        let delivered = store
+            .complete_authoritative_outbox_attempt(
+                item_id,
+                payload_hash,
+                2,
+                AuthoritativeOutboxAttemptResult::Delivered,
+            )
+            .await
+            .unwrap();
+        assert!(delivered.state().is_terminal());
+        assert!(
+            store
+                .pending_authoritative_outbox()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .complete_authoritative_outbox_attempt(
+                    item_id,
+                    payload_hash,
+                    2,
+                    AuthoritativeOutboxAttemptResult::Delivered,
+                )
+                .await
+                .unwrap(),
+            delivered,
+            "lost terminal acknowledgement is idempotent"
+        );
+        store
+            .checkpoint_authoritative(token, hash)
+            .await
+            .expect("terminal outbox permits compaction");
+    }
+
+    #[tokio::test]
     async fn authoritative_epoch_retirement_is_monotonic_and_never_reopens_old_keys() {
         let store = InMemoryStore::new();
         seed_minimal_world(&store).await;
-        let old = authoritative_bundle_for_epoch(101, 102, 103, ObjId(2), Some(3), 0);
+        let old = authoritative_bundle_for_epoch(101, 102, 103, ObjId(2), Some(3), 0, vec![]);
         let old_token = old.token();
         let old_hash = old.bundle_hash();
         let old_key = old.idempotency().clone();
@@ -2261,7 +2599,7 @@ mod tests {
             })
         ));
 
-        let current = authoritative_bundle_for_epoch(104, 105, 106, ObjId(3), Some(4), 1);
+        let current = authoritative_bundle_for_epoch(104, 105, 106, ObjId(3), Some(4), 1, vec![]);
         let current_token = current.token();
         let current_hash = current.bundle_hash();
         store.reserve_authoritative_intent(current).await.unwrap();

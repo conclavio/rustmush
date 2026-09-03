@@ -33,7 +33,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use mush_config::accounts::import_accounts_json;
-use mush_config::config::{Config, StoreBackend};
+use mush_config::config::{Config, StoreBackend, StoreReceiptPolicy};
 use mush_config::ipguard::IpGuard;
 use mush_config::metrics::Metrics;
 use mush_core::{ControlMsg, Engine, Inbound};
@@ -50,6 +50,7 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 pub mod accounts;
 pub mod action_coordinator;
 pub mod config_ext;
+pub mod durable_outbox;
 pub mod gateway_sink;
 pub mod help;
 pub mod modules;
@@ -74,6 +75,7 @@ fn server_id() -> String {
 
 /// Open the configured store backend (fail fast when Redis is unreachable).
 async fn open_store(config: &Config) -> Result<Arc<dyn ObjectStore>, String> {
+    let receipt_policy = config.store_receipt_policy().map_err(|e| e.to_string())?;
     match config.store_backend().map_err(|e| e.to_string())? {
         StoreBackend::Redis => {
             let url = &config.store.redis_url;
@@ -81,9 +83,21 @@ async fn open_store(config: &Config) -> Result<Arc<dyn ObjectStore>, String> {
             let store = RedisStore::connect_read_only(url)
                 .await
                 .map_err(|e| format!("cannot reach Redis at {url}: {e}"))?;
+            if receipt_policy == StoreReceiptPolicy::HostPowerLoss {
+                store
+                    .require_host_power_loss_receipts()
+                    .await
+                    .map_err(|e| format!("Redis does not satisfy [store].receipt_policy: {e}"))?;
+            }
             Ok(Arc::new(store))
         }
         StoreBackend::Memory => {
+            if receipt_policy == StoreReceiptPolicy::HostPowerLoss {
+                return Err(
+                    "[store].receipt_policy=\"host_power_loss\" requires the Redis backend"
+                        .to_owned(),
+                );
+            }
             tracing::warn!("[store].store = \"memory\": nothing will survive a restart");
             Ok(Arc::new(InMemoryStore::new()))
         }

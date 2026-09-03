@@ -32,7 +32,7 @@ winnow = "0.7"
 # RedisJSON (i-redis-json) + RediSearch (i-redisearch) interfaces; serde-json
 # enables Value <-> serde_json::Value conversion. Defaults (i-std,
 # transactions) stay on.
-fred = { version = "10.1", features = ["i-redis-json", "i-redisearch", "i-scripts", "serde-json"] }
+fred = { version = "10.1", features = ["i-config", "i-redis-json", "i-redisearch", "i-scripts", "serde-json"] }
 # net (M1/M4)
 # default features pull aws-lc-sys (CMake/NASM C build); ring keeps the
 # workspace's no-C-toolchain-babysitting rule intact on Windows + Linux.

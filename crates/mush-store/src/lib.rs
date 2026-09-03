@@ -39,9 +39,11 @@ pub use redis::RedisStore;
 pub use store::{AuthoritativeStore, ObjectStore};
 pub use types::{
     AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeEpochRetirement,
-    AuthoritativeIntentPage, AuthoritativeReceipt, AuthoritativeRetentionUsage,
+    AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult, AuthoritativeOutboxRecord,
+    AuthoritativeOutboxState, AuthoritativeReceipt, AuthoritativeRetentionUsage,
     AuthoritativeScanCursor, BanRec, BundleStatus, CharacterRef, IdempotencyStatus, IntentReceipt,
-    MAX_AUTHORITATIVE_DISCOVERY_PAGE, MAX_AUTHORITATIVE_SCAN_CURSOR_BYTES,
+    MAX_AUTHORITATIVE_DISCOVERY_PAGE, MAX_AUTHORITATIVE_OUTBOX_ERROR_BYTES,
+    MAX_AUTHORITATIVE_SCAN_CURSOR_BYTES, MAX_PENDING_AUTHORITATIVE_OUTBOX,
     MAX_RETAINED_AUTHORITATIVE_BYTES, MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleOp, ModuleWrite,
     PendingAuthoritativeIntent, SshKeyRec, StoreError, TokenRecord, WorldSnapshot, WriteBatch,
     WriteReceipt,

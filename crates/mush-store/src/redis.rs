@@ -89,8 +89,8 @@ use serde::{Deserialize, Serialize};
 use fred::clients::Client;
 use fred::error::Error as FredError;
 use fred::interfaces::{
-    ClientLike, KeysInterface, LuaInterface, RediSearchInterface, RedisJsonInterface,
-    ServerInterface, SetsInterface, StreamsInterface, TransactionInterface,
+    ClientLike, ConfigInterface, KeysInterface, LuaInterface, RediSearchInterface,
+    RedisJsonInterface, ServerInterface, SetsInterface, StreamsInterface, TransactionInterface,
 };
 use fred::prelude::{Builder, Config, Expiration, ReconnectPolicy, SetOptions};
 use fred::types::redisearch::{
@@ -101,9 +101,10 @@ use fred::types::{Key, RespVersion, Value};
 use crate::store::{AuthoritativeStore, ObjectStore};
 use crate::types::{
     AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeEpochRetirement,
-    AuthoritativeIntentPage, AuthoritativeReceipt, AuthoritativeRetentionUsage,
-    AuthoritativeScanCursor, BanRec, BundleStatus, CharacterRef, IdempotencyStatus, IntentReceipt,
-    MAX_AUTHORITATIVE_DISCOVERY_PAGE, MAX_RETAINED_AUTHORITATIVE_BYTES,
+    AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult, AuthoritativeOutboxRecord,
+    AuthoritativeReceipt, AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec,
+    BundleStatus, CharacterRef, IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
+    MAX_PENDING_AUTHORITATIVE_OUTBOX, MAX_RETAINED_AUTHORITATIVE_BYTES,
     MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleWrite, PendingAuthoritativeIntent, SshKeyRec,
     StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt, validate_module_key,
     validate_module_ns, validate_module_op, validate_token_hash,
@@ -141,12 +142,18 @@ pub const AUTHORITATIVE_RETAINED_BYTES: &str = "auth:retained_bytes";
 pub const AUTHORITATIVE_MINIMUM_EPOCH_PREFIX: &str = "auth:min_epoch:";
 /// Changes whenever the set of retained full intents changes.
 pub const AUTHORITATIVE_RETAINED_GENERATION: &str = "auth:retained_generation";
+/// Prefix of stable durable-outbox item records.
+pub const AUTHORITATIVE_OUTBOX_PREFIX: &str = "auth:outbox:item:";
+/// Independently enumerable non-terminal durable-outbox item ids.
+pub const AUTHORITATIVE_OUTBOX_PENDING_INDEX: &str = "auth:outbox:pending";
 
 const RESERVE_AUTHORITATIVE_LUA: &str = include_str!("lua/reserve_authoritative.lua");
 const FINALIZE_AUTHORITATIVE_LUA: &str = include_str!("lua/finalize_authoritative.lua");
 const CHECKPOINT_AUTHORITATIVE_LUA: &str = include_str!("lua/checkpoint_authoritative.lua");
 const ADVANCE_AUTHORITATIVE_EPOCH_LUA: &str = include_str!("lua/advance_authoritative_epoch.lua");
 const PURGE_AUTHORITATIVE_RECEIPT_LUA: &str = include_str!("lua/purge_authoritative_receipt.lua");
+const TRANSITION_AUTHORITATIVE_OUTBOX_LUA: &str =
+    include_str!("lua/transition_authoritative_outbox.lua");
 const REPAIR_AUTHORITATIVE_RETENTION_LUA: &str =
     include_str!("lua/repair_authoritative_retention.lua");
 
@@ -191,6 +198,10 @@ fn authoritative_intent_key(token: CommitToken) -> String {
 
 fn authoritative_receipt_key(token: CommitToken) -> String {
     format!("{AUTHORITATIVE_RECEIPT_PREFIX}{token}")
+}
+
+fn authoritative_outbox_key(item_id: CanonicalHash) -> String {
+    format!("{AUTHORITATIVE_OUTBOX_PREFIX}{item_id}")
 }
 
 fn authoritative_idempotency_key(key: &ScopedIdempotencyKey) -> Result<String, StoreError> {
@@ -244,6 +255,31 @@ impl RedisIdempotencyBinding {
             bundle_hash: receipt.bundle_hash(),
         }
     }
+}
+
+fn decode_outbox_record(doc: &str) -> Result<AuthoritativeOutboxRecord, StoreError> {
+    let record: AuthoritativeOutboxRecord = serde_json::from_str(doc)
+        .map_err(|error| StoreError::AuthoritativeCorrupt(error.to_string()))?;
+    record.validate()?;
+    let canonical = serde_json::to_string(&record)
+        .map_err(|error| StoreError::AuthoritativeCorrupt(error.to_string()))?;
+    if canonical != doc {
+        return Err(StoreError::AuthoritativeCorrupt(
+            "Redis authoritative outbox record is not in canonical storage form".to_owned(),
+        ));
+    }
+    Ok(record)
+}
+
+fn expected_outbox_records(
+    bundle: &AuthoritativeBundle,
+) -> Result<Vec<AuthoritativeOutboxRecord>, StoreError> {
+    bundle
+        .durable_outbox()
+        .iter()
+        .cloned()
+        .map(|intent| AuthoritativeOutboxRecord::new(bundle.token(), bundle.bundle_hash(), intent))
+        .collect()
 }
 
 enum LoadedAuthoritative {
@@ -314,6 +350,17 @@ fn authoritative_script_error(code: &str) -> StoreError {
     }
     if code == "NOT_FINALIZED" {
         return StoreError::AuthoritativeNotFinalized;
+    }
+    if code == "OUTBOX_PENDING" {
+        return StoreError::AuthoritativeOutboxPending;
+    }
+    if let Some(pending) = code.strip_prefix("OUTBOX_CAPACITY:")
+        && let Ok(pending) = pending.parse::<usize>()
+    {
+        return StoreError::AuthoritativeOutboxCapacity {
+            pending,
+            max_pending: MAX_PENDING_AUTHORITATIVE_OUTBOX,
+        };
     }
     if let Some(capacity) = code.strip_prefix("CAPACITY:") {
         let mut parts = capacity.split(':');
@@ -483,6 +530,108 @@ impl RedisStore {
         &self.client
     }
 
+    /// Refuse the stronger host-power-loss receipt promise unless the live
+    /// Redis server fsyncs every acknowledged AOF write, including while an
+    /// AOF rewrite is running. CONFIG permission is therefore required only
+    /// when this policy is selected.
+    pub async fn require_host_power_loss_receipts(&self) -> Result<(), StoreError> {
+        let appendonly: std::collections::HashMap<String, String> =
+            self.client.config_get("appendonly").await?;
+        let appendfsync: std::collections::HashMap<String, String> =
+            self.client.config_get("appendfsync").await?;
+        let no_fsync_on_rewrite: std::collections::HashMap<String, String> =
+            self.client.config_get("no-appendfsync-on-rewrite").await?;
+        let aof = appendonly
+            .get("appendonly")
+            .cloned()
+            .unwrap_or_else(|| "<missing>".to_owned());
+        let fsync = appendfsync
+            .get("appendfsync")
+            .cloned()
+            .unwrap_or_else(|| "<missing>".to_owned());
+        let skip_rewrite = no_fsync_on_rewrite
+            .get("no-appendfsync-on-rewrite")
+            .cloned()
+            .unwrap_or_else(|| "<missing>".to_owned());
+        if aof != "yes" || fsync != "always" || skip_rewrite != "no" {
+            return Err(StoreError::Invalid(format!(
+                "host-power-loss receipt policy requires Redis appendonly=yes, appendfsync=always, and no-appendfsync-on-rewrite=no (got {aof}, {fsync}, {skip_rewrite})"
+            )));
+        }
+        Ok(())
+    }
+
+    async fn load_outbox_record(
+        &self,
+        item_id: CanonicalHash,
+    ) -> Result<Option<(AuthoritativeOutboxRecord, String)>, StoreError> {
+        let doc: Option<String> = self.client.get(authoritative_outbox_key(item_id)).await?;
+        doc.map(|doc| {
+            let record = decode_outbox_record(&doc)?;
+            if record.item_id() != item_id {
+                return Err(StoreError::AuthoritativeCorrupt(
+                    "Redis authoritative outbox record is stored under the wrong item id"
+                        .to_owned(),
+                ));
+            }
+            Ok((record, doc))
+        })
+        .transpose()
+    }
+
+    async fn transition_outbox_record(
+        &self,
+        prior_doc: String,
+        next: AuthoritativeOutboxRecord,
+    ) -> Result<AuthoritativeOutboxRecord, StoreError> {
+        let next_doc = serde_json::to_string(&next)?;
+        let code: String = self
+            .client
+            .eval(
+                TRANSITION_AUTHORITATIVE_OUTBOX_LUA,
+                vec![
+                    authoritative_outbox_key(next.item_id()),
+                    AUTHORITATIVE_OUTBOX_PENDING_INDEX.to_owned(),
+                ],
+                vec![
+                    prior_doc,
+                    next_doc,
+                    next.item_id().to_string(),
+                    if next.state().is_terminal() { "0" } else { "1" }.to_owned(),
+                ],
+            )
+            .await?;
+        match code.as_str() {
+            "UPDATED" | "RESUMED" => Ok(next),
+            "OUTBOX_MISSING" => Err(StoreError::AuthoritativeOutboxMissing),
+            "OUTBOX_CONFLICT" => Err(StoreError::AuthoritativeOutboxConflict),
+            _ => Err(authoritative_script_error(&code)),
+        }
+    }
+
+    async fn validate_bundle_outbox(&self, bundle: &AuthoritativeBundle) -> Result<(), StoreError> {
+        for expected in expected_outbox_records(bundle)? {
+            let doc: Option<String> = self
+                .client
+                .get(authoritative_outbox_key(expected.item_id()))
+                .await?;
+            let record = decode_outbox_record(&doc.ok_or_else(|| {
+                StoreError::AuthoritativeCorrupt(
+                    "finalized action is missing a durable outbox record".to_owned(),
+                )
+            })?)?;
+            if record.parent_token() != expected.parent_token()
+                || record.parent_bundle_hash() != expected.parent_bundle_hash()
+                || record.intent() != expected.intent()
+            {
+                return Err(StoreError::AuthoritativeCorrupt(
+                    "durable outbox record disagrees with its parent action".to_owned(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     async fn load_validated_authoritative(
         &self,
         token: CommitToken,
@@ -570,6 +719,9 @@ impl RedisStore {
                 Ok(receipt)
             })
             .transpose()?;
+        if receipt.is_some() {
+            self.validate_bundle_outbox(&bundle).await?;
+        }
         Ok(Some(LoadedAuthoritative::Retained {
             bundle: Box::new(bundle),
             receipt,
@@ -953,23 +1105,39 @@ impl AuthoritativeStore for RedisStore {
             let receipt_doc = serde_json::to_string(&receipt)?;
             let binding_doc = serde_json::to_string(&RedisIdempotencyBinding::for_bundle(&bundle))?;
             let planned = plan_authoritative_replay(&bundle)?;
+            let outbox = expected_outbox_records(&bundle)?
+                .into_iter()
+                .map(|record| Ok((record.item_id(), serde_json::to_string(&record)?)))
+                .collect::<Result<Vec<_>, StoreError>>()?;
             let mut keys = vec![
                 authoritative_intent_key(token),
                 authoritative_receipt_key(token),
                 authoritative_idempotency_key(bundle.idempotency())?,
                 AUTHORITATIVE_PENDING_INDEX.to_owned(),
+                AUTHORITATIVE_OUTBOX_PENDING_INDEX.to_owned(),
             ];
             keys.extend(planned.iter().map(|write| write.key.clone()));
+            keys.extend(
+                outbox
+                    .iter()
+                    .map(|(item_id, _)| authoritative_outbox_key(*item_id)),
+            );
             let mut args = vec![
                 intent_doc,
                 receipt_doc,
                 binding_doc,
                 token.to_string(),
                 planned.len().to_string(),
+                outbox.len().to_string(),
+                MAX_PENDING_AUTHORITATIVE_OUTBOX.to_string(),
             ];
             for write in &planned {
                 args.push(write.kind.to_owned());
                 args.push(write.post_image.clone());
+            }
+            for (item_id, doc) in &outbox {
+                args.push(item_id.to_string());
+                args.push(doc.clone());
             }
             let code: String = self
                 .client
@@ -1035,9 +1203,6 @@ impl AuthoritativeStore for RedisStore {
             if bundle.bundle_hash() != expected_bundle_hash {
                 return Err(StoreError::AuthoritativeTokenConflict);
             }
-            if !bundle.durable_outbox().is_empty() {
-                return Err(StoreError::AuthoritativeOutboxPending);
-            }
             if !receipt.matches_bundle(&bundle) {
                 return Err(StoreError::AuthoritativeCorrupt(
                     "Redis finalized receipt disagrees with its retained intent".to_owned(),
@@ -1050,28 +1215,50 @@ impl AuthoritativeStore for RedisStore {
                 prior_receipt_doc.ok_or(StoreError::AuthoritativeNotFinalized)?;
             let checkpoint_doc = serde_json::to_string(&receipt)?;
             let binding_doc = serde_json::to_string(&RedisIdempotencyBinding::for_bundle(&bundle))?;
+            let mut outbox_docs = Vec::with_capacity(bundle.durable_outbox().len());
+            for expected in expected_outbox_records(&bundle)? {
+                let doc: Option<String> = self
+                    .client
+                    .get(authoritative_outbox_key(expected.item_id()))
+                    .await?;
+                let doc = doc.ok_or_else(|| {
+                    StoreError::AuthoritativeCorrupt(
+                        "finalized action is missing a durable outbox record".to_owned(),
+                    )
+                })?;
+                let record = decode_outbox_record(&doc)?;
+                if !record.state().is_terminal() {
+                    return Err(StoreError::AuthoritativeOutboxPending);
+                }
+                outbox_docs.push((record.item_id(), doc));
+            }
+            let mut keys = vec![
+                authoritative_intent_key(token),
+                authoritative_receipt_key(token),
+                authoritative_idempotency_key(bundle.idempotency())?,
+                AUTHORITATIVE_PENDING_INDEX.to_owned(),
+                AUTHORITATIVE_RETAINED_COUNT.to_owned(),
+                AUTHORITATIVE_RETAINED_BYTES.to_owned(),
+                AUTHORITATIVE_RETAINED_GENERATION.to_owned(),
+            ];
+            keys.extend(
+                outbox_docs
+                    .iter()
+                    .map(|(item_id, _)| authoritative_outbox_key(*item_id)),
+            );
+            let mut args = vec![
+                intent_doc.clone(),
+                prior_receipt_doc,
+                checkpoint_doc,
+                binding_doc,
+                token.to_string(),
+                intent_doc.len().to_string(),
+                outbox_docs.len().to_string(),
+            ];
+            args.extend(outbox_docs.iter().map(|(_, doc)| doc.clone()));
             let code: String = self
                 .client
-                .eval(
-                    CHECKPOINT_AUTHORITATIVE_LUA,
-                    vec![
-                        authoritative_intent_key(token),
-                        authoritative_receipt_key(token),
-                        authoritative_idempotency_key(bundle.idempotency())?,
-                        AUTHORITATIVE_PENDING_INDEX.to_owned(),
-                        AUTHORITATIVE_RETAINED_COUNT.to_owned(),
-                        AUTHORITATIVE_RETAINED_BYTES.to_owned(),
-                        AUTHORITATIVE_RETAINED_GENERATION.to_owned(),
-                    ],
-                    vec![
-                        intent_doc.clone(),
-                        prior_receipt_doc,
-                        checkpoint_doc,
-                        binding_doc,
-                        token.to_string(),
-                        intent_doc.len().to_string(),
-                    ],
-                )
+                .eval(CHECKPOINT_AUTHORITATIVE_LUA, keys, args)
                 .await?;
             let resumed = match code.as_str() {
                 "CHECKPOINTED" => false,
@@ -1093,6 +1280,130 @@ impl AuthoritativeStore for RedisStore {
                 released_intent_bytes: if resumed { 0 } else { intent_doc.len() },
                 resumed,
             })
+        })
+    }
+
+    fn pending_authoritative_outbox(
+        &self,
+    ) -> BoxFuture<'_, Result<Vec<AuthoritativeOutboxRecord>, StoreError>> {
+        Box::pin(async move {
+            let mut ids: Vec<String> = self
+                .client
+                .smembers(AUTHORITATIVE_OUTBOX_PENDING_INDEX)
+                .await?;
+            ids.sort();
+            ids.dedup();
+            if ids.len() > MAX_PENDING_AUTHORITATIVE_OUTBOX {
+                return Err(StoreError::AuthoritativeCorrupt(format!(
+                    "Redis durable outbox pending index contains {} items; maximum is {MAX_PENDING_AUTHORITATIVE_OUTBOX}",
+                    ids.len()
+                )));
+            }
+            let mut records = Vec::with_capacity(ids.len());
+            for encoded in ids {
+                let item_id = CanonicalHash::from_hex(&encoded).map_err(|error| {
+                    StoreError::AuthoritativeCorrupt(format!(
+                        "Redis durable outbox pending index contains invalid item id: {error}"
+                    ))
+                })?;
+                let (record, _) = self.load_outbox_record(item_id).await?.ok_or_else(|| {
+                    StoreError::AuthoritativeCorrupt(
+                        "Redis durable outbox pending index names a missing item".to_owned(),
+                    )
+                })?;
+                if record.state().is_terminal() {
+                    return Err(StoreError::AuthoritativeCorrupt(
+                        "Redis durable outbox pending index names a terminal item".to_owned(),
+                    ));
+                }
+                let Some(parent) = self
+                    .load_validated_authoritative(record.parent_token())
+                    .await?
+                else {
+                    return Err(StoreError::AuthoritativeCorrupt(
+                        "Redis durable outbox item has no finalized parent".to_owned(),
+                    ));
+                };
+                let parent_hash = match parent {
+                    LoadedAuthoritative::Retained {
+                        receipt: Some(receipt),
+                        ..
+                    }
+                    | LoadedAuthoritative::Checkpointed(receipt) => receipt.bundle_hash(),
+                    LoadedAuthoritative::Retained { receipt: None, .. } => {
+                        return Err(StoreError::AuthoritativeCorrupt(
+                            "Redis durable outbox item belongs to an unfinalized parent".to_owned(),
+                        ));
+                    }
+                };
+                if parent_hash != record.parent_bundle_hash() {
+                    return Err(StoreError::AuthoritativeCorrupt(
+                        "Redis durable outbox item disagrees with its finalized parent".to_owned(),
+                    ));
+                }
+                records.push(record);
+            }
+            Ok(records)
+        })
+    }
+
+    fn begin_authoritative_outbox_attempt(
+        &self,
+        item_id: CanonicalHash,
+        expected_payload_hash: CanonicalHash,
+        expected_attempts: u32,
+    ) -> BoxFuture<'_, Result<AuthoritativeOutboxRecord, StoreError>> {
+        Box::pin(async move {
+            let (record, prior_doc) = self
+                .load_outbox_record(item_id)
+                .await?
+                .ok_or(StoreError::AuthoritativeOutboxMissing)?;
+            if record.intent().payload_hash() != expected_payload_hash
+                || record.state().is_terminal()
+            {
+                return Err(StoreError::AuthoritativeOutboxConflict);
+            }
+            if expected_attempts < u32::MAX && record.attempts() == expected_attempts + 1 {
+                return Ok(record);
+            }
+            let next = record.start_attempt(expected_attempts)?;
+            self.transition_outbox_record(prior_doc, next).await
+        })
+    }
+
+    fn complete_authoritative_outbox_attempt(
+        &self,
+        item_id: CanonicalHash,
+        expected_payload_hash: CanonicalHash,
+        expected_attempt: u32,
+        result: AuthoritativeOutboxAttemptResult,
+    ) -> BoxFuture<'_, Result<AuthoritativeOutboxRecord, StoreError>> {
+        Box::pin(async move {
+            let (record, prior_doc) = self
+                .load_outbox_record(item_id)
+                .await?
+                .ok_or(StoreError::AuthoritativeOutboxMissing)?;
+            if record.intent().payload_hash() != expected_payload_hash {
+                return Err(StoreError::AuthoritativeOutboxConflict);
+            }
+            let terminal_retry = matches!(
+                (record.state(), &result),
+                (
+                    crate::types::AuthoritativeOutboxState::Delivered,
+                    AuthoritativeOutboxAttemptResult::Delivered
+                )
+            ) || matches!(
+                (record.state(), &result),
+                (
+                    crate::types::AuthoritativeOutboxState::DeadLetter { error: stored },
+                    AuthoritativeOutboxAttemptResult::DeadLetter { error }
+                ) if stored == error
+            );
+            if terminal_retry && record.attempts() == expected_attempt {
+                return Ok(record);
+            }
+            let next = record.complete_attempt(expected_attempt, result)?;
+            self.transition_outbox_record(prior_doc, next).await
         })
     }
 

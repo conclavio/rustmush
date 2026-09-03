@@ -40,10 +40,10 @@ use mush_core::{
 
 use crate::types::{
     AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeEpochRetirement,
-    AuthoritativeIntentPage, AuthoritativeReceipt, AuthoritativeRetentionUsage,
-    AuthoritativeScanCursor, BanRec, BundleStatus, IdempotencyStatus, IntentReceipt,
-    PendingAuthoritativeIntent, SshKeyRec, StoreError, TokenRecord, WorldSnapshot, WriteBatch,
-    WriteReceipt,
+    AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult, AuthoritativeOutboxRecord,
+    AuthoritativeReceipt, AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec,
+    BundleStatus, IdempotencyStatus, IntentReceipt, PendingAuthoritativeIntent, SshKeyRec,
+    StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt,
 };
 
 /// Exact-intent persistence used by the K3 action coordinator.
@@ -84,6 +84,31 @@ pub trait AuthoritativeStore: ObjectStore {
         token: CommitToken,
         expected_bundle_hash: CanonicalHash,
     ) -> BoxFuture<'_, Result<AuthoritativeCheckpointReceipt, StoreError>>;
+
+    /// Discover every finalized, non-terminal durable delivery item. Stable
+    /// item ids are suitable for adapter-side deduplication.
+    fn pending_authoritative_outbox(
+        &self,
+    ) -> BoxFuture<'_, Result<Vec<AuthoritativeOutboxRecord>, StoreError>>;
+
+    /// Persist an attempt number before calling the external adapter. Exact
+    /// retries use `expected_attempts` to join an acknowledgement-lost start.
+    fn begin_authoritative_outbox_attempt(
+        &self,
+        item_id: CanonicalHash,
+        expected_payload_hash: CanonicalHash,
+        expected_attempts: u32,
+    ) -> BoxFuture<'_, Result<AuthoritativeOutboxRecord, StoreError>>;
+
+    /// Persist the result of one already-started delivery attempt. `Retry`
+    /// remains independently discoverable; terminal states leave the index.
+    fn complete_authoritative_outbox_attempt(
+        &self,
+        item_id: CanonicalHash,
+        expected_payload_hash: CanonicalHash,
+        expected_attempt: u32,
+        result: AuthoritativeOutboxAttemptResult,
+    ) -> BoxFuture<'_, Result<AuthoritativeOutboxRecord, StoreError>>;
 
     /// Advance one idempotency scope's durable retry horizon and remove every
     /// compact receipt/binding below it. Implementations must refuse while a

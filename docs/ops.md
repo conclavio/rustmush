@@ -59,6 +59,7 @@ Point `mushd.toml` at it:
 [store]
 store = "redis"                          # default
 redis_url = "redis://127.0.0.1:6379"     # redis://[user:pass@]host:port[/db]
+receipt_policy = "applied"               # or "host_power_loss" (strict AOF validation)
 ```
 
 `mushd` fails fast at boot when Redis is unreachable — deliberately. Fix the
@@ -76,6 +77,17 @@ policy — Redis is a separate process and already holds the data. The AOF
 window only matters when the whole machine (or Redis itself) dies. Keep
 `appendonly yes` in all cases; RDB snapshots alone would widen the crash
 window to minutes.
+
+The configured receipt promise makes that distinction executable:
+
+- `receipt_policy = "applied"` is the default. An acknowledgement means the
+  live Redis process applied the write; the configured AOF window still
+  applies to host power loss.
+- `receipt_policy = "host_power_loss"` refuses writable boot unless Redis
+  reports `appendonly yes`, `appendfsync always`, and
+  `no-appendfsync-on-rewrite no`. The Redis ACL used by rustmush must permit
+  read-only `CONFIG GET` for those settings. rustmush never silently weakens
+  this selected promise.
 
 ## Backups
 

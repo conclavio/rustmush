@@ -1,9 +1,10 @@
 //! Domain types shared by every [`crate::ObjectStore`] implementation.
 
 use mush_core::{
-    AuthoritativeBundle, CanonicalHash, CommitToken, DefinitionRef, IdempotencyScope,
-    MAX_MODULE_KEY_BYTES, MAX_MODULE_NAMESPACE_BYTES, Obj, ObjId, OwnerId, PreparedCausalRef,
-    PrincipalId, RequestUid, RulesValue, ScopedIdempotencyKey, is_action_state_persistence_key,
+    AuthoritativeBundle, CanonicalHash, CommitToken, DefinitionRef, DurableOutboxIntent,
+    IdempotencyScope, MAX_MODULE_KEY_BYTES, MAX_MODULE_NAMESPACE_BYTES, Obj, ObjId, OwnerId,
+    PreparedCausalRef, PrincipalId, RequestUid, RulesValue, ScopedIdempotencyKey,
+    is_action_state_persistence_key,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
@@ -174,6 +175,12 @@ pub struct IntentReceipt {
 pub const MAX_RETAINED_AUTHORITATIVE_INTENTS: usize = 256;
 /// Hard maximum encoded bytes across full intents retained for recovery.
 pub const MAX_RETAINED_AUTHORITATIVE_BYTES: usize = 64 * 1024 * 1024;
+/// Maximum independently discoverable durable-outbox items. This is the
+/// product of the retained-action and per-action hard limits.
+pub const MAX_PENDING_AUTHORITATIVE_OUTBOX: usize =
+    MAX_RETAINED_AUTHORITATIVE_INTENTS * mush_core::MAX_DURABLE_OUTBOX_INTENTS;
+/// Maximum diagnostic bytes retained on one outbox retry/dead-letter state.
+pub const MAX_AUTHORITATIVE_OUTBOX_ERROR_BYTES: usize = 4 * 1024;
 /// Hard maximum intent records returned by one recovery scan page.
 pub const MAX_AUTHORITATIVE_DISCOVERY_PAGE: usize = 256;
 /// Hard maximum opaque bytes in one backend recovery cursor.
@@ -220,6 +227,174 @@ impl AuthoritativeScanCursor {
 pub struct AuthoritativeIntentPage {
     pub intents: Vec<AuthoritativeBundle>,
     pub next_cursor: Option<AuthoritativeScanCursor>,
+}
+
+/// Durable delivery state for one post-finalization outbox item.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AuthoritativeOutboxState {
+    Pending { last_error: Option<String> },
+    Delivered,
+    DeadLetter { error: String },
+}
+
+impl AuthoritativeOutboxState {
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        matches!(self, Self::Delivered | Self::DeadLetter { .. })
+    }
+}
+
+/// Independently discoverable, stable-ID delivery record materialized by the
+/// same finalization barrier as its parent action witness.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthoritativeOutboxRecord {
+    schema_version: u16,
+    item_id: CanonicalHash,
+    parent_token: CommitToken,
+    parent_bundle_hash: CanonicalHash,
+    intent: DurableOutboxIntent,
+    attempts: u32,
+    state: AuthoritativeOutboxState,
+}
+
+impl AuthoritativeOutboxRecord {
+    pub const SCHEMA_VERSION: u16 = 1;
+
+    pub fn new(
+        parent_token: CommitToken,
+        parent_bundle_hash: CanonicalHash,
+        intent: DurableOutboxIntent,
+    ) -> Result<Self, StoreError> {
+        let item_id = intent
+            .stable_id(parent_token)
+            .map_err(|error| StoreError::Invalid(format!("invalid outbox identity: {error}")))?;
+        Ok(Self {
+            schema_version: Self::SCHEMA_VERSION,
+            item_id,
+            parent_token,
+            parent_bundle_hash,
+            intent,
+            attempts: 0,
+            state: AuthoritativeOutboxState::Pending { last_error: None },
+        })
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), StoreError> {
+        if self.schema_version != Self::SCHEMA_VERSION {
+            return Err(StoreError::AuthoritativeCorrupt(format!(
+                "unsupported authoritative outbox schema {}",
+                self.schema_version
+            )));
+        }
+        let expected = self.intent.stable_id(self.parent_token).map_err(|error| {
+            StoreError::AuthoritativeCorrupt(format!("invalid outbox identity: {error}"))
+        })?;
+        if self.item_id != expected {
+            return Err(StoreError::AuthoritativeCorrupt(
+                "authoritative outbox stable item id mismatch".to_owned(),
+            ));
+        }
+        let error = match &self.state {
+            AuthoritativeOutboxState::Pending { last_error } => last_error.as_deref(),
+            AuthoritativeOutboxState::Delivered => None,
+            AuthoritativeOutboxState::DeadLetter { error } => Some(error.as_str()),
+        };
+        if error.is_some_and(|error| error.len() > MAX_AUTHORITATIVE_OUTBOX_ERROR_BYTES) {
+            return Err(StoreError::AuthoritativeCorrupt(format!(
+                "authoritative outbox diagnostic exceeds {MAX_AUTHORITATIVE_OUTBOX_ERROR_BYTES} bytes"
+            )));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn start_attempt(&self, expected_attempts: u32) -> Result<Self, StoreError> {
+        self.validate()?;
+        if self.state.is_terminal() || self.attempts != expected_attempts {
+            return Err(StoreError::AuthoritativeOutboxConflict);
+        }
+        let mut next = self.clone();
+        next.attempts = next
+            .attempts
+            .checked_add(1)
+            .ok_or(StoreError::AuthoritativeOutboxAttemptsExhausted)?;
+        next.state = AuthoritativeOutboxState::Pending { last_error: None };
+        Ok(next)
+    }
+
+    pub(crate) fn complete_attempt(
+        &self,
+        expected_attempt: u32,
+        result: AuthoritativeOutboxAttemptResult,
+    ) -> Result<Self, StoreError> {
+        self.validate()?;
+        if self.state.is_terminal() || self.attempts != expected_attempt {
+            return Err(StoreError::AuthoritativeOutboxConflict);
+        }
+        let mut next = self.clone();
+        next.state = match result {
+            AuthoritativeOutboxAttemptResult::Retry { error } => {
+                validate_outbox_error(&error)?;
+                AuthoritativeOutboxState::Pending {
+                    last_error: Some(error),
+                }
+            }
+            AuthoritativeOutboxAttemptResult::Delivered => AuthoritativeOutboxState::Delivered,
+            AuthoritativeOutboxAttemptResult::DeadLetter { error } => {
+                validate_outbox_error(&error)?;
+                AuthoritativeOutboxState::DeadLetter { error }
+            }
+        };
+        Ok(next)
+    }
+
+    #[must_use]
+    pub const fn item_id(&self) -> CanonicalHash {
+        self.item_id
+    }
+
+    #[must_use]
+    pub const fn parent_token(&self) -> CommitToken {
+        self.parent_token
+    }
+
+    #[must_use]
+    pub const fn parent_bundle_hash(&self) -> CanonicalHash {
+        self.parent_bundle_hash
+    }
+
+    #[must_use]
+    pub const fn intent(&self) -> &DurableOutboxIntent {
+        &self.intent
+    }
+
+    #[must_use]
+    pub const fn attempts(&self) -> u32 {
+        self.attempts
+    }
+
+    #[must_use]
+    pub const fn state(&self) -> &AuthoritativeOutboxState {
+        &self.state
+    }
+}
+
+fn validate_outbox_error(error: &str) -> Result<(), StoreError> {
+    if error.is_empty() || error.len() > MAX_AUTHORITATIVE_OUTBOX_ERROR_BYTES {
+        return Err(StoreError::Invalid(format!(
+            "authoritative outbox diagnostic must contain 1..={MAX_AUTHORITATIVE_OUTBOX_ERROR_BYTES} bytes"
+        )));
+    }
+    Ok(())
+}
+
+/// Result reported by a durable delivery adapter after one persisted attempt.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AuthoritativeOutboxAttemptResult {
+    Retry { error: String },
+    Delivered,
+    DeadLetter { error: String },
 }
 
 /// Compact immutable semantic result witness produced only after exact
@@ -666,6 +841,20 @@ pub enum StoreError {
     /// for the action reaches a terminal state.
     #[error("authoritative commit has unresolved durable outbox work")]
     AuthoritativeOutboxPending,
+    /// A stable outbox item does not exist.
+    #[error("authoritative durable-outbox item does not exist")]
+    AuthoritativeOutboxMissing,
+    /// The requested outbox transition did not match the exact current item.
+    #[error("authoritative durable-outbox item or attempt conflicts with durable state")]
+    AuthoritativeOutboxConflict,
+    /// The durable attempt counter cannot advance further.
+    #[error("authoritative durable-outbox attempt counter is exhausted")]
+    AuthoritativeOutboxAttemptsExhausted,
+    /// Finalizing another action would exceed the global pending-delivery cap.
+    #[error(
+        "authoritative durable-outbox capacity exhausted: {pending}/{max_pending} pending items"
+    )]
+    AuthoritativeOutboxCapacity { pending: usize, max_pending: usize },
     /// Reservation raced with or followed durable retirement of this epoch.
     #[error(
         "authoritative idempotency epoch {requested_epoch} is retired; minimum accepted epoch is {minimum_accepted_epoch}"
@@ -765,6 +954,10 @@ impl StoreError {
             | StoreError::AuthoritativeIntentMissing
             | StoreError::AuthoritativeNotFinalized
             | StoreError::AuthoritativeOutboxPending
+            | StoreError::AuthoritativeOutboxMissing
+            | StoreError::AuthoritativeOutboxConflict
+            | StoreError::AuthoritativeOutboxAttemptsExhausted
+            | StoreError::AuthoritativeOutboxCapacity { .. }
             | StoreError::AuthoritativeEpochRetired { .. }
             | StoreError::AuthoritativeEpochRegression { .. }
             | StoreError::AuthoritativeEpochPending { .. }

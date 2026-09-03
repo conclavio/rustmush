@@ -17,12 +17,14 @@
 use mush_core::{
     AuthoritativeBundle, AuthoritativeBundleDraft, AuthoritativeKey, CanonicalHash, CanonicalId,
     CommitToken, DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder,
-    GOD, IdempotencyKey, IdempotencyScope, Obj, ObjId, ObjKind, OwnerId, PreparedCausalRef,
-    PrincipalId, ReplayWrite, RequestUid, RulesValue, ScopedIdempotencyKey, World,
+    DurableOutboxIntent, GOD, IdempotencyKey, IdempotencyScope, Obj, ObjId, ObjKind, OwnerId,
+    PreparedCausalRef, PrincipalId, ReplayWrite, RequestUid, RulesValue, ScopedIdempotencyKey,
+    World,
 };
 use mush_store::{
-    AuthoritativeRetentionUsage, AuthoritativeScanCursor, AuthoritativeStore, BundleStatus,
-    IdempotencyStatus, ObjectStore, RedisStore, StoreError, WriteBatch, suite,
+    AuthoritativeOutboxAttemptResult, AuthoritativeRetentionUsage, AuthoritativeScanCursor,
+    AuthoritativeStore, BundleStatus, IdempotencyStatus, ObjectStore, RedisStore, StoreError,
+    WriteBatch, suite,
 };
 use tokio::sync::Mutex;
 
@@ -64,6 +66,15 @@ fn authoritative_bundle_for_epoch(
     token_byte: u8,
     request_byte: u8,
     epoch: u64,
+) -> AuthoritativeBundle {
+    authoritative_bundle_for_epoch_and_outbox(token_byte, request_byte, epoch, vec![])
+}
+
+fn authoritative_bundle_for_epoch_and_outbox(
+    token_byte: u8,
+    request_byte: u8,
+    epoch: u64,
+    durable_outbox: Vec<DurableOutboxIntent>,
 ) -> AuthoritativeBundle {
     let owner = OwnerId::new("redis_toy").unwrap();
     let mut definitions = DefinitionRegistryBuilder::new();
@@ -125,7 +136,7 @@ fn authoritative_bundle_for_epoch(
         ],
         outcome: RulesValue::new(outcome_definition, serde_json::json!({ "ok": true })).unwrap(),
         eligible_witnesses: vec![principal],
-        durable_outbox: vec![],
+        durable_outbox,
     })
     .unwrap()
 }
@@ -236,6 +247,13 @@ redis_gated!(module_list_rejects_type_clobbered_key, store, {
 // ---------------------------------------------------------------------
 // Redis-only behavior
 // ---------------------------------------------------------------------
+
+redis_gated!(host_power_loss_receipt_policy_validates_live_aof, store, {
+    store
+        .require_host_power_loss_receipts()
+        .await
+        .expect("test Redis uses AOF with fsync always");
+});
 
 redis_gated!(authoritative_exact_round_trip_and_discovery, store, {
     use fred::interfaces::SetsInterface;
@@ -471,6 +489,85 @@ redis_gated!(authoritative_checkpoint_is_atomic_and_retryable, store, {
     let resumed = store.checkpoint_authoritative(token, hash).await.unwrap();
     assert!(resumed.resumed);
     assert_eq!(resumed.released_intent_bytes, 0);
+});
+
+redis_gated!(authoritative_durable_outbox_round_trip, store, {
+    seed_minimal_world(&store).await;
+    let intent = DurableOutboxIntent::new(
+        0,
+        OwnerId::new("redis_toy").unwrap(),
+        CanonicalId::new("webhook").unwrap(),
+        serde_json::json!({"event": "braced"}),
+    )
+    .unwrap();
+    let payload_hash = intent.payload_hash();
+    let bundle = authoritative_bundle_for_epoch_and_outbox(15, 25, 0, vec![intent]);
+    let token = bundle.token();
+    let hash = bundle.bundle_hash();
+    store
+        .reserve_authoritative_intent(bundle)
+        .await
+        .expect("reserve outbox parent");
+    assert!(
+        store
+            .pending_authoritative_outbox()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    store
+        .reconcile_authoritative(token, hash)
+        .await
+        .expect("finalize and materialize outbox");
+
+    let pending = store.pending_authoritative_outbox().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    let item_id = pending[0].item_id();
+    assert!(matches!(
+        store.checkpoint_authoritative(token, hash).await,
+        Err(StoreError::AuthoritativeOutboxPending)
+    ));
+    let attempt = store
+        .begin_authoritative_outbox_attempt(item_id, payload_hash, 0)
+        .await
+        .expect("persist attempt before send");
+    assert_eq!(attempt.attempts(), 1);
+    assert_eq!(
+        store
+            .begin_authoritative_outbox_attempt(item_id, payload_hash, 0)
+            .await
+            .expect("join lost start acknowledgement"),
+        attempt
+    );
+    store
+        .complete_authoritative_outbox_attempt(
+            item_id,
+            payload_hash,
+            1,
+            AuthoritativeOutboxAttemptResult::Delivered,
+        )
+        .await
+        .expect("mark delivered");
+    assert!(
+        store
+            .pending_authoritative_outbox()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    store
+        .complete_authoritative_outbox_attempt(
+            item_id,
+            payload_hash,
+            1,
+            AuthoritativeOutboxAttemptResult::Delivered,
+        )
+        .await
+        .expect("join lost delivery acknowledgement");
+    store
+        .checkpoint_authoritative(token, hash)
+        .await
+        .expect("terminal outbox permits compaction");
 });
 
 redis_gated!(authoritative_epoch_retirement_is_watermark_first, store, {
