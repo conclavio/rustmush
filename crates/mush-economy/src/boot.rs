@@ -46,11 +46,11 @@ use smol_str::SmolStr;
 use crate::amount::Amount;
 use crate::api::{self, META_KEY};
 use crate::custody::CustodyTable;
-use crate::ids::{AccountId, InstrumentId, TransactionId, VaultId};
+use crate::ids::{AccountId, ApprovalRequestId, InstrumentId, TransactionId, VaultId};
 use crate::module::EconomyStore;
 use crate::record::{
-    Account, CustodyDirection, EconomicAsset, EconomicTransaction, Encumbrance, IdempotencyRecord,
-    InstrumentDef, Vault, VaultStatus,
+    Account, ApprovalRequest, CustodyDirection, EconomicAsset, EconomicTransaction, Encumbrance,
+    IdempotencyRecord, InstrumentDef, Vault, VaultStatus,
 };
 use crate::snapshot::EconomySnapshot;
 
@@ -77,6 +77,7 @@ pub(crate) fn load_boot(
     let mut stored_accounts: BTreeMap<AccountId, Account> = BTreeMap::new();
     let mut stored_assets: BTreeMap<ObjId, EconomicAsset> = BTreeMap::new();
     let mut stored_vaults: BTreeMap<VaultId, Vault> = BTreeMap::new();
+    let mut stored_approvals: BTreeMap<ApprovalRequestId, ApprovalRequest> = BTreeMap::new();
     let mut chunks: Vec<LedgerChunk> = Vec::new();
     let mut meta: Option<serde_json::Value> = None;
 
@@ -118,6 +119,21 @@ pub(crate) fn load_boot(
                 return Err(ModError::msg(format!("economy: vault doc {key:?} claims id {}", vault.id)));
             }
             stored_vaults.insert(vault.id, vault);
+        } else if let Some(id) = key.strip_prefix("approval:") {
+            // A **leaf**: an unreadable approval request costs at most a
+            // re-submission, so it is skipped loudly rather than failing the boot
+            // (§4.1). The warning names the key so staff can find the doc.
+            let Ok(parsed) = id.parse::<u64>() else {
+                tracing::warn!(%key, "economy: bad approval key; skipping");
+                continue;
+            };
+            match serde_json::from_value::<ApprovalRequest>(value.clone()) {
+                Ok(r) if r.id == ApprovalRequestId(parsed) => {
+                    stored_approvals.insert(r.id, r);
+                }
+                Ok(r) => tracing::warn!(%key, claimed = r.id.0, "economy: approval doc claims another id; skipping"),
+                Err(e) => tracing::warn!(%key, error = %e, "economy: corrupt approval doc; skipping"),
+            }
         } else {
             tracing::warn!(%key, "economy: unknown persisted key ignored");
         }
@@ -146,6 +162,8 @@ pub(crate) fn load_boot(
     let mut asset_at_stored: BTreeMap<ObjId, EconomicAsset> = BTreeMap::new();
     let mut last_custody: BTreeMap<ObjId, (VaultId, CustodyDirection)> = BTreeMap::new();
     let mut max_custody_vault: Option<u64> = None;
+    let mut consumed_approval: BTreeMap<ApprovalRequestId, TransactionId> = BTreeMap::new();
+    let mut max_consumed_approval: Option<u64> = None;
     let mut transactions: BTreeMap<TransactionId, EconomicTransaction> = BTreeMap::new();
     let mut snapshot = EconomySnapshot::new();
     for def in instruments.values() {
@@ -185,6 +203,14 @@ pub(crate) fn load_boot(
         for effect in &tx.custody_effects {
             last_custody.insert(effect.object, (effect.vault, effect.direction));
             max_custody_vault = Some(max_custody_vault.map_or(effect.vault.0, |m: u64| m.max(effect.vault.0)));
+        }
+        // The journal is the authority on which requests were SPENT: a `Consumed`
+        // doc can be lost, the entry that consumed it cannot. Keyed by ID (C3) —
+        // healing by plan hash would let an unrelated request with a colliding
+        // intent inherit the consumption.
+        if let Some(id) = tx.consumed_approval {
+            consumed_approval.insert(id, tx.id);
+            max_consumed_approval = Some(max_consumed_approval.map_or(id.0, |m: u64| m.max(id.0)));
         }
         // Idempotency index (journal-derived — the double-post backstop).
         snapshot.put_idempotency(IdempotencyRecord {
@@ -295,6 +321,43 @@ pub(crate) fn load_boot(
         snapshot.put_vault(v);
     }
 
+    // ---- E3b2: approval requests (leaf docs, §4.1) ------------------------
+    //
+    // Three directional rules, all of which move a request toward "not usable":
+    // a Pending request the journal proves was spent becomes `Consumed` (healed by
+    // ID, never by hash); one past its TTL becomes `Expired`; and a long-dead one is
+    // garbage-collected. Nothing here ever revives a request.
+    let now = ctx.w.now();
+    let mut healed_approvals: Vec<ApprovalRequest> = Vec::new();
+    let mut dropped_approvals: Vec<ApprovalRequestId> = Vec::new();
+    let max_stored_approval: Option<u64> = stored_approvals.keys().map(|id| id.0).max();
+    for (id, mut r) in stored_approvals {
+        if r.status == crate::record::ApprovalStatus::Pending {
+            if let Some(tx) = consumed_approval.get(&id) {
+                tracing::warn!(approval = id.0, transaction = tx.0, "economy: approval doc lags the journal; marking it consumed");
+                r.status = crate::record::ApprovalStatus::Consumed { transaction: *tx };
+                r.revision += 1;
+                healed_approvals.push(r.clone());
+            } else if now >= r.expires_at {
+                r.status = crate::record::ApprovalStatus::Expired;
+                r.revision += 1;
+                healed_approvals.push(r.clone());
+            }
+        }
+        // GC: a dead request stops being an audit trail long before it stops being
+        // clutter. `Consumed` requests are NEVER collected — they are the other end
+        // of a journal entry's `consumed_approval`.
+        let dead = matches!(
+            r.status,
+            crate::record::ApprovalStatus::Expired | crate::record::ApprovalStatus::Cancelled
+        );
+        if dead && now.saturating_sub(r.expires_at) > crate::APPROVAL_GC_AFTER_SECS {
+            dropped_approvals.push(id);
+            continue;
+        }
+        snapshot.put_approval(r);
+    }
+
     // ---- E3: custody reconciliation (audit-only; never derives a location) --
     let deposited: Vec<(ObjId, VaultId)> = last_custody
         .iter()
@@ -385,6 +448,12 @@ pub(crate) fn load_boot(
     let next_vault = meta_u64(&meta, "next_vault_id")
         .max(next_after(max_custody_vault))
         .max(next_after(snapshot.vaults().map(|v| v.id.0).max()));
+    // C4: floor the approval allocator past every id the JOURNAL has seen and every
+    // stored doc — including the ones just garbage-collected, so a collected id is
+    // never re-minted onto a different request.
+    let next_approval = meta_u64(&meta, "next_approval_id")
+        .max(next_after(max_consumed_approval))
+        .max(next_after(max_stored_approval));
 
     // Self-heal writes (only what actually changed, unless frozen — then persist the
     // frozen status of everything).
@@ -404,6 +473,12 @@ pub(crate) fn load_boot(
     for v in &healed_vaults {
         api::persist_vault(ctx.out, v);
     }
+    for r in &healed_approvals {
+        api::persist_approval(ctx.out, r);
+    }
+    for id in &dropped_approvals {
+        api::delete_key(ctx.out, api::approval_key(*id));
+    }
 
     Ok(EconomyStore::from_parts(
         snapshot,
@@ -412,6 +487,7 @@ pub(crate) fn load_boot(
         next_account,
         next_transaction,
         next_vault,
+        next_approval,
         frozen,
     ))
 }

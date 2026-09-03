@@ -49,6 +49,30 @@
 //!
 //! The world-attached half (persistence, boot heal, the custody providers, the
 //! commands, the approval workflow) is E3b.
+//!
+//! ## E3b2 — org wallets, approvals, and the disclosure boundary
+//!
+//! The live authorization half. Four spine points, all of them about failing
+//! **closed** where E2 failed open:
+//!
+//! - **The money rules moved into the bridge** (§4.4). A negative delta on a
+//!   `System` faucet needs staff *in [`WorldAuth`]*, not merely in the command that
+//!   happens to build the plan — E2's comment said "gated by the command layer",
+//!   which stopped being true the moment `@econ/pay` learned about divisional
+//!   wallets. A scoped debit additionally needs the org `Active` and the scope
+//!   `Active`; a credit reaches a `Dissolving` org (final settlement) but never a
+//!   `Suspended` or `Closed` one.
+//! - **Approvals are live, minted, and singular** (§4.6, invariant 17).
+//!   [`post`] mints one [`ApprovalRequest`] per plan hash, re-serves it on every
+//!   later submission, and consumes it in the same durable bundle as the
+//!   transaction; every recorded approver is re-qualified through
+//!   [`AuthEval::authorize_approver`] at post time, and the requester never counts.
+//! - **Reads are bounded and existence-hiding** (§4.5, D-E3-6). Non-staff may read
+//!   what they own or hold a `*.view` capability over; every other refusal renders
+//!   as "No such …", so "denied" and "nonexistent" are one message.
+//! - **The module refuses shapes it cannot apply atomically.** A prepared plan with
+//!   more than one custody effect is refused before any provider runs: custody moves
+//!   one provider call at a time, so a refusal on the second would strand the first.
 
 // E2a — the pure library.
 mod amount;
@@ -71,10 +95,11 @@ mod module;
 
 pub use amount::{Amount, MAX_SCALE};
 pub use engine::{
-    APPROVAL_TTL_SECS, AllowAll, AuthEval, CAPABILITIES, CustodyEval, MAX_APPROVERS_PER_REQUEST,
-    MAX_ASSET_OPS_PER_PLAN, MAX_CUSTODY_OPS_PER_PLAN, MAX_DESCRIPTION_BYTES,
-    MAX_ENCUMBRANCES_PER_ASSET, MAX_ENTRY_BYTES, MAX_LINES_PER_TX, MAX_MEMO_BYTES,
-    MAX_REASON_BYTES, NoCustody, ValidateEnv, apply, plan_reversal, validate,
+    APPROVAL_GC_AFTER_SECS, APPROVAL_TTL_SECS, AllowAll, AuthEval, CAPABILITIES, CustodyEval,
+    MAX_APPROVERS_PER_REQUEST, MAX_ASSET_OPS_PER_PLAN, MAX_CUSTODY_OPS_PER_PLAN,
+    MAX_DESCRIPTION_BYTES, MAX_ENCUMBRANCES_PER_ASSET, MAX_ENTRY_BYTES, MAX_LINES_PER_TX,
+    MAX_MEMO_BYTES, MAX_PENDING_PER_ACCOUNT, MAX_PENDING_PER_REQUESTER, MAX_REASON_BYTES,
+    NoCustody, ValidateEnv, apply, plan_reversal, validate,
 };
 pub use hash::plan_hash;
 pub use ids::{AccountId, ApprovalRequestId, InstrumentId, TransactionId, VaultId};
@@ -94,9 +119,9 @@ pub use snapshot::EconomySnapshot;
 
 // E2b/E3b1 public surface.
 pub use api::{
-    META_KEY, PostOutcome, account_key, asset_key, create_vault, instrument_key, open_account,
-    post, post_capability, register_instrument, reverse, set_asset_frozen, set_vault_status,
-    vault_key,
+    META_KEY, PostOutcome, account_key, approval_key, asset_key, create_vault, instrument_key,
+    open_account, post, post_capability, register_instrument, reverse, set_account_approval,
+    set_account_status, set_asset_frozen, set_vault_status, vault_key,
 };
 pub use custody::{ContainerProvider, CustodyError, CustodyProvider, CustodyTable};
-pub use module::{EconomyModule, EconomyStore, JOURNAL_LOG, NS};
+pub use module::{EconomyModule, EconomyScopeUse, EconomyStore, JOURNAL_LOG, NS};

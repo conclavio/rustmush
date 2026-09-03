@@ -17,17 +17,21 @@ use mush_core::{
     Ctx, Deferred, MAX_CONTAINMENT_DEPTH, ModuleOp, ModuleWrite, ObjId, Outbox, Powers, Role,
     World, perm,
 };
-use mush_org::{AuthRequest, CapabilityId, OrgScopeId, OrgStatus, PrincipalId, ScopeStatus, authorize_in_world};
+use mush_org::{
+    ApprovalPolicy, AuthRequest, CapabilityId, MembershipStatus, OrgScopeId, OrgStatus, PrincipalId,
+    ScopeStatus, authorize_in_world,
+};
 use smol_str::SmolStr;
 
 use crate::amount::Amount;
 use crate::custody::{CustodyError, WorldCustody};
-use crate::engine::{AuthEval, ValidateEnv, apply, plan_reversal, validate};
+use crate::engine::{APPROVAL_TTL_SECS, AuthEval, ValidateEnv, apply, plan_reversal, validate};
 use crate::ids::{AccountId, ApprovalRequestId, InstrumentId, TransactionId, VaultId};
 use crate::module::{EconomyStore, JOURNAL_LOG, NS};
-use crate::plan::{AssetOp, CustodyOp, EconomyError, EconomyPlan, PlanResult, Prepared};
+use crate::plan::{ApprovalNeed, AssetOp, CustodyOp, EconomyError, EconomyPlan, PlanResult, Prepared};
 use crate::record::{
-    Account, CustodyDirection, EconomicAsset, EconomicCause, InstrumentDef, Vault,
+    Account, ApprovalRequest, ApprovalStatus, CustodyDirection, EconomicAsset, EconomicCause,
+    InstrumentDef, Vault,
 };
 
 /// The kv key of the allocator meta document.
@@ -55,6 +59,13 @@ pub fn asset_key(object: ObjId) -> SmolStr {
 #[must_use]
 pub fn vault_key(id: VaultId) -> SmolStr {
     SmolStr::new(format!("vault:{}", id.0))
+}
+/// `approval:{id}` — a **leaf** doc (E3b2): a corrupt one is skipped loudly, never
+/// a boot failure, because an unreadable approval can only ever cost someone a
+/// re-submission.
+#[must_use]
+pub fn approval_key(id: ApprovalRequestId) -> SmolStr {
+    SmolStr::new(format!("approval:{}", id.0))
 }
 
 // ---- persist helpers ------------------------------------------------------
@@ -85,6 +96,15 @@ pub(crate) fn persist_vault(out: &mut Outbox, v: &Vault) {
         key: vault_key(v.id),
         value: serde_json::to_value(v).expect("vault serializes"),
     });
+}
+pub(crate) fn persist_approval(out: &mut Outbox, r: &ApprovalRequest) {
+    push_op(out, ModuleWrite::JsonSet {
+        key: approval_key(r.id),
+        value: serde_json::to_value(r).expect("approval request serializes"),
+    });
+}
+pub(crate) fn delete_key(out: &mut Outbox, key: SmolStr) {
+    push_op(out, ModuleWrite::Del { key });
 }
 pub(crate) fn persist_meta(out: &mut Outbox, meta: serde_json::Value) {
     push_op(out, ModuleWrite::JsonSet { key: SmolStr::new_static(META_KEY), value: meta });
@@ -161,36 +181,63 @@ pub(crate) fn subtree(w: &World, root: ObjId) -> Vec<ObjId> {
     out
 }
 
+/// Whether an org compartment may still **receive** value (§4.4). A `Dissolving`
+/// org must be able to take final settlement — that is what dissolving *is* — while
+/// a `Suspended` or `Closed` one must not, and neither may a compartment whose org
+/// has vanished. An unscoped account takes credit freely, as in E2.
+#[must_use]
+fn credit_allowed(w: &World, account: &Account) -> bool {
+    if account.scope.is_none() {
+        return true;
+    }
+    let PrincipalId::Organization(org) = &account.owner else { return false };
+    let Some(store) = w.module_state::<mush_org::OrgStore>() else { return false };
+    store
+        .state()
+        .org(*org)
+        .is_some_and(|o| matches!(o.status, OrgStatus::Active | OrgStatus::Dissolving))
+}
+
 /// Bridges the injected [`AuthEval`] to the live org authorization engine (R-D4).
-/// Money-safe defaults: receiving value needs no authority; you may move your own
-/// unscoped account; a scoped (org) account defers to the live org policy; a
-/// system source/sink line is gated by the (staff-only) command that builds it.
+/// Money-safe defaults: receiving value needs no authority beyond a live
+/// compartment; you may move your own unscoped account; a scoped (org) account
+/// defers to the live org policy; a system source/sink debit is **staff**.
 pub(crate) struct WorldAuth<'a> {
     pub(crate) w: &'a World,
 }
 
 impl AuthEval for WorldAuth<'_> {
     fn authorize(&self, actor: &PrincipalId, account: &Account, delta: Amount) -> bool {
-        // A credit (receiving value) needs no authority.
+        let staff = matches!(actor, PrincipalId::Object(o) if is_staff(self.w, *o));
+        // A credit (receiving value) needs no authority — but §4.4 gates WHICH
+        // compartment may receive: dissolving settles, suspended/closed does not.
         if !delta.is_negative() {
-            return true;
+            return credit_allowed(self.w, account);
         }
-        // Own it → may move it.
-        if *actor == account.owner {
-            return true;
-        }
-        // Staff may post attributed moves on any account (corrections, admin, mint).
-        if let PrincipalId::Object(obj) = actor
-            && (perm::has_power(self.w, *obj, Powers::SIM_ADMIN) || perm::has_role(self.w, *obj, Role::Royalty))
-        {
-            return true;
-        }
-        // System-owned accounts (faucets/sinks) are gated by the command layer.
+        // A6 — **the mint/burn gate, in the bridge**. A negative delta on a
+        // registered system source/sink creates money out of nothing, so it is
+        // staff, full stop. E2 left this to "the command layer", which fails OPEN
+        // the moment `econ_pay`'s owner guard relaxes for divisional wallets (it
+        // did, one function below): a non-staff payer naming a faucet as `from`
+        // would have minted. The check belongs where every path passes.
         if matches!(account.owner, PrincipalId::System(_)) {
+            return staff;
+        }
+        // Staff may post attributed moves on any other account (corrections, admin).
+        if staff {
             return true;
         }
-        // Org-scoped → the live org policy decides (E1 capability + amount limit).
-        if let (Some(scope), PrincipalId::Object(obj)) = (account.scope, actor) {
+        // Org-scoped → the live org policy decides (E1 capability + amount limit),
+        // and only over a LIVE compartment: §4.4 requires the org `Active` and the
+        // scope `Active` for a debit. `scope_coherent` proves both, plus that the
+        // scope really belongs to the owning org (invariant 18's seam half); org's
+        // own `authorize` denies `Inactive` on the same facts after E3b2, so this is
+        // defence in depth, not the only lock.
+        if let Some(scope) = account.scope {
+            let PrincipalId::Object(obj) = actor else { return false };
+            if !scope_coherent(self.w, Some(scope), &account.owner) {
+                return false;
+            }
             let amount = delta.minor().checked_abs().unwrap_or(i64::MAX);
             let req = AuthRequest {
                 actor: *obj,
@@ -201,7 +248,9 @@ impl AuthEval for WorldAuth<'_> {
             };
             return authorize_in_world(self.w, &req).is_allow();
         }
-        false
+        // Unscoped → own it. (An unscoped org-owned account is unreachable: no
+        // object principal can equal an `Organization`, so it fails closed.)
+        *actor == account.owner
     }
 
     /// Invariants 19–20 (§4.4). Staff allow; otherwise the actor is the
@@ -288,6 +337,51 @@ impl AuthEval for WorldAuth<'_> {
         }
         self.scoped_capability(account.scope, &account.owner, "economy.account.post", *a)
     }
+
+    /// Invariant 17 / §4.4 — **re-run LIVE at every post**, never captured at
+    /// approve time (A5): an approver who has since lost the capability, the role,
+    /// or their place in the named set simply stops counting.
+    ///
+    /// The two policies ask different questions:
+    ///
+    /// - **`Threshold`** asks about standing: `economy.account.approve` on the
+    ///   account's compartment (staff pass it by fiat), plus — for
+    ///   `from_role: Some(r)` — a live `OrgMembership` in that org carrying `r`
+    ///   (D-E3-11: role approval needs a REAL membership, not a cosmetic title).
+    /// - **`NamedSet`** asks about identity: is this person one of the people staff
+    ///   named? Membership in the set is necessary AND sufficient — naming a set is
+    ///   itself the authorization, which is why the named need no grant and why
+    ///   **staff do not qualify unless named** (staff-in-general is not a person).
+    ///   §4.5 pairs this with a view of the request's accounts for its lifetime, so
+    ///   a named approver can see what they are signing.
+    ///
+    /// `OneAuthorizedActor` qualifies nobody: it is inert (the one authorized actor
+    /// is the poster, and four-eyes bars them), which is why `@account/approval`
+    /// refuses to store it (A11).
+    fn authorize_approver(&self, approver: ObjId, account: &Account, policy: &ApprovalPolicy) -> bool {
+        match policy {
+            ApprovalPolicy::OneAuthorizedActor => false,
+            ApprovalPolicy::NamedSet { actors, .. } => actors.contains(&approver),
+            ApprovalPolicy::Threshold { from_role, .. } => {
+                let base = is_staff(self.w, approver)
+                    || account.scope.is_some_and(|s| {
+                        scope_coherent(self.w, Some(s), &account.owner)
+                            && holds_capability(self.w, approver, "economy.account.approve", s)
+                    });
+                if !base {
+                    return false;
+                }
+                let Some(role) = from_role else { return true };
+                let Some(scope) = account.scope else { return false };
+                let Some(store) = self.w.module_state::<mush_org::OrgStore>() else { return false };
+                let state = store.state();
+                let Some(sc) = state.scope(scope) else { return false };
+                state
+                    .membership(sc.org, approver)
+                    .is_some_and(|m| m.status == MembershipStatus::Active && m.roles.contains(role))
+            }
+        }
+    }
 }
 
 impl WorldAuth<'_> {
@@ -354,6 +448,41 @@ pub fn set_asset_frozen(ctx: &mut Ctx<'_>, object: ObjId, frozen: bool, reason: 
     true
 }
 
+/// Set an account's doc-authority `status` (E3b2: `@account/close`, staff
+/// `@account/unfreeze`). **Not journaled**, and deliberately **does not bump
+/// `revision`** — the same discipline as [`set_asset_frozen`]: `revision` moves with
+/// the journal (`apply` bumps it on every touched account), so nudging it from a doc
+/// write would make the doc claim a state its own `last_journal_seq` never produced.
+/// Returns `false` if the account is unknown.
+pub fn set_account_status(ctx: &mut Ctx<'_>, id: AccountId, status: crate::record::AccountStatus) -> bool {
+    let doc = {
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return false };
+        let Some(a) = store.snapshot.account_mut(id) else { return false };
+        a.status = status;
+        a.clone()
+    };
+    persist_account(ctx.out, &doc);
+    true
+}
+
+/// Set (or clear) an account's per-account [`crate::ApprovalRule`] (staff,
+/// `@account/approval`). A doc write like [`set_account_status`], and for the same
+/// reason it leaves `revision` alone.
+///
+/// The rule is **not** part of the plan hash: an approval authorizes an intent, so
+/// changing the rule never invalidates a request already collected — but the rule is
+/// re-read live at every post, so raising it does take effect immediately.
+pub fn set_account_approval(ctx: &mut Ctx<'_>, id: AccountId, rule: Option<crate::record::ApprovalRule>) -> bool {
+    let doc = {
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return false };
+        let Some(a) = store.snapshot.account_mut(id) else { return false };
+        a.approval = rule;
+        a.clone()
+    };
+    persist_account(ctx.out, &doc);
+    true
+}
+
 /// Staff: set a vault's doc-authority status. Not journaled (same split).
 pub fn set_vault_status(ctx: &mut Ctx<'_>, id: VaultId, status: crate::record::VaultStatus) -> bool {
     let doc = {
@@ -376,10 +505,10 @@ pub enum PostOutcome {
     Posted(TransactionId),
     /// The idempotency key already resolved to this transaction (no new post).
     AlreadyPosted(TransactionId),
-    /// A per-account [`crate::ApprovalRule`] fired: nothing posted, and this request
-    /// must be satisfied first. **E3b2** mints and serves these; in E3a the seam
-    /// surfaces [`EconomyError::ApprovalRequired`] instead, so the variant exists for
-    /// the callers that will match on it.
+    /// A per-account [`crate::ApprovalRule`] fired: **nothing posted**, and this
+    /// request must be satisfied before the same plan will. E3b2 mints it on the
+    /// first submission and re-serves the same id on every later one (one live
+    /// request per hash, A1), so re-submitting is safe and idempotent.
     NeedsApproval(ApprovalRequestId),
 }
 
@@ -410,7 +539,7 @@ pub fn post(ctx: &mut Ctx<'_>, plan: &EconomyPlan) -> Result<PostOutcome, Econom
         let env = ValidateEnv { auth: &auth, custody: &custody, now: ctx.w.now() };
         (validate(plan, store.snapshot(), &env), providers)
     };
-    finish(ctx, outcome, &providers)
+    finish(ctx, outcome, &providers, &plan.actor)
 }
 
 /// Reverse transaction `target`: fetch the real original from the journal-derived
@@ -429,9 +558,9 @@ pub fn reverse(
         }
         let original = store.transaction(target).ok_or(EconomyError::NoSuchTransaction(target))?.clone();
         let auth = WorldAuth { w: ctx.w };
-        (plan_reversal(&original, actor, cause, store.snapshot(), &auth), store.providers())
+        (plan_reversal(&original, actor.clone(), cause, store.snapshot(), &auth), store.providers())
     };
-    finish(ctx, outcome, &providers)
+    finish(ctx, outcome, &providers, &actor)
 }
 
 /// Run the prepared custody moves through their resolved providers — §4.2 step 2,
@@ -482,11 +611,109 @@ fn run_custody_effects(
     Ok(())
 }
 
+/// The **module-layer** custody arity cap (§4.2 / E3b1's finding). `validate`
+/// happily proves a plan carrying several custody ops against one snapshot, but
+/// [`run_custody_effects`] applies them one provider call at a time: a provider that
+/// refuses the *k*-th move leaves the first *k−1* applied in the world with nothing
+/// journaled. Until a two-phase custody protocol exists (not E3), the module refuses
+/// the shape outright rather than trusting every caller to build only one.
+const MAX_CUSTODY_EFFECTS_AT_MODULE: usize = 1;
+
+/// Serve, or mint, the [`ApprovalRequest`] a `NeedsApproval` plan needs (§4.6).
+///
+/// **No money moves here**, so the confirmation rides the ordinary (non-strict)
+/// durable gate: the worst case for a dropped request doc is that the requester
+/// re-submits and gets a fresh id, never a lost or double post.
+fn mint_or_serve_approval(
+    ctx: &mut Ctx<'_>,
+    need: &ApprovalNeed,
+    requester: &PrincipalId,
+) -> Result<PostOutcome, EconomyError> {
+    let now = ctx.w.now();
+    // A1: exactly one LIVE request per hash. An existing, unexpired one is simply
+    // re-served — this is what makes re-submitting the same plan idempotent instead
+    // of minting a second request that could collect approvals in parallel.
+    let (live, stale) = {
+        let store = ctx.w.module_state::<EconomyStore>().ok_or(EconomyError::EconomyFrozen)?;
+        match store.snapshot().live_approval_for_hash(&need.plan_hash) {
+            Some(r) if now < r.expires_at => (Some(r.id), None),
+            Some(r) => (None, Some(r.clone())),
+            None => (None, None),
+        }
+    };
+    if let Some(id) = live {
+        ctx.gate_on_durable_ack();
+        return Ok(PostOutcome::NeedsApproval(id));
+    }
+    // A request that aged out still holds the by-hash index (its status is only
+    // recomputed against the clock at boot). Retire it explicitly, or the fresh
+    // request would be minted and then ignored by `validate`, which reads the index.
+    if let Some(mut old) = stale {
+        old.status = ApprovalStatus::Expired;
+        old.revision += 1;
+        put_approval(ctx, old);
+    }
+
+    // G1 caps: a requester cannot paper the world with pending requests, and one
+    // account cannot be buried under them.
+    {
+        let store = ctx.w.module_state::<EconomyStore>().ok_or(EconomyError::EconomyFrozen)?;
+        let pending = || {
+            store
+                .snapshot()
+                .approvals()
+                .filter(move |r| r.status == ApprovalStatus::Pending && now < r.expires_at)
+        };
+        if pending().filter(|r| r.requested_by == *requester).count() >= crate::MAX_PENDING_PER_REQUESTER {
+            return Err(EconomyError::TooLarge("too many pending approval requests for this requester"));
+        }
+        for account in &need.accounts {
+            if pending().filter(|r| r.accounts.contains(account)).count() >= crate::MAX_PENDING_PER_ACCOUNT {
+                return Err(EconomyError::TooLarge("too many pending approval requests for this account"));
+            }
+        }
+    }
+
+    let request = {
+        let store = ctx.w.module_state_mut::<EconomyStore>().expect("economy store");
+        ApprovalRequest {
+            id: store.alloc_approval(),
+            plan_hash: need.plan_hash,
+            accounts: need.accounts.clone(),
+            requested_by: requester.clone(),
+            approvals: Vec::new(),
+            decisions: Vec::new(),
+            created_at: now,
+            expires_at: now.saturating_add(APPROVAL_TTL_SECS),
+            status: ApprovalStatus::Pending,
+            revision: 1,
+        }
+    };
+    let id = request.id;
+    put_approval(ctx, request);
+    let meta = ctx.w.module_state::<EconomyStore>().expect("economy store").meta_doc();
+    persist_meta(ctx.out, meta);
+    ctx.gate_on_durable_ack();
+    Ok(PostOutcome::NeedsApproval(id))
+}
+
+/// Install an approval request into the live snapshot and queue its doc. The
+/// caller owns the state transition (the command layer records decisions; `post`
+/// mints and expires) — this is the single write path for both.
+pub(crate) fn put_approval(ctx: &mut Ctx<'_>, request: ApprovalRequest) {
+    {
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return };
+        store.snapshot.put_approval(request.clone());
+    }
+    persist_approval(ctx.out, &request);
+}
+
 /// Common tail: turn a [`PlanResult`] into a durable-gated outcome or an error.
 fn finish(
     ctx: &mut Ctx<'_>,
     outcome: PlanResult,
     providers: &crate::custody::CustodyTable,
+    requester: &PrincipalId,
 ) -> Result<PostOutcome, EconomyError> {
     match outcome {
         PlanResult::AlreadyPosted(id) => {
@@ -503,13 +730,18 @@ fn finish(
             ctx.gate_on_durable_ack_strict();
             Ok(PostOutcome::AlreadyPosted(id))
         }
-        // E3a stops here: the plan is well-formed and authorized but needs approvals,
-        // and minting/serving the ApprovalRequest (and returning
-        // `PostOutcome::NeedsApproval`) is E3b2's job. Refusing is the fail-closed
-        // half — nothing posts.
-        PlanResult::NeedsApproval(_) => Err(EconomyError::ApprovalRequired),
+        // The plan is well-formed and authorized but unapproved: mint (or re-serve)
+        // its request. Nothing posts either way — this is not a refusal, it is the
+        // §4.6 escalation, and the requester's next submission of the SAME plan
+        // posts once the approvals are live-qualifying.
+        PlanResult::NeedsApproval(need) => mint_or_serve_approval(ctx, &need, requester),
         PlanResult::Refused(e) => Err(e),
         PlanResult::Post(prepared) => {
+            // The module-layer custody arity cap: refuse a shape that could
+            // half-apply, BEFORE any provider is called.
+            if prepared.custody_effects.len() > MAX_CUSTODY_EFFECTS_AT_MODULE {
+                return Err(EconomyError::TooLarge("one custody op per plan at the module layer"));
+            }
             // §4.2 step 2: the world moves BEFORE the store advances, and only from
             // the prepared effects (never the plan's ops — see `AlreadyPosted` above,
             // which performs zero world mutation).
@@ -529,7 +761,7 @@ fn finish(
 /// write batch. The store mutation happens in a scope that ends before `ctx.out` is
 /// used (the shipped module discipline).
 fn commit_prepared(ctx: &mut Ctx<'_>, prepared: &Prepared, now: i64) -> TransactionId {
-    let (txid, journal_op, account_docs, asset_docs, meta) = {
+    let (txid, journal_op, account_docs, asset_docs, approval_doc, meta) = {
         let store = ctx.w.module_state_mut::<EconomyStore>().expect("economy store");
         let txid = store.alloc_transaction();
         // Peek the seq the journal will assign, so the transaction carries it before
@@ -552,7 +784,13 @@ fn commit_prepared(ctx: &mut Ctx<'_>, prepared: &Prepared, now: i64) -> Transact
             .iter()
             .filter_map(|e| store.snapshot().asset(e.object).cloned())
             .collect();
-        (txid, op, account_docs, asset_docs, store.meta_doc())
+        // The consumed request rides the SAME bundle as the transaction that spent
+        // it (`apply` already flipped it to `Consumed { transaction }`), so a doc
+        // drop is healed at boot by id — never by hash (C3).
+        let approval_doc = prepared
+            .consumed_approval
+            .and_then(|id| store.snapshot().approval(id).cloned());
+        (txid, op, account_docs, asset_docs, approval_doc, store.meta_doc())
     };
     persist_journal(ctx.out, journal_op);
     for a in &account_docs {
@@ -560,6 +798,9 @@ fn commit_prepared(ctx: &mut Ctx<'_>, prepared: &Prepared, now: i64) -> Transact
     }
     for a in &asset_docs {
         persist_asset(ctx.out, a);
+    }
+    if let Some(r) = &approval_doc {
+        persist_approval(ctx.out, r);
     }
     persist_meta(ctx.out, meta);
     txid

@@ -1,7 +1,18 @@
-//! The staff economy command surface (E2b). All money movement goes through the
-//! validated [`crate::post`]/[`crate::reverse`] seam — there is no balance-set
-//! command (a correction is an attributed balanced transaction). Per R-D2 all E2
-//! reads are staff-gated; the player-facing economy is the later ruleset slices.
+//! The economy command surface. All money movement goes through the validated
+//! [`crate::post`]/[`crate::reverse`] seam — there is no balance-set command (a
+//! correction is an attributed balanced transaction).
+//!
+//! **E3b2 opens a bounded non-staff surface** (§4.5, D-E3-6). Creating things stays
+//! staff — instruments, accounts, vaults, titles, approval rules — but spending,
+//! custody, approving, and *reading* are now player verbs gated by live org
+//! capability. That makes disclosure a real concern for the first time, so this
+//! module carries three existence-hiding renderers ([`asset_refusal`],
+//! [`vault_refusal`], [`account_refusal`], plus [`NO_SUCH_REQUEST`]): **any** refusal
+//! touching a resource the actor may not *view* renders as that resource's "No such
+//! …" text, so a probe cannot distinguish "denied" from "not there". Every list
+//! filters by the same view standing and caps at [`LIST_CAP`]; an unauthorized or
+//! nonexistent filter yields an empty list rather than an error that would confirm
+//! it. The journal itself ([`econ_audit`]) stays staff-only.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -11,16 +22,18 @@ use mush_core::output::display_name;
 use mush_core::{
     ArgShape, CmdError, CommandSpec, Ctx, ObjId, Powers, Role, World, match_object, perm,
 };
-use mush_org::{OrgScopeId, PrincipalId, SystemPrincipalId};
+use mush_org::{ApprovalPolicy, OrgScopeId, PrincipalId, SystemPrincipalId};
 use smol_str::SmolStr;
 
 use crate::amount::Amount;
 use crate::api::{self, PostOutcome};
-use crate::ids::{AccountId, InstrumentId, TransactionId, VaultId};
+use crate::engine::AuthEval;
+use crate::ids::{AccountId, ApprovalRequestId, InstrumentId, TransactionId, VaultId};
 use crate::plan::{AssetOp, CustodyOp, EconomyPlan, RequestedLine};
 use crate::record::{
-    Account, AccountStatus, CreditPolicy, CustodyRef, EconomicCause, Encumbrance, IdempotencyKey,
-    InstrumentDef, InstrumentKind, InstrumentStatus, NegativePolicy, Vault, VaultStatus,
+    Account, AccountStatus, Approval, ApprovalRule, ApprovalStatus, CreditPolicy, CustodyRef,
+    Decision, EconomicCause, Encumbrance, IdempotencyKey, InstrumentDef, InstrumentKind,
+    InstrumentStatus, NegativePolicy, Vault, VaultStatus, Verdict,
 };
 use crate::module::EconomyStore;
 
@@ -42,11 +55,23 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: "@account".into(),
             shape: ArgShape::EqPair,
-            switches: ["open", "system", "show", "list"].iter().copied().map(SmolStr::new).collect(),
-            help: "@account/open <obj>=<instrument>       open a personal account\n\
-                   @account/system <name>=<instrument>    register a system source/sink\n\
+            switches: ["open", "system", "approval", "close", "unfreeze", "show", "list"]
+                .iter()
+                .copied()
+                .map(SmolStr::new)
+                .collect(),
+            help: "@account/open <obj>=<instrument>       open a personal account (staff)\n\
+                   @account/open org:<org>[/<scope>]=<instrument>\n\
+                   \x20                                     open an ORG wallet on a scope (staff)\n\
+                   @account/system <name>=<instrument>    register a system source/sink (staff)\n\
+                   @account/approval <id>=<threshold> <policy>   high-value escalation (staff)\n\
+                   \x20  policy = threshold:<n>[:<role>] | named:<n>:<obj>,<obj>… | none\n\
+                   @account/close <id>                    close an empty, active account\n\
+                   @account/unfreeze <id>                 clear a recovery freeze (staff)\n\
                    @account/show <id>                     inspect one account\n\
-                   @account/list                          list accounts"
+                   @account/list                          list the accounts you may see\n\
+                   A threshold is a PER-TRANSACTION escalation, not a budget: two payments\n\
+                   under it both post without any approval (holds are E4)."
                 .into(),
             ..CommandSpec::default()
         },
@@ -56,13 +81,21 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: "@econ".into(),
             shape: ArgShape::EqPair,
-            switches: ["pay", "mint", "reverse", "audit"].iter().copied().map(SmolStr::new).collect(),
+            switches: ["pay", "mint", "reverse", "audit", "approve", "deny", "approvals"]
+                .iter()
+                .copied()
+                .map(SmolStr::new)
+                .collect(),
             help: "@econ/pay <from>=<to> <amount> [asset=<obj>] [from_vault=<id>|to_vault=<id>]\n\
                    \x20                                      transfer money, and optionally the\n\
                    \x20                                      title/custody of one asset, in ONE plan\n\
-                   @econ/mint <sysacct>=<to> <amount>      mint from a system source\n\
-                   @econ/reverse <txid>                    reverse a transaction\n\
-                   @econ/audit                             recent journal entries\n\
+                   @econ/mint <sysacct>=<to> <amount>      mint from a system source (staff)\n\
+                   @econ/reverse <txid>                    reverse a transaction (staff)\n\
+                   @econ/audit                             recent journal entries (staff)\n\
+                   @econ/approve <id>   @econ/deny <id>    decide an approval request\n\
+                   @econ/approvals                         requests awaiting your decision\n\
+                   An approval authorizes ONE exact plan; re-run the same @econ/pay once it is\n\
+                   satisfied and it posts. You can never approve your own request (four-eyes).\n\
                    A plan is single-authority in E3: the payer and the title holder must be the\n\
                    same principal (or you must be staff). Counterparty consent is E4."
                 .into(),
@@ -243,6 +276,50 @@ fn may_view_asset(w: &World, actor: ObjId, object: ObjId) -> bool {
     api::scope_coherent(w, Some(scope), &a.title_owner)
         && (api::holds_capability(w, actor, "asset.title.transfer", scope)
             || api::holds_capability(w, actor, "asset.assign", scope))
+}
+
+/// §4.5 view standing over an account: staff, its owner, a holder of
+/// `economy.account.view` on its (live) compartment — **or** an actor named in a
+/// live approval request's `NamedSet` over it. That last clause is deliberate: you
+/// cannot responsibly approve a payment you are forbidden to look at, and the
+/// standing lasts exactly as long as the request does.
+fn may_view_account(w: &World, actor: ObjId, id: AccountId) -> bool {
+    if api::is_staff(w, actor) {
+        return true;
+    }
+    let Some(store) = w.module_state::<EconomyStore>() else { return false };
+    let snap = store.snapshot();
+    let Some(a) = snap.account(id) else { return false };
+    if a.owner == PrincipalId::Object(actor) {
+        return true;
+    }
+    if let Some(scope) = a.scope
+        && api::scope_coherent(w, Some(scope), &a.owner)
+        && api::holds_capability(w, actor, "economy.account.view", scope)
+    {
+        return true;
+    }
+    let named = a
+        .approval
+        .as_ref()
+        .is_some_and(|rule| matches!(&rule.policy, ApprovalPolicy::NamedSet { actors, .. } if actors.contains(&actor)));
+    if !named {
+        return false;
+    }
+    let now = w.now();
+    snap.approvals()
+        .any(|r| r.status == ApprovalStatus::Pending && now < r.expires_at && r.accounts.contains(&id))
+}
+
+/// The account half of the existence-hiding rule (§4.5): a refusal touching an
+/// account the actor may not VIEW renders as the nonexistent-account text, so
+/// "denied" and "there is no such account" are one message.
+fn account_refusal(ctx: &Ctx<'_>, id: AccountId, detail: impl std::fmt::Display) -> CmdError {
+    if may_view_account(ctx.w, ctx.actor, id) {
+        CmdError::msg(detail.to_string())
+    } else {
+        CmdError::msg("No such account.")
+    }
 }
 
 /// §4.5 view standing over a vault: staff, its owner, or `vault.view` on its scope.
@@ -426,17 +503,29 @@ fn instrument_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 // ---- @account -------------------------------------------------------------
 
 fn cmd_account(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    require_admin(ctx)?;
+    // Gating is per-subcommand from E3b2 on: the WRITES stay staff (opening a wallet
+    // mints an owner binding; an approval rule is policy), `close` asks the economy
+    // who may spend from it, and the READS are the §4.5 bounded non-staff surface.
     if ctx.switches.has("open") {
+        require_admin(ctx)?;
         account_open(ctx, false)
     } else if ctx.switches.has("system") {
+        require_admin(ctx)?;
         account_open(ctx, true)
+    } else if ctx.switches.has("approval") {
+        require_admin(ctx)?;
+        account_approval(ctx)
+    } else if ctx.switches.has("unfreeze") {
+        require_admin(ctx)?;
+        account_unfreeze(ctx)
+    } else if ctx.switches.has("close") {
+        account_close(ctx)
     } else if ctx.switches.has("show") {
         account_show(ctx)
     } else if ctx.switches.has("list") {
         account_list(ctx)
     } else {
-        Err(CmdError::msg("Usage: @account/open|system|show|list"))
+        Err(CmdError::msg("Usage: @account/open|system|approval|close|unfreeze|show|list"))
     }
 }
 
@@ -451,20 +540,49 @@ fn account_open(ctx: &mut Ctx<'_>, system: bool) -> Result<(), CmdError> {
     if ctx.w.module_state::<EconomyStore>().is_none_or(|s| s.snapshot().instrument(&instrument).is_none()) {
         return Err(CmdError::msg("No such instrument (register it first)."));
     }
-    let (owner, name, credit) = if system {
-        let raw = ctx.args.lhs().trim();
-        let sys = SystemPrincipalId::new(raw).ok_or_else(|| CmdError::msg("Bad system principal name (use [a-z0-9_.-])."))?;
-        (PrincipalId::System(sys), SmolStr::new(raw), CreditPolicy::unbounded())
+    let lhs = ctx.args.lhs().trim().to_string();
+    let (owner, name, credit, scope) = if system {
+        let sys = SystemPrincipalId::new(&lhs).ok_or_else(|| CmdError::msg("Bad system principal name (use [a-z0-9_.-])."))?;
+        (PrincipalId::System(sys), SmolStr::new(&lhs), CreditPolicy::unbounded(), None)
+    } else if let Some(spec) = lhs.strip_prefix("org:") {
+        // `org:<org>[/<scope>]` — the divisional wallet (§4.6). The compartment is
+        // the policy anchor: everything about who may spend from this account is a
+        // question about `scope`, answered live by org.
+        let (org_s, scope_s) = match spec.split_once('/') {
+            Some((o, s)) => (o, Some(s)),
+            None => (spec, None),
+        };
+        let org = resolve_org(ctx, org_s).ok_or_else(|| CmdError::msg("No such org."))?;
+        let (scope, label) = {
+            let store = ctx.w.module_state::<mush_org::OrgStore>().ok_or_else(|| CmdError::msg("No organizations."))?;
+            let state = store.state();
+            let o = state.org(org).expect("resolved org exists");
+            let sid = match scope_s {
+                None => o.root_scope,
+                Some(s) => parse_scope(s).ok_or_else(|| CmdError::msg("Bad scope id."))?,
+            };
+            let sc = state.scope(sid).ok_or_else(|| CmdError::msg("No such scope."))?;
+            (sid, format!("{}/{}", o.name, sc.name))
+        };
+        let owner = PrincipalId::Organization(org);
+        // Invariant 18 at open: the scope must belong to THIS org and be live (and
+        // so must the org). The engine proves only the structural half.
+        if !api::scope_coherent(ctx.w, Some(scope), &owner) {
+            return Err(CmdError::msg(
+                "That scope does not belong to that organization, or the scope/org is not active.",
+            ));
+        }
+        (owner, SmolStr::new(label), CreditPolicy::forbid(), Some(scope))
     } else {
-        let obj = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
-        (PrincipalId::Object(obj), SmolStr::new(display_name(ctx.w, obj)), CreditPolicy::forbid())
+        let obj = match_object(ctx.w, ctx.actor, &lhs)?;
+        (PrincipalId::Object(obj), SmolStr::new(display_name(ctx.w, obj)), CreditPolicy::forbid(), None)
     };
     let id = ctx.w.module_state_mut::<EconomyStore>().expect("economy store").alloc_account();
     let account = Account {
         id,
         owner: owner.clone(),
         instrument: instrument.clone(),
-        scope: None,
+        scope,
         name,
         status: AccountStatus::Active,
         posted_balance: Amount::ZERO,
@@ -476,50 +594,299 @@ fn account_open(ctx: &mut Ctx<'_>, system: bool) -> Result<(), CmdError> {
         approval: None,
     };
     api::open_account(ctx, account);
-    info(ctx, format!("Opened account #{id} ({instrument}){}.", if system { " [system source/sink]" } else { "" }));
+    let where_ = scope.map_or_else(String::new, |s| format!(" on scope #{s}"));
+    info(ctx, format!(
+        "Opened account #{id} ({instrument}){where_}{}.",
+        if system { " [system source/sink]" } else { "" }
+    ));
     Ok(())
 }
 
+/// `@account/show <id>` — §4.5's bounded non-staff read. A non-viewer gets the
+/// SAME text as for an id that does not exist; a viewer gets id, instrument, name,
+/// status, posted balance, and the approval rule if any. Staff additionally see the
+/// owner, the compartment, and the projection bookkeeping.
 fn account_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let id = parse_account(ctx.args.lhs()).ok_or_else(|| CmdError::msg("Usage: @account/show <id>"))?;
-    let lines: Vec<String> = {
-        let store = ctx.w.module_state::<EconomyStore>().expect("economy store");
-        let a = store.snapshot().account(id).ok_or_else(|| CmdError::msg("No such account."))?;
-        let scale = store.snapshot().instrument(&a.instrument).map_or(0, |i| i.scale);
-        vec![
-            format!("account #{} ({}) owner {:?} [{:?}]", a.id, a.instrument, a.owner, a.status),
-            format!("  balance {} (held {})", a.posted_balance.to_decimal_string(scale), a.held_amount.to_decimal_string(scale)),
-            format!("  last journal seq {}, revision {}", a.last_journal_seq, a.revision),
-        ]
+    let Some(id) = parse_account(ctx.args.lhs()) else {
+        return Err(CmdError::msg("No such account."));
     };
+    if !may_view_account(ctx.w, ctx.actor, id) {
+        return Err(CmdError::msg("No such account."));
+    }
+    let staff = is_admin(ctx.w, ctx.actor);
+    let (a, scale) = {
+        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No such account."))?;
+        let a = store.snapshot().account(id).ok_or_else(|| CmdError::msg("No such account."))?.clone();
+        let scale = store.snapshot().instrument(&a.instrument).map_or(0, |i| i.scale);
+        (a, scale)
+    };
+    let mut lines = vec![
+        format!("account #{} \"{}\" ({}) [{:?}]", a.id, a.name, a.instrument, a.status),
+        format!("  balance {}", a.posted_balance.to_decimal_string(scale)),
+    ];
+    if let Some(rule) = &a.approval {
+        lines.push(format!(
+            "  approval above {}: {}",
+            rule.threshold.to_decimal_string(scale),
+            render_policy(ctx, &rule.policy)
+        ));
+    }
+    if staff {
+        lines.push(format!("  owner {}", render_principal(ctx, &a.owner)));
+        if let Some(s) = a.scope {
+            lines.push(format!("  scope #{s}"));
+        }
+        lines.push(format!("  held {}", a.held_amount.to_decimal_string(scale)));
+        lines.push(format!("  last journal seq {}, revision {}", a.last_journal_seq, a.revision));
+    }
     for l in lines {
         info(ctx, l);
     }
     Ok(())
 }
 
+fn render_policy(ctx: &Ctx<'_>, p: &ApprovalPolicy) -> String {
+    match p {
+        ApprovalPolicy::OneAuthorizedActor => "one authorized actor (inert)".to_string(),
+        ApprovalPolicy::Threshold { approvals, from_role } => match from_role {
+            None => format!("{approvals} approval(s)"),
+            Some(r) => {
+                let name = ctx
+                    .w
+                    .module_state::<mush_org::OrgStore>()
+                    .and_then(|s| s.state().role(*r).map(|x| x.name.to_string()));
+                format!("{approvals} approval(s) from role {}", name.unwrap_or_else(|| format!("#{r}")))
+            }
+        },
+        ApprovalPolicy::NamedSet { approvals, actors } => format!(
+            "{approvals} approval(s) from {}",
+            actors.iter().map(|o| format!("#{}", o.0)).collect::<Vec<_>>().join(", ")
+        ),
+    }
+}
+
+/// `@account/list` — every account the actor may VIEW, capped at 20 (§4.5). An
+/// actor with no standing sees an empty list, never a count of what is hidden.
 fn account_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let lines: Vec<String> = {
-        let store = ctx.w.module_state::<EconomyStore>().expect("economy store");
-        let frozen = if store.is_frozen() { " [ECONOMY FROZEN]" } else { "" };
-        let mut v: Vec<String> = store
-            .snapshot()
-            .accounts()
-            .map(|a| {
-                let scale = store.snapshot().instrument(&a.instrument).map_or(0, |i| i.scale);
-                format!("#{} {} {} = {} [{:?}]", a.id, a.name, a.instrument, a.posted_balance.to_decimal_string(scale), a.status)
-            })
-            .collect();
-        if v.is_empty() {
-            v.push("No accounts.".into());
-        }
-        v.push(format!("(store{frozen})"));
-        v
+    let staff = is_admin(ctx.w, ctx.actor);
+    let ids: Vec<AccountId> = {
+        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
+        store.snapshot().accounts().map(|a| a.id).collect()
     };
-    for l in lines {
-        info(ctx, l);
+    let rows: Vec<String> = ids
+        .into_iter()
+        .filter(|id| may_view_account(ctx.w, ctx.actor, *id))
+        .map(|id| {
+            let store = ctx.w.module_state::<EconomyStore>().expect("economy store");
+            let a = store.snapshot().account(id).expect("listed above");
+            let scale = store.snapshot().instrument(&a.instrument).map_or(0, |i| i.scale);
+            format!(
+                "#{} {} {} = {} [{:?}]{}",
+                a.id,
+                a.name,
+                a.instrument,
+                a.posted_balance.to_decimal_string(scale),
+                a.status,
+                if a.approval.is_some() { " (approval rule)" } else { "" }
+            )
+        })
+        .collect();
+    emit_list(ctx, rows, "No accounts.");
+    if staff && ctx.w.module_state::<EconomyStore>().is_some_and(EconomyStore::is_frozen) {
+        info(ctx, "(store [ECONOMY FROZEN])".to_string());
     }
     Ok(())
+}
+
+// ---- @account/close | unfreeze | approval (E3b2) ---------------------------
+
+/// `@account/close <id>` — zero balance, `Active`, and the authority to spend from
+/// it: an org wallet needs staff or `economy.account.post` on its compartment (you
+/// may not retire a division's wallet just because you can see it), a personal one
+/// needs staff or its owner.
+fn account_close(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let Some(id) = parse_account(ctx.args.lhs()) else {
+        return Err(CmdError::msg("No such account."));
+    };
+    if !may_view_account(ctx.w, ctx.actor, id) {
+        return Err(CmdError::msg("No such account."));
+    }
+    let a = {
+        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No such account."))?;
+        store.snapshot().account(id).ok_or_else(|| CmdError::msg("No such account."))?.clone()
+    };
+    let staff = is_admin(ctx.w, ctx.actor);
+    let permitted = staff
+        || match a.scope {
+            Some(scope) => {
+                api::scope_coherent(ctx.w, Some(scope), &a.owner)
+                    && api::holds_capability(ctx.w, ctx.actor, "economy.account.post", scope)
+            }
+            None => a.owner == PrincipalId::Object(ctx.actor),
+        };
+    if !permitted {
+        return Err(account_refusal(ctx, id, "You may not close that account."));
+    }
+    if a.status != AccountStatus::Active {
+        return Err(account_refusal(ctx, id, "That account is not active."));
+    }
+    if !a.posted_balance.is_zero() || !a.held_amount.is_zero() {
+        return Err(account_refusal(ctx, id, "That account still holds a balance."));
+    }
+    api::set_account_status(ctx, id, AccountStatus::Closed);
+    info(ctx, format!("Account #{id} closed."));
+    Ok(())
+}
+
+/// `@account/unfreeze <id>` — staff recovery (E2 shipped no unfreeze). A doc write,
+/// never journaled, and deliberately no `revision` bump (see `set_account_status`).
+fn account_unfreeze(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let id = parse_account(ctx.args.lhs()).ok_or_else(|| CmdError::msg("Usage: @account/unfreeze <id>"))?;
+    let status = {
+        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No such account."))?;
+        store.snapshot().account(id).ok_or_else(|| CmdError::msg("No such account."))?.status
+    };
+    if status != AccountStatus::Frozen {
+        return Err(CmdError::msg("That account is not frozen."));
+    }
+    if ctx.w.module_state::<EconomyStore>().is_some_and(EconomyStore::is_frozen) {
+        return Err(CmdError::msg(
+            "The whole economy is frozen; a per-account unfreeze would not restore posting.",
+        ));
+    }
+    api::set_account_status(ctx, id, AccountStatus::Active);
+    info(ctx, format!("Account #{id} unfrozen."));
+    Ok(())
+}
+
+/// `@account/approval <id>=<threshold> <policy>` (staff) — the per-account
+/// high-value escalation of D-E3-2.
+fn account_approval(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    const USAGE: &str = "Usage: @account/approval <id>=<threshold> threshold:<n>[:<role>] | \
+                         named:<n>:<obj>,<obj>… | @account/approval <id>=none";
+    let id = parse_account(ctx.args.lhs()).ok_or_else(|| CmdError::msg(USAGE))?;
+    let account = {
+        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No such account."))?;
+        store.snapshot().account(id).ok_or_else(|| CmdError::msg("No such account."))?.clone()
+    };
+    let rhs = ctx.args.rhs().map(str::trim).ok_or_else(|| CmdError::msg(USAGE))?;
+    if rhs.eq_ignore_ascii_case("none") {
+        api::set_account_approval(ctx, id, None);
+        info(ctx, format!("Cleared the approval rule on account #{id}."));
+        return Ok(());
+    }
+    let mut words = rhs.split_whitespace();
+    let threshold = words.next().and_then(parse_amount).ok_or_else(|| CmdError::msg(USAGE))?;
+    if threshold.is_negative() {
+        return Err(CmdError::msg("A threshold must not be negative."));
+    }
+    let spec = words.next().ok_or_else(|| CmdError::msg(USAGE))?.to_string();
+    if spec.eq_ignore_ascii_case("none") {
+        api::set_account_approval(ctx, id, None);
+        info(ctx, format!("Cleared the approval rule on account #{id}."));
+        return Ok(());
+    }
+    let policy = parse_policy(ctx, &account, &spec)?;
+    api::set_account_approval(ctx, id, Some(ApprovalRule { threshold, policy: policy.clone() }));
+    let scale = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().instrument(&account.instrument).map(|i| i.scale))
+        .unwrap_or(0);
+    let rendered = render_policy(ctx, &policy);
+    info(ctx, format!(
+        "Account #{id}: a net debit above {} now needs {rendered}.",
+        threshold.to_decimal_string(scale)
+    ));
+    info(ctx, "That is a per-transaction escalation, not a budget.".to_string());
+    Ok(())
+}
+
+/// Parse `threshold:<n>[:<role>]` / `named:<n>:<obj>,<obj>…`, refusing the two
+/// shapes that can never gate anything.
+fn parse_policy(ctx: &Ctx<'_>, account: &Account, spec: &str) -> Result<ApprovalPolicy, CmdError> {
+    let lower = spec.to_ascii_lowercase();
+    if lower == "one" || lower == "oneauthorizedactor" {
+        // A11: the one authorized actor is the poster, and four-eyes bars them, so
+        // this rule blocks every payment forever rather than escalating any.
+        return Err(CmdError::msg(
+            "`one` can never be satisfied: the one authorized actor is the payer, and a requester \
+             never approves their own request. Use threshold:1 (one OTHER person) or none.",
+        ));
+    }
+    let (kind, rest) = lower.split_once(':').ok_or_else(|| CmdError::msg("Bad policy (use threshold:<n>[:<role>] or named:<n>:<obj>,…)."))?;
+    match kind {
+        "threshold" => {
+            let (n_s, role_s) = match rest.split_once(':') {
+                Some((n, r)) => (n, Some(r)),
+                None => (rest, None),
+            };
+            let approvals = parse_approvals(n_s)?;
+            let from_role = match role_s {
+                None => None,
+                Some(r) => Some(resolve_role(ctx, account, r)?),
+            };
+            Ok(ApprovalPolicy::Threshold { approvals, from_role })
+        }
+        "named" => {
+            let (n_s, list) = rest
+                .split_once(':')
+                .ok_or_else(|| CmdError::msg("Usage: named:<n>:<obj>,<obj>…"))?;
+            let approvals = parse_approvals(n_s)?;
+            let mut actors: std::collections::BTreeSet<ObjId> = std::collections::BTreeSet::new();
+            for token in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                let obj = match_object(ctx.w, ctx.actor, token)
+                    .map_err(|_| CmdError::msg(format!("No such object: {token}")))?;
+                actors.insert(obj);
+            }
+            if actors.is_empty() {
+                return Err(CmdError::msg("A named set needs at least one actor."));
+            }
+            if usize::from(approvals) > actors.len() {
+                return Err(CmdError::msg(
+                    "That named set is smaller than the approvals it demands; it could never be satisfied.",
+                ));
+            }
+            Ok(ApprovalPolicy::NamedSet { approvals, actors })
+        }
+        _ => Err(CmdError::msg("Bad policy (use threshold:<n>[:<role>] or named:<n>:<obj>,…).")),
+    }
+}
+
+fn parse_approvals(s: &str) -> Result<u8, CmdError> {
+    let n: u8 = s.trim().parse().map_err(|_| CmdError::msg("The approval count must be 1-255."))?;
+    if n == 0 {
+        // A zero-approval rule is satisfied by nothing at all — it escalates and
+        // then waves the plan through, which reads as protection and is not.
+        return Err(CmdError::msg("An approval count of 0 gates nothing; use `none` to clear the rule."));
+    }
+    Ok(n)
+}
+
+/// D-E3-11: a `from_role` policy is only meaningful against a REAL `OrgMembership`,
+/// so the role must exist in the account's own organization.
+fn resolve_role(ctx: &Ctx<'_>, account: &Account, s: &str) -> Result<mush_org::RoleId, CmdError> {
+    let Some(scope) = account.scope else {
+        return Err(CmdError::msg(
+            "That account has no organization compartment, so a role-based policy has no roles to name.",
+        ));
+    };
+    let store = ctx.w.module_state::<mush_org::OrgStore>().ok_or_else(|| CmdError::msg("No organizations."))?;
+    let state = store.state();
+    let org = state.scope(scope).ok_or_else(|| CmdError::msg("That account's scope no longer exists."))?.org;
+    let s = s.trim();
+    if let Ok(n) = s.trim_start_matches('#').parse::<u64>() {
+        let id = mush_org::RoleId(n);
+        if state.role(id).is_some_and(|r| r.org == org) {
+            return Ok(id);
+        }
+        return Err(CmdError::msg("No such role in that organization."));
+    }
+    state
+        .roles_in(org)
+        .find(|r| r.name.eq_ignore_ascii_case(s))
+        .map(|r| r.id)
+        .ok_or_else(|| CmdError::msg("No such role in that organization."))
 }
 
 // ---- @econ ----------------------------------------------------------------
@@ -536,9 +903,146 @@ fn cmd_econ(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     } else if ctx.switches.has("audit") {
         require_admin(ctx)?;
         econ_audit(ctx)
+    } else if ctx.switches.has("approve") {
+        econ_decide(ctx, Verdict::Approved)
+    } else if ctx.switches.has("deny") {
+        econ_decide(ctx, Verdict::Denied)
+    } else if ctx.switches.has("approvals") {
+        econ_approvals(ctx)
     } else {
-        Err(CmdError::msg("Usage: @econ/pay|mint|reverse|audit"))
+        Err(CmdError::msg("Usage: @econ/pay|mint|reverse|audit|approve|deny|approvals"))
     }
+}
+
+// ---- approvals (E3b2 §4.6) ------------------------------------------------
+
+/// The unknown-id text every approval refusal collapses to for an actor without
+/// standing (§4.5): an approval request names accounts and amounts, so even
+/// confirming that id #7 exists is a disclosure.
+const NO_SUCH_REQUEST: &str = "No such approval request.";
+
+fn parse_approval_id(s: &str) -> Option<ApprovalRequestId> {
+    s.trim().trim_start_matches('#').parse::<u64>().ok().map(ApprovalRequestId)
+}
+
+/// Whether `actor` may act on a request: would their approval COUNT for at least
+/// one of its accounts, under that account's live rule? That is exactly
+/// `authorize_approver`, so standing and counting can never drift apart.
+///
+/// The requester is not excluded here — they may look at and even record a decision
+/// on their own request; the engine simply never counts it (four-eyes).
+fn may_act_on_request(w: &World, actor: ObjId, request: &crate::record::ApprovalRequest) -> bool {
+    let Some(store) = w.module_state::<EconomyStore>() else { return false };
+    let snap = store.snapshot();
+    let auth = api::WorldAuth { w };
+    request.accounts.iter().any(|id| {
+        snap.account(*id).is_some_and(|a| {
+            a.approval
+                .as_ref()
+                .is_some_and(|rule| auth.authorize_approver(actor, a, &rule.policy))
+        })
+    })
+}
+
+/// `@econ/approve <id>` / `@econ/deny <id>`. Records a [`Decision`] either way (the
+/// audit trail keeps denials); a denial `Cancel`s the request, and approving twice
+/// is a no-op rather than a second vote.
+fn econ_decide(ctx: &mut Ctx<'_>, verdict: Verdict) -> Result<(), CmdError> {
+    let unknown = || CmdError::msg(NO_SUCH_REQUEST);
+    let id = parse_approval_id(ctx.args.lhs()).ok_or_else(unknown)?;
+    let mut request = {
+        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(unknown)?;
+        store.snapshot().approval(id).ok_or_else(unknown)?.clone()
+    };
+    // Standing FIRST: only once it is established may a status-specific message be
+    // shown, or the messages themselves would enumerate the request table.
+    if !may_act_on_request(ctx.w, ctx.actor, &request) {
+        return Err(unknown());
+    }
+    let now = ctx.w.now();
+    if request.status != ApprovalStatus::Pending {
+        return Err(CmdError::msg(format!("Request #{id} is already {}.", status_word(request.status))));
+    }
+    if now >= request.expires_at {
+        return Err(CmdError::msg(format!("Request #{id} has expired; the payer must submit a fresh one.")));
+    }
+    let me = ctx.actor;
+    if verdict == Verdict::Approved && request.approvals.iter().any(|a| a.approver == me) {
+        info(ctx, format!("You have already approved request #{id}."));
+        return Ok(());
+    }
+    if request.decisions.len() >= crate::MAX_APPROVERS_PER_REQUEST {
+        return Err(CmdError::msg(format!(
+            "Request #{id} has already recorded the maximum of {} decisions.",
+            crate::MAX_APPROVERS_PER_REQUEST
+        )));
+    }
+    request.decisions.push(Decision { actor: me, at: now, verdict });
+    match verdict {
+        Verdict::Approved => {
+            if request.approvals.len() >= crate::MAX_APPROVERS_PER_REQUEST {
+                return Err(CmdError::msg(format!(
+                    "Request #{id} has already recorded the maximum of {} approvals.",
+                    crate::MAX_APPROVERS_PER_REQUEST
+                )));
+            }
+            request.approvals.push(Approval { approver: me, at: now });
+        }
+        Verdict::Denied => request.status = ApprovalStatus::Cancelled,
+    }
+    request.revision += 1;
+    let requester_is_me = request.requested_by == PrincipalId::Object(me);
+    api::put_approval(ctx, request);
+    match verdict {
+        Verdict::Approved => {
+            info(ctx, format!("Approved request #{id}."));
+            if requester_is_me {
+                info(ctx, "(It is your own request, so it does not count toward the policy.)".to_string());
+            }
+        }
+        Verdict::Denied => info(ctx, format!("Denied request #{id}; it is cancelled.")),
+    }
+    Ok(())
+}
+
+fn status_word(s: ApprovalStatus) -> &'static str {
+    match s {
+        ApprovalStatus::Pending => "pending",
+        ApprovalStatus::Consumed { .. } => "spent",
+        ApprovalStatus::Cancelled => "cancelled",
+        ApprovalStatus::Expired => "expired",
+    }
+}
+
+/// `@econ/approvals` — the live requests this actor may act on, capped at 20.
+fn econ_approvals(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let now = ctx.w.now();
+    let live: Vec<crate::record::ApprovalRequest> = {
+        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
+        store
+            .snapshot()
+            .approvals()
+            .filter(|r| r.status == ApprovalStatus::Pending && now < r.expires_at)
+            .cloned()
+            .collect()
+    };
+    let rows: Vec<String> = live
+        .into_iter()
+        .filter(|r| may_act_on_request(ctx.w, ctx.actor, r))
+        .map(|r| {
+            let mine = if r.requested_by == PrincipalId::Object(ctx.actor) { " (yours)" } else { "" };
+            let already = if r.approvals.iter().any(|a| a.approver == ctx.actor) { " [approved]" } else { "" };
+            format!(
+                "#{} — requested by {}, {} approval(s) so far, account(s) {}{mine}{already}",
+                r.id,
+                render_principal(ctx, &r.requested_by),
+                r.approvals.len(),
+                r.accounts.iter().map(|a| format!("#{a}")).collect::<Vec<_>>().join(", "),
+            )
+        })
+        .collect();
+    emit_list(ctx, rows, "No approval requests await you.");
+    Ok(())
 }
 
 /// Parse `<amount>` in an instrument's minor units (integer minor units for E2b —
@@ -576,16 +1080,26 @@ fn econ_pay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if amount.is_zero() || amount.is_negative() {
         return Err(CmdError::msg("Amount must be positive."));
     }
-    // Non-staff may pay only FROM an account they own (the engine re-checks live).
+    // §4.4: a non-staff payer may name an account they OWN, or a SCOPED (org) one —
+    // and only those two. The engine then decides the scoped case live, against the
+    // org's capability + limit + compartment status.
+    //
+    // This is deliberately not "let the engine decide everything": a `System`
+    // faucet is neither owned nor scoped, so it never reaches the engine from here,
+    // and `WorldAuth::authorize` refuses it a second time even if some other caller
+    // does reach it (A6 — two locks, because minting is the one irreversible act).
     let staff = is_admin(ctx.w, ctx.actor);
     if !staff {
-        let owns = ctx
-            .w
-            .module_state::<EconomyStore>()
-            .and_then(|s| s.snapshot().account(from))
-            .is_some_and(|a| a.owner == PrincipalId::Object(ctx.actor));
-        if !owns {
-            return Err(CmdError::msg("You may only pay from your own account."));
+        let source = ctx.w.module_state::<EconomyStore>().and_then(|s| s.snapshot().account(from).cloned());
+        let eligible = source
+            .as_ref()
+            .is_some_and(|a| a.owner == PrincipalId::Object(ctx.actor) || a.scope.is_some());
+        if !eligible {
+            return Err(account_refusal(
+                ctx,
+                from,
+                "You may only pay from your own account or an organization account you hold authority on.",
+            ));
         }
     }
 
@@ -649,7 +1163,33 @@ fn econ_pay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let outcome = api::post(ctx, &plan);
     match asset_object {
         Some(object) => finish_asset(ctx, object, outcome, "Paid"),
-        None => finish(ctx, outcome, "Paid"),
+        None => finish_pay(ctx, from, outcome),
+    }
+}
+
+/// The `@econ/pay` tail: the same outcomes as [`finish`], but every refusal is
+/// rendered through the account existence-hiding rule (§4.5) — a payer with no
+/// standing on the source account learns only that there is no such account.
+fn finish_pay(
+    ctx: &mut Ctx<'_>,
+    from: AccountId,
+    outcome: Result<PostOutcome, crate::plan::EconomyError>,
+) -> Result<(), CmdError> {
+    match outcome {
+        Ok(PostOutcome::Posted(id)) => {
+            info(ctx, format!("Paid: transaction #{id} posted."));
+            Ok(())
+        }
+        Ok(PostOutcome::AlreadyPosted(id)) => {
+            info(ctx, format!("Already posted as transaction #{id}."));
+            Ok(())
+        }
+        Ok(PostOutcome::NeedsApproval(id)) => {
+            info(ctx, format!("Approval required: request #{id}. Nothing has moved."));
+            info(ctx, "Once it is approved, run the same command again to post it.".to_string());
+            Ok(())
+        }
+        Err(e) => Err(account_refusal(ctx, from, e)),
     }
 }
 

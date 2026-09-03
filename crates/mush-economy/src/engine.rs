@@ -71,6 +71,15 @@ pub const MAX_REASON_BYTES: usize = 512;
 pub const MAX_APPROVERS_PER_REQUEST: usize = 8;
 /// How long an approval request stays live (real seconds).
 pub const APPROVAL_TTL_SECS: i64 = 86_400;
+/// Maximum LIVE (pending, unexpired) approval requests one requester may hold
+/// open at once (E3b2 §4.6, G1).
+pub const MAX_PENDING_PER_REQUESTER: usize = 4;
+/// Maximum LIVE approval requests naming one account (E3b2 §4.6, G1).
+pub const MAX_PENDING_PER_ACCOUNT: usize = 16;
+/// How long past `expires_at` a dead (`Expired`/`Cancelled`) request doc is kept
+/// before boot garbage-collects it — long enough to be an audit trail, bounded
+/// enough not to be a landfill.
+pub const APPROVAL_GC_AFTER_SECS: i64 = 7 * APPROVAL_TTL_SECS;
 
 /// The economy capability vocabulary (§4.8) — every capability the economy asks
 /// `mush-org` about. Wiring freezes the vocabulary; this is the authoritative list

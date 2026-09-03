@@ -29,7 +29,7 @@ use smol_str::SmolStr;
 
 use crate::boot;
 use crate::custody::{ContainerProvider, CustodyProvider, CustodyTable};
-use crate::ids::{AccountId, TransactionId, VaultId};
+use crate::ids::{AccountId, ApprovalRequestId, TransactionId, VaultId};
 use crate::record::{Account, EconomicTransaction, Vault};
 use crate::snapshot::EconomySnapshot;
 
@@ -57,6 +57,9 @@ pub struct EconomyStore {
     /// The vault-id allocator (E3b1); never reused, resumed from `meta` floored at
     /// one past every journal-derived custody effect.
     pub(crate) next_vault: u64,
+    /// The approval-request-id allocator (E3b2); never reused, resumed from `meta`
+    /// floored at one past every journal-derived `consumed_approval`.
+    pub(crate) next_approval: u64,
     /// The whole-economy freeze latch (boot drift / conservation break / a dropped
     /// durable write). While set, [`crate::post`] refuses everything.
     pub frozen: bool,
@@ -69,6 +72,7 @@ pub struct EconomyStore {
 impl EconomyStore {
     /// Assemble a store from boot-derived parts (used by [`crate::boot`]). The
     /// provider table is empty here — the module injects the frozen one after boot.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_parts(
         snapshot: EconomySnapshot,
         journal: Ledger,
@@ -76,6 +80,7 @@ impl EconomyStore {
         next_account: u64,
         next_transaction: u64,
         next_vault: u64,
+        next_approval: u64,
         frozen: bool,
     ) -> EconomyStore {
         EconomyStore {
@@ -85,6 +90,7 @@ impl EconomyStore {
             next_account,
             next_transaction,
             next_vault,
+            next_approval,
             frozen,
             providers: CustodyTable::default(),
         }
@@ -122,6 +128,12 @@ impl EconomyStore {
         self.next_vault += 1;
         id
     }
+    /// Mint the next approval-request id (E3b2).
+    pub fn alloc_approval(&mut self) -> ApprovalRequestId {
+        let id = ApprovalRequestId(self.next_approval);
+        self.next_approval += 1;
+        id
+    }
     /// The wiring-frozen custody provider table (an `Arc` clone — cheap).
     #[must_use]
     pub(crate) fn providers(&self) -> CustodyTable {
@@ -145,6 +157,7 @@ impl EconomyStore {
             "next_account_id": self.next_account,
             "next_transaction_id": self.next_transaction,
             "next_vault_id": self.next_vault,
+            "next_approval_id": self.next_approval,
         })
     }
 
@@ -369,5 +382,46 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     }
     for v in &vaults {
         crate::api::persist_vault(ctx.out, v);
+    }
+}
+
+// ---- the org scope-use binder (§4.8.2) ------------------------------------
+
+/// Answers `mush-org`'s `@org/scope retire` question — *does the economy still bind
+/// this compartment?* — through the wiring-frozen [`mush_org::ScopeUseProvider`]
+/// table.
+///
+/// The dependency runs economy → org, so org cannot look for an account itself; it
+/// asks, exactly as an org `AccessPolicy` asks faction about standing. Retiring a
+/// bound scope would strand the records pointing at it: after E3b2 a retired scope
+/// authorizes nobody, so a live org account under it becomes unspendable by anyone
+/// but staff.
+#[derive(Debug)]
+pub struct EconomyScopeUse;
+
+impl mush_org::ScopeUseProvider for EconomyScopeUse {
+    fn binder(&self) -> &str {
+        "the economy"
+    }
+
+    fn scope_in_use(&self, w: &mush_core::World, scope: mush_org::OrgScopeId) -> Option<String> {
+        use crate::record::{AccountStatus, AssetLifecycle, VaultStatus};
+        let store = w.module_state::<EconomyStore>()?;
+        let snap = store.snapshot();
+        if let Some(a) =
+            snap.accounts().find(|a| a.scope == Some(scope) && a.status != AccountStatus::Closed)
+        {
+            return Some(format!("account #{} is still open on it", a.id));
+        }
+        if let Some(x) =
+            snap.assets().find(|x| x.scope == Some(scope) && x.lifecycle != AssetLifecycle::WrittenOff)
+        {
+            return Some(format!("asset #{} is still titled to it", x.object.0));
+        }
+        if let Some(v) = snap.vaults().find(|v| v.scope == Some(scope) && v.status != VaultStatus::Closed)
+        {
+            return Some(format!("vault #{} is still bound to it", v.id));
+        }
+        None
     }
 }

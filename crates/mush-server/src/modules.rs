@@ -76,9 +76,18 @@ pub fn server_modules_with(weather: mush_weather::WeatherConfig) -> Vec<Box<dyn 
         // ownership/permission substrate). E1c wires the faction-standing predicate
         // provider so an org AccessPolicy can gate on live faction membership /
         // officer / intel standing (the faction level model stays faction-side).
-        Box::new(mush_org::OrgModule::with_predicates(vec![std::sync::Arc::new(
-            mush_faction::FactionStandingProvider,
-        )])),
+        // E3b2 freezes two more org tables at wiring: the capability VOCABULARY (so
+        // `@org/grant` refuses a typo instead of storing a grant that authorizes
+        // nothing), and the scope-use binder table (so `@org/scope retire` can refuse
+        // a compartment the economy still binds — org sits below economy and cannot
+        // look for an account itself).
+        Box::new(
+            mush_org::OrgModule::with_predicates(vec![std::sync::Arc::new(
+                mush_faction::FactionStandingProvider,
+            )])
+            .with_capabilities(org_capability_vocabulary())
+            .with_scope_use(vec![std::sync::Arc::new(mush_economy::EconomyScopeUse)]),
+        ),
         // E2: the accountable-value engine — the double-entry journal, accounts, and
         // the strict durable money ack-gate. After org (it authorizes through it).
         // E3b1 freezes the custody provider table at wiring: the built-in container
@@ -92,6 +101,25 @@ pub fn server_modules_with(weather: mush_weather::WeatherConfig) -> Vec<Box<dyn 
         Box::new(mush_weather::WeatherModule::with_config(weather)),
         Box::new(mush_script::ScriptModule::new()),
     ]
+}
+
+/// The capability vocabulary this server recognizes (E3b2 §4.8.4 / §4.10): every
+/// capability the economy asks org about (`mush_economy::CAPABILITIES`) plus the two
+/// org-administrative ones the org module's own doctrine names.
+///
+/// It is a **typo catcher**, not an authorization gate — `authorize` matches
+/// capability ids by equality, so an unknown one already grants nothing; what this
+/// buys is that granting `economy.acount.post` fails loudly at the command instead
+/// of quietly producing an inert record. Add to it whenever a module starts asking
+/// about a new capability.
+#[must_use]
+pub fn org_capability_vocabulary() -> std::collections::BTreeSet<mush_org::CapabilityId> {
+    mush_economy::CAPABILITIES
+        .iter()
+        .copied()
+        .chain(["org.role.manage", "org.grant.delegate"])
+        .map(|c| mush_org::CapabilityId::new(c).expect("a built-in capability id is well-formed"))
+        .collect()
 }
 
 /// The ruleset module(s) named in `[rulesets].enabled`, in listed order.
@@ -716,6 +744,24 @@ mod tests {
             names,
             ["comsys", "faction", "canon", "org", "economy", "scenes", "sim", "mail", "jobs", "weather", "script"]
         );
+    }
+
+    #[test]
+    fn the_org_capability_vocabulary_covers_every_economy_capability() {
+        // E3b2 §4.10: the wiring vocabulary is `mush_economy::CAPABILITIES` ∪ the two
+        // org-administrative ids. If the economy starts asking about a capability the
+        // server does not wire, `@org/grant` would refuse the very grant the economy
+        // needs — so this is a real coupling, pinned here.
+        let vocab = org_capability_vocabulary();
+        for c in mush_economy::CAPABILITIES {
+            let id = mush_org::CapabilityId::new(c).expect("well-formed");
+            assert!(vocab.contains(&id), "the wiring vocabulary omits {c}");
+        }
+        for c in ["org.role.manage", "org.grant.delegate"] {
+            assert!(vocab.contains(&mush_org::CapabilityId::new(c).expect("well-formed")), "{c}");
+        }
+        assert_eq!(vocab.len(), mush_economy::CAPABILITIES.len() + 2);
+        assert!(!vocab.contains(&mush_org::CapabilityId::new("economy.acount.post").expect("well-formed")));
     }
 
     #[test]
