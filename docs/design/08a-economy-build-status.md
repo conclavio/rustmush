@@ -33,8 +33,8 @@ Shipped row) rather than per cut.
 | **E3d** | `mush-faction` | `d8d17c3` | `Faction.org` + `migrated`, `@faction/org|migrate`, view-gated balance read-through, destroy refused while bound |
 | **E3 verify fold** | economy + faction | `fa97479` | the end-of-build adversarial verify's confirmed findings, each with a regression test (§"E3 verify outcome") |
 
-Test tally after E3: **mush-org 46**, **mush-economy 141 + the fold's regressions**, **mush-sim 72**,
-**mush-tactics 52**, **mush-faction 52**, **mush-server 62**; workspace 1695+ passing. The one
+Test tally after E3 (post-fold): **mush-org 46**, **mush-economy 157**, **mush-sim 72**,
+**mush-tactics 52**, **mush-faction 56**, **mush-server 62**; `cargo test --workspace --no-fail-fast` runs 2012 passing. The one
 failing workspace test, `mushd::web_e2e::spa_and_healthz_are_served`, predates E3 (it needs a
 `web/dist` build). `cargo fmt` is **not** applied anywhere in E3: the tree had 1334 rustfmt hunks at
 `d7f6707`, so CI's fmt step was already red before E3.
