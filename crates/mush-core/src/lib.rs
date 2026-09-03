@@ -48,6 +48,7 @@
 
 pub mod action;
 pub mod action_state;
+pub mod authoritative;
 pub mod attr;
 pub mod behavior;
 pub mod clock;
@@ -76,9 +77,9 @@ pub use action::{
     AuthorityGuardValidatorEntry, AuthorityGuardValidatorLookupError,
     AuthorityGuardValidatorRegistry, AuthorityGuardValidatorRegistryBuilder,
     AuthorityGuardValidatorRegistryError, CanonicalHash, CanonicalHashError, CascadeError,
-    CausalMetadataError, CausalTriggerQueue, ContactId, FixedHexIdError, GuardRevalidation,
-    GuardRevalidationError, GuardSet, GuardSetBuildError, IdempotencyKey, IdempotencyKeyText,
-    IdempotencyKeyTextError, IdempotencyScope, IngressEnvelope, IngressPayload,
+    CausalMetadataError, CausalTriggerQueue, CommitToken, ContactId, FixedHexIdError,
+    GuardRevalidation, GuardRevalidationError, GuardSet, GuardSetBuildError, IdempotencyKey,
+    IdempotencyKeyText, IdempotencyKeyTextError, IdempotencyScope, IngressEnvelope, IngressPayload,
     IngressSurfaceVersion, MAX_ACTION_ERROR_BYTES, MAX_ACTION_PARAMETER_BYTES,
     MAX_ACTION_PROVIDERS, MAX_ACTION_PROVIDERS_PER_OWNER, MAX_ACTION_REVISIONS, MAX_ACTION_TARGETS,
     MAX_AUTHORITY_GUARDS, MAX_AUTHORITY_VALIDATORS, MAX_AUTHORITY_VALIDATORS_PER_OWNER,
@@ -92,6 +93,13 @@ pub use action::{
     RevisionValidatorRegistry, RevisionValidatorRegistryBuilder, RevisionValidatorRegistryError,
     ScopedIdempotencyKey, ServerGuardSetBuilder, SubjectKey, TriggerEnqueue, TriggerHandlerId,
     TriggerIdentity, TriggerWork,
+};
+pub use authoritative::{
+    AuthoritativeBundle, AuthoritativeBundleDraft, AuthoritativeBundleError, AuthoritativeKey,
+    AuthoritativeKeyError, DurableOutboxIntent, MAX_AUTHORITATIVE_BUNDLE_BYTES,
+    MAX_AUTHORITATIVE_DEFINITIONS, MAX_AUTHORITATIVE_REPLAY_WRITES,
+    MAX_AUTHORITATIVE_WITNESSES, MAX_DURABLE_OUTBOX_INTENTS,
+    MAX_DURABLE_OUTBOX_PAYLOAD_BYTES, ReplayWrite,
 };
 pub use action_state::{
     ACTION_STATE_PERSISTENCE_ROOT, ActionStateBootRecord, ActionStateError, ActionStateStore,

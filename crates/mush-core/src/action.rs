@@ -138,6 +138,11 @@ fixed_hex_id!(
     "A gateway-assigned, replay-stable 128-bit request identity."
 );
 fixed_hex_id!(
+    CommitToken,
+    16,
+    "A server-assigned, replay-stable 128-bit authoritative commit identity."
+);
+fixed_hex_id!(
     ContactId,
     16,
     "An opaque projected contact identity; never an object dbref."
@@ -2349,6 +2354,21 @@ impl PreparedCausalRef {
             request: self.root_request,
             ordinal: self.ordinal,
         }
+    }
+
+    #[must_use]
+    pub const fn root_request(self) -> RequestUid {
+        self.root_request
+    }
+
+    #[must_use]
+    pub const fn parent(self) -> Option<PreparedEventId> {
+        self.parent
+    }
+
+    #[must_use]
+    pub const fn ordinal(self) -> u32 {
+        self.ordinal
     }
 }
 

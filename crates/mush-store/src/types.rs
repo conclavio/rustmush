@@ -1,6 +1,9 @@
 //! Domain types shared by every [`crate::ObjectStore`] implementation.
 
-use mush_core::{MAX_MODULE_KEY_BYTES, MAX_MODULE_NAMESPACE_BYTES, Obj, ObjId};
+use mush_core::{
+    AuthoritativeBundle, CanonicalHash, CommitToken, MAX_MODULE_KEY_BYTES,
+    MAX_MODULE_NAMESPACE_BYTES, Obj, ObjId,
+};
 use serde::{Deserialize, Serialize};
 
 // The module-op vocabulary is owned by mush-core (modules queue these
@@ -150,6 +153,114 @@ pub struct WriteReceipt {
     pub serial: u64,
 }
 
+/// Exact acknowledgement that a complete authoritative intent is durable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IntentReceipt {
+    pub token: CommitToken,
+    pub bundle_hash: CanonicalHash,
+    /// True when the same exact intent or finalized result already existed.
+    pub resumed: bool,
+}
+
+/// Hard maximum full intents retained for recovery by one store.
+pub const MAX_RETAINED_AUTHORITATIVE_INTENTS: usize = 256;
+/// Hard maximum encoded bytes across full intents retained for recovery.
+pub const MAX_RETAINED_AUTHORITATIVE_BYTES: usize = 64 * 1024 * 1024;
+/// Hard maximum intent records returned by one recovery scan page.
+pub const MAX_AUTHORITATIVE_DISCOVERY_PAGE: usize = 256;
+/// Hard maximum opaque bytes in one backend recovery cursor.
+pub const MAX_AUTHORITATIVE_SCAN_CURSOR_BYTES: usize = 256;
+
+/// One exact entry recovered from the independently maintained pending index.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PendingAuthoritativeIntent {
+    pub token: CommitToken,
+    pub bundle_hash: CanonicalHash,
+}
+
+/// Opaque backend cursor for exhaustive authoritative-intent discovery.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthoritativeScanCursor(Box<str>);
+
+impl AuthoritativeScanCursor {
+    pub fn new(value: impl Into<Box<str>>) -> Result<Self, StoreError> {
+        let value = value.into();
+        if value.is_empty() || value.len() > MAX_AUTHORITATIVE_SCAN_CURSOR_BYTES {
+            return Err(StoreError::Invalid(format!(
+                "authoritative scan cursor must contain 1..={MAX_AUTHORITATIVE_SCAN_CURSOR_BYTES} bytes"
+            )));
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// One bounded page from the complete retained intent keyspace.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AuthoritativeIntentPage {
+    pub intents: Vec<AuthoritativeBundle>,
+    pub next_cursor: Option<AuthoritativeScanCursor>,
+}
+
+/// Immutable semantic result witness produced only after exact readback.
+///
+/// The first implementation retains the complete bundle. K3 compaction may
+/// later replace replay payloads with a smaller witness only after a durable
+/// checkpoint proves every authoritative post-image.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthoritativeReceipt {
+    bundle: AuthoritativeBundle,
+}
+
+impl AuthoritativeReceipt {
+    #[must_use]
+    pub const fn new(bundle: AuthoritativeBundle) -> Self {
+        Self { bundle }
+    }
+
+    #[must_use]
+    pub const fn bundle(&self) -> &AuthoritativeBundle {
+        &self.bundle
+    }
+
+    #[must_use]
+    pub const fn token(&self) -> CommitToken {
+        self.bundle.token()
+    }
+
+    #[must_use]
+    pub const fn bundle_hash(&self) -> CanonicalHash {
+        self.bundle.bundle_hash()
+    }
+}
+
+/// Exact status for one token and expected bundle hash.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BundleStatus {
+    Absent,
+    PendingExact,
+    FinalizedExact(Box<AuthoritativeReceipt>),
+    Conflict { stored_bundle_hash: CanonicalHash },
+}
+
+/// Result of the pre-parse `(scoped key, ingress hash)` lookup.
+#[derive(Clone, Debug, PartialEq)]
+pub enum IdempotencyStatus {
+    Vacant,
+    PendingExact {
+        token: CommitToken,
+        bundle_hash: CanonicalHash,
+    },
+    FinalizedExact(Box<AuthoritativeReceipt>),
+    /// The scoped key exists but was bound to different ingress bytes.
+    Conflict,
+}
+
 /// One character linked to an account (dbref + name denormalized at link
 /// time, mirroring `mushd::accounts::CharSummary`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -288,6 +399,28 @@ pub enum StoreError {
     /// The store has been [`crate::ObjectStore::close`]d.
     #[error("store is closed")]
     Closed,
+    /// One commit token was already bound to different immutable bytes.
+    #[error("authoritative commit token is already bound to a different bundle")]
+    AuthoritativeTokenConflict,
+    /// One scoped idempotency key was already bound to a different request.
+    #[error("authoritative idempotency key is already bound to a different request")]
+    AuthoritativeIdempotencyConflict,
+    /// Reconciliation was requested for a token with no durable intent.
+    #[error("authoritative commit token has no durable intent")]
+    AuthoritativeIntentMissing,
+    /// A stored authoritative intent or finalized witness failed strict decode.
+    #[error("authoritative persistence record is corrupt: {0}")]
+    AuthoritativeCorrupt(String),
+    /// Retaining another exact intent would exceed a hard bound.
+    #[error(
+        "authoritative retained-intent capacity exhausted: {retained_count}/{max_count} records, {retained_bytes}/{max_bytes} bytes"
+    )]
+    AuthoritativeCapacity {
+        retained_count: usize,
+        retained_bytes: usize,
+        max_count: usize,
+        max_bytes: usize,
+    },
 }
 
 impl StoreError {
@@ -340,7 +473,12 @@ impl StoreError {
             | StoreError::Corrupt(_)
             | StoreError::Serde(_)
             | StoreError::Migration(_)
-            | StoreError::Closed => false,
+            | StoreError::Closed
+            | StoreError::AuthoritativeTokenConflict
+            | StoreError::AuthoritativeIdempotencyConflict
+            | StoreError::AuthoritativeIntentMissing
+            | StoreError::AuthoritativeCorrupt(_)
+            | StoreError::AuthoritativeCapacity { .. } => false,
         }
     }
 }

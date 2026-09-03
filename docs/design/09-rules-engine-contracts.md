@@ -1,8 +1,9 @@
 # Cross-ruleset mechanical contracts and proving gates
 
-**Status:** Implementing 0.6 — K0/K1 exit criteria landed; the K2 typed-state and bounded logical-
-transaction foundation now includes strict atomic boot hydration and a process-local applied-ack
-installation lane; K3 exact-token durability and all five end-to-end proving gates remain open
+**Status:** Implementing 0.7 — K0/K1 exit criteria landed; K2 includes strict atomic boot hydration,
+final commit-admission guard revalidation, and a process-local applied-ack installation lane; K3's
+canonical exact bundle and in-memory intent/reconciliation contract are underway, while Redis,
+the server coordinator, fault matrix, and all five end-to-end proving gates remain open
 
 **Scope:** the shared contracts that must be stable before RustMUSH substantially expands character,
 tactical, economic, and AI-driven rules
@@ -1444,6 +1445,7 @@ Initial bounds are configurable with conservative hard defaults:
 - 256 KiB per prepared record;
 - 16 MiB total encoded bundle;
 - 256 retained/recovery records;
+- 64 MiB aggregate encoded full-intent retention until checkpoint compaction;
 - 1,024 replay writes;
 - all arithmetic and encoded sizes checked before RAM installation or store submission.
 
@@ -1770,7 +1772,7 @@ The repository already contains useful local proofs. They should be adapted, not
 | Contract | Current foundation | Missing shared contract |
 |---|---|---|
 | C1 definitions | shared canonical owner/kind/id/digest identities; bounded `RulesValue`; immutable global definition registry; exact-reference closure; one provider semantic validator per owner/kind; bounded monotonic owner-readiness latch; tactics exact-digest owner fan-out; dry-run migration registry; tactics/sim adapters | owner-freeze discovery in remaining rules-bearing adapters, executing one migration through K3 durability, broader production provider coverage |
-| C2 plan/commit | `mush-sim::Transition`, `UnitMutationPlan`, world single writer, `WriteBatch`, K0 exact receipt gate, typed output/effect custody and one `CommitPending` batch; K2 action invocation/provider metadata; engine-owned typed state families; owner-scoped bounded multi-record `ActionTxn`; one-shot `PreparedTxn`; separate staged writer lane retaining typed images until an exact process-local applied serial | K3 authoritative bundle token/intent/status and restart reconciliation; exact early idempotency; outcomes/events/replay writes/allocator/outbox in the same bounded bundle; full coordinator and legacy migration |
+| C2 plan/commit | `mush-sim::Transition`, `UnitMutationPlan`, world single writer, `WriteBatch`, K0 exact receipt gate, typed output/effect custody and one `CommitPending` batch; K2 action invocation/provider metadata; engine-owned typed state families; owner-scoped bounded multi-record `ActionTxn`; one-shot `PreparedTxn`; separate staged writer lane retaining typed images until an exact process-local applied serial; canonical bounded K3 bundle/token/replay/outbox models; in-memory exact intent reservation, early idempotency lookup, replay/readback/finalization, object-plus-allocator admission, and hash-aware status | Redis authoritative protocol; server coordinator and restart integration; fault matrix; compact witness/checkpoint retention; full legacy migration |
 | C3 legal actions | contextual behavior commands, required channels, command-subject links, LLM tool manifests, exact owner-stamped action-provider registry | separate internal/projected legal actions, bounded offer store, one submission path for human/UI/AI/LLM |
 | C4 time/windows | scheduler, `GameClock`, Timestop turns, passive domain clock, Journey timing, mobility switching | typed clock identity/provider, generic window generations, simultaneous intent collection/order, restart/catch-up policy |
 | C5 RNG | injectable `mush-dice::RollCtx`; test-seeded ChaCha in rulesets | idempotency-derived resolution streams, draw transcript, algorithm/version and durable outcome record |
@@ -1779,7 +1781,7 @@ The repository already contains useful local proofs. They should be adapted, not
 | C8 guards | F3 control channels, unit `control_gen`, expected unit revision, economy plan draft; canonical `RevisionSet`, owner-stamped validator registries, explicit server-created `GuardSet` on every staged typed action, and final fail-closed revalidation at the synchronous writer-custody transition | actual per-channel leases, durable bundle reservation, wiring every delayed result through guards, shared idempotency |
 | C9 projection | per-observer perception and delivery, witness-aware power events | opaque contact references, dedicated view DTOs, shared legal-action/error/LLM projection |
 | C10 ownership | registrar-stamped definition/action/state-family owners; composition-bound opaque typed state handles; provider-stamped transactions that reject cross-owner handles; fail-closed cross-owner tactical references; immutable directional exact-definition bridge registry; shared owner-readiness gates on executable definitions/providers/validators/bridge routes | ownership migration for state outside `ActionStateStore`, executable bridge preparation across typed transactions, freeze aggregation from remaining owner adapters |
-| C11 lifecycle | pre-boot validated poison spool, exact seal retention/isolation, structural world modes, bounded recovery incidents/reports, tactical Active/Frozen/Migrating/Quarantined records, tactics owner-scoped digest-conflict freeze; prepared typed images install or abort on the matching process-local writer receipt; strict atomic state-family decode/validate/canonical boot hydration; legacy isolation of `action-state/*` | exhaustive orphan-owner discovery; exact-target recovery receipts; owner freezes in remaining lifecycle adapters; authoritative account ingress; store-enforced prefix ownership; K3 whole-bundle reconciliation and automated runbook coordinator |
+| C11 lifecycle | pre-boot validated poison spool, exact seal retention/isolation, structural world modes, bounded recovery incidents/reports, tactical Active/Frozen/Migrating/Quarantined records, tactics owner-scoped digest-conflict freeze; prepared typed images install or abort on the matching process-local writer receipt; strict atomic state-family decode/validate/canonical boot hydration; legacy isolation of `action-state/*`; bounded in-memory pending index plus index-independent paged intent discovery | exhaustive orphan-owner discovery; Redis pending-index repair/cursor scan; exact-target server recovery receipts; owner freezes in remaining lifecycle adapters; authoritative account ingress; store-enforced prefix ownership; K3 coordinator and automated runbook |
 | C12 presentation | `OutputEvent::Panel`, registered panel feeds, keyframe/delta kind, line fallback renderers | schema/projection/state revisions, delta base/sequence, commit receipt, resync/deduplication |
 
 None of the five gates currently traverses all of these through one action pipeline. The toy
@@ -1928,6 +1930,13 @@ Exit criteria:
 ### K3. Exact-token authoritative bundle durability
 
 **Contracts:** C2, C6, C8, C11; foundational portion of Gate 5.
+
+**Implementation note (0.7):** the core canonical bundle/token/replay/outbox types and the separate
+in-memory `AuthoritativeStore` contract now implement exact intent reservation, early idempotency
+lookup, exact replay/readback/finalization, hash-aware status, bounded retained-intent capacity,
+object allocator admission, a pending accelerator, and an independent bounded full-intent scan.
+This is the contract test bed, not durable production support: Redis, fault injection, boot/world
+coordination, quarantine, checkpoints, and durable-outbox dispatch remain in the work below.
 
 Work:
 

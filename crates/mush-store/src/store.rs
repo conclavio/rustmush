@@ -34,11 +34,65 @@
 //! [`load_world`]: ObjectStore::load_world
 
 use futures::future::BoxFuture;
-use mush_core::ObjId;
+use mush_core::{AuthoritativeBundle, CanonicalHash, CommitToken, ObjId, ScopedIdempotencyKey};
 
 use crate::types::{
-    AccountRec, BanRec, SshKeyRec, StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt,
+    AccountRec, AuthoritativeIntentPage, AuthoritativeReceipt, AuthoritativeScanCursor, BanRec,
+    BundleStatus, IdempotencyStatus, IntentReceipt, PendingAuthoritativeIntent, SshKeyRec,
+    StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt,
 };
+
+/// Exact-intent persistence used by the K3 action coordinator.
+///
+/// This is separate from [`ObjectStore`] while the in-memory contract and
+/// fault matrix are being proven. A backend must not claim this trait by
+/// routing bundles through legacy [`ObjectStore::write`].
+pub trait AuthoritativeStore: ObjectStore {
+    /// Reserve a complete immutable intent and its idempotency binding before
+    /// any replay write can materialize.
+    fn reserve_authoritative_intent(
+        &self,
+        bundle: AuthoritativeBundle,
+    ) -> BoxFuture<'_, Result<IntentReceipt, StoreError>>;
+
+    /// Return/join a prior request before parsing, resolution, planning, or
+    /// RNG. A conflicting ingress hash never exposes the stored result.
+    fn authoritative_idempotency_status<'a>(
+        &'a self,
+        key: &'a ScopedIdempotencyKey,
+        ingress_hash: CanonicalHash,
+    ) -> BoxFuture<'a, Result<IdempotencyStatus, StoreError>>;
+
+    /// Reapply exact post-images, verify them, and atomically publish the
+    /// finalized witness for one expected token/hash pair.
+    fn reconcile_authoritative(
+        &self,
+        token: CommitToken,
+        expected_bundle_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<AuthoritativeReceipt, StoreError>>;
+
+    /// Inspect only an exact expected token/hash pair.
+    fn authoritative_status(
+        &self,
+        token: CommitToken,
+        expected_bundle_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<BundleStatus, StoreError>>;
+
+    /// Read the bounded recovery accelerator. This index is never the only
+    /// discovery source because its last update may have been interrupted.
+    fn pending_authoritative_intents(
+        &self,
+    ) -> BoxFuture<'_, Result<Vec<PendingAuthoritativeIntent>, StoreError>>;
+
+    /// Scan the complete retained intent keyspace in bounded pages. Boot must
+    /// continue until `next_cursor` is `None`, even after the pending index is
+    /// empty, and reconcile every pending record found by either source.
+    fn scan_authoritative_intents(
+        &self,
+        cursor: Option<AuthoritativeScanCursor>,
+        limit: usize,
+    ) -> BoxFuture<'_, Result<AuthoritativeIntentPage, StoreError>>;
+}
 
 /// Persistent storage for the world, accounts, sitebans, and store metadata.
 ///
