@@ -330,6 +330,28 @@ escrowed total, floored; the remainder goes to `remainder_to`; feasibility (`Σ 
 `Σ Permille ≤ 1000`, deliverable counts within E3's per-plan caps) is checked at `Offer`
 (`check_offerable`) and again at settlement.
 
+**E4b2 extensions required by E6's owner answers (08e §4, 2026-09-03)** — E4a's single split is the
+degenerate case of each:
+- **Outcome-indexed terms:** `ContractTerms.outcomes: Vec<OutcomeTerms { name, when: Vec<usize>
+  /* condition indexes */, payouts: Vec<PayoutShare>, expense_treatment, asset_consequences }>`,
+  bounded (`MAX_OUTCOMES` 8) and data-driven (`success`/`partial`/`failure` as defaults, never
+  hard-coded), each outcome's exact shares summing to its total with **no implicit remainder**;
+  separate named slots for payout, arranger fee, expense advance, reimbursable reserve, and
+  bonuses/penalties. `settlement_plan(&c, outcome)` builds the plan for the outcome whose `when`
+  conditions are satisfied; ambiguity (two outcomes satisfied) is `Disputed`.
+- **Roster lock and amendment:** an `Offered` contract may carry slot shares and an unfrozen party;
+  the party's acceptance **freezes the roster snapshot and exact shares into the consent hash**;
+  a later substitution is an `Amend` that re-hashes the consent surface and requires re-acceptance
+  from the affected parties only (others' acceptances stand).
+- **Named adjudicator and permitted evidence:** the consent surface names the adjudicator
+  (`AttestorSet`) and the permitted condition kinds; attestation from anyone else is refused.
+- **Separate roles:** `EconomicContract` records author, payer (the accountable escrow principal),
+  visible representative, facilitator, and adjudicator as distinct fields with independent
+  visibility — they may coincide, the model must not assume it.
+- **Payer authority:** a run funded from an org account passes the ordinary `economy.account.post`
+  scope check and `ApprovalRule` at escrow placement; nothing may fund an offer from an
+  uncontrolled faucet.
+
 ### 3.6 E4a tests (`tests/e4a.rs`, ~45)
 
 Holds: place/capture/release/expire on hand-built snapshots; available enforcement — two holds
@@ -568,6 +590,11 @@ their balances.
    "another account"; `Staff`-visibility entries omitted entirely (not "hidden"); descriptions
    shown only to parties. `EconomicVisibility` is thereby **enforced for reads**; recording is
    unchanged. `@contract/show` and `@hold/show` render through the same rule.
+   **The attestation seam is what E6b gates on** (08e §3 answers 6, 19): a run may settle from a
+   sealed scene outcome (a typed outcome record `mush-scenes` will commit as canon with
+   `source: scene:{uid}` — produced by E6b, or by E4c if the seam needs a real producer to test
+   against), an authorized attestation, a deterministic condition, or a composite; E4c must accept
+   all four through the same `TypedCondition` alphabet and refuse prose-only settlement.
 6. **Title issuance for registered system principals** (fed back by E5, 08d §7 item 4; D-E3-13 was
    "shape only" until now): `mush_economy::issue_title(ctx, object, owner, scope, issuer:
    SystemPrincipalId)` mints an `EconomicAsset` title record as a journaled `Created` effect with
