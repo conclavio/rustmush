@@ -3,9 +3,11 @@
 -- so a concurrent or externally clobbered witness can never be overwritten.
 --
 -- KEYS: intent, receipt, idempotency binding, pending set, retained count,
--- retained bytes, retained generation, then every exact terminal outbox item.
+-- retained bytes, retained generation, exact parent outbox manifest, then
+-- every exact terminal outbox item.
 -- ARGV: exact intent doc, exact prior receipt doc, compact checkpoint receipt,
--- exact binding doc, token, exact intent bytes, outbox count, then each exact
+-- exact binding doc, token, exact intent bytes, outbox count, exact parent
+-- manifest, then each exact
 -- terminal outbox document.
 
 local function key_type(key)
@@ -25,6 +27,10 @@ end
 local pending_type = key_type(KEYS[4])
 if pending_type ~= 'none' and pending_type ~= 'set' then
   return 'CORRUPT_PENDING'
+end
+local parent_manifest_type = key_type(KEYS[8])
+if parent_manifest_type ~= 'none' and parent_manifest_type ~= 'string' then
+  return 'OUTBOX_CONFLICT'
 end
 
 local intent = redis.call('GET', KEYS[1])
@@ -65,11 +71,16 @@ if not retained_count or not retained_bytes or not intent_bytes or
 end
 
 local outbox_count = tonumber(ARGV[7])
-if not outbox_count or outbox_count < 0 or outbox_count ~= (#KEYS - 7) then
+if not outbox_count or outbox_count < 0 or not ARGV[8] or
+   outbox_count ~= (#KEYS - 8) then
   return 'CORRUPT_ARGUMENTS'
 end
+local parent_manifest = redis.call('GET', KEYS[8])
+if parent_manifest and parent_manifest ~= ARGV[8] then
+  return 'OUTBOX_CONFLICT'
+end
 for index = 1, outbox_count do
-  if redis.call('GET', KEYS[7 + index]) ~= ARGV[7 + index] then
+  if redis.call('GET', KEYS[8 + index]) ~= ARGV[8 + index] then
     return 'OUTBOX_PENDING'
   end
 end
@@ -86,6 +97,7 @@ if not canonical_decimal(generation) or
 end
 
 redis.call('INCR', KEYS[7])
+redis.call('SET', KEYS[8], ARGV[8])
 redis.call('SET', KEYS[2], ARGV[3])
 redis.call('DEL', KEYS[1])
 redis.call('SET', KEYS[5], tostring(retained_count - 1))

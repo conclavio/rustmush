@@ -265,6 +265,27 @@ fn validate_bundle_outbox(inner: &Inner, bundle: &AuthoritativeBundle) -> Result
     Ok(())
 }
 
+fn validate_outbox_parent(
+    inner: &Inner,
+    record: &AuthoritativeOutboxRecord,
+) -> Result<(), StoreError> {
+    let receipt_doc = inner
+        .authoritative_receipts
+        .get(&record.parent_token())
+        .ok_or_else(|| {
+            StoreError::AuthoritativeCorrupt(
+                "durable outbox item has no finalized parent".to_owned(),
+            )
+        })?;
+    let receipt = decode_receipt(receipt_doc)?;
+    if receipt.bundle_hash() != record.parent_bundle_hash() {
+        return Err(StoreError::AuthoritativeCorrupt(
+            "durable outbox item disagrees with its finalized parent".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_receipt_binding(
     inner: &Inner,
     stored_token: CommitToken,
@@ -932,6 +953,7 @@ impl AuthoritativeStore for InMemoryStore {
             {
                 return Err(StoreError::AuthoritativeOutboxConflict);
             }
+            validate_outbox_parent(&inner, &record)?;
             if expected_attempts < u32::MAX && record.attempts() == expected_attempts + 1 {
                 return Ok(record);
             }
@@ -961,6 +983,7 @@ impl AuthoritativeStore for InMemoryStore {
             if record.intent().payload_hash() != expected_payload_hash {
                 return Err(StoreError::AuthoritativeOutboxConflict);
             }
+            validate_outbox_parent(&inner, &record)?;
             let terminal_retry = matches!(
                 (record.state(), &result),
                 (
@@ -1039,16 +1062,41 @@ impl AuthoritativeStore for InMemoryStore {
                     && receipt.idempotency().epoch() < minimum_accepted_epoch
                 {
                     validate_receipt_binding(&inner, *token, &receipt)?;
-                    retired.push((*token, receipt.idempotency().clone()));
+                    retired.push((*token, receipt.idempotency().clone(), receipt.bundle_hash()));
                 }
+            }
+
+            let retired_parents: BTreeMap<_, _> = retired
+                .iter()
+                .map(|(token, _, bundle_hash)| (*token, *bundle_hash))
+                .collect();
+            let mut retired_outbox = Vec::new();
+            for (item_id, doc) in &inner.authoritative_outbox {
+                let record = decode_outbox_record(doc)?;
+                let Some(expected_bundle_hash) = retired_parents.get(&record.parent_token()) else {
+                    continue;
+                };
+                if record.parent_bundle_hash() != *expected_bundle_hash
+                    || !record.state().is_terminal()
+                {
+                    return Err(StoreError::AuthoritativeCorrupt(
+                        "durable outbox terminal record disagrees with its retired parent"
+                            .to_owned(),
+                    ));
+                }
+                retired_outbox.push(*item_id);
             }
 
             inner
                 .authoritative_minimum_epochs
                 .insert(scope.clone(), minimum_accepted_epoch);
-            for (token, idempotency) in &retired {
+            for (token, idempotency, _) in &retired {
                 inner.authoritative_receipts.remove(token);
                 inner.authoritative_idempotency.remove(idempotency);
+            }
+            for item_id in retired_outbox {
+                inner.authoritative_outbox.remove(&item_id);
+                inner.authoritative_outbox_pending.remove(&item_id);
             }
             Ok(AuthoritativeEpochRetirement {
                 scope: scope.clone(),
@@ -2449,6 +2497,7 @@ mod tests {
             authoritative_bundle_for_epoch(111, 112, 113, ObjId(2), Some(3), 0, vec![intent]);
         let token = bundle.token();
         let hash = bundle.bundle_hash();
+        let scope = bundle.idempotency().scope().clone();
         store.reserve_authoritative_intent(bundle).await.unwrap();
         assert!(
             store
@@ -2534,6 +2583,13 @@ mod tests {
             .checkpoint_authoritative(token, hash)
             .await
             .expect("terminal outbox permits compaction");
+        store
+            .retire_authoritative_epochs(&scope, 1)
+            .await
+            .expect("parent epoch and terminal delivery retire together");
+        let inner = store.lock().unwrap();
+        assert!(!inner.authoritative_outbox.contains_key(&item_id));
+        assert!(!inner.authoritative_outbox_pending.contains(&item_id));
     }
 
     #[tokio::test]

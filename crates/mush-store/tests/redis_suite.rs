@@ -504,6 +504,7 @@ redis_gated!(authoritative_durable_outbox_round_trip, store, {
     let bundle = authoritative_bundle_for_epoch_and_outbox(15, 25, 0, vec![intent]);
     let token = bundle.token();
     let hash = bundle.bundle_hash();
+    let scope = bundle.idempotency().scope().clone();
     store
         .reserve_authoritative_intent(bundle)
         .await
@@ -568,6 +569,27 @@ redis_gated!(authoritative_durable_outbox_round_trip, store, {
         .checkpoint_authoritative(token, hash)
         .await
         .expect("terminal outbox permits compaction");
+    store
+        .retire_authoritative_epochs(&scope, 1)
+        .await
+        .expect("parent epoch and terminal delivery retire together");
+    use fred::interfaces::KeysInterface;
+    assert_eq!(
+        store
+            .client()
+            .get::<Option<String>, _>(format!("auth:outbox:item:{item_id}"))
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        store
+            .client()
+            .get::<Option<String>, _>(format!("auth:outbox:parent:{token}"))
+            .await
+            .unwrap(),
+        None
+    );
 });
 
 redis_gated!(authoritative_epoch_retirement_is_watermark_first, store, {

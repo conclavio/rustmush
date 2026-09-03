@@ -81,8 +81,8 @@
 use futures::TryStreamExt;
 use futures::future::BoxFuture;
 use mush_core::{
-    AuthoritativeBundle, CanonicalHash, CommitToken, IdempotencyScope, Obj, ObjId, ReplayWrite,
-    ScopedIdempotencyKey,
+    AuthoritativeBundle, CanonicalHash, CommitToken, IdempotencyScope, MAX_DURABLE_OUTBOX_INTENTS,
+    Obj, ObjId, ReplayWrite, ScopedIdempotencyKey,
 };
 use serde::{Deserialize, Serialize};
 
@@ -144,6 +144,8 @@ pub const AUTHORITATIVE_MINIMUM_EPOCH_PREFIX: &str = "auth:min_epoch:";
 pub const AUTHORITATIVE_RETAINED_GENERATION: &str = "auth:retained_generation";
 /// Prefix of stable durable-outbox item records.
 pub const AUTHORITATIVE_OUTBOX_PREFIX: &str = "auth:outbox:item:";
+/// Prefix of exact per-parent durable-outbox item manifests.
+pub const AUTHORITATIVE_OUTBOX_PARENT_PREFIX: &str = "auth:outbox:parent:";
 /// Independently enumerable non-terminal durable-outbox item ids.
 pub const AUTHORITATIVE_OUTBOX_PENDING_INDEX: &str = "auth:outbox:pending";
 
@@ -202,6 +204,39 @@ fn authoritative_receipt_key(token: CommitToken) -> String {
 
 fn authoritative_outbox_key(item_id: CanonicalHash) -> String {
     format!("{AUTHORITATIVE_OUTBOX_PREFIX}{item_id}")
+}
+
+fn authoritative_outbox_parent_key(token: CommitToken) -> String {
+    format!("{AUTHORITATIVE_OUTBOX_PARENT_PREFIX}{token}")
+}
+
+fn authoritative_outbox_parent_doc(
+    records: &[AuthoritativeOutboxRecord],
+) -> Result<String, StoreError> {
+    Ok(serde_json::to_string(
+        &records
+            .iter()
+            .map(AuthoritativeOutboxRecord::item_id)
+            .collect::<Vec<_>>(),
+    )?)
+}
+
+fn decode_outbox_parent_doc(doc: &str) -> Result<Vec<CanonicalHash>, StoreError> {
+    let ids: Vec<CanonicalHash> = serde_json::from_str(doc)
+        .map_err(|error| StoreError::AuthoritativeCorrupt(error.to_string()))?;
+    if ids.len() > MAX_DURABLE_OUTBOX_INTENTS {
+        return Err(StoreError::AuthoritativeCorrupt(format!(
+            "durable outbox parent manifest contains {} items; maximum is {MAX_DURABLE_OUTBOX_INTENTS}",
+            ids.len()
+        )));
+    }
+    let unique: std::collections::BTreeSet<_> = ids.iter().copied().collect();
+    if unique.len() != ids.len() || serde_json::to_string(&ids)? != doc {
+        return Err(StoreError::AuthoritativeCorrupt(
+            "durable outbox parent manifest is duplicate or non-canonical".to_owned(),
+        ));
+    }
+    Ok(ids)
 }
 
 fn authoritative_idempotency_key(key: &ScopedIdempotencyKey) -> Result<String, StoreError> {
@@ -610,7 +645,18 @@ impl RedisStore {
     }
 
     async fn validate_bundle_outbox(&self, bundle: &AuthoritativeBundle) -> Result<(), StoreError> {
-        for expected in expected_outbox_records(bundle)? {
+        let expected_records = expected_outbox_records(bundle)?;
+        let expected_parent_doc = authoritative_outbox_parent_doc(&expected_records)?;
+        let parent_doc: Option<String> = self
+            .client
+            .get(authoritative_outbox_parent_key(bundle.token()))
+            .await?;
+        if parent_doc.as_deref() != Some(expected_parent_doc.as_str()) {
+            return Err(StoreError::AuthoritativeCorrupt(
+                "finalized action durable outbox parent manifest mismatch".to_owned(),
+            ));
+        }
+        for expected in expected_records {
             let doc: Option<String> = self
                 .client
                 .get(authoritative_outbox_key(expected.item_id()))
@@ -628,6 +674,38 @@ impl RedisStore {
                     "durable outbox record disagrees with its parent action".to_owned(),
                 ));
             }
+        }
+        Ok(())
+    }
+
+    async fn validate_outbox_parent(
+        &self,
+        record: &AuthoritativeOutboxRecord,
+    ) -> Result<(), StoreError> {
+        let Some(parent) = self
+            .load_validated_authoritative(record.parent_token())
+            .await?
+        else {
+            return Err(StoreError::AuthoritativeCorrupt(
+                "Redis durable outbox item has no authoritative parent".to_owned(),
+            ));
+        };
+        let parent_hash = match parent {
+            LoadedAuthoritative::Retained {
+                receipt: Some(receipt),
+                ..
+            }
+            | LoadedAuthoritative::Checkpointed(receipt) => receipt.bundle_hash(),
+            LoadedAuthoritative::Retained { receipt: None, .. } => {
+                return Err(StoreError::AuthoritativeCorrupt(
+                    "Redis durable outbox item belongs to an unfinalized parent".to_owned(),
+                ));
+            }
+        };
+        if parent_hash != record.parent_bundle_hash() {
+            return Err(StoreError::AuthoritativeCorrupt(
+                "Redis durable outbox item disagrees with its finalized parent".to_owned(),
+            ));
         }
         Ok(())
     }
@@ -1109,12 +1187,19 @@ impl AuthoritativeStore for RedisStore {
                 .into_iter()
                 .map(|record| Ok((record.item_id(), serde_json::to_string(&record)?)))
                 .collect::<Result<Vec<_>, StoreError>>()?;
+            let outbox_parent_doc = serde_json::to_string(
+                &outbox
+                    .iter()
+                    .map(|(item_id, _)| *item_id)
+                    .collect::<Vec<_>>(),
+            )?;
             let mut keys = vec![
                 authoritative_intent_key(token),
                 authoritative_receipt_key(token),
                 authoritative_idempotency_key(bundle.idempotency())?,
                 AUTHORITATIVE_PENDING_INDEX.to_owned(),
                 AUTHORITATIVE_OUTBOX_PENDING_INDEX.to_owned(),
+                authoritative_outbox_parent_key(token),
             ];
             keys.extend(planned.iter().map(|write| write.key.clone()));
             keys.extend(
@@ -1130,6 +1215,7 @@ impl AuthoritativeStore for RedisStore {
                 planned.len().to_string(),
                 outbox.len().to_string(),
                 MAX_PENDING_AUTHORITATIVE_OUTBOX.to_string(),
+                outbox_parent_doc,
             ];
             for write in &planned {
                 args.push(write.kind.to_owned());
@@ -1232,6 +1318,12 @@ impl AuthoritativeStore for RedisStore {
                 }
                 outbox_docs.push((record.item_id(), doc));
             }
+            let outbox_parent_doc = serde_json::to_string(
+                &outbox_docs
+                    .iter()
+                    .map(|(item_id, _)| *item_id)
+                    .collect::<Vec<_>>(),
+            )?;
             let mut keys = vec![
                 authoritative_intent_key(token),
                 authoritative_receipt_key(token),
@@ -1240,6 +1332,7 @@ impl AuthoritativeStore for RedisStore {
                 AUTHORITATIVE_RETAINED_COUNT.to_owned(),
                 AUTHORITATIVE_RETAINED_BYTES.to_owned(),
                 AUTHORITATIVE_RETAINED_GENERATION.to_owned(),
+                authoritative_outbox_parent_key(token),
             ];
             keys.extend(
                 outbox_docs
@@ -1254,6 +1347,7 @@ impl AuthoritativeStore for RedisStore {
                 token.to_string(),
                 intent_doc.len().to_string(),
                 outbox_docs.len().to_string(),
+                outbox_parent_doc,
             ];
             args.extend(outbox_docs.iter().map(|(_, doc)| doc.clone()));
             let code: String = self
@@ -1316,31 +1410,7 @@ impl AuthoritativeStore for RedisStore {
                         "Redis durable outbox pending index names a terminal item".to_owned(),
                     ));
                 }
-                let Some(parent) = self
-                    .load_validated_authoritative(record.parent_token())
-                    .await?
-                else {
-                    return Err(StoreError::AuthoritativeCorrupt(
-                        "Redis durable outbox item has no finalized parent".to_owned(),
-                    ));
-                };
-                let parent_hash = match parent {
-                    LoadedAuthoritative::Retained {
-                        receipt: Some(receipt),
-                        ..
-                    }
-                    | LoadedAuthoritative::Checkpointed(receipt) => receipt.bundle_hash(),
-                    LoadedAuthoritative::Retained { receipt: None, .. } => {
-                        return Err(StoreError::AuthoritativeCorrupt(
-                            "Redis durable outbox item belongs to an unfinalized parent".to_owned(),
-                        ));
-                    }
-                };
-                if parent_hash != record.parent_bundle_hash() {
-                    return Err(StoreError::AuthoritativeCorrupt(
-                        "Redis durable outbox item disagrees with its finalized parent".to_owned(),
-                    ));
-                }
+                self.validate_outbox_parent(&record).await?;
                 records.push(record);
             }
             Ok(records)
@@ -1363,6 +1433,7 @@ impl AuthoritativeStore for RedisStore {
             {
                 return Err(StoreError::AuthoritativeOutboxConflict);
             }
+            self.validate_outbox_parent(&record).await?;
             if expected_attempts < u32::MAX && record.attempts() == expected_attempts + 1 {
                 return Ok(record);
             }
@@ -1386,6 +1457,7 @@ impl AuthoritativeStore for RedisStore {
             if record.intent().payload_hash() != expected_payload_hash {
                 return Err(StoreError::AuthoritativeOutboxConflict);
             }
+            self.validate_outbox_parent(&record).await?;
             let terminal_retry = matches!(
                 (record.state(), &result),
                 (
@@ -1546,18 +1618,61 @@ impl AuthoritativeStore for RedisStore {
                     let receipt_doc = serde_json::to_string(&receipt)?;
                     let binding = RedisIdempotencyBinding::for_receipt(&receipt);
                     let binding_doc = serde_json::to_string(&binding)?;
+                    let parent_key = authoritative_outbox_parent_key(token);
+                    let parent_doc: Option<String> = self.client.get(&parent_key).await?;
+                    // Receipts written before durable outbox materialization
+                    // had no manifest and necessarily had no item records.
+                    let parent_doc = parent_doc.unwrap_or_else(|| "[]".to_owned());
+                    let item_ids = decode_outbox_parent_doc(&parent_doc)?;
+                    let mut item_docs = Vec::with_capacity(item_ids.len());
+                    for item_id in item_ids {
+                        let doc: Option<String> =
+                            self.client.get(authoritative_outbox_key(item_id)).await?;
+                        let doc = doc.ok_or_else(|| {
+                            StoreError::AuthoritativeCorrupt(
+                                "durable outbox parent manifest names a missing item".to_owned(),
+                            )
+                        })?;
+                        let record = decode_outbox_record(&doc)?;
+                        if record.item_id() != item_id
+                            || record.parent_token() != token
+                            || record.parent_bundle_hash() != receipt.bundle_hash()
+                            || !record.state().is_terminal()
+                        {
+                            return Err(StoreError::AuthoritativeCorrupt(
+                                "durable outbox terminal record disagrees with its retired parent"
+                                    .to_owned(),
+                            ));
+                        }
+                        item_docs.push((item_id, doc));
+                    }
+                    let mut keys = vec![
+                        receipt_key,
+                        authoritative_idempotency_key(receipt.idempotency())?,
+                        authoritative_intent_key(token),
+                        minimum_key.clone(),
+                        parent_key,
+                        AUTHORITATIVE_OUTBOX_PENDING_INDEX.to_owned(),
+                    ];
+                    keys.extend(
+                        item_docs
+                            .iter()
+                            .map(|(item_id, _)| authoritative_outbox_key(*item_id)),
+                    );
+                    let mut args = vec![
+                        receipt_doc,
+                        binding_doc,
+                        requested.clone(),
+                        parent_doc,
+                        item_docs.len().to_string(),
+                    ];
+                    for (item_id, doc) in &item_docs {
+                        args.push(item_id.to_string());
+                        args.push(doc.clone());
+                    }
                     let code: String = self
                         .client
-                        .eval(
-                            PURGE_AUTHORITATIVE_RECEIPT_LUA,
-                            vec![
-                                receipt_key,
-                                authoritative_idempotency_key(receipt.idempotency())?,
-                                authoritative_intent_key(token),
-                                minimum_key.clone(),
-                            ],
-                            vec![receipt_doc, binding_doc, requested.clone()],
-                        )
+                        .eval(PURGE_AUTHORITATIVE_RECEIPT_LUA, keys, args)
                         .await?;
                     match code.as_str() {
                         "PURGED" => {
