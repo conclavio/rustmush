@@ -1,8 +1,11 @@
 # Economy, organizations, ownership, and accountable value
 
-**Status:** Draft 0.2 — the reference design. **E0, E1, and E2 are SHIPPED** (`mush-org` and
-`mush-economy` now exist); see [08a-economy-build-status.md](08a-economy-build-status.md) for the
-build ledger, the decisions made while building, and the E3 pickup point — read it alongside §18.
+**Status:** Draft 0.3 — the reference design. **E0–E3 are SHIPPED** (`mush-org` and `mush-economy`
+exist; assets, vaults, org wallets, approvals, and the faction linkage are live); see
+[08a-economy-build-status.md](08a-economy-build-status.md) for the build ledger, the decisions made
+while building, and the **E4 pickup point** — read it alongside §18 — and
+[08b-e3-implementation-plan.md](08b-e3-implementation-plan.md) for E3 as reviewed and as built.
+Where an "as shipped" note below disagrees with the surrounding prose, the note wins.
 Reconciled with the shipped tactical spine (F3 control channels/lease, M32 `TacticalUnit`/`UnitMutationPlan` + the `asset` seam, M33 tactics module)<br>
 **Scope:** cross-ruleset economic accounts and journals, first-class organizations, scoped
 authorization and delegation, asset title and custody, obligations and contracts, background
@@ -178,7 +181,7 @@ membership/level model and exposes standing to org policies through the `Registe
 (`FactionStandingProvider`); a membership merge was judged redundant and dropped.** A backing-`OrgId`
 mapping is deferred to E3. See [08a](08a-economy-build-status.md).
 
-### 4.3 `mush-economy` (E2 shipped; holds/assets/contracts are E3/E4)
+### 4.3 `mush-economy` (E2 + E3 shipped; holds, obligations, contracts, work orders are E4+)
 
 `mush-economy` owns exact accountable value:
 
@@ -195,6 +198,15 @@ mapping is deferred to E3. See [08a](08a-economy-build-status.md).
 
 It depends on `mush-core` and `mush-org`. It consumes faction standing only through a narrow query
 provider; it does not depend on faction simulation, canon, spatial, or any ruleset.
+
+**As shipped (E3):** physical custody is reached through the `CustodyProvider` seam that
+`mush-economy` *defines* and `mush-sim` *implements* (`InteriorCustodyProvider`; the built-in
+container provider is economy's own) — so `mush-sim` now depends on `mush-economy`, never the
+reverse. `mush-faction` likewise depends on `mush-economy` (E3d) for the backing-org wallet.
+`mush-org` gained two wiring hooks the economy fills at server assembly: the capability vocabulary
+(`with_capabilities`) and the scope-use binder (`with_scope_use`, so a scope an account/asset/vault
+still binds cannot be retired). Boot order matters: sim before economy, org before faction (08a
+decision 19).
 
 ### 4.4 `mush-faction`
 
@@ -462,9 +474,21 @@ pub enum ApprovalPolicy {
 ```
 
 Approvals bind to an immutable plan hash and expire. Changing amount, destination, asset set, or
-terms invalidates them. **As shipped, E1 ships only the `ApprovalPolicy` *type*; the
-approval-collection workflow (binding approvals to the plan hash) lands with the economy (E2/E3),
-which has plans to approve.**
+terms invalidates them. **As shipped (E3b2, D-E3-2 — read this over the sketch above):** the
+approval *rule* lives on the **account** (`Account.approval: Option<ApprovalRule { threshold, policy }>`
+— the threshold is an `Amount` in one instrument, which a grant cannot express), and the approval
+*request* lives in **`mush-economy`** (`approval:{id}`), bound to the E2a `plan_hash`. A post whose
+net debit exceeds a rule's threshold returns `NeedsApproval`; there is **one live request per hash**
+(an identical re-submission serves it, never mints a second); recorded approvers are **re-qualified
+live at consumption** (`economy.account.approve` on the account's scope, plus the role for
+`Threshold { from_role }`; `NamedSet` membership is necessary and sufficient; a destroyed approver
+stops counting) — there is no stored "satisfied" state; the requester never counts, so
+`Threshold { approvals: 1 }` means one *other* person; `OneAuthorizedActor` is refused at set time
+(it can gate nothing); requests expire after 24 h, are capped per requester and per account, and are
+garbage-collected. The org-side `GrantLimit` stays the per-operation ceiling; the rule is the
+per-operation escalation; **neither is a budget** (ten payments of 1 000 pass a 10 000 threshold —
+holds are E4). Approve/deny decisions are recorded on the request doc; routing them into the org
+audit ledger (§12.3) is an E4 item.
 
 ### 5.7 Faction migration
 
@@ -476,6 +500,17 @@ which has plans to approve.**
 > **Faction→backing-`OrgId` mapping and the `Faction.resources` migration are deferred to E3**, where
 > account ownership defines what that mapping must carry. See [08a](08a-economy-build-status.md) §5.
 >
+> **As shipped (E3d):** `Faction.org: Option<OrgId>` on the whole-doc `fac:{id}`, one org per
+> faction; `mush_faction::backing_org` is the single resolver (unbound / missing / conflict, all
+> failing closed at use, and — since the post-E3 reorder of `FactionModule` after `OrgModule` —
+> reported loudly at boot, never unbound). `@faction/org <f>=<org|new|none>` binds, mints-and-binds,
+> or unbinds (the org survives); `@faction/destroy` is refused while any link exists. The
+> "non-destructive membership adapter" is **struck** (D-E3-11): role templates need real
+> `OrgMembership`, and a faction-backed org authorizes through direct grants plus the E1c
+> predicates. Migration is **static and per key** (`Faction.migrated`): `@faction/migrate
+> <f>=<key> <sysacct> /confirm` takes the pool verbatim as minor units, posts first from a system
+> source, then marks; registering an instrument never reclassifies a rating. Balances render in
+> `+faction`/`@faction/show` only to staff or `economy.account.view` holders on the root scope.
 > *(Original E1 intent, retained for context:)*
 No DATA migration is needed — dev1 is wipeable, so there is no legacy membership store to preserve.
 But the shipped M21–M25 `mush-faction` CODE is refactored to consume `mush-org`: rework faction
@@ -549,6 +584,12 @@ pub enum AccountStatus {
 }
 ```
 
+> **As shipped:** `posted_balance`/`held_amount` are the checked `Amount` (serde-transparent `i64`);
+> `policy: PolicyRef` **does not exist** (D-E3-5 — per-resource policy is a dedicated leaf scope plus
+> org `AccessPolicy` rules against `ScopeSelector::Exact`); E3 added `approval: Option<ApprovalRule>`
+> (§5.6). `held_amount` is still a zero projection until E4's holds. Invariant 18: `scope: Some(s)` ⇒
+> `owner == Organization(s.org)`, and a scoped debit needs the org and scope `Active`.
+
 Each account holds one instrument. `posted_balance` and `held_amount` are materialized projections,
 not competing truths. Available funds are derived:
 
@@ -600,6 +641,17 @@ for incidental ammunition, fuel, or meals while keeping major purchases exact.
 > break freezes the *whole* economy (single latch — per-account isolation is later). The durability
 > **checkpoint and cold-chunk paging are deferred** (full-replay is the E2 baseline). See
 > [08a](08a-economy-build-status.md).
+>
+> **E3 extended the journal's authority to title** (D-E3-1): every asset title / assignment /
+> encumbrance / lifecycle change is an `AssetEffect` carrying the asset's full post-state inside a
+> journal transaction, and `asset:{obj}` docs are *projections* healed and frozen by the same
+> directional rules (a missing doc rebuilds **frozen**; an unjournaled doc is not loaded). The
+> per-asset `frozen` recovery latch is doc-authority and is never compared against the journal — a
+> latch write touches no journal-authority field, `revision` included. Custody effects are
+> audit-only (location truth stays in the world; boot reconciles the last deposit against the
+> provider and freezes a titled mismatch per asset). Since the E3 verify fold the **whole-economy
+> freeze latch is durable** (it rides `meta` and survives the boot that heals the drifted docs;
+> `@econ/unfreeze` clears it) — before that it was lost at the next boot.
 
 ### 7.1 Transaction model
 
@@ -646,6 +698,16 @@ every new economy record. Registered external references correlate a transaction
 canon event, simulation operation, or job while keeping `mush-economy` independent of those crates.
 The provider validates the reference when a plan requires it; the journal preserves the opaque
 attribution even if the external record is later archived.
+
+> **As shipped (E3):** `EconomicTransaction` gained `asset_effects`, `custody_effects`, and
+> `consumed_approval` (all serde-default, so E2 entries still parse), and `EconomyPlan` gained
+> `asset_ops`, `custody_ops`, and `expected_asset_revisions`; `PlanResult` gained `NeedsApproval`.
+> `plan_hash` v2 canonicalizes the new fields under skip-if-empty with a total order, so a
+> money-only plan hashes **byte-identically** to E2 (pinned to a hard-coded digest). Invariant 1
+> below is relaxed to *"≥2 non-zero money lines, or ≥1 asset/custody effect"* (an effect-only entry
+> contributes nothing to conservation); authorization is asked about each account's **gross debit**,
+> never its net (a net-zero pair on one account is not a free write). `validate` now takes a
+> `ValidateEnv { auth, custody, now }` — the clock is a real dependency (approval expiry).
 
 Normative invariants:
 
@@ -878,6 +940,38 @@ terms. Remainders go to a named account, never whichever participant happened to
 ---
 
 ## 9. Assets, title, custody, assignment, and vaults
+
+> **As shipped (E3 — read this over §9.1–§9.3; the sketches below are the design intent).**
+> - **Records.** `EconomicAsset` as built adds `scope: Option<OrgScopeId>` (the policy anchor, like
+>   `Account.scope`; invariant 18 ties it to the owning org), splits `status` into a journaled
+>   `lifecycle: Active | WrittenOff` and a doc-authority `frozen`/`frozen_reason` latch, and has no
+>   `PolicyRef`. `Encumbrance` ships `Lien { creditor, amount: Amount, instrument }` and `Disputed`;
+>   `Lease`/`Collateral` arrive with `ContractId` in E4 (serde-tagged enum, open). `acquisition` is
+>   stamped only when the same transaction moved money.
+> - **Authority (D-E3-12).** Title transfer needs authority on **both** sides: the source (owner,
+>   `asset.title.transfer` on the asset's scope, or staff) **and** the destination (an org → the
+>   capability on `to_scope`; another character → staff only, until E4 consent). `Title` (creating a
+>   record) and `Encumber` are staff-only in E3; `Release(Lien)` is open to its creditor. A transfer
+>   clears `assignment` and `maintenance_account` (relationships with the old owner);
+>   `SetMaintenance` needs debit authority on the named account. Plans are single-authority; a
+>   two-party sale is E4.
+> - **Custody (§9.2 realized).** A `CustodyProvider` seam, frozen at server assembly: the built-in
+>   container provider (moves = `can_move_to` + the containment depth cap + the `CarryAttempt` hook
+>   chain + one `move_to`) and `mush-sim`'s interior provider (requires `sim.participant`; withdraw
+>   pre-validates the destination and runs `Unplace{keep:true}` + one `move_to`). Exactly one
+>   provider resolves an op — the one that handles the backing — refused if any other claims the
+>   object. Custody standing is *carried* (exact `Obj.location == actor`) or *co-located as
+>   owner/assignee/controller/staff*. **Exits and actors are never custody**; a vault's own backing
+>   cannot be deposited; a withdrawal lands only on the actor or the actor's location and never inside
+>   any vault's backing chain; one custody op per plan at the module layer. Custody effects are
+>   audit-only.
+> - **Vaults (§9.3).** `Vault { owner, scope, name, backing: CustodyRef, status }` as sketched, no
+>   `PolicyRef`; contents are a live provider query rendered to `vault.view` holders; a dead or
+>   invalid backing freezes the vault, never its titles. `CustodyRef::Registered` has no provider yet.
+> - **Destruction (§15.3).** The `@destroy` gate covers the target and everything it transitively
+>   contains; the `ObjDestroyed` backstop freezes; boot liveness + custody reconciliation converge
+>   the observer-less path. The M33-deferred component `asset` scrub shipped in `mush-tactics` with
+>   no economy dependency.
 
 ### 9.1 Asset interests
 
@@ -1252,6 +1346,14 @@ Rulesets generate observer-relative output. Error messages, autocomplete, lists,
 metrics, and audit tools must not distinguish “secret account exists but denied” from “no such
 account” for unauthorized actors.
 
+> **As shipped (E3, D-E3-6):** a *bounded* non-staff read exists — owners and `*.view` holders may
+> `show`/`list` accounts, assets, and vaults with a fixed field set — and the indistinguishability
+> rule is implemented once, in the command layer's error renderer: any refusal touching a resource
+> the actor may not view renders as that resource's "No such …" text, collapsing against **every**
+> resource the error names (not only the command's subject); unauthorized list filters return
+> empty; lists cap at 20. `may_view_account` is the single view gate. `EconomicVisibility` is still
+> recorded and never enforced, and the journal is staff-only — the disclosure *filter* proper is E4.
+
 ### 12.3 Audit records
 
 The economic transaction journal already attributes transfers. `mush-org` separately journals:
@@ -1260,6 +1362,11 @@ The economic transaction journal already attributes transfers. `mush-org` separa
 - delegations, revocations, approvals, and asset assignments;
 - vault withdrawals and deposits;
 - freezes, recovery actions, and staff overrides.
+
+> **As shipped (E3):** asset assignments and title changes, and vault deposits/withdrawals, are
+> journaled **economy-side** as effects inside the transaction that caused them (D-E3-1), not in
+> `mush-org`'s audit ledger; approve/deny decisions live on the `approval:{id}` doc. Routing
+> approvals into the org audit ledger is an E4 item.
 
 Rejected attempts are security telemetry, not authoritative economic history. They are bounded and
 rate-limited so an attacker cannot create an unbounded audit queue.
@@ -1401,11 +1508,14 @@ checkpoint:{seq}
 log:journal:{chunk}
 ```
 
-> **As shipped (E2), the economy persists only `meta`, `instrument:{id}`, `account:{id}`, and
-> `log:journal:*`.** `idempotency:*` is **not** written — the idempotency index is journal-DERIVED at
-> boot (R-B2); `checkpoint:{seq}` is **deferred** (full-replay baseline); and `asset`/`vault`/`hold`/
-> `obligation`/`contract`/`work` are **E3/E4** (not yet persisted). `mush-org` similarly ships no
-> `approval:{id}` yet (the `ApprovalPolicy` type only).
+> **As shipped (E3), the economy persists `meta`** (allocators, their high-water marks, and — since
+> the E3 fold — the durable whole-economy `frozen` latch), **`instrument:{id}`, `account:{id}`,
+> `asset:{obj}`** (a journal *projection*), **`vault:{id}`** (a container), **`approval:{id}`** (a
+> leaf), **and `log:journal:*`**. `idempotency:*` is **not** written — the idempotency index is
+> journal-DERIVED at boot (R-B2); `checkpoint:{seq}` is **deferred** (full-replay baseline);
+> `hold`/`obligation`/`contract`/`work` are **E4+**. **`approval:{id}` lives under `economy`, not
+> `mush-org`** (D-E3-2 — the request binds the economy's `plan_hash`); the `mush-org` list above
+> should be read without it. `mush-faction`'s `fac:{id}` gained `org` and `migrated`.
 
 All IDs are monotonic and never reused. Keys and embedded IDs must agree. Unknown schema versions
 do not load active.
@@ -1445,6 +1555,13 @@ Object-destruction gates refuse destruction while the object is:
 Programmatic destruction is handled by a world-event backstop that freezes affected state and opens
 recovery; it never treats destruction as a valid transfer or debt cancellation.
 
+> **As shipped (E3):** the first, second, and fifth gates are live (`EconomicDestroyGate`, walking
+> the target's transitive contents; `@destroy/override` bypasses only `SAFE`, never the gate; the
+> non-staff refusal is neutral text so it is not an existence oracle). Tenancy and facility gates are
+> E5/E7. The backstop freezes every asset on / owned by / assigned to / naming the dead object and
+> every vault it backs, as doc writes; boot's liveness and custody-reconciliation passes are the
+> third leg, since only `@destroy` emits `ObjDestroyed`.
+
 ### 15.4 Boundedness
 
 Configuration must cap:
@@ -1467,15 +1584,21 @@ with escrow/staging and an explicit completion state. They do not monopolize one
 ## 16. Commands and presentation
 
 Core module commands are administrative and neutral. **The list below is the design vision; the
-verbs/prefixes that actually shipped in E1/E2 are annotated (`✓`) — the rest are later milestones:**
+verbs/prefixes that actually shipped in E1–E3 are annotated (`✓`) — the rest are later milestones:**
 
 ```text
 @org/create ✓, @org/list ✓, @org/show ✓, @org/grant ✓, @org/audit ✓   (E1b — staff-only)
+@org/scope create|retire ✓; @org/grant … scope=|limit= ✓              (E3b2 — vocabulary-checked)
 @instrument/register ✓, @instrument/list ✓                            (E2b — NOT @economy/instrument)
-@account/open ✓, @account/system ✓, @account/show ✓, @account/list ✓   (E2b)
-@econ/pay ✓, @econ/mint ✓, @econ/reverse ✓, @econ/audit ✓             (E2b — NOT @economy/*; no /freeze or /validate command)
-@asset/*, @vault/*, @obligation/*, @contract/*, @work/*               (E3/E4 — not built)
-@org/scope, @org/role, @org/delegate                                  (E1 API via submit(); no dedicated commands yet)
+@account/open ✓ (incl. org:<org>[/<scope>]), @account/system ✓, @account/show ✓, @account/list ✓   (E2b/E3b2)
+@account/approval ✓, @account/close ✓, @account/unfreeze ✓            (E3b2 — show/list also non-staff, existence-hidden)
+@econ/pay ✓ (… [asset=] [from_vault=|to_vault=]), @econ/mint ✓, @econ/reverse ✓, @econ/audit ✓   (E2b/E3b1)
+@econ/approve ✓, @econ/deny ✓, @econ/approvals ✓, @econ/unfreeze ✓    (E3b2 / the E3 fold)
+@asset/title|transfer|assign|unassign|maintenance|lien|release|writeoff|unfreeze|show|list ✓   (E3b1)
+@vault/create|deposit|withdraw|show|list|freeze|unfreeze|close ✓      (E3b1; interior: backings since E3c)
+@faction/org ✓, @faction/migrate ✓                                    (E3d)
+@obligation/*, @contract/*, @work/*                                   (E4+ — not built)
+@org/role, @org/delegate                                              (E1 API via submit(); no dedicated commands yet)
 ```
 
 Player-facing commands and panels are ruleset-owned:
@@ -1604,23 +1727,31 @@ authorization and visibility are unchanged (resolved live via the predicate seam
 **Exit criterion:** journal tests 1–7 and restart/rebuild tests pass on in-memory and Redis suites;
 there is no balance mutation API outside validated posting.
 
-### E3: organization wallets, assets, and vaults — **NEXT**
+### E3: organization wallets, assets, and vaults — **SHIPPED** (`e780fd7` … `fa97479`, `286c4d6`)
 
-- Bind organization accounts to scopes and enforce capability/approval policies. **(The `scope` field
-  + the `WorldAuth`→`authorize_in_world` scoped path already exist; E3 makes the divisional-wallet
-  vertical real and wires `ApprovalPolicy` collection to the E2a `plan_hash`.)**
-- **Deferred from E1c:** the Faction→backing-`OrgId` mapping and the non-destructive
-  membership/authorization adapter — decide the linkage shape here, driven by account ownership.
-- Add title, assignment, maintenance payer, encumbrance, and lifecycle records (the four-axis
-  title/custody/**operation (= the shipped F3 control lease)**/maintenance separation, D5).
-- Add vaults bound to ordinary containers and `mush-sim` interiors.
-- Add atomic payment + title + custody plans and programmatic-destruction recovery.
-- Begin migration of exact `Faction.resources` pools into organization accounts.
+Planned, reviewed, and built per [08b](08b-e3-implementation-plan.md); ledger and decisions in
+[08a](08a-economy-build-status.md).
 
-**Exit criterion:** organization/asset scenarios 8–12 and 18–22 pass, including restart at every
-transition boundary.
+- Bind organization accounts to scopes and enforce capability/approval policies. **(Shipped E3b2:
+  `@account/open org:<org>[/<scope>]`, per-account `ApprovalRule` bound to `plan_hash` with live
+  approver re-qualification — §5.6 as-shipped note.)**
+- ~~The non-destructive membership/authorization adapter~~ **struck (D-E3-11)**; the
+  Faction→backing-`OrgId` mapping shipped as `Faction.org` (E3d, §5.7 as-shipped note).
+- Title, assignment, maintenance payer, encumbrance, and lifecycle records. **(Shipped E3a/E3b1;
+  journal-carried effects; both-sides title authority — §9 as-shipped note. The operation axis is
+  tested to be untouched by title/assignment changes; a title owner has no operator-eviction verb
+  until E7.)**
+- Vaults over ordinary containers (E3b1) and `mush-sim` interiors (E3c). **(Shipped.)**
+- Atomic payment + title + custody plans and programmatic-destruction recovery. **(Shipped;
+  single-authority plans, one custody op per plan at the module layer.)**
+- Migration of exact `Faction.resources` pools. **(Shipped E3d as static per-key marking +
+  `@faction/migrate`.)**
 
-### E4: holds, escrow, obligations, and contracts
+**Exit criterion met:** scenarios 8–12 and 18–22 are tests in `mush-economy/tests/{e3b,e3b2}.rs`
+and `mush-sim/tests/custody.rs`, each with per-boundary reboots. The end-of-build adversarial verify
+found and folded three high and a dozen lesser holes (08b §13).
+
+### E4: holds, escrow, obligations, and contracts — **NEXT** (pickup: 08a "Pick up here: E4")
 
 - Add holds, capture/release/expiry, and available-balance projection.
 - Add registered clocks, bounded due processing, catch-up policy, obligations, and grace state.
@@ -1711,6 +1842,12 @@ policy. Default deny.
 physical location; control-station leases (the shipped F3 control-channel/lease bundle) own
 operation; an account may own maintenance liability.
 No relationship silently implies another.
+
+**As built (E3):** proved both ways in `mush-sim/tests/custody.rs` — `@asset/assign` and
+`@asset/transfer` on a crewed unit leave its station seats and `control_gen` untouched, and a
+station assignment leaves the title record untouched; `@chown` and title are independent both ways
+and `@chown` is not gated. The one place the four axes do not yet compose: a new title owner has no
+verb to evict an operator in E3 — deliberately, until E7.
 
 ### D6. Posted transactions are immutable
 
