@@ -92,6 +92,10 @@ const MAX_AUTHORITATIVE_BOOT_SCAN_PAGES: usize = 65_536;
 /// service manager can retry later after the store recovers.
 const AUTHORITATIVE_BOOT_RECONCILE_ATTEMPTS: u32 = 3;
 
+/// Exact replay attempts used to distinguish a deterministic K3 poison from
+/// a stale/transient observation before the whole bundle is dead-lettered.
+const AUTHORITATIVE_POISON_ATTEMPTS: u32 = 3;
+
 /// Summary of the exact-intent recovery barrier that precedes ordinary world
 /// loading and every writable startup mutation.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -540,9 +544,14 @@ async fn writer_loop(
                         "persistence integrity halted after an unresolved predecessor: {reason}"
                     )))
                 } else {
-                    let result =
-                        commit_authoritative_with_retry(&*store, *bundle, &mut healthy, &signals)
-                            .await;
+                    let result = commit_authoritative_with_retry(
+                        &*store,
+                        *bundle,
+                        &mut healthy,
+                        &signals,
+                        &quarantine_spool,
+                    )
+                    .await;
                     if let Err(AuthoritativeCommitFailure::Integrity(detail)) = &result {
                         integrity.latch();
                         let reason = bounded_detail(format!(
@@ -584,6 +593,7 @@ async fn commit_authoritative_with_retry(
     bundle: AuthoritativeBundle,
     healthy: &mut bool,
     signals: &WriterSignalSender,
+    quarantine_spool: &QuarantineSpool,
 ) -> Result<AuthoritativeReceipt, AuthoritativeCommitFailure> {
     let token = bundle.token();
     let hash = bundle.bundle_hash();
@@ -593,6 +603,7 @@ async fn commit_authoritative_with_retry(
             "configured store has no K3 authoritative capability".to_owned(),
         )
     })?;
+    let mut deterministic_reconcile_attempts = 0u32;
 
     loop {
         match authoritative
@@ -687,8 +698,32 @@ async fn commit_authoritative_with_retry(
                     return Ok(*receipt);
                 }
                 Ok(BundleStatus::PendingExact) => {
+                    deterministic_reconcile_attempts = deterministic_reconcile_attempts
+                        .checked_add(1)
+                        .expect("bounded authoritative poison attempt counter");
+                    if deterministic_reconcile_attempts < AUTHORITATIVE_POISON_ATTEMPTS {
+                        tracing::warn!(
+                            %token,
+                            attempt = deterministic_reconcile_attempts,
+                            max_attempts = AUTHORITATIVE_POISON_ATTEMPTS,
+                            error = %error,
+                            "deterministic authoritative reconciliation failure; retrying exact bundle before quarantine"
+                        );
+                        continue;
+                    }
+                    quarantine_spool
+                        .quarantine_authoritative_bundle(
+                            &bundle,
+                            &error,
+                            deterministic_reconcile_attempts,
+                        )
+                        .map_err(|quarantine_error| {
+                            AuthoritativeCommitFailure::Integrity(format!(
+                                "authoritative bundle {token} remained pending after {deterministic_reconcile_attempts} deterministic attempts and its dead-letter could not be preserved: {quarantine_error}"
+                            ))
+                        })?;
                     return Err(AuthoritativeCommitFailure::Integrity(format!(
-                        "authoritative bundle {token} remains durably pending after deterministic reconciliation failure: {error}"
+                        "authoritative bundle {token} remains durably pending and was quarantined after {deterministic_reconcile_attempts} deterministic reconciliation failures: {error}"
                     )));
                 }
                 Ok(BundleStatus::Absent) => {
@@ -1540,7 +1575,7 @@ mod tests {
         IdempotencyKey, IdempotencyScope, LIMBO, Obj, ObjKind, OwnerId, PreparedCausalRef,
         PrincipalId, ReplayWrite, RequestUid, RulesValue, ScopedIdempotencyKey,
     };
-    use mush_store::{AuthoritativeStore, BundleStatus, InMemoryStore};
+    use mush_store::{AuthoritativeStore, BundleStatus, InMemoryStore, RedisStore};
 
     fn boot_recovery_bundle() -> AuthoritativeBundle {
         let owner = OwnerId::new("boot_recovery_test").unwrap();
@@ -1797,8 +1832,9 @@ mod tests {
         let (signals, _signal_rx) = crate::world_task::writer_signal_channel();
         let mut healthy = true;
 
+        let spool = QuarantineSpool::in_memory();
         let receipt =
-            commit_authoritative_with_retry(&store, bundle.clone(), &mut healthy, &signals)
+            commit_authoritative_with_retry(&store, bundle.clone(), &mut healthy, &signals, &spool)
                 .await
                 .unwrap();
 
@@ -1818,5 +1854,159 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn authoritative_writer_quarantines_whole_bundle_after_bounded_poison() {
+        let store = InMemoryStore::new();
+        load_or_seed_world(&store).await.unwrap();
+        let bundle = boot_recovery_bundle();
+
+        // Model a crash/interleaving that left this exact immutable intent
+        // pending while durable allocator state advanced beyond its post-image.
+        // Exact replay can never be valid, so each reconciliation fails
+        // deterministically while status remains PendingExact.
+        store
+            .reserve_authoritative_intent(bundle.clone())
+            .await
+            .unwrap();
+        store
+            .write(mush_store::WriteBatch {
+                serial: 2,
+                next_id: Some(4),
+                durable: true,
+                ..mush_store::WriteBatch::default()
+            })
+            .await
+            .unwrap();
+
+        let (signals, _signal_rx) = crate::world_task::writer_signal_channel();
+        let mut healthy = true;
+        let mut spool = QuarantineSpool::in_memory();
+        let error =
+            commit_authoritative_with_retry(&store, bundle.clone(), &mut healthy, &signals, &spool)
+                .await
+                .unwrap_err();
+
+        assert!(matches!(
+            error,
+            AuthoritativeCommitFailure::Integrity(ref detail)
+                if detail.contains("quarantined after 3 deterministic reconciliation failures")
+        ));
+        assert_eq!(
+            store
+                .authoritative_status(bundle.token(), bundle.bundle_hash())
+                .await
+                .unwrap(),
+            BundleStatus::PendingExact,
+            "the authoritative intent remains the primary durable truth"
+        );
+
+        // The independently retained whole-bundle record participates in the
+        // same boot gate. Its exact reconcile is still poison, so it remains
+        // active rather than being archived on mere token/hash presence.
+        let report = spool.reconcile_exact_matches(&store).await.unwrap();
+        assert_eq!(report.examined, 1);
+        assert_eq!(report.resolved, 0);
+        assert_eq!(report.remaining.unresolved_records, 1);
+        assert!(spool.require_resolved_for_boot().is_err());
+    }
+
+    #[tokio::test]
+    async fn live_redis_wrong_type_bundle_quarantines_repairs_and_recovers() {
+        use fred::interfaces::KeysInterface as _;
+
+        let Some(url) = std::env::var("REDIS_URL")
+            .ok()
+            .filter(|value| !value.is_empty())
+        else {
+            eprintln!(
+                "skipping live_redis_wrong_type_bundle_quarantines_repairs_and_recovers: \
+                 REDIS_URL not set"
+            );
+            return;
+        };
+        let store = RedisStore::connect(&url)
+            .await
+            .expect("connect to disposable live Redis");
+        store
+            .wipe_namespaces()
+            .await
+            .expect("wipe disposable Redis namespaces");
+        load_or_seed_world(&store).await.unwrap();
+        let bundle = boot_recovery_bundle();
+        store
+            .reserve_authoritative_intent(bundle.clone())
+            .await
+            .expect("reserve exact intent before fault injection");
+
+        // Generic SET gives obj:2 the Redis string type. The authoritative
+        // JSON.SET replay is then deterministic WRONGTYPE poison while the
+        // complete exact intent remains independently retained in Redis.
+        let _: () = store
+            .client()
+            .set("obj:2", "wrong type", None, None, false)
+            .await
+            .expect("install deterministic wrong-type target");
+
+        let root = std::env::temp_dir().join(format!(
+            "rustmush-k3-quarantine-live-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let spool_path = root.join("quarantine");
+        let mut spool = QuarantineSpool::open(&spool_path).unwrap();
+        let (signals, _signal_rx) = crate::world_task::writer_signal_channel();
+        let mut healthy = true;
+        let error =
+            commit_authoritative_with_retry(&store, bundle.clone(), &mut healthy, &signals, &spool)
+                .await
+                .unwrap_err();
+        assert!(matches!(error, AuthoritativeCommitFailure::Integrity(_)));
+        assert_eq!(
+            store
+                .authoritative_status(bundle.token(), bundle.bundle_hash())
+                .await
+                .unwrap(),
+            BundleStatus::PendingExact
+        );
+
+        let files: Vec<_> = std::fs::read_dir(&spool_path)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+            .collect();
+        assert_eq!(files.len(), 1);
+        let record: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(files[0].path()).unwrap()).unwrap();
+        assert_eq!(
+            record["record_version"],
+            crate::quarantine::QUARANTINE_RECORD_VERSION
+        );
+        assert_eq!(record["content"]["kind"], "authoritative_bundle");
+        assert_eq!(
+            record["content"]["bundle"],
+            serde_json::to_value(&bundle).unwrap(),
+            "the dead-letter retains the whole immutable bundle"
+        );
+
+        let deleted: i64 = store.client().del("obj:2").await.unwrap();
+        assert_eq!(deleted, 1);
+        let report = spool.reconcile_exact_matches(&store).await.unwrap();
+        assert_eq!(report.resolved, 1);
+        assert_eq!(report.remaining.unresolved_records, 0);
+        assert!(matches!(
+            store
+                .authoritative_status(bundle.token(), bundle.bundle_hash())
+                .await
+                .unwrap(),
+            BundleStatus::FinalizedExact(receipt)
+                if receipt.token() == bundle.token()
+                    && receipt.bundle_hash() == bundle.bundle_hash()
+        ));
+
+        drop(spool);
+        store.wipe_namespaces().await.unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

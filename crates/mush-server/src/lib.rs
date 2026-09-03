@@ -89,12 +89,14 @@ async fn open_store(config: &Config) -> Result<Arc<dyn ObjectStore>, String> {
     }
 }
 
-/// Open only the read side of the configured store for quarantine recovery.
+/// Open the narrow pre-boot side of the configured store for quarantine
+/// recovery.
 ///
 /// Redis connection setup deliberately skips search-index bootstrap; schema
 /// migrations, world seeds, imports, and module boot remain downstream of the
 /// exact-match decision. The returned store is kept private and is handed to
-/// [`QuarantineSpool`] only through its one-method read interface.
+/// [`QuarantineSpool`] only through its target-read plus exact-bundle recovery
+/// interface.
 async fn open_quarantine_recovery_store(config: &Config) -> Result<Arc<dyn ObjectStore>, String> {
     match config.store_backend().map_err(|error| error.to_string())? {
         StoreBackend::Redis => {
@@ -111,10 +113,11 @@ async fn open_quarantine_recovery_store(config: &Config) -> Result<Arc<dyn Objec
 /// Resolve exact authoritative matches, then enforce the quarantine gate.
 ///
 /// This is the complete pre-write recovery plane shared by the split server
-/// and all-in-one `mushd`. It performs only `module_json_get` calls against the
-/// authoritative store. Any missing/different/unreadable target, invalid or
-/// full evidence archive, or unresolved active record prevents migrations and
-/// every other ordinary boot mutation.
+/// and all-in-one `mushd`. Legacy seals use `module_json_get`; K3 bundle
+/// records may invoke only exact token/hash status and idempotent reconcile.
+/// Any missing/different/unreadable target, invalid or full evidence archive,
+/// or unresolved active record prevents migrations and every other ordinary
+/// boot mutation.
 ///
 /// # Errors
 ///
@@ -326,9 +329,9 @@ pub async fn serve_with_quarantine_spool(
     // into (matching `mushd::main`), or `@boot`/`@siteban`/... would be enqueued
     // to an orphan queue and never execute.
     deps.staff = staff;
-    // E0 quarantine spool: a separate failure domain from the store, under the
-    // configured data dir. A confirmed poison seal is fsynced here before being
-    // dropped from re-emit, so it is preserved for staff repair.
+    // Unified quarantine spool: a separate failure domain from the store,
+    // under the configured data dir. Confirmed poison seals and complete K3
+    // bundles are fsynced here before the writer enters its integrity halt.
     deps.quarantine_spool = quarantine_spool;
 
     // Cloned out BEFORE `deps` is moved into the world spawn: the writer task and

@@ -291,9 +291,13 @@ The required posture is therefore fail-closed:
    `(namespace, key, payload SHA-256)`, written to the required quarantine
    spool, read back, and removed from re-emission only after preservation is
    proven.
-4. Store connectivity recovering does not thaw the world. The incident remains
+4. If an exact K3 authoritative intent remains `PendingExact` after three
+   deterministic reconciliation failures, the writer preserves the complete
+   immutable bundle in that same spool. It does not split or shed individual
+   replay writes, and the original store intent remains authoritative.
+5. Store connectivity recovering does not thaw the world. The incident remains
    frozen until an exact repair is verified and the recovery state is resolved.
-5. Ordinary snapshots fail closed after the same process-wide integrity latch:
+6. Ordinary snapshots fail closed after the same process-wide integrity latch:
    queued `@dump` requests are rejected without reaching Redis, and all-in-one
    clean shutdown skips its direct `BGSAVE`. Snapshotting partial or ambiguous
    durable state would create a misleading recovery point.
@@ -320,45 +324,52 @@ the world safe to resume.
 
 ### Required quarantine spool and boot preflight
 
-Production uses `<data_dir>/quarantine/` as a durability domain separate from
-Redis. A persistent server cannot construct its writer without an opened,
+Production uses `<data_dir>/quarantine/` as a unified durability domain separate
+from Redis. A persistent server cannot construct its writer without an opened,
 durable `QuarantineSpool`; tests must opt into the explicit in-memory
 implementation. There is no `None`, log-only, or "best effort" preservation
-mode.
+mode. Legacy v1 sealed-Ledger records remain read-compatible and are never
+rewritten merely due to upgrade. New seals and complete K3 bundles use the
+tagged v2 envelope (`ledger_seal` or `authoritative_bundle`) and share the same
+lifetime lock, active count/byte budget, boot gate, and evidence archive.
 
 Both `mushd` and the split `mush-server` preflight the spool before opening or
 mutating world state. Opening it verifies directory read/write/rename ability,
 record count and byte bounds, record schema version, filename identity,
-SHA-256, and sealed Ledger payload structure. A fully synced, exact-valid
+SHA-256, and kind-specific payload structure (sealed Ledger or self-validating
+complete authoritative bundle). A fully synced, exact-valid
 `.tmp` is safely promoted (or reconciled with an existing exact final record)
 before the scan; a partial, malformed, or conflicting temp still aborts
 startup. An unexpected artifact, hash mismatch, unreadable directory, or
 failed write probe likewise aborts startup; it is unresolved integrity state,
 not an empty spool.
 
-A valid active record triggers one bounded **read-only exact-target pass**
-before store bootstrap, migrations, imports, world seeding, or module boot. The
-Redis recovery connection deliberately skips index bootstrap. For each record,
-the server reads only its validated namespace/key and compares canonical
-payload bytes plus the length-framed identity hash. If the authoritative target
-is exact, the original record is durably moved to
+A valid active record triggers one bounded **exact-target recovery pass** before
+store bootstrap, migrations, imports, world seeding, or module boot. The Redis
+recovery connection deliberately skips index bootstrap. A Ledger record reads
+only its validated namespace/key and compares canonical payload bytes plus the
+length-framed identity hash. A bundle record checks its exact token/hash; a
+`PendingExact` record may invoke only the idempotent authoritative reconciler,
+and is resolved only after an exact finalized receipt. If the authoritative
+target is exact, the original record is durably moved to
 `<data_dir>/quarantine-resolved/`; a crash leaving both active and archived
 names is reconciled idempotently on restart. A missing or different target, a
-read error, or any ambiguous archive state leaves the active record unresolved
-and refuses ordinary boot. Normal gameplay never starts through this gate.
+read/reconcile error, continued deterministic poison, non-exact witness, or any
+ambiguous archive state leaves the active record unresolved and refuses
+ordinary boot. Normal gameplay never starts through this gate.
 
 The resolved-evidence directory is a second fully validated collection, not an
 opaque dumping ground. Its directory and files are owner-only on Unix; every
-filename contains a validated seal identity and full-record digest, and every
-record is decoded and re-hashed at startup. It has the same explicit limits as
-the active collection: at most 100,000 records, at most 1 GiB total encoded
-bytes, and at most 16 MiB per record. If accepting new evidence would exceed a
-limit, the active record is not moved and boot fails closed. Archive filenames
-are evidence identifiers only and are never interpreted as caller-controlled
-filesystem paths or authoritative store destinations.
+filename contains a validated kind-specific identity and full-record digest,
+and every record is decoded and re-hashed at startup. It has the same explicit
+limits as the active collection: at most 100,000 records, at most 1 GiB total
+encoded bytes, and at most 16 MiB per record. If accepting new evidence would
+exceed a limit, the active record is not moved and boot fails closed. Archive
+filenames are evidence identifiers only and are never interpreted as
+caller-controlled filesystem paths or authoritative store destinations.
 
-This archive is crash-safe **evidence custody for the narrow K0 exact-match
-case**, not yet the general C11 resolution receipt. The latter still needs a
+This archive is crash-safe **evidence custody for exact-target recovery**, not
+yet the general C11 resolution receipt. The latter still needs a
 strict, bounded envelope that records the resolution time, resolver/version,
 and observed payload hash without weakening the archive's no-copy-loss
 publication invariant. Keep the C11 receipt gap open until that separate

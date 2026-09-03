@@ -1017,9 +1017,10 @@ pub struct ServerDeps {
     /// each throttled sample; the store writer stamps write-queue depth and
     /// last-ack age. Read back by `mush-net-web`'s `/healthz` + `/metrics`.
     pub metrics: Arc<Metrics>,
-    /// Required E0 authoritative-ledger quarantine sink. Production supplies a
-    /// durable, boot-validated spool; tests opt into the explicit in-memory
-    /// implementation. There is no log-only preservation mode.
+    /// Required unified persistence quarantine sink. Production supplies a
+    /// durable, boot-validated spool for ledger seals and complete K3 bundles;
+    /// tests opt into the explicit in-memory implementation. There is no
+    /// log-only preservation mode.
     pub quarantine_spool: crate::quarantine::QuarantineSpool,
 }
 

@@ -1,8 +1,10 @@
-//! Durable quarantine storage for authoritative ledger seals.
+//! Durable quarantine storage for persistence incidents.
 //!
 //! Opening this store is a boot precondition.  A directory that cannot be
 //! enumerated, a record that cannot be read and verified, or a crash-left temp
-//! file is integrity state, not an empty spool.
+//! file is integrity state, not an empty spool. Legacy v1 sealed-ledger records
+//! remain readable without rewrite; new ledger seals and complete K3
+//! authoritative bundles use the tagged v2 envelope.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -13,14 +15,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures::future::BoxFuture;
-use mush_core::{LedgerChunk, MAX_MODULE_KEY_BYTES, MAX_MODULE_NAMESPACE_BYTES};
-use mush_store::{ObjectStore, StoreError};
+use mush_core::{
+    AuthoritativeBundle, CanonicalHash, CommitToken, LedgerChunk, MAX_MODULE_KEY_BYTES,
+    MAX_MODULE_NAMESPACE_BYTES,
+};
+use mush_store::{AuthoritativeReceipt, BundleStatus, ObjectStore, StoreError};
 use serde::{Deserialize, Serialize};
 
 use mush_config::unix_now_s;
 
-/// On-disk quarantine record schema written by this release.
-pub const QUARANTINE_RECORD_VERSION: u32 = 1;
+/// Legacy sealed-ledger record schema, retained indefinitely for read
+/// compatibility and never rewritten merely because the server upgraded.
+pub const LEGACY_QUARANTINE_RECORD_VERSION: u32 = 1;
+/// Tagged unified quarantine record schema written by this release.
+pub const QUARANTINE_RECORD_VERSION: u32 = 2;
 
 /// A quarantine record is recovery material, but it must still be bounded at
 /// the trust boundary before allocation.
@@ -55,12 +63,13 @@ pub struct UnresolvedQuarantine {
     pub unresolved_bytes: u64,
 }
 
-/// Read-only authority exposed to the quarantine reconciler.
+/// Narrow recovery authority exposed to the quarantine reconciler.
 ///
 /// Production adapts an [`ObjectStore`] through the blanket implementation,
-/// but the recovery algorithm receives only this one read method. This keeps
-/// migrations, snapshots, and ordinary writes out of the pre-boot recovery
-/// phase by construction and lets tests prove that no write surface is used.
+/// but the recovery algorithm can only read legacy ledger targets and perform
+/// status/reconcile operations for an already-retained exact authoritative
+/// bundle. This keeps migrations, snapshots, and ordinary writes out of the
+/// pre-boot recovery phase by construction.
 pub trait QuarantineTargetReader: Send + Sync {
     /// Read one authoritative module JSON target without mutating the store.
     fn quarantine_target<'a>(
@@ -68,6 +77,35 @@ pub trait QuarantineTargetReader: Send + Sync {
         namespace: &'a str,
         key: &'a str,
     ) -> BoxFuture<'a, Result<Option<serde_json::Value>, StoreError>>;
+
+    /// Inspect an exact authoritative bundle identity without exposing any
+    /// non-recovery write surface.
+    fn quarantine_bundle_status(
+        &self,
+        token: CommitToken,
+        bundle_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<BundleStatus, StoreError>> {
+        Box::pin(async move {
+            let _ = (token, bundle_hash);
+            Err(StoreError::AuthoritativeCorrupt(
+                "quarantine reader has no authoritative bundle capability".to_owned(),
+            ))
+        })
+    }
+
+    /// Retry one already-reserved immutable bundle during pre-boot recovery.
+    fn reconcile_quarantine_bundle(
+        &self,
+        token: CommitToken,
+        bundle_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<AuthoritativeReceipt, StoreError>> {
+        Box::pin(async move {
+            let _ = (token, bundle_hash);
+            Err(StoreError::AuthoritativeCorrupt(
+                "quarantine reader has no authoritative bundle capability".to_owned(),
+            ))
+        })
+    }
 }
 
 impl<T: ObjectStore + ?Sized> QuarantineTargetReader for T {
@@ -78,9 +116,43 @@ impl<T: ObjectStore + ?Sized> QuarantineTargetReader for T {
     ) -> BoxFuture<'a, Result<Option<serde_json::Value>, StoreError>> {
         ObjectStore::module_json_get(self, namespace, key)
     }
+
+    fn quarantine_bundle_status(
+        &self,
+        token: CommitToken,
+        bundle_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<BundleStatus, StoreError>> {
+        Box::pin(async move {
+            self.authoritative_store()
+                .ok_or_else(|| {
+                    StoreError::AuthoritativeCorrupt(
+                        "quarantine store has no authoritative bundle capability".to_owned(),
+                    )
+                })?
+                .authoritative_status(token, bundle_hash)
+                .await
+        })
+    }
+
+    fn reconcile_quarantine_bundle(
+        &self,
+        token: CommitToken,
+        bundle_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<AuthoritativeReceipt, StoreError>> {
+        Box::pin(async move {
+            self.authoritative_store()
+                .ok_or_else(|| {
+                    StoreError::AuthoritativeCorrupt(
+                        "quarantine store has no authoritative bundle capability".to_owned(),
+                    )
+                })?
+                .reconcile_authoritative(token, bundle_hash)
+                .await
+        })
+    }
 }
 
-/// Result of one bounded, read-only exact-target recovery pass.
+/// Result of one bounded exact-target recovery pass.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct QuarantineRecoveryReport {
     /// Verified active records whose targets were examined.
@@ -110,6 +182,23 @@ pub enum QuarantineRecoveryError {
         /// Store read failure.
         #[source]
         source: StoreError,
+    },
+    /// An exact bundle status/reconciliation probe could not be completed.
+    #[error("recovering authoritative quarantine bundle {token}: {source}")]
+    BundleRecovery {
+        /// Durable bundle identity from the validated record.
+        token: CommitToken,
+        /// Store failure. Deterministic replay poison remains active rather
+        /// than being routed through this error.
+        #[source]
+        source: StoreError,
+    },
+    /// A store claimed an exact finalized bundle but returned a witness for a
+    /// different token or bundle hash. Never archive evidence on that claim.
+    #[error("authoritative quarantine bundle {token} returned a non-exact finalized witness")]
+    BundleWitnessMismatch {
+        /// Durable bundle identity from the validated record.
+        token: CommitToken,
     },
     /// The spool or resolved-evidence archive could not be read, validated, or
     /// durably updated.
@@ -190,12 +279,20 @@ pub enum QuarantineBootError {
     SpoolTooLarge,
 }
 
-/// A runtime failure preserving a newly confirmed poison seal.
+/// A runtime failure preserving a newly confirmed persistence incident.
 #[derive(Debug, thiserror::Error)]
 pub enum QuarantineWriteError {
-    /// The candidate itself is not a valid sealed ledger chunk.
-    #[error("invalid sealed ledger quarantine candidate: {0}")]
+    /// The candidate itself violates its kind-specific integrity contract.
+    #[error("invalid quarantine candidate: {0}")]
     InvalidCandidate(String),
+    /// The encoded envelope would make the next boot reject the spool.
+    #[error("quarantine record is {bytes} bytes; maximum is {max}")]
+    RecordTooLarge {
+        /// Encoded candidate length.
+        bytes: usize,
+        /// Per-record spool limit.
+        max: u64,
+    },
     /// Durable I/O or post-write verification failed.
     #[error("quarantine spool {path}: {detail}")]
     Durable {
@@ -221,7 +318,7 @@ pub enum QuarantineWriteError {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct QuarantineRecord {
+struct LegacyQuarantineRecord {
     record_version: u32,
     ns: String,
     key: String,
@@ -233,6 +330,42 @@ struct QuarantineRecord {
     isolation_attempts: u32,
     quarantined_unix: i64,
     server_version: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QuarantineRecordV2 {
+    record_version: u32,
+    identity_hash: String,
+    content: QuarantineContentV2,
+    store_error: String,
+    error_transient: bool,
+    isolation_attempts: u32,
+    quarantined_unix: i64,
+    server_version: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum QuarantineContentV2 {
+    LedgerSeal {
+        namespace: String,
+        key: String,
+        serial: u64,
+        payload: serde_json::Value,
+    },
+    AuthoritativeBundle {
+        token: CommitToken,
+        bundle_hash: CanonicalHash,
+        bundle: Box<AuthoritativeBundle>,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+enum StoredQuarantineRecord {
+    V2(QuarantineRecordV2),
+    V1(LegacyQuarantineRecord),
 }
 
 #[derive(Debug)]
@@ -247,7 +380,7 @@ struct DurableBackend {
 
 #[derive(Debug)]
 struct MemoryBackend {
-    records: BTreeMap<String, QuarantineRecord>,
+    records: BTreeMap<String, StoredQuarantineRecord>,
     state: SpoolState,
 }
 
@@ -274,8 +407,27 @@ struct RuntimeReservation {
 #[derive(Clone, Debug)]
 struct RecoveryTarget {
     identity: String,
-    namespace: String,
-    key: String,
+    kind: RecoveryTargetKind,
+}
+
+#[derive(Clone, Debug)]
+enum RecoveryTargetKind {
+    LedgerSeal {
+        namespace: String,
+        key: String,
+    },
+    AuthoritativeBundle {
+        token: CommitToken,
+        bundle_hash: CanonicalHash,
+    },
+}
+
+enum RecoveryProof<'a> {
+    LedgerSeal(&'a serde_json::Value),
+    AuthoritativeBundle {
+        token: CommitToken,
+        bundle_hash: CanonicalHash,
+    },
 }
 
 #[derive(Debug)]
@@ -481,12 +633,14 @@ impl QuarantineSpool {
     }
 
     /// Resolve only active records whose authoritative target is an exact
-    /// canonical match for the quarantined namespace/key/payload identity.
+    /// canonical match for the retained identity.
     ///
-    /// This pass performs store reads only. A missing or different target is
-    /// left active and continues to block writable boot. An exact match is
-    /// moved into a sibling owner-only resolved-evidence archive and both
-    /// directories are synced before it stops counting as unresolved.
+    /// Ledger records perform a read-only target comparison. Bundle records
+    /// inspect the exact token/hash state and, only for `PendingExact`, invoke
+    /// the store's idempotent exact-bundle reconciler. A missing, conflicting,
+    /// or still-deterministically-poisoned target is left active and continues
+    /// to block writable boot. Only an exact finalized witness permits moving
+    /// the record into the sibling owner-only resolved-evidence archive.
     ///
     /// The spool's lifetime lock must have been acquired by [`Self::open`] and
     /// remains held across this pass and the caller's transition into ordinary
@@ -507,16 +661,76 @@ impl QuarantineSpool {
         let examined = targets.len();
         let mut resolved = 0usize;
         for target in targets {
-            let observed = reader
-                .quarantine_target(&target.namespace, &target.key)
-                .await
-                .map_err(|source| QuarantineRecoveryError::TargetRead {
-                    namespace: target.namespace.clone(),
-                    key: target.key.clone(),
-                    source,
-                })?;
-            if self.resolve_exact_match(&target.identity, observed.as_ref())? {
-                resolved = resolved.saturating_add(1);
+            match target.kind {
+                RecoveryTargetKind::LedgerSeal { namespace, key } => {
+                    let observed =
+                        reader
+                            .quarantine_target(&namespace, &key)
+                            .await
+                            .map_err(|source| QuarantineRecoveryError::TargetRead {
+                                namespace,
+                                key,
+                                source,
+                            })?;
+                    if let Some(observed) = observed.as_ref()
+                        && self.resolve_with_proof(
+                            &target.identity,
+                            RecoveryProof::LedgerSeal(observed),
+                        )?
+                    {
+                        resolved = resolved.saturating_add(1);
+                    }
+                }
+                RecoveryTargetKind::AuthoritativeBundle { token, bundle_hash } => {
+                    let status = reader
+                        .quarantine_bundle_status(token, bundle_hash)
+                        .await
+                        .map_err(|source| QuarantineRecoveryError::BundleRecovery {
+                            token,
+                            source,
+                        })?;
+                    let exact = match status {
+                        BundleStatus::FinalizedExact(receipt) => {
+                            if receipt.token() != token || receipt.bundle_hash() != bundle_hash {
+                                return Err(QuarantineRecoveryError::BundleWitnessMismatch {
+                                    token,
+                                });
+                            }
+                            true
+                        }
+                        BundleStatus::PendingExact => {
+                            match reader.reconcile_quarantine_bundle(token, bundle_hash).await {
+                                Ok(receipt)
+                                    if receipt.token() == token
+                                        && receipt.bundle_hash() == bundle_hash =>
+                                {
+                                    true
+                                }
+                                Ok(_) => {
+                                    return Err(QuarantineRecoveryError::BundleWitnessMismatch {
+                                        token,
+                                    });
+                                }
+                                Err(error) if !error.is_transient() => false,
+                                Err(source) => {
+                                    return Err(QuarantineRecoveryError::BundleRecovery {
+                                        token,
+                                        source,
+                                    });
+                                }
+                            }
+                        }
+                        BundleStatus::Absent | BundleStatus::Conflict { .. } => false,
+                    };
+                    if exact
+                        && self.resolve_with_proof(
+                            &target.identity,
+                            RecoveryProof::AuthoritativeBundle { token, bundle_hash },
+                        )?
+                    {
+                        resolved = resolved.saturating_add(1);
+                    }
+                }
             }
         }
         self.opened_state = self.current_state()?;
@@ -549,17 +763,13 @@ impl QuarantineSpool {
                     .map_err(|_| QuarantineRecoveryError::LockPoisoned)?;
                 let mut targets = Vec::with_capacity(backend.records.len());
                 for (identity, record) in &backend.records {
-                    validate_record(identity, record).map_err(|detail| {
+                    validate_stored_record(identity, record).map_err(|detail| {
                         QuarantineBootError::InvalidRecord {
                             path: PathBuf::from(format!("<in-memory>/{identity}.json")),
                             detail,
                         }
                     })?;
-                    targets.push(RecoveryTarget {
-                        identity: identity.clone(),
-                        namespace: record.ns.clone(),
-                        key: record.key.clone(),
-                    });
+                    targets.push(recovery_target(identity.clone(), record));
                 }
                 Ok(targets)
             }
@@ -579,25 +789,18 @@ impl QuarantineSpool {
                     let identity = filename_identity(&path)
                         .expect("decode_and_validate accepted the filename")
                         .to_owned();
-                    targets.push(RecoveryTarget {
-                        identity,
-                        namespace: record.ns,
-                        key: record.key,
-                    });
+                    targets.push(recovery_target(identity, &record));
                 }
                 Ok(targets)
             }
         }
     }
 
-    fn resolve_exact_match(
+    fn resolve_with_proof(
         &mut self,
         identity: &str,
-        observed: Option<&serde_json::Value>,
+        proof: RecoveryProof<'_>,
     ) -> Result<bool, QuarantineRecoveryError> {
-        let Some(observed) = observed else {
-            return Ok(false);
-        };
         let next_state = match self.backend.as_ref() {
             Backend::InMemory(backend) => {
                 let mut backend = backend
@@ -607,7 +810,7 @@ impl QuarantineSpool {
                     .records
                     .get(identity)
                     .ok_or_else(|| QuarantineRecoveryError::RecordMissing(identity.to_owned()))?;
-                if !record_matches_observation(identity, record, observed) {
+                if !record_matches_proof(identity, record, &proof) {
                     return Ok(false);
                 }
                 let encoded_len =
@@ -667,7 +870,7 @@ impl QuarantineSpool {
                 })?;
                 let bytes = read_bounded(&active_path)?;
                 let record = decode_and_validate(&active_path, &bytes)?;
-                if !record_matches_observation(identity, &record, observed) {
+                if !record_matches_proof(identity, &record, &proof) {
                     return Ok(false);
                 }
                 // Compute both bounded accounting transitions before touching
@@ -704,20 +907,59 @@ impl QuarantineSpool {
         attempts: u32,
     ) -> Result<bool, QuarantineWriteError> {
         let identity = seal_identity_hash(ns, key, value);
-        let record = QuarantineRecord {
+        let record = StoredQuarantineRecord::V2(QuarantineRecordV2 {
             record_version: QUARANTINE_RECORD_VERSION,
-            ns: ns.to_owned(),
-            key: key.to_owned(),
-            serial,
-            payload_hash: identity.clone(),
-            payload: value.clone(),
+            identity_hash: identity.clone(),
+            content: QuarantineContentV2::LedgerSeal {
+                namespace: ns.to_owned(),
+                key: key.to_owned(),
+                serial,
+                payload: value.clone(),
+            },
             store_error: truncate(err.to_string(), MAX_ERROR_BYTES),
             error_transient: err.is_transient(),
             isolation_attempts: attempts,
             quarantined_unix: unix_now_s(),
             server_version: env!("CARGO_PKG_VERSION").to_owned(),
-        };
-        validate_record(&identity, &record).map_err(QuarantineWriteError::InvalidCandidate)?;
+        });
+        self.preserve_record(identity, record)
+    }
+
+    /// Preserve one complete immutable K3 bundle after bounded deterministic
+    /// reconciliation failures. The store's original pending intent remains
+    /// authoritative; this record is the independent dead-letter copy and
+    /// boot gate.
+    pub(crate) fn quarantine_authoritative_bundle(
+        &self,
+        bundle: &AuthoritativeBundle,
+        err: &StoreError,
+        attempts: u32,
+    ) -> Result<bool, QuarantineWriteError> {
+        let identity = authoritative_bundle_identity_hash(bundle);
+        let record = StoredQuarantineRecord::V2(QuarantineRecordV2 {
+            record_version: QUARANTINE_RECORD_VERSION,
+            identity_hash: identity.clone(),
+            content: QuarantineContentV2::AuthoritativeBundle {
+                token: bundle.token(),
+                bundle_hash: bundle.bundle_hash(),
+                bundle: Box::new(bundle.clone()),
+            },
+            store_error: truncate(err.to_string(), MAX_ERROR_BYTES),
+            error_transient: err.is_transient(),
+            isolation_attempts: attempts,
+            quarantined_unix: unix_now_s(),
+            server_version: env!("CARGO_PKG_VERSION").to_owned(),
+        });
+        self.preserve_record(identity, record)
+    }
+
+    fn preserve_record(
+        &self,
+        identity: String,
+        record: StoredQuarantineRecord,
+    ) -> Result<bool, QuarantineWriteError> {
+        validate_stored_record(&identity, &record)
+            .map_err(QuarantineWriteError::InvalidCandidate)?;
         let bytes = encode_record(&record).map_err(|e| QuarantineWriteError::Durable {
             path: match self.backend.as_ref() {
                 Backend::Durable(backend) => backend.dir.clone(),
@@ -725,6 +967,12 @@ impl QuarantineSpool {
             },
             detail: e.to_string(),
         })?;
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_RECORD_BYTES {
+            return Err(QuarantineWriteError::RecordTooLarge {
+                bytes: bytes.len(),
+                max: MAX_RECORD_BYTES,
+            });
+        }
 
         match self.backend.as_ref() {
             Backend::InMemory(backend) => {
@@ -863,16 +1111,81 @@ fn reserve_archive_capacity(
     })
 }
 
-fn record_matches_observation(
+fn recovery_target(identity: String, record: &StoredQuarantineRecord) -> RecoveryTarget {
+    let kind = match record {
+        StoredQuarantineRecord::V1(record) => RecoveryTargetKind::LedgerSeal {
+            namespace: record.ns.clone(),
+            key: record.key.clone(),
+        },
+        StoredQuarantineRecord::V2(record) => match &record.content {
+            QuarantineContentV2::LedgerSeal { namespace, key, .. } => {
+                RecoveryTargetKind::LedgerSeal {
+                    namespace: namespace.clone(),
+                    key: key.clone(),
+                }
+            }
+            QuarantineContentV2::AuthoritativeBundle {
+                token, bundle_hash, ..
+            } => RecoveryTargetKind::AuthoritativeBundle {
+                token: *token,
+                bundle_hash: *bundle_hash,
+            },
+        },
+    };
+    RecoveryTarget { identity, kind }
+}
+
+fn record_matches_proof(
     identity: &str,
-    record: &QuarantineRecord,
+    record: &StoredQuarantineRecord,
+    proof: &RecoveryProof<'_>,
+) -> bool {
+    match (record, proof) {
+        (StoredQuarantineRecord::V1(record), RecoveryProof::LedgerSeal(observed)) => {
+            ledger_record_matches(identity, &record.ns, &record.key, &record.payload, observed)
+        }
+        (
+            StoredQuarantineRecord::V2(QuarantineRecordV2 {
+                content:
+                    QuarantineContentV2::LedgerSeal {
+                        namespace,
+                        key,
+                        payload,
+                        ..
+                    },
+                ..
+            }),
+            RecoveryProof::LedgerSeal(observed),
+        ) => ledger_record_matches(identity, namespace, key, payload, observed),
+        (
+            StoredQuarantineRecord::V2(QuarantineRecordV2 {
+                content:
+                    QuarantineContentV2::AuthoritativeBundle {
+                        token, bundle_hash, ..
+                    },
+                ..
+            }),
+            RecoveryProof::AuthoritativeBundle {
+                token: proven_token,
+                bundle_hash: proven_hash,
+            },
+        ) => token == proven_token && bundle_hash == proven_hash,
+        _ => false,
+    }
+}
+
+fn ledger_record_matches(
+    identity: &str,
+    namespace: &str,
+    key: &str,
+    payload: &serde_json::Value,
     observed: &serde_json::Value,
 ) -> bool {
-    if seal_identity_hash(&record.ns, &record.key, observed) != identity {
+    if seal_identity_hash(namespace, key, observed) != identity {
         return false;
     }
     match (
-        mush_core::canonical_json_bytes(&record.payload),
+        mush_core::canonical_json_bytes(payload),
         mush_core::canonical_json_bytes(observed),
     ) {
         (Ok(expected), Ok(actual)) => expected == actual,
@@ -1204,15 +1517,17 @@ fn decode_and_validate_for_identity(
     path: &Path,
     bytes: &[u8],
     identity: &str,
-) -> Result<QuarantineRecord, QuarantineBootError> {
-    let record: QuarantineRecord =
+) -> Result<StoredQuarantineRecord, QuarantineBootError> {
+    let record: StoredQuarantineRecord =
         serde_json::from_slice(bytes).map_err(|error| QuarantineBootError::InvalidRecord {
             path: path.to_owned(),
             detail: truncate(error.to_string(), MAX_ERROR_BYTES),
         })?;
-    validate_record(identity, &record).map_err(|detail| QuarantineBootError::InvalidRecord {
-        path: path.to_owned(),
-        detail,
+    validate_stored_record(identity, &record).map_err(|detail| {
+        QuarantineBootError::InvalidRecord {
+            path: path.to_owned(),
+            detail,
+        }
     })?;
     Ok(record)
 }
@@ -1598,8 +1913,8 @@ fn publish_recovered_temp(temp_path: &Path, final_path: &Path) -> std::io::Resul
 }
 
 fn temp_bytes_match_identity(bytes: &[u8], identity: &str) -> bool {
-    serde_json::from_slice::<QuarantineRecord>(bytes)
-        .is_ok_and(|record| validate_record(identity, &record).is_ok())
+    serde_json::from_slice::<StoredQuarantineRecord>(bytes)
+        .is_ok_and(|record| validate_stored_record(identity, &record).is_ok())
 }
 
 fn sync_existing_file(path: &Path) -> std::io::Result<()> {
@@ -1644,8 +1959,11 @@ fn read_bounded(path: &Path) -> Result<Vec<u8>, QuarantineBootError> {
     Ok(bytes)
 }
 
-fn decode_and_validate(path: &Path, bytes: &[u8]) -> Result<QuarantineRecord, QuarantineBootError> {
-    let record: QuarantineRecord =
+fn decode_and_validate(
+    path: &Path,
+    bytes: &[u8],
+) -> Result<StoredQuarantineRecord, QuarantineBootError> {
+    let record: StoredQuarantineRecord =
         serde_json::from_slice(bytes).map_err(|e| QuarantineBootError::InvalidRecord {
             path: path.to_owned(),
             detail: truncate(e.to_string(), MAX_ERROR_BYTES),
@@ -1654,9 +1972,11 @@ fn decode_and_validate(path: &Path, bytes: &[u8]) -> Result<QuarantineRecord, Qu
         path: path.to_owned(),
         detail: "filename must be 64 lowercase SHA-256 hex characters plus .json".to_owned(),
     })?;
-    validate_record(identity, &record).map_err(|detail| QuarantineBootError::InvalidRecord {
-        path: path.to_owned(),
-        detail,
+    validate_stored_record(identity, &record).map_err(|detail| {
+        QuarantineBootError::InvalidRecord {
+            path: path.to_owned(),
+            detail,
+        }
     })?;
     Ok(record)
 }
@@ -1670,10 +1990,23 @@ fn filename_identity(path: &Path) -> Option<&str> {
     .then_some(stem)
 }
 
-fn validate_record(expected_identity: &str, record: &QuarantineRecord) -> Result<(), String> {
-    if record.record_version != QUARANTINE_RECORD_VERSION {
+fn validate_stored_record(
+    expected_identity: &str,
+    record: &StoredQuarantineRecord,
+) -> Result<(), String> {
+    match record {
+        StoredQuarantineRecord::V1(record) => validate_legacy_record(expected_identity, record),
+        StoredQuarantineRecord::V2(record) => validate_v2_record(expected_identity, record),
+    }
+}
+
+fn validate_legacy_record(
+    expected_identity: &str,
+    record: &LegacyQuarantineRecord,
+) -> Result<(), String> {
+    if record.record_version != LEGACY_QUARANTINE_RECORD_VERSION {
         return Err(format!(
-            "unsupported record_version {} (expected {QUARANTINE_RECORD_VERSION})",
+            "unsupported legacy record_version {} (expected {LEGACY_QUARANTINE_RECORD_VERSION})",
             record.record_version
         ));
     }
@@ -1696,6 +2029,58 @@ fn validate_record(expected_identity: &str, record: &QuarantineRecord) -> Result
     }
     validate_sealed_payload(&record.key, &record.payload)?;
     Ok(())
+}
+
+fn validate_v2_record(expected_identity: &str, record: &QuarantineRecordV2) -> Result<(), String> {
+    if record.record_version != QUARANTINE_RECORD_VERSION {
+        return Err(format!(
+            "unsupported record_version {} (expected {QUARANTINE_RECORD_VERSION})",
+            record.record_version
+        ));
+    }
+    if record.store_error.len() > MAX_ERROR_BYTES || record.server_version.len() > MAX_VERSION_BYTES
+    {
+        return Err("diagnostic field is too large".to_owned());
+    }
+    if record.identity_hash != expected_identity {
+        return Err("identity_hash does not match filename identity".to_owned());
+    }
+    match &record.content {
+        QuarantineContentV2::LedgerSeal {
+            namespace,
+            key,
+            payload,
+            ..
+        } => {
+            if namespace.is_empty() || namespace.len() > MAX_MODULE_NAMESPACE_BYTES {
+                return Err("namespace is empty or too large".to_owned());
+            }
+            if key.is_empty() || key.len() > MAX_MODULE_KEY_BYTES {
+                return Err("key is empty or too large".to_owned());
+            }
+            if seal_identity_hash(namespace, key, payload) != expected_identity {
+                return Err(
+                    "SHA-256 identity does not match namespace/key/payload bytes".to_owned(),
+                );
+            }
+            validate_sealed_payload(key, payload)
+        }
+        QuarantineContentV2::AuthoritativeBundle {
+            token,
+            bundle_hash,
+            bundle,
+        } => {
+            if *token != bundle.token() || *bundle_hash != bundle.bundle_hash() {
+                return Err("bundle identity fields disagree with the retained bundle".to_owned());
+            }
+            if authoritative_bundle_identity_hash(bundle) != expected_identity {
+                return Err(
+                    "SHA-256 identity does not match authoritative bundle token/hash".to_owned(),
+                );
+            }
+            Ok(())
+        }
+    }
 }
 
 fn validate_sealed_payload(key: &str, value: &serde_json::Value) -> Result<(), String> {
@@ -1780,8 +2165,8 @@ fn inspect_runtime_temp(
     }
     let mut actual = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0));
     file.take(MAX_RECORD_BYTES + 1).read_to_end(&mut actual)?;
-    if let Ok(record) = serde_json::from_slice::<QuarantineRecord>(&actual)
-        && validate_record(identity, &record).is_ok()
+    if let Ok(record) = serde_json::from_slice::<StoredQuarantineRecord>(&actual)
+        && validate_stored_record(identity, &record).is_ok()
     {
         return Ok(RuntimeTempState::Valid);
     }
@@ -1857,7 +2242,7 @@ fn remove_file_if_present(path: &Path) -> std::io::Result<bool> {
     }
 }
 
-fn encode_record(record: &QuarantineRecord) -> std::io::Result<Vec<u8>> {
+fn encode_record(record: &impl Serialize) -> std::io::Result<Vec<u8>> {
     // Compact JSON keeps the durable envelope within a predictable constant
     // overhead of the core ledger's bounded canonical payload. Pretty-printing
     // can multiply whitespace for millions of small entries and turn an
@@ -1928,6 +2313,34 @@ pub fn seal_identity_hash(ns: &str, key: &str, value: &serde_json::Value) -> Str
     hex
 }
 
+/// Stable SHA-256 identity for one complete immutable authoritative bundle
+/// dead-letter. The bundle's canonical self-hash covers its complete semantic
+/// content; length-framed token/hash fields and a distinct domain prevent
+/// cross-kind or serialization-order aliases.
+#[must_use]
+pub fn authoritative_bundle_identity_hash(bundle: &AuthoritativeBundle) -> String {
+    use sha2::{Digest as _, Sha256};
+    const DOMAIN: &[u8] = b"rustmush/quarantine-authoritative-bundle/v2";
+
+    fn hash_field(hasher: &mut Sha256, bytes: &[u8]) {
+        let len = u64::try_from(bytes.len()).expect("field length fits u64");
+        hasher.update(len.to_be_bytes());
+        hasher.update(bytes);
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(DOMAIN);
+    hash_field(&mut hasher, bundle.token().as_bytes());
+    hash_field(&mut hasher, bundle.bundle_hash().as_bytes());
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
+}
+
 fn truncate(mut value: String, max_bytes: usize) -> String {
     if value.len() <= max_bytes {
         return value;
@@ -1945,7 +2358,13 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
 
     use super::*;
-    use mush_core::{LedgerEntry, chunk_key};
+    use mush_core::{
+        AuthoritativeBundleDraft, AuthoritativeKey, CanonicalId, DefinitionDescriptor,
+        DefinitionId, DefinitionKind, DefinitionRegistryBuilder, GOD, IdempotencyKey,
+        IdempotencyScope, LedgerEntry, OwnerId, PreparedCausalRef, PrincipalId, ReplayWrite,
+        RequestUid, RulesValue, ScopedIdempotencyKey, chunk_key,
+    };
+    use mush_store::{AuthoritativeStore as _, BundleStatus, InMemoryStore};
 
     struct RecoveryReader {
         expected_namespace: String,
@@ -2015,6 +2434,66 @@ mod tests {
         (key, payload)
     }
 
+    fn authoritative_bundle() -> AuthoritativeBundle {
+        let owner = OwnerId::new("quarantine_test").unwrap();
+        let mut definitions = DefinitionRegistryBuilder::new();
+        let action = definitions
+            .register(
+                owner.clone(),
+                DefinitionDescriptor::new(
+                    DefinitionKind::new("action").unwrap(),
+                    DefinitionId::new("retain_marker").unwrap(),
+                    1,
+                    serde_json::json!({}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let outcome = definitions
+            .register(
+                owner.clone(),
+                DefinitionDescriptor::new(
+                    DefinitionKind::new("outcome").unwrap(),
+                    DefinitionId::new("marker_retained").unwrap(),
+                    1,
+                    serde_json::json!({}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let request = RequestUid::from_bytes([31; 16]);
+        let principal = PrincipalId::Object { id: GOD };
+        AuthoritativeBundle::new(AuthoritativeBundleDraft {
+            token: CommitToken::from_bytes([32; 16]),
+            request,
+            idempotency: ScopedIdempotencyKey::new(
+                IdempotencyScope {
+                    principal: principal.clone(),
+                    owner: owner.clone(),
+                    namespace: CanonicalId::new("retain_marker").unwrap(),
+                },
+                0,
+                IdempotencyKey::Request(request),
+            ),
+            ingress_hash: CanonicalHash::from_bytes([33; 32]),
+            request_hash: CanonicalHash::from_bytes([34; 32]),
+            plan_hash: CanonicalHash::from_bytes([35; 32]),
+            action: action.clone(),
+            provider: owner.clone(),
+            cause: PreparedCausalRef::new(request, None, 0).unwrap(),
+            definitions: vec![action, outcome.clone()],
+            writes: vec![ReplayWrite::ModuleJsonSet {
+                namespace: owner,
+                key: AuthoritativeKey::parse_canonical("quarantine/v1/marker").unwrap(),
+                value: serde_json::json!({"retained": true}),
+            }],
+            outcome: RulesValue::new(outcome, serde_json::json!({"ok": true})).unwrap(),
+            eligible_witnesses: vec![principal],
+            durable_outbox: vec![],
+        })
+        .unwrap()
+    }
+
     fn resolved_dir(active: &Path) -> PathBuf {
         let mut name = OsString::from(active.file_name().unwrap());
         name.push("-resolved");
@@ -2072,6 +2551,166 @@ mod tests {
 
         std::fs::remove_dir_all(dir).unwrap();
         std::fs::remove_dir_all(archive).unwrap();
+    }
+
+    #[tokio::test]
+    async fn pending_bundle_is_exactly_reconciled_then_archived() {
+        let dir = temp_spool("bundle-exact-recovery");
+        let archive = resolved_dir(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&archive);
+        let mut spool = QuarantineSpool::open(&dir).unwrap();
+        let bundle = authoritative_bundle();
+        let store = InMemoryStore::new();
+        store
+            .reserve_authoritative_intent(bundle.clone())
+            .await
+            .unwrap();
+        assert!(
+            spool
+                .quarantine_authoritative_bundle(
+                    &bundle,
+                    &StoreError::Invalid("deterministic poison".to_owned()),
+                    3,
+                )
+                .unwrap()
+        );
+
+        let report = spool.reconcile_exact_matches(&store).await.unwrap();
+        assert_eq!(report.examined, 1);
+        assert_eq!(report.resolved, 1);
+        assert_eq!(report.remaining, SpoolState::default());
+        spool.require_resolved_for_boot().unwrap();
+        assert!(matches!(
+            store
+                .authoritative_status(bundle.token(), bundle.bundle_hash())
+                .await
+                .unwrap(),
+            BundleStatus::FinalizedExact(receipt)
+                if receipt.token() == bundle.token()
+                    && receipt.bundle_hash() == bundle.bundle_hash()
+        ));
+        drop(spool);
+        assert_eq!(
+            QuarantineSpool::open(&dir)
+                .unwrap()
+                .opened_state()
+                .unresolved_records,
+            0
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+        std::fs::remove_dir_all(archive).unwrap();
+    }
+
+    #[test]
+    fn bundle_v2_identity_covers_the_complete_immutable_bundle() {
+        let spool = QuarantineSpool::in_memory();
+        let bundle = authoritative_bundle();
+        let identity = authoritative_bundle_identity_hash(&bundle);
+        assert_eq!(identity.len(), 64);
+        assert_ne!(
+            identity,
+            seal_identity_hash(
+                "quarantine_test",
+                "quarantine/v1/marker",
+                &serde_json::json!({"retained": true}),
+            ),
+            "bundle and seal identities are domain separated"
+        );
+        spool
+            .quarantine_authoritative_bundle(
+                &bundle,
+                &StoreError::Invalid("deterministic poison".to_owned()),
+                3,
+            )
+            .unwrap();
+
+        let Backend::InMemory(backend) = spool.backend.as_ref() else {
+            unreachable!()
+        };
+        let backend = backend.lock().unwrap();
+        let record = backend.records.get(&identity).unwrap();
+        validate_stored_record(&identity, record).unwrap();
+        let StoredQuarantineRecord::V2(record) = record else {
+            panic!("new bundle quarantine records must use v2");
+        };
+        assert_eq!(record.record_version, QUARANTINE_RECORD_VERSION);
+        let QuarantineContentV2::AuthoritativeBundle {
+            token,
+            bundle_hash,
+            bundle: retained,
+        } = &record.content
+        else {
+            panic!("whole authoritative bundle must be retained");
+        };
+        assert_eq!(*token, bundle.token());
+        assert_eq!(*bundle_hash, bundle.bundle_hash());
+        assert_eq!(retained.as_ref(), &bundle);
+    }
+
+    #[test]
+    fn legacy_v1_and_tagged_v2_records_share_one_durable_spool() {
+        let dir = temp_spool("mixed-versions");
+        let archive = resolved_dir(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&archive);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let (key, payload) = seal();
+        let legacy_identity = seal_identity_hash("test", &key, &payload);
+        let legacy = LegacyQuarantineRecord {
+            record_version: LEGACY_QUARANTINE_RECORD_VERSION,
+            ns: "test".to_owned(),
+            key,
+            serial: 1,
+            payload_hash: legacy_identity.clone(),
+            payload,
+            store_error: "legacy poison".to_owned(),
+            error_transient: false,
+            isolation_attempts: 3,
+            quarantined_unix: 1,
+            server_version: "legacy".to_owned(),
+        };
+        std::fs::write(
+            dir.join(format!("{legacy_identity}.json")),
+            encode_record(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        let spool = QuarantineSpool::open(&dir).unwrap();
+        assert_eq!(spool.opened_state().unresolved_records, 1);
+        let bundle = authoritative_bundle();
+        let bundle_identity = authoritative_bundle_identity_hash(&bundle);
+        spool
+            .quarantine_authoritative_bundle(
+                &bundle,
+                &StoreError::Invalid("bundle poison".to_owned()),
+                3,
+            )
+            .unwrap();
+        let mut bundle_json: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(dir.join(format!("{bundle_identity}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(bundle_json["record_version"], QUARANTINE_RECORD_VERSION);
+        assert_eq!(bundle_json["content"]["kind"], "authoritative_bundle");
+        drop(spool);
+
+        let reopened = QuarantineSpool::open(&dir).unwrap();
+        assert_eq!(reopened.opened_state().unresolved_records, 2);
+        drop(reopened);
+
+        bundle_json["content"]["bundle_hash"] = serde_json::json!("0".repeat(64));
+        std::fs::write(
+            dir.join(format!("{bundle_identity}.json")),
+            serde_json::to_vec(&bundle_json).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            QuarantineSpool::open(&dir).is_err(),
+            "tampering any exact bundle identity field must fail closed"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
@@ -2302,19 +2941,19 @@ mod tests {
                 2 => {
                     let mut record: serde_json::Value =
                         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-                    record["payload_hash"] = serde_json::json!("0".repeat(64));
+                    record["identity_hash"] = serde_json::json!("0".repeat(64));
                     std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
                 }
                 3 => {
                     let mut record: serde_json::Value =
                         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-                    record["payload"]["sealed"] = serde_json::json!(false);
+                    record["content"]["payload"]["sealed"] = serde_json::json!(false);
                     let identity = seal_identity_hash(
-                        record["ns"].as_str().unwrap(),
-                        record["key"].as_str().unwrap(),
-                        &record["payload"],
+                        record["content"]["namespace"].as_str().unwrap(),
+                        record["content"]["key"].as_str().unwrap(),
+                        &record["content"]["payload"],
                     );
-                    record["payload_hash"] = serde_json::json!(&identity);
+                    record["identity_hash"] = serde_json::json!(&identity);
                     let new_path = dir.join(format!("{identity}.json"));
                     std::fs::write(&new_path, serde_json::to_vec(&record).unwrap()).unwrap();
                     std::fs::remove_file(&path).unwrap();
@@ -2489,8 +3128,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let (key, payload) = seal();
         let identity = seal_identity_hash("test", &key, &payload);
-        let first_record = QuarantineRecord {
-            record_version: QUARANTINE_RECORD_VERSION,
+        let first_record = LegacyQuarantineRecord {
+            record_version: LEGACY_QUARANTINE_RECORD_VERSION,
             ns: "test".to_owned(),
             key,
             serial: 1,
@@ -2544,8 +3183,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let (key, payload) = seal();
         let identity = seal_identity_hash("test", &key, &payload);
-        let record = QuarantineRecord {
-            record_version: QUARANTINE_RECORD_VERSION,
+        let record = LegacyQuarantineRecord {
+            record_version: LEGACY_QUARANTINE_RECORD_VERSION,
             ns: "test".to_owned(),
             key,
             serial: 1,
