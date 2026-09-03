@@ -7,8 +7,8 @@ ledger**: what of the E0–E8 plan is actually shipped, the decisions made while
 live seams a later milestone consumes, and the concrete pickup point for **E4**. Read this first
 when resuming economy work.
 
-E0–E2 are on `origin/main`. **The E3 commits (`99f5b9c`..the fold) are local on `main` and not yet
-pushed.** Each cut ran the standing rhythm — design-review-before-build, adversarial-verify — with
+E0–E3 are on `origin/main` (the E3 commits, `99f5b9c` through the post-E3 module-order commit, were
+pushed 2026-09-03). Each cut ran the standing rhythm — design-review-before-build, adversarial-verify — with
 one variation for E3: by owner instruction the adversarial verify ran **once, over the whole E3
 diff, after E3d**, and its confirmed findings were folded in a separate commit (see the last
 Shipped row) rather than per cut.
@@ -174,10 +174,14 @@ failing workspace test, `mushd::web_e2e::spa_and_healthz_are_served`, predates E
     backing chain. Custody effects are audit-only; boot reconciles the last `Deposit` per object
     against the provider and freezes a titled mismatch per asset (a provider `None` is
     unverifiable, not a mismatch).
-19. **Module order matters: economy boots after sim.** `SpatialState` is installed at registration,
-    so an economy booting first sees an empty state and a definite "not held" for every interior
-    deposit. Org still precedes economy; a server without `SimulationModule` takes the provider's
-    `None` path safely.
+19. **Module order matters: economy boots after sim, and faction after org.** `SpatialState` is
+    installed at registration, so an economy booting first sees an empty state and a definite "not
+    held" for every interior deposit. Org still precedes economy; a server without
+    `SimulationModule` takes the provider's `None` path safely. *(Owner decision 2026-09-03:
+    `FactionModule` loads after `OrgModule` so faction boot can validate every `Faction.org` link
+    against loaded org state — a missing org or a two-factions-one-org conflict is reported loudly
+    at boot and never unbound; `backing_org` stays the at-use enforcement. The 24 h approval TTL
+    and staff-only character-to-character title transfer were confirmed at the same time.)*
 20. **The E1c membership adapter is struck** (D-E3-11). Role templates need real `OrgMembership`;
     a faction-backed org authorizes through direct grants and `FactionStandingProvider` predicates;
     `@account/approval` refuses `from_role` for a role the org does not have. A faction officer with

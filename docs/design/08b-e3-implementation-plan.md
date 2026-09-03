@@ -704,8 +704,11 @@ and `#[serde(default)] pub migrated: BTreeSet<SmolStr>`; the single struct liter
 `Faction::new` (`data.rs:292`). One org backs at most one faction — checked at bind; at use, a
 duplicate binding found live makes **both** links unresolvable (fail closed, `@faction/show`
 prints `org #N (CONFLICT)`) until staff re-bind. The link is validated at every use (a missing org
-→ the use fails closed; `org #N (MISSING)`), not at faction boot — `FactionModule` loads before
-`OrgModule` (`modules.rs:73` vs `:79`) and E3 does not reorder.
+→ the use fails closed; `org #N (MISSING)`). *Owner decision 2026-09-03 (post-E3):* `FactionModule`
+now loads **after** `OrgModule`, and faction boot additionally validates every link against the
+loaded org state — a `MISSING` org or a `CONFLICT` is reported loudly at boot, **never** mutated or
+unbound (§15.2: a money linkage is not silently dropped); the at-use resolver stays the
+enforcement.
 
 - `@faction/org <faction>=<org|new|none>` (staff): bind, create-and-bind (`new` → the `@org/create`
   path via `submit`; *as built* the **org** carries the faction's name and its root scope is named
@@ -818,12 +821,12 @@ reproduces balances from the journal.
 `MAX_PENDING_PER_ACCOUNT` 16 · `APPROVAL_TTL_SECS` 86 400 · approval GC at 7×TTL ·
 `MAX_SCOPES_PER_ORG` 64 · list cap 20 · `MAX_CONTAINMENT_DEPTH` (core, 8) reused for custody walks.
 
-## 10. Open questions for the owner (non-blocking; defaults chosen)
+## 10. Open questions — resolved by the owner 2026-09-03
 
-1. `APPROVAL_TTL_SECS` = 86 400 real seconds — confirm.
-2. D-E3-12's "transfer to another character is staff-only in E3" — confirm (the alternative is
-   recipient acknowledgement, which is E4's consent).
-3. Whether to reorder `FactionModule` after `OrgModule` (would allow link validation at boot).
+1. `APPROVAL_TTL_SECS` = 86 400 real seconds — **confirmed** ("fine for now").
+2. D-E3-12's "transfer to another character is staff-only in E3" — **confirmed** until E4 consent.
+3. Reorder `FactionModule` after `OrgModule` for boot-time link validation — **yes**; done as a
+   post-E3 commit (§6.1).
 
 ## 11. Review outcome (Draft 0.1 → 0.2)
 
@@ -871,8 +874,9 @@ Three passes ran on 2026-09-02 against Draft 0.1. Folded, by source:
   (G.3); tactics scrub as its own commit (G.4).
 - **Not folded (deliberate):** a `mush-sim` `economy` cargo feature; a two-phase custody plan
   across the trait (the terminal-fallible rule plus the module-layer one-custody-op cap make
-  single-call safe); reordering the module list — *superseded:* E3c did reorder economy after sim
-  (§4.10), for a reason the review did not anticipate.
+  single-call safe); reordering the module list — *superseded twice:* E3c reordered economy after
+  sim (§4.10) for a reason the review did not anticipate, and the owner then chose faction after
+  org for boot-time link validation (§6.1, §10).
 
 ## 12. Build outcome
 
