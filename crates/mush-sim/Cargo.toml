@@ -8,6 +8,10 @@ description = "Spatial simulation foundation: durable placement graph, domains, 
 
 [dependencies]
 mush-core.workspace = true
+# E3c: mush-sim implements the economy's `CustodyProvider` for interior vaults
+# (doc 08b §5.1). The edge is unconditional — no cargo feature — and acyclic:
+# mush-economy depends on {core, org} only.
+mush-economy.workspace = true
 mush-proto.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -17,6 +21,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 futures.workspace = true
+mush-org.workspace = true
 mush-store.workspace = true
 mush-testkit.workspace = true
 

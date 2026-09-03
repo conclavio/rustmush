@@ -2305,6 +2305,8 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "mush-core",
+ "mush-economy",
+ "mush-org",
  "mush-proto",
  "mush-store",
  "mush-testkit",

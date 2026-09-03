@@ -12,6 +12,7 @@
 
 pub mod boot;
 pub mod commands;
+pub mod custody;
 pub mod data;
 pub mod graph;
 pub mod links;
@@ -36,6 +37,7 @@ pub use data::{
     SpaceAnchor, SpatialParent, SpatialState, StationAssignment, StationId, StationSpec,
     UnplacedInfo, cgen_key,
 };
+pub use custody::InteriorCustodyProvider;
 pub use graph::{effective_domain, presence, project, space_domain, verify_indexes, verify_projections};
 pub use route::{Journey, JourneyStatus, Leg, RouteState};
 pub use transition::{Plan, SpatialError, Transition, apply, plan, run};

@@ -103,6 +103,13 @@ pub trait CustodyProvider: Send + Sync + std::fmt::Debug {
 /// Resolve the ONE provider for an op: the first that `handles(backing)`, refused
 /// if any *other* provider `claims(obj)`. Pass `obj: None` for a pure query about
 /// the backing itself (no object is being routed).
+///
+/// `@vault/create` calls this with the backing object itself, which is exactly
+/// the "never a backing another system owns" guard: the provider that will run
+/// the vault's ops is exempt (an interior vault's backing IS a space `mush-sim`
+/// owns), while a sim-placed hull offered as a *container* backing is refused,
+/// because the container provider is the one that would have to move things into
+/// it.
 pub(crate) fn resolve<'t>(
     providers: &'t [Arc<dyn CustodyProvider>],
     w: &World,
@@ -121,17 +128,6 @@ pub(crate) fn resolve<'t>(
         }
     }
     Ok(&providers[idx])
-}
-
-/// Whether any registered provider claims `obj` (the `@vault/create` backing
-/// guard: a backing another system owns is not a container we may move things
-/// into).
-#[must_use]
-pub(crate) fn claimed_by(providers: &[Arc<dyn CustodyProvider>], w: &World, obj: ObjId) -> Option<String> {
-    providers
-        .iter()
-        .find(|p| p.claims(w, obj))
-        .map(|p| p.provider().to_string())
 }
 
 // ---- the built-in container provider --------------------------------------

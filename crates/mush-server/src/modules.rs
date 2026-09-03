@@ -21,9 +21,15 @@
 //! The module list itself is [`server_modules`]: comsys first (its
 //! [`AliasStage`](mush_core::AliasStage) is the earliest alias stage in
 //! dispatch), then mail, then jobs, then weather, then script (both M5).
-//! Their persistence namespaces are disjoint, so the order is otherwise
+//! Their persistence namespaces are disjoint, so the order is mostly
 //! cosmetic — but it is the registration order hooks and observers fire in,
-//! so keep it stable.
+//! and it is the order `on_world_loaded` runs in, so keep it stable.
+//!
+//! Two orderings are **load-bearing** and documented at their entries: org
+//! before economy (economy authorizes through org), and — since E3c — sim
+//! before economy, because the economy's boot asks `mush-sim`'s custody
+//! provider about interior vault backings and a module state slot exists,
+//! empty, from registration onward.
 //!
 //! Script goes **last** deliberately. Its object `$`-command matcher is a
 //! post-command-table [`CommandFallback`](mush_core::CommandFallback), not an
@@ -88,14 +94,27 @@ pub fn server_modules_with(weather: mush_weather::WeatherConfig) -> Vec<Box<dyn 
             .with_capabilities(org_capability_vocabulary())
             .with_scope_use(vec![std::sync::Arc::new(mush_economy::EconomyScopeUse)]),
         ),
+        Box::new(mush_scenes::ScenesModule::new()),
+        Box::new(mush_sim::SimulationModule::new()),
         // E2: the accountable-value engine — the double-entry journal, accounts, and
         // the strict durable money ack-gate. After org (it authorizes through it).
         // E3b1 freezes the custody provider table at wiring: the built-in container
-        // provider is appended by the module itself, and E3c adds
-        // `Arc::new(mush_sim::InteriorCustodyProvider)` here for interior vaults.
-        Box::new(mush_economy::EconomyModule::with_custody(vec![])),
-        Box::new(mush_scenes::ScenesModule::new()),
-        Box::new(mush_sim::SimulationModule::new()),
+        // provider is appended by the module itself, and E3c adds the interior
+        // provider for `@vault/create … interior:<space>`.
+        //
+        // E3c moved economy **after** `SimulationModule` (org must still come
+        // first; scenes and sim read no economy state at boot). Boot order is
+        // `on_world_loaded` order, and `SpatialState` exists — EMPTY — from
+        // registration onward, so an economy booting first would ask the interior
+        // provider about a vault backing and get a definite `Some(false)` from a
+        // module that simply has not loaded its documents yet: every interior
+        // vault would boot `Frozen` and every deposited asset would latch
+        // `custody-mismatch`. With sim ahead of it, the economy's custody
+        // reconciliation and vault-backing validation see real state, and a
+        // `Some(false)` can be trusted as the drift it claims to be.
+        Box::new(mush_economy::EconomyModule::with_custody(vec![Arc::new(
+            mush_sim::InteriorCustodyProvider,
+        )])),
         Box::new(mush_mail::MailModule),
         Box::new(mush_jobs::JobsModule::new()),
         Box::new(mush_weather::WeatherModule::with_config(weather)),
@@ -742,7 +761,7 @@ mod tests {
         let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
         assert_eq!(
             names,
-            ["comsys", "faction", "canon", "org", "economy", "scenes", "sim", "mail", "jobs", "weather", "script"]
+            ["comsys", "faction", "canon", "org", "scenes", "sim", "economy", "mail", "jobs", "weather", "script"]
         );
     }
 
@@ -868,7 +887,7 @@ mod tests {
         assert_eq!(
             names,
             [
-                "comsys", "faction", "canon", "org", "economy", "scenes", "sim", "mail", "jobs", "weather", "script",
+                "comsys", "faction", "canon", "org", "scenes", "sim", "economy", "mail", "jobs", "weather", "script",
                 "worldgen", "wod"
             ]
         );
@@ -980,7 +999,7 @@ mod tests {
         let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
         assert_eq!(
             names,
-            ["comsys", "faction", "canon", "org", "economy", "scenes", "sim", "mail", "jobs", "weather", "script", "wod"]
+            ["comsys", "faction", "canon", "org", "scenes", "sim", "economy", "mail", "jobs", "weather", "script", "wod"]
         );
         // The ruleset's surface is live: +roll / +sheet registered, the
         // wod.roll panel feed present, and the chargen/xp job queues too.

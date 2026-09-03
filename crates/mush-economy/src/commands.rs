@@ -1593,7 +1593,8 @@ fn cmd_vault(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 fn vault_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     require_admin(ctx)?;
-    const USAGE: &str = "Usage: @vault/create <name>=container:<obj> [owner=<principal>] [scope=<id>]";
+    const USAGE: &str =
+        "Usage: @vault/create <name>=container:<obj>|interior:<obj> [owner=<principal>] [scope=<id>]";
     let name = ctx.args.lhs().trim().to_string();
     if name.is_empty() {
         return Err(CmdError::msg(USAGE));
@@ -1601,16 +1602,17 @@ fn vault_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?;
     let (rest, opts) = parse_opts(rhs, &["owner", "scope"]);
     let spec = rest.trim();
-    let backing_obj = if let Some(o) = spec.strip_prefix("container:") {
-        match_object(ctx.w, ctx.actor, o).map_err(|_| CmdError::msg("No such object."))?
-    } else if spec.starts_with("interior:") {
-        return Err(CmdError::msg(
-            "Interior vaults are not available until the interior custody provider is wired.",
-        ));
+    let backing = if let Some(o) = spec.strip_prefix("container:") {
+        CustodyRef::Container(match_object(ctx.w, ctx.actor, o).map_err(|_| CmdError::msg("No such object."))?)
+    } else if let Some(o) = spec.strip_prefix("interior:") {
+        // E3c: legal as soon as SOME registered provider handles the backing
+        // kind (`mush_sim::InteriorCustodyProvider`). Whether *this* room is a
+        // usable interior is `backing_valid`'s question, below.
+        CustodyRef::SpatialInterior(match_object(ctx.w, ctx.actor, o).map_err(|_| CmdError::msg("No such object."))?)
     } else {
         return Err(CmdError::msg(USAGE));
     };
-    let backing = CustodyRef::Container(backing_obj);
+    let backing_obj = backing.object().ok_or_else(|| CmdError::msg(USAGE))?;
     let owner = match opts.get("owner") {
         Some(s) => parse_principal(ctx, s).ok_or_else(|| CmdError::msg("No such principal."))?,
         None => PrincipalId::Object(ctx.actor),
@@ -1630,16 +1632,26 @@ fn vault_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             return Err(CmdError::msg(format!("That object already backs vault #{}.", v.id)));
         }
         let providers = store.providers();
-        if let Some(p) = crate::custody::claimed_by(&providers, ctx.w, backing_obj) {
-            return Err(CmdError::msg(format!(
-                "That object is held by the {p} system and cannot back a container vault."
-            )));
+        if !providers.iter().any(|p| p.handles(&backing)) {
+            return Err(CmdError::msg(if matches!(backing, CustodyRef::SpatialInterior(_)) {
+                "Interior vaults are not available until the interior custody provider is wired."
+            } else {
+                "Nothing registered can hold a vault of that kind."
+            }));
         }
-        let usable = crate::custody::resolve(&providers, ctx.w, &backing, None)
-            .ok()
-            .and_then(|p| p.backing_valid(ctx.w, &backing))
-            == Some(true);
-        if !usable {
+        // Resolving WITH the object is the claim check: the provider that will
+        // run this vault's ops is exempt (an interior vault's backing IS a space
+        // the simulation owns — that is the point), but a backing some OTHER
+        // system owns is refused, so a placed hull never becomes a footlocker.
+        let resolved = crate::custody::resolve(&providers, ctx.w, &backing, Some(backing_obj)).map_err(|e| {
+            match e {
+                crate::custody::CustodyError::Claimed { provider, .. } => CmdError::msg(format!(
+                    "That object is held by the {provider} system and cannot back a vault of that kind."
+                )),
+                other => CmdError::msg(other.to_string()),
+            }
+        })?;
+        if resolved.backing_valid(ctx.w, &backing) != Some(true) {
             return Err(CmdError::msg("That object cannot back a vault."));
         }
     }
