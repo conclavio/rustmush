@@ -1996,6 +1996,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "mush-economy"
+version = "0.1.0"
+dependencies = [
+ "mush-core",
+ "mush-org",
+ "serde",
+ "serde_json",
+ "sha2",
+ "smol_str",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "mush-faction"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,19 @@
+[package]
+name = "mush-economy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "mush-economy (E2): the accountable-value engine — checked amounts, instruments, accounts, and the immutable double-entry journal with a pure plan/validate/apply posting engine. E2a is a world-free library; the EconomyModule is E2b."
+
+[dependencies]
+mush-core.workspace = true
+mush-org.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true
