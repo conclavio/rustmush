@@ -328,11 +328,15 @@ pub struct InstalledComponent {
     /// Its opaque condition.
     pub condition: ConditionId,
     /// An optional detachable, ownable economic asset this component IS (major
-    /// tradeable kit); minor internal parts leave this `None`. An INERT pointer
-    /// with no reader yet — the scrub that nulls it when the asset object dies is
-    /// DEFERRED to the economy/ownership cut that first gives `asset` meaning and
-    /// can reconcile custody (the M33 review confirmed deferral is safe while the
-    /// pointer is inert).
+    /// tradeable kit); minor internal parts leave this `None`.
+    ///
+    /// E3c gave the pointer a reader (`mush-economy` titles objects, and a title
+    /// record names an `ObjId`), so it is no longer inert and no longer allowed
+    /// to outlive its referent: [`UnitMutationOp::SetComponentAsset`] is the one
+    /// way to change it, and the module nulls it on `ObjDestroyed` and at boot
+    /// (`module.rs`). `mush-tactics` still takes **no** dependency on
+    /// `mush-economy` — a dangling `ObjId` is a tactics-side integrity problem,
+    /// and ObjIds are never reused, so the scrub cannot mis-target.
     #[serde(default)]
     pub asset: Option<ObjId>,
 }
@@ -678,6 +682,14 @@ impl TacticalUnit {
                 let from = std::mem::replace(&mut c.condition, condition.clone());
                 Ok(JournalEntry::ComponentCondition { component: component.clone(), from, to: condition.clone() })
             }
+            UnitMutationOp::SetComponentAsset { component, asset } => {
+                let c = self
+                    .components
+                    .get_mut(component)
+                    .ok_or_else(|| UnitError::UnknownComponent(component.clone()))?;
+                let from = std::mem::replace(&mut c.asset, *asset);
+                Ok(JournalEntry::ComponentAsset { component: component.clone(), from, to: *asset })
+            }
             UnitMutationOp::GrantCapability { key, rules } => {
                 // Grant is the one op that introduces a fresh referent, so it
                 // must re-check the source resolves — otherwise apply could bless
@@ -746,6 +758,18 @@ pub enum UnitMutationOp {
         component: ComponentId,
         /// The new condition.
         condition: ConditionId,
+    },
+    /// Point a component at an economic asset object, or clear the pointer
+    /// (E3c). Idempotent; an unknown component is refused like every other
+    /// unresolved referent. This is the ONLY way
+    /// [`InstalledComponent::asset`] changes after `from_spec`, so a scrub is a
+    /// real revision bump a queued order that captured `(subject, gen)` can see,
+    /// not a silent doc edit.
+    SetComponentAsset {
+        /// The component.
+        component: ComponentId,
+        /// The asset object, or `None` to clear.
+        asset: Option<ObjId>,
     },
     /// Grant (or overwrite) a capability with an opaque payload (idempotent).
     GrantCapability {
@@ -824,6 +848,15 @@ pub enum JournalEntry {
         from: ConditionId,
         /// After.
         to: ConditionId,
+    },
+    /// A component's economic-asset pointer changed (E3c).
+    ComponentAsset {
+        /// The component.
+        component: ComponentId,
+        /// Before.
+        from: Option<ObjId>,
+        /// After.
+        to: Option<ObjId>,
     },
     /// A capability was granted (`replaced` = an entry already existed).
     CapabilityGranted {

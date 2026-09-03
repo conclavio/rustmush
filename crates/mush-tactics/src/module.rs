@@ -144,9 +144,16 @@ fn project(unit: &TacticalUnit, _observer: ObjId, _now: i64) -> serde_json::Valu
 
 // ---- lifecycle --------------------------------------------------------
 
-/// A destroyed unit-object drops its unit + doc. (Nulling a component's `asset`
-/// pointer when the ASSET object dies is DEFERRED to the economy cut that first
-/// reads `asset`; the pointer is inert until then.)
+/// A destroyed unit-object drops its unit + doc — **and** every OTHER unit that
+/// pointed a component at the husk as its economic asset drops that pointer
+/// (E3c, doc 08b §5.2).
+///
+/// The M32/M33 deferral is over: `mush-economy` now titles objects, so a
+/// component whose `asset` names a dead `ObjId` is a dangling reference into a
+/// namespace that will never resolve again. Nulling goes through a real
+/// [`UnitMutationPlan`], so the unit's revision bumps and a queued order that
+/// captured `(subject, gen)` sees the change; the repaired doc rides the same
+/// outbox as everything else this event produced.
 fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     let WorldEvent::ObjDestroyed { obj } = ev else { return };
     let obj = *obj;
@@ -154,6 +161,60 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     if removed {
         persist_unit_del(ctx.out, obj);
     }
+    let now = ctx.w.now();
+    let repaired = {
+        let Some(store) = ctx.w.module_state::<UnitStore>() else { return };
+        scrub_component_assets(&store.units, now, &|a| a == obj)
+    };
+    for u in &repaired {
+        tracing::warn!(unit = %u.object(), dead = %obj, "tactics: component asset pointer scrubbed (object destroyed)");
+        persist_unit(ctx.out, u);
+    }
+    if let Some(store) = ctx.w.module_state_mut::<UnitStore>() {
+        for u in repaired {
+            store.units.insert(u.object(), u);
+        }
+    }
+}
+
+/// The one scrub: for every unit holding a component whose `asset` satisfies
+/// `dead`, null those pointers through a single [`UnitMutationPlan`] and return
+/// the repaired units (the caller persists and installs them).
+///
+/// Pure with respect to the store — it clones and folds, so a plan the engine
+/// refuses (it cannot, but the type says it may) leaves the live unit exactly as
+/// it was, pointer and all, with a loud log instead of a half-edit.
+fn scrub_component_assets(
+    units: &BTreeMap<ObjId, TacticalUnit>,
+    now: i64,
+    dead: &dyn Fn(ObjId) -> bool,
+) -> Vec<TacticalUnit> {
+    let mut repaired = Vec::new();
+    for (id, unit) in units {
+        let ops: Vec<UnitMutationOp> = unit
+            .components()
+            .filter(|(_, c)| c.asset.is_some_and(dead))
+            .map(|(cid, _)| UnitMutationOp::SetComponentAsset { component: cid.clone(), asset: None })
+            .collect();
+        if ops.is_empty() {
+            continue;
+        }
+        let plan = UnitMutationPlan {
+            ops,
+            expected_revision: None,
+            cause: Some(SmolStr::new_static("asset-scrub")),
+        };
+        match unit::apply(unit, &plan, now) {
+            Ok((mut post, _journal)) => {
+                post.settle_mobility(now);
+                repaired.push(post);
+            }
+            Err(e) => {
+                tracing::error!(unit = %id, error = %e, "tactics: component asset scrub refused; pointer left dangling");
+            }
+        }
+    }
+    repaired
 }
 
 /// Refuse `@behavior/remove tactics.unit` while the object is a live unit —
@@ -226,6 +287,25 @@ fn boot_units(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) {
     for obj in stale {
         tracing::warn!(%obj, "tactics: tactics.unit binding with no unit doc; detaching");
         let _ = ctx.w.detach_behavior(obj, &unit_behavior);
+    }
+
+    // E3c: the boot half of the component-asset scrub. Only `@destroy` emits
+    // `ObjDestroyed`, so a programmatic `World::destroy` (or an object lost
+    // during downtime) leaves a component pointing at nothing; this is the pass
+    // that catches it. World-only eligibility, like everything else here — the
+    // question is "does that object still exist?", never "does it have a title?"
+    // (`mush-tactics` takes no economy dependency).
+    let now = ctx.w.now();
+    let repaired = {
+        let w: &World = ctx.w;
+        scrub_component_assets(&store.units, now, &|a| {
+            w.get(a).is_none_or(|o| o.flags.contains(Flags::GOING))
+        })
+    };
+    for u in repaired {
+        tracing::warn!(unit = %u.object(), "tactics: component asset pointer(s) to a missing object scrubbed at boot");
+        persist_unit(ctx.out, &u);
+        store.units.insert(u.object(), u);
     }
 
     if let Some(slot) = ctx.w.module_state_mut::<UnitStore>() {
