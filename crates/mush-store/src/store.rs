@@ -37,8 +37,7 @@ use futures::future::BoxFuture;
 use mush_core::ObjId;
 
 use crate::types::{
-    AccountRec, BanRec, SshKeyRec, StoreError, TokenRecord, WorldSnapshot, WriteBatch,
-    WriteReceipt,
+    AccountRec, BanRec, SshKeyRec, StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt,
 };
 
 /// Persistent storage for the world, accounts, sitebans, and store metadata.
@@ -53,8 +52,9 @@ pub trait ObjectStore: Send + Sync {
     /// no `next_id`) so the caller can seed a fresh world. A store with
     /// objects but no `next_id` is corrupt ([`StoreError::Corrupt`]) — ids
     /// are never recycled, so the allocator resume point must exist.
-    /// Individual corrupt object docs are tolerated: logged via `tracing`
-    /// and skipped, never a panic.
+    /// Individual corrupt object docs are logged, omitted from `objects`, and
+    /// counted in [`WorldSnapshot::corrupt_docs`] rather than panicking. An
+    /// authoritative server must refuse a snapshot with a non-zero count.
     fn load_world(&self) -> BoxFuture<'_, Result<Option<WorldSnapshot>, StoreError>>;
 
     /// Apply one [`WriteBatch`] atomically (see its docs for the exact
@@ -213,8 +213,12 @@ pub trait ObjectStore: Send + Sync {
     /// (`SCAN mod:{ns}:*` — the trailing `:` in the pattern is what keeps
     /// `mod:a:*` from matching `mod:ab:...`). Keys are returned **without**
     /// the `mod:{ns}:` prefix. Order is unspecified. Stream keys sharing
-    /// the namespace are skipped, not errors. An unknown namespace is an
-    /// empty list.
+    /// the namespace are skipped, not errors; implementations must
+    /// positively identify a key as a stream rather than treating every
+    /// JSON wrong-type error as one. An unknown namespace is an empty list.
+    /// A discovered JSON document that cannot be decoded, or a key with any
+    /// other storage type, is an error; implementations must never omit
+    /// corrupt authoritative bytes.
     fn module_json_list<'a>(
         &'a self,
         ns: &'a str,

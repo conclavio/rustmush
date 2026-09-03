@@ -150,8 +150,9 @@ async fn worldgen_full_journey_over_ssh() {
     god.send_line("@dig Gallery=gallery,out").await;
     god.expect("Gallery created with room number #").await;
     let gallery = parse_id_after(&strip_ansi(&god.seen), "Gallery created with room number #");
+    let mark = god.mark();
     god.send_line(&format!("@zone #{gallery}=#{zone}")).await;
-    god.expect("Zoned.").await;
+    god.expect_after(mark, "Zoned.").await;
 
     let mark = god.mark();
     god.send_line("gallery").await;
@@ -160,8 +161,9 @@ async fn worldgen_full_journey_over_ssh() {
     god.send_line("@dig Study=study,back").await;
     god.expect("Study created with room number #").await;
     let study = parse_id_after(&strip_ansi(&god.seen), "Study created with room number #");
+    let mark = god.mark();
     god.send_line(&format!("@zone #{study}=#{zone}")).await;
-    god.expect("Zoned.").await;
+    god.expect_after(mark, "Zoned.").await;
 
     // --- @gen the Gallery and accept it (this is the neighbor's desc). ---
     let mark = god.mark();

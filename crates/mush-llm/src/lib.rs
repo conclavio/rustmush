@@ -60,7 +60,9 @@ pub use config::{
     RetryConfig, RouteConfig,
 };
 pub use dashboard::{BudgetStatus, DashboardSnapshot, RecentCall, SpendRow};
-pub use provider::{BudgetScope, LlmError, LlmProvider, ProviderCaps, ProviderId};
+pub use provider::{
+    BudgetScope, LlmError, LlmProvider, MAX_PROVIDER_RESPONSE_BYTES, ProviderCaps, ProviderId,
+};
 pub use service::{
     CallCtx, KillSwitch, LlmFeature, LlmService, LlmServiceBuilder, NpcTier, Priority,
     ServiceError, derive_route, user_request,

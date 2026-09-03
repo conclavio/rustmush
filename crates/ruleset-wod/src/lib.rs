@@ -324,19 +324,23 @@ impl GameModule for WodRuleset {
         // Phase 1 — decode + validate against the live world (immutable borrow;
         // each decode borrow ends before the next statement).
         let conceal = match &conceal_doc {
-            Some(v) => Some(WodState::decode_conceal(v, |id| ctx.w.get(id).is_some()).map_err(ModError::msg)?),
+            Some(v) => Some(
+                WodState::decode_conceal(v, |id| ctx.w.get(id).is_some()).map_err(ModError::msg)?,
+            ),
             None => None,
         };
         let pending = match &pending_doc {
-            Some(v) => {
-                Some(WodState::decode_pending(v, now, |id| ctx.w.get(id).is_some()).map_err(ModError::msg)?)
-            }
+            Some(v) => Some(
+                WodState::decode_pending(v, now, |id| ctx.w.get(id).is_some())
+                    .map_err(ModError::msg)?,
+            ),
             None => None,
         };
         let extended = match &extended_doc {
-            Some(v) => {
-                Some(WodState::decode_extended(v, |id| ctx.w.get(id).is_some()).map_err(ModError::msg)?)
-            }
+            Some(v) => Some(
+                WodState::decode_extended(v, |id| ctx.w.get(id).is_some())
+                    .map_err(ModError::msg)?,
+            ),
             None => None,
         };
         // Phase 2 — install into the slot (fields only) and note any doc that was

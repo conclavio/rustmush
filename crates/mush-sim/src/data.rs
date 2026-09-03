@@ -5,10 +5,17 @@
 //! rebuildable projection of it and is never persisted.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::OnceLock;
 
-use mush_core::{ChannelId, Deferred, Ledger, ModuleOp, ModuleWrite, ObjId, Outbox, LIMBO};
+use mush_core::{
+    ChannelId, Deferred, DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef,
+    DefinitionRegistryBuilder, DefinitionValidationContext, LIMBO, Ledger, ModuleOp, ModuleWrite,
+    ObjId, Outbox, OwnerId, RulesValueError,
+};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
+
+pub use mush_core::RulesValue;
 
 /// The module namespace (`mod:sim:*`).
 pub const NS: &str = "sim";
@@ -17,6 +24,10 @@ pub const META_KEY: &str = "meta";
 /// The only driver cut 1 accepts: a passive domain that holds placements and
 /// never ticks (design §6.2 `DomainClock::Passive`).
 pub const PASSIVE_DRIVER: &str = "sim.passive";
+const PASSIVE_DEFINITION_KIND: &str = "schema";
+const PASSIVE_DEFINITION_ID: &str = "passive";
+const PASSIVE_DEFINITION_VERSION: u32 = 1;
+static PASSIVE_DEFINITION_REF: OnceLock<DefinitionRef> = OnceLock::new();
 /// Bound on the placement/anchor ancestor walk (design §5.2 #2).
 pub const MAX_SPATIAL_DEPTH: usize = 8;
 /// The recovery audit ledger's log id (design §12.1 "audited").
@@ -35,6 +46,46 @@ impl std::fmt::Display for DomainId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
+}
+
+/// A persisted monotonic counter cannot advance without wrapping.
+///
+/// Callers must either refuse the requested change before mutating anything,
+/// or (only for a terminal safety transition) deliberately retain the maximum
+/// value and make the record permanently non-reactivatable.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum SpatialCounterError {
+    /// `u64::MAX` is reserved as the exhausted domain-id cursor because there
+    /// is no representable cursor after allocating it.
+    #[error("the domain id allocator is exhausted")]
+    DomainIdExhausted,
+    /// A domain record cannot represent another revision.
+    #[error("domain #{0} has exhausted its revision counter")]
+    DomainRevisionExhausted(DomainId),
+    /// A placement record cannot represent another revision.
+    #[error("{0} has exhausted its placement revision counter")]
+    PlacementRevisionExhausted(ObjId),
+    /// A control host cannot represent another lease/control epoch.
+    #[error("{0} has exhausted its control generation")]
+    ControlGenerationExhausted(ObjId),
+}
+
+pub(crate) fn checked_domain_revision(
+    domain: DomainId,
+    current: u64,
+) -> Result<u64, SpatialCounterError> {
+    current
+        .checked_add(1)
+        .ok_or(SpatialCounterError::DomainRevisionExhausted(domain))
+}
+
+pub(crate) fn checked_placement_revision(
+    object: ObjId,
+    current: u64,
+) -> Result<u64, SpatialCounterError> {
+    current
+        .checked_add(1)
+        .ok_or(SpatialCounterError::PlacementRevisionExhausted(object))
 }
 
 /// A compartment/berth name within an interior space (lowercased).
@@ -59,7 +110,11 @@ macro_rules! name_id {
             #[must_use]
             pub fn new(s: &str) -> Option<$t> {
                 let s = s.trim().to_lowercase();
-                if s.is_empty() { None } else { Some($t(SmolStr::new(s))) }
+                if s.is_empty() {
+                    None
+                } else {
+                    Some($t(SmolStr::new(s)))
+                }
             }
             /// The name.
             #[must_use]
@@ -82,17 +137,62 @@ name_id!(StationId);
 // Records
 // ----------------------------------------------------------------------
 
-/// An opaque, schema-tagged value whose interpretation belongs to a domain
-/// driver (design §5.1): a Cartesian pose, a berth transform, whatever the
-/// ruleset needs. The passive driver stores it verbatim.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct RulesValue {
-    /// The schema id (`"tactics.pose"`, …).
-    pub schema: SmolStr,
-    /// Schema version.
-    pub version: u32,
-    /// The payload.
-    pub data: serde_json::Value,
+/// The immutable definition registered for the passive driver's opaque JSON
+/// values. The registrar supplies the `sim` owner; this descriptor supplies
+/// the owner-local `schema:passive@1` identity and its canonical payload.
+pub(crate) fn passive_definition_descriptor() -> DefinitionDescriptor {
+    DefinitionDescriptor::new(
+        DefinitionKind::new(PASSIVE_DEFINITION_KIND)
+            .expect("the built-in passive definition kind is canonical"),
+        DefinitionId::new(PASSIVE_DEFINITION_ID)
+            .expect("the built-in passive definition id is canonical"),
+        PASSIVE_DEFINITION_VERSION,
+        serde_json::json!({ "instance": "opaque_json" }),
+    )
+    .expect("the built-in passive definition has a non-zero version")
+    .as_current()
+}
+
+/// Provider-owned semantic validation for the `sim:schema:*` catalog. This is
+/// deliberately stricter than accepting arbitrary canonical JSON: the only
+/// current schema is the exact passive-driver descriptor, with no external
+/// dependencies.
+pub(crate) fn validate_schema_definition(
+    context: &DefinitionValidationContext<'_>,
+) -> Result<(), String> {
+    let entry = context.definition();
+    let reference = entry.reference();
+    if reference.key().id.as_str() != PASSIVE_DEFINITION_ID
+        || reference.version() != PASSIVE_DEFINITION_VERSION
+        || entry.payload() != &serde_json::json!({ "instance": "opaque_json" })
+        || !entry.references().is_empty()
+        || !entry.is_current()
+    {
+        return Err("unknown or malformed passive schema definition".into());
+    }
+    Ok(())
+}
+
+/// The exact shared identity of [`PASSIVE_DRIVER`]. This deliberately builds
+/// the same owner-stamped descriptor used during module composition; legacy
+/// dotted schema names are never parsed to infer an owner.
+#[must_use]
+pub fn passive_definition_ref() -> DefinitionRef {
+    PASSIVE_DEFINITION_REF
+        .get_or_init(|| {
+            DefinitionRegistryBuilder::new()
+                .register(
+                    OwnerId::new(NS).expect("the sim module namespace is canonical"),
+                    passive_definition_descriptor(),
+                )
+                .expect("the built-in passive definition is valid")
+        })
+        .clone()
+}
+
+/// Wrap passive-driver data in the shared, exact-reference rules value.
+pub fn passive_rules_value(data: serde_json::Value) -> Result<RulesValue, RulesValueError> {
+    RulesValue::new(passive_definition_ref(), data)
 }
 
 /// Domain lifecycle (design §6.1; `Retired` per the cut-1 review: a retired
@@ -118,15 +218,18 @@ pub enum DomainClock {
 /// A simulation domain (design §6.1). `presentation_location` is where every
 /// directly placed participant's `Obj.location` projects (design D1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DomainRecord {
     /// Durable id.
     pub id: DomainId,
     /// The object carrying `sim.domain`.
     pub host: ObjId,
-    /// The driver id (cut 1: [`PASSIVE_DRIVER`] only).
-    pub driver: SmolStr,
-    /// Driver data schema version.
-    pub schema_version: u32,
+    /// Exact immutable driver definition (cut 1: [`PASSIVE_DRIVER`] only).
+    ///
+    /// The legacy `"sim.passive"` plus `schema_version` pair is accepted only
+    /// by the domain-record boot adapter; newly authored records always carry
+    /// this complete owner/kind/id/version/digest identity.
+    pub driver: DefinitionRef,
     /// Lifecycle.
     pub status: DomainStatus,
     /// Clock mode.
@@ -208,6 +311,21 @@ pub struct PlacementRecord {
     /// Set while `parent` is `Unplaced`.
     #[serde(default)]
     pub unplaced: Option<UnplacedInfo>,
+}
+
+/// Boot-only hold metadata for an authoritative placement document that could
+/// not be decoded or whose exact rules references could not be resolved.
+///
+/// The authoritative `placement:*` value is deliberately left untouched in
+/// the store until a later repair/migration workflow can preserve it.  This
+/// record keeps the associated object gated and mechanically inactive without
+/// pretending that the corrupt document was successfully interpreted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldPlacement {
+    /// The authoritative key that remains unchanged.
+    pub key: SmolStr,
+    /// Bounded parser/validation diagnostic; never the raw document.
+    pub reason: String,
 }
 
 /// Where an interior space sits (design §5.4).
@@ -393,6 +511,13 @@ pub struct SpatialState {
     pub domains: BTreeMap<DomainId, DomainRecord>,
     /// Placements by object.
     pub placements: BTreeMap<ObjId, PlacementRecord>,
+    /// Unreadable authoritative placements associated with a canonical object
+    /// key. These are mechanically inactive and never rewritten at boot.
+    pub held_placements: BTreeMap<ObjId, HeldPlacement>,
+    /// Unreadable/non-canonical placement keys that cannot safely be associated
+    /// with an object. Retained only as bounded in-memory diagnostics; the raw
+    /// authoritative values remain in the store.
+    pub unbound_placement_docs: BTreeMap<SmolStr, String>,
     /// Interior spaces by object.
     pub spaces: BTreeMap<ObjId, InteriorSpaceRecord>,
     /// Mount definitions by host.
@@ -421,6 +546,8 @@ impl Default for SpatialState {
         SpatialState {
             domains: BTreeMap::new(),
             placements: BTreeMap::new(),
+            held_placements: BTreeMap::new(),
+            unbound_placement_docs: BTreeMap::new(),
             spaces: BTreeMap::new(),
             mounts: BTreeMap::new(),
             stations: BTreeMap::new(),
@@ -440,6 +567,8 @@ impl PartialEq for SpatialState {
     fn eq(&self, other: &Self) -> bool {
         self.domains == other.domains
             && self.placements == other.placements
+            && self.held_placements == other.held_placements
+            && self.unbound_placement_docs == other.unbound_placement_docs
             && self.spaces == other.spaces
             && self.mounts == other.mounts
             && self.stations == other.stations
@@ -462,18 +591,45 @@ impl SpatialState {
     }
 
     /// Allocate the next domain id (callers persist the meta doc).
-    pub fn alloc_domain_id(&mut self) -> DomainId {
+    ///
+    /// `u64::MAX` is an exhausted sentinel rather than an allocatable id: a
+    /// persisted allocator must always retain a representable resume cursor.
+    /// Refusal leaves the cursor unchanged.
+    pub fn alloc_domain_id(&mut self) -> Result<DomainId, SpatialCounterError> {
         let id = DomainId(self.next_domain_id);
-        self.next_domain_id += 1;
-        id
+        let next = self
+            .next_domain_id
+            .checked_add(1)
+            .ok_or(SpatialCounterError::DomainIdExhausted)?;
+        self.next_domain_id = next;
+        Ok(id)
+    }
+
+    /// Compute the next control epoch without mutating the state.
+    pub fn next_control_generation(&self, unit: ObjId) -> Result<u64, SpatialCounterError> {
+        self.control_generation(unit)
+            .checked_add(1)
+            .ok_or(SpatialCounterError::ControlGenerationExhausted(unit))
     }
 
     /// Advance a unit's control epoch (a control change); returns the new value.
     /// Callers persist it via [`persist_control_gen`]. Monotonic across reboot.
-    pub fn bump_control_gen(&mut self, unit: ObjId) -> u64 {
-        let g = self.control_gen.entry(unit).or_insert(0);
-        *g += 1;
-        *g
+    /// Refusal leaves the current epoch unchanged.
+    pub fn bump_control_gen(&mut self, unit: ObjId) -> Result<u64, SpatialCounterError> {
+        let next = self.next_control_generation(unit)?;
+        self.apply_control_generation(unit, next);
+        Ok(next)
+    }
+
+    /// Commit a value returned by [`SpatialState::next_control_generation`]
+    /// after the caller has completed all other fallible preflight.
+    pub(crate) fn apply_control_generation(&mut self, unit: ObjId, next: u64) {
+        debug_assert_eq!(
+            self.control_generation(unit).checked_add(1),
+            Some(next),
+            "prepared control generation must still be current"
+        );
+        self.control_gen.insert(unit, next);
     }
 
     /// The current control epoch for `unit` (0 if never changed). A queued intent
@@ -494,16 +650,26 @@ impl SpatialState {
     /// Whether `obj` is currently placed (Direct/Interior/Attached).
     #[must_use]
     pub fn is_placed(&self, obj: ObjId) -> bool {
-        self.placements.get(&obj).is_some_and(|p| p.parent.is_placed())
+        self.placements
+            .get(&obj)
+            .is_some_and(|p| p.parent.is_placed())
     }
 
     /// Whether `obj` is quarantined.
     #[must_use]
     pub fn is_quarantined(&self, obj: ObjId) -> bool {
-        self.placements
-            .get(&obj)
-            .and_then(|p| p.unplaced.as_ref())
-            .is_some_and(|u| u.quarantined)
+        self.held_placements.contains_key(&obj)
+            || self
+                .placements
+                .get(&obj)
+                .and_then(|p| p.unplaced.as_ref())
+                .is_some_and(|u| u.quarantined)
+    }
+
+    /// Why an unreadable authoritative placement is held, if one exists.
+    #[must_use]
+    pub fn held_placement(&self, obj: ObjId) -> Option<&HeldPlacement> {
+        self.held_placements.get(&obj)
     }
 
     /// Whether `obj` is bound into the simulation in ANY way: placed,
@@ -536,7 +702,8 @@ impl SpatialState {
     /// host), from the derived index.
     #[must_use]
     pub fn children_of(&self, obj: ObjId) -> &BTreeSet<ObjId> {
-        static EMPTY: std::sync::LazyLock<BTreeSet<ObjId>> = std::sync::LazyLock::new(BTreeSet::new);
+        static EMPTY: std::sync::LazyLock<BTreeSet<ObjId>> =
+            std::sync::LazyLock::new(BTreeSet::new);
         self.derived.children.get(&obj).unwrap_or(&EMPTY)
     }
 
@@ -610,7 +777,9 @@ impl SpatialState {
         self.children_of(space)
             .iter()
             .filter(|&&o| match self.parent_of(o) {
-                SpatialParent::Interior { slot: s, .. } => slot.is_none_or(|want| s.as_ref() == Some(want)),
+                SpatialParent::Interior { slot: s, .. } => {
+                    slot.is_none_or(|want| s.as_ref() == Some(want))
+                }
                 _ => false,
             })
             .count()
@@ -722,8 +891,52 @@ pub fn cgen_key(unit: ObjId) -> SmolStr {
     SmolStr::new(format!("cgen:{}", unit.0))
 }
 pub(crate) fn persist_control_gen(out: &mut Outbox, unit: ObjId, generation: u64) {
-    push_op(out, ModuleWrite::JsonSet { key: cgen_key(unit), value: serde_json::json!(generation) });
+    push_op(
+        out,
+        ModuleWrite::JsonSet {
+            key: cgen_key(unit),
+            value: serde_json::json!(generation),
+        },
+    );
 }
 
 /// The default recovery room when none is configured.
 pub const DEFAULT_RECOVERY_ROOM: ObjId = LIMBO;
+
+#[cfg(test)]
+mod tests {
+    use super::{DomainId, SpatialCounterError, SpatialState};
+    use mush_core::ObjId;
+
+    #[test]
+    fn domain_allocator_exhaustion_is_explicit_and_nonmutating() {
+        let mut state = SpatialState {
+            next_domain_id: u64::MAX - 1,
+            ..SpatialState::default()
+        };
+
+        assert_eq!(state.alloc_domain_id(), Ok(DomainId(u64::MAX - 1)));
+        assert_eq!(state.next_domain_id, u64::MAX);
+        let before = state.clone();
+        assert_eq!(
+            state.alloc_domain_id(),
+            Err(SpatialCounterError::DomainIdExhausted)
+        );
+        assert_eq!(state, before, "exhausted allocation changed state");
+    }
+
+    #[test]
+    fn control_generation_exhaustion_is_explicit_and_nonmutating() {
+        let unit = ObjId(42);
+        let mut state = SpatialState::default();
+        state.control_gen.insert(unit, u64::MAX - 1);
+
+        assert_eq!(state.bump_control_gen(unit), Ok(u64::MAX));
+        let before = state.clone();
+        assert_eq!(
+            state.bump_control_gen(unit),
+            Err(SpatialCounterError::ControlGenerationExhausted(unit))
+        );
+        assert_eq!(state, before, "exhausted control bump changed state");
+    }
+}

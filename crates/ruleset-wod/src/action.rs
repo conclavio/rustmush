@@ -52,7 +52,11 @@ fn action_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         pool_expr.trim().to_string()
     };
     let resolved_pool = crate::dice::resolve_sheet_pool(&schema, &doc, &pool)
-        .map_err(|e| CmdError::msg(format!("That pool does not resolve against your sheet: {e}.")))?
+        .map_err(|e| {
+            CmdError::msg(format!(
+                "That pool does not resolve against your sheet: {e}."
+            ))
+        })?
         .total;
 
     let actor = ctx.actor;

@@ -27,19 +27,19 @@
 use std::collections::HashMap;
 
 use mush_core::{
-    Audience, Effect, Effects, Engine, GameModule, GOD, Inbound, LIMBO, ModuleBootData, ModuleOp,
+    Audience, Effect, Effects, Engine, GOD, GameModule, Inbound, LIMBO, ModuleBootData, ModuleOp,
     ObjId, ObjKind, Outbox,
 };
 use mush_dice::owod20::{ExtendedRoll, Owod20Opts, Owod20Outcome, Owod20Pool};
 use mush_jobs::JobsModule;
 use mush_proto::OutputEvent;
 use mush_store::{InMemoryStore, ObjectStore, WriteBatch};
-use mush_testkit::{boot_world, TestWorld};
+use mush_testkit::{TestWorld, boot_world};
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use ruleset_wod::state::WodState;
-use ruleset_wod::st::{ActionKind, Ruling, RulingResult, StResult};
 use ruleset_wod::WodRuleset;
+use ruleset_wod::st::{ActionKind, Ruling, RulingResult, StResult};
+use ruleset_wod::state::WodState;
 use smol_str::SmolStr;
 
 /// A fixed RNG seed shared by both engine instances (register-time), so the
@@ -179,7 +179,10 @@ async fn roundtrip(ops: Vec<ModuleOp>) -> HashMap<SmolStr, ModuleBootData> {
         })
         .await
         .expect("store write");
-    let kv = store.module_json_list("wod").await.expect("module_json_list");
+    let kv = store
+        .module_json_list("wod")
+        .await
+        .expect("module_json_list");
     let boot = ModuleBootData {
         kv: kv.into_iter().map(|(k, v)| (SmolStr::new(k), v)).collect(),
         streams: HashMap::new(),
@@ -239,21 +242,43 @@ async fn wod_scene_state_survives_a_hot_restart() {
 
     // (S2 pending, expired) Stale proposes at t=1000 → pending expires at 1300.
     let stale_fx = step_cmd(&mut tw, stale, "+cast Kindle a flame proposing Forces");
-    apply_ruling(&mut tw, stale, deferred_correlation(&stale_fx), accept_ruling(5));
+    apply_ruling(
+        &mut tw,
+        stale,
+        deferred_correlation(&stale_fx),
+        accept_ruling(5),
+    );
     assert!(tw_state(&tw).pending(stale).is_some(), "Stale pending set");
 
     // (S2 pending, survives) Nick proposes at t=10000 → pending expires at 10300.
     tw.set_now(10_000);
     let nick_fx = step_cmd(&mut tw, nick, "+cast Hurl a bolt of fire proposing Forces");
-    apply_ruling(&mut tw, nick, deferred_correlation(&nick_fx), accept_ruling(7));
+    apply_ruling(
+        &mut tw,
+        nick,
+        deferred_correlation(&nick_fx),
+        accept_ruling(7),
+    );
 
     // Capture the pre-restart truth to compare against.
     let pre = tw_state(&tw);
-    assert_eq!(pre.concealed_rating(vlad), Some(2), "Vlad cloaked at rating 2");
-    assert_eq!(pre.concealed_rating(ghost), Some(3), "Ghost cloaked at rating 3");
+    assert_eq!(
+        pre.concealed_rating(vlad),
+        Some(2),
+        "Vlad cloaked at rating 2"
+    );
+    assert_eq!(
+        pre.concealed_rating(ghost),
+        Some(3),
+        "Ghost cloaked at rating 3"
+    );
     let seer_v = pre.perception_verdict(seer, vlad);
     let mort_v = pre.perception_verdict(mort, vlad);
-    assert_eq!(mort_v, Some(false), "the no-Auspex mortal cannot pierce Vlad");
+    assert_eq!(
+        mort_v,
+        Some(false),
+        "the no-Auspex mortal cannot pierce Vlad"
+    );
     let rae_ext: ExtendedRoll = pre.extended(rae).expect("Rae extended roll").clone();
     assert_eq!(rae_ext.target, 5);
     assert_eq!(rae_ext.rolls.len(), 1, "one extended roll recorded");
@@ -263,12 +288,17 @@ async fn wod_scene_state_survives_a_hot_restart() {
     assert_eq!(nick_pending_pre.difficulty, 7);
     // The seer + Rae logged rolls (perception pierce / the extended throw) — used
     // below to prove the log ring is NOT persisted.
-    assert!(!pre.recent_logs(rae, 1).is_empty(), "Rae has a logged roll pre-restart");
+    assert!(
+        !pre.recent_logs(rae, 1).is_empty(),
+        "Rae has a logged roll pre-restart"
+    );
 
     // The write-through ops the scene emitted, folded into one store batch.
     let ops = tw.take_module_ops();
     assert!(
-        ops.iter().any(|o| matches!(&o.op, mush_core::ModuleWrite::JsonSet { key, .. } if key == "conceal")),
+        ops.iter().any(
+            |o| matches!(&o.op, mush_core::ModuleWrite::JsonSet { key, .. } if key == "conceal")
+        ),
         "the cloak emitted a conceal doc"
     );
     let boot = roundtrip(ops).await;
@@ -317,8 +347,11 @@ async fn wod_scene_state_survives_a_hot_restart() {
     // so the boot re-wrote the corrected conceal + pending docs.
     let fixups = engine.take_module_ops();
     assert!(
-        fixups.iter().any(|o| matches!(&o.op, mush_core::ModuleWrite::JsonSet { key, .. } if key == "conceal"))
-            && fixups.iter().any(|o| matches!(&o.op, mush_core::ModuleWrite::JsonSet { key, .. } if key == "pending")),
+        fixups.iter().any(
+            |o| matches!(&o.op, mush_core::ModuleWrite::JsonSet { key, .. } if key == "conceal")
+        ) && fixups.iter().any(
+            |o| matches!(&o.op, mush_core::ModuleWrite::JsonSet { key, .. } if key == "pending")
+        ),
         "pruning an orphan/expired entry re-persists the corrected docs: {fixups:?}"
     );
 
@@ -330,8 +363,16 @@ async fn wod_scene_state_survives_a_hot_restart() {
         "the cloaked vampire is STILL concealed at the same rating (the bug is fixed)"
     );
     assert!(post.is_concealed(vlad));
-    assert_eq!(post.perception_verdict(seer, vlad), seer_v, "seer verdict intact");
-    assert_eq!(post.perception_verdict(mort, vlad), mort_v, "mortal verdict intact");
+    assert_eq!(
+        post.perception_verdict(seer, vlad),
+        seer_v,
+        "seer verdict intact"
+    );
+    assert_eq!(
+        post.perception_verdict(mort, vlad),
+        mort_v,
+        "mortal verdict intact"
+    );
     assert_eq!(post.perception_verdict(mort, vlad), Some(false));
 
     // --- S2: orphan dropped, not resurrected ---
@@ -361,14 +402,22 @@ async fn wod_scene_state_survives_a_hot_restart() {
     );
 
     // --- S3: the log ring was NOT persisted (it re-hydrates empty) ---
-    assert!(post.recent_logs(rae, 1).is_empty(), "logs are not persisted (Rae)");
-    assert!(post.recent_logs(seer, 1).is_empty(), "logs are not persisted (Seer)");
+    assert!(
+        post.recent_logs(rae, 1).is_empty(),
+        "logs are not persisted (Rae)"
+    );
+    assert!(
+        post.recent_logs(seer, 1).is_empty(),
+        "logs are not persisted (Seer)"
+    );
 
     // --- S3: the RNG was NOT persisted (re-seeded on boot). A fresh roll on the
     // reboot reproduces the pristine seed-0 stream; had the advanced RNG been
     // restored it would not match. Probe rolls FIRST, before any other RNG use. ---
     let mut expect_rng = ChaCha8Rng::seed_from_u64(S);
-    let faces: Vec<u8> = (0..5).map(|_| (expect_rng.next_u32() % 10) as u8 + 1).collect();
+    let faces: Vec<u8> = (0..5)
+        .map(|_| (expect_rng.next_u32() % 10) as u8 + 1)
+        .collect();
     let expected = Owod20Pool::score(&faces, &Owod20Opts::new(6));
     cmd(&mut engine, probe, "+roll strength+brawl");
     let got: Owod20Outcome = state(&engine)

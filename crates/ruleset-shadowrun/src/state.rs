@@ -215,7 +215,10 @@ impl Sr5State {
     pub fn extended_persist_op(&self) -> ModuleOp {
         let doc: BTreeMap<u32, &Sr5Extended> =
             self.extended.iter().map(|(k, v)| (k.0, v)).collect();
-        json_set(KEY_EXTENDED, serde_json::to_value(&doc).expect("extended doc serializes"))
+        json_set(
+            KEY_EXTENDED,
+            serde_json::to_value(&doc).expect("extended doc serializes"),
+        )
     }
 
     /// Decode + validate a persisted `extended` doc against a liveness

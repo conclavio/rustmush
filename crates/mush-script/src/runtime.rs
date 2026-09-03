@@ -463,7 +463,7 @@ fn handle_error(trigger: &Trigger, err: &EvalAltResult, cfg: ScriptConfig) {
         let Some(sess) = b.as_mut() else { return };
         let obj = trigger.self_obj;
         let owner = sess.world.get(obj).map_or(obj, |o| o.owner);
-        sess.out.error(
+        sess.out.error_on_commit(
             owner,
             format!("Script {} on {} failed: {}", trigger.script_key, obj, err),
         );
@@ -481,7 +481,7 @@ fn handle_error(trigger: &Trigger, err: &EvalAltResult, cfg: ScriptConfig) {
         };
         if strikes >= cfg.strikes_to_halt {
             let _ = sess.world.set_flag(obj, Flags::HALTED, true);
-            sess.out.error(
+            sess.out.error_on_commit(
                 owner,
                 format!(
                     "{obj} has been HALTED after {strikes} script budget overruns; \
@@ -1297,7 +1297,7 @@ pub(crate) fn recompile_object(w: &mut World, out: &mut Outbox, obj: ObjId) {
         st.strikes.remove(&obj);
     }
     for (key, msg) in errors {
-        out.error(
+        out.error_on_commit(
             owner,
             format!("Script {key} on {obj} failed to compile: {msg}"),
         );

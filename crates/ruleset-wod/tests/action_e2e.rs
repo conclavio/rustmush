@@ -236,7 +236,10 @@ async fn generic_action_silent_witnesses_only_the_sharp_eyed_notice() {
     })));
     let done = apply_done(&mut tw, &module, alice, corr, run(&llm, &payload).await);
     assert!(
-        contains(&sys_to(&done, alice), "Roll dexterity+subterfuge at difficulty 8"),
+        contains(
+            &sys_to(&done, alice),
+            "Roll dexterity+subterfuge at difficulty 8"
+        ),
         "{:?}",
         sys_to(&done, alice)
     );
@@ -245,7 +248,9 @@ async fn generic_action_silent_witnesses_only_the_sharp_eyed_notice() {
     // ALICE THROWS. The room gets no dice line (silent); only Alice sees her own.
     let (roll_ev, roll_fx) = step_cmd(&mut tw, alice, "+roll/silent");
     assert!(
-        roll_ev.iter().all(|(aud, _)| matches!(aud, Audience::Actor(_))),
+        roll_ev
+            .iter()
+            .all(|(aud, _)| matches!(aud, Audience::Actor(_))),
         "the action roll emits nothing to the room: {roll_ev:?}"
     );
     assert!(contains(&sys_to(&roll_ev, alice), "attempts the action"));
@@ -290,7 +295,11 @@ async fn generic_action_reject_path_stores_no_pending() {
     let alice = tw.spawn_player("Alice");
     tw.run(GOD, "@sheet/set Alice/dexterity=4");
 
-    let (_open, effects) = step_cmd(&mut tw, alice, "+action fly to the moon by flapping my arms using dexterity");
+    let (_open, effects) = step_cmd(
+        &mut tw,
+        alice,
+        "+action fly to the moon by flapping my arms using dexterity",
+    );
     let (module, corr, payload) = module_async(&effects);
     mock.push_response(ruling_resp(json!({
         "accept": false,
@@ -303,7 +312,10 @@ async fn generic_action_reject_path_stores_no_pending() {
     })));
     let done = apply_done(&mut tw, &module, alice, corr, run(&llm, &payload).await);
     assert!(
-        contains(&sys_to(&done, alice), "rejects the action: You cannot fly unaided"),
+        contains(
+            &sys_to(&done, alice),
+            "rejects the action: You cannot fly unaided"
+        ),
         "{:?}",
         sys_to(&done, alice)
     );
@@ -311,7 +323,10 @@ async fn generic_action_reject_path_stores_no_pending() {
 
     // A later +roll is an ordinary roll (no pending to consume, nothing deferred).
     let (_ev, fx) = step_cmd(&mut tw, alice, "+roll dexterity");
-    assert!(module_async_opt(&fx).is_none(), "an ordinary roll defers nothing");
+    assert!(
+        module_async_opt(&fx).is_none(),
+        "an ordinary roll defers nothing"
+    );
 }
 
 // ----------------------------------------------------------------------
@@ -330,8 +345,11 @@ async fn mage_cast_accept_applies_paradox_and_runs_witnesses() {
     tw.run(GOD, "@sheet/set Nick/spheres:Forces=2");
     let mort = tw.spawn_player("Mort"); // no perception -> true silence
 
-    let (_open, effects) =
-        step_cmd(&mut tw, nick, "+cast/vulgar hurl a bolt of fire proposing Forces");
+    let (_open, effects) = step_cmd(
+        &mut tw,
+        nick,
+        "+cast/vulgar hurl a bolt of fire proposing Forces",
+    );
     let (module, corr, payload) = module_async(&effects);
     mock.push_response(ruling_resp(json!({
         "accept": true,

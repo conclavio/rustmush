@@ -10,8 +10,8 @@ use smol_str::SmolStr;
 
 use crate::data::{ControlKind, FactionState, Visibility};
 use crate::sim::{
-    Clock, ClockId, Front, FrontId, SimState, clock_key, persist_clock, persist_del,
-    persist_front, persist_sim_meta,
+    Clock, ClockId, Front, FrontId, SimState, clock_key, persist_clock, persist_del, persist_front,
+    persist_sim_meta,
 };
 
 fn sim<'a>(ctx: &'a mut Ctx<'_>) -> &'a mut SimState {
@@ -33,7 +33,8 @@ fn fac_ref<'a>(ctx: &'a Ctx<'_>) -> &'a FactionState {
 }
 
 fn is_admin(w: &World, who: ObjId) -> bool {
-    perm::has_power(w, who, mush_core::Powers::FACTION_ADMIN) || perm::has_role(w, who, Role::Royalty)
+    perm::has_power(w, who, mush_core::Powers::FACTION_ADMIN)
+        || perm::has_role(w, who, Role::Royalty)
 }
 
 fn require_admin(ctx: &Ctx<'_>) -> Result<(), CmdError> {
@@ -80,18 +81,28 @@ fn front_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (front, next_f, next_c) = {
         let st = sim(ctx);
         let id = st.alloc_front_id();
-        let front = Front { id, faction, title, resolved: false };
+        let front = Front {
+            id,
+            faction,
+            title,
+            resolved: false,
+        };
         st.fronts.insert(id, front.clone());
         (front, st.next_front_id, st.next_clock_id)
     };
     persist_front(ctx.out, &front);
     persist_sim_meta_now(ctx, next_f, next_c);
-    info(ctx, format!("Created front #{} ({}).", front.id, front.title));
+    info(
+        ctx,
+        format!("Created front #{} ({}).", front.id, front.title),
+    );
     Ok(())
 }
 
 fn front_resolve(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let id = parse_id(ctx.args.lhs()).map(FrontId).ok_or_else(|| CmdError::msg("Usage: @front/resolve <id>"))?;
+    let id = parse_id(ctx.args.lhs())
+        .map(FrontId)
+        .ok_or_else(|| CmdError::msg("Usage: @front/resolve <id>"))?;
     let updated = {
         let st = sim(ctx);
         let Some(front) = st.fronts.get_mut(&id) else {
@@ -211,7 +222,10 @@ fn clock_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ctx,
         format!(
             "Created clock #{} ({}) on front #{}, {}. Configure with @clock/set.",
-            clock.id, clock.title, clock.front, clock.progress()
+            clock.id,
+            clock.title,
+            clock.front,
+            clock.progress()
         ),
     );
     Ok(())
@@ -278,10 +292,13 @@ fn clock_set(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 /// Parse a `control` value `<region>/<kind>` into `(RegionId, ControlKind)`.
-fn parse_control(ctx: &Ctx<'_>, value: &str) -> Result<(crate::data::RegionId, ControlKind), CmdError> {
-    let (region_name, kind_s) = value
-        .rsplit_once('/')
-        .ok_or_else(|| CmdError::msg("control: <region>/<kind> (kind: dejure/defacto/covert/economic)."))?;
+fn parse_control(
+    ctx: &Ctx<'_>,
+    value: &str,
+) -> Result<(crate::data::RegionId, ControlKind), CmdError> {
+    let (region_name, kind_s) = value.rsplit_once('/').ok_or_else(|| {
+        CmdError::msg("control: <region>/<kind> (kind: dejure/defacto/covert/economic).")
+    })?;
     let region = fac_ref(ctx)
         .region_by_name(region_name.trim())
         .map(|r| r.id)
@@ -300,12 +317,18 @@ fn clock_advance_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .rhs()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map_or(Ok(1), |s| s.parse().map_err(|_| CmdError::msg("Amount must be a number.")))?;
+        .map_or(Ok(1), |s| {
+            s.parse()
+                .map_err(|_| CmdError::msg("Amount must be a number."))
+        })?;
     if !sim_ref(ctx).clocks.contains_key(&id) {
         return Err(CmdError::msg("No such clock."));
     }
     let completed = crate::advance_clock(ctx, id, n);
-    let progress = sim_ref(ctx).clocks.get(&id).map_or_else(String::new, Clock::progress);
+    let progress = sim_ref(ctx)
+        .clocks
+        .get(&id)
+        .map_or_else(String::new, Clock::progress);
     info(
         ctx,
         if completed {
@@ -353,7 +376,10 @@ fn clock_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .collect()
     };
     if lines.is_empty() {
-        info(ctx, "No clocks. (@clock/create <front-id>=<title>/<segments>)");
+        info(
+            ctx,
+            "No clocks. (@clock/create <front-id>=<title>/<segments>)",
+        );
         return Ok(());
     }
     info(ctx, "Clocks:");

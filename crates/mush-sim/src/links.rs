@@ -20,14 +20,20 @@ use crate::data::{NS, SpatialState};
 /// The (unit, role, priority) links `actor` should currently hold: one per
 /// unit the actor crews, for a **placed, live** unit, at the actor's
 /// highest-priority role on that unit.
-fn desired_links(st: &SpatialState, w: &World, actor: ObjId) -> Vec<(ObjId, SmolStr, u16, BTreeSet<ChannelId>)> {
+fn desired_links(
+    st: &SpatialState,
+    w: &World,
+    actor: ObjId,
+) -> Vec<(ObjId, SmolStr, u16, BTreeSet<ChannelId>)> {
     let Some(units) = st.derived.assignments_by_actor.get(&actor) else {
         return Vec::new();
     };
     units
         .iter()
         .copied()
-        .filter(|&unit| st.is_placed(unit) && w.get(unit).is_some_and(|o| !o.flags.contains(Flags::GOING)))
+        .filter(|&unit| {
+            st.is_placed(unit) && w.get(unit).is_some_and(|o| !o.flags.contains(Flags::GOING))
+        })
         .filter_map(|unit| {
             let seats = &st.assignments.get(&unit)?.seats;
             let hs = st.stations.get(&unit)?;
@@ -55,7 +61,9 @@ fn desired_links(st: &SpatialState, w: &World, actor: ObjId) -> Vec<(ObjId, Smol
 /// assignments. Idempotent.
 pub(crate) fn refresh_actor_links(w: &mut World, actor: ObjId) {
     let desired = {
-        let st = w.module_state::<SpatialState>().expect("sim state slot installed at registration");
+        let st = w
+            .module_state::<SpatialState>()
+            .expect("sim state slot installed at registration");
         desired_links(st, w, actor)
     };
     w.retract_command_subjects(NS, Some(actor));
@@ -76,7 +84,9 @@ pub(crate) fn refresh_actor_links(w: &mut World, actor: ObjId) {
 /// quarantined and must stop granting control).
 pub(crate) fn refresh_unit_actors(w: &mut World, unit: ObjId) {
     let actors: Vec<ObjId> = {
-        let st = w.module_state::<SpatialState>().expect("sim state slot installed at registration");
+        let st = w
+            .module_state::<SpatialState>()
+            .expect("sim state slot installed at registration");
         st.assignments
             .get(&unit)
             .map(|a| a.seats.values().map(|s| s.actor).collect())

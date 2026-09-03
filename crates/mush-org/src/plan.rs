@@ -151,7 +151,10 @@ impl OrgMutationPlan {
     /// A plan with the given ops and no staleness expectations.
     #[must_use]
     pub fn of(ops: Vec<OrgMutationOp>) -> OrgMutationPlan {
-        OrgMutationPlan { expected: Vec::new(), ops }
+        OrgMutationPlan {
+            expected: Vec::new(),
+            ops,
+        }
     }
 
     /// Validate + apply against a clone of `state`. Returns the new state on
@@ -220,7 +223,9 @@ fn apply_one(state: &mut OrgState, op: &OrgMutationOp) -> Result<(), OrgError> {
                 return Err(OrgError::Invalid("scope parent in a different org".into()));
             }
             if scope.depth != parent.depth + 1 {
-                return Err(OrgError::Invalid("scope depth must be parent depth + 1".into()));
+                return Err(OrgError::Invalid(
+                    "scope depth must be parent depth + 1".into(),
+                ));
             }
             if scope.depth > MAX_SCOPE_DEPTH {
                 return Err(OrgError::DepthExceeded);
@@ -294,11 +299,14 @@ fn apply_one(state: &mut OrgState, op: &OrgMutationOp) -> Result<(), OrgError> {
         }
         OrgMutationOp::Delegate { delegation } => {
             if state.delegation(delegation.id).is_some() {
-                return Err(OrgError::DuplicateId(format!("delegation {}", delegation.id)));
+                return Err(OrgError::DuplicateId(format!(
+                    "delegation {}",
+                    delegation.id
+                )));
             }
-            let src = state
-                .grant(delegation.source_grant)
-                .ok_or_else(|| OrgError::NotFound(format!("source grant {}", delegation.source_grant)))?;
+            let src = state.grant(delegation.source_grant).ok_or_else(|| {
+                OrgError::NotFound(format!("source grant {}", delegation.source_grant))
+            })?;
             if !src.delegable {
                 return Err(OrgError::Invalid("source grant is not delegable".into()));
             }
@@ -306,10 +314,14 @@ fn apply_one(state: &mut OrgState, op: &OrgMutationOp) -> Result<(), OrgError> {
                 // Only the actual holder of the source grant may delegate it —
                 // otherwise delegated authority is forgeable from any delegable
                 // grant regardless of who holds it (authorize re-checks this live).
-                return Err(OrgError::Invalid("grantor does not hold the source grant".into()));
+                return Err(OrgError::Invalid(
+                    "grantor does not hold the source grant".into(),
+                ));
             }
             if src.org != delegation.org || src.capability != delegation.capability {
-                return Err(OrgError::Invalid("delegation does not match its source".into()));
+                return Err(OrgError::Invalid(
+                    "delegation does not match its source".into(),
+                ));
             }
             if !crate::authorize::selector_subsumes(state, &src.scope, &delegation.scope) {
                 return Err(OrgError::DelegationWiden);
@@ -339,10 +351,16 @@ fn apply_one(state: &mut OrgState, op: &OrgMutationOp) -> Result<(), OrgError> {
 }
 
 /// A delegation's limit must be no wider than its source's.
-fn limit_narrows(src: Option<crate::record::GrantLimit>, del: Option<crate::record::GrantLimit>) -> bool {
-    match (src.and_then(|l| l.max_amount), del.and_then(|l| l.max_amount)) {
-        (None, _) => true,                    // unlimited source admits any delegated limit
-        (Some(_), None) => false,             // a limited source cannot delegate an unlimited grant
+fn limit_narrows(
+    src: Option<crate::record::GrantLimit>,
+    del: Option<crate::record::GrantLimit>,
+) -> bool {
+    match (
+        src.and_then(|l| l.max_amount),
+        del.and_then(|l| l.max_amount),
+    ) {
+        (None, _) => true,        // unlimited source admits any delegated limit
+        (Some(_), None) => false, // a limited source cannot delegate an unlimited grant
         (Some(s), Some(d)) => d <= s,
     }
 }

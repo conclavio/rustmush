@@ -48,7 +48,9 @@ impl GameModule for ToyModule {
         boot: ModuleBootData,
     ) -> Result<(), ModError> {
         let mut ledger = Ledger::new();
-        ledger.restore_from_kv(&boot.kv);
+        ledger
+            .restore_from_kv(&boot.kv)
+            .map_err(|error| ModError::msg(format!("toy ledger restore failed: {error}")))?;
         if let Some(st) = ctx.state_mut::<ToyState>() {
             st.ledger = ledger;
         }
@@ -65,21 +67,33 @@ fn toylog(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("Say something."));
     }
     let actor = ctx.actor;
-    // 1. Advance the ledger and grab the persist op.
-    let op = {
+    // 1. Prepare the ledger append without changing it.
+    let prepared = {
         let st = ctx
             .w
-            .module_state_mut::<ToyState>()
+            .module_state::<ToyState>()
             .expect("toy state installed at registration");
-        let (seq, op) = st.ledger.append("main", serde_json::json!({ "text": text, "by": actor.0 }));
-        let _ = seq;
-        op
+        st.ledger
+            .prepare_append("main", serde_json::json!({ "text": text, "by": actor.0 }))
+            .map_err(|error| CmdError::msg(format!("ledger append refused: {error}")))?
     };
     // 2. Mutate world state (dirties the actor).
     ctx.w
-        .set_attr(actor, "toy:last", Attr::json(serde_json::json!(text), actor))
+        .set_attr(
+            actor,
+            "toy:last",
+            Attr::json(serde_json::json!(text), actor),
+        )
         .map_err(|e| CmdError::msg(e.to_string()))?;
-    // 3. Queue the ledger op in the SAME command.
+    // 3. Applying a current prepared plan is infallible. Queue its write in
+    // the SAME command as the object mutation.
+    let (_seq, op) = ctx
+        .w
+        .module_state_mut::<ToyState>()
+        .expect("toy state installed at registration")
+        .ledger
+        .apply_prepared(prepared)
+        .expect("toy ledger did not change between prepare and apply");
     ctx.persist(ModuleOp {
         ns: SmolStr::new(NS),
         op,
@@ -167,15 +181,18 @@ fn ledger_tail_rehydrates_on_reboot() {
         .module_state::<ToyState>()
         .expect("toy state after reboot")
         .ledger;
-    assert_eq!(ledger.next_seq("main"), 3, "the sequence resumes past all three");
+    assert_eq!(
+        ledger.next_seq("main"),
+        3,
+        "the sequence resumes past all three"
+    );
     // The next append continues the sequence and rewrites the same open chunk.
-    let alice2 = tw2.world().resolve_player("Alice").expect("alice after reboot");
-    tw2.run(alice2, "+toylog four");
-    let ledger = &tw2
+    let alice2 = tw2
         .world()
-        .module_state::<ToyState>()
-        .unwrap()
-        .ledger;
+        .resolve_player("Alice")
+        .expect("alice after reboot");
+    tw2.run(alice2, "+toylog four");
+    let ledger = &tw2.world().module_state::<ToyState>().unwrap().ledger;
     assert_eq!(ledger.next_seq("main"), 4);
     assert_eq!(ledger.open_entries("main").last().unwrap().seq, 3);
 }

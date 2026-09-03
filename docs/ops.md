@@ -87,9 +87,13 @@ Three layers, cheapest first:
    demand:
    - in-game: `@dump` (Wizard) triggers a `BGSAVE`, ordered **behind** every
      write already queued; the invoker is told when the store acknowledged.
-   - shutdown: the clean-shutdown sequence triggers a final `BGSAVE`
-     automatically.
-   - shell: `redis-cli BGSAVE`.
+     Once persistence integrity is latched, it is refused without contacting
+     Redis.
+   - shutdown: the clean-shutdown sequence triggers a final `BGSAVE` only
+     after the ordered writer drains cleanly and the process-wide integrity
+     latch remains clear. Otherwise it logs that the snapshot was skipped.
+   - shell: `redis-cli BGSAVE`. This bypasses rustmush's integrity guard; do
+     not use it during an integrity incident as a purported recovery snapshot.
 3. **Offsite copies** — `dump.rdb` is a complete, copyable, point-in-time
    file (safe to copy while Redis runs; it is written atomically via
    rename). Cron something like:
@@ -162,31 +166,270 @@ Operator procedure for upgrades that mention a schema change: take an extra
 offsite copy of `dump.rdb`, deploy the new binary, start it, watch the log
 for `store schema current` (and any `running module migration` lines).
 
-## Read-only mode (store outage mid-game)
+## Persistence modes and incident recovery
 
-If the store starts failing writes (Redis down, disk full), the writer task
-retries the failed batch forever with backoff **in order** — nothing is
-dropped or reordered — and the world enters read-only mode. An outage is
-*detected* by the store client's per-command timeout (~5s; without it the
-Redis client would buffer commands silently until reconnect), so the mode
-engages within seconds of Redis going away:
+The world has one structural `WorldMode`; it does not infer integrity from a
+collection of overlapping booleans. New ingress types must be assigned an
+execution class before they can pass the central mode gate. The operating
+states are:
 
-- Commands that change the world are refused with a player-facing notice;
-  look/WHO/say/pose and other non-mutating commands keep working from RAM.
-  A line that matches an **exit** is refused even when the exit is aliased
-  to a read-only verb (`library;l`) — movement mutates. Welcome-screen
-  `create`/`newchar` are refused with a "database unavailable" error.
-- Connected Wizards get a `GAME:` alert on entry and again on recovery.
-- The moment a retry succeeds, the stuck batch (and everything queued behind
-  it) lands and the mode lifts automatically. No operator action is needed
-  beyond fixing Redis.
-- `@shutdown` still works while read-only (you can always stop the server).
-- One exception to "nothing is dropped": a batch failing with a
-  **deterministic** error (e.g. an `obj:*` key clobbered with the wrong
-  type by an outside client) would fail identically forever, so it is
-  dropped with a loud `BATCH DROPPED` log line instead of wedging every
-  batch behind it; the store self-heals the next time those objects are
-  written (batches carry full-object snapshots).
+| mode | meaning | admitted work | exit condition |
+|---|---|---|---|
+| `Booting` | integrity stores, definitions, and world state are not ready | bounded status/query, transport-only reattachment, writer recovery, and shutdown | all boot gates pass |
+| `Recovering` | exact durable state is being reconciled | the same restricted set as `Booting` | recovery reaches a verified terminal state |
+| `Writable` | normal play | all ordinary ingress | a commit, outage, or integrity incident changes the mode |
+| `CommitPending` | one authoritative commit is waiting for its exact acknowledgement | ordering barriers, status, transport-only reattachment, recovery, and shutdown; gameplay/world reads and retryable mutations receive typed `Busy` (see the FIFO caveat below) | exact commit acknowledgement, abort, or integrity freeze |
+| `StoreReadOnly` | the store has a transient availability failure | safe queries/status plus a conservative line-command subset | the same write succeeds and the ordered writer reports recovery |
+| `IntegrityFrozen` | durable truth is missing, rejected deterministically, or ambiguous | observation, status, transport-only reattachment, recovery, and shutdown only | explicit, verified recovery; never store health alone |
+
+`Booting`, `Recovering`, `CommitPending`, and `IntegrityFrozen` are hard
+structural barriers. They refuse command lines, connection hooks, new player
+creation, async applies, timers, staff mutations, and external effects before
+those paths reach the engine. A transport-only reattach is intentionally
+different from a connection hook: it restores delivery bookkeeping without
+announcing a connect or firing gameplay behavior. An ordinary text command is
+still a `Command` even if its spelling sounds read-only, so use `/healthz`,
+`/metrics`, logs, and typed query/staff-status surfaces during a hard mode.
+Process shutdown through SIGTERM, Ctrl-C, or the typed shutdown control remains
+available.
+
+`CommitPending` is stricter about reads than the other hard modes in the current
+single-flight implementation. The engine has already installed the tentative
+post-image in RAM but does not yet have the exact durable receipt, so structured
+panel queries, `NameFree`, and input-context probes are refused as `Busy` rather
+than observing that image or fabricating a negative answer. Ordinary command,
+new-player, and dump requests are also refused immediately, so they cannot
+head-of-line block transport/status traffic. Ordering barriers are admitted and
+resolve only after the receipt.
+
+The current FIFO has one explicit liveness caveat: an async `Apply` or
+`ConnUp`/`ConnDown`/`SessionGone` has already transferred must-retain semantic or
+lifecycle custody, so one dequeued item is retained behind the receipt and the
+world stops polling the main inbound channel. A barrier or reannounce physically
+behind that item waits too. This is bounded (one local item plus the 1,024-entry
+inbound channel with sender backpressure), but is not an independently live
+operational lane. K2 must introduce separately bounded completion/lifecycle
+mailboxes and sequence-aware barrier ordering. K2's prepared-install snapshot
+may also restore concurrent reads once it can serve a real pre-action view.
+
+Repeated reannounce traffic cannot grow receipt custody: only the latest full
+roster is retained, with at most 256 fixed-size records; barrier custody is
+independently capped at 256. Their combined conservative logical budget is
+81,920 bytes. A roster above 256 is a protocol violation, not a shed decision:
+the server applies none of it and tears down the split boundary so the gateway,
+which still owns the roster, can replay it to a healthy server. A world-task
+caller receives `false` for the same atomic refusal. If a successfully enqueued
+roster cannot reach the world because it has stopped, the reader likewise tears
+the boundary down instead of continuing after losing the must-deliver snapshot.
+Coalescing is safe because pending snapshots target a freshly booted world and
+none has been applied yet. `Engine::reattach` is additive; a future protocol
+that reconciles repeated full snapshots on one still-running world must add a
+generation and explicit remove-missing behavior.
+
+A newly authenticated transport is not announced locally until its world-side
+connection is exact. The gateway reserves one bounded lifecycle slot, sends
+`ConnUp`, crosses a typed commit barrier, and verifies that the engine tracks
+that exact connection/actor pair before sending `SessionInfo` or the initial
+room view. A saturated barrier is retryable `Busy`; a failed receipt is
+`Unavailable`. If either proof fails, the gateway sends a compensating
+`ConnDown`, restores a revived link-dead session when applicable, and closes the
+attempt without publishing a successful login. This prevents persistent
+connect hooks from racing the initial `look`, and prevents a `ConnUp` refused by
+`Booting`, `Recovering`, or `IntegrityFrozen` from becoming a half-established
+gateway session.
+
+The initiating legacy action's held output/effects are observable but not yet
+hard-capped: individual panel/rich-text payloads and module async payloads can
+also be arbitrarily large. Capping them after the handler returns is too late to
+be policy-neutral because that handler may already have mutated live RAM. The
+unsafe choices would be to freeze without committing that post-image, commit
+while dropping required semantic work, or roll the live mutation back. The
+planned K2 scratch/preflight transaction avoids all three by rejecting an
+oversized construction before mutation. Until then, alert on
+`mush_commit_pending_custody_items{kind="send"}` and `{kind="effect"}` rather
+than treating them as proven hard bounds. The barrier/reattach gauges and overload/coalescing
+counters *are* hard-bound evidence; see the Observability section.
+
+### Transient store outage (`StoreReadOnly`)
+
+If Redis is unreachable or times out, the writer retries the **same** batch
+with the same identity and exponential backoff. It does not let later writes
+overtake it. The store client's per-command timeout (approximately 5 seconds)
+prevents Redis buffering from hiding the outage, and the world moves into
+`StoreReadOnly` within seconds:
+
+- Commands known to change the world are refused. The current compatibility
+  path admits only a conservative non-mutating command subset; an exit match
+  is always refused even when it is aliased to a normally read-only verb such
+  as `l` or `look`, because traversal mutates location state.
+- New account/character creation, async applies, timers, staff mutations, and
+  external effects remain paused. Connected Wizards receive a `GAME:` alert.
+- Fix Redis, its disk, permissions, or connectivity. When the exact blocked
+  write succeeds, the FIFO writer drains in order, the world returns to
+  `Writable`, and Wizards receive the recovery alert.
+- Automatic return to `Writable` happens **only** from `StoreReadOnly`. A
+  healthy-store signal cannot clear `IntegrityFrozen`.
+
+### Deterministic failure (`IntegrityFrozen`)
+
+A deterministic rejection is not an availability outage. Examples include a
+wrong Redis key type, invalid or oversized encoded state, checked-arithmetic or
+schema failure, and an exact-token/hash conflict. Retrying unchanged input
+forever cannot repair one, while dropping it and committing later batches would
+break the relationship between RAM, the ledgers, and durable truth.
+
+The required posture is therefore fail-closed:
+
+1. The writer reports the deterministic failure as an integrity incident and
+   the world latches `IntegrityFrozen`.
+2. No later mutating ingress, timer, hook, apply, staff mutation, or external
+   effect may run past that unresolved predecessor. Success output and effects
+   belonging to the failed mutation are not released.
+3. If the batch contains sealed Ledger chunks, the writer tests each candidate
+   alone with bounded retries. A collateral chunk that commits alone is marked
+   healed. A repeatedly rejected chunk is identified by
+   `(namespace, key, payload SHA-256)`, written to the required quarantine
+   spool, read back, and removed from re-emission only after preservation is
+   proven.
+4. Store connectivity recovering does not thaw the world. The incident remains
+   frozen until an exact repair is verified and the recovery state is resolved.
+5. Ordinary snapshots fail closed after the same process-wide integrity latch:
+   queued `@dump` requests are rejected without reaching Redis, and all-in-one
+   clean shutdown skips its direct `BGSAVE`. Snapshotting partial or ambiguous
+   durable state would create a misleading recovery point.
+
+Both in-process custody seams are hard-bounded. The world retains at most 1,024
+exact seal identities and 64 MiB of encoded seal payloads; it validates the
+whole candidate before changing any acknowledgement stamp. A limit refusal
+latches the process-wide integrity barrier before the candidate seals are
+preserved to quarantine. Writer-to-world recovery facts use fixed coalescing
+slots and a 1,024-identity/16-MiB exact-resolution map awakened by a capacity-one
+channel. A full resolution map never sheds an identity: the writer retains the
+outcome and republishes it on the seal's next retained re-emit.
+
+Do not treat a `BATCH DROPPED` log, a later full-object snapshot, or a Redis
+reconnect as self-healing. Module operations, deletes, streams, Ledger
+continuity, and observed RAM state may not be reconstructible from a later
+object write. Do not manually flip the mode or delete quarantine evidence to
+make the server writable.
+
+A future **forensic export** may copy the live incident state to a separate,
+evidence-labelled destination under its own audited API. It is not an ordinary
+Redis `BGSAVE`, must never replace the last known-good backup, and does not make
+the world safe to resume.
+
+### Required quarantine spool and boot preflight
+
+Production uses `<data_dir>/quarantine/` as a durability domain separate from
+Redis. A persistent server cannot construct its writer without an opened,
+durable `QuarantineSpool`; tests must opt into the explicit in-memory
+implementation. There is no `None`, log-only, or "best effort" preservation
+mode.
+
+Both `mushd` and the split `mush-server` preflight the spool before opening or
+mutating world state. Opening it verifies directory read/write/rename ability,
+record count and byte bounds, record schema version, filename identity,
+SHA-256, and sealed Ledger payload structure. A fully synced, exact-valid
+`.tmp` is safely promoted (or reconciled with an existing exact final record)
+before the scan; a partial, malformed, or conflicting temp still aborts
+startup. An unexpected artifact, hash mismatch, unreadable directory, or
+failed write probe likewise aborts startup; it is unresolved integrity state,
+not an empty spool.
+
+A valid active record triggers one bounded **read-only exact-target pass**
+before store bootstrap, migrations, imports, world seeding, or module boot. The
+Redis recovery connection deliberately skips index bootstrap. For each record,
+the server reads only its validated namespace/key and compares canonical
+payload bytes plus the length-framed identity hash. If the authoritative target
+is exact, the original record is durably moved to
+`<data_dir>/quarantine-resolved/`; a crash leaving both active and archived
+names is reconciled idempotently on restart. A missing or different target, a
+read error, or any ambiguous archive state leaves the active record unresolved
+and refuses ordinary boot. Normal gameplay never starts through this gate.
+
+The resolved-evidence directory is a second fully validated collection, not an
+opaque dumping ground. Its directory and files are owner-only on Unix; every
+filename contains a validated seal identity and full-record digest, and every
+record is decoded and re-hashed at startup. It has the same explicit limits as
+the active collection: at most 100,000 records, at most 1 GiB total encoded
+bytes, and at most 16 MiB per record. If accepting new evidence would exceed a
+limit, the active record is not moved and boot fails closed. Archive filenames
+are evidence identifiers only and are never interpreted as caller-controlled
+filesystem paths or authoritative store destinations.
+
+This archive is crash-safe **evidence custody for the narrow K0 exact-match
+case**, not yet the general C11 resolution receipt. The latter still needs a
+strict, bounded envelope that records the resolution time, resolver/version,
+and observed payload hash without weakening the archive's no-copy-loss
+publication invariant. Keep the C11 receipt gap open until that separate
+atomic publication and recovery protocol ships.
+
+Treat the spool like sensitive recovery material:
+
+- keep it on durable storage with access limited to the service identity and
+  recovery operators, and include it in protected backups;
+- never edit a record in place or paste its payload into chat, tickets, logs,
+  or an LLM prompt;
+- preserve a copy before repair, and bind every action to the record's exact
+  namespace, key, and payload digest;
+- let boot archive an active record only after the authoritative target has
+  been read back and its exact expected bytes/hash are proven. Merely deleting
+  the file is not recovery;
+- monitor the bounded resolved-evidence collection. Before it reaches capacity,
+  stop the service and move verified evidence into protected, audited long-term
+  storage under a reviewed retention procedure; do not move it back into the
+  active spool or rename arbitrary files into either directory.
+
+The current K0 thaw path is repair (when the target differs), restart, and the
+automatic exact verification/archive pass. If the original write actually
+committed but its acknowledgement was lost, restart resolves it without human
+intervention. Different or missing authoritative data still requires a
+reviewed repair runbook; the server will not infer or apply that repair. A
+first-class audited recovery command remains roadmap work, and the original
+evidence must be retained.
+
+### Automatic recovery ladder and staff handoff
+
+Recovery should exhaust bounded, programmatic proof before waking a person. For
+each recognized incident class, the recovery owner registers retry-safe probes
+and repairs with preconditions, exact before/after digests, attempt limits, and
+verification. The coordinator follows this order:
+
+1. re-read and re-verify authoritative bytes to rule out a stale observation;
+2. retry only a declared retry-safe operation, preserving its identity/token;
+3. search trusted installed providers and retained versions for the exact
+   referenced definition and its closed dependency set;
+4. dry-run a registered migration or reconstruction and require every guard to
+   match;
+5. apply it through the acknowledgement-gated recovery transaction, then read
+   back and compare the exact result;
+6. otherwise freeze the smallest scope that preserves invariants and update one
+   deduplicated incident;
+7. page staff only when no registered operation can prove a safe result or the
+   bounded attempts are exhausted.
+
+K0 already performs the bounded transient retry and sealed-chunk
+isolation/heal/quarantine cases. The general recovery coordinator and outbound
+on-call service are roadmap work. Until paging is wired, monitoring must alert
+the operator through the deployment's existing service, and the process logs
+and metrics remain the authoritative discovery surfaces.
+
+The planned `page staff` service is a protected on-call rotation, not an
+in-game broadcast. Each participating Wizard provides a verified SMS number
+and email address; after Discord integration, they also link a verified Discord
+account. Critical incidents contact the active primary, wait a configured
+acknowledgement interval, retry, and advance through the rotation to a bounded
+fallback. Alerts contain only a stable incident ID, severity, affected scope,
+world identity, safe bounded summary, start time, and a runbook/status link.
+Contact details and provider credentials live encrypted in a restricted
+operations store—never on MUSH objects, in canon/epistemic records, ordinary
+diagnostics, or LLM context. Delivery attempts and acknowledgements are audited
+and repeated signals coalesce by incident ID.
+
+An LLM may summarize safe diagnostics, rank already-registered runbook choices,
+and explain a proposed repair. It must not invent a migration, choose between
+ambiguous authoritative histories, write authoritative state, or decide that a
+page acknowledgement is permission to thaw the world.
 
 ## Shutdown and crash behavior
 
@@ -199,7 +442,9 @@ the console, SIGTERM (what `systemctl stop` sends):
    clients received the announce first — their tokens survive in Redis, so
    they resume after the restart);
 4. drain the store writer (log: `store writer drained and exiting`);
-5. final store barrier + `BGSAVE` (log: `shutdown BGSAVE triggered`);
+5. final store barrier, then `BGSAVE` only if the writer drained cleanly and
+   the persistence-integrity latch is clear (log: `shutdown BGSAVE triggered`;
+   otherwise an explicit `shutdown BGSAVE skipped` error);
 6. exit 0.
 
 `kill -9` / power loss skips all of that and is still safe (write-through);
@@ -210,9 +455,10 @@ Redis (`crates/mushd/tests/durability_e2e.rs`).
 
 A clean shutdown started **while Redis is down** still exits within a
 bounded time: the writer drain is capped at 15s and each remaining store
-step (drain barrier, BGSAVE, close) at 10s, all loudly logged. Batches that
-could not be flushed within the cap are lost — the same window a `kill -9`
-during the outage would lose.
+step (drain barrier, eligible BGSAVE, close) at 10s, all loudly logged. If the
+writer cannot drain, the final BGSAVE is skipped rather than snapshotting a
+possibly incomplete store. Batches that could not be flushed within the cap
+are lost — the same window a `kill -9` during the outage would lose.
 
 ## Game systems (M5): clock, weather, scripting
 
@@ -577,11 +823,13 @@ bucketed `mush_loop_lag_ms` histogram, p99 derived), a
 `mush_world_loop_last_iteration_unixtime` liveness heartbeat (alert on staleness:
 a loop wedged inside a handler freezes it while the lag gauge stays low),
 scheduler queue depth, object counts by kind, store
-read-only/write-queue-depth/last-ack, NPC active/thinking, and LLM
+read-only/write-queue-depth/last-ack, pending-receipt custody/overload,
+IPC ReAnnounce protocol violations, NPC active/thinking, and LLM
 calls/tokens/cost by feature and provider. It never carries per-player data,
 prompts, tokens, or API keys. Metric families are `mush_*` (e.g.
 `mush_connections{transport="ssh"}`, `mush_commands_total`,
-`mush_objects{kind="room"}`, `mush_store_read_only`).
+`mush_objects{kind="room"}`, `mush_store_read_only`,
+`mush_commit_pending_custody_items{kind="barrier"}`).
 
 The registry is a single shared handle: the transports bump connection counters,
 the world loop feeds the lag histogram every iteration and publishes the
@@ -711,19 +959,23 @@ listen = "/run/rustmush/dev1.sock"   # Linux prod: a Unix-domain socket path
 # high_water_warn_pct = 80    # edge-gated high-water warn threshold, percent of a queue's cap.
 ```
 
-Every shed, teardown, and write timeout logs at `warn` and increments a counter
+Every shed, teardown, protocol violation, and write timeout logs and increments a counter
 surfaced on `/metrics` (`mush_ipc_frames_shed_total`, `mush_ipc_write_timeouts_total`,
-`mush_ipc_to_gw_overflow_total`, and the `mush_ipc_queue_high_water{dir="to_server"|"to_gw"}`
-gauge) and on the wizard `@stats` `IPC boundary:` line — so you can tell when the
-boundary is shedding or tearing down. (These IPC counters are on `/metrics` +
-`@stats`, not the minimal `/healthz` liveness JSON.) In the split, the forked
+`mush_ipc_to_gw_overflow_total`, `mush_ipc_reannounce_protocol_violations_total`, and the
+`mush_ipc_queue_high_water{dir="to_server"|"to_gw"}` gauge), so you can tell when the
+boundary is shedding or tearing down. The shed/timeout/overflow/high-water
+subset also appears on the wizard `@stats` `IPC boundary:` line; the new
+ReAnnounce violation counter is currently `/metrics` plus its error log. These
+are not in the minimal `/healthz` liveness JSON. In the split, the forked
 `mush-server` serves no HTTP, so its `to_gw`/write-timeout counters reach an
 operator through `@stats`; the gateway's `to_server` shed + write-timeout
 counters also reach the gateway process `/metrics`.
 
 A value that parses as a socket address is TCP; on Unix anything else is a
-filesystem path for a Unix-domain socket (`listen()` removes a stale socket file
-first). **Prefer the Unix-socket form on Linux prod** — the boundary is
+filesystem path for a Unix-domain socket. Startup probes an existing socket:
+it removes only an inode that refuses connections, and refuses to unlink a live
+listener, an ordinary file, or an inconclusive probe. **Prefer the Unix-socket
+form on Linux prod** — the boundary is
 unauthenticated (the server trusts whatever connects to assert authenticated
 sessions), and a `127.0.0.1` TCP port is connectable by *any* local process,
 which could impersonate the gateway. A socket in a mode-0750 directory restricts
@@ -774,8 +1026,15 @@ can be torn down and rebuilt underneath live players — on both transports:
   restarts **only its server child** from the fresh binary. It does **not**
   restart itself, so no SSH **or web** connection is dropped. Players see a
   `GAME: The server is restarting; hold on…` line, then
-  `GAME: Reconnected. Resuming where you left off.` and a fresh room render of
-  wherever they were — mid-scene, no reconnect, no re-login. The WoD/SR ruleset
+  a fresh room render of wherever they were and
+  `GAME: Reconnected. Resuming where you left off.` — mid-scene, no reconnect,
+  no re-login. (The replay render and notice are adjacent but clients must not
+  depend on their presentation order.) The gateway keeps input in the restart
+  gap until the new server has accepted the complete attachment snapshot and an
+  exact world-loop `Barrier` has crossed any startup `CommitPending` receipt.
+  Thus **Reconnected means commit-ready**, not merely "the IPC Hello arrived";
+  a failed replay or barrier tears down that attempt and retries under the
+  crash-loop guard. The WoD/SR ruleset
   working state that shapes that render survives the restart (M17): a cloaked
   vampire stays cloaked, an accepted ST ruling still awaits its throw, an
   extended roll keeps its progress (see *Accepted losses across a restart*).
@@ -792,6 +1051,11 @@ can be torn down and rebuilt underneath live players — on both transports:
   could not be restarted`, still without dropping them (input stays refused with
   a clear message). A one-off crash after a long healthy run resets the counter —
   it is not a loop; a successful reconnect resets the consecutive-failure streak.
+  Independently, the supervisor will not respawn unless the previous server's
+  exit is positively confirmed inside the shutdown grace window. An uncertain
+  exit is fail-stop: connections remain held in the restart gap and staff see
+  the server-down notice, rather than risking two authoritative world/store
+  writers at once.
 - **During the gap, input is refused, not dropped.** While the server is down
   the gateway rejects commands with the "restarting" notice rather than hanging
   or disconnecting; in-flight service requests fail fast (they do not wait for a

@@ -34,7 +34,7 @@ use mushd::accounts::{Accounts, AuthBackend};
 use mushd::ipguard::IpGuard;
 use mushd::persist::load_or_seed_world;
 use mushd::staff::{StaffQueue, register_server_commands};
-use mushd::world_task::{self, PersistHandles, ServerDeps, WorldHandle, char_key};
+use mushd::world_task::{self, PersistHandles, ServerDeps, WorldHandle, WorldReadError, char_key};
 
 type EventRx = mpsc::Receiver<Arc<OutputEvent>>;
 
@@ -116,7 +116,7 @@ async fn boot_rig(
             guard: Arc::clone(guard),
             staff,
             llm: None,
-            quarantine_dir: None,
+            quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
         },
     );
     (sessions, handles)
@@ -149,7 +149,7 @@ async fn boot_module_rig(
             guard: Arc::clone(guard),
             staff,
             llm: None,
-            quarantine_dir: None,
+            quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
         },
     );
     (sessions, handles)
@@ -167,6 +167,13 @@ async fn god_cmd(world: &WorldHandle, line: &str) {
     );
 }
 
+/// Submit one ordinary world-mutating command and cross its exact durable
+/// delivery boundary before another command is allowed to race its receipt.
+async fn god_cmd_committed(world: &WorldHandle, line: &str) {
+    god_cmd(world, line).await;
+    assert!(world.barrier().await, "world mutation commit barrier");
+}
+
 // ---------------------------------------------------------------------------
 // 1. Boot → seed → play → reload round trip (shared with the Redis variant)
 // ---------------------------------------------------------------------------
@@ -182,13 +189,13 @@ async fn boot_round_trip(store: Arc<dyn ObjectStore>) {
     let world = handles.handle.clone();
     let mut god_rx = attach_direct(&sessions, &world, 1, GOD, "god").await;
 
-    god_cmd(&world, "@dig Vault = east;e, west;w").await;
-    god_cmd(&world, "@desc here = A featureless white plain.").await;
-    god_cmd(&world, "@create orb").await;
+    god_cmd_committed(&world, "@dig Vault = east;e, west;w").await;
+    god_cmd_committed(&world, "@desc here = A featureless white plain.").await;
+    god_cmd_committed(&world, "@create orb").await;
     expect_text(&mut god_rx, "Vault created").await;
 
-    // The ack-gated create is queued behind every batch above; its return
-    // means the store is current through it.
+    // Each command above crossed its exact commit barrier; player creation is
+    // independently acknowledgement-gated too.
     let nick = world.create_player("Nick").await.expect("create Nick");
 
     // --- second boot: a fresh world hydrated from the store --------------
@@ -251,7 +258,7 @@ async fn boot_round_trip(store: Arc<dyn ObjectStore>) {
             guard: Arc::new(IpGuard::new()),
             staff: Arc::new(StaffQueue::new()),
             llm: None,
-            quarantine_dir: None,
+            quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
         },
     );
     let mut nick_rx = attach_direct(&sessions2, &handles2.handle, 7, nick, "nick").await;
@@ -316,28 +323,26 @@ async fn m5_module_round_trip(store: Arc<dyn ObjectStore>) {
     // A Zone Master Object, a room in it (teleport there so `here` resolves),
     // and a pinned storm — the pin persists a weather cell through the same
     // write-through path as any command.
-    god_cmd(&world, "@create Downtown").await;
-    god_cmd(&world, "@set Downtown=ZONE_MASTER").await;
-    god_cmd(&world, "@dig/teleport Plaza").await;
-    god_cmd(&world, "@zone here=Downtown").await;
-    god_cmd(&world, "@set here=OUTDOORS").await;
-    god_cmd(&world, "@weather/climate here=temperate-coastal").await;
-    god_cmd(&world, "@weather here=storm").await;
+    god_cmd_committed(&world, "@create Downtown").await;
+    god_cmd_committed(&world, "@set Downtown=ZONE_MASTER").await;
+    god_cmd_committed(&world, "@dig/teleport Plaza").await;
+    god_cmd_committed(&world, "@zone here=Downtown").await;
+    god_cmd_committed(&world, "@set here=OUTDOORS").await;
+    god_cmd_committed(&world, "@weather/climate here=temperate-coastal").await;
+    god_cmd_committed(&world, "@weather here=storm").await;
     expect_text(&mut god_rx, "Pinned").await;
 
     // A scripted object: its script lives in a `script:*` attribute on the
     // object doc, so it rides `obj:*` persistence with no module namespace.
-    god_cmd(&world, "@create parrot").await;
-    god_cmd(
+    god_cmd_committed(&world, "@create parrot").await;
+    god_cmd_committed(
         &world,
         r#"@set parrot/script:command:squawk=mush::pemit(mush::caller(), "SQUAWK survived the reboot")"#,
     )
     .await;
 
-    // Fence: an ack-gated Player create returns only once the store has
-    // acknowledged its batch, and the writer is strictly ordered — so every
-    // fire-and-forget batch above (the weather cell, the script attribute)
-    // has certainly landed in the store by the time this returns.
+    // Every prior mutation crossed its exact barrier; player creation is an
+    // independently acknowledgement-gated final persistence probe.
     world.create_player("Fence").await.expect("fence create");
 
     // --- second boot: rebuild from the store alone. ----------------------
@@ -493,7 +498,7 @@ async fn boot_onboarding_rig(
             guard: Arc::clone(guard),
             staff,
             llm: None,
-            quarantine_dir: None,
+            quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
         },
     );
     (sessions, handles)
@@ -521,6 +526,11 @@ async fn onboarding_round_trip(store: Arc<dyn ObjectStore>) {
     let nick = world.create_player("Nick").await.expect("create Nick");
     // Connecting drops Nick into the guided wizard (the Connected hook).
     let mut nick_rx = attach_direct(&sessions, &world, 2, nick, "nick").await;
+    assert!(
+        world.barrier().await,
+        "onboarding connect-hook commit barrier"
+    );
+    let mut submitted = None;
     for line in VAMPIRE_WIZARD {
         assert!(
             world
@@ -531,11 +541,20 @@ async fn onboarding_round_trip(store: Arc<dyn ObjectStore>) {
                 })
                 .await
         );
+        assert!(world.barrier().await, "wizard mutation commit barrier");
+        if *line == "submit" {
+            submitted = Some(expect_text(&mut nick_rx, "Submitted for approval as job").await);
+        } else {
+            // The exact barrier makes this command's prompt/output observable;
+            // consume it now so the bounded fake client is not mistaken for a
+            // slow connection during the deliberately long wizard journey.
+            while nick_rx.try_recv().is_ok() {}
+        }
     }
-    let ev = expect_text(&mut nick_rx, "Submitted for approval as job").await;
+    let ev = submitted.expect("wizard submit acknowledgement");
     let job = parse_job_id(&text_of(&ev));
-    // Fence: an ack-gated create returns only after every prior batch (the
-    // sheet-attr writes, the job doc) has certainly landed in the store.
+    // Every wizard action crossed its exact barrier; creation independently
+    // proves the world remains writable after the submitted sheet/job commit.
     world.create_player("Fence").await.expect("fence create");
 
     // --- reboot #1 (store alone): the sheet is Pending, unapproved. -------
@@ -680,7 +699,7 @@ async fn boot_worldgen_rig(
             guard: Arc::clone(guard),
             staff,
             llm: Some(llm),
-            quarantine_dir: None,
+            quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
         },
     );
     (sessions, handles)
@@ -704,9 +723,9 @@ async fn worldgen_round_trip(store: Arc<dyn ObjectStore>) {
     let mut god_rx = attach_direct(&sessions, &world, 1, GOD, "god").await;
 
     // A Zone Master Object carrying the theme (a `worldgen.theme` obj attr).
-    god_cmd(&world, "@create Downtown").await;
-    god_cmd(&world, "@set Downtown=ZONE_MASTER").await;
-    god_cmd(
+    god_cmd_committed(&world, "@create Downtown").await;
+    god_cmd_committed(&world, "@set Downtown=ZONE_MASTER").await;
+    god_cmd_committed(
         &world,
         &format!("@theme Downtown=style_guide:{THEME_STYLE}"),
     )
@@ -715,8 +734,8 @@ async fn worldgen_round_trip(store: Arc<dyn ObjectStore>) {
 
     // A room in the zone (teleport in so `here` resolves), then @gen it — the
     // MockProvider returns the canned draft through the real async path.
-    god_cmd(&world, "@dig/teleport Plaza").await;
-    god_cmd(&world, "@zone here=Downtown").await;
+    god_cmd_committed(&world, "@dig/teleport Plaza").await;
+    god_cmd_committed(&world, "@zone here=Downtown").await;
     god_cmd(&world, "@gen here=A wide plaza with a dry fountain.").await;
     // "Draft ready" is delivered in the same world-loop iteration that queues
     // the draft's persist batch, so seeing it means the batch is queued.
@@ -823,7 +842,7 @@ async fn boot_wod_rig(
             guard: Arc::clone(guard),
             staff,
             llm: None,
-            quarantine_dir: None,
+            quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
         },
     );
     (sessions, handles)
@@ -846,12 +865,12 @@ async fn wod_sheet_round_trip(store: Arc<dyn ObjectStore>) {
     let nick = world.create_player("Nick").await.expect("create Nick");
     // Staff-edit the sheet (@sheet/set is Royalty-gated; God qualifies). The
     // sheet is an attr on Nick's object, so these writes ride obj:* through.
-    god_cmd(&world, "@sheet/set Nick/strength=3").await;
-    god_cmd(&world, "@sheet/set Nick/brawl=4").await;
-    god_cmd(&world, "@sheet/set Nick/willpower=6").await;
+    god_cmd_committed(&world, "@sheet/set Nick/strength=3").await;
+    god_cmd_committed(&world, "@sheet/set Nick/brawl=4").await;
+    god_cmd_committed(&world, "@sheet/set Nick/willpower=6").await;
 
-    // Fence: an ack-gated create returns only once the ordered writer has
-    // acknowledged its batch — so every @sheet/set above has certainly landed.
+    // Every sheet edit crossed its exact barrier; creation independently
+    // verifies the world remains writable afterward.
     world.create_player("Fence").await.expect("fence create");
 
     // --- reboot: hydrate a fresh world from the store alone. --------------
@@ -926,71 +945,72 @@ async fn wod_splat_sheet_round_trip(store: Arc<dyn ObjectStore>) {
     // Turn Kindred (re-shapes the sheet to the vampire schema), then set the
     // splat-only fields. A mortal's schema has none of these — they exist only
     // because the sheet's `template` is now `vampire`.
-    god_cmd(&world, "@sheet/set Vlad/template=vampire").await;
-    god_cmd(&world, "@sheet/set Vlad/clan=brujah").await;
-    god_cmd(&world, "@sheet/set Vlad/generation=10").await;
-    god_cmd(&world, "@sheet/set Vlad/disciplines:Celerity=2").await;
-    god_cmd(&world, "@sheet/set Vlad/disciplines:Potence=1").await;
-    god_cmd(&world, "@sheet/set Vlad/bloodpool=8").await;
-    god_cmd(&world, "@sheet/set Vlad/strength=3").await;
+    god_cmd_committed(&world, "@sheet/set Vlad/template=vampire").await;
+    god_cmd_committed(&world, "@sheet/set Vlad/clan=brujah").await;
+    god_cmd_committed(&world, "@sheet/set Vlad/generation=10").await;
+    god_cmd_committed(&world, "@sheet/set Vlad/disciplines:Celerity=2").await;
+    god_cmd_committed(&world, "@sheet/set Vlad/disciplines:Potence=1").await;
+    god_cmd_committed(&world, "@sheet/set Vlad/bloodpool=8").await;
+    god_cmd_committed(&world, "@sheet/set Vlad/strength=3").await;
 
     // A Mage — Spheres / Arete / Quintessence must survive on the mage schema.
     let mira = world.create_player("Mira").await.expect("create Mira");
-    god_cmd(&world, "@sheet/set Mira/template=mage").await;
-    god_cmd(&world, "@sheet/set Mira/affiliation=order_of_hermes").await;
-    god_cmd(&world, "@sheet/set Mira/arete=3").await;
-    god_cmd(&world, "@sheet/set Mira/spheres:Forces=3").await;
-    god_cmd(&world, "@sheet/set Mira/quintessence=2").await;
+    god_cmd_committed(&world, "@sheet/set Mira/template=mage").await;
+    god_cmd_committed(&world, "@sheet/set Mira/affiliation=order_of_hermes").await;
+    god_cmd_committed(&world, "@sheet/set Mira/arete=3").await;
+    god_cmd_committed(&world, "@sheet/set Mira/spheres:Forces=3").await;
+    god_cmd_committed(&world, "@sheet/set Mira/quintessence=2").await;
 
     // A Werewolf — the Garou block, the split Rage/Gnosis pools, `current_form`
     // and Gifts must all survive on the werewolf schema.
     let rex = world.create_player("Rex").await.expect("create Rex");
-    god_cmd(&world, "@sheet/set Rex/template=werewolf").await;
-    god_cmd(&world, "@sheet/set Rex/breed=lupus").await;
-    god_cmd(&world, "@sheet/set Rex/auspice=ahroun").await;
-    god_cmd(&world, "@sheet/set Rex/tribe=get_of_fenris").await;
-    god_cmd(&world, "@sheet/set Rex/rage=5").await;
-    god_cmd(&world, "@sheet/set Rex/rage_temp=3").await;
-    god_cmd(&world, "@sheet/set Rex/gnosis=5").await;
-    god_cmd(&world, "@sheet/set Rex/current_form=crinos").await;
-    god_cmd(&world, "@sheet/set Rex/gifts:Razor Claws=2").await;
+    god_cmd_committed(&world, "@sheet/set Rex/template=werewolf").await;
+    god_cmd_committed(&world, "@sheet/set Rex/breed=lupus").await;
+    god_cmd_committed(&world, "@sheet/set Rex/auspice=ahroun").await;
+    god_cmd_committed(&world, "@sheet/set Rex/tribe=get_of_fenris").await;
+    god_cmd_committed(&world, "@sheet/set Rex/rage=5").await;
+    god_cmd_committed(&world, "@sheet/set Rex/rage_temp=3").await;
+    god_cmd_committed(&world, "@sheet/set Rex/gnosis=5").await;
+    god_cmd_committed(&world, "@sheet/set Rex/current_form=crinos").await;
+    god_cmd_committed(&world, "@sheet/set Rex/gifts:Razor Claws=2").await;
 
     // A Changeling (M10a) — the Fae block, Arts / Realms dots-maps, and the
     // Glamour pool must all survive on the changeling schema.
     let nuala = world.create_player("Nuala").await.expect("create Nuala");
-    god_cmd(&world, "@sheet/set Nuala/template=changeling").await;
-    god_cmd(&world, "@sheet/set Nuala/kith=pooka").await;
-    god_cmd(&world, "@sheet/set Nuala/seeming=childling").await;
-    god_cmd(&world, "@sheet/set Nuala/court=seelie").await;
-    god_cmd(&world, "@sheet/set Nuala/arts:Chicanery=2").await;
-    god_cmd(&world, "@sheet/set Nuala/realms:Actor=3").await;
-    god_cmd(&world, "@sheet/set Nuala/glamour=4").await;
-    god_cmd(&world, "@sheet/set Nuala/glamour_temp=3").await;
-    god_cmd(&world, "@sheet/set Nuala/banality=2").await;
+    god_cmd_committed(&world, "@sheet/set Nuala/template=changeling").await;
+    god_cmd_committed(&world, "@sheet/set Nuala/kith=pooka").await;
+    god_cmd_committed(&world, "@sheet/set Nuala/seeming=childling").await;
+    god_cmd_committed(&world, "@sheet/set Nuala/court=seelie").await;
+    god_cmd_committed(&world, "@sheet/set Nuala/arts:Chicanery=2").await;
+    god_cmd_committed(&world, "@sheet/set Nuala/realms:Actor=3").await;
+    god_cmd_committed(&world, "@sheet/set Nuala/glamour=4").await;
+    god_cmd_committed(&world, "@sheet/set Nuala/glamour_temp=3").await;
+    god_cmd_committed(&world, "@sheet/set Nuala/banality=2").await;
 
     // A Ghoul (M10a) — the Ghoul block, the Disciplines map (free Potence plus a
     // domitor-clan pick), the flat Blood Pool and the Blood Bond must survive on
     // the ghoul schema (which carries no clan/generation/weakness).
     let grimm = world.create_player("Grimm").await.expect("create Grimm");
-    god_cmd(&world, "@sheet/set Grimm/template=ghoul").await;
-    god_cmd(&world, "@sheet/set Grimm/domitor_clan=gangrel").await;
-    god_cmd(&world, "@sheet/set Grimm/domitor=Lady Sascha").await;
-    god_cmd(&world, "@sheet/set Grimm/disciplines:Potence=1").await;
-    god_cmd(&world, "@sheet/set Grimm/disciplines:Fortitude=2").await;
-    god_cmd(&world, "@sheet/set Grimm/bloodpool=6").await;
-    god_cmd(&world, "@sheet/set Grimm/bond_level=2").await;
+    god_cmd_committed(&world, "@sheet/set Grimm/template=ghoul").await;
+    god_cmd_committed(&world, "@sheet/set Grimm/domitor_clan=gangrel").await;
+    god_cmd_committed(&world, "@sheet/set Grimm/domitor=Lady Sascha").await;
+    god_cmd_committed(&world, "@sheet/set Grimm/disciplines:Potence=1").await;
+    god_cmd_committed(&world, "@sheet/set Grimm/disciplines:Fortitude=2").await;
+    god_cmd_committed(&world, "@sheet/set Grimm/bloodpool=6").await;
+    god_cmd_committed(&world, "@sheet/set Grimm/bond_level=2").await;
 
     // A Kinfolk (M10a) — the Kinfolk block, the split Gnosis pool, the Gifts map
     // and the Delirium-immunity flag must survive on the kinfolk schema (no
     // Rage / Renown / Disciplines).
     let willa = world.create_player("Willa").await.expect("create Willa");
-    god_cmd(&world, "@sheet/set Willa/template=kinfolk").await;
-    god_cmd(&world, "@sheet/set Willa/tribe=fianna").await;
-    god_cmd(&world, "@sheet/set Willa/gnosis=3").await;
-    god_cmd(&world, "@sheet/set Willa/gnosis_temp=2").await;
-    god_cmd(&world, "@sheet/set Willa/gifts:Persuasion=1").await;
+    god_cmd_committed(&world, "@sheet/set Willa/template=kinfolk").await;
+    god_cmd_committed(&world, "@sheet/set Willa/tribe=fianna").await;
+    god_cmd_committed(&world, "@sheet/set Willa/gnosis=3").await;
+    god_cmd_committed(&world, "@sheet/set Willa/gnosis_temp=2").await;
+    god_cmd_committed(&world, "@sheet/set Willa/gifts:Persuasion=1").await;
 
-    // Fence on an ack-gated create so every sheet write has landed in the store.
+    // Every sheet edit crossed its exact barrier; creation independently probes
+    // that the world remains writable after the full build.
     world.create_player("Fence").await.expect("fence create");
 
     // --- reboot: hydrate a fresh world from the store alone. --------------
@@ -1240,6 +1260,7 @@ const MODE_NORMAL: u8 = 0;
 const MODE_HOLD: u8 = 1;
 const MODE_FAIL: u8 = 2;
 const MODE_CLOSED: u8 = 3;
+const MODE_WRONG_RECEIPT: u8 = 4;
 
 struct FlakyStore {
     inner: InMemoryStore,
@@ -1277,6 +1298,12 @@ impl ObjectStore for FlakyStore {
                         )));
                     }
                     MODE_CLOSED => return Err(StoreError::Closed),
+                    MODE_WRONG_RECEIPT => {
+                        let receipt = self.inner.write(batch).await?;
+                        return Ok(WriteReceipt {
+                            serial: receipt.serial.saturating_add(1),
+                        });
+                    }
                     _ => return self.inner.write(batch).await,
                 }
             }
@@ -1459,6 +1486,113 @@ async fn account_creation_confirmation_waits_for_store_ack() {
     );
 }
 
+/// Ordinary mutation presentation is governed by the same receipt boundary as
+/// typed account creation. While the write is held, gameplay/world reads get a
+/// typed Busy refusal (never tentative RAM and never a false negative), and
+/// neither the success line nor a later barrier may overtake it.
+#[tokio::test(flavor = "multi_thread")]
+async fn ordinary_success_and_barrier_wait_for_exact_store_ack() {
+    let flaky = Arc::new(FlakyStore::new());
+    let store: Arc<dyn ObjectStore> = Arc::clone(&flaky) as Arc<dyn ObjectStore>;
+    let guard = Arc::new(IpGuard::new());
+    let (sessions, handles) = boot_rig(&store, &guard).await;
+    let world = handles.handle.clone();
+    let mut god_rx = attach_direct(&sessions, &world, 1, GOD, "god").await;
+    assert!(world.barrier().await, "connection setup barrier");
+
+    flaky.set_mode(MODE_HOLD);
+    god_cmd(&world, "@create held-orb").await;
+    let barrier_world = world.clone();
+    let barrier = tokio::spawn(async move { barrier_world.barrier().await });
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert!(
+        !barrier.is_finished(),
+        "barrier completed before the prior write's exact receipt"
+    );
+    assert!(
+        world
+            .inbound(Inbound::Query {
+                conn: 1,
+                actor: GOD,
+                id: 991,
+                name: "who".into(),
+                args: serde_json::json!({}),
+            })
+            .await
+    );
+    expect_text(&mut god_rx, "committing another action").await;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), world.name_free("Probe"))
+            .await
+            .expect("world read receives a bounded response"),
+        Err(WorldReadError::Busy),
+        "a pending commit must not expose tentative world state or invent a name answer"
+    );
+    while let Ok(event) = god_rx.try_recv() {
+        assert!(
+            !text_of(&event).contains("Created: held-orb"),
+            "success presentation escaped before durable acknowledgement"
+        );
+    }
+
+    flaky.set_mode(MODE_NORMAL);
+    expect_text(&mut god_rx, "Created: held-orb").await;
+    assert!(
+        barrier.await.expect("barrier task joins"),
+        "barrier completes after output release"
+    );
+    assert_eq!(
+        world.name_free("Probe").await,
+        Ok(true),
+        "world reads resume after the exact receipt"
+    );
+    let snapshot = store.load_world().await.unwrap().expect("seeded world");
+    assert!(snapshot.objects.iter().any(|o| o.name == "held-orb"));
+}
+
+/// A store receipt is an exact token, not a generic "some write happened"
+/// acknowledgement. Even if the backend applied the bytes, returning another
+/// serial aborts presentation/effects and integrity-freezes the world.
+#[tokio::test(flavor = "multi_thread")]
+async fn wrong_receipt_serial_never_releases_success() {
+    let flaky = Arc::new(FlakyStore::new());
+    let store: Arc<dyn ObjectStore> = Arc::clone(&flaky) as Arc<dyn ObjectStore>;
+    let guard = Arc::new(IpGuard::new());
+    let (sessions, handles) = boot_rig(&store, &guard).await;
+    let world = handles.handle.clone();
+    let mut god_rx = attach_direct(&sessions, &world, 1, GOD, "god").await;
+    assert!(world.barrier().await, "connection setup barrier");
+
+    flaky.set_mode(MODE_WRONG_RECEIPT);
+    god_cmd(&world, "@create false-ack-orb").await;
+
+    let saw_created = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut leaked = false;
+        loop {
+            let event = god_rx.recv().await.expect("wizard connection remains open");
+            let text = text_of(&event);
+            leaked |= text.contains("Created: false-ack-orb");
+            if text.contains("success output and external effects were suppressed") {
+                return leaked;
+            }
+        }
+    })
+    .await
+    .expect("bounded integrity-failure response");
+    assert!(
+        !saw_created,
+        "a mismatched receipt released commit-bound success presentation"
+    );
+    assert!(
+        world.barrier().await,
+        "failure release precedes the barrier"
+    );
+
+    god_cmd(&world, "@create compounded-divergence").await;
+    expect_text(&mut god_rx, "integrity-frozen").await;
+}
+
 // ---------------------------------------------------------------------------
 // 3. Read-only mode entry/exit on store failure
 // ---------------------------------------------------------------------------
@@ -1478,21 +1612,22 @@ async fn store_failure_enters_read_only_and_recovery_exits() {
     god_cmd(&world, "@create doomed-orb").await;
     expect_text(&mut god_rx, "store write failure").await;
 
-    // Mutating commands are refused...
+    // The exact failed write remains in writer custody and keeps the world in
+    // CommitPending until it can retry. Every ordinary command is refused
+    // against that tentative RAM image, including otherwise read-only lines.
     god_cmd(&world, "@create another-orb").await;
-    expect_text(&mut god_rx, "database is currently unavailable").await;
-    // ...but reads and speech still work from RAM.
+    expect_text(&mut god_rx, "committing another action").await;
     god_cmd(&world, "look").await;
-    expect_text(&mut god_rx, "Limbo(#0)").await;
+    expect_text(&mut god_rx, "committing another action").await;
     god_cmd(&world, "say still here").await;
-    expect_text(&mut god_rx, "still here").await;
+    expect_text(&mut god_rx, "committing another action").await;
 
     // Store comes back: the writer's retry succeeds (backoff <= 5s), the
     // world announces recovery, and mutations flow again — including the
     // batch that was stuck, which must land in the store.
     flaky.set_mode(MODE_NORMAL);
     expect_text(&mut god_rx, "store writes recovered").await;
-    god_cmd(&world, "@create recovery-orb").await;
+    god_cmd_committed(&world, "@create recovery-orb").await;
     expect_text(&mut god_rx, "Created: recovery-orb").await;
 
     // Everything (including the once-stuck doomed-orb batch) is persisted.
@@ -1579,11 +1714,9 @@ async fn destroy_sweeps_and_deletes_from_store() {
 // 3c. Read-only mode vs exit aliases and creation flows
 // ---------------------------------------------------------------------------
 
-/// Dispatch matches exits BEFORE the command table, so an exit aliased to
-/// an allowlisted verb (`library;l` is a classic build pattern) must be
-/// refused in read-only mode — traversing it would move the player. And
-/// `CreatePlayer` (welcome-screen `create`) must fail closed instead of
-/// mutating RAM behind a stuck writer.
+/// A transiently failed mutation leaves tentative RAM behind an exact pending
+/// receipt. Exit aliases, reads, and typed creation must all receive Busy until
+/// that predecessor commits; none may inspect or extend the tentative image.
 #[tokio::test(flavor = "multi_thread")]
 async fn read_only_refuses_exit_aliases_and_creation() {
     let flaky = Arc::new(FlakyStore::new());
@@ -1597,29 +1730,37 @@ async fn read_only_refuses_exit_aliases_and_creation() {
     god_cmd(&world, "@dig Lounge = library;l, out;o").await;
     expect_text(&mut god_rx, "Lounge created").await;
 
-    // Break the store; a mutation trips the writer into read-only mode.
+    // Break the store; a mutation trips the writer health signal while its
+    // exact receipt remains pending.
     flaky.set_mode(MODE_FAIL);
     god_cmd(&world, "@create tripwire").await;
     expect_text(&mut god_rx, "store write failure").await;
 
-    // "l" resolves to the exit, not to `look` — refused.
+    // "l" resolves to the exit, not to `look` — refused as CommitPending.
     god_cmd(&world, "l").await;
-    expect_text(&mut god_rx, "database is currently unavailable").await;
-    // Still in Limbo, and plain `look` still works from RAM.
+    expect_text(&mut god_rx, "committing another action").await;
+    // Plain `look` is also refused: it may not observe tentative RAM.
     god_cmd(&world, "look").await;
-    expect_text(&mut god_rx, "Limbo(#0)").await;
+    expect_text(&mut god_rx, "committing another action").await;
 
-    // Creation flows fail closed while read-only.
+    // Typed creation gets the equivalent retryable Busy result.
     let err = world.create_player("Nope").await.unwrap_err();
     assert_eq!(
         err,
-        mushd::world_task::CreatePlayerErr::StoreUnavailable,
-        "CreatePlayer must be refused in read-only mode"
+        mushd::world_task::CreatePlayerErr::Busy,
+        "CreatePlayer must be refused while the predecessor receipt is pending"
     );
 
     // Recovery lifts the gate: the same "l" now traverses the exit.
     flaky.set_mode(MODE_NORMAL);
     expect_text(&mut god_rx, "store writes recovered").await;
+    // StoreStatus(true) and the exact receipt use separate control lanes; the
+    // advisory recovery notice may arrive first. Cross the receipt fence
+    // before asserting that ordinary input is admitted again.
+    assert!(
+        world.barrier().await,
+        "recovery notice must be followed by the exact commit receipt"
+    );
     god_cmd(&world, "l").await;
     expect_text(&mut god_rx, "Lounge(#").await;
 }
@@ -1804,7 +1945,7 @@ async fn boot_npc_rig(
             guard: Arc::clone(guard),
             staff,
             llm: Some(llm),
-            quarantine_dir: None,
+            quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
         },
     );
     (sessions, handles)
@@ -1873,9 +2014,13 @@ async fn npc_agent_round_trip(store: Arc<dyn ObjectStore>) {
     )
     .await;
 
-    // Fence: an ack-gated create returns only after the strictly-ordered writer
-    // has acknowledged its batch — so the memory + summary batches queued before
-    // it have certainly landed in the store.
+    // Apply messages carry transferred semantic custody and may be retained
+    // behind one another. Cross both exact receipts before issuing an ordinary
+    // mutation, which would otherwise be refused while the second is pending.
+    assert!(world.barrier().await, "NPC completion commit barrier");
+
+    // Player creation is independently acknowledgement-gated after both
+    // completion batches have landed.
     world.create_player("Fence").await.expect("fence create");
 
     // --- second boot: rebuild from the store alone. ----------------------

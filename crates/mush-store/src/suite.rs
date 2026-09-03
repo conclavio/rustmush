@@ -394,7 +394,12 @@ pub async fn account_ssh_keys_update(store: &dyn ObjectStore) {
     assert_eq!(rec.characters.len(), 1, "characters still untouched");
 
     // Clear: an empty slice empties the array.
-    assert!(store.set_account_ssh_keys("nick", &[]).await.expect("clear"));
+    assert!(
+        store
+            .set_account_ssh_keys("nick", &[])
+            .await
+            .expect("clear")
+    );
     let rec = store
         .get_account("nick")
         .await

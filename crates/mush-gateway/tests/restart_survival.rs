@@ -8,8 +8,9 @@
 //! signal). The proof asserts:
 //!
 //! - the SSH connection SURVIVES — it is never disconnected;
-//! - the player is told "restarting" then "reconnected" and is pushed a fresh
-//!   room render from the reloaded world (D2/D3);
+//! - the player is told "restarting", is pushed a fresh room render from the
+//!   reloaded world, and only sees "reconnected" after the replay plus an exact
+//!   readiness barrier have crossed (D2/D3);
 //! - world state is INTACT across the restart — a room the player `@dig`ged
 //!   before the restart is still reachable afterwards (R1: the server reloads
 //!   its world from the shared store, exactly as it would from Redis);
@@ -86,7 +87,11 @@ async fn launch_thread_server(store: Arc<dyn ObjectStore>) -> Result<LaunchedSer
             .enable_all()
             .build()
             .unwrap();
-        let _ = rt.block_on(mush_server::serve_with_store(cfg, Some(ipc_tx), Some(store)));
+        let _ = rt.block_on(mush_server::serve_with_store(
+            cfg,
+            Some(ipc_tx),
+            Some(store),
+        ));
         let _ = exit_tx.send(());
     });
     let endpoint = tokio::time::timeout(Duration::from_secs(30), ipc_rx)
@@ -298,13 +303,18 @@ impl Term {
         while !strip_ansi(&self.seen[mark..]).contains(needle) {
             let msg = tokio::time::timeout_at(deadline, self.channel.wait())
                 .await
-                .unwrap_or_else(|_| panic!("timeout waiting for {needle:?}; seen: {:?}", self.seen));
+                .unwrap_or_else(|_| {
+                    panic!("timeout waiting for {needle:?}; seen: {:?}", self.seen)
+                });
             match msg {
                 Some(ChannelMsg::Data { data }) => {
                     self.seen.push_str(&String::from_utf8_lossy(&data));
                 }
                 Some(_) => {}
-                None => panic!("channel closed waiting for {needle:?}; seen: {:?}", self.seen),
+                None => panic!(
+                    "channel closed waiting for {needle:?}; seen: {:?}",
+                    self.seen
+                ),
             }
         }
     }
@@ -401,33 +411,39 @@ async fn server_restart_keeps_connections_and_world() {
     // --- God connects on TWO connections (multi-connect) and plays. ---
     let (_g1, mut god1) = play_client(ssh_addr).await;
     god1.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-    god1.expect("Connected as God (account boss, 1 connection).").await;
+    god1.expect("Connected as God (account boss, 1 connection).")
+        .await;
     god1.expect("Limbo(#0)").await;
 
     let (_g2, mut god2) = play_client(ssh_addr).await;
     god2.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-    god2.expect("Connected as God (account boss, 2 connections).").await;
+    god2.expect("Connected as God (account boss, 2 connections).")
+        .await;
     god2.expect("Limbo(#0)").await;
 
     // A mutating command that must survive the restart: dig a room with an exit.
     let before_dig = god1.mark();
     god1.send_line("@dig Vault = east;e, west;w").await;
-    god1.expect_after(before_dig, "Vault created with room number").await;
+    god1.expect_after(before_dig, "Vault created with room number")
+        .await;
 
     // Speech round-trips across the boundary before the restart.
     let before_say = god2.mark();
     god1.send_line("say pre-restart").await;
-    god2.expect_after(before_say, "God says, \"pre-restart\"").await;
+    god2.expect_after(before_say, "God says, \"pre-restart\"")
+        .await;
 
     // --- RESTART the server (the programmatic SIGHUP stand-in). ---
     let restart_mark1 = god1.mark();
     let restart_mark2 = god2.mark();
     assert!(trigger.restart().await, "restart must be accepted");
 
-    // Both connections are told the game is restarting, then reconnected, and
-    // are pushed a fresh room render from the reloaded world — WITHOUT ever
-    // being disconnected (R1/R3). The gateway generates the restarting/
-    // reconnected lines (server is down); the look comes from the new server.
+    // Both connections are told the game is restarting, are pushed a fresh
+    // room render from the reloaded world, then are told reconnected only after
+    // the replay + exact readiness barrier — WITHOUT ever being disconnected
+    // (R1/R3). The gateway generates the system lines; the look comes from the
+    // new server. We search from one mark because transport scheduling need not
+    // impose a presentation order between the replay render and final notice.
     god1.expect_after(restart_mark1, "restarting").await;
     god1.expect_after(restart_mark1, "Reconnected").await;
     god1.expect_after(restart_mark1, "Limbo(#0)").await;
@@ -445,9 +461,15 @@ async fn server_restart_keeps_connections_and_world() {
     //     second connection (still in Limbo) hears it — both connections are
     //     live and the world loop is running. ---
     let after_move = god2.mark();
+    let before_west = god1.mark();
     god1.send_line("west").await; // back to Limbo with god2
+    // Command output is acknowledgement-gated. Wait for west's room render
+    // before issuing another action; firing `say` immediately would correctly
+    // receive typed CommitPending Busy while west's receipt is outstanding.
+    god1.expect_after(before_west, "Limbo(#0)").await;
     god1.send_line("say post-restart").await;
-    god2.expect_after(after_move, "God says, \"post-restart\"").await;
+    god2.expect_after(after_move, "God says, \"post-restart\"")
+        .await;
 
     drop(god1);
     drop(god2);
@@ -468,13 +490,15 @@ async fn restart_mid_scene_resumes_in_current_room() {
 
     let (_g, mut god) = play_client(ssh_addr).await;
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-    god.expect("Connected as God (account boss, 1 connection).").await;
+    god.expect("Connected as God (account boss, 1 connection).")
+        .await;
     god.expect("Limbo(#0)").await;
 
     // Build a room, then WALK INTO it — the player is now mid-scene in Vault.
     let before_dig = god.mark();
     god.send_line("@dig Vault = east;e, west;w").await;
-    god.expect_after(before_dig, "Vault created with room number").await;
+    god.expect_after(before_dig, "Vault created with room number")
+        .await;
     let before_move = god.mark();
     god.send_line("east").await;
     god.expect_after(before_move, "Vault").await;
@@ -512,7 +536,8 @@ async fn crash_loop_guard_gives_up_without_dropping_players() {
 
     let (_g, mut god) = play_client(ssh_addr).await;
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-    god.expect("Connected as God (account boss, 1 connection).").await;
+    god.expect("Connected as God (account boss, 1 connection).")
+        .await;
     god.expect("Limbo(#0)").await;
 
     // Trigger a restart the server can never come back from (every relaunch fails).
@@ -549,13 +574,15 @@ async fn server_self_exit_auto_restarts_without_dropping_players() {
 
     let (_g, mut god) = play_client(ssh_addr).await;
     god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-    god.expect("Connected as God (account boss, 1 connection).").await;
+    god.expect("Connected as God (account boss, 1 connection).")
+        .await;
     god.expect("Limbo(#0)").await;
 
     // Build something that must survive the auto-restart.
     let before_dig = god.mark();
     god.send_line("@dig Vault = east;e, west;w").await;
-    god.expect_after(before_dig, "Vault created with room number").await;
+    god.expect_after(before_dig, "Vault created with room number")
+        .await;
 
     // Make the server EXIT ON ITS OWN (the crash / auto-restart path, D1a) by
     // firing the first server's crash signal — NOT the RestartTrigger. The
@@ -598,18 +625,21 @@ async fn client_disconnect_during_gap_leaves_survivor_intact() {
     // Two connections on the same character (multi-connect).
     let (_s1, mut god1) = play_client(ssh_addr).await;
     god1.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-    god1.expect("Connected as God (account boss, 1 connection).").await;
+    god1.expect("Connected as God (account boss, 1 connection).")
+        .await;
     god1.expect("Limbo(#0)").await;
 
     let (s2, mut god2) = play_client(ssh_addr).await;
     god2.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-    god2.expect("Connected as God (account boss, 2 connections).").await;
+    god2.expect("Connected as God (account boss, 2 connections).")
+        .await;
     god2.expect("Limbo(#0)").await;
 
     // Something to prove the world is intact afterward.
     let before_dig = god1.mark();
     god1.send_line("@dig Vault = east;e, west;w").await;
-    god1.expect_after(before_dig, "Vault created with room number").await;
+    god1.expect_after(before_dig, "Vault created with room number")
+        .await;
 
     // RESTART, then immediately drop the SECOND connection — it vanishes during
     // the restart gap, before the re-attach completes.

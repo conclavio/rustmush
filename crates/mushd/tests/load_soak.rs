@@ -65,10 +65,15 @@ use mushd::staff::{StaffQueue, register_server_commands};
 use mushd::web_bridge::WebBridge;
 use mushd::world_task::{self, PersistHandles, ServerDeps};
 
-use support::{STEP_TIMEOUT, play_client, scratch_dir};
+use support::{STEP_TIMEOUT, Term, play_client, scratch_dir};
 
 const GM_PASSWORD: &str = "gm-load-secret";
 const BANNER: &str = "Welcome to the load MUSH!";
+const COMMIT_PENDING_BUSY: &str =
+    "The world is committing another action; please retry in a moment.";
+const GATEWAY_QUEUE_BUSY: &str = "The server is busy; try again.";
+const MAX_BUSY_ATTEMPTS: usize = 4_096;
+const BUSY_RETRY_DELAY: Duration = Duration::from_millis(2);
 
 type Ws = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -387,7 +392,7 @@ async fn boot_load(tag: &str, send_queue: usize, send_timeout_ms: u64) -> Rig {
             guard: Arc::clone(&guard),
             staff,
             llm: None,
-            quarantine_dir: None,
+            quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
             metrics: Arc::new(mush_net_web::Metrics::new()),
         },
     );
@@ -453,56 +458,125 @@ async fn boot_load(tag: &str, send_queue: usize, send_timeout_ms: u64) -> Rig {
 /// One SSH player's whole journey: create, a say/pose/look/move loop, then a
 /// link-dead drop + reconnect + final say. Returns the number of commands it
 /// issued (for throughput accounting).
-async fn run_ssh_client(addr: SocketAddr, name: String, iters: usize) -> usize {
+async fn send_with_busy_retry(term: &mut Term, line: &str, acknowledgement: &str) {
+    let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
+    for attempt in 1..=MAX_BUSY_ATTEMPTS {
+        let mark = term.mark();
+        term.send_line(line).await;
+        let outcome = tokio::time::timeout_at(
+            deadline,
+            term.expect_one_of_after(
+                mark,
+                &[acknowledgement, COMMIT_PENDING_BUSY, GATEWAY_QUEUE_BUSY],
+            ),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "command {line:?} did not settle within {STEP_TIMEOUT:?} after {attempt} attempts"
+            )
+        });
+        if outcome == 0 {
+            return;
+        }
+        assert!(
+            attempt < MAX_BUSY_ATTEMPTS,
+            "command {line:?} remained busy after {MAX_BUSY_ATTEMPTS} attempts"
+        );
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "command {line:?} remained busy until the {STEP_TIMEOUT:?} deadline"
+        );
+        tokio::time::sleep(BUSY_RETRY_DELAY.min(remaining)).await;
+    }
+    unreachable!("bounded retry loop either succeeds or panics");
+}
+
+async fn wait_for_phase(barrier: &tokio::sync::Barrier, phase: &str) {
+    tokio::time::timeout(STEP_TIMEOUT, barrier.wait())
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for all clients at the {phase} phase"));
+}
+
+async fn run_ssh_client(
+    addr: SocketAddr,
+    name: String,
+    iters: usize,
+    connection_gate: Arc<tokio::sync::Semaphore>,
+    phase_barrier: Arc<tokio::sync::Barrier>,
+) -> usize {
     let pw = "player-pw-123";
     let (handle, mut term) = play_client(addr).await;
-    term.send_line(&format!("create {name} {pw}")).await;
-    term.expect(&format!("Connected as {name}")).await;
-    term.expect("Limbo(#0)").await;
+    {
+        let _permit = connection_gate
+            .acquire()
+            .await
+            .expect("connection gate remains open");
+        let mark = term.mark();
+        term.send_line(&format!("create {name} {pw}")).await;
+        term.expect_after(mark, &format!("Connected as {name}"))
+            .await;
+        term.expect_after(mark, "Limbo(#0)").await;
+    }
     let mut cmds = 1usize;
+
+    // Finish all serialized account/character setup before beginning the
+    // concurrent command phase. The gate must not hide world contention from
+    // the actual load loop below.
+    wait_for_phase(&phase_barrier, "load start").await;
 
     // Each command is drained before the next: like a real terminal, this
     // client reads continuously, so heavy room-wide cross-talk never piles up
     // in its own output buffer (a client that fired a burst and then stopped
     // reading is exactly the slow client the backpressure test covers). Every
     // command echoes something to the speaker, giving a per-command sync point
-    // that is also a proof the world loop processed THIS client's input.
+    // that is also a proof the world loop processed THIS client's input. A
+    // CommitPending or gateway-queue refusal is an explicit retry signal:
+    // back off, then resend this same command. Clients remain concurrent with
+    // one another while each individual client has at most one command in
+    // flight.
     for i in 0..iters {
-        let m = term.mark();
-        term.send_line("look").await;
-        term.expect_after(m, "Limbo(#0)").await;
-
-        let m = term.mark();
-        term.send_line("pose stretches").await;
-        term.expect_after(m, "stretches").await;
-
-        let m = term.mark();
-        term.send_line(&format!("say tick-{name}-{i}")).await;
-        term.expect_after(m, &format!("tick-{name}-{i}")).await;
-
-        let m = term.mark();
-        term.send_line("east").await;
-        term.expect_after(m, "Loop(#").await;
-
-        let m = term.mark();
-        term.send_line("west").await;
-        term.expect_after(m, "Limbo(#0)").await;
+        send_with_busy_retry(&mut term, "look", "Limbo(#0)").await;
+        let stretch = format!("stretches-{name}-{i}");
+        let pose = format!("pose {stretch}");
+        send_with_busy_retry(&mut term, &pose, &stretch).await;
+        let tick = format!("tick-{name}-{i}");
+        send_with_busy_retry(&mut term, &format!("say {tick}"), &tick).await;
+        send_with_busy_retry(&mut term, "east", "Loop(#").await;
+        send_with_busy_retry(&mut term, "west", "Limbo(#0)").await;
         cmds += 5;
     }
 
     // Link-dead drop, then reconnect within the grace and speak again.
-    let _ = handle
-        .disconnect(russh::Disconnect::ByApplication, "", "")
-        .await;
-    drop(term);
-    drop(handle);
+    wait_for_phase(&phase_barrier, "reconnect start").await;
+    let (handle2, mut term2) = {
+        let _permit = connection_gate
+            .acquire()
+            .await
+            .expect("connection gate remains open");
+        let _ = handle
+            .disconnect(russh::Disconnect::ByApplication, "", "")
+            .await;
+        drop(term);
+        drop(handle);
 
-    let (handle2, mut term2) = play_client(addr).await;
-    term2.send_line(&format!("connect {name} {pw}")).await;
-    term2.expect(&format!("Connected as {name}")).await;
-    let mark = term2.mark();
-    term2.send_line(&format!("say back-{name}")).await;
-    term2.expect_after(mark, &format!("back-{name}")).await;
+        let (handle2, mut term2) = play_client(addr).await;
+        let mark = term2.mark();
+        term2.send_line(&format!("connect {name} {pw}")).await;
+        term2
+            .expect_after(mark, &format!("Connected as {name}"))
+            .await;
+        term2.expect_after(mark, "Limbo(#0)").await;
+        (handle2, term2)
+    };
+    wait_for_phase(&phase_barrier, "final command").await;
+    send_with_busy_retry(
+        &mut term2,
+        &format!("say back-{name}"),
+        &format!("back-{name}"),
+    )
+    .await;
     cmds += 2;
     let _ = handle2
         .disconnect(russh::Disconnect::ByApplication, "", "")
@@ -531,6 +605,7 @@ async fn ssh_load_liveness_and_throughput() {
         boss.expect(BANNER).await;
         boss.send_line(&format!("connect boss {GM_PASSWORD}")).await;
         boss.expect("Connected as God").await;
+        boss.expect("Limbo(#0)").await;
         boss.send_line("@dig Loop = east;e, west;w").await;
         boss.expect("Opened exit east(").await;
         boss.expect("Opened exit west(").await;
@@ -538,15 +613,25 @@ async fn ssh_load_liveness_and_throughput() {
             .disconnect(russh::Disconnect::ByApplication, "", "")
             .await;
     }
+    assert!(
+        rig._handles.handle.barrier().await,
+        "boss disconnect must settle before load starts"
+    );
 
     let started = Instant::now();
     let mut tasks = Vec::new();
+    let connection_gate = Arc::new(tokio::sync::Semaphore::new(1));
+    let phase_barrier = Arc::new(tokio::sync::Barrier::new(n_clients));
     for i in 0..n_clients {
         let addr = rig.ssh;
+        let connection_gate = Arc::clone(&connection_gate);
+        let phase_barrier = Arc::clone(&phase_barrier);
         tasks.push(tokio::spawn(run_ssh_client(
             addr,
             format!("Load{i}"),
             iters,
+            connection_gate,
+            phase_barrier,
         )));
     }
     let mut total_cmds = 0usize;
@@ -570,6 +655,7 @@ async fn ssh_load_liveness_and_throughput() {
         .send_line(&format!("connect boss {GM_PASSWORD}"))
         .await;
     checker.expect("Connected as God").await;
+    checker.expect("Limbo(#0)").await;
     let live_started = Instant::now();
     checker.send_line("WHO").await;
     checker.expect("players connected.").await;

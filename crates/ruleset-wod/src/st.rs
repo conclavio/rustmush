@@ -542,8 +542,9 @@ fn extract_tool_input(
     }
     let text = resp.text();
     match last_json_object(&text) {
-        Some(obj) => serde_json::from_str(obj)
-            .map_err(|e| format!("embedded JSON did not parse: {e}")),
+        Some(obj) => {
+            serde_json::from_str(obj).map_err(|e| format!("embedded JSON did not parse: {e}"))
+        }
         None => Err("response contained no tool call and no JSON object".to_string()),
     }
 }
@@ -736,7 +737,11 @@ fn ruling_user_prompt_mage(req: &RulingRequest) -> String {
     ));
     s.push_str(&format!(
         "Vulgar: {}\n",
-        if req.vulgar { "yes" } else { "no (coincidental)" }
+        if req.vulgar {
+            "yes"
+        } else {
+            "no (coincidental)"
+        }
     ));
     s.push_str("Effect described by the player:\n");
     s.push_str(req.freeform.trim());
@@ -793,7 +798,10 @@ fn interpret_user_prompt(req: &InterpretRequest) -> String {
     let mut s = String::new();
     s.push_str("== THE ENGINE'S RESULT (authoritative — do not change it) ==\n");
     s.push_str(&format!("Result: {result}\n"));
-    s.push_str(&format!("Pool rolled: {} at difficulty {}\n", req.pool, req.difficulty));
+    s.push_str(&format!(
+        "Pool rolled: {} at difficulty {}\n",
+        req.pool, req.difficulty
+    ));
     if req.kind == ActionKind::Mage {
         s.push_str(&format!(
             "Spheres: {}\n",
@@ -805,7 +813,11 @@ fn interpret_user_prompt(req: &InterpretRequest) -> String {
         ));
         s.push_str(&format!(
             "Vulgar: {}\n",
-            if req.vulgar { "yes" } else { "no (coincidental)" }
+            if req.vulgar {
+                "yes"
+            } else {
+                "no (coincidental)"
+            }
         ));
     }
     s.push('\n');
@@ -966,8 +978,11 @@ impl WodCompletion {
             } else {
                 ruling.reject_reason.trim().to_string()
             };
-            ctx.out
-                .sys_to_actor(actor, "wod", format!("The Storyteller rejects the {noun}: {reason}."));
+            ctx.out.sys_to_actor(
+                actor,
+                "wod",
+                format!("The Storyteller rejects the {noun}: {reason}."),
+            );
             return;
         }
 
@@ -979,7 +994,8 @@ impl WodCompletion {
         // Mage: every proposed Sphere must be owned within the Arete cap.
         // Generic: no Spheres in play.
         let spheres = match kind {
-            ActionKind::Mage => match crate::splats::mage::spheres_owned(&doc, &r.proposed_spheres) {
+            ActionKind::Mage => match crate::splats::mage::spheres_owned(&doc, &r.proposed_spheres)
+            {
                 Ok(canon) => canon.iter().map(|s| (*s).to_string()).collect::<Vec<_>>(),
                 Err(e) => {
                     ctx.out.sys_to_actor(

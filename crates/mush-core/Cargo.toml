@@ -12,6 +12,7 @@ serde.workspace = true
 serde_json.workspace = true
 bitflags.workspace = true
 smol_str.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

@@ -13,9 +13,10 @@
 //!
 //! - the WS connection SURVIVES — it is never sent a Close frame (`recv_env`
 //!   panics on a close, so a dropped WS fails the test);
-//! - the player is told "restarting" then "Reconnected" over the SAME WS and is
-//!   pushed a fresh room render from the reloaded world (W2/D2/D3), all as
-//!   ordinary JSON envelopes;
+//! - the player is told "restarting" over the SAME WS, is pushed a fresh room
+//!   render from the reloaded world, and sees "Reconnected" only after the
+//!   roster replay's readiness barrier (W2/D2/D3), all as ordinary JSON
+//!   envelopes;
 //! - world state is INTACT across the restart — a room the player `@dig`ged
 //!   before the restart is still reachable afterwards (R1: the server reloads its
 //!   world from the shared store, exactly as it would from Redis);
@@ -45,9 +46,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 use mush_config::accounts::hash_password;
 use mush_config::config::Config;
-use mush_gateway::{
-    GatewayOptions, LaunchedServer, RestartTrigger, ServerLauncher, ServerSource,
-};
+use mush_gateway::{GatewayOptions, LaunchedServer, RestartTrigger, ServerLauncher, ServerSource};
 use mush_proto::{ClientCommand, Envelope, OutputEvent};
 use mush_testkit::text_of;
 use serde_json::{Value, json};
@@ -65,7 +64,8 @@ fn scratch_dir(tag: &str) -> PathBuf {
     // intermittent, load-dependent fast failure.)
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("mush-webrestart-{tag}-{}-{n}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("mush-webrestart-{tag}-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -117,7 +117,11 @@ async fn launch_thread_server(store: Arc<dyn ObjectStore>) -> Result<LaunchedSer
             .enable_all()
             .build()
             .unwrap();
-        let _ = rt.block_on(mush_server::serve_with_store(cfg, Some(ipc_tx), Some(store)));
+        let _ = rt.block_on(mush_server::serve_with_store(
+            cfg,
+            Some(ipc_tx),
+            Some(store),
+        ));
         let _ = exit_tx.send(());
     });
     let endpoint = tokio::time::timeout(Duration::from_secs(30), ipc_rx)
@@ -236,8 +240,9 @@ async fn connect_ws(web: SocketAddr, token: &str, char_key: u64) -> Result<Ws, W
     connect_async(req).await.map(|(ws, _resp)| ws)
 }
 
-/// Next JSON envelope (skips WS control frames); PANICS on close — a WS close is
-/// the exact W2 failure (the connection must never be dropped across a restart).
+/// Next non-keepalive JSON envelope (skips WS control frames and answers the
+/// protocol's application-level Ping); PANICS on close — a WS close is the
+/// exact W2 failure (the connection must never be dropped across a restart).
 async fn recv_env(ws: &mut Ws) -> Envelope {
     loop {
         let msg = tokio::time::timeout(STEP_TIMEOUT, ws.next())
@@ -246,7 +251,17 @@ async fn recv_env(ws: &mut Ws) -> Envelope {
             .expect("stream ended")
             .expect("ws error");
         match msg {
-            Message::Text(text) => return serde_json::from_str(text.as_str()).unwrap(),
+            Message::Text(text) => {
+                let env: Envelope = serde_json::from_str(text.as_str()).unwrap();
+                if let OutputEvent::Ping { nonce } = &env.event {
+                    let pong = ClientCommand::Pong { nonce: *nonce };
+                    ws.send(Message::Text(serde_json::to_string(&pong).unwrap().into()))
+                        .await
+                        .expect("send application keepalive pong");
+                    continue;
+                }
+                return env;
+            }
             Message::Close(frame) => panic!("WS was CLOSED (W2 violation): {frame:?}"),
             _ => {}
         }
@@ -263,8 +278,43 @@ async fn expect_env(ws: &mut Ws, needle: &str) -> Envelope {
             return env;
         }
         seen.push(text);
-        assert!(seen.len() < 200, "no envelope containing {needle:?} in {seen:?}");
+        assert!(
+            seen.len() < 200,
+            "no envelope containing {needle:?} in {seen:?}"
+        );
     }
+}
+
+/// Consume the restart replay until both the fresh room and the final readiness
+/// notice have arrived. ReAnnounce produces the room before its exact Barrier
+/// resolves, but the two gateway/server writer tasks need not expose a stable
+/// presentation order; neither envelope may be discarded while seeking the
+/// other.
+async fn expect_ready_replay(ws: &mut Ws, room_needle: &str) -> Envelope {
+    let mut reconnected = false;
+    let mut room = None;
+    let mut seen = Vec::new();
+    while !reconnected || room.is_none() {
+        let env = recv_env(ws).await;
+        let text = text_of(&env.event);
+        if text.contains("Reconnected") {
+            reconnected = true;
+        }
+        if text.contains(room_needle) {
+            assert!(
+                matches!(&env.event, OutputEvent::Room(_)),
+                "restart room marker came from a non-Room event"
+            );
+            room = Some(env);
+        } else {
+            seen.push(text);
+        }
+        assert!(
+            seen.len() < 200,
+            "restart replay did not contain both Reconnected and {room_needle:?}: {seen:?}"
+        );
+    }
+    room.expect("loop exits only with the replay room")
 }
 
 /// Expect the out-of-band `hello` (seq 0) as the first frame; return
@@ -312,10 +362,16 @@ async fn web_connection_survives_server_restart_with_world_intact() {
     // feeds who/comsys/mail + <ruleset>.sheet) — proving the server shipped its
     // real manifest over IPC at boot and the gateway wired it into WebConfig.
     let (features, panels) = expect_hello(&mut ws).await;
-    assert!(!features.is_empty(), "features must not be empty: {features:?}");
+    assert!(
+        !features.is_empty(),
+        "features must not be empty: {features:?}"
+    );
     assert!(!panels.is_empty(), "panels must not be empty: {panels:?}");
     for f in ["channels", "wod"] {
-        assert!(features.iter().any(|x| x == f), "feature {f} in {features:?}");
+        assert!(
+            features.iter().any(|x| x == f),
+            "feature {f} in {features:?}"
+        );
     }
     assert!(panels.iter().any(|p| p == "who"), "who panel in {panels:?}");
     assert!(
@@ -343,15 +399,14 @@ async fn web_connection_survives_server_restart_with_world_intact() {
     // --- RESTART the server (the programmatic SIGHUP stand-in). ---
     assert!(trigger.restart().await, "restart must be accepted");
 
-    // The WS is told the game is restarting, then Reconnected, and is pushed a
-    // fresh room render from the reloaded world — WITHOUT ever being closed (W2).
-    // `recv_env` panics on a Close frame, so surviving these three envelopes IS
-    // the proof the connection was never dropped. The gateway generates the
-    // restarting/Reconnected lines (server is down for the gap); the look comes
-    // from the respawned server.
+    // The WS is told the game is restarting, is pushed a fresh room render, and
+    // receives Reconnected only after the exact readiness barrier — WITHOUT ever
+    // being closed (W2). Replay render and final notice are adjacent but their
+    // presentation order is deliberately not a client contract, so retain both
+    // while consuming the stream. The gateway generates the system lines; the
+    // look comes from the respawned server.
     expect_env(&mut ws, "restarting").await;
-    expect_env(&mut ws, "Reconnected").await;
-    let relook = expect_env(&mut ws, "Limbo(#0)").await;
+    let relook = expect_ready_replay(&mut ws, "Limbo(#0)").await;
     assert!(matches!(relook.event, OutputEvent::Room(_)));
 
     // --- World state INTACT (R1): the Vault @dug before the restart is still

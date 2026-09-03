@@ -166,8 +166,7 @@ impl SocketSink {
             Ok(()) => {
                 let depth = self.cap.saturating_sub(self.tx.capacity()) as u64;
                 self.metrics.observe_ipc_to_gw_depth(depth);
-                let threshold =
-                    self.cap.saturating_mul(self.high_water_pct as usize) / 100;
+                let threshold = self.cap.saturating_mul(self.high_water_pct as usize) / 100;
                 if threshold > 0 && depth >= threshold as u64 {
                     if !self.hw_warned.swap(true, Ordering::Relaxed) {
                         tracing::warn!(

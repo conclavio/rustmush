@@ -1,6 +1,6 @@
 //! Domain types shared by every [`crate::ObjectStore`] implementation.
 
-use mush_core::{Obj, ObjId};
+use mush_core::{MAX_MODULE_KEY_BYTES, MAX_MODULE_NAMESPACE_BYTES, Obj, ObjId};
 use serde::{Deserialize, Serialize};
 
 // The module-op vocabulary is owned by mush-core (modules queue these
@@ -107,6 +107,12 @@ pub(crate) fn validate_module_ns(ns: &str) -> Result<(), StoreError> {
             "module namespace {ns:?} contains ':' (reserved separator)"
         )));
     }
+    if ns.len() > MAX_MODULE_NAMESPACE_BYTES {
+        return Err(StoreError::Invalid(format!(
+            "module namespace is {} bytes; maximum is {MAX_MODULE_NAMESPACE_BYTES}",
+            ns.len()
+        )));
+    }
     Ok(())
 }
 
@@ -116,6 +122,12 @@ pub(crate) fn validate_module_ns(ns: &str) -> Result<(), StoreError> {
 pub(crate) fn validate_module_key(key: &str) -> Result<(), StoreError> {
     if key.is_empty() {
         return Err(StoreError::Invalid("empty module key".into()));
+    }
+    if key.len() > MAX_MODULE_KEY_BYTES {
+        return Err(StoreError::Invalid(format!(
+            "module key is {} bytes; maximum is {MAX_MODULE_KEY_BYTES}",
+            key.len()
+        )));
     }
     Ok(())
 }
@@ -282,7 +294,8 @@ impl StoreError {
     /// Whether retrying the same operation can plausibly succeed.
     ///
     /// Connection-shaped failures (I/O, timeout, protocol hiccups,
-    /// reconnect races, generic server errors like a transient OOM) are
+    /// reconnect races) and a small allowlist of recoverable Redis server
+    /// states are
     /// transient: the write-behind retry loop should keep trying them.
     /// Deterministic failures — serialization bugs, invalid input, corrupt
     /// data, a type-clobbered key (`WRONGTYPE` → `InvalidArgument`), auth
@@ -292,10 +305,35 @@ impl StoreError {
     pub fn is_transient(&self) -> bool {
         use fred::error::ErrorKind as K;
         match self {
-            StoreError::Redis(e) => !matches!(
-                e.kind(),
-                K::InvalidArgument | K::InvalidCommand | K::Config | K::Auth | K::Url | K::Parse
-            ),
+            StoreError::Redis(e) => {
+                // Redis modules and fred report many unrelated `ERR ...`
+                // replies as `Unknown`. Treating the whole class as transient
+                // lets a novel deterministic module/schema error wedge the
+                // FIFO forever. Only explicitly recoverable server states are
+                // retryable; unknown text fails closed for diagnosis.
+                let message = e.to_string().to_ascii_lowercase();
+                let recoverable_unknown = [
+                    "oom command not allowed",
+                    "loading redis",
+                    "tryagain",
+                    "clusterdown",
+                    "masterdown",
+                    "readonly",
+                    "busy redis is busy",
+                ]
+                .iter()
+                .any(|needle| message.contains(needle));
+                match e.kind() {
+                    K::Unknown => recoverable_unknown,
+                    K::InvalidArgument
+                    | K::InvalidCommand
+                    | K::Config
+                    | K::Auth
+                    | K::Url
+                    | K::Parse => false,
+                    _ => true,
+                }
+            }
             StoreError::AccountExists
             | StoreError::NoSuchAccount(_)
             | StoreError::Invalid(_)
@@ -329,7 +367,10 @@ mod tests {
         assert!(debug.contains("<redacted>"));
         assert!(debug.contains("Nick"));
         // ssh_keys are public data — printed, not redacted.
-        assert!(debug.contains("SHA256:pub"), "ssh_keys should show: {debug}");
+        assert!(
+            debug.contains("SHA256:pub"),
+            "ssh_keys should show: {debug}"
+        );
     }
 
     #[test]
@@ -341,7 +382,6 @@ mod tests {
             ErrorKind::Timeout,
             ErrorKind::Protocol,
             ErrorKind::Canceled,
-            ErrorKind::Unknown, // generic server "ERR ..." (e.g. transient OOM)
         ] {
             let msg = format!("{kind:?} must be retried");
             assert!(
@@ -349,11 +389,42 @@ mod tests {
                 "{msg}"
             );
         }
+        for message in [
+            "OOM command not allowed when used memory > maxmemory",
+            "LOADING Redis is loading the dataset in memory",
+            "TRYAGAIN Multiple keys request during rehashing",
+            "CLUSTERDOWN The cluster is down",
+            "MASTERDOWN Link with MASTER is down",
+            "READONLY You can't write against a read only replica",
+            "BUSY Redis is busy running a script",
+        ] {
+            assert!(
+                StoreError::Redis(FredError::new(ErrorKind::Unknown, message)).is_transient(),
+                "known recoverable server state must retry: {message}"
+            );
+        }
+        assert!(
+            !StoreError::Redis(FredError::new(
+                ErrorKind::Unknown,
+                "ERR arbitrary module validation failure"
+            ))
+            .is_transient(),
+            "unclassified generic Redis errors must fail closed"
+        );
         // Deterministic: retrying forever would wedge the writer.
         assert!(
             !StoreError::Redis(FredError::new(ErrorKind::InvalidArgument, "WRONGTYPE"))
                 .is_transient()
         );
+        for message in [
+            "WRONGTYPE Operation against a key holding the wrong kind of value",
+            "ERR Existing key has wrong Redis type",
+        ] {
+            assert!(
+                !StoreError::Redis(FredError::new(ErrorKind::Unknown, message)).is_transient(),
+                "known wrong-type reply must be deterministic: {message}"
+            );
+        }
         assert!(!StoreError::Closed.is_transient());
         assert!(!StoreError::Invalid("x".into()).is_transient());
         assert!(!StoreError::Corrupt("x".into()).is_transient());

@@ -68,11 +68,7 @@ fn actor_room(ctx: &Ctx<'_>) -> Result<ObjId, CmdError> {
 /// A one-line turn summary: round, whose turn, and the scene-local IC time.
 fn turn_line(w: &World, s: &SceneRecord) -> String {
     match s.current_actor() {
-        Some(a) => format!(
-            "Round {} — it is {}'s turn.",
-            s.round,
-            display_name(w, a)
-        ),
+        Some(a) => format!("Round {} — it is {}'s turn.", s.round, display_name(w, a)),
         None => format!("Round {} — no participants.", s.round),
     }
 }
@@ -201,7 +197,11 @@ fn timestop_start(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         format!(
             "Time freezes — a timestop begins (scene #{}). Turn order: {}. {}",
             rec.id,
-            if order.is_empty() { "(none)".into() } else { order.join(", ") },
+            if order.is_empty() {
+                "(none)".into()
+            } else {
+                order.join(", ")
+            },
             turn_line(ctx.w, &rec)
         ),
     );
@@ -254,9 +254,7 @@ fn readable_scene(ctx: &Ctx<'_>) -> Option<SceneRecord> {
 fn timestop_next(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let s = driver_scene(ctx)?;
     if s.status != SceneStatus::Active {
-        return Err(CmdError::msg(
-            "The scene is not active (resume it first).",
-        ));
+        return Err(CmdError::msg("The scene is not active (resume it first)."));
     }
     let (anchor, updated) = {
         let st = state(ctx);
@@ -289,8 +287,18 @@ fn timestop_pause(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         (rec.anchor, rec.clone())
     };
     persist_scene(ctx.out, &updated);
-    announce(ctx, anchor, format!("The timestop (scene #{}) is paused.", updated.id));
-    log_event(ctx, &updated, SceneEventKind::Paused, Some(ctx.actor), serde_json::json!({}));
+    announce(
+        ctx,
+        anchor,
+        format!("The timestop (scene #{}) is paused.", updated.id),
+    );
+    log_event(
+        ctx,
+        &updated,
+        SceneEventKind::Paused,
+        Some(ctx.actor),
+        serde_json::json!({}),
+    );
     Ok(())
 }
 
@@ -310,9 +318,19 @@ fn timestop_resume(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     announce(
         ctx,
         anchor,
-        format!("The timestop (scene #{}) resumes. {}", updated.id, turn_line(ctx.w, &updated)),
+        format!(
+            "The timestop (scene #{}) resumes. {}",
+            updated.id,
+            turn_line(ctx.w, &updated)
+        ),
     );
-    log_event(ctx, &updated, SceneEventKind::Resumed, Some(ctx.actor), serde_json::json!({}));
+    log_event(
+        ctx,
+        &updated,
+        SceneEventKind::Resumed,
+        Some(ctx.actor),
+        serde_json::json!({}),
+    );
     Ok(())
 }
 
@@ -352,9 +370,18 @@ fn timestop_release(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     announce(
         ctx,
         anchor,
-        format!("{name} is released from the timestop (scene #{}).", updated.id),
+        format!(
+            "{name} is released from the timestop (scene #{}).",
+            updated.id
+        ),
     );
-    log_event(ctx, &updated, SceneEventKind::Released, Some(who), serde_json::json!({}));
+    log_event(
+        ctx,
+        &updated,
+        SceneEventKind::Released,
+        Some(who),
+        serde_json::json!({}),
+    );
     Ok(())
 }
 
@@ -380,7 +407,13 @@ fn timestop_end(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         anchor,
         format!("Time resumes — the timestop (scene #{}) ends.", updated.id),
     );
-    log_event(ctx, &updated, SceneEventKind::Ended, Some(ctx.actor), serde_json::json!({}));
+    log_event(
+        ctx,
+        &updated,
+        SceneEventKind::Ended,
+        Some(ctx.actor),
+        serde_json::json!({}),
+    );
     crate::emit_scene_concluded(ctx, &updated);
     Ok(())
 }
@@ -396,7 +429,11 @@ fn render_event(w: &World, ev: &SceneEvent) -> String {
     match ev.kind {
         SceneEventKind::Started => "The scene began.".to_string(),
         SceneEventKind::TurnAdvanced => {
-            let round = ev.detail.get("round").and_then(serde_json::Value::as_u64).unwrap_or(0);
+            let round = ev
+                .detail
+                .get("round")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
             format!("Round {round} — {who}'s turn.")
         }
         SceneEventKind::Paused => "The scene was paused.".to_string(),
@@ -467,12 +504,24 @@ fn timestop_log(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// Render one witnessed [`SceneEvent`] as a line of narrative prose, or `None`
 /// to omit purely structural events from the recap.
 fn recap_line(ctx: &Ctx<'_>, ev: &SceneEvent) -> Option<String> {
-    let who = ev.actor.map_or_else(String::new, |a| display_name(ctx.w, a));
-    let s = |k: &str| ev.detail.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let who = ev
+        .actor
+        .map_or_else(String::new, |a| display_name(ctx.w, a));
+    let s = |k: &str| {
+        ev.detail
+            .get(k)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
     match ev.kind {
         SceneEventKind::Started => Some("The scene begins.".to_string()),
         SceneEventKind::TurnAdvanced => {
-            let r = ev.detail.get("round").and_then(serde_json::Value::as_u64).unwrap_or(0);
+            let r = ev
+                .detail
+                .get("round")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
             Some(format!("-- round {r} --"))
         }
         SceneEventKind::Said => Some(match s("narr").as_str() {
@@ -512,7 +561,10 @@ fn scene_recap(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         } else {
             "Nothing has happened yet."
         };
-        to_actor(ctx, format!("Recap of {} (scene #{}): {msg}", s.title, s.id));
+        to_actor(
+            ctx,
+            format!("Recap of {} (scene #{}): {msg}", s.title, s.id),
+        );
         return Ok(());
     }
     let entries = state_ref(ctx).events.open_entries(&log_id).to_vec();
@@ -527,10 +579,16 @@ fn scene_recap(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .collect();
     to_actor(
         ctx,
-        format!("Recap of {} (scene #{}) — as you witnessed it:", s.title, s.id),
+        format!(
+            "Recap of {} (scene #{}) — as you witnessed it:",
+            s.title, s.id
+        ),
     );
     if omitted > 0 {
-        to_actor(ctx, format!("  (… {omitted} earlier event(s) not shown here …)"));
+        to_actor(
+            ctx,
+            format!("  (… {omitted} earlier event(s) not shown here …)"),
+        );
     }
     if lines.is_empty() {
         to_actor(ctx, "  (nothing you witnessed)");

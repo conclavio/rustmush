@@ -525,6 +525,13 @@ pub(crate) fn submit(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     crate::chargen::finalize_sheet(&cmd.config, &mut doc, &pools, splat.as_ref())
         .map_err(|i| CmdError::msg(format!("Cannot submit: {i}")))?;
 
+    // Validate the exact finalized document before allocating an approval job.
+    // `open_job` mutates the jobs cache and queues its write-through ops; if
+    // validation waited for `put_by` below, a malformed pre-existing sheet
+    // could report submit failure while still committing an orphan job.
+    mush_ruleset::validate(cmd.store_for_doc(&doc).schema(), &doc.data)
+        .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
+
     // Open the approval job carrying the target, then mark the sheet Pending.
     let job = open_job(
         ctx,

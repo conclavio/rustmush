@@ -40,7 +40,12 @@ fn line(w: &World, e: &CanonEvent, superseded: bool, staff: bool) -> String {
     };
     let mark = if superseded { "  (retconned)" } else { "" };
     if staff {
-        format!("  #{} <{}>  {}{who}{mark}", e.id, e.scope.label(), e.summary)
+        format!(
+            "  #{} <{}>  {}{who}{mark}",
+            e.id,
+            e.scope.label(),
+            e.summary
+        )
     } else {
         format!("  {}{who}{mark}", e.summary)
     }
@@ -94,7 +99,13 @@ fn cmd_canon(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         to_actor(ctx, "The canon ledger is empty.");
         return Ok(());
     }
-    to_actor(ctx, format!("Canon ledger — {} recent event(s), newest first:", events.len()));
+    to_actor(
+        ctx,
+        format!(
+            "Canon ledger — {} recent event(s), newest first:",
+            events.len()
+        ),
+    );
     for e in events.iter().rev() {
         let l = line(ctx.w, e, superseded.contains(&e.id), true);
         to_actor(ctx, l);
@@ -143,11 +154,16 @@ fn canon_retcon(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ));
     }
     if state_ref(ctx).superseded_in_tail().contains(&target) {
-        return Err(CmdError::msg("That canon event has already been retconned."));
+        return Err(CmdError::msg(
+            "That canon event has already been retconned.",
+        ));
     }
     match crate::retcon(ctx, target, &reason) {
         Some(rid) => {
-            to_actor(ctx, format!("Retconned canon #{id} (recorded as #{rid}): {reason}"));
+            to_actor(
+                ctx,
+                format!("Retconned canon #{id} (recorded as #{rid}): {reason}"),
+            );
             Ok(())
         }
         None => Err(CmdError::msg("Canon ledger is unavailable.")),

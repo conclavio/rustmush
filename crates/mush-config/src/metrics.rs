@@ -116,6 +116,7 @@ pub struct Metrics {
 
     // -- store health (published each sample; ack-time set by the writer) --
     store_read_only: AtomicBool,
+    integrity_frozen: AtomicBool,
     store_write_queue_depth: AtomicI64,
     store_last_ack_unix: AtomicI64,
 
@@ -135,12 +136,30 @@ pub struct Metrics {
     /// drop). Monotonic counter — the surfaced signal for the teardown class
     /// that the write-timeout counter does not cover.
     ipc_to_gw_overflow_total: AtomicU64,
+    /// Nonconforming `ReAnnounce` snapshots rejected atomically at the server
+    /// boundary because they exceeded lifecycle custody. The boundary is torn
+    /// down so the gateway-retained roster can retry; no partial snapshot is
+    /// ever applied.
+    ipc_reannounce_protocol_violations_total: AtomicU64,
     /// High-water mark of the gateway->server (`to_server`) queue depth
     /// (`fetch_max` gauge).
     ipc_queue_high_water_to_server: AtomicU64,
     /// High-water mark of the server->gateway (`to_gw`) queue depth
     /// (`fetch_max` gauge).
     ipc_queue_high_water_to_gw: AtomicU64,
+
+    // -- exact-receipt operational custody (event-driven, always live) --
+    commit_pending_barrier_refused_total: AtomicU64,
+    commit_pending_reattach_coalesced_total: AtomicU64,
+    commit_pending_reattach_rejected_total: AtomicU64,
+    commit_pending_barriers: AtomicU64,
+    commit_pending_reattach_records: AtomicU64,
+    commit_pending_operational_bytes: AtomicU64,
+    /// Observability only until K2 preflight construction supplies a safe hard
+    /// cap before legacy handlers mutate authoritative RAM.
+    commit_pending_sends: AtomicU64,
+    /// Observability only; see `commit_pending_sends`.
+    commit_pending_effects: AtomicU64,
 
     // -- LLM (published each sample) --
     llm: Mutex<LlmMetrics>,
@@ -241,6 +260,7 @@ impl Metrics {
             "loop_lag_ms": self.loop_lag_last_ms.load(Ordering::Relaxed),
             "world_loop_unixtime": self.world_loop_last_iter_unix.load(Ordering::Relaxed),
             "store_ok": !self.store_read_only.load(Ordering::Relaxed),
+            "integrity_ok": !self.integrity_frozen.load(Ordering::Relaxed),
         })
     }
 
@@ -259,6 +279,8 @@ impl Metrics {
         self.obj_npcs.store(w.npcs, Ordering::Relaxed);
         self.store_read_only
             .store(w.store_read_only, Ordering::Relaxed);
+        self.integrity_frozen
+            .store(w.integrity_frozen, Ordering::Relaxed);
         self.npc_active.store(w.npc_active, Ordering::Relaxed);
         self.npc_thinking.store(w.npc_thinking, Ordering::Relaxed);
     }
@@ -267,6 +289,17 @@ impl Metrics {
     /// last-ack timestamp (the writer task on each acked write).
     pub fn set_store_write_queue_depth(&self, depth: i64) {
         self.store_write_queue_depth.store(depth, Ordering::Relaxed);
+    }
+
+    /// Immediately publish persistence admission state. Unlike the aggregate
+    /// world sample, mode transitions cannot be throttled: health checks must
+    /// observe a read-only/frozen transition even when the world then waits on
+    /// a stuck receipt and performs no later iteration.
+    pub fn set_persistence_state(&self, store_read_only: bool, integrity_frozen: bool) {
+        self.store_read_only
+            .store(store_read_only, Ordering::Relaxed);
+        self.integrity_frozen
+            .store(integrity_frozen, Ordering::Relaxed);
     }
 
     /// Bump the store write-queue depth by `delta` (writer enqueue/ack).
@@ -291,14 +324,24 @@ impl Metrics {
     /// Count one IPC `write_frame` timeout on a wedged peer (either writer).
     /// Monotonic; the timeout site also logs a warn and tears the boundary down.
     pub fn ipc_write_timeout(&self) {
-        self.ipc_write_timeouts_total.fetch_add(1, Ordering::Relaxed);
+        self.ipc_write_timeouts_total
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Count one server->gateway (`to_gw`) overflow: a must-deliver frame hit a
     /// full queue and forced a boundary teardown. Monotonic; the overflow site
     /// also logs a warn and notifies the writer to tear down.
     pub fn ipc_to_gw_overflow(&self) {
-        self.ipc_to_gw_overflow_total.fetch_add(1, Ordering::Relaxed);
+        self.ipc_to_gw_overflow_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Count one oversized `ReAnnounce` protocol violation. The server tears
+    /// the boundary down before applying any record; the gateway remains owner
+    /// of the full roster and retries it through the reconnect handshake.
+    pub fn ipc_reannounce_protocol_violation(&self) {
+        self.ipc_reannounce_protocol_violations_total
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record a gateway->server (`to_server`) queue occupancy observation,
@@ -319,6 +362,52 @@ impl Metrics {
     #[must_use]
     pub fn ipc_frames_shed_total(&self) -> u64 {
         self.ipc_frames_shed_total.load(Ordering::Relaxed)
+    }
+
+    // -- exact-receipt operational custody -------------------------------
+
+    /// Count one barrier waiter refused at the fixed pending-receipt cap.
+    pub fn commit_pending_barrier_refused(&self) {
+        self.commit_pending_barrier_refused_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Count one older full reattach snapshot replaced by a newer snapshot.
+    pub fn commit_pending_reattach_coalesced(&self) {
+        self.commit_pending_reattach_coalesced_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Count one reattach snapshot rejected atomically for violating the
+    /// lifecycle-roster cap. This is an invariant/protocol violation, not
+    /// ordinary load shedding.
+    pub fn commit_pending_reattach_rejected(&self) {
+        self.commit_pending_reattach_rejected_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Publish custody held behind the currently unresolved exact receipt.
+    /// Barrier/reattach count and logical bytes have hard ceilings in the
+    /// world task. Sends/effects are exposed to make the legacy pre-K2 gap
+    /// visible; they are not silently truncated after a handler has mutated
+    /// authoritative RAM.
+    pub fn set_commit_pending_custody(
+        &self,
+        barriers: u64,
+        reattach_records: u64,
+        operational_bytes: u64,
+        sends: u64,
+        effects: u64,
+    ) {
+        self.commit_pending_barriers
+            .store(barriers, Ordering::Relaxed);
+        self.commit_pending_reattach_records
+            .store(reattach_records, Ordering::Relaxed);
+        self.commit_pending_operational_bytes
+            .store(operational_bytes, Ordering::Relaxed);
+        self.commit_pending_sends.store(sends, Ordering::Relaxed);
+        self.commit_pending_effects
+            .store(effects, Ordering::Relaxed);
     }
 
     /// Replace the LLM aggregate (world task on each sample).
@@ -356,6 +445,12 @@ impl Metrics {
         !self.store_read_only.load(Ordering::Relaxed)
     }
 
+    /// Whether no authoritative-integrity incident is latched.
+    #[must_use]
+    pub fn integrity_ok(&self) -> bool {
+        !self.integrity_frozen.load(Ordering::Relaxed)
+    }
+
     /// A full point-in-time copy of every metric, for rendering.
     #[must_use]
     pub fn snapshot(&self) -> MetricsSnapshot {
@@ -381,6 +476,7 @@ impl Metrics {
             players: self.obj_players.load(Ordering::Relaxed),
             npcs: self.obj_npcs.load(Ordering::Relaxed),
             store_read_only: self.store_read_only.load(Ordering::Relaxed),
+            integrity_frozen: self.integrity_frozen.load(Ordering::Relaxed),
             store_write_queue_depth: self.store_write_queue_depth.load(Ordering::Relaxed),
             store_last_ack_unix: self.store_last_ack_unix.load(Ordering::Relaxed),
             npc_active: self.npc_active.load(Ordering::Relaxed),
@@ -388,10 +484,31 @@ impl Metrics {
             ipc_frames_shed_total: self.ipc_frames_shed_total.load(Ordering::Relaxed),
             ipc_write_timeouts_total: self.ipc_write_timeouts_total.load(Ordering::Relaxed),
             ipc_to_gw_overflow_total: self.ipc_to_gw_overflow_total.load(Ordering::Relaxed),
+            ipc_reannounce_protocol_violations_total: self
+                .ipc_reannounce_protocol_violations_total
+                .load(Ordering::Relaxed),
             ipc_queue_high_water_to_server: self
                 .ipc_queue_high_water_to_server
                 .load(Ordering::Relaxed),
             ipc_queue_high_water_to_gw: self.ipc_queue_high_water_to_gw.load(Ordering::Relaxed),
+            commit_pending_barrier_refused_total: self
+                .commit_pending_barrier_refused_total
+                .load(Ordering::Relaxed),
+            commit_pending_reattach_coalesced_total: self
+                .commit_pending_reattach_coalesced_total
+                .load(Ordering::Relaxed),
+            commit_pending_reattach_rejected_total: self
+                .commit_pending_reattach_rejected_total
+                .load(Ordering::Relaxed),
+            commit_pending_barriers: self.commit_pending_barriers.load(Ordering::Relaxed),
+            commit_pending_reattach_records: self
+                .commit_pending_reattach_records
+                .load(Ordering::Relaxed),
+            commit_pending_operational_bytes: self
+                .commit_pending_operational_bytes
+                .load(Ordering::Relaxed),
+            commit_pending_sends: self.commit_pending_sends.load(Ordering::Relaxed),
+            commit_pending_effects: self.commit_pending_effects.load(Ordering::Relaxed),
             llm_enabled: g.enabled,
             llm_globally_disabled: g.globally_disabled,
             llm_features: g.features.clone(),
@@ -421,6 +538,8 @@ pub struct WorldSample {
     pub npcs: i64,
     /// Whether the store is in read-only mode.
     pub store_read_only: bool,
+    /// Whether authoritative integrity is frozen pending recovery.
+    pub integrity_frozen: bool,
     /// NPCs with a live runtime (stimulated at least once).
     pub npc_active: i64,
     /// NPCs with an in-flight LLM turn.
@@ -472,6 +591,8 @@ pub struct MetricsSnapshot {
     pub npcs: i64,
     /// Store read-only mode.
     pub store_read_only: bool,
+    /// Authoritative integrity freeze state.
+    pub integrity_frozen: bool,
     /// Store write-queue depth.
     pub store_write_queue_depth: i64,
     /// Unix seconds of the last acked store write (0 = none yet).
@@ -486,10 +607,28 @@ pub struct MetricsSnapshot {
     pub ipc_write_timeouts_total: u64,
     /// Server->gateway (`to_gw`) overflow teardowns since boot (M18).
     pub ipc_to_gw_overflow_total: u64,
+    /// Oversized `ReAnnounce` protocol violations since boot.
+    pub ipc_reannounce_protocol_violations_total: u64,
     /// High-water mark of the gateway->server (`to_server`) queue depth (M18).
     pub ipc_queue_high_water_to_server: u64,
     /// High-water mark of the server->gateway (`to_gw`) queue depth (M18).
     pub ipc_queue_high_water_to_gw: u64,
+    /// Barrier waiters refused at the pending-receipt cap since boot.
+    pub commit_pending_barrier_refused_total: u64,
+    /// Older full reattach snapshots coalesced since boot.
+    pub commit_pending_reattach_coalesced_total: u64,
+    /// Reattach snapshots atomically rejected for violating the roster cap.
+    pub commit_pending_reattach_rejected_total: u64,
+    /// Barrier waiters held behind the unresolved exact receipt.
+    pub commit_pending_barriers: u64,
+    /// Records in the one coalesced reattach snapshot.
+    pub commit_pending_reattach_records: u64,
+    /// Conservative logical bytes of bounded barrier/reattach custody.
+    pub commit_pending_operational_bytes: u64,
+    /// Resolved sends held behind the receipt (observable; K2 bounds construction).
+    pub commit_pending_sends: u64,
+    /// External effects held behind the receipt (observable; K2 bounds construction).
+    pub commit_pending_effects: u64,
     /// Whether an LLM service is configured.
     pub llm_enabled: bool,
     /// Whether the global LLM kill switch is engaged.
@@ -630,6 +769,13 @@ impl MetricsSnapshot {
         );
         metric(
             &mut o,
+            "mush_integrity_frozen",
+            "gauge",
+            "1 when an authoritative-integrity incident is latched pending recovery, else 0.",
+            &[(&[], if self.integrity_frozen { 1.0 } else { 0.0 })],
+        );
+        metric(
+            &mut o,
             "mush_store_write_queue_depth",
             "gauge",
             "Store write batches queued and not yet acknowledged.",
@@ -668,6 +814,13 @@ impl MetricsSnapshot {
         );
         metric(
             &mut o,
+            "mush_ipc_reannounce_protocol_violations_total",
+            "counter",
+            "Oversized ReAnnounce snapshots rejected atomically before boundary teardown.",
+            &[(&[], self.ipc_reannounce_protocol_violations_total as f64)],
+        );
+        metric(
+            &mut o,
             "mush_ipc_queue_high_water",
             "gauge",
             "High-water mark of an IPC boundary queue's depth, by direction.",
@@ -678,6 +831,53 @@ impl MetricsSnapshot {
                 ),
                 (&[("dir", "to_gw")], self.ipc_queue_high_water_to_gw as f64),
             ],
+        );
+
+        // Operational custody behind one unresolved exact receipt. Barrier and
+        // reattach dimensions are hard-bounded; sends/effects expose the legacy
+        // pre-K2 construction gap without pretending that shedding is safe.
+        metric(
+            &mut o,
+            "mush_commit_pending_barrier_refused_total",
+            "counter",
+            "Barrier waiters refused at the fixed pending-receipt cap.",
+            &[(&[], self.commit_pending_barrier_refused_total as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_commit_pending_reattach_coalesced_total",
+            "counter",
+            "Older full reattach snapshots replaced while an exact receipt was pending.",
+            &[(&[], self.commit_pending_reattach_coalesced_total as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_commit_pending_reattach_rejected_total",
+            "counter",
+            "Reattach snapshots rejected atomically for violating lifecycle custody.",
+            &[(&[], self.commit_pending_reattach_rejected_total as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_commit_pending_custody_items",
+            "gauge",
+            "Items held behind one unresolved exact receipt, by kind.",
+            &[
+                (&[("kind", "barrier")], self.commit_pending_barriers as f64),
+                (
+                    &[("kind", "reattach")],
+                    self.commit_pending_reattach_records as f64,
+                ),
+                (&[("kind", "send")], self.commit_pending_sends as f64),
+                (&[("kind", "effect")], self.commit_pending_effects as f64),
+            ],
+        );
+        metric(
+            &mut o,
+            "mush_commit_pending_operational_custody_bytes",
+            "gauge",
+            "Conservative logical bytes of hard-bounded barrier and reattach custody.",
+            &[(&[], self.commit_pending_operational_bytes as f64)],
         );
 
         // NPC agents.
@@ -981,6 +1181,7 @@ mod tests {
         assert_eq!(s.ipc_frames_shed_total, 0);
         assert_eq!(s.ipc_write_timeouts_total, 0);
         assert_eq!(s.ipc_to_gw_overflow_total, 0);
+        assert_eq!(s.ipc_reannounce_protocol_violations_total, 0);
         assert_eq!(s.ipc_queue_high_water_to_server, 0);
         assert_eq!(s.ipc_queue_high_water_to_gw, 0);
 
@@ -991,6 +1192,7 @@ mod tests {
         m.ipc_write_timeout();
         m.ipc_write_timeout();
         m.ipc_to_gw_overflow();
+        m.ipc_reannounce_protocol_violation();
 
         // High-water keeps the max, not the last observation.
         m.observe_ipc_to_server_depth(5);
@@ -1004,6 +1206,7 @@ mod tests {
         assert_eq!(m.ipc_frames_shed_total(), 3);
         assert_eq!(s.ipc_write_timeouts_total, 2);
         assert_eq!(s.ipc_to_gw_overflow_total, 1);
+        assert_eq!(s.ipc_reannounce_protocol_violations_total, 1);
         assert_eq!(s.ipc_queue_high_water_to_server, 12);
         assert_eq!(s.ipc_queue_high_water_to_gw, 4000);
 
@@ -1014,12 +1217,43 @@ mod tests {
         assert!(text.contains("mush_ipc_frames_shed_total 3"));
         assert!(text.contains("mush_ipc_write_timeouts_total 2"));
         assert!(text.contains("mush_ipc_to_gw_overflow_total 1"));
+        assert!(text.contains("mush_ipc_reannounce_protocol_violations_total 1"));
         assert!(text.contains("# TYPE mush_ipc_queue_high_water gauge"));
         assert!(text.contains("mush_ipc_queue_high_water{dir=\"to_server\"} 12"));
         assert!(text.contains("mush_ipc_queue_high_water{dir=\"to_gw\"} 4000"));
         for forbidden in ["player=\"", "account=\"", "token=\"", "ip=\"", "actor=\""] {
             assert!(!text.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn commit_pending_custody_counters_and_gauges_render() {
+        let m = Metrics::new();
+        m.commit_pending_barrier_refused();
+        m.commit_pending_reattach_coalesced();
+        m.commit_pending_reattach_coalesced();
+        m.commit_pending_reattach_rejected();
+        m.set_commit_pending_custody(256, 1, 65_600, 3, 2);
+
+        let s = m.snapshot();
+        assert_eq!(s.commit_pending_barrier_refused_total, 1);
+        assert_eq!(s.commit_pending_reattach_coalesced_total, 2);
+        assert_eq!(s.commit_pending_reattach_rejected_total, 1);
+        assert_eq!(s.commit_pending_barriers, 256);
+        assert_eq!(s.commit_pending_reattach_records, 1);
+        assert_eq!(s.commit_pending_operational_bytes, 65_600);
+        assert_eq!(s.commit_pending_sends, 3);
+        assert_eq!(s.commit_pending_effects, 2);
+
+        let text = s.to_prometheus(1);
+        assert!(text.contains("mush_commit_pending_barrier_refused_total 1"));
+        assert!(text.contains("mush_commit_pending_reattach_coalesced_total 2"));
+        assert!(text.contains("mush_commit_pending_reattach_rejected_total 1"));
+        assert!(text.contains("mush_commit_pending_custody_items{kind=\"barrier\"} 256"));
+        assert!(text.contains("mush_commit_pending_custody_items{kind=\"reattach\"} 1"));
+        assert!(text.contains("mush_commit_pending_custody_items{kind=\"send\"} 3"));
+        assert!(text.contains("mush_commit_pending_custody_items{kind=\"effect\"} 2"));
+        assert!(text.contains("mush_commit_pending_operational_custody_bytes 65600"));
     }
 
     #[test]
@@ -1041,6 +1275,7 @@ mod tests {
         assert_eq!(j["loop_lag_ms"], 12);
         assert_eq!(j["world_loop_unixtime"], 1_700_000_000);
         assert_eq!(j["store_ok"], true);
+        assert_eq!(j["integrity_ok"], true);
     }
 
     #[test]
@@ -1069,6 +1304,7 @@ mod tests {
             players: 2,
             npcs: 1,
             store_read_only: false,
+            integrity_frozen: false,
             npc_active: 1,
             npc_thinking: 0,
         });
@@ -1105,6 +1341,7 @@ mod tests {
         assert!(text.contains("mush_loop_lag_ms_count 1"));
         assert!(text.contains("mush_objects{kind=\"room\"} 5"));
         assert!(text.contains("mush_store_read_only 0"));
+        assert!(text.contains("mush_integrity_frozen 0"));
         assert!(text.contains("mush_npc_active 1"));
         assert!(text.contains(
             "mush_llm_calls_total{feature=\"worldgen_room\",provider=\"openrouter\",outcome=\"ok\"} 2"

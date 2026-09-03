@@ -16,9 +16,7 @@ use mush_core::{
     ConnId, Ctx, Effect, Effects, Engine, GOD, Inbound, ObjId, ObjKind, Outbox, ParsedArgs,
     SwitchSet, World,
 };
-use mush_llm::{
-    BudgetConfig, LlmProvider, LlmService, MockProvider, RouteConfig,
-};
+use mush_llm::{BudgetConfig, LlmProvider, LlmService, MockProvider, RouteConfig};
 use mush_proto::OutputEvent;
 use mush_store::InMemoryStore;
 use smol_str::SmolStr;

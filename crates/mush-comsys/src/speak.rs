@@ -116,30 +116,29 @@ pub(crate) fn channel_speak(
     let now_ms = w.now().saturating_mul(1000);
     let actor_ref = obj_ref(w, actor);
 
-    // Phase 1: bump seq, snapshot what delivery needs.
-    let Some(st) = w.module_state_mut::<ComsysState>() else {
-        return;
+    // Phase 1: bump seq, snapshot what delivery needs, then release the
+    // mutable module-state borrow before selecting the live audience.
+    let (seq, chan_name, flags, hist, see, chan_doc, title) = {
+        let Some(st) = w.module_state_mut::<ComsysState>() else {
+            return;
+        };
+        let Some(c) = st.channels.get_mut(&chan) else {
+            return;
+        };
+        c.seq += 1;
+        let seq = c.seq;
+        let chan_name = c.name.clone();
+        let flags = c.flags;
+        let hist = c.history;
+        let see = c.perms.see.clone();
+        let chan_doc = serde_json::to_value(&*c).expect("channel doc serializes");
+        let title = if flags.no_titles {
+            None
+        } else {
+            st.members.get(&(actor, chan)).and_then(|m| m.title.clone())
+        };
+        (seq, chan_name, flags, hist, see, chan_doc, title)
     };
-    let Some(c) = st.channels.get_mut(&chan) else {
-        return;
-    };
-    c.seq += 1;
-    let seq = c.seq;
-    let chan_name = c.name.clone();
-    let flags = c.flags;
-    let hist = c.history;
-    let see = c.perms.see.clone();
-    let chan_doc = serde_json::to_value(&*c).expect("channel doc serializes");
-    let title = if flags.no_titles {
-        None
-    } else {
-        st.members.get(&(actor, chan)).and_then(|m| m.title.clone())
-    };
-    let candidates: Vec<ObjId> = st
-        .members_of(chan)
-        .filter(|m| !m.gagged)
-        .map(|m| m.player)
-        .collect();
     push_op(
         out,
         ModuleWrite::JsonSet {
@@ -156,10 +155,19 @@ pub(crate) fn channel_speak(
     // get the unread notice on reconnect instead. `@ignore` applies to
     // channel traffic exactly as it does to room speech (staff speakers
     // are never filtered — `is_ignoring` owns that policy).
-    let deliver: Vec<ObjId> = candidates
-        .into_iter()
+    // Iterate the world's live-side index rather than materializing every
+    // ungagged membership first. Offline memberships can be numerous and can
+    // never receive this send; production lifecycle admission independently
+    // bounds this connected set.
+    let st = w
+        .module_state::<ComsysState>()
+        .expect("comsys state remains installed during a synchronous send");
+    let deliver: Vec<ObjId> = w
+        .connected()
         .filter(|&p| {
-            w.is_connected(p)
+            st.members
+                .get(&(p, chan))
+                .is_some_and(|membership| !membership.gagged)
                 && w.has_live_conns(p)
                 && eval_lock(w, &see, p, MAX_LOCK_DEPTH)
                 && !is_ignoring(w, p, actor)

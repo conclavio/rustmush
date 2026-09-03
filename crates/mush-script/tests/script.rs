@@ -9,8 +9,8 @@ use std::collections::HashMap;
 
 use mush_core::engine::{Effects, Engine, Inbound};
 use mush_core::{
-    Attr, AttrFlags, AttrValue, Audience, Flags, GOD, LIMBO, ObjId, ObjKind, Outbox, Registry,
-    World, register_core_commands, register_engine_commands,
+    Attr, AttrFlags, AttrValue, Audience, DeliveryClass, Flags, GOD, LIMBO, ObjId, ObjKind, Outbox,
+    Registry, World, register_core_commands, register_engine_commands,
 };
 use mush_proto::OutputEvent;
 use mush_script::{ScriptConfig, ScriptModule};
@@ -95,6 +95,24 @@ impl Fixture {
         out.take()
     }
 
+    fn run_classified(
+        &mut self,
+        actor: ObjId,
+        line: &str,
+    ) -> Vec<(DeliveryClass, Audience, OutputEvent)> {
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        self.engine.step(
+            Inbound::Cmd {
+                conn: 1,
+                actor,
+                line: line.into(),
+            },
+            &mut out,
+            &mut fx,
+        );
+        out.take_classified()
+    }
+
     fn run_fx(&mut self, actor: ObjId, line: &str) -> (Vec<(Audience, OutputEvent)>, Effects) {
         let (mut out, mut fx) = (Outbox::new(), Effects::new());
         self.engine.step(
@@ -154,6 +172,21 @@ fn actor_saw(events: &[(Audience, OutputEvent)], actor: ObjId, needle: &str) -> 
     events.iter().any(|(aud, e)| {
         matches!(aud, Audience::Actor(a) if *a == actor)
             && matches!(e,
+                OutputEvent::Narrative { text, .. } | OutputEvent::Sys(text)
+                if text.to_plain_text().contains(needle))
+    })
+}
+
+fn classified_actor_saw(
+    events: &[(DeliveryClass, Audience, OutputEvent)],
+    class: DeliveryClass,
+    actor: ObjId,
+    needle: &str,
+) -> bool {
+    events.iter().any(|(actual_class, aud, event)| {
+        *actual_class == class
+            && matches!(aud, Audience::Actor(a) if *a == actor)
+            && matches!(event,
                 OutputEvent::Narrative { text, .. } | OutputEvent::Sys(text)
                 if text.to_plain_text().contains(needle))
     })
@@ -480,11 +513,14 @@ fn compile_error_disables_only_that_script_and_notifies_owner() {
         "script:command:good",
         r#"mush::pemit(mush::caller(), "ok")"#,
     );
-    let out = f.run(
+    let out = f.run_classified(
         GOD,
         &format!("@set {obj}/script:command:bad=this is (not valid rhai"),
     );
-    assert!(actor_saw(&out, nick, "failed to compile"), "owner notified");
+    assert!(
+        classified_actor_saw(&out, DeliveryClass::OnCommit, nick, "failed to compile"),
+        "a compile diagnostic accompanies the committed attribute change"
+    );
     // The good one still runs; the bad one just Huhs (never compiled).
     assert!(actor_saw(&f.run(nick, "good"), nick, "ok"));
     assert!(saw(&f.run(nick, "bad blah"), "Huh?"));
@@ -507,8 +543,15 @@ fn three_budget_overruns_halt_the_object() {
         assert!(!f.flag(bomb, Flags::HALTED));
     }
     // Third overrun trips the auto-disable.
-    let out = f.run(nick, "spin");
-    assert!(actor_saw(&out, nick, "HALTED"));
+    let out = f.run_classified(nick, "spin");
+    assert!(
+        classified_actor_saw(&out, DeliveryClass::OnCommit, nick, "failed"),
+        "the third failure report must wait for the HALTED write"
+    );
+    assert!(
+        classified_actor_saw(&out, DeliveryClass::OnCommit, nick, "HALTED"),
+        "the HALTED claim must be released only after its write commits"
+    );
     assert!(f.flag(bomb, Flags::HALTED));
 
     // A HALTED object's scripts no longer run at all.

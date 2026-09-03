@@ -101,6 +101,37 @@ redis_gated!(module_empty_namespace_list, store, {
     suite::module_empty_namespace_list(&store).await;
 });
 
+redis_gated!(module_list_rejects_type_clobbered_key, store, {
+    use fred::interfaces::KeysInterface;
+    use mush_store::StoreError;
+
+    // JSON.GET reports the same wrong-type family for a legitimate stream
+    // and an arbitrary Redis string. The listing must inspect TYPE and fail
+    // closed instead of silently classifying this corrupt document as a
+    // stream. module_empty_namespace_list above separately proves that a
+    // real stream remains an accepted, skipped sibling.
+    let _: () = store
+        .client()
+        .set(
+            "mod:clobbered:authoritative-doc",
+            "not a RedisJSON document",
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("clobber module document with a string");
+
+    let err = store
+        .module_json_list("clobbered")
+        .await
+        .expect_err("a non-JSON, non-stream module key must fail closed");
+    assert!(
+        matches!(err, StoreError::Corrupt(ref message) if message.contains("unexpected Redis type \"string\"")),
+        "expected a corruption error naming the unexpected Redis type, got {err:?}"
+    );
+});
+
 // ---------------------------------------------------------------------
 // Redis-only behavior
 // ---------------------------------------------------------------------

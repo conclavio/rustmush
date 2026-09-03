@@ -28,9 +28,7 @@ use mush_core::module::{GameModule, ModError, ModuleBootData, ModuleCtx, Registr
 use mush_core::{Ctx, is_log_key};
 use smol_str::SmolStr;
 
-pub use data::{
-    CanonDraft, CanonEvent, CanonId, CanonScope, CanonState, LOG, META_KEY, NS,
-};
+pub use data::{CanonDraft, CanonEvent, CanonId, CanonScope, CanonState, LOG, META_KEY, NS};
 
 use data::{persist_meta, push_op};
 
@@ -68,11 +66,15 @@ impl GameModule for CanonModule {
         data: ModuleBootData,
     ) -> Result<(), ModError> {
         let mut ledger = mush_core::Ledger::new();
-        ledger.restore_from_kv(&data.kv);
+        ledger
+            .restore_from_kv(&data.kv)
+            .map_err(|error| ModError::msg(format!("canon ledger restore failed: {error}")))?;
         let mut next_from_meta: Option<u64> = None;
         for (key, value) in &data.kv {
             if key == META_KEY {
-                next_from_meta = value.get("next_canon_id").and_then(serde_json::Value::as_u64);
+                next_from_meta = value
+                    .get("next_canon_id")
+                    .and_then(serde_json::Value::as_u64);
             } else if is_log_key(key) {
                 // Rehydrated into the ledger above.
             } else {
@@ -129,7 +131,11 @@ pub fn commit(ctx: &mut Ctx<'_>, draft: CanonDraft) -> Option<CanonId> {
     let entities = draft.entities.clone();
     let (id, next, op) = {
         let st = ctx.w.module_state_mut::<CanonState>()?;
-        let id = st.alloc_id();
+        let id = CanonId(st.next_canon_id);
+        let Some(next) = st.next_canon_id.checked_add(1) else {
+            tracing::error!("canon: id allocator exhausted; event refused without mutation");
+            return None;
+        };
         let event = CanonEvent {
             id,
             kind: draft.kind,
@@ -144,8 +150,19 @@ pub fn commit(ctx: &mut Ctx<'_>, draft: CanonDraft) -> Option<CanonId> {
             detail: draft.detail,
         };
         let value = serde_json::to_value(&event).expect("canon event serializes");
-        let (_seq, op) = st.ledger.append(LOG, value);
-        (id, st.next_canon_id, op)
+        let prepared = match st.ledger.prepare_append(LOG, value) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                tracing::error!(%error, "canon: unsafe ledger append refused without mutation");
+                return None;
+            }
+        };
+        let (_seq, op) = st
+            .ledger
+            .apply_prepared(prepared)
+            .expect("canon ledger cannot change during one exclusive state borrow");
+        st.next_canon_id = next;
+        (id, next, op)
     };
     push_op(ctx.out, op);
     persist_meta(ctx.out, next);
@@ -182,7 +199,11 @@ pub fn retcon(ctx: &mut Ctx<'_>, target: CanonId, reason: &str) -> Option<CanonI
             .into_iter()
             .find(|e| e.id == target)
             .map_or((CanonScope::Secret, Vec::new()), |e| (e.scope, e.entities));
-        let id = st.alloc_id();
+        let id = CanonId(st.next_canon_id);
+        let Some(next) = st.next_canon_id.checked_add(1) else {
+            tracing::error!("canon: id allocator exhausted; retcon refused without mutation");
+            return None;
+        };
         let event = CanonEvent {
             id,
             kind: SmolStr::new_static("retcon"),
@@ -197,8 +218,19 @@ pub fn retcon(ctx: &mut Ctx<'_>, target: CanonId, reason: &str) -> Option<CanonI
             detail: serde_json::Value::Null,
         };
         let value = serde_json::to_value(&event).expect("canon event serializes");
-        let (_seq, op) = st.ledger.append(LOG, value);
-        (id, st.next_canon_id, op)
+        let prepared = match st.ledger.prepare_append(LOG, value) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                tracing::error!(%error, "canon: unsafe retcon ledger append refused without mutation");
+                return None;
+            }
+        };
+        let (_seq, op) = st
+            .ledger
+            .apply_prepared(prepared)
+            .expect("canon ledger cannot change during one exclusive state borrow");
+        st.next_canon_id = next;
+        (id, next, op)
     };
     push_op(ctx.out, op);
     persist_meta(ctx.out, next);

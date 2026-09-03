@@ -94,11 +94,13 @@ pub fn intel_key(principal: Principal) -> SmolStr {
 #[must_use]
 pub fn parse_intel_key_id(id: &str) -> Option<Principal> {
     if let Some(f) = id.strip_prefix("f:") {
-        f.parse::<u64>()
-            .ok()
-            .map(|n| Principal::Faction { faction: FactionId(n) })
+        f.parse::<u64>().ok().map(|n| Principal::Faction {
+            faction: FactionId(n),
+        })
     } else {
-        id.parse::<u32>().ok().map(|n| Principal::Character(ObjId(n)))
+        id.parse::<u32>()
+            .ok()
+            .map(|n| Principal::Character(ObjId(n)))
     }
 }
 
@@ -139,18 +141,12 @@ impl IntelStore {
     /// newest-first reverse this.
     #[must_use]
     pub fn for_principal(&self, principal: Principal) -> &[IntelRecord] {
-        self.by_principal
-            .get(&principal)
-            .map_or(&[], Vec::as_slice)
+        self.by_principal.get(&principal).map_or(&[], Vec::as_slice)
     }
 
     /// A principal's records about one subject, oldest-first.
     #[must_use]
-    pub fn for_principal_subject(
-        &self,
-        principal: Principal,
-        subject: ObjId,
-    ) -> Vec<&IntelRecord> {
+    pub fn for_principal_subject(&self, principal: Principal, subject: ObjId) -> Vec<&IntelRecord> {
         self.for_principal(principal)
             .iter()
             .filter(|r| r.subject == subject)
@@ -170,9 +166,7 @@ impl IntelStore {
 
     /// Clear a principal's records, returning how many were dropped.
     pub fn clear_for(&mut self, principal: Principal) -> usize {
-        self.by_principal
-            .remove(&principal)
-            .map_or(0, |v| v.len())
+        self.by_principal.remove(&principal).map_or(0, |v| v.len())
     }
 }
 

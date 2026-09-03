@@ -459,7 +459,7 @@ impl AsyncCompletion for WorldgenCompletion {
                         Some(entrance) => {
                             set_batch_room_status(ctx, entrance, room, RoomState::NeedsAttention);
                             if ctx.w.get(builder).is_some() {
-                                ctx.out.error(
+                                ctx.out.error_on_commit(
                                     builder,
                                     format!(
                                         "A building room (#{}) no longer exists; skipped.",
@@ -485,7 +485,7 @@ impl AsyncCompletion for WorldgenCompletion {
                         Some(entrance) => {
                             set_batch_room_status(ctx, entrance, room, RoomState::NeedsAttention);
                             if ctx.w.get(builder).is_some() {
-                                ctx.out.error(
+                                ctx.out.error_on_commit(
                                     builder,
                                     format!(
                                         "You no longer control {}; skipped.",
@@ -561,7 +561,7 @@ impl AsyncCompletion for WorldgenCompletion {
             } => {
                 set_batch_status(ctx, entrance, BatchStatus::Failed);
                 if ctx.w.get(builder).is_some() {
-                    ctx.out.error(
+                    ctx.out.error_on_commit(
                         builder,
                         format!("{message} (@gen/retry regenerates the brief.)"),
                     );
@@ -1890,7 +1890,7 @@ fn on_batch_room_err(
     if budget {
         degrade_remaining(ctx, entrance);
         if ctx.w.get(builder).is_some() {
-            ctx.out.error(
+            ctx.out.error_on_commit(
                 builder,
                 format!(
                     "Budget reached mid-building: {} and the remaining rooms are marked \
@@ -1902,7 +1902,7 @@ fn on_batch_room_err(
         }
     } else {
         if ctx.w.get(builder).is_some() {
-            ctx.out.error(
+            ctx.out.error_on_commit(
                 builder,
                 format!("{} needs attention: {message}", room_name(ctx.w, room)),
             );

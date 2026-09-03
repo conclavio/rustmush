@@ -14,8 +14,8 @@
 //! double-post (R-B2).
 
 use mush_core::{
-    Ctx, Deferred, MAX_CONTAINMENT_DEPTH, ModuleOp, ModuleWrite, ObjId, Outbox, Powers, Role,
-    World, perm,
+    Ctx, Deferred, MAX_CONTAINMENT_DEPTH, ModuleOp, ModuleWrite, ObjId, Outbox, Powers,
+    PreparedLedgerAppend, Role, World, perm,
 };
 use mush_org::{
     ApprovalPolicy, AuthRequest, CapabilityId, MembershipStatus, OrgScopeId, OrgStatus, PrincipalId,
@@ -31,8 +31,9 @@ use crate::module::{EconomyStore, JOURNAL_LOG, NS};
 use crate::plan::{ApprovalNeed, AssetOp, CustodyOp, EconomyError, EconomyPlan, PlanResult, Prepared};
 use crate::record::{
     Account, ApprovalRequest, ApprovalStatus, CustodyDirection, EconomicAsset, EconomicCause,
-    InstrumentDef, Vault,
+    EconomicTransaction, InstrumentDef, Vault,
 };
+use crate::snapshot::EconomySnapshot;
 
 /// The kv key of the allocator meta document.
 pub const META_KEY: &str = "meta";
@@ -783,12 +784,17 @@ fn finish(
             if prepared.custody_effects.len() > MAX_CUSTODY_EFFECTS_AT_MODULE {
                 return Err(EconomyError::TooLarge("one custody op per plan at the module layer"));
             }
+            let now = ctx.w.now();
+            // Prove the exact journal append and every economic post-image
+            // representable before custody can move an object. This closes the
+            // K0 poison-append seam without changing E3's rule that the world move
+            // occurs before the economic state becomes live.
+            let commit = prepare_commit(ctx, &prepared, now)?;
             // §4.2 step 2: the world moves BEFORE the store advances, and only from
             // the prepared effects (never the plan's ops — see `AlreadyPosted` above,
             // which performs zero world mutation).
             run_custody_effects(ctx, &prepared, providers)?;
-            let now = ctx.w.now();
-            let txid = commit_prepared(ctx, &prepared, now);
+            let txid = install_commit(ctx, commit)?;
             // Invariant 9 / R-R1: the "posted" confirmation must never outrun the
             // durable ack — strict so a dropped write suppresses it entirely.
             ctx.gate_on_durable_ack_strict();
@@ -797,41 +803,103 @@ fn finish(
     }
 }
 
-/// Allocate ids, apply the prepared post to the live snapshot, and queue the whole
-/// bundle (journal append + touched account projections + allocator meta) on one
-/// write batch. The store mutation happens in a scope that ends before `ctx.out` is
-/// used (the shipped module discipline).
-fn commit_prepared(ctx: &mut Ctx<'_>, prepared: &Prepared, now: i64) -> TransactionId {
-    let (txid, journal_op, account_docs, asset_docs, approval_doc, meta) = {
+/// A fully bounded economy post-image. Building this value is fallible but leaves
+/// the world and the economy store untouched; installation only checks that the
+/// allocator and ledger tail still match the exact preparation point.
+struct PreparedEconomyCommit {
+    txid: TransactionId,
+    next_transaction: u64,
+    journal_seq: u64,
+    journal: PreparedLedgerAppend,
+    snapshot: EconomySnapshot,
+    transaction: EconomicTransaction,
+    account_docs: Vec<Account>,
+    asset_docs: Vec<EconomicAsset>,
+    approval_doc: Option<ApprovalRequest>,
+}
+
+fn prepare_commit(
+    ctx: &Ctx<'_>,
+    prepared: &Prepared,
+    now: i64,
+) -> Result<PreparedEconomyCommit, EconomyError> {
+    let store = ctx.w.module_state::<EconomyStore>().expect("economy store");
+    let txid = TransactionId(store.peek_next_transaction());
+    let next_transaction = store
+        .peek_next_transaction()
+        .checked_add(1)
+        .ok_or(EconomyError::Overflow)?;
+    let journal_seq = store.journal.next_seq(JOURNAL_LOG);
+    let (snapshot, transaction) = apply(store.snapshot(), prepared, txid, journal_seq, now);
+    let journal = store
+        .journal
+        .prepare_append(
+            JOURNAL_LOG,
+            serde_json::to_value(&transaction).expect("transaction serializes"),
+        )
+        .map_err(|error| {
+            tracing::error!(%error, "economy journal refused a validated transaction post-image");
+            EconomyError::JournalUnavailable
+        })?;
+    let account_docs = prepared
+        .touched_accounts()
+        .filter_map(|id| snapshot.account(id).cloned())
+        .collect();
+    let asset_docs = prepared
+        .asset_effects
+        .iter()
+        .filter_map(|effect| snapshot.asset(effect.object).cloned())
+        .collect();
+    let approval_doc = prepared
+        .consumed_approval
+        .and_then(|id| snapshot.approval(id).cloned());
+    Ok(PreparedEconomyCommit {
+        txid,
+        next_transaction,
+        journal_seq,
+        journal,
+        snapshot,
+        transaction,
+        account_docs,
+        asset_docs,
+        approval_doc,
+    })
+}
+
+fn install_commit(
+    ctx: &mut Ctx<'_>,
+    commit: PreparedEconomyCommit,
+) -> Result<TransactionId, EconomyError> {
+    let PreparedEconomyCommit {
+        txid,
+        next_transaction,
+        journal_seq,
+        journal,
+        snapshot,
+        transaction,
+        account_docs,
+        asset_docs,
+        approval_doc,
+    } = commit;
+    let (journal_op, meta) = {
         let store = ctx.w.module_state_mut::<EconomyStore>().expect("economy store");
-        let txid = store.alloc_transaction();
-        // Peek the seq the journal will assign, so the transaction carries it before
-        // the append (which then returns the same seq).
-        let seq = store.journal.next_seq(JOURNAL_LOG);
-        let (snapshot2, tx) = apply(store.snapshot(), prepared, txid, seq, now);
-        let value = serde_json::to_value(&tx).expect("transaction serializes");
-        let (_seq2, op) = store.journal.append(JOURNAL_LOG, value);
-        debug_assert_eq!(seq, _seq2, "journal seq peeked == appended");
-        store.snapshot = snapshot2;
-        store.index_transaction(tx);
-        let account_docs: Vec<Account> = prepared
-            .touched_accounts()
-            .filter_map(|id| store.snapshot().account(id).cloned())
-            .collect();
-        // Every touched title projection rides the same bundle (D-E3-1: the doc is a
-        // projection, the effect in the journal is the authority).
-        let asset_docs: Vec<EconomicAsset> = prepared
-            .asset_effects
-            .iter()
-            .filter_map(|e| store.snapshot().asset(e.object).cloned())
-            .collect();
-        // The consumed request rides the SAME bundle as the transaction that spent
-        // it (`apply` already flipped it to `Consumed { transaction }`), so a doc
-        // drop is healed at boot by id — never by hash (C3).
-        let approval_doc = prepared
-            .consumed_approval
-            .and_then(|id| store.snapshot().approval(id).cloned());
-        (txid, op, account_docs, asset_docs, approval_doc, store.meta_doc())
+        if store.peek_next_transaction() != txid.0 {
+            tracing::error!(
+                expected = txid.0,
+                actual = store.peek_next_transaction(),
+                "economy transaction allocator changed after preparation"
+            );
+            return Err(EconomyError::JournalUnavailable);
+        }
+        let (applied_seq, journal_op) = store.journal.apply_prepared(journal).map_err(|error| {
+            tracing::error!(%error, "economy journal changed after transaction preparation");
+            EconomyError::JournalUnavailable
+        })?;
+        debug_assert_eq!(journal_seq, applied_seq, "prepared journal seq is exact");
+        store.next_transaction = next_transaction;
+        store.snapshot = snapshot;
+        store.index_transaction(transaction);
+        (journal_op, store.meta_doc())
     };
     persist_journal(ctx.out, journal_op);
     for a in &account_docs {
@@ -844,5 +912,5 @@ fn commit_prepared(ctx: &mut Ctx<'_>, prepared: &Prepared, now: i64) -> Transact
         persist_approval(ctx.out, r);
     }
     persist_meta(ctx.out, meta);
-    txid
+    Ok(txid)
 }

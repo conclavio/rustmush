@@ -71,7 +71,9 @@ fn console_spec() -> BehaviorSpec {
 }
 
 fn name_of(ctx: &Ctx<'_>, id: ObjId) -> String {
-    ctx.w.get(id).map_or_else(|| id.to_string(), |o| o.name.clone())
+    ctx.w
+        .get(id)
+        .map_or_else(|| id.to_string(), |o| o.name.clone())
 }
 
 fn power_on(ctx: &Ctx<'_>, id: ObjId) -> bool {
@@ -81,7 +83,10 @@ fn power_on(ctx: &Ctx<'_>, id: ObjId) -> bool {
 fn startup(ctx: &mut Ctx<'_>, t: &BehaviorTarget) -> Result<(), CmdError> {
     let (subject, actor) = (t.subject, ctx.actor);
     if power_on(ctx, subject) {
-        return Err(CmdError::msg(format!("{} is already powered up.", name_of(ctx, subject))));
+        return Err(CmdError::msg(format!(
+            "{} is already powered up.",
+            name_of(ctx, subject)
+        )));
     }
     ctx.w
         .set_attr(subject, "vehicle:power", Attr::text("on", actor))
@@ -108,7 +113,11 @@ fn throttle(ctx: &mut Ctx<'_>, t: &BehaviorTarget) -> Result<(), CmdError> {
         r
     };
     ctx.w
-        .set_attr(subject, "vehicle:throttle", Attr::text(setting.clone(), actor))
+        .set_attr(
+            subject,
+            "vehicle:throttle",
+            Attr::text(setting.clone(), actor),
+        )
         .map_err(|e| CmdError::msg(e.to_string()))?;
     ctx.out.info(actor, format!("Throttle set to {setting}."));
     Ok(())
@@ -120,7 +129,8 @@ fn beacon(ctx: &mut Ctx<'_>, t: &BehaviorTarget) -> Result<(), CmdError> {
         .set_attr(t.subject, "vehicle:beacon", Attr::text("1", actor))
         .map_err(|e| CmdError::msg(e.to_string()))?;
     let n = name_of(ctx, t.subject);
-    ctx.out.info(actor, format!("The console at {n} chirps ({:?}).", t.reach));
+    ctx.out
+        .info(actor, format!("The console at {n} chirps ({:?}).", t.reach));
     Ok(())
 }
 
@@ -141,7 +151,9 @@ fn pilot_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ctx.w.retract_command_subjects(NS, Some(actor));
         ctx.persist(ModuleOp {
             ns: SmolStr::new_static(NS),
-            op: ModuleWrite::Del { key: pilot_key(actor) },
+            op: ModuleWrite::Del {
+                key: pilot_key(actor),
+            },
         });
         ctx.out.info(ctx.actor, "Pilot assignment cleared.");
         return Ok(());
@@ -231,7 +243,11 @@ impl GameModule for ConsoleModule {
 
     /// Rebuild the in-RAM assignment map and republish links from the persisted
     /// `pilot:*` docs — the link index is never persisted by core.
-    fn on_world_loaded(&mut self, ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModError> {
+    fn on_world_loaded(
+        &mut self,
+        ctx: &mut ModuleCtx<'_>,
+        data: ModuleBootData,
+    ) -> Result<(), ModError> {
         for (key, value) in data.kv {
             let Some(a) = key.strip_prefix("pilot:") else {
                 continue;
@@ -279,17 +295,27 @@ fn texts(ev: &[(Audience, OutputEvent)]) -> String {
 }
 
 fn attr(tw: &TestWorld, id: ObjId, name: &str) -> Option<String> {
-    tw.world().attr(id, name).and_then(|a| a.as_text()).map(str::to_string)
+    tw.world()
+        .attr(id, name)
+        .and_then(|a| a.as_text())
+        .map(str::to_string)
 }
 
 /// A bound console Thing at `loc`, owned by GOD.
 fn console(tw: &mut TestWorld, name: &str, loc: ObjId) -> ObjId {
-    let c = tw.world_mut().create(ObjKind::Thing, name, GOD, Some(loc)).unwrap();
+    let c = tw
+        .world_mut()
+        .create(ObjKind::Thing, name, GOD, Some(loc))
+        .unwrap();
     tw.world_mut()
         .attach_behavior(
             c,
             console_id(),
-            mush_core::BehaviorBinding { schema_version: 1, attached_by: GOD, attached_at: 0 },
+            mush_core::BehaviorBinding {
+                schema_version: 1,
+                attached_by: GOD,
+                attached_at: 0,
+            },
         )
         .unwrap();
     c
@@ -321,7 +347,9 @@ fn carried_console_powers_up_and_the_subject_is_what_mutates() {
     assert_eq!(attr(&tw, c, "vehicle:throttle").as_deref(), Some("full"));
     assert!(texts(&tw.run(bob, "throttle 42")).contains("Throttle set to 42."));
     // The spec's switch table is enforced exactly like a global command's.
-    assert!(texts(&tw.run(bob, "throttle/warp")).contains("Unknown switch \"/warp\" for throttle."));
+    assert!(
+        texts(&tw.run(bob, "throttle/warp")).contains("Unknown switch \"/warp\" for throttle.")
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -333,13 +361,24 @@ fn unreachable_consoles_leave_the_verb_undefined() {
     let mut tw = boot();
     let bob = tw.spawn_player("Bob");
     let ann = tw.spawn_player("Ann");
-    assert!(texts(&tw.run(ann, "startup")).contains("Huh?"), "no console at all");
+    assert!(
+        texts(&tw.run(ann, "startup")).contains("Huh?"),
+        "no console at all"
+    );
     // An UNBOUND console in hand is just a thing.
-    tw.world_mut().create(ObjKind::Thing, "Dud", GOD, Some(ann)).unwrap();
-    assert!(texts(&tw.run(ann, "startup")).contains("Huh?"), "unbound console");
+    tw.world_mut()
+        .create(ObjKind::Thing, "Dud", GOD, Some(ann))
+        .unwrap();
+    assert!(
+        texts(&tw.run(ann, "startup")).contains("Huh?"),
+        "unbound console"
+    );
     // A bound console in BOB's inventory is not reachable by Ann.
     console(&mut tw, "Console", bob);
-    assert!(texts(&tw.run(ann, "startup")).contains("Huh?"), "someone else's inventory");
+    assert!(
+        texts(&tw.run(ann, "startup")).contains("Huh?"),
+        "someone else's inventory"
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -353,7 +392,10 @@ fn two_carried_consoles_are_ambiguous_and_nothing_mutates() {
     let a = console(&mut tw, "Alpha", bob);
     let b = console(&mut tw, "Beta", bob);
     let t = texts(&tw.run(bob, "startup"));
-    assert!(t.contains("Ambiguous") && t.contains("Alpha") && t.contains("Beta"), "{t}");
+    assert!(
+        t.contains("Ambiguous") && t.contains("Alpha") && t.contains("Beta"),
+        "{t}"
+    );
     assert!(attr(&tw, a, "vehicle:power").is_none() && attr(&tw, b, "vehicle:power").is_none());
     tw.world_mut().detach_behavior(b, &console_id()).unwrap();
     assert!(texts(&tw.run(bob, "startup")).contains("You power up Alpha."));
@@ -372,18 +414,29 @@ fn ambient_is_opt_in_and_a_container_outranks_carried() {
     assert!(texts(&tw.run(bob, "startup")).contains("Huh?"));
     assert!(texts(&tw.run(bob, "beacon")).contains("Huh?"));
     // Bind the ROOM: its opt-in `beacon` answers ambiently; `startup` still doesn't.
-    tw.world_mut().detach_behavior(floor, &console_id()).unwrap();
+    tw.world_mut()
+        .detach_behavior(floor, &console_id())
+        .unwrap();
     tw.world_mut()
         .attach_behavior(
             LIMBO,
             console_id(),
-            mush_core::BehaviorBinding { schema_version: 1, attached_by: GOD, attached_at: 0 },
+            mush_core::BehaviorBinding {
+                schema_version: 1,
+                attached_by: GOD,
+                attached_at: 0,
+            },
         )
         .unwrap();
     let t = texts(&tw.run(bob, "beacon"));
     assert!(t.contains("chirps (Ambient)"), "{t}");
-    assert!(texts(&tw.run(bob, "startup")).contains("Huh?"), "startup has no ambient reach");
-    tw.world_mut().detach_behavior(LIMBO, &console_id()).unwrap();
+    assert!(
+        texts(&tw.run(bob, "startup")).contains("Huh?"),
+        "startup has no ambient reach"
+    );
+    tw.world_mut()
+        .detach_behavior(LIMBO, &console_id())
+        .unwrap();
 
     // Bob climbs into a bound cockpit while also carrying a bound console: the
     // container tier wins outright (no ambiguity across tiers).
@@ -404,21 +457,37 @@ fn exits_and_globals_beat_behavior_verbs_and_prefixes_do_not_reach() {
     let mut tw = boot();
     let bob = tw.spawn_player("Bob");
     let c = console(&mut tw, "Console", bob);
-    assert!(texts(&tw.run(bob, "sta")).contains("Huh?"), "no prefix matching");
+    assert!(
+        texts(&tw.run(bob, "sta")).contains("Huh?"),
+        "no prefix matching"
+    );
 
     // An exit named `startup` in Bob's room wins (stage 5 precedes the stage).
-    let hall = tw.world_mut().create(ObjKind::Room, "Hall", GOD, None).unwrap();
-    let ex = tw.world_mut().create(ObjKind::Exit, "startup", GOD, Some(LIMBO)).unwrap();
+    let hall = tw
+        .world_mut()
+        .create(ObjKind::Room, "Hall", GOD, None)
+        .unwrap();
+    let ex = tw
+        .world_mut()
+        .create(ObjKind::Exit, "startup", GOD, Some(LIMBO))
+        .unwrap();
     tw.world_mut().link_exit(ex, Some(hall)).unwrap();
     tw.run(bob, "startup");
-    assert_eq!(tw.world().get(bob).and_then(|o| o.location), Some(hall), "exit won");
+    assert_eq!(
+        tw.world().get(bob).and_then(|o| o.location),
+        Some(hall),
+        "exit won"
+    );
     assert!(attr(&tw, c, "vehicle:power").is_none());
 
     // A global verb registered later shadows it (global wins by design).
     tw.engine_mut()
         .registry
         .register(
-            CommandSpec { name: "beacon".into(), ..CommandSpec::default() },
+            CommandSpec {
+                name: "beacon".into(),
+                ..CommandSpec::default()
+            },
             Arc::new(|ctx: &mut Ctx<'_>| {
                 ctx.out.info(ctx.actor, "global beacon");
                 Ok(())
@@ -438,7 +507,10 @@ fn a_pilot_link_operates_a_remote_console_and_survives_reboot() {
     let mut tw = boot();
     let bob = tw.spawn_player("Bob");
     let mech = console(&mut tw, "Mech", LIMBO); // in the room, not carried
-    assert!(texts(&tw.run(bob, "startup")).contains("Huh?"), "unlinked: unreachable");
+    assert!(
+        texts(&tw.run(bob, "startup")).contains("Huh?"),
+        "unlinked: unreachable"
+    );
 
     let t = texts(&tw.run(GOD, &format!("+pilot *Bob={mech}")));
     assert!(t.contains("Pilot assigned."), "{t}");
@@ -458,18 +530,30 @@ fn a_pilot_link_operates_a_remote_console_and_survives_reboot() {
             ModuleWrite::StreamAppend { .. } => {}
         }
     }
-    assert!(kv.iter().any(|(k, _)| k.starts_with("pilot:")), "assignment persisted");
+    assert!(
+        kv.iter().any(|(k, _)| k.starts_with("pilot:")),
+        "assignment persisted"
+    );
 
     let mut tw2 = boot();
     let bob2 = tw2.spawn_player("Bob");
     let mech2 = console(&mut tw2, "Mech", LIMBO);
     assert_eq!((bob2, mech2), (bob, mech), "ids are dense and monotonic");
-    assert!(texts(&tw2.run(bob2, "startup")).contains("Huh?"), "no link before republish");
+    assert!(
+        texts(&tw2.run(bob2, "startup")).contains("Huh?"),
+        "no link before republish"
+    );
     tw2.modules_loaded(HashMap::from([(
         SmolStr::new(NS),
-        ModuleBootData { kv, streams: HashMap::new() },
+        ModuleBootData {
+            kv,
+            streams: HashMap::new(),
+        },
     )]));
-    assert!(texts(&tw2.run(bob2, "startup")).contains("You power up Mech."), "link republished");
+    assert!(
+        texts(&tw2.run(bob2, "startup")).contains("You power up Mech."),
+        "link republished"
+    );
 
     // Clearing retracts it.
     tw2.run(GOD, "+pilot *Bob=");
@@ -487,10 +571,14 @@ fn destroying_the_operated_object_retires_the_assignment() {
 
     let t = texts(&tw.run(GOD, &format!("@destroy {mech}")));
     assert!(t.contains("Destroyed."), "{t}");
-    assert!(texts(&tw.run(bob, "startup")).contains("Huh?"), "link gone with the mech");
+    assert!(
+        texts(&tw.run(bob, "startup")).contains("Huh?"),
+        "link gone with the mech"
+    );
     let ops = tw.take_module_ops();
     assert!(
-        ops.iter().any(|o| matches!(&o.op, ModuleWrite::Del { key } if key == &pilot_key(bob))),
+        ops.iter()
+            .any(|o| matches!(&o.op, ModuleWrite::Del { key } if key == &pilot_key(bob))),
         "observer retired the persisted assignment: {ops:?}"
     );
 }

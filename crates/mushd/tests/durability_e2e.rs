@@ -343,7 +343,7 @@ async fn boot_rig(store: &Arc<dyn ObjectStore>) -> (Arc<SessionManager>, Persist
             guard: Arc::new(IpGuard::new()),
             staff,
             llm: None,
-            quarantine_dir: None,
+            quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
         },
     );
     (sessions, handles)
@@ -393,6 +393,7 @@ async fn kill9_journey_local_twin_in_memory() {
         handle,
         world_join,
         writer_join,
+        ..
     } = handles;
     world_join.abort();
     writer_join.abort();

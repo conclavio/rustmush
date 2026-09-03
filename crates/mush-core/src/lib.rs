@@ -46,6 +46,8 @@
 //! - [`sched`] — the pure min-heap [`Scheduler`] behind `@wait` and module
 //!   ticks.
 
+pub mod action;
+pub mod action_state;
 pub mod attr;
 pub mod behavior;
 pub mod clock;
@@ -56,6 +58,7 @@ pub mod flags;
 pub mod ledger;
 pub mod lock;
 pub mod matchit;
+pub mod mechanics;
 pub mod module;
 pub mod obj;
 pub mod output;
@@ -63,6 +66,41 @@ pub mod perm;
 pub mod sched;
 pub mod world;
 
+pub use action::{
+    ActionAttemptMetadata, ActionAttemptMetadataError, ActionError, ActionErrorBuildError,
+    ActionErrorCode, ActionInvocation, ActionInvocationDraft, ActionLifecycle, ActionMetadataError,
+    ActionOfferId, ActionProvider, ActionProviderDispatchError, ActionProviderEntry,
+    ActionProviderLookupError, ActionProviderPrepareError, ActionProviderRegistry,
+    ActionProviderRegistryBuilder, ActionProviderRegistryError, ActionReceiptMetadata,
+    ActionReceiptMetadataError, AuthorityGuard, AuthorityGuardKind, AuthorityGuardValidator,
+    AuthorityGuardValidatorEntry, AuthorityGuardValidatorLookupError,
+    AuthorityGuardValidatorRegistry, AuthorityGuardValidatorRegistryBuilder,
+    AuthorityGuardValidatorRegistryError, CanonicalHash, CanonicalHashError, CascadeError,
+    CausalMetadataError, CausalTriggerQueue, ContactId, FixedHexIdError, GuardRevalidation,
+    GuardRevalidationError, GuardSet, GuardSetBuildError, IdempotencyKey, IdempotencyKeyText,
+    IdempotencyKeyTextError, IdempotencyScope, IngressEnvelope, IngressPayload,
+    IngressSurfaceVersion, MAX_ACTION_ERROR_BYTES, MAX_ACTION_PARAMETER_BYTES,
+    MAX_ACTION_PROVIDERS, MAX_ACTION_PROVIDERS_PER_OWNER, MAX_ACTION_REVISIONS, MAX_ACTION_TARGETS,
+    MAX_AUTHORITY_GUARDS, MAX_AUTHORITY_VALIDATORS, MAX_AUTHORITY_VALIDATORS_PER_OWNER,
+    MAX_CASCADE_BYTES, MAX_CASCADE_OPERATIONS, MAX_CASCADE_TRIGGERS, MAX_GUARD_SET_BYTES,
+    MAX_IDEMPOTENCY_KEY_BYTES, MAX_INGRESS_LINE_BYTES, MAX_INGRESS_PAYLOAD_BYTES,
+    MAX_REVISION_VALIDATORS, MAX_REVISION_VALIDATORS_PER_OWNER, MAX_SEMANTIC_EVENTS,
+    MAX_TRIGGER_DEPTH, PerceivedRef, PreparedCausalRef, PreparedEventId, PreparedTrigger,
+    PreparedTriggerDraft, PrincipalId, ProviderRegistrationOrdinal, RequestUid, RevisionKey,
+    RevisionKind, RevisionMismatch, RevisionSet, RevisionSetError, RevisionStamp,
+    RevisionValidator, RevisionValidatorEntry, RevisionValidatorLookupError,
+    RevisionValidatorRegistry, RevisionValidatorRegistryBuilder, RevisionValidatorRegistryError,
+    ScopedIdempotencyKey, ServerGuardSetBuilder, SubjectKey, TriggerEnqueue, TriggerHandlerId,
+    TriggerIdentity, TriggerWork,
+};
+pub use action_state::{
+    ActionStateError, ActionStateStore, ActionTxn, ActionTxnLimits, CanonicalStateBytes,
+    MAX_ACTION_BUNDLE_BYTES, MAX_ACTION_MUTATION_OPERATIONS, MAX_ACTION_STATE_RECORD_BYTES,
+    MAX_STATE_FAMILIES, MAX_STATE_FAMILIES_PER_OWNER, MAX_STATE_KEY_BYTES, PreparedInstallation,
+    PreparedRecord, PreparedTxn, StateFamilyDescriptor, StateFamilyDescriptorError,
+    StateFamilyHandle, StateFamilyId, StateFamilyRegistry, StateFamilyRegistryBuilder,
+    StateFamilyRegistryError, StateKey, StateKeyCodec, StateValueSerializer, StateValueValidator,
+};
 pub use attr::{Attr, AttrFlags, AttrMap, AttrValue, UncasedName};
 pub use behavior::{
     BINDING_SCHEMA_VERSION, BehaviorBinding, BehaviorCommand, BehaviorCommandHandler, BehaviorId,
@@ -80,24 +118,48 @@ pub use commands::{
     event_subject, ignore_list, is_ignoring, narrative_actor, register_core_commands,
 };
 pub use engine::{
-    ControlMsg, Deferred, DisconnectKind, Effect, Effects, Engine, Inbound, StepOutcome,
-    WorldCommand, register_engine_commands,
+    ControlMsg, Deferred, DisconnectKind, Effect, Effects, Engine, Inbound, ModuleComposition,
+    StagePreparedActionError, StagedAction, StepOutcome, WorldCommand, register_engine_commands,
 };
 pub use flags::{Flags, Powers, Role};
 pub use ledger::{
-    BreachKind, ContiguityBreach, Ledger, LedgerChunk, LedgerEntry, chunk_key, is_log_key,
-    is_sealed_chunk, scan_contiguity,
+    BreachKind, ContiguityBreach, Ledger, LedgerAppendError, LedgerApplyError, LedgerChunk,
+    LedgerEntry, LedgerRestoreError, LedgerRestoreReport, MAX_LEDGER_LOG_ID_BYTES,
+    MAX_RESTORE_BREACH_DETAILS, PreparedLedgerAppend, chunk_key, is_log_key, is_sealed_chunk,
+    scan_contiguity,
 };
 pub use lock::{LockExpr, LockParseError, LockType, eval_lock, glob_match, parse_lock};
 pub use matchit::{MatchErr, match_object};
+pub use mechanics::{
+    BridgeDescriptor, BridgeEntry, BridgeKey, BridgeLookupError, BridgeRegistry,
+    BridgeRegistryBuilder, BridgeRegistryError, CanonicalEncodingError, CanonicalId,
+    CanonicalIdError, DefinitionDescriptor, DefinitionDescriptorError, DefinitionDigest,
+    DefinitionDigestError, DefinitionEntry, DefinitionId, DefinitionKey, DefinitionKind,
+    DefinitionLocator, DefinitionLookupError, DefinitionMigrationDescriptor, DefinitionMigrationFn,
+    DefinitionMigrationRegistry, DefinitionMigrationRegistryBuilder, DefinitionRef,
+    DefinitionRegistry, DefinitionRegistryBuilder, DefinitionRegistryError,
+    DefinitionRegistrySummary, DefinitionValidationContext, DefinitionValidator, IncidentId,
+    IncidentState, InteractionRoute, MAX_BOOT_REPORT_DETAILS, MAX_MECHANICS_OWNERS,
+    MAX_RECOVERY_SUBJECTS, MAX_RULES_VALUE_BYTES, MechanicalOwnerFreeze, MechanicalOwnerReadiness,
+    MechanicalOwnerReadinessError, MechanicalState, MechanicsLimits, MigrationError, MigrationPlan,
+    MigrationPlanSummary, MigrationStep, ModuleBootReport, OwnerId, RecoveryIncident,
+    RecoveryIncidentError, RecoveryIncidentSummary, RecoveryReason, RecoveryScope,
+    RecoverySeverity, RecoverySubject, RulesValue, RulesValueError, canonical_json_bytes,
+    canonical_json_bytes_with_limit,
+};
 pub use module::{
     AsyncCompletion, ContextOutcome, EventHook, GameModule, HookPoint, InputContext, JobQueueSpec,
-    Migration, ModError, ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, PanelFeedHandle,
-    Perceive, QueryHandler, Registrar, Scene, SceneId, StackedContext, TickCadence, TickHandler,
-    WeatherQuery, WorldEvent, WorldEventKind, WorldObserver, WxSnapshot, can_perceive,
-    is_concealed, perceives_via,
+    MAX_MODULE_KEY_BYTES, MAX_MODULE_NAMESPACE_BYTES, Migration, ModError, ModuleBootData,
+    ModuleCtx, ModuleOp, ModuleWrite, PanelFeedHandle, Perceive, QueryHandler, RecoveryReporter,
+    Registrar, Scene, SceneId, StackedContext, TickCadence, TickHandler, WeatherQuery, WorldEvent,
+    WorldEventKind, WorldObserver, WxSnapshot, can_perceive, is_concealed, perceives_via,
 };
 pub use obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
-pub use output::{Audience, ConnId, Outbox, name_span, obj_ref, room_view};
-pub use sched::{ScheduledKind, Scheduler, TimerId};
+pub use output::{
+    Audience, ConnId, DeliveryClass, DeliveryOutcome, Outbox, name_span, obj_ref, room_view,
+};
+pub use sched::{
+    MAX_PENDING_ENTRIES_PER_INSPECTION, MAX_SCHEDULED_FIRES_PER_STEP, PendingEntrySnapshot,
+    ScheduledKind, Scheduler, TimerId,
+};
 pub use world::{CommandSubjectLink, MAX_CONTAINMENT_DEPTH, SessionStat, World, WorldError};

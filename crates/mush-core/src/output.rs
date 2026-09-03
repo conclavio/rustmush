@@ -17,6 +17,50 @@ use crate::obj::{ObjId, ObjKind};
 use crate::perm;
 use crate::world::World;
 
+/// Durability relationship of presentation or external work produced by one
+/// world step. The driver uses this tag after persistence; it never infers a
+/// commit claim from event text or a command name.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeliveryClass {
+    /// Release only after the step's authoritative write is acknowledged.
+    OnCommit,
+    /// Commit-bound output reconstructible from durable state, such as a
+    /// panel keyframe.
+    Recoverable,
+    /// Delivery represented in a durable outbox. K3 adds dequeue receipts;
+    /// K0 treats it as commit-bound.
+    DurableOutbox,
+    /// Non-authoritative status/transport output that makes no commit claim.
+    BestEffort,
+    /// A refusal/failure response released only when the step aborts (or no
+    /// authoritative write was attempted).
+    OnAbort,
+}
+
+/// Durable disposition of the world step that produced a queue.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeliveryOutcome {
+    /// The step produced no authoritative write, so its ordinary output is
+    /// immediately final.
+    NoWrite,
+    /// The exact write was acknowledged.
+    Committed,
+    /// Persistence deterministically refused or lost the write.
+    Aborted,
+}
+
+impl DeliveryClass {
+    /// Whether an item in this class may be released for `outcome`.
+    #[must_use]
+    pub const fn releases_on(self, outcome: DeliveryOutcome) -> bool {
+        match outcome {
+            DeliveryOutcome::NoWrite => true,
+            DeliveryOutcome::Committed => !matches!(self, Self::OnAbort),
+            DeliveryOutcome::Aborted => matches!(self, Self::BestEffort | Self::OnAbort),
+        }
+    }
+}
+
 /// Connection id, allocated by the session layer. The core only needs an
 /// opaque handle to address one specific connection (pre-login prompts,
 /// per-connection routing); `mush-session` owns allocation and delivery.
@@ -65,6 +109,9 @@ pub enum Audience {
 #[derive(Debug, Default)]
 pub struct Outbox {
     events: Vec<(Audience, OutputEvent)>,
+    // Parallel storage preserves the long-standing `events()`/`take()` API
+    // while giving the persistence driver typed entries.
+    classes: Vec<DeliveryClass>,
     deferred: Vec<Deferred>,
 }
 
@@ -77,7 +124,18 @@ impl Outbox {
 
     /// Queue an event for an arbitrary audience.
     pub fn push(&mut self, audience: Audience, event: OutputEvent) {
+        self.push_classified(DeliveryClass::OnCommit, audience, event);
+    }
+
+    /// Queue an event with an explicit durability relationship.
+    pub fn push_classified(
+        &mut self,
+        class: DeliveryClass,
+        audience: Audience,
+        event: OutputEvent,
+    ) {
         self.events.push((audience, event));
+        self.classes.push(class);
     }
 
     /// Queue an event to a single actor.
@@ -88,6 +146,25 @@ impl Outbox {
     /// Queue an event to a single connection.
     pub fn to_conn(&mut self, conn: ConnId, event: OutputEvent) {
         self.push(Audience::Conn(conn), event);
+    }
+
+    /// Queue non-authoritative connection/status output that never claims a
+    /// mutation committed.
+    pub fn best_effort_to_conn(&mut self, conn: ConnId, event: OutputEvent) {
+        self.push_classified(DeliveryClass::BestEffort, Audience::Conn(conn), event);
+    }
+
+    /// Queue an error-styled, non-authoritative diagnostic to one actor.
+    ///
+    /// Use this for transient/runtime truth that remains useful regardless of
+    /// whether the step's unrelated authoritative writes commit (for example,
+    /// refusing one more entry from an in-memory scheduler queue).
+    pub fn best_effort_error(&mut self, actor: ObjId, msg: impl Into<String>) {
+        self.push_classified(
+            DeliveryClass::BestEffort,
+            Audience::Actor(actor),
+            OutputEvent::Sys(RichText::tag("error", msg)),
+        );
     }
 
     /// Queue an event to everyone in `room` except `exclude`. The line names
@@ -140,7 +217,37 @@ impl Outbox {
 
     /// Queue an error line (`Sys` tagged `"error"`) to one actor.
     pub fn error(&mut self, actor: ObjId, msg: impl Into<String>) {
-        self.sys_to_actor(actor, "error", msg);
+        self.push_classified(
+            DeliveryClass::OnAbort,
+            Audience::Actor(actor),
+            OutputEvent::Sys(RichText::tag("error", msg)),
+        );
+    }
+
+    /// Queue an error-styled line whose truth depends on the step committing.
+    ///
+    /// Use this for a diagnostic that accompanies a successful mutation (for
+    /// example, disabling a faulty script). Unlike [`error`](Self::error), it
+    /// is withheld on authoritative abort and released after the exact write
+    /// receipt. A step that produced no write releases it immediately.
+    pub fn error_on_commit(&mut self, actor: ObjId, msg: impl Into<String>) {
+        self.push_classified(
+            DeliveryClass::OnCommit,
+            Audience::Actor(actor),
+            OutputEvent::Sys(RichText::tag("error", msg)),
+        );
+    }
+
+    /// Queue explanatory failure detail to one actor without styling it as
+    /// the terminal error.  A handler may emit several of these and then
+    /// return `Err`; dispatch preserves them while discarding any speculative
+    /// success presentation from that handler.
+    pub fn abort_info(&mut self, actor: ObjId, msg: impl Into<String>) {
+        self.push_classified(
+            DeliveryClass::OnAbort,
+            Audience::Actor(actor),
+            OutputEvent::Sys(RichText::tag("system", msg)),
+        );
     }
 
     /// Queue an informational line (`Sys` tagged `"system"`) to one actor.
@@ -181,8 +288,54 @@ impl Outbox {
         &self.events
     }
 
+    /// Durability classes parallel to [`events`](Self::events).
+    #[must_use]
+    pub fn classes(&self) -> &[DeliveryClass] {
+        &self.classes
+    }
+
+    /// Drain typed events in emission order.
+    pub fn take_classified(&mut self) -> Vec<(DeliveryClass, Audience, OutputEvent)> {
+        debug_assert_eq!(self.events.len(), self.classes.len());
+        let events = std::mem::take(&mut self.events);
+        let classes = std::mem::take(&mut self.classes);
+        classes
+            .into_iter()
+            .zip(events)
+            .map(|(class, (audience, event))| (class, audience, event))
+            .collect()
+    }
+
+    /// Truncate emitted events and their durability tags together. Dispatch
+    /// uses this to discard partial success presentation from a handler that
+    /// ultimately returns an error.
+    pub fn truncate(&mut self, len: usize) {
+        self.events.truncate(len);
+        self.classes.truncate(len);
+    }
+
+    /// Roll a failed handler back to `len`, retaining only suffix output whose
+    /// class is explicitly safe to release on abort.  This keeps useful,
+    /// ordered refusal diagnostics while ensuring partial success messages
+    /// cannot escape a handler that ultimately failed.
+    pub fn retain_abort_since(&mut self, len: usize) {
+        debug_assert_eq!(self.events.len(), self.classes.len());
+        debug_assert!(len <= self.events.len());
+
+        let suffix_events: Vec<_> = self.events.drain(len..).collect();
+        let suffix_classes: Vec<_> = self.classes.drain(len..).collect();
+        for (class, event) in suffix_classes.into_iter().zip(suffix_events) {
+            if class.releases_on(DeliveryOutcome::Aborted) {
+                self.classes.push(class);
+                self.events.push(event);
+            }
+        }
+    }
+
     /// Drain the queue, leaving the outbox empty.
     pub fn take(&mut self) -> Vec<(Audience, OutputEvent)> {
+        debug_assert_eq!(self.events.len(), self.classes.len());
+        self.classes.clear();
         std::mem::take(&mut self.events)
     }
 
@@ -387,6 +540,119 @@ mod tests {
     }
 
     #[test]
+    fn classified_output_preserves_order_and_legacy_take_clears_tags() {
+        let mut out = Outbox::new();
+        out.push_classified(
+            DeliveryClass::BestEffort,
+            Audience::Conn(7),
+            OutputEvent::Sys(RichText::plain("status")),
+        );
+        out.info(ObjId(2), "committed");
+        out.error_on_commit(ObjId(2), "committed error");
+        out.error(ObjId(2), "aborted");
+        assert_eq!(
+            out.classes(),
+            &[
+                DeliveryClass::BestEffort,
+                DeliveryClass::OnCommit,
+                DeliveryClass::OnCommit,
+                DeliveryClass::OnAbort,
+            ]
+        );
+
+        let classified = out.take_classified();
+        assert_eq!(classified.len(), 4);
+        assert_eq!(classified[0].0, DeliveryClass::BestEffort);
+        assert_eq!(classified[1].0, DeliveryClass::OnCommit);
+        assert_eq!(classified[2].0, DeliveryClass::OnCommit);
+        assert_eq!(classified[3].0, DeliveryClass::OnAbort);
+        assert!(out.is_empty());
+        assert!(out.classes().is_empty());
+
+        out.info(ObjId(2), "legacy");
+        assert_eq!(out.take().len(), 1);
+        assert!(out.classes().is_empty());
+    }
+
+    #[test]
+    fn deterministic_abort_releases_only_failure_or_non_authoritative_output() {
+        for class in [
+            DeliveryClass::OnCommit,
+            DeliveryClass::Recoverable,
+            DeliveryClass::DurableOutbox,
+        ] {
+            assert!(!class.releases_on(DeliveryOutcome::Aborted));
+            assert!(class.releases_on(DeliveryOutcome::Committed));
+        }
+        assert!(DeliveryClass::BestEffort.releases_on(DeliveryOutcome::Aborted));
+        assert!(DeliveryClass::OnAbort.releases_on(DeliveryOutcome::Aborted));
+        assert!(!DeliveryClass::OnAbort.releases_on(DeliveryOutcome::Committed));
+    }
+
+    #[test]
+    fn best_effort_error_is_styled_and_survives_every_disposition() {
+        let mut out = Outbox::new();
+        out.best_effort_error(ObjId(2), "runtime refusal");
+
+        assert_eq!(out.classes(), &[DeliveryClass::BestEffort]);
+        assert!(DeliveryClass::BestEffort.releases_on(DeliveryOutcome::NoWrite));
+        assert!(DeliveryClass::BestEffort.releases_on(DeliveryOutcome::Committed));
+        assert!(DeliveryClass::BestEffort.releases_on(DeliveryOutcome::Aborted));
+        match &out.events()[0] {
+            (Audience::Actor(actor), OutputEvent::Sys(text)) => {
+                assert_eq!(*actor, ObjId(2));
+                assert_eq!(text.to_plain_text(), "runtime refusal");
+                assert_eq!(text.spans()[0].tag.as_deref(), Some("error"));
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn failed_handler_checkpoint_keeps_only_abort_safe_suffix_in_order() {
+        let mut out = Outbox::new();
+        out.info(ObjId(1), "earlier");
+        let checkpoint = out.len();
+        out.info(ObjId(2), "speculative success");
+        out.abort_info(ObjId(2), "first refusal");
+        out.push_classified(
+            DeliveryClass::BestEffort,
+            Audience::Conn(9),
+            OutputEvent::Sys(RichText::plain("transport status")),
+        );
+        out.error(ObjId(2), "second refusal");
+
+        out.retain_abort_since(checkpoint);
+
+        assert_eq!(
+            out.classes(),
+            &[
+                DeliveryClass::OnCommit,
+                DeliveryClass::OnAbort,
+                DeliveryClass::BestEffort,
+                DeliveryClass::OnAbort,
+            ]
+        );
+        let text: Vec<_> = out
+            .events()
+            .iter()
+            .map(|(_, event)| match event {
+                OutputEvent::Sys(text) => text.to_plain_text(),
+                other => panic!("unexpected event: {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            text,
+            [
+                "earlier",
+                "first refusal",
+                "transport status",
+                "second refusal"
+            ]
+        );
+    }
+
+    #[test]
     fn name_span_tags_by_kind() {
         let (mut w, nick, hall) = setup();
         let exit = w.create(ObjKind::Exit, "north;n", GOD, Some(hall)).unwrap();
@@ -463,12 +729,20 @@ mod tests {
         w.set_flag(hall, Flags::OPAQUE, true).unwrap();
         assert_eq!(room_view(&reg, &w, nick, hall).unwrap().contents.len(), 1);
         let outsider = w.create(ObjKind::Player, "Out", GOD, Some(LIMBO)).unwrap();
-        assert!(room_view(&reg, &w, outsider, hall).unwrap().contents.is_empty());
+        assert!(
+            room_view(&reg, &w, outsider, hall)
+                .unwrap()
+                .contents
+                .is_empty()
+        );
 
         // SEE_HIDDEN power waives DARK (and OPAQUE-from-outside).
         w.set_flag(hall, Flags::DARK, true).unwrap();
         w.get_mut(outsider).unwrap().powers = Powers::SEE_HIDDEN;
-        assert_eq!(room_view(&reg, &w, outsider, hall).unwrap().contents.len(), 2);
+        assert_eq!(
+            room_view(&reg, &w, outsider, hall).unwrap().contents.len(),
+            2
+        );
     }
 
     #[test]

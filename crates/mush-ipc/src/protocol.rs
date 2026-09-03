@@ -3,8 +3,8 @@
 //! Everything the gateway and server exchange is one of two tagged unions:
 //! [`ToServer`] (gateway → server) and [`ToGateway`] (server → gateway). The
 //! former oneshot service calls (`CreatePlayer`/`NameFree`/`InInputContext`/
-//! `Barrier`) become correlated [`ServiceReq`]/[`ServiceResp`] pairs matched by
-//! a `u64` request id.
+//! `ConnectionReady`/`Barrier`) become correlated [`ServiceReq`]/[`ServiceResp`]
+//! pairs matched by a `u64` request id.
 
 use mush_core::{DisconnectKind, Inbound, ObjId};
 use mush_proto::OutputEvent;
@@ -24,6 +24,32 @@ pub use mush_core::ControlMsg;
 /// self-describing encoding) keep the same version and stay wire-compatible
 /// with older peers.
 pub const IPC_VERSION: u32 = 1;
+
+/// Maximum number of correlated service requests one split-process boundary
+/// may hold in flight at once.
+///
+/// Service requests ultimately serialize through the single world task, so a
+/// larger backlog does not add throughput; it only increases gateway waiter
+/// custody and server task count. Both halves enforce this same hard ceiling:
+/// the gateway refuses new custody with [`ServiceResp::Busy`], while the
+/// server applies the limit independently so a nonconforming peer cannot spawn
+/// an unbounded number of handlers.
+pub const MAX_IN_FLIGHT_SERVICE_REQUESTS: usize = 256;
+
+/// Maximum number of uncompleted connection-lifecycle obligations the split
+/// gateway may own at once.
+///
+/// An obligation is either one live/reserved physical connection or one
+/// link-dead actor whose eventual [`WireInbound::SessionGone`] is still owed.
+/// The gateway reserves a slot *before* attaching a transport to its local
+/// session manager. Once reserved, that connection's [`WireInbound::ConnUp`]
+/// and teardown frames remain must-deliver; overload is refused at admission,
+/// rather than by shedding a lifecycle frame after custody was taken.
+///
+/// Keeping this independent from the configurable input high-water also bounds
+/// the restart [`ToServer::ReAnnounce`] snapshot and the number of teardown
+/// frames that can arrive after a server stops draining.
+pub const MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS: usize = 256;
 
 /// The cross-boundary subset of [`mush_core::Inbound`].
 ///
@@ -227,6 +253,16 @@ pub enum ServiceReq {
         /// The actor to probe.
         actor: ObjId,
     },
+    /// Does the engine currently track this exact transport connection as
+    /// attached to this actor? Used after the connect ordering barrier so the
+    /// gateway never publishes a local session whose `ConnUp` was refused by
+    /// a hard world mode or ignored for an invalid actor.
+    ConnectionReady {
+        /// The physical connection id.
+        conn: u64,
+        /// The actor the gateway attached locally.
+        actor: ObjId,
+    },
     /// Ordering barrier: answered once every message queued before it has been
     /// processed and its output delivered.
     Barrier,
@@ -244,8 +280,23 @@ pub enum ServiceResp {
     NameFree(bool),
     /// Result of a [`ServiceReq::InInputContext`]: `true` = inside a context.
     InInputContext(bool),
+    /// Result of a [`ServiceReq::ConnectionReady`]: `true` = the exact
+    /// connection-to-actor association exists in the engine.
+    ConnectionReady(bool),
     /// Acknowledgement of a [`ServiceReq::Barrier`].
     Barrier,
+    /// The boundary has reached its fixed correlated-request custody limit.
+    ///
+    /// This is a refusal *before* the request enters world-task custody. A
+    /// caller may retry later; it must not interpret this as a negative answer
+    /// to the request itself (for example, `NameFree(false)`).
+    Busy,
+    /// The request was admitted by the boundary, but its server-side service
+    /// became unavailable before it could acknowledge completion.
+    ///
+    /// In particular, a failed ordering barrier must use this arm: failure may
+    /// never be synthesized into [`ServiceResp::Barrier`].
+    Unavailable,
 }
 
 /// Player-creation failure, carried in [`ServiceResp::CreatePlayer`]. A

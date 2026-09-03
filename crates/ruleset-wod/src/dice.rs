@@ -262,9 +262,7 @@ pub fn resolve_sheet_pool(
         // A sheet pool may sum each trait at most once — the same trait named
         // twice (directly or via two tokens that resolve to it) is a padded
         // pool that would inflate the dice past the sheet. Reject it.
-        let key = field
-            .clone()
-            .unwrap_or_else(|| label.to_ascii_lowercase());
+        let key = field.clone().unwrap_or_else(|| label.to_ascii_lowercase());
         if seen.contains(&key) {
             return Err(format!(
                 "{label:?} is named more than once — a pool may sum each trait only once"

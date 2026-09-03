@@ -385,10 +385,12 @@ fn builder_gating() {
     let widget = g.find("widget");
     assert_eq!(g.loc(widget), Some(bob));
     assert_eq!(g.w.get(widget).unwrap().owner, bob);
-    // Bob digs, but does not control Limbo: room ok, exits refused.
+    // Bob asks for a room plus exit, but does not control Limbo. The command
+    // validates the complete request before allocating anything: failure is
+    // atomic rather than leaving an unannounced orphan room behind.
     let out = g.run(bob, "@dig Shack=door");
-    assert_error_contains(&out, bob, "created with room number");
     assert_error_contains(&out, bob, "Permission denied.");
+    assert!(g.w.iter().all(|object| object.name != "Shack"));
 }
 
 #[test]

@@ -200,7 +200,7 @@ pub(crate) fn deliver(
 
     if accepted.is_empty() {
         for line in refused {
-            ctx.out.info(from, format!("MAIL: {line}"));
+            ctx.out.abort_info(from, format!("MAIL: {line}"));
         }
         return Err(CmdError::msg("MAIL: Nobody could receive your message."));
     }

@@ -13,7 +13,7 @@ use mush_core::{
     GOD, LIMBO, ModuleBootData, ModuleOp, ObjId, ObjKind, Outbox, Registry, World, WorldEvent,
     register_core_commands, register_engine_commands,
 };
-use mush_faction::{ControlKind, FactionModule, FactionState, SimState, Visibility, NS};
+use mush_faction::{ControlKind, FactionModule, FactionState, NS, SimState, Visibility};
 use mush_proto::OutputEvent;
 use mush_store::{InMemoryStore, ObjectStore, WriteBatch};
 use smol_str::SmolStr;
@@ -21,8 +21,12 @@ use smol_str::SmolStr;
 fn boot() -> (Engine, ObjId, ObjId) {
     let mut world = World::new_minimal();
     world.set_now(1_000);
-    let nick = world.create(ObjKind::Player, "Nick", GOD, Some(LIMBO)).unwrap();
-    let bob = world.create(ObjKind::Player, "Bob", GOD, Some(LIMBO)).unwrap();
+    let nick = world
+        .create(ObjKind::Player, "Nick", GOD, Some(LIMBO))
+        .unwrap();
+    let bob = world
+        .create(ObjKind::Player, "Bob", GOD, Some(LIMBO))
+        .unwrap();
     let mut registry = Registry::new();
     register_core_commands(&mut registry).unwrap();
     register_engine_commands(&mut registry).unwrap();
@@ -37,14 +41,24 @@ fn boot() -> (Engine, ObjId, ObjId) {
     )
     .unwrap();
     let (mut out, mut fx) = (Outbox::new(), Effects::new());
-    engine.modules_loaded(HashMap::new(), &mut out, &mut fx).unwrap();
+    engine
+        .modules_loaded(HashMap::new(), &mut out, &mut fx)
+        .unwrap();
     let _ = engine.take_module_ops();
     (engine, nick, bob)
 }
 
 fn run(engine: &mut Engine, actor: ObjId, line: &str) -> Outbox {
     let (mut out, mut fx) = (Outbox::new(), Effects::new());
-    engine.step(Inbound::Cmd { conn: 1, actor, line: line.into() }, &mut out, &mut fx);
+    engine.step(
+        Inbound::Cmd {
+            conn: 1,
+            actor,
+            line: line.into(),
+        },
+        &mut out,
+        &mut fx,
+    );
     out
 }
 
@@ -87,7 +101,11 @@ fn setup_loop(engine: &mut Engine, nick: ObjId) {
     run(engine, GOD, "@clock/create 0=Waterfront falls/2");
     run(engine, GOD, "@clock/set 0=on:scene.concluded");
     run(engine, GOD, "@clock/set 0=control:The Waterfront/defacto");
-    run(engine, GOD, "@clock/set 0=says:The Undertow seize the waterfront.");
+    run(
+        engine,
+        GOD,
+        "@clock/set 0=says:The Undertow seize the waterfront.",
+    );
     let _ = nick;
 }
 
@@ -99,7 +117,11 @@ fn a_canon_event_advances_a_watching_clock_and_completion_fires_the_consequence(
 
     // An unrelated member's scene does NOT advance it (relevance gate).
     emit_canon(&mut engine, "scene.concluded", &[bob]);
-    assert_eq!(sim(&engine).clocks[&clock0].filled, 0, "irrelevant scene ignored");
+    assert_eq!(
+        sim(&engine).clocks[&clock0].filled,
+        0,
+        "irrelevant scene ignored"
+    );
 
     // A scene involving the faction's member advances it by one.
     emit_canon(&mut engine, "scene.concluded", &[nick]);
@@ -123,14 +145,20 @@ fn a_canon_event_advances_a_watching_clock_and_completion_fires_the_consequence(
     // And recorded a canon consequence (front.progress), so the chronicle knows.
     let canon = engine.world.module_state::<CanonState>().unwrap();
     assert!(
-        canon.recent().iter().any(|e| e.kind == "front.progress"
-            && e.summary.contains("seize the waterfront")),
+        canon
+            .recent()
+            .iter()
+            .any(|e| e.kind == "front.progress" && e.summary.contains("seize the waterfront")),
         "consequence recorded in canon"
     );
 
     // A further canon event does not re-complete or re-advance it.
     emit_canon(&mut engine, "scene.concluded", &[nick]);
-    assert_eq!(sim(&engine).clocks[&clock0].filled, 2, "completed clock frozen");
+    assert_eq!(
+        sim(&engine).clocks[&clock0].filled,
+        2,
+        "completed clock frozen"
+    );
 }
 
 #[test]
@@ -149,7 +177,11 @@ fn a_covert_clock_flip_stays_covert_not_public() {
         .iter()
         .find(|r| r.kind == ControlKind::DeFacto)
         .expect("flip happened");
-    assert_eq!(rec.visibility, Visibility::Covert, "covert op → covert hold");
+    assert_eq!(
+        rec.visibility,
+        Visibility::Covert,
+        "covert op → covert hold"
+    );
 
     // And a non-member bystander sees no holder on +territory (the leak closed).
     let out = run(&mut engine, bob, "+territory");
@@ -167,10 +199,16 @@ fn the_consequence_kind_is_reserved_from_watching() {
     let (mut engine, nick, _bob) = boot();
     setup_loop(&mut engine, nick);
     let out = run(&mut engine, GOD, "@clock/set 0=on:front.progress");
-    assert!(texts(&out).to_lowercase().contains("reserved"), "{}", texts(&out));
+    assert!(
+        texts(&out).to_lowercase().contains("reserved"),
+        "{}",
+        texts(&out)
+    );
     // The watch was not changed.
     assert_eq!(
-        sim(&engine).clocks[&mush_faction::ClockId(0)].advance_on.as_deref(),
+        sim(&engine).clocks[&mush_faction::ClockId(0)]
+            .advance_on
+            .as_deref(),
         Some("scene.concluded"),
     );
 }
@@ -183,8 +221,14 @@ fn destroying_a_faction_prunes_its_fronts_and_clocks() {
     assert_eq!(sim(&engine).fronts.len(), 1);
     assert_eq!(sim(&engine).clocks.len(), 1);
     run(&mut engine, GOD, "@faction/destroy Undertow");
-    assert!(sim(&engine).fronts.is_empty(), "fronts pruned with the faction");
-    assert!(sim(&engine).clocks.is_empty(), "clocks pruned with the faction");
+    assert!(
+        sim(&engine).fronts.is_empty(),
+        "fronts pruned with the faction"
+    );
+    assert!(
+        sim(&engine).clocks.is_empty(),
+        "clocks pruned with the faction"
+    );
 }
 
 #[test]
@@ -193,10 +237,16 @@ fn destroying_a_region_detaches_its_clock_flip() {
     // flip then silently no-ops. Destroy should null the consequence instead.
     let (mut engine, nick, _bob) = boot();
     setup_loop(&mut engine, nick);
-    assert!(sim(&engine).clocks[&mush_faction::ClockId(0)].on_complete_control.is_some());
+    assert!(
+        sim(&engine).clocks[&mush_faction::ClockId(0)]
+            .on_complete_control
+            .is_some()
+    );
     run(&mut engine, GOD, "@region/destroy The Waterfront");
     assert!(
-        sim(&engine).clocks[&mush_faction::ClockId(0)].on_complete_control.is_none(),
+        sim(&engine).clocks[&mush_faction::ClockId(0)]
+            .on_complete_control
+            .is_none(),
         "clock flip detached from the destroyed region",
     );
 }
@@ -217,7 +267,11 @@ fn clocks_are_visibility_gated_for_players() {
     // Nick is a member but level 1 (not an officer, default officer_level 2),
     // so an OfficersKnow clock is hidden from him.
     let out = run(&mut engine, nick, "+clocks");
-    assert!(texts(&out).contains("no active faction clocks"), "member sees officer clock? {}", texts(&out));
+    assert!(
+        texts(&out).contains("no active faction clocks"),
+        "member sees officer clock? {}",
+        texts(&out)
+    );
     // Make it Public: now Nick (and Bob) see it.
     run(&mut engine, GOD, "@clock/set 0=vis:public");
     assert!(texts(&run(&mut engine, nick, "+clocks")).contains("Waterfront falls"));
@@ -235,7 +289,11 @@ fn fronts_and_clocks_survive_a_restart() {
     let store = InMemoryStore::new();
     futures::executor::block_on(async {
         store
-            .write(WriteBatch { serial: 1, module_ops: ops, ..WriteBatch::default() })
+            .write(WriteBatch {
+                serial: 1,
+                module_ops: ops,
+                ..WriteBatch::default()
+            })
             .await
             .unwrap();
     });
@@ -246,8 +304,12 @@ fn fronts_and_clocks_survive_a_restart() {
     };
     let mut world = World::new_minimal();
     world.set_now(2_000);
-    world.create(ObjKind::Player, "Nick", GOD, Some(LIMBO)).unwrap();
-    world.create(ObjKind::Player, "Bob", GOD, Some(LIMBO)).unwrap();
+    world
+        .create(ObjKind::Player, "Nick", GOD, Some(LIMBO))
+        .unwrap();
+    world
+        .create(ObjKind::Player, "Bob", GOD, Some(LIMBO))
+        .unwrap();
     let mut registry = Registry::new();
     register_core_commands(&mut registry).unwrap();
     register_engine_commands(&mut registry).unwrap();
@@ -263,7 +325,11 @@ fn fronts_and_clocks_survive_a_restart() {
     .unwrap();
     let (mut out, mut fx) = (Outbox::new(), Effects::new());
     engine2
-        .modules_loaded(HashMap::from([(SmolStr::new(NS), boot_data)]), &mut out, &mut fx)
+        .modules_loaded(
+            HashMap::from([(SmolStr::new(NS), boot_data)]),
+            &mut out,
+            &mut fx,
+        )
         .unwrap();
 
     let s = sim(&engine2);

@@ -5,10 +5,10 @@
 
 use mush_core::{Audience, GOD, LIMBO, ModuleWrite, SceneId};
 use mush_proto::{OutputEvent, PanelFrameKind};
-use mush_testkit::{TestWorld, assert_actor_saw};
 use mush_tactics::{
-    BATTLE_TICK, TacticsState, TacticsStub, HEXLOCK_MSG, MAP_FEED, NS, PULSE_TICK, SCENE_KIND,
+    BATTLE_TICK, HEXLOCK_MSG, MAP_FEED, NS, PULSE_TICK, SCENE_KIND, TacticsState, TacticsStub,
 };
+use mush_testkit::{TestWorld, assert_actor_saw};
 
 fn tactics_world() -> TestWorld {
     TestWorld::with_modules(vec![Box::new(TacticsStub::new())])
@@ -218,7 +218,10 @@ fn hexlock_marker_vetoes_movement_and_teleport() {
     let events = tw.run(GOD, &format!("@set #{}=tacseam:hexlock", arena.0));
     assert_actor_saw(&events, GOD, "Set.");
     let (canonical, owner) = tw.registry().marker_owner("TACSEAM:HEXLOCK").unwrap();
-    assert_eq!((canonical.as_str(), owner.as_str()), ("tacseam:hexlock", NS));
+    assert_eq!(
+        (canonical.as_str(), owner.as_str()),
+        ("tacseam:hexlock", NS)
+    );
 
     // Exit traversal is vetoed with the themed message; nobody moves.
     let events = tw.run(pilot, "enter");

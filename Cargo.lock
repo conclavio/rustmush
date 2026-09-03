@@ -1969,6 +1969,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mush-contract-tests"
+version = "0.1.0"
+dependencies = [
+ "mush-core",
+ "mush-testkit",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mush-core"
 version = "0.1.0"
 dependencies = [
@@ -1977,6 +1987,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "sha2",
  "smol_str",
  "thiserror 2.0.20",
  "tracing",
@@ -2271,6 +2282,7 @@ dependencies = [
  "mush-script",
  "mush-sim",
  "mush-store",
+ "mush-tactics",
  "mush-testkit",
  "mush-weather",
  "mush-worldgen",

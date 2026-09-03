@@ -162,7 +162,7 @@ async fn boot_server(dir: &Path) -> SocketAddr {
             guard: Arc::new(IpGuard::new()),
             staff,
             llm: None,
-            quarantine_dir: None,
+            quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
         },
     );
     let world = handles.handle;

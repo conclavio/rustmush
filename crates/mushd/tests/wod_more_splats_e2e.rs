@@ -99,7 +99,7 @@ async fn boot_server(dir: &Path) -> SocketAddr {
             guard: Arc::new(IpGuard::new()),
             staff,
             llm: None,
-            quarantine_dir: None,
+            quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
         },
     );
     let world = handles.handle;
@@ -134,11 +134,27 @@ async fn login_create(
     (handle, term)
 }
 
-/// Send a burst of lines back-to-back (per-connection ordering guarantees they
-/// all land before the next command this connection issues).
+fn command_ack(line: &str) -> String {
+    if let Some(template) = line.strip_prefix("+chargen/template ") {
+        return format!("Template set to {template}.");
+    }
+    if line.starts_with("+chargen/attr ") || line.starts_with("+chargen/abil ") {
+        return "Priorities set.".to_string();
+    }
+    if let Some(assignment) = line.strip_prefix("+stat ") {
+        let (field, value) = assignment.split_once('=').expect("field=value");
+        return format!("Set {field} = {value}.");
+    }
+    panic!("no commit acknowledgement defined for {line:?}");
+}
+
+/// Send each chargen mutation only after the previous mutation's commit-bound
+/// success output has arrived.
 async fn send_all(term: &mut Term, lines: &[&str]) {
     for l in lines {
+        let mark = term.mark();
         term.send_line(l).await;
+        term.expect_after(mark, &command_ack(l)).await;
     }
 }
 
@@ -478,14 +494,18 @@ async fn m10a_wod_more_splats_full_journey() {
 /// power pool (`wizard_pool_field` = `"arts"`, routed to `wizard_set_pool` →
 /// `apply_art`), and the Realms pool rides the generic `realms:<name>=<n>` path
 /// in the Freebies step (Changeling exposes only one wizard pool slot).
+async fn send_and_expect(t: &mut Term, line: &str, needle: &str) {
+    let mark = t.mark();
+    t.send_line(line).await;
+    t.expect_after(mark, needle).await;
+}
+
 async fn wizard_changeling_and_submit(t: &mut Term) -> u64 {
-    t.send_line("+chargen/wizard").await;
-    t.expect("Guided Character Creation").await;
+    send_and_expect(t, "+chargen/wizard", "Guided Character Creation").await;
     // The Template step lists the new template with its blurb.
     t.expect("changeling").await;
 
-    t.send_line("changeling").await;
-    t.expect("Template set to changeling").await;
+    send_and_expect(t, "changeling", "Template set to changeling").await;
 
     // Concept + priorities + attributes + abilities + backgrounds (balanced).
     for line in [
@@ -520,28 +540,42 @@ async fn wizard_changeling_and_submit(t: &mut Term) -> u64 {
         "Chimera=3",
         "Contacts=2",
     ] {
+        let mark = t.mark();
         t.send_line(line).await;
+        let acknowledgement = match line {
+            "next" => "--- ".to_string(),
+            "concept=Grinning Trickster" => "concept set.".to_string(),
+            "physical=7 social=5 mental=3" => "Attribute priorities set.".to_string(),
+            "talents=13 skills=9 knowledges=5" => "Ability priorities set.".to_string(),
+            "Chimera=3" | "Contacts=2" => {
+                let (name, value) = line.split_once('=').expect("background=value");
+                format!("Background {name} = {value}.")
+            }
+            _ => {
+                let (field, value) = line.split_once('=').expect("field=value");
+                format!("{field} = {value}.")
+            }
+        };
+        t.expect_after(mark, &acknowledgement).await;
     }
 
     // Splat step: the Fae identity fields + the Arts power pool (bare names route
     // to the changeling's wizard_set_pool).
-    t.send_line("next").await;
-    t.send_line("kith=pooka").await;
-    t.send_line("seeming=childling").await;
-    t.send_line("court=seelie").await;
-    t.send_line("Chicanery=2").await;
-    t.expect("Arts").await;
-    t.send_line("Wayfare=1").await;
+    send_and_expect(t, "next", "--- Template Traits ---").await;
+    send_and_expect(t, "kith=pooka", "kith set.").await;
+    send_and_expect(t, "seeming=childling", "seeming set.").await;
+    send_and_expect(t, "court=seelie", "court set.").await;
+    send_and_expect(t, "Chicanery=2", "Chicanery = 2.").await;
+    send_and_expect(t, "Wayfare=1", "Wayfare = 1.").await;
 
     // Virtues (leave at default — Changeling's flat Willpower is exempt), then
     // the Realms pool via the generic field:key path in the Freebies step.
-    t.send_line("next").await; // → Virtues
-    t.send_line("next").await; // → Freebies
-    t.send_line("realms:Actor=3").await;
-    t.send_line("realms:Fae=2").await;
-    t.send_line("next").await; // → Review
-    t.send_line("submit").await;
-    t.expect("Submitted for approval as job").await;
+    send_and_expect(t, "next", "--- Virtues ---").await;
+    send_and_expect(t, "next", "--- Freebies ---").await;
+    send_and_expect(t, "realms:Actor=3", "realms:Actor = 3.").await;
+    send_and_expect(t, "realms:Fae=2", "realms:Fae = 2.").await;
+    send_and_expect(t, "next", "--- Review & Submit ---").await;
+    send_and_expect(t, "submit", "Submitted for approval as job").await;
 
     let hay = strip_ansi(&t.seen);
     let idx = hay

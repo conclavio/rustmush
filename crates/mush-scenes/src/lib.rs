@@ -46,17 +46,18 @@ use mush_core::module::{
 };
 use mush_core::output::display_name;
 use mush_core::{
-    CommandGate, Ctx, ModuleOp, ObjId, ObjKind, Registry, Role, SceneClass, World, is_log_key, perm,
+    CommandGate, Ctx, ModuleOp, ObjId, ObjKind, Registry, Role, SceneClass, World, is_log_key,
+    perm, scan_contiguity,
 };
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
 use smol_str::SmolStr;
 
 pub use data::{
-    KIND_TIMESTOP, NS, PauseReason, SceneEvent, SceneEventKind, SceneMode, SceneRecord, SceneStatus,
-    SceneUid, ScenesState, scene_key,
+    KIND_TIMESTOP, NS, PauseReason, SceneEvent, SceneEventKind, SceneMode, SceneRecord,
+    SceneStatus, SceneUid, ScenesState, scene_key,
 };
 
-use data::{persist_scene, META_KEY};
+use data::{META_KEY, persist_scene};
 
 /// Whether `who` is scene-management staff (Royalty and up) — the same bar the
 /// commands use, so a staffer who can drive a scene is also not frozen by it.
@@ -196,9 +197,15 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     //    (to hand facilitation to a *player*), which is why step 1 cloned out.
     enum Plan {
         /// Scene closed — release all these members.
-        Close { record: SceneRecord, release_all: Vec<ObjId> },
+        Close {
+            record: SceneRecord,
+            release_all: Vec<ObjId>,
+        },
         /// Object removed — release just it; `new_facilitator` set if handed on.
-        Shrink { record: SceneRecord, new_facilitator: Option<ObjId> },
+        Shrink {
+            record: SceneRecord,
+            new_facilitator: Option<ObjId>,
+        },
     }
     let mut plans: Vec<Plan> = Vec::new();
     for mut rec in affected {
@@ -208,7 +215,10 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
             rec.status = SceneStatus::Closed;
             rec.pause_reason = None;
             let release_all: Vec<ObjId> = rec.members().collect();
-            plans.push(Plan::Close { record: rec, release_all });
+            plans.push(Plan::Close {
+                record: rec,
+                release_all,
+            });
         } else {
             let new_facilitator = if was_facilitator {
                 // Prefer a player to inherit facilitation (an NPC could not
@@ -225,7 +235,10 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
             } else {
                 None
             };
-            plans.push(Plan::Shrink { record: rec, new_facilitator });
+            plans.push(Plan::Shrink {
+                record: rec,
+                new_facilitator,
+            });
         }
     }
 
@@ -233,7 +246,10 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     //    the room.
     for plan in plans {
         match plan {
-            Plan::Close { record, release_all } => {
+            Plan::Close {
+                record,
+                release_all,
+            } => {
                 if let Some(st) = ctx.w.module_state_mut::<ScenesState>() {
                     st.scenes.insert(record.id, record.clone());
                 }
@@ -252,7 +268,10 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
                 );
                 emit_scene_concluded(ctx, &record);
             }
-            Plan::Shrink { record, new_facilitator } => {
+            Plan::Shrink {
+                record,
+                new_facilitator,
+            } => {
                 if let Some(st) = ctx.w.module_state_mut::<ScenesState>() {
                     st.scenes.insert(record.id, record.clone());
                 }
@@ -338,7 +357,17 @@ pub(crate) fn record_scene_event(ctx: &mut Ctx<'_>, scene: SceneUid, ev: SceneEv
         let Some(st) = ctx.w.module_state_mut::<ScenesState>() else {
             return;
         };
-        let (_seq, op) = st.events.append(&scene.to_string(), value);
+        let prepared = match st.events.prepare_append(&scene.to_string(), value) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                tracing::error!(scene = %scene, %error, "scene: unsafe event-ledger append refused without ledger mutation");
+                return;
+            }
+        };
+        let (_seq, op) = st
+            .events
+            .apply_prepared(prepared)
+            .expect("scene ledger cannot change during one exclusive state borrow");
         op
     };
     ctx.persist(ModuleOp {
@@ -385,7 +414,13 @@ fn active_scene_at(w: &World, room: ObjId) -> Option<SceneRecord> {
 /// `Said` observer: record IC narrative spoken in an active scene's anchor room
 /// as a `Said` event. OOC / page / whisper are never recorded.
 fn on_said(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
-    let WorldEvent::Said { who, room, kind, text } = ev else {
+    let WorldEvent::Said {
+        who,
+        room,
+        kind,
+        text,
+    } = ev
+    else {
         return;
     };
     if !is_ic_narrative(*kind) {
@@ -447,13 +482,15 @@ impl CommandGate for TurnGate {
             // An ambiguous global prefix is refused by dispatch before the
             // behavior stage, so it is Free here too.
             Err(mush_core::LookupErr::Ambiguous(_)) => SceneClass::Free,
-            Err(mush_core::LookupErr::NotFound) => match mush_core::resolve_behavior_command(reg, w, actor, verb) {
-                mush_core::BehaviorResolution::One { target, index } => reg
-                    .behavior_spec(&target.behavior)
-                    .and_then(|b| b.commands.get(index))
-                    .map_or(SceneClass::Free, |c| c.spec.scene_class),
-                _ => SceneClass::Free,
-            },
+            Err(mush_core::LookupErr::NotFound) => {
+                match mush_core::resolve_behavior_command(reg, w, actor, verb) {
+                    mush_core::BehaviorResolution::One { target, index } => reg
+                        .behavior_spec(&target.behavior)
+                        .and_then(|b| b.commands.get(index))
+                        .map_or(SceneClass::Free, |c| c.spec.scene_class),
+                    _ => SceneClass::Free,
+                }
+            }
         };
         if class != SceneClass::Turn {
             return Ok(());
@@ -513,13 +550,25 @@ fn on_moved(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     }
     let now = ctx.w.now();
     if let Some(s) = active_scene_at(ctx.w, *to) {
-        let event = SceneEvent::new(&s, now, SceneEventKind::Joined, Some(*who), serde_json::json!({}));
+        let event = SceneEvent::new(
+            &s,
+            now,
+            SceneEventKind::Joined,
+            Some(*who),
+            serde_json::json!({}),
+        );
         record_scene_event(ctx, s.id, event);
     }
     if let Some(from) = *from
         && let Some(s) = active_scene_at(ctx.w, from)
     {
-        let event = SceneEvent::new(&s, now, SceneEventKind::Left, Some(*who), serde_json::json!({}));
+        let event = SceneEvent::new(
+            &s,
+            now,
+            SceneEventKind::Left,
+            Some(*who),
+            serde_json::json!({}),
+        );
         record_scene_event(ctx, s.id, event);
     }
 }
@@ -570,6 +619,23 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
         .unwrap_or_else(|| scenes.keys().last().map_or(0, |id| id.0 + 1))
         .max(scenes.keys().last().map_or(0, |id| id.0 + 1));
 
+    // Validate every authoritative scene-history document before selecting the
+    // live tails retained in RAM. Closed/missing-scene logs remain immutable on
+    // disk, but corruption there is still an integrity breach and may not be
+    // hidden by the memory optimization below.
+    let all_log_kv: Vec<(SmolStr, serde_json::Value)> = data
+        .kv
+        .iter()
+        .filter(|(key, _)| key.starts_with("log:"))
+        .cloned()
+        .collect();
+    let breaches = scan_contiguity(&all_log_kv);
+    if !breaches.is_empty() {
+        return Err(ModError::msg(format!(
+            "scene ledger history validation failed: {breaches:?}"
+        )));
+    }
+
     // Rehydrate the event-log open tail — but only for scenes that still hold
     // members. A Closed scene's log is immutable history on disk that nothing
     // in RAM appends to or reads (`active_scene_of` excludes closed scenes), so
@@ -592,7 +658,9 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
         .cloned()
         .collect();
     let mut events = mush_core::Ledger::new();
-    events.restore_from_kv(&live_log_kv);
+    events
+        .restore_from_kv(&live_log_kv)
+        .map_err(|error| ModError::msg(format!("scene ledger restore failed: {error}")))?;
     let st = ScenesState {
         scenes,
         next_scene_uid,

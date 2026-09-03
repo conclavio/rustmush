@@ -125,8 +125,8 @@ pub use module::NpcModule;
 pub use profile::{
     AgentProfile, KnowledgeBounds, NS, NpcTier, PROFILE_ATTR, SUMMARY_ATTR, THINKING_FEED,
 };
-pub use query::IntelListQuery;
 pub use prompt::{ENGINE_FRAME, system_prompt, user_prompt};
+pub use query::IntelListQuery;
 pub use runtime::{NpcConfig, NpcHostState, NpcRuntime};
 pub use snapshot::{
     AgentGrounding, AppliedAction, NoGrounding, PresentPlayer, RecalledMemory, SceneView,

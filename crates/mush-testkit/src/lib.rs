@@ -351,14 +351,13 @@ impl WriteBatchView {
         self.module_ops
             .iter()
             .filter_map(|op| match &op.op {
-                mush_core::ModuleWrite::JsonSet { key, value }
-                    if mush_core::is_log_key(key) =>
-                {
+                mush_core::ModuleWrite::JsonSet { key, value } if mush_core::is_log_key(key) => {
                     // `log:{id}:{chunk}` — the log id is everything between the
                     // prefix and the final `:` segment.
                     let rest = key.strip_prefix("log:")?;
                     let (log_id, _) = rest.rsplit_once(':')?;
-                    let chunk = serde_json::from_value::<mush_core::LedgerChunk>(value.clone()).ok()?;
+                    let chunk =
+                        serde_json::from_value::<mush_core::LedgerChunk>(value.clone()).ok()?;
                     Some((op.ns.clone(), SmolStr::new(log_id), chunk))
                 }
                 _ => None,

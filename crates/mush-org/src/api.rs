@@ -178,16 +178,38 @@ pub fn submit(ctx: &mut Ctx<'_>, plan: &OrgMutationPlan, action: OrgAction) -> R
             .ok_or_else(|| OrgError::Invalid("org module not loaded".into()))?;
         plan.apply(store.state())?
     };
-    // Persist exactly the docs the ops touched (from the op payloads / post-image).
-    persist_ops(ctx.out, &plan.ops, &post);
     let now = ctx.w.now();
     let actor = ctx.actor;
+    let audit_entry = OrgAuditEntry {
+        at: now,
+        actor,
+        action: action.action,
+        org: action.org,
+        detail: action.detail,
+    };
+    // Construct and bound the exact audit post-image before changing either
+    // the audit tail or the live organization state.
+    let prepared_audit = ctx
+        .w
+        .module_state::<OrgStore>()
+        .expect("org store slot")
+        .audit
+        .prepare_append(
+            AUDIT_LOG,
+            serde_json::to_value(&audit_entry).expect("audit entry serializes"),
+        )
+        .map_err(|error| OrgError::Invalid(format!("audit append refused: {error}")))?;
+    // Queue projections only after the append is known to be representable. If
+    // installation becomes stale, the caller's output checkpoint discards them.
+    persist_ops(ctx.out, &plan.ops, &post);
     let (audit_op, meta) = {
         let store = ctx.w.module_state_mut::<OrgStore>().expect("org store slot");
+        let (_seq, audit_op) = store
+            .audit
+            .apply_prepared(prepared_audit)
+            .map_err(|error| OrgError::Invalid(format!("audit append became stale: {error}")))?;
         store.install_state(post);
-        let entry = OrgAuditEntry { at: now, actor, action: action.action, org: action.org, detail: action.detail };
-        let (_seq, op) = store.audit.append(AUDIT_LOG, serde_json::to_value(&entry).expect("audit entry serializes"));
-        (op, store.meta_doc())
+        (audit_op, store.meta_doc())
     };
     push_op(ctx.out, audit_op);
     persist_meta(ctx.out, meta);

@@ -664,8 +664,8 @@ pub(crate) fn spheres_owned(
     let map = doc.map("spheres");
     let mut out = Vec::new();
     for s in spheres {
-        let canon = canonical_sphere(s)
-            .ok_or_else(|| format!("{s:?} is not one of the nine Spheres"))?;
+        let canon =
+            canonical_sphere(s).ok_or_else(|| format!("{s:?} is not one of the nine Spheres"))?;
         let dots = map
             .and_then(|m| m.get(canon))
             .and_then(serde_json::Value::as_i64)
@@ -674,7 +674,9 @@ pub(crate) fn spheres_owned(
             return Err(format!("you do not have the {canon} Sphere"));
         }
         if dots > arete {
-            return Err(format!("your {canon} ({dots}) exceeds your Arete ({arete})"));
+            return Err(format!(
+                "your {canon} ({dots}) exceeds your Arete ({arete})"
+            ));
         }
         out.push(canon);
     }

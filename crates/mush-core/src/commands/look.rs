@@ -34,9 +34,7 @@ fn look_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         // <name>` and `look #dbref` cannot probe a concealed subject. The
         // looker always perceives themselves. Free pass with no Perceive hook,
         // so this is identical to today for a game without concealment.
-        Ok(target)
-            if target == ctx.actor || can_perceive(ctx.reg, ctx.w, ctx.actor, target) =>
-        {
+        Ok(target) if target == ctx.actor || can_perceive(ctx.reg, ctx.w, ctx.actor, target) => {
             look_at(ctx.reg, ctx.w, ctx.actor, target, ctx.out);
             Ok(())
         }

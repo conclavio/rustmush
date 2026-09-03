@@ -11,8 +11,8 @@ use mush_core::{BehaviorId, Ctx, Flags, ObjId, Outbox, World};
 
 use crate::data::{
     DomainId, DomainStatus, InteriorSpaceRecord, PlacementRecord, RECOVERY_LOG, SpaceAnchor,
-    SpatialParent, SpatialState, UnplacedInfo, persist_domain, persist_placement, persist_space,
-    push_op,
+    SpatialCounterError, SpatialParent, SpatialState, UnplacedInfo, checked_placement_revision,
+    persist_domain, persist_placement, persist_space, push_op,
 };
 use crate::graph::{ancestors, project, rebuild};
 
@@ -91,6 +91,10 @@ pub enum SpatialError {
     /// The object is not placed / not a spatial entity.
     #[error("{0} is not placed")]
     NotPlaced(ObjId),
+    /// Boot held the object's unreadable authoritative placement. Only an
+    /// explicit repair/migration workflow may replace that record.
+    #[error("{0} has a held unreadable placement; repair it before re-placing")]
+    HeldPlacement(ObjId),
     /// The object is on a route: it is EITHER traveling OR sim-placed, never
     /// both (the mirror of `route_ineligible`).
     #[error("{0} is en route; @route/abort it before placing it in the simulation")]
@@ -108,6 +112,13 @@ pub enum SpatialError {
     /// The domain is still referenced.
     #[error("domain #{0} is still referenced by {1} placement(s)/space(s); clear them first")]
     DomainReferenced(DomainId, usize),
+    /// The authoritative recovery audit append could not be prepared. This is
+    /// checked before any world or spatial mutation.
+    #[error("recovery ledger append refused: {0}")]
+    RecoveryLedger(String),
+    /// A persisted monotonic counter cannot represent the requested change.
+    #[error(transparent)]
+    Counter(#[from] SpatialCounterError),
 }
 
 /// A structural transition (design §7).
@@ -194,24 +205,41 @@ fn check_projection(w: &World, obj: ObjId, dest: ObjId) -> Result<(), SpatialErr
     if already {
         return Ok(());
     }
-    w.can_move_to(obj, dest).map_err(|e| SpatialError::Projection {
-        obj,
-        dest,
-        reason: e.to_string(),
-    })
+    w.can_move_to(obj, dest)
+        .map_err(|e| SpatialError::Projection {
+            obj,
+            dest,
+            reason: e.to_string(),
+        })
 }
 
 /// The anchor/placement consistency rule (design §5.2 #6) for a space with
 /// `anchor`, given the parent it has or will have.
-fn anchor_consistent(space: ObjId, anchor: &SpaceAnchor, parent: &SpatialParent) -> Result<(), SpatialError> {
+fn anchor_consistent(
+    space: ObjId,
+    anchor: &SpaceAnchor,
+    parent: &SpatialParent,
+) -> Result<(), SpatialError> {
     match (anchor, parent) {
         (SpaceAnchor::Unanchored, _) | (_, SpatialParent::Unplaced) => Ok(()),
-        (SpaceAnchor::FixedDomain { domain, .. }, SpatialParent::Direct { domain: d, .. }) if d == domain => Ok(()),
+        (SpaceAnchor::FixedDomain { domain, .. }, SpatialParent::Direct { domain: d, .. })
+            if d == domain =>
+        {
+            Ok(())
+        }
         (SpaceAnchor::FixedDomain { domain, .. }, _) => Err(SpatialError::AnchorConflict(format!(
             "{space} is fixed in domain #{domain} but placed elsewhere"
         ))),
-        (SpaceAnchor::MovingObject { host }, SpatialParent::Interior { space: s, .. }) if s == host => Ok(()),
-        (SpaceAnchor::MovingObject { host }, SpatialParent::Attached { host: h, .. }) if h == host => Ok(()),
+        (SpaceAnchor::MovingObject { host }, SpatialParent::Interior { space: s, .. })
+            if s == host =>
+        {
+            Ok(())
+        }
+        (SpaceAnchor::MovingObject { host }, SpatialParent::Attached { host: h, .. })
+            if h == host =>
+        {
+            Ok(())
+        }
         (SpaceAnchor::MovingObject { host }, _) => Err(SpatialError::AnchorConflict(format!(
             "{space} rides {host} but is placed elsewhere"
         ))),
@@ -241,7 +269,9 @@ fn projections_for(
 /// route-side half). Enforced in the validate stage, so a refusal mutates
 /// nothing.
 fn route_free(w: &World, obj: ObjId) -> Result<(), SpatialError> {
-    if w.module_state::<crate::route::RouteState>().is_some_and(|rs| rs.is_traveling(obj)) {
+    if w.module_state::<crate::route::RouteState>()
+        .is_some_and(|rs| rs.is_traveling(obj))
+    {
         return Err(SpatialError::EnRoute(obj));
     }
     Ok(())
@@ -252,12 +282,18 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
     match t {
         Transition::Place { obj, parent } => {
             let obj = *obj;
+            if st.held_placement(obj).is_some() {
+                return Err(SpatialError::HeldPlacement(obj));
+            }
             live(w, obj)?;
             needs(w, obj, "sim.participant")?;
             route_free(w, obj)?;
             let parent_obj = match parent {
                 SpatialParent::Direct { domain, .. } => {
-                    let d = st.domains.get(domain).ok_or(SpatialError::NoSuchDomain(*domain))?;
+                    let d = st
+                        .domains
+                        .get(domain)
+                        .ok_or(SpatialError::NoSuchDomain(*domain))?;
                     if d.status != DomainStatus::Active {
                         return Err(SpatialError::DomainClosed(*domain, d.status));
                     }
@@ -266,20 +302,30 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
                 }
                 SpatialParent::Interior { space, slot } => {
                     live(w, *space)?;
-                    let s = st.spaces.get(space).ok_or(SpatialError::NoSuchSpace(*space))?;
+                    let s = st
+                        .spaces
+                        .get(space)
+                        .ok_or(SpatialError::NoSuchSpace(*space))?;
                     needs(w, *space, "sim.interior")?;
                     if let Some(slot) = slot {
-                        let cap = s.compartments.get(slot).ok_or_else(|| SpatialError::NoSuchSlot {
-                            space: *space,
-                            slot: slot.to_string(),
-                        })?;
+                        let cap =
+                            s.compartments
+                                .get(slot)
+                                .ok_or_else(|| SpatialError::NoSuchSlot {
+                                    space: *space,
+                                    slot: slot.to_string(),
+                                })?;
                         if let Some(max) = cap.maximum_items {
                             let mut n = st.occupants(*space, Some(slot));
-                            if matches!(st.parent_of(obj), SpatialParent::Interior { space: sp, slot: ref sl, .. } if sp == *space && sl.as_ref() == Some(slot)) {
+                            if matches!(st.parent_of(obj), SpatialParent::Interior { space: sp, slot: ref sl, .. } if sp == *space && sl.as_ref() == Some(slot))
+                            {
                                 n = n.saturating_sub(1); // re-placing into the same slot
                             }
                             if n as u32 >= max {
-                                return Err(SpatialError::Full { what: format!("{space} compartment `{slot}`"), max });
+                                return Err(SpatialError::Full {
+                                    what: format!("{space} compartment `{slot}`"),
+                                    max,
+                                });
                             }
                         }
                     }
@@ -291,14 +337,21 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
                         .mounts
                         .get(host)
                         .and_then(|m| m.mounts.get(mount))
-                        .ok_or_else(|| SpatialError::NoSuchMount { host: *host, mount: mount.to_string() })?;
+                        .ok_or_else(|| SpatialError::NoSuchMount {
+                            host: *host,
+                            mount: mount.to_string(),
+                        })?;
                     if let Some(max) = spec.capacity.maximum_items {
                         let mut n = st.attachments(*host, mount);
-                        if matches!(st.parent_of(obj), SpatialParent::Attached { host: h, mount: ref m, .. } if h == *host && m == mount) {
+                        if matches!(st.parent_of(obj), SpatialParent::Attached { host: h, mount: ref m, .. } if h == *host && m == mount)
+                        {
                             n = n.saturating_sub(1);
                         }
                         if n as u32 >= max {
-                            return Err(SpatialError::Full { what: format!("{host} mount `{mount}`"), max });
+                            return Err(SpatialError::Full {
+                                what: format!("{host} mount `{mount}`"),
+                                max,
+                            });
                         }
                     }
                     *host
@@ -311,7 +364,10 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
             }
             let up = ancestors(st, parent_obj)?;
             if up.contains(&obj) {
-                return Err(SpatialError::Cycle { obj, via: parent_obj });
+                return Err(SpatialError::Cycle {
+                    obj,
+                    via: parent_obj,
+                });
             }
             // Depth invariant: every node's ancestor chain is at most
             // MAX_SPATIAL_DEPTH. The deepest node under `obj` after the move has
@@ -330,7 +386,10 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
             let rec = PlacementRecord {
                 object: obj,
                 parent: parent.clone(),
-                revision: prev.map_or(1, |p| p.revision + 1),
+                revision: match prev {
+                    Some(p) => checked_placement_revision(obj, p.revision)?,
+                    None => 1,
+                },
                 unplaced: None,
             };
             let mut post = st.clone();
@@ -343,9 +402,18 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
             });
             plan.set_placements.push(rec);
         }
-        Transition::Unplace { obj, reason, by, keep } => {
+        Transition::Unplace {
+            obj,
+            reason,
+            by,
+            keep,
+        } => {
             let obj = *obj;
-            let prev = st.placements.get(&obj).filter(|p| p.parent.is_placed()).ok_or(SpatialError::NotPlaced(obj))?;
+            let prev = st
+                .placements
+                .get(&obj)
+                .filter(|p| p.parent.is_placed())
+                .ok_or(SpatialError::NotPlaced(obj))?;
             let deps = st.children_of(obj).len();
             if deps > 0 {
                 return Err(SpatialError::HasDependents { obj, count: deps });
@@ -357,7 +425,7 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
             plan.set_placements.push(PlacementRecord {
                 object: obj,
                 parent: SpatialParent::Unplaced,
-                revision: prev.revision + 1,
+                revision: checked_placement_revision(obj, prev.revision)?,
                 unplaced: Some(UnplacedInfo {
                     reason: reason.clone(),
                     by: *by,
@@ -372,19 +440,42 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
             let root = *root;
             let mut moved = Vec::new();
             for o in st.subtree(root) {
-                let Some(prev) = st.placements.get(&o) else { continue };
-                if !prev.parent.is_placed() && prev.unplaced.as_ref().is_some_and(|u| u.quarantined) {
+                let Some(prev) = st.placements.get(&o) else {
+                    continue;
+                };
+                if !prev.parent.is_placed() && prev.unplaced.as_ref().is_some_and(|u| u.quarantined)
+                {
                     continue; // already quarantined
                 }
                 // Prefer the recovery room; fall back to Limbo if it is gone.
-                let dest = if live(w, st.recovery_room).is_ok() { st.recovery_room } else { mush_core::LIMBO };
+                let dest = if live(w, st.recovery_room).is_ok() {
+                    st.recovery_room
+                } else {
+                    mush_core::LIMBO
+                };
                 if w.get(o).is_some() && check_projection(w, o, dest).is_ok() {
                     plan.projections.push((o, dest));
                 }
+                // Destruction quarantine is a terminal safety transition. At
+                // revision exhaustion, retaining MAX is safer than refusing
+                // and leaving a live graph edge aimed at a destroyed object.
+                // Recovery/re-placement still fail closed because their
+                // checked revision advance cannot move beyond MAX.
+                let revision = match checked_placement_revision(o, prev.revision) {
+                    Ok(revision) => revision,
+                    Err(error) => {
+                        tracing::error!(
+                            object = %o,
+                            %error,
+                            "sim: placement revision exhausted; quarantining at terminal revision"
+                        );
+                        u64::MAX
+                    }
+                };
                 plan.set_placements.push(PlacementRecord {
                     object: o,
                     parent: SpatialParent::Unplaced,
-                    revision: prev.revision + 1,
+                    revision,
                     unplaced: Some(UnplacedInfo {
                         reason: reason.clone(),
                         by: None,
@@ -403,27 +494,40 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
             route_free(w, space)?;
             // The base record: keep an existing one's compartments/rooms, or a
             // fresh Unanchored shell whose sole room is the space itself.
-            let base = st.spaces.get(&space).cloned().unwrap_or_else(|| InteriorSpaceRecord {
-                object: space,
-                anchor: SpaceAnchor::Unanchored,
-                compartments: Default::default(),
-                rooms: std::iter::once(space).collect(),
-                egresses: Default::default(),
-            });
+            let base = st
+                .spaces
+                .get(&space)
+                .cloned()
+                .unwrap_or_else(|| InteriorSpaceRecord {
+                    object: space,
+                    anchor: SpaceAnchor::Unanchored,
+                    compartments: Default::default(),
+                    rooms: std::iter::once(space).collect(),
+                    egresses: Default::default(),
+                });
             match anchor {
                 SpaceAnchor::FixedDomain { domain, .. } => {
-                    let d = st.domains.get(domain).ok_or(SpatialError::NoSuchDomain(*domain))?;
+                    let d = st
+                        .domains
+                        .get(domain)
+                        .ok_or(SpatialError::NoSuchDomain(*domain))?;
                     if d.status == DomainStatus::Retired {
                         return Err(SpatialError::DomainClosed(*domain, d.status));
                     }
                     // The anchor edge runs space -> domain.host, so the host must
                     // not sit under the space.
                     if d.host == space {
-                        return Err(SpatialError::Cycle { obj: space, via: space });
+                        return Err(SpatialError::Cycle {
+                            obj: space,
+                            via: space,
+                        });
                     }
                     let up = ancestors(st, d.host)?;
                     if up.contains(&space) {
-                        return Err(SpatialError::Cycle { obj: space, via: d.host });
+                        return Err(SpatialError::Cycle {
+                            obj: space,
+                            via: d.host,
+                        });
                     }
                     if up.len() + 1 + st.subtree_height(space) > crate::data::MAX_SPATIAL_DEPTH {
                         return Err(SpatialError::TooDeep { obj: space });
@@ -432,11 +536,17 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
                 SpaceAnchor::MovingObject { host } => {
                     live(w, *host)?;
                     if *host == space {
-                        return Err(SpatialError::Cycle { obj: space, via: space });
+                        return Err(SpatialError::Cycle {
+                            obj: space,
+                            via: space,
+                        });
                     }
                     let up = ancestors(st, *host)?;
                     if up.contains(&space) {
-                        return Err(SpatialError::Cycle { obj: space, via: *host });
+                        return Err(SpatialError::Cycle {
+                            obj: space,
+                            via: *host,
+                        });
                     }
                     if up.len() + 1 + st.subtree_height(space) > crate::data::MAX_SPATIAL_DEPTH {
                         return Err(SpatialError::TooDeep { obj: space });
@@ -451,12 +561,22 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
             plan.set_spaces.push(rec);
         }
         Transition::Retire { domain } => {
-            let d = st.domains.get(domain).ok_or(SpatialError::NoSuchDomain(*domain))?;
+            let d = st
+                .domains
+                .get(domain)
+                .ok_or(SpatialError::NoSuchDomain(*domain))?;
             if d.status == DomainStatus::Retired {
                 return Err(SpatialError::DomainClosed(*domain, d.status));
             }
-            let refs = st.derived.domain_direct.get(domain).map_or(0, BTreeSet::len)
-                + st.derived.spaces_in_domain.get(domain).map_or(0, BTreeSet::len);
+            let refs = st
+                .derived
+                .domain_direct
+                .get(domain)
+                .map_or(0, BTreeSet::len)
+                + st.derived
+                    .spaces_in_domain
+                    .get(domain)
+                    .map_or(0, BTreeSet::len);
             if refs > 0 {
                 return Err(SpatialError::DomainReferenced(*domain, refs));
             }
@@ -474,7 +594,21 @@ pub fn plan(st: &SpatialState, w: &World, t: &Transition) -> Result<Plan, Spatia
 /// records, indexes, and persistence written. On the (unreachable-in-practice)
 /// mid-batch refusal, `Err` is returned after any earlier moves but before any
 /// record change.
-pub fn apply(st: &mut SpatialState, w: &mut World, out: &mut Outbox, plan: Plan) -> Result<(), SpatialError> {
+pub fn apply(
+    st: &mut SpatialState,
+    w: &mut World,
+    out: &mut Outbox,
+    plan: Plan,
+) -> Result<(), SpatialError> {
+    let prepared_audit = if plan.audit.is_null() {
+        None
+    } else {
+        Some(
+            st.recovery
+                .prepare_append(RECOVERY_LOG, plan.audit.clone())
+                .map_err(|error| SpatialError::RecoveryLedger(error.to_string()))?,
+        )
+    };
     for &(obj, dest) in &plan.projections {
         if w.get(obj).and_then(|o| o.location) == Some(dest) {
             continue;
@@ -493,8 +627,18 @@ pub fn apply(st: &mut SpatialState, w: &mut World, out: &mut Outbox, plan: Plan)
     }
     for d in &plan.retire {
         if let Some(rec) = st.domains.get_mut(d) {
+            // Retirement is terminal. If this record has exhausted its
+            // revision space, retaining MAX while closing the domain is safer
+            // than leaving it active and permanently unretirable.
+            let revision = rec.revision.saturating_add(1);
+            if revision == rec.revision {
+                tracing::error!(
+                    domain = %d,
+                    "sim: domain revision exhausted; retiring at terminal revision"
+                );
+            }
             rec.status = DomainStatus::Retired;
-            rec.revision += 1;
+            rec.revision = revision;
         }
     }
     st.derived = rebuild(st);
@@ -509,8 +653,11 @@ pub fn apply(st: &mut SpatialState, w: &mut World, out: &mut Outbox, plan: Plan)
             persist_domain(out, rec);
         }
     }
-    if !plan.audit.is_null() {
-        let (_, op) = st.recovery.append(RECOVERY_LOG, plan.audit);
+    if let Some(prepared) = prepared_audit {
+        let (_, op) = st
+            .recovery
+            .apply_prepared(prepared)
+            .expect("recovery ledger cannot change during one spatial apply");
         push_op(out, op);
     }
     Ok(())
@@ -519,14 +666,22 @@ pub fn apply(st: &mut SpatialState, w: &mut World, out: &mut Outbox, plan: Plan)
 /// Plan and apply in one step against a command context.
 pub fn run(ctx: &mut Ctx<'_>, t: &Transition) -> Result<(), SpatialError> {
     let plan = {
-        let st = ctx.w.module_state::<SpatialState>().expect("sim state slot installed at registration");
+        let st = ctx
+            .w
+            .module_state::<SpatialState>()
+            .expect("sim state slot installed at registration");
         plan(st, ctx.w, t)?
     };
     // Take the slot out to satisfy the borrow checker (world + slot are both
     // mutated); put it back before returning.
-    let mut st = std::mem::take(ctx.w.module_state_mut::<SpatialState>().expect("sim state slot installed at registration"));
+    let mut st = std::mem::take(
+        ctx.w
+            .module_state_mut::<SpatialState>()
+            .expect("sim state slot installed at registration"),
+    );
     let r = apply(&mut st, ctx.w, ctx.out, plan);
-    *ctx.w.module_state_mut::<SpatialState>().expect("sim state slot installed at registration") = st;
+    *ctx.w
+        .module_state_mut::<SpatialState>()
+        .expect("sim state slot installed at registration") = st;
     r
 }
-

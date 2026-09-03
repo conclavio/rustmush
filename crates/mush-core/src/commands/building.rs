@@ -96,6 +96,33 @@ fn dig_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("Dig what?"));
     }
     let exit_specs: Vec<String> = ctx.args.rhs_list().to_vec();
+    // Validate every fallible prerequisite before allocating the room. Command
+    // handlers run under an output/deferred checkpoint, not a World rollback;
+    // returning Err after `create` would otherwise leave a dirty, silently
+    // persisted room while reporting only the later permission error.
+    let exit_source = if exit_specs.is_empty() {
+        None
+    } else {
+        if exit_specs.iter().any(|spec| {
+            !spec
+                .split(';')
+                .map(str::trim)
+                .any(|segment| !segment.is_empty())
+        }) {
+            return Err(CmdError::msg("Open which exit?"));
+        }
+        let here = ctx
+            .w
+            .get(ctx.actor)
+            .and_then(|o| o.location)
+            .ok_or_else(|| CmdError::msg("You are nowhere; no exits opened."))?;
+        if !perm::controls(ctx.w, ctx.actor, here) {
+            return Err(CmdError::msg(
+                "Permission denied.  (You don't control this room; no exits opened.)",
+            ));
+        }
+        Some(here)
+    };
     let room = ctx.w.create(ObjKind::Room, &name, ctx.actor, None)?;
     ctx.out.info(
         ctx.actor,
@@ -107,17 +134,7 @@ fn dig_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         creator: ctx.actor,
     });
 
-    if !exit_specs.is_empty() {
-        let here = ctx
-            .w
-            .get(ctx.actor)
-            .and_then(|o| o.location)
-            .ok_or_else(|| CmdError::msg("You are nowhere; no exits opened."))?;
-        if !perm::controls(ctx.w, ctx.actor, here) {
-            return Err(CmdError::msg(
-                "Permission denied.  (You don't control this room; no exits opened.)",
-            ));
-        }
+    if let Some(here) = exit_source {
         // Exit out: here -> new room.
         let out_exit = open_exit(ctx.w, ctx.actor, here, &exit_specs[0], Some(room))?;
         ctx.out.info(

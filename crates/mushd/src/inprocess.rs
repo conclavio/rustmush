@@ -88,7 +88,9 @@ impl GatewaySink for InProcessSink {
                     let Some(tx) = feedback.upgrade() else {
                         return ControlFlow::Break(());
                     };
-                    let _ = tx.send(WorldMsg::Inbound(Inbound::SessionGone { actor })).await;
+                    let _ = tx
+                        .send(WorldMsg::Inbound(Inbound::SessionGone { actor }))
+                        .await;
                     ControlFlow::Continue(())
                 }
             });

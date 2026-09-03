@@ -399,6 +399,10 @@ pub enum EconomyError {
     /// Checked arithmetic overflowed (invariant 4).
     #[error("arithmetic overflow")]
     Overflow,
+    /// The authoritative journal could not accept or install the exact prepared
+    /// transaction append. No economic post may be confirmed in this state.
+    #[error("the authoritative economy journal is unavailable")]
+    JournalUnavailable,
     /// A projected balance would breach an account's credit policy.
     #[error("account {0} would breach its credit policy")]
     CreditViolation(AccountId),

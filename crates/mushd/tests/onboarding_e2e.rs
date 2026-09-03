@@ -155,7 +155,7 @@ async fn boot(tag: &str, chargen_required: bool) -> Server {
             guard: Arc::clone(&guard),
             staff,
             llm: Some(Arc::clone(&llm)),
-            quarantine_dir: None,
+            quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
             metrics: Arc::new(mush_net_web::Metrics::new()),
         },
     );
@@ -294,10 +294,15 @@ async fn play_client(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Ter
 /// balanced vampire (the same allocation the ruleset's in-process onboarding
 /// test uses). Returns the wizard-reported `wod-chargen` job id, parsed from
 /// the submit confirmation.
+async fn send_and_expect(t: &mut Term, line: &str, needle: &str) {
+    let mark = t.mark();
+    t.send_line(line).await;
+    t.expect_after(mark, needle).await;
+}
+
 async fn wizard_vampire_and_submit(t: &mut Term) -> u64 {
     // Template.
-    t.send_line("vampire").await;
-    t.expect("Template set to vampire").await;
+    send_and_expect(t, "vampire", "Template set to vampire").await;
 
     // Concept + attributes + abilities + backgrounds (balanced).
     for line in [
@@ -332,24 +337,39 @@ async fn wizard_vampire_and_submit(t: &mut Term) -> u64 {
         "Resources=3",
         "Allies=2",
     ] {
+        let mark = t.mark();
         t.send_line(line).await;
+        let acknowledgement = match line {
+            "next" => "--- ".to_string(),
+            "concept=Jaded Detective" => "concept set.".to_string(),
+            "physical=7 social=5 mental=3" => "Attribute priorities set.".to_string(),
+            "talents=13 skills=9 knowledges=5" => "Ability priorities set.".to_string(),
+            "Resources=3" | "Allies=2" => {
+                let (name, value) = line.split_once('=').expect("background=value");
+                format!("Background {name} = {value}.")
+            }
+            _ => {
+                let (field, value) = line.split_once('=').expect("field=value");
+                format!("{field} = {value}.")
+            }
+        };
+        t.expect_after(mark, &acknowledgement).await;
     }
     // Splat: clan + a 3-dot Discipline pool (the budget names the pool).
-    t.send_line("next").await;
-    t.send_line("clan=brujah").await;
-    t.send_line("Celerity=2").await;
-    t.expect("Disciplines").await;
-    t.send_line("Potence=1").await;
+    send_and_expect(t, "next", "--- Template Traits ---").await;
+    send_and_expect(t, "clan=brujah", "clan set.").await;
+    send_and_expect(t, "Celerity=2", "Celerity = 2.").await;
+    send_and_expect(t, "Potence=1", "Potence = 1.").await;
 
     // Virtues.
-    for line in ["next", "conscience=4", "self_control=3", "courage=3"] {
-        t.send_line(line).await;
-    }
+    send_and_expect(t, "next", "--- Virtues ---").await;
+    send_and_expect(t, "conscience=4", "conscience = 4.").await;
+    send_and_expect(t, "self_control=3", "self_control = 3.").await;
+    send_and_expect(t, "courage=3", "courage = 3.").await;
     // Freebies (balanced — nothing to spend) → Review → submit.
-    t.send_line("next").await; // Freebies
-    t.send_line("next").await; // Review
-    t.send_line("submit").await;
-    t.expect("Submitted for approval as job").await;
+    send_and_expect(t, "next", "--- Freebies ---").await;
+    send_and_expect(t, "next", "--- Review & Submit ---").await;
+    send_and_expect(t, "submit", "Submitted for approval as job").await;
 
     // Parse the job id out of the confirmation line.
     let hay = strip_ansi(&t.seen);

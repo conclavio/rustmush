@@ -130,7 +130,7 @@ async fn boot_server(dir: &Path, seed: u64) -> SocketAddr {
             guard: Arc::new(IpGuard::new()),
             staff,
             llm: None,
-            quarantine_dir: None,
+            quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
         },
     );
     let world = handles.handle;
@@ -228,10 +228,14 @@ async fn sr5_full_journey_over_ssh() {
         // Resources E = 6000¥ (leftover cash is fine).
         "+stat nuyen=5000",
     ] {
+        let mark = razor.mark();
         razor.send_line(c).await;
+        let assignment = c.strip_prefix("+stat ").expect("a +stat command");
+        let (field, value) = assignment.split_once('=').expect("field=value");
+        razor
+            .expect_after(mark, &format!("Set {field} = {value}."))
+            .await;
     }
-    // The last stat's budget line confirms the whole burst landed.
-    razor.expect("Set nuyen = 5000.").await;
 
     // Learn a spell while unapproved (chargen) so +cast has something to throw.
     razor.send_line("+spell Manabolt").await;
@@ -545,9 +549,15 @@ async fn sr5_sheet_survives_redis_reboot_gated() {
         "@sheet/set Razor/willpower=4",
         "@sheet/set Razor/active_skills:pistols=5",
     ] {
+        let mark = god.mark();
         god.send_line(c).await;
+        let assignment = c
+            .strip_prefix("@sheet/set ")
+            .expect("an @sheet/set command");
+        let (field, value) = assignment.split_once('=').expect("field=value");
+        god.expect_after(mark, &format!("Set {field} = {value}."))
+            .await;
     }
-    god.expect("Set Razor/active_skills:pistols = 5.").await;
 
     god.send_line("@shutdown").await;
     god.expect("GAME: Shutdown in progress.").await;

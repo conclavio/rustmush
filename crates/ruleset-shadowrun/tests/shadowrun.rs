@@ -569,6 +569,41 @@ fn chargen_priority_full_build_submit_and_approve() {
 }
 
 #[test]
+fn wizard_submit_rejects_malformed_finalized_sheet_without_opening_a_job() {
+    let (mut tw, nick) = world(S);
+    full_chargen(&mut tw, nick);
+    tw.run(nick, "+chargen/wizard");
+    tw.run(nick, "review");
+
+    let mut doc = read_sheet(&tw, nick);
+    doc.set("unknown_injected_field", serde_json::json!(true));
+    tw.world_mut()
+        .set_attr(
+            nick,
+            "sheet:shadowrun",
+            mush_core::Attr::json(serde_json::to_value(doc).unwrap(), nick),
+        )
+        .unwrap();
+    let _ = tw.take_module_ops();
+
+    let events = tw.run(nick, "submit");
+    let seen = tw.seen_by(&events, nick);
+    assert!(
+        seen.iter().any(|line| line.contains("unknown field")),
+        "malformed sheet refusal missing: {seen:?}"
+    );
+    assert!(
+        get_job(tw.world(), 1).is_none(),
+        "submit opened an orphan job"
+    );
+    assert!(
+        tw.take_module_ops().is_empty(),
+        "failed wizard submit queued partial job persistence"
+    );
+    assert_eq!(tw.world().input_depth(nick), 1, "wizard should remain open");
+}
+
+#[test]
 fn chargen_flags_overspend_and_maxima() {
     let (mut tw, nick) = world(S);
     tw.run(nick, "+chargen");

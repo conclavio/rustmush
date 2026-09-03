@@ -274,15 +274,14 @@ mod tests {
         });
         pools.insert(LorePool {
             tag: "occult".into(),
-            entries: vec![entry("vampires shun sunlight"), entry("silver burns lupines")],
+            entries: vec![
+                entry("vampires shun sunlight"),
+                entry("silver burns lupines"),
+            ],
         });
 
         // Tag matching is slug-insensitive; unknown tags contribute nothing.
-        let resolved = pools.resolve(&[
-            "docks".into(),
-            "occult".into(),
-            "no-such-pool".into(),
-        ]);
+        let resolved = pools.resolve(&["docks".into(), "occult".into(), "no-such-pool".into()]);
         assert_eq!(resolved.len(), 3);
         assert_eq!(resolved[0].fact, "smugglers land at midnight");
         assert_eq!(resolved[1].fact, "vampires shun sunlight");
@@ -307,10 +306,7 @@ mod tests {
         let mut store = LongTermStore::default();
         let npc = ObjId(9);
         // No record at all: Stranger.
-        assert_eq!(
-            familiarity_of(&store, npc, "Alice"),
-            Familiarity::Stranger
-        );
+        assert_eq!(familiarity_of(&store, npc, "Alice"), Familiarity::Stranger);
         // One note: Acquaintance.
         store.remember(npc, "Alice", "asked about the cellar", 100);
         assert_eq!(

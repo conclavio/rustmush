@@ -24,7 +24,6 @@ use support::{
 
 const GM_PASSWORD: &str = "gm-secret-1";
 const BANNER: &str = "Welcome to the scripting e2e MUSH!";
-
 #[tokio::test(flavor = "multi_thread")]
 async fn scripting_room_trigger_demo() {
     let dir = scratch_dir("scripting-e2e");

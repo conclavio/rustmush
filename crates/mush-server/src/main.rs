@@ -39,6 +39,19 @@ fn main() -> ExitCode {
         config.ipc.listen = addr.clone();
     }
 
+    // Logging may create/append files, so integrity storage is structurally
+    // validated first. Retain this exact instance (and its exclusive lifetime
+    // lock) through the zero-write exact-target pass and into the writer.
+    let quarantine_spool = match mush_server::quarantine::QuarantineSpool::open(
+        config.server.data_dir.join("quarantine"),
+    ) {
+        Ok(spool) => spool,
+        Err(error) => {
+            eprintln!("mush-server: quarantine spool preflight failed: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     let _log_guards = mush_config::logging::init(&config.log, &config.server.data_dir);
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -51,7 +64,12 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match runtime.block_on(mush_server::serve(config, None)) {
+    match runtime.block_on(mush_server::serve_with_quarantine_spool(
+        config,
+        None,
+        None,
+        quarantine_spool,
+    )) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("mush-server: {e}");

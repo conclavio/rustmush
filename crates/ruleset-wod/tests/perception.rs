@@ -21,8 +21,8 @@
 //! veil, mundane senses do not) is exactly as specified.
 
 use mush_core::{GOD, LIMBO, ObjId, ObjKind, can_perceive, is_concealed};
-use mush_testkit::TestWorld;
 use mush_jobs::JobsModule;
+use mush_testkit::TestWorld;
 use ruleset_wod::WodRuleset;
 use ruleset_wod::state::WodState;
 
@@ -61,7 +61,10 @@ fn make_seer(tw: &mut TestWorld, name: &str, auspex: i32) -> ObjId {
     set(tw, &format!("@sheet/set {name}/template=vampire"));
     set(tw, &format!("@sheet/set {name}/perception=5"));
     set(tw, &format!("@sheet/set {name}/awareness=5"));
-    set(tw, &format!("@sheet/set {name}/disciplines:Auspex={auspex}"));
+    set(
+        tw,
+        &format!("@sheet/set {name}/disciplines:Auspex={auspex}"),
+    );
     id
 }
 
@@ -373,7 +376,9 @@ fn movement_arrival_is_gated_for_a_cloaked_mover() {
     // suppressed).
     let mort_saw = tw.seen_by(&arrival, mort);
     assert!(
-        !mort_saw.iter().any(|l| l.contains("Vlad") || l.contains("arrived")),
+        !mort_saw
+            .iter()
+            .any(|l| l.contains("Vlad") || l.contains("arrived")),
         "arrival of a cloaked mover leaked to the mortal: {mort_saw:?}"
     );
     assert!(
@@ -404,7 +409,9 @@ fn movement_departure_is_gated_for_a_cloaked_mover() {
     let departure = tw.run(vlad, "down");
     let mort_saw = tw.seen_by(&departure, mort);
     assert!(
-        !mort_saw.iter().any(|l| l.contains("Vlad") || l.contains("goes")),
+        !mort_saw
+            .iter()
+            .any(|l| l.contains("Vlad") || l.contains("goes")),
         "departure of a cloaked mover leaked to the mortal: {mort_saw:?}"
     );
 }
@@ -425,7 +432,9 @@ fn direct_look_and_examine_cannot_probe_a_cloaked_subject() {
     let ev = tw.run(mort, "look Vlad");
     let seen = tw.seen_by(&ev, mort);
     assert!(
-        !seen.iter().any(|l| l.contains("nothing special") || l.contains(" -- ")),
+        !seen
+            .iter()
+            .any(|l| l.contains("nothing special") || l.contains(" -- ")),
         "direct look leaked the cloaked subject: {seen:?}"
     );
 
@@ -433,7 +442,9 @@ fn direct_look_and_examine_cannot_probe_a_cloaked_subject() {
     let ev = tw.run(GOD, "examine Vlad");
     let seen = tw.seen_by(&ev, GOD);
     assert!(
-        !seen.iter().any(|l| l.contains("owned by") || l.contains("Vlad(")),
+        !seen
+            .iter()
+            .any(|l| l.contains("owned by") || l.contains("Vlad(")),
         "direct examine leaked the cloaked subject: {seen:?}"
     );
 

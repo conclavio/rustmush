@@ -91,7 +91,10 @@ pub fn transmit_and_police(
             SendTarget::Char(ch) => {
                 let report = sessions.send_to_char(CharKey(ch), ev);
                 if report.delivered == 0 && report.dropped.is_empty() {
-                    tracing::debug!(char = ch, "output to actor with no live connections dropped");
+                    tracing::debug!(
+                        char = ch,
+                        "output to actor with no live connections dropped"
+                    );
                 }
                 slow.extend(report.dropped);
             }
@@ -129,7 +132,10 @@ fn police_slow_client(
         .and_then(|s| sessions.character_of(s))
         .map(char_key_obj);
     let outcome = sessions.detach(conn, DetachReason::SlowClient)?;
-    tracing::warn!(conn = conn.0, "slow client disconnected (output buffer overflow)");
+    tracing::warn!(
+        conn = conn.0,
+        "slow client disconnected (output buffer overflow)"
+    );
     let actor = actor?;
     let reason = match outcome {
         DetachOutcome::Closed => DisconnectKind::Boot,
@@ -150,8 +156,11 @@ fn police_slow_client(
 /// session and [`SessionManager::take_expired`] skips it. `on_expired` returns
 /// [`ControlFlow::Break`] to stop the sweep early (the all-in-one's weak-sender
 /// path uses this when the world loop's inbound queue is already gone).
-pub fn spawn_linkdead_reaper<F, Fut>(sessions: Arc<SessionManager>, grace: Duration, mut on_expired: F)
-where
+pub fn spawn_linkdead_reaper<F, Fut>(
+    sessions: Arc<SessionManager>,
+    grace: Duration,
+    mut on_expired: F,
+) where
     F: FnMut(ObjId) -> Fut + Send + 'static,
     Fut: Future<Output = ControlFlow<()>> + Send,
 {

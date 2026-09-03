@@ -408,6 +408,12 @@ pub(crate) fn submit(cmd: &Sr5Cmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     chargen::finalize_sheet(&cmd.config, &mut doc, &priorities)
         .map_err(|i| CmdError::msg(format!("Cannot submit: {i}")))?;
 
+    // Validate the exact finalized document before allocating an approval job.
+    // Otherwise a malformed pre-existing sheet can make `put_by` fail only
+    // after `open_job` has queued an orphan approval job for persistence.
+    mush_ruleset::validate(cmd.store().schema(), &doc.data)
+        .map_err(|es| CmdError::msg(fmt_errs(&es)))?;
+
     let job = open_job(
         ctx,
         OpenJob {

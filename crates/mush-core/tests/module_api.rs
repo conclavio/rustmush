@@ -14,11 +14,17 @@ use mush_core::engine::{Effects, Engine, Inbound};
 use mush_core::module::{
     ContextOutcome, EventHook, GameModule, HookPoint, InputContext, JobQueueSpec, Migration,
     ModError, ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, PanelFeedHandle, QueryHandler,
-    Registrar, SceneId, TickCadence, WorldEvent, WorldEventKind,
+    RecoveryReporter, Registrar, SceneId, TickCadence, WorldEvent, WorldEventKind,
 };
 use mush_core::{
-    AliasOutcome, AliasStage, ArgShape, CmdError, CommandSpec, Ctx, GOD, LIMBO, ObjId, ObjKind,
-    Outbox, Registry, World, register_core_commands, register_engine_commands,
+    ActionError, ActionInvocation, ActionProvider, AliasOutcome, AliasStage, ArgShape,
+    AuthorityGuard, AuthorityGuardKind, AuthorityGuardValidator, BridgeDescriptor, CanonicalId,
+    CmdError, CommandSpec, Ctx, DefinitionDescriptor, DefinitionDigest, DefinitionId,
+    DefinitionKey, DefinitionKind, DefinitionRef, DefinitionValidationContext, GOD, IncidentId,
+    IncidentState, LIMBO, MAX_BOOT_REPORT_DETAILS, MigrationPlanSummary, ModuleBootReport, ObjId,
+    ObjKind, Outbox, OwnerId, RecoveryIncidentSummary, RecoveryReason, RecoveryScope,
+    RecoverySeverity, Registry, RevisionKey, RevisionKind, RevisionValidator, SubjectKey, World,
+    register_core_commands, register_engine_commands,
 };
 use mush_proto::{InputMode, NarrativeKind, OutputEvent, PanelFrameKind, PromptSpec, RichText};
 use serde_json::json;
@@ -817,6 +823,964 @@ fn duplicate_module_names_fail_boot() {
     .err()
     .expect("duplicate module names must fail boot");
     assert!(err.to_string().contains("twin"), "{err}");
+}
+
+#[test]
+fn mechanics_owner_roster_is_bounded_at_composition() {
+    struct EmptyOwner(&'static str);
+    impl GameModule for EmptyOwner {
+        fn name(&self) -> &'static str {
+            self.0
+        }
+
+        fn register(&mut self, _reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            Ok(())
+        }
+    }
+
+    let modules: Vec<Box<dyn GameModule>> = (0..=mush_core::MAX_MECHANICS_OWNERS)
+        .map(|index| {
+            let name: &'static str = Box::leak(format!("owner_{index}").into_boxed_str());
+            Box::new(EmptyOwner(name)) as Box<dyn GameModule>
+        })
+        .collect();
+    let error = Engine::compose_modules(Registry::new(), modules)
+        .err()
+        .expect("oversized mechanics owner roster must fail composition");
+    assert!(
+        error.to_string().contains("mechanics owner roster"),
+        "{error}"
+    );
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PreWorldState(u32);
+
+struct MechanicsDefinitionModule;
+
+struct AcceptAction;
+
+impl ActionProvider for AcceptAction {
+    fn validate_invocation(&self, _invocation: &ActionInvocation) -> Result<(), ActionError> {
+        Ok(())
+    }
+}
+
+struct MechanicsActionModule {
+    name: &'static str,
+    duplicate_provider: bool,
+}
+
+struct ModuleRevisionValidator;
+
+impl RevisionValidator for ModuleRevisionValidator {
+    fn current_generation(
+        &self,
+        _world: &World,
+        _key: &RevisionKey,
+    ) -> Result<Option<u64>, ActionError> {
+        Ok(Some(1))
+    }
+}
+
+struct ModuleAuthorityValidator;
+
+impl AuthorityGuardValidator for ModuleAuthorityValidator {
+    fn is_current(&self, _world: &World, _guard: &AuthorityGuard) -> Result<bool, ActionError> {
+        Ok(true)
+    }
+}
+
+struct MechanicsGuardModule {
+    duplicate_revision: bool,
+}
+
+impl GameModule for MechanicsGuardModule {
+    fn name(&self) -> &'static str {
+        "guard_test"
+    }
+
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        let kind = RevisionKind::new(CanonicalId::new("unit").unwrap());
+        reg.revision_validator(kind.clone(), ModuleRevisionValidator)?;
+        if self.duplicate_revision {
+            reg.revision_validator(kind, ModuleRevisionValidator)?;
+        }
+        reg.authority_guard_validator(AuthorityGuardKind::Capability, ModuleAuthorityValidator)
+    }
+}
+
+impl GameModule for MechanicsActionModule {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        let kind = DefinitionKind::new("action").unwrap();
+        reg.definition_validator(kind.clone(), object_definition_validator)?;
+        let action = reg.definition(
+            DefinitionDescriptor::new(
+                kind,
+                DefinitionId::new("wave").unwrap(),
+                1,
+                json!({"parameters": {}}),
+            )
+            .unwrap()
+            .as_current(),
+        )?;
+        reg.action_provider(action.clone(), AcceptAction)?;
+        if self.duplicate_provider {
+            reg.action_provider(action, AcceptAction)?;
+        }
+        Ok(())
+    }
+}
+
+fn object_definition_validator(context: &DefinitionValidationContext<'_>) -> Result<(), String> {
+    context
+        .definition()
+        .payload()
+        .is_object()
+        .then_some(())
+        .ok_or_else(|| "test definition payload must be an object".into())
+}
+
+impl GameModule for MechanicsDefinitionModule {
+    fn name(&self) -> &'static str {
+        "mechanics_test"
+    }
+
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.state(PreWorldState(17));
+        reg.definition_validator(
+            DefinitionKind::new("schema").unwrap(),
+            object_definition_validator,
+        )?;
+        reg.definition(
+            DefinitionDescriptor::new(
+                DefinitionKind::new("schema").unwrap(),
+                DefinitionId::new("unit").unwrap(),
+                1,
+                json!({"shape": "test"}),
+            )
+            .unwrap()
+            .as_current(),
+        )?;
+        Ok(())
+    }
+}
+
+#[test]
+fn composition_freezes_mechanics_before_it_touches_a_world() {
+    let composition =
+        Engine::compose_modules(Registry::new(), vec![Box::new(MechanicsDefinitionModule)])
+            .unwrap();
+
+    let definitions = composition
+        .registry()
+        .definitions()
+        .expect("definition registry is frozen by composition");
+    assert!(composition.registry().bridges().is_some());
+    assert!(composition.registry().definition_migrations().is_some());
+    assert!(composition.registry().mechanics_fingerprint().is_some());
+    assert!(definitions.is_fully_provider_validated());
+    let key = DefinitionKey::new(
+        OwnerId::new("mechanics_test").unwrap(),
+        DefinitionKind::new("schema").unwrap(),
+        DefinitionId::new("unit").unwrap(),
+    );
+    assert!(definitions.current(&key).is_some());
+
+    let untouched = World::new_minimal();
+    assert!(untouched.module_state::<PreWorldState>().is_none());
+    let engine = Engine::from_composition(untouched, composition);
+    assert_eq!(
+        engine.world.module_state::<PreWorldState>(),
+        Some(&PreWorldState(17))
+    );
+}
+
+#[test]
+fn composition_freezes_exact_owner_stamped_action_providers() {
+    let composition = Engine::compose_modules(
+        Registry::new(),
+        vec![Box::new(MechanicsActionModule {
+            name: "action_test",
+            duplicate_provider: false,
+        })],
+    )
+    .unwrap();
+    let key = DefinitionKey::new(
+        OwnerId::new("action_test").unwrap(),
+        DefinitionKind::new("action").unwrap(),
+        DefinitionId::new("wave").unwrap(),
+    );
+    let action = composition
+        .registry()
+        .definitions()
+        .unwrap()
+        .current(&key)
+        .unwrap();
+    let entry = composition
+        .registry()
+        .action_providers()
+        .expect("action provider registry is frozen by composition")
+        .get_exact(action)
+        .unwrap();
+    assert_eq!(entry.owner(), &OwnerId::new("action_test").unwrap());
+
+    let duplicate = Engine::compose_modules(
+        Registry::new(),
+        vec![Box::new(MechanicsActionModule {
+            name: "action_test",
+            duplicate_provider: true,
+        })],
+    )
+    .err()
+    .expect("an exact action provider can only be registered once");
+    assert!(
+        duplicate.to_string().contains("more than once"),
+        "{duplicate}"
+    );
+}
+
+#[test]
+fn composed_owner_freeze_reaches_every_executable_registry_and_not_other_owners() {
+    let composition = Engine::compose_modules(
+        Registry::new(),
+        vec![
+            Box::new(MechanicsActionModule {
+                name: "action_test",
+                duplicate_provider: false,
+            }),
+            Box::new(MechanicsActionModule {
+                name: "action_other",
+                duplicate_provider: false,
+            }),
+            Box::new(MechanicsGuardModule {
+                duplicate_revision: false,
+            }),
+        ],
+    )
+    .unwrap();
+    let registry = composition.registry();
+    let action_ref = |owner: &str| {
+        registry
+            .definitions()
+            .unwrap()
+            .current(&DefinitionKey::new(
+                OwnerId::new(owner).unwrap(),
+                DefinitionKind::new("action").unwrap(),
+                DefinitionId::new("wave").unwrap(),
+            ))
+            .unwrap()
+            .clone()
+    };
+    let held_action = action_ref("action_test");
+    let other_action = action_ref("action_other");
+    let held_owner = OwnerId::new("action_test").unwrap();
+    let first_reason = RecoveryReason::IntegrityViolation {
+        code: CanonicalId::new("persisted_definition_digest_conflict").unwrap(),
+    };
+    registry
+        .freeze_mechanics_owner(&held_owner, IncidentId(501), first_reason)
+        .unwrap();
+
+    assert!(matches!(
+        registry.definitions().unwrap().get_exact(&held_action),
+        Err(mush_core::DefinitionLookupError::OwnerNotReady { .. })
+    ));
+    assert!(
+        registry
+            .definitions()
+            .unwrap()
+            .inspect_exact(&held_action)
+            .is_ok()
+    );
+    assert!(matches!(
+        registry.action_providers().unwrap().get_exact(&held_action),
+        Err(mush_core::ActionProviderLookupError::OwnerNotReady { .. })
+    ));
+    assert!(
+        registry
+            .action_providers()
+            .unwrap()
+            .get_exact(&other_action)
+            .is_ok()
+    );
+    assert!(
+        registry
+            .definitions()
+            .unwrap()
+            .get_exact(&other_action)
+            .is_ok()
+    );
+
+    let guard_owner = OwnerId::new("guard_test").unwrap();
+    let revision_key = RevisionKey {
+        owner: guard_owner.clone(),
+        kind: RevisionKind::new(CanonicalId::new("unit").unwrap()),
+        subject: SubjectKey::Object { id: ObjId(17) },
+        facet: None,
+    };
+    let authority_guard = AuthorityGuard::Capability {
+        provider: guard_owner.clone(),
+        actor: ObjId(17),
+        capability: CanonicalId::new("pilot").unwrap(),
+        generation: 1,
+    };
+    assert!(
+        registry
+            .revision_validators()
+            .unwrap()
+            .get_for_key(&revision_key)
+            .is_ok()
+    );
+    assert!(
+        registry
+            .authority_guard_validators()
+            .unwrap()
+            .get_for_guard(&authority_guard)
+            .is_ok()
+    );
+    registry
+        .freeze_mechanics_owner(
+            &guard_owner,
+            IncidentId(502),
+            RecoveryReason::IntegrityViolation {
+                code: CanonicalId::new("guard_owner_conflict").unwrap(),
+            },
+        )
+        .unwrap();
+    assert!(matches!(
+        registry
+            .revision_validators()
+            .unwrap()
+            .get_for_key(&revision_key),
+        Err(mush_core::RevisionValidatorLookupError::OwnerNotReady { .. })
+    ));
+    assert!(matches!(
+        registry
+            .authority_guard_validators()
+            .unwrap()
+            .get_for_guard(&authority_guard),
+        Err(mush_core::AuthorityGuardValidatorLookupError::OwnerNotReady { .. })
+    ));
+    assert!(
+        registry
+            .action_providers()
+            .unwrap()
+            .get_exact(&other_action)
+            .is_ok()
+    );
+}
+
+#[test]
+fn composition_freezes_owner_stamped_guard_validators() {
+    let composition = Engine::compose_modules(
+        Registry::new(),
+        vec![Box::new(MechanicsGuardModule {
+            duplicate_revision: false,
+        })],
+    )
+    .unwrap();
+    let key = RevisionKey {
+        owner: OwnerId::new("guard_test").unwrap(),
+        kind: RevisionKind::new(CanonicalId::new("unit").unwrap()),
+        subject: SubjectKey::Object { id: ObjId(7) },
+        facet: None,
+    };
+    let revision = composition
+        .registry()
+        .revision_validators()
+        .expect("revision validators freeze during composition")
+        .get_for_key(&key)
+        .unwrap();
+    assert_eq!(revision.owner(), &OwnerId::new("guard_test").unwrap());
+    assert!(
+        composition
+            .registry()
+            .authority_guard_validators()
+            .is_some()
+    );
+
+    let duplicate = Engine::compose_modules(
+        Registry::new(),
+        vec![Box::new(MechanicsGuardModule {
+            duplicate_revision: true,
+        })],
+    )
+    .err()
+    .expect("duplicate owner/kind revision validators must fail composition");
+    assert!(
+        duplicate.to_string().contains("more than once"),
+        "{duplicate}"
+    );
+}
+
+#[test]
+fn standalone_registrar_cannot_preclaim_a_composed_mechanics_owner() {
+    let mut registry = Registry::new();
+    let descriptor = DefinitionDescriptor::new(
+        DefinitionKind::new("schema").unwrap(),
+        DefinitionId::new("unit").unwrap(),
+        1,
+        json!({"shape": "spoofed"}),
+    )
+    .unwrap();
+
+    let error = Registrar::new(&mut registry, "mechanics_test")
+        .definition(descriptor)
+        .expect_err("a standalone registrar must not carry mechanics authority");
+    assert!(
+        error
+            .to_string()
+            .contains("requires the Engine::compose_modules callback"),
+        "{error}"
+    );
+
+    // The rejected attempt left no hidden builder entry, so the real module
+    // can still claim and validate its own owner during composition.
+    Engine::compose_modules(registry, vec![Box::new(MechanicsDefinitionModule)])
+        .expect("composition-owned registrar remains authorized");
+}
+
+struct InvalidActionProviderModule {
+    action: DefinitionRef,
+}
+
+impl GameModule for InvalidActionProviderModule {
+    fn name(&self) -> &'static str {
+        "action_test"
+    }
+
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.action_provider(self.action.clone(), AcceptAction)
+    }
+}
+
+#[test]
+fn registrar_refuses_spoofed_or_unregistered_action_definitions() {
+    let spoofed = DefinitionRef::new(
+        DefinitionKey::new(
+            OwnerId::new("other_owner").unwrap(),
+            DefinitionKind::new("action").unwrap(),
+            DefinitionId::new("wave").unwrap(),
+        ),
+        1,
+        DefinitionDigest::from_bytes([1; 32]),
+    )
+    .unwrap();
+    let error = Engine::compose_modules(
+        Registry::new(),
+        vec![Box::new(InvalidActionProviderModule { action: spoofed })],
+    )
+    .err()
+    .expect("registrar owner stamping must reject spoofed action ownership");
+    assert!(error.to_string().contains("not an action owned"), "{error}");
+
+    let missing = DefinitionRef::new(
+        DefinitionKey::new(
+            OwnerId::new("action_test").unwrap(),
+            DefinitionKind::new("action").unwrap(),
+            DefinitionId::new("missing").unwrap(),
+        ),
+        1,
+        DefinitionDigest::from_bytes([2; 32]),
+    )
+    .unwrap();
+    let error = Engine::compose_modules(
+        Registry::new(),
+        vec![Box::new(InvalidActionProviderModule { action: missing })],
+    )
+    .err()
+    .expect("provider freeze must require an exact registered definition");
+    assert!(
+        error.to_string().contains("exact definition") && error.to_string().contains("unavailable"),
+        "{error}"
+    );
+}
+
+struct MissingDefinitionValidatorModule;
+
+impl GameModule for MissingDefinitionValidatorModule {
+    fn name(&self) -> &'static str {
+        "missing_validator"
+    }
+
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.definition(
+            DefinitionDescriptor::new(
+                DefinitionKind::new("schema").unwrap(),
+                DefinitionId::new("unchecked").unwrap(),
+                1,
+                json!({"shape": "unchecked"}),
+            )
+            .unwrap(),
+        )?;
+        Ok(())
+    }
+}
+
+struct RejectedDefinitionModule;
+
+impl GameModule for RejectedDefinitionModule {
+    fn name(&self) -> &'static str {
+        "rejected_definition"
+    }
+
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.definition_validator(
+            DefinitionKind::new("schema").unwrap(),
+            object_definition_validator,
+        )?;
+        reg.definition(
+            DefinitionDescriptor::new(
+                DefinitionKind::new("schema").unwrap(),
+                DefinitionId::new("not_an_object").unwrap(),
+                1,
+                json!(["canonical", "but", "semantically", "invalid"]),
+            )
+            .unwrap(),
+        )?;
+        Ok(())
+    }
+}
+
+struct DuplicateDefinitionValidatorModule;
+
+impl GameModule for DuplicateDefinitionValidatorModule {
+    fn name(&self) -> &'static str {
+        "duplicate_validator"
+    }
+
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        let kind = DefinitionKind::new("schema").unwrap();
+        reg.definition_validator(kind.clone(), object_definition_validator)?;
+        reg.definition_validator(kind, object_definition_validator)
+    }
+}
+
+#[test]
+fn registrar_requires_exactly_one_successful_validator_for_every_definition_kind() {
+    let missing = Engine::compose_modules(
+        Registry::new(),
+        vec![Box::new(MissingDefinitionValidatorModule)],
+    )
+    .err()
+    .expect("provider definitions without semantic validation must fail composition");
+    assert!(
+        missing.to_string().contains("did not register"),
+        "{missing}"
+    );
+
+    let rejected =
+        Engine::compose_modules(Registry::new(), vec![Box::new(RejectedDefinitionModule)])
+            .err()
+            .expect("canonical JSON rejected by the typed provider must fail composition");
+    assert!(
+        rejected
+            .to_string()
+            .contains("failed provider semantic validation"),
+        "{rejected}"
+    );
+
+    let duplicate = Engine::compose_modules(
+        Registry::new(),
+        vec![Box::new(DuplicateDefinitionValidatorModule)],
+    )
+    .err()
+    .expect("a second validator for the same owner and kind must fail composition");
+    assert!(
+        duplicate.to_string().contains("registered more than once"),
+        "{duplicate}"
+    );
+}
+
+struct RepeatedDefinitionModule {
+    name: &'static str,
+    conflict: bool,
+}
+
+impl GameModule for RepeatedDefinitionModule {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.definition_validator(
+            DefinitionKind::new("schema").unwrap(),
+            object_definition_validator,
+        )?;
+        let descriptor = |marker| {
+            DefinitionDescriptor::new(
+                DefinitionKind::new("schema").unwrap(),
+                DefinitionId::new("unit").unwrap(),
+                1,
+                json!({"marker": marker}),
+            )
+            .unwrap()
+        };
+        reg.definition(descriptor(1))?;
+        reg.definition(descriptor(if self.conflict { 2 } else { 1 }))?;
+        Ok(())
+    }
+}
+
+#[test]
+fn registrar_definition_duplicates_and_digest_conflicts_fail_composition() {
+    let duplicate = Engine::compose_modules(
+        Registry::new(),
+        vec![Box::new(RepeatedDefinitionModule {
+            name: "duplicate_definition",
+            conflict: false,
+        })],
+    )
+    .err()
+    .expect("an exact duplicate must fail");
+    assert!(
+        duplicate.to_string().contains("more than once"),
+        "{duplicate}"
+    );
+
+    let conflict = Engine::compose_modules(
+        Registry::new(),
+        vec![Box::new(RepeatedDefinitionModule {
+            name: "conflicting_definition",
+            conflict: true,
+        })],
+    )
+    .err()
+    .expect("same-version digest drift must fail");
+    assert!(
+        conflict.to_string().contains("changes digest"),
+        "{conflict}"
+    );
+}
+
+struct MissingDefinitionDependency;
+
+impl GameModule for MissingDefinitionDependency {
+    fn name(&self) -> &'static str {
+        "missing_dependency"
+    }
+
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.definition_validator(
+            DefinitionKind::new("schema").unwrap(),
+            object_definition_validator,
+        )?;
+        let missing = DefinitionRef::new(
+            DefinitionKey::new(
+                OwnerId::new("absent").unwrap(),
+                DefinitionKind::new("schema").unwrap(),
+                DefinitionId::new("dependency").unwrap(),
+            ),
+            1,
+            DefinitionDigest::from_bytes([9; 32]),
+        )
+        .unwrap();
+        reg.definition(
+            DefinitionDescriptor::new(
+                DefinitionKind::new("schema").unwrap(),
+                DefinitionId::new("dependent").unwrap(),
+                1,
+                json!({}),
+            )
+            .unwrap()
+            .with_references(vec![missing]),
+        )?;
+        Ok(())
+    }
+}
+
+#[test]
+fn unresolved_exact_definition_reference_fails_the_freeze() {
+    let error =
+        Engine::compose_modules(Registry::new(), vec![Box::new(MissingDefinitionDependency)])
+            .err()
+            .expect("freeze must refuse an unavailable exact dependency");
+    assert!(
+        error.to_string().contains("missing exact definition"),
+        "{error}"
+    );
+}
+
+struct BridgeRosterModule {
+    source: &'static str,
+    target: &'static str,
+}
+
+impl GameModule for BridgeRosterModule {
+    fn name(&self) -> &'static str {
+        "bridge_provider"
+    }
+
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.definition_validator(
+            DefinitionKind::new("interaction").unwrap(),
+            object_definition_validator,
+        )?;
+        reg.definition_validator(
+            DefinitionKind::new("bridge").unwrap(),
+            object_definition_validator,
+        )?;
+        let interaction = reg.definition(
+            DefinitionDescriptor::new(
+                DefinitionKind::new("interaction").unwrap(),
+                DefinitionId::new("ram").unwrap(),
+                1,
+                json!({}),
+            )
+            .unwrap(),
+        )?;
+        let bridge = reg.definition(
+            DefinitionDescriptor::new(
+                DefinitionKind::new("bridge").unwrap(),
+                DefinitionId::new("ram_bridge").unwrap(),
+                1,
+                json!({}),
+            )
+            .unwrap(),
+        )?;
+        reg.interaction_bridge(BridgeDescriptor::new(
+            bridge,
+            OwnerId::new(self.source).unwrap(),
+            OwnerId::new(self.target).unwrap(),
+            interaction,
+        ))
+    }
+}
+
+struct EmptyRosterModule(&'static str);
+
+impl GameModule for EmptyRosterModule {
+    fn name(&self) -> &'static str {
+        self.0
+    }
+
+    fn register(&mut self, _reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn bridge_endpoints_must_be_present_in_the_composed_module_roster() {
+    for (source, target, endpoint, missing) in [
+        (
+            "absent_source",
+            "bridge_provider",
+            "source",
+            "absent_source",
+        ),
+        (
+            "bridge_provider",
+            "absent_target",
+            "target",
+            "absent_target",
+        ),
+    ] {
+        let error = Engine::compose_modules(
+            Registry::new(),
+            vec![Box::new(BridgeRosterModule { source, target })],
+        )
+        .err()
+        .expect("a bridge endpoint cannot name an unloaded module");
+        let message = error.to_string();
+        assert!(message.contains(endpoint), "{message}");
+        assert!(message.contains(missing), "{message}");
+        assert!(message.contains("not present"), "{message}");
+    }
+
+    Engine::compose_modules(
+        Registry::new(),
+        vec![
+            Box::new(BridgeRosterModule {
+                source: "bridge_provider",
+                target: "bridge_target",
+            }),
+            Box::new(EmptyRosterModule("bridge_target")),
+        ],
+    )
+    .expect("a bridge whose endpoints are loaded is valid");
+}
+
+struct NamedModule {
+    name: &'static str,
+    registrations: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl GameModule for NamedModule {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn register(&mut self, _reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        self.registrations
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[test]
+fn module_owner_names_are_canonical_unique_and_preflighted() {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let error = Engine::compose_modules(
+        Registry::new(),
+        vec![
+            Box::new(NamedModule {
+                name: "Shared_Owner",
+                registrations: Arc::clone(&calls),
+            }),
+            Box::new(NamedModule {
+                name: "shared_owner",
+                registrations: Arc::clone(&calls),
+            }),
+        ],
+    )
+    .err()
+    .expect("canonical owner collision must fail");
+    assert!(
+        error.to_string().contains("same canonical mechanics owner"),
+        "{error}"
+    );
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+    let error = Engine::compose_modules(
+        Registry::new(),
+        vec![Box::new(NamedModule {
+            name: "not-canonical",
+            registrations: Arc::clone(&calls),
+        })],
+    )
+    .err()
+    .expect("invalid owner spelling must fail");
+    assert!(
+        error.to_string().contains("not a valid mechanics owner id"),
+        "{error}"
+    );
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[derive(Clone)]
+struct FixedRecoveryReport(ModuleBootReport);
+
+impl RecoveryReporter for FixedRecoveryReport {
+    fn report(&self, _world: &World) -> ModuleBootReport {
+        self.0.clone()
+    }
+}
+
+struct RecoveryModule {
+    name: &'static str,
+    report: ModuleBootReport,
+}
+
+impl GameModule for RecoveryModule {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.recovery_reporter(Arc::new(FixedRecoveryReport(self.report.clone())))
+    }
+}
+
+fn test_definition_ref(owner: &str, byte: u8) -> DefinitionRef {
+    DefinitionRef::new(
+        DefinitionKey::new(
+            OwnerId::new(owner).unwrap(),
+            DefinitionKind::new("schema").unwrap(),
+            DefinitionId::new("recovery").unwrap(),
+        ),
+        1,
+        DefinitionDigest::from_bytes([byte; 32]),
+    )
+    .unwrap()
+}
+
+fn oversized_recovery_report() -> ModuleBootReport {
+    let spoofed = OwnerId::new("spoofed").unwrap();
+    let from = test_definition_ref("alpha", 1);
+    let to = test_definition_ref("alpha", 2);
+    let incidents = (0..=MAX_BOOT_REPORT_DETAILS)
+        .map(|index| RecoveryIncidentSummary {
+            id: IncidentId(index as u64),
+            owner: spoofed.clone(),
+            scope: RecoveryScope::Record,
+            severity: RecoverySeverity::Error,
+            reason: RecoveryReason::MalformedRecord {
+                code: CanonicalId::new("bad_record").unwrap(),
+            },
+            subject_count: 0,
+            payload_digest: None,
+            discovered_unix: 0,
+            state: IncidentState::Open,
+        })
+        .collect();
+    let migration_plans = (0..=MAX_BOOT_REPORT_DETAILS)
+        .map(|_| MigrationPlanSummary {
+            from: from.clone(),
+            to: to.clone(),
+            step_count: 1,
+            before_digest: DefinitionDigest::from_bytes([3; 32]),
+            after_digest: DefinitionDigest::from_bytes([4; 32]),
+        })
+        .collect();
+    ModuleBootReport {
+        owner: spoofed,
+        active: 1,
+        frozen: 2,
+        migrating: 3,
+        quarantined: 4,
+        incident_count: 0,
+        migration_plan_count: 0,
+        incidents,
+        migration_plans,
+        details_truncated: false,
+    }
+}
+
+#[test]
+fn recovery_reports_are_owner_stamped_bounded_and_canonically_ordered() {
+    let alpha = oversized_recovery_report();
+    let zeta = ModuleBootReport::new(OwnerId::new("spoofed").unwrap());
+    let composition = Engine::compose_modules(
+        Registry::new(),
+        vec![
+            Box::new(RecoveryModule {
+                name: "zeta",
+                report: zeta,
+            }),
+            Box::new(RecoveryModule {
+                name: "alpha",
+                report: alpha,
+            }),
+        ],
+    )
+    .unwrap();
+    let reports = composition
+        .registry()
+        .recovery_reports(&World::new_minimal());
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[0].owner.as_str(), "alpha");
+    assert_eq!(reports[1].owner.as_str(), "zeta");
+
+    let report = &reports[0];
+    assert_eq!(report.incident_count, (MAX_BOOT_REPORT_DETAILS + 1) as u64);
+    assert_eq!(
+        report.migration_plan_count,
+        (MAX_BOOT_REPORT_DETAILS + 1) as u64
+    );
+    assert_eq!(report.incidents.len(), MAX_BOOT_REPORT_DETAILS);
+    assert_eq!(report.migration_plans.len(), MAX_BOOT_REPORT_DETAILS);
+    assert!(report.details_truncated);
+    assert!(
+        report
+            .incidents
+            .iter()
+            .all(|incident| incident.owner == report.owner)
+    );
 }
 
 #[test]

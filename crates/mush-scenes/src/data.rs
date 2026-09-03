@@ -156,7 +156,10 @@ pub struct SceneRecord {
 impl SceneRecord {
     /// The whole membership (participants ∪ observers), for freeze/release.
     pub fn members(&self) -> impl Iterator<Item = ObjId> + '_ {
-        self.participants.iter().copied().chain(self.observers.iter().copied())
+        self.participants
+            .iter()
+            .copied()
+            .chain(self.observers.iter().copied())
     }
 
     /// Whose turn it is now (the participant at `turn_index`), if any.
@@ -383,7 +386,13 @@ pub(crate) fn push_op(out: &mut Outbox, op: ModuleWrite) {
 /// Mirror a scene document (plain data; serialization cannot fail).
 pub(crate) fn persist_scene(out: &mut Outbox, s: &SceneRecord) {
     let value = serde_json::to_value(s).expect("scene doc serializes");
-    push_op(out, ModuleWrite::JsonSet { key: scene_key(s.id), value });
+    push_op(
+        out,
+        ModuleWrite::JsonSet {
+            key: scene_key(s.id),
+            value,
+        },
+    );
 }
 
 /// Mirror the meta document (the id allocator resume point).
@@ -446,7 +455,10 @@ mod tests {
         assert_eq!(s.scene_ic_time(), 500 + i64::from(DEFAULT_ROUND_SECONDS));
         s.advance_turn(); // round 2 (2 -> 3)
         s.advance_turn(); // round 3
-        assert_eq!(s.scene_ic_time(), 500 + 2 * i64::from(DEFAULT_ROUND_SECONDS));
+        assert_eq!(
+            s.scene_ic_time(),
+            500 + 2 * i64::from(DEFAULT_ROUND_SECONDS)
+        );
     }
 
     #[test]

@@ -21,7 +21,9 @@
 
 use std::collections::BTreeMap;
 
-use mush_core::{Ctx, Deferred, Flags, ModuleOp, ModuleWrite, ObjId, WorldEvent, output::name_span};
+use mush_core::{
+    Ctx, Deferred, Flags, ModuleOp, ModuleWrite, ObjId, WorldEvent, output::name_span,
+};
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -91,7 +93,11 @@ impl Journey {
     /// The absolute due-time to have reached `legs[k]`.
     #[must_use]
     fn due(&self, k: usize) -> i64 {
-        self.started_at + self.legs[..=k].iter().map(|l| i64::from(l.travel_s)).sum::<i64>()
+        self.started_at
+            + self.legs[..=k]
+                .iter()
+                .map(|l| i64::from(l.travel_s))
+                .sum::<i64>()
     }
     /// The absolute due-time of the next unreached leg, if any.
     #[must_use]
@@ -164,7 +170,11 @@ pub fn traveling_reason(rs: &RouteState, w: &mush_core::World, obj: ObjId) -> Op
 // ---- narrative helpers (narrative_emit is crate-private in core) -------
 
 fn emit(text: RichText) -> OutputEvent {
-    OutputEvent::Narrative { kind: NarrativeKind::Emit, actor: None, text }
+    OutputEvent::Narrative {
+        kind: NarrativeKind::Emit,
+        actor: None,
+        text,
+    }
 }
 
 // ---- the sweep --------------------------------------------------------
@@ -174,7 +184,9 @@ fn emit(text: RichText) -> OutputEvent {
 pub(crate) fn sweep(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::SceneId>) {
     let now = ctx.w.now();
     let mut rs = std::mem::take(
-        ctx.w.module_state_mut::<RouteState>().expect("route state slot installed at registration"),
+        ctx.w
+            .module_state_mut::<RouteState>()
+            .expect("route state slot installed at registration"),
     );
     let mut retire: Vec<ObjId> = Vec::new();
     let mut touched: Vec<ObjId> = Vec::new();
@@ -223,17 +235,29 @@ pub(crate) fn sweep(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::Sce
                     fr,
                     vec![traveler],
                     traveler,
-                    emit(RichText::new().span(name_span(ctx.w, traveler)).text(" departs.")),
+                    emit(
+                        RichText::new()
+                            .span(name_span(ctx.w, traveler))
+                            .text(" departs."),
+                    ),
                 );
             }
             ctx.out.to_room_from(
                 dest,
                 vec![traveler],
                 traveler,
-                emit(RichText::new().span(name_span(ctx.w, traveler)).text(" arrives.")),
+                emit(
+                    RichText::new()
+                        .span(name_span(ctx.w, traveler))
+                        .text(" arrives."),
+                ),
             );
         }
-        ctx.emit_world_event(&WorldEvent::Moved { who: traveler, from, to: dest });
+        ctx.emit_world_event(&WorldEvent::Moved {
+            who: traveler,
+            from,
+            to: dest,
+        });
         if j.cursor == j.legs.len() {
             j.status = JourneyStatus::Arrived;
             retire.push(traveler);
@@ -251,7 +275,9 @@ pub(crate) fn sweep(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::Sce
         rs.journeys.remove(&t);
         persist_journey_del(ctx.out, t);
     }
-    *ctx.w.module_state_mut::<RouteState>().expect("route state slot installed at registration") = rs;
+    *ctx.w
+        .module_state_mut::<RouteState>()
+        .expect("route state slot installed at registration") = rs;
 }
 
 // ---- lifecycle: a destroyed traveler drops its journey ----------------
@@ -273,8 +299,16 @@ pub(crate) fn on_traveler_destroyed(ctx: &mut Ctx<'_>, obj: ObjId) {
 
 /// Pause `traveler`'s journey (an interception). Returns the room it was
 /// stopped in on success.
-pub(crate) fn pause(rs: &mut RouteState, traveler: ObjId, now: i64, enforce_grace: bool) -> Result<(), String> {
-    let j = rs.journeys.get_mut(&traveler).ok_or("It is not going anywhere.")?;
+pub(crate) fn pause(
+    rs: &mut RouteState,
+    traveler: ObjId,
+    now: i64,
+    enforce_grace: bool,
+) -> Result<(), String> {
+    let j = rs
+        .journeys
+        .get_mut(&traveler)
+        .ok_or("It is not going anywhere.")?;
     if j.status != JourneyStatus::Traveling {
         return Err("It is already stopped.".into());
     }
@@ -290,7 +324,10 @@ pub(crate) fn pause(rs: &mut RouteState, traveler: ObjId, now: i64, enforce_grac
 /// so the remaining legs keep their relative timing, with a re-interception
 /// grace.
 pub(crate) fn resume(rs: &mut RouteState, traveler: ObjId, now: i64) -> Result<(), String> {
-    let j = rs.journeys.get_mut(&traveler).ok_or("It is not going anywhere.")?;
+    let j = rs
+        .journeys
+        .get_mut(&traveler)
+        .ok_or("It is not going anywhere.")?;
     if j.status != JourneyStatus::Paused {
         return Err("It is not paused.".into());
     }

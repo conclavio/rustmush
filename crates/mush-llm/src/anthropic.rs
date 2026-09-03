@@ -261,10 +261,11 @@ impl LlmProvider for AnthropicProvider {
             .map_err(|e| http::transport_error(&e))?;
         let status = resp.status();
         let headers = resp.headers().clone();
-        let text = resp.text().await.map_err(|e| http::transport_error(&e))?;
         if !status.is_success() {
+            let text = http::error_response_text(resp).await;
             return Err(http::status_error(status, &headers, &text));
         }
+        let text = http::response_text(resp).await?;
         let v: Value = serde_json::from_str(&text)
             .map_err(|e| LlmError::MalformedOutput(format!("response json: {e}")))?;
         self.parse_response(&v)
@@ -286,14 +287,23 @@ impl LlmProvider for AnthropicProvider {
         let status = resp.status();
         if !status.is_success() {
             let headers = resp.headers().clone();
-            let text = resp.text().await.unwrap_or_default();
+            let text = http::error_response_text(resp).await;
             return Err(http::status_error(status, &headers, &text));
         }
+        http::ensure_response_size(&resp)?;
 
         let price = (self.price_input_per_mtok, self.price_output_per_mtok);
         let model = req.model.clone();
         let (tx, rx) = mpsc::unbounded::<Result<StreamEvent, LlmError>>();
-        let mut events = resp.bytes_stream().eventsource();
+        let mut response_bytes = 0usize;
+        let mut events = resp
+            .bytes_stream()
+            .map(move |chunk| {
+                let chunk = chunk.map_err(|e| http::transport_error(&e))?;
+                http::account_response_chunk(&mut response_bytes, chunk.len())?;
+                Ok(chunk)
+            })
+            .eventsource();
 
         tokio::spawn(async move {
             let mut asm = StreamAsm::new(model, price);
@@ -304,8 +314,15 @@ impl LlmProvider for AnthropicProvider {
                             break;
                         }
                     }
-                    Err(e) => {
-                        let _ = tx.unbounded_send(Err(LlmError::Network(e.to_string())));
+                    Err(eventsource_stream::EventStreamError::Transport(err)) => {
+                        let _ = tx.unbounded_send(Err(err));
+                        return;
+                    }
+                    Err(eventsource_stream::EventStreamError::Utf8(_))
+                    | Err(eventsource_stream::EventStreamError::Parser(_)) => {
+                        let _ = tx.unbounded_send(Err(http::stream_protocol_error(
+                            "provider response contained invalid SSE framing",
+                        )));
                         return;
                     }
                 }

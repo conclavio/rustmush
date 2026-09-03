@@ -55,12 +55,13 @@ mod protocol;
 mod target;
 
 pub use codec::{CodecError, FrameDecoder, MAX_FRAME_LEN, decode_frame, encode_frame};
-pub use link::{GatewayLink, InputSend};
 pub use io::{
     BoxRead, BoxWrite, FrameReader, IpcEndpoint, IpcListener, connect, listen, write_frame,
 };
+pub use link::{ConnectionAdmission, GatewayLink, InputSend};
 pub use protocol::{
-    AttachRec, ControlMsg, CreatePlayerError, DetachCause, IPC_VERSION, ServiceReq, ServiceResp,
+    AttachRec, ControlMsg, CreatePlayerError, DetachCause, IPC_VERSION,
+    MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, MAX_IN_FLIGHT_SERVICE_REQUESTS, ServiceReq, ServiceResp,
     ToGateway, ToServer, WireInbound, WireInboundError,
 };
 pub use target::SendTarget;

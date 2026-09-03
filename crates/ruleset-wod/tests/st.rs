@@ -18,12 +18,12 @@
 use std::sync::Arc;
 
 use mush_core::{Audience, Effect, Effects, GOD, Inbound, ObjId, Outbox, WorldCommand};
+use mush_dice::owod20::Owod20Outcome;
+use mush_jobs::JobsModule;
 use mush_llm::{
     CompletionResponse, ContentBlock, LlmProvider, LlmService, MockProvider, RouteConfig,
     StopReason, Usage,
 };
-use mush_dice::owod20::Owod20Outcome;
-use mush_jobs::JobsModule;
 use mush_proto::OutputEvent;
 use mush_ruleset::SheetDoc;
 use mush_testkit::TestWorld;
@@ -225,8 +225,11 @@ async fn accept_flow_rolls_then_interprets_and_applies_paradox() {
     tw.set_now(1000);
 
     // Propose (vulgar => Paradox applies deterministically regardless of dice).
-    let (open, effects) =
-        step_cmd(&mut tw, nick, "+cast/vulgar Hurl a bolt of fire proposing Forces");
+    let (open, effects) = step_cmd(
+        &mut tw,
+        nick,
+        "+cast/vulgar Hurl a bolt of fire proposing Forces",
+    );
     assert!(contains(&sys_to(&open, nick), "Storyteller"));
     let (module, corr, payload) = module_async(&effects);
     assert_eq!(module, "wod");
@@ -252,7 +255,9 @@ async fn accept_flow_rolls_then_interprets_and_applies_paradox() {
     // The player throws. The roll is ST-authoritative and the room stays silent.
     let (roll_ev, roll_fx) = step_cmd(&mut tw, nick, "+roll/silent");
     assert!(
-        roll_ev.iter().all(|(aud, _)| matches!(aud, Audience::Actor(_))),
+        roll_ev
+            .iter()
+            .all(|(aud, _)| matches!(aud, Audience::Actor(_))),
         "a cast roll emits nothing to the room: {roll_ev:?}"
     );
     assert!(contains(&sys_to(&roll_ev, nick), "works the effect"));
@@ -309,8 +314,15 @@ async fn roll_is_st_authoritative_and_interpret_reads_the_engine_outcome() {
     // arete (4 dice) at difficulty 7.
     let (_roll_ev, roll_fx) = step_cmd(&mut tw, nick, "+roll/silent strength+brawl+50");
     let logged = last_outcome(&tw, nick);
-    assert_eq!(logged.dice.len(), 4, "Arete 4 => 4 dice, not the typed pool");
-    assert_eq!(logged.difficulty, 7, "the ruling's difficulty, not the typed 2");
+    assert_eq!(
+        logged.dice.len(),
+        4,
+        "Arete 4 => 4 dice, not the typed pool"
+    );
+    assert_eq!(
+        logged.difficulty, 7,
+        "the ruling's difficulty, not the typed 2"
+    );
 
     // The interpret request carries the engine's logged outcome verbatim.
     let (_im, _ic, ipayload) = module_async(&roll_fx);
@@ -403,7 +415,11 @@ async fn difficulty_and_paradox_are_clamped() {
         "witness_difficulty": 99
     })));
     apply_done(&mut tw, &module, nick, corr, run(&llm, &payload).await);
-    assert_eq!(pending_difficulty(&tw, nick), 10, "difficulty clamped to 10");
+    assert_eq!(
+        pending_difficulty(&tw, nick),
+        10,
+        "difficulty clamped to 10"
+    );
 }
 
 // ----------------------------------------------------------------------
@@ -413,7 +429,11 @@ async fn difficulty_and_paradox_are_clamped() {
 #[tokio::test]
 async fn reject_path_stores_no_pending_and_roll_stays_normal() {
     let (mut tw, mock, llm, nick) = world();
-    let (_open, effects) = step_cmd(&mut tw, nick, "+cast Reverse the flow of time proposing Time");
+    let (_open, effects) = step_cmd(
+        &mut tw,
+        nick,
+        "+cast Reverse the flow of time proposing Time",
+    );
     let (module, corr, payload) = module_async(&effects);
     mock.push_response(ruling_resp(json!({
         "accept": false,
@@ -426,7 +446,10 @@ async fn reject_path_stores_no_pending_and_roll_stays_normal() {
     })));
     let done = apply_done(&mut tw, &module, nick, corr, run(&llm, &payload).await);
     assert!(
-        contains(&sys_to(&done, nick), "rejects the working: You lack the Time Sphere"),
+        contains(
+            &sys_to(&done, nick),
+            "rejects the working: You lack the Time Sphere"
+        ),
         "{:?}",
         sys_to(&done, nick)
     );
@@ -434,7 +457,10 @@ async fn reject_path_stores_no_pending_and_roll_stays_normal() {
 
     // A normal roll: no pending to consume, no interpret deferred.
     let (_ev, fx) = step_cmd(&mut tw, nick, "+roll arete");
-    assert!(module_async_opt(&fx).is_none(), "an ordinary roll defers nothing");
+    assert!(
+        module_async_opt(&fx).is_none(),
+        "an ordinary roll defers nothing"
+    );
     assert_eq!(last_outcome(&tw, nick).dice.len(), 4);
 }
 
@@ -458,7 +484,10 @@ async fn pending_expires() {
     // Long after the TTL, the throw is an ordinary roll.
     tw.set_now(1000 + 10_000);
     let (_ev, fx) = step_cmd(&mut tw, nick, "+roll arete");
-    assert!(module_async_opt(&fx).is_none(), "expired pending defers nothing");
+    assert!(
+        module_async_opt(&fx).is_none(),
+        "expired pending defers nothing"
+    );
     assert!(!pending_exists(&tw, nick));
 }
 
@@ -504,7 +533,10 @@ async fn a_bad_completion_payload_does_not_wedge_the_actor() {
 
     // The actor can still propose afterwards.
     let (_o2, fx2) = step_cmd(&mut tw, nick, "+cast Try again proposing Forces");
-    assert!(module_async_opt(&fx2).is_some(), "a fresh proposal still defers");
+    assert!(
+        module_async_opt(&fx2).is_some(),
+        "a fresh proposal still defers"
+    );
 }
 
 // ----------------------------------------------------------------------
@@ -530,7 +562,10 @@ async fn interpret_completion_does_not_wipe_a_newer_pending() {
     // Player throws A: consumes pending A, defers interpret A (a new correlation).
     let (_roll_a, roll_fx_a) = step_cmd(&mut tw, nick, "+roll/silent");
     let (ia_mod, ia_corr, ia_payload) = module_async(&roll_fx_a);
-    assert!(!pending_exists(&tw, nick), "pending A consumed at the throw");
+    assert!(
+        !pending_exists(&tw, nick),
+        "pending A consumed at the throw"
+    );
 
     // Before interpret A returns, the player proposes B, accepted at difficulty 8.
     let (_ob, fxb) = step_cmd(&mut tw, nick, "+cast Working B proposing Forces");
@@ -546,7 +581,13 @@ async fn interpret_completion_does_not_wipe_a_newer_pending() {
     mock.push_response(interp_resp(json!({
         "actor_result": "Working A resolves.", "witnessed": ""
     })));
-    apply_done(&mut tw, &ia_mod, nick, ia_corr, run(&llm, &ia_payload).await);
+    apply_done(
+        &mut tw,
+        &ia_mod,
+        nick,
+        ia_corr,
+        run(&llm, &ia_payload).await,
+    );
     assert!(
         pending_exists(&tw, nick),
         "interpret A must not clobber the newer pending B"
@@ -555,8 +596,15 @@ async fn interpret_completion_does_not_wipe_a_newer_pending() {
 
     // The player's throw for B keeps ST authority (difficulty 8, its interpret defers).
     let (_roll_b, roll_fx_b) = step_cmd(&mut tw, nick, "+roll/silent");
-    assert_eq!(last_outcome(&tw, nick).difficulty, 8, "B keeps ST authority");
-    assert!(module_async_opt(&roll_fx_b).is_some(), "B defers its interpret");
+    assert_eq!(
+        last_outcome(&tw, nick).difficulty,
+        8,
+        "B keeps ST authority"
+    );
+    assert!(
+        module_async_opt(&roll_fx_b).is_some(),
+        "B defers its interpret"
+    );
 }
 
 #[tokio::test]

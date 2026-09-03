@@ -29,8 +29,8 @@
 use mush_core::ObjId;
 use mush_llm::{LlmConfig, LlmService};
 use mush_npc::{
-    AgentProfile, Familiarity, NpcAction, NpcTier, PresentPlayer, SceneView, StimulusLine, TurnKind,
-    TurnOutcome, TurnSnapshot, run_npc_turn_async,
+    AgentProfile, Familiarity, NpcAction, NpcTier, PresentPlayer, SceneView, StimulusLine,
+    TurnKind, TurnOutcome, TurnSnapshot, run_npc_turn_async,
 };
 
 #[tokio::test(flavor = "multi_thread")]
