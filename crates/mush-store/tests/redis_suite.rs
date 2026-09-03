@@ -6,14 +6,24 @@
 //! has no Redis; Linux CI runs a `redis:8` service container.
 //!
 //! **WARNING:** these tests delete every `obj:*`, `account:*`, `ban:*`,
-//! `token:*`, `meta:*`, and `mod:*` key in the configured database between
-//! phases — module data (channels, mail, jobs) is wiped along with the
-//! world. Point `REDIS_URL` at a disposable database.
+//! `token:*`, `meta:*`, `mod:*`, and `auth:*` key in the configured database
+//! between phases — module data (channels, mail, jobs) and retained
+//! authoritative intents are wiped along with the world. Point `REDIS_URL`
+//! at a disposable database.
 //!
 //! Tests in this file share one database, so they serialize on a static
 //! async mutex (cargo runs `#[tokio::test]`s in one process concurrently).
 
-use mush_store::{ObjectStore, RedisStore, WriteBatch, suite};
+use mush_core::{
+    AuthoritativeBundle, AuthoritativeBundleDraft, AuthoritativeKey, CanonicalHash, CanonicalId,
+    CommitToken, DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder,
+    GOD, IdempotencyKey, IdempotencyScope, Obj, ObjId, ObjKind, OwnerId, PreparedCausalRef,
+    PrincipalId, ReplayWrite, RequestUid, RulesValue, ScopedIdempotencyKey, World,
+};
+use mush_store::{
+    AuthoritativeScanCursor, AuthoritativeStore, BundleStatus, IdempotencyStatus, ObjectStore,
+    RedisStore, StoreError, WriteBatch, suite,
+};
 use tokio::sync::Mutex;
 
 static REDIS_LOCK: Mutex<()> = Mutex::const_new(());
@@ -30,6 +40,86 @@ async fn fresh_store(test: &str) -> Option<RedisStore> {
         .unwrap_or_else(|e| panic!("REDIS_URL set but connect failed: {e}"));
     store.wipe_namespaces().await.expect("wipe test namespaces");
     Some(store)
+}
+
+async fn seed_minimal_world(store: &RedisStore) {
+    let world = World::new_minimal();
+    store
+        .write(WriteBatch {
+            serial: 1,
+            upserts: world.iter().cloned().collect(),
+            next_id: Some(world.next_id()),
+            durable: true,
+            ..WriteBatch::default()
+        })
+        .await
+        .expect("seed minimal world");
+}
+
+fn authoritative_bundle(token_byte: u8, request_byte: u8) -> AuthoritativeBundle {
+    let owner = OwnerId::new("redis-toy").unwrap();
+    let mut definitions = DefinitionRegistryBuilder::new();
+    let action = definitions
+        .register(
+            owner.clone(),
+            DefinitionDescriptor::new(
+                DefinitionKind::new("action").unwrap(),
+                DefinitionId::new("brace").unwrap(),
+                1,
+                serde_json::json!({}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let outcome_definition = definitions
+        .register(
+            owner.clone(),
+            DefinitionDescriptor::new(
+                DefinitionKind::new("outcome").unwrap(),
+                DefinitionId::new("braced").unwrap(),
+                1,
+                serde_json::json!({}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let request = RequestUid::from_bytes([request_byte; 16]);
+    let principal = PrincipalId::Object { id: GOD };
+    AuthoritativeBundle::new(AuthoritativeBundleDraft {
+        token: CommitToken::from_bytes([token_byte; 16]),
+        request,
+        idempotency: ScopedIdempotencyKey::new(
+            IdempotencyScope {
+                principal: principal.clone(),
+                owner: owner.clone(),
+                namespace: CanonicalId::new("brace").unwrap(),
+            },
+            0,
+            IdempotencyKey::Request(request),
+        ),
+        ingress_hash: CanonicalHash::from_bytes([request_byte; 32]),
+        request_hash: CanonicalHash::from_bytes([3; 32]),
+        plan_hash: CanonicalHash::from_bytes([4; 32]),
+        action: action.clone(),
+        provider: owner.clone(),
+        cause: PreparedCausalRef::new(request, None, 0).unwrap(),
+        definitions: vec![action, outcome_definition.clone()],
+        writes: vec![
+            ReplayWrite::ObjectSet {
+                object: Obj::new(ObjId(2), ObjKind::Thing, "guard", GOD, 0),
+            },
+            ReplayWrite::ObjectAllocatorSet { next_id: 3 },
+            ReplayWrite::ModuleJsonSet {
+                namespace: owner,
+                key: AuthoritativeKey::parse_canonical("action-state/v1/guarded/2").unwrap(),
+                value: serde_json::json!({ "amount": 1 }),
+            },
+        ],
+        outcome: RulesValue::new(outcome_definition, serde_json::json!({ "ok": true })).unwrap(),
+        eligible_witnesses: vec![principal],
+        durable_outbox: vec![],
+    })
+    .unwrap()
 }
 
 macro_rules! redis_gated {
@@ -135,6 +225,273 @@ redis_gated!(module_list_rejects_type_clobbered_key, store, {
 // ---------------------------------------------------------------------
 // Redis-only behavior
 // ---------------------------------------------------------------------
+
+redis_gated!(authoritative_exact_round_trip_and_discovery, store, {
+    seed_minimal_world(&store).await;
+    let bundle = authoritative_bundle(11, 21);
+
+    assert_eq!(
+        store
+            .authoritative_idempotency_status(bundle.idempotency(), bundle.ingress_hash())
+            .await
+            .expect("empty idempotency lookup"),
+        IdempotencyStatus::Vacant
+    );
+
+    let reservation = store
+        .reserve_authoritative_intent(bundle.clone())
+        .await
+        .expect("reserve exact intent");
+    assert_eq!(reservation.token, bundle.token());
+    assert_eq!(reservation.bundle_hash, bundle.bundle_hash());
+    assert!(!reservation.resumed);
+    assert_eq!(
+        store
+            .pending_authoritative_intents()
+            .await
+            .expect("pending index"),
+        vec![mush_store::PendingAuthoritativeIntent {
+            token: bundle.token(),
+            bundle_hash: bundle.bundle_hash(),
+        }]
+    );
+
+    // SCAN's count is a work hint rather than a strict result limit. Walk
+    // every cursor anyway: boot recovery must never treat one page as the
+    // complete retained-intent keyspace.
+    let mut cursor: Option<AuthoritativeScanCursor> = None;
+    let mut discovered = Vec::new();
+    loop {
+        let page = store
+            .scan_authoritative_intents(cursor, 1)
+            .await
+            .expect("scan retained intents");
+        discovered.extend(page.intents);
+        let Some(next) = page.next_cursor else { break };
+        cursor = Some(next);
+    }
+    assert_eq!(discovered, vec![bundle.clone()]);
+
+    let receipt = store
+        .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+        .await
+        .expect("replay, read back, and finalize");
+    assert_eq!(receipt.bundle(), &bundle);
+    assert_eq!(
+        store
+            .authoritative_status(bundle.token(), bundle.bundle_hash())
+            .await
+            .expect("final status"),
+        BundleStatus::FinalizedExact(Box::new(receipt.clone()))
+    );
+    assert_eq!(
+        store
+            .authoritative_idempotency_status(bundle.idempotency(), bundle.ingress_hash())
+            .await
+            .expect("final idempotency lookup"),
+        IdempotencyStatus::FinalizedExact(Box::new(receipt.clone()))
+    );
+    assert!(
+        store
+            .pending_authoritative_intents()
+            .await
+            .expect("empty pending index")
+            .is_empty()
+    );
+
+    let resumed = store
+        .reserve_authoritative_intent(bundle.clone())
+        .await
+        .expect("exact retry joins prior result");
+    assert!(resumed.resumed);
+    assert_eq!(
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .expect("finalization retry returns exact witness"),
+        receipt
+    );
+
+    let world = store
+        .load_world()
+        .await
+        .expect("load materialized world")
+        .expect("world exists");
+    assert_eq!(world.next_id, 3);
+    assert!(world.objects.iter().any(|object| object.id == ObjId(2)));
+    assert_eq!(
+        store
+            .module_json_get("redis-toy", "action-state/v1/guarded/2")
+            .await
+            .expect("load materialized module value"),
+        Some(serde_json::json!({ "amount": 1 }))
+    );
+});
+
+redis_gated!(
+    authoritative_token_and_idempotency_conflicts_are_closed,
+    store,
+    {
+        seed_minimal_world(&store).await;
+        let first = authoritative_bundle(14, 24);
+        store
+            .reserve_authoritative_intent(first.clone())
+            .await
+            .expect("reserve first intent");
+
+        let same_token_different_bundle = authoritative_bundle(14, 25);
+        let token_error = store
+            .reserve_authoritative_intent(same_token_different_bundle)
+            .await
+            .expect_err("one token cannot name different bytes");
+        assert!(matches!(
+            token_error,
+            StoreError::AuthoritativeTokenConflict
+        ));
+
+        let same_idempotency_different_token = authoritative_bundle(15, 24);
+        let idempotency_error = store
+            .reserve_authoritative_intent(same_idempotency_different_token)
+            .await
+            .expect_err("one scoped idempotency key cannot name another token");
+        assert!(matches!(
+            idempotency_error,
+            StoreError::AuthoritativeIdempotencyConflict
+        ));
+
+        let wrong_hash = CanonicalHash::from_bytes([99; 32]);
+        assert_eq!(
+            store
+                .authoritative_status(first.token(), wrong_hash)
+                .await
+                .expect("hash-aware status"),
+            BundleStatus::Conflict {
+                stored_bundle_hash: first.bundle_hash(),
+            }
+        );
+        assert!(matches!(
+            store
+                .reconcile_authoritative(first.token(), wrong_hash)
+                .await
+                .expect_err("reconcile must require the expected bundle hash"),
+            StoreError::AuthoritativeTokenConflict
+        ));
+    }
+);
+
+redis_gated!(
+    authoritative_unindexed_intent_is_found_by_full_scan,
+    store,
+    {
+        use fred::interfaces::SetsInterface;
+
+        seed_minimal_world(&store).await;
+        let bundle = authoritative_bundle(12, 22);
+        store
+            .reserve_authoritative_intent(bundle.clone())
+            .await
+            .expect("reserve intent");
+
+        // Simulate loss of the accelerator update. The immutable full intent is
+        // still authoritative and exhaustive boot discovery must find it.
+        let removed: i64 = store
+            .client()
+            .srem("auth:pending", bundle.token().to_string())
+            .await
+            .expect("remove pending accelerator member");
+        assert_eq!(removed, 1);
+        assert!(
+            store
+                .pending_authoritative_intents()
+                .await
+                .expect("pending accelerator")
+                .is_empty()
+        );
+
+        let page = store
+            .scan_authoritative_intents(None, 256)
+            .await
+            .expect("exhaustive intent scan");
+        assert_eq!(page.intents, vec![bundle.clone()]);
+        assert!(page.next_cursor.is_none());
+        assert_eq!(
+            store
+                .authoritative_status(bundle.token(), bundle.bundle_hash())
+                .await
+                .expect("intent status"),
+            BundleStatus::PendingExact
+        );
+    }
+);
+
+redis_gated!(
+    authoritative_wrong_type_partial_execution_keeps_exact_intent,
+    store,
+    {
+        use fred::interfaces::KeysInterface;
+
+        seed_minimal_world(&store).await;
+        let bundle = authoritative_bundle(13, 23);
+        store
+            .reserve_authoritative_intent(bundle.clone())
+            .await
+            .expect("reserve intent");
+
+        let module_key = "mod:redis-toy:action-state/v1/guarded/2";
+        let _: () = store
+            .client()
+            .set(module_key, "wrong type", None, None, false)
+            .await
+            .expect("install deterministic poison");
+        let error = store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .expect_err("RedisJSON must reject a string target");
+        assert!(matches!(error, StoreError::Redis(_)), "got {error:?}");
+        assert!(
+            !error.is_transient(),
+            "a deterministic WRONGTYPE must not enter an unbounded retry loop"
+        );
+        assert_eq!(
+            store
+                .authoritative_status(bundle.token(), bundle.bundle_hash())
+                .await
+                .expect("intent survives partial execution"),
+            BundleStatus::PendingExact
+        );
+        assert_eq!(
+            store
+                .pending_authoritative_intents()
+                .await
+                .expect("pending intent remains indexed")
+                .len(),
+            1
+        );
+
+        // Object and allocator precede module targets in canonical order, so
+        // this proves the protocol can recover after a partially materialized
+        // attempt without recomputing action logic.
+        let world = store
+            .load_world()
+            .await
+            .expect("load partially materialized world")
+            .expect("world exists");
+        assert_eq!(world.next_id, 3);
+        assert!(world.objects.iter().any(|object| object.id == ObjId(2)));
+
+        let deleted: i64 = store
+            .client()
+            .del(module_key)
+            .await
+            .expect("remove deterministic poison");
+        assert_eq!(deleted, 1);
+        let receipt = store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .expect("resume exact replay after repair");
+        assert_eq!(receipt.bundle(), &bundle);
+    }
+);
 
 redis_gated!(index_bootstrap_and_search, store, {
     // ensure_index already ran in connect(); running it again must be a

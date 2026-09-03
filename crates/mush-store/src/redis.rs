@@ -12,6 +12,10 @@
 //! | `ban:{ip}`            | string JSON | one [`BanRec`], native `EXAT` TTL         |
 //! | `token:{hash}`        | string JSON | one [`TokenRecord`], native `EXAT` TTL    |
 //! | `mod:{ns}:{key}`      | JSON/stream | module state ([`WriteBatch::module_ops`]) |
+//! | `auth:intent:{token}` | string JSON | immutable full authoritative bundle       |
+//! | `auth:receipt:{token}`| string JSON | immutable finalized exact witness         |
+//! | `auth:idempotency:*`  | string JSON | scoped request-to-bundle binding           |
+//! | `auth:pending`        | set         | recovery accelerator (not sole discovery) |
 //! | `idx:objs`            | FT index    | see [`RedisStore::ensure_index`]          |
 //!
 //! Module ops ride the same `MULTI`/`EXEC` as the object writes:
@@ -40,6 +44,16 @@
 //! crate's own key discipline that cannot happen; it takes outside
 //! interference with the keyspace.
 //!
+//! Authoritative actions do not use that legacy transaction. A checked Lua
+//! reservation stores the complete immutable intent, idempotency binding,
+//! pending membership, retention counters, and object-allocation admission
+//! before any post-image can materialize. A second checked Lua barrier
+//! replays exact post-images, reads every target back without interleaving,
+//! publishes the finalized witness, and removes pending membership. Redis
+//! script errors are not rollback points, so an execution-time `WRONGTYPE`
+//! may leave a prefix of post-images applied; the pre-existing full intent
+//! deliberately remains discoverable and exactly replayable.
+//!
 //! ## Reconnects and outages
 //!
 //! The client is built with an exponential [`ReconnectPolicy`] (100ms → 30s,
@@ -66,13 +80,16 @@
 
 use futures::TryStreamExt;
 use futures::future::BoxFuture;
-use mush_core::{Obj, ObjId};
+use mush_core::{
+    AuthoritativeBundle, CanonicalHash, CommitToken, Obj, ObjId, ReplayWrite, ScopedIdempotencyKey,
+};
+use serde::{Deserialize, Serialize};
 
 use fred::clients::Client;
 use fred::error::Error as FredError;
 use fred::interfaces::{
-    ClientLike, KeysInterface, RediSearchInterface, RedisJsonInterface, ServerInterface,
-    StreamsInterface, TransactionInterface,
+    ClientLike, KeysInterface, LuaInterface, RediSearchInterface, RedisJsonInterface,
+    ServerInterface, SetsInterface, StreamsInterface, TransactionInterface,
 };
 use fred::prelude::{Builder, Config, Expiration, ReconnectPolicy, SetOptions};
 use fred::types::redisearch::{
@@ -80,11 +97,13 @@ use fred::types::redisearch::{
 };
 use fred::types::{Key, RespVersion, Value};
 
-use crate::store::ObjectStore;
+use crate::store::{AuthoritativeStore, ObjectStore};
 use crate::types::{
-    AccountRec, BanRec, CharacterRef, ModuleWrite, SshKeyRec, StoreError, TokenRecord,
-    WorldSnapshot, WriteBatch, WriteReceipt, validate_module_key, validate_module_ns,
-    validate_module_op, validate_token_hash,
+    AccountRec, AuthoritativeIntentPage, AuthoritativeReceipt, AuthoritativeScanCursor, BanRec,
+    BundleStatus, CharacterRef, IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
+    MAX_RETAINED_AUTHORITATIVE_BYTES, MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleWrite,
+    PendingAuthoritativeIntent, SshKeyRec, StoreError, TokenRecord, WorldSnapshot, WriteBatch,
+    WriteReceipt, validate_module_key, validate_module_ns, validate_module_op, validate_token_hash,
 };
 
 /// Prefix of per-object JSON docs.
@@ -103,6 +122,21 @@ pub const META_NEXT_ID: &str = "meta:next_id";
 pub const META_SCHEMA_VERSION: &str = "meta:schema_version";
 /// Name of the object search index.
 pub const OBJ_INDEX: &str = "idx:objs";
+/// Prefix of immutable full authoritative intents.
+pub const AUTHORITATIVE_INTENT_PREFIX: &str = "auth:intent:";
+/// Prefix of immutable finalized authoritative witnesses.
+pub const AUTHORITATIVE_RECEIPT_PREFIX: &str = "auth:receipt:";
+/// Prefix of scoped idempotency bindings addressed by canonical scope hash.
+pub const AUTHORITATIVE_IDEMPOTENCY_PREFIX: &str = "auth:idempotency:";
+/// Recovery accelerator; exhaustive intent scanning remains mandatory.
+pub const AUTHORITATIVE_PENDING_INDEX: &str = "auth:pending";
+/// Count of full intents retained until checkpoint compaction.
+pub const AUTHORITATIVE_RETAINED_COUNT: &str = "auth:retained_count";
+/// Encoded full-intent bytes retained until checkpoint compaction.
+pub const AUTHORITATIVE_RETAINED_BYTES: &str = "auth:retained_bytes";
+
+const RESERVE_AUTHORITATIVE_LUA: &str = include_str!("lua/reserve_authoritative.lua");
+const FINALIZE_AUTHORITATIVE_LUA: &str = include_str!("lua/finalize_authoritative.lua");
 
 /// SCAN page size used for bulk key walks.
 const SCAN_PAGE: u32 = 500;
@@ -137,6 +171,126 @@ fn token_key(hash: &str) -> String {
 /// is unambiguous.
 fn module_key(ns: &str, key: &str) -> String {
     format!("{MOD_PREFIX}{ns}:{key}")
+}
+
+fn authoritative_intent_key(token: CommitToken) -> String {
+    format!("{AUTHORITATIVE_INTENT_PREFIX}{token}")
+}
+
+fn authoritative_receipt_key(token: CommitToken) -> String {
+    format!("{AUTHORITATIVE_RECEIPT_PREFIX}{token}")
+}
+
+fn authoritative_idempotency_key(key: &ScopedIdempotencyKey) -> Result<String, StoreError> {
+    let value = serde_json::to_value(key)?;
+    let digest = CanonicalHash::for_canonical_value(
+        "authoritative_idempotency_address.v1",
+        1,
+        &value,
+        64 * 1024,
+    )
+    .map_err(|error| StoreError::Invalid(format!("invalid idempotency identity: {error}")))?;
+    Ok(format!("{AUTHORITATIVE_IDEMPOTENCY_PREFIX}{digest}"))
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RedisIdempotencyBinding {
+    key: ScopedIdempotencyKey,
+    ingress_hash: CanonicalHash,
+    token: CommitToken,
+    bundle_hash: CanonicalHash,
+}
+
+impl RedisIdempotencyBinding {
+    fn for_bundle(bundle: &AuthoritativeBundle) -> Self {
+        Self {
+            key: bundle.idempotency().clone(),
+            ingress_hash: bundle.ingress_hash(),
+            token: bundle.token(),
+            bundle_hash: bundle.bundle_hash(),
+        }
+    }
+}
+
+struct RedisReplayWrite {
+    key: String,
+    kind: &'static str,
+    post_image: String,
+}
+
+fn plan_authoritative_replay(
+    bundle: &AuthoritativeBundle,
+) -> Result<Vec<RedisReplayWrite>, StoreError> {
+    bundle
+        .writes()
+        .iter()
+        .map(|write| {
+            Ok(match write {
+                ReplayWrite::ObjectSet { object } => RedisReplayWrite {
+                    key: obj_key(object.id),
+                    kind: "json_set",
+                    post_image: serde_json::to_string(object)?,
+                },
+                ReplayWrite::ObjectDelete { id } => RedisReplayWrite {
+                    key: obj_key(*id),
+                    kind: "delete",
+                    post_image: String::new(),
+                },
+                ReplayWrite::ObjectAllocatorSet { next_id } => RedisReplayWrite {
+                    key: META_NEXT_ID.to_owned(),
+                    kind: "string_set",
+                    post_image: next_id.to_string(),
+                },
+                ReplayWrite::ModuleJsonSet {
+                    namespace,
+                    key,
+                    value,
+                } => RedisReplayWrite {
+                    key: module_key(namespace.as_str(), key.as_str()),
+                    kind: "json_set",
+                    post_image: serde_json::to_string(value)?,
+                },
+                ReplayWrite::ModuleDelete { namespace, key } => RedisReplayWrite {
+                    key: module_key(namespace.as_str(), key.as_str()),
+                    kind: "delete",
+                    post_image: String::new(),
+                },
+            })
+        })
+        .collect()
+}
+
+fn authoritative_script_error(code: &str) -> StoreError {
+    if code == "TOKEN_CONFLICT" {
+        return StoreError::AuthoritativeTokenConflict;
+    }
+    if code == "IDEMPOTENCY_CONFLICT" {
+        return StoreError::AuthoritativeIdempotencyConflict;
+    }
+    if code == "MISSING_INTENT" {
+        return StoreError::AuthoritativeIntentMissing;
+    }
+    if let Some(capacity) = code.strip_prefix("CAPACITY:") {
+        let mut parts = capacity.split(':');
+        if let (Some(count), Some(bytes), None) = (parts.next(), parts.next(), parts.next())
+            && let (Ok(retained_count), Ok(retained_bytes)) =
+                (count.parse::<usize>(), bytes.parse::<usize>())
+        {
+            return StoreError::AuthoritativeCapacity {
+                retained_count,
+                retained_bytes,
+                max_count: MAX_RETAINED_AUTHORITATIVE_INTENTS,
+                max_bytes: MAX_RETAINED_AUTHORITATIVE_BYTES,
+            };
+        }
+    }
+    if matches!(code, "INVALID_ALLOCATOR" | "MISSING_ALLOCATOR" | "ID_REUSE") {
+        return StoreError::Invalid(format!(
+            "Redis refused authoritative object allocation: {code}"
+        ));
+    }
+    StoreError::AuthoritativeCorrupt(format!("Redis authoritative script returned {code:?}"))
 }
 
 /// The `SCAN` pattern for one module namespace. Two safety properties:
@@ -269,6 +423,60 @@ impl RedisStore {
     #[must_use]
     pub fn client(&self) -> &Client {
         &self.client
+    }
+
+    async fn load_validated_authoritative(
+        &self,
+        token: CommitToken,
+    ) -> Result<Option<(AuthoritativeBundle, Option<AuthoritativeReceipt>)>, StoreError> {
+        let intent_key = authoritative_intent_key(token);
+        let intent_doc: Option<String> = self.client.get(intent_key).await?;
+        let Some(intent_doc) = intent_doc else {
+            let receipt: Option<String> = self.client.get(authoritative_receipt_key(token)).await?;
+            if receipt.is_some() {
+                return Err(StoreError::AuthoritativeCorrupt(
+                    "finalized Redis receipt has no retained intent".to_owned(),
+                ));
+            }
+            return Ok(None);
+        };
+        let bundle: AuthoritativeBundle = serde_json::from_str(&intent_doc)
+            .map_err(|error| StoreError::AuthoritativeCorrupt(error.to_string()))?;
+        if bundle.token() != token {
+            return Err(StoreError::AuthoritativeCorrupt(
+                "Redis intent is stored under the wrong token".to_owned(),
+            ));
+        }
+        let binding_doc: Option<String> = self
+            .client
+            .get(authoritative_idempotency_key(bundle.idempotency())?)
+            .await?;
+        let binding_doc = binding_doc.ok_or_else(|| {
+            StoreError::AuthoritativeCorrupt(
+                "Redis intent is missing its idempotency binding".to_owned(),
+            )
+        })?;
+        let binding: RedisIdempotencyBinding = serde_json::from_str(&binding_doc)
+            .map_err(|error| StoreError::AuthoritativeCorrupt(error.to_string()))?;
+        if binding != RedisIdempotencyBinding::for_bundle(&bundle) {
+            return Err(StoreError::AuthoritativeCorrupt(
+                "Redis intent disagrees with its idempotency binding".to_owned(),
+            ));
+        }
+        let receipt_doc: Option<String> = self.client.get(authoritative_receipt_key(token)).await?;
+        let receipt = receipt_doc
+            .map(|doc| {
+                let receipt: AuthoritativeReceipt = serde_json::from_str(&doc)
+                    .map_err(|error| StoreError::AuthoritativeCorrupt(error.to_string()))?;
+                if receipt.bundle() != &bundle {
+                    return Err(StoreError::AuthoritativeCorrupt(
+                        "Redis receipt disagrees with its retained intent".to_owned(),
+                    ));
+                }
+                Ok(receipt)
+            })
+            .transpose()?;
+        Ok(Some((bundle, receipt)))
     }
 
     /// Idempotently create `idx:objs`:
@@ -404,7 +612,15 @@ impl RedisStore {
     /// what this crate owns.
     #[doc(hidden)]
     pub async fn wipe_namespaces(&self) -> Result<(), StoreError> {
-        for pattern in ["obj:*", "account:*", "ban:*", "token:*", "meta:*", "mod:*"] {
+        for pattern in [
+            "obj:*",
+            "account:*",
+            "ban:*",
+            "token:*",
+            "meta:*",
+            "mod:*",
+            "auth:*",
+        ] {
             let keys = self.scan_keys(pattern).await?;
             if !keys.is_empty() {
                 let _: i64 = self.client.del(keys).await?;
@@ -451,6 +667,304 @@ fn collect_obj_ids(value: &serde_json::Value, out: &mut Vec<ObjId>) {
             }
         }
         _ => {}
+    }
+}
+
+impl AuthoritativeStore for RedisStore {
+    fn reserve_authoritative_intent(
+        &self,
+        bundle: AuthoritativeBundle,
+    ) -> BoxFuture<'_, Result<IntentReceipt, StoreError>> {
+        Box::pin(async move {
+            let token = bundle.token();
+            let bundle_hash = bundle.bundle_hash();
+            let intent_doc = serde_json::to_string(&bundle)?;
+            let intent_bytes = intent_doc.len();
+            let binding = RedisIdempotencyBinding::for_bundle(&bundle);
+            let binding_doc = serde_json::to_string(&binding)?;
+            let proposed_next_id = bundle.writes().iter().find_map(|write| match write {
+                ReplayWrite::ObjectAllocatorSet { next_id } => Some(*next_id),
+                _ => None,
+            });
+            let object_sets: Vec<_> = bundle
+                .writes()
+                .iter()
+                .filter_map(|write| match write {
+                    ReplayWrite::ObjectSet { object } => Some(object.id),
+                    _ => None,
+                })
+                .collect();
+            let mut keys = vec![
+                authoritative_intent_key(token),
+                authoritative_receipt_key(token),
+                authoritative_idempotency_key(bundle.idempotency())?,
+                AUTHORITATIVE_PENDING_INDEX.to_owned(),
+                AUTHORITATIVE_RETAINED_COUNT.to_owned(),
+                AUTHORITATIVE_RETAINED_BYTES.to_owned(),
+                META_NEXT_ID.to_owned(),
+            ];
+            keys.extend(object_sets.iter().map(|id| obj_key(*id)));
+            let mut args = vec![
+                intent_doc,
+                binding_doc,
+                token.to_string(),
+                intent_bytes.to_string(),
+                MAX_RETAINED_AUTHORITATIVE_INTENTS.to_string(),
+                MAX_RETAINED_AUTHORITATIVE_BYTES.to_string(),
+                proposed_next_id.map_or_else(String::new, |next_id| next_id.to_string()),
+                object_sets.len().to_string(),
+            ];
+            args.extend(object_sets.iter().map(|id| id.0.to_string()));
+            let code: String = self
+                .client
+                .eval(RESERVE_AUTHORITATIVE_LUA, keys, args)
+                .await?;
+            let resumed = match code.as_str() {
+                "NEW" => false,
+                "RESUMED" => true,
+                _ => return Err(authoritative_script_error(&code)),
+            };
+            let Some((stored, _)) = self.load_validated_authoritative(token).await? else {
+                return Err(StoreError::AuthoritativeCorrupt(
+                    "Redis reservation returned without a retained intent".to_owned(),
+                ));
+            };
+            if stored != bundle {
+                return Err(StoreError::AuthoritativeTokenConflict);
+            }
+            Ok(IntentReceipt {
+                token,
+                bundle_hash,
+                resumed,
+            })
+        })
+    }
+
+    fn authoritative_idempotency_status<'a>(
+        &'a self,
+        key: &'a ScopedIdempotencyKey,
+        ingress_hash: CanonicalHash,
+    ) -> BoxFuture<'a, Result<IdempotencyStatus, StoreError>> {
+        Box::pin(async move {
+            let binding_doc: Option<String> =
+                self.client.get(authoritative_idempotency_key(key)?).await?;
+            let Some(binding_doc) = binding_doc else {
+                return Ok(IdempotencyStatus::Vacant);
+            };
+            let binding: RedisIdempotencyBinding = serde_json::from_str(&binding_doc)
+                .map_err(|error| StoreError::AuthoritativeCorrupt(error.to_string()))?;
+            if &binding.key != key {
+                return Err(StoreError::AuthoritativeCorrupt(
+                    "Redis idempotency address contains a different scoped key".to_owned(),
+                ));
+            }
+            let Some((bundle, receipt)) = self.load_validated_authoritative(binding.token).await?
+            else {
+                return Err(StoreError::AuthoritativeCorrupt(
+                    "Redis idempotency binding names no retained intent".to_owned(),
+                ));
+            };
+            if binding != RedisIdempotencyBinding::for_bundle(&bundle) {
+                return Err(StoreError::AuthoritativeCorrupt(
+                    "Redis idempotency binding disagrees with its retained intent".to_owned(),
+                ));
+            }
+            if ingress_hash != binding.ingress_hash {
+                return Ok(IdempotencyStatus::Conflict);
+            }
+            Ok(receipt.map_or(
+                IdempotencyStatus::PendingExact {
+                    token: binding.token,
+                    bundle_hash: binding.bundle_hash,
+                },
+                |receipt| IdempotencyStatus::FinalizedExact(Box::new(receipt)),
+            ))
+        })
+    }
+
+    fn reconcile_authoritative(
+        &self,
+        token: CommitToken,
+        expected_bundle_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<AuthoritativeReceipt, StoreError>> {
+        Box::pin(async move {
+            let Some((bundle, prior_receipt)) = self.load_validated_authoritative(token).await?
+            else {
+                return Err(StoreError::AuthoritativeIntentMissing);
+            };
+            if bundle.bundle_hash() != expected_bundle_hash {
+                return Err(StoreError::AuthoritativeTokenConflict);
+            }
+            if let Some(receipt) = prior_receipt {
+                return Ok(receipt);
+            }
+            let intent_doc = serde_json::to_string(&bundle)?;
+            let receipt = AuthoritativeReceipt::new(bundle.clone());
+            let receipt_doc = serde_json::to_string(&receipt)?;
+            let binding_doc = serde_json::to_string(&RedisIdempotencyBinding::for_bundle(&bundle))?;
+            let planned = plan_authoritative_replay(&bundle)?;
+            let mut keys = vec![
+                authoritative_intent_key(token),
+                authoritative_receipt_key(token),
+                authoritative_idempotency_key(bundle.idempotency())?,
+                AUTHORITATIVE_PENDING_INDEX.to_owned(),
+            ];
+            keys.extend(planned.iter().map(|write| write.key.clone()));
+            let mut args = vec![
+                intent_doc,
+                receipt_doc,
+                binding_doc,
+                token.to_string(),
+                planned.len().to_string(),
+            ];
+            for write in &planned {
+                args.push(write.kind.to_owned());
+                args.push(write.post_image.clone());
+            }
+            let code: String = self
+                .client
+                .eval(FINALIZE_AUTHORITATIVE_LUA, keys, args)
+                .await?;
+            if code != "FINALIZED" {
+                return Err(authoritative_script_error(&code));
+            }
+            let Some((stored, stored_receipt)) = self.load_validated_authoritative(token).await?
+            else {
+                return Err(StoreError::AuthoritativeCorrupt(
+                    "Redis finalization returned without a retained intent".to_owned(),
+                ));
+            };
+            if stored.bundle_hash() != expected_bundle_hash {
+                return Err(StoreError::AuthoritativeTokenConflict);
+            }
+            stored_receipt.ok_or_else(|| {
+                StoreError::AuthoritativeCorrupt(
+                    "Redis finalization returned without a finalized witness".to_owned(),
+                )
+            })
+        })
+    }
+
+    fn authoritative_status(
+        &self,
+        token: CommitToken,
+        expected_bundle_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<BundleStatus, StoreError>> {
+        Box::pin(async move {
+            let Some((bundle, receipt)) = self.load_validated_authoritative(token).await? else {
+                return Ok(BundleStatus::Absent);
+            };
+            if bundle.bundle_hash() != expected_bundle_hash {
+                return Ok(BundleStatus::Conflict {
+                    stored_bundle_hash: bundle.bundle_hash(),
+                });
+            }
+            Ok(receipt.map_or(BundleStatus::PendingExact, |receipt| {
+                BundleStatus::FinalizedExact(Box::new(receipt))
+            }))
+        })
+    }
+
+    fn pending_authoritative_intents(
+        &self,
+    ) -> BoxFuture<'_, Result<Vec<PendingAuthoritativeIntent>, StoreError>> {
+        Box::pin(async move {
+            let mut tokens: Vec<String> = self.client.smembers(AUTHORITATIVE_PENDING_INDEX).await?;
+            tokens.sort();
+            tokens.dedup();
+            if tokens.len() > MAX_RETAINED_AUTHORITATIVE_INTENTS {
+                return Err(StoreError::AuthoritativeCorrupt(format!(
+                    "Redis pending index contains {} entries; maximum is {}",
+                    tokens.len(),
+                    MAX_RETAINED_AUTHORITATIVE_INTENTS
+                )));
+            }
+            let mut pending = Vec::with_capacity(tokens.len());
+            for token in tokens {
+                let token = CommitToken::from_hex(&token).map_err(|error| {
+                    StoreError::AuthoritativeCorrupt(format!(
+                        "Redis pending index contains invalid token: {error}"
+                    ))
+                })?;
+                let Some((bundle, _)) = self.load_validated_authoritative(token).await? else {
+                    return Err(StoreError::AuthoritativeCorrupt(format!(
+                        "Redis pending index token {token} has no retained intent"
+                    )));
+                };
+                pending.push(PendingAuthoritativeIntent {
+                    token,
+                    bundle_hash: bundle.bundle_hash(),
+                });
+            }
+            Ok(pending)
+        })
+    }
+
+    fn scan_authoritative_intents(
+        &self,
+        cursor: Option<AuthoritativeScanCursor>,
+        limit: usize,
+    ) -> BoxFuture<'_, Result<AuthoritativeIntentPage, StoreError>> {
+        Box::pin(async move {
+            if limit == 0 || limit > MAX_AUTHORITATIVE_DISCOVERY_PAGE {
+                return Err(StoreError::Invalid(format!(
+                    "authoritative discovery page limit must be 1..={MAX_AUTHORITATIVE_DISCOVERY_PAGE}"
+                )));
+            }
+            let cursor = cursor.map_or_else(|| "0".to_owned(), |cursor| cursor.as_str().to_owned());
+            let count = u32::try_from(limit).map_err(|_| {
+                StoreError::Invalid("authoritative discovery limit is out of range".to_owned())
+            })?;
+            let (next, keys): (String, Vec<Key>) = self
+                .client
+                .scan_page(
+                    cursor,
+                    format!("{AUTHORITATIVE_INTENT_PREFIX}*"),
+                    Some(count),
+                    None,
+                )
+                .await?;
+            let unique: std::collections::BTreeSet<String> = keys
+                .iter()
+                .filter_map(|key| key.as_str().map(ToOwned::to_owned))
+                .collect();
+            if unique.len() > MAX_AUTHORITATIVE_DISCOVERY_PAGE {
+                return Err(StoreError::AuthoritativeCorrupt(format!(
+                    "Redis returned {} authoritative intents in one scan page; maximum is {}",
+                    unique.len(),
+                    MAX_AUTHORITATIVE_DISCOVERY_PAGE
+                )));
+            }
+            let mut intents = Vec::with_capacity(unique.len());
+            for key in unique {
+                let token = key
+                    .strip_prefix(AUTHORITATIVE_INTENT_PREFIX)
+                    .ok_or_else(|| {
+                        StoreError::AuthoritativeCorrupt(
+                            "Redis authoritative scan returned a key outside its prefix".to_owned(),
+                        )
+                    })
+                    .and_then(|token| {
+                        CommitToken::from_hex(token).map_err(|error| {
+                            StoreError::AuthoritativeCorrupt(format!(
+                                "Redis authoritative intent key has invalid token: {error}"
+                            ))
+                        })
+                    })?;
+                if let Some((bundle, _)) = self.load_validated_authoritative(token).await? {
+                    intents.push(bundle);
+                }
+            }
+            let next_cursor = if next.as_str() == "0" {
+                None
+            } else {
+                Some(AuthoritativeScanCursor::new(next.as_str())?)
+            };
+            Ok(AuthoritativeIntentPage {
+                intents,
+                next_cursor,
+            })
+        })
     }
 }
 
