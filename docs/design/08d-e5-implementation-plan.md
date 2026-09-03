@@ -341,6 +341,15 @@ the built E4 before E5b starts.
    ("a named campaign/domain clock with a configurable cadence and bounded catch-up") is this.
 2. **Canon attestation matches a specific source**, not kind + entities: `Attestation { by: Canon
    { kind, source } }` — owner answer 20.
+3. *(post-K)* Doc 09 C6 gives events a `CausalRef { root: CommitToken, parent, ordinal }` and
+   `SemanticEvent { kind, schema, truth, eligible_witnesses }`. E5's `FrontRef` and its
+   `wod.career.*`/`wod.housing.*` canon kinds are the pre-C6 attribution shape; when C6 lands, the
+   front/operation ids ride `SemanticEvent.truth` and the commit token is the source, so front
+   attribution nests inside the kernel's causal chain rather than running as a parallel system —
+   no change to the front-attribution rule itself. In K's code today only the action-local
+   `PreparedCausalRef` exists (`mush-core/src/action.rs:2265-2731`); `FrontRef` over the shipped
+   `FactionId`/`FrontId` is the right pre-C6 shape. E5's period evaluation runs on an E4 cadence
+   clock, which is doc 09's `ClockRef::Registered { owner: economy, .. }` (08c §12).
 
 ## 8. Decisions
 

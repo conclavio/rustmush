@@ -1,6 +1,6 @@
 # E4 implementation plan — holds, escrow, obligations, and contracts
 
-**Status:** Draft 0.4 — reviewed (three passes: adversarial money-safety, code-grounding, design-fit
+**Status:** Draft 0.5 — reviewed (three passes: adversarial money-safety, code-grounding, design-fit
 against docs 08/08a/08b); every confirmed finding is folded below and itemised in §11. The owner's
 answers to §10 are folded (Draft 0.3: automatic reconciliation + a graded escalation ladder,
 D-E4-14). Draft 0.4 folds two requirements E5's planning fed back (08d §7): **cadence clocks ship in
@@ -45,9 +45,15 @@ revisions, large time jumps, and hidden parties.
 - **Work orders / production reservations** (E7), **markets/quotes/fences** (E6/E8), **fee and tax
   templates**, **interest**.
 - **Settlement conditions that react to LLM output or narrative prose** — never (§13). And
-  conditions that react *synchronously to a `WorldEvent` for money*: the survey found no event
-  source that is stably identified, immutable, and durable at event time, so settlement rests on
-  explicit attestations and the economy's own journaled facts, re-verified at settlement (D-E4-4).
+  conditions that react *synchronously to a `WorldEvent` for money*: no event source is stably
+  identified, immutable, and durable at event time — the survey found none, and doc 09's own K2
+  status says so of action transactions too ("a K2 compatibility bridge over the current
+  process-local serial receipt, not K3's durable token/idempotency protocol",
+  `mush-server/src/world_task.rs:2595-2598` on the K branch; no `AuthoritativeOutcome` or durable
+  `CommitToken` exists) — so settlement rests on explicit attestations and the economy's own
+  journaled facts, re-verified at settlement (D-E4-4). A `FactProvider` over K2 action
+  transactions is **not** built in E4; revisit after K3 ships and a ruleset stores immutable
+  per-fact records in a state family.
 - **Per-obligation or per-contract scheduler entries.** The core scheduler is in-RAM, re-armed from
   scratch at boot, and only `Scene` ticks are dynamic (`mush-core/src/module.rs:208-220`,
   `engine.rs:503-522`); everything runs on one bounded economy sweep (D-E4-3).
@@ -79,7 +85,11 @@ direction — the fact provider lives with the data; the grounding review confir
 neither economy nor org depends on jobs, directly or dev), and `mush-server` implements the canon
 bridge (the composition root already depends on canon and economy). `mush-scenes` gains nothing: a
 scene concludes by committing canon (`mush-scenes/src/lib.rs:282-311`), which the observer sees.
-**No `mush-core` change** in E4.
+**One `mush-core` change** in E4 (found by the post-K fit review): `WorldEvent::CanonRecorded`
+carries only `{ canon_id, kind, entities }` (`mush-core/src/module.rs:523-530`, unchanged by K) and
+`mush-canon` exposes no id→event query, so source-specific attestation (§6.2) needs `source: String`
+added to that event — a lifecycle-notification field, which doc 09 C6 explicitly keeps `WorldEvent`
+for. Its own commit in E4c.
 
 ---
 
@@ -268,7 +278,7 @@ pub enum TypedCondition {
     Attestation { by: AttestorSet },             // Party(PrincipalId) | Capability(scope) | Staff | Canon { kind, entities_include }
     DepositInto { object: ObjId, vault: VaultId },        // the economy's own journaled custody effect
     TitleHeld  { object: ObjId, by: PrincipalId },       // journal-authority title state
-    Fact       { fact: FactRef { provider: SmolStr, kind: SmolStr, id: u64 } },   // via FactProvider (E4c)
+    Fact       { fact: ExternalRef },                     // the E2 `CausalRef { provider, kind, id, revision }`, renamed (§12); via FactProvider (E4c)
     Before     { deadline: EconomicDeadline },           // absolute time
     After      { condition: usize, delay: i64, clock: EconomicClock },   // relative: true once condition[i] has been satisfied for `delay` (E6's fence settlement delay)
 }
@@ -527,7 +537,8 @@ their balances.
 2. **Canon attestation observer**: economy subscribes to `WorldEventKind::CanonRecorded` (core's
    event, `mush-core/src/module.rs:388-422`, `Registrar::subscribe` at `:1431-1437`; the only
    production emitter is `mush-canon/src/lib.rs:159`, which persists then emits within the same
-   command step and is documented as terminal) and, in the same step — hence the same `WriteBatch`
+   command step and is documented as terminal; **E4c adds `source: String` to the event** — §2) and,
+   in the same step — hence the same `WriteBatch`
    as canon's own writes — records an `Attestation { source: canon:{id} }` on every `Active`
    contract condition `Attestation { by: Canon { kind, source } }` whose `kind` **and `source`**
    match the recorded canon event (E5's owner answer 20: progress must cite a specific front,
@@ -650,6 +661,39 @@ hold/approval/escalation GC retention 7 d after terminal · list cap 20.
    party dispute resolution, a graded ladder whose page carries the recommended command, and
    subject-only suspension.
 3. Canon evidence bridge in E4c, existence-level only, `Public` contracts only — **confirmed**.
+4. *(new, post-K)* Whether E4's obligation and contract docs should be **K2 state families** on the
+   prepared lane from day one, or conventional module docs shaped for a mechanical K3 migration
+   (§12, default: conventional now, migrate at K3 — the K2 lane cannot yet hydrate at boot).
+5. *(post-K)* The one-field `WorldEvent::CanonRecorded { source }` core change (§2) — default:
+   accepted as an E4c commit; doc 09 C6 keeps `WorldEvent` for lightweight lifecycle notification.
+6. *(post-K)* Does `mush-economy::post` ever become a K2/K3 action-transaction provider, or does the
+   economy's single-writer path stay permanently outside the kernel? Doc 09 §10 is silent. Default:
+   outside until K3 exists and a concrete gain is named; E4 shapes its records for a mechanical
+   migration either way.
+
+## 12. Doc 09 conformance (post-K, Draft 0.5)
+
+The K series (`codex/k1-contracts`, `fd3108c`; doc 09 K0–K2) landed after this plan was drafted. Doc
+09 is a kernel-contract design that E4 overlaps in four places; E4 conforms as follows, and the
+K-side facts are cited from `docs/design/09-rules-engine-contracts.md` in that branch.
+
+| Doc 09 | E4 concept | Conformance |
+|---|---|---|
+| **C8 `ReservationRecord { id, owner, resource, holder: ScopedIdempotencyKey, amount, revision, expires: ClockStamp, state: Held \| Consumed(commit) \| Released \| Expired }`** | `Hold` (§3.2) | A `Hold` **is** the economy's reservation: `Active/Captured{tx}/Released/Expired` map 1:1 onto `Held/Consumed/Released/Expired`; `placed_by` + the placing plan's idempotency key is the `holder`; "acquire, replace, release, and expiry are idempotent authoritative actions … expiry is a causally linked scheduled action and survives restart" is satisfied by hold effects in the journal with deterministic keys and the sweep's `hold/{id}/expire`. Rename the states to doc 09's at build time; add `holder` (the placing key). |
+| **§2.5 `ClockRef { Utc, WorldIc{generation}, SceneTurn, DomainTick, Registered{owner,id,generation} }` + `ClockStamp`; C4 "obligations become `ClockProvider` adapters"** | `EconomicClock` / cadence clocks (§3.1) | `EconomicClock` is a **pre-K4 adapter shape**: `RealUtc ≙ Utc`, `WorldIc ≙ WorldIc{generation}`, `Cadence(id) ≙ Registered { owner: economy, id: cadence.<name>, generation }`, `Manual` folds into a registered cadence with a `Manual` source. Deadlines/schedules carry the clock identity so two stamps are comparable only on the same clock (doc 09's rule). When K4 lands, `EconomicClock` becomes a thin alias over `ClockRef` and the sweep registers as the economy's `ClockProvider`; no journal migration (the serde shape stays). |
+| **C6 `SemanticEvent { id, cause: CausalRef{root: CommitToken, parent, ordinal}, owner, kind, schema, truth, eligible_witnesses }`** (in K's code today only as the action-local `PreparedCausalRef`/`PreparedEventId`, `mush-core/src/action.rs:2265-2731`; `SemanticEvent`/`WitnessSet` are design vocabulary, zero matches) | `EconomicEvent` (§6.3), `EconomicCause::External(CausalRef)` (E2) | `EconomicEvent` is the **pre-C6 form** of the economy's semantic events (ids + kinds only, D-E4-13) and migrates to `SemanticEvent` when commit tokens exist. **Name collision (prose today, code later):** economy's E2 `CausalRef { provider, kind, id, revision }` (`mush-economy/src/record.rs:278-287`) is *not* doc 09's causal reference; E4 renames it **`ExternalRef`** (serde shape unchanged) and reuses it for `TypedCondition::Fact` instead of minting a `FactRef` — one external-reference type, with `revision` for free. Contract attestations record the canon event's id and `source` today, and its commit-token causal reference once C6 lands, so front attribution nests inside the kernel's causal chain rather than running as a parallel system. |
+| **§2.6 canonical hashes "state their domain/encoding version"** | `plan_hash` v3 (§3.3 inv. 27) | The hash stays byte-compatible (E2 pin) and the record gains a `hash_domain: "economy.plan/v3"` note in the journal entry's schema doc, not in the hashed bytes. |
+| **C2 / K2 "new authoritative state-family actions must use the prepared path; legacy handlers remain a compatibility risk until migrated"; §1.4 durable atomicity is K3** | `post`, `submit`, E4's new docs | E3's `post`/`submit` are legacy K0-lane handlers by doc 09's own classification, hardened by K's two-phase `PreparedLedgerAppend`. E4 **keeps the journal as authority** (holds as effects — stronger than the K2 bridge's process-local serial, which has no restart hydration) and keeps `obligation:{id}` / `contract:{id}` as conventional container docs, **but** shapes them so the K3 migration is mechanical: one mutation per key per plan, canonical post-images, no fallible step after the first install (already §4.2). Registering them as K2 state families now would put money-adjacent truth on a lane that doc 09 itself says cannot yet hydrate at boot. **Owner decision requested (§10 q4).** |
+| **C8 idempotency list: "quotes and contract settlement; production, upkeep, and scheduled obligations"** | keys `contract/{id}/settle`, `obligation/{id}/{period}`, `hold/{id}/expire` | Complies; a conflict on an internal deterministic key is treated as an integrity incident (freeze the smallest scope — here the contract or obligation, via the escalation ladder), matching C8. |
+
+K's own changes inside `mush-economy` (the `prepare_commit` → custody move → `install_commit` split)
+are **kept** by E4: `post_with` (§4.1) wraps that sequence, and settlement/sweep posts go through it.
+`mush_core::ScopedIdempotencyKey`/`IdempotencyScope` (`action.rs:374-426`) exist but are ingress/
+gateway machinery; the sweep's server-internal deterministic keys stay `IdempotencyKey` (optional
+future alignment, not required). `mush-contract-tests` hosts only the toy `focus/brace/guarded`
+slice and doc 09 K8 names no economy migration; an economy contract-settlement fixture there is
+**backlog**, not a gap. Doc 09 §10 never mentions the economy — whether `post` ever becomes a
+kernel action provider is an owner question (§10 q6).
 
 ## 11. Review outcome (Draft 0.1 → 0.2)
 
