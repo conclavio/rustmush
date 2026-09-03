@@ -48,8 +48,8 @@
 
 pub mod action;
 pub mod action_state;
-pub mod authoritative;
 pub mod attr;
+pub mod authoritative;
 pub mod behavior;
 pub mod clock;
 pub mod cmd;
@@ -94,13 +94,6 @@ pub use action::{
     ScopedIdempotencyKey, ServerGuardSetBuilder, SubjectKey, TriggerEnqueue, TriggerHandlerId,
     TriggerIdentity, TriggerWork,
 };
-pub use authoritative::{
-    AuthoritativeBundle, AuthoritativeBundleDraft, AuthoritativeBundleError, AuthoritativeKey,
-    AuthoritativeKeyError, DurableOutboxIntent, MAX_AUTHORITATIVE_BUNDLE_BYTES,
-    MAX_AUTHORITATIVE_DEFINITIONS, MAX_AUTHORITATIVE_REPLAY_WRITES,
-    MAX_AUTHORITATIVE_WITNESSES, MAX_DURABLE_OUTBOX_INTENTS,
-    MAX_DURABLE_OUTBOX_PAYLOAD_BYTES, ReplayWrite,
-};
 pub use action_state::{
     ACTION_STATE_PERSISTENCE_ROOT, ActionStateBootRecord, ActionStateError, ActionStateStore,
     ActionTxn, ActionTxnLimits, CanonicalStateBytes, MAX_ACTION_BUNDLE_BYTES,
@@ -112,6 +105,12 @@ pub use action_state::{
     StateValueDecoder, StateValueSerializer, StateValueValidator, is_action_state_persistence_key,
 };
 pub use attr::{Attr, AttrFlags, AttrMap, AttrValue, UncasedName};
+pub use authoritative::{
+    AuthoritativeBundle, AuthoritativeBundleDraft, AuthoritativeBundleError, AuthoritativeKey,
+    AuthoritativeKeyError, DurableOutboxIntent, MAX_AUTHORITATIVE_BUNDLE_BYTES,
+    MAX_AUTHORITATIVE_DEFINITIONS, MAX_AUTHORITATIVE_REPLAY_WRITES, MAX_AUTHORITATIVE_WITNESSES,
+    MAX_DURABLE_OUTBOX_INTENTS, MAX_DURABLE_OUTBOX_PAYLOAD_BYTES, ReplayWrite,
+};
 pub use behavior::{
     BINDING_SCHEMA_VERSION, BehaviorBinding, BehaviorCommand, BehaviorCommandHandler, BehaviorId,
     BehaviorIdError, BehaviorRegError, BehaviorResolution, BehaviorSpec, BehaviorTarget, ChannelId,
@@ -129,8 +128,8 @@ pub use commands::{
 };
 pub use engine::{
     ControlMsg, Deferred, DisconnectKind, Effect, Effects, Engine, Inbound, ModuleComposition,
-    StagePreparedActionError, StagedAction, StagedActionAdmissionError, StepOutcome, WorldCommand,
-    register_engine_commands,
+    StagePreparedActionError, StagedAction, StagedActionAdmissionError, StagedActionPersistence,
+    StepOutcome, WorldCommand, register_engine_commands,
 };
 pub use flags::{Flags, Powers, Role};
 pub use ledger::{

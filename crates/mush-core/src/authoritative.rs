@@ -602,6 +602,9 @@ fn validate_identity(draft: &AuthoritativeBundleDraft) -> Result<(), Authoritati
     if draft.cause.root_request() != draft.request {
         return Err(AuthoritativeBundleError::CauseRequestMismatch);
     }
+    if draft.idempotency.scope().owner != draft.provider {
+        return Err(AuthoritativeBundleError::IdempotencyOwnerMismatch);
+    }
     if draft.action.key().owner != draft.provider
         || draft.action.key().kind.as_str() != ACTION_DEFINITION_KIND
     {
@@ -654,6 +657,8 @@ pub enum AuthoritativeBundleError {
     RequestKeyMismatch,
     #[error("the causal root does not match the bundle request")]
     CauseRequestMismatch,
+    #[error("the idempotency scope owner does not match the bundle provider")]
+    IdempotencyOwnerMismatch,
     #[error("the primary action is not owned by the named provider")]
     WrongActionProvider,
     #[error("the bundle contains a duplicate exact definition")]
@@ -788,6 +793,21 @@ mod tests {
 
     #[test]
     fn duplicate_targets_and_allocator_regression_are_refused() {
+        let mut wrong_scope = draft();
+        wrong_scope.idempotency = ScopedIdempotencyKey::new(
+            IdempotencyScope {
+                principal: PrincipalId::Object { id: GOD },
+                owner: OwnerId::new("other").unwrap(),
+                namespace: CanonicalId::new("brace").unwrap(),
+            },
+            0,
+            IdempotencyKey::Request(wrong_scope.request),
+        );
+        assert_eq!(
+            AuthoritativeBundle::new(wrong_scope).unwrap_err(),
+            AuthoritativeBundleError::IdempotencyOwnerMismatch
+        );
+
         let mut duplicate = draft();
         duplicate
             .writes

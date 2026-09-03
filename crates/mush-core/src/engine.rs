@@ -32,6 +32,7 @@ use crate::action_state::{
     ActionStateBootRecord, ActionStateError, ActionStateStore, ActionTxn, PreparedInstallation,
     PreparedTxn, StateFamilyHandle,
 };
+use crate::authoritative::AuthoritativeBundle;
 use crate::cmd::{
     ArgShape, CmdError, CommandSpec, Ctx, ParsedArgs, Registry, RegistryError, SwitchSet, dispatch,
 };
@@ -423,15 +424,32 @@ pub struct ModuleComposition {
 /// One prepared action submission crossing the synchronous engine/driver
 /// boundary. It is deliberately separate from legacy [`ModuleOp`] custody.
 pub struct StagedAction {
-    module_ops: Vec<ModuleOp>,
+    persistence: StagedActionPersistence,
     installation: PreparedInstallation,
     guards: GuardSet,
+}
+
+/// Persistence identity paired with one non-cloneable prepared RAM image.
+pub enum StagedActionPersistence {
+    /// K2 compatibility lane using the process-local writer serial.
+    Legacy(Vec<ModuleOp>),
+    /// K3 lane carrying the complete immutable exact-token intent.
+    Authoritative(Box<AuthoritativeBundle>),
+}
+
+impl fmt::Debug for StagedActionPersistence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Legacy(module_ops) => f.debug_tuple("Legacy").field(module_ops).finish(),
+            Self::Authoritative(bundle) => f.debug_tuple("Authoritative").field(bundle).finish(),
+        }
+    }
 }
 
 impl fmt::Debug for StagedAction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StagedAction")
-            .field("module_ops", &self.module_ops)
+            .field("persistence", &self.persistence)
             .field("installation", &self.installation)
             .field("guards", &self.guards)
             .finish()
@@ -440,8 +458,8 @@ impl fmt::Debug for StagedAction {
 
 impl StagedAction {
     /// Split the already-built persistence writes from the post-ack images.
-    pub fn into_parts(self) -> (Vec<ModuleOp>, PreparedInstallation) {
-        (self.module_ops, self.installation)
+    pub fn into_parts(self) -> (StagedActionPersistence, PreparedInstallation) {
+        (self.persistence, self.installation)
     }
 }
 
@@ -454,6 +472,12 @@ pub enum StagePreparedActionError {
     DirtyWorld,
     #[error("prepared action cannot share a step with legacy module persistence")]
     LegacyModuleOps,
+    #[error("authoritative bundle provider does not own the prepared transaction")]
+    AuthoritativeProviderMismatch,
+    #[error("authoritative bundle idempotency scope does not belong to its provider")]
+    AuthoritativeScopeMismatch,
+    #[error("authoritative bundle writes do not exactly match the prepared transaction")]
+    AuthoritativeWriteSetMismatch,
 }
 
 /// Final process-local refusal while moving a staged action into writer
@@ -816,7 +840,48 @@ impl Engine {
             return Err(StagePreparedActionError::LegacyModuleOps);
         }
         self.staged_action = Some(StagedAction {
-            module_ops,
+            persistence: StagedActionPersistence::Legacy(module_ops),
+            installation,
+            guards,
+        });
+        Ok(())
+    }
+
+    /// Stage one K3 action only when its immutable replay writes exactly match
+    /// the typed post-images retained for post-ack RAM installation.
+    ///
+    /// This deliberately accepts an already-complete bundle: outcome,
+    /// causality, witnesses, definitions, and outbox intent must all be fixed
+    /// before the synchronous final guard check transfers store custody.
+    pub fn stage_authoritative_action(
+        &mut self,
+        prepared: PreparedTxn,
+        guards: GuardSet,
+        bundle: AuthoritativeBundle,
+    ) -> Result<(), StagePreparedActionError> {
+        let refusal = if self.staged_action.is_some() {
+            Some(StagePreparedActionError::AlreadyStaged)
+        } else if prepared.owner() != bundle.provider() {
+            Some(StagePreparedActionError::AuthoritativeProviderMismatch)
+        } else if bundle.idempotency().scope().owner != *bundle.provider() {
+            Some(StagePreparedActionError::AuthoritativeScopeMismatch)
+        } else if prepared.authoritative_replay_writes() != bundle.writes() {
+            Some(StagePreparedActionError::AuthoritativeWriteSetMismatch)
+        } else if self.world.has_dirty() {
+            Some(StagePreparedActionError::DirtyWorld)
+        } else if !self.module_ops.is_empty() {
+            Some(StagePreparedActionError::LegacyModuleOps)
+        } else {
+            None
+        };
+        if let Some(error) = refusal {
+            let (_, installation) = prepared.into_parts();
+            self.action_state.abort(installation);
+            return Err(error);
+        }
+        let (_, installation) = prepared.into_parts();
+        self.staged_action = Some(StagedAction {
+            persistence: StagedActionPersistence::Authoritative(Box::new(bundle)),
             installation,
             guards,
         });

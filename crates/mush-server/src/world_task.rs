@@ -74,14 +74,16 @@ use mush_core::commands::movement::find_exit;
 use mush_core::{
     Audience, ControlMsg, DeliveryClass, DeliveryOutcome, DisconnectKind, Effect, Effects, Engine,
     Flags, Inbound, IncidentId, ObjId, ObjKind, Outbox, PreparedInstallation, Registry, Role,
-    ScheduledKind, StagedAction, StepOutcome, TickCadence, World, WorldCommand, WorldEvent,
-    can_perceive, event_subject, is_ignoring, narrative_actor, register_core_commands,
-    register_engine_commands,
+    ScheduledKind, StagedAction, StagedActionPersistence, StepOutcome, TickCadence, World,
+    WorldCommand, WorldEvent, can_perceive, event_subject, is_ignoring, narrative_actor,
+    register_core_commands, register_engine_commands,
 };
 use mush_ipc::{MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, SendTarget};
 use mush_llm::LlmService;
 use mush_proto::{OutputEvent, RichText};
-use mush_store::{AccountRec, InMemoryStore, ObjectStore, SshKeyRec, WriteBatch};
+use mush_store::{
+    AccountRec, AuthoritativeReceipt, InMemoryStore, ObjectStore, SshKeyRec, WriteBatch,
+};
 use sha2::{Digest, Sha256};
 use smol_str::SmolStr;
 use tokio::sync::mpsc::error::{TryRecvError, TrySendError};
@@ -89,7 +91,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::gateway_sink::GatewaySink;
-use crate::persist::{self, PersistenceIntegrityLatch, StoreJob};
+use crate::persist::{self, AuthoritativeCommitFailure, PersistenceIntegrityLatch, StoreJob};
 use crate::retained::RetainedSeals;
 use crate::staff::{StaffOp, StaffOpKind, StaffQueue};
 
@@ -547,19 +549,28 @@ fn bound_writer_detail(mut detail: String) -> String {
     detail
 }
 
-/// Driver-local identity of the authoritative commit whose acknowledgement is
-/// currently pending. K3 replaces the serial payload with the exact durable
-/// bundle token; keeping it opaque here prevents callers from treating a bare
-/// writer serial as an authorization credential.
+/// Driver-local identity of the commit whose acknowledgement is currently
+/// pending. Migrated K3 actions carry the exact durable bundle token; legacy
+/// batches retain their process-local writer serial during the transition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CommitToken(u64);
+pub enum CommitToken {
+    /// Process-local identity for a legacy `WriteBatch` receipt.
+    Legacy(u64),
+    /// Durable K3 identity embedded in an immutable authoritative bundle.
+    Authoritative(mush_core::CommitToken),
+}
 
 impl CommitToken {
-    /// Construct a provisional driver token from the monotonically increasing
-    /// writer serial. K3 will instead source this from the exact bundle token.
+    /// Construct the identity of a legacy batch from its monotonically
+    /// increasing process-local writer serial.
     #[must_use]
     pub const fn from_serial(serial: u64) -> Self {
-        Self(serial)
+        Self::Legacy(serial)
+    }
+
+    #[must_use]
+    pub const fn from_authoritative(token: mush_core::CommitToken) -> Self {
+        Self::Authoritative(token)
     }
 }
 
@@ -1195,7 +1206,7 @@ fn spawn_persist_with_gateway_mode(
 enum Wake {
     Msg(WorldMsg),
     Signal(WriterSignal),
-    CommitAck(Result<Result<u64, String>, oneshot::error::RecvError>),
+    CommitAck(Result<(), AuthoritativeCommitFailure>),
     Timer,
     Shutdown,
     ShutdownDeadline,
@@ -1210,10 +1221,10 @@ struct CreateCompletion {
 }
 
 /// One authoritative batch whose presentation and external work remain held
-/// until the writer returns the receipt for this exact serial.
+/// until the writer returns its matching legacy serial or K3 token/hash receipt.
 struct PendingCommit {
     token: CommitToken,
-    receipt: oneshot::Receiver<Result<u64, String>>,
+    receipt: PendingReceipt,
     sends: Vec<ClassifiedSend>,
     effects: Vec<(DeliveryClass, Effect)>,
     failure_actor: Option<ObjId>,
@@ -1227,6 +1238,70 @@ struct PendingCommit {
     /// `sends` and make transport churn an unbounded custody side channel.
     coalesced_reattach: Option<Box<[ReAttachRec]>>,
     exit_after_ack: bool,
+}
+
+enum PendingReceipt {
+    Legacy {
+        expected_serial: u64,
+        receiver: oneshot::Receiver<Result<u64, String>>,
+    },
+    Authoritative {
+        expected_token: mush_core::CommitToken,
+        expected_hash: mush_core::CanonicalHash,
+        receiver: oneshot::Receiver<Result<AuthoritativeReceipt, AuthoritativeCommitFailure>>,
+    },
+}
+
+impl PendingReceipt {
+    const fn token(&self) -> CommitToken {
+        match self {
+            Self::Legacy {
+                expected_serial, ..
+            } => CommitToken::Legacy(*expected_serial),
+            Self::Authoritative { expected_token, .. } => {
+                CommitToken::Authoritative(*expected_token)
+            }
+        }
+    }
+
+    async fn receive(&mut self) -> Result<(), AuthoritativeCommitFailure> {
+        match self {
+            Self::Legacy {
+                expected_serial,
+                receiver,
+            } => match receiver.await {
+                Ok(Ok(serial)) if serial == *expected_serial => Ok(()),
+                Ok(Ok(serial)) => Err(AuthoritativeCommitFailure::Integrity(format!(
+                    "commit receipt identity mismatch: expected serial {expected_serial}, received {serial}"
+                ))),
+                Ok(Err(detail)) => Err(AuthoritativeCommitFailure::Integrity(detail)),
+                Err(_) => Err(AuthoritativeCommitFailure::Integrity(
+                    "store writer dropped the exact commit receipt".to_owned(),
+                )),
+            },
+            Self::Authoritative {
+                expected_token,
+                expected_hash,
+                receiver,
+            } => match receiver.await {
+                Ok(Ok(receipt))
+                    if receipt.token() == *expected_token
+                        && receipt.bundle_hash() == *expected_hash =>
+                {
+                    Ok(())
+                }
+                Ok(Ok(receipt)) => Err(AuthoritativeCommitFailure::Integrity(format!(
+                    "authoritative receipt identity mismatch: expected {expected_token}/{expected_hash}, received {}/{}",
+                    receipt.token(),
+                    receipt.bundle_hash()
+                ))),
+                Ok(Err(failure)) => Err(failure),
+                Err(_) => Err(AuthoritativeCommitFailure::Integrity(
+                    "store writer dropped the authoritative commit receipt".to_owned(),
+                )),
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1458,7 +1533,7 @@ async fn run(
             },
             ack = async {
                 match pending_commit.as_mut() {
-                    Some(pending) => (&mut pending.receipt).await,
+                    Some(pending) => pending.receipt.receive().await,
                     None => std::future::pending().await,
                 }
             } => Wake::CommitAck(ack),
@@ -1765,7 +1840,7 @@ async fn run(
                 if let Some(pending) = pending_commit.take() {
                     let completed = complete_pending_commit(
                         pending,
-                        Ok(Err(detail.to_owned())),
+                        Err(AuthoritativeCommitFailure::Integrity(detail.to_owned())),
                         &mut engine,
                         &gateway,
                         &mut health,
@@ -1896,7 +1971,7 @@ async fn run(
                         llm.as_ref(),
                     );
                     pending_commit = Some(PendingCommit {
-                        token: CommitToken::from_serial(serial),
+                        token: receipt.token(),
                         receipt,
                         sends: classified_sends,
                         effects: classified_effects,
@@ -2038,7 +2113,7 @@ async fn run(
                         llm.as_ref(),
                     );
                     pending_commit = Some(PendingCommit {
-                        token: CommitToken::from_serial(serial),
+                        token: receipt.token(),
                         receipt,
                         sends,
                         effects,
@@ -2218,7 +2293,7 @@ async fn run(
                         llm.as_ref(),
                     );
                     pending_commit = Some(PendingCommit {
-                        token: CommitToken::from_serial(serial),
+                        token: receipt.token(),
                         receipt,
                         sends,
                         effects,
@@ -2585,7 +2660,7 @@ enum FlushOutcome {
     /// A batch was handed to the writer. Carries the receipt receiver when
     /// the batch was durable.
     Queued {
-        receipt: Option<oneshot::Receiver<Result<u64, String>>>,
+        receipt: Option<PendingReceipt>,
         prepared_installation: Option<PreparedInstallation>,
     },
     /// A normal final precondition (for example a revision guard) became
@@ -2635,9 +2710,9 @@ async fn flush_engine_step(
 }
 
 /// Submit one already-built action-state write set and retain its typed RAM
-/// images for the matching applied acknowledgement. This is a K2 compatibility
-/// bridge over the current process-local serial receipt, not K3's durable
-/// token/idempotency protocol.
+/// images for the matching acknowledgement. K2 callers use the legacy serial
+/// lane; K3 callers transfer one complete exact-token bundle to the same FIFO
+/// writer and install only after its matching durable receipt.
 async fn flush_prepared_action(
     engine: &mut Engine,
     writer: &mpsc::Sender<StoreJob>,
@@ -2652,7 +2727,7 @@ async fn flush_prepared_action(
         Ok(None) => unreachable!("prepared flush selected only with a staged action"),
         Err(error) => return FlushOutcome::Refused(error.to_string()),
     };
-    let (module_ops, installation) = staged.into_parts();
+    let (persistence, installation) = staged.into_parts();
 
     // Staging checks this invariant once, but later code in the same engine
     // step must not be able to add legacy dirtiness and silently move it to a
@@ -2674,38 +2749,68 @@ async fn flush_prepared_action(
                 .to_owned(),
         );
     }
-    if *serial == u64::MAX {
-        engine.abort_prepared_action(installation);
-        return FlushOutcome::Rejected(
-            "authoritative writer serial exhausted; restart/recovery required".to_owned(),
-        );
-    }
-    *serial = serial
-        .checked_add(1)
-        .expect("u64::MAX was rejected before prepared batch construction");
-    let batch = WriteBatch {
-        serial: *serial,
-        module_ops,
-        durable: true,
-        ..WriteBatch::default()
+    let receipt = match persistence {
+        StagedActionPersistence::Legacy(module_ops) => {
+            if *serial == u64::MAX {
+                engine.abort_prepared_action(installation);
+                return FlushOutcome::Rejected(
+                    "authoritative writer serial exhausted; restart/recovery required".to_owned(),
+                );
+            }
+            *serial = serial
+                .checked_add(1)
+                .expect("u64::MAX was rejected before prepared batch construction");
+            let batch = WriteBatch {
+                serial: *serial,
+                module_ops,
+                durable: true,
+                ..WriteBatch::default()
+            };
+            debug_assert!(!batch.is_empty());
+            let (notify, receiver) = oneshot::channel();
+            if writer
+                .send(StoreJob::Write {
+                    batch,
+                    notify: Some(notify),
+                })
+                .await
+                .is_err()
+            {
+                engine.abort_prepared_action(installation);
+                tracing::error!(
+                    serial = *serial,
+                    "store writer gone before accepting prepared action"
+                );
+                return FlushOutcome::WriterGone;
+            }
+            PendingReceipt::Legacy {
+                expected_serial: *serial,
+                receiver,
+            }
+        }
+        StagedActionPersistence::Authoritative(bundle) => {
+            let expected_token = bundle.token();
+            let expected_hash = bundle.bundle_hash();
+            let (notify, receiver) = oneshot::channel();
+            if writer
+                .send(StoreJob::Authoritative { bundle, notify })
+                .await
+                .is_err()
+            {
+                engine.abort_prepared_action(installation);
+                tracing::error!(
+                    %expected_token,
+                    "store writer gone before accepting authoritative action"
+                );
+                return FlushOutcome::WriterGone;
+            }
+            PendingReceipt::Authoritative {
+                expected_token,
+                expected_hash,
+                receiver,
+            }
+        }
     };
-    debug_assert!(!batch.is_empty());
-    let (notify, receipt) = oneshot::channel();
-    if writer
-        .send(StoreJob::Write {
-            batch,
-            notify: Some(notify),
-        })
-        .await
-        .is_err()
-    {
-        engine.abort_prepared_action(installation);
-        tracing::error!(
-            serial = *serial,
-            "store writer gone before accepting prepared action"
-        );
-        return FlushOutcome::WriterGone;
-    }
     metrics.add_store_write_queue_depth(1);
     health.last_write_unix = Some(unix_now_s());
     FlushOutcome::Queued {
@@ -2823,7 +2928,13 @@ async fn flush_dirty(
     }
     let (notify, receipt) = if durable {
         let (tx, rx) = oneshot::channel();
-        (Some(tx), Some(rx))
+        (
+            Some(tx),
+            Some(PendingReceipt::Legacy {
+                expected_serial: *serial,
+                receiver: rx,
+            }),
+        )
     } else {
         (None, None)
     };
@@ -4277,7 +4388,7 @@ fn release_independent_while_pending(
 #[allow(clippy::too_many_arguments)]
 fn complete_pending_commit(
     pending: PendingCommit,
-    ack: Result<Result<u64, String>, oneshot::error::RecvError>,
+    ack: Result<(), AuthoritativeCommitFailure>,
     engine: &mut Engine,
     gateway: &Gateway,
     health: &mut StoreHealth,
@@ -4285,7 +4396,6 @@ fn complete_pending_commit(
     tx: &mpsc::WeakSender<WorldMsg>,
     llm: Option<&Arc<LlmService>>,
 ) -> CompletedPending {
-    let expected_serial = pending.token.0;
     let PendingCommit {
         sends,
         effects,
@@ -4296,19 +4406,14 @@ fn complete_pending_commit(
         coalesced_reattach,
         ..
     } = pending;
-    let (outcome, failure) = match ack {
-        Ok(Ok(serial)) if serial == expected_serial => (DeliveryOutcome::Committed, None),
-        Ok(Ok(serial)) => (
-            DeliveryOutcome::Aborted,
-            Some(format!(
-                "commit receipt identity mismatch: expected serial {expected_serial}, received {serial}"
-            )),
-        ),
-        Ok(Err(detail)) => (DeliveryOutcome::Aborted, Some(detail)),
-        Err(_) => (
-            DeliveryOutcome::Aborted,
-            Some("store writer dropped the exact commit receipt".to_string()),
-        ),
+    let (outcome, failure, integrity_failure) = match ack {
+        Ok(()) => (DeliveryOutcome::Committed, None, false),
+        Err(AuthoritativeCommitFailure::Refused(detail)) => {
+            (DeliveryOutcome::Aborted, Some(detail), false)
+        }
+        Err(AuthoritativeCommitFailure::Integrity(detail)) => {
+            (DeliveryOutcome::Aborted, Some(detail), true)
+        }
     };
     let has_abort_output = sends
         .iter()
@@ -4347,13 +4452,15 @@ fn complete_pending_commit(
     }
 
     if let Some(detail) = failure {
-        apply_integrity_freeze(
-            &engine.world,
-            gateway,
-            health,
-            persistence_integrity,
-            &detail,
-        );
+        if integrity_failure {
+            apply_integrity_freeze(
+                &engine.world,
+                gateway,
+                health,
+                persistence_integrity,
+                &detail,
+            );
+        }
         if let Some(actor) = failure_actor
             && !has_abort_output
         {
@@ -4693,14 +4800,18 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
     use mush_core::{
-        ActionError, ArgShape, AsyncCompletion, CanonicalId, CmdError, CommandSpec, ContextOutcome,
-        Ctx, Deferred, EventHook, GOD, GameModule, GuardSet, HookPoint, InputContext, LIMBO,
-        ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, OwnerId, QueryHandler, Registrar,
-        RevisionKey, RevisionKind, RevisionSet, RevisionStamp, RevisionValidator,
-        StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey, TickHandler,
-        WorldEventKind, WorldObserver,
+        ActionError, ArgShape, AsyncCompletion, AuthoritativeBundle, AuthoritativeBundleDraft,
+        CanonicalHash, CanonicalId, CmdError, CommandSpec, CommitToken as DurableCommitToken,
+        ContextOutcome, Ctx, Deferred, DefinitionDescriptor, DefinitionId, DefinitionKind,
+        DefinitionRegistryBuilder, EventHook, GOD, GameModule, GuardSet, HookPoint, IdempotencyKey,
+        IdempotencyScope, InputContext, LIMBO, ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite,
+        OwnerId, PreparedCausalRef, PreparedTxn, PrincipalId, QueryHandler, Registrar, RequestUid,
+        RevisionKey, RevisionKind, RevisionSet, RevisionStamp, RevisionValidator, RulesValue,
+        ScopedIdempotencyKey, StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey,
+        TickHandler, WorldEventKind, WorldObserver,
     };
     use mush_proto::{InputMode, PromptSpec};
+    use mush_store::AuthoritativeStore;
 
     struct BlackholeGateway;
 
@@ -4949,6 +5060,63 @@ mod tests {
         installation
     }
 
+    fn prepared_lane_bundle(prepared: &PreparedTxn, identity: u8) -> AuthoritativeBundle {
+        let owner = OwnerId::new("prepared_lane_test").expect("static owner");
+        let mut definitions = DefinitionRegistryBuilder::new();
+        let action = definitions
+            .register(
+                owner.clone(),
+                DefinitionDescriptor::new(
+                    DefinitionKind::new("action").unwrap(),
+                    DefinitionId::new("set_receipt_state").unwrap(),
+                    1,
+                    serde_json::json!({}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let outcome_definition = definitions
+            .register(
+                owner.clone(),
+                DefinitionDescriptor::new(
+                    DefinitionKind::new("outcome").unwrap(),
+                    DefinitionId::new("receipt_state_set").unwrap(),
+                    1,
+                    serde_json::json!({}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let request = RequestUid::from_bytes([identity; 16]);
+        let principal = PrincipalId::Object { id: GOD };
+        AuthoritativeBundle::new(AuthoritativeBundleDraft {
+            token: DurableCommitToken::from_bytes([identity.wrapping_add(1); 16]),
+            request,
+            idempotency: ScopedIdempotencyKey::new(
+                IdempotencyScope {
+                    principal: principal.clone(),
+                    owner: owner.clone(),
+                    namespace: CanonicalId::new("set_receipt_state").unwrap(),
+                },
+                0,
+                IdempotencyKey::Request(request),
+            ),
+            ingress_hash: CanonicalHash::from_bytes([identity.wrapping_add(2); 32]),
+            request_hash: CanonicalHash::from_bytes([identity.wrapping_add(3); 32]),
+            plan_hash: CanonicalHash::from_bytes([identity.wrapping_add(4); 32]),
+            action: action.clone(),
+            provider: owner,
+            cause: PreparedCausalRef::new(request, None, 0).unwrap(),
+            definitions: vec![action, outcome_definition.clone()],
+            writes: prepared.authoritative_replay_writes(),
+            outcome: RulesValue::new(outcome_definition, serde_json::json!({ "accepted": true }))
+                .unwrap(),
+            eligible_witnesses: vec![principal],
+            durable_outbox: vec![],
+        })
+        .unwrap()
+    }
+
     fn pending_with_prepared_installation(
         serial: u64,
         installation: PreparedInstallation,
@@ -4956,7 +5124,10 @@ mod tests {
         let (_receipt_tx, receipt) = oneshot::channel();
         PendingCommit {
             token: CommitToken::from_serial(serial),
-            receipt,
+            receipt: PendingReceipt::Legacy {
+                expected_serial: serial,
+                receiver: receipt,
+            },
             sends: Vec::new(),
             effects: Vec::new(),
             failure_actor: None,
@@ -5819,7 +5990,10 @@ mod tests {
         let (_receipt_tx, receipt) = oneshot::channel();
         PendingCommit {
             token: CommitToken::from_serial(7),
-            receipt,
+            receipt: PendingReceipt::Legacy {
+                expected_serial: 7,
+                receiver: receipt,
+            },
             sends: vec![(
                 DeliveryClass::OnCommit,
                 SendTarget::Char(u64::from(GOD.0)),
@@ -5904,7 +6078,8 @@ mod tests {
         notify
             .send(Ok(batch.serial))
             .expect("world still owns the exact receipt");
-        let ack = receipt.await;
+        let mut receipt = receipt;
+        let ack = receipt.receive().await;
         let pending = pending_with_prepared_installation(batch.serial, installation);
         let gateway: Gateway = Arc::new(BlackholeGateway);
         let persistence_integrity = PersistenceIntegrityLatch::new();
@@ -5931,6 +6106,152 @@ mod tests {
             Some(&PreparedLaneState { amount: 7 })
         );
         assert!(!persistence_integrity.is_latched());
+    }
+
+    #[tokio::test]
+    async fn authoritative_prepared_action_queues_exact_bundle_and_installs_only_on_exact_receipt()
+    {
+        let (mut engine, handle) = prepared_lane_fixture();
+        let mut transaction = engine.action_transaction(&handle).unwrap();
+        transaction
+            .insert(&handle, &42, PreparedLaneState { amount: 9 })
+            .unwrap();
+        let prepared = transaction.prepare().unwrap();
+        let bundle = prepared_lane_bundle(&prepared, 91);
+        let expected_token = bundle.token();
+        let expected_hash = bundle.bundle_hash();
+        let guards = empty_guards(&engine);
+        engine
+            .stage_authoritative_action(prepared, guards, bundle.clone())
+            .expect("matching bundle stages");
+
+        let (writer, mut writer_rx) = mpsc::channel(1);
+        let mut serial = 0;
+        let mut health = StoreHealth::new();
+        let metrics = Metrics::new();
+        let mut retained = RetainedSeals::new();
+        let high_water = AtomicU64::new(0);
+        let outcome = flush_prepared_action(
+            &mut engine,
+            &writer,
+            &mut serial,
+            &mut health,
+            &metrics,
+            &mut retained,
+            &high_water,
+        )
+        .await;
+        let FlushOutcome::Queued {
+            receipt: Some(mut pending_receipt),
+            prepared_installation: Some(installation),
+        } = outcome
+        else {
+            panic!("authoritative action must queue exact receipt custody");
+        };
+        assert_eq!(serial, 0, "K3 tokens do not consume legacy serials");
+        assert_eq!(
+            pending_receipt.token(),
+            CommitToken::from_authoritative(expected_token)
+        );
+        let StoreJob::Authoritative {
+            bundle: queued,
+            notify,
+        } = writer_rx.recv().await.expect("exact bundle queued")
+        else {
+            panic!("K3 staging must not use legacy WriteBatch");
+        };
+        assert_eq!(queued.as_ref(), &bundle);
+
+        let store = InMemoryStore::new();
+        store
+            .reserve_authoritative_intent((*queued).clone())
+            .await
+            .unwrap();
+        let exact = store
+            .reconcile_authoritative(expected_token, expected_hash)
+            .await
+            .unwrap();
+        notify.send(Ok(exact)).unwrap();
+        let ack = pending_receipt.receive().await;
+
+        let mut pending = pending_with_prepared_installation(0, installation);
+        pending.token = CommitToken::from_authoritative(expected_token);
+        let gateway: Gateway = Arc::new(BlackholeGateway);
+        let persistence_integrity = PersistenceIntegrityLatch::new();
+        let (tx, _rx) = mpsc::channel(1);
+        let completed = complete_pending_commit(
+            pending,
+            ack,
+            &mut engine,
+            &gateway,
+            &mut health,
+            &persistence_integrity,
+            &tx.downgrade(),
+            None,
+        );
+        assert_eq!(completed.outcome, DeliveryOutcome::Committed);
+        assert_eq!(
+            engine.action_state().get(&handle, &42).unwrap(),
+            Some(&PreparedLaneState { amount: 9 })
+        );
+        assert!(!persistence_integrity.is_latched());
+    }
+
+    #[test]
+    fn definitive_pre_intent_refusal_aborts_typed_image_without_integrity_freeze() {
+        let (mut engine, handle) = prepared_lane_fixture();
+        let installation = prepare_lane_installation(&mut engine, &handle, 73, 12);
+        let pending = pending_with_prepared_installation(9, installation);
+        let gateway: Gateway = Arc::new(BlackholeGateway);
+        let mut health = StoreHealth::new();
+        let persistence_integrity = PersistenceIntegrityLatch::new();
+        let (tx, _rx) = mpsc::channel(1);
+
+        let completed = complete_pending_commit(
+            pending,
+            Err(AuthoritativeCommitFailure::Refused(
+                "authoritative capacity refused before intent".to_owned(),
+            )),
+            &mut engine,
+            &gateway,
+            &mut health,
+            &persistence_integrity,
+            &tx.downgrade(),
+            None,
+        );
+
+        assert_eq!(completed.outcome, DeliveryOutcome::Aborted);
+        assert_eq!(engine.action_state().get(&handle, &73).unwrap(), None);
+        assert!(!engine.action_state().has_prepared());
+        assert!(!persistence_integrity.is_latched());
+    }
+
+    #[test]
+    fn authoritative_stage_rejects_bundle_that_does_not_match_typed_post_images() {
+        let (mut engine, handle) = prepared_lane_fixture();
+        let mut first = engine.action_transaction(&handle).unwrap();
+        first
+            .insert(&handle, &51, PreparedLaneState { amount: 1 })
+            .unwrap();
+        let first = first.prepare().unwrap();
+        let mismatched_bundle = prepared_lane_bundle(&first, 101);
+        let (_, first_installation) = first.into_parts();
+        engine.abort_prepared_action(first_installation);
+
+        let mut second = engine.action_transaction(&handle).unwrap();
+        second
+            .insert(&handle, &51, PreparedLaneState { amount: 2 })
+            .unwrap();
+        let second = second.prepare().unwrap();
+        let guards = empty_guards(&engine);
+        assert_eq!(
+            engine.stage_authoritative_action(second, guards, mismatched_bundle),
+            Err(mush_core::StagePreparedActionError::AuthoritativeWriteSetMismatch)
+        );
+        assert!(!engine.has_staged_action());
+        assert!(!engine.action_state().has_prepared());
+        assert_eq!(engine.action_state().revision(), 0);
+        assert!(engine.action_transaction(&handle).is_ok());
     }
 
     #[tokio::test]
@@ -6016,9 +6337,13 @@ mod tests {
             let (mut engine, handle) = prepared_lane_fixture();
             let installation = prepare_lane_installation(&mut engine, &handle, 17, 3);
             let pending = pending_with_prepared_installation(7, installation);
-            let ack: Result<Result<u64, String>, oneshot::error::RecvError> = match bad_receipt {
-                BadReceipt::WrongSerial => Ok(Ok(8)),
-                BadReceipt::StoreRejected => Ok(Err("deterministic store rejection".to_owned())),
+            let ack = match bad_receipt {
+                BadReceipt::WrongSerial => Err(AuthoritativeCommitFailure::Integrity(
+                    "commit receipt identity mismatch: expected serial 7, received 8".to_owned(),
+                )),
+                BadReceipt::StoreRejected => Err(AuthoritativeCommitFailure::Integrity(
+                    "deterministic store rejection".to_owned(),
+                )),
             };
             let gateway: Gateway = Arc::new(BlackholeGateway);
             let mut health = StoreHealth::new();
@@ -6200,7 +6525,9 @@ mod tests {
         let (tx, _rx) = mpsc::channel(1);
         let completed = complete_pending_commit(
             pending,
-            Ok(Err("deterministic rejection".to_string())),
+            Err(AuthoritativeCommitFailure::Integrity(
+                "deterministic rejection".to_owned(),
+            )),
             &mut engine,
             &gateway,
             &mut health,
@@ -6509,7 +6836,10 @@ mod tests {
         let (_receipt_tx, receipt) = oneshot::channel();
         let pending = PendingCommit {
             token: CommitToken::from_serial(7),
-            receipt,
+            receipt: PendingReceipt::Legacy {
+                expected_serial: 7,
+                receiver: receipt,
+            },
             sends: Vec::new(),
             effects: vec![(
                 DeliveryClass::BestEffort,
@@ -6532,7 +6862,9 @@ mod tests {
         let persistence_integrity = PersistenceIntegrityLatch::new();
         complete_pending_commit(
             pending,
-            Ok(Err("deterministic rejection".to_string())),
+            Err(AuthoritativeCommitFailure::Integrity(
+                "deterministic rejection".to_owned(),
+            )),
             &mut engine,
             &gateway,
             &mut health,

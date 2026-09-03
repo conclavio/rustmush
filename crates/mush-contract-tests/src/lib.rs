@@ -544,7 +544,10 @@ mod tests {
             .take_staged_action()
             .expect("final guard validation succeeds")
             .expect("driver receives prepared action");
-        let (ops, installation) = staged.into_parts();
+        let (persistence, installation) = staged.into_parts();
+        let mush_core::StagedActionPersistence::Legacy(ops) = persistence else {
+            panic!("K2 compatibility staging must use the legacy persistence lane");
+        };
         assert_eq!(ops.len(), 2);
         assert!(
             ops.iter()

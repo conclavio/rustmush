@@ -21,6 +21,7 @@ use smol_str::SmolStr;
 use thiserror::Error;
 
 use crate::action::{MAX_CASCADE_OPERATIONS, ProviderRegistrationOrdinal};
+use crate::authoritative::{AuthoritativeKey, ReplayWrite};
 use crate::mechanics::{
     CanonicalEncodingError, CanonicalId, CanonicalIdError, DefinitionDigest,
     MechanicalOwnerReadiness, MechanicalOwnerReadinessError, OwnerId,
@@ -1768,6 +1769,34 @@ impl PreparedTxn {
     #[must_use]
     pub fn records(&self) -> &[PreparedRecord] {
         &self.records
+    }
+
+    /// Deterministic K3 replay post-images corresponding to this typed
+    /// transaction. A complete authoritative bundle may be built around this
+    /// write set before the transaction is consumed for staging.
+    #[must_use]
+    pub fn authoritative_replay_writes(&self) -> Vec<ReplayWrite> {
+        self.records
+            .iter()
+            .map(|record| match &record.module_op.op {
+                ModuleWrite::JsonSet { key, value } => ReplayWrite::ModuleJsonSet {
+                    namespace: record.key.owner.clone(),
+                    key: AuthoritativeKey::parse_canonical(key).expect(
+                        "prepared action-state keys already satisfy authoritative-key constraints",
+                    ),
+                    value: value.clone(),
+                },
+                ModuleWrite::Del { key } => ReplayWrite::ModuleDelete {
+                    namespace: record.key.owner.clone(),
+                    key: AuthoritativeKey::parse_canonical(key).expect(
+                        "prepared action-state keys already satisfy authoritative-key constraints",
+                    ),
+                },
+                ModuleWrite::StreamAppend { .. } => {
+                    unreachable!("typed action-state transactions never produce stream appends")
+                }
+            })
+            .collect()
     }
 
     /// Split store writes from the non-cloneable install images. Both were

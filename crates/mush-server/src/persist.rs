@@ -40,10 +40,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use mush_config::metrics::Metrics;
-use mush_core::{ObjId, World};
+use mush_core::{AuthoritativeBundle, CommitToken, ObjId, World};
 use mush_store::{
-    AuthoritativeStore, BundleStatus, MAX_AUTHORITATIVE_DISCOVERY_PAGE, ModuleOp, ModuleWrite,
-    ObjectStore, StoreError, WorldSnapshot, WriteBatch,
+    AuthoritativeReceipt, AuthoritativeStore, BundleStatus, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
+    ModuleOp, ModuleWrite, ObjectStore, StoreError, WorldSnapshot, WriteBatch,
 };
 use smol_str::SmolStr;
 use tokio::sync::{mpsc, oneshot};
@@ -342,6 +342,13 @@ pub enum StoreJob {
         /// fire-and-forget ordinary command batches.
         notify: Option<oneshot::Sender<Result<u64, String>>>,
     },
+    /// Reserve and reconcile one complete K3 exact-token bundle. The writer
+    /// keeps FIFO custody across both operations and returns only the exact
+    /// immutable receipt or a typed refusal/integrity failure.
+    Authoritative {
+        bundle: Box<AuthoritativeBundle>,
+        notify: oneshot::Sender<Result<AuthoritativeReceipt, AuthoritativeCommitFailure>>,
+    },
     /// Trigger an ordinary background snapshot (`@dump`), ordered behind
     /// everything queued before it and refused after an integrity breach.
     ///
@@ -352,6 +359,26 @@ pub enum StoreJob {
         /// Resolved when the store acknowledged the BGSAVE request.
         done: oneshot::Sender<Result<(), String>>,
     },
+}
+
+/// Terminal result from an authoritative writer job.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AuthoritativeCommitFailure {
+    /// Reservation definitively created no intent; the typed RAM image may be
+    /// aborted without freezing unrelated persistence.
+    Refused(String),
+    /// An intent may exist, exact identity is contradictory, or store
+    /// integrity is damaged. Later writes must not pass this predecessor.
+    Integrity(String),
+}
+
+impl AuthoritativeCommitFailure {
+    #[must_use]
+    pub fn detail(&self) -> &str {
+        match self {
+            Self::Refused(detail) | Self::Integrity(detail) => detail,
+        }
+    }
 }
 
 /// Spawn the store-writer task. `signals` is the dedicated bounded/coalescing
@@ -472,6 +499,37 @@ async fn writer_loop(
                     let _ = notify.send(result);
                 }
             }
+            StoreJob::Authoritative { bundle, notify } => {
+                let token = bundle.token();
+                let result = if let Some(reason) = &integrity_halt {
+                    integrity.latch();
+                    Err(AuthoritativeCommitFailure::Integrity(format!(
+                        "persistence integrity halted after an unresolved predecessor: {reason}"
+                    )))
+                } else {
+                    let result =
+                        commit_authoritative_with_retry(&*store, *bundle, &mut healthy, &signals)
+                            .await;
+                    if let Err(AuthoritativeCommitFailure::Integrity(detail)) = &result {
+                        integrity.latch();
+                        let reason = bounded_detail(format!(
+                            "authoritative bundle {token} was not exactly committed: {detail}"
+                        ));
+                        tracing::error!(
+                            %token,
+                            %reason,
+                            "store writer latched integrity halt after authoritative bundle"
+                        );
+                        integrity_halt = Some(reason);
+                    }
+                    result
+                };
+                metrics.add_store_write_queue_depth(-1);
+                if result.is_ok() {
+                    metrics.set_store_last_ack_unix(unix_now_s());
+                }
+                let _ = notify.send(result);
+            }
             StoreJob::Bgsave { done } => {
                 let result = if integrity.is_latched() {
                     Err("persistence integrity is latched; ordinary BGSAVE refused".to_owned())
@@ -486,6 +544,173 @@ async fn writer_loop(
         }
     }
     tracing::info!("store writer drained and exiting");
+}
+
+async fn commit_authoritative_with_retry(
+    store: &dyn ObjectStore,
+    bundle: AuthoritativeBundle,
+    healthy: &mut bool,
+    signals: &WriterSignalSender,
+) -> Result<AuthoritativeReceipt, AuthoritativeCommitFailure> {
+    let token = bundle.token();
+    let hash = bundle.bundle_hash();
+    let mut delay = RETRY_INITIAL;
+    let authoritative = store.authoritative_store().ok_or_else(|| {
+        AuthoritativeCommitFailure::Integrity(
+            "configured store has no K3 authoritative capability".to_owned(),
+        )
+    })?;
+
+    loop {
+        match authoritative
+            .reserve_authoritative_intent(bundle.clone())
+            .await
+        {
+            Ok(receipt) if receipt.token == token && receipt.bundle_hash == hash => break,
+            Ok(_) => {
+                return Err(AuthoritativeCommitFailure::Integrity(format!(
+                    "authoritative reservation returned a non-exact witness for {token}"
+                )));
+            }
+            Err(error) if error.is_transient() => {
+                mark_authoritative_transient(healthy, signals, token, &error);
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(RETRY_MAX);
+            }
+            Err(error) => {
+                let status = authoritative.authoritative_status(token, hash).await;
+                match status {
+                    Ok(BundleStatus::PendingExact) => break,
+                    Ok(BundleStatus::FinalizedExact(receipt))
+                        if receipt.token() == token && receipt.bundle_hash() == hash =>
+                    {
+                        mark_authoritative_recovered(healthy, signals, token);
+                        return Ok(*receipt);
+                    }
+                    Ok(BundleStatus::FinalizedExact(_)) => {
+                        return Err(AuthoritativeCommitFailure::Integrity(format!(
+                            "authoritative status returned a non-exact finalized witness for {token}"
+                        )));
+                    }
+                    Ok(BundleStatus::Absent)
+                        if matches!(
+                            error,
+                            StoreError::AuthoritativeCapacity { .. }
+                                | StoreError::AuthoritativeIdempotencyConflict
+                                | StoreError::Invalid(_)
+                        ) =>
+                    {
+                        mark_authoritative_recovered(healthy, signals, token);
+                        return Err(AuthoritativeCommitFailure::Refused(format!(
+                            "authoritative reservation refused before intent: {error}"
+                        )));
+                    }
+                    Ok(BundleStatus::Absent) => {
+                        return Err(AuthoritativeCommitFailure::Integrity(format!(
+                            "authoritative reservation failed without an intent: {error}"
+                        )));
+                    }
+                    Ok(BundleStatus::Conflict { stored_bundle_hash }) => {
+                        return Err(AuthoritativeCommitFailure::Integrity(format!(
+                            "authoritative token {token} conflicts with stored bundle {stored_bundle_hash}"
+                        )));
+                    }
+                    Err(status_error) if status_error.is_transient() => {
+                        mark_authoritative_transient(healthy, signals, token, &status_error);
+                        tokio::time::sleep(delay).await;
+                        delay = (delay * 2).min(RETRY_MAX);
+                    }
+                    Err(status_error) => {
+                        return Err(AuthoritativeCommitFailure::Integrity(format!(
+                            "cannot determine authoritative reservation state for {token}: {status_error}"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
+    loop {
+        match authoritative.reconcile_authoritative(token, hash).await {
+            Ok(receipt) if receipt.token() == token && receipt.bundle_hash() == hash => {
+                mark_authoritative_recovered(healthy, signals, token);
+                return Ok(receipt);
+            }
+            Ok(_) => {
+                return Err(AuthoritativeCommitFailure::Integrity(format!(
+                    "authoritative reconciliation returned a non-exact witness for {token}"
+                )));
+            }
+            Err(error) if error.is_transient() => {
+                mark_authoritative_transient(healthy, signals, token, &error);
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(RETRY_MAX);
+            }
+            Err(error) => match authoritative.authoritative_status(token, hash).await {
+                Ok(BundleStatus::FinalizedExact(receipt))
+                    if receipt.token() == token && receipt.bundle_hash() == hash =>
+                {
+                    mark_authoritative_recovered(healthy, signals, token);
+                    return Ok(*receipt);
+                }
+                Ok(BundleStatus::PendingExact) => {
+                    return Err(AuthoritativeCommitFailure::Integrity(format!(
+                        "authoritative bundle {token} remains durably pending after deterministic reconciliation failure: {error}"
+                    )));
+                }
+                Ok(BundleStatus::Absent) => {
+                    return Err(AuthoritativeCommitFailure::Integrity(format!(
+                        "authoritative intent {token} disappeared after reservation: {error}"
+                    )));
+                }
+                Ok(BundleStatus::Conflict { stored_bundle_hash }) => {
+                    return Err(AuthoritativeCommitFailure::Integrity(format!(
+                        "authoritative intent {token} changed to bundle {stored_bundle_hash}: {error}"
+                    )));
+                }
+                Ok(BundleStatus::FinalizedExact(_)) => {
+                    return Err(AuthoritativeCommitFailure::Integrity(format!(
+                        "authoritative status returned a non-exact finalized witness for {token}"
+                    )));
+                }
+                Err(status_error) if status_error.is_transient() => {
+                    mark_authoritative_transient(healthy, signals, token, &status_error);
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(RETRY_MAX);
+                }
+                Err(status_error) => {
+                    return Err(AuthoritativeCommitFailure::Integrity(format!(
+                        "cannot determine authoritative reconciliation state for {token}: {status_error}"
+                    )));
+                }
+            },
+        }
+    }
+}
+
+fn mark_authoritative_transient(
+    healthy: &mut bool,
+    signals: &WriterSignalSender,
+    token: CommitToken,
+    error: &StoreError,
+) {
+    tracing::error!(%token, error = %error, "authoritative store operation failed; retrying exact bundle");
+    if *healthy {
+        *healthy = false;
+        notify_status(signals, false, error.to_string());
+    }
+}
+
+fn mark_authoritative_recovered(
+    healthy: &mut bool,
+    signals: &WriterSignalSender,
+    token: CommitToken,
+) {
+    if !*healthy {
+        *healthy = true;
+        tracing::info!(%token, "authoritative store writes recovered");
+        notify_status(signals, true, String::new());
+    }
 }
 
 /// Apply one batch, retrying transient failures with backoff until the
@@ -1527,5 +1752,36 @@ mod tests {
         assert_eq!(second.retained, 1);
         assert_eq!(second.reconciled, 0);
         assert_eq!(second.already_finalized, 1);
+    }
+
+    #[tokio::test]
+    async fn authoritative_writer_reserves_reconciles_and_returns_exact_receipt() {
+        let store = InMemoryStore::new();
+        load_or_seed_world(&store).await.unwrap();
+        let bundle = boot_recovery_bundle();
+        let (signals, _signal_rx) = crate::world_task::writer_signal_channel();
+        let mut healthy = true;
+
+        let receipt =
+            commit_authoritative_with_retry(&store, bundle.clone(), &mut healthy, &signals)
+                .await
+                .unwrap();
+
+        assert_eq!(receipt.bundle(), &bundle);
+        assert!(healthy);
+        assert_eq!(
+            store
+                .authoritative_status(bundle.token(), bundle.bundle_hash())
+                .await
+                .unwrap(),
+            BundleStatus::FinalizedExact(Box::new(receipt))
+        );
+        assert!(
+            store
+                .pending_authoritative_intents()
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }
