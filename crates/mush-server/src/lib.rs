@@ -48,6 +48,7 @@ use tokio::sync::oneshot;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 pub mod accounts;
+pub mod action_coordinator;
 pub mod config_ext;
 pub mod gateway_sink;
 pub mod help;

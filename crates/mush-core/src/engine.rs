@@ -814,6 +814,33 @@ impl Engine {
         providers.prepare_invocation(action, invocation, &mut self.action_state)
     }
 
+    /// Prepare one registered provider's typed post-images and semantic K3
+    /// result material. Persistence identity remains coordinator-owned.
+    pub fn prepare_registered_authoritative_action(
+        &mut self,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+    ) -> Result<
+        (PreparedTxn, crate::action::AuthoritativeActionOutput),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        providers.prepare_authoritative_invocation(action, invocation, &mut self.action_state)
+    }
+
+    /// Release a prepared transaction that could not be assembled into a
+    /// complete authoritative bundle. This is distinct from aborting a
+    /// [`PreparedInstallation`]: coordinators need this form when canonical
+    /// hashing or bundle validation fails before staging consumes the
+    /// transaction.
+    pub fn abort_prepared_transaction(&mut self, prepared: PreparedTxn) {
+        let (_, installation) = prepared.into_parts();
+        self.action_state.abort(installation);
+    }
+
     /// Move a logical action's persistence and install images into the one
     /// driver-facing prepared lane.
     ///
