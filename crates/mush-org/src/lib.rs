@@ -24,11 +24,20 @@
 //! - **`PrincipalId::Object` is clean** — no embedded generation (ids are never
 //!   recycled).
 
+// E1a — the pure library.
 mod authorize;
 mod ids;
 mod plan;
 mod record;
 mod state;
+
+// E1b — the world-attached module (persistence, boot, commands, the destroy
+// scrub, the frozen predicate table, and the public authorize/submit seam).
+mod api;
+mod boot;
+mod commands;
+mod module;
+mod wiring;
 
 /// The maximum org scope-tree depth (root = 0). Enforced at scope creation, so a
 /// containment walk always terminates; a check that would exceed it fails closed.
@@ -48,4 +57,12 @@ pub use record::{
     PolicyCondition, PolicyEffect, PolicyRule, PolicySubject, RulesValue, ScopeSelector,
     ScopeStatus, Visibility,
 };
-pub use state::OrgState;
+pub use state::{OrgState, ScrubReport};
+
+// E1b public surface.
+pub use api::{
+    AUDIT_LOG, META_KEY, NS, OrgAction, OrgAuditEntry, authorize_in_world, delegation_key,
+    grant_key, member_key, org_key, policy_key, role_key, scope_key, submit,
+};
+pub use module::{OrgModule, OrgStore};
+pub use wiring::OrgPredicateProvider;

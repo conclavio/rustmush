@@ -29,6 +29,8 @@ mush-faction.workspace = true
 mush-scenes.workspace = true
 mush-sim.workspace = true
 mush-canon.workspace = true
+# The E1 organization identity + scoped-authorization module.
+mush-org.workspace = true
 mush-mail.workspace = true
 mush-jobs.workspace = true
 # The M5 scripting + weather modules.

@@ -17,6 +17,36 @@ use crate::record::{
     Organization,
 };
 
+/// What a [`OrgState::scrub_object`] removed — the exact docs the E1b module must
+/// delete from the store and the surviving policies whose rule lists changed and
+/// must be re-persisted. Absence of a field just means nothing of that kind
+/// referenced the destroyed object.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScrubReport {
+    /// Orgs the object was a member of (delete `member:{org}:{obj}`).
+    pub memberships: Vec<OrgId>,
+    /// Direct grants to the object (delete `grant:{id}`).
+    pub grants: Vec<GrantId>,
+    /// Delegations to or from the object (delete `delegation:{id}`).
+    pub delegations: Vec<DelegationId>,
+    /// Policies owned by the object, removed whole (delete `policy:{id}`).
+    pub deleted_policies: Vec<PolicyId>,
+    /// Policies that survived but lost a rule naming the object (re-persist them).
+    pub modified_policies: Vec<PolicyId>,
+}
+
+impl ScrubReport {
+    /// Whether nothing referenced the object (the common case — no writes needed).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.memberships.is_empty()
+            && self.grants.is_empty()
+            && self.delegations.is_empty()
+            && self.deleted_policies.is_empty()
+            && self.modified_policies.is_empty()
+    }
+}
+
 /// The authoritative organization state. Read by `authorize`; mutated only via
 /// [`OrgMutationPlan`](crate::OrgMutationPlan)`::apply`, which keeps the derived
 /// indexes consistent.
@@ -77,6 +107,37 @@ impl OrgState {
     /// A delegation.
     pub fn delegation(&self, id: DelegationId) -> Option<&Delegation> {
         self.delegations.get(&id)
+    }
+
+    // ---- staff-inspection iterators (E1b `@org` commands + boot) -----------
+
+    /// Every organization (ordered by id).
+    pub fn orgs(&self) -> impl Iterator<Item = &Organization> {
+        self.orgs.values()
+    }
+    /// Every scope in an org.
+    pub fn scopes_in(&self, org: OrgId) -> impl Iterator<Item = &OrgScope> {
+        self.scopes.values().filter(move |s| s.org == org)
+    }
+    /// Every membership in an org.
+    pub fn members_in(&self, org: OrgId) -> impl Iterator<Item = &OrgMembership> {
+        self.memberships.values().filter(move |m| m.org == org)
+    }
+    /// Every role template in an org.
+    pub fn roles_in(&self, org: OrgId) -> impl Iterator<Item = &OrgRole> {
+        self.roles.values().filter(move |r| r.org == org)
+    }
+    /// Every direct grant in an org.
+    pub fn grants_in(&self, org: OrgId) -> impl Iterator<Item = &CapabilityGrant> {
+        self.grants.values().filter(move |g| g.org == org)
+    }
+    /// Every delegation in an org.
+    pub fn delegations_in(&self, org: OrgId) -> impl Iterator<Item = &Delegation> {
+        self.delegations.values().filter(move |d| d.org == org)
+    }
+    /// Every access policy in an org.
+    pub fn policies_in(&self, org: OrgId) -> impl Iterator<Item = &AccessPolicy> {
+        self.policies.values().filter(move |p| p.org == org)
     }
 
     pub(crate) fn grants_to(&self, grantee: ObjId) -> impl Iterator<Item = &CapabilityGrant> {
@@ -189,16 +250,21 @@ impl OrgState {
     /// destroyed object grants nothing because it has no live records; E1b calls
     /// this on `ObjDestroyed`). Removes memberships, direct grants, and
     /// delegations to/from the object; also strips `AccessPolicy` rules and
-    /// ownership referencing it (R-R5).
-    pub fn scrub_object(&mut self, obj: ObjId) {
+    /// ownership referencing it (R-R5). Returns a [`ScrubReport`] naming exactly
+    /// what changed so the module can delete the matching docs (and re-persist any
+    /// policy whose rule list shrank) in the same write batch.
+    pub fn scrub_object(&mut self, obj: ObjId) -> ScrubReport {
+        let mut report = ScrubReport::default();
         let orgs: Vec<OrgId> = self.member_orgs(obj).collect();
         for org in orgs {
             self.remove_membership(org, obj);
+            report.memberships.push(org);
         }
         let grant_ids: Vec<GrantId> =
             self.grants_by_grantee.get(&obj).into_iter().flatten().copied().collect();
         for g in grant_ids {
             self.remove_grant(g);
+            report.grants.push(g);
         }
         // Delegations to or from the object.
         let del_ids: Vec<DelegationId> = self
@@ -216,6 +282,7 @@ impl OrgState {
                     self.delegations_by_grantee.remove(&d.grantee);
                 }
             }
+            report.delegations.push(id);
         }
         // Policy hygiene: drop rules whose subject is this principal, and drop a
         // policy owned by this object entirely (R-R5). Absence only narrows.
@@ -231,11 +298,17 @@ impl OrgState {
             {
                 set.remove(&pid);
             }
+            report.deleted_policies.push(pid);
         }
         for p in self.policies.values_mut() {
+            let before = p.rules.len();
             p.rules.retain(|r| {
                 !matches!(&r.subject, crate::PolicySubject::Principal(crate::PrincipalId::Object(o)) if *o == obj)
             });
+            if p.rules.len() != before {
+                report.modified_policies.push(p.id);
+            }
         }
+        report
     }
 }

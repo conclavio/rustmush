@@ -2169,10 +2169,13 @@ name = "mush-org"
 version = "0.1.0"
 dependencies = [
  "mush-core",
+ "mush-proto",
+ "mush-testkit",
  "serde",
  "serde_json",
  "smol_str",
  "thiserror 2.0.20",
+ "tracing",
 ]
 
 [[package]]
@@ -2242,6 +2245,7 @@ dependencies = [
  "mush-llm",
  "mush-mail",
  "mush-npc",
+ "mush-org",
  "mush-proto",
  "mush-ruleset",
  "mush-scenes",

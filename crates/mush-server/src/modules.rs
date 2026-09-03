@@ -72,6 +72,10 @@ pub fn server_modules_with(weather: mush_weather::WeatherConfig) -> Vec<Box<dyn 
         Box::new(mush_comsys::ComsysModule::new()),
         Box::new(mush_faction::FactionModule::new()),
         Box::new(mush_canon::CanonModule::new()),
+        // E1: organization identity + scoped authorization (the economy's
+        // ownership/permission substrate). No predicate providers wired yet — E1c
+        // adds the faction-standing provider.
+        Box::new(mush_org::OrgModule::new()),
         Box::new(mush_scenes::ScenesModule::new()),
         Box::new(mush_sim::SimulationModule::new()),
         Box::new(mush_mail::MailModule),
@@ -701,7 +705,7 @@ mod tests {
         let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
         assert_eq!(
             names,
-            ["comsys", "faction", "canon", "scenes", "sim", "mail", "jobs", "weather", "script"]
+            ["comsys", "faction", "canon", "org", "scenes", "sim", "mail", "jobs", "weather", "script"]
         );
     }
 
@@ -809,7 +813,7 @@ mod tests {
         assert_eq!(
             names,
             [
-                "comsys", "faction", "canon", "scenes", "sim", "mail", "jobs", "weather", "script",
+                "comsys", "faction", "canon", "org", "scenes", "sim", "mail", "jobs", "weather", "script",
                 "worldgen", "wod"
             ]
         );
@@ -921,7 +925,7 @@ mod tests {
         let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
         assert_eq!(
             names,
-            ["comsys", "faction", "canon", "scenes", "sim", "mail", "jobs", "weather", "script", "wod"]
+            ["comsys", "faction", "canon", "org", "scenes", "sim", "mail", "jobs", "weather", "script", "wod"]
         );
         // The ruleset's surface is live: +roll / +sheet registered, the
         // wod.roll panel feed present, and the chargen/xp job queues too.
