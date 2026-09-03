@@ -189,6 +189,8 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
         retained = recovery.retained,
         reconciled = recovery.reconciled,
         already_finalized = recovery.already_finalized,
+        checkpointed = recovery.checkpointed,
+        checkpoint_deferred_outbox = recovery.checkpoint_deferred_outbox,
         scan_pages = recovery.scan_pages,
         "authoritative intent recovery barrier complete"
     );

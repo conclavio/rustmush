@@ -37,10 +37,10 @@ use futures::future::BoxFuture;
 use mush_core::{AuthoritativeBundle, CanonicalHash, CommitToken, ObjId, ScopedIdempotencyKey};
 
 use crate::types::{
-    AccountRec, AuthoritativeIntentPage, AuthoritativeReceipt, AuthoritativeRetentionUsage,
-    AuthoritativeScanCursor, BanRec, BundleStatus, IdempotencyStatus, IntentReceipt,
-    PendingAuthoritativeIntent, SshKeyRec, StoreError, TokenRecord, WorldSnapshot, WriteBatch,
-    WriteReceipt,
+    AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeIntentPage, AuthoritativeReceipt,
+    AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec, BundleStatus, IdempotencyStatus,
+    IntentReceipt, PendingAuthoritativeIntent, SshKeyRec, StoreError, TokenRecord, WorldSnapshot,
+    WriteBatch, WriteReceipt,
 };
 
 /// Exact-intent persistence used by the K3 action coordinator.
@@ -71,6 +71,16 @@ pub trait AuthoritativeStore: ObjectStore {
         token: CommitToken,
         expected_bundle_hash: CanonicalHash,
     ) -> BoxFuture<'_, Result<AuthoritativeReceipt, StoreError>>;
+
+    /// Atomically replace a finalized action's full replay intent with its
+    /// compact, hash-verified checkpoint witness. The idempotency binding and
+    /// semantic result remain available for exact retries. Pending actions or
+    /// actions with unresolved durable-outbox work are never compacted.
+    fn checkpoint_authoritative(
+        &self,
+        token: CommitToken,
+        expected_bundle_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<AuthoritativeCheckpointReceipt, StoreError>>;
 
     /// Inspect only an exact expected token/hash pair.
     fn authoritative_status(

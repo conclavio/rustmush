@@ -176,6 +176,8 @@ async fn build_engine(
         retention_counters_repaired = recovery.retention_counters_repaired,
         reconciled = recovery.reconciled,
         already_finalized = recovery.already_finalized,
+        checkpointed = recovery.checkpointed,
+        checkpoint_deferred_outbox = recovery.checkpoint_deferred_outbox,
         scan_pages = recovery.scan_pages,
         "authoritative intent recovery barrier complete"
     );

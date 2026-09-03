@@ -1959,9 +1959,14 @@ quarantine spool now keeps v1 Ledger records read-compatible while writing tagge
 records under one lock and capacity budget. Runtime authoritative poison is retried three times,
 then the whole immutable bundle is durably dead-lettered and the writer integrity-freezes. Pre-boot
 recovery performs exact token/hash status and pending reconciliation and archives a bundle only
-after an exact finalized receipt. Production support still requires the live-Redis suite in CI,
-semantic bundle assembly and early idempotency in real providers, remaining process/IPC fault
-cases, checkpoints, and durable-outbox dispatch.
+after an exact finalized receipt. Finalized receipts are now compact, self-hashed semantic
+witnesses (legacy full-bundle receipts remain read-compatible). The single writer and boot recovery
+atomically checkpoint finalized actions without unresolved durable-outbox work, release their full
+replay intents and capacity charges, and preserve exact token/idempotency retry through the compact
+witness; the transition is idempotent after acknowledgement loss and is covered in memory and live
+Redis. Linux CI already supplies Redis 8 for the live-gated suite. Production support still
+requires epoch/watermark retirement for compact tombstones, semantic bundle assembly and early
+idempotency in real providers, the remaining process/IPC fault cases, and durable-outbox dispatch.
 
 Work:
 

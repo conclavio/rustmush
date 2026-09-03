@@ -126,6 +126,7 @@ async fn pending_intent_is_reconciled_before_redis_world_load() {
     );
     assert!(report.retention_counters_repaired);
     assert_eq!(report.reconciled, 1);
+    assert_eq!(report.checkpointed, 1);
     let repaired_count: usize = store
         .client()
         .get("auth:retained_count")
@@ -136,8 +137,8 @@ async fn pending_intent_is_reconciled_before_redis_world_load() {
         .get("auth:retained_bytes")
         .await
         .expect("read repaired bytes");
-    assert_eq!(repaired_count, report.retained);
-    assert_eq!(repaired_bytes, report.retained_bytes);
+    assert_eq!(repaired_count, 0, "checkpoint releases the full intent");
+    assert_eq!(repaired_bytes, 0, "checkpoint releases its byte charge");
     let world = load_or_seed_world(&store)
         .await
         .expect("hydrate after barrier");

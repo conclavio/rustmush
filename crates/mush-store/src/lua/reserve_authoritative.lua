@@ -33,8 +33,15 @@ if existing_intent then
   return 'RESUMED'
 end
 
+-- A checkpointed action deliberately has no full intent. Its compact receipt
+-- and exact idempotency binding are sufficient to join an identical retry;
+-- Rust performs the full typed/hash validation before returning success.
 if redis.call('EXISTS', KEYS[2]) ~= 0 then
-  return 'CORRUPT_RECEIPT'
+  if redis.call('GET', KEYS[3]) == ARGV[2] then
+    redis.call('SREM', KEYS[4], ARGV[3])
+    return 'RESUMED'
+  end
+  return 'TOKEN_CONFLICT'
 end
 
 local existing_binding = redis.call('GET', KEYS[3])

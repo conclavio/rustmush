@@ -112,6 +112,11 @@ pub struct AuthoritativeBootRecoveryReport {
     pub reconciled: usize,
     /// Retained intents already carrying an exact finalized witness.
     pub already_finalized: usize,
+    /// Finalized full intents replaced by compact checkpoint witnesses.
+    pub checkpointed: usize,
+    /// Finalized intents deliberately retained because durable outbox work is
+    /// not yet terminal.
+    pub checkpoint_deferred_outbox: usize,
     /// Cursor pages consumed, including an empty terminal page when Redis
     /// returns one.
     pub scan_pages: usize,
@@ -278,6 +283,11 @@ pub async fn reconcile_authoritative_for_writable_boot(
                 ));
             }
         }
+        match checkpoint_one_authoritative_boot_intent(store, token, hash).await? {
+            BootCheckpoint::Released => report.checkpointed += 1,
+            BootCheckpoint::AlreadyCheckpointed => {}
+            BootCheckpoint::DeferredOutbox => report.checkpoint_deferred_outbox += 1,
+        }
     }
 
     let remaining = store
@@ -291,6 +301,60 @@ pub async fn reconcile_authoritative_for_writable_boot(
         ));
     }
     Ok(report)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BootCheckpoint {
+    Released,
+    AlreadyCheckpointed,
+    DeferredOutbox,
+}
+
+async fn checkpoint_one_authoritative_boot_intent(
+    store: &dyn AuthoritativeStore,
+    token: mush_core::CommitToken,
+    hash: mush_core::CanonicalHash,
+) -> Result<BootCheckpoint, String> {
+    for attempt in 1..=AUTHORITATIVE_BOOT_RECONCILE_ATTEMPTS {
+        match store.checkpoint_authoritative(token, hash).await {
+            Ok(checkpoint)
+                if checkpoint.receipt.token() == token
+                    && checkpoint.receipt.bundle_hash() == hash =>
+            {
+                return Ok(if checkpoint.resumed {
+                    BootCheckpoint::AlreadyCheckpointed
+                } else {
+                    BootCheckpoint::Released
+                });
+            }
+            Ok(_) => {
+                return Err(format!(
+                    "authoritative checkpoint returned a non-exact witness for {token}"
+                ));
+            }
+            Err(StoreError::AuthoritativeOutboxPending) => {
+                return Ok(BootCheckpoint::DeferredOutbox);
+            }
+            Err(error)
+                if error.is_transient() && attempt < AUTHORITATIVE_BOOT_RECONCILE_ATTEMPTS =>
+            {
+                tracing::warn!(
+                    %token,
+                    attempt,
+                    max_attempts = AUTHORITATIVE_BOOT_RECONCILE_ATTEMPTS,
+                    error = %error,
+                    "transient authoritative boot checkpoint failure; retrying exact intent"
+                );
+                tokio::time::sleep(Duration::from_millis(100 * u64::from(attempt))).await;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "checkpointing authoritative intent {token} on attempt {attempt}: {error}"
+                ));
+            }
+        }
+    }
+    unreachable!("bounded authoritative checkpoint loop always returns")
 }
 
 async fn reconcile_one_authoritative_boot_intent(
@@ -628,8 +692,16 @@ async fn commit_authoritative_with_retry(
                     Ok(BundleStatus::FinalizedExact(receipt))
                         if receipt.token() == token && receipt.bundle_hash() == hash =>
                     {
-                        mark_authoritative_recovered(healthy, signals, token);
-                        return Ok(*receipt);
+                        return checkpoint_finalized_with_retry(
+                            authoritative,
+                            &bundle,
+                            *receipt,
+                            healthy,
+                            signals,
+                            quarantine_spool,
+                            &mut delay,
+                        )
+                        .await;
                     }
                     Ok(BundleStatus::FinalizedExact(_)) => {
                         return Err(AuthoritativeCommitFailure::Integrity(format!(
@@ -677,8 +749,16 @@ async fn commit_authoritative_with_retry(
     loop {
         match authoritative.reconcile_authoritative(token, hash).await {
             Ok(receipt) if receipt.token() == token && receipt.bundle_hash() == hash => {
-                mark_authoritative_recovered(healthy, signals, token);
-                return Ok(receipt);
+                return checkpoint_finalized_with_retry(
+                    authoritative,
+                    &bundle,
+                    receipt,
+                    healthy,
+                    signals,
+                    quarantine_spool,
+                    &mut delay,
+                )
+                .await;
             }
             Ok(_) => {
                 return Err(AuthoritativeCommitFailure::Integrity(format!(
@@ -694,8 +774,16 @@ async fn commit_authoritative_with_retry(
                 Ok(BundleStatus::FinalizedExact(receipt))
                     if receipt.token() == token && receipt.bundle_hash() == hash =>
                 {
-                    mark_authoritative_recovered(healthy, signals, token);
-                    return Ok(*receipt);
+                    return checkpoint_finalized_with_retry(
+                        authoritative,
+                        &bundle,
+                        *receipt,
+                        healthy,
+                        signals,
+                        quarantine_spool,
+                        &mut delay,
+                    )
+                    .await;
                 }
                 Ok(BundleStatus::PendingExact) => {
                     deterministic_reconcile_attempts = deterministic_reconcile_attempts
@@ -752,6 +840,73 @@ async fn commit_authoritative_with_retry(
                     )));
                 }
             },
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn checkpoint_finalized_with_retry(
+    store: &dyn AuthoritativeStore,
+    bundle: &AuthoritativeBundle,
+    receipt: AuthoritativeReceipt,
+    healthy: &mut bool,
+    signals: &WriterSignalSender,
+    quarantine_spool: &QuarantineSpool,
+    delay: &mut Duration,
+) -> Result<AuthoritativeReceipt, AuthoritativeCommitFailure> {
+    let token = bundle.token();
+    let hash = bundle.bundle_hash();
+    let mut deterministic_attempts = 0u32;
+    loop {
+        match store.checkpoint_authoritative(token, hash).await {
+            Ok(checkpoint)
+                if checkpoint.receipt.token() == token
+                    && checkpoint.receipt.bundle_hash() == hash =>
+            {
+                mark_authoritative_recovered(healthy, signals, token);
+                return Ok(checkpoint.receipt);
+            }
+            Ok(_) => {
+                return Err(AuthoritativeCommitFailure::Integrity(format!(
+                    "authoritative checkpoint returned a non-exact witness for {token}"
+                )));
+            }
+            Err(StoreError::AuthoritativeOutboxPending) => {
+                // Durable outbox dispatch owns the full replay record until
+                // every item is terminal. Finalization is nevertheless exact.
+                mark_authoritative_recovered(healthy, signals, token);
+                return Ok(receipt);
+            }
+            Err(error) if error.is_transient() => {
+                mark_authoritative_transient(healthy, signals, token, &error);
+                tokio::time::sleep(*delay).await;
+                *delay = (*delay * 2).min(RETRY_MAX);
+            }
+            Err(error) => {
+                deterministic_attempts = deterministic_attempts
+                    .checked_add(1)
+                    .expect("bounded checkpoint poison attempt counter");
+                if deterministic_attempts < AUTHORITATIVE_POISON_ATTEMPTS {
+                    tracing::warn!(
+                        %token,
+                        attempt = deterministic_attempts,
+                        max_attempts = AUTHORITATIVE_POISON_ATTEMPTS,
+                        error = %error,
+                        "deterministic authoritative checkpoint failure; retrying before quarantine"
+                    );
+                    continue;
+                }
+                quarantine_spool
+                    .quarantine_authoritative_bundle(bundle, &error, deterministic_attempts)
+                    .map_err(|quarantine_error| {
+                        AuthoritativeCommitFailure::Integrity(format!(
+                            "finalized authoritative bundle {token} could not be checkpointed and its dead-letter could not be preserved: {quarantine_error}"
+                        ))
+                    })?;
+                return Err(AuthoritativeCommitFailure::Integrity(format!(
+                    "finalized authoritative bundle {token} could not be checkpointed and was quarantined after {deterministic_attempts} deterministic attempts: {error}"
+                )));
+            }
         }
     }
 }
@@ -1807,6 +1962,8 @@ mod tests {
                 retention_counters_repaired: false,
                 reconciled: 1,
                 already_finalized: 0,
+                checkpointed: 1,
+                checkpoint_deferred_outbox: 0,
                 scan_pages: 1,
             }
         );
@@ -1814,14 +1971,16 @@ mod tests {
         assert_eq!(world.next_id(), 3);
         assert_eq!(world.get(ObjId(2)).unwrap().name, "recovered marker");
 
-        // Rebooting is an exact no-op over the retained finalized witness.
+        // Rebooting is an exact no-op: the compact checkpoint is not part of
+        // the full-intent recovery scan.
         let second = reconcile_authoritative_for_writable_boot(&store)
             .await
             .unwrap();
         assert_eq!(second.indexed, 0);
-        assert_eq!(second.retained, 1);
+        assert_eq!(second.retained, 0);
         assert_eq!(second.reconciled, 0);
-        assert_eq!(second.already_finalized, 1);
+        assert_eq!(second.already_finalized, 0);
+        assert_eq!(second.checkpointed, 0);
     }
 
     #[tokio::test]
@@ -1838,7 +1997,7 @@ mod tests {
                 .await
                 .unwrap();
 
-        assert_eq!(receipt.bundle(), &bundle);
+        assert!(receipt.matches_bundle(&bundle));
         assert!(healthy);
         assert_eq!(
             store
@@ -1853,6 +2012,15 @@ mod tests {
                 .await
                 .unwrap()
                 .is_empty()
+        );
+        assert!(
+            store
+                .scan_authoritative_intents(None, 1)
+                .await
+                .unwrap()
+                .intents
+                .is_empty(),
+            "the writer checkpoints and releases finalized replay material"
         );
     }
 

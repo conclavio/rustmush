@@ -30,12 +30,12 @@ use mush_core::{
 
 use crate::store::{AuthoritativeStore, ObjectStore};
 use crate::types::{
-    AccountRec, AuthoritativeIntentPage, AuthoritativeReceipt, AuthoritativeRetentionUsage,
-    AuthoritativeScanCursor, BanRec, BundleStatus, CharacterRef, IdempotencyStatus, IntentReceipt,
-    MAX_AUTHORITATIVE_DISCOVERY_PAGE, MAX_RETAINED_AUTHORITATIVE_BYTES,
-    MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleWrite, PendingAuthoritativeIntent, SshKeyRec,
-    StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt, validate_module_key,
-    validate_module_ns, validate_module_op, validate_token_hash,
+    AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeIntentPage, AuthoritativeReceipt,
+    AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec, BundleStatus, CharacterRef,
+    IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
+    MAX_RETAINED_AUTHORITATIVE_BYTES, MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleWrite,
+    PendingAuthoritativeIntent, SshKeyRec, StoreError, TokenRecord, WorldSnapshot, WriteBatch,
+    WriteReceipt, validate_module_key, validate_module_ns, validate_module_op, validate_token_hash,
 };
 
 /// See the [module docs](self).
@@ -68,10 +68,9 @@ struct Inner {
     module_streams: BTreeMap<(String, String), MemStream>,
     /// Highest acknowledged batch serial (debug/ops visibility).
     last_serial: Option<u64>,
-    /// Immutable full intents, retained until K3 checkpoint compaction exists.
+    /// Immutable full intents, retained until exact checkpoint compaction.
     authoritative_intents: BTreeMap<CommitToken, String>,
-    /// Immutable finalized witnesses. The initial implementation retains the
-    /// complete bundle inside each receipt.
+    /// Immutable compact finalized/checkpoint witnesses.
     authoritative_receipts: BTreeMap<CommitToken, String>,
     /// Early lookup binding installed atomically with the full intent.
     authoritative_idempotency: BTreeMap<ScopedIdempotencyKey, IdempotencyBinding>,
@@ -186,6 +185,47 @@ fn decode_receipt(doc: &str) -> Result<AuthoritativeReceipt, StoreError> {
     serde_json::from_str(doc).map_err(|error| StoreError::AuthoritativeCorrupt(error.to_string()))
 }
 
+fn decode_checkpoint_receipt(doc: &str) -> Result<AuthoritativeReceipt, StoreError> {
+    let receipt = decode_receipt(doc)?;
+    let canonical = serde_json::to_string(&receipt)
+        .map_err(|error| StoreError::AuthoritativeCorrupt(error.to_string()))?;
+    if canonical != doc {
+        return Err(StoreError::AuthoritativeCorrupt(
+            "checkpoint receipt document is not in canonical storage form".to_owned(),
+        ));
+    }
+    Ok(receipt)
+}
+
+fn validate_receipt_binding(
+    inner: &Inner,
+    stored_token: CommitToken,
+    receipt: &AuthoritativeReceipt,
+) -> Result<(), StoreError> {
+    if receipt.token() != stored_token {
+        return Err(StoreError::AuthoritativeCorrupt(
+            "authoritative receipt is stored under the wrong token".to_owned(),
+        ));
+    }
+    let binding = inner
+        .authoritative_idempotency
+        .get(receipt.idempotency())
+        .ok_or_else(|| {
+            StoreError::AuthoritativeCorrupt(
+                "authoritative receipt is missing its idempotency binding".to_owned(),
+            )
+        })?;
+    if binding.token != stored_token
+        || binding.ingress_hash != receipt.ingress_hash()
+        || binding.bundle_hash != receipt.bundle_hash()
+    {
+        return Err(StoreError::AuthoritativeCorrupt(
+            "authoritative receipt disagrees with its idempotency binding".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_retained_intent(
     inner: &Inner,
     stored_token: CommitToken,
@@ -216,7 +256,7 @@ fn validate_retained_intent(
         return Ok(None);
     };
     let receipt = decode_receipt(receipt_doc)?;
-    if receipt.token() != stored_token || receipt.bundle() != intent {
+    if !receipt.matches_bundle(intent) {
         return Err(StoreError::AuthoritativeCorrupt(
             "finalized receipt disagrees with its retained intent".to_owned(),
         ));
@@ -450,7 +490,7 @@ impl AuthoritativeStore for InMemoryStore {
                 let finalized = if let Some(receipt_doc) = inner.authoritative_receipts.get(&token)
                 {
                     let receipt = decode_receipt(receipt_doc)?;
-                    if receipt.bundle() != &bundle {
+                    if !receipt.matches_bundle(&bundle) {
                         return Err(StoreError::AuthoritativeCorrupt(
                             "finalized receipt disagrees with its retained intent".to_owned(),
                         ));
@@ -464,6 +504,19 @@ impl AuthoritativeStore for InMemoryStore {
                 } else {
                     inner.authoritative_pending.insert(token);
                 }
+                return Ok(IntentReceipt {
+                    token,
+                    bundle_hash,
+                    resumed: true,
+                });
+            }
+            if let Some(receipt_doc) = inner.authoritative_receipts.get(&token) {
+                let receipt = decode_checkpoint_receipt(receipt_doc)?;
+                validate_receipt_binding(&inner, token, &receipt)?;
+                if !receipt.matches_bundle(&bundle) {
+                    return Err(StoreError::AuthoritativeTokenConflict);
+                }
+                inner.authoritative_pending.remove(&token);
                 return Ok(IntentReceipt {
                     token,
                     bundle_hash,
@@ -516,10 +569,26 @@ impl AuthoritativeStore for InMemoryStore {
             let Some(binding) = inner.authoritative_idempotency.get(key) else {
                 return Ok(IdempotencyStatus::Vacant);
             };
+            if binding.ingress_hash != ingress_hash {
+                return Ok(IdempotencyStatus::Conflict);
+            }
             let Some(intent_doc) = inner.authoritative_intents.get(&binding.token) else {
-                return Err(StoreError::AuthoritativeCorrupt(
-                    "idempotency binding names no intent or receipt".to_owned(),
-                ));
+                let receipt_doc = inner
+                    .authoritative_receipts
+                    .get(&binding.token)
+                    .ok_or_else(|| {
+                        StoreError::AuthoritativeCorrupt(
+                            "idempotency binding names no intent or receipt".to_owned(),
+                        )
+                    })?;
+                let receipt = decode_checkpoint_receipt(receipt_doc)?;
+                validate_receipt_binding(&inner, binding.token, &receipt)?;
+                if receipt.idempotency() != key {
+                    return Err(StoreError::AuthoritativeCorrupt(
+                        "checkpoint receipt disagrees with its idempotency address".to_owned(),
+                    ));
+                }
+                return Ok(IdempotencyStatus::FinalizedExact(Box::new(receipt)));
             };
             let intent = decode_intent(intent_doc)?;
             if intent.idempotency() != key {
@@ -528,9 +597,6 @@ impl AuthoritativeStore for InMemoryStore {
                 ));
             }
             let receipt = validate_retained_intent(&inner, binding.token, &intent)?;
-            if binding.ingress_hash != ingress_hash {
-                return Ok(IdempotencyStatus::Conflict);
-            }
             if let Some(receipt) = receipt {
                 return Ok(IdempotencyStatus::FinalizedExact(Box::new(receipt)));
             }
@@ -549,11 +615,18 @@ impl AuthoritativeStore for InMemoryStore {
         Box::pin(async move {
             let intent_doc = {
                 let mut inner = self.lock()?;
-                let intent_doc = inner
-                    .authoritative_intents
-                    .get(&token)
-                    .cloned()
-                    .ok_or(StoreError::AuthoritativeIntentMissing)?;
+                let Some(intent_doc) = inner.authoritative_intents.get(&token).cloned() else {
+                    let receipt_doc = inner
+                        .authoritative_receipts
+                        .get(&token)
+                        .ok_or(StoreError::AuthoritativeIntentMissing)?;
+                    let receipt = decode_checkpoint_receipt(receipt_doc)?;
+                    validate_receipt_binding(&inner, token, &receipt)?;
+                    if receipt.bundle_hash() != expected_bundle_hash {
+                        return Err(StoreError::AuthoritativeTokenConflict);
+                    }
+                    return Ok(receipt);
+                };
                 let intent = decode_intent(&intent_doc)?;
                 if let Some(receipt) = validate_retained_intent(&inner, token, &intent)? {
                     if receipt.bundle_hash() != expected_bundle_hash {
@@ -574,37 +647,34 @@ impl AuthoritativeStore for InMemoryStore {
                 return Err(StoreError::AuthoritativeTokenConflict);
             }
             let planned = plan_replay(&bundle)?;
-            let receipt = AuthoritativeReceipt::new(bundle);
+            let receipt = AuthoritativeReceipt::new(&bundle);
             let receipt_doc = serde_json::to_string(&receipt)?;
 
             let mut inner = self.lock()?;
             if inner.authoritative_intents.get(&token) != Some(&intent_doc) {
                 return Err(StoreError::AuthoritativeTokenConflict);
             }
-            if let Some(existing) = validate_retained_intent(&inner, token, receipt.bundle())? {
+            if let Some(existing) = validate_retained_intent(&inner, token, &bundle)? {
                 if existing != receipt {
                     return Err(StoreError::AuthoritativeTokenConflict);
                 }
                 inner.authoritative_pending.remove(&token);
                 return Ok(existing);
             }
-            let Some(binding) = inner
-                .authoritative_idempotency
-                .get(receipt.bundle().idempotency())
-            else {
+            let Some(binding) = inner.authoritative_idempotency.get(bundle.idempotency()) else {
                 return Err(StoreError::AuthoritativeCorrupt(
                     "authoritative intent is missing its idempotency binding".to_owned(),
                 ));
             };
             if binding.token != token
-                || binding.ingress_hash != receipt.bundle().ingress_hash()
+                || binding.ingress_hash != bundle.ingress_hash()
                 || binding.bundle_hash != expected_bundle_hash
             {
                 return Err(StoreError::AuthoritativeCorrupt(
                     "authoritative intent disagrees with its idempotency binding".to_owned(),
                 ));
             }
-            validate_replay_recovery(&inner, receipt.bundle())?;
+            validate_replay_recovery(&inner, &bundle)?;
             apply_replay(&mut inner, &planned);
             if !replay_matches(&inner, &planned) {
                 return Err(StoreError::AuthoritativeCorrupt(
@@ -614,6 +684,51 @@ impl AuthoritativeStore for InMemoryStore {
             inner.authoritative_receipts.insert(token, receipt_doc);
             inner.authoritative_pending.remove(&token);
             Ok(receipt)
+        })
+    }
+
+    fn checkpoint_authoritative(
+        &self,
+        token: CommitToken,
+        expected_bundle_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<AuthoritativeCheckpointReceipt, StoreError>> {
+        Box::pin(async move {
+            let mut inner = self.lock()?;
+            let Some(intent_doc) = inner.authoritative_intents.get(&token).cloned() else {
+                let receipt_doc = inner
+                    .authoritative_receipts
+                    .get(&token)
+                    .ok_or(StoreError::AuthoritativeIntentMissing)?;
+                let receipt = decode_checkpoint_receipt(receipt_doc)?;
+                validate_receipt_binding(&inner, token, &receipt)?;
+                if receipt.bundle_hash() != expected_bundle_hash {
+                    return Err(StoreError::AuthoritativeTokenConflict);
+                }
+                return Ok(AuthoritativeCheckpointReceipt {
+                    receipt,
+                    released_intent_bytes: 0,
+                    resumed: true,
+                });
+            };
+            let bundle = decode_intent(&intent_doc)?;
+            if bundle.bundle_hash() != expected_bundle_hash {
+                return Err(StoreError::AuthoritativeTokenConflict);
+            }
+            if !bundle.durable_outbox().is_empty() {
+                return Err(StoreError::AuthoritativeOutboxPending);
+            }
+            let receipt = validate_retained_intent(&inner, token, &bundle)?
+                .ok_or(StoreError::AuthoritativeNotFinalized)?;
+            validate_receipt_binding(&inner, token, &receipt)?;
+            let checkpoint_doc = serde_json::to_string(&receipt)?;
+            inner.authoritative_receipts.insert(token, checkpoint_doc);
+            inner.authoritative_intents.remove(&token);
+            inner.authoritative_pending.remove(&token);
+            Ok(AuthoritativeCheckpointReceipt {
+                receipt,
+                released_intent_bytes: intent_doc.len(),
+                resumed: false,
+            })
         })
     }
 
@@ -637,9 +752,19 @@ impl AuthoritativeStore for InMemoryStore {
                 }));
             }
             if inner.authoritative_receipts.contains_key(&token) {
-                return Err(StoreError::AuthoritativeCorrupt(
-                    "finalized receipt has no retained intent".to_owned(),
-                ));
+                let receipt = decode_checkpoint_receipt(
+                    inner
+                        .authoritative_receipts
+                        .get(&token)
+                        .expect("receipt presence checked"),
+                )?;
+                validate_receipt_binding(&inner, token, &receipt)?;
+                if receipt.bundle_hash() != expected_bundle_hash {
+                    return Ok(BundleStatus::Conflict {
+                        stored_bundle_hash: receipt.bundle_hash(),
+                    });
+                }
+                return Ok(BundleStatus::FinalizedExact(Box::new(receipt)));
             }
             Ok(BundleStatus::Absent)
         })
@@ -1680,7 +1805,7 @@ mod tests {
                 .reconcile(token, hash)
                 .await?
                 .expect("exact recovery receipt");
-            assert_eq!(receipt.bundle(), &bundle, "fault mode {mode:?}");
+            assert!(receipt.matches_bundle(&bundle), "fault mode {mode:?}");
             assert_eq!(
                 store.inner.authoritative_status(token, hash).await?,
                 BundleStatus::FinalizedExact(Box::new(receipt.clone())),
@@ -1892,6 +2017,83 @@ mod tests {
         assert_eq!(snapshot.next_id, 3);
         assert_eq!(snapshot.objects.len(), 3);
         assert!(snapshot.objects.iter().any(|object| object.id == ObjId(2)));
+    }
+
+    #[tokio::test]
+    async fn authoritative_checkpoint_releases_replay_but_preserves_exact_retry() {
+        let store = InMemoryStore::new();
+        seed_minimal_world(&store).await;
+        let bundle = authoritative_bundle(81, 82);
+        let token = bundle.token();
+        let hash = bundle.bundle_hash();
+        let key = bundle.idempotency().clone();
+        let ingress = bundle.ingress_hash();
+        let intent_bytes = serde_json::to_string(&bundle).unwrap().len();
+
+        store
+            .reserve_authoritative_intent(bundle.clone())
+            .await
+            .unwrap();
+        assert!(matches!(
+            store.checkpoint_authoritative(token, hash).await,
+            Err(StoreError::AuthoritativeNotFinalized)
+        ));
+        let receipt = store.reconcile_authoritative(token, hash).await.unwrap();
+        let checkpoint = store.checkpoint_authoritative(token, hash).await.unwrap();
+        assert_eq!(checkpoint.receipt, receipt);
+        assert_eq!(checkpoint.released_intent_bytes, intent_bytes);
+        assert!(!checkpoint.resumed);
+        assert!(
+            store
+                .scan_authoritative_intents(None, 1)
+                .await
+                .unwrap()
+                .intents
+                .is_empty()
+        );
+        assert_eq!(
+            store.authoritative_status(token, hash).await.unwrap(),
+            BundleStatus::FinalizedExact(Box::new(receipt.clone()))
+        );
+        assert_eq!(
+            store
+                .authoritative_idempotency_status(&key, ingress)
+                .await
+                .unwrap(),
+            IdempotencyStatus::FinalizedExact(Box::new(receipt.clone()))
+        );
+        assert!(
+            store
+                .reserve_authoritative_intent(bundle.clone())
+                .await
+                .unwrap()
+                .resumed
+        );
+        assert_eq!(
+            store.reconcile_authoritative(token, hash).await.unwrap(),
+            receipt
+        );
+        let resumed = store.checkpoint_authoritative(token, hash).await.unwrap();
+        assert!(resumed.resumed);
+        assert_eq!(resumed.released_intent_bytes, 0);
+        assert_eq!(resumed.receipt, receipt);
+
+        let inner = store.lock().unwrap();
+        assert!(inner.authoritative_intents.is_empty());
+        assert_eq!(inner.authoritative_receipts.len(), 1);
+        assert!(inner.authoritative_pending.is_empty());
+    }
+
+    #[test]
+    fn compact_receipt_reads_legacy_bytes_and_rejects_hash_tampering() {
+        let bundle = authoritative_bundle(91, 92);
+        let legacy = serde_json::json!({ "bundle": bundle });
+        let receipt: AuthoritativeReceipt = serde_json::from_value(legacy).unwrap();
+        assert!(receipt.matches_bundle(&bundle));
+
+        let mut current = serde_json::to_value(&receipt).unwrap();
+        current["receipt_hash"] = serde_json::json!(CanonicalHash::from_bytes([0xaa; 32]));
+        assert!(serde_json::from_value::<AuthoritativeReceipt>(current).is_err());
     }
 
     #[tokio::test]

@@ -278,7 +278,7 @@ redis_gated!(authoritative_exact_round_trip_and_discovery, store, {
         .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
         .await
         .expect("replay, read back, and finalize");
-    assert_eq!(receipt.bundle(), &bundle);
+    assert!(receipt.matches_bundle(&bundle));
     assert_eq!(
         store
             .authoritative_status(bundle.token(), bundle.bundle_hash())
@@ -371,6 +371,95 @@ redis_gated!(authoritative_exact_round_trip_and_discovery, store, {
             .expect("load materialized module value"),
         Some(serde_json::json!({ "amount": 1 }))
     );
+});
+
+redis_gated!(authoritative_checkpoint_is_atomic_and_retryable, store, {
+    use fred::interfaces::KeysInterface;
+
+    seed_minimal_world(&store).await;
+    let bundle = authoritative_bundle(12, 22);
+    let token = bundle.token();
+    let hash = bundle.bundle_hash();
+    let intent_key = format!("auth:intent:{token}");
+    let receipt_key = format!("auth:receipt:{token}");
+    let intent_bytes = serde_json::to_string(&bundle).unwrap().len();
+
+    store
+        .reserve_authoritative_intent(bundle.clone())
+        .await
+        .expect("reserve checkpoint candidate");
+    assert!(matches!(
+        store.checkpoint_authoritative(token, hash).await,
+        Err(StoreError::AuthoritativeNotFinalized)
+    ));
+    let receipt = store
+        .reconcile_authoritative(token, hash)
+        .await
+        .expect("finalize checkpoint candidate");
+    let checkpoint = store
+        .checkpoint_authoritative(token, hash)
+        .await
+        .expect("checkpoint finalized intent");
+    assert_eq!(checkpoint.receipt, receipt);
+    assert_eq!(checkpoint.released_intent_bytes, intent_bytes);
+    assert!(!checkpoint.resumed);
+    assert_eq!(
+        store.client().exists::<i64, _>(intent_key).await.unwrap(),
+        0
+    );
+    assert_eq!(
+        store.client().exists::<i64, _>(receipt_key).await.unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .client()
+            .get::<usize, _>("auth:retained_count")
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        store
+            .client()
+            .get::<usize, _>("auth:retained_bytes")
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(
+        store
+            .scan_authoritative_intents(None, 1)
+            .await
+            .unwrap()
+            .intents
+            .is_empty()
+    );
+    assert_eq!(
+        store.authoritative_status(token, hash).await.unwrap(),
+        BundleStatus::FinalizedExact(Box::new(receipt.clone()))
+    );
+    assert_eq!(
+        store
+            .authoritative_idempotency_status(bundle.idempotency(), bundle.ingress_hash())
+            .await
+            .unwrap(),
+        IdempotencyStatus::FinalizedExact(Box::new(receipt.clone()))
+    );
+    assert!(
+        store
+            .reserve_authoritative_intent(bundle.clone())
+            .await
+            .expect("exact checkpoint retry")
+            .resumed
+    );
+    assert_eq!(
+        store.reconcile_authoritative(token, hash).await.unwrap(),
+        receipt
+    );
+    let resumed = store.checkpoint_authoritative(token, hash).await.unwrap();
+    assert!(resumed.resumed);
+    assert_eq!(resumed.released_intent_bytes, 0);
 });
 
 redis_gated!(
@@ -598,7 +687,7 @@ redis_gated!(
             .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
             .await
             .expect("resume exact replay after repair");
-        assert_eq!(receipt.bundle(), &bundle);
+        assert!(receipt.matches_bundle(&bundle));
     }
 );
 
