@@ -352,7 +352,36 @@ degenerate case of each:
   scope check and `ApprovalRule` at escrow placement; nothing may fund an offer from an
   uncontrolled faucet.
 
-### 3.6 E4a tests (`tests/e4a.rs`, ~45)
+### 3.5a As built (E4a, `29282fe`)
+
+- `ValidateEnv { auth, custody, facts: &dyn FactEval, now, ic_now, next_hold_id }` — `Place` mints
+  a `HoldId` at validate time so `apply` stays infallible; **E4b1 must feed `next_hold_id` from the
+  journal-derived floor** (today `EconomyStore::peek_next_hold` floors from the snapshot and
+  `next_hold` is not yet in `meta`).
+- `AuthEval` gains `authorize_hold(actor, &Hold, &HoldOp)` and `authorize_attestor(actor,
+  &AttestorSet)`, default `false`; `FactEval { resolve(&ExternalRef) -> Option<bool> }` with
+  `NoFacts`; `reverify(&contract, &snapshot, &env)` re-checks every condition kind at settlement.
+- `CausalRef` is **hard-renamed `ExternalRef`** (serde shape byte-identical); `pub type CausalRef =
+  ExternalRef` kept one release.
+- `ConsentSurface.parties` is a `Vec<PrincipalId>` canonicalized by principal key (`PrincipalId`
+  has no `Ord`); duplicates refused at `check_offerable`. An `Attestation` records its **clock** so
+  `After` compares stamps only on one clock (doc 09 §2.5). `AttestorSet::Canon { kind, source }`.
+- Invariant 23 raises **two** errors: `CreditViolation` keeps E2's meaning (`posted' < floor`);
+  `InsufficientAvailable` is `posted' − held' < floor`; placement also requires `available' ≥ 0`.
+- `Expire` requires `authorize_hold` **and** the sweep cause; the custody unlock requires the
+  locking contract's cause **and** one of its two deterministic keys (`cause` alone is
+  caller-settable through `post`).
+- `Obligation.periods_settled` counts **closed** periods (settled, missed, or forgiven) — it is the
+  key-index base, not a success counter; otherwise a miss would re-derive the same
+  `obligation/{id}/{period}` key and `grace` would exhaust within one sweep.
+- `settlement_plan` accepts `Active` as well as `ReadyToSettle` (the step satisfying the last
+  condition settles in the same step); `Deliverable::DepositInto`/`Obligation` emit no plan ops at
+  settlement. `Encumbrance::{Lease, Collateral}` exist; `ContractAuth` also authorizes placing the
+  contract's own collateral. `EscalationId` and `forgive()` exist.
+- One out-of-crate line: `mush-faction/src/econ.rs` `Account` literal gains `last_hold_seq: 0`.
+- Digest pins: E2 `9c917eee…d74e` and E3-shaped `b780e3a0…5949`, both green.
+
+### 3.6 E4a tests (`tests/e4a.rs`, ~45 — built: 66)
 
 Holds: place/capture/release/expire on hand-built snapshots; available enforcement — two holds
 that together exceed available refuse the second (scenario 13 pure half); a debit that ignores a
