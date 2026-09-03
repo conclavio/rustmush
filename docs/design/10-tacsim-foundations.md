@@ -1,10 +1,11 @@
 # 10 — TacSim Foundations
 
-**Draft 0.1 — 2026-09-03.** The definitional record for the TacSim programme (build units E7+):
-the owner's scope note, the foundational survey with the **locked decisions 1A–7A**, the accepted
-addendum **T1–T7**, the remaining qualifications, and what all of that implies for the economy
-programme already in flight (docs 08–08e). This is not a build plan; the E7 plan will cite it the
-way 08c cites 08 and 09.
+**Draft 0.2 — 2026-09-03.** The definitional record for the TacSim programme (build units E7+):
+the owner's scope note, the foundational survey with the **locked decisions 1A–7A**, the
+character-first survey with the **locked decisions C1A–C30A**, the accepted addenda **T1–T16**,
+the remaining qualifications, and what all of that implies for the economy programme already in
+flight (docs 08–08e). This is not a build plan; the E7 plan will cite it the way 08c cites 08 and
+09.
 
 Companion docs: 06 (object behaviors, spatial domains), 07 (NPC control and tactical AI), 08–08e
 (economy, organizations, ownership; E3–E6 plans and owner answers), 09 (rules-engine contracts —
@@ -94,13 +95,16 @@ contract; governments and station owners impose fees, access rules, embargoes an
 
 ## 6. Organizations and politics
 
-Four concepts, kept separate: **government factions** (sovereignty, law, diplomacy, fronts,
+Six concepts, kept separate: **government factions** (sovereignty, law, diplomacy, fronts,
 territory, strategic goals); **NPC corporations** (industrial actors with real accounts,
 facilities, assets, agendas); **player corporations and mercenary units** (player-created, on the
-same accountable machinery); **operation groups** (temporary parties for one sortie or contract —
-the E6 party subsystem). A faction may claim Mars, a corporation own the refinery, a rival hold de
-facto security control, a union or intelligence service covert control — all at once; this is the
-existing de jure / de facto / covert / economic control distinction (doc 08, `mush-faction`).
+same accountable machinery); **operation groups** (temporary parties of characters for one sortie
+or contract — the E6 party subsystem); **formations** (persistent order-of-battle groupings of
+units); and **task forces** (operation-scoped containers assembling formations, detached
+subformations, individual units and support assets under one temporary command structure). A
+faction may claim Mars, a corporation own the refinery, a rival hold de facto security control, a
+union or intelligence service covert control — all at once; this is the existing de jure / de
+facto / covert / economic control distinction (doc 08, `mush-faction`).
 
 Player-created organizations are **real** here (unlike the conservative WoD default): a charter fee
 and sensible caps rather than staff creating every corporation. Templates: corporation, mercenary
@@ -146,6 +150,15 @@ control, surrender / capture / boarding. Strategic travel sets encounter geometr
 bounded local-space domain. Large ships are multicrew (helm, tactical, EW, engineering, flight ops,
 command): continuous controls are latest-order-wins; firing, launching, docking and damage control
 are bounded discrete intents (doc 06's continuous-control / discrete-action split; doc 09 K6).
+
+The player identity remains a **character**, not an asset portfolio. A character has one physical
+location and one active station. Ownership, station billets, active control and command authority
+are separate facts: a character or organization may own many units and roster a character on many
+stations, but the character directly operates only the bounded channels of one active station.
+Commanders affect larger forces through delivered mission orders and doctrine, not by manually
+driving every subordinate unit. NPCs and automation make solo capital-ship operation viable;
+additional player crew contribute parallel judgment, local competence and resilience rather than
+an unexplained ship-wide attendance bonus (§§17–19).
 
 ## 9. Economic granularity
 
@@ -366,9 +379,9 @@ Recorded here so the in-flight plans pick them up; each is small.
   journey arrival raises it and emits a typed arrival event. Doc 09's `SceneTurn` clock is the
   natural carrier; this is E7 scope but the field is worth adding when scenes are next touched.
 
-## 16. E7 definitional backlog (the next survey)
+## 16. E7 definition and implementation backlog
 
-Decisions still open before an E7 plan can be drafted:
+Definition decisions still open before an E7 plan can be drafted:
 
 1. **Extraction and yield model** — deposit record, survey resolution, depletion, claim tenure,
    licensing as entitlements; production as scheduled, journaled lot creation (doc 09 C8 already
@@ -387,3 +400,277 @@ Decisions still open before an E7 plan can be drafted:
 7. **Recovery provider** — program funding, eligibility, restrictions, upgrade terms (T7).
 8. **Time compression** — the campaign clock's OOC↔IC ratio, its interaction with obligations
    tuned for WoD/Shadowrun cadences, and `TimeJump` forgiveness thresholds.
+
+Accepted requirements which still need build-plan decomposition:
+
+9. **Carrier journeys** — replace the present `Journey` requirement that its traveler be wholly
+   sim-unbound with a carrier-root invariant: the root is not directly placed in a live domain
+   while traveling, but its station infrastructure, anchored interiors, occupants, mounts, cargo
+   and carried craft remain coherent; define promotion into and return from an interception domain.
+10. **Active-station focus** — add an actor-side active focus and lease grant invariant above the
+    existing host-scoped station assignments and per-channel control leases; define local and
+    remote reach, traversal, safe-boundary handoff and republished command-subject links.
+11. **Formation and task-force state** — persistent administrative trees, operation-scoped command
+    overlays, unique operational parentage, ruleset-authored formation kinds and `mush-org`
+    authorization without importing military vocabulary into the organization core.
+12. **Human-directed NPC control** — distinguish the in-world actor from the decision driver;
+    invitation, acceptance, scope, guardrails, dual attribution, revocation and deterministic
+    fallback for operation-scoped OOC proxy seats.
+13. **Account integrity identity** — an immutable private account id used for one foreground focus,
+    account-distinct quorum/reward rules and one-side-per-conflict enforcement, while accounts
+    remain neither economic nor fictional principals.
+14. **Delivered command state** — versioned order envelopes, communications reachability,
+    queued/transmitted/delivered/acknowledged state, supersession, expiry, relays and the rule that a
+    unit obeys the newest valid order it has actually received.
+15. **Crew, survival and participation** — named decision NPCs plus aggregate complements,
+    readiness obligations, station-local competence, evacuation/capture/rescue facts, scheduled
+    musters, open crew calls and contribution-aware settlement.
+
+---
+
+## 17. Character-first identity — governing model
+
+TacSim is character-first even though characters and organizations may own and operate many
+assets. The player is normally the character who occupies a place in the world; neither an account
+nor an ownership record is a disembodied tactical actor.
+
+| Concept | Binding meaning |
+|---|---|
+| Account | Authentication and competitive-integrity identity; never an in-world principal |
+| Character / named NPC | Occupies space, perceives information, incurs risk and performs fictional actions |
+| Ownership | Economic title; does not itself grant present operational control |
+| Billet | Durable authorization or roster assignment to a station; a character may hold several |
+| Active station | The character's one current operational focus and its bounded control channels |
+| Order | Delegated intent that becomes authoritative for a recipient only when delivered |
+| Decision driver | Human, deterministic AI or LLM-assisted planner supplying choices for an actor |
+| Automation | Non-person controller providing continuity, routine execution and safe fallback |
+
+This requires two explicit corrections above the current implementation:
+
+1. `mush-sim` station assignments are host-scoped today. An actor may be assigned on several units,
+   and its projected command-subject links include every placed unit it crews; seats on one unit
+   union their channels. Preserve those records as **billets**, but add an actor-side active focus
+   so only one station supplies live human control.
+2. A durable `Journey` currently moves a plain object and rejects any traveler that is itself a
+   domain, interior, mount or station host. TacSim needs a carrier journey: the carrier root travels
+   while its anchored interior topology and everyone aboard remain playable and move with it.
+
+An account may own multiple characters, and a character or organization may own multiple units.
+Neither fact expands the character's body, perception or active control surface.
+
+## 18. Character-first survey — decisions (owner, 2026-09-03, binding)
+
+All recommended answers were accepted, with C6, C7/C29, C8 and C14 sharpened by T8–T16 (§19).
+
+| # | Question | Decision |
+|---|---|---|
+| C1 | Account as an in-world principal | **C1A** private integrity identity only |
+| C2 | Station assignment | **C2A** many billets, one active station |
+| C3 | Station capability | **C3A** ruleset-bounded channel bundle |
+| C4 | Station reach | **C4A** physical console or valid remote link |
+| C5 | Station switching | **C5A** traversal plus safe-boundary handoff |
+| C6 | Fleet and task-force representation | **C6A** operation-scoped task-force container over formations/assets |
+| C7 | Command of subordinate units | **C7A** structured mission orders |
+| C8 | Changing orders | **C8A** versioned replacement at decision boundaries |
+| C9 | Communications latency | **C9A** deterministic delivery for consequential information |
+| C10 | Absent-owner visibility and action | **C10A** administration plus legitimately delivered telemetry |
+| C11 | Large-crew representation | **C11A** named decision-makers plus aggregate complement |
+| C12 | NPC performance | **C12A** lower decision bandwidth and adaptability, not a type penalty |
+| C13 | Solo capital-ship operation | **C13A** one player plus funded crew and suitable automation |
+| C14 | Human multicrew advantage | **C14A** parallel discretion, actor competence and resilience |
+| C15 | Crew cost | **C15A** aggregate readiness obligation; individual terms when salient |
+| C16 | Journey topology | **C16A** carrier root moves its contained topology |
+| C17 | Relationships aboard | **C17A** manifest, billet, station, access, custody and title are separate |
+| C18 | Passage contract | **C18A** itinerary and bounded onboard rights |
+| C19 | Routine travel activity | **C19A** background journey with optional opportunity events |
+| C20 | Interception | **C20A** promote the carrier into a live tactical domain |
+| C21 | Simultaneous account play | **C21A** one foreground character or control focus per world |
+| C22 | Character switching | **C22A** allowed with location, exposure and fallback preserved |
+| C23 | Multiplicative competitive benefits | **C23A** account-distinct eligibility plus policy-defined tenure/stake |
+| C24 | Opposing participation | **C24A** one side per defined conflict episode |
+| C25 | Hostile-organization alts | **C25A** narrative membership allowed; incompatible privileged roles restricted |
+| C26 | Sibling-character transfers | **C26A** ordinary, attributed and journaled |
+| C27 | Character defeat | **C27A** staged injury, evacuation, rescue, capture and campaign-rated death |
+| C28 | Personal progression | **C28A** bounded competence, issuer trust, contacts and reputation |
+| C29 | Short-session participation | **C29A** published crew calls and explicit relief handoffs |
+| C30 | Unfilled stations | **C30A** declared NPC/automation fallback with reduced discretion |
+
+### 18.1 Presence, billets and control
+
+A billet records that a character may serve at a station; active focus records what the character
+is operating now. An integrated small-craft cockpit may grant helm, sensors and weapons, while a
+capital command station remains narrower. Remote drone or vehicle operation still consumes the
+single active focus and requires an authorized terminal, compatible equipment and a live
+communications path. A drone-control station issues bounded group commands rather than becoming a
+loophole for manually piloting an armada.
+
+Station changes relinquish the former lease, require physical traversal when consoles occupy
+different places, and complete at a safe pulse boundary. NPC or automation fallback maintains the
+old station through the handoff. Ownership alone never satisfies reach or control.
+
+### 18.2 Command and information
+
+A mission order contains objective, priority, area or route, formation, rules of engagement,
+withdrawal/surrender/abort conditions, fallback behavior, duration and review time. Subordinate
+controllers translate it into the same legal intents available to human station holders. An
+operation has one operational command parent per assigned unit even when its administrative
+formation belongs elsewhere.
+
+Consequential commands, sensor reports, market intelligence and operational messages traverse a
+deterministic communications path. Owners may conduct legitimate administration remotely, but see
+only telemetry that has actually reached them. Ordinary OOC communication is not constrained by
+IC propagation. The server never supplies a universal live owner map.
+
+### 18.3 Crew and multicrew
+
+Named NPC objects occupy dramatically relevant positions: captain, helm, tactical, engineering,
+marine command and similar roles. Routine watchstanders, technicians, loaders, stewards and
+medical staff may be an aggregate complement carrying readiness, capacity and morale. A periodic
+readiness obligation covers ordinary payroll and support; individual employment contracts are used
+when a named NPC's personal terms matter.
+
+NPCs use their real equipment and traits. Their usual disadvantage is reduced reconsideration
+frequency, parallel attention, initiative under ambiguity and ability to recover from cascading
+exceptions—not a universal `NPC` penalty. One player, suitable automation and a funded competent
+crew can transit, fight and withdraw a capital ship. More player crew provide parallel observation,
+station-local skill, creative judgment, quicker handoffs and casualty resilience, never an
+unexplained ship-wide attendance bonus.
+
+### 18.4 Voyages as inhabited play
+
+The carrier root owns one journey. Anchored rooms, occupants, cargo, mounted equipment and carried
+craft inherit its strategic movement without duplicate journey records. Passenger status, crew
+billet, active station, compartment/berth access, cargo custody, prisoner status and title remain
+independent relationships. A passenger buying passage from an NPC captain receives itinerary and
+bounded onboard rights, not control of the ship.
+
+Journeys advance without required watch chores. Departure, cruise, maintenance, contact, distress,
+approach and arrival create optional prompts or actionable events. A real mechanical interception,
+not a prose scene, may suspend or divert a leg: it promotes the carrier into a live domain while
+preserving interiors, resolves through tactical facts, then resumes, diverts, captures or ends the
+journey. Survey 6A still governs scenes: a scene cannot hold an otherwise due arrival.
+
+### 18.5 Accounts, alts and integrity
+
+Add an immutable private account id for durable integrity policy; do not turn it into a fictional or
+economic principal. An account has one foreground character or OOC control focus per world, though
+several client connections may attach to that same focus. Switching characters is allowed even on
+a long voyage: the former character remains physically present and vulnerable, and any active
+station hands off without granting a fresh link-loss exploit.
+
+Quorums, sides, referral and first-time rewards, command succession and similar multiplicative
+benefits require distinct eligible accounts; sensitive policy may also require membership tenure or
+committed stake. An account may materially assist only one side of a defined operation, battle,
+claim contest or similar competitive episode. Narrative alts may belong to different factions, but
+one account cannot concurrently hold command, intelligence, treasury, market-making, adjudication
+or operation-planning authority for active opposing belligerents in the same campaign.
+
+Sibling characters remain separate in location, money, reputation, obligations and knowledge.
+Their transfers use ordinary contracts, custody and communications and remain attributed; a special
+ban would only encourage laundering through another principal. Account rules prevent ordinary alt
+multiplication, not determined multi-account evasion, which remains an audit and community-policy
+problem absent intrusive real-person verification.
+
+### 18.6 Character stakes, progression and access to play
+
+Vehicle defeat resolves compartment danger, injury, evacuation or ejection, suit/pod endurance,
+beacon detection, rescue, capture, ransom and death as separate facts. Campaign lethality decides
+when death is available; it is neither automatic nor erased by universal escape insurance.
+
+Progression expands options and trust rather than creating an inexorable stat treadmill. Bounded
+competence improves reliability and information; certifications express an issuer's trust; contacts
+create opportunities; reputation changes access and terms. Published crew calls state destination,
+station, qualifications, risk, time window and compensation. Relief handoffs and fallback control
+let characters join for a short session without making uninterrupted attendance a prerequisite.
+
+## 19. Addendum — accepted decisions T8–T16 (owner, 2026-09-03, binding)
+
+**T8. Formations and task forces.** Maintain two layers. A persistent order-of-battle tree records
+fleets, subfleets, wings, squadrons, flights, battalions, companies, platoons, lances, stars and
+other formations. An operation-scoped task force references whole formations, detached
+subformations, individual units and support assets under a temporary command tree. Administrative
+parentage is unchanged by attachment; a unit has exactly one operational command parent in an
+operation. The engine stores generic formation kind, branch/domain, echelon, parent/children,
+members, command roles and exact/minimum/maximum/preferred composition. `ruleset-tacsim` supplies
+names and doctrine—for example a four-unit lance and five-unit star may share an echelon but remain
+distinct kinds; an air flight may be four aircraft, a squadron three flights/twelve aircraft, and a
+wing four squadrons/forty-eight aircraft; ground platoons, companies and battalions use their
+ruleset ranges. `mush-org` supplies scoped authority to create, attach, assign and command, but does
+not hard-code military vocabulary or misuse the organization scope tree as force composition.
+
+**T9. Actor and decision driver.** Separate the in-world actor occupying a station from the source
+of its decisions. A player character driven by its authenticated player, a named NPC driven by
+deterministic/LLM control, and the same NPC temporarily directed by a human all retain the actor's
+location, traits, perception, injuries and fictional identity. Automation need not invent a person.
+Every accepted intent records actor, decision driver, authority and control-lease epoch.
+
+**T10. Human-directed NPC invitations.** A commander may offer an operation-scoped NPC station to
+an online player: organization, faction, allies, allowlist or public eligibility; operation, side,
+unit, station, time window, required certification/standing, granted channels, mission order, rules
+of engagement, permitted area, revocation and fallback all freeze in the accepted invitation. The
+player consents; they cannot be forcibly attached. Public seats suit open/non-secret operations;
+covert operations restrict the audience because the human inevitably learns what their station
+perceives.
+
+**T11. Proxy-control guardrails.** Human-directed NPC control grants tactical discretion, not title,
+administration or an unrestricted possession verb. It does not by default permit asset transfer or
+abandonment, scuttling, fallback changes, loadout/crew mutation, organization spending, surrender
+of unrelated assets, departure from the authorized operation, or assumption of another station.
+Ordinary tactical loss cannot be made impossible without making the seat fictitious; legal intents,
+ROE/safety interlocks, immediate revocation and dual actor/account attribution bound deliberate
+misuse. Revocation or disconnect returns the lease to its declared NPC/automation fallback at a
+safe boundary and invalidates stale intents.
+
+**T12. One account control focus.** OOC proxy control consumes the account's one foreground focus.
+The player's own character remains at their durable location and cannot act concurrently. Entering
+proxy mode hands off that character's station, clearly identifies the represented NPC and exposes
+only that NPC station's observer projection. Leaving restores AI control; it never moves or
+protects the player's character.
+
+**T13. Proxy canon and reward.** A proxy operator supplies tactical choices for the NPC; canon,
+injury, knowledge, reputation, kill/salvage credit and economic consequences attach to the NPC,
+unit, commanding organization and operation. The absent player character receives no automatic
+pay, advancement, reputation, knowledge or property. The account may receive non-fungible OOC
+participation history or matchmaking standing, never a currency convertible into character power.
+IC reward requires the player's character to participate through a real physical/remote billet or
+another actual mission role.
+
+**T14. Scheduled musters and open seats.** An operation may publish its start and expected duration,
+committed formations, character billets, proxy-eligible NPC stations, certifications/faction
+restrictions, command succession, secrecy and compensation. At muster, a slot resolves to a player
+character, human-directed NPC, AI-controlled named NPC, automation or vacancy. Missing players
+reduce discretion and resilience but do not cancel a valid operation. Late arrival and early
+departure use the same explicit handoff.
+
+**T15. Orders require delivery.** Issuing revision N does not make it the recipient's active order.
+An attributed envelope progresses through queued, transmitted, delivered and acknowledged states,
+or expires, is cancelled or is superseded. The recipient obeys the newest valid revision it has
+actually received; under ECM it continues its last order and fallback doctrine while the commander
+sees that the replacement is unacknowledged. On restored reachability, deliver the newest valid
+superseding order rather than an obsolete execution backlog. Relays, couriers, store-and-forward,
+interception, encryption and forged orders extend the envelope later. Ordinary jamming blocks or
+delays; content corruption/deception requires an explicit electronic-warfare result.
+
+**T16. Station-local competence.** The actor at a station supplies the relevant traits: reactions
+and spatial judgment at helm; perception, analysis and EW at sensors; leadership and tactics at
+command; technical skill in engineering; officer decisions plus aggregate readiness in damage
+control. A physically present player character uses their sheet, a named NPC uses its sheet, and a
+human proxy directing an NPC still uses the NPC's sheet—the human adds judgment, not an absent
+character's stats. Any wider effect needs a causal action or changed ship state, never a free global
+bonus for seat occupancy.
+
+## 20. Cross-ruleset environmental boundary
+
+TacSim supplies physical and civil context, not ruleset metaphysics. The generic seam exposes facts
+such as campaign time, body/region, authoritative local or shipboard civil phase, illumination and
+direct environmental exposure, atmosphere, gravity and radiation. A ruleset decides what those
+facts mean to its characters.
+
+This prevents cross-ruleset composition from multiplying clocks or embedding supernatural doctrine
+in orbital mechanics. A WoD ruleset may treat Luna as the one supernatural lunar authority for a
+werewolf wherever they travel; Jupiter's satellites are geography unless story policy promotes a
+specific local influence. It may treat vampire day sleep as following the vessel or habitat's
+stable civil cycle while direct solar exposure remains a separate physical hazard. Ships and
+habitats therefore register a durable authoritative schedule that cannot be toggled moment to
+moment for mechanical advantage. Other rulesets may consume the same facts differently without
+changing `mush-sim`.
