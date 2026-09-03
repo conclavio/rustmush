@@ -1,9 +1,11 @@
 # E4 implementation plan — holds, escrow, obligations, and contracts
 
-**Status:** Draft 0.3 — reviewed (three passes: adversarial money-safety, code-grounding, design-fit
+**Status:** Draft 0.4 — reviewed (three passes: adversarial money-safety, code-grounding, design-fit
 against docs 08/08a/08b); every confirmed finding is folded below and itemised in §11. The owner's
 answers to §10 are folded (Draft 0.3: automatic reconciliation + a graded escalation ladder,
-D-E4-14). Ready for build once the K-series rebase lands. Companion to
+D-E4-14). Draft 0.4 folds two requirements E5's planning fed back (08d §7): **cadence clocks ship in
+E4** (D-E4-2 revised) and **canon attestation matches a specific source** (§6.2). Ready for build
+once the K-series rebase lands. Companion to
 [08-economy-organizations-ownership.md](08-economy-organizations-ownership.md) (the design; §8, §12,
 §18-E4), [08a-economy-build-status.md](08a-economy-build-status.md) (the ledger + the E4 pickup), and
 [08b-e3-implementation-plan.md](08b-e3-implementation-plan.md) (E3 as built — E4 extends it).
@@ -88,7 +90,13 @@ scene concludes by committing canon (`mush-scenes/src/lib.rs:282-311`), which th
 `int_id! { HoldId }`, `int_id! { ObligationId }`, `int_id! { ContractId }`.
 
 ```rust
-pub enum EconomicClock { RealUtc, WorldIc, Manual }          // Registered{..} deferred (D-E4-2)
+pub enum EconomicClock { RealUtc, WorldIc, Manual, Cadence(CadenceId) }   // Registered{provider} still deferred (D-E4-2)
+/// A named campaign/domain clock (owner answer 7 to E5): economy-owned, staff/config-defined,
+/// advanced by the sweep from its `source` with bounded catch-up (excess recorded as forgiven
+/// periods), or by `@econ/cadence advance <id>` for `Manual`. A schedule on a cadence expresses
+/// `next_due` as a period index; obligations, holds, contracts, and E5's housing/career
+/// evaluation all run on it — never on an IC:OOC ratio or a literal calendar.
+pub struct CadenceClock { pub id: CadenceId, pub name: SmolStr, pub source: CadenceSource /* RealUtc | WorldIc | Manual */, pub period: i64, pub catch_up_cap: u8, pub position: u64, pub advanced_at: i64, pub revision: u64 }
 pub struct EconomicDeadline { pub clock: EconomicClock, pub at: i64 }
 pub struct EconomicSchedule {
     pub clock: EconomicClock,
@@ -521,8 +529,10 @@ their balances.
    production emitter is `mush-canon/src/lib.rs:159`, which persists then emits within the same
    command step and is documented as terminal) and, in the same step — hence the same `WriteBatch`
    as canon's own writes — records an `Attestation { source: canon:{id} }` on every `Active`
-   contract condition `Attestation { by: Canon { kind, entities ⊇ } }` that matches, then attempts
-   settlement. **The observer is infallible from dispatch's point of view**: any internal refusal
+   contract condition `Attestation { by: Canon { kind, source } }` whose `kind` **and `source`**
+   match the recorded canon event (E5's owner answer 20: progress must cite a specific front,
+   opportunity, or operation — a `scene.concluded` involving any faction member is too broad, so
+   kind + entities is **not** a match key), then attempts settlement. **The observer is infallible from dispatch's point of view**: any internal refusal
    is logged and swallowed; the attestation write stands (durable) and the contract stays
    `ReadyToSettle` for the sweep — canon's terminal-commit contract is never violated by an
    economy error. Canon's RAM-tail-only queryability does not matter: the attestation is durable
@@ -569,9 +579,13 @@ owner says so. `cargo fmt` stays off until the pending reformat lands.
   own seq anchor (`last_hold_seq`).** Same argument as D-E3-1; a hold has no recovery latch, so a
   missing doc heals silently. Doc 08 §8.1 sketches no journal/doc split for holds — this is where
   one is chosen.
-- **D-E4-2 Three clocks, `Registered` deferred, `Manual` advanced only by explicit act.** Doc 08
-  §18-E4's "add registered clocks" bullet is consciously deferred: no provider seam exists; E7
-  builds it with its consumer. IC time enters the engine as `ValidateEnv.ic_now`.
+- **D-E4-2 (revised, Draft 0.4) Four clocks: `RealUtc`, `WorldIc`, `Manual`, and economy-owned
+  `Cadence(CadenceId)` records; `Registered { provider }` stays deferred.** E5's owner answer 7 asks
+  for "a named campaign/domain clock with a configurable cadence and bounded catch-up" — that is a
+  cadence clock, buildable inside the economy without a provider seam (`cadence:{id}` container
+  docs, advanced by the sweep; the sweep stamps make catch-up classification work for it as for
+  obligations). A provider-backed clock waits for E7's consumer. IC time enters the engine as
+  `ValidateEnv.ic_now`; a cadence's position enters as its period index.
 - **D-E4-3 One bounded sweep tick; catch-up from schedule arithmetic, never from tick count;
   per-period idempotency keys; excess periods are forgiven with a classified cause, not parked; the
   due pool excludes `Delinquent`/`Suspended`.** The core scheduler is in-RAM, re-armed at boot,
