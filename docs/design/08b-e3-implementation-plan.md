@@ -1,7 +1,8 @@
 # E3 implementation plan — organization wallets, assets, and vaults
 
-**Status:** Draft 0.2 — reviewed (three passes: adversarial money-safety, code-grounding, design-fit
-against docs 08/08a); every confirmed finding is folded below and listed in §11. Companion to
+**Status:** Draft 0.3 — reviewed (three passes: adversarial money-safety, code-grounding, design-fit
+against docs 08/08a); every confirmed finding is folded below and listed in §11. Draft 0.3 adds the
+as-built amendments each cut reported (marked *as built*) and the build outcome in §12. Companion to
 [08-economy-organizations-ownership.md](08-economy-organizations-ownership.md) (the design) and
 [08a-economy-build-status.md](08a-economy-build-status.md) (the build ledger + the E3 pickup point).
 Read 08a §"Pick up here: E3" first; this document turns that pickup into cuts, records, seams,
@@ -224,7 +225,12 @@ New `EconomyError` variants: `NoSuchAsset`, `AssetExists`, `AssetNotActive`, `As
 `Encumbered`, `NoSuchVault`, `VaultNotActive`, `NotInVault`, `NoCustodyStanding`, `BadDestination`,
 `BackingInvalid`, `DuplicateAssetOp`, `DuplicateCustodyOp`, `ScopeOwnerMismatch`,
 `ApprovalExpired`, `StaleAsset { object, expected, found }`. (Rendering of these to non-staff is
-governed by §4.5's existence-hiding rule.)
+governed by §4.5's existence-hiding rule.) *As built:* also `NoSuchEncumbrance` (a `Release` naming
+a claim the asset does not carry — invariant 12 relies on releases actually clearing),
+`AssignmentToOwner` (invariant 13), `HasEffects` (reversal of an effect-carrying transaction),
+`ApprovalRequired`, and `Custody(CustodyError)`; `Prepared` also carries `stamp_acquisition: bool`
+because `validate` cannot know the txid `apply` will stamp. `ApprovalExpired` is a command-layer
+error — `validate` answers an expired request with `NeedsApproval` (the remedy is a new request).
 
 ### 3.5 Invariants `validate` proves (extends E2a's nine)
 
@@ -266,6 +272,12 @@ governed by §4.5's existence-hiding rule.)
 18. **Scope/owner coherence** (assets, vaults, and — at open — accounts): `scope: Some(s)` ⇒ the
     owner is `PrincipalId::Organization(s.org)`; `TransferTitle` to a non-org principal requires
     `to_scope: None`. Checked in `validate` for asset ops and at `@vault/create`/`@account/open`.
+    *As built, split:* the pure engine proves the structural half (a scoped resource is org-owned; a
+    non-org destination carries no scope); **which** org (`s.org == owner`, and both Active) needs
+    `OrgState`, so the seam (`authorize_asset` / `authorize_title_receipt`, §4.4) proves it.
+    There is deliberately **no asset-value escalation** in invariant 17: rules live on accounts and
+    fire on net debit, so an effect-only plan moves a title of any value with no approval —
+    two-party consent (E4) is the control for that, not a threshold.
 19. `Encumber` is **staff-only in E3** (a `Lien` without a `ContractId` cannot represent a real
     obligation; an unpriced lien is a hostage primitive). `Release(Lien)` — its `creditor` or
     staff; `Release(Disputed)` — staff. Both checked via `AuthEval::authorize_asset`.
@@ -296,15 +308,18 @@ pub trait CustodyEval {
     fn may_deposit(&self, obj: ObjId, actor: &PrincipalId) -> bool;
     fn destination_ok(&self, actor: &PrincipalId, to: ObjId) -> bool;
 }
-pub fn validate(plan, snapshot, auth: &dyn AuthEval, custody: &dyn CustodyEval) -> PlanResult;
+pub struct ValidateEnv<'a> { pub auth: &'a dyn AuthEval, pub custody: &'a dyn CustodyEval, pub now: i64 }
+pub fn validate(plan, snapshot, env: &ValidateEnv<'_>) -> PlanResult;   // as built: the clock is a
+                                                                        // real new dependency (approval expiry)
 ```
 
 Parameter names are underscored in the default bodies (CI runs clippy with `-D warnings`).
 Default `false` keeps every foreign impl fail-closed; `AllowAll` overrides to `true` (note in its
 doc that it now authorizes *title*, not just money — tests/trusted only); a `NoCustody` fake
 (everything invalid) ships for tests. `plan_reversal` (`engine.rs:283-330`) **keeps its E2
-signature**, passes an in-crate `NoCustody` to `validate_inner` with `skip_approval = true`, and
-reverses **money lines only**; the reversal entry has empty effect vectors. **`reverse` refuses a
+signature**, builds an in-crate `ValidateEnv { auth, custody: &NoCustody, now: original.posted_at }`
+(nothing on that path reads the clock) with `skip_approval = true`, and reverses **money lines
+only**; the reversal entry has empty effect vectors. **`reverse` refuses a
 target whose `asset_effects`/`custody_effects` are non-empty** (`EconomyError::HasEffects`), naming
 the compensating `@asset/transfer` — no `/force` in E3.
 
@@ -331,8 +346,10 @@ stamped only when money moved; transfer clears assignment + maintenance; asset r
 per effect; `NeedsApproval` fires above threshold not at/below; an approved request whose approver
 no longer qualifies (`authorize_approver` now false) no longer satisfies; mutate the plan →
 `NeedsApproval` again (scenario 11 pure half); expiry; reversal of an effect-carrying tx refused;
-reversal path ignores `ApprovalRule`; hash v2 == hard-coded E2 digest; fuzz (proptest, as E2a):
-random op sequences never panic and never yield a transaction with zero lines and zero effects.
+reversal path ignores `ApprovalRule`; hash v2 == hard-coded E2 digest
+(`9c917eee84e001912480fdb8306b9a762ed2e3f50d1014e34ae38601c490d74e`, computed on the pre-change
+code); fuzz (E2a's deterministic xorshift, not proptest — the crate has no proptest dev-dep): random
+op sequences never panic and never yield a transaction with zero lines and zero effects.
 
 ---
 
@@ -356,6 +373,17 @@ New docs under `NS = "economy"`: `asset:{obj}`, `vault:{id}`, `approval:{id}`; `
 and the `Consumed` approval doc; custody truth stays in the world (`Obj.location`/`SpatialParent`),
 which the same `WriteBatch` carries (`mush-testkit/src/lib.rs:236-244`).
 
+*As built, the latch rule made precise:* **a doc-authority latch write (asset `frozen`, vault or
+account status, an approval rule) touches no journal-authority field — `revision` included.**
+Bumping `revision` on a backstop freeze makes the doc disagree with the journal at its own claimed
+seq, and the next boot reads the freeze itself as drift (the C2 regression caught it in test).
+Two further boot rules: a *corrupt* `asset:{obj}` doc fails the boot (its latch is unreadable, and
+proceeding would silently un-freeze a recovering title); a doc claiming a `last_journal_seq` at
+which its object has no effect is "disagrees at its claimed seq" → freeze. A vault whose
+`backing_valid` is `None` at boot is left alone with a warning (only a missing/`GOING` backing or a
+definite `Some(false)` freezes it). Persistence and authorization for title land **together**
+(E3b1): E3a alone left every asset op refused by default, so title could never be live-but-undurable.
+
 ### 4.2 Post ordering — the atomicity rules
 
 A handler that returns `Err` **discards its deferred persists but not its world mutations**
@@ -377,6 +405,13 @@ A handler that returns `Err` **discards its deferred persists but not its world 
 Step 3 must never precede step 2 (a custody failure after a RAM store advance leaves RAM ahead of
 the discarded persists). Regressions: a provider `Err` after a valid money plan mutates nothing;
 a handler that `Err`s after a successful `post` leaves store, world, and persists consistent.
+
+*As built:* the engine admits up to 32 custody ops, but with the single-call provider contract a
+provider that refuses the *k*-th move would leave the first *k*−1 applied. **`post` therefore
+refuses more than one custody effect per plan at the module layer** (E3b2), until a two-phase
+provider API exists. The deposit-side `claims` check (is some *other* provider the object's
+owner?) also runs here, at step 2 before any mutation — `CustodyEval::may_deposit` has no vault
+argument and so cannot resolve the backing; the withdraw side resolves through `holds` at validate.
 
 ### 4.3 The custody seam (`custody.rs`, new)
 
@@ -412,8 +447,9 @@ only thing that makes sim's `PlacementGate` see the move; `World::move_to` itsel
 hook) **and** a `MAX_CONTAINMENT_DEPTH` (`world.rs:35`) check on the resulting chain (`move_to`
 does not enforce it and `containing_room` returns `None` past it), then `move_to` (`:935`).
 `Registered{..}` backings have no provider in E3 and are always invalid. `@vault/create` refuses
-`interior:` until E3c registers a provider, and refuses a `Container` backing that is itself
-sim-bound (a space, host, placed object, or the recovery room).
+`interior:` until a registered provider `handles` it (E3c), and refuses a backing that any
+provider **other than the one resolving it** `claims` (an interior vault's backing *is* a space
+sim claims, so the resolving provider is exempt — *as built*).
 
 `WorldCustody { w, providers }` bridges the table to E3a's `CustodyEval`, as `WorldAuth` bridges
 `AuthEval` (`api.rs:82-118`).
@@ -481,7 +517,15 @@ detailed for staff.
   request `Consumed { transaction }` in the same bundle; `consumed_approval` rides the journal.
 - `@econ/approve <id>` / `@econ/deny <id>` (standing as §4.4; each records a `Decision`; deny →
   `Cancelled`); `@econ/approvals` lists requests the actor may act on, indexed by account scope,
-  capped.
+  capped. *As built:* **standing == counting** — `may_act_on_request` *is* `authorize_approver`, so
+  an actor who could never count (capability but not the role) sees the unknown-id text rather
+  than recording a dead decision. `NamedSet` membership is necessary **and sufficient** (requiring
+  the capability as well would make a named set inert without extra grants and the §4.5 view
+  grant pointless); staff qualify for `Threshold` but never for `NamedSet` unless named. The GC
+  anchor is `expires_at + 7×TTL`; `Consumed` requests are never collected. Credits into a
+  `Suspended`/`Closed` org's wallet have **no staff exemption** — staff reactivate the org first.
+  The `MAX_PENDING_PER_ACCOUNT` cap is only reachable across several requesters (the per-requester
+  cap fires first) and is tested that way.
 - Scenario 11 end-to-end: rule `threshold:2`, pay above threshold → request; one approval → still
   needs one; edit the amount → the old request does not authorize the new plan; revoke an
   approver's capability → the request no longer satisfies; two identical submissions never mint
@@ -519,8 +563,11 @@ independence, tested both ways).
    scope is `Retired` — right after the `NoSuchScope` short-circuit (`authorize.rs:135-137`).
    Both statuses are inert today; E1's 34 tests may assume it — note in the commit.
 2. `OrgMutationOp::RetireScope { scope }` — arms in **both** `plan.rs` `apply_one` (`:176-311`)
-   and the `api.rs` persist dispatcher (`:203-219`). Refused at the command layer while any
-   account/asset/vault binds the scope (org cannot see economy).
+   and the `api.rs` persist dispatcher (`:203-219`); a root scope cannot be retired. Refused while
+   any account/asset/vault binds the scope — *as built* through a new predicate-table-shaped seam,
+   `mush_org::ScopeUseProvider` (frozen at wiring via `OrgModule::with_scope_use`), implemented by
+   `mush_economy::EconomyScopeUse`; org cannot see the economy, so it asks. It fails open only if
+   no economy module is registered at all.
 3. `MAX_SCOPES_PER_ORG` (64) in `CreateScope` validation.
 4. **Capability vocabulary** (08a decision 6 — E3 is the consumer): `OrgModule::with_capabilities
    (BTreeSet<CapabilityId>)` frozen at wiring (empty = accept all, the E1 behavior); `@org/grant`
@@ -528,6 +575,11 @@ independence, tested both ways).
    The server wires `mush_economy::CAPABILITIES ∪ {org.role.manage, org.grant.delegate}`.
 5. `@org/scope create|retire`; `@org/grant` gains `scope=` (exact scope selector) and `limit=`.
    `submit` stays authorization-free and non-gated; commands gate.
+6. *As built, a follow-up for a later cut:* `Organization.revision` is inert (no op bumps it), so
+   `@org/scope create` stamps `created_rev = revision + 1` to stop a `SubtreeFrozen` grant silently
+   widening to every runtime-created scope. The proper fix — a revision bump on scope creation plus
+   `SetOrgStatus`/`PutRole` ops (the org status tests currently patch the persisted doc and reboot,
+   and scenario 9's "rename" is expressed as a second identically named role) — needs its own cut.
 
 ### 4.9 Destruction: gate + backstop (E3b1)
 
@@ -550,9 +602,13 @@ independence, tested both ways).
 ### 4.10 Server wiring
 
 `mush-server/src/modules.rs:84`: `EconomyModule::with_custody(vec![])` in E3b; E3c adds
-`Arc::new(mush_sim::InteriorCustodyProvider)`. Org (`:79`) gains `.with_capabilities(..)` in E3b2.
-The sim provider reads `SpatialState` live per call, so order relative to `SimulationModule`
-(`:86`) does not matter for boot.
+`Arc::new(mush_sim::InteriorCustodyProvider)`. Org (`:79`) gains `.with_capabilities(..)` and
+`.with_scope_use(..)` in E3b2. **Module order matters for boot (*as built*, E3c): `EconomyModule`
+now boots after `SimulationModule`.** `SpatialState` is installed at *registration*, so an economy
+booting first sees an *empty* sim state and gets a definite `Some(false)` from the interior
+provider — every interior-deposited title would freeze as a custody mismatch and every interior
+vault as invalid, on every reboot. Org still precedes economy; scenes/sim read no economy state at
+boot. A cold-reboot test pins the old failure mode.
 
 ### 4.11 E3b tests (`tests/e3b.rs`, `TestWorld`-driven like `e2b.rs`; ~20 per sub-cut)
 
@@ -598,13 +654,21 @@ the `InteriorSpaceRecord` exists, its object live, not quarantined; `contents` =
 `move_into`: the object must already carry `sim.participant` (`Transition::Place` requires it,
 `transition.rs:253-257`; the provider attaches no behaviors — refuse with a clear message
 otherwise), then `mush_sim::run(ctx, &Transition::Place { obj, parent: Interior { space, slot: None } })`
-(`transition.rs:520`). `move_out`: **pre-validate `to`** (`live` + `w.can_move_to(obj, to)` + the
-carry hook), then `run(ctx, &Transition::Unplace { obj, reason, by: Some(actor), keep: true })`
-(`keep: true` skips the recovery-room projection — `plan` for `Unplace` validates only that hop,
-`transition.rs:346-370`, so the two-move form could half-apply and strand the object plus a
-recovery-log hole), then the single `move_to(obj, to)`. `mush-sim/Cargo.toml` gains
-`mush-economy`. The sim `RECOVERY_LOG` audit (`transition.rs:512-515`) co-commits with the journal.
-`@vault/create … interior:` is enabled in this commit; the server wires the provider.
+(`transition.rs:520`). `move_out`: **pre-validate `to`** (`live` + `w.can_move_to(obj, to)` +
+**every `CarryAttempt` hook except the simulation's own** — sim's `PlacementGate` vetoes any move
+of a *placed* object, which is the precondition of every withdrawal, so running it would make
+withdrawal unsatisfiable, and running it after the `Unplace` would let a foreign gate refuse too
+late to be atomic; *as built*), then `run(ctx, &Transition::Unplace { obj, reason, by: Some(actor),
+keep: true })` — `keep: true` pushes **no** projection, so `Obj.location` stays on the space object
+and the record becomes non-quarantined `Unplaced` (`is_sim_bound` false) — then the single
+`move_to(obj, to)`. The `keep: false` form validates only the recovery-room hop and appends the
+recovery-log line before the second move, so a refusal there strands the object with an audit
+entry claiming a withdrawal that never happened. `backing_valid` is `None` only when the sim
+module is **not registered**, never "state not loaded" (the §4.10 order fix covers that).
+`mush-sim/Cargo.toml` gains `mush-economy`. The sim `RECOVERY_LOG` audit (`transition.rs:512-515`)
+co-commits with the journal. `@vault/create … interior:` is enabled in this commit; the server
+wires the provider. Known and inert: a withdrawal leaves a non-quarantined `Unplaced`
+`placement:{obj}` doc behind, exactly as `@spatial/unplace` does; no cleanup pass was added.
 
 ### 5.2 `mush-tactics` asset scrub (commit 2)
 
@@ -622,8 +686,10 @@ recovery-log hole), then the single `move_to(obj, to)`. `mush-sim/Cargo.toml` ga
 
 Interior vault: deposit a participant-bound unit into a hangar interior + withdraw, atomic with
 the journal; a non-participant deposit refused; a sim-placed object offered to a container vault
-refused; quarantined space → vault invalid; destroy the space → vault Frozen, placed contents keep
-title. **Operation axis (D5):** `@asset/assign`/`@asset/transfer` on a crewed unit leave
+refused; quarantined space → vault invalid (*as built:* no live command path can quarantine a
+space today — a space is a Room and holds no placement record — so the test plants the record
+directly); destroy the space → vault Frozen, placed contents keep title; the cold-reboot
+module-order regression (§4.10). **Operation axis (D5):** `@asset/assign`/`@asset/transfer` on a crewed unit leave
 `StationAssignment` seats and `control_generation(unit)` unchanged; `@spatial/assign` a pilot
 leaves `EconomicAsset.assignment`/`title_owner` unchanged.
 
@@ -642,9 +708,12 @@ prints `org #N (CONFLICT)`) until staff re-bind. The link is validated at every 
 `OrgModule` (`modules.rs:73` vs `:79`) and E3 does not reorder.
 
 - `@faction/org <faction>=<org|new|none>` (staff): bind, create-and-bind (`new` → the `@org/create`
-  path via `submit`, root scope named for the faction), or unbind. Unbinding leaves the org and its
-  accounts standing. `@faction/create` does **not** auto-bind — money attribution is a deliberate
-  staff act.
+  path via `submit`; *as built* the **org** carries the faction's name and its root scope is named
+  `root` exactly as `@org/create` does), or unbind. Unbinding leaves the org and its accounts
+  standing. `@faction/create` does **not** auto-bind — money attribution is a deliberate staff act.
+  *As built:* one resolver, `mush_faction::backing_org(w, &Faction) -> Result<OrgId, LinkError>`
+  (`Unbound` / `Missing` / `Conflict`), is used by every consumer; `@faction/destroy` reads the raw
+  link, so a `MISSING` or `CONFLICT` link also blocks destruction.
 - `@faction/destroy` (`commands.rs:216-300`) is **refused** while `org` is `Some`.
 
 ### 6.2 The resource rule (D-E3-9, static)
@@ -662,6 +731,14 @@ Registering an instrument never reclassifies anything.
   "migrated to account #N" }` **directly to `resource_log`** (not via `apply_resource`, which would
   resurrect the key at 0), persist the faction doc. Post-then-mark converges: a dropped faction-doc
   write reboots with the key present, and a re-run is an idempotency HIT that just re-marks.
+  *As built (after the §13 fold):* the source account must hold the key's instrument and be
+  `Active`, the backing org must be `Active`/`Dissolving`, and the economy unfrozen — all checked
+  **before** the org wallet is opened, so nothing fallible follows that store mutation (and if
+  `post` still refuses, the refusal is reported and the opened wallet's persist kept). The
+  idempotency record `faction.migrate/{fid}/{code}` is consulted **before** any pool judgement: if
+  it exists the migration already posted, so the command marks the key, removes it, logs the
+  residual (`-current_pool`, only when non-zero), and reports the original transaction — a pool
+  edited or spent between the post and the re-run still converges.
 - `@faction/resource <f>=<kind>/<delta>` refuses a `migrated` key with a pointer to `@econ`;
   `Faction::apply_resource` (`data.rs:310-326`) keeps its saturating arithmetic and is now
   provably rating-only.
@@ -793,4 +870,59 @@ Three passes ran on 2026-09-02 against Draft 0.1. Folded, by source:
   split (G.1); hook fix removes the hidden E3c prerequisite (G.2); `interior:` refused until E3c
   (G.3); tactics scrub as its own commit (G.4).
 - **Not folded (deliberate):** a `mush-sim` `economy` cargo feature; a two-phase custody plan
-  across the trait (the terminal-fallible rule makes single-call safe); reordering the module list.
+  across the trait (the terminal-fallible rule plus the module-layer one-custody-op cap make
+  single-call safe); reordering the module list — *superseded:* E3c did reorder economy after sim
+  (§4.10), for a reason the review did not anticipate.
+
+## 12. Build outcome
+
+Built 2026-09-02/03 on `main` after `99f5b9c` (this plan), each cut by an Opus build agent from the
+section named, gated on `cargo clippy --workspace --all-targets -- -D warnings` and
+`cargo test --workspace`, committed locally and not pushed. `cargo fmt` was deliberately not
+applied: the tree had 1334 rustfmt hunks at `d7f6707` before E3 touched it.
+
+| Cut | Commit | Tests added | Crate tallies after |
+|-----|--------|-------------|---------------------|
+| E3a | `e780fd7` | 46 (`tests/e3a.rs`) + 2 hash pins | mush-economy 75 |
+| E3b1 | `288f769` | 31 (`tests/e3b.rs`) + 2 E2b back-fills | mush-economy 108 |
+| E3b2 (org) | `cb7c8f3` | 12 (e1a +4, e1b +8) | mush-org 46 |
+| E3b2 | `ae3de96` | 33 (`tests/e3b2.rs`) | mush-economy 141, mush-server 62 |
+| E3c (sim) | `d48b1eb` | 10 (`mush-sim/tests/custody.rs`) | mush-sim 72 |
+| E3c (tactics) | `fe4faea` | 4 | mush-tactics 52 |
+| E3d | `d8d17c3` | 15 (`mush-faction/tests/economy.rs`) | mush-faction 52 |
+
+Workspace after E3d: 1695 tests pass; the single failure, `mushd::web_e2e::spa_and_healthz_are_served`,
+predates E3 (it serves the embedded Vite build and `web/dist` is empty on a fresh clone). Total
+E3 diff: 42 files, +12 609 / −303. The end-of-build adversarial verify and its fold are recorded
+in §13.
+
+## 13. End-of-build verify outcome
+
+Three Opus verifiers ran over `d7f6707..d8d17c3` on 2026-09-03 with the §7 lenses, each required
+to **confirm** a finding with a throwaway probe test (deleted afterwards) rather than by reading.
+Folded in the "E3 verify fold" commit `fa97479`, each with a regression test:
+
+| # | Lens | Sev | Finding | Fix |
+|---|------|-----|---------|-----|
+| A | auth | **H** | `authorize` was asked about each account's **net** delta and a zero delta is a credit, so `@econ/pay <ops>=<ops> 1` let any player append journal entries and bump `revision` on any scoped wallet | authorize the **gross debit** per account; `econ_pay` refuses `from == to` |
+| B | auth | M | the existence-hiding renderer collapsed only against the command's subject; an error naming another resource leaked ("no such account: 4242" vs "account 3 is not active"; `@asset/maintenance` → "scope and owner do not agree") | `EconomyError` exposes every id it names; the renderer falls back to "No such …" if **any** is unviewable |
+| C | desync | **H** | `move_to` files an `ObjKind::Exit` into `exits`, which no custody query walks: an exit could be deposited (journaled), was invisible to `holds`/`contents`, unwithdrawable, let `@vault/close` close a non-empty vault, and froze as custody-mismatch at reboot | the container provider and `may_deposit` refuse exits |
+| D | desync | L–M | `may_deposit(obj == actor)` passed (co-located, `controls(a, a)`): a player could deposit themself | refuse the actor and actor kinds |
+| E | desync | M | invariant 15 checked "is `to` a backing", not "is `to` inside one": standing inside vault B's backing, `@vault/withdraw X=A to=me` landed X in B with no Deposit authority or effect | `destination_ok` walks `to`'s ancestor chain (depth-capped) |
+| F | desync | M | `Deposit` had no `is_vault_backing(object)` guard: vault A's chest deposited into vault B let B's withdraw policy extract A's contents | refuse depositing a vault backing |
+| G | desync | L | `mint_or_serve_approval` retired the stale request before the cap checks that can refuse | caps first |
+| H | boot | **H** | the boot that detects drift latched `frozen` in RAM, healed the drifted docs, and never persisted the latch — the next boot was clean (an E2-era gap) | `frozen` in `meta`, OR'd at boot, `persist_meta` at boot end, `@econ/unfreeze`; asset drift leaves a per-asset trace |
+| I | boot | L–M | boot never re-persisted `meta`, so allocator floors lasted one boot; a corrupt/skipped approval doc did not floor the id | persist meta at boot end; floor on every `approval:` key that parses |
+| J | boot | M | the new control-doc writes (approval rule, vault/account/asset status, `@account/open`) carried no durable gate | non-strict `gate_on_durable_ack` in each tail |
+| K | boot | L | `Account.revision` was not re-derived at boot and moved backwards on a lag heal (weakens `expected_revisions`) | `revision = max(stored, 1 + touches)` |
+| L | boot | L | `@account/open|approval`, `@vault/create` worked while the economy was frozen | refused while frozen; recovery verbs stay |
+| M | boot | L | `NamedSet` approver arm did not check liveness — a destroyed named approver's approval kept counting | require a live approver |
+| N | auth+desync | L–M | `@faction/migrate` opened the org root account (RAM + deferred persist) before `post`; a refusal left a phantom account until reboot | hoist every refusal `post` would hit above the open; if `post` still refuses, report and return `Ok` so the opened account persists |
+| O | boot | M | `@faction/migrate` could not converge after a pool edit between runs (same key, different hash → conflict; pool 0 → "no pool"), leaving value both in the wallet and as a rating | the idempotency record is checked first; if it exists, mark + log the residual + report the transaction |
+
+Noted, not changed: a request whose firing-account set grows after minting is unpostable until TTL
+(fail-closed); staff cannot credit a `Suspended`/`Closed` org wallet without reactivating it.
+Read-verified sound: `post` ordering and the terminal-fallible rule in every command, both-sides
+title rules, custody standing, approval consumption/hash binding/four-eyes, reversal
+unforgeability, E2-era journals under the E3 binary (digest pin + live retry), latch polarity
+across reboot, entry boundedness, key routing, and the module order.
