@@ -224,6 +224,7 @@ polarity across reboot, entry boundedness, key routing, module order.
 ## Pick up here: E4 — holds, escrow, obligations, and contracts
 
 Design: doc 08 §8 (holds/clocks/obligations/contracts), §12 (visibility filter), §18 "E4".
+**Plan:** [08c-e4-implementation-plan.md](08c-e4-implementation-plan.md) (Draft 0.2, three-pass reviewed) — build from it.
 Concretely, and what E3 left as the hooks:
 
 - **Holds + `held_amount`.** `Account.held_amount` is a zero projection; `available()` exists.
