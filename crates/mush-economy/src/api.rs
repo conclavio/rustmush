@@ -13,16 +13,22 @@
 //! are re-derived from the journal at boot, so a companion-doc drop can never cause a
 //! double-post (R-B2).
 
-use mush_core::{Ctx, Deferred, ModuleOp, ModuleWrite, Outbox, Powers, Role, World, perm};
-use mush_org::{AuthRequest, CapabilityId, PrincipalId, authorize_in_world};
+use mush_core::{
+    Ctx, Deferred, MAX_CONTAINMENT_DEPTH, ModuleOp, ModuleWrite, ObjId, Outbox, Powers, Role,
+    World, perm,
+};
+use mush_org::{AuthRequest, CapabilityId, OrgScopeId, OrgStatus, PrincipalId, ScopeStatus, authorize_in_world};
 use smol_str::SmolStr;
 
 use crate::amount::Amount;
-use crate::engine::{AuthEval, NoCustody, ValidateEnv, apply, plan_reversal, validate};
-use crate::ids::{AccountId, ApprovalRequestId, InstrumentId, TransactionId};
+use crate::custody::{CustodyError, WorldCustody};
+use crate::engine::{AuthEval, ValidateEnv, apply, plan_reversal, validate};
+use crate::ids::{AccountId, ApprovalRequestId, InstrumentId, TransactionId, VaultId};
 use crate::module::{EconomyStore, JOURNAL_LOG, NS};
-use crate::plan::{EconomyError, EconomyPlan, PlanResult, Prepared};
-use crate::record::{Account, EconomicCause, InstrumentDef};
+use crate::plan::{AssetOp, CustodyOp, EconomyError, EconomyPlan, PlanResult, Prepared};
+use crate::record::{
+    Account, CustodyDirection, EconomicAsset, EconomicCause, InstrumentDef, Vault,
+};
 
 /// The kv key of the allocator meta document.
 pub const META_KEY: &str = "meta";
@@ -38,6 +44,17 @@ pub fn instrument_key(id: &InstrumentId) -> SmolStr {
 #[must_use]
 pub fn account_key(id: AccountId) -> SmolStr {
     SmolStr::new(format!("account:{}", id.0))
+}
+/// `asset:{obj}` — the title projection (journal-authority fields; the `frozen`
+/// latch is doc authority).
+#[must_use]
+pub fn asset_key(object: ObjId) -> SmolStr {
+    SmolStr::new(format!("asset:{}", object.0))
+}
+/// `vault:{id}`.
+#[must_use]
+pub fn vault_key(id: VaultId) -> SmolStr {
+    SmolStr::new(format!("vault:{}", id.0))
 }
 
 // ---- persist helpers ------------------------------------------------------
@@ -57,6 +74,18 @@ pub(crate) fn persist_account(out: &mut Outbox, a: &Account) {
         value: serde_json::to_value(a).expect("account serializes"),
     });
 }
+pub(crate) fn persist_asset(out: &mut Outbox, a: &EconomicAsset) {
+    push_op(out, ModuleWrite::JsonSet {
+        key: asset_key(a.object),
+        value: serde_json::to_value(a).expect("asset serializes"),
+    });
+}
+pub(crate) fn persist_vault(out: &mut Outbox, v: &Vault) {
+    push_op(out, ModuleWrite::JsonSet {
+        key: vault_key(v.id),
+        value: serde_json::to_value(v).expect("vault serializes"),
+    });
+}
 pub(crate) fn persist_meta(out: &mut Outbox, meta: serde_json::Value) {
     push_op(out, ModuleWrite::JsonSet { key: SmolStr::new_static(META_KEY), value: meta });
 }
@@ -71,6 +100,65 @@ pub(crate) fn persist_journal(out: &mut Outbox, op: ModuleWrite) {
 #[must_use]
 pub fn post_capability() -> CapabilityId {
     CapabilityId::new("economy.account.post").expect("valid capability id")
+}
+
+/// Staff: `SIM_ADMIN` or `Royalty` — the one staff predicate the whole crate uses.
+#[must_use]
+pub(crate) fn is_staff(w: &World, who: ObjId) -> bool {
+    perm::has_power(w, who, Powers::SIM_ADMIN) || perm::has_role(w, who, Role::Royalty)
+}
+
+/// Whether `actor` currently holds `capability` on `scope` (`AuthRequest.amount:
+/// None` — these are not amount-carrying operations, and a `GrantLimit` on a
+/// non-amount capability never authorizes, by design).
+#[must_use]
+pub(crate) fn holds_capability(w: &World, actor: ObjId, capability: &str, scope: OrgScopeId) -> bool {
+    let Some(capability) = CapabilityId::new(capability) else { return false };
+    let req = AuthRequest { actor, capability, scope, now: w.now(), amount: None };
+    authorize_in_world(w, &req).is_allow()
+}
+
+/// Invariant 18's **seam half**: a scoped resource's scope must exist, belong to
+/// the organization named in its owner, and be `Active` — with that organization
+/// `Active` too. The pure engine proves only the structural half (`scope: Some` ⇒
+/// the owner is an organization); which organization, and whether it is live, is a
+/// question only the org state can answer.
+#[must_use]
+pub(crate) fn scope_coherent(w: &World, scope: Option<OrgScopeId>, owner: &PrincipalId) -> bool {
+    let Some(sid) = scope else { return true };
+    let PrincipalId::Organization(org) = owner else { return false };
+    let Some(store) = w.module_state::<mush_org::OrgStore>() else { return false };
+    let state = store.state();
+    let Some(sc) = state.scope(sid) else { return false };
+    if sc.org != *org || sc.status != ScopeStatus::Active {
+        return false;
+    }
+    state.org(*org).is_some_and(|o| o.status == OrgStatus::Active)
+}
+
+/// An object plus everything it transitively contains, depth-capped — what the
+/// destroy gate must clear (§4.9: contents are dispersed, not destroyed, but a
+/// container full of titled goods is still not a thing you may delete).
+#[must_use]
+pub(crate) fn subtree(w: &World, root: ObjId) -> Vec<ObjId> {
+    let mut out = vec![root];
+    let mut frontier = vec![root];
+    for _ in 0..MAX_CONTAINMENT_DEPTH {
+        let mut next = Vec::new();
+        for id in frontier.drain(..) {
+            for &c in w.contents_of(id) {
+                if !out.contains(&c) {
+                    out.push(c);
+                    next.push(c);
+                }
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
+    }
+    out
 }
 
 /// Bridges the injected [`AuthEval`] to the live org authorization engine (R-D4).
@@ -115,6 +203,99 @@ impl AuthEval for WorldAuth<'_> {
         }
         false
     }
+
+    /// Invariants 19–20 (§4.4). Staff allow; otherwise the actor is the
+    /// `title_owner`, or holds the op's capability on the asset's (live, coherent)
+    /// org compartment. `Title` and `Encumber` are **staff-only in E3**;
+    /// `Release(Lien)` is additionally open to its own creditor, `Release(Disputed)`
+    /// is staff.
+    fn authorize_asset(&self, actor: &PrincipalId, asset: Option<&EconomicAsset>, op: &AssetOp) -> bool {
+        let PrincipalId::Object(a) = actor else { return false };
+        let staff = is_staff(self.w, *a);
+        match op {
+            // Creating a title mints a compartment binding; never an incoherent one,
+            // staff or not (invariant 18's seam half).
+            AssetOp::Title { owner, scope, .. } => staff && scope_coherent(self.w, *scope, owner),
+            AssetOp::Encumber { .. } => staff,
+            AssetOp::Release { encumbrance, .. } => {
+                staff
+                    || matches!(encumbrance,
+                        crate::record::Encumbrance::Lien { creditor, .. } if creditor == actor)
+            }
+            _ => {
+                let Some(asset) = asset else { return false };
+                if staff || asset.title_owner == *actor {
+                    return true;
+                }
+                let capability = match op {
+                    AssetOp::Assign { .. } | AssetOp::Unassign { .. } => "asset.assign",
+                    _ => "asset.title.transfer",
+                };
+                self.scoped_capability(asset.scope, &asset.title_owner, capability, *a)
+            }
+        }
+    }
+
+    /// The destination half of D-E3-12: title carries liabilities, so receiving is
+    /// not free the way a money credit is. To an org → `asset.title.transfer` on
+    /// `to_scope`, which must be present and belong to that org. To an object
+    /// principal → the actor IS that principal, or staff.
+    fn authorize_title_receipt(&self, actor: &PrincipalId, to: &PrincipalId, to_scope: Option<OrgScopeId>) -> bool {
+        let PrincipalId::Object(a) = actor else { return false };
+        let staff = is_staff(self.w, *a);
+        match to {
+            PrincipalId::Organization(_) => {
+                let Some(scope) = to_scope else { return false };
+                if !scope_coherent(self.w, Some(scope), to) {
+                    return false;
+                }
+                staff || holds_capability(self.w, *a, "asset.title.transfer", scope)
+            }
+            // A non-org principal carries no compartment (the pure engine refuses a
+            // scope here too; this is the belt).
+            PrincipalId::Object(_) => to_scope.is_none() && (actor == to || staff),
+            PrincipalId::System(_) => to_scope.is_none() && staff,
+        }
+    }
+
+    /// Vault policy (§4.4): the vault's owner, `vault.deposit`/`vault.withdraw` on
+    /// its compartment, or staff. Vault ops never consult title (D5).
+    fn authorize_vault(&self, actor: &PrincipalId, vault: &Vault, op: &CustodyOp) -> bool {
+        let PrincipalId::Object(a) = actor else { return false };
+        if is_staff(self.w, *a) || vault.owner == *actor {
+            return true;
+        }
+        let capability = match op {
+            CustodyOp::Deposit { .. } => "vault.deposit",
+            CustodyOp::Withdraw { .. } => "vault.withdraw",
+        };
+        self.scoped_capability(vault.scope, &vault.owner, capability, *a)
+    }
+
+    /// Invariant 14: pointing maintenance at an account means "may DEBIT it".
+    /// Crediting is free, so a zero-delta probe through [`AuthEval::authorize`]
+    /// proves nothing — and a `System` faucet/sink is staff-only either way (A6).
+    fn authorize_maintenance(&self, actor: &PrincipalId, account: &Account) -> bool {
+        let PrincipalId::Object(a) = actor else { return false };
+        if is_staff(self.w, *a) {
+            return true;
+        }
+        if matches!(account.owner, PrincipalId::System(_)) {
+            return false;
+        }
+        if *actor == account.owner && account.scope.is_none() {
+            return true;
+        }
+        self.scoped_capability(account.scope, &account.owner, "economy.account.post", *a)
+    }
+}
+
+impl WorldAuth<'_> {
+    /// The capability path: a live, coherent compartment plus the capability on it.
+    fn scoped_capability(&self, scope: Option<OrgScopeId>, owner: &PrincipalId, capability: &str, actor: ObjId) -> bool {
+        let Some(scope) = scope else { return false };
+        scope_coherent(self.w, Some(scope), owner) && holds_capability(self.w, actor, capability, scope)
+    }
 }
 
 // ---- instrument + account creation (non-money writes) ---------------------
@@ -140,6 +321,52 @@ pub fn open_account(ctx: &mut Ctx<'_>, account: Account) {
     persist_meta(ctx.out, meta);
 }
 
+/// Create a vault (empty). Not money and not title — a normal record write, like
+/// [`open_account`]. The `id` must come from [`EconomyStore::alloc_vault`], and the
+/// caller has already proved the backing is usable and unclaimed.
+pub fn create_vault(ctx: &mut Ctx<'_>, vault: Vault) {
+    let meta = {
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return };
+        store.snapshot.put_vault(vault.clone());
+        store.meta_doc()
+    };
+    persist_vault(ctx.out, &vault);
+    persist_meta(ctx.out, meta);
+}
+
+/// Staff recovery: set (or clear) an asset's doc-authority `frozen` latch. **Not
+/// journaled** — the latch is deliberately outside every `AssetEffect` (D-E3-1), so
+/// clearing it is a doc write and a lost doc rebuilds *frozen*.
+///
+/// It deliberately does **not** bump `revision`: `revision` is a journal-authority
+/// field, and moving it here would make the doc disagree with the journal at its own
+/// claimed sequence — the next boot would read the freeze itself as drift and latch
+/// the whole-economy freeze (the C2 regression).
+pub fn set_asset_frozen(ctx: &mut Ctx<'_>, object: ObjId, frozen: bool, reason: Option<SmolStr>) -> bool {
+    let doc = {
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return false };
+        let Some(a) = store.snapshot.asset_mut(object) else { return false };
+        a.frozen = frozen;
+        a.frozen_reason = if frozen { reason } else { None };
+        a.clone()
+    };
+    persist_asset(ctx.out, &doc);
+    true
+}
+
+/// Staff: set a vault's doc-authority status. Not journaled (same split).
+pub fn set_vault_status(ctx: &mut Ctx<'_>, id: VaultId, status: crate::record::VaultStatus) -> bool {
+    let doc = {
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return false };
+        let Some(v) = store.snapshot.vault_mut(id) else { return false };
+        v.status = status;
+        v.revision += 1;
+        v.clone()
+    };
+    persist_vault(ctx.out, &doc);
+    true
+}
+
 // ---- the money seam -------------------------------------------------------
 
 /// The result of a post.
@@ -156,23 +383,34 @@ pub enum PostOutcome {
     NeedsApproval(ApprovalRequestId),
 }
 
-/// Post a validated plan: the whole money path. Refuses when the economy is frozen,
-/// validates live, applies, writes the atomic bundle, and gates the confirmation on
-/// the strict durable ack.
+/// Post a validated plan: the whole money **and title and custody** path. Refuses
+/// when the economy is frozen, validates live, performs the custody moves through
+/// the resolved providers, applies, writes the atomic bundle, and gates the
+/// confirmation on the strict durable ack.
+///
+/// **`post` is the LAST fallible call a handler may make** (§4.2 step 6, the
+/// `mush_org::submit` contract). A handler that returns `Err` discards its deferred
+/// persists but NOT its world mutations, so anything fallible after a successful
+/// `post` can leave the world ahead of the journal. Parse and resolve everything
+/// before calling it, and never `?` afterwards.
+///
+/// Ordering inside (§4.2): validate → custody moves (driven **only** by
+/// `Prepared.custody_effects`, so an `AlreadyPosted` retry performs zero world
+/// mutation) → apply + index → queue the bundle → strict gate. A provider `Err`
+/// returns before the store is touched.
 pub fn post(ctx: &mut Ctx<'_>, plan: &EconomyPlan) -> Result<PostOutcome, EconomyError> {
-    let outcome = {
+    let (outcome, providers) = {
         let store = ctx.w.module_state::<EconomyStore>().ok_or(EconomyError::EconomyFrozen)?;
         if store.frozen {
             return Err(EconomyError::EconomyFrozen);
         }
+        let providers = store.providers();
         let auth = WorldAuth { w: ctx.w };
-        // Custody providers arrive in E3b1; until then `NoCustody` refuses every
-        // custody op, which is the correct fail-closed behaviour (a plan that moves
-        // objects is refused rather than half-applied).
-        let env = ValidateEnv { auth: &auth, custody: &NoCustody, now: ctx.w.now() };
-        validate(plan, store.snapshot(), &env)
+        let custody = WorldCustody { w: ctx.w, providers: providers.clone() };
+        let env = ValidateEnv { auth: &auth, custody: &custody, now: ctx.w.now() };
+        (validate(plan, store.snapshot(), &env), providers)
     };
-    finish(ctx, outcome)
+    finish(ctx, outcome, &providers)
 }
 
 /// Reverse transaction `target`: fetch the real original from the journal-derived
@@ -184,20 +422,72 @@ pub fn reverse(
     actor: PrincipalId,
     cause: EconomicCause,
 ) -> Result<PostOutcome, EconomyError> {
-    let outcome = {
+    let (outcome, providers) = {
         let store = ctx.w.module_state::<EconomyStore>().ok_or(EconomyError::EconomyFrozen)?;
         if store.frozen {
             return Err(EconomyError::EconomyFrozen);
         }
         let original = store.transaction(target).ok_or(EconomyError::NoSuchTransaction(target))?.clone();
         let auth = WorldAuth { w: ctx.w };
-        plan_reversal(&original, actor, cause, store.snapshot(), &auth)
+        (plan_reversal(&original, actor, cause, store.snapshot(), &auth), store.providers())
     };
-    finish(ctx, outcome)
+    finish(ctx, outcome, &providers)
+}
+
+/// Run the prepared custody moves through their resolved providers — §4.2 step 2,
+/// **before** the store advances, so a refusal leaves RAM, the journal, and the
+/// deferred persists all untouched.
+///
+/// Every backing is resolved (and every claim checked) in a read-only first pass, so
+/// a mis-routed op never reaches a mutation. A plan carrying several custody ops
+/// applies them in order: validation already proved standing and destination for all
+/// of them against one snapshot, but a provider that nonetheless refuses the *k*-th
+/// move leaves the first *k−1* applied — commands therefore build at most one.
+fn run_custody_effects(
+    ctx: &mut Ctx<'_>,
+    prepared: &Prepared,
+    providers: &crate::custody::CustodyTable,
+) -> Result<(), EconomyError> {
+    if prepared.custody_effects.is_empty() {
+        return Ok(());
+    }
+    let PrincipalId::Object(actor) = prepared.actor else {
+        return Err(EconomyError::Custody("only an object principal can move custody".into()));
+    };
+    let mut moves: Vec<(crate::record::CustodyRef, ObjId, CustodyDirection, ObjId)> = Vec::new();
+    {
+        let store = ctx.w.module_state::<EconomyStore>().ok_or(EconomyError::EconomyFrozen)?;
+        for e in &prepared.custody_effects {
+            let vault = store.snapshot().vault(e.vault).ok_or(EconomyError::NoSuchVault(e.vault))?;
+            moves.push((vault.backing.clone(), e.object, e.direction, e.to));
+        }
+    }
+    // Read-only routing pass: no provider is invoked until every op has exactly one.
+    for (backing, obj, _, _) in &moves {
+        crate::custody::resolve(providers, ctx.w, backing, Some(*obj))
+            .map_err(|e: CustodyError| EconomyError::Custody(e.to_string()))?;
+    }
+    for (backing, obj, direction, to) in moves {
+        let provider = {
+            let p = crate::custody::resolve(providers, ctx.w, &backing, Some(obj))
+                .map_err(|e: CustodyError| EconomyError::Custody(e.to_string()))?;
+            std::sync::Arc::clone(p)
+        };
+        let done = match direction {
+            CustodyDirection::Deposit => provider.move_into(ctx, actor, obj, &backing),
+            CustodyDirection::Withdraw => provider.move_out(ctx, actor, obj, &backing, to),
+        };
+        done.map_err(|e| EconomyError::Custody(e.to_string()))?;
+    }
+    Ok(())
 }
 
 /// Common tail: turn a [`PlanResult`] into a durable-gated outcome or an error.
-fn finish(ctx: &mut Ctx<'_>, outcome: PlanResult) -> Result<PostOutcome, EconomyError> {
+fn finish(
+    ctx: &mut Ctx<'_>,
+    outcome: PlanResult,
+    providers: &crate::custody::CustodyTable,
+) -> Result<PostOutcome, EconomyError> {
     match outcome {
         PlanResult::AlreadyPosted(id) => {
             // R-R2: an idempotency HIT during the ORIGINAL's durability window must
@@ -220,6 +510,10 @@ fn finish(ctx: &mut Ctx<'_>, outcome: PlanResult) -> Result<PostOutcome, Economy
         PlanResult::NeedsApproval(_) => Err(EconomyError::ApprovalRequired),
         PlanResult::Refused(e) => Err(e),
         PlanResult::Post(prepared) => {
+            // §4.2 step 2: the world moves BEFORE the store advances, and only from
+            // the prepared effects (never the plan's ops — see `AlreadyPosted` above,
+            // which performs zero world mutation).
+            run_custody_effects(ctx, &prepared, providers)?;
             let now = ctx.w.now();
             let txid = commit_prepared(ctx, &prepared, now);
             // Invariant 9 / R-R1: the "posted" confirmation must never outrun the
@@ -235,7 +529,7 @@ fn finish(ctx: &mut Ctx<'_>, outcome: PlanResult) -> Result<PostOutcome, Economy
 /// write batch. The store mutation happens in a scope that ends before `ctx.out` is
 /// used (the shipped module discipline).
 fn commit_prepared(ctx: &mut Ctx<'_>, prepared: &Prepared, now: i64) -> TransactionId {
-    let (txid, journal_op, account_docs, meta) = {
+    let (txid, journal_op, account_docs, asset_docs, meta) = {
         let store = ctx.w.module_state_mut::<EconomyStore>().expect("economy store");
         let txid = store.alloc_transaction();
         // Peek the seq the journal will assign, so the transaction carries it before
@@ -251,11 +545,21 @@ fn commit_prepared(ctx: &mut Ctx<'_>, prepared: &Prepared, now: i64) -> Transact
             .touched_accounts()
             .filter_map(|id| store.snapshot().account(id).cloned())
             .collect();
-        (txid, op, account_docs, store.meta_doc())
+        // Every touched title projection rides the same bundle (D-E3-1: the doc is a
+        // projection, the effect in the journal is the authority).
+        let asset_docs: Vec<EconomicAsset> = prepared
+            .asset_effects
+            .iter()
+            .filter_map(|e| store.snapshot().asset(e.object).cloned())
+            .collect();
+        (txid, op, account_docs, asset_docs, store.meta_doc())
     };
     persist_journal(ctx.out, journal_op);
     for a in &account_docs {
         persist_account(ctx.out, a);
+    }
+    for a in &asset_docs {
+        persist_asset(ctx.out, a);
     }
     persist_meta(ctx.out, meta);
     txid

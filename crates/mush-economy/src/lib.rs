@@ -61,10 +61,12 @@ mod snapshot;
 
 // E2b — the world-attached module (the journal on the E0 Ledger, the atomic
 // full-bundle post, the strict durable money ack-gate, and directional boot
-// self-heal).
+// self-heal). E3b1 adds the custody seam, asset/vault persistence + boot, the
+// destroy gate, and the `@asset`/`@vault` surface.
 mod api;
 mod boot;
 mod commands;
+mod custody;
 mod module;
 
 pub use amount::{Amount, MAX_SCALE};
@@ -90,9 +92,11 @@ pub use record::{
 };
 pub use snapshot::EconomySnapshot;
 
-// E2b public surface.
+// E2b/E3b1 public surface.
 pub use api::{
-    META_KEY, PostOutcome, account_key, instrument_key, open_account, post, post_capability,
-    register_instrument, reverse,
+    META_KEY, PostOutcome, account_key, asset_key, create_vault, instrument_key, open_account,
+    post, post_capability, register_instrument, reverse, set_asset_frozen, set_vault_status,
+    vault_key,
 };
+pub use custody::{ContainerProvider, CustodyError, CustodyProvider, CustodyTable};
 pub use module::{EconomyModule, EconomyStore, JOURNAL_LOG, NS};

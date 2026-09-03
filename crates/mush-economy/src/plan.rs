@@ -488,6 +488,11 @@ pub enum EconomyError {
     /// `@asset/transfer` instead — there is no `/force` in E3.
     #[error("that transaction carries asset or custody effects and cannot be reversed")]
     HasEffects,
+    /// A custody provider refused (or could not be routed to) — the E3b1 world
+    /// half of a custody op. Raised only AFTER `validate` returned `Post` and
+    /// **before** the store is touched, so nothing has moved and nothing posted.
+    #[error("custody refused: {0}")]
+    Custody(String),
     /// An expected-asset-revision guard did not match current title state.
     #[error("stale plan: asset {object} expected revision {expected}, found {found:?}")]
     StaleAsset {

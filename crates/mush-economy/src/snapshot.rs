@@ -215,6 +215,19 @@ impl EconomySnapshot {
     pub(crate) fn account_mut(&mut self, id: AccountId) -> Option<&mut Account> {
         self.accounts.get_mut(&id)
     }
+    /// Mutable access to an asset — **doc-authority fields only** (the `frozen`
+    /// latch; the recovery backstop and boot liveness pass). Journal-authority
+    /// fields move only through [`crate::apply`]; changing `title_owner` here would
+    /// desync the owner index.
+    pub(crate) fn asset_mut(&mut self, object: ObjId) -> Option<&mut EconomicAsset> {
+        self.assets.get_mut(&object)
+    }
+    /// Mutable access to a vault — **`status`/`revision` only** (staff freeze/close
+    /// and the recovery backstop); re-binding a backing must go through
+    /// [`EconomySnapshot::put_vault`] so the index stays coherent.
+    pub(crate) fn vault_mut(&mut self, id: VaultId) -> Option<&mut Vault> {
+        self.vaults.get_mut(&id)
+    }
     /// Mark an approval request consumed by a transaction, dropping it from the live
     /// by-hash index (used by `apply`).
     pub(crate) fn consume_approval(&mut self, id: ApprovalRequestId, transaction: TransactionId) {

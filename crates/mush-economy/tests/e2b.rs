@@ -263,3 +263,37 @@ fn destroying_an_owner_freezes_their_account() {
     assert_eq!(bal(&tw, 1), 1000, "balance preserved");
     assert!(tw.take_module_ops().iter().any(|o| matches!(&o.op, ModuleWrite::JsonSet { key, .. } if key == "account:1")), "frozen account re-persisted");
 }
+
+#[test]
+fn boot_freezes_on_a_projection_ahead_of_the_journal() {
+    // The lost-tail direction of the E2 pair (back-filled in E3b1 alongside the asset
+    // quartet): a projection that remembers a journal entry the journal no longer has
+    // is not a lag to heal — the tail it was written from is GONE.
+    let mut tw = boot();
+    setup_mint(&mut tw, 1000); // account 1 = 1000 at seq 0
+    let mut kv = fold_kv(&mut tw);
+    for (k, v) in kv.iter_mut() {
+        if k == "account:1" {
+            v["last_journal_seq"] = serde_json::json!(7);
+        }
+    }
+    let tw2 = reboot(kv);
+    assert!(store(&tw2).is_frozen(), "a projection ahead of the journal (lost tail) must freeze");
+}
+
+#[test]
+fn boot_refuses_a_missing_account_doc() {
+    // The account metadata was lost while its money history survived: the journal
+    // cannot be replayed onto an account nothing describes, so boot FAILS rather than
+    // inventing one (the safe failure is no spending authority at all).
+    let mut tw = boot();
+    setup_mint(&mut tw, 1000);
+    let mut kv = fold_kv(&mut tw);
+    kv.retain(|(k, _)| k != "account:1");
+    let res = try_boot(&mut tw, kv);
+    assert!(res.is_err(), "a journal line referencing an account with no doc must refuse the boot");
+    assert!(
+        res.unwrap_err().contains("unknown account"),
+        "the refusal should name the cause"
+    );
+}

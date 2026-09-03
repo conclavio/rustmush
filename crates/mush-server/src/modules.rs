@@ -81,7 +81,10 @@ pub fn server_modules_with(weather: mush_weather::WeatherConfig) -> Vec<Box<dyn 
         )])),
         // E2: the accountable-value engine — the double-entry journal, accounts, and
         // the strict durable money ack-gate. After org (it authorizes through it).
-        Box::new(mush_economy::EconomyModule::new()),
+        // E3b1 freezes the custody provider table at wiring: the built-in container
+        // provider is appended by the module itself, and E3c adds
+        // `Arc::new(mush_sim::InteriorCustodyProvider)` here for interior vaults.
+        Box::new(mush_economy::EconomyModule::with_custody(vec![])),
         Box::new(mush_scenes::ScenesModule::new()),
         Box::new(mush_sim::SimulationModule::new()),
         Box::new(mush_mail::MailModule),

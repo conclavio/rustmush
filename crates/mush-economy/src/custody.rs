@@ -1,0 +1,342 @@
+//! The custody seam (E3b1, doc 08b §4.3) — how a [`Vault`] reaches the world.
+//!
+//! `mush-economy` is world-free at its core: the pure engine asks a
+//! [`CustodyEval`] the four world questions a custody op needs (is the backing
+//! usable, does the vault hold this, does the actor have standing, is the
+//! destination legal). This module supplies the live answers, and adds the
+//! *mutation* half the engine never touches: a [`CustodyProvider`] table that
+//! actually moves objects.
+//!
+//! ## Rules that keep custody from half-applying
+//!
+//! - **Exactly one provider resolves a whole op** — the first whose
+//!   [`CustodyProvider::handles`] accepts the backing. The op is refused if any
+//!   *other* registered provider [`claims`](CustodyProvider::claims) the object
+//!   (a sim-placed hull is not a thing you drop into a footlocker).
+//! - **`None` from any query is fail-closed.** A provider that cannot answer
+//!   (its own state is not loaded yet, the backing is not its kind) never
+//!   accidentally authorizes; boot treats `None` as "unknown", never as drift.
+//! - **Validate-then-mutate, never half-apply.** [`CustodyProvider::move_into`]
+//!   and [`CustodyProvider::move_out`] prove every precondition before the first
+//!   world write, because [`crate::post`] runs them BEFORE the store advances
+//!   (§4.2) and a handler `Err` discards deferred persists but not world writes.
+//! - The built-in [`ContainerProvider`] is always appended **last**, so a wired
+//!   provider always wins the routing race for its own backings.
+
+use std::sync::Arc;
+
+use mush_core::module::check_carry_attempt;
+use mush_core::{Ctx, Flags, MAX_CONTAINMENT_DEPTH, ObjId, World, perm};
+use mush_org::PrincipalId;
+
+use crate::engine::CustodyEval;
+use crate::module::EconomyStore;
+use crate::record::{CustodyRef, Vault};
+
+/// The wiring-frozen provider table (the `OrgModule::with_predicates` shape).
+pub type CustodyTable = Arc<Vec<Arc<dyn CustodyProvider>>>;
+
+/// Why a custody move was refused. Never a partial application: a provider that
+/// returns this has mutated nothing.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum CustodyError {
+    /// No registered provider handles that backing (`Registered{..}` backings
+    /// have none in E3; `SpatialInterior` waits for E3c).
+    #[error("no custody provider handles that backing")]
+    NoProvider,
+    /// Another provider owns the object's placement — routing it through this
+    /// one would strand it (a sim-placed or traveling object).
+    #[error("object #{obj} is held by the {provider} system and cannot move that way")]
+    Claimed {
+        /// The object another provider claims.
+        obj: ObjId,
+        /// Which provider claims it.
+        provider: String,
+    },
+    /// The provider validated and refused; nothing moved.
+    #[error("{0}")]
+    Refused(String),
+}
+
+/// A custody backend: the party that knows how a class of backing physically
+/// holds things, and the only party that moves objects in or out of one.
+///
+/// Implementors live with the data they read (`mush-sim` owns interiors, E3c);
+/// `mush-economy` ships only [`ContainerProvider`].
+pub trait CustodyProvider: Send + Sync + std::fmt::Debug {
+    /// A short stable name for messages/logs (`"container"`, `"sim"`).
+    fn provider(&self) -> &str;
+    /// Whether this provider resolves ops against `backing`.
+    fn handles(&self, backing: &CustodyRef) -> bool;
+    /// `true` if this provider owns the object's placement/motion, so no OTHER
+    /// provider may move it. `ContainerProvider` claims nothing.
+    fn claims(&self, w: &World, obj: ObjId) -> bool;
+    /// Whether the backing is a live, usable custody container. `None` = cannot
+    /// answer (fail closed at validate; "unknown", never drift, at boot).
+    fn backing_valid(&self, w: &World, backing: &CustodyRef) -> Option<bool>;
+    /// Everything the backing holds, transitively, depth-capped at
+    /// [`MAX_CONTAINMENT_DEPTH`] — a container deposited whole is not a
+    /// laundering primitive: its contents stay visible and individually
+    /// withdrawable.
+    fn contents(&self, w: &World, backing: &CustodyRef) -> Option<Vec<ObjId>>;
+    /// Whether the backing (transitively) holds `obj`.
+    fn holds(&self, w: &World, backing: &CustodyRef, obj: ObjId) -> Option<bool>;
+    /// Move `obj` into the backing. **Validate first; never half-apply.**
+    fn move_into(
+        &self,
+        ctx: &mut Ctx<'_>,
+        actor: ObjId,
+        obj: ObjId,
+        backing: &CustodyRef,
+    ) -> Result<(), CustodyError>;
+    /// Move `obj` out of the backing to `to`. **Validate first; never half-apply.**
+    fn move_out(
+        &self,
+        ctx: &mut Ctx<'_>,
+        actor: ObjId,
+        obj: ObjId,
+        backing: &CustodyRef,
+        to: ObjId,
+    ) -> Result<(), CustodyError>;
+}
+
+/// Resolve the ONE provider for an op: the first that `handles(backing)`, refused
+/// if any *other* provider `claims(obj)`. Pass `obj: None` for a pure query about
+/// the backing itself (no object is being routed).
+pub(crate) fn resolve<'t>(
+    providers: &'t [Arc<dyn CustodyProvider>],
+    w: &World,
+    backing: &CustodyRef,
+    obj: Option<ObjId>,
+) -> Result<&'t Arc<dyn CustodyProvider>, CustodyError> {
+    let idx = providers
+        .iter()
+        .position(|p| p.handles(backing))
+        .ok_or(CustodyError::NoProvider)?;
+    if let Some(obj) = obj {
+        for (i, p) in providers.iter().enumerate() {
+            if i != idx && p.claims(w, obj) {
+                return Err(CustodyError::Claimed { obj, provider: p.provider().to_string() });
+            }
+        }
+    }
+    Ok(&providers[idx])
+}
+
+/// Whether any registered provider claims `obj` (the `@vault/create` backing
+/// guard: a backing another system owns is not a container we may move things
+/// into).
+#[must_use]
+pub(crate) fn claimed_by(providers: &[Arc<dyn CustodyProvider>], w: &World, obj: ObjId) -> Option<String> {
+    providers
+        .iter()
+        .find(|p| p.claims(w, obj))
+        .map(|p| p.provider().to_string())
+}
+
+// ---- the built-in container provider --------------------------------------
+
+/// The ordinary-container backend: any live world object can hold things.
+///
+/// Moves go through `World::can_move_to` **and** the `CarryAttempt` hook chain
+/// (`World::move_to` itself consults no hook, so skipping the chain would make
+/// `mush-sim`'s placement gate blind to a vault deposit) **and** a
+/// [`MAX_CONTAINMENT_DEPTH`] check on the resulting chain (`move_to` does not
+/// enforce it, and `containing_room` returns `None` past it) — all before the
+/// single `move_to`.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ContainerProvider;
+
+impl CustodyProvider for ContainerProvider {
+    fn provider(&self) -> &str {
+        "container"
+    }
+    fn handles(&self, backing: &CustodyRef) -> bool {
+        matches!(backing, CustodyRef::Container(_))
+    }
+    fn claims(&self, _w: &World, _obj: ObjId) -> bool {
+        false
+    }
+    fn backing_valid(&self, w: &World, backing: &CustodyRef) -> Option<bool> {
+        let CustodyRef::Container(o) = backing else { return None };
+        Some(live(w, *o))
+    }
+    fn contents(&self, w: &World, backing: &CustodyRef) -> Option<Vec<ObjId>> {
+        let CustodyRef::Container(o) = backing else { return None };
+        if !live(w, *o) {
+            return Some(Vec::new());
+        }
+        Some(transitive_contents(w, *o))
+    }
+    fn holds(&self, w: &World, backing: &CustodyRef, obj: ObjId) -> Option<bool> {
+        self.contents(w, backing).map(|v| v.contains(&obj))
+    }
+    fn move_into(
+        &self,
+        ctx: &mut Ctx<'_>,
+        actor: ObjId,
+        obj: ObjId,
+        backing: &CustodyRef,
+    ) -> Result<(), CustodyError> {
+        let CustodyRef::Container(dest) = backing else { return Err(CustodyError::NoProvider) };
+        container_move(ctx, actor, obj, *dest)
+    }
+    fn move_out(
+        &self,
+        ctx: &mut Ctx<'_>,
+        actor: ObjId,
+        obj: ObjId,
+        backing: &CustodyRef,
+        to: ObjId,
+    ) -> Result<(), CustodyError> {
+        if !self.handles(backing) {
+            return Err(CustodyError::NoProvider);
+        }
+        container_move(ctx, actor, obj, to)
+    }
+}
+
+/// The one mutating primitive: prove every precondition, then exactly one
+/// `move_to`. Every early return leaves the world untouched.
+fn container_move(ctx: &mut Ctx<'_>, actor: ObjId, obj: ObjId, dest: ObjId) -> Result<(), CustodyError> {
+    if !live(ctx.w, obj) {
+        return Err(CustodyError::Refused(format!("#{} is not available to move.", obj.0)));
+    }
+    if !live(ctx.w, dest) {
+        return Err(CustodyError::Refused(format!("#{} cannot hold anything.", dest.0)));
+    }
+    ctx.w
+        .can_move_to(obj, dest)
+        .map_err(|e| CustodyError::Refused(e.to_string()))?;
+    if resulting_depth(ctx.w, obj, dest) > MAX_CONTAINMENT_DEPTH {
+        return Err(CustodyError::Refused("That would nest containers too deeply.".to_string()));
+    }
+    // The only thing that makes a registered `CarryAttempt` gate (sim placement,
+    // a ruleset's no-take rule) see a vault move at all.
+    check_carry_attempt(ctx.reg, ctx.w, actor, obj, dest)
+        .map_err(|rt| CustodyError::Refused(rt.to_plain_text()))?;
+    ctx.w
+        .move_to(obj, dest)
+        .map_err(|e| CustodyError::Refused(e.to_string()))
+}
+
+fn live(w: &World, o: ObjId) -> bool {
+    w.get(o).is_some_and(|x| !x.flags.contains(Flags::GOING))
+}
+
+/// Everything under `root`, transitively, capped at [`MAX_CONTAINMENT_DEPTH`]
+/// levels (so a cyclic or absurdly deep world cannot make this unbounded).
+fn transitive_contents(w: &World, root: ObjId) -> Vec<ObjId> {
+    let mut out: Vec<ObjId> = Vec::new();
+    let mut frontier: Vec<ObjId> = vec![root];
+    for _ in 0..MAX_CONTAINMENT_DEPTH {
+        let mut next: Vec<ObjId> = Vec::new();
+        for id in frontier.drain(..) {
+            for &c in w.contents_of(id) {
+                if !out.contains(&c) {
+                    out.push(c);
+                    next.push(c);
+                }
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
+    }
+    out
+}
+
+/// The containment-chain length that moving `obj` into `dest` would produce:
+/// the chain above `dest` (counting `dest`), the object itself, and the deepest
+/// thing the object carries.
+fn resulting_depth(w: &World, obj: ObjId, dest: ObjId) -> usize {
+    depth_above(w, dest) + 1 + subtree_depth(w, obj, MAX_CONTAINMENT_DEPTH)
+}
+
+fn depth_above(w: &World, start: ObjId) -> usize {
+    let mut n = 1usize;
+    let mut cur = start;
+    for _ in 0..=(MAX_CONTAINMENT_DEPTH * 2) {
+        match w.get(cur).and_then(|o| o.location) {
+            Some(loc) => {
+                n += 1;
+                cur = loc;
+            }
+            None => break,
+        }
+    }
+    n
+}
+
+fn subtree_depth(w: &World, obj: ObjId, budget: usize) -> usize {
+    if budget == 0 {
+        return 0;
+    }
+    w.contents_of(obj)
+        .iter()
+        .map(|c| 1 + subtree_depth(w, *c, budget - 1))
+        .max()
+        .unwrap_or(0)
+}
+
+// ---- the CustodyEval bridge -----------------------------------------------
+
+/// Bridges the provider table to the pure engine's [`CustodyEval`], exactly as
+/// `WorldAuth` bridges `AuthEval`. Every unanswerable query is `false`.
+pub(crate) struct WorldCustody<'a> {
+    pub(crate) w: &'a World,
+    pub(crate) providers: CustodyTable,
+}
+
+impl CustodyEval for WorldCustody<'_> {
+    fn backing_valid(&self, vault: &Vault) -> bool {
+        resolve(&self.providers, self.w, &vault.backing, None)
+            .ok()
+            .and_then(|p| p.backing_valid(self.w, &vault.backing))
+            .unwrap_or(false)
+    }
+    fn holds(&self, vault: &Vault, obj: ObjId) -> bool {
+        // Resolving WITH the object is also the claims check: an object another
+        // provider owns is never "in" a container vault.
+        let Ok(p) = resolve(&self.providers, self.w, &vault.backing, Some(obj)) else {
+            return false;
+        };
+        p.holds(self.w, &vault.backing, obj).unwrap_or(false)
+    }
+    /// Invariant 15's standing rule: **carried exactly** (`Obj.location ==
+    /// Some(actor)`, never an ancestor walk), **or** co-located with the actor
+    /// and the actor is the title owner / assignee / MUSH controller / staff.
+    fn may_deposit(&self, obj: ObjId, actor: &PrincipalId) -> bool {
+        let PrincipalId::Object(a) = actor else { return false };
+        let a = *a;
+        if !live(self.w, obj) || !live(self.w, a) {
+            return false;
+        }
+        let obj_loc = self.w.get(obj).and_then(|o| o.location);
+        if obj_loc == Some(a) {
+            return true;
+        }
+        let actor_loc = self.w.get(a).and_then(|o| o.location);
+        if obj_loc.is_none() || obj_loc != actor_loc {
+            return false;
+        }
+        if crate::api::is_staff(self.w, a) || perm::controls(self.w, a, obj) {
+            return true;
+        }
+        let principal = PrincipalId::Object(a);
+        self.w
+            .module_state::<EconomyStore>()
+            .and_then(|s| s.snapshot().asset(obj))
+            .is_some_and(|asset| {
+                asset.title_owner == principal
+                    || asset.assignment.as_ref().is_some_and(|x| x.assigned_to == principal)
+            })
+    }
+    fn destination_ok(&self, actor: &PrincipalId, to: ObjId) -> bool {
+        let PrincipalId::Object(a) = actor else { return false };
+        let a = *a;
+        let reachable = to == a || self.w.get(a).and_then(|o| o.location) == Some(to);
+        reachable && live(self.w, to)
+    }
+}
