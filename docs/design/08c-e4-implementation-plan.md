@@ -670,15 +670,13 @@ hold/approval/escalation GC retention 7 d after terminal · list cap 20.
    party dispute resolution, a graded ladder whose page carries the recommended command, and
    subject-only suspension.
 3. Canon evidence bridge in E4c, existence-level only, `Public` contracts only — **confirmed**.
-4. *(new, post-K)* Whether E4's obligation and contract docs should be **K2 state families** on the
-   prepared lane from day one, or conventional module docs shaped for a mechanical K3 migration
-   (§12, default: conventional now, migrate at K3 — the K2 lane cannot yet hydrate at boot).
-5. *(post-K)* The one-field `WorldEvent::CanonRecorded { source }` core change (§2) — default:
-   accepted as an E4c commit; doc 09 C6 keeps `WorldEvent` for lightweight lifecycle notification.
-6. *(post-K)* Does `mush-economy::post` ever become a K2/K3 action-transaction provider, or does the
-   economy's single-writer path stay permanently outside the kernel? Doc 09 §10 is silent. Default:
-   outside until K3 exists and a concrete gain is named; E4 shapes its records for a mechanical
-   migration either way.
+4. *(post-K)* Obligation and contract docs: **conventional module docs, owner-confirmed 2026-09-03**
+   ("leave E4 on conventional until K makes it further along and is boot durable"); shaped for a
+   mechanical K3 migration (§12).
+5. *(post-K)* The one-field `WorldEvent::CanonRecorded { source }` core change (§2) — **accepted**
+   (owner, 2026-09-03), an E4c commit.
+6. *(post-K)* Whether `mush-economy::post` ever becomes a kernel action provider — **deferred** with
+   q4 until K is boot-durable; E4 shapes its records for a mechanical migration either way.
 
 ## 12. Doc 09 conformance (post-K, Draft 0.5)
 
