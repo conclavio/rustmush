@@ -73,7 +73,11 @@ fn parse_bool(s: &str) -> Result<bool, CmdError> {
 
 /// Resolve a faction by name/alias, honoring the hidden gate for `viewer`
 /// (a hidden faction is indistinguishable from a missing one).
-fn resolve_faction(ctx: &Ctx<'_>, name: &str, honor_hidden: bool) -> Result<Faction, CmdError> {
+pub(crate) fn resolve_faction(
+    ctx: &Ctx<'_>,
+    name: &str,
+    honor_hidden: bool,
+) -> Result<Faction, CmdError> {
     let staff = is_admin(ctx.w, ctx.actor);
     let st = state_ref(ctx);
     let f = st
@@ -92,7 +96,7 @@ fn resolve_region(ctx: &Ctx<'_>, name: &str) -> Result<Region, CmdError> {
         .ok_or_else(|| CmdError::msg("No such region."))
 }
 
-fn rhs_required(ctx: &Ctx<'_>, usage: &str) -> Result<String, CmdError> {
+pub(crate) fn rhs_required(ctx: &Ctx<'_>, usage: &str) -> Result<String, CmdError> {
     ctx.args
         .rhs()
         .map(str::trim)
@@ -175,6 +179,10 @@ fn cmd_faction(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         faction_principal(ctx)
     } else if ctx.switches.has("resource") {
         faction_resource(ctx)
+    } else if ctx.switches.has("org") {
+        crate::econ::faction_org(ctx)
+    } else if ctx.switches.has("migrate") {
+        crate::econ::faction_migrate(ctx)
     } else if ctx.switches.has("channel") {
         faction_channel(ctx)
     } else if ctx.switches.has("control") {
@@ -215,6 +223,20 @@ fn faction_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 fn faction_destroy(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let f = resolve_faction(ctx, ctx.args.lhs(), false)?;
+    // E3d / D-E3-8: a bound faction is an attribution for money that outlives it.
+    // The cascade below deletes the faction doc, which would silently orphan the
+    // link — and with it the only record of WHOSE the org's balances were. Unbinding
+    // first is a deliberate staff act that leaves the organization and its accounts
+    // standing; only then may the registry entry go. (`f.org` is read straight from
+    // the doc, not through `backing_org`: a MISSING or CONFLICTing link must block
+    // destruction too, precisely because it is the state that needs attention.)
+    if let Some(org) = f.org {
+        return Err(CmdError::msg(format!(
+            "{} is backed by org #{org}; unbind it first (@faction/org {}=none). \
+             The organization and its accounts survive the unbind.",
+            f.name, f.name
+        )));
+    }
     let id = f.id;
     // Capture the bound channel and the module-joined (eligible) members
     // BEFORE the cascade deletes the faction — they leave the channel below,
@@ -674,6 +696,18 @@ fn faction_resource(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| CmdError::msg("Delta must be a signed integer."))?;
     let reason = segs.next().unwrap_or("staff adjustment").to_string();
+    // E3d / D-E3-9: a migrated key is money, and money moves only through the
+    // validated, conserved, reversible economy path. Letting this saturating
+    // rating verb touch it would create value with no counterparty and no journal
+    // entry — the exact thing the migration existed to end.
+    let canonical = SmolStr::new(kind.to_ascii_lowercase());
+    if f.migrated.contains(&canonical) {
+        return Err(CmdError::msg(format!(
+            "{canonical} is money on {}, not a rating: move it with @econ/pay, or \
+             mint more with @econ/mint from a system source.",
+            f.name
+        )));
+    }
     let actor = ctx.actor;
     let now = ctx.w.now();
     let updated = {
@@ -1015,6 +1049,17 @@ fn faction_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     for (kind, total) in &f.resources {
         lines.push(format!("  Resource: {kind} = {total}"));
     }
+    // E3d: the backing-org link, resolved LIVE (so a missing org or a duplicate
+    // binding is visible here rather than only at the moment money refuses), then
+    // the org's root-scope balances behind the economy's own view gate.
+    lines.push(format!("  Backing: {}", crate::econ::link_label(ctx.w, &f)));
+    if !f.migrated.is_empty() {
+        lines.push(format!(
+            "  Migrated to money: {}",
+            f.migrated.iter().map(SmolStr::as_str).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    lines.extend(crate::econ::balance_lines(ctx, &f, "  "));
     for p in &f.principals {
         lines.push(format!("  Principal NPC: {}", display_name(ctx.w, *p)));
     }
@@ -1384,6 +1429,12 @@ fn cmd_faction_info(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             lines.push(format!("  Resource: {kind} = {total}"));
         }
     }
+    // Money is NOT internal faction knowledge (§6.2, D-E3-11). The officer gate
+    // above governs ratings; the backing org's balances answer to the economy's own
+    // §4.5 view rule — staff, or `economy.account.view` on the org's root scope — so
+    // a faction officer with no `OrgMembership` and no grant sees ratings here and
+    // no money, and there is no "hidden" marker to tell them a wallet exists.
+    lines.extend(crate::econ::balance_lines(ctx, &f, "  "));
     // Holdings — control visibility, with the holder's officers always aware
     // of their own faction's holds (covert or not).
     let holdings: Vec<String> = st
@@ -1525,6 +1576,9 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 "unedge".into(),
                 "principal".into(),
                 "resource".into(),
+                "org".into(),
+                "migrate".into(),
+                "confirm".into(),
                 "channel".into(),
                 "control".into(),
                 "uncontrol".into(),
@@ -1543,7 +1597,15 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    subordinate, contracted, front; front edges default covert; acyclic per kind) ; \
                    @faction/unedge <from>=<kind>/<to>\n\
                    @faction/principal <f>=<npc>  (toggle the NPC voice of the faction)\n\
-                   @faction/resource <f>=<kind>/<delta>[/<reason>]  (typed pools, cause-stamped)\n\
+                   @faction/resource <f>=<kind>/<delta>[/<reason>]  (typed RATING pools, \
+                   cause-stamped; a migrated key is money and is refused here)\n\
+                   @faction/org <f>=<org|new|none>  (bind the faction's money identity; new \
+                   mints an org + root scope; none unbinds and leaves the org and its accounts \
+                   standing. A bound faction cannot be destroyed.)\n\
+                   @faction/migrate <f>=<kind> <system account> [/confirm]  (ONE key per call: \
+                   the rating integer becomes that instrument's MINOR UNITS, verbatim, minted \
+                   from the named system source into the org's root-scope account. One way, \
+                   once per key; without /confirm it only shows what would move.)\n\
                    @faction/channel <f>  (show binding) ; @faction/channel <f>=<channel>  (bind; \
                    PUBLIC members auto-join — quieter visibilities never ride the roster; \
                    @faction/channel <f>= with an explicit '=' unbinds; lock the channel's \

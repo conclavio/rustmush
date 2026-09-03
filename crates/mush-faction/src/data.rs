@@ -30,7 +30,7 @@
 //!   In the registry phase control records are staff-set; the simulation
 //!   phase moves changes behind front/clock resolution.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mush_core::{Deferred, ModuleOp, ModuleWrite, ObjId, Outbox};
 use serde::{Deserialize, Serialize};
@@ -258,11 +258,35 @@ pub struct Faction {
     pub intel_level: u8,
     /// Typed resource pools — never one influence scalar. Core owns the
     /// ledgered mutation; rulesets declare the vocabulary.
+    ///
+    /// These are **ratings**, not money: saturating, unaudited, and free of the
+    /// double-entry discipline. A key that should be money is migrated out of
+    /// here exactly once by `@faction/migrate` and recorded in [`Faction::migrated`]
+    /// (E3d / D-E3-9).
     #[serde(default)]
     pub resources: BTreeMap<SmolStr, i64>,
     /// Bounded cause-stamped tail of resource changes (newest last).
     #[serde(default)]
     pub resource_log: Vec<ResourceChange>,
+    /// The backing organization (E3d, D-E3-8): the faction's money identity, so
+    /// value attributed to "the Camarilla" is owned by a real principal with
+    /// scopes, grants, and a journal. `None` is the default and the norm —
+    /// `@faction/create` never auto-binds; binding is a deliberate staff act
+    /// (`@faction/org`).
+    ///
+    /// The link is validated at **every use** ([`backing_org`](crate::backing_org)),
+    /// never at boot: `FactionModule` loads before `OrgModule`, so at faction boot
+    /// the org registry is not yet there to ask. A missing org, or two factions
+    /// naming the same org, makes the link unusable — fail closed, both sides.
+    #[serde(default)]
+    pub org: Option<mush_org::OrgId>,
+    /// Resource keys that are **money now**, not ratings (E3d, D-E3-9). The
+    /// classification is explicit, static, and one-way: a key is money iff it is
+    /// listed here, so registering an instrument can never retroactively turn a
+    /// rating into something mintable. `@faction/resource` refuses these keys and
+    /// points at `@econ`.
+    #[serde(default)]
+    pub migrated: BTreeSet<SmolStr>,
     /// Outgoing structural edges.
     #[serde(default)]
     pub edges: Vec<FactionEdge>,
@@ -299,6 +323,8 @@ impl Faction {
             intel_level: 0,
             resources: BTreeMap::new(),
             resource_log: Vec::new(),
+            org: None,
+            migrated: BTreeSet::new(),
             edges: Vec::new(),
             principals: Vec::new(),
             channel: None,
@@ -307,17 +333,31 @@ impl Faction {
     }
 
     /// Apply one resource delta with its cause, keeping the log bounded.
+    ///
+    /// **Rating-only** (E3d): this is the saturating, unaudited arithmetic ratings
+    /// want, and it *creates* the key if absent — which is exactly why the
+    /// `@faction/migrate` path must never route through it. A migrated key removed
+    /// from `resources` would be resurrected here at 0 and start looking like a
+    /// second, parallel pool for money that already lives in the journal.
     pub fn apply_resource(&mut self, kind: &str, delta: i64, reason: &str, by: ObjId, ts: i64) {
         let kind = SmolStr::new(kind.to_ascii_lowercase());
         let slot = self.resources.entry(kind.clone()).or_insert(0);
         *slot = slot.saturating_add(delta);
-        self.resource_log.push(ResourceChange {
+        self.push_resource_log(ResourceChange {
             kind,
             delta,
             reason: reason.to_string(),
             by,
             ts,
         });
+    }
+
+    /// Append one change to the bounded audit tail, dropping the oldest entries
+    /// past `RESOURCE_LOG_CAP`. The migration path (E3d) appends **directly**
+    /// through here rather than through [`Faction::apply_resource`], which would
+    /// re-create the pool key it just removed.
+    pub fn push_resource_log(&mut self, change: ResourceChange) {
+        self.resource_log.push(change);
         if self.resource_log.len() > RESOURCE_LOG_CAP {
             let overflow = self.resource_log.len() - RESOURCE_LOG_CAP;
             self.resource_log.drain(..overflow);

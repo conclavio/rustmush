@@ -13,6 +13,10 @@ mush-canon.workspace = true
 # E1c: the faction-standing predicate provider bridges faction standing into org
 # access policies (mush-faction depends on the ownership layer, never the reverse).
 mush-org.workspace = true
+# E3d: the faction -> backing-OrgId link and the one-way `Faction.resources`
+# migration post through the economy's validated seam (doc 08b §6). The edge runs
+# faction -> economy only; the economy knows nothing about factions.
+mush-economy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true

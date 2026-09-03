@@ -123,5 +123,6 @@ pub use api::{
     open_account, post, post_capability, register_instrument, reverse, set_account_approval,
     set_account_status, set_asset_frozen, set_vault_status, vault_key,
 };
+pub use commands::may_view_account;
 pub use custody::{ContainerProvider, CustodyError, CustodyProvider, CustodyTable};
 pub use module::{EconomyModule, EconomyScopeUse, EconomyStore, JOURNAL_LOG, NS};

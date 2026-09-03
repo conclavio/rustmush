@@ -283,7 +283,12 @@ fn may_view_asset(w: &World, actor: ObjId, object: ObjId) -> bool {
 /// live approval request's `NamedSet` over it. That last clause is deliberate: you
 /// cannot responsibly approve a payment you are forbidden to look at, and the
 /// standing lasts exactly as long as the request does.
-fn may_view_account(w: &World, actor: ObjId, id: AccountId) -> bool {
+///
+/// **Public** so other modules that render an account balance render it behind the
+/// SAME gate rather than inventing a second, weaker one (E3d's faction read-through
+/// is the first such caller). A `false` answer means "render nothing" — never
+/// "render a placeholder", which would leak the account's existence.
+pub fn may_view_account(w: &World, actor: ObjId, id: AccountId) -> bool {
     if api::is_staff(w, actor) {
         return true;
     }

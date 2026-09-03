@@ -19,6 +19,13 @@
 //!   influence regions) with per-kind [`ControlRecord`]s (de jure / de facto
 //!   / covert / economic). Registry phase: staff-set; the faction
 //!   *simulation* (fronts/clocks) later moves changes behind typed causes.
+//! - **A backing [`OrgId`](mush_org::OrgId)** (E3d): a faction is a registry
+//!   entry, never a principal, so anything it *owns* is owned by an organization
+//!   it names ([`Faction::org`], bound by staff through `@faction/org`, resolved
+//!   live by [`backing_org`]). The same cut makes the rating/money boundary
+//!   explicit: `@faction/migrate` moves one `resources` key into a real journaled
+//!   account, once, and records it in [`Faction::migrated`] so `@faction/resource`
+//!   can never touch it again.
 //! - **[`Principal`]** — the generalized M12 intel principal (`Character` or
 //!   `Faction`), consumed by `mush-npc`'s informant loop: a faction's intel
 //!   pool is a clearance-gated shared store, read via `+intel` by members
@@ -48,6 +55,7 @@
 
 mod commands;
 mod data;
+mod econ;
 mod sim;
 mod sim_commands;
 mod standing;
@@ -65,6 +73,7 @@ pub use data::{
     FactionState, MAX_NAME_LEN, META_KEY, NS, Principal, Region, RegionId, ResourceChange,
     Visibility, control_key, fac_key, member_key, region_key,
 };
+pub use econ::{LinkError, backing_org};
 pub use sim::{Clock, ClockId, Front, FrontId, SimState};
 pub use standing::FactionStandingProvider;
 

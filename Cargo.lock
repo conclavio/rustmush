@@ -2019,6 +2019,7 @@ dependencies = [
  "mush-canon",
  "mush-comsys",
  "mush-core",
+ "mush-economy",
  "mush-org",
  "mush-proto",
  "mush-store",
