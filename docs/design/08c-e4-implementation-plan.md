@@ -1,8 +1,9 @@
 # E4 implementation plan — holds, escrow, obligations, and contracts
 
-**Status:** Draft 0.2 — reviewed (three passes: adversarial money-safety, code-grounding, design-fit
-against docs 08/08a/08b); every confirmed finding is folded below and itemised in §11. Ready for
-build once the K-series rebase lands. Companion to
+**Status:** Draft 0.3 — reviewed (three passes: adversarial money-safety, code-grounding, design-fit
+against docs 08/08a/08b); every confirmed finding is folded below and itemised in §11. The owner's
+answers to §10 are folded (Draft 0.3: automatic reconciliation + a graded escalation ladder,
+D-E4-14). Ready for build once the K-series rebase lands. Companion to
 [08-economy-organizations-ownership.md](08-economy-organizations-ownership.md) (the design; §8, §12,
 §18-E4), [08a-economy-build-status.md](08a-economy-build-status.md) (the ledger + the E4 pickup), and
 [08b-e3-implementation-plan.md](08b-e3-implementation-plan.md) (E3 as built — E4 extends it).
@@ -187,11 +188,14 @@ pub struct Obligation {
     pub schedule: EconomicSchedule,
     pub grace: GracePolicy { pub periods: u8 },  // missed periods tolerated before Delinquent
     pub notify_on_success: bool,                 // default false — routine settlement is silent (§14.3)
-    pub status: ObligationStatus,                // Active | Grace { missed, deadline: EconomicDeadline } | Delinquent | Suspended | Reconciliation { missed } | Satisfied | Cancelled
+    pub status: ObligationStatus,                // Active | Grace { missed, deadline: EconomicDeadline } | Delinquent | Suspended { reason: SuspendReason } | Satisfied | Cancelled
     pub cause: ObligationCause,                  // Contract(ContractId) | Staff { reason } | Ruleset { namespace }
     pub periods_settled: u32,
+    pub history: Vec<ObligationEvent>,           // bounded (32): Settled | Missed | Forgiven { periods, from, to, cause } | Escalated { id } | Resumed — the audit tail
     pub revision: u64,
 }
+pub enum SuspendReason { Staff { reason }, Escalated(EscalationId) }
+pub enum ForgiveCause { Downtime, TimeJump, Overload }
 /// Pure sweep step for one obligation at `now`: which period indexes to attempt (≤ maximum_catch_up),
 /// and the status if more than that are due (→ Reconciliation) — no money logic here.
 pub fn plan_sweep(o: &Obligation, now: i64) -> SweepIntent;
@@ -203,14 +207,26 @@ Each period's settlement is an ordinary money plan with `cause: Internal { kind:
 and **idempotency key `obligation/{id}/{period}`** (the period index is `periods_settled + k`, so a
 restart mid-sweep re-derives the same keys and resolves to `AlreadyPosted` — the exit criterion's
 "duplicate scheduler events"). A failed period → `Grace { missed: 1, deadline }`; further failures
-increment `missed`; past `grace.periods` → `Delinquent` (no further attempts until staff/ruleset
-act); more due periods than `maximum_catch_up` → `Reconciliation { missed }` (§8.2 — doc 08 §8.3's
-status enum gains this variant because §8.2's own prose requires it). **`Reconciliation`,
-`Delinquent`, and `Suspended` remove the obligation from the due pool** until staff act — that,
-not the per-sweep cap, is what prevents a long-suspended obligation from starving others.
+increment `missed`; past `grace.periods` → `Delinquent` (no further attempts; the E5 consequence
+hook takes over — a story state, not a staff page).
+
+**Reconciliation is automatic (D-E4-14; owner decision 2026-09-03).** When more periods are due
+than `maximum_catch_up`, the sweep settles the **most recent** `maximum_catch_up` periods and
+**forgives** the older excess: the schedule advances past them, and `history` gains
+`Forgiven { periods, from, to, cause }` with both debtor and creditor notified once. Doc 08 §2
+already forbids charging a downtime or time-jump backlog, so forgiveness is the *designed* outcome,
+not a fallback; §8.2's "explicit staff-visible reconciliation state" becomes this attributed
+history record plus an `ObligationChanged` event, **not a wait state** — there is no
+`Reconciliation` status. The cause is classified from the economy's own persisted sweep stamps
+(`meta.last_sweep_real`, `meta.last_sweep_ic`): `Downtime` when no sweep ran across the missed
+periods; `TimeJump` when the IC clock advanced more than `real_elapsed × ic_ratio` allows (an epoch
+or ratio change); `Overload` when sweeps did run but this obligation never received post budget.
+`Overload` forgiveness twice within `ESCALATION_WINDOW` escalates (a misconfigured cadence, or a
+starved pool — a human question). **`Delinquent` and `Suspended` remove the obligation from the due
+pool** — that, not the per-sweep cap, prevents a long-suspended obligation from starving others.
 Changing `cadence`/`next_due` on a live obligation is staff-only and never lowers
 `periods_settled`. Obligation status is **doc-authority** (`obligation:{id}` container); its
-settlement history is the journal.
+settlement history is the journal; `history` is the bounded human-readable tail.
 
 ### 3.5 Contracts (`contract.rs`, pure)
 
@@ -351,21 +367,53 @@ never reads for authority). Per fire, in order, **all no-ops while the economy i
    `Grace` only), ≤ `MAX_OBLIGATIONS_PER_SWEEP` (64) obligations and ≤ `MAX_POSTS_PER_SWEEP` (128)
    posts per fire: `plan_sweep` → attempt each period as a post with key
    `obligation/{id}/{period}`; `Posted`/`AlreadyPosted` → `advance`; insufficient **available**
-   (`CreditViolation`) → `Grace`/`Delinquent`; any other refusal → `Suspended` + staff log; periods
-   beyond the cap → `Reconciliation`. **Output is exception-driven (§14.3, D10): a routine `Posted`
-   is silent unless `notify_on_success`; a transition to `Grace`, `Delinquent`, `Reconciliation`,
-   or `Suspended` notifies debtor and creditor via `out.to_actor`.** No sweep notice ever claims
-   that money durably moved (D-E4-6); the whole-step gate is not used from the sweep.
+   (`CreditViolation`) → `Grace`/`Delinquent`; periods beyond the cap → **forgiven** with cause
+   (D-E4-14); a refusal only a human can fix (creditor or debtor account closed/missing/frozen, org
+   inactive, instrument retired) → **escalate**: `Suspended { Escalated(id) }` for *that* obligation
+   and an `Escalation` record (§4.6) — never a whole-economy stop. **Output is exception-driven
+   (§14.3, D10): a routine `Posted` is silent unless `notify_on_success`; a transition to `Grace`,
+   `Delinquent`, a `Forgiven` record, or `Suspended` notifies debtor and creditor via
+   `out.to_actor`.** No sweep notice ever claims that money durably moved (D-E4-6); the whole-step
+   gate is not used from the sweep. The sweep stamps `meta.last_sweep_real/ic` at the end of every
+   fire (the cause classifier's evidence).
 3. *(E4b2 adds)* **Contracts**: expire `Offered`/`Active` contracts past their deadline (`on_expiry`
    → refund / forfeit / dispute); settle `ReadyToSettle` ones whose readiness came from a `Before`/
    `After` condition or whose in-step settlement was deferred by a re-verification failure.
 4. **GC** expired approval requests (E3's rule), `Released`/`Expired` holds older than the retention
-   window (their history stays in the journal), and `Draft` contracts older than `DRAFT_TTL`.
+   window (their history stays in the journal), `Draft` contracts older than `DRAFT_TTL`, and
+   acknowledged escalations older than the retention window.
 
 Catch-up is computed from `next_due` and the clock, **never from tick count** — the
 `mush-sim/src/route.rs:14-20, 186-208` pattern. The first sweep after a restart fires immediately
-(`engine.rs:447-453`) and runs catch-up under the caps; a large IC jump lands in `Reconciliation`,
-not a charge storm; work left over waits for the next fire (§14.3: bounded per step).
+(`engine.rs:447-453`) and runs catch-up under the caps; a large IC jump is **forgiven with cause
+`TimeJump`**, not charged and not parked; work left over waits for the next fire (§14.3: bounded
+per step).
+
+### 4.6 Escalations — the graded ladder (D-E4-14)
+
+The owner's operating constraint: a game has perhaps one staffer who understands an economy alert,
+and they may be hours away. So: **resolve programmatically wherever the best action is determinable;
+page a human only for a genuine decision; stop future periods only then; never stop the world for a
+local problem.** The ladder, used by holds, obligations, and contracts alike:
+
+| Level | Meaning | Economy action |
+|-------|---------|----------------|
+| 0 — resolve | the best action is determinable | do it, record it (`Forgiven`, a retried refusal, a unanimous party agreement), notify the affected principals once |
+| 1 — inform | worth a human's eventual glance, nothing blocked | `EconomicEvent` + a line in `@econ/alerts`; no state stops |
+| 2 — page | a human must decide | open an `Escalation { id, kind, subject, context, recommended: Vec<Command>, opened_at, acked_by }` (`escalation:{id}` leaf doc), suspend **only the subject** (`Suspended { Escalated(id) }` / contract `Disputed`), emit `EscalationOpened`; the server glue (E4c) broadcasts to the staff channel and may open a job |
+| 3 — stop | the journal cannot be trusted | the existing whole-economy freeze — unchanged — but it now also opens a level-2 record carrying the diagnosis (which doc drifted, at which seq) and the recovery command |
+
+Triggers: level 2 for a settlement refusal only a human can fix (closed/missing/frozen account,
+inactive org, retired instrument, a `Settled` contract whose transaction is reversed), for
+`Overload` forgiveness twice in `ESCALATION_WINDOW`, for a contract `Disputed` longer than
+`DISPUTE_TTL` without unanimous party agreement, and for `MAX_SETTLE_ATTEMPTS` exhausted. Every
+record carries **the recommended command(s)** with arguments filled in (`@obligation/repoint #12
+creditor=#7`, `@obligation/cancel #12`, `@contract/resolve #4=refund`) — the staffer is going to
+paste the alert into an LLM anyway, so the alert should already be the answer. `@econ/alerts`
+lists open escalations newest first (staff, capped); `@econ/ack <id>` marks one handled and resumes
+the subject where that is the recommendation. Unacknowledged level-2 escalations re-notify at
+`ESCALATION_RENOTIFY` intervals (bounded, then daily). Escalation docs are leaves (corrupt → skip
+loudly); ids are floored like approvals.
 
 ### 4.4 Commands
 
@@ -373,7 +421,8 @@ not a charge storm; work left over waits for the next fire (§14.3: bounded per 
 @hold/place <account>=<amount> [for=<principal>] [expires=<secs|ic:<secs>>] [reason]   (debit authority; ApprovalRule applies)
 @hold/release <id>    @hold/capture <id>=<to account> <amount>    @hold/show <id>   @hold/list [account=]
 @obligation/create <debtor acct>=<creditor acct> <amount> every=<secs|ic:<secs>> [start=] [grace=<n>] [catchup=<n>] [notify]   (staff / ruleset)
-@obligation/show|list|suspend|resume|cancel <id>   @obligation/advance <id>  (Manual clock)   @obligation/reconcile <id>=<settle <n>|forgive>  (staff)
+@obligation/show|list|suspend|resume|cancel <id>   @obligation/advance <id>  (Manual clock)   @obligation/repoint <id>=<debit|credit acct>  (staff)
+@econ/alerts   @econ/ack <id>                    (staff — the escalation ladder, §4.6)
 @account/close  — now refuses per invariant 29
 ```
 
@@ -391,12 +440,16 @@ would dip into held funds is refused; **14** capture, release, and expiry each: 
 restart between the sweep's post and its doc write converges; **15** an obligation settles on
 schedule (set_now steps) *silently*, fails into `Grace` with a notice when available is short,
 reaches `Delinquent` after `grace.periods`, and after a simulated downtime of ten periods with
-`maximum_catch_up = 3` settles exactly three and lands in `Reconciliation` (and leaves the due
-pool); an IC-ratio jump does the same; a backwards clock charges nothing; `fire_due` twice at the
-same instant posts once per period; the whole-economy freeze stops the sweep; `@account/close`
-refused with an Active hold; `reverse` refused on a capture. Plus the boot quartet for `hold:{id}`,
-the `held_amount` drift freeze anchored on `last_hold_seq`, the `next_hold_id` floor after GC, and
-the hidden-party renderings for holds and obligations.
+`maximum_catch_up = 3` settles exactly the three most recent, **forgives seven with cause
+`Downtime`**, notifies once, and stays `Active` on schedule; an IC-ratio jump forgives with cause
+`TimeJump`; a starved pool forgives with `Overload` and the second time within the window
+escalates; a backwards clock charges nothing; `fire_due` twice at the same instant posts once per
+period; the whole-economy freeze stops the sweep and opens a level-2 record; a creditor account
+closed under a live obligation → `Suspended { Escalated }` with a recommended `@obligation/repoint`
+in the record, `@econ/ack` resumes it after repointing; `@account/close` refused with an Active
+hold; `reverse` refused on a capture. Plus the boot quartet for `hold:{id}`, the `held_amount` drift
+freeze anchored on `last_hold_seq`, the `next_hold_id` floor after GC, escalation-id floors, and the
+hidden-party renderings for holds and obligations.
 
 ---
 
@@ -423,7 +476,8 @@ contract's scope — new vocabulary entries `contract.draft`, `contract.accept`,
 @contract/offer <id>                       Draft → Offered (check_offerable; freezes consent_hash)
 @contract/accept <id>                      a party; places that party's consideration hold under their live authority
 @contract/attest <id>=<n>                  an attestor; may settle in the same step
-@contract/dispute <id>   @contract/cancel <id>   @contract/resolve <id>=settle|refund   (staff)
+@contract/dispute <id>   @contract/agree <id>=settle|refund   (a party; unanimous agreement resolves a dispute without staff — level 0)
+@contract/cancel <id>    @contract/resolve <id>=settle|refund   (staff — level 2, after DISPUTE_TTL escalates)
 @contract/show <id>   @contract/list
 ```
 
@@ -519,10 +573,11 @@ owner says so. `cargo fmt` stays off until the pending reformat lands.
   §18-E4's "add registered clocks" bullet is consciously deferred: no provider seam exists; E7
   builds it with its consumer. IC time enters the engine as `ValidateEnv.ic_now`.
 - **D-E4-3 One bounded sweep tick; catch-up from schedule arithmetic, never from tick count;
-  per-period idempotency keys; `Reconciliation` added to §8.3's status enum because §8.2's prose
-  demands it; the due pool excludes `Reconciliation`/`Delinquent`/`Suspended`.** The core scheduler
-  is in-RAM, re-armed at boot, fires each tick exactly once regardless of downtime, and cannot host
-  per-record timers. `maximum_catch_up` is clamped at creation.
+  per-period idempotency keys; excess periods are forgiven with a classified cause, not parked; the
+  due pool excludes `Delinquent`/`Suspended`.** The core scheduler is in-RAM, re-armed at boot,
+  fires each tick exactly once regardless of downtime, and cannot host per-record timers.
+  `maximum_catch_up` is clamped at creation. *(Draft 0.2's `Reconciliation` wait state is gone —
+  see D-E4-14.)*
 - **D-E4-4 Contracts are the consent carrier; acceptance bound to the whole consent surface's hash
   is the settlement authority, re-checked live; conditions settle on attestations and the
   economy's own journaled facts, re-verified at settlement; `DepositInto` objects are
@@ -551,6 +606,14 @@ owner says so. `cargo fmt` stays off until the pending reformat lands.
   accepted that visibility, ever reach canon.
 - **D-E4-13 `EconomicEvent` payloads carry ids and kinds only** — tighter than §12.4's sketch
   (`TransactionPosted { id, cause }` would leak a staff reason string).
+- **D-E4-14 Programmatic resolution first; a graded escalation ladder; stop only the subject, and
+  only when a human must decide** (owner decision 2026-09-03, §4.6). A one-staffer game cannot park
+  money on "wait for staff" for hours. Downtime and time-jump backlogs are *forgiven* with an
+  attributed record (doc 08 §2 forbids charging them anyway); disputes resolve on unanimous party
+  agreement; refusals only a human can fix page with the recommended command filled in and suspend
+  that obligation alone; the whole-economy freeze stays the only world-stop and now also opens a
+  record carrying its diagnosis. This is a standing principle for later economy cuts, recorded in
+  08a as decision 25.
 
 ## 9. Constants
 
@@ -558,16 +621,21 @@ owner says so. `cargo fmt` stays off until the pending reformat lands.
 `MAX_HOLD_EXPIRIES_PER_SWEEP` 64 · `MAX_OBLIGATIONS_PER_SWEEP` 64 · `MAX_POSTS_PER_SWEEP` 128 ·
 `MAX_CATCH_UP_CAP` 8 (default 3) · default `grace.periods` 1 · `MAX_PARTIES` 16 · `MAX_CONDITIONS` 16 ·
 `MAX_DELIVERABLES` 16 · `MAX_SHARES` 32 · `MAX_OPEN_CONTRACTS_PER_ISSUER` 16 ·
-`MAX_LIVE_CONTRACTS_PER_PARTY` 32 · `MAX_SETTLE_ATTEMPTS` 8 · `DRAFT_TTL` 7 d · hold/approval GC
-retention 7 d after terminal · list cap 20.
+`MAX_LIVE_CONTRACTS_PER_PARTY` 32 · `MAX_SETTLE_ATTEMPTS` 8 · `DRAFT_TTL` 7 d · `DISPUTE_TTL` 3 d ·
+`ESCALATION_WINDOW` 7 d · `ESCALATION_RENOTIFY` 1 h, then daily · `MAX_OBLIGATION_HISTORY` 32 ·
+hold/approval/escalation GC retention 7 d after terminal · list cap 20.
 
-## 10. Open questions for the owner (defaults chosen)
+## 10. Open questions — resolved by the owner 2026-09-03
 
-1. Sweep period 30 s wall time — confirm (obligations on `WorldIc` still resolve per sweep).
-2. Whether `Reconciliation` should also stop *future* periods (default: yes, until staff
-   `@obligation/reconcile`).
-3. Whether the canon evidence bridge belongs in E4 or waits for E8's dashboards (default: E4c,
-   existence-level only, `Public` contracts only).
+1. Sweep period 30 s wall time — **confirmed**.
+2. Whether reconciliation stops future periods — **no, not by default.** The owner's constraint:
+   "things that stop until staff do something" can wait hours on a game with one staffer who would
+   take the alert to an LLM anyway; figure out the best action programmatically and attempt it, and
+   only when there is a real issue for a human to decide, page them, escalate, and stop future
+   periods. Folded as D-E4-14 / §4.6: automatic forgiveness with a classified cause, unanimous
+   party dispute resolution, a graded ladder whose page carries the recommended command, and
+   subject-only suspension.
+3. Canon evidence bridge in E4c, existence-level only, `Public` contracts only — **confirmed**.
 
 ## 11. Review outcome (Draft 0.1 → 0.2)
 

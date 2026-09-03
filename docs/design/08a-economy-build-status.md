@@ -204,6 +204,16 @@ failing workspace test, `mushd::web_e2e::spa_and_healthz_are_served`, predates E
     non-empty vault backing, a principal holding a balance or a title); `@destroy/override` bypasses
     only `SAFE`, never the gate; the non-staff refusal is neutral text.
 
+25. **Programmatic resolution first; page a human only for a genuine decision; stop only the subject**
+    (owner decision 2026-09-03, standing for every economy cut from E4 on; 08c §4.6 / D-E4-14). A game
+    has perhaps one staffer who understands an economy alert and may be hours away, and they will
+    take it to an LLM anyway — so the economy forgives downtime/time-jump backlogs with an
+    attributed record (doc 08 §2 forbids charging them), lets contract parties resolve disputes
+    unanimously, pages only for refusals a human must decide (closed/missing account, inactive org,
+    retired instrument) with the recommended command already filled in, suspends only that
+    obligation or contract, and never stops the world for a local problem. The whole-economy freeze
+    remains the one world-stop and now also opens an escalation record carrying its diagnosis.
+
 ## E3 verify outcome (end-of-build, three lenses, probe-confirmed)
 
 Confirmed and folded, each with a regression test: **(H)** net-zero self-transfer bypassing debit
