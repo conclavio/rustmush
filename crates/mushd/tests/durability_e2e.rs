@@ -343,6 +343,7 @@ async fn boot_rig(store: &Arc<dyn ObjectStore>) -> (Arc<SessionManager>, Persist
             guard: Arc::new(IpGuard::new()),
             staff,
             llm: None,
+            quarantine_dir: None,
         },
     );
     (sessions, handles)

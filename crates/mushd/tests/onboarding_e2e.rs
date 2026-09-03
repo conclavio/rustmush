@@ -155,6 +155,7 @@ async fn boot(tag: &str, chargen_required: bool) -> Server {
             guard: Arc::clone(&guard),
             staff,
             llm: Some(Arc::clone(&llm)),
+            quarantine_dir: None,
             metrics: Arc::new(mush_net_web::Metrics::new()),
         },
     );

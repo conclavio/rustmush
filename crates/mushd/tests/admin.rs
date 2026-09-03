@@ -63,6 +63,7 @@ fn spawn_staffed(
             guard: Arc::new(IpGuard::new()),
             staff,
             llm: None,
+            quarantine_dir: None,
         },
     )
 }
@@ -357,6 +358,7 @@ fn render_stats_reports_counts_lag_and_store_health() {
     let health = StoreHealth {
         read_only: false,
         last_write_unix: Some(now - 5),
+        poison_frozen: false,
     };
     // The enriched aggregates (M9 observability): transport-split connections,
     // write-queue depth, NPC counts, p99 lag, and today's LLM spend.

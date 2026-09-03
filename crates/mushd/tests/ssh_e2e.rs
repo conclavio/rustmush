@@ -203,6 +203,7 @@ async fn boot_duo_server(dir: &std::path::Path, seed_key: bool, with_staff: bool
                 guard: Arc::new(IpGuard::new()),
                 staff,
                 llm: None,
+                quarantine_dir: None,
             },
         )
         .handle

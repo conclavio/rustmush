@@ -268,6 +268,7 @@ pub async fn boot_module_server(dir: &Path, server_name: &str, boss_password: &s
             guard: Arc::new(mushd::ipguard::IpGuard::new()),
             staff,
             llm: None,
+            quarantine_dir: None,
         },
     );
     let world = handles.handle;
@@ -353,6 +354,7 @@ pub async fn boot_worldgen_server(
             guard: Arc::new(mushd::ipguard::IpGuard::new()),
             staff,
             llm: Some(llm),
+            quarantine_dir: None,
         },
     );
     let world = handles.handle;

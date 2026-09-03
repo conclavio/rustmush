@@ -40,7 +40,7 @@
 //! ## Pause-mutations policy (PLAN risk 3)
 //!
 //! When the store-writer reports persistent write failure
-//! ([`WorldMsg::StoreStatus`]), the world enters **read-only mode**: input
+//! ([`WriterSignal::StoreStatus`]), the world enters **read-only mode**: input
 //! lines are refused unless they are on a conservative non-mutating
 //! allowlist (look/WHO/speech/...) — a line matching an **exit** is refused
 //! even when it spells an allowlisted verb, since dispatch matches exits
@@ -68,6 +68,7 @@
 //! format does not show them.)
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use mush_core::commands::movement::find_exit;
@@ -87,6 +88,7 @@ use tokio::task::JoinHandle;
 
 use crate::gateway_sink::GatewaySink;
 use crate::persist::{self, StoreJob};
+use crate::retained::RetainedSeals;
 use crate::staff::{StaffOp, StaffOpKind, StaffQueue};
 
 /// The server-side view of the delivery seam: an `Arc<dyn GatewaySink>` the
@@ -108,6 +110,21 @@ const STAFF_OPS_CAPACITY: usize = 64;
 /// world loop must never block on slow work; lag here means something
 /// synchronous is too slow or the writer queue is back-pressuring.
 const LOOP_LAG_WARN: Duration = Duration::from_millis(500);
+
+/// While any sealed ledger chunk is awaiting a durable ack (E0), the world loop
+/// wakes on this cadence even with no other traffic, so a dropped seal is
+/// re-emitted promptly on an otherwise idle world rather than waiting for the
+/// next incidental command. Short enough to keep the loss window tight; long
+/// enough that the re-flush is negligible load. Acks normally arrive within one
+/// world step, so in the steady state this fires at most once per seal.
+const REEMIT_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Global alarm threshold on the retained-seal depth. In healthy
+/// operation the table holds at most a handful of seals (one per log that just
+/// rolled over, cleared within a step or two). A depth past this means acks are
+/// not flowing — the store is wedged or a seal is poison — and is logged so a
+/// scraper/operator notices before the bounded writer queue backs the loop up.
+const RETAINED_DEPTH_ALARM: usize = 64;
 
 /// Player creation failure, reported back over the oneshot.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -216,14 +233,44 @@ pub enum WorldMsg {
         /// Signalled when the barrier is reached.
         reply: oneshot::Sender<()>,
     },
-    /// Store-writer health transition (sent by the writer task): `false`
-    /// enters read-only mode (mutations paused, Wizards alerted), `true`
-    /// lifts it.
+}
+
+/// A control signal from the store-writer task to the world loop (health
+/// transitions and authoritative-ledger breaches).
+///
+/// These ride a **dedicated unbounded channel**, NOT the bounded inbound
+/// [`WorldMsg`] queue. The writer must never block sending one: the world loop
+/// blocks on `writer.send(StoreJob)` when the writer's job queue is full, and if
+/// the writer then blocked on a *bounded* signal send (with the world unable to
+/// drain it while parked on that queue) the two would deadlock — the exact
+/// hazard the E0 design kept the commit high-water off a channel to avoid. An
+/// unbounded send never blocks, so the writer always makes progress draining its
+/// queue, which unblocks the world, which then drains these. Signals are rare
+/// (health transitions; per-incident breach messages), so unboundedness costs no
+/// real memory, and nothing is dropped — a freeze/quarantine must always arrive.
+pub enum WriterSignal {
+    /// Store-writer health transition: `false` enters read-only mode (mutations
+    /// paused, Wizards alerted), `true` lifts it (unless a ledger-breach freeze
+    /// is latched).
     StoreStatus {
         /// Whether writes are succeeding again.
         healthy: bool,
         /// The triggering error, for the staff alert (empty on recovery).
         detail: String,
+    },
+    /// An **authoritative-ledger breach** (E0): a batch carrying a sealed ledger
+    /// chunk was dropped by a *deterministic* store rejection. Latches the
+    /// non-auto-lifting freeze ([`StoreHealth::poison_frozen`]).
+    LedgerBreach {
+        /// Human detail for the staff freeze alert.
+        detail: String,
+        /// Per-seal resolution once the writer has isolated one:
+        /// `Some((ns, key, quarantined))` — `quarantined = true` is a confirmed
+        /// poison seal (drop it from re-emit and keep it out; it is preserved in
+        /// the quarantine spool), `false` is a seal healed in isolation (durable
+        /// now; just drop it from re-emit). `None` is the initial fail-closed
+        /// freeze with no specific seal yet resolved.
+        seal: Option<(smol_str::SmolStr, smol_str::SmolStr, bool)>,
     },
 }
 
@@ -237,6 +284,14 @@ pub struct StoreHealth {
     /// Unix seconds when the most recent batch was handed to the writer
     /// (`None` before the first write of this boot).
     pub last_write_unix: Option<i64>,
+    /// A **non-auto-lifting** freeze latched by an authoritative-ledger breach
+    /// (E0): a *deterministic* store rejection of a batch carrying a sealed
+    /// chunk means the ledger's durability is in question, so the world fails
+    /// closed and — unlike the transient read-only mode — does **not** lift on
+    /// the store merely recovering. It clears only on an explicit staff-verified
+    /// resume (today: repair the store/spool and restart). While set,
+    /// `read_only` is held true regardless of transient recovery.
+    pub poison_frozen: bool,
 }
 
 impl StoreHealth {
@@ -246,6 +301,7 @@ impl StoreHealth {
         StoreHealth {
             read_only: false,
             last_write_unix: None,
+            poison_frozen: false,
         }
     }
 }
@@ -369,12 +425,20 @@ pub struct ServerDeps {
     /// each throttled sample; the store writer stamps write-queue depth and
     /// last-ack age. Read back by `mush-net-web`'s `/healthz` + `/metrics`.
     pub metrics: Arc<Metrics>,
+    /// Directory for the E0 authoritative-ledger **quarantine spool** — a
+    /// separate failure domain from the (possibly-damaged) store. When the
+    /// writer confirms a sealed chunk is a deterministic poison it writes a full
+    /// recovery record here (fsynced) before dropping it from re-emit, so a
+    /// poison seal is preserved for staff repair, never silently discarded.
+    /// `None` disables spooling (tests / the compat [`spawn`]): a confirmed
+    /// poison is then only logged at critical severity.
+    pub quarantine_dir: Option<std::path::PathBuf>,
 }
 
 impl ServerDeps {
     /// Throwaway deps for tests and the compat [`spawn`]: fresh in-memory
-    /// store, fresh guard, fresh (never-populated) staff queue, no LLM, and a
-    /// throwaway metrics registry.
+    /// store, fresh guard, fresh (never-populated) staff queue, no LLM, a
+    /// throwaway metrics registry, and no quarantine spool.
     #[must_use]
     pub fn in_memory() -> ServerDeps {
         ServerDeps {
@@ -383,6 +447,7 @@ impl ServerDeps {
             staff: Arc::new(StaffQueue::new()),
             llm: None,
             metrics: Arc::new(Metrics::new()),
+            quarantine_dir: None,
         }
     }
 }
@@ -461,14 +526,26 @@ pub fn spawn_persist_with_gateway(
     // in-process sink wires its policing feedback onto this loop's own inbound
     // queue via the weak sender; the socket sink ignores it.
     let gateway = make_gateway(tx.downgrade());
-    // The writer notifies health transitions through a weak sender so it
-    // can never keep the world channel alive on its own. It also stamps the
-    // metrics registry (write-queue depth decrement + last-ack age) as it
-    // drains each batch.
+    // The durable-commit high-water (E0): the writer publishes the serial of
+    // every batch the store acks (monotone `fetch_max`); the world loop reads
+    // it to clear retained sealed-chunk re-emits. A lock-free `AtomicU64` shared
+    // both ways — never a channel, so it can never deadlock against the writer's
+    // job queue.
+    let high_water = Arc::new(AtomicU64::new(0));
+    // The writer's control signals (health transitions, ledger breaches) ride a
+    // DEDICATED UNBOUNDED channel, never the bounded inbound queue — an unbounded
+    // send never blocks, so the writer can never deadlock against the world's
+    // `writer.send(StoreJob)` back-pressure (see `WriterSignal`).
+    let (signal_tx, signal_rx) = mpsc::unbounded_channel::<WriterSignal>();
+    // The writer publishes the commit high-water, stamps the metrics registry
+    // (write-queue depth + last-ack age) as it drains each batch, and sends its
+    // control signals over `signal_tx`.
     let (writer_tx, writer_join) = persist::spawn_store_writer(
         Arc::clone(&deps.store),
-        tx.downgrade(),
+        signal_tx,
         Arc::clone(&deps.metrics),
+        Arc::clone(&high_water),
+        deps.quarantine_dir.clone(),
     );
     // Sequential executor for staff store ops (@siteban set/clear/list):
     // ONE task draining ONE queue, so two staff commands issued in order
@@ -497,6 +574,8 @@ pub fn spawn_persist_with_gateway(
         deps,
         staff_tx,
         gateway,
+        high_water,
+        signal_rx,
     ));
     PersistHandles {
         handle,
@@ -505,9 +584,11 @@ pub fn spawn_persist_with_gateway(
     }
 }
 
-/// One `select!` wake: a message, a due timer, or channel closure.
+/// One `select!` wake: a message, a writer control signal, a due timer, or
+/// channel closure.
 enum Wake {
     Msg(WorldMsg),
+    Signal(WriterSignal),
     Timer,
     Closed,
 }
@@ -522,6 +603,8 @@ async fn run(
     deps: ServerDeps,
     staff_ops: mpsc::Sender<StaffOp>,
     gateway: Gateway,
+    high_water: Arc<AtomicU64>,
+    mut signals: mpsc::UnboundedReceiver<WriterSignal>,
 ) {
     tracing::info!("world task running");
     let boot_unix = unix_now_s();
@@ -540,15 +623,38 @@ async fn run(
     let mut fx = Effects::new();
     let mut serial: u64 = 0;
     let mut health = StoreHealth::new();
+    // The E0 retained-write table: unacked sealed ledger chunks, re-emitted on
+    // every flush until the commit high-water reaches them. See `crate::retained`.
+    let mut retained = RetainedSeals::new();
+    // Whether the writer's control-signal channel is still open (disabled once
+    // the writer is gone, so the closed channel does not busy-loop the select).
+    let mut signals_open = true;
+    // Rate-limit the retained-depth alarm so a genuinely wedged store logs once
+    // per crossing, not every re-emit tick.
+    let mut retained_alarmed = false;
     // Throttle the world-owned metrics sample (object scan, NPC/LLM
     // aggregation) so it never rides the hot path more than once a second.
     // `None` forces a sample on the first iteration.
     let mut last_sample: Option<Instant> = None;
     loop {
         let next_due = engine.sched.next_due();
+        // Arm the E0 re-emit nudge while any sealed chunk is unacked, so an idle
+        // world still re-flushes a dropped seal. A bare `Timer` wake just runs
+        // `fire_due` (a no-op when nothing is scheduled) and falls through to the
+        // foot-of-loop flush, which does the actual re-emit + ack.
+        let reemit_pending = !retained.is_empty();
         let wake = tokio::select! {
             m = rx.recv() => m.map_or(Wake::Closed, Wake::Msg),
+            // Writer control signals ride their own unbounded channel (see
+            // `WriterSignal`). `None` means the writer is gone; disable this arm
+            // (avoid a busy-loop) rather than closing the world — the world's
+            // lifetime is driven by its inbound channel, not this one.
+            s = signals.recv(), if signals_open => match s {
+                Some(sig) => Wake::Signal(sig),
+                None => { signals_open = false; Wake::Timer }
+            },
             () = sleep_until_unix_ms(next_due), if next_due.is_some() => Wake::Timer,
+            () = tokio::time::sleep(REEMIT_INTERVAL), if reemit_pending => Wake::Timer,
         };
         let iteration_start = Instant::now();
         let now_unix = unix_now_s();
@@ -628,6 +734,8 @@ async fn run(
                                 true,
                                 &mut health,
                                 &metrics,
+                                &mut retained,
+                                &high_water,
                             )
                             .await
                             {
@@ -678,8 +786,23 @@ async fn run(
                 let _ = reply.send(());
                 StepOutcome::Continue
             }
-            Wake::Msg(WorldMsg::StoreStatus { healthy, detail }) => {
+            Wake::Signal(WriterSignal::StoreStatus { healthy, detail }) => {
                 apply_store_status(&engine.world, &gateway, &mut health, healthy, &detail);
+                StepOutcome::Continue
+            }
+            Wake::Signal(WriterSignal::LedgerBreach { detail, seal }) => {
+                // Resolve a specific seal the writer isolated: a confirmed poison
+                // is quarantined (stop re-emitting it — it can never commit and
+                // is preserved in the spool); a collateral seal healed in
+                // isolation is simply dropped from re-emit (already durable).
+                if let Some((ns, key, quarantined)) = seal {
+                    if quarantined {
+                        retained.quarantine(ns, key);
+                    } else {
+                        retained.healed(ns, key);
+                    }
+                }
+                apply_ledger_freeze(&engine.world, &gateway, &mut health, &detail);
                 StepOutcome::Continue
             }
             Wake::Timer => {
@@ -717,6 +840,8 @@ async fn run(
                 true,
                 &mut health,
                 &metrics,
+                &mut retained,
+                &high_water,
             )
             .await
             {
@@ -769,6 +894,8 @@ async fn run(
                 false,
                 &mut health,
                 &metrics,
+                &mut retained,
+                &high_water,
             )
             .await;
         }
@@ -803,6 +930,8 @@ async fn run(
                 false,
                 &mut health,
                 &metrics,
+                &mut retained,
+                &high_water,
             )
             .await;
         }
@@ -818,6 +947,21 @@ async fn run(
         metrics.observe_loop_lag(lag_ms);
         if lag > LOOP_LAG_WARN {
             tracing::warn!(lag_ms, "world loop iteration lagged");
+        }
+        // E0 retained-seal depth alarm: a table that stays deep means durable
+        // acks are not flowing — a wedged store, or a poison seal the writer
+        // keeps dropping. Log once per crossing (not every re-emit tick).
+        let retained_depth = retained.depth();
+        if retained_depth > RETAINED_DEPTH_ALARM && !retained_alarmed {
+            retained_alarmed = true;
+            tracing::error!(
+                depth = retained_depth,
+                "retained sealed-chunk backlog is deep — durable ledger acks are not \
+                 flowing (store wedged or a poison seal); durability is degraded"
+            );
+        } else if retained_depth == 0 && retained_alarmed {
+            retained_alarmed = false;
+            tracing::info!("retained sealed-chunk backlog cleared");
         }
         // Publish the world-owned gauges (throttled). Done at the end of the
         // iteration so it reflects the just-applied state, and cheaply skipped
@@ -849,6 +993,8 @@ async fn run(
                 false,
                 &mut health,
                 &metrics,
+                &mut retained,
+                &high_water,
             )
             .await;
             debug_assert_eq!(outcome, StepOutcome::Shutdown);
@@ -953,13 +1099,21 @@ fn apply_store_status(
     detail: &str,
 ) {
     if healthy {
-        if health.read_only {
+        // A ledger-breach freeze does NOT lift on the store merely recovering —
+        // it needs an explicit staff-verified resume (repair + restart). Only
+        // the transient read-only mode auto-lifts here.
+        if health.read_only && !health.poison_frozen {
             health.read_only = false;
             tracing::info!("store recovered; leaving read-only mode");
             broadcast_wizards(
                 world,
                 gateway,
                 "GAME: store writes recovered; the world is writable again.",
+            );
+        } else if health.poison_frozen {
+            tracing::warn!(
+                "store writes recovered, but the world stays read-only: an \
+                 authoritative-ledger breach requires a staff-verified resume"
             );
         }
     } else if !health.read_only {
@@ -974,6 +1128,33 @@ fn apply_store_status(
             ),
         );
     }
+}
+
+/// Latch the non-auto-lifting freeze on an authoritative-ledger breach (E0):
+/// enter read-only, set [`StoreHealth::poison_frozen`] so a later transient
+/// recovery cannot lift it, and alert Wizards. Idempotent — the writer may send
+/// several breach messages (the initial freeze plus one per isolated seal); only
+/// the first transition alerts.
+fn apply_ledger_freeze(world: &World, gateway: &Gateway, health: &mut StoreHealth, detail: &str) {
+    if health.poison_frozen {
+        return;
+    }
+    health.poison_frozen = true;
+    health.read_only = true;
+    tracing::error!(
+        detail,
+        "AUTHORITATIVE-LEDGER BREACH: a sealed chunk was dropped by a deterministic \
+         store rejection; entering read-only until a staff-verified resume (repair + restart)"
+    );
+    broadcast_wizards(
+        world,
+        gateway,
+        &format!(
+            "GAME: authoritative-ledger breach ({detail}); the world is now READ-ONLY. \
+             Mutations stay paused until staff repair the ledger and restart — the store \
+             recovering on its own will NOT lift this."
+        ),
+    );
 }
 
 /// Send a Sys line to every connected Wizard-or-better, each as a
@@ -1009,6 +1190,7 @@ enum FlushOutcome {
 /// is [`sweep`](World::sweep)t to a tombstone so the **same batch** carries
 /// its store delete — without this, destroyed objects would linger in RAM
 /// and in the store forever (nothing else in the server calls `sweep`).
+#[allow(clippy::too_many_arguments)] // threads the loop's persistence context
 async fn flush_dirty(
     engine: &mut Engine,
     writer: &mpsc::Sender<StoreJob>,
@@ -1016,13 +1198,24 @@ async fn flush_dirty(
     durable: bool,
     health: &mut StoreHealth,
     metrics: &Metrics,
+    retained: &mut RetainedSeals,
+    high_water: &AtomicU64,
 ) -> FlushOutcome {
+    // Apply the durable-commit high-water first (E0), so a seal already acked
+    // by the writer is not needlessly re-emitted into this batch.
+    retained.ack(high_water.load(Ordering::Relaxed));
+
     let mut dirty = engine.world.take_dirty();
     // Module persistence ops (comsys/mail/jobs writes queued via
     // Ctx::persist) ride the SAME batch as the step's object mutations —
     // that is the write-through atomicity contract of the module API.
-    let module_ops = engine.take_module_ops();
-    if dirty.is_empty() && module_ops.is_empty() {
+    let mut module_ops = engine.take_module_ops();
+    // Re-emit every still-unacked sealed ledger chunk (E0). A lone re-emit is
+    // enough to DRIVE a real, serial-bumped batch (the emptiness check counts
+    // it), so a dropped seal is rewritten even when nothing else dirtied the
+    // world — the fix for "no guaranteed subsequent batch".
+    let mut reemit = retained.reemit_ops();
+    if dirty.is_empty() && module_ops.is_empty() && reemit.is_empty() {
         return FlushOutcome::Clean;
     }
     // `destroy` dirties everything it marks GOING, and every flush sweeps,
@@ -1039,10 +1232,15 @@ async fn flush_dirty(
     }
     *serial += 1;
     let mut batch = persist::batch_from_dirty(&engine.world, dirty, *serial, durable);
+    module_ops.append(&mut reemit);
     batch.module_ops = module_ops;
     if batch.is_empty() {
         return FlushOutcome::Clean;
     }
+    // Record (and re-stamp) every sealed chunk this batch carries to this
+    // serial, just before handing it off — `capture` reflects "sent to the
+    // writer", and the only path where the send below fails is teardown.
+    retained.capture(&batch.module_ops, *serial);
     let (notify, receipt) = if durable {
         let (tx, rx) = oneshot::channel();
         (Some(tx), Some(rx))

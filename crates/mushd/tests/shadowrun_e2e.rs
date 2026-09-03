@@ -130,6 +130,7 @@ async fn boot_server(dir: &Path, seed: u64) -> SocketAddr {
             guard: Arc::new(IpGuard::new()),
             staff,
             llm: None,
+            quarantine_dir: None,
         },
     );
     let world = handles.handle;

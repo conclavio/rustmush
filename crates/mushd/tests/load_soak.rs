@@ -387,6 +387,7 @@ async fn boot_load(tag: &str, send_queue: usize, send_timeout_ms: u64) -> Rig {
             guard: Arc::clone(&guard),
             staff,
             llm: None,
+            quarantine_dir: None,
             metrics: Arc::new(mush_net_web::Metrics::new()),
         },
     );

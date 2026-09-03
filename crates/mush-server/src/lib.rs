@@ -51,6 +51,7 @@ pub mod gateway_sink;
 pub mod help;
 pub mod modules;
 pub mod persist;
+pub mod retained;
 pub mod staff;
 pub mod world_task;
 
@@ -206,6 +207,10 @@ pub async fn serve_with_store(
     // into (matching `mushd::main`), or `@boot`/`@siteban`/... would be enqueued
     // to an orphan queue and never execute.
     deps.staff = staff;
+    // E0 quarantine spool: a separate failure domain from the store, under the
+    // configured data dir. A confirmed poison seal is fsynced here before being
+    // dropped from re-emit, so it is preserved for staff repair.
+    deps.quarantine_dir = Some(config.server.data_dir.join("quarantine"));
 
     // Cloned out BEFORE `deps` is moved into the world spawn: the writer task and
     // the [`SocketSink`] stamp shed/timeout/high-water onto the SAME registry the

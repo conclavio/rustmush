@@ -1,0 +1,441 @@
+//! E0 exit-criterion proof: a sealed ledger chunk whose batch is **dropped**
+//! deterministically is re-emitted by the World-owned retained-write table and
+//! becomes durable, and the durable-commit high-water clears it — end to end,
+//! against the real persistence writer and a fault-injecting store.
+//!
+//! This drives the exact sequence `flush_dirty` runs (ack → fold re-emit →
+//! capture → send) against [`mush_server::persist::spawn_store_writer`] and
+//! [`mush_server::retained::RetainedSeals`], with a store that drops any batch
+//! carrying a poison op (a deterministic, non-transient failure — the collateral
+//! drop that strands a seal today). The seal must survive.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::Mutex;
+use std::time::Duration;
+
+use futures::future::BoxFuture;
+use mush_config::metrics::Metrics;
+use mush_core::{LedgerChunk, LedgerEntry, ModuleOp, ModuleWrite, chunk_key};
+use mush_server::persist::{spawn_store_writer, StoreJob};
+use mush_server::retained::RetainedSeals;
+use mush_server::world_task::WriterSignal;
+use mush_store::{
+    AccountRec, BanRec, InMemoryStore, ObjectStore, SshKeyRec, StoreError, TokenRecord, WorldSnapshot,
+    WriteBatch, WriteReceipt,
+};
+use smol_str::SmolStr;
+use tokio::sync::{mpsc, oneshot};
+
+/// An [`ObjectStore`] that deterministically DROPS any batch whose module ops
+/// contain a poison key, delegating everything else to an inner in-memory store.
+struct FaultStore {
+    inner: InMemoryStore,
+    poison_key: Mutex<Option<SmolStr>>,
+    drops: AtomicUsize,
+}
+
+impl FaultStore {
+    fn new(poison: Option<&str>) -> Arc<FaultStore> {
+        Arc::new(FaultStore {
+            inner: InMemoryStore::new(),
+            poison_key: Mutex::new(poison.map(SmolStr::new)),
+            drops: AtomicUsize::new(0),
+        })
+    }
+
+    fn key_of(op: &ModuleOp) -> &SmolStr {
+        match &op.op {
+            ModuleWrite::JsonSet { key, .. }
+            | ModuleWrite::Del { key }
+            | ModuleWrite::StreamAppend { key, .. } => key,
+        }
+    }
+}
+
+impl ObjectStore for FaultStore {
+    fn write(&self, batch: WriteBatch) -> BoxFuture<'_, Result<WriteReceipt, StoreError>> {
+        Box::pin(async move {
+            let poison = self.poison_key.lock().unwrap().clone();
+            if let Some(pk) = poison
+                && batch.module_ops.iter().any(|op| FaultStore::key_of(op) == &pk)
+            {
+                self.drops.fetch_add(1, Ordering::Relaxed);
+                // Non-transient → the writer DROPS the batch (collateral seal loss).
+                return Err(StoreError::Invalid(format!("poison op {pk:?} present")));
+            }
+            self.inner.write(batch).await
+        })
+    }
+
+    fn module_json_get<'a>(
+        &'a self,
+        ns: &'a str,
+        key: &'a str,
+    ) -> BoxFuture<'a, Result<Option<serde_json::Value>, StoreError>> {
+        self.inner.module_json_get(ns, key)
+    }
+
+    fn bgsave(&self) -> BoxFuture<'_, Result<(), StoreError>> {
+        self.inner.bgsave()
+    }
+
+    // The writer + this test never call anything else.
+    fn load_world(&self) -> BoxFuture<'_, Result<Option<WorldSnapshot>, StoreError>> {
+        self.inner.load_world()
+    }
+    fn create_account(&self, _: AccountRec) -> BoxFuture<'_, Result<(), StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn get_account<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<Option<AccountRec>, StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn link_character<'a>(
+        &'a self,
+        _: &'a str,
+        _: mush_core::ObjId,
+        _: &'a str,
+    ) -> BoxFuture<'a, Result<(), StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn list_accounts(&self) -> BoxFuture<'_, Result<Vec<AccountRec>, StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn set_account_password<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn set_account_ssh_keys<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a [SshKeyRec],
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn set_ban<'a>(
+        &'a self,
+        _: &'a str,
+        _: Option<i64>,
+        _: &'a str,
+    ) -> BoxFuture<'a, Result<(), StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn get_bans(&self) -> BoxFuture<'_, Result<Vec<BanRec>, StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn clear_ban<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<bool, StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn token_put(&self, _: String, _: TokenRecord) -> BoxFuture<'_, Result<(), StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn token_get<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<Option<TokenRecord>, StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn token_touch<'a>(&'a self, _: &'a str, _: i64) -> BoxFuture<'a, Result<bool, StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn token_del<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<bool, StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn tokens_del_account<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<u64, StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn module_json_list<'a>(
+        &'a self,
+        _: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<(String, serde_json::Value)>, StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn stream_range<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: u32,
+    ) -> BoxFuture<'a, Result<Vec<(String, serde_json::Value)>, StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn get_schema_version(&self) -> BoxFuture<'_, Result<Option<u32>, StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn set_schema_version(&self, _: u32) -> BoxFuture<'_, Result<(), StoreError>> {
+        unimplemented!("fault store: unused")
+    }
+    fn drain(&self) -> BoxFuture<'_, Result<(), StoreError>> {
+        self.inner.drain()
+    }
+    fn close(&self) -> BoxFuture<'_, Result<(), StoreError>> {
+        self.inner.close()
+    }
+}
+
+/// Drain every `LedgerBreach` currently buffered on the world channel,
+/// returning each message's `seal` field. The writer sends these synchronously
+/// (awaited) before it replies with the batch result, so by the time the caller
+/// has the result they are all present.
+fn drain_breaches(
+    rx: &mut mpsc::UnboundedReceiver<WriterSignal>,
+) -> Vec<Option<(SmolStr, SmolStr, bool)>> {
+    let mut out = Vec::new();
+    while let Ok(msg) = rx.try_recv() {
+        if let WriterSignal::LedgerBreach { seal, .. } = msg {
+            out.push(seal);
+        }
+    }
+    out
+}
+
+/// One sealed-chunk `ModuleOp` (`log:{log}:{chunk}` with `sealed: true`).
+fn seal_op(ns: &str, log: &str, chunk: u64) -> ModuleOp {
+    let value = serde_json::to_value(LedgerChunk {
+        chunk,
+        sealed: true,
+        entries: vec![LedgerEntry { seq: 0, value: serde_json::json!("event") }],
+    })
+    .unwrap();
+    ModuleOp { ns: SmolStr::new(ns), op: ModuleWrite::JsonSet { key: chunk_key(log, chunk), value } }
+}
+
+/// A poison non-ledger op.
+fn poison_op(ns: &str, key: &str) -> ModuleOp {
+    ModuleOp {
+        ns: SmolStr::new(ns),
+        op: ModuleWrite::JsonSet { key: SmolStr::new(key), value: serde_json::json!({"x": 1}) },
+    }
+}
+
+/// Mimic ONE `flush_dirty` for a module-ops-only batch: apply the high-water,
+/// fold the re-emit, capture, send durable, and return the writer's result.
+/// Returns `None` when the flush would be empty (nothing to do).
+async fn flush(
+    retained: &mut RetainedSeals,
+    writer: &mpsc::Sender<StoreJob>,
+    serial: &mut u64,
+    fresh: Vec<ModuleOp>,
+    high_water: &AtomicU64,
+) -> Option<Result<u64, String>> {
+    retained.ack(high_water.load(Ordering::Relaxed));
+    let mut ops = fresh;
+    ops.extend(retained.reemit_ops());
+    if ops.is_empty() {
+        return None;
+    }
+    *serial += 1;
+    let batch = WriteBatch { serial: *serial, module_ops: ops, durable: true, ..WriteBatch::default() };
+    retained.capture(&batch.module_ops, *serial);
+    let (tx, rx) = oneshot::channel();
+    writer.send(StoreJob::Write { batch, notify: Some(tx) }).await.unwrap();
+    Some(rx.await.unwrap())
+}
+
+/// Spawn a writer over a fault store, returning everything the tests poke.
+fn spawn(
+    poison: Option<&str>,
+    quarantine_dir: Option<std::path::PathBuf>,
+) -> (
+    Arc<FaultStore>,
+    mpsc::Sender<StoreJob>,
+    tokio::task::JoinHandle<()>,
+    Arc<AtomicU64>,
+    mpsc::UnboundedReceiver<WriterSignal>,
+) {
+    let store = FaultStore::new(poison);
+    let high_water = Arc::new(AtomicU64::new(0));
+    let (signal_tx, signal_rx) = mpsc::unbounded_channel::<WriterSignal>();
+    let (writer, join) = spawn_store_writer(
+        Arc::clone(&store) as Arc<dyn ObjectStore>,
+        signal_tx,
+        Arc::new(Metrics::new()),
+        Arc::clone(&high_water),
+        quarantine_dir,
+    );
+    (store, writer, join, high_water, signal_rx)
+}
+
+/// Send one durable batch and await the writer's result.
+async fn send(writer: &mpsc::Sender<StoreJob>, serial: u64, ops: Vec<ModuleOp>) -> Result<u64, String> {
+    let batch = WriteBatch { serial, module_ops: ops, durable: true, ..WriteBatch::default() };
+    let (tx, rx) = oneshot::channel();
+    writer.send(StoreJob::Write { batch, notify: Some(tx) }).await.unwrap();
+    rx.await.unwrap()
+}
+
+/// Happy path: a seal commits, the writer publishes the high-water, and the
+/// retained table clears on the ack. No faults, no re-emit needed.
+#[tokio::test]
+async fn happy_path_commit_advances_high_water_and_clears_retained() {
+    let (store, writer, join, high_water, _rx) = spawn(None, None);
+    let mut retained = RetainedSeals::new();
+    let mut serial = 0u64;
+
+    let r = flush(&mut retained, &writer, &mut serial, vec![seal_op("scenes", "s", 0)], &high_water).await;
+    assert_eq!(r, Some(Ok(1)));
+    assert_eq!(high_water.load(Ordering::Relaxed), 1);
+    retained.ack(high_water.load(Ordering::Relaxed));
+    assert!(retained.is_empty(), "the commit high-water clears the seal");
+    assert!(store.module_json_get("scenes", chunk_key("s", 0).as_str()).await.unwrap().is_some());
+
+    drop(writer);
+    tokio::time::timeout(Duration::from_secs(5), join).await.unwrap().unwrap();
+}
+
+/// A seal caught as COLLATERAL of another op's deterministic poison: the writer
+/// fails closed (freeze), isolates the seal — which commits ALONE — and signals
+/// it healed. The seal ends up durable; the world is told to freeze then drop it
+/// from re-emit.
+#[tokio::test]
+async fn collateral_seal_heals_in_isolation_and_freezes() {
+    let (store, writer, join, high_water, mut rx) = spawn(Some("comsys:poison"), None);
+
+    // A batch whose poison is a NON-seal op; the seal is collateral.
+    let r = send(&writer, 1, vec![poison_op("comsys", "comsys:poison"), seal_op("scenes", "s", 0)]).await;
+    assert!(r.is_err(), "the poisoned batch drops: {r:?}");
+    assert_eq!(high_water.load(Ordering::Relaxed), 0, "a dropped batch never advances the high-water");
+
+    // The writer isolated the seal, which committed alone → durable.
+    let stored = store.module_json_get("scenes", chunk_key("s", 0).as_str()).await.unwrap();
+    let chunk: LedgerChunk = serde_json::from_value(stored.expect("seal healed in isolation")).unwrap();
+    assert!(chunk.sealed && chunk.entries.len() == 1);
+
+    // World signals: an initial freeze (None) then the healed seal (quarantined=false).
+    let breaches = drain_breaches(&mut rx);
+    assert!(breaches.iter().any(|s| s.is_none()), "an initial fail-closed freeze was signaled: {breaches:?}");
+    assert!(
+        breaches
+            .iter()
+            .any(|s| matches!(s, Some((_, k, false)) if k == &chunk_key("s", 0))),
+        "the collateral seal was signaled healed: {breaches:?}"
+    );
+
+    drop(writer);
+    tokio::time::timeout(Duration::from_secs(5), join).await.unwrap().unwrap();
+}
+
+/// A seal that is ITSELF the deterministic poison: isolated retries all fail, so
+/// the writer durably QUARANTINES it to the spool (a separate failure domain),
+/// signals the world to freeze and drop it from re-emit, and never lets it back.
+#[tokio::test]
+async fn poison_seal_is_quarantined_to_spool_and_frozen() {
+    let spool = std::env::temp_dir().join(format!("rustmush-e0-spool-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&spool);
+    // The seal's own chunk key is the poison: every write carrying it fails.
+    let poison_key = chunk_key("econ", 0);
+    let (store, writer, join, high_water, mut rx) = spawn(Some(poison_key.as_str()), Some(spool.clone()));
+
+    let r = send(&writer, 1, vec![seal_op("econ", "econ", 0)]).await;
+    assert!(r.is_err(), "the poison-seal batch drops: {r:?}");
+    assert_eq!(high_water.load(Ordering::Relaxed), 0);
+    // The original drop + POISON_ISOLATION_ATTEMPTS isolated retries all failed.
+    assert!(store.drops.load(Ordering::Relaxed) >= 6, "isolation retried the poison: {}", store.drops.load(Ordering::Relaxed));
+    // Never committed.
+    assert!(store.module_json_get("econ", poison_key.as_str()).await.unwrap().is_none());
+
+    // World signals: freeze (None) + quarantine (quarantined=true).
+    let breaches = drain_breaches(&mut rx);
+    assert!(breaches.iter().any(|s| s.is_none()), "fail-closed freeze signaled: {breaches:?}");
+    assert!(
+        breaches.iter().any(|s| matches!(s, Some((_, k, true)) if k == &poison_key)),
+        "the poison seal was signaled quarantined: {breaches:?}"
+    );
+
+    // The spool holds a durable recovery record with the full payload + hash.
+    let files: Vec<_> = std::fs::read_dir(&spool).unwrap().filter_map(Result::ok).collect();
+    assert_eq!(files.len(), 1, "exactly one quarantine record was spooled");
+    let record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(files[0].path()).unwrap()).unwrap();
+    assert_eq!(record["ns"], "econ");
+    assert_eq!(record["key"], poison_key.as_str());
+    assert!(record["payload"]["sealed"].as_bool().unwrap(), "the full seal payload is preserved");
+    assert!(record["payload_hash"].as_str().is_some());
+    assert_eq!(record["isolation_attempts"].as_u64().unwrap(), 5);
+
+    drop(writer);
+    tokio::time::timeout(Duration::from_secs(5), join).await.unwrap().unwrap();
+    let _ = std::fs::remove_dir_all(&spool);
+}
+
+/// The load-bearing guarantee: when a poison seal and a HEALTHY seal are bundled
+/// in one dropped batch, per-seal isolation must quarantine ONLY the poison and
+/// preserve the good one (it commits alone) — the good seal must never be lost.
+#[tokio::test]
+async fn a_good_seal_bundled_with_a_poison_seal_is_not_lost() {
+    let spool = std::env::temp_dir().join(format!("rustmush-e0-multi-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&spool);
+    let poison_key = chunk_key("econ", 0);
+    let (store, writer, join, _hw, mut rx) = spawn(Some(poison_key.as_str()), Some(spool.clone()));
+
+    // One batch carrying BOTH a poison seal (econ) and a healthy seal (scenes).
+    let r = send(&writer, 1, vec![seal_op("econ", "econ", 0), seal_op("scenes", "s", 0)]).await;
+    assert!(r.is_err(), "the batch drops because of the poison seal: {r:?}");
+
+    // The healthy seal committed in isolation → durable. The poison never did.
+    assert!(
+        store.module_json_get("scenes", chunk_key("s", 0).as_str()).await.unwrap().is_some(),
+        "the good seal bundled with poison must be preserved, not lost"
+    );
+    assert!(store.module_json_get("econ", poison_key.as_str()).await.unwrap().is_none());
+
+    // Signals: the good seal healed (false), the poison quarantined (true).
+    let breaches = drain_breaches(&mut rx);
+    assert!(
+        breaches.iter().any(|s| matches!(s, Some((_, k, false)) if k == &chunk_key("s", 0))),
+        "good seal healed: {breaches:?}"
+    );
+    assert!(
+        breaches.iter().any(|s| matches!(s, Some((_, k, true)) if k == &poison_key)),
+        "poison seal quarantined: {breaches:?}"
+    );
+
+    drop(writer);
+    tokio::time::timeout(Duration::from_secs(5), join).await.unwrap().unwrap();
+    let _ = std::fs::remove_dir_all(&spool);
+}
+
+/// Resilience: even if the world never sees the heal signal (channel gone), the
+/// retained table's re-emit + ack still converges a collateral seal to durable.
+#[tokio::test]
+async fn reemit_backstops_a_lost_heal_signal() {
+    // The poison is a non-seal op present ONLY in flush 1; the re-emit batch
+    // carries the seal alone, so it commits.
+    let store = FaultStore::new(Some("scenes:once"));
+    let high_water = Arc::new(AtomicU64::new(0));
+    // No world listener at all: the heal/freeze signals are dropped on the floor.
+    let (signal_tx, signal_rx) = mpsc::unbounded_channel::<WriterSignal>();
+    drop(signal_rx);
+    let (writer, join) = spawn_store_writer(
+        Arc::clone(&store) as Arc<dyn ObjectStore>,
+        signal_tx,
+        Arc::new(Metrics::new()),
+        Arc::clone(&high_water),
+        None,
+    );
+    let mut retained = RetainedSeals::new();
+    let mut serial = 0u64;
+
+    // Flush 1: [one-shot poison + seal] drops; the seal is captured for re-emit.
+    // (Isolation heals+writes the seal, but the heal SIGNAL is lost — no listener.)
+    let r1 = flush(
+        &mut retained,
+        &writer,
+        &mut serial,
+        vec![poison_op("scenes", "scenes:once"), seal_op("scenes", "s", 0)],
+        &high_water,
+    )
+    .await;
+    assert!(matches!(r1, Some(Err(_))), "the batch drops: {r1:?}");
+    // The heal signal was lost, so the world still holds the seal pending.
+    assert_eq!(retained.depth(), 1, "re-emit backstop still holds the seal");
+
+    // Flush 2: the retained seal re-emits and (poison cleared) commits → acked.
+    let r2 = flush(&mut retained, &writer, &mut serial, vec![], &high_water).await;
+    assert_eq!(r2, Some(Ok(2)), "the re-emit converges the seal to durable: {r2:?}");
+    retained.ack(high_water.load(Ordering::Relaxed));
+    assert!(retained.is_empty(), "re-emit + ack cleared it despite the lost signal");
+    assert!(store.module_json_get("scenes", chunk_key("s", 0).as_str()).await.unwrap().is_some());
+
+    drop(writer);
+    tokio::time::timeout(Duration::from_secs(5), join).await.unwrap().unwrap();
+}

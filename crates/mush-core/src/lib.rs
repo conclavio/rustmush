@@ -84,7 +84,10 @@ pub use engine::{
     WorldCommand, register_engine_commands,
 };
 pub use flags::{Flags, Powers, Role};
-pub use ledger::{Ledger, LedgerChunk, LedgerEntry, chunk_key, is_log_key};
+pub use ledger::{
+    BreachKind, ContiguityBreach, Ledger, LedgerChunk, LedgerEntry, chunk_key, is_log_key,
+    is_sealed_chunk, scan_contiguity,
+};
 pub use lock::{LockExpr, LockParseError, LockType, eval_lock, glob_match, parse_lock};
 pub use matchit::{MatchErr, match_object};
 pub use module::{

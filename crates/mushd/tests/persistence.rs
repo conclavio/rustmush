@@ -116,6 +116,7 @@ async fn boot_rig(
             guard: Arc::clone(guard),
             staff,
             llm: None,
+            quarantine_dir: None,
         },
     );
     (sessions, handles)
@@ -148,6 +149,7 @@ async fn boot_module_rig(
             guard: Arc::clone(guard),
             staff,
             llm: None,
+            quarantine_dir: None,
         },
     );
     (sessions, handles)
@@ -249,6 +251,7 @@ async fn boot_round_trip(store: Arc<dyn ObjectStore>) {
             guard: Arc::new(IpGuard::new()),
             staff: Arc::new(StaffQueue::new()),
             llm: None,
+            quarantine_dir: None,
         },
     );
     let mut nick_rx = attach_direct(&sessions2, &handles2.handle, 7, nick, "nick").await;
@@ -490,6 +493,7 @@ async fn boot_onboarding_rig(
             guard: Arc::clone(guard),
             staff,
             llm: None,
+            quarantine_dir: None,
         },
     );
     (sessions, handles)
@@ -676,6 +680,7 @@ async fn boot_worldgen_rig(
             guard: Arc::clone(guard),
             staff,
             llm: Some(llm),
+            quarantine_dir: None,
         },
     );
     (sessions, handles)
@@ -818,6 +823,7 @@ async fn boot_wod_rig(
             guard: Arc::clone(guard),
             staff,
             llm: None,
+            quarantine_dir: None,
         },
     );
     (sessions, handles)
@@ -1798,6 +1804,7 @@ async fn boot_npc_rig(
             guard: Arc::clone(guard),
             staff,
             llm: Some(llm),
+            quarantine_dir: None,
         },
     );
     (sessions, handles)

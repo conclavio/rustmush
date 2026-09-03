@@ -286,6 +286,9 @@ async fn serve(config: Config) -> Result<(), String> {
             staff,
             llm: Some(Arc::clone(&llm)),
             metrics: Arc::clone(&metrics),
+            // E0 quarantine spool: a separate durable failure domain under the
+            // data dir for confirmed-poison ledger seals.
+            quarantine_dir: Some(data_dir.join("quarantine")),
         },
     );
     let world = handles.handle;
