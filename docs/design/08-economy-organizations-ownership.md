@@ -1,10 +1,13 @@
 # Economy, organizations, ownership, and accountable value
 
-**Status:** Draft 0.2 for design review — reconciled with the shipped tactical spine (F3 control channels/lease, M32 `TacticalUnit`/`UnitMutationPlan` + the `asset` seam, M33 tactics module)<br>
+**Status:** Draft 0.2 — the reference design. **E0, E1, and E2 are SHIPPED** (`mush-org` and
+`mush-economy` now exist); see [08a-economy-build-status.md](08a-economy-build-status.md) for the
+build ledger, the decisions made while building, and the E3 pickup point — read it alongside §18.
+Reconciled with the shipped tactical spine (F3 control channels/lease, M32 `TacticalUnit`/`UnitMutationPlan` + the `asset` seam, M33 tactics module)<br>
 **Scope:** cross-ruleset economic accounts and journals, first-class organizations, scoped
 authorization and delegation, asset title and custody, obligations and contracts, background
 careers and housing, fencing and markets, and tactical production/logistics<br>
-**Applies to:** `mush-core`, proposed `mush-org` and `mush-economy` foundation crates,
+**Applies to:** `mush-core`, the `mush-org` and `mush-economy` foundation crates (shipped),
 `mush-faction`, `mush-canon`, `mush-sim`, rulesets, and presentation clients<br>
 **Companions:** `docs/design/06-object-behaviors-spatial-domains.md` and
 `docs/design/07-npc-control-and-tactical-ai.md`
@@ -155,7 +158,7 @@ Core should gain only universally necessary seams:
 Core does not know what nuyen, rent, a corporation, a fence, a hangar, a career, or a factory is.
 It must not acquire a global `money` field on `Obj`.
 
-### 4.2 Proposed `mush-org`
+### 4.2 `mush-org` (shipped, E1)
 
 `mush-org` owns organization identity and authorization:
 
@@ -170,10 +173,12 @@ It must not acquire a global `money` field on `Obj`.
 - bounded live indexes and an authoritative organization-action ledger.
 
 This is a promotion/generalization of existing faction membership ideas, not a parallel membership
-system. `mush-faction` should eventually consume organization membership rather than maintain a
-second incompatible answer to “who belongs to this group?”
+system. **As shipped (E1c), `mush-faction` does NOT consume org membership — it keeps its own
+membership/level model and exposes standing to org policies through the `RegisteredPredicate` seam
+(`FactionStandingProvider`); a membership merge was judged redundant and dropped.** A backing-`OrgId`
+mapping is deferred to E3. See [08a](08a-economy-build-status.md).
 
-### 4.3 Proposed `mush-economy`
+### 4.3 `mush-economy` (E2 shipped; holds/assets/contracts are E3/E4)
 
 `mush-economy` owns exact accountable value:
 
@@ -235,15 +240,19 @@ do — never a bare `serde_json::Value`, so a ruleset can version and migrate it
 ### 5.1 Economic principals
 
 ```rust
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+// As shipped (E1a, crates/mush-org/src/ids.rs): PrincipalId is NOT Copy (it holds a
+// non-Copy SystemPrincipalId), and SystemPrincipalId is a validating canonical newtype.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PrincipalId {
     Object(ObjId),
     Organization(OrgId),
     System(SystemPrincipalId),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SystemPrincipalId(pub SmolStr); // registered, namespaced, never player-created
+// Private field; built via a canonicalizing `new()` (trim + lowercase over
+// [a-z0-9_.-], serde try_from), the ChannelId pattern. Registered by a module at
+// boot; an arbitrary string from a command is never accepted as one.
+pub struct SystemPrincipalId(SmolStr);
 ```
 
 `Object` covers characters and NPCs and permits staff-approved object principals where a ruleset
@@ -255,11 +264,11 @@ An absent or destroyed object principal freezes its accounts and contracts for r
 not erase them. Character destruction therefore cannot destroy money or launder title. Rulesets
 decide inheritance, estate, unclaimed-property, and final write-off policy.
 
-Because `Object(ObjId)` binds financial state to a raw object id, and object ids can be reused after
-destruction, an object-principal record carries a creation stamp (the object's generation at binding
-time). A reused id never inherits a destroyed principal's frozen accounts — the same secondary-guard
-discipline the shipped F3 control lease uses (`control_gen`) so a recycled `ObjId` cannot resurrect
-authority.
+**As shipped (E1a), `PrincipalId::Object` is deliberately *clean* — no embedded generation.** The
+"reused id" premise turned out false: `ObjId` is never recycled (a destroyed object leaves a
+permanent tombstone), so a recycled id cannot resurrect authority in the first place. A generation
+guard would live in a *side-table* (the F3 `control_gen` shape) only if some future binding must
+outlive its object — never as part of the id's identity/equality/hash.
 
 ### 5.2 Organization record
 
@@ -434,8 +443,13 @@ pub struct Delegation {
 
 A delegation may only narrow its source grant. It cannot last beyond the source grant, increase an
 amount limit, add a scope, or become delegable unless the source explicitly permits subdelegation.
-Revoking or revising the source invalidates descendants through `source_revision`. Delegation depth
-is bounded; the first implementation should allow one hop.
+**As shipped (E1a), a delegation is re-validated by FULLY re-resolving its live source grant on every
+authorization** — existence, current validity window, still-`delegable`, capability match, scope
+containment in the source's *current* scope, and that the grantor still holds the source
+(`src.grantee == grantor`). Revocation, expiry, reassignment, and scope-narrowing therefore all take
+effect immediately. `source_revision` is only a fast staleness *hint*, NOT the invalidation
+mechanism (an expired source bumps no revision, so equality alone would miss it). Delegation depth is
+bounded; E1 allows one hop.
 
 High-value actions may use an approval policy rather than one broad grant:
 
@@ -448,10 +462,21 @@ pub enum ApprovalPolicy {
 ```
 
 Approvals bind to an immutable plan hash and expire. Changing amount, destination, asset set, or
-terms invalidates them.
+terms invalidates them. **As shipped, E1 ships only the `ApprovalPolicy` *type*; the
+approval-collection workflow (binding approvals to the plan hash) lands with the economy (E2/E3),
+which has plans to approve.**
 
 ### 5.7 Faction migration
 
+> **As shipped (E1c), this was scoped down — read this note over the paragraph below.** E1c ships a
+> `FactionStandingProvider` (an `OrgPredicateProvider`): org access policies read *live* faction
+> `member`/`officer`/`intel` standing through the `RegisteredPredicate` seam. **The faction keeps its
+> own membership + level/officer/intel model** (R-D1) — there is NO membership merge, and mirroring
+> faction membership into `OrgMembership` was **dropped** as redundant with the predicate seam. The
+> **Faction→backing-`OrgId` mapping and the `Faction.resources` migration are deferred to E3**, where
+> account ownership defines what that mapping must carry. See [08a](08a-economy-build-status.md) §5.
+>
+> *(Original E1 intent, retained for context:)*
 No DATA migration is needed — dev1 is wipeable, so there is no legacy membership store to preserve.
 But the shipped M21–M25 `mush-faction` CODE is refactored to consume `mush-org`: rework faction
 membership to BE organization membership (a faction references its backing `OrgId` and keeps NO second
@@ -564,6 +589,17 @@ for incidental ammunition, fuel, or meals while keeping major purchases exact.
 ---
 
 ## 7. The economic journal
+
+> **As shipped (E2 — read this over §7.2/§7.5 below).** The journal is the sole authority: balances,
+> the idempotency index, the reversed set, the txid index, and the allocators are all **re-derived
+> from the journal at boot** — the idempotency record is NOT a separately-persisted boot authority (no
+> `idempotency:*` doc), so a companion-doc drop cannot double-post. E0's retained-write table closed
+> the old `Ledger` seal-drop window (§7.2's hazard is resolved). Boot is **full-journal-replay** with
+> **directional self-heal**: a projection that merely lags re-derives silently to the head; only real
+> drift, an ahead projection (lost tail), an unreplayable journal, or a per-instrument conservation
+> break freezes the *whole* economy (single latch — per-account isolation is later). The durability
+> **checkpoint and cold-chunk paging are deferred** (full-replay is the E2 baseline). See
+> [08a](08a-economy-build-status.md).
 
 ### 7.1 Transaction model
 
@@ -1365,6 +1401,12 @@ checkpoint:{seq}
 log:journal:{chunk}
 ```
 
+> **As shipped (E2), the economy persists only `meta`, `instrument:{id}`, `account:{id}`, and
+> `log:journal:*`.** `idempotency:*` is **not** written — the idempotency index is journal-DERIVED at
+> boot (R-B2); `checkpoint:{seq}` is **deferred** (full-replay baseline); and `asset`/`vault`/`hold`/
+> `obligation`/`contract`/`work` are **E3/E4** (not yet persisted). `mush-org` similarly ships no
+> `approval:{id}` yet (the `ApprovalPolicy` type only).
+
 All IDs are monotonic and never reused. Keys and embedded IDs must agree. Unknown schema versions
 do not load active.
 
@@ -1372,9 +1414,12 @@ do not load active.
 
 Financial corruption must fail closed:
 
-- corrupt allocator, instrument, journal tail, or checkpoint: fail economy boot;
-- account projection mismatch: freeze economy or the provably isolated account set and require
-  recovery;
+- corrupt allocator, instrument, or journal tail (~~or checkpoint~~): fail economy boot; **(as
+  shipped: a contiguity breach, an unknown-account journal reference, or an unparseable doc fails the
+  boot)**;
+- account projection mismatch: **as shipped, any drift / ahead / conservation break freezes the WHOLE
+  economy (a single frozen latch over all accounts)** and requires staff recovery — per-account
+  isolation is a later refinement;
 - invalid hold/contract/obligation reference: disable and quarantine the record, reserve no value,
   and persist the recovery state;
 - missing object principal or asset object: freeze related accounts/title for estate or write-off
@@ -1421,16 +1466,16 @@ with escrow/staging and an explicit completion state. They do not monopolize one
 
 ## 16. Commands and presentation
 
-Core module commands are administrative and neutral:
+Core module commands are administrative and neutral. **The list below is the design vision; the
+verbs/prefixes that actually shipped in E1/E2 are annotated (`✓`) — the rest are later milestones:**
 
 ```text
-@org/create, @org/status, @org/scope
-@org/role, @org/grant, @org/delegate, @org/audit
-@economy/instrument, @economy/account, @economy/freeze
-@economy/transfer, @economy/reverse, @economy/audit, @economy/validate
-@asset/title, @asset/assign, @asset/status
-@vault/status, @vault/policy
-@obligation/status, @contract/status, @work/status
+@org/create ✓, @org/list ✓, @org/show ✓, @org/grant ✓, @org/audit ✓   (E1b — staff-only)
+@instrument/register ✓, @instrument/list ✓                            (E2b — NOT @economy/instrument)
+@account/open ✓, @account/system ✓, @account/show ✓, @account/list ✓   (E2b)
+@econ/pay ✓, @econ/mint ✓, @econ/reverse ✓, @econ/audit ✓             (E2b — NOT @economy/*; no /freeze or /validate command)
+@asset/*, @vault/*, @obligation/*, @contract/*, @work/*               (E3/E4 — not built)
+@org/scope, @org/role, @org/delegate                                  (E1 API via submit(); no dedicated commands yet)
 ```
 
 Player-facing commands and panels are ruleset-owned:
@@ -1516,44 +1561,58 @@ scale, rounding, and approximate disclosure; clients do not infer secret precisi
 These milestones are labeled E0–E8 to avoid colliding with the repository-wide M-numbered delivery
 history and docs 06/07's spatial phases.
 
-### E0: durability and boundary prerequisites
+### E0: durability and boundary prerequisites — **SHIPPED (`565ff1b`, `32ca322`)**
 
-- Land ack-gated `Ledger` seal/rollover and cold chunk paging.
+- Land ack-gated `Ledger` seal/rollover. **(Shipped: byte-scan retained-write table re-emits un-acked
+  sealed chunks, poison-seal fail-closed, boot contiguity.)** Cold-chunk *paging* / a play-time
+  store-read seam was **deferred** — no reader yet; full-journal-replay-from-`data.kv` is the baseline.
 - Add authoritative-ledger recovery tests around ambiguous and deterministic store failures.
 - Define checked amount/wire types, monotonic economic IDs, idempotency limits, and registered clock
-  references.
+  references. **(The checked `Amount`/wire types actually landed in E2a, not E0.)**
 - Prove one plan can atomically queue Ledger, module, object, and cross-module projection writes in
   the existing `WriteBatch` and gate success on durable acknowledgement.
 
 **Exit criterion:** kill/retry/restart tests cannot duplicate or lose a synthetic journal entry,
 including exactly at chunk rollover.
 
-### E1: organization identity and scoped authorization
+### E1: organization identity and scoped authorization — **SHIPPED (`6e9a030`, `11090aa`, `97afebf`)**
 
 - Add `mush-org` records, persistence, boot validation, indexes, inspection, and recovery.
 - Add scopes, role templates, capability grants, one-hop delegation, revisions, and policy checks.
-- Add organization-action audit and hidden-membership disclosure tests.
-- Add faction-to-backing-organization mapping and a non-destructive membership adapter.
+- Add organization-action audit and hidden-membership disclosure tests. **Org creation is staff-only.**
+- ~~Add faction-to-backing-organization mapping and a non-destructive membership adapter.~~
+  **(E1c instead shipped a `FactionStandingProvider` — org policies read live faction
+  member/officer/intel standing via the `RegisteredPredicate` seam, the faction level model unchanged.
+  The backing-`OrgId` mapping + membership adapter are DEFERRED to E3; membership-mirroring was
+  dropped.)**
 
 **Exit criterion:** two organizations can have identically named roles but different scoped powers;
-an actor can operate one account/vault scope without learning a sibling exists; migrated faction
-authorization and visibility remain identical.
+an actor can operate one account/vault scope without learning a sibling exists; **faction
+authorization and visibility are unchanged (resolved live via the predicate seam — no data migration).**
 
-### E2: instruments, accounts, journal, and transfers
+### E2: instruments, accounts, journal, and transfers — **SHIPPED (`8bed472`, `547aec6`)**
 
 - Add `mush-economy` instruments, accounts, materialized projections, allocator/meta, and journal.
 - Add pure plan validation, posting, reversal, idempotency, durable acknowledgement, boot replay,
-  checkpoints, and bounded audit.
-- Add registered system source/sink accounts and flow telemetry.
-- Add staff-only neutral inspection and recovery commands.
+  and bounded audit. **The durability *checkpoint* was deferred (R-D1) — full-journal-replay is the
+  baseline; idempotency/reversed/txid/allocators are journal-DERIVED at boot. A new STRICT durable
+  ack-gate was added to core for money (invariant 9).**
+- Add registered system source/sink accounts and flow telemetry. **(E2b records a system-owned
+  unbounded-credit account; the rich system-principal metadata + flow telemetry are future.)**
+- Add staff-only neutral inspection and recovery commands (`@instrument`/`@account`/`@econ`).
 
 **Exit criterion:** journal tests 1–7 and restart/rebuild tests pass on in-memory and Redis suites;
 there is no balance mutation API outside validated posting.
 
-### E3: organization wallets, assets, and vaults
+### E3: organization wallets, assets, and vaults — **NEXT**
 
-- Bind organization accounts to scopes and enforce capability/approval policies.
-- Add title, assignment, maintenance payer, encumbrance, and lifecycle records.
+- Bind organization accounts to scopes and enforce capability/approval policies. **(The `scope` field
+  + the `WorldAuth`→`authorize_in_world` scoped path already exist; E3 makes the divisional-wallet
+  vertical real and wires `ApprovalPolicy` collection to the E2a `plan_hash`.)**
+- **Deferred from E1c:** the Faction→backing-`OrgId` mapping and the non-destructive
+  membership/authorization adapter — decide the linkage shape here, driven by account ownership.
+- Add title, assignment, maintenance payer, encumbrance, and lifecycle records (the four-axis
+  title/custody/**operation (= the shipped F3 control lease)**/maintenance separation, D5).
 - Add vaults bound to ordinary containers and `mush-sim` interiors.
 - Add atomic payment + title + custody plans and programmatic-destruction recovery.
 - Begin migration of exact `Faction.resources` pools into organization accounts.
@@ -1637,7 +1696,8 @@ duplicate membership and authorization.
 
 **Decision:** one dedicated double-entry economy journal uses hardened `mush_core::Ledger` chunked
 documents plus materialized account projections in the same `WriteBatch`. It is correlated with,
-but not stored in, canon. Ack-gated rollover and cold paging are E0 blockers.
+but not stored in, canon. Ack-gated rollover was the E0 blocker (**shipped**); cold-chunk paging was
+deferred (no reader — full-journal-replay-from-`data.kv` is the E2 baseline).
 
 ### D4. Roles are templates; capabilities authorize
 
