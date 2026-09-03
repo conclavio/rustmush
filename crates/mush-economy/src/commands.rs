@@ -355,6 +355,13 @@ fn hidden_text(ctx: &Ctx<'_>, resource: NamedResource) -> Option<&'static str> {
         }
         NamedResource::Asset(o) => (!may_view_asset(ctx.w, ctx.actor, o)).then_some("No such asset."),
         NamedResource::Vault(v) => (!may_view_vault(ctx.w, ctx.actor, v)).then_some("No such vault."),
+        // E4a mints the resource kinds; `may_view_hold`/`may_view_obligation`/
+        // `may_view_contract` and their verbs are E4b1/E4b2. Until those exist no
+        // command can name one, and hiding unconditionally is the fail-closed
+        // reading of §4.5: never disclose a resource whose view gate is unwritten.
+        NamedResource::Hold(_) => Some("No such hold."),
+        NamedResource::Obligation(_) => Some("No such obligation."),
+        NamedResource::Contract(_) => Some("No such contract."),
     }
 }
 
@@ -653,6 +660,7 @@ fn account_open(ctx: &mut Ctx<'_>, system: bool) -> Result<(), CmdError> {
         status: AccountStatus::Active,
         posted_balance: Amount::ZERO,
         held_amount: Amount::ZERO,
+        last_hold_seq: 0,
         credit,
         last_journal_seq: 0,
         revision: 1,
@@ -1633,6 +1641,10 @@ fn render_encumbrance(ctx: &Ctx<'_>, e: &Encumbrance) -> String {
         Encumbrance::Disputed { claimant, reason } => {
             format!("disputed by {} ({reason})", render_principal(ctx, claimant))
         }
+        Encumbrance::Lease { lessor, contract } => {
+            format!("leased from {} (contract {contract})", render_principal(ctx, lessor))
+        }
+        Encumbrance::Collateral { contract } => format!("collateral (contract {contract})"),
     }
 }
 

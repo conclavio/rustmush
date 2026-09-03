@@ -15,10 +15,14 @@ use serde::Serialize;
 use smol_str::SmolStr;
 
 use crate::amount::Amount;
-use crate::ids::{AccountId, ApprovalRequestId, InstrumentId, TransactionId, VaultId};
+use crate::clock::EconomicDeadline;
+use crate::ids::{
+    AccountId, ApprovalRequestId, ContractId, HoldId, InstrumentId, ObligationId, TransactionId,
+    VaultId,
+};
 use crate::record::{
     AssetEffect, CatalogRef, CustodyEffect, EconomicCause, EconomicVisibility, Encumbrance,
-    IdempotencyKey, JournalLine,
+    HoldEffect, HoldPurpose, IdempotencyKey, JournalLine,
 };
 
 /// One requested movement: a signed delta to an account. The instrument is derived
@@ -52,6 +56,19 @@ pub struct AccountRevision {
 pub struct AssetRevision {
     /// The asset (keyed by the object it titles).
     pub object: ObjId,
+    /// Its expected current revision.
+    pub revision: u64,
+}
+
+/// An optimistic-concurrency expectation on a **hold** (E4a, invariant 26) — the
+/// [`AccountRevision`] shape for reservation data, and the exit criterion's "stale
+/// revisions" guard: a second attest or a racing capture built against a hold that
+/// has since moved is refused rather than applied to a different reservation.
+/// Excluded from the plan hash like every other expectation.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct HoldRevision {
+    /// The hold.
+    pub hold: HoldId,
     /// Its expected current revision.
     pub revision: u64,
 }
@@ -216,6 +233,86 @@ impl CustodyOp {
     }
 }
 
+/// One requested change to a reservation (E4a, §3.2). A hold op is an **effect**,
+/// not a money line: a plan carrying only hold ops is the effect-only shape
+/// invariant 10 admits, and `Account.held_amount` is the projection it folds.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub enum HoldOp {
+    /// Reserve `amount` on `account`. Needs **debit authority** — a reservation is a
+    /// promise to pay (invariant 25) — and is subject to the account's
+    /// [`crate::ApprovalRule`] like any other debit-authority plan (D-E4-11).
+    Place {
+        /// The account to reserve against.
+        account: AccountId,
+        /// How much (> 0, ≤ the account's available funds at placement).
+        amount: Amount,
+        /// Who the reservation is for, if anyone.
+        beneficiary: Option<PrincipalId>,
+        /// What it reserves for.
+        purpose: HoldPurpose,
+        /// When it lapses, on a named clock.
+        expires: Option<EconomicDeadline>,
+    },
+    /// Spend (part of) a hold. `amount` is **explicit** and ≤ `hold.amount`; the
+    /// uncaptured remainder is released by the same effect, so several holds on one
+    /// account can be captured in one plan and each is attributed exactly (A1).
+    Capture {
+        /// The hold to spend.
+        hold: HoldId,
+        /// How much of it (> 0, ≤ `hold.amount`).
+        amount: Amount,
+    },
+    /// Release a hold unspent (the placer, the beneficiary, or staff).
+    Release {
+        /// The hold.
+        hold: HoldId,
+    },
+    /// Age a hold out past its deadline. **Sweep-only**: legal only with cause
+    /// `Internal { kind: "hold.expire" }` and a deadline that has passed on its own
+    /// clock (invariant 24).
+    Expire {
+        /// The hold.
+        hold: HoldId,
+    },
+}
+
+impl HoldOp {
+    /// The hold this op targets, or `None` for a [`HoldOp::Place`] (which mints one).
+    #[must_use]
+    pub fn hold(&self) -> Option<HoldId> {
+        match self {
+            HoldOp::Place { .. } => None,
+            HoldOp::Capture { hold, .. } | HoldOp::Release { hold } | HoldOp::Expire { hold } => {
+                Some(*hold)
+            }
+        }
+    }
+    /// The **subject id** — the first key of the total order (invariant 27): the
+    /// hold for an op that names one, the account for a `Place`, which does not yet
+    /// have a hold id to be ordered by.
+    #[must_use]
+    pub fn subject(&self) -> u64 {
+        match self {
+            HoldOp::Place { account, .. } => account.0,
+            HoldOp::Capture { hold, .. } | HoldOp::Release { hold } | HoldOp::Expire { hold } => {
+                hold.0
+            }
+        }
+    }
+    /// The canonical op ordinal — the second key of the total order, and the order
+    /// ops are applied in (a `Place` before any capture/release, so a plan that
+    /// places and captures in one breath is deterministic).
+    #[must_use]
+    pub fn ordinal(&self) -> u8 {
+        match self {
+            HoldOp::Place { .. } => 0,
+            HoldOp::Capture { .. } => 1,
+            HoldOp::Release { .. } => 2,
+            HoldOp::Expire { .. } => 3,
+        }
+    }
+}
+
 /// What a plan still needs before it can post: approvals bound to this exact hash.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApprovalNeed {
@@ -225,10 +322,10 @@ pub struct ApprovalNeed {
     pub accounts: Vec<AccountId>,
 }
 
-/// A validated-then-applied economic plan. The `hold_ops`/`contract_ops`/`world_ops`
-/// vectors of doc 08 are forward-declared as **empty** (holds and contracts are E4)
-/// and are simply absent from this struct until then; their arrival does not change
-/// the persisted transaction shape.
+/// A validated-then-applied economic plan. Doc 08's `contract_ops`/`world_ops`
+/// vectors are still absent (a contract acts by *building* a plan — §3.5's
+/// `settlement_plan` — rather than by carrying contract ops into one); `hold_ops`
+/// arrived in E4a without changing the persisted transaction shape.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EconomyPlan {
     /// The idempotency key (mandatory — repeat-safe posting).
@@ -253,6 +350,11 @@ pub struct EconomyPlan {
     /// Optimistic staleness expectations on assets (≤
     /// [`crate::MAX_ASSET_OPS_PER_PLAN`]).
     pub expected_asset_revisions: Vec<AssetRevision>,
+    /// Reservation changes (≤ [`crate::MAX_HOLD_OPS_PER_PLAN`]; ≤ 1 per hold).
+    pub hold_ops: Vec<HoldOp>,
+    /// Optimistic staleness expectations on holds (≤
+    /// [`crate::MAX_HOLD_OPS_PER_PLAN`]).
+    pub expected_hold_revisions: Vec<HoldRevision>,
     // NOTE: a plan carries NO caller-settable `reverses` — a reversal's back-
     // reference is set ONLY by the engine ([`crate::reverse`]) from a real original
     // transaction, so it can never be forged onto an ordinary post (which would let
@@ -280,6 +382,8 @@ impl EconomyPlan {
             asset_ops: Vec::new(),
             custody_ops: Vec::new(),
             expected_asset_revisions: Vec::new(),
+            hold_ops: Vec::new(),
+            expected_hold_revisions: Vec::new(),
         }
     }
 }
@@ -339,6 +443,10 @@ pub struct Prepared {
     pub asset_effects: Vec<AssetEffect>,
     /// The custody movements (audit; the world move is E3b's).
     pub custody_effects: Vec<CustodyEffect>,
+    /// The reservation changes, in canonical order, each carrying the full
+    /// post-state with its allocated [`HoldId`]. `apply` stamps `last_journal_seq`
+    /// and — for a capture — the consuming transaction id.
+    pub hold_effects: Vec<HoldEffect>,
     /// The approval request this post consumes, if any.
     pub consumed_approval: Option<ApprovalRequestId>,
     /// Invariant 22: this transaction carries ≥1 money line, so `apply` stamps
@@ -365,6 +473,12 @@ pub enum NamedResource {
     Asset(ObjId),
     /// A vault.
     Vault(VaultId),
+    /// A hold (E4a).
+    Hold(HoldId),
+    /// An obligation (E4a).
+    Obligation(ObligationId),
+    /// A contract (E4a).
+    Contract(ContractId),
 }
 
 /// Why a plan was refused. These carry precise detail for **trusted server callers
@@ -524,6 +638,72 @@ pub enum EconomyError {
         /// The current revision, if the asset exists.
         found: Option<u64>,
     },
+
+    // ---- E4a: holds, obligations, contracts ------------------------------
+    /// The posted balance is fine but the money is **reserved**: `posted − held`
+    /// would breach the account's credit policy (invariant 23). Distinct from
+    /// [`EconomyError::CreditViolation`], which is the posted-balance breach, so a
+    /// payer can tell "you do not have it" from "you have it, and it is spoken for".
+    #[error("account {0} has insufficient available funds")]
+    InsufficientAvailable(AccountId),
+    /// A referenced hold does not exist.
+    #[error("no such hold: {0}")]
+    NoSuchHold(HoldId),
+    /// A `Place` asked to reserve a non-positive amount.
+    #[error("a hold amount must be positive")]
+    HoldAmountNotPositive,
+    /// A capture/release/expiry named a hold that is no longer `Held` (invariant 24).
+    #[error("hold {0} is not held")]
+    HoldNotHeld(HoldId),
+    /// `Place` on an account whose `credit.floor` is `None` (invariant 23):
+    /// `CreditPolicy::permits` is vacuous there, so a reservation on an
+    /// unbounded-credit account reserves nothing at all.
+    #[error("account {0} has unbounded credit and cannot carry a hold")]
+    HoldOnUnboundedAccount(AccountId),
+    /// A capture asked for more than the hold reserves, or for a non-positive
+    /// amount (invariant 26).
+    #[error("hold {0} cannot cover that capture")]
+    CaptureExceedsHold(HoldId),
+    /// `Expire` on a hold whose deadline has not passed on its own clock — or which
+    /// has no deadline at all (invariant 24).
+    #[error("hold {0} has not expired")]
+    HoldNotExpired(HoldId),
+    /// `Expire` outside the sweep's `Internal {{ kind: "hold.expire" }}` cause
+    /// (invariant 24): expiry is the scheduler's act, not a player verb.
+    #[error("a hold expiry must be posted by the economy sweep")]
+    HoldExpireNotSweep,
+    /// Two hold ops on one hold in one plan (invariant 26) — they would race each
+    /// other inside one bundle.
+    #[error("more than one hold op on hold {0}")]
+    DuplicateHoldOp(HoldId),
+    /// An expected-hold-revision guard did not match current reservation state.
+    #[error("stale plan: hold {hold} expected revision {expected}, found {found:?}")]
+    StaleHold {
+        /// The hold.
+        hold: HoldId,
+        /// The expected revision.
+        expected: u64,
+        /// The current revision, if the hold exists.
+        found: Option<u64>,
+    },
+    /// A withdrawal named an object a live contract's `DepositInto` condition holds
+    /// in that vault (§3.5): only that contract's settlement or refund may take it
+    /// out, or a seller could sell the deposit out from under the buyer.
+    #[error("object {0} is held by a live contract")]
+    CustodyLocked(ObjId),
+    /// A referenced contract does not exist.
+    #[error("no such contract: {0}")]
+    NoSuchContract(ContractId),
+    /// The contract is not in a state that admits this operation.
+    #[error("contract {0} is not in a state that allows that")]
+    ContractState(ContractId),
+    /// An acceptance no longer matches the contract's consent surface: something in
+    /// the surface changed after `Offer` (D-E4-4).
+    #[error("contract {0}'s consent surface has changed")]
+    ConsentMismatch(ContractId),
+    /// A referenced obligation does not exist.
+    #[error("no such obligation: {0}")]
+    NoSuchObligation(ObligationId),
 }
 
 impl EconomyError {
@@ -561,6 +741,19 @@ impl EconomyError {
             EconomyError::NoSuchVault(v)
             | EconomyError::VaultNotActive(v)
             | EconomyError::BackingInvalid(v) => vec![NamedResource::Vault(*v)],
+            EconomyError::InsufficientAvailable(a) | EconomyError::HoldOnUnboundedAccount(a) => {
+                vec![NamedResource::Account(*a)]
+            }
+            EconomyError::NoSuchHold(h)
+            | EconomyError::HoldNotHeld(h)
+            | EconomyError::CaptureExceedsHold(h)
+            | EconomyError::HoldNotExpired(h)
+            | EconomyError::DuplicateHoldOp(h) => vec![NamedResource::Hold(*h)],
+            EconomyError::StaleHold { hold, .. } => vec![NamedResource::Hold(*hold)],
+            EconomyError::NoSuchContract(c)
+            | EconomyError::ContractState(c)
+            | EconomyError::ConsentMismatch(c) => vec![NamedResource::Contract(*c)],
+            EconomyError::NoSuchObligation(o) => vec![NamedResource::Obligation(*o)],
             _ => Vec::new(),
         }
     }

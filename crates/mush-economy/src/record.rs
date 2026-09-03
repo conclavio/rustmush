@@ -13,7 +13,11 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::amount::Amount;
-use crate::ids::{AccountId, ApprovalRequestId, InstrumentId, TransactionId, VaultId};
+use crate::clock::EconomicDeadline;
+use crate::ids::{
+    AccountId, ApprovalRequestId, ContractId, HoldId, InstrumentId, ObligationId, TransactionId,
+    VaultId,
+};
 
 // ---- instruments ----------------------------------------------------------
 
@@ -103,7 +107,9 @@ pub struct Account {
     pub status: AccountStatus,
     /// Materialized posted balance (checked, journal-derived).
     pub posted_balance: Amount,
-    /// Materialized sum of active holds (always `Amount::ZERO` in E2 — holds are E4).
+    /// Materialized sum of the account's `Held` holds (E4a). A **projection**, like
+    /// `posted_balance`: `apply` maintains it from the transaction's hold effects and
+    /// E4b1's boot re-derives it as Σ of the account's `Held` holds.
     pub held_amount: Amount,
     /// Whether/how far this account may go negative.
     pub credit: CreditPolicy,
@@ -117,6 +123,14 @@ pub struct Account {
     /// (the default, so every E2 account doc still deserializes) means no escalation.
     #[serde(default)]
     pub approval: Option<ApprovalRule>,
+    /// The journal sequence of the last **hold effect** touching this account (E4a,
+    /// review point D11) — the drift anchor for `held_amount`, deliberately distinct
+    /// from `last_journal_seq`, which moves only for money-line deltas. A
+    /// `Place`/`Release`/`Expire` is an effect-only entry, so without its own anchor
+    /// a `held_amount` projection could never be compared at the sequence it was
+    /// derived at. `#[serde(default)]` so every E2/E3 account doc still deserializes.
+    #[serde(default)]
+    pub last_hold_seq: u64,
 }
 
 impl Account {
@@ -222,6 +236,14 @@ pub struct EconomicTransaction {
     /// fired (E3a).
     #[serde(default)]
     pub consumed_approval: Option<ApprovalRequestId>,
+    /// The hold placements/captures/releases/expiries this transaction carried
+    /// (E4a). **Journal authority** exactly like [`EconomicTransaction::asset_effects`]
+    /// (D-E4-1): each effect carries the full post-state of the hold, so replay
+    /// rebuilds every reservation — and `Account.held_amount` — from the journal
+    /// alone, and a dropped `hold:{id}` projection can never strand escrow.
+    /// `#[serde(default)]` so every E2/E3 entry still deserializes.
+    #[serde(default)]
+    pub hold_effects: Vec<HoldEffect>,
 }
 
 /// One line of a double-entry transaction: a signed delta to one account, in that
@@ -256,7 +278,7 @@ pub enum EconomicCause {
         id: u64,
     },
     /// An external correlated reference (validated by its provider).
-    External(CausalRef),
+    External(ExternalRef),
     /// A staff action with a reason.
     Staff {
         /// The staff reason.
@@ -271,11 +293,18 @@ pub enum EconomicCause {
     },
 }
 
-/// An opaque external reference correlating a transaction with a scene/canon/sim/job
-/// without `mush-economy` depending on those crates. The provider validates it; the
-/// journal preserves the attribution even if the external record is later archived.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CausalRef {
+/// An opaque external reference correlating a transaction — or a contract's `Fact`
+/// condition — with a scene/canon/sim/job, without `mush-economy` depending on those
+/// crates. The provider validates it; the journal preserves the attribution even if
+/// the external record is later archived.
+///
+/// **E4a rename (doc 09 conformance, §12).** This was E2's `CausalRef`; doc 09 C6
+/// uses that name for the *kernel's* causal reference (`root: CommitToken`, `parent`,
+/// `ordinal`), which this is not. The serde field shape is **byte-identical** —
+/// `provider`/`kind`/`id`/`revision` — so every stored journal entry still
+/// deserializes, and [`CausalRef`] survives as an alias for one release.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ExternalRef {
     /// The provider name (`"scene"`, `"canon"`, `"sim"`, `"jobs"`).
     pub provider: SmolStr,
     /// The referenced record kind.
@@ -285,6 +314,10 @@ pub struct CausalRef {
     /// The referenced record revision, if versioned.
     pub revision: Option<u64>,
 }
+
+/// The E2 name of [`ExternalRef`], kept for one release so a caller written against
+/// E2/E3 keeps compiling (§12).
+pub type CausalRef = ExternalRef;
 
 /// Recorded transaction visibility. **Recorded, not enforced** in E2 — all E2 reads
 /// are staff-gated and the disclosure filter lands in E4 (R-D2).
@@ -425,6 +458,21 @@ pub enum Encumbrance {
         claimant: PrincipalId,
         /// Why (≤ [`crate::MAX_REASON_BYTES`]).
         reason: String,
+    },
+    /// A lease held by `lessor` under a contract (E4). Placed at contract
+    /// activation from the source party's acceptance, released at settlement or
+    /// refund — never staff-minted, because the contract IS the consent (D-E4-8).
+    Lease {
+        /// Who leases it out.
+        lessor: PrincipalId,
+        /// The contract that placed it.
+        contract: ContractId,
+    },
+    /// Collateral pledged under a contract (E4). Same lifecycle as
+    /// [`Encumbrance::Lease`]: contract-placed, contract-released.
+    Collateral {
+        /// The contract that placed it.
+        contract: ContractId,
     },
 }
 
@@ -675,4 +723,203 @@ pub enum CustodyDirection {
 #[must_use]
 pub fn object_principal(obj: ObjId) -> PrincipalId {
     PrincipalId::Object(obj)
+}
+
+// ---- holds (E4a) ----------------------------------------------------------
+
+/// What a hold reserves value *for*.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HoldPurpose {
+    /// A contract's escrow (placed when a party accepts).
+    Escrow {
+        /// The contract.
+        contract: ContractId,
+    },
+    /// A ruleset reservation (a work order, a production run, a quote).
+    Reservation {
+        /// The reserving namespace.
+        kind: SmolStr,
+        /// The reserving record's id in that namespace.
+        id: u64,
+    },
+    /// A staff/player hold with a stated reason.
+    Manual {
+        /// Why (≤ [`crate::MAX_REASON_BYTES`]).
+        reason: SmolStr,
+    },
+}
+
+/// A hold's lifecycle — doc 09 C8's `ReservationRecord` states, adopted verbatim
+/// (§12) so the K4 migration is a rename of nothing at all.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HoldStatus {
+    /// Live: counted in `Account.held_amount`, subtracted from available funds.
+    Held,
+    /// Spent by a transaction. `amount` is what that transaction actually took
+    /// (≤ the hold's `amount`); the remainder was released in the same effect, so a
+    /// capture is exactly attributable per hold (review point A1).
+    Consumed {
+        /// The transaction that consumed it.
+        transaction: TransactionId,
+        /// How much it took.
+        amount: Amount,
+    },
+    /// Released without being spent.
+    Released,
+    /// Aged out past its deadline (the sweep).
+    Expired,
+}
+
+impl HoldStatus {
+    /// Whether this hold still reserves value.
+    #[must_use]
+    pub fn is_held(&self) -> bool {
+        matches!(self, HoldStatus::Held)
+    }
+}
+
+/// One reservation against an account — doc 09 C8's `ReservationRecord` in the
+/// economy's vocabulary (§12).
+///
+/// **Journal authority** (D-E4-1): every placement, capture, release and expiry is a
+/// [`HoldEffect`] inside a journal transaction carrying the full post-state, so
+/// replay rebuilds every hold and every `held_amount` from the journal alone. The
+/// `hold:{id}` doc is a projection; a missing one heals silently because a hold
+/// carries no recovery latch.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hold {
+    /// Identity (never reused; floored from the journal, never from surviving docs).
+    pub id: HoldId,
+    /// The account whose funds are reserved.
+    pub account: AccountId,
+    /// How much (> 0).
+    pub amount: Amount,
+    /// Who the reservation is *for*, if anyone — a beneficiary may release their own
+    /// claim (invariant 25).
+    pub beneficiary: Option<PrincipalId>,
+    /// What it reserves for.
+    pub purpose: HoldPurpose,
+    /// Who placed it.
+    pub placed_by: PrincipalId,
+    /// The **placing plan's idempotency key** — doc 09 C8's `holder` (§12). Two
+    /// retries of one placement therefore name one holder, and an audit can trace a
+    /// reservation back to the exact intent that made it.
+    pub holder: IdempotencyKey,
+    /// When it lapses, on a named clock (`None` = never).
+    pub expires: Option<EconomicDeadline>,
+    /// Lifecycle.
+    pub status: HoldStatus,
+    /// The journal sequence of the last effect folded into this projection.
+    pub last_journal_seq: u64,
+    /// Staleness stamp (bumped once per effect).
+    pub revision: u64,
+}
+
+/// One hold change carried by a transaction. `hold` is the **full post-state**, the
+/// same journal-authority discipline as [`AssetEffect`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HoldEffect {
+    /// What kind of change (audit + display; the state is `hold`).
+    pub kind: HoldEffectKind,
+    /// The complete hold after the change.
+    pub hold: Hold,
+}
+
+/// What a [`HoldEffect`] did.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum HoldEffectKind {
+    /// A reservation was placed.
+    Placed,
+    /// A reservation was (partly) spent; the remainder was released with it.
+    Captured,
+    /// A reservation was released unspent.
+    Released,
+    /// A reservation aged out past its deadline.
+    Expired,
+}
+
+// ---- compact economic events (E4a, D-E4-13) -------------------------------
+
+/// A payload-free [`crate::ContractState`] discriminant — what an event may say.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum ContractStateKind {
+    /// Being drafted.
+    Draft,
+    /// Offered to its parties.
+    Offered,
+    /// Every party accepted.
+    Active,
+    /// Every condition satisfied; settlement pending.
+    ReadyToSettle,
+    /// Settled.
+    Settled,
+    /// Disputed.
+    Disputed,
+    /// Cancelled.
+    Cancelled,
+    /// Expired.
+    Expired,
+}
+
+/// A payload-free [`crate::ObligationStatus`] discriminant — what an event may say.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum ObligationStatusKind {
+    /// Settling on schedule.
+    Active,
+    /// A period was missed; within the grace allowance.
+    Grace,
+    /// Past the grace allowance.
+    Delinquent,
+    /// Out of the due pool pending a human decision.
+    Suspended,
+    /// Finished (a one-shot that settled).
+    Satisfied,
+    /// Cancelled.
+    Cancelled,
+}
+
+/// What the economy announces to observers (§6.3).
+///
+/// **Ids and kinds only** (D-E4-13, tighter than §12.4's sketch): no amounts, no
+/// parties, no `cause` text — a staff reason string riding an event would leak
+/// through every observer that logs it. An observer that needs detail asks the
+/// economy through the disclosure filter, under the viewer's own authority.
+///
+/// The pre-C6 form of doc 09's `SemanticEvent`; it migrates when commit tokens exist
+/// (§12).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EconomicEvent {
+    /// A transaction posted.
+    TransactionPosted {
+        /// Which one.
+        id: TransactionId,
+    },
+    /// A hold changed state.
+    HoldChanged {
+        /// Which hold.
+        id: HoldId,
+        /// What happened to it.
+        kind: HoldEffectKind,
+    },
+    /// A contract changed state.
+    ContractChanged {
+        /// Which contract.
+        id: ContractId,
+        /// Its new state, kind only.
+        state: ContractStateKind,
+    },
+    /// An obligation changed status.
+    ObligationChanged {
+        /// Which obligation.
+        id: ObligationId,
+        /// Its new status, kind only.
+        status_kind: ObligationStatusKind,
+    },
+    /// An asset's title record changed.
+    AssetTitleChanged {
+        /// Which object.
+        object: ObjId,
+        /// Its new revision.
+        revision: u64,
+    },
 }

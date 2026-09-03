@@ -25,7 +25,9 @@ use smol_str::SmolStr;
 
 use crate::amount::Amount;
 use crate::custody::{CustodyError, WorldCustody};
-use crate::engine::{APPROVAL_TTL_SECS, AuthEval, ValidateEnv, apply, plan_reversal, validate};
+use crate::engine::{
+    APPROVAL_TTL_SECS, AuthEval, NoFacts, ValidateEnv, apply, plan_reversal, validate,
+};
 use crate::ids::{AccountId, ApprovalRequestId, InstrumentId, TransactionId, VaultId};
 use crate::module::{EconomyStore, JOURNAL_LOG, NS};
 use crate::plan::{ApprovalNeed, AssetOp, CustodyOp, EconomyError, EconomyPlan, PlanResult, Prepared};
@@ -573,7 +575,16 @@ pub fn post(ctx: &mut Ctx<'_>, plan: &EconomyPlan) -> Result<PostOutcome, Econom
         let providers = store.providers();
         let auth = WorldAuth { w: ctx.w };
         let custody = WorldCustody { w: ctx.w, providers: providers.clone() };
-        let env = ValidateEnv { auth: &auth, custody: &custody, now: ctx.w.now() };
+        let env = ValidateEnv {
+            auth: &auth,
+            custody: &custody,
+            // E4c wires the real provider; until then every `Fact` condition is
+            // unknown, which is unsatisfied.
+            facts: &NoFacts,
+            now: ctx.w.now(),
+            ic_now: ctx.w.game_now_unix(),
+            next_hold_id: store.peek_next_hold(),
+        };
         (validate(plan, store.snapshot(), &env), providers)
     };
     finish(ctx, outcome, &providers, &plan.actor)

@@ -49,6 +49,37 @@ int_id! {
     /// request exists per hash.
     ApprovalRequestId
 }
+int_id! {
+    /// Monotonic hold id; never reused (E4a). A hold is the economy's reservation
+    /// record (doc 09 C8); its floor is re-derived **from the journal's hold
+    /// effects**, never from surviving `hold:{id}` docs, so a garbage-collected
+    /// terminal hold can never be re-minted under a stale `Contract.escrow` id.
+    HoldId
+}
+int_id! {
+    /// Monotonic obligation id; never reused (E4a). Obligation *state* is a
+    /// doc-authority container (`obligation:{id}`); its money is the journal.
+    ObligationId
+}
+int_id! {
+    /// Monotonic contract id; never reused (E4a). Contract *state* is a
+    /// doc-authority container (`contract:{id}`); its money is the journal.
+    ContractId
+}
+int_id! {
+    /// Monotonic cadence-clock id; never reused (E4a, D-E4-2). A named
+    /// campaign/domain clock the economy owns and advances from its own source with
+    /// bounded catch-up; the pre-K4 stand-in for doc 09's
+    /// `ClockRef::Registered { owner, id, generation }`.
+    CadenceId
+}
+int_id! {
+    /// Monotonic escalation id; never reused (E4a, §4.6). The graded ladder's
+    /// level-2 record — a subject suspended pending a human decision names the id
+    /// that suspended it. The record itself is E4b1's; the id is minted here so
+    /// [`crate::SuspendReason`] can carry it.
+    EscalationId
+}
 
 /// A registered instrument code: a canonical, validated `SmolStr` — a namespaced
 /// currency/commodity code (`sr.nuyen`, `tacsim.cbill`, `wod.resources`). Trim +

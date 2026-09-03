@@ -848,6 +848,7 @@ fn open_root_account(
             status: AccountStatus::Active,
             posted_balance: Amount::ZERO,
             held_amount: Amount::ZERO,
+            last_hold_seq: 0,
             credit: CreditPolicy::forbid(),
             last_journal_seq: 0,
             revision: 1,

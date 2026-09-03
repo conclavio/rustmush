@@ -32,16 +32,18 @@ use mush_core::ObjId;
 use mush_org::{ApprovalPolicy, OrgScopeId, PrincipalId};
 
 use crate::amount::Amount;
-use crate::hash::{asset_op_key, custody_op_key, plan_hash};
-use crate::ids::{AccountId, ApprovalRequestId, InstrumentId, TransactionId};
+use crate::clock::Clocks;
+use crate::contract::AttestorSet;
+use crate::hash::{asset_op_key, custody_op_key, hold_op_key, plan_hash};
+use crate::ids::{AccountId, ApprovalRequestId, HoldId, InstrumentId, TransactionId};
 use crate::plan::{
-    ApprovalNeed, AssetOp, CustodyOp, EconomyError, EconomyPlan, PlanResult, Prepared,
+    ApprovalNeed, AssetOp, CustodyOp, EconomyError, EconomyPlan, HoldOp, PlanResult, Prepared,
 };
 use crate::record::{
     Account, AccountStatus, AcquisitionRecord, ApprovalRule, AssetAssignment, AssetEffect,
-    AssetEffectKind, AssetLifecycle, CustodyDirection, CustodyEffect, EconomicAsset,
-    EconomicTransaction, Encumbrance, IdempotencyRecord, InstrumentStatus, JournalLine, Vault,
-    VaultStatus,
+    AssetEffectKind, AssetLifecycle, CustodyDirection, CustodyEffect, EconomicAsset, EconomicCause,
+    EconomicTransaction, Encumbrance, ExternalRef, Hold, HoldEffect, HoldEffectKind, HoldStatus,
+    IdempotencyRecord, InstrumentStatus, JournalLine, Vault, VaultStatus,
 };
 use crate::snapshot::EconomySnapshot;
 
@@ -80,6 +82,24 @@ pub const MAX_PENDING_PER_ACCOUNT: usize = 16;
 /// before boot garbage-collects it — long enough to be an audit trail, bounded
 /// enough not to be a landfill.
 pub const APPROVAL_GC_AFTER_SECS: i64 = 7 * APPROVAL_TTL_SECS;
+/// Maximum hold ops in one plan (§9). Also caps `expected_hold_revisions`.
+pub const MAX_HOLD_OPS_PER_PLAN: usize = 32;
+/// Maximum `Held` holds one account may carry at once (§9, invariant 26). Every
+/// later validation walks the account's holds, so this is a real cost bound.
+pub const MAX_ACTIVE_HOLDS_PER_ACCOUNT: usize = 64;
+/// Maximum hold expiries one economy sweep may post (§9; E4b1 enforces).
+pub const MAX_HOLD_EXPIRIES_PER_SWEEP: usize = 64;
+/// Maximum obligations one economy sweep may touch (§9; E4b1 enforces).
+pub const MAX_OBLIGATIONS_PER_SWEEP: usize = 64;
+/// Maximum posts one economy sweep may make (§9; E4b1 enforces).
+pub const MAX_POSTS_PER_SWEEP: usize = 128;
+/// How long a terminal (`Released`/`Expired`/`Consumed`) hold doc is kept before
+/// GC (§9); its history stays in the journal forever.
+pub const HOLD_GC_AFTER_SECS: i64 = 7 * 86_400;
+/// The window in which a repeated `Overload` forgiveness escalates (§9, §4.6).
+pub const ESCALATION_WINDOW_SECS: i64 = 7 * 86_400;
+/// How often an unacknowledged level-2 escalation re-notifies (§9, §4.6).
+pub const ESCALATION_RENOTIFY_SECS: i64 = 3_600;
 
 /// The economy capability vocabulary (§4.8) — every capability the economy asks
 /// `mush-org` about. Wiring freezes the vocabulary; this is the authoritative list
@@ -142,6 +162,27 @@ pub trait AuthEval {
     fn authorize_approver(&self, _approver: ObjId, _account: &Account, _policy: &ApprovalPolicy) -> bool {
         false
     }
+    /// `true` if `actor` may perform `op` on `hold` (E4a, invariant 25).
+    ///
+    /// The seam owns the policy: a `Release` is the placer's, the beneficiary's
+    /// (releasing their own claim), or staff's; an `Expire` is the sweep's; a
+    /// `Capture` reaches here only when plain debit authority on the account said
+    /// no, which is exactly how a contract settlement — authorized by its
+    /// acceptances rather than by any actor — captures escrow
+    /// ([`crate::ContractAuth`]).
+    ///
+    /// Defaults to `false` like every other E3+ method, so an impl written against
+    /// E3 keeps compiling and simply cannot move a reservation.
+    fn authorize_hold(&self, _actor: &PrincipalId, _hold: &Hold, _op: &HoldOp) -> bool {
+        false
+    }
+    /// `true` if `actor` currently qualifies as an attestor for `set` — re-run LIVE
+    /// at settlement, exactly like [`AuthEval::authorize_approver`] (E3's A5 rule):
+    /// a `Capability`/`Staff` attestor who has since lost the capability stops
+    /// counting, so an attestation is a record of a claim, not a captured credential.
+    fn authorize_attestor(&self, _actor: &PrincipalId, _set: &AttestorSet) -> bool {
+        false
+    }
 }
 
 /// An [`AuthEval`] that authorizes everything — for tests and trusted internal posts.
@@ -167,6 +208,12 @@ impl AuthEval for AllowAll {
         true
     }
     fn authorize_approver(&self, _: ObjId, _: &Account, _: &ApprovalPolicy) -> bool {
+        true
+    }
+    fn authorize_hold(&self, _: &PrincipalId, _: &Hold, _: &HoldOp) -> bool {
+        true
+    }
+    fn authorize_attestor(&self, _: &PrincipalId, _: &AttestorSet) -> bool {
         true
     }
 }
@@ -212,16 +259,56 @@ impl CustodyEval for NoCustody {
     }
 }
 
-/// Everything [`validate`] needs beyond the plan and the snapshot: the two live
-/// seams and a clock (approval expiry is a time question the pure engine cannot
-/// answer on its own).
+// ---- the external-fact seam (E4a) -----------------------------------------
+
+/// Resolves a contract's [`crate::TypedCondition::Fact`] against the provider that
+/// owns it (E4c wires `mush-jobs`; nothing implements it in E4a).
+///
+/// Three answers, and only one of them settles money: `Some(true)` satisfied,
+/// `Some(false)` known-unsatisfied, `None` **unknown**. Unknown is unsatisfied — a
+/// contract can never settle on a fact nobody can answer, which is why the default
+/// impl answers `None` and [`NoFacts`] exists at all (D-E4-4).
+pub trait FactEval {
+    /// Resolve one fact.
+    fn resolve(&self, _fact: &ExternalRef) -> Option<bool> {
+        None
+    }
+}
+
+/// A [`FactEval`] that knows nothing — the fail-closed default until E4c wires a
+/// provider.
+pub struct NoFacts;
+impl FactEval for NoFacts {}
+
+/// Everything [`validate`] needs beyond the plan and the snapshot: the three live
+/// seams and the two clocks (approval expiry, hold expiry, and every schedule are
+/// time questions the pure engine cannot answer on its own).
 pub struct ValidateEnv<'a> {
     /// Live authorization.
     pub auth: &'a dyn AuthEval,
     /// Live world custody.
     pub custody: &'a dyn CustodyEval,
+    /// Live external facts (E4a; [`NoFacts`] until E4c).
+    pub facts: &'a dyn FactEval,
     /// Wall-clock unix seconds.
     pub now: i64,
+    /// The world's IC clock, unix seconds (`World::game_now_unix`) — the second
+    /// instant [`crate::EconomicClock`] resolves against (E4a).
+    pub ic_now: i64,
+    /// The next [`HoldId`] the module's allocator will mint. `validate` assigns hold
+    /// ids deterministically from it in canonical op order, so `apply` stays
+    /// infallible and the module advances its allocator by the number of
+    /// [`crate::HoldEffect`]s with kind `Placed`. It is **not** hashed: two
+    /// validations of one plan at different allocator states are the same plan.
+    pub next_hold_id: u64,
+}
+
+impl ValidateEnv<'_> {
+    /// The clock resolver for this environment.
+    #[must_use]
+    pub fn clocks(&self) -> Clocks {
+        Clocks::new(self.now, self.ic_now)
+    }
 }
 
 // ---- validate -------------------------------------------------------------
@@ -283,6 +370,13 @@ fn validate_inner(
             return Err(EconomyError::StaleAsset { object: e.object, expected: e.revision, found: cur }.into());
         }
     }
+    // Invariant 26: and on RESERVATION data — the exit criterion's stale revisions.
+    for e in &plan.expected_hold_revisions {
+        let cur = snapshot.hold(e.hold).map(|h| h.revision);
+        if cur != Some(e.revision) {
+            return Err(EconomyError::StaleHold { hold: e.hold, expected: e.revision, found: cur }.into());
+        }
+    }
 
     // Resolve every line: account active, instrument active + matching, delta non-zero.
     // Build the canonical journal lines and the net per-account + per-instrument sums.
@@ -326,7 +420,8 @@ fn validate_inner(
     // Invariant 10 (extends invariant 1): a transaction needs ≥2 non-zero money
     // lines, OR ≥1 asset/custody effect. When money lines exist at all, invariants
     // 1–4 hold unchanged — one lonely line is still refused.
-    let has_ops = !plan.asset_ops.is_empty() || !plan.custody_ops.is_empty();
+    let has_ops =
+        !plan.asset_ops.is_empty() || !plan.custody_ops.is_empty() || !plan.hold_ops.is_empty();
     if non_zero < 2 && !(non_zero == 0 && has_ops) {
         return Err(EconomyError::TooFewLines.into());
     }
@@ -336,6 +431,11 @@ fn validate_inner(
             return Err(EconomyError::NotBalanced(instrument.clone()).into());
         }
     }
+
+    // Invariants 23-26: the reservations. Resolved BEFORE the credit checks, because
+    // what a debit is checked against is now `posted - held`, and this plan's own
+    // placements count while its own captures release what they consume (D-E4-9).
+    let holds = resolve_hold_ops(plan, snapshot, env)?;
 
     // Invariant 4 + credit policy: fold each net delta into the account's balance
     // with checked arithmetic and refuse a credit-policy breach.
@@ -348,6 +448,40 @@ fn validate_inner(
             return Err(EconomyError::CreditViolation(account_id).into());
         }
         balance_deltas.insert(account_id, net);
+    }
+
+    // Invariant 23: **available** balance. Every account this plan debits, and every
+    // account it places a hold on, must still satisfy its credit policy at
+    // `posted' - held'`. The posted check above stays exactly as E3 wrote it, so a
+    // plain overdraft is still `CreditViolation` - `InsufficientAvailable` means the
+    // money IS there and is spoken for, which is a different thing to tell a payer.
+    //
+    // Every touched account's `held'` is narrowed to `i64` here even when its policy
+    // is not checked, so `apply`'s fold is provably infallible (a release only ever
+    // lowers `held`, but the arithmetic is proved rather than assumed).
+    let mut new_held: BTreeMap<AccountId, Amount> = BTreeMap::new();
+    for (&account_id, &delta) in &holds.held_deltas {
+        let account = snapshot.account(account_id).ok_or(EconomyError::NoSuchAccount(account_id))?;
+        let widened = account.held_amount.widen().checked_add(delta).ok_or(EconomyError::Overflow)?;
+        new_held.insert(account_id, Amount::from_widened(widened).ok_or(EconomyError::Overflow)?);
+    }
+    let mut available_checked: BTreeSet<AccountId> = gross_debit.keys().copied().collect();
+    available_checked.extend(holds.place_accounts.iter().copied());
+    for account_id in available_checked {
+        let account = snapshot.account(account_id).ok_or(EconomyError::NoSuchAccount(account_id))?;
+        let net = balance_deltas.get(&account_id).copied().unwrap_or(Amount::ZERO);
+        let posted = account.posted_balance.checked_add(net).ok_or(EconomyError::Overflow)?;
+        let held = new_held.get(&account_id).copied().unwrap_or(account.held_amount);
+        let available = posted.checked_sub(held).ok_or(EconomyError::Overflow)?;
+        if !account.credit.permits(available) {
+            return Err(EconomyError::InsufficientAvailable(account_id).into());
+        }
+        // Invariant 26: a hold cannot promise money that is not there, so a
+        // PLACEMENT additionally needs non-negative available funds - a credit line
+        // is a licence to overdraw, not a licence to reserve headroom.
+        if holds.place_accounts.contains(&account_id) && available.is_negative() {
+            return Err(EconomyError::InsufficientAvailable(account_id).into());
+        }
     }
 
     // Authorization — re-evaluated LIVE per touched account (R-D4), on the account's
@@ -380,10 +514,20 @@ fn validate_inner(
     // Invariant 17: approval. NOT evaluated on the reversal path — a staff reversal
     // is not a new spend, and an ApprovalRule must never be a shield against
     // clawback (A7).
+    //
+    // D-E4-11: a placement is a debit-authority plan, so it counts toward the
+    // account's rule exactly like a spend - otherwise reserving a fortune and
+    // capturing it later would route around the escalation entirely.
     let consumed_approval = if skip_approval {
         None
     } else {
-        evaluate_approvals(snapshot, env, hash, &balance_deltas)?
+        let mut approval_deltas = balance_deltas.clone();
+        for (&account_id, &placed) in &holds.placed {
+            let entry = approval_deltas.entry(account_id).or_insert(Amount::ZERO);
+            let amount = Amount::from_widened(placed).ok_or(EconomyError::Overflow)?;
+            *entry = entry.checked_sub(amount).ok_or(EconomyError::Overflow)?;
+        }
+        evaluate_approvals(snapshot, env, hash, &approval_deltas)?
     };
 
     // Canonical line order (matches the hash's total key) so the persisted entry is
@@ -408,6 +552,7 @@ fn validate_inner(
         stamp_acquisition: non_zero > 0,
         asset_effects,
         custody_effects,
+        hold_effects: holds.effects,
         consumed_approval,
     };
 
@@ -447,6 +592,19 @@ fn caps(plan: &EconomyPlan) -> Result<(), EconomyError> {
     }
     if plan.expected_asset_revisions.len() > MAX_ASSET_OPS_PER_PLAN {
         return Err(EconomyError::TooLarge("too many expected asset revisions"));
+    }
+    if plan.hold_ops.len() > MAX_HOLD_OPS_PER_PLAN {
+        return Err(EconomyError::TooLarge("too many hold ops"));
+    }
+    if plan.expected_hold_revisions.len() > MAX_HOLD_OPS_PER_PLAN {
+        return Err(EconomyError::TooLarge("too many expected hold revisions"));
+    }
+    for op in &plan.hold_ops {
+        if let HoldOp::Place { purpose: crate::record::HoldPurpose::Manual { reason }, .. } = op
+            && reason.len() > MAX_REASON_BYTES
+        {
+            return Err(EconomyError::TooLarge("hold reason too long"));
+        }
     }
     // Invariant 21: every free-text field that lands inside an effect is capped, and
     // the full post-state re-serializes them on each later effect.
@@ -697,6 +855,196 @@ fn apply_asset_op(
     }
 }
 
+// ---- invariants 23-26: the reservations (E4a) -----------------------------
+
+/// Everything the hold ops of one plan resolve to.
+struct HoldResolution {
+    /// The journal effects, in canonical order, each carrying the full post-state.
+    effects: Vec<HoldEffect>,
+    /// The signed change to each account's `held_amount` (widened).
+    held_deltas: BTreeMap<AccountId, i128>,
+    /// The accounts this plan places a hold on (invariant 23's stricter half).
+    place_accounts: BTreeSet<AccountId>,
+    /// How much this plan reserves on each account - the input D-E4-11 feeds to the
+    /// account's `ApprovalRule` alongside its net debit.
+    placed: BTreeMap<AccountId, i128>,
+}
+
+/// Resolve `plan.hold_ops` into journal effects, proving invariants 23-26.
+///
+/// Every op is authorized LIVE and per-hold, and every state change carries the FULL
+/// post-state (D-E4-1), so replay rebuilds both the reservation and the account
+/// projection from the journal alone. Hold ids are minted deterministically from
+/// `env.next_hold_id` in canonical order, which is why `apply` never has to allocate.
+fn resolve_hold_ops(
+    plan: &EconomyPlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> Result<HoldResolution, EconomyError> {
+    let mut out = HoldResolution {
+        effects: Vec::new(),
+        held_deltas: BTreeMap::new(),
+        place_accounts: BTreeSet::new(),
+        placed: BTreeMap::new(),
+    };
+    if plan.hold_ops.is_empty() {
+        return Ok(out);
+    }
+    // The SAME total order the plan hash uses, so the applied order is the hashed
+    // order and two plans differing only in op order are one plan (invariant 27).
+    let mut keyed: Vec<(_, &HoldOp)> = plan.hold_ops.iter().map(|op| (hold_op_key(op), op)).collect();
+    keyed.sort_by(|a, b| a.0.cmp(&b.0));
+    // At most ONE op per hold: two would race each other inside one bundle, and the
+    // second would fold a stale pre-state.
+    let mut seen: BTreeSet<HoldId> = BTreeSet::new();
+    for (_, op) in &keyed {
+        if let Some(id) = op.hold()
+            && !seen.insert(id)
+        {
+            return Err(EconomyError::DuplicateHoldOp(id));
+        }
+    }
+
+    let actor = &plan.actor;
+    let clocks = env.clocks();
+    let mut minted = 0u64;
+    let mut placed_count: BTreeMap<AccountId, usize> = BTreeMap::new();
+
+    for (_, op) in keyed {
+        let effect = match op {
+            HoldOp::Place { account, amount, beneficiary, purpose, expires } => {
+                if amount.is_negative() || amount.is_zero() {
+                    return Err(EconomyError::HoldAmountNotPositive);
+                }
+                let acct =
+                    snapshot.account(*account).ok_or(EconomyError::NoSuchAccount(*account))?;
+                if acct.status != AccountStatus::Active {
+                    return Err(EconomyError::InactiveAccount(*account));
+                }
+                // Invariant 23: `CreditPolicy::permits` is vacuous on an unbounded
+                // floor, so a reservation there would reserve nothing at all - the
+                // account would still fund every debit that ignored it.
+                if acct.credit.floor.is_none() {
+                    return Err(EconomyError::HoldOnUnboundedAccount(*account));
+                }
+                let mine = placed_count.entry(*account).or_insert(0);
+                *mine += 1;
+                if snapshot.active_holds_on(*account) + *mine > MAX_ACTIVE_HOLDS_PER_ACCOUNT {
+                    return Err(EconomyError::TooLarge("too many active holds on one account"));
+                }
+                // Invariant 25: a reservation is a PROMISE TO PAY, so it needs debit
+                // authority - asked as the negative probe, because crediting is free.
+                let probe = amount.checked_neg().ok_or(EconomyError::Overflow)?;
+                if !env.auth.authorize(actor, acct, probe) {
+                    return Err(EconomyError::Unauthorized);
+                }
+                let id = HoldId(env.next_hold_id.checked_add(minted).ok_or(EconomyError::Overflow)?);
+                minted += 1;
+                *out.held_deltas.entry(*account).or_insert(0) += amount.widen();
+                *out.placed.entry(*account).or_insert(0) += amount.widen();
+                out.place_accounts.insert(*account);
+                HoldEffect {
+                    kind: HoldEffectKind::Placed,
+                    hold: Hold {
+                        id,
+                        account: *account,
+                        amount: *amount,
+                        beneficiary: beneficiary.clone(),
+                        purpose: purpose.clone(),
+                        placed_by: actor.clone(),
+                        // doc 09 C8's `holder`: the placing plan's key, so two
+                        // retries of one placement name one holder.
+                        holder: plan.idempotency.clone(),
+                        expires: *expires,
+                        status: HoldStatus::Held,
+                        last_journal_seq: 0,
+                        revision: 1,
+                    },
+                }
+            }
+            HoldOp::Capture { hold, amount } => {
+                let (live, _) = live_hold(snapshot, *hold)?;
+                // Invariant 26: an explicit amount, never "whatever is left" - that
+                // is what makes two captures on one account attributable per hold.
+                if amount.is_negative() || amount.is_zero() || *amount > live.amount {
+                    return Err(EconomyError::CaptureExceedsHold(*hold));
+                }
+                let acct = snapshot
+                    .account(live.account)
+                    .ok_or(EconomyError::NoSuchAccount(live.account))?;
+                let debit = amount.checked_neg().ok_or(EconomyError::Overflow)?;
+                // Invariant 25: debit authority on the account, OR an authority the
+                // seam recognizes for this exact hold - which is how a contract
+                // settlement, authorized by acceptances rather than by any actor,
+                // spends escrow (`ContractAuth`).
+                if !env.auth.authorize(actor, acct, debit) && !env.auth.authorize_hold(actor, live, op)
+                {
+                    return Err(EconomyError::Unauthorized);
+                }
+                // The WHOLE hold leaves `held`: the captured part becomes a real
+                // debit line and the remainder is released by this same effect.
+                *out.held_deltas.entry(live.account).or_insert(0) -= live.amount.widen();
+                let mut post = live.clone();
+                // `apply` stamps the real transaction id (the acquisition pattern).
+                post.status =
+                    HoldStatus::Consumed { transaction: TransactionId(0), amount: *amount };
+                post.revision += 1;
+                HoldEffect { kind: HoldEffectKind::Captured, hold: post }
+            }
+            HoldOp::Release { hold } => {
+                let (live, _) = live_hold(snapshot, *hold)?;
+                if !env.auth.authorize_hold(actor, live, op) {
+                    return Err(EconomyError::Unauthorized);
+                }
+                *out.held_deltas.entry(live.account).or_insert(0) -= live.amount.widen();
+                let mut post = live.clone();
+                post.status = HoldStatus::Released;
+                post.revision += 1;
+                HoldEffect { kind: HoldEffectKind::Released, hold: post }
+            }
+            HoldOp::Expire { hold } => {
+                let (live, _) = live_hold(snapshot, *hold)?;
+                // Invariant 24: expiry is the SWEEP's act. Without the cause gate any
+                // caller who could name a hold could age it out early and free the
+                // funds it was reserving.
+                match &plan.cause {
+                    EconomicCause::Internal { kind, .. } if kind == "hold.expire" => {}
+                    _ => return Err(EconomyError::HoldExpireNotSweep),
+                }
+                let deadline = live.expires.ok_or(EconomyError::HoldNotExpired(*hold))?;
+                // A `Manual` deadline resolves to `i64::MIN`, i.e. never passed: a
+                // manually-clocked hold is released by hand, never aged out by a
+                // sweep reading someone else's clock.
+                if !clocks.passed(&deadline, snapshot, i64::MIN) {
+                    return Err(EconomyError::HoldNotExpired(*hold));
+                }
+                if !env.auth.authorize_hold(actor, live, op) {
+                    return Err(EconomyError::Unauthorized);
+                }
+                *out.held_deltas.entry(live.account).or_insert(0) -= live.amount.widen();
+                let mut post = live.clone();
+                post.status = HoldStatus::Expired;
+                post.revision += 1;
+                HoldEffect { kind: HoldEffectKind::Expired, hold: post }
+            }
+        };
+        out.effects.push(effect);
+    }
+    Ok(out)
+}
+
+/// Fetch a hold that is still `Held`, and prove its account exists (so `apply`'s
+/// projection fold is infallible). Invariant 24's shared precondition.
+fn live_hold(snapshot: &EconomySnapshot, id: HoldId) -> Result<(&Hold, &Account), EconomyError> {
+    let hold = snapshot.hold(id).ok_or(EconomyError::NoSuchHold(id))?;
+    if !hold.status.is_held() {
+        return Err(EconomyError::HoldNotHeld(id));
+    }
+    let account =
+        snapshot.account(hold.account).ok_or(EconomyError::NoSuchAccount(hold.account))?;
+    Ok((hold, account))
+}
+
 // ---- invariant 15: custody ------------------------------------------------
 
 fn resolve_custody_ops(
@@ -762,6 +1110,22 @@ fn resolve_custody_ops(
             CustodyOp::Withdraw { object, to, .. } => {
                 if !env.custody.holds(vault, *object) {
                     return Err(EconomyError::NotInVault(*object));
+                }
+                // A live contract's `DepositInto` condition custody-LOCKS the object
+                // it names (S3.5): only that contract's own settlement or refund may
+                // take it out, or a seller could sell the deposit out from under the
+                // buyer between attestation and settlement.
+                if let Some(owner) = snapshot.custody_lock(*object, vault_id) {
+                    // BOTH gates: the contract's own cause and one of its two
+                    // deterministic keys. `cause` alone is caller-settable through the
+                    // public `post`, so it would be no gate at all.
+                    let by_owner = matches!(
+                        &plan.cause,
+                        EconomicCause::Internal { kind, id } if kind == "contract" && *id == owner.0
+                    ) && crate::contract::is_contract_key(&plan.idempotency, owner);
+                    if !by_owner {
+                        return Err(EconomyError::CustodyLocked(*object));
+                    }
                 }
                 // A2: an unconstrained destination is a laundering primitive. The
                 // seam checks live/`GOING`/reachability; the snapshot check below is
@@ -901,6 +1265,18 @@ fn entry_probe(p: &Prepared) -> EconomicTransaction {
             e
         })
         .collect();
+    let hold_effects: Vec<HoldEffect> = p
+        .hold_effects
+        .iter()
+        .map(|e| {
+            let mut e = e.clone();
+            e.hold.last_journal_seq = u64::MAX;
+            if let HoldStatus::Consumed { transaction, .. } = &mut e.hold.status {
+                *transaction = TransactionId(u64::MAX);
+            }
+            e
+        })
+        .collect();
     EconomicTransaction {
         id: TransactionId(u64::MAX),
         journal_seq: u64::MAX,
@@ -916,6 +1292,7 @@ fn entry_probe(p: &Prepared) -> EconomicTransaction {
         asset_effects,
         custody_effects: p.custody_effects.clone(),
         consumed_approval: p.consumed_approval,
+        hold_effects,
     }
 }
 
@@ -933,13 +1310,50 @@ pub fn apply(
     posted_at: i64,
 ) -> (EconomySnapshot, EconomicTransaction) {
     let mut next = snapshot.clone();
-    for (&account_id, &net) in &prepared.balance_deltas {
+
+    // Fold the reservation effects first: each carries the FULL post-state, and the
+    // one thing only `apply` knows - which transaction consumed a capture - is
+    // stamped here, exactly as the acquisition record is.
+    let mut held_deltas: BTreeMap<AccountId, i128> = BTreeMap::new();
+    let mut hold_effects = Vec::with_capacity(prepared.hold_effects.len());
+    for effect in &prepared.hold_effects {
+        let mut effect = effect.clone();
+        effect.hold.last_journal_seq = journal_seq;
+        if let HoldStatus::Consumed { transaction, .. } = &mut effect.hold.status {
+            *transaction = txid;
+        }
+        let signed = if effect.kind == HoldEffectKind::Placed {
+            effect.hold.amount.widen()
+        } else {
+            // A capture, a release and an expiry all take the WHOLE reservation off
+            // `held`; what a capture spent is recorded inside its own status.
+            -effect.hold.amount.widen()
+        };
+        *held_deltas.entry(effect.hold.account).or_insert(0) += signed;
+        next.put_hold(effect.hold.clone());
+        hold_effects.push(effect);
+    }
+
+    // One revision bump per touched account, whichever projection moved: an
+    // effect-only placement moves `held_amount`/`last_hold_seq` and deliberately
+    // leaves `last_journal_seq` alone (D11 - that is why the anchor is separate).
+    let touched: BTreeSet<AccountId> =
+        prepared.balance_deltas.keys().chain(held_deltas.keys()).copied().collect();
+    for account_id in touched {
         let account = next.account_mut(account_id).expect("validated account exists");
-        account.posted_balance = account
-            .posted_balance
-            .checked_add(net)
-            .expect("validate proved no overflow");
-        account.last_journal_seq = journal_seq;
+        if let Some(&net) = prepared.balance_deltas.get(&account_id) {
+            account.posted_balance = account
+                .posted_balance
+                .checked_add(net)
+                .expect("validate proved no overflow");
+            account.last_journal_seq = journal_seq;
+        }
+        if let Some(&delta) = held_deltas.get(&account_id) {
+            let widened = account.held_amount.widen() + delta;
+            account.held_amount =
+                Amount::from_widened(widened).expect("validate proved the held projection fits");
+            account.last_hold_seq = journal_seq;
+        }
         account.revision += 1;
     }
 
@@ -984,6 +1398,7 @@ pub fn apply(
         // the E3b module through the custody provider, in the same terminal bundle.
         custody_effects: prepared.custody_effects.clone(),
         consumed_approval: prepared.consumed_approval,
+        hold_effects,
     };
     next.put_idempotency(IdempotencyRecord {
         idempotency: prepared.idempotency.clone(),
@@ -1031,7 +1446,14 @@ pub fn plan_reversal(
     snapshot: &EconomySnapshot,
     auth: &dyn AuthEval,
 ) -> PlanResult {
-    if !original.asset_effects.is_empty() || !original.custody_effects.is_empty() {
+    // Invariant 28 extends E3's rule to reservations: money-only compensation would
+    // pay the payer back and leave the hold `Consumed`, so the payee's credit
+    // vanishes while the reservation still says it was spent. A capture is unwound by
+    // a contract refund or an attributed compensating plan, never by a reversal.
+    if !original.asset_effects.is_empty()
+        || !original.custody_effects.is_empty()
+        || !original.hold_effects.is_empty()
+    {
         return PlanResult::Refused(EconomyError::HasEffects);
     }
     // Inverse lines; `i64::MIN` has no negation (cannot arise from a balanced posted
@@ -1054,6 +1476,8 @@ pub fn plan_reversal(
         asset_ops: Vec::new(),
         custody_ops: Vec::new(),
         expected_asset_revisions: Vec::new(),
+        hold_ops: Vec::new(),
+        expected_hold_revisions: Vec::new(),
     };
     // The reversal's identity is the TARGET, not the caller's cause/actor — so a
     // re-reverse with a different staff reason still resolves to AlreadyPosted.
@@ -1070,7 +1494,14 @@ pub fn plan_reversal(
     if snapshot.is_reversed(original.id) {
         return PlanResult::Refused(EconomyError::AlreadyReversed(original.id));
     }
-    let env = ValidateEnv { auth, custody: &NoCustody, now: original.posted_at };
+    let env = ValidateEnv {
+        auth,
+        custody: &NoCustody,
+        facts: &NoFacts,
+        now: original.posted_at,
+        ic_now: original.posted_at,
+        next_hold_id: 0,
+    };
     match validate_inner(&plan, snapshot, &env, hash, true) {
         Ok(mut prepared) => {
             prepared.reverses = Some(original.id);

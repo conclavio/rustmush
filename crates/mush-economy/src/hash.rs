@@ -17,7 +17,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::ids::TransactionId;
-use crate::plan::{AssetOp, CustodyOp, EconomyPlan};
+use crate::plan::{AssetOp, CustodyOp, EconomyPlan, HoldOp};
 use crate::record::EconomicVisibility;
 use mush_org::PrincipalId;
 
@@ -42,6 +42,11 @@ struct CanonicalPlan<'a> {
     /// v2 (E3a). Skipped when empty, as above.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     custody_ops: Vec<&'a CustodyOp>,
+    /// v3 (E4a, invariant 27). Skipped when empty, so an E2- *or* E3-shaped plan
+    /// hashes byte-identically under E4 - both hard-coded digest pins below prove it,
+    /// and every stored idempotency record keeps resolving.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    hold_ops: Vec<&'a HoldOp>,
 }
 
 /// The canonical SHA-256 hash of `plan`'s economic identity.
@@ -66,6 +71,13 @@ pub fn plan_hash(plan: &EconomyPlan) -> [u8; 32] {
     let mut custody_ops: Vec<(CustodyOpKey, &CustodyOp)> =
         plan.custody_ops.iter().map(|op| (custody_op_key(op), op)).collect();
     custody_ops.sort_by_key(|(k, _)| *k);
+    // Hold ops by (hold-or-account id, discriminant, canonical bytes) - the byte
+    // tiebreak makes it total, and the sort is STABLE so two identical `Place`s (two
+    // genuinely distinct reservations with the same shape) keep their relative order
+    // instead of being an unordered pair.
+    let mut hold_ops: Vec<(HoldOpKey, &HoldOp)> =
+        plan.hold_ops.iter().map(|op| (hold_op_key(op), op)).collect();
+    hold_ops.sort_by(|a, b| a.0.cmp(&b.0));
     let canonical = CanonicalPlan {
         actor: &plan.actor,
         cause: &plan.cause,
@@ -74,6 +86,7 @@ pub fn plan_hash(plan: &EconomyPlan) -> [u8; 32] {
         lines,
         asset_ops: asset_ops.iter().map(|(_, op)| *op).collect(),
         custody_ops: custody_ops.iter().map(|(_, op)| *op).collect(),
+        hold_ops: hold_ops.iter().map(|(_, op)| *op).collect(),
     };
     // serde_json over field-ordered structs + a sorted Vec is deterministic here
     // (no floats, no maps). This is the tactics `canon()` discipline for money.
@@ -93,6 +106,8 @@ fn canonical_bytes<T: Serialize>(op: &T) -> Vec<u8> {
 pub(crate) type AssetOpKey = (u32, u8, Vec<u8>);
 /// The total sort key of a custody op — see [`custody_op_key`].
 pub(crate) type CustodyOpKey = (u32, u64, u8);
+/// The total sort key of a hold op — see [`hold_op_key`].
+pub(crate) type HoldOpKey = (u64, u8, Vec<u8>);
 
 /// The total sort key of an asset op: `(object, op ordinal, canonical bytes)`. The
 /// byte tiebreak is what makes the order TOTAL — two `Release`s on the same object
@@ -106,6 +121,16 @@ pub(crate) fn asset_op_key(op: &AssetOp) -> AssetOpKey {
 /// validation admits at most one custody op per object.
 pub(crate) fn custody_op_key(op: &CustodyOp) -> CustodyOpKey {
     (op.object().0, op.vault().0, op.ordinal())
+}
+
+/// The total sort key of a hold op (E4a, invariant 27): `(hold-or-account id, op
+/// ordinal, canonical bytes)`. A `Place` has no hold id yet, so it sorts by the
+/// account it reserves against; the byte tiebreak keeps the order total, and the
+/// ordinal puts every `Place` before every capture/release/expiry so a plan that
+/// places and spends in one breath applies deterministically. The engine sorts by
+/// the same key, so the order ops APPLY in is the order they are HASHED in.
+pub(crate) fn hold_op_key(op: &HoldOp) -> HoldOpKey {
+    (op.subject(), op.ordinal(), canonical_bytes(op))
 }
 
 /// The canonical hash of the reversal of `target` — derived from the TARGET alone,
@@ -127,9 +152,20 @@ mod tests {
 
     use super::*;
     use crate::amount::Amount;
-    use crate::ids::AccountId;
+    use crate::ids::{AccountId, VaultId};
     use crate::plan::RequestedLine;
-    use crate::record::{EconomicCause, IdempotencyKey};
+    use crate::record::{EconomicCause, Encumbrance, IdempotencyKey};
+
+    /// The digest of [`pin_plan_v3`] computed on the **pre-v3** (E3a) hash function
+    /// and hard-coded here (E4a invariant 27), exactly as `PIN_DIGEST` pins E2's:
+    /// v3 adds `hold_ops`, and an E3-shaped plan must keep hashing byte-identically
+    /// or every stored idempotency record for a title/custody post is orphaned.
+    const PIN_DIGEST_V3: &str = "b780e3a0974e641bbe381dace3aba60a1b3b57f0dcfef5e39472e41a7b185949";
+
+    #[test]
+    fn v3_reproduces_the_hard_coded_e3_digest_for_a_title_and_custody_plan() {
+        assert_eq!(hex(&plan_hash(&pin_plan_v3())), PIN_DIGEST_V3);
+    }
 
     /// The digest of [`pin_plan`] computed on the **pre-v2** (E2a) hash function and
     /// hard-coded here (D-E3-10 / C7): a later field reorder, a renamed variant, or a
@@ -159,6 +195,47 @@ mod tests {
         p
     }
 
+    /// The E3-shaped pin plan (money lines + title ops + a custody op) — the v3
+    /// digest anchor. Its digest is computed on the **v2** hash function and
+    /// hard-coded, so v3's new `hold_ops` field must stay skipped-when-empty.
+    fn pin_plan_v3() -> EconomyPlan {
+        let mut p = EconomyPlan::new(
+            IdempotencyKey::new("pin", "v3"),
+            PrincipalId::Object(ObjId(11)),
+            EconomicCause::Staff { reason: "pin3".into() },
+            vec![
+                RequestedLine {
+                    account: AccountId(3),
+                    delta: Amount::from_minor(-700),
+                    memo: "pay".into(),
+                },
+                RequestedLine {
+                    account: AccountId(4),
+                    delta: Amount::from_minor(700),
+                    memo: "recv".into(),
+                },
+            ],
+        );
+        p.description = "hash pin v3".into();
+        p.asset_ops = vec![
+            AssetOp::TransferTitle {
+                object: ObjId(21),
+                to: PrincipalId::Object(ObjId(12)),
+                to_scope: None,
+            },
+            AssetOp::Encumber {
+                object: ObjId(22),
+                encumbrance: Encumbrance::Lien {
+                    creditor: PrincipalId::Object(ObjId(13)),
+                    amount: Amount::from_minor(50),
+                    instrument: crate::ids::InstrumentId::new("gold").unwrap(),
+                },
+            },
+        ];
+        p.custody_ops = vec![CustodyOp::Deposit { object: ObjId(23), vault: VaultId(5) }];
+        p
+    }
+
     fn hex(bytes: &[u8; 32]) -> String {
         bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
@@ -181,9 +258,11 @@ mod tests {
             lines: Vec::new(),
             asset_ops: Vec::new(),
             custody_ops: Vec::new(),
+            hold_ops: Vec::new(),
         })
         .unwrap();
         assert!(!json.contains("asset_ops"), "empty asset_ops must not serialize");
         assert!(!json.contains("custody_ops"), "empty custody_ops must not serialize");
+        assert!(!json.contains("hold_ops"), "empty hold_ops must not serialize");
     }
 }

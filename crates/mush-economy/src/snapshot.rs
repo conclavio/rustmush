@@ -11,9 +11,15 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use mush_core::ObjId;
 use mush_org::PrincipalId;
 
-use crate::ids::{AccountId, ApprovalRequestId, InstrumentId, TransactionId, VaultId};
+use crate::clock::CadenceClock;
+use crate::contract::{ContractState, EconomicContract, TypedCondition};
+use crate::ids::{
+    AccountId, ApprovalRequestId, CadenceId, ContractId, HoldId, InstrumentId, ObligationId,
+    TransactionId, VaultId,
+};
+use crate::obligation::Obligation;
 use crate::record::{
-    Account, ApprovalRequest, ApprovalStatus, CustodyRef, EconomicAsset, IdempotencyKey,
+    Account, ApprovalRequest, ApprovalStatus, CustodyRef, EconomicAsset, Hold, IdempotencyKey,
     IdempotencyRecord, InstrumentDef, Vault,
 };
 
@@ -40,6 +46,18 @@ pub struct EconomySnapshot {
     assets_by_owner: HashMap<PrincipalId, BTreeSet<ObjId>>,
     /// Derived: one vault per backing.
     vaults_by_backing: BTreeMap<CustodyRef, VaultId>,
+    // ---- E4a ----
+    holds: BTreeMap<HoldId, Hold>,
+    /// Derived: every hold on an account, in id order — the `held_amount`
+    /// re-derivation and the per-account hold cap read it.
+    holds_by_account: BTreeMap<AccountId, BTreeSet<HoldId>>,
+    cadences: BTreeMap<CadenceId, CadenceClock>,
+    obligations: BTreeMap<ObligationId, Obligation>,
+    contracts: BTreeMap<ContractId, EconomicContract>,
+    /// Derived: the `(object, vault)` pairs a **live** contract's `DepositInto`
+    /// condition holds, and which contract holds each. Only that contract's own
+    /// settlement or refund may withdraw the object (§3.5).
+    contract_locks: BTreeMap<(ObjId, VaultId), ContractId>,
 }
 
 impl EconomySnapshot {
@@ -135,6 +153,76 @@ impl EconomySnapshot {
             .filter(|r| r.status == ApprovalStatus::Pending)
     }
 
+    // ---- E4a reads --------------------------------------------------------
+
+    /// Look up a hold.
+    #[must_use]
+    pub fn hold(&self, id: HoldId) -> Option<&Hold> {
+        self.holds.get(&id)
+    }
+    /// Every hold, in id order.
+    pub fn holds(&self) -> impl Iterator<Item = &Hold> {
+        self.holds.values()
+    }
+    /// The holds against one account, in id order.
+    pub fn holds_of(&self, account: AccountId) -> impl Iterator<Item = &Hold> {
+        self.holds_by_account
+            .get(&account)
+            .into_iter()
+            .flat_map(|set| set.iter().filter_map(|h| self.holds.get(h)))
+    }
+    /// One past the highest hold id in the snapshot — the allocator floor a caller
+    /// with no persisted allocator can still mint safely from. E4b1 floors the real
+    /// allocator from the JOURNAL's hold effects instead, because GC deletes terminal
+    /// hold docs and a stale `Contract.escrow` id must never be re-minted.
+    #[must_use]
+    pub fn next_hold_floor(&self) -> u64 {
+        self.holds.keys().next_back().map_or(1, |h| h.0.saturating_add(1))
+    }
+    /// How many `Held` holds an account currently carries (invariant 26's cap).
+    #[must_use]
+    pub fn active_holds_on(&self, account: AccountId) -> usize {
+        self.holds_of(account).filter(|h| h.status.is_held()).count()
+    }
+    /// Look up a cadence clock.
+    #[must_use]
+    pub fn cadence(&self, id: CadenceId) -> Option<&CadenceClock> {
+        self.cadences.get(&id)
+    }
+    /// Every cadence clock, in id order.
+    pub fn cadences(&self) -> impl Iterator<Item = &CadenceClock> {
+        self.cadences.values()
+    }
+    /// Look up an obligation.
+    #[must_use]
+    pub fn obligation(&self, id: ObligationId) -> Option<&Obligation> {
+        self.obligations.get(&id)
+    }
+    /// Every obligation, in id order.
+    pub fn obligations(&self) -> impl Iterator<Item = &Obligation> {
+        self.obligations.values()
+    }
+    /// Look up a contract.
+    #[must_use]
+    pub fn contract(&self, id: ContractId) -> Option<&EconomicContract> {
+        self.contracts.get(&id)
+    }
+    /// Every contract, in id order.
+    pub fn contracts(&self) -> impl Iterator<Item = &EconomicContract> {
+        self.contracts.values()
+    }
+    /// Every `(object, vault)` pair a live contract holds (§3.5). Re-derived at boot
+    /// from the `Active`/`ReadyToSettle` contracts' `DepositInto` conditions.
+    #[must_use]
+    pub fn contract_locks(&self) -> BTreeSet<(ObjId, VaultId)> {
+        self.contract_locks.keys().copied().collect()
+    }
+    /// Which contract holds `object` in `vault`, if any.
+    #[must_use]
+    pub fn custody_lock(&self, object: ObjId, vault: VaultId) -> Option<ContractId> {
+        self.contract_locks.get(&(object, vault)).copied()
+    }
+
     // ---- writes (test construction + `apply`) -----------------------------
 
     /// Insert/replace an instrument.
@@ -210,6 +298,45 @@ impl EconomySnapshot {
             }
         }
         self.approvals.insert(id, request);
+    }
+    /// Insert/replace a hold, keeping the per-account index coherent.
+    pub fn put_hold(&mut self, hold: Hold) {
+        if let Some(prev) = self.holds.get(&hold.id)
+            && prev.account != hold.account
+            && let Some(set) = self.holds_by_account.get_mut(&prev.account)
+        {
+            set.remove(&hold.id);
+            if set.is_empty() {
+                self.holds_by_account.remove(&prev.account);
+            }
+        }
+        self.holds_by_account.entry(hold.account).or_default().insert(hold.id);
+        self.holds.insert(hold.id, hold);
+    }
+    /// Insert/replace a cadence clock.
+    pub fn put_cadence(&mut self, cadence: CadenceClock) {
+        self.cadences.insert(cadence.id, cadence);
+    }
+    /// Insert/replace an obligation.
+    pub fn put_obligation(&mut self, obligation: Obligation) {
+        self.obligations.insert(obligation.id, obligation);
+    }
+    /// Insert/replace a contract, re-deriving its custody locks.
+    ///
+    /// A contract holds `(object, vault)` only while it is `Active` or
+    /// `ReadyToSettle`; every other state (including `Disputed`, whose escrow is
+    /// frozen but whose deposits are not the economy's to strand forever) releases
+    /// the lock, so a terminal contract can never trap someone's property.
+    pub fn put_contract(&mut self, contract: EconomicContract) {
+        self.contract_locks.retain(|_, c| *c != contract.id);
+        if matches!(contract.state, ContractState::Active | ContractState::ReadyToSettle) {
+            for condition in &contract.consent.conditions {
+                if let TypedCondition::DepositInto { object, vault } = condition {
+                    self.contract_locks.insert((*object, *vault), contract.id);
+                }
+            }
+        }
+        self.contracts.insert(contract.id, contract);
     }
     /// Mutable access to an account (used by `apply` to fold a delta).
     pub(crate) fn account_mut(&mut self, id: AccountId) -> Option<&mut Account> {

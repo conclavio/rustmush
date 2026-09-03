@@ -62,6 +62,7 @@ fn account(id: u64, balance: i64) -> Account {
         status: AccountStatus::Active,
         posted_balance: Amount::from_minor(balance),
         held_amount: Amount::ZERO,
+        last_hold_seq: 0,
         credit: CreditPolicy::forbid(),
         last_journal_seq: 0,
         revision: 1,
@@ -219,7 +220,7 @@ impl CustodyEval for Custody {
 // ---- drivers --------------------------------------------------------------
 
 fn env<'a>(auth: &'a dyn AuthEval, custody: &'a dyn CustodyEval) -> ValidateEnv<'a> {
-    ValidateEnv { auth, custody, now: NOW }
+    ValidateEnv { auth, custody, facts: &mush_economy::NoFacts, now: NOW, ic_now: NOW, next_hold_id: 1 }
 }
 fn prepare(s: &EconomySnapshot, p: &EconomyPlan, auth: &Auth, custody: &Custody) -> Prepared {
     match validate(p, s, &env(auth, custody)) {

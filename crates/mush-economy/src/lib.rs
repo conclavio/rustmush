@@ -83,6 +83,11 @@ mod plan;
 mod record;
 mod snapshot;
 
+// E4a — clocks, holds, obligations, contracts (still pure).
+mod clock;
+mod contract;
+mod obligation;
+
 // E2b — the world-attached module (the journal on the E0 Ledger, the atomic
 // full-bundle post, the strict durable money ack-gate, and directional boot
 // self-heal). E3b1 adds the custody seam, asset/vault persistence + boot, the
@@ -96,26 +101,56 @@ mod module;
 pub use amount::{Amount, MAX_SCALE};
 pub use engine::{
     APPROVAL_GC_AFTER_SECS, APPROVAL_TTL_SECS, AllowAll, AuthEval, CAPABILITIES, CustodyEval,
-    MAX_APPROVERS_PER_REQUEST, MAX_ASSET_OPS_PER_PLAN, MAX_CUSTODY_OPS_PER_PLAN,
-    MAX_DESCRIPTION_BYTES, MAX_ENCUMBRANCES_PER_ASSET, MAX_ENTRY_BYTES, MAX_LINES_PER_TX,
-    MAX_MEMO_BYTES, MAX_PENDING_PER_ACCOUNT, MAX_PENDING_PER_REQUESTER, MAX_REASON_BYTES,
-    NoCustody, ValidateEnv, apply, plan_reversal, validate,
+    ESCALATION_RENOTIFY_SECS, ESCALATION_WINDOW_SECS, FactEval, HOLD_GC_AFTER_SECS,
+    MAX_ACTIVE_HOLDS_PER_ACCOUNT, MAX_APPROVERS_PER_REQUEST, MAX_ASSET_OPS_PER_PLAN,
+    MAX_CUSTODY_OPS_PER_PLAN, MAX_DESCRIPTION_BYTES, MAX_ENCUMBRANCES_PER_ASSET, MAX_ENTRY_BYTES,
+    MAX_HOLD_EXPIRIES_PER_SWEEP, MAX_HOLD_OPS_PER_PLAN, MAX_LINES_PER_TX, MAX_MEMO_BYTES,
+    MAX_OBLIGATIONS_PER_SWEEP, MAX_PENDING_PER_ACCOUNT, MAX_PENDING_PER_REQUESTER,
+    MAX_POSTS_PER_SWEEP, MAX_REASON_BYTES, NoCustody, NoFacts, ValidateEnv, apply, plan_reversal,
+    validate,
 };
 pub use hash::plan_hash;
-pub use ids::{AccountId, ApprovalRequestId, InstrumentId, TransactionId, VaultId};
+pub use ids::{
+    AccountId, ApprovalRequestId, CadenceId, ContractId, EscalationId, HoldId, InstrumentId,
+    ObligationId, TransactionId, VaultId,
+};
 pub use plan::{
     AccountRevision, ApprovalNeed, AssetOp, AssetRevision, CustodyOp, EconomyError, EconomyPlan,
-    NamedResource, PlanResult, Prepared, RequestedLine,
+    HoldOp, HoldRevision, NamedResource, PlanResult, Prepared, RequestedLine,
 };
 pub use record::{
     Account, AccountStatus, AcquisitionRecord, Approval, ApprovalRequest, ApprovalRule,
     ApprovalStatus, AssetAssignment, AssetEffect, AssetEffectKind, AssetLifecycle, CatalogRef,
-    CausalRef, CreditPolicy, CustodyDirection, CustodyEffect, CustodyRef, Decision, EconomicAsset,
-    EconomicCause, EconomicTransaction, EconomicVisibility, Encumbrance, IdempotencyKey,
-    IdempotencyRecord, InstrumentDef, InstrumentKind, InstrumentStatus, JournalLine,
-    NegativePolicy, Vault, VaultStatus, Verdict, object_principal,
+    CausalRef, ContractStateKind, CreditPolicy, CustodyDirection, CustodyEffect, CustodyRef,
+    Decision, EconomicAsset, EconomicCause, EconomicEvent, EconomicTransaction, EconomicVisibility,
+    Encumbrance, ExternalRef, Hold, HoldEffect, HoldEffectKind, HoldPurpose, HoldStatus,
+    IdempotencyKey, IdempotencyRecord, InstrumentDef, InstrumentKind, InstrumentStatus,
+    JournalLine, NegativePolicy, ObligationStatusKind, Vault, VaultStatus, Verdict,
+    object_principal,
 };
 pub use snapshot::EconomySnapshot;
+
+// E4a — clocks, holds, obligations, contracts.
+pub use clock::{
+    CadenceClock, CadenceSource, Clocks, DEFAULT_CATCH_UP, EconomicClock, EconomicDeadline,
+    EconomicSchedule, MAX_CATCH_UP_CAP, SWEEP_GAP_DOWNTIME_SECS, SWEEP_PERIOD_SECS, advance,
+    advance_cadence, advance_cadence_manual, cadence_elapsed, due_periods,
+};
+pub use contract::{
+    Acceptance, Attestation, AttestorRef, AttestorSet, ConsentSurface, Consideration,
+    ContractAuth, ContractError, ContractState, ContractTerms, DISPUTE_TTL_SECS, DRAFT_TTL_SECS,
+    Deliverable, EconomicContract, Expiry, MAX_CONDITIONS, MAX_DELIVERABLES,
+    MAX_LIVE_CONTRACTS_PER_PARTY, MAX_OPEN_CONTRACTS_PER_ISSUER, MAX_PARTIES, MAX_SETTLE_ATTEMPTS,
+    MAX_SHARES, ObligationTemplate, PERMILLE, PayoutShare, Share, TypedCondition, apply_split,
+    check_offerable, conditions_met, consent_hash, is_contract_key, principal_key, refund_key,
+    refund_plan, reverify, settle_key, settlement_plan,
+};
+pub use obligation::{
+    DEFAULT_GRACE_PERIODS, ForgiveCause, GracePolicy, MAX_OBLIGATION_HISTORY, Obligation,
+    ObligationCause, ObligationEvent, ObligationStatus, SettleOutcome, SuspendReason, SweepIntent,
+    advance as advance_obligation, classify_forgiveness, due_now, forgive, obligation_key,
+    plan_sweep,
+};
 
 // E2b/E3b1 public surface.
 pub use api::{

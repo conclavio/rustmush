@@ -60,6 +60,13 @@ pub struct EconomyStore {
     /// The approval-request-id allocator (E3b2); never reused, resumed from `meta`
     /// floored at one past every journal-derived `consumed_approval`.
     pub(crate) next_approval: u64,
+    /// The hold-id allocator (E4a). E4b1 resumes it from `meta` floored at one past
+    /// every **journal-derived** hold effect — never from surviving `hold:{id}` docs,
+    /// because GC deletes terminal ones and re-minting a garbage-collected id under a
+    /// stale `Contract.escrow` reference would attach live escrow to a dead contract.
+    /// Until then [`EconomyStore::peek_next_hold`] floors it from the snapshot, so the
+    /// pure path can never mint a colliding id.
+    pub(crate) next_hold: u64,
     /// The whole-economy freeze latch (boot drift / conservation break / a dropped
     /// durable write). While set, [`crate::post`] refuses everything, and so do the
     /// non-recovery control verbs (`@account/open`, `@account/approval`,
@@ -98,6 +105,7 @@ impl EconomyStore {
             next_transaction,
             next_vault,
             next_approval,
+            next_hold: 0,
             frozen,
             providers: CustodyTable::default(),
         }
@@ -151,6 +159,12 @@ impl EconomyStore {
     #[must_use]
     pub fn peek_next_transaction(&self) -> u64 {
         self.next_transaction
+    }
+    /// The next hold id validation may mint, floored at one past every hold the
+    /// snapshot knows (E4a; E4b1 replaces the floor with the journal-derived one).
+    #[must_use]
+    pub fn peek_next_hold(&self) -> u64 {
+        self.next_hold.max(self.snapshot.next_hold_floor())
     }
     /// The allocator resume document — high-water marks boot never lowers, plus the
     /// **durable** whole-economy freeze latch.
@@ -343,6 +357,10 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
         let names = |e: &Encumbrance| match e {
             Encumbrance::Lien { creditor, .. } => *creditor == principal,
             Encumbrance::Disputed { claimant, .. } => *claimant == principal,
+            Encumbrance::Lease { lessor, .. } => *lessor == principal,
+            // Collateral names no principal of its own — the contract does, and a
+            // destroyed party is E4b2's contract reconciliation, not an asset freeze.
+            Encumbrance::Collateral { .. } => false,
         };
         let touched: Vec<ObjId> = store
             .snapshot

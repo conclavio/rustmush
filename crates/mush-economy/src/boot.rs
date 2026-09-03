@@ -610,6 +610,10 @@ fn asset_is_live(w: &World, a: &EconomicAsset) -> bool {
     a.encumbrances.iter().all(|e| match e {
         Encumbrance::Lien { creditor, .. } => principal_live(w, creditor),
         Encumbrance::Disputed { claimant, .. } => principal_live(w, claimant),
+        // A contract-placed claim (E4a) is live while its CONTRACT is; a destroyed
+        // lessor cannot strand the asset, because the contract is the party that
+        // releases the claim. E4b2's boot reconciles the contract itself.
+        Encumbrance::Lease { .. } | Encumbrance::Collateral { .. } => true,
     })
 }
 

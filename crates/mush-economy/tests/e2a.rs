@@ -27,7 +27,7 @@ fn account(id: u64, instrument: &str, credit: CreditPolicy, balance: i64) -> Acc
     Account {
         id: AccountId(id), owner: PrincipalId::Object(ObjId(id as u32)), instrument: iid(instrument),
         scope: None, name: format!("acct{id}").into(), status: AccountStatus::Active,
-        posted_balance: Amount::from_minor(balance), held_amount: Amount::ZERO, credit,
+        posted_balance: Amount::from_minor(balance), held_amount: Amount::ZERO, last_hold_seq: 0, credit,
         last_journal_seq: 0, revision: 1, approval: None,
     }
 }
@@ -55,7 +55,14 @@ fn plan(ns: &str, key: &str, lines: Vec<RequestedLine>) -> EconomyPlan {
 /// The E2 environment: everything authorized, no custody provider (E2 plans move no
 /// objects), clock at the same 1000 the tests post at.
 fn env(auth: &dyn AuthEval) -> ValidateEnv<'_> {
-    ValidateEnv { auth, custody: &mush_economy::NoCustody, now: 1000 }
+    ValidateEnv {
+        auth,
+        custody: &mush_economy::NoCustody,
+        facts: &mush_economy::NoFacts,
+        now: 1000,
+        ic_now: 1000,
+        next_hold_id: 1,
+    }
 }
 fn post(s: &EconomySnapshot, p: &EconomyPlan, txid: u64, seq: u64) -> (EconomySnapshot, mush_economy::EconomicTransaction) {
     match validate(p, s, &env(&mush_economy::AllowAll)) {
