@@ -130,6 +130,8 @@ mush-mail = { path = "crates/mush-mail" }
 mush-weather = { path = "crates/mush-weather" }
 ruleset-wod = { path = "crates/ruleset-wod" }
 mush-tactics = { path = "crates/mush-tactics" }
+# E1: organization identity + scoped authorization (the ownership/permission layer).
+mush-org = { path = "crates/mush-org" }
 ruleset-shadowrun = { path = "crates/ruleset-shadowrun" }
 mush-testkit = { path = "crates/mush-testkit" }
 # M16b: the all-in-one server library reused by both forked halves, plus the

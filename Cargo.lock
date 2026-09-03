@@ -2165,6 +2165,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mush-org"
+version = "0.1.0"
+dependencies = [
+ "mush-core",
+ "serde",
+ "serde_json",
+ "smol_str",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "mush-proto"
 version = "0.1.0"
 dependencies = [

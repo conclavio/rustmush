@@ -1,0 +1,17 @@
+[package]
+name = "mush-org"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "mush-org (E1): organization identity + scoped authorization — the pure ownership/permission engine the economy (E2+) owns accounts and vaults through. E1a is a world-free library; the OrgModule wiring is E1b."
+
+[dependencies]
+mush-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
