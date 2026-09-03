@@ -1,11 +1,11 @@
 # 10 — TacSim Foundations
 
-**Draft 0.2 — 2026-09-03.** The definitional record for the TacSim programme (build units E7+):
+**Draft 0.3 — 2026-09-03.** The definitional record for the TacSim programme (build units E7+):
 the owner's scope note, the foundational survey with the **locked decisions 1A–7A**, the
 character-first survey with the **locked decisions C1A–C30A**, the accepted addenda **T1–T16**,
-the remaining qualifications, and what all of that implies for the economy programme already in
-flight (docs 08–08e). This is not a build plan; the E7 plan will cite it the way 08c cites 08 and
-09.
+the Draft 0.2 review's **sharpenings R1–R7** (§21, accepted), the remaining qualifications, and
+what all of that implies for the economy programme already in flight (docs 08–08e). This is not
+a build plan; the E7 plan will cite it the way 08c cites 08 and 09.
 
 Companion docs: 06 (object behaviors, spatial domains), 07 (NPC control and tactical AI), 08–08e
 (economy, organizations, ownership; E3–E6 plans and owner answers), 09 (rules-engine contracts —
@@ -378,6 +378,25 @@ Recorded here so the in-flight plans pick them up; each is small.
 - **`mush-scenes` (6A).** A scene gains a monotonic **IC time floor** that `scene_ic_time` respects;
   journey arrival raises it and emits a typed arrival event. Doc 09's `SceneTurn` clock is the
   natural carrier; this is E7 scope but the field is worth adding when scenes are next touched.
+- **Contract templates from the character-first decisions (R6).** A T10 proxy-seat invitation is
+  a contract with audience visibility whose consent surface freezes station, channels, mission
+  order, rules of engagement, window, and revocation at acceptance — E4b2's machinery, a template
+  only. C15A's readiness obligation is an E4b1 obligation on the operation cadence with success
+  notifications off. C18A's passage contract is a deliverable-free contract granting bounded
+  onboard rights. None needs new engine work.
+- **Participation facts (R6, T13).** "An absent character earns nothing" means settlement splits
+  index on *participation*, which E4b2's outcome-indexed terms already support once `mush-sim`
+  emits a served-station fact (`sim.station.served { actor, station, from, to }`) — register it
+  as an E4c fact kind next to the T2 boundary facts. Kill, salvage, and delivery credit are the
+  same shape.
+- **Account-distinctness is a predicate, never a principal (R3).** C23/C24 need "are these
+  characters account-distinct" at roster lock and side assignment; C1A forbids an account
+  principal. Core (or `mush-org`) exposes a boolean oracle over character ids; contracts and the
+  party subsystem call it and store only the verdict. The private account id never enters a
+  journal, contract, or canon record.
+- **Character switching aboard (R5, C22).** A character left aboard after a switch is present and
+  vulnerable, so E5's attention budget and non-response semantics (08d) govern prompts to them;
+  the two rulesets share one fallback rule rather than inventing two.
 
 ## 16. E7 definition and implementation backlog
 
@@ -392,6 +411,8 @@ Definition decisions still open before an E7 plan can be drafted:
    shape-conformant interim; what "consume atomically" means before K3 durable atomicity.
 4. **Contact and observer-projection layer** — the minimum deterministic sensor/contact model that
    space combat and emissions control need, separate from the belief engine.
+   **R4:** merged with item 14 into one *propagation layer* — sensing and consequential
+   communications are both "what has reached whom" and must share the substrate.
 5. **Campaign/warfare layer ownership** — whether declared operations live in `mush-faction`, a new
    crate, or the ruleset; freeze-at-activation semantics; the bond as an escrow hold; consequence
    events into fronts and control.
@@ -413,15 +434,21 @@ Accepted requirements which still need build-plan decomposition:
 11. **Formation and task-force state** — persistent administrative trees, operation-scoped command
     overlays, unique operational parentage, ruleset-authored formation kinds and `mush-org`
     authorization without importing military vocabulary into the organization core.
+    **R1/R2:** a task force is the force half of its operation record (T6), or linked one-to-one
+    with it; a unit is in at most one operation at a time; every formation node binds to exactly
+    one owning org scope so `force.*` capabilities authorize through the existing machinery.
 12. **Human-directed NPC control** — distinguish the in-world actor from the decision driver;
     invitation, acceptance, scope, guardrails, dual attribution, revocation and deterministic
     fallback for operation-scoped OOC proxy seats.
 13. **Account integrity identity** — an immutable private account id used for one foreground focus,
     account-distinct quorum/reward rules and one-side-per-conflict enforcement, while accounts
     remain neither economic nor fictional principals.
+    **R3/R7:** exposed only as a boolean distinctness oracle; stored opaque, audit-only; never in a
+    journaled, contract, or canon record.
 14. **Delivered command state** — versioned order envelopes, communications reachability,
     queued/transmitted/delivered/acknowledged state, supersession, expiry, relays and the rule that a
     unit obeys the newest valid order it has actually received.
+    **R4:** delivery rides the same propagation layer as sensing (item 4).
 15. **Crew, survival and participation** — named decision NPCs plus aggregate complements,
     readiness obligations, station-local competence, evacuation/capture/rescue facts, scheduled
     musters, open crew calls and contribution-aware settlement.
@@ -556,7 +583,8 @@ Add an immutable private account id for durable integrity policy; do not turn it
 economic principal. An account has one foreground character or OOC control focus per world, though
 several client connections may attach to that same focus. Switching characters is allowed even on
 a long voyage: the former character remains physically present and vulnerable, and any active
-station hands off without granting a fresh link-loss exploit.
+station hands off without granting a fresh link-loss exploit. The character left behind falls
+under E5's attention budget and non-response semantics (R5).
 
 Quorums, sides, referral and first-time rewards, command succession and similar multiplicative
 benefits require distinct eligible accounts; sensitive policy may also require membership tenure or
@@ -632,6 +660,7 @@ injury, knowledge, reputation, kill/salvage credit and economic consequences att
 unit, commanding organization and operation. The absent player character receives no automatic
 pay, advancement, reputation, knowledge or property. The account may receive non-fungible OOC
 participation history or matchmaking standing, never a currency convertible into character power.
+Matchmaking standing is a *policy input* to crew-call eligibility and nothing else (R6).
 IC reward requires the player's character to participate through a real physical/remote billet or
 another actual mission role.
 
@@ -674,3 +703,29 @@ stable civil cycle while direct solar exposure remains a separate physical hazar
 habitats therefore register a durable authoritative schedule that cannot be toggled moment to
 moment for mechanical advantage. Other rulesets may consume the same facts differently without
 changing `mush-sim`.
+
+## 21. Draft 0.2 review — accepted sharpenings R1–R7 (2026-09-03)
+
+The Draft 0.2 review verified §17's two code corrections against the tree (`StationAssignment` is
+keyed by host; units carry a monotonic control epoch; a `Journey` is "a scheduled route a plain
+object is following", keyed by traveler) and folded these sharpenings, all accepted:
+
+- **R1. One operation, one force record.** A declared operation (T6) and a task force (T8) are one
+  record, or linked one-to-one: the task force is the operation's roster and command overlay. A
+  unit has at most one operation at a time, not merely one parent within an operation.
+- **R2. Formation authority binds to an org scope.** Each formation node references exactly one
+  owning org scope; `force.*` capabilities resolve through the existing capability machinery, and a
+  task force borrows authority from its operation's consent surface. The org scope tree still never
+  mirrors the order of battle.
+- **R3. Account-distinctness as a predicate.** A boolean oracle over character ids, called at
+  roster lock and side assignment, storing only the verdict; the account id is never a principal
+  and never appears in a journaled, contract, or canon record.
+- **R4. One propagation layer.** C9A's deterministic delivery and §14's contact/observer projection
+  share one "what has reached whom" substrate; backlog items 4 and 14 are one layer.
+- **R5. Switching meets E5's fallback rules.** A character left aboard after a switch is governed by
+  E5's attention budget and non-response semantics; no second fallback model.
+- **R6. New decisions are contract shapes.** T10 invitations, C15A readiness, C18A passage, and T13's
+  participation-indexed settlement are templates and fact kinds over E4b1/E4b2/E4c (§15).
+  Matchmaking standing is a policy input only.
+- **R7. Storage rule for the account id.** Opaque, audit-only, staff-visible through an audit verb;
+  never in a journaled or canon record.
