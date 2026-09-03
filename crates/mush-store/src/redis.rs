@@ -99,11 +99,12 @@ use fred::types::{Key, RespVersion, Value};
 
 use crate::store::{AuthoritativeStore, ObjectStore};
 use crate::types::{
-    AccountRec, AuthoritativeIntentPage, AuthoritativeReceipt, AuthoritativeScanCursor, BanRec,
-    BundleStatus, CharacterRef, IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
-    MAX_RETAINED_AUTHORITATIVE_BYTES, MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleWrite,
-    PendingAuthoritativeIntent, SshKeyRec, StoreError, TokenRecord, WorldSnapshot, WriteBatch,
-    WriteReceipt, validate_module_key, validate_module_ns, validate_module_op, validate_token_hash,
+    AccountRec, AuthoritativeIntentPage, AuthoritativeReceipt, AuthoritativeRetentionUsage,
+    AuthoritativeScanCursor, BanRec, BundleStatus, CharacterRef, IdempotencyStatus, IntentReceipt,
+    MAX_AUTHORITATIVE_DISCOVERY_PAGE, MAX_RETAINED_AUTHORITATIVE_BYTES,
+    MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleWrite, PendingAuthoritativeIntent, SshKeyRec,
+    StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt, validate_module_key,
+    validate_module_ns, validate_module_op, validate_token_hash,
 };
 
 /// Prefix of per-object JSON docs.
@@ -137,6 +138,8 @@ pub const AUTHORITATIVE_RETAINED_BYTES: &str = "auth:retained_bytes";
 
 const RESERVE_AUTHORITATIVE_LUA: &str = include_str!("lua/reserve_authoritative.lua");
 const FINALIZE_AUTHORITATIVE_LUA: &str = include_str!("lua/finalize_authoritative.lua");
+const REPAIR_AUTHORITATIVE_RETENTION_LUA: &str =
+    include_str!("lua/repair_authoritative_retention.lua");
 
 /// SCAN page size used for bulk key walks.
 const SCAN_PAGE: u32 = 500;
@@ -442,6 +445,13 @@ impl RedisStore {
         };
         let bundle: AuthoritativeBundle = serde_json::from_str(&intent_doc)
             .map_err(|error| StoreError::AuthoritativeCorrupt(error.to_string()))?;
+        let canonical = serde_json::to_string(&bundle)
+            .map_err(|error| StoreError::AuthoritativeCorrupt(error.to_string()))?;
+        if canonical != intent_doc {
+            return Err(StoreError::AuthoritativeCorrupt(
+                "Redis retained intent is not in canonical storage form".to_owned(),
+            ));
+        }
         if bundle.token() != token {
             return Err(StoreError::AuthoritativeCorrupt(
                 "Redis intent is stored under the wrong token".to_owned(),
@@ -968,6 +978,40 @@ impl AuthoritativeStore for RedisStore {
                 intents,
                 next_cursor,
             })
+        })
+    }
+
+    fn repair_authoritative_retention(
+        &self,
+        usage: AuthoritativeRetentionUsage,
+    ) -> BoxFuture<'_, Result<bool, StoreError>> {
+        Box::pin(async move {
+            if usage.count > MAX_RETAINED_AUTHORITATIVE_INTENTS
+                || usage.bytes > MAX_RETAINED_AUTHORITATIVE_BYTES
+            {
+                return Err(StoreError::AuthoritativeCapacity {
+                    retained_count: usage.count,
+                    retained_bytes: usage.bytes,
+                    max_count: MAX_RETAINED_AUTHORITATIVE_INTENTS,
+                    max_bytes: MAX_RETAINED_AUTHORITATIVE_BYTES,
+                });
+            }
+            let code: String = self
+                .client
+                .eval(
+                    REPAIR_AUTHORITATIVE_RETENTION_LUA,
+                    vec![
+                        AUTHORITATIVE_RETAINED_COUNT.to_owned(),
+                        AUTHORITATIVE_RETAINED_BYTES.to_owned(),
+                    ],
+                    vec![usage.count.to_string(), usage.bytes.to_string()],
+                )
+                .await?;
+            match code.as_str() {
+                "UNCHANGED" => Ok(false),
+                "REPAIRED" => Ok(true),
+                _ => Err(authoritative_script_error(&code)),
+            }
         })
     }
 }

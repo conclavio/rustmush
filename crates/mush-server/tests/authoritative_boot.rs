@@ -2,6 +2,7 @@
 //! intent before ordinary world hydration. Gated on `REDIS_URL`; the selected
 //! database must be disposable because this test wipes RustMUSH namespaces.
 
+use fred::interfaces::{KeysInterface, SetsInterface};
 use mush_core::{
     AuthoritativeBundle, AuthoritativeBundleDraft, CanonicalHash, CanonicalId, CommitToken,
     DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, GOD,
@@ -92,6 +93,25 @@ async fn pending_intent_is_reconciled_before_redis_world_load() {
         .reserve_authoritative_intent(bundle.clone())
         .await
         .expect("reserve pending exact intent");
+
+    // The counters are derived capacity indexes, not authority. Simulate a
+    // torn/externally clobbered pair; boot must reconstruct both atomically
+    // from the exhaustive validated intent scan before admitting writes.
+    let _: i64 = store
+        .client()
+        .del("auth:retained_count")
+        .await
+        .expect("remove retained count");
+    let _: i64 = store
+        .client()
+        .sadd("auth:retained_count", "wrong-type")
+        .await
+        .expect("clobber retained count type");
+    let _: () = store
+        .client()
+        .set("auth:retained_bytes", "999999", None, None, false)
+        .await
+        .expect("clobber retained bytes");
     let before = store.load_world().await.unwrap().unwrap();
     assert!(before.objects.iter().all(|object| object.id != ObjId(2)));
 
@@ -100,7 +120,24 @@ async fn pending_intent_is_reconciled_before_redis_world_load() {
         .expect("boot recovery barrier");
     assert_eq!(report.indexed, 1);
     assert_eq!(report.retained, 1);
+    assert_eq!(
+        report.retained_bytes,
+        serde_json::to_string(&bundle).unwrap().len()
+    );
+    assert!(report.retention_counters_repaired);
     assert_eq!(report.reconciled, 1);
+    let repaired_count: usize = store
+        .client()
+        .get("auth:retained_count")
+        .await
+        .expect("read repaired count");
+    let repaired_bytes: usize = store
+        .client()
+        .get("auth:retained_bytes")
+        .await
+        .expect("read repaired bytes");
+    assert_eq!(repaired_count, report.retained);
+    assert_eq!(repaired_bytes, report.retained_bytes);
     let world = load_or_seed_world(&store)
         .await
         .expect("hydrate after barrier");

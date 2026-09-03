@@ -21,8 +21,8 @@ use mush_core::{
     PrincipalId, ReplayWrite, RequestUid, RulesValue, ScopedIdempotencyKey, World,
 };
 use mush_store::{
-    AuthoritativeScanCursor, AuthoritativeStore, BundleStatus, IdempotencyStatus, ObjectStore,
-    RedisStore, StoreError, WriteBatch, suite,
+    AuthoritativeRetentionUsage, AuthoritativeScanCursor, AuthoritativeStore, BundleStatus,
+    IdempotencyStatus, ObjectStore, RedisStore, StoreError, WriteBatch, suite,
 };
 use tokio::sync::Mutex;
 
@@ -372,6 +372,70 @@ redis_gated!(authoritative_exact_round_trip_and_discovery, store, {
         Some(serde_json::json!({ "amount": 1 }))
     );
 });
+
+redis_gated!(
+    authoritative_retention_rebuilds_wrong_typed_counters,
+    store,
+    {
+        use fred::interfaces::{KeysInterface, SetsInterface};
+
+        seed_minimal_world(&store).await;
+        let bundle = authoritative_bundle(31, 41);
+        store
+            .reserve_authoritative_intent(bundle.clone())
+            .await
+            .expect("reserve exact intent");
+        let usage = AuthoritativeRetentionUsage {
+            count: 1,
+            bytes: serde_json::to_string(&bundle).unwrap().len(),
+        };
+
+        let _: i64 = store
+            .client()
+            .del("auth:retained_count")
+            .await
+            .expect("remove count string");
+        let _: i64 = store
+            .client()
+            .sadd("auth:retained_count", "wrong-type")
+            .await
+            .expect("replace count with set");
+        let _: () = store
+            .client()
+            .set("auth:retained_bytes", "17", None, None, false)
+            .await
+            .expect("install stale byte count");
+
+        assert!(
+            store
+                .repair_authoritative_retention(usage)
+                .await
+                .expect("repair derivative counters")
+        );
+        assert_eq!(
+            store
+                .client()
+                .get::<usize, _>("auth:retained_count")
+                .await
+                .unwrap(),
+            usage.count
+        );
+        assert_eq!(
+            store
+                .client()
+                .get::<usize, _>("auth:retained_bytes")
+                .await
+                .unwrap(),
+            usage.bytes
+        );
+        assert!(
+            !store
+                .repair_authoritative_retention(usage)
+                .await
+                .expect("exact counters are an idempotent no-op")
+        );
+    }
+);
 
 redis_gated!(
     authoritative_token_and_idempotency_conflicts_are_closed,

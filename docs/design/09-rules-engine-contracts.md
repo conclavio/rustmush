@@ -1,11 +1,11 @@
 # Cross-ruleset mechanical contracts and proving gates
 
-**Status:** Implementing 0.10 — K0/K1 exit criteria landed; K2 includes strict atomic boot hydration
+**Status:** Implementing 0.11 — K0/K1 exit criteria landed; K2 includes strict atomic boot hydration
 and final commit-admission guard revalidation; K3 now pairs typed post-images with a complete exact
 bundle, carries that bundle through the FIFO writer's reserve/reconcile protocol, and installs RAM
 only after the matching 128-bit token/hash receipt. Canonical store protocols and the pre-hydration
 recovery barrier are implemented, while semantic bundle assembly by production providers, early
-idempotency, counter repair, process/quarantine fault cases, and all five end-to-end proving gates
+idempotency, process/quarantine fault cases, and all five end-to-end proving gates
 remain open
 
 **Scope:** the shared contracts that must be stable before RustMUSH substantially expands character,
@@ -1784,7 +1784,7 @@ The repository already contains useful local proofs. They should be adapted, not
 | C8 guards | F3 control channels, unit `control_gen`, expected unit revision, economy plan draft; canonical `RevisionSet`, owner-stamped validator registries, explicit server-created `GuardSet` on every staged typed action, final fail-closed revalidation at the synchronous writer-custody transition, and durable exact-bundle reservation | actual per-channel leases, wiring every delayed result through guards, shared early idempotency |
 | C9 projection | per-observer perception and delivery, witness-aware power events | opaque contact references, dedicated view DTOs, shared legal-action/error/LLM projection |
 | C10 ownership | registrar-stamped definition/action/state-family owners; composition-bound opaque typed state handles; provider-stamped transactions that reject cross-owner handles; fail-closed cross-owner tactical references; immutable directional exact-definition bridge registry; shared owner-readiness gates on executable definitions/providers/validators/bridge routes | ownership migration for state outside `ActionStateStore`, executable bridge preparation across typed transactions, freeze aggregation from remaining owner adapters |
-| C11 lifecycle | pre-boot validated poison spool, exact seal retention/isolation, structural world modes, bounded recovery incidents/reports, tactical Active/Frozen/Migrating/Quarantined records, tactics owner-scoped digest-conflict freeze; prepared typed images install or abort on the matching legacy serial or K3 token/hash receipt; strict atomic state-family decode/validate/canonical boot hydration; legacy isolation of `action-state/*`; bounded in-memory and Redis pending indexes plus independent paged full-intent discovery; exhaustive bounded boot reconciliation before world hydration or writable bootstrap; exact retry repair of stale pending-index membership | exhaustive orphan-owner discovery; Redis retained-counter repair; exact-target server recovery receipts; owner freezes in remaining lifecycle adapters; authoritative account ingress; store-enforced prefix ownership; production semantic coordinator and automated runbook |
+| C11 lifecycle | pre-boot validated poison spool, exact seal retention/isolation, structural world modes, bounded recovery incidents/reports, tactical Active/Frozen/Migrating/Quarantined records, tactics owner-scoped digest-conflict freeze; prepared typed images install or abort on the matching legacy serial or K3 token/hash receipt; strict atomic state-family decode/validate/canonical boot hydration; legacy isolation of `action-state/*`; bounded in-memory and Redis pending indexes plus independent paged full-intent discovery; exhaustive bounded boot reconciliation before world hydration or writable bootstrap; exact retry repair of stale pending-index membership; canonical retained-intent storage validation; atomic reconstruction of derived Redis count/byte counters from exhaustive boot discovery | exhaustive orphan-owner discovery; exact-target server recovery receipts; owner freezes in remaining lifecycle adapters; authoritative account ingress; store-enforced prefix ownership; production semantic coordinator and automated runbook |
 | C12 presentation | `OutputEvent::Panel`, registered panel feeds, keyframe/delta kind, line fallback renderers | schema/projection/state revisions, delta base/sequence, commit receipt, resync/deduplication |
 
 None of the five gates currently traverses all of these through one action pipeline. The toy
@@ -1936,7 +1936,7 @@ Exit criteria:
 
 **Contracts:** C2, C6, C8, C11; foundational portion of Gate 5.
 
-**Implementation note (0.10):** the core canonical bundle/token/replay/outbox types and the separate
+**Implementation note (0.11):** the core canonical bundle/token/replay/outbox types and the separate
 `AuthoritativeStore` contract now implement exact intent reservation, early idempotency lookup,
 exact replay/readback/finalization, hash-aware status, bounded retained-intent capacity, object
 allocator admission, a pending accelerator, and an independent bounded full-intent scan in memory.
@@ -1944,7 +1944,10 @@ The memory harness covers loss before/after intent, every materialization prefix
 before allocator), token conflict, and acknowledgement loss after finalization. Redis now has
 checked Lua reservation and finalization barriers, immutable intent/idempotency/receipt records,
 retention counters, pending-index and cursor discovery, and live-gated tests for exact retry,
-missing accelerator membership, conflicts, and wrong-type partial execution. The full 29-test Redis
+missing accelerator membership, conflicts, and wrong-type partial execution. Retained intent reads
+now require the exact canonical storage form, and exclusive boot atomically rebuilds the derivative
+count/byte pair from exhaustive validated discovery, including over wrong-typed keys. The full
+30-test Redis
 suite and server recovery integration test pass against disposable Redis 8.10.1. Server startup now
 connects without ordinary bootstrap writes, exhaustively reconciles every retained exact intent,
 repairs stale pending membership, refuses conflicting or incomplete recovery, and only then creates
@@ -1953,7 +1956,7 @@ provider/scope/replay writes do not exactly match its prepared typed transaction
 complete bundle through FIFO writer custody, classifies pre-intent refusal separately from ambiguous
 integrity failure, and validates the exact token/hash receipt before RAM installation. Production
 support still requires the live-Redis suite in CI, semantic bundle assembly and early idempotency in
-real providers, retained-counter repair, process/IPC/quarantine cases, checkpoints, and durable-outbox
+real providers, process/IPC/quarantine cases, checkpoints, and durable-outbox
 dispatch.
 
 Work:

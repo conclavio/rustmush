@@ -37,9 +37,10 @@ use futures::future::BoxFuture;
 use mush_core::{AuthoritativeBundle, CanonicalHash, CommitToken, ObjId, ScopedIdempotencyKey};
 
 use crate::types::{
-    AccountRec, AuthoritativeIntentPage, AuthoritativeReceipt, AuthoritativeScanCursor, BanRec,
-    BundleStatus, IdempotencyStatus, IntentReceipt, PendingAuthoritativeIntent, SshKeyRec,
-    StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt,
+    AccountRec, AuthoritativeIntentPage, AuthoritativeReceipt, AuthoritativeRetentionUsage,
+    AuthoritativeScanCursor, BanRec, BundleStatus, IdempotencyStatus, IntentReceipt,
+    PendingAuthoritativeIntent, SshKeyRec, StoreError, TokenRecord, WorldSnapshot, WriteBatch,
+    WriteReceipt,
 };
 
 /// Exact-intent persistence used by the K3 action coordinator.
@@ -92,6 +93,15 @@ pub trait AuthoritativeStore: ObjectStore {
         cursor: Option<AuthoritativeScanCursor>,
         limit: usize,
     ) -> BoxFuture<'_, Result<AuthoritativeIntentPage, StoreError>>;
+
+    /// Repair the non-authoritative count/byte capacity indexes from a
+    /// complete validated intent scan. This may only run during exclusive
+    /// boot, before a live writer can reserve another intent. Backends must
+    /// replace the pair atomically and return `true` only when it changed.
+    fn repair_authoritative_retention(
+        &self,
+        usage: AuthoritativeRetentionUsage,
+    ) -> BoxFuture<'_, Result<bool, StoreError>>;
 }
 
 /// Persistent storage for the world, accounts, sitebans, and store metadata.

@@ -42,8 +42,9 @@ use std::time::Duration;
 use mush_config::metrics::Metrics;
 use mush_core::{AuthoritativeBundle, CommitToken, ObjId, World};
 use mush_store::{
-    AuthoritativeReceipt, AuthoritativeStore, BundleStatus, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
-    ModuleOp, ModuleWrite, ObjectStore, StoreError, WorldSnapshot, WriteBatch,
+    AuthoritativeReceipt, AuthoritativeRetentionUsage, AuthoritativeStore, BundleStatus,
+    MAX_AUTHORITATIVE_DISCOVERY_PAGE, MAX_RETAINED_AUTHORITATIVE_BYTES, ModuleOp, ModuleWrite,
+    ObjectStore, StoreError, WorldSnapshot, WriteBatch,
 };
 use smol_str::SmolStr;
 use tokio::sync::{mpsc, oneshot};
@@ -99,6 +100,10 @@ pub struct AuthoritativeBootRecoveryReport {
     pub indexed: usize,
     /// Unique immutable intents found by exhaustive cursor discovery.
     pub retained: usize,
+    /// Exact canonical bytes charged by all retained full intents.
+    pub retained_bytes: usize,
+    /// Whether boot rebuilt either non-authoritative capacity counter.
+    pub retention_counters_repaired: bool,
     /// Pending intents replayed and finalized in this boot.
     pub reconciled: usize,
     /// Retained intents already carrying an exact finalized witness.
@@ -141,6 +146,7 @@ pub async fn reconcile_authoritative_for_writable_boot(
     }
 
     let mut retained = BTreeMap::new();
+    let mut retained_bytes = 0usize;
     let mut cursor = None;
     loop {
         report.scan_pages = report
@@ -161,12 +167,25 @@ pub async fn reconcile_authoritative_for_writable_boot(
         for bundle in page.intents {
             let token = bundle.token();
             let hash = bundle.bundle_hash();
-            if let Some(existing) = retained.insert(token, hash)
-                && existing != hash
-            {
-                return Err(format!(
-                    "authoritative token {token} appeared with conflicting bundle hashes during boot"
-                ));
+            let encoded_bytes = serde_json::to_string(&bundle)
+                .map_err(|error| {
+                    format!("encoding retained authoritative intent {token}: {error}")
+                })?
+                .len();
+            match retained.entry(token) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    retained_bytes =
+                        retained_bytes.checked_add(encoded_bytes).ok_or_else(|| {
+                            "authoritative retained-intent byte counter overflow".to_owned()
+                        })?;
+                    entry.insert(hash);
+                }
+                std::collections::btree_map::Entry::Occupied(entry) if *entry.get() == hash => {}
+                std::collections::btree_map::Entry::Occupied(_) => {
+                    return Err(format!(
+                        "authoritative token {token} appeared with conflicting bundle hashes during boot"
+                    ));
+                }
             }
         }
         if retained.len() > mush_store::MAX_RETAINED_AUTHORITATIVE_INTENTS {
@@ -174,6 +193,11 @@ pub async fn reconcile_authoritative_for_writable_boot(
                 "authoritative boot scan found {} retained intents; maximum is {}",
                 retained.len(),
                 mush_store::MAX_RETAINED_AUTHORITATIVE_INTENTS
+            ));
+        }
+        if retained_bytes > MAX_RETAINED_AUTHORITATIVE_BYTES {
+            return Err(format!(
+                "authoritative boot scan found {retained_bytes} retained bytes; maximum is {MAX_RETAINED_AUTHORITATIVE_BYTES}"
             ));
         }
         let Some(next_cursor) = page.next_cursor else {
@@ -188,6 +212,7 @@ pub async fn reconcile_authoritative_for_writable_boot(
         cursor = Some(next_cursor);
     }
     report.retained = retained.len();
+    report.retained_bytes = retained_bytes;
 
     for (token, indexed_hash) in &indexed_by_token {
         match retained.get(token) {
@@ -204,6 +229,14 @@ pub async fn reconcile_authoritative_for_writable_boot(
             }
         }
     }
+
+    report.retention_counters_repaired = store
+        .repair_authoritative_retention(AuthoritativeRetentionUsage {
+            count: report.retained,
+            bytes: report.retained_bytes,
+        })
+        .await
+        .map_err(|error| format!("repairing authoritative retention counters: {error}"))?;
 
     for (token, hash) in retained {
         let was_indexed = indexed_by_token.contains_key(&token);
@@ -1735,6 +1768,8 @@ mod tests {
             AuthoritativeBootRecoveryReport {
                 indexed: 1,
                 retained: 1,
+                retained_bytes: serde_json::to_string(&bundle).unwrap().len(),
+                retention_counters_repaired: false,
                 reconciled: 1,
                 already_finalized: 0,
                 scan_pages: 1,

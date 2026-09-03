@@ -171,6 +171,14 @@ pub const MAX_AUTHORITATIVE_DISCOVERY_PAGE: usize = 256;
 /// Hard maximum opaque bytes in one backend recovery cursor.
 pub const MAX_AUTHORITATIVE_SCAN_CURSOR_BYTES: usize = 256;
 
+/// Exact derived capacity charge for all immutable full intents currently
+/// retained by one store.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AuthoritativeRetentionUsage {
+    pub count: usize,
+    pub bytes: usize,
+}
+
 /// One exact entry recovered from the independently maintained pending index.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PendingAuthoritativeIntent {

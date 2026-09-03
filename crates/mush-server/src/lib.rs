@@ -169,6 +169,8 @@ async fn build_engine(
     tracing::info!(
         indexed = recovery.indexed,
         retained = recovery.retained,
+        retained_bytes = recovery.retained_bytes,
+        retention_counters_repaired = recovery.retention_counters_repaired,
         reconciled = recovery.reconciled,
         already_finalized = recovery.already_finalized,
         scan_pages = recovery.scan_pages,

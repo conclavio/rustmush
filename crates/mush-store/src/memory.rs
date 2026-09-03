@@ -30,11 +30,12 @@ use mush_core::{
 
 use crate::store::{AuthoritativeStore, ObjectStore};
 use crate::types::{
-    AccountRec, AuthoritativeIntentPage, AuthoritativeReceipt, AuthoritativeScanCursor, BanRec,
-    BundleStatus, CharacterRef, IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
-    MAX_RETAINED_AUTHORITATIVE_BYTES, MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleWrite,
-    PendingAuthoritativeIntent, SshKeyRec, StoreError, TokenRecord, WorldSnapshot, WriteBatch,
-    WriteReceipt, validate_module_key, validate_module_ns, validate_module_op, validate_token_hash,
+    AccountRec, AuthoritativeIntentPage, AuthoritativeReceipt, AuthoritativeRetentionUsage,
+    AuthoritativeScanCursor, BanRec, BundleStatus, CharacterRef, IdempotencyStatus, IntentReceipt,
+    MAX_AUTHORITATIVE_DISCOVERY_PAGE, MAX_RETAINED_AUTHORITATIVE_BYTES,
+    MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleWrite, PendingAuthoritativeIntent, SshKeyRec,
+    StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt, validate_module_key,
+    validate_module_ns, validate_module_op, validate_token_hash,
 };
 
 /// See the [module docs](self).
@@ -169,7 +170,16 @@ fn now_unix() -> i64 {
 }
 
 fn decode_intent(doc: &str) -> Result<AuthoritativeBundle, StoreError> {
-    serde_json::from_str(doc).map_err(|error| StoreError::AuthoritativeCorrupt(error.to_string()))
+    let bundle: AuthoritativeBundle = serde_json::from_str(doc)
+        .map_err(|error| StoreError::AuthoritativeCorrupt(error.to_string()))?;
+    let canonical = serde_json::to_string(&bundle)
+        .map_err(|error| StoreError::AuthoritativeCorrupt(error.to_string()))?;
+    if canonical != doc {
+        return Err(StoreError::AuthoritativeCorrupt(
+            "retained intent document is not in canonical storage form".to_owned(),
+        ));
+    }
+    Ok(bundle)
 }
 
 fn decode_receipt(doc: &str) -> Result<AuthoritativeReceipt, StoreError> {
@@ -719,6 +729,23 @@ impl AuthoritativeStore for InMemoryStore {
                 intents,
                 next_cursor,
             })
+        })
+    }
+
+    fn repair_authoritative_retention(
+        &self,
+        usage: AuthoritativeRetentionUsage,
+    ) -> BoxFuture<'_, Result<bool, StoreError>> {
+        Box::pin(async move {
+            let inner = self.lock()?;
+            let (count, bytes) = retained_authoritative_usage(&inner)?;
+            let actual = AuthoritativeRetentionUsage { count, bytes };
+            if actual != usage {
+                return Err(StoreError::AuthoritativeCorrupt(format!(
+                    "authoritative retention scan disagrees with in-memory storage: expected {usage:?}, actual {actual:?}"
+                )));
+            }
+            Ok(false)
         })
     }
 }
@@ -1726,6 +1753,45 @@ mod tests {
             })
         ));
         assert!(inner.authoritative_pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn authoritative_retention_usage_is_exact_and_noncanonical_intents_fail_closed() {
+        let store = InMemoryStore::new();
+        seed_minimal_world(&store).await;
+        let bundle = authoritative_bundle(71, 72);
+        store
+            .reserve_authoritative_intent(bundle.clone())
+            .await
+            .unwrap();
+        let usage = AuthoritativeRetentionUsage {
+            count: 1,
+            bytes: serde_json::to_string(&bundle).unwrap().len(),
+        };
+        assert!(!store.repair_authoritative_retention(usage).await.unwrap());
+        assert!(matches!(
+            store
+                .repair_authoritative_retention(AuthoritativeRetentionUsage {
+                    count: 1,
+                    bytes: usage.bytes + 1,
+                })
+                .await,
+            Err(StoreError::AuthoritativeCorrupt(_))
+        ));
+
+        {
+            let mut inner = store.lock().unwrap();
+            let document = inner
+                .authoritative_intents
+                .get_mut(&bundle.token())
+                .unwrap();
+            document.insert(0, ' ');
+        }
+        assert!(matches!(
+            store.scan_authoritative_intents(None, 1).await,
+            Err(StoreError::AuthoritativeCorrupt(message))
+                if message.contains("canonical storage form")
+        ));
     }
 
     #[tokio::test]
