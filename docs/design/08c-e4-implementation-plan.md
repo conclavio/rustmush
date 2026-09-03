@@ -37,7 +37,9 @@ revisions, large time jumps, and hidden parties.
 
 - **`EconomicClock::Registered { provider, id }`** — doc 08 §18-E4 says "add registered clocks",
   but no clock-provider seam exists anywhere and no consumer needs one before E7's campaign clocks
-  (D-E4-2). E4 ships `RealUtc`, `WorldIc`, `Manual`; the enum stays open.
+  (D-E4-2). E4 ships `RealUtc`, `WorldIc`, `Manual`, and economy-owned `Cadence(CadenceId)` records
+  (Draft 0.4, for E5's named campaign clock); the enum stays open and becomes an adapter over doc
+  09's `ClockRef` when K4 lands (§12).
 - **Ruleset consequence policies** (eviction windows, lifestyle strain, loyalty) — E5 hooks onto
   the `ObligationChanged` event; E4 stops at `Grace → Delinquent → Reconciliation` state.
   `Obligation.amount` is a fixed `Amount` per period; lifestyle-tier or percentage amounts are an
@@ -688,6 +690,16 @@ K-side facts are cited from `docs/design/09-rules-engine-contracts.md` in that b
 
 K's own changes inside `mush-economy` (the `prepare_commit` → custody move → `install_commit` split)
 are **kept** by E4: `post_with` (§4.1) wraps that sequence, and settlement/sweep posts go through it.
+**One K-introduced latent hazard is fixed in E4b1** (found by two of the three K reviews): K's
+`install_commit(ctx, commit)?` sits *after* `run_custody_effects` (the world mutation) and can
+return `JournalUnavailable`/`StalePrestate` if the allocator or ledger tail moved between prepare
+and install — unreachable today (no custody provider or `CarryAttempt` hook can reach the economy
+store; the hook has no `Ctx`) but it contradicts the file's own "never `?` after the world moves"
+rule and has no test. E4b1 makes the install **infallible** (the two checks become asserted
+invariants with the reachability argument recorded), keeping the custody move as the last fallible
+act; a regression test drives a stub provider that reenters and proves the assertion, not a desync,
+is what fires. `mush-org`'s split already runs its fallible check before any mutation and is the
+shape to match.
 `mush_core::ScopedIdempotencyKey`/`IdempotencyScope` (`action.rs:374-426`) exist but are ingress/
 gateway machinery; the sweep's server-internal deterministic keys stay `IdempotencyKey` (optional
 future alignment, not required). `mush-contract-tests` hosts only the toy `focus/brace/guarded`
