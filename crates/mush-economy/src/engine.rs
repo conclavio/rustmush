@@ -280,7 +280,7 @@ pub fn apply(
 /// guard is the backstop. A reversal may itself be reversed — a distinct new
 /// transaction with its own deterministic key.
 #[must_use]
-pub fn reverse(
+pub fn plan_reversal(
     original: &EconomicTransaction,
     actor: PrincipalId,
     cause: crate::record::EconomicCause,

@@ -2001,11 +2001,14 @@ version = "0.1.0"
 dependencies = [
  "mush-core",
  "mush-org",
+ "mush-proto",
+ "mush-testkit",
  "serde",
  "serde_json",
  "sha2",
  "smol_str",
  "thiserror 2.0.20",
+ "tracing",
 ]
 
 [[package]]
@@ -2253,6 +2256,7 @@ dependencies = [
  "mush-comsys",
  "mush-config",
  "mush-core",
+ "mush-economy",
  "mush-faction",
  "mush-ipc",
  "mush-jobs",

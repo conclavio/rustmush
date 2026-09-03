@@ -79,6 +79,9 @@ pub fn server_modules_with(weather: mush_weather::WeatherConfig) -> Vec<Box<dyn 
         Box::new(mush_org::OrgModule::with_predicates(vec![std::sync::Arc::new(
             mush_faction::FactionStandingProvider,
         )])),
+        // E2: the accountable-value engine — the double-entry journal, accounts, and
+        // the strict durable money ack-gate. After org (it authorizes through it).
+        Box::new(mush_economy::EconomyModule::new()),
         Box::new(mush_scenes::ScenesModule::new()),
         Box::new(mush_sim::SimulationModule::new()),
         Box::new(mush_mail::MailModule),
@@ -708,7 +711,7 @@ mod tests {
         let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
         assert_eq!(
             names,
-            ["comsys", "faction", "canon", "org", "scenes", "sim", "mail", "jobs", "weather", "script"]
+            ["comsys", "faction", "canon", "org", "economy", "scenes", "sim", "mail", "jobs", "weather", "script"]
         );
     }
 
@@ -816,7 +819,7 @@ mod tests {
         assert_eq!(
             names,
             [
-                "comsys", "faction", "canon", "org", "scenes", "sim", "mail", "jobs", "weather", "script",
+                "comsys", "faction", "canon", "org", "economy", "scenes", "sim", "mail", "jobs", "weather", "script",
                 "worldgen", "wod"
             ]
         );
@@ -928,7 +931,7 @@ mod tests {
         let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
         assert_eq!(
             names,
-            ["comsys", "faction", "canon", "org", "scenes", "sim", "mail", "jobs", "weather", "script", "wod"]
+            ["comsys", "faction", "canon", "org", "economy", "scenes", "sim", "mail", "jobs", "weather", "script", "wod"]
         );
         // The ruleset's surface is live: +roll / +sheet registered, the
         // wod.roll panel feed present, and the chargen/xp job queues too.

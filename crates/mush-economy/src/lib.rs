@@ -29,6 +29,7 @@
 //! - **Authorization is injected + live.** The [`AuthEval`] seam keeps this crate
 //!   independent of the org module and is re-evaluated at every post (R-D4).
 
+// E2a — the pure library.
 mod amount;
 mod engine;
 mod hash;
@@ -37,10 +38,18 @@ mod plan;
 mod record;
 mod snapshot;
 
+// E2b — the world-attached module (the journal on the E0 Ledger, the atomic
+// full-bundle post, the strict durable money ack-gate, and directional boot
+// self-heal).
+mod api;
+mod boot;
+mod commands;
+mod module;
+
 pub use amount::{Amount, MAX_SCALE};
 pub use engine::{
     AllowAll, AuthEval, MAX_DESCRIPTION_BYTES, MAX_ENTRY_BYTES, MAX_LINES_PER_TX, MAX_MEMO_BYTES,
-    apply, reverse, validate,
+    apply, plan_reversal, validate,
 };
 pub use hash::plan_hash;
 pub use ids::{AccountId, InstrumentId, TransactionId};
@@ -51,3 +60,10 @@ pub use record::{
     InstrumentStatus, JournalLine, NegativePolicy, object_principal,
 };
 pub use snapshot::EconomySnapshot;
+
+// E2b public surface.
+pub use api::{
+    META_KEY, PostOutcome, account_key, instrument_key, open_account, post, post_capability,
+    register_instrument, reverse,
+};
+pub use module::{EconomyModule, EconomyStore, JOURNAL_LOG, NS};

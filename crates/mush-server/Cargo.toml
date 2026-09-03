@@ -31,6 +31,8 @@ mush-sim.workspace = true
 mush-canon.workspace = true
 # The E1 organization identity + scoped-authorization module.
 mush-org.workspace = true
+# The E2 accountable-value engine (double-entry journal).
+mush-economy.workspace = true
 mush-mail.workspace = true
 mush-jobs.workspace = true
 # The M5 scripting + weather modules.

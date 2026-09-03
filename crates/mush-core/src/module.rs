@@ -1846,7 +1846,17 @@ impl Ctx<'_> {
     /// from the command that emits a "sent"/"approved" confirmation whose
     /// loss would be a lie after a crash.
     pub fn gate_on_durable_ack(&mut self) {
-        self.out.defer(Deferred::DurableGate { actor: self.actor });
+        self.out.defer(Deferred::DurableGate { actor: self.actor, strict: false });
+    }
+
+    /// Like [`Ctx::gate_on_durable_ack`], but **strict** (for money — E2 R-R1): on a
+    /// dropped durable write the step's confirmation is SUPPRESSED entirely, not
+    /// delivered with a "may not survive" warning. Invariant 9 — a posted economic
+    /// confirmation must never outrun the durable ack (the RAM effect is frozen and
+    /// reconciled at boot; the actor is told the command did NOT confirm). Use it
+    /// from any handler that emits a money-movement confirmation.
+    pub fn gate_on_durable_ack_strict(&mut self) {
+        self.out.defer(Deferred::DurableGate { actor: self.actor, strict: true });
     }
 
     /// Read this world's state slot for `T` (declared via

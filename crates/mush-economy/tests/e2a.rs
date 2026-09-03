@@ -7,7 +7,7 @@ use mush_economy::{
     Account, AccountStatus, AuthEval, Amount, CreditPolicy, EconomicCause, EconomyError,
     EconomyPlan, EconomySnapshot, IdempotencyKey, InstrumentDef, InstrumentId, InstrumentKind,
     InstrumentStatus, NegativePolicy, PlanResult, RequestedLine, TransactionId, apply, plan_hash,
-    reverse, validate, AccountId,
+    plan_reversal, validate, AccountId,
 };
 use mush_org::PrincipalId;
 
@@ -163,7 +163,7 @@ fn reversal_compensates_and_is_at_most_once() {
     ]);
     let (s2, tx) = post(&s, &plan("transfer", "r1", vec![line(1, -100, "pay"), line(2, 100, "recv")]), 1, 1);
     // Reverse via the dedicated engine path (fed the real original transaction).
-    let (s3, rtx) = match reverse(&tx, PrincipalId::Object(ObjId(1)), EconomicCause::Staff { reason: "undo".into() }, &s2, &mush_economy::AllowAll) {
+    let (s3, rtx) = match plan_reversal(&tx, PrincipalId::Object(ObjId(1)), EconomicCause::Staff { reason: "undo".into() }, &s2, &mush_economy::AllowAll) {
         PlanResult::Post(prepared) => apply(&s2, &prepared, TransactionId(2), 2, 1000),
         other => panic!("expected Post, got {other:?}"),
     };
@@ -174,7 +174,7 @@ fn reversal_compensates_and_is_at_most_once() {
     assert_eq!(tx.lines.iter().find(|l| l.account == AccountId(1)).unwrap().delta, Amount::from_minor(-100));
     assert_eq!(rtx.lines.iter().find(|l| l.account == AccountId(1)).unwrap().delta, Amount::from_minor(100));
     // At-most-once: re-reversing is the original reversal id (deterministic key).
-    match reverse(&tx, PrincipalId::Object(ObjId(1)), EconomicCause::Staff { reason: "again".into() }, &s3, &mush_economy::AllowAll) {
+    match plan_reversal(&tx, PrincipalId::Object(ObjId(1)), EconomicCause::Staff { reason: "again".into() }, &s3, &mush_economy::AllowAll) {
         PlanResult::AlreadyPosted(id) => assert_eq!(id, rtx.id),
         other => panic!("expected AlreadyPosted, got {other:?}"),
     }

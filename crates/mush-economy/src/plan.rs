@@ -156,6 +156,9 @@ pub enum EconomyError {
     /// A referenced account does not exist.
     #[error("no such account: {0}")]
     NoSuchAccount(AccountId),
+    /// A referenced transaction does not exist (reversal target).
+    #[error("no such transaction: {0}")]
+    NoSuchTransaction(TransactionId),
     /// A referenced account is not active.
     #[error("account {0} is not active")]
     InactiveAccount(AccountId),
@@ -197,4 +200,8 @@ pub enum EconomyError {
     /// never build a poison-sized chunk.
     #[error("plan exceeds a boundedness cap: {0}")]
     TooLarge(&'static str),
+    /// The whole economy is frozen (boot found drift / a conservation break / a
+    /// dropped durable write) — no posting until staff clear it.
+    #[error("the economy is frozen")]
+    EconomyFrozen,
 }

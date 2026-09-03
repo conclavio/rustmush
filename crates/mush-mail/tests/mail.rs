@@ -794,8 +794,8 @@ fn send_requests_the_durable_ack_gate() {
     run(&mut engine, alice, "@mail/quick Bob=Gate/check");
     assert_eq!(
         engine.take_durable_gate(),
-        Some(alice),
-        "a successful send must gate its output on the store ack"
+        Some((alice, false)),
+        "a successful send must gate its output on the store ack (non-strict)"
     );
     // A refused send gates nothing (the handler returned Err, and dispatch
     // discarded everything it deferred).

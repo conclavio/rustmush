@@ -848,7 +848,7 @@ async fn run(
             // mutating the gateway's throttle directly (M16b: serialized).
             gateway.set_flood_exempt(u64::from(actor.0), engine.world.input_depth(actor) > 0);
         }
-        if let Some(gate_actor) = engine.take_durable_gate() {
+        if let Some((gate_actor, gate_strict)) = engine.take_durable_gate() {
             // The step asked for the durable-ack output gate (mail send,
             // XP approval — PLAN's ack-gated confirmations): resolve the
             // step's audiences against CURRENT world state, flush its
@@ -879,19 +879,36 @@ async fn run(
                                 gateway.transmit(resolved);
                             }
                             Ok(Err(e)) => {
-                                // The write was dropped (non-retryable):
-                                // deliver what happened in RAM, but never
-                                // pretend it is durable.
-                                gateway.transmit(resolved);
-                                send_sys(
-                                    &gateway,
-                                    gate_actor,
-                                    &format!(
-                                        "WARNING: the database write for your last \
-                                         command failed ({e}); its effects may not \
-                                         survive a restart."
-                                    ),
-                                );
+                                if gate_strict {
+                                    // Money (invariant 9 / E2 R-R1): a dropped durable
+                                    // write must NEVER surface a posted confirmation.
+                                    // Suppress the held output and tell the actor the
+                                    // command did not confirm (the economy is frozen
+                                    // by the E0 poison-seal and reconciled at boot).
+                                    send_sys(
+                                        &gateway,
+                                        gate_actor,
+                                        &format!(
+                                            "Your last command was NOT confirmed: its \
+                                             durable write failed ({e}). It did not \
+                                             commit; nothing was posted."
+                                        ),
+                                    );
+                                } else {
+                                    // The write was dropped (non-retryable):
+                                    // deliver what happened in RAM, but never
+                                    // pretend it is durable.
+                                    gateway.transmit(resolved);
+                                    send_sys(
+                                        &gateway,
+                                        gate_actor,
+                                        &format!(
+                                            "WARNING: the database write for your last \
+                                             command failed ({e}); its effects may not \
+                                             survive a restart."
+                                        ),
+                                    );
+                                }
                             }
                             // Teardown: the writer vanished before acking —
                             // the batch may be lost; never confirm.

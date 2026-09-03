@@ -220,6 +220,11 @@ pub enum Deferred {
     DurableGate {
         /// The acting player whose confirmation is being gated.
         actor: ObjId,
+        /// **Strict** (money) gating: on a dropped durable write the confirmation
+        /// is SUPPRESSED, not delivered-with-a-warning. Invariant 9 — no posted
+        /// confirmation may outrun the durable ack (E2 R-R1). A non-strict gate
+        /// (mail/XP) still delivers the RAM effect with a "may not survive" warning.
+        strict: bool,
     },
 }
 
@@ -387,8 +392,8 @@ pub struct Engine {
     scene_ticks: HashMap<(SmolStr, SmolStr, SceneId), SceneTickInfo>,
     /// Set when the last drained step requested a durable-ack output gate
     /// ([`Deferred::DurableGate`]); the driving loop takes it via
-    /// [`Engine::take_durable_gate`].
-    durable_gate: Option<ObjId>,
+    /// [`Engine::take_durable_gate`]. The bool is strict (money) gating.
+    durable_gate: Option<(ObjId, bool)>,
     /// Live connections by id.
     conns: HashMap<ConnId, ConnInfo>,
     /// Live connection count per actor (invariant: sums `conns` rows).
@@ -1122,9 +1127,12 @@ impl Engine {
                         self.sched.cancel(info.timer);
                     }
                 }
-                Deferred::DurableGate { actor } => {
-                    // First gate of the step wins (one batch, one gate).
-                    self.durable_gate.get_or_insert(actor);
+                Deferred::DurableGate { actor, strict } => {
+                    // First gate of the step sets the actor; strictness DOMINATES —
+                    // if any gate in the step is strict, the whole step is strict
+                    // (money-safe: a step that moves money is never downgraded).
+                    let entry = self.durable_gate.get_or_insert((actor, false));
+                    entry.1 |= strict;
                 }
             }
         }
@@ -1132,8 +1140,9 @@ impl Engine {
 
     /// Take the durable-ack output gate the last step requested (if any):
     /// the driving loop flushes that step's batch `durable: true` and
-    /// withholds its output until the receipt resolves.
-    pub fn take_durable_gate(&mut self) -> Option<ObjId> {
+    /// withholds its output until the receipt resolves. The bool is strict
+    /// (money) gating — on a dropped write, suppress the confirmation entirely.
+    pub fn take_durable_gate(&mut self) -> Option<(ObjId, bool)> {
         self.durable_gate.take()
     }
 

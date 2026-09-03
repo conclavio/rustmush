@@ -998,7 +998,7 @@ fn approve_requests_the_durable_ack_gate() {
     run(env.nick, &mut env, "+xspend Buy a dot=xp.apply");
     let _ = env.engine.take_durable_gate();
     run(env.wanda, &mut env, "+job/approve 1");
-    assert_eq!(env.engine.take_durable_gate(), Some(env.wanda));
+    assert_eq!(env.engine.take_durable_gate(), Some((env.wanda, false)));
 
     let mut env = setup();
     run(env.nick, &mut env, "+xspend Bad spend=xp.fail");
