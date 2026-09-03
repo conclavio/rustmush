@@ -43,6 +43,11 @@ mod wiring;
 /// containment walk always terminates; a check that would exceed it fails closed.
 pub const MAX_SCOPE_DEPTH: u8 = 8;
 
+/// The maximum number of scopes one organization may hold (E3b2 §4.8.3, doc 08b
+/// §9). Enforced at [`OrgMutationOp::CreateScope`]; a scope tree is walked per
+/// authorization and rendered whole by `@org/show`, so its size is a cost input.
+pub const MAX_SCOPES_PER_ORG: usize = 64;
+
 pub use authorize::{
     AuthRequest, AuthWitness, Decision, DenyReason, NoPredicates, PredicateEval, authorize,
 };
@@ -65,4 +70,6 @@ pub use api::{
     grant_key, member_key, org_key, policy_key, role_key, scope_key, submit,
 };
 pub use module::{OrgModule, OrgStore};
-pub use wiring::OrgPredicateProvider;
+pub use wiring::{
+    CapabilityVocabulary, OrgPredicateProvider, ScopeUseProvider, ScopeUseProviders,
+};

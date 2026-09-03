@@ -205,6 +205,13 @@ fn persist_ops(out: &mut Outbox, ops: &[OrgMutationOp], post: &crate::OrgState) 
                 persist_scope(out, root);
             }
             OrgMutationOp::CreateScope { scope } => persist_scope(out, scope),
+            // Retire flips status on the LIVE record, so the doc comes from the
+            // post-image (the op carries only an id).
+            OrgMutationOp::RetireScope { scope } => {
+                if let Some(s) = post.scope(*scope) {
+                    persist_scope(out, s);
+                }
+            }
             OrgMutationOp::CreateRole { role } => persist_role(out, role),
             OrgMutationOp::PutMembership { membership } => persist_membership(out, membership),
             OrgMutationOp::RemoveMembership { org, member } => persist_del(out, member_key(*org, *member)),

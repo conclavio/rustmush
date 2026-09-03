@@ -16,11 +16,13 @@
 //! `MobilityVocabulary`/`UnitCatalog` freeze pattern. E1c supplies the first real
 //! provider (faction standing); E1b ships none by default.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use mush_core::{ObjId, World};
 
 use crate::authorize::PredicateEval;
+use crate::ids::{CapabilityId, OrgScopeId};
 
 /// A world-aware policy-predicate provider, frozen into the module at wiring.
 ///
@@ -72,3 +74,43 @@ impl PredicateEval for WorldPredicates<'_> {
             .eval(self.w, predicate, arguments, actor)
     }
 }
+
+// ---- the capability vocabulary (E3b2 §4.8.4) ------------------------------
+
+/// The set of capability ids this server recognizes, frozen at wiring
+/// ([`crate::OrgModule::with_capabilities`]).
+///
+/// **An EMPTY vocabulary accepts everything** — the E1 behavior, so a server that
+/// wires none behaves exactly as before. When one is configured, `@org/grant`
+/// refuses an unknown capability and `@org/show` flags a stored grant whose
+/// capability has fallen outside it (a vocabulary can shrink between builds; an
+/// existing grant is never silently deleted, only marked).
+///
+/// The vocabulary is a **typo catcher, not an authorization gate**: `authorize`
+/// compares capability ids by equality, so an unknown capability already
+/// authorizes nothing. What it prevents is a staff member granting
+/// `economy.acount.post` and believing they granted anything at all.
+pub type CapabilityVocabulary = Arc<BTreeSet<CapabilityId>>;
+
+// ---- the scope-use seam (E3b2 §4.8.2) ------------------------------------
+
+/// Answers *does anything still bind this scope?* for `@org/scope retire`.
+///
+/// `mush-org` sits **below** the economy in the dependency graph and cannot see an
+/// account, asset, or vault — but retiring a compartment those records still point
+/// at would strand them (an account whose scope confers no authority can no longer
+/// be spent from by anyone but staff). So the binder answers, exactly as the
+/// predicate table lets a policy ask faction about standing: the table is frozen at
+/// wiring ([`crate::OrgModule::with_scope_use`]), and `mush-economy` implements it.
+///
+/// A binder that cannot answer returns `None` (nothing known to bind); the command
+/// layer treats a present reason as a refusal.
+pub trait ScopeUseProvider: Send + Sync + std::fmt::Debug {
+    /// The binder's name (e.g. `"economy"`), for the refusal message.
+    fn binder(&self) -> &str;
+    /// A human-readable reason the scope is still in use, or `None`.
+    fn scope_in_use(&self, w: &World, scope: OrgScopeId) -> Option<String>;
+}
+
+/// The frozen scope-use table (an `Arc`, shared like the predicate table).
+pub type ScopeUseProviders = Arc<Vec<Arc<dyn ScopeUseProvider>>>;

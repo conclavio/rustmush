@@ -80,8 +80,8 @@ impl Decision {
 }
 
 /// A staff-safe denial reason. The caller-facing layer (E1b) MUST collapse the
-/// existence-revealing variants (`NoSuchScope`) with `NoAuthority` for an
-/// unauthorized actor, so "denied" and "nonexistent" are indistinguishable.
+/// existence-revealing variants (`NoSuchScope`, `Inactive`) with `NoAuthority` for
+/// an unauthorized actor, so "denied" and "nonexistent" are indistinguishable.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DenyReason {
     /// No grant or policy allowed the action (the default-deny outcome).
@@ -95,6 +95,10 @@ pub enum DenyReason {
     LimitExceeded,
     /// The target scope does not exist. **Collapse with `NoAuthority` publicly.**
     NoSuchScope,
+    /// The target scope is `Retired`, or its organization is not `Active` — an
+    /// inert compartment grants nothing, however good the grant is (E3b2 §4.8.1).
+    /// **Collapse with `NoAuthority` publicly** (it reveals org lifecycle).
+    Inactive,
 }
 
 /// The server-internal record of an allow decision: the revisions that
@@ -136,6 +140,16 @@ pub fn authorize(state: &OrgState, req: &AuthRequest, predicates: &dyn Predicate
         return Decision::Deny(DenyReason::NoSuchScope);
     };
     let org = target.org;
+    // E3b2 §4.8.1: a retired compartment, or one under an organization that is not
+    // `Active` (suspended / dissolving / closed / — fail-closed — missing), confers
+    // NO authority. Both statuses were inert before this cut, so a grant on a
+    // wound-down org still authorized spending; this is the whole-org kill switch
+    // the economy's status rules (§4.4) lean on. Checked before any grant/policy
+    // work, so it cannot be out-voted by a policy Allow.
+    let org_active = state.org(org).is_some_and(|o| o.status == crate::OrgStatus::Active);
+    if !org_active || target.status != crate::ScopeStatus::Active {
+        return Decision::Deny(DenyReason::Inactive);
+    }
     let mut revs: Vec<(SmolStr, u64)> = Vec::new();
     // The most-specific denial reason seen while failing grants (amount/limit),
     // used only when no grant/policy authorizes and no explicit deny fired.

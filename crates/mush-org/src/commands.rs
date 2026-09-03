@@ -17,11 +17,12 @@ use mush_core::{
 use smol_str::SmolStr;
 
 use crate::api::{self, OrgAction, OrgAuditEntry};
-use crate::ids::{CapabilityId, OrgId};
+use crate::ids::{CapabilityId, OrgId, OrgScopeId};
 use crate::module::OrgStore;
 use crate::plan::{OrgMutationOp, OrgMutationPlan};
 use crate::record::{
-    CapabilityGrant, OrgScope, OrgStatus, Organization, RulesValue, ScopeSelector, ScopeStatus,
+    CapabilityGrant, GrantLimit, OrgScope, OrgStatus, Organization, RulesValue, ScopeSelector,
+    ScopeStatus,
 };
 
 /// Register the `@org` command.
@@ -30,12 +31,22 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: "@org".into(),
             shape: ArgShape::EqPair,
-            switches: ["create", "list", "show", "grant", "audit"].iter().copied().map(SmolStr::new).collect(),
+            switches: ["create", "list", "show", "grant", "scope", "audit"]
+                .iter()
+                .copied()
+                .map(SmolStr::new)
+                .collect(),
             help: "@org/create <name>                 create an organization (+ its root scope)\n\
                    @org/list                          list organizations\n\
                    @org/show <id|name>                inspect one (scopes, roles, members, grants, policies)\n\
-                   @org/grant <obj>=<orgid> <cap>     grant a capability over the org's scope tree\n\
-                   @org/audit <id|name>               recent audit entries for an org"
+                   @org/scope create <org>=<name> [parent=<scope>]   add a compartment\n\
+                   @org/scope retire <org>=<scope>    retire one (never a delete)\n\
+                   @org/grant <obj>=<org> <cap> [scope=<id>] [limit=<n>]\n\
+                   \x20                                 grant a capability; scope= binds ONE scope,\n\
+                   \x20                                 limit= caps the per-operation amount\n\
+                   @org/audit <id|name>               recent audit entries for an org\n\
+                   A limit is a PER-OPERATION ceiling, never a budget: ten payments of 1000 all\n\
+                   pass a limit of 10000. Spending accounting is the economy's (holds are E4)."
                 .into(),
             ..CommandSpec::default()
         },
@@ -95,10 +106,12 @@ fn cmd_org(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         org_show(ctx)
     } else if ctx.switches.has("grant") {
         org_grant(ctx)
+    } else if ctx.switches.has("scope") {
+        org_scope(ctx)
     } else if ctx.switches.has("audit") {
         org_audit(ctx)
     } else {
-        Err(CmdError::msg("Usage: @org/create|list|show|grant|audit …"))
+        Err(CmdError::msg("Usage: @org/create|list|show|scope|grant|audit …"))
     }
 }
 
@@ -190,11 +203,12 @@ fn org_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
         for s in st.scopes_in(org_id) {
             v.push(format!(
-                "  scope #{} {} (depth {}, parent {})",
+                "  scope #{} {} (depth {}, parent {}){}",
                 s.id,
                 s.name,
                 s.depth,
                 s.parent.map_or_else(|| "—".into(), |p| format!("#{p}")),
+                if s.status == ScopeStatus::Retired { " RETIRED" } else { "" },
             ));
         }
         for r in st.roles_in(org_id) {
@@ -205,12 +219,19 @@ fn org_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
         for g in st.grants_in(org_id) {
             v.push(format!(
-                "  grant #{} -> #{} {} on {:?}{}",
+                "  grant #{} -> #{} {} on {:?}{}{}{}",
                 g.id,
                 g.grantee.0,
                 g.capability.as_str(),
                 g.scope,
+                g.limit
+                    .and_then(|l| l.max_amount)
+                    .map_or_else(String::new, |m| format!(" limit {m}/op")),
                 if g.delegable { " (delegable)" } else { "" },
+                // §4.8.4: a stored grant whose capability has fallen outside the
+                // wiring vocabulary authorizes nothing (equality match) — say so
+                // rather than leaving staff to wonder why it never fires.
+                if store.knows_capability(&g.capability) { "" } else { " [UNKNOWN CAPABILITY]" },
             ));
         }
         for d in st.delegations_in(org_id) {
@@ -227,24 +248,106 @@ fn org_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// The one capability an [`AuthRequest`](crate::AuthRequest) ever carries an amount
+/// for. A `GrantLimit` on anything else is inert-but-lethal: `limit_ok` answers
+/// `AmountRequired` for every amount-free request, so the grant authorizes *nothing*,
+/// forever (A13). `@org/grant` therefore refuses `limit=` outside this list rather
+/// than minting a grant that silently never works.
+const AMOUNT_CAPABILITIES: &[&str] = &["economy.account.post"];
+
+/// Pull `key=value` options out of a free-form tail, returning the remaining words
+/// and the recognized options (lower-cased keys). An unrecognized `k=v` word stays
+/// in the remainder rather than being silently eaten.
+fn parse_opts(s: &str, keys: &[&str]) -> (String, std::collections::BTreeMap<String, String>) {
+    let mut rest: Vec<&str> = Vec::new();
+    let mut opts: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for tok in s.split_whitespace() {
+        if let Some((k, v)) = tok.split_once('=') {
+            let lk = k.to_ascii_lowercase();
+            if keys.contains(&lk.as_str()) {
+                opts.insert(lk, v.to_string());
+                continue;
+            }
+        }
+        rest.push(tok);
+    }
+    (rest.join(" "), opts)
+}
+
+fn parse_scope_id(s: &str) -> Option<OrgScopeId> {
+    s.trim().trim_start_matches('#').parse::<u64>().ok().map(OrgScopeId)
+}
+
 fn org_grant(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    const USAGE: &str = "Usage: @org/grant <obj>=<org> <capability> [scope=<id>] [limit=<n>]";
     let obj = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
     let rhs = ctx
         .args
         .rhs()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| CmdError::msg("Usage: @org/grant <obj>=<orgid> <capability>"))?;
-    let mut it = rhs.split_whitespace();
-    let org_s = it.next().ok_or_else(|| CmdError::msg("Usage: @org/grant <obj>=<orgid> <capability>"))?;
-    let cap_s = it.next().ok_or_else(|| CmdError::msg("Usage: @org/grant <obj>=<orgid> <capability>"))?;
-    let org_id = resolve_org(ctx, org_s).ok_or_else(|| CmdError::msg("No such org."))?;
-    let cap = CapabilityId::new(cap_s).ok_or_else(|| CmdError::msg("Bad capability id (use [a-z0-9_.-])."))?;
+        .ok_or_else(|| CmdError::msg(USAGE))?;
+    let (rest, opts) = parse_opts(rhs, &["scope", "limit"]);
+    let mut it = rest.split_whitespace();
+    let org_s = it.next().ok_or_else(|| CmdError::msg(USAGE))?.to_string();
+    let cap_s = it.next().ok_or_else(|| CmdError::msg(USAGE))?.to_string();
+    let org_id = resolve_org(ctx, &org_s).ok_or_else(|| CmdError::msg("No such org."))?;
+    let cap = CapabilityId::new(&cap_s).ok_or_else(|| CmdError::msg("Bad capability id (use [a-z0-9_.-])."))?;
 
-    let root = {
+    // §4.8.4: with a vocabulary configured, an unknown capability is a typo, not a
+    // grant — refuse it loudly instead of storing something that authorizes nothing.
+    {
         let store = ctx.w.module_state::<OrgStore>().expect("org store");
-        store.state().org(org_id).expect("resolved org exists").root_scope
+        if !store.knows_capability(&cap) {
+            return Err(CmdError::msg(format!(
+                "Unknown capability {}. This server recognizes: {}.",
+                cap.as_str(),
+                store.capabilities().iter().map(CapabilityId::as_str).collect::<Vec<_>>().join(", ")
+            )));
+        }
+    }
+
+    // A13: a limit on a capability whose requests never carry an amount denies
+    // forever (`AmountRequired`). Refuse at the source.
+    let limit = match opts.get("limit") {
+        None => None,
+        Some(s) => {
+            if !AMOUNT_CAPABILITIES.contains(&cap.as_str()) {
+                return Err(CmdError::msg(format!(
+                    "limit= applies only to an amount-carrying capability ({}); a limit on {} \
+                     would deny every request, because those requests carry no amount.",
+                    AMOUNT_CAPABILITIES.join(", "),
+                    cap.as_str()
+                )));
+            }
+            let n: i64 = s
+                .parse()
+                .map_err(|_| CmdError::msg("limit= must be a whole number of minor units."))?;
+            if n < 0 {
+                return Err(CmdError::msg("limit= must not be negative."));
+            }
+            Some(GrantLimit { max_amount: Some(n) })
+        }
     };
+
+    // `scope=` narrows to exactly ONE scope (the per-resource policy anchor,
+    // D-E3-5); the default stays the org's whole live scope tree.
+    let selector = match opts.get("scope") {
+        None => {
+            let store = ctx.w.module_state::<OrgStore>().expect("org store");
+            ScopeSelector::SubtreeLive(store.state().org(org_id).expect("resolved org exists").root_scope)
+        }
+        Some(s) => {
+            let sid = parse_scope_id(s).ok_or_else(|| CmdError::msg("Bad scope id."))?;
+            let store = ctx.w.module_state::<OrgStore>().expect("org store");
+            let sc = store.state().scope(sid).ok_or_else(|| CmdError::msg("No such scope."))?;
+            if sc.org != org_id {
+                return Err(CmdError::msg("That scope belongs to another organization."));
+            }
+            ScopeSelector::Exact(sid)
+        }
+    };
+
     let grant_id = {
         let store = ctx.w.module_state_mut::<OrgStore>().expect("org store");
         store.alloc_grant()
@@ -254,8 +357,8 @@ fn org_grant(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         org: org_id,
         grantee: obj,
         capability: cap.clone(),
-        scope: ScopeSelector::SubtreeLive(root),
-        limit: None,
+        scope: selector.clone(),
+        limit,
         delegable: false,
         valid_from: None,
         valid_until: None,
@@ -268,12 +371,151 @@ fn org_grant(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         OrgAction {
             action: SmolStr::new_static("grant.create"),
             org: Some(org_id),
-            detail: serde_json::json!({ "grantee": obj.0, "capability": cap.as_str(), "grant": grant_id.0 }),
+            detail: serde_json::json!({
+                "grantee": obj.0,
+                "capability": cap.as_str(),
+                "grant": grant_id.0,
+                "scope": format!("{selector:?}"),
+                "limit": limit.and_then(|l| l.max_amount),
+            }),
         },
     )
     .map_err(|e| CmdError::msg(e.to_string()))?;
     let who = display_name(ctx.w, obj);
-    info(ctx, format!("Granted {} to {who} over org #{org_id}'s scope tree (grant #{grant_id}).", cap.as_str()));
+    let where_ = match selector {
+        ScopeSelector::Exact(s) => format!("scope #{s}"),
+        _ => format!("org #{org_id}'s scope tree"),
+    };
+    let cap_str = cap.as_str().to_string();
+    info(ctx, format!("Granted {cap_str} to {who} over {where_} (grant #{grant_id})."));
+    if let Some(max) = limit.and_then(|l| l.max_amount) {
+        info(ctx, format!("  limit {max} per operation (a ceiling, not a budget)."));
+    }
+    Ok(())
+}
+
+// ---- @org/scope -----------------------------------------------------------
+
+/// `@org/scope create <org>=<name> [parent=<scope>]` / `@org/scope retire <org>=<scope>`.
+///
+/// The verb rides the LHS (`ArgShape::EqPair` splits at the first `=`, and both
+/// forms need the org on the left of it).
+fn org_scope(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    const USAGE: &str = "Usage: @org/scope create <org>=<name> [parent=<scope>]   |   \
+                         @org/scope retire <org>=<scope>";
+    let lhs = ctx.args.lhs().trim().to_string();
+    let (verb, org_s) = lhs.split_once(char::is_whitespace).ok_or_else(|| CmdError::msg(USAGE))?;
+    let org_id = resolve_org(ctx, org_s).ok_or_else(|| CmdError::msg("No such org."))?;
+    match verb.to_ascii_lowercase().as_str() {
+        "create" => scope_create(ctx, org_id),
+        "retire" => scope_retire(ctx, org_id),
+        _ => Err(CmdError::msg(USAGE)),
+    }
+}
+
+fn scope_create(ctx: &mut Ctx<'_>, org_id: OrgId) -> Result<(), CmdError> {
+    let rhs = ctx
+        .args
+        .rhs()
+        .ok_or_else(|| CmdError::msg("Usage: @org/scope create <org>=<name> [parent=<scope>]"))?;
+    let (rest, opts) = parse_opts(rhs, &["parent"]);
+    let name = rest.trim().to_string();
+    if name.is_empty() {
+        return Err(CmdError::msg("Usage: @org/scope create <org>=<name> [parent=<scope>]"));
+    }
+    let (parent_id, depth, created_rev) = {
+        let store = ctx.w.module_state::<OrgStore>().expect("org store");
+        let st = store.state();
+        let org = st.org(org_id).expect("resolved org exists");
+        let parent_id = match opts.get("parent") {
+            None => org.root_scope,
+            Some(s) => parse_scope_id(s).ok_or_else(|| CmdError::msg("Bad parent scope id."))?,
+        };
+        let parent = st.scope(parent_id).ok_or_else(|| CmdError::msg("No such parent scope."))?;
+        if parent.org != org_id {
+            return Err(CmdError::msg("That parent scope belongs to another organization."));
+        }
+        if parent.status != ScopeStatus::Active {
+            return Err(CmdError::msg("That parent scope is retired."));
+        }
+        // `created_rev` is what a `ScopeSelector::SubtreeFrozen { snapshot_revision }`
+        // compares against, and the whole point of that variant is that it does NOT
+        // widen to scopes created after its snapshot. A snapshot is taken as the org's
+        // CURRENT revision, so a scope minted now must stamp **past** it — hence
+        // `revision + 1`, not `revision`. (No mutation op moves `Organization.revision`
+        // today, so stamping it verbatim would make every frozen subtree silently
+        // swallow every scope this command ever creates.)
+        (parent_id, parent.depth + 1, org.revision + 1)
+    };
+    let scope_id = {
+        let store = ctx.w.module_state_mut::<OrgStore>().expect("org store");
+        store.alloc_scope()
+    };
+    let scope = OrgScope {
+        id: scope_id,
+        org: org_id,
+        parent: Some(parent_id),
+        name: SmolStr::new(&name),
+        status: ScopeStatus::Active,
+        depth,
+        created_rev,
+        revision: 1,
+    };
+    let plan = OrgMutationPlan::of(vec![OrgMutationOp::CreateScope { scope }]);
+    api::submit(
+        ctx,
+        &plan,
+        OrgAction {
+            action: SmolStr::new_static("scope.create"),
+            org: Some(org_id),
+            detail: serde_json::json!({ "scope": scope_id.0, "name": name, "parent": parent_id.0 }),
+        },
+    )
+    .map_err(|e| CmdError::msg(e.to_string()))?;
+    info(ctx, format!("Created scope #{scope_id} ({name}) under #{parent_id} in org #{org_id}."));
+    Ok(())
+}
+
+fn scope_retire(ctx: &mut Ctx<'_>, org_id: OrgId) -> Result<(), CmdError> {
+    let scope_id = ctx
+        .args
+        .rhs()
+        .and_then(parse_scope_id)
+        .ok_or_else(|| CmdError::msg("Usage: @org/scope retire <org>=<scope>"))?;
+    {
+        let store = ctx.w.module_state::<OrgStore>().expect("org store");
+        let sc = store.state().scope(scope_id).ok_or_else(|| CmdError::msg("No such scope."))?;
+        if sc.org != org_id {
+            return Err(CmdError::msg("That scope belongs to another organization."));
+        }
+        if sc.parent.is_none() {
+            return Err(CmdError::msg("A root scope cannot be retired."));
+        }
+    }
+    // §4.8.2: `mush-org` cannot see an account/asset/vault, so the modules that BIND
+    // scopes answer for themselves through the wiring-frozen binder table. Retiring
+    // a bound compartment would strand the records pointing at it.
+    let binders = ctx.w.module_state::<OrgStore>().expect("org store").scope_use();
+    for b in binders.iter() {
+        if let Some(reason) = b.scope_in_use(ctx.w, scope_id) {
+            return Err(CmdError::msg(format!(
+                "That scope is still in use by {}: {reason}",
+                b.binder()
+            )));
+        }
+    }
+    let plan = OrgMutationPlan::of(vec![OrgMutationOp::RetireScope { scope: scope_id }]);
+    api::submit(
+        ctx,
+        &plan,
+        OrgAction {
+            action: SmolStr::new_static("scope.retire"),
+            org: Some(org_id),
+            detail: serde_json::json!({ "scope": scope_id.0 }),
+        },
+    )
+    .map_err(|e| CmdError::msg(e.to_string()))?;
+    info(ctx, format!("Retired scope #{scope_id}; it confers no authority and takes no new binding."));
     Ok(())
 }
 

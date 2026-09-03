@@ -338,3 +338,253 @@ fn a_new_object_reusing_no_id_is_unaffected_by_a_prior_scrub() {
     assert!(allow(&tw, joe, "org.view", root), "unrelated destroy leaves authority intact");
     assert!(del_keys(&mut tw).is_empty(), "no org doc deleted for an unrelated object");
 }
+
+// ======================================================================
+// E3b2 (§4.8) — scopes, the capability vocabulary, the scope-use binder
+// ======================================================================
+
+/// A binder that reports a fixed set of scopes as "still bound" — the shape
+/// `mush-economy` fills in (org cannot see accounts/assets/vaults itself).
+#[derive(Debug)]
+struct StubBinder(Vec<OrgScopeId>);
+impl mush_org::ScopeUseProvider for StubBinder {
+    fn binder(&self) -> &str {
+        "stub"
+    }
+    fn scope_in_use(&self, _w: &mush_core::World, scope: OrgScopeId) -> Option<String> {
+        self.0.contains(&scope).then(|| format!("account #7 binds scope #{scope}"))
+    }
+}
+
+fn vocab(caps: &[&str]) -> std::collections::BTreeSet<CapabilityId> {
+    caps.iter().map(|c| CapabilityId::new(c).expect("cap")).collect()
+}
+fn boot_with_vocab(caps: &[&str]) -> TestWorld {
+    TestWorld::with_modules(vec![Box::new(mush_org::OrgModule::new().with_capabilities(vocab(caps)))])
+}
+
+#[test]
+fn scope_create_and_retire_through_the_command_surface() {
+    let mut tw = boot();
+    assert!(!has_error(&tw.run(GOD, "@org/create Camarilla")));
+    let (org, root) = only_org(&tw);
+
+    let ev = tw.run(GOD, "@org/scope create Camarilla=logistics");
+    assert!(!has_error(&ev), "scope create refused: {}", texts(&ev));
+    let child = store(&tw)
+        .state()
+        .scopes_in(org)
+        .find(|s| s.name == "logistics")
+        .expect("the new scope")
+        .id;
+    assert_eq!(store(&tw).state().scope(child).expect("scope").parent, Some(root));
+    assert_eq!(store(&tw).state().scope(child).expect("scope").depth, 1);
+
+    // A nested one under the child.
+    let ev = tw.run(GOD, &format!("@org/scope create Camarilla=depot parent=#{child}"));
+    assert!(!has_error(&ev), "nested scope create refused: {}", texts(&ev));
+    let depot = store(&tw).state().scopes_in(org).find(|s| s.name == "depot").expect("depot").id;
+    assert_eq!(store(&tw).state().scope(depot).expect("scope").depth, 2);
+
+    // A grant on the child authorizes; retiring it takes the authority away.
+    let joe = tw.spawn_player("Joe");
+    assert!(!has_error(
+        &tw.run(GOD, &format!("@org/grant #{}=Camarilla economy.account.post scope=#{child}", joe.0))
+    ));
+    assert!(allow(&tw, joe, "economy.account.post", child));
+    let ev = tw.run(GOD, &format!("@org/scope retire Camarilla=#{child}"));
+    assert!(!has_error(&ev), "retire refused: {}", texts(&ev));
+    assert!(!allow(&tw, joe, "economy.account.post", child), "a retired scope still authorized");
+
+    // Retire is not a delete: the scope and the grant are both still there.
+    assert!(store(&tw).state().scope(child).is_some());
+    assert_eq!(store(&tw).state().grants_in(org).count(), 1);
+
+    // The root can never be retired.
+    let ev = tw.run(GOD, &format!("@org/scope retire Camarilla=#{root}"));
+    assert!(has_error(&ev) && texts(&ev).contains("root scope"), "{}", texts(&ev));
+}
+
+#[test]
+fn retire_survives_reboot_and_stays_retired() {
+    let mut tw = boot();
+    tw.run(GOD, "@org/create Camarilla");
+    tw.run(GOD, "@org/scope create Camarilla=logistics");
+    let (org, _) = only_org(&tw);
+    let child = store(&tw).state().scopes_in(org).find(|s| s.name == "logistics").expect("scope").id;
+    assert!(!has_error(&tw.run(GOD, &format!("@org/scope retire Camarilla=#{child}"))));
+    let kv = fold_kv(&mut tw);
+    let tw2 = reboot(kv, &[]);
+    assert_eq!(
+        store(&tw2).state().scope(child).expect("scope survives").status,
+        mush_org::ScopeStatus::Retired
+    );
+}
+
+#[test]
+fn scope_retire_is_refused_while_a_binder_still_names_it() {
+    let mut tw = TestWorld::with_modules(vec![Box::new(
+        mush_org::OrgModule::new()
+            .with_scope_use(vec![std::sync::Arc::new(StubBinder(vec![OrgScopeId(1)]))]),
+    )]);
+    tw.run(GOD, "@org/create Camarilla");
+    tw.run(GOD, "@org/scope create Camarilla=logistics");
+    let (org, _) = only_org(&tw);
+    let child = store(&tw).state().scopes_in(org).find(|s| s.name == "logistics").expect("scope").id;
+    assert_eq!(child, OrgScopeId(1), "the stub binder names scope #1");
+
+    let ev = tw.run(GOD, &format!("@org/scope retire Camarilla=#{child}"));
+    assert!(has_error(&ev), "a bound scope must not retire");
+    assert!(texts(&ev).contains("still in use"), "{}", texts(&ev));
+    assert_eq!(store(&tw).state().scope(child).expect("scope").status, mush_org::ScopeStatus::Active);
+}
+
+#[test]
+fn grant_takes_an_exact_scope_and_a_per_operation_limit() {
+    let mut tw = boot();
+    let joe = tw.spawn_player("Joe");
+    tw.run(GOD, "@org/create Camarilla");
+    tw.run(GOD, "@org/scope create Camarilla=logistics");
+    tw.run(GOD, "@org/scope create Camarilla=operations");
+    let (org, root) = only_org(&tw);
+    let logistics = store(&tw).state().scopes_in(org).find(|s| s.name == "logistics").expect("s").id;
+    let operations = store(&tw).state().scopes_in(org).find(|s| s.name == "operations").expect("s").id;
+
+    let ev = tw.run(
+        GOD,
+        &format!("@org/grant #{}=Camarilla economy.account.post scope=#{logistics} limit=500", joe.0),
+    );
+    assert!(!has_error(&ev), "grant refused: {}", texts(&ev));
+    let g = store(&tw).state().grants_in(org).next().expect("grant").clone();
+    assert_eq!(g.scope, mush_org::ScopeSelector::Exact(logistics));
+    assert_eq!(g.limit.and_then(|l| l.max_amount), Some(500));
+
+    // The exact selector does not reach the sibling or the root...
+    let within = |scope, amount| {
+        authorize_in_world(tw.world(), &AuthRequest {
+            actor: joe,
+            capability: cap("economy.account.post"),
+            scope,
+            now: tw.world().now(),
+            amount: Some(amount),
+        })
+        .is_allow()
+    };
+    assert!(within(logistics, 500), "at the limit must pass");
+    assert!(!within(logistics, 501), "over the limit must fail");
+    assert!(!within(operations, 100), "an Exact selector reached a sibling");
+    assert!(!within(root, 100), "an Exact selector reached the root");
+    // ...and a limited grant denies an amount-free request (fail-closed).
+    assert!(!allow(&tw, joe, "economy.account.post", logistics));
+
+    // A limit is a PER-OPERATION ceiling, not a budget (A12): ten under-limit
+    // requests all pass, forever.
+    for _ in 0..10 {
+        assert!(within(logistics, 500));
+    }
+
+    // A scope from another org is refused.
+    tw.run(GOD, "@org/create Tremere");
+    let other_root = store(&tw).state().orgs().find(|o| o.name == "Tremere").expect("org").root_scope;
+    let ev = tw.run(
+        GOD,
+        &format!("@org/grant #{}=Camarilla economy.account.post scope=#{other_root}", joe.0),
+    );
+    assert!(has_error(&ev) && texts(&ev).contains("another organization"), "{}", texts(&ev));
+}
+
+#[test]
+fn a_limit_is_refused_on_a_non_amount_capability() {
+    let mut tw = boot();
+    let joe = tw.spawn_player("Joe");
+    tw.run(GOD, "@org/create Camarilla");
+    let (org, root) = only_org(&tw);
+    // A13: `vault.withdraw` requests carry no amount, so a limit would answer
+    // AmountRequired forever — the grant would be inert, not narrow.
+    let ev = tw.run(GOD, &format!("@org/grant #{}=Camarilla vault.withdraw scope=#{root} limit=5", joe.0));
+    assert!(has_error(&ev), "a limit on a non-amount capability must refuse");
+    assert!(texts(&ev).contains("amount-carrying"), "{}", texts(&ev));
+    assert_eq!(store(&tw).state().grants_in(org).count(), 0, "the refused grant was stored anyway");
+}
+
+#[test]
+fn an_unknown_capability_is_refused_when_a_vocabulary_is_wired() {
+    let mut tw = boot_with_vocab(&["economy.account.post", "org.role.manage"]);
+    let joe = tw.spawn_player("Joe");
+    tw.run(GOD, "@org/create Camarilla");
+    let (org, _) = only_org(&tw);
+
+    let ev = tw.run(GOD, &format!("@org/grant #{}=Camarilla economy.acount.post", joe.0));
+    assert!(has_error(&ev), "a typo-ed capability must refuse");
+    assert!(texts(&ev).contains("Unknown capability"), "{}", texts(&ev));
+    assert_eq!(store(&tw).state().grants_in(org).count(), 0);
+
+    // A capability inside the vocabulary is granted normally.
+    assert!(!has_error(&tw.run(GOD, &format!("@org/grant #{}=Camarilla org.role.manage", joe.0))));
+    assert_eq!(store(&tw).state().grants_in(org).count(), 1);
+}
+
+#[test]
+fn no_vocabulary_accepts_everything_and_show_flags_a_stray_grant() {
+    // Empty vocabulary = the E1 behavior: any well-formed capability id is granted.
+    let mut tw = boot();
+    let joe = tw.spawn_player("Joe");
+    tw.run(GOD, "@org/create Camarilla");
+    assert!(!has_error(&tw.run(GOD, &format!("@org/grant #{}=Camarilla legacy.capability", joe.0))));
+    let kv = fold_kv(&mut tw);
+
+    // Reboot the SAME data under a vocabulary that no longer lists it: the grant is
+    // not deleted, it is flagged — a shrinking vocabulary must never eat records.
+    let mut tw2 = boot_with_vocab(&["economy.account.post"]);
+    tw2.spawn_player("Joe");
+    tw2.modules_loaded(HashMap::from([(
+        SmolStr::new(NS),
+        ModuleBootData { kv, streams: HashMap::new() },
+    )]));
+    let (org, _) = only_org(&tw2);
+    assert_eq!(store(&tw2).state().grants_in(org).count(), 1, "the stray grant was dropped");
+    let ev = tw2.run(GOD, "@org/show Camarilla");
+    assert!(
+        texts(&ev).contains("UNKNOWN CAPABILITY"),
+        "@org/show must flag a stray grant: {}",
+        texts(&ev)
+    );
+}
+
+#[test]
+fn a_frozen_subtree_never_widens_to_a_scope_created_later() {
+    let mut tw = boot();
+    let joe = tw.spawn_player("Joe");
+    tw.run(GOD, "@org/create Camarilla");
+    let (org, root) = only_org(&tw);
+    // A grant frozen at the org's revision AS IT IS NOW — the snapshot a caller
+    // reading `Organization.revision` would take.
+    let snapshot_revision = store(&tw).state().org(org).expect("org").revision;
+    let grant_id = tw.world_mut().module_state_mut::<OrgStore>().expect("store").alloc_grant();
+    let frozen = mush_org::CapabilityGrant {
+        id: grant_id,
+        org,
+        grantee: joe,
+        capability: cap("economy.account.post"),
+        scope: mush_org::ScopeSelector::SubtreeFrozen { root, snapshot_revision },
+        limit: None,
+        delegable: false,
+        valid_from: None,
+        valid_until: None,
+        revision: 1,
+    };
+    let mut probe_kv: Vec<(SmolStr, serde_json::Value)> = fold_kv(&mut tw);
+    probe_kv.push((mush_org::grant_key(grant_id), serde_json::to_value(&frozen).expect("grant")));
+    let mut tw = reboot(probe_kv, &["Joe"]);
+    assert!(allow(&tw, joe, "economy.account.post", root), "the frozen subtree covers its own root");
+
+    // A scope created AFTER the snapshot must not fall inside it.
+    assert!(!has_error(&tw.run(GOD, "@org/scope create Camarilla=logistics")));
+    let (org, _) = only_org(&tw);
+    let child = store(&tw).state().scopes_in(org).find(|s| s.name == "logistics").expect("scope").id;
+    assert!(
+        !allow(&tw, joe, "economy.account.post", child),
+        "a frozen subtree silently widened to a scope created after its snapshot"
+    );
+    assert!(store(&tw).state().scope(child).expect("scope").created_rev > snapshot_revision);
+}

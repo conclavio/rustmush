@@ -11,7 +11,7 @@
 
 use mush_core::ObjId;
 
-use crate::MAX_SCOPE_DEPTH;
+use crate::{MAX_SCOPE_DEPTH, MAX_SCOPES_PER_ORG};
 use crate::ids::{DelegationId, GrantId, OrgId, OrgScopeId, PolicyId, RoleId};
 use crate::record::{
     AccessPolicy, CapabilityGrant, Delegation, OrgMembership, OrgRole, OrgScope, Organization,
@@ -32,6 +32,14 @@ pub enum OrgMutationOp {
     CreateScope {
         /// The new scope.
         scope: OrgScope,
+    },
+    /// Retire a non-root scope (E3b2): it stops conferring authority
+    /// ([`DenyReason::Inactive`](crate::DenyReason)) and takes no new binding. Never
+    /// a delete — existing records keep naming it so staff can resolve them. A
+    /// **root** scope is refused: an org must always have a live compartment.
+    RetireScope {
+        /// The scope to retire.
+        scope: OrgScopeId,
     },
     /// Create a role template.
     CreateRole {
@@ -131,6 +139,9 @@ pub enum OrgError {
     /// A scope would exceed the maximum tree depth.
     #[error("scope depth exceeds the maximum ({MAX_SCOPE_DEPTH})")]
     DepthExceeded,
+    /// The organization already holds [`MAX_SCOPES_PER_ORG`] scopes.
+    #[error("the organization already has the maximum number of scopes ({MAX_SCOPES_PER_ORG})")]
+    TooManyScopes,
     /// A delegation is not a strict narrowing of its source grant.
     #[error("delegation does not narrow its source grant")]
     DelegationWiden,
@@ -214,7 +225,24 @@ fn apply_one(state: &mut OrgState, op: &OrgMutationOp) -> Result<(), OrgError> {
             if scope.depth > MAX_SCOPE_DEPTH {
                 return Err(OrgError::DepthExceeded);
             }
+            // Boundedness (E3b2 §4.8.3): a scope tree is walked per authorization and
+            // listed whole by `@org/show`, so its size is a real cost input.
+            if state.scopes_in(scope.org).count() >= MAX_SCOPES_PER_ORG {
+                return Err(OrgError::TooManyScopes);
+            }
             state.put_scope(scope.clone());
+        }
+        OrgMutationOp::RetireScope { scope } => {
+            let mut s = state
+                .scope(*scope)
+                .cloned()
+                .ok_or_else(|| OrgError::NotFound(format!("scope {scope}")))?;
+            if s.parent.is_none() {
+                return Err(OrgError::Invalid("a root scope cannot be retired".into()));
+            }
+            s.status = crate::ScopeStatus::Retired;
+            s.revision += 1;
+            state.put_scope(s);
         }
         OrgMutationOp::CreateRole { role } => {
             if state.role(role.id).is_some() {

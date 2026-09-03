@@ -18,6 +18,7 @@
 //! - **The predicate table is frozen at wiring** ([`OrgModule::with_predicates`]),
 //!   the `MobilityVocabulary`/`UnitCatalog` pattern; E1b ships none.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use mush_core::module::{
@@ -27,10 +28,13 @@ use mush_core::{Ctx, Ledger};
 
 use crate::api;
 use crate::boot;
-use crate::ids::{DelegationId, GrantId, OrgId, OrgScopeId, PolicyId, RoleId};
+use crate::ids::{CapabilityId, DelegationId, GrantId, OrgId, OrgScopeId, PolicyId, RoleId};
 use crate::record::AccessPolicy;
 use crate::state::OrgState;
-use crate::wiring::{OrgPredicateProvider, PredicateProviders};
+use crate::wiring::{
+    CapabilityVocabulary, OrgPredicateProvider, PredicateProviders, ScopeUseProvider,
+    ScopeUseProviders,
+};
 
 /// The module id and persistence namespace.
 pub const NS: &str = api::NS;
@@ -51,6 +55,10 @@ pub struct OrgStore {
     next_delegation: u64,
     next_policy: u64,
     providers: PredicateProviders,
+    /// The wiring-frozen capability vocabulary (E3b2 §4.8.4); empty accepts all.
+    capabilities: CapabilityVocabulary,
+    /// The wiring-frozen scope-use binders (E3b2 §4.8.2).
+    scope_use: ScopeUseProviders,
 }
 
 impl OrgStore {
@@ -77,6 +85,8 @@ impl OrgStore {
             next_delegation,
             next_policy,
             providers: PredicateProviders::default(),
+            capabilities: CapabilityVocabulary::default(),
+            scope_use: ScopeUseProviders::default(),
         }
     }
 
@@ -89,6 +99,23 @@ impl OrgStore {
     #[must_use]
     pub(crate) fn providers(&self) -> PredicateProviders {
         self.providers.clone()
+    }
+    /// The frozen capability vocabulary. **Empty means "accept everything"** (the
+    /// E1 behavior for a server that wires none).
+    #[must_use]
+    pub fn capabilities(&self) -> &BTreeSet<CapabilityId> {
+        &self.capabilities
+    }
+    /// Whether `capability` is inside the configured vocabulary (always `true` when
+    /// no vocabulary is configured).
+    #[must_use]
+    pub fn knows_capability(&self, capability: &CapabilityId) -> bool {
+        self.capabilities.is_empty() || self.capabilities.contains(capability)
+    }
+    /// The frozen scope-use binder table (an `Arc` clone — cheap).
+    #[must_use]
+    pub(crate) fn scope_use(&self) -> ScopeUseProviders {
+        self.scope_use.clone()
     }
     /// Install a new post-image state ([`crate::submit`] only).
     pub(crate) fn install_state(&mut self, state: OrgState) {
@@ -158,19 +185,37 @@ impl OrgStore {
 #[derive(Debug, Default)]
 pub struct OrgModule {
     providers: PredicateProviders,
+    capabilities: CapabilityVocabulary,
+    scope_use: ScopeUseProviders,
 }
 
 impl OrgModule {
     /// A module with no predicate providers.
     #[must_use]
     pub fn new() -> OrgModule {
-        OrgModule { providers: PredicateProviders::default() }
+        OrgModule::default()
     }
     /// A module with a frozen predicate table (a ruleset / server wiring supplies
     /// it; e.g. E1c's faction-standing provider).
     #[must_use]
     pub fn with_predicates(providers: Vec<Arc<dyn OrgPredicateProvider>>) -> OrgModule {
-        OrgModule { providers: Arc::new(providers) }
+        OrgModule { providers: Arc::new(providers), ..OrgModule::default() }
+    }
+    /// Freeze the capability vocabulary this server recognizes (E3b2 §4.8.4). An
+    /// **empty** set (the default) accepts every capability — the E1 behavior.
+    /// Chained after [`OrgModule::with_predicates`] at wiring; the server passes
+    /// `mush_economy::CAPABILITIES ∪ {org.role.manage, org.grant.delegate}`.
+    #[must_use]
+    pub fn with_capabilities(mut self, capabilities: BTreeSet<CapabilityId>) -> OrgModule {
+        self.capabilities = Arc::new(capabilities);
+        self
+    }
+    /// Freeze the table of modules that bind records to scopes (E3b2 §4.8.2), so
+    /// `@org/scope retire` can refuse a compartment something still points at.
+    #[must_use]
+    pub fn with_scope_use(mut self, binders: Vec<Arc<dyn ScopeUseProvider>>) -> OrgModule {
+        self.scope_use = Arc::new(binders);
+        self
     }
 }
 
@@ -188,8 +233,10 @@ impl GameModule for OrgModule {
 
     fn on_world_loaded(&mut self, ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModError> {
         let mut store = boot::load_boot(ctx, data)?;
-        // Inject the wiring-frozen predicate table into the freshly booted slot.
+        // Inject the wiring-frozen tables into the freshly booted slot.
         store.providers = self.providers.clone();
+        store.capabilities = self.capabilities.clone();
+        store.scope_use = self.scope_use.clone();
         *ctx.w.module_state_mut::<OrgStore>().expect("org store slot installed at registration") = store;
         Ok(())
     }
