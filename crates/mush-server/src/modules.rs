@@ -76,12 +76,16 @@ pub fn server_modules() -> Vec<Box<dyn GameModule>> {
 pub fn server_modules_with(weather: mush_weather::WeatherConfig) -> Vec<Box<dyn GameModule>> {
     vec![
         Box::new(mush_comsys::ComsysModule::new()),
-        Box::new(mush_faction::FactionModule::new()),
         Box::new(mush_canon::CanonModule::new()),
         // E1: organization identity + scoped authorization (the economy's
         // ownership/permission substrate). E1c wires the faction-standing predicate
         // provider so an org AccessPolicy can gate on live faction membership /
         // officer / intel standing (the faction level model stays faction-side).
+        // The provider is evaluated at authorize time, never at boot, so org may
+        // load BEFORE faction — and since the post-E3 owner decision it does: the
+        // faction module validates every `Faction.org` backing link against loaded
+        // org state at its own boot (reporting a missing org or a two-factions-one-
+        // org conflict loudly, never unbinding). Org's boot reads no faction state.
         // E3b2 freezes two more org tables at wiring: the capability VOCABULARY (so
         // `@org/grant` refuses a typo instead of storing a grant that authorizes
         // nothing), and the scope-use binder table (so `@org/scope retire` can refuse
@@ -94,6 +98,8 @@ pub fn server_modules_with(weather: mush_weather::WeatherConfig) -> Vec<Box<dyn 
             .with_capabilities(org_capability_vocabulary())
             .with_scope_use(vec![std::sync::Arc::new(mush_economy::EconomyScopeUse)]),
         ),
+        // After org (see above): `Faction.org` links are checked at faction boot.
+        Box::new(mush_faction::FactionModule::new()),
         Box::new(mush_scenes::ScenesModule::new()),
         Box::new(mush_sim::SimulationModule::new()),
         // E2: the accountable-value engine — the double-entry journal, accounts, and
@@ -761,7 +767,7 @@ mod tests {
         let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
         assert_eq!(
             names,
-            ["comsys", "faction", "canon", "org", "scenes", "sim", "economy", "mail", "jobs", "weather", "script"]
+            ["comsys", "canon", "org", "faction", "scenes", "sim", "economy", "mail", "jobs", "weather", "script"]
         );
     }
 
@@ -887,7 +893,7 @@ mod tests {
         assert_eq!(
             names,
             [
-                "comsys", "faction", "canon", "org", "scenes", "sim", "economy", "mail", "jobs", "weather", "script",
+                "comsys", "canon", "org", "faction", "scenes", "sim", "economy", "mail", "jobs", "weather", "script",
                 "worldgen", "wod"
             ]
         );
@@ -999,7 +1005,7 @@ mod tests {
         let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
         assert_eq!(
             names,
-            ["comsys", "faction", "canon", "org", "scenes", "sim", "economy", "mail", "jobs", "weather", "script", "wod"]
+            ["comsys", "canon", "org", "faction", "scenes", "sim", "economy", "mail", "jobs", "weather", "script", "wod"]
         );
         // The ruleset's surface is live: +roll / +sheet registered, the
         // wod.roll panel feed present, and the chargen/xp job queues too.

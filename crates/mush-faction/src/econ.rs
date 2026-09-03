@@ -154,6 +154,46 @@ pub fn backing_org(w: &World, f: &Faction) -> Result<OrgId, LinkError> {
     Ok(org)
 }
 
+/// Boot-time link validation (owner decision 2026-09-03). `OrgModule` now loads
+/// before `FactionModule`, so every `Faction.org` link is checked once against the
+/// loaded org state. Findings are **reported, never repaired**: a money linkage is
+/// not silently dropped (doc 08 §15.2), and [`backing_org`] remains the at-use
+/// enforcement — a `MISSING` or `CONFLICT` link fails closed until staff re-bind.
+/// With no org module registered (a test assembly) there is nothing to check
+/// against, so the links are left as they are with one warning.
+pub(crate) fn validate_links_at_boot(w: &World) {
+    let Some(st) = w.module_state::<FactionState>() else {
+        return;
+    };
+    let bound = st.factions.values().filter(|f| f.org.is_some()).count();
+    if bound == 0 {
+        return;
+    }
+    if w.module_state::<OrgStore>().is_none() {
+        tracing::warn!(
+            bound,
+            "faction: no org module registered; backing-org links cannot be validated at boot"
+        );
+        return;
+    }
+    for f in st.factions.values() {
+        match backing_org(w, f) {
+            Ok(_) | Err(LinkError::Unbound) => {}
+            Err(LinkError::Missing(org)) => tracing::error!(
+                faction = f.id.0,
+                %org,
+                "faction: backing org is missing; the link fails closed until staff re-bind it"
+            ),
+            Err(LinkError::Conflict(org)) => tracing::error!(
+                faction = f.id.0,
+                %org,
+                other = ?other_holder(w, org, f.id),
+                "faction: backing org is claimed by another faction; both links fail closed until staff re-bind"
+            ),
+        }
+    }
+}
+
 /// The name of a faction OTHER than `except` that binds `org`, if any.
 fn other_holder(w: &World, org: OrgId, except: FactionId) -> Option<SmolStr> {
     let st = w.module_state::<FactionState>()?;

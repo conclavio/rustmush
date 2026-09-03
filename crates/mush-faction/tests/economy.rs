@@ -1,7 +1,7 @@
 //! E3d acceptance (doc 08b §6, D-E3-8 / D-E3-9 / D-E3-11): the faction →
 //! backing-`OrgId` link and the one-way `Faction.resources` migration, driven
 //! through the real `Engine` with the server's own module order
-//! (faction → org → economy).
+//! (org → faction → economy, since the post-E3 owner decision).
 //!
 //! The verify axis of this cut is **attribution + idempotent migration**, so the
 //! tests cluster around three questions:
@@ -38,15 +38,29 @@ use smol_str::SmolStr;
 /// tests prove nothing.
 const NAMESPACES: [&str; 3] = ["faction", "org", "economy"];
 
-/// Exactly `mush-server/src/modules.rs`'s order: faction registers BEFORE org, so
-/// the faction module cannot validate its links at boot — which is the whole
-/// reason [`backing_org`] resolves at every use instead.
+/// Exactly `mush-server/src/modules.rs`'s order since the post-E3 owner decision:
+/// org registers BEFORE faction, so faction boot can validate every backing link
+/// against loaded org state — reporting a missing org or a conflict, never
+/// unbinding. [`backing_org`] still resolves at every use; boot only adds the
+/// early, loud report.
 fn modules() -> Vec<Box<dyn GameModule>> {
     vec![
-        Box::new(FactionModule::new()),
         Box::new(OrgModule::with_predicates(vec![Arc::new(FactionStandingProvider)])),
+        Box::new(FactionModule::new()),
         Box::new(EconomyModule::with_custody(vec![])),
     ]
+}
+
+/// Rewrite one persisted faction doc inside a folded kv (a restored backup or a
+/// hand-edited doc — the states boot-time validation exists to report).
+fn patch_faction_doc(kv: &mut Kv, fid: FactionId, patch: impl FnOnce(&mut serde_json::Value)) {
+    let key = format!("fac:{}", fid.0);
+    let bucket = kv.get_mut("faction").expect("faction namespace present");
+    let (_, doc) = bucket
+        .iter_mut()
+        .find(|(k, _)| k.as_str() == key.as_str())
+        .expect("faction doc present");
+    patch(doc);
 }
 
 fn boot() -> TestWorld {
@@ -254,6 +268,44 @@ fn a_missing_org_makes_the_link_unresolvable_not_absent() {
         Err(LinkError::Missing(OrgId(9)))
     );
     assert!(ok(&mut tw, GOD, "@faction/show Camarilla").contains("org #9 (MISSING)"));
+}
+
+#[test]
+fn boot_reports_a_missing_backing_org_and_preserves_the_link() {
+    let mut tw = boot();
+    setup(&mut tw);
+    let fid = faction(&tw, "Camarilla").id;
+    let mut kv = fold_kv(&mut tw);
+    // The persisted doc names an org that does not exist (a lost org doc). Org
+    // loads BEFORE faction now, so faction boot sees the loaded org state and
+    // reports the gap — and must NOT repair it by unbinding (doc 08 §15.2).
+    patch_faction_doc(&mut kv, fid, |doc| doc["org"] = serde_json::json!(9));
+    let mut tw2 = reboot(kv);
+    assert_eq!(faction(&tw2, "Camarilla").org, Some(OrgId(9)), "boot reports, never unbinds");
+    assert_eq!(
+        backing_org(tw2.world(), &faction(&tw2, "Camarilla")),
+        Err(LinkError::Missing(OrgId(9)))
+    );
+    assert!(ok(&mut tw2, GOD, "@faction/show Camarilla").contains("org #9 (MISSING)"));
+}
+
+#[test]
+fn boot_reports_a_two_factions_one_org_conflict_and_preserves_both_links() {
+    let mut tw = boot();
+    setup(&mut tw); // Camarilla is bound to org #0
+    ok(&mut tw, GOD, "@faction/create Sabbat");
+    let sabbat = faction(&tw, "Sabbat").id;
+    let mut kv = fold_kv(&mut tw);
+    // A restored backup binds the second faction to the same org.
+    patch_faction_doc(&mut kv, sabbat, |doc| doc["org"] = serde_json::json!(0));
+    let mut tw2 = reboot(kv);
+    assert_eq!(faction(&tw2, "Camarilla").org, Some(OrgId(0)));
+    assert_eq!(faction(&tw2, "Sabbat").org, Some(OrgId(0)));
+    assert!(ok(&mut tw2, GOD, "@faction/show Camarilla").contains("(CONFLICT)"));
+    assert!(ok(&mut tw2, GOD, "@faction/show Sabbat").contains("(CONFLICT)"));
+    // Both links fail closed at use until staff re-bind one of them.
+    err(&mut tw2, GOD, "@faction/migrate/confirm Camarilla=gold #0");
+    assert_eq!(tx_count(&tw2), 0);
 }
 
 #[test]

@@ -131,6 +131,11 @@ impl GameModule for FactionModule {
                 streams: data.streams,
             },
         )?;
+        // The server loads `OrgModule` before this module (post-E3 owner decision),
+        // so every `Faction.org` backing link can be checked against loaded org
+        // state here. Findings are reported, never repaired: `backing_org` stays
+        // the at-use enforcement and fails closed on a MISSING or CONFLICT link.
+        econ::validate_links_at_boot(ctx.w);
         sim::load_boot(ctx, sim_kv)
     }
 }
