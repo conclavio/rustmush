@@ -94,12 +94,14 @@ pub use action::{
     TriggerIdentity, TriggerWork,
 };
 pub use action_state::{
-    ActionStateError, ActionStateStore, ActionTxn, ActionTxnLimits, CanonicalStateBytes,
-    MAX_ACTION_BUNDLE_BYTES, MAX_ACTION_MUTATION_OPERATIONS, MAX_ACTION_STATE_RECORD_BYTES,
-    MAX_STATE_FAMILIES, MAX_STATE_FAMILIES_PER_OWNER, MAX_STATE_KEY_BYTES, PreparedInstallation,
-    PreparedRecord, PreparedTxn, StateFamilyDescriptor, StateFamilyDescriptorError,
-    StateFamilyHandle, StateFamilyId, StateFamilyRegistry, StateFamilyRegistryBuilder,
-    StateFamilyRegistryError, StateKey, StateKeyCodec, StateValueSerializer, StateValueValidator,
+    ACTION_STATE_PERSISTENCE_ROOT, ActionStateBootRecord, ActionStateError, ActionStateStore,
+    ActionTxn, ActionTxnLimits, CanonicalStateBytes, MAX_ACTION_BUNDLE_BYTES,
+    MAX_ACTION_MUTATION_OPERATIONS, MAX_ACTION_STATE_BOOT_BYTES, MAX_ACTION_STATE_BOOT_RECORDS,
+    MAX_ACTION_STATE_RECORD_BYTES, MAX_STATE_FAMILIES, MAX_STATE_FAMILIES_PER_OWNER,
+    MAX_STATE_KEY_BYTES, PreparedInstallation, PreparedRecord, PreparedTxn, StateFamilyDescriptor,
+    StateFamilyDescriptorError, StateFamilyHandle, StateFamilyId, StateFamilyRegistry,
+    StateFamilyRegistryBuilder, StateFamilyRegistryError, StateKey, StateKeyCodec,
+    StateValueDecoder, StateValueSerializer, StateValueValidator, is_action_state_persistence_key,
 };
 pub use attr::{Attr, AttrFlags, AttrMap, AttrValue, UncasedName};
 pub use behavior::{

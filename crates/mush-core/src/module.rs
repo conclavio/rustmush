@@ -1500,11 +1500,12 @@ pub trait GameModule: Send {
     /// Which persisted streams the driver should load into this module's
     /// [`ModuleBootData::streams`], given the module's kv documents (as the
     /// driver just listed them): `(stream key, newest-N to load)` pairs.
-    /// Pure over `kv` — called after the kv listing and before
-    /// [`GameModule::on_world_loaded`], so a module whose stream keys are
-    /// derived from its docs (comsys `hist:{id}` per `chan:{id}`) can name
-    /// them without the driver knowing its layout. Invalid persisted metadata
-    /// must return an error here, before the driver performs any stream read.
+    /// Pure over `kv` — called after coordinator-owned typed state has passed
+    /// atomic boot hydration and before [`GameModule::on_world_loaded`], so a
+    /// module whose stream keys are derived from its docs (comsys `hist:{id}`
+    /// per `chan:{id}`) can name them without the driver knowing its layout.
+    /// Invalid persisted metadata must return an error here, before the driver
+    /// performs any stream read.
     /// Default: none.
     fn boot_stream_requests(
         &self,
@@ -1700,10 +1701,11 @@ impl<'a> Registrar<'a> {
     /// [`ActionTxn`](crate::ActionTxn). No family is installed in the legacy
     /// [`ModuleStateMap`].
     #[allow(clippy::too_many_arguments)]
-    pub fn state_family<K, V, KC, VV, VS>(
+    pub fn state_family<K, V, KC, VD, VV, VS>(
         &mut self,
         descriptor: crate::action_state::StateFamilyDescriptor,
         key_codec: KC,
+        decoder: VD,
         validator: VV,
         serializer: VS,
     ) -> Result<crate::action_state::StateFamilyHandle<K, V>, ModError>
@@ -1711,6 +1713,7 @@ impl<'a> Registrar<'a> {
         K: Send + Sync + 'static,
         V: Clone + Send + Sync + 'static,
         KC: crate::action_state::StateKeyCodec<K> + 'static,
+        VD: crate::action_state::StateValueDecoder<V> + 'static,
         VV: crate::action_state::StateValueValidator<V> + 'static,
         VS: crate::action_state::StateValueSerializer<V> + 'static,
     {
@@ -1729,7 +1732,7 @@ impl<'a> Registrar<'a> {
         })?;
         self.reg
             .state_family_builder
-            .register(owner, descriptor, key_codec, validator, serializer)
+            .register(owner, descriptor, key_codec, decoder, validator, serializer)
             .map_err(|e| {
                 ModError::msg(format!(
                     "module {}: state-family registration: {e}",

@@ -40,9 +40,24 @@ pub const MAX_ACTION_STATE_RECORD_BYTES: usize = 256 * 1024;
 pub const MAX_ACTION_BUNDLE_BYTES: usize = 16 * 1024 * 1024;
 /// Hard maximum distinct record mutations in one logical action.
 pub const MAX_ACTION_MUTATION_OPERATIONS: usize = MAX_CASCADE_OPERATIONS as usize;
+/// Hard maximum records accepted during one typed-state boot hydration.
+pub const MAX_ACTION_STATE_BOOT_RECORDS: usize = 1_000_000;
+/// Hard maximum canonical record bytes retained during one boot hydration.
+pub const MAX_ACTION_STATE_BOOT_BYTES: usize = 512 * 1024 * 1024;
 
+/// Reserved module-key root owned exclusively by the action-state coordinator.
+/// Ordinary module boot, migrations, and legacy writes must never consume it.
+pub const ACTION_STATE_PERSISTENCE_ROOT: &str = "action-state/";
 const STATE_PERSISTENCE_PREFIX: &str = "action-state/v1";
 const MAX_STATE_CALLBACK_ERROR_BYTES: usize = 512;
+
+/// Whether a module key belongs to the coordinator-reserved action-state tree.
+/// All versions are reserved so an older binary cannot hand a future encoding
+/// to an ordinary module or its eager migration callbacks.
+#[must_use]
+pub fn is_action_state_persistence_key(key: &str) -> bool {
+    key.starts_with(ACTION_STATE_PERSISTENCE_ROOT)
+}
 
 /// Owner-local canonical identity of an authoritative state family.
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -101,15 +116,16 @@ impl<'de> Deserialize<'de> for StateFamilyId {
 /// Stable, reviewable description of a typed state family.
 ///
 /// Callback implementation details are deliberately represented by canonical
-/// contract IDs. Changing a key codec, schema, validator, or serializer must
-/// change its corresponding ID or schema version and therefore changes the
-/// deployment fingerprint.
+/// contract IDs. Changing a key codec, schema, decoder, validator, or
+/// serializer must change its corresponding ID or schema version and therefore
+/// changes the deployment fingerprint.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StateFamilyDescriptor {
     id: StateFamilyId,
     key_codec: CanonicalId,
     value_schema: CanonicalId,
     schema_version: u16,
+    decoder: CanonicalId,
     validator: CanonicalId,
     serializer: CanonicalId,
     max_key_bytes: usize,
@@ -123,6 +139,7 @@ impl StateFamilyDescriptor {
         key_codec: CanonicalId,
         value_schema: CanonicalId,
         schema_version: u16,
+        decoder: CanonicalId,
         validator: CanonicalId,
         serializer: CanonicalId,
     ) -> Result<Self, StateFamilyDescriptorError> {
@@ -134,6 +151,7 @@ impl StateFamilyDescriptor {
             key_codec,
             value_schema,
             schema_version,
+            decoder,
             validator,
             serializer,
             max_key_bytes: MAX_STATE_KEY_BYTES,
@@ -185,6 +203,11 @@ impl StateFamilyDescriptor {
     }
 
     #[must_use]
+    pub const fn decoder(&self) -> &CanonicalId {
+        &self.decoder
+    }
+
+    #[must_use]
     pub const fn validator(&self) -> &CanonicalId {
         &self.validator
     }
@@ -210,6 +233,7 @@ impl StateFamilyDescriptor {
             "key_codec": self.key_codec,
             "value_schema": self.value_schema,
             "schema_version": self.schema_version,
+            "decoder": self.decoder,
             "validator": self.validator,
             "serializer": self.serializer,
             "max_key_bytes": self.max_key_bytes,
@@ -248,6 +272,22 @@ pub trait StateValueValidator<V>: Send + Sync {
     fn validate_value(&self, value: &V) -> Result<(), String>;
 }
 
+/// Strict persisted-JSON-to-typed-value decoder registered for a state family.
+/// A decoder may not silently retain unknown meaning: hydration reserializes
+/// its result and requires canonical equality with the persisted envelope.
+pub trait StateValueDecoder<V>: Send + Sync {
+    fn decode_value(&self, value: &Value) -> Result<V, String>;
+}
+
+impl<V, F> StateValueDecoder<V> for F
+where
+    F: Fn(&Value) -> Result<V, String> + Send + Sync,
+{
+    fn decode_value(&self, value: &Value) -> Result<V, String> {
+        self(value)
+    }
+}
+
 impl<V, F> StateValueValidator<V> for F
 where
     F: Fn(&V) -> Result<(), String> + Send + Sync,
@@ -278,6 +318,11 @@ trait ErasedStateFamily: Send + Sync {
     fn value_type_id(&self) -> TypeId;
     fn key_type_name(&self) -> &'static str;
     fn value_type_name(&self) -> &'static str;
+    fn decode_and_project(
+        &self,
+        key: &StateKey,
+        value: &Value,
+    ) -> Result<(Box<dyn ErasedStateValue>, Value), ActionStateError>;
     fn as_any(&self) -> &dyn Any;
 }
 
@@ -285,11 +330,12 @@ struct TypedStateFamily<K, V> {
     owner: OwnerId,
     descriptor: StateFamilyDescriptor,
     key_codec: Arc<dyn StateKeyCodec<K>>,
+    decoder: Arc<dyn StateValueDecoder<V>>,
     validator: Arc<dyn StateValueValidator<V>>,
     serializer: Arc<dyn StateValueSerializer<V>>,
 }
 
-impl<K: 'static, V: 'static> ErasedStateFamily for TypedStateFamily<K, V> {
+impl<K: 'static, V: Send + Sync + 'static> ErasedStateFamily for TypedStateFamily<K, V> {
     fn owner(&self) -> &OwnerId {
         &self.owner
     }
@@ -312,6 +358,33 @@ impl<K: 'static, V: 'static> ErasedStateFamily for TypedStateFamily<K, V> {
 
     fn value_type_name(&self) -> &'static str {
         type_name::<V>()
+    }
+
+    fn decode_and_project(
+        &self,
+        key: &StateKey,
+        value: &Value,
+    ) -> Result<(Box<dyn ErasedStateValue>, Value), ActionStateError> {
+        let decoded = self.decoder.decode_value(value).map_err(|message| {
+            ActionStateError::DecodeRejected {
+                key: key.clone(),
+                message: bounded_callback_message(message),
+            }
+        })?;
+        self.validator.validate_value(&decoded).map_err(|message| {
+            ActionStateError::ValueRejected {
+                key: key.clone(),
+                message: bounded_callback_message(message),
+            }
+        })?;
+        let projected = self
+            .serializer
+            .serialize_value(&decoded)
+            .map_err(|message| ActionStateError::SerializationRejected {
+                key: key.clone(),
+                message: bounded_callback_message(message),
+            })?;
+        Ok((Box::new(decoded), projected))
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -394,11 +467,12 @@ impl StateFamilyRegistryBuilder {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn register<K, V, KC, VV, VS>(
+    pub(crate) fn register<K, V, KC, VD, VV, VS>(
         &mut self,
         owner: OwnerId,
         descriptor: StateFamilyDescriptor,
         key_codec: KC,
+        decoder: VD,
         validator: VV,
         serializer: VS,
     ) -> Result<StateFamilyHandle<K, V>, StateFamilyRegistryError>
@@ -406,6 +480,7 @@ impl StateFamilyRegistryBuilder {
         K: Send + Sync + 'static,
         V: Clone + Send + Sync + 'static,
         KC: StateKeyCodec<K> + 'static,
+        VD: StateValueDecoder<V> + 'static,
         VV: StateValueValidator<V> + 'static,
         VS: StateValueSerializer<V> + 'static,
     {
@@ -436,6 +511,7 @@ impl StateFamilyRegistryBuilder {
             owner: owner.clone(),
             descriptor,
             key_codec: Arc::new(key_codec),
+            decoder: Arc::new(decoder),
             validator: Arc::new(validator),
             serializer: Arc::new(serializer),
         });
@@ -607,6 +683,51 @@ impl StateKey {
     }
 }
 
+/// One persisted action-state document discovered by the server before
+/// ordinary module boot. The namespace supplies the owner identity; `key`
+/// remains the complete reserved module key so path and envelope can be
+/// cross-checked before any typed value becomes live.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ActionStateBootRecord {
+    pub namespace: SmolStr,
+    pub key: SmolStr,
+    pub value: Value,
+}
+
+impl ActionStateBootRecord {
+    #[must_use]
+    pub fn new(namespace: impl Into<SmolStr>, key: impl Into<SmolStr>, value: Value) -> Self {
+        Self {
+            namespace: namespace.into(),
+            key: key.into(),
+            value,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedStateEnvelope {
+    family: PersistedStateFamily,
+    key: String,
+    schema: PersistedStateSchema,
+    value: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedStateFamily {
+    owner: OwnerId,
+    id: StateFamilyId,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedStateSchema {
+    id: CanonicalId,
+    version: u16,
+}
+
 /// Immutable bounded canonical JSON bytes retained with a prepared/live value.
 #[derive(Clone, Eq, PartialEq)]
 pub struct CanonicalStateBytes(Arc<[u8]>);
@@ -722,6 +843,178 @@ impl ActionStateStore {
     #[must_use]
     pub const fn has_prepared(&self) -> bool {
         self.pending_reservation.is_some()
+    }
+
+    /// Atomically hydrate every discovered persisted record through its exact
+    /// registered decoder. The live map is replaced only after the complete
+    /// input has passed path/envelope/schema/bounds checks, typed validation,
+    /// and canonical decode→serialize equality.
+    ///
+    /// The process-local revision and reservation counters intentionally start
+    /// at zero after boot; K3 will place their durable successors in the exact
+    /// authoritative bundle alongside idempotency and outcome records.
+    pub fn hydrate(
+        &mut self,
+        records: impl IntoIterator<Item = ActionStateBootRecord>,
+    ) -> Result<(), ActionStateError> {
+        if !self.records.is_empty() || self.pending_reservation.is_some() || self.revision != 0 {
+            return Err(ActionStateError::HydrationStoreNotEmpty);
+        }
+        let mut hydrated = BTreeMap::new();
+        let mut total_bytes = 0usize;
+        for record in records {
+            if hydrated.len() >= MAX_ACTION_STATE_BOOT_RECORDS {
+                return Err(ActionStateError::HydrationRecordLimit {
+                    max: MAX_ACTION_STATE_BOOT_RECORDS,
+                });
+            }
+            let state_key = self.hydration_key(&record)?;
+            let locator = (state_key.owner.clone(), state_key.family.clone());
+            let family = self.registry.entries.get(&locator).ok_or_else(|| {
+                ActionStateError::UnknownFamily {
+                    owner: state_key.owner.clone(),
+                    family: state_key.family.clone(),
+                }
+            })?;
+            // Bound the untrusted persisted document before cloning it into a
+            // typed envelope or invoking any module-supplied decoder.
+            let actual = canonical_json_bytes_with_limit(
+                &record.value,
+                family.descriptor().max_record_bytes(),
+            )
+            .map_err(|source| ActionStateError::CanonicalPostImage {
+                key: state_key.clone(),
+                source,
+            })?;
+            total_bytes = total_bytes
+                .checked_add(actual.len())
+                .ok_or(ActionStateError::ArithmeticOverflow)?;
+            if total_bytes > MAX_ACTION_STATE_BOOT_BYTES {
+                return Err(ActionStateError::HydrationBytesExceeded {
+                    attempted: total_bytes,
+                    max: MAX_ACTION_STATE_BOOT_BYTES,
+                });
+            }
+            let envelope: PersistedStateEnvelope = serde_json::from_value(record.value.clone())
+                .map_err(|error| ActionStateError::HydrationEnvelope {
+                    namespace: record.namespace.clone(),
+                    persistence_key: record.key.clone(),
+                    message: bounded_callback_message(error.to_string()),
+                })?;
+            require_hydration_identity(
+                &state_key,
+                "family.owner",
+                state_key.owner.as_str(),
+                envelope.family.owner.as_str(),
+            )?;
+            require_hydration_identity(
+                &state_key,
+                "family.id",
+                state_key.family.as_str(),
+                envelope.family.id.as_str(),
+            )?;
+            require_hydration_identity(&state_key, "key", state_key.encoded(), &envelope.key)?;
+            require_hydration_identity(
+                &state_key,
+                "schema.id",
+                family.descriptor().value_schema().as_str(),
+                envelope.schema.id.as_str(),
+            )?;
+            if envelope.schema.version != family.descriptor().schema_version() {
+                return Err(ActionStateError::HydrationIdentityMismatch {
+                    key: state_key,
+                    field: "schema.version",
+                    expected: family
+                        .descriptor()
+                        .schema_version()
+                        .to_string()
+                        .into_boxed_str(),
+                    actual: envelope.schema.version.to_string().into_boxed_str(),
+                });
+            }
+            let (value, projected) = family.decode_and_project(&state_key, &envelope.value)?;
+            let expected_document = json!({
+                "family": {
+                    "owner": &state_key.owner,
+                    "id": &state_key.family,
+                },
+                "key": &state_key.encoded,
+                "schema": {
+                    "id": family.descriptor().value_schema(),
+                    "version": family.descriptor().schema_version(),
+                },
+                "value": projected,
+            });
+            let expected = canonical_json_bytes_with_limit(
+                &expected_document,
+                family.descriptor().max_record_bytes(),
+            )
+            .map_err(|source| ActionStateError::CanonicalPostImage {
+                key: state_key.clone(),
+                source,
+            })?;
+            if actual != expected {
+                return Err(ActionStateError::HydrationCanonicalMismatch { key: state_key });
+            }
+            let canonical = CanonicalStateBytes(Arc::from(expected));
+            if hydrated
+                .insert(state_key.clone(), StoredStateRecord { value, canonical })
+                .is_some()
+            {
+                return Err(ActionStateError::DuplicateHydratedRecord { key: state_key });
+            }
+        }
+        self.records = hydrated;
+        Ok(())
+    }
+
+    fn hydration_key(&self, record: &ActionStateBootRecord) -> Result<StateKey, ActionStateError> {
+        let owner = OwnerId::parse_canonical(record.namespace.as_str()).map_err(|error| {
+            ActionStateError::HydrationPath {
+                namespace: record.namespace.clone(),
+                persistence_key: record.key.clone(),
+                message: bounded_callback_message(error.to_string()),
+            }
+        })?;
+        let prefix = format!("{STATE_PERSISTENCE_PREFIX}/");
+        let tail =
+            record
+                .key
+                .strip_prefix(&prefix)
+                .ok_or_else(|| ActionStateError::HydrationPath {
+                    namespace: record.namespace.clone(),
+                    persistence_key: record.key.clone(),
+                    message: "unsupported action-state persistence version".to_owned(),
+                })?;
+        let (family_text, encoded) =
+            tail.split_once('/')
+                .ok_or_else(|| ActionStateError::HydrationPath {
+                    namespace: record.namespace.clone(),
+                    persistence_key: record.key.clone(),
+                    message: "action-state path must contain family and encoded key".to_owned(),
+                })?;
+        let family = StateFamilyId::parse_canonical(family_text).map_err(|error| {
+            ActionStateError::HydrationPath {
+                namespace: record.namespace.clone(),
+                persistence_key: record.key.clone(),
+                message: bounded_callback_message(error.to_string()),
+            }
+        })?;
+        let locator = (owner.clone(), family.clone());
+        let registered =
+            self.registry
+                .entries
+                .get(&locator)
+                .ok_or_else(|| ActionStateError::UnknownFamily {
+                    owner: owner.clone(),
+                    family: family.clone(),
+                })?;
+        validate_encoded_state_key(
+            owner,
+            family,
+            encoded,
+            registered.descriptor().max_key_bytes(),
+        )
     }
 
     /// Read one live value through its exact composition-bound capability.
@@ -1291,18 +1584,29 @@ where
                 family: family.descriptor.id.clone(),
                 message: bounded_callback_message(message),
             })?;
+    validate_encoded_state_key(
+        family.owner.clone(),
+        family.descriptor.id.clone(),
+        &encoded,
+        family.descriptor.max_key_bytes,
+    )
+}
+
+fn validate_encoded_state_key(
+    owner: OwnerId,
+    family: StateFamilyId,
+    encoded: &str,
+    max_key_bytes: usize,
+) -> Result<StateKey, ActionStateError> {
     if encoded.is_empty() {
-        return Err(ActionStateError::EmptyKey {
-            owner: family.owner.clone(),
-            family: family.descriptor.id.clone(),
-        });
+        return Err(ActionStateError::EmptyKey { owner, family });
     }
-    if encoded.len() > family.descriptor.max_key_bytes {
+    if encoded.len() > max_key_bytes {
         return Err(ActionStateError::KeyTooLong {
-            owner: family.owner.clone(),
-            family: family.descriptor.id.clone(),
+            owner,
+            family,
             actual: encoded.len(),
-            max: family.descriptor.max_key_bytes,
+            max: max_key_bytes,
         });
     }
     if let Some((offset, byte)) = encoded.bytes().enumerate().find(|(_, byte)| {
@@ -1312,15 +1616,15 @@ where
         )
     }) {
         return Err(ActionStateError::InvalidKeyByte {
-            owner: family.owner.clone(),
-            family: family.descriptor.id.clone(),
+            owner,
+            family,
             offset,
             byte,
         });
     }
     let state_key = StateKey {
-        owner: family.owner.clone(),
-        family: family.descriptor.id.clone(),
+        owner,
+        family,
         encoded: SmolStr::new(encoded),
     };
     if state_key.persistence_key().len() > MAX_MODULE_KEY_BYTES {
@@ -1330,6 +1634,24 @@ where
         });
     }
     Ok(state_key)
+}
+
+fn require_hydration_identity(
+    key: &StateKey,
+    field: &'static str,
+    expected: &str,
+    actual: &str,
+) -> Result<(), ActionStateError> {
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(ActionStateError::HydrationIdentityMismatch {
+            key: key.clone(),
+            field,
+            expected: expected.to_owned().into_boxed_str(),
+            actual: actual.to_owned().into_boxed_str(),
+        })
+    }
 }
 
 fn downcast_value<'a, V: 'static>(
@@ -1552,6 +1874,8 @@ pub enum ActionStateError {
     PersistenceKeyTooLong { key: StateKey, max: usize },
     #[error("state value for {key:?} was rejected: {message}")]
     ValueRejected { key: StateKey, message: String },
+    #[error("persisted state decoder for {key:?} rejected the value: {message}")]
+    DecodeRejected { key: StateKey, message: String },
     #[error("state serializer for {key:?} refused the value: {message}")]
     SerializationRejected { key: StateKey, message: String },
     #[error("canonical post-image for {key:?} is invalid: {source}")]
@@ -1589,6 +1913,39 @@ pub enum ActionStateError {
     ReservationExhausted,
     #[error("action-state revision sequence is exhausted")]
     RevisionExhausted,
+    #[error("action state can only hydrate into a fresh, unreserved store")]
+    HydrationStoreNotEmpty,
+    #[error("action-state hydration exceeds the maximum of {max} records")]
+    HydrationRecordLimit { max: usize },
+    #[error("action-state hydration bytes {attempted} exceed maximum {max}")]
+    HydrationBytesExceeded { attempted: usize, max: usize },
+    #[error(
+        "invalid action-state envelope in namespace {namespace}, key {persistence_key}: {message}"
+    )]
+    HydrationEnvelope {
+        namespace: SmolStr,
+        persistence_key: SmolStr,
+        message: String,
+    },
+    #[error("invalid action-state path in namespace {namespace}, key {persistence_key}: {message}")]
+    HydrationPath {
+        namespace: SmolStr,
+        persistence_key: SmolStr,
+        message: String,
+    },
+    #[error(
+        "persisted state identity {field} for {key:?} differs: expected {expected}, got {actual}"
+    )]
+    HydrationIdentityMismatch {
+        key: StateKey,
+        field: &'static str,
+        expected: Box<str>,
+        actual: Box<str>,
+    },
+    #[error("persisted state for {key:?} is not the canonical registered representation")]
+    HydrationCanonicalMismatch { key: StateKey },
+    #[error("persisted action-state record is duplicated: {key:?}")]
+    DuplicateHydratedRecord { key: StateKey },
 }
 
 #[cfg(test)]
@@ -1599,7 +1956,8 @@ mod tests {
     use super::*;
     use crate::{Engine, GameModule, ModError, Registrar, Registry, World};
 
-    #[derive(Clone, Debug, Eq, PartialEq)]
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+    #[serde(deny_unknown_fields)]
     struct CounterState {
         amount: u16,
     }
@@ -1623,6 +1981,7 @@ mod tests {
                 CanonicalId::new("u64.decimal.v1").expect("static codec id"),
                 CanonicalId::new("counter.v1").expect("static schema id"),
                 1,
+                CanonicalId::new("counter.decode_json.v1").expect("static decoder id"),
                 CanonicalId::new("counter.range.v1").expect("static validator id"),
                 CanonicalId::new("counter.json.v1").expect("static serializer id"),
             )
@@ -1631,6 +1990,16 @@ mod tests {
             let handle = registrar.state_family(
                 descriptor,
                 |key: &u64| Ok(key.to_string()),
+                |value: &Value| {
+                    let amount = value
+                        .get("amount")
+                        .and_then(Value::as_u64)
+                        .ok_or_else(|| "amount must be an unsigned integer".to_owned())?;
+                    Ok(CounterState {
+                        amount: u16::try_from(amount)
+                            .map_err(|_| "amount exceeds u16".to_owned())?,
+                    })
+                },
                 |value: &CounterState| {
                     if value.amount <= 3 {
                         Ok(())
@@ -1674,6 +2043,107 @@ mod tests {
         let (ops, installation) = prepared.into_parts();
         engine.install_prepared_action(installation);
         ops
+    }
+
+    fn boot_records(ops: Vec<ModuleOp>) -> Vec<ActionStateBootRecord> {
+        ops.into_iter()
+            .map(|op| match op.op {
+                ModuleWrite::JsonSet { key, value } => {
+                    ActionStateBootRecord::new(op.ns, key, value)
+                }
+                other => panic!("expected state JsonSet, got {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn persisted_state_round_trips_into_a_fresh_composition() {
+        let (mut first, first_handle, _) = fixture("state_test");
+        let mut txn = first.action_transaction(&first_handle).unwrap();
+        txn.insert(&first_handle, &7, CounterState { amount: 2 })
+            .unwrap();
+        txn.insert(&first_handle, &3, CounterState { amount: 1 })
+            .unwrap();
+        let prepared = txn.prepare().unwrap();
+        let records = boot_records(install_direct(&mut first, prepared));
+
+        let (mut restarted, restarted_handle, calls) = fixture("state_test");
+        restarted.hydrate_action_state(records).unwrap();
+
+        assert_eq!(restarted.action_state().len(), 2);
+        assert_eq!(
+            restarted.action_state().get(&restarted_handle, &3).unwrap(),
+            Some(&CounterState { amount: 1 })
+        );
+        assert_eq!(
+            restarted.action_state().get(&restarted_handle, &7).unwrap(),
+            Some(&CounterState { amount: 2 })
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(restarted.action_state().revision(), 0);
+        assert!(!restarted.action_state().has_prepared());
+    }
+
+    #[test]
+    fn one_bad_record_leaves_the_entire_hydration_uninstalled() {
+        let (mut first, handle, _) = fixture("state_test");
+        let mut txn = first.action_transaction(&handle).unwrap();
+        txn.insert(&handle, &1, CounterState { amount: 1 }).unwrap();
+        txn.insert(&handle, &2, CounterState { amount: 2 }).unwrap();
+        let prepared = txn.prepare().unwrap();
+        let mut records = boot_records(install_direct(&mut first, prepared));
+        records[1].value["schema"]["version"] = json!(9);
+
+        let (mut restarted, restarted_handle, _) = fixture("state_test");
+        assert!(matches!(
+            restarted.hydrate_action_state(records),
+            Err(ActionStateError::HydrationIdentityMismatch {
+                field: "schema.version",
+                ..
+            })
+        ));
+        assert!(restarted.action_state().is_empty());
+        assert!(
+            restarted
+                .action_state()
+                .get(&restarted_handle, &1)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn hydration_rejects_noncanonical_decoder_normalization() {
+        let (mut first, handle, _) = fixture("state_test");
+        let mut txn = first.action_transaction(&handle).unwrap();
+        txn.insert(&handle, &1, CounterState { amount: 1 }).unwrap();
+        let prepared = txn.prepare().unwrap();
+        let mut records = boot_records(install_direct(&mut first, prepared));
+        records[0].value["value"]["unregistered"] = json!(true);
+
+        let (mut restarted, _, _) = fixture("state_test");
+        assert!(matches!(
+            restarted.hydrate_action_state(records),
+            Err(ActionStateError::HydrationCanonicalMismatch { .. })
+        ));
+        assert!(restarted.action_state().is_empty());
+    }
+
+    #[test]
+    fn hydration_rejects_an_unregistered_family_without_partial_state() {
+        let (mut first, handle, _) = fixture("state_test");
+        let mut txn = first.action_transaction(&handle).unwrap();
+        txn.insert(&handle, &1, CounterState { amount: 1 }).unwrap();
+        let prepared = txn.prepare().unwrap();
+        let mut records = boot_records(install_direct(&mut first, prepared));
+        records[0].key = "action-state/v1/missing/1".into();
+
+        let (mut restarted, _, _) = fixture("state_test");
+        assert!(matches!(
+            restarted.hydrate_action_state(records),
+            Err(ActionStateError::UnknownFamily { .. })
+        ));
+        assert!(restarted.action_state().is_empty());
     }
 
     #[test]

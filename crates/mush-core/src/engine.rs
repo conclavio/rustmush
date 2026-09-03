@@ -28,8 +28,8 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::action_state::{
-    ActionStateError, ActionStateStore, ActionTxn, PreparedInstallation, PreparedTxn,
-    StateFamilyHandle,
+    ActionStateBootRecord, ActionStateError, ActionStateStore, ActionTxn, PreparedInstallation,
+    PreparedTxn, StateFamilyHandle,
 };
 use crate::cmd::{
     ArgShape, CmdError, CommandSpec, Ctx, ParsedArgs, Registry, RegistryError, SwitchSet, dispatch,
@@ -734,6 +734,15 @@ impl Engine {
     #[must_use]
     pub const fn action_state(&self) -> &ActionStateStore {
         &self.action_state
+    }
+
+    /// Atomically install persisted typed state after module composition but
+    /// before any module receives its ordinary boot callback.
+    pub fn hydrate_action_state(
+        &mut self,
+        records: impl IntoIterator<Item = ActionStateBootRecord>,
+    ) -> Result<(), ActionStateError> {
+        self.action_state.hydrate(records)
     }
 
     /// Begin a handle-scoped transaction, primarily for bootstrapping and

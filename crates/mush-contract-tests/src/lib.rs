@@ -280,11 +280,15 @@ impl GameModule for ToyRulesModule {
                 CanonicalId::new("obj_id.decimal.v1").expect("static codec id"),
                 CanonicalId::new("toy.focus.v1").expect("static schema id"),
                 1,
+                CanonicalId::new("toy.focus.decode_json.v1").expect("static decoder id"),
                 CanonicalId::new("toy.focus.range.v1").expect("static validator id"),
                 CanonicalId::new("toy.focus.json.v1").expect("static serializer id"),
             )
             .map_err(|error| ModError::msg(error.to_string()))?,
             |key: &ObjId| Ok(key.0.to_string()),
+            |value: &Value| {
+                serde_json::from_value(value.clone()).map_err(|error| error.to_string())
+            },
             |value: &ToyFocusState| {
                 if value.amount <= 3 {
                     Ok(())
@@ -300,11 +304,15 @@ impl GameModule for ToyRulesModule {
                 CanonicalId::new("obj_id.decimal.v1").expect("static codec id"),
                 CanonicalId::new("toy.guarded.v1").expect("static schema id"),
                 1,
+                CanonicalId::new("toy.guarded.decode_json.v1").expect("static decoder id"),
                 CanonicalId::new("toy.guarded.range.v1").expect("static validator id"),
                 CanonicalId::new("toy.guarded.json.v1").expect("static serializer id"),
             )
             .map_err(|error| ModError::msg(error.to_string()))?,
             |key: &ObjId| Ok(key.0.to_string()),
+            |value: &Value| {
+                serde_json::from_value(value.clone()).map_err(|error| error.to_string())
+            },
             |_value: &ToyGuardedState| Ok(()),
             |value: &ToyGuardedState| {
                 serde_json::to_value(value).map_err(|error| error.to_string())

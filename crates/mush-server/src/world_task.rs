@@ -2670,6 +2670,22 @@ async fn flush_prepared_action(
     }
 }
 
+fn legacy_reserved_action_state_violation(ops: &[mush_core::ModuleOp]) -> Option<String> {
+    ops.iter().find_map(|op| {
+        let key = match &op.op {
+            mush_core::ModuleWrite::JsonSet { key, .. }
+            | mush_core::ModuleWrite::Del { key }
+            | mush_core::ModuleWrite::StreamAppend { key, .. } => key,
+        };
+        mush_core::is_action_state_persistence_key(key).then(|| {
+            format!(
+                "legacy module persistence attempted coordinator-reserved key {}:{key}",
+                op.ns
+            )
+        })
+    })
+}
+
 /// Snapshot the world's dirty set into one batch and hand it to the writer,
 /// bumping `serial` when a batch is actually produced.
 ///
@@ -2695,6 +2711,11 @@ async fn flush_dirty(
         return FlushOutcome::Rejected(
             "authoritative writer serial exhausted; restart/recovery required".to_owned(),
         );
+    }
+    if let Some(detail) = legacy_reserved_action_state_violation(engine.module_ops()) {
+        persistence_integrity.latch();
+        tracing::error!(%detail, "authoritative batch rejected before snapshot");
+        return FlushOutcome::Rejected(detail);
     }
     // Apply the durable-commit high-water first (E0), so a seal already acked
     // by the writer is not needlessly re-emitted into this batch.
@@ -4697,7 +4718,8 @@ mod tests {
         }
     }
 
-    #[derive(Clone, Debug, Eq, PartialEq)]
+    #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct PreparedLaneState {
         amount: u8,
     }
@@ -4719,6 +4741,7 @@ mod tests {
                 CanonicalId::new("u64.decimal.v1").expect("static codec id"),
                 CanonicalId::new("prepared_lane_state.v1").expect("static schema id"),
                 1,
+                CanonicalId::new("prepared_lane_state.decode_json.v1").expect("static decoder id"),
                 CanonicalId::new("prepared_lane_state.range.v1").expect("static validator id"),
                 CanonicalId::new("prepared_lane_state.json.v1").expect("static serializer id"),
             )
@@ -4726,6 +4749,9 @@ mod tests {
             let handle = registrar.state_family(
                 descriptor,
                 |key: &u64| Ok(key.to_string()),
+                |value: &serde_json::Value| {
+                    serde_json::from_value(value.clone()).map_err(|error| error.to_string())
+                },
                 |_value: &PreparedLaneState| Ok(()),
                 |value: &PreparedLaneState| Ok(serde_json::json!({ "amount": value.amount })),
             )?;
@@ -4804,6 +4830,43 @@ mod tests {
             barriers: Vec::new(),
             coalesced_reattach: None,
             exit_after_ack: false,
+        }
+    }
+
+    #[test]
+    fn legacy_module_writes_cannot_enter_the_action_state_keyspace() {
+        let ordinary = ModuleOp {
+            ns: "toy".into(),
+            op: ModuleWrite::JsonSet {
+                key: "ordinary".into(),
+                value: serde_json::json!(true),
+            },
+        };
+        assert!(legacy_reserved_action_state_violation(&[ordinary]).is_none());
+
+        for op in [
+            ModuleWrite::JsonSet {
+                key: "action-state/v1/family/1".into(),
+                value: serde_json::json!(true),
+            },
+            ModuleWrite::Del {
+                key: "action-state/v2/family/1".into(),
+            },
+            ModuleWrite::StreamAppend {
+                key: "action-state/future".into(),
+                value: serde_json::json!(true),
+                maxlen: 1,
+            },
+        ] {
+            let violation = legacy_reserved_action_state_violation(&[ModuleOp {
+                ns: "toy".into(),
+                op,
+            }]);
+            assert!(
+                violation
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("coordinator-reserved"))
+            );
         }
     }
 
