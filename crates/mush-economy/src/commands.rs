@@ -29,7 +29,7 @@ use crate::amount::Amount;
 use crate::api::{self, PostOutcome};
 use crate::engine::AuthEval;
 use crate::ids::{AccountId, ApprovalRequestId, InstrumentId, TransactionId, VaultId};
-use crate::plan::{AssetOp, CustodyOp, EconomyPlan, RequestedLine};
+use crate::plan::{AssetOp, CustodyOp, EconomyPlan, NamedResource, RequestedLine};
 use crate::record::{
     Account, AccountStatus, Approval, ApprovalRule, ApprovalStatus, CreditPolicy, CustodyRef,
     Decision, EconomicCause, Encumbrance, IdempotencyKey, InstrumentDef, InstrumentKind,
@@ -81,7 +81,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: "@econ".into(),
             shape: ArgShape::EqPair,
-            switches: ["pay", "mint", "reverse", "audit", "approve", "deny", "approvals"]
+            switches: ["pay", "mint", "reverse", "audit", "approve", "deny", "approvals", "unfreeze"]
                 .iter()
                 .copied()
                 .map(SmolStr::new)
@@ -94,6 +94,10 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @econ/audit                             recent journal entries (staff)\n\
                    @econ/approve <id>   @econ/deny <id>    decide an approval request\n\
                    @econ/approvals                         requests awaiting your decision\n\
+                   @econ/unfreeze                          clear the whole-economy freeze (staff)\n\
+                   \x20                                      the latch is DURABLE: it survives reboots\n\
+                   \x20                                      until it is cleared here. Account, asset and\n\
+                   \x20                                      vault freezes are cleared separately.\n\
                    An approval authorizes ONE exact plan; re-run the same @econ/pay once it is\n\
                    satisfied and it posts. You can never approve your own request (four-eyes).\n\
                    A plan is single-authority in E3: the payer and the title holder must be the\n\
@@ -168,6 +172,21 @@ fn require_admin(ctx: &Ctx<'_>) -> Result<(), CmdError> {
     } else {
         Err(CmdError::msg("Permission denied."))
     }
+}
+/// Refuse a **non-recovery** control write while the whole economy is frozen.
+///
+/// A freeze is "no spending authority until staff look at it"; opening a fresh
+/// wallet, re-writing an approval rule, or binding a new vault are all ways to build
+/// authority on top of a state nobody has audited yet. The recovery verbs
+/// (`freeze`/`unfreeze`/`close`) stay available — they are how the freeze is worked
+/// through — and the read verbs never move anything.
+fn refuse_if_frozen(ctx: &Ctx<'_>) -> Result<(), CmdError> {
+    if ctx.w.module_state::<EconomyStore>().is_some_and(EconomyStore::is_frozen) {
+        return Err(CmdError::msg(
+            "The economy is frozen; that is not available until staff clear it (@econ/unfreeze).",
+        ));
+    }
+    Ok(())
 }
 fn info(ctx: &mut Ctx<'_>, msg: impl Into<String>) {
     let actor = ctx.actor;
@@ -327,6 +346,46 @@ fn account_refusal(ctx: &Ctx<'_>, id: AccountId, detail: impl std::fmt::Display)
     }
 }
 
+/// The "No such …" text for a resource the actor may not view, or `None` when they
+/// may (and so may see the real refusal).
+fn hidden_text(ctx: &Ctx<'_>, resource: NamedResource) -> Option<&'static str> {
+    match resource {
+        NamedResource::Account(id) => {
+            (!may_view_account(ctx.w, ctx.actor, id)).then_some("No such account.")
+        }
+        NamedResource::Asset(o) => (!may_view_asset(ctx.w, ctx.actor, o)).then_some("No such asset."),
+        NamedResource::Vault(v) => (!may_view_vault(ctx.w, ctx.actor, v)).then_some("No such vault."),
+    }
+}
+
+/// Render an [`crate::EconomyError`] under the existence-hiding rule (§4.5,
+/// D-E3-6), against **every** resource the refusal touches:
+///
+/// 1. the command's own `subject` (as before),
+/// 2. every resource the ERROR names ([`crate::EconomyError::named_resources`]) —
+///    the cross-resource half: `@econ/pay <mine>=<x> 1` answers about the
+///    DESTINATION, and rendering that raw distinguished "no such account: 4242" from
+///    "account 3 is not active" for accounts the actor may not see either way,
+/// 3. the other resources the COMMAND named (`also`), for refusals that name
+///    nothing but are policy answers about them
+///    ([`crate::EconomyError::concerns_named_subjects`]):
+///    `@asset/maintenance <mine>=<hidden wallet>` refused as "scope and owner do
+///    not agree", which is an answer about a wallet the actor cannot see.
+///
+/// A cap or shape complaint keeps its own text (see `concerns_named_subjects`) —
+/// hiding a payer's own operational error behind "No such account." would be a
+/// disclosure rule eating the game.
+fn refuse(ctx: &Ctx<'_>, subject: NamedResource, also: &[NamedResource], e: &crate::plan::EconomyError) -> CmdError {
+    let named = e.named_resources();
+    let extra: &[NamedResource] = if e.concerns_named_subjects() { also } else { &[] };
+    for r in std::iter::once(subject).chain(named).chain(extra.iter().copied()) {
+        if let Some(text) = hidden_text(ctx, r) {
+            return CmdError::msg(text);
+        }
+    }
+    CmdError::msg(e.to_string())
+}
+
 /// §4.5 view standing over a vault: staff, its owner, or `vault.view` on its scope.
 fn may_view_vault(w: &World, actor: ObjId, id: VaultId) -> bool {
     if api::is_staff(w, actor) {
@@ -388,25 +447,24 @@ fn finish_asset(
     outcome: Result<PostOutcome, crate::plan::EconomyError>,
     verb: &str,
 ) -> Result<(), CmdError> {
-    match outcome {
-        Ok(PostOutcome::Posted(id)) => {
-            info(ctx, format!("{verb} (transaction #{id})."));
-            Ok(())
-        }
-        Ok(PostOutcome::AlreadyPosted(id)) => {
-            info(ctx, format!("Already posted as transaction #{id}."));
-            Ok(())
-        }
-        Ok(PostOutcome::NeedsApproval(id)) => {
-            info(ctx, format!("Approval required: request #{id}."));
-            Ok(())
-        }
-        Err(e) => Err(asset_refusal(ctx, object, e)),
-    }
+    finish_ops(ctx, NamedResource::Asset(object), &[], outcome, verb)
 }
 fn finish_vault(
     ctx: &mut Ctx<'_>,
     vault: VaultId,
+    outcome: Result<PostOutcome, crate::plan::EconomyError>,
+    verb: &str,
+) -> Result<(), CmdError> {
+    finish_ops(ctx, NamedResource::Vault(vault), &[], outcome, verb)
+}
+
+/// The shared post tail: one confirmation shape, and every refusal through the
+/// existence-hiding renderer against the command's subject, the resources the error
+/// names, and the other resources the command named (`also`).
+fn finish_ops(
+    ctx: &mut Ctx<'_>,
+    subject: NamedResource,
+    also: &[NamedResource],
     outcome: Result<PostOutcome, crate::plan::EconomyError>,
     verb: &str,
 ) -> Result<(), CmdError> {
@@ -423,7 +481,7 @@ fn finish_vault(
             info(ctx, format!("Approval required: request #{id}."));
             Ok(())
         }
-        Err(e) => Err(vault_refusal(ctx, vault, e)),
+        Err(e) => Err(refuse(ctx, subject, also, &e)),
     }
 }
 
@@ -513,12 +571,15 @@ fn cmd_account(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // who may spend from it, and the READS are the §4.5 bounded non-staff surface.
     if ctx.switches.has("open") {
         require_admin(ctx)?;
+        refuse_if_frozen(ctx)?;
         account_open(ctx, false)
     } else if ctx.switches.has("system") {
         require_admin(ctx)?;
+        refuse_if_frozen(ctx)?;
         account_open(ctx, true)
     } else if ctx.switches.has("approval") {
         require_admin(ctx)?;
+        refuse_if_frozen(ctx)?;
         account_approval(ctx)
     } else if ctx.switches.has("unfreeze") {
         require_admin(ctx)?;
@@ -604,6 +665,10 @@ fn account_open(ctx: &mut Ctx<'_>, system: bool) -> Result<(), CmdError> {
         "Opened account #{id} ({instrument}){where_}{}.",
         if system { " [system source/sink]" } else { "" }
     ));
+    // A control doc + the allocator meta: no money moved, so the ORDINARY durable
+    // gate (never the strict money one). Without it the confirmation — and the
+    // account id staff are about to hand out — can outrun its own durable write.
+    ctx.gate_on_durable_ack();
     Ok(())
 }
 
@@ -740,6 +805,7 @@ fn account_close(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     api::set_account_status(ctx, id, AccountStatus::Closed);
     info(ctx, format!("Account #{id} closed."));
+    ctx.gate_on_durable_ack();
     Ok(())
 }
 
@@ -761,6 +827,7 @@ fn account_unfreeze(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     api::set_account_status(ctx, id, AccountStatus::Active);
     info(ctx, format!("Account #{id} unfrozen."));
+    ctx.gate_on_durable_ack();
     Ok(())
 }
 
@@ -778,6 +845,7 @@ fn account_approval(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if rhs.eq_ignore_ascii_case("none") {
         api::set_account_approval(ctx, id, None);
         info(ctx, format!("Cleared the approval rule on account #{id}."));
+        ctx.gate_on_durable_ack();
         return Ok(());
     }
     let mut words = rhs.split_whitespace();
@@ -789,6 +857,7 @@ fn account_approval(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if spec.eq_ignore_ascii_case("none") {
         api::set_account_approval(ctx, id, None);
         info(ctx, format!("Cleared the approval rule on account #{id}."));
+        ctx.gate_on_durable_ack();
         return Ok(());
     }
     let policy = parse_policy(ctx, &account, &spec)?;
@@ -804,6 +873,9 @@ fn account_approval(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         threshold.to_decimal_string(scale)
     ));
     info(ctx, "That is a per-transaction escalation, not a budget.".to_string());
+    // The rule is read live at every post, so the confirmation must not outrun the
+    // doc that carries it (non-strict: policy, not money).
+    ctx.gate_on_durable_ack();
     Ok(())
 }
 
@@ -914,9 +986,37 @@ fn cmd_econ(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         econ_decide(ctx, Verdict::Denied)
     } else if ctx.switches.has("approvals") {
         econ_approvals(ctx)
+    } else if ctx.switches.has("unfreeze") {
+        require_admin(ctx)?;
+        econ_unfreeze(ctx)
     } else {
-        Err(CmdError::msg("Usage: @econ/pay|mint|reverse|audit|approve|deny|approvals"))
+        Err(CmdError::msg("Usage: @econ/pay|mint|reverse|audit|approve|deny|approvals|unfreeze"))
     }
+}
+
+/// `@econ/unfreeze` — staff recovery for the **whole-economy** latch (E3 verify
+/// finding H). The latch is durable (`meta.frozen`), so this is the only thing that
+/// clears it: a boot that froze on drift also heals the drifted projections and
+/// persists them, which means no later boot would ever re-derive the freeze.
+///
+/// It deliberately does NOT unfreeze the accounts, assets, or vaults that the same
+/// recovery boot latched: those name which records need attention, and clearing them
+/// wholesale would erase the reason anyone froze.
+fn econ_unfreeze(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if ctx.w.module_state::<EconomyStore>().is_none_or(|s| !s.is_frozen()) {
+        return Err(CmdError::msg("The economy is not frozen."));
+    }
+    api::set_economy_frozen(ctx, false);
+    info(ctx, "The whole-economy freeze is cleared. Posting is live again.".to_string());
+    info(
+        ctx,
+        "Accounts, assets and vaults frozen by the recovery boot stay frozen: clear them with \
+         @account/unfreeze, @asset/unfreeze and @vault/unfreeze."
+            .to_string(),
+    );
+    // A control-doc write, not money: the ordinary durable gate (§4.2).
+    ctx.gate_on_durable_ack();
+    Ok(())
 }
 
 // ---- approvals (E3b2 §4.6) ------------------------------------------------
@@ -1085,6 +1185,13 @@ fn econ_pay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if amount.is_zero() || amount.is_negative() {
         return Err(CmdError::msg("Amount must be positive."));
     }
+    // A self-transfer moves nothing and nets to zero — the belt on the engine's
+    // gross-debit authorization (a `[-n, +n]` pair on ONE account used to read as a
+    // free credit and post against any account the actor could name). Refused BEFORE
+    // any lookup, so it discloses nothing about either id.
+    if from == to {
+        return Err(CmdError::msg("An account cannot pay itself."));
+    }
     // §4.4: a non-staff payer may name an account they OWN, or a SCOPED (org) one —
     // and only those two. The engine then decides the scoped case live, against the
     // org's capability + limit + compartment status.
@@ -1167,17 +1274,27 @@ fn econ_pay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     plan.custody_ops = custody_ops;
     let outcome = api::post(ctx, &plan);
     match asset_object {
-        Some(object) => finish_asset(ctx, object, outcome, "Paid"),
-        None => finish_pay(ctx, from, outcome),
+        // Both accounts ride along as `also`: a refusal about the money half of a
+        // pay-with-asset plan must hide behind them exactly as a money-only pay does.
+        Some(object) => finish_ops(
+            ctx,
+            NamedResource::Asset(object),
+            &[NamedResource::Account(from), NamedResource::Account(to)],
+            outcome,
+            "Paid",
+        ),
+        None => finish_pay(ctx, from, to, outcome),
     }
 }
 
 /// The `@econ/pay` tail: the same outcomes as [`finish`], but every refusal is
 /// rendered through the account existence-hiding rule (§4.5) — a payer with no
-/// standing on the source account learns only that there is no such account.
+/// standing on the source account learns only that there is no such account, and a
+/// refusal that answers about the DESTINATION hides behind it just the same.
 fn finish_pay(
     ctx: &mut Ctx<'_>,
     from: AccountId,
+    to: AccountId,
     outcome: Result<PostOutcome, crate::plan::EconomyError>,
 ) -> Result<(), CmdError> {
     match outcome {
@@ -1194,7 +1311,7 @@ fn finish_pay(
             info(ctx, "Once it is approved, run the same command again to post it.".to_string());
             Ok(())
         }
-        Err(e) => Err(account_refusal(ctx, from, e)),
+        Err(e) => Err(refuse(ctx, NamedResource::Account(from), &[NamedResource::Account(to)], &e)),
     }
 }
 
@@ -1375,7 +1492,11 @@ fn asset_maintenance(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     let plan = ops_plan(ctx, vec![AssetOp::SetMaintenance { object, account }], Vec::new());
     let outcome = api::post(ctx, &plan);
-    finish_asset(ctx, object, outcome, "Maintenance payer set")
+    // The payer account is a subject too: invariant 14's refusal ("scope and owner
+    // do not agree") is an answer ABOUT that account, and naming a wallet the actor
+    // may not view is how a probe would find one.
+    let also: Vec<NamedResource> = account.map(NamedResource::Account).into_iter().collect();
+    finish_ops(ctx, NamedResource::Asset(object), &also, outcome, "Maintenance payer set")
 }
 
 fn asset_lien(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -1452,6 +1573,7 @@ fn asset_unfreeze(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     api::set_asset_frozen(ctx, object, false, None);
     info(ctx, format!("Asset #{} unfrozen.", object.0));
+    ctx.gate_on_durable_ack();
     Ok(())
 }
 
@@ -1598,6 +1720,7 @@ fn cmd_vault(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 fn vault_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     require_admin(ctx)?;
+    refuse_if_frozen(ctx)?;
     const USAGE: &str =
         "Usage: @vault/create <name>=container:<obj>|interior:<obj> [owner=<principal>] [scope=<id>]";
     let name = ctx.args.lhs().trim().to_string();
@@ -1672,6 +1795,7 @@ fn vault_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     api::create_vault(ctx, vault);
     info(ctx, format!("Created vault #{id} ({name}) backed by #{}.", backing_obj.0));
+    ctx.gate_on_durable_ack();
     Ok(())
 }
 
@@ -1789,6 +1913,7 @@ fn vault_set_status(ctx: &mut Ctx<'_>, status: VaultStatus, verb: &str) -> Resul
     }
     api::set_vault_status(ctx, id, status);
     info(ctx, format!("Vault #{id} {verb}."));
+    ctx.gate_on_durable_ack();
     Ok(())
 }
 
@@ -1814,5 +1939,6 @@ fn vault_close(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     api::set_vault_status(ctx, id, VaultStatus::Closed);
     info(ctx, format!("Vault #{id} closed."));
+    ctx.gate_on_durable_ack();
     Ok(())
 }

@@ -355,6 +355,18 @@ impl Prepared {
     }
 }
 
+/// One economic resource a refusal names — the input to the command layer's
+/// existence-hiding renderer (§4.5, D-E3-6).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum NamedResource {
+    /// An account.
+    Account(AccountId),
+    /// A **title record**, keyed by the object it titles.
+    Asset(ObjId),
+    /// A vault.
+    Vault(VaultId),
+}
+
 /// Why a plan was refused. These carry precise detail for **trusted server callers
 /// only** — E2 exposes no non-staff economic read (R-D2), so a disclosure filter is
 /// not needed until E4.
@@ -456,9 +468,14 @@ pub enum EconomyError {
     #[error("no custody standing over object {0}")]
     NoCustodyStanding(ObjId),
     /// A withdrawal destination is not the actor / the actor's location, is dead or
-    /// `GOING`, or is itself a vault backing (entering one is a deposit).
+    /// `GOING`, or is (or sits inside) a vault backing (entering one is a deposit).
     #[error("object {0} is not a valid destination")]
     BadDestination(ObjId),
+    /// A `Deposit` named an object that is itself the backing of a vault. Nesting a
+    /// vault's backing inside another vault puts the inner vault's contents under
+    /// the OUTER vault's withdraw policy — a custody-laundering primitive.
+    #[error("object {0} backs a vault and cannot be put inside another")]
+    BackingNotDepositable(ObjId),
     /// The vault's backing is not a usable custody container.
     #[error("vault {0} has an invalid backing")]
     BackingInvalid(VaultId),
@@ -503,4 +520,56 @@ pub enum EconomyError {
         /// The current revision, if the asset exists.
         found: Option<u64>,
     },
+}
+
+impl EconomyError {
+    /// Every account / title record / vault this refusal NAMES.
+    ///
+    /// The command layer's existence-hiding renderer (§4.5, D-E3-6) collapses a
+    /// refusal to the matching "No such …" text when **any** of these is a resource
+    /// the actor may not view — not merely when the COMMAND's own subject is. An
+    /// error naming a different resource than the verb's subject (`@econ/pay
+    /// <mine>=<someone else's>` answering about the *destination*) is exactly the
+    /// cross-resource disclosure this closes.
+    ///
+    /// Custody refusals ([`EconomyError::NoCustodyStanding`],
+    /// [`EconomyError::NotInVault`], [`EconomyError::BadDestination`],
+    /// [`EconomyError::BackingNotDepositable`], [`EconomyError::DuplicateCustodyOp`])
+    /// name a **world object**, not a title record — an object the actor is looking
+    /// at in the room discloses nothing, and the vault they named is the subject the
+    /// renderer already hides behind — so they are deliberately not listed here.
+    #[must_use]
+    pub fn named_resources(&self) -> Vec<NamedResource> {
+        match self {
+            EconomyError::NoSuchAccount(a)
+            | EconomyError::InactiveAccount(a)
+            | EconomyError::CreditViolation(a) => vec![NamedResource::Account(*a)],
+            EconomyError::Stale { account, .. } => vec![NamedResource::Account(*account)],
+            EconomyError::NoSuchAsset(o)
+            | EconomyError::AssetExists(o)
+            | EconomyError::AssetNotActive(o)
+            | EconomyError::AssetFrozen(o)
+            | EconomyError::Encumbered(o)
+            | EconomyError::NoSuchEncumbrance(o)
+            | EconomyError::AssignmentToOwner(o)
+            | EconomyError::DuplicateAssetOp(o) => vec![NamedResource::Asset(*o)],
+            EconomyError::StaleAsset { object, .. } => vec![NamedResource::Asset(*object)],
+            EconomyError::NoSuchVault(v)
+            | EconomyError::VaultNotActive(v)
+            | EconomyError::BackingInvalid(v) => vec![NamedResource::Vault(*v)],
+            _ => Vec::new(),
+        }
+    }
+
+    /// Whether a refusal that names **no** resource is nonetheless a policy answer
+    /// *about the resources the caller named* — so the renderer must also hide
+    /// behind those (the account `@asset/maintenance` pointed at, the account
+    /// `@econ/pay` paid into). A cap or a shape complaint
+    /// ([`EconomyError::TooLarge`], [`EconomyError::TooFewLines`]) is about the
+    /// PLAN, not about any resource, and must keep rendering its own text — hiding
+    /// it would tell a payer their own operational error is "no such account".
+    #[must_use]
+    pub fn concerns_named_subjects(&self) -> bool {
+        matches!(self, EconomyError::Unauthorized | EconomyError::ScopeOwnerMismatch)
+    }
 }

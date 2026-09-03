@@ -61,7 +61,14 @@ pub struct EconomyStore {
     /// floored at one past every journal-derived `consumed_approval`.
     pub(crate) next_approval: u64,
     /// The whole-economy freeze latch (boot drift / conservation break / a dropped
-    /// durable write). While set, [`crate::post`] refuses everything.
+    /// durable write). While set, [`crate::post`] refuses everything, and so do the
+    /// non-recovery control verbs (`@account/open`, `@account/approval`,
+    /// `@vault/create`).
+    ///
+    /// **Durable** (`meta.frozen`, written by `meta_doc`): the boot that
+    /// detects drift also heals the drifted projections and persists them, so
+    /// nothing in the docs would ever re-derive the freeze — only staff
+    /// `@econ/unfreeze` clears it.
     pub frozen: bool,
     /// The wiring-frozen custody provider table (injected after boot, the
     /// `OrgModule::with_predicates` shape). The built-in `ContainerProvider` is
@@ -151,13 +158,22 @@ impl EconomyStore {
     pub fn peek_next_transaction(&self) -> u64 {
         self.next_transaction
     }
-    /// The allocator resume document — high-water marks boot never lowers.
+    /// The allocator resume document — high-water marks boot never lowers, plus the
+    /// **durable** whole-economy freeze latch.
+    ///
+    /// `frozen` lives here because a latch that only exists in RAM is not a latch:
+    /// the boot that detects drift freezes, heals the drifted docs to the journal,
+    /// persists them — and the NEXT boot then reads a clean world and comes up
+    /// spending. Boot ORs the stored value into what it derives (a read tolerant of
+    /// the field's absence, for pre-E3 meta docs), and only staff `@econ/unfreeze`
+    /// clears it.
     pub(crate) fn meta_doc(&self) -> serde_json::Value {
         serde_json::json!({
             "next_account_id": self.next_account,
             "next_transaction_id": self.next_transaction,
             "next_vault_id": self.next_vault,
             "next_approval_id": self.next_approval,
+            "frozen": self.frozen,
         })
     }
 

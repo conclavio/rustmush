@@ -37,11 +37,31 @@
 //! key still present, and re-running the identical command is an idempotency HIT
 //! (`faction.migrate/{fid}/{code}`) that moves nothing and just re-marks. The
 //! reverse order would lose the pool with nothing minted to replace it.
+//!
+//! Two consequences of that ordering are load-bearing enough to name:
+//!
+//! - **Opening the destination wallet is a store mutation, so every refusal that
+//!   can be decided up front is decided ABOVE it.** `open_root_account` advances the
+//!   account allocator and puts a record in RAM under a *deferred* persist; a handler
+//!   that then returns `Err` loses the persist but keeps the RAM record, leaving a
+//!   phantom account that binds the org's root scope until the next reboot. So the
+//!   whole-economy freeze, the backing org's ability to *receive* (§4.4), the
+//!   instrument, the source account, and the pool are all proved before the wallet is
+//!   opened — and if `post` refuses anyway, the refusal is rendered to the actor and
+//!   the command returns `Ok` so the wallet's persist rides out with it (an org
+//!   root-scope account is a legitimate record whether or not the mint landed).
+//! - **The idempotency index, not the faction doc, answers "did this migrate?"**
+//!   A re-run rebuilds the plan from the *current* pool, so a pool staff edited
+//!   between the post and the re-run hashes differently under the same key and
+//!   `post` refuses with `IdempotencyConflict` — forever, with the money in the
+//!   wallet AND the rating still live. [`faction_migrate`] therefore asks the index
+//!   before it looks at the pool, and converges on a hit instead of re-planning.
 
 use mush_core::{CmdError, Ctx, ObjId, World};
 use mush_economy::{
     Account, AccountId, AccountStatus, Amount, CreditPolicy, EconomicCause, EconomyPlan,
     EconomyStore, IdempotencyKey, InstrumentId, InstrumentStatus, PostOutcome, RequestedLine,
+    TransactionId,
 };
 use mush_org::{
     OrgAction, OrgId, OrgMutationOp, OrgMutationPlan, OrgScope, OrgScopeId, OrgStatus, OrgStore,
@@ -409,8 +429,20 @@ pub(crate) fn faction_migrate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (Some(raw_key), Some(raw_src), None) = (words.next(), words.next(), words.next()) else {
         return Err(CmdError::msg(format!("Usage: {USAGE}")));
     };
-    if ctx.w.module_state::<EconomyStore>().is_none() {
-        return Err(CmdError::msg("The economy is not available on this world."));
+    {
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return Err(CmdError::msg("The economy is not available on this world."));
+        };
+        // 0. The whole-economy freeze, hoisted to the top of the handler rather than
+        //    left to `post`. `post` would refuse it just the same — but only AFTER
+        //    `open_root_account` has already advanced the allocator and put a wallet
+        //    in RAM, and a frozen economy is precisely the state in which a phantom
+        //    account must not be minted.
+        if store.is_frozen() {
+            return Err(CmdError::msg(
+                "The economy is frozen; nothing may be posted or opened until staff clear it.",
+            ));
+        }
     }
 
     // 1. The key must canonicalize to a REGISTERED, ACTIVE instrument code (F4).
@@ -438,13 +470,24 @@ pub(crate) fn faction_migrate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         def.scale
     };
 
-    // 2. The faction must resolve a backing org, live.
+    // 2. The faction must resolve a backing org, live — and that org must be able to
+    //    RECEIVE. `backing_org` deliberately answers "which organization" and leaves
+    //    the lifecycle question to the economy, but the economy answers it inside
+    //    `post` (`credit_allowed`, §4.4: a `Dissolving` org takes final settlement, a
+    //    `Suspended` or `Closed` one takes nothing), which is one call too late — the
+    //    wallet would already be open. So the same rule is proved here, first.
     let org = backing_org(ctx.w, &f).map_err(|e| CmdError::msg(e.to_string()))?;
-    let root = ctx
+    let (root, org_status) = ctx
         .w
         .module_state::<OrgStore>()
-        .and_then(|s| s.state().org(org).map(|o| o.root_scope))
+        .and_then(|s| s.state().org(org).map(|o| (o.root_scope, o.status)))
         .ok_or_else(|| CmdError::msg(format!("org #{org} has no root scope.")))?;
+    if !matches!(org_status, OrgStatus::Active | OrgStatus::Dissolving) {
+        return Err(CmdError::msg(format!(
+            "org #{org} is {org_status:?}; a suspended or closed organization may not \
+             receive value, so there is nothing to migrate into."
+        )));
+    }
 
     // 3. The idempotency key is a pure function of (faction, instrument), so every
     //    re-run of this migration — including one after a lost faction-doc write —
@@ -455,31 +498,32 @@ pub(crate) fn faction_migrate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     );
     let pool = f.resources.get(&key).copied().unwrap_or(0);
 
-    // Already migrated and the pool already gone: the work is done. Report the
-    // idempotency HIT from the economy's own index rather than rebuilding a plan
-    // for an amount that no longer exists.
+    // 3a. **Did this migration already post?** The economy's index is asked BEFORE
+    //     the pool is judged, because the pool is exactly what a re-run cannot trust:
+    //     a post that landed with the faction-doc write lost leaves the rating live,
+    //     and staff who then edit it (`@faction/resource`) change the plan this
+    //     command would rebuild — same idempotency key, different plan hash, so
+    //     `post` refuses `IdempotencyConflict` on that run and on every run after it,
+    //     with the money in the wallet AND the rating still standing. Editing the
+    //     pool to 0 instead dies on "holds no pool". Neither ever marks the key. On a
+    //     hit there is nothing left to post, so converge on the doc instead. (This
+    //     subsumes the old `pool == 0 && migrated` report.)
+    let posted = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().idempotency(&idempotency).map(|r| r.transaction));
+    if let Some(tx) = posted {
+        return converge_already_posted(ctx, &f, &key, tx);
+    }
+    // Marked with the pool gone but NO transaction under the key: the marking and the
+    // journal disagree in the one direction this command cannot repair (it would have
+    // to mint an amount nobody recorded).
     if pool == 0 && f.migrated.contains(&key) {
-        let hit = ctx
-            .w
-            .module_state::<EconomyStore>()
-            .and_then(|s| s.snapshot().idempotency(&idempotency).map(|r| r.transaction));
-        return match hit {
-            Some(tx) => {
-                info(
-                    ctx,
-                    format!(
-                        "{}: {key} was already migrated (transaction #{tx}). Nothing moved.",
-                        f.name
-                    ),
-                );
-                Ok(())
-            }
-            None => Err(CmdError::msg(format!(
-                "{}: {key} is already marked migrated but no migration transaction \
-                 exists for it; correct it through @econ, not here.",
-                f.name
-            ))),
-        };
+        return Err(CmdError::msg(format!(
+            "{}: {key} is already marked migrated but no migration transaction \
+             exists for it; correct it through @econ, not here.",
+            f.name
+        )));
     }
     // 4. Nothing to mint / no minting debt.
     if pool <= 0 {
@@ -522,6 +566,15 @@ pub(crate) fn faction_migrate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 src.instrument
             )));
         }
+        // Hoisted for the same reason as the freeze and the org status: `post`
+        // refuses a non-`Active` line account (`InactiveAccount`), and by then the
+        // destination wallet exists.
+        if src.status != AccountStatus::Active {
+            return Err(CmdError::msg(format!(
+                "Account #{source} is {:?}, not Active; nothing may be posted from it.",
+                src.status
+            )));
+        }
     }
 
     // 6. The destination: the org's root-scope account for this instrument.
@@ -550,9 +603,12 @@ pub(crate) fn faction_migrate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         );
         return Ok(());
     }
-    let dest = match existing {
-        Some(id) => id,
-        None => open_root_account(ctx, org, root, &code),
+    // THE store mutation of this handler. Everything that could refuse the post on
+    // facts already in hand has refused above; what remains below cannot be answered
+    // without asking `post` itself.
+    let (dest, opened) = match existing {
+        Some(id) => (id, false),
+        None => (open_root_account(ctx, org, root, &code), true),
     };
 
     let mut plan = EconomyPlan::new(
@@ -577,6 +633,27 @@ pub(crate) fn faction_migrate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 format!(
                     "Approval required: request #{id}. Nothing has moved, and {key} \
                      is still a rating."
+                ),
+            );
+            return Ok(());
+        }
+        // A refusal we could not hoist (an unforeseen policy on the source, an
+        // arithmetic edge). If a wallet was opened above, `Err` is the ONE answer
+        // that must not be given: core discards a failed handler's deferred persists
+        // but not its world mutations, so the account would live in RAM, hold the
+        // allocator's advance, and bind the root scope in `EconomyScopeUse` with no
+        // doc behind it until the next reboot. Report the refusal and return `Ok` so
+        // the empty wallet persists as the ordinary record it is.
+        Err(e) if opened => {
+            let actor = ctx.actor;
+            ctx.out.error(
+                actor,
+                format!(
+                    "{}: {key} was NOT migrated — the post was refused ({e}). Nothing \
+                     moved and {key} is still a rating; the org's now-empty root-scope \
+                     account #{dest} stands (close it with @account/close if it is not \
+                     wanted).",
+                    f.name
                 ),
             );
             return Ok(());
@@ -616,6 +693,67 @@ pub(crate) fn faction_migrate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             amount.to_decimal_string(scale)
         ),
     );
+    Ok(())
+}
+
+/// The migration under this key ALREADY posted — the economy's idempotency index
+/// says so — and the faction doc has not caught up. Converge on the doc: drop
+/// whatever the rating still holds, mark the key, log the residual, and report the
+/// transaction that did the work.
+///
+/// This is the only path that can retire a key whose pool moved between the post and
+/// the re-run, and it is deliberately **not** gated on `/confirm`: it mints nothing,
+/// moves nothing, and describes a world where the money already exists. The residual
+/// is *dropped, not minted* — the post that happened is the whole migration, and a
+/// rating edited after it was never money (D-E3-9's one-way rule cuts both ways).
+///
+/// Idempotent in its own right: a second call finds nothing to remove and nothing to
+/// mark, writes no doc, and appends no log line.
+fn converge_already_posted(
+    ctx: &mut Ctx<'_>,
+    f: &Faction,
+    key: &SmolStr,
+    tx: TransactionId,
+) -> Result<(), CmdError> {
+    let now = ctx.w.now();
+    let actor: ObjId = ctx.actor;
+    let (residual, updated) = {
+        let st = ctx
+            .w
+            .module_state_mut::<FactionState>()
+            .expect("faction state slot installed at registration");
+        let fac = st.factions.get_mut(&f.id).expect("resolved above");
+        let removed = fac.resources.remove(key);
+        let newly = fac.migrated.insert(key.clone());
+        let residual = removed.unwrap_or(0);
+        if residual != 0 {
+            fac.push_resource_log(ResourceChange {
+                kind: key.clone(),
+                delta: -residual,
+                reason: format!("migration already posted as #{tx}; residual dropped"),
+                by: actor,
+                ts: now,
+            });
+        }
+        // No write when nothing changed: the common re-run is a pure report.
+        let changed = removed.is_some() || newly;
+        (residual, changed.then(|| fac.clone()))
+    };
+    if let Some(updated) = &updated {
+        persist_faction(ctx.out, updated);
+    }
+    let msg = if residual == 0 {
+        format!("{}: {key} was already migrated (transaction #{tx}). Nothing moved.", f.name)
+    } else {
+        format!(
+            "{}: {key} was already migrated (transaction #{tx}); the {residual} left on the \
+             rating was DROPPED, not minted — that post was the migration, and a rating \
+             edited after it never became money. Mint more with @econ/mint if it should \
+             have been.",
+            f.name
+        )
+    };
+    info(ctx, msg);
     Ok(())
 }
 

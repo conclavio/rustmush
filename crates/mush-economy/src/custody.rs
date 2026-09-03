@@ -26,7 +26,7 @@
 use std::sync::Arc;
 
 use mush_core::module::check_carry_attempt;
-use mush_core::{Ctx, Flags, MAX_CONTAINMENT_DEPTH, ObjId, World, perm};
+use mush_core::{Ctx, Flags, MAX_CONTAINMENT_DEPTH, ObjId, ObjKind, World, perm};
 use mush_org::PrincipalId;
 
 use crate::engine::CustodyEval;
@@ -198,6 +198,15 @@ fn container_move(ctx: &mut Ctx<'_>, actor: ObjId, obj: ObjId, dest: ObjId) -> R
     if !live(ctx.w, obj) {
         return Err(CustodyError::Refused(format!("#{} is not available to move.", obj.0)));
     }
+    // Topology is not custody. `World::move_to` files an `Exit` into the
+    // destination's `exits` vector, which NO custody query walks (`contents_of` is
+    // contents only) — so a deposited exit would be journaled, then be invisible to
+    // `holds`/`contents`, unwithdrawable, let `@vault/close` close an "empty" vault
+    // that still held it, and boot as a custody mismatch. Refuse every kind
+    // `move_to` would not file into `contents`.
+    if !custody_movable(ctx.w, obj) {
+        return Err(CustodyError::Refused(format!("#{} is not a thing custody can hold.", obj.0)));
+    }
     if !live(ctx.w, dest) {
         return Err(CustodyError::Refused(format!("#{} cannot hold anything.", dest.0)));
     }
@@ -218,6 +227,14 @@ fn container_move(ctx: &mut Ctx<'_>, actor: ObjId, obj: ObjId, dest: ObjId) -> R
 
 fn live(w: &World, o: ObjId) -> bool {
     w.get(o).is_some_and(|x| !x.flags.contains(Flags::GOING))
+}
+
+/// Whether custody can hold this object at all: `World::move_to` must file it into
+/// the destination's **`contents`**, which is where every custody query looks. An
+/// [`ObjKind::Exit`] is filed into `exits` instead — it is world topology, not a
+/// thing — and a `Room` has no location to move. Both are refused before any move.
+fn custody_movable(w: &World, o: ObjId) -> bool {
+    w.get(o).is_some_and(|x| !matches!(x.kind, ObjKind::Exit | ObjKind::Room))
 }
 
 /// Everything under `root`, transitively, capped at [`MAX_CONTAINMENT_DEPTH`]
@@ -309,6 +326,19 @@ impl CustodyEval for WorldCustody<'_> {
         if !live(self.w, obj) || !live(self.w, a) {
             return false;
         }
+        // A person is not vault contents. `obj == actor` would otherwise sail
+        // through every clause below — co-located with itself, and
+        // `perm::controls(a, a)` is true — so an actor could file THEMSELF into a
+        // vault; the same reasoning bars depositing any other actor (a custody
+        // record is a claim about a thing, and imprisonment is not a custody op).
+        if obj == a || self.w.get(obj).is_some_and(|o| o.kind.is_actor()) {
+            return false;
+        }
+        // Topology is not custody either (see `custody_movable`): an exit filed
+        // into `exits` would be journaled and then invisible to every query.
+        if !custody_movable(self.w, obj) {
+            return false;
+        }
         let obj_loc = self.w.get(obj).and_then(|o| o.location);
         if obj_loc == Some(a) {
             return true;
@@ -329,10 +359,33 @@ impl CustodyEval for WorldCustody<'_> {
                     || asset.assignment.as_ref().is_some_and(|x| x.assigned_to == principal)
             })
     }
+    /// Invariant 15's destination rule: the actor or the actor's current location,
+    /// live, not `GOING` — and **not inside any vault's backing**.
+    ///
+    /// The engine owns the direct check (`is_vault_backing(to)`), but only the world
+    /// can see the containment CHAIN above `to`: standing inside vault B's backing,
+    /// `@vault/withdraw x=A` (destination `to = me`) would otherwise land the object
+    /// in vault B with no Deposit authorization, no standing check, and no custody
+    /// effect recording it — laundering by geography. Entering a vault is a
+    /// `Deposit`, at any depth.
     fn destination_ok(&self, actor: &PrincipalId, to: ObjId) -> bool {
         let PrincipalId::Object(a) = actor else { return false };
         let a = *a;
         let reachable = to == a || self.w.get(a).and_then(|o| o.location) == Some(to);
-        reachable && live(self.w, to)
+        if !reachable || !live(self.w, to) {
+            return false;
+        }
+        let Some(store) = self.w.module_state::<EconomyStore>() else { return false };
+        let snapshot = store.snapshot();
+        let mut cur = Some(to);
+        for _ in 0..=MAX_CONTAINMENT_DEPTH {
+            let Some(id) = cur else { return true };
+            if snapshot.is_vault_backing(id) {
+                return false;
+            }
+            cur = self.w.get(id).and_then(|o| o.location);
+        }
+        // A chain deeper than the cap is a world we cannot prove safe: fail closed.
+        false
     }
 }

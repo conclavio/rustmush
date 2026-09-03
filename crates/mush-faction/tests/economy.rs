@@ -393,6 +393,106 @@ fn migrate_refuses_a_zero_or_negative_pool() {
 }
 
 // ----------------------------------------------------------------------
+// Refusals that must land ABOVE the wallet, not below it
+// ----------------------------------------------------------------------
+//
+// `open_root_account` is the one store mutation `@faction/migrate` makes before
+// `post`: it advances the account allocator and puts a record in RAM under a
+// DEFERRED persist. Core discards a failed handler's deferred writes but not its
+// world mutations, so a refusal that arrives after that point and returns `Err`
+// leaves a phantom account — no doc, but real in RAM, holding the allocator's
+// advance and binding the org's root scope in `EconomyScopeUse` until the next
+// reboot. Every refusal decidable from facts already in hand therefore has to be
+// decided first, and these two are the ones the economy would otherwise raise from
+// inside `post`.
+
+/// Count every account, phantom or not: the RAM snapshot is exactly where a
+/// discarded-persist account would still be visible.
+fn account_count(tw: &TestWorld) -> usize {
+    store(tw).snapshot().accounts().count()
+}
+/// Whether anything was queued to the economy namespace since the last drain.
+fn wrote_economy(tw: &mut TestWorld) -> bool {
+    tw.take_module_ops().iter().any(|op| op.ns.as_str() == "economy")
+}
+/// Rewrite an org's persisted status. The only route to a wound-down org — the org
+/// mutation alphabet has no status op — and the same trick `mush-economy`'s e3b2
+/// suite uses.
+fn with_org_status(kv: &Kv, org: OrgId, status: &str) -> Kv {
+    let mut kv = kv.clone();
+    let key = mush_org::org_key(org);
+    for (k, v) in kv.get_mut("org").expect("org kv") {
+        if *k == key {
+            v["status"] = serde_json::json!(status);
+        }
+    }
+    kv
+}
+
+#[test]
+fn a_frozen_economy_refuses_the_migration_before_a_wallet_is_opened() {
+    let mut tw = boot();
+    setup(&mut tw);
+    // Freeze the way boot freezes: a stored balance that disagrees with the journal
+    // at its own claimed sequence is drift, and drift latches the whole economy.
+    let mut kv = fold_kv(&mut tw);
+    for (k, v) in kv.get_mut("economy").expect("economy kv") {
+        if k == "account:0" {
+            v["posted_balance"] = serde_json::json!(5);
+        }
+    }
+    let mut tw2 = reboot(kv);
+    assert!(store(&tw2).is_frozen(), "the drift must latch the freeze");
+    let before = account_count(&tw2);
+    let _ = wrote_economy(&mut tw2); // drain boot's own healing writes
+
+    let seen = err(&mut tw2, GOD, "@faction/migrate/confirm Camarilla=gold #0");
+    assert!(seen.contains("frozen"), "{seen}");
+
+    // The refusal landed above `open_root_account`: no wallet in RAM, none on the
+    // scope, and not one economy write queued (so the allocator never moved either).
+    assert_eq!(account_count(&tw2), before, "a phantom wallet was opened under a freeze");
+    assert!(org_account(&tw2).is_none(), "no org root-scope wallet exists");
+    assert_eq!(tx_count(&tw2), 0);
+    assert!(!wrote_economy(&mut tw2), "a refused migration wrote to the economy");
+    // And the rating is untouched: still a rating, still unmarked.
+    let f = faction(&tw2, "Camarilla");
+    assert_eq!(f.resources.get("gold"), Some(&250));
+    assert!(f.migrated.is_empty());
+}
+
+#[test]
+fn a_suspended_backing_org_refuses_the_migration_before_a_wallet_is_opened() {
+    let mut tw = boot();
+    setup(&mut tw);
+    let kv = fold_kv(&mut tw);
+
+    // A `Suspended` org may not RECEIVE value (§4.4), so the credit half of the plan
+    // could never be authorized — and the wallet meant to receive it is never opened.
+    let mut tw2 = reboot(with_org_status(&kv, OrgId(0), "Suspended"));
+    let before = account_count(&tw2);
+    let _ = wrote_economy(&mut tw2);
+    let seen = err(&mut tw2, GOD, "@faction/migrate/confirm Camarilla=gold #0");
+    assert!(seen.contains("Suspended"), "{seen}");
+    assert_eq!(account_count(&tw2), before, "a phantom wallet was opened for an uncreditable org");
+    assert!(org_account(&tw2).is_none(), "no org root-scope wallet exists");
+    assert_eq!(tx_count(&tw2), 0);
+    assert!(!wrote_economy(&mut tw2), "a refused migration wrote to the economy");
+    let f = faction(&tw2, "Camarilla");
+    assert_eq!(f.resources.get("gold"), Some(&250));
+    assert!(f.migrated.is_empty());
+
+    // The hoisted gate MIRRORS the economy's own rule rather than inventing a
+    // stricter one: a `Dissolving` org is exactly the case that must still settle.
+    let mut tw3 = reboot(with_org_status(&kv, OrgId(0), "Dissolving"));
+    ok(&mut tw3, GOD, "@faction/migrate/confirm Camarilla=gold #0");
+    let dest = org_account(&tw3).expect("a dissolving org still takes final settlement");
+    assert_eq!(bal(&tw3, dest), 250);
+    assert_eq!(tx_count(&tw3), 1);
+    assert!(faction(&tw3, "Camarilla").migrated.contains("gold"));
+}
+
+// ----------------------------------------------------------------------
 // The migration itself
 // ----------------------------------------------------------------------
 
@@ -478,6 +578,106 @@ fn a_dropped_faction_doc_write_converges_on_a_re_run() {
     let f = faction(&tw2, "Camarilla");
     assert!(!f.resources.contains_key("gold"), "the key is gone");
     assert!(f.migrated.contains("gold"));
+}
+
+/// Post, lose the faction-doc write, reboot — and hand the world back to staff who
+/// do not know the money already moved. Whatever they do to the rating in the
+/// meantime, the re-run has to converge.
+///
+/// It could not before: the re-run rebuilds its plan from the CURRENT pool, so an
+/// edited pool hashes differently under the same `faction.migrate/{fid}/{code}` key
+/// and `post` refuses `IdempotencyConflict` — permanently, with 250 in the wallet
+/// and 300 live as a rating, and the key never marked. Asking the idempotency index
+/// before judging the pool is what makes the outcome reachable.
+///
+/// Returns `(TestWorld, dest, tx)` positioned just after the reboot.
+fn posted_but_unmarked(tw: &mut TestWorld) -> (TestWorld, AccountId, mush_economy::TransactionId) {
+    setup(tw);
+    let mut kv = fold_kv(tw);
+    let stale = kv["faction"].iter().find(|(k, _)| k == "fac:0").expect("faction doc").1.clone();
+
+    ok(tw, GOD, "@faction/migrate/confirm Camarilla=gold #0");
+    let dest = org_account(tw).expect("org wallet");
+    let tx = store(tw).transactions().next().expect("the migration transaction").id;
+    fold_into(tw, &mut kv);
+    for (k, v) in kv.get_mut("faction").expect("faction kv") {
+        if k == "fac:0" {
+            *v = stale.clone();
+        }
+    }
+    let tw2 = reboot(kv);
+    // The money is durable; the marking is not, so `gold` reboots as a live rating.
+    assert_eq!(faction(&tw2, "Camarilla").resources.get("gold"), Some(&250));
+    assert!(faction(&tw2, "Camarilla").migrated.is_empty());
+    (tw2, dest, tx)
+}
+
+#[test]
+fn a_pool_edited_between_the_post_and_the_re_run_still_converges() {
+    let mut tw = boot();
+    let (mut tw2, dest, tx) = posted_but_unmarked(&mut tw);
+
+    // Staff, not knowing the money moved, top the rating up.
+    ok(&mut tw2, GOD, "@faction/resource Camarilla=gold/50/more turf");
+    assert_eq!(faction(&tw2, "Camarilla").resources.get("gold"), Some(&300));
+    let before = faction(&tw2, "Camarilla").resource_log.len();
+
+    let seen = ok(&mut tw2, GOD, "@faction/migrate/confirm Camarilla=gold #0");
+    assert!(seen.contains("already migrated"), "{seen}");
+    assert!(seen.contains(&format!("transaction #{tx}")), "the ORIGINAL transaction: {seen}");
+
+    // Converged: the key is retired, marked, and the residual is logged as DROPPED.
+    let f = faction(&tw2, "Camarilla");
+    assert!(!f.resources.contains_key("gold"), "the key is gone");
+    assert!(f.migrated.contains("gold"));
+    let last = f.resource_log.last().expect("a log entry");
+    assert_eq!(last.kind, "gold");
+    assert_eq!(last.delta, -300, "the whole residual is dropped, not just the migrated 250");
+    assert!(last.reason.contains("already posted"), "{}", last.reason);
+    assert_eq!(last.by, GOD);
+    assert_eq!(f.resource_log.len(), before + 1);
+
+    // Not a minor unit moved: a rating edited after the post was never money.
+    assert_eq!(tx_count(&tw2), 1, "the residual must not mint a second transaction");
+    assert_eq!(bal(&tw2, AccountId(0)), -250, "balances unchanged");
+    assert_eq!(bal(&tw2, dest), 250);
+    assert_eq!(store(&tw2).snapshot().accounts().count(), 2, "no duplicate wallet");
+
+    // And it is idempotent in its own right: a third run reports the same
+    // transaction, writes no doc, and appends no log line.
+    let len = f.resource_log.len();
+    let seen = ok(&mut tw2, GOD, "@faction/migrate/confirm Camarilla=gold #0");
+    assert!(seen.contains("Nothing moved"), "{seen}");
+    assert_eq!(faction(&tw2, "Camarilla").resource_log.len(), len);
+    assert_eq!(tx_count(&tw2), 1);
+}
+
+#[test]
+fn a_pool_zeroed_between_the_post_and_the_re_run_still_converges() {
+    let mut tw = boot();
+    let (mut tw2, dest, tx) = posted_but_unmarked(&mut tw);
+
+    // The other half of the same trap: spending the rating down to 0 used to make the
+    // re-run die on "holds no pool" instead, so the key was never marked either way.
+    ok(&mut tw2, GOD, "@faction/resource Camarilla=gold/-250/spent it");
+    assert_eq!(faction(&tw2, "Camarilla").resources.get("gold"), Some(&0));
+    let before = faction(&tw2, "Camarilla").resource_log.len();
+
+    let seen = ok(&mut tw2, GOD, "@faction/migrate/confirm Camarilla=gold #0");
+    assert!(seen.contains("already migrated"), "{seen}");
+    assert!(seen.contains(&format!("transaction #{tx}")), "{seen}");
+
+    let f = faction(&tw2, "Camarilla");
+    assert!(!f.resources.contains_key("gold"), "the zeroed key is gone, not left shadowing");
+    assert!(f.migrated.contains("gold"));
+    // A zero residual is nothing to log — the drop entry would be noise.
+    assert_eq!(f.resource_log.len(), before);
+    assert_eq!(tx_count(&tw2), 1);
+    assert_eq!(bal(&tw2, AccountId(0)), -250);
+    assert_eq!(bal(&tw2, dest), 250);
+    // The key is money now, and the rating verb says so.
+    let seen = err(&mut tw2, GOD, "@faction/resource Camarilla=gold/10");
+    assert!(seen.contains("@econ/pay"), "{seen}");
 }
 
 #[test]

@@ -105,7 +105,7 @@ pub use hash::plan_hash;
 pub use ids::{AccountId, ApprovalRequestId, InstrumentId, TransactionId, VaultId};
 pub use plan::{
     AccountRevision, ApprovalNeed, AssetOp, AssetRevision, CustodyOp, EconomyError, EconomyPlan,
-    PlanResult, Prepared, RequestedLine,
+    NamedResource, PlanResult, Prepared, RequestedLine,
 };
 pub use record::{
     Account, AccountStatus, AcquisitionRecord, Approval, ApprovalRequest, ApprovalRule,
@@ -121,7 +121,7 @@ pub use snapshot::EconomySnapshot;
 pub use api::{
     META_KEY, PostOutcome, account_key, approval_key, asset_key, create_vault, instrument_key,
     open_account, post, post_capability, register_instrument, reverse, set_account_approval,
-    set_account_status, set_asset_frozen, set_vault_status, vault_key,
+    set_account_status, set_asset_frozen, set_economy_frozen, set_vault_status, vault_key,
 };
 pub use commands::may_view_account;
 pub use custody::{ContainerProvider, CustodyError, CustodyProvider, CustodyTable};

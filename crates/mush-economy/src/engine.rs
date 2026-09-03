@@ -288,6 +288,10 @@ fn validate_inner(
     // Build the canonical journal lines and the net per-account + per-instrument sums.
     let mut lines: Vec<JournalLine> = Vec::with_capacity(plan.requested_lines.len());
     let mut per_account: BTreeMap<AccountId, i128> = BTreeMap::new();
+    // The GROSS debit per account — the sum of its NEGATIVE lines only. Authorization
+    // is asked about this as well as the net, because a net of zero (or of a credit)
+    // hides real debits behind lines that pay them back (below).
+    let mut gross_debit: BTreeMap<AccountId, i128> = BTreeMap::new();
     let mut per_instrument: BTreeMap<InstrumentId, i128> = BTreeMap::new();
     let mut non_zero = 0usize;
 
@@ -307,6 +311,9 @@ fn validate_inner(
             return Err(EconomyError::InactiveInstrument(account.instrument.clone()).into());
         }
         *per_account.entry(rl.account).or_insert(0) += rl.delta.widen();
+        if rl.delta.is_negative() {
+            *gross_debit.entry(rl.account).or_insert(0) += rl.delta.widen();
+        }
         *per_instrument.entry(account.instrument.clone()).or_insert(0) += rl.delta.widen();
         lines.push(JournalLine {
             account: rl.account,
@@ -343,10 +350,25 @@ fn validate_inner(
         balance_deltas.insert(account_id, net);
     }
 
-    // Authorization — re-evaluated LIVE per touched account (R-D4).
+    // Authorization — re-evaluated LIVE per touched account (R-D4), on the account's
+    // GROSS debit as well as its net.
+    //
+    // Asking only about the net is a bypass: receiving value is free, and a zero
+    // delta is not negative, so a line PAIR like `[-1, +1]` on one account nets to
+    // zero, reads as a credit, and needs no authority at all — any actor could post
+    // journal entries against any account they could name, bumping its revision
+    // without bound (and, on a scoped wallet, doing it entirely outside the org's
+    // capability policy). The net still drives balances, the credit policy, and the
+    // approval rules; the DEBIT question is asked about every account some line
+    // actually debits.
     for (&account_id, &net) in &balance_deltas {
         let account = snapshot.account(account_id).expect("resolved above");
         if !env.auth.authorize(&plan.actor, account, net) {
+            return Err(EconomyError::Unauthorized.into());
+        }
+        let Some(&debit128) = gross_debit.get(&account_id) else { continue };
+        let debit = Amount::from_widened(debit128).ok_or(EconomyError::Overflow)?;
+        if debit != net && !env.auth.authorize(&plan.actor, account, debit) {
             return Err(EconomyError::Unauthorized.into());
         }
     }
@@ -717,6 +739,13 @@ fn resolve_custody_ops(
 
         let effect = match op {
             CustodyOp::Deposit { object, .. } => {
+                // A vault's own backing is not cargo (A2, the mirror of the
+                // withdrawal rule below): nesting backing B inside vault A puts
+                // everything vault B holds under vault A's withdraw policy, so
+                // A's holders could extract B's contents without ever touching B.
+                if snapshot.is_vault_backing(*object) {
+                    return Err(EconomyError::BackingNotDepositable(*object));
+                }
                 if !env.custody.may_deposit(*object, actor) {
                     return Err(EconomyError::NoCustodyStanding(*object));
                 }

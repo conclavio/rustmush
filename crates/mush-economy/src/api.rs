@@ -122,6 +122,13 @@ pub fn post_capability() -> CapabilityId {
     CapabilityId::new("economy.account.post").expect("valid capability id")
 }
 
+/// Whether an approver still exists as a live world object (not missing, not
+/// `GOING`) — the liveness half of [`AuthEval::authorize_approver`].
+#[must_use]
+fn approver_live(w: &World, who: ObjId) -> bool {
+    w.get(who).is_some_and(|o| !o.flags.contains(mush_core::Flags::GOING))
+}
+
 /// Staff: `SIM_ADMIN` or `Royalty` — the one staff predicate the whole crate uses.
 #[must_use]
 pub(crate) fn is_staff(w: &World, who: ObjId) -> bool {
@@ -359,6 +366,15 @@ impl AuthEval for WorldAuth<'_> {
     /// is the poster, and four-eyes bars them), which is why `@account/approval`
     /// refuses to store it (A11).
     fn authorize_approver(&self, approver: ObjId, account: &Account, policy: &ApprovalPolicy) -> bool {
+        // Liveness first, for both policies: a recorded approval is re-qualified at
+        // post time, and a destroyed approver qualifies for nothing. The `Threshold`
+        // arm fails closed anyway (a dead object holds no capability and no live
+        // membership), but `NamedSet` asks only about identity — and an id in a
+        // stored set outlives the person, so a destroyed named approver's recorded
+        // approval would keep counting forever (A5).
+        if !approver_live(self.w, approver) {
+            return false;
+        }
         match policy {
             ApprovalPolicy::OneAuthorizedActor => false,
             ApprovalPolicy::NamedSet { actors, .. } => actors.contains(&approver),
@@ -480,6 +496,26 @@ pub fn set_account_approval(ctx: &mut Ctx<'_>, id: AccountId, rule: Option<crate
         a.clone()
     };
     persist_account(ctx.out, &doc);
+    true
+}
+
+/// Staff recovery: set (or clear) the **whole-economy** freeze latch, and persist
+/// it (the allocator `meta` doc's `frozen` field).
+///
+/// The latch is durable precisely so that clearing it is a decision someone makes:
+/// the boot that detects drift freezes, heals the drifted projections to the
+/// journal, and persists them, so nothing in the docs would ever say "frozen" again
+/// — only this write does. Per-account / per-asset / per-vault unfreezing stays
+/// separate (`@account/unfreeze`, `@asset/unfreeze`, `@vault/unfreeze`): clearing
+/// the economy-wide latch must not silently clear the records that named which
+/// resources actually need attention.
+pub fn set_economy_frozen(ctx: &mut Ctx<'_>, frozen: bool) -> bool {
+    let meta = {
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return false };
+        store.frozen = frozen;
+        store.meta_doc()
+    };
+    persist_meta(ctx.out, meta);
     true
 }
 
@@ -645,17 +681,13 @@ fn mint_or_serve_approval(
         ctx.gate_on_durable_ack();
         return Ok(PostOutcome::NeedsApproval(id));
     }
-    // A request that aged out still holds the by-hash index (its status is only
-    // recomputed against the clock at boot). Retire it explicitly, or the fresh
-    // request would be minted and then ignored by `validate`, which reads the index.
-    if let Some(mut old) = stale {
-        old.status = ApprovalStatus::Expired;
-        old.revision += 1;
-        put_approval(ctx, old);
-    }
 
-    // G1 caps: a requester cannot paper the world with pending requests, and one
-    // account cannot be buried under them.
+    // G1 caps FIRST — before the stale-request retire below, which mutates RAM and
+    // queues a write. A handler that returns `Err` discards its deferred persists
+    // but NOT its world mutations (§4.2), so retiring first would leave the doc
+    // saying `Pending` and RAM saying `Expired` whenever a cap then refuses: the
+    // by-hash index would go quiet in RAM while the durable record still claimed a
+    // live request. Nothing between here and the mint reads the retired request.
     {
         let store = ctx.w.module_state::<EconomyStore>().ok_or(EconomyError::EconomyFrozen)?;
         let pending = || {
@@ -672,6 +704,15 @@ fn mint_or_serve_approval(
                 return Err(EconomyError::TooLarge("too many pending approval requests for this account"));
             }
         }
+    }
+
+    // A request that aged out still holds the by-hash index (its status is only
+    // recomputed against the clock at boot). Retire it explicitly, or the fresh
+    // request would be minted and then ignored by `validate`, which reads the index.
+    if let Some(mut old) = stale {
+        old.status = ApprovalStatus::Expired;
+        old.revision += 1;
+        put_approval(ctx, old);
     }
 
     let request = {

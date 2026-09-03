@@ -422,6 +422,98 @@ fn a_withdrawal_may_not_land_in_another_vaults_backing() {
     assert_eq!(loc(&tw, widget), Some(chest), "the widget moved despite the refusal");
 }
 
+// ---- E3 verify: what custody may hold, and where a withdrawal may land ----
+
+#[test]
+fn an_exit_is_topology_and_can_never_be_deposited() {
+    // `World::move_to` files an `Exit` into the destination's `exits`, which NO
+    // custody query walks: a deposited exit would be journaled and then be invisible
+    // to `holds`/`contents`, unwithdrawable, let `@vault/close` close a vault that
+    // still held it, and boot as a custody mismatch.
+    let mut tw = boot();
+    let (chest, _widget) = vault_fixture(&mut tw);
+    let hall = room(&mut tw, "Hall");
+    let north = tw.world_mut().create(ObjKind::Exit, "north", GOD, Some(hall)).expect("create exit");
+    // Stand in the hall, so co-location standing (staff, co-located) is satisfied and
+    // the ONLY thing left to refuse is "an exit is not a thing custody can hold".
+    tw.world_mut().move_to(GOD, hall).expect("step into the hall");
+    let before_txs = journal_len(&mut tw);
+
+    let ev = tw.run(GOD, &format!("@vault/deposit #{}=0", north.0));
+    assert!(has_error(&ev), "an exit must never be depositable: {}", texts(&ev));
+    assert_eq!(loc(&tw, north), Some(hall), "the exit moved");
+    assert!(
+        tw.world().get(chest).expect("chest").exits.is_empty(),
+        "the exit was filed into the vault backing's `exits`, where no custody query looks"
+    );
+    assert_eq!(journal_len(&mut tw), before_txs, "a custody entry was journaled for an exit");
+}
+
+#[test]
+fn a_vault_never_takes_an_actor_as_contents() {
+    // `obj == actor` passes every standing clause trivially — co-located with itself,
+    // and `perm::controls(a, a)` — so a player could file THEMSELF into a vault.
+    let mut tw = boot();
+    let (chest, _widget) = vault_fixture(&mut tw);
+    let pat = tw.spawn_player("Pat");
+    tw.world_mut().move_to(pat, LIMBO).expect("co-locate Pat with God");
+    let before_txs = journal_len(&mut tw);
+
+    let ev = tw.run(GOD, &format!("@vault/deposit #{}=0", GOD.0));
+    assert!(has_error(&ev), "depositing yourself must refuse: {}", texts(&ev));
+    assert_ne!(loc(&tw, GOD), Some(chest), "the actor deposited themself");
+    // ...and an actor is not cargo when someone else names them, either.
+    let ev = tw.run(GOD, &format!("@vault/deposit #{}=0", pat.0));
+    assert!(has_error(&ev), "depositing a player must refuse: {}", texts(&ev));
+    assert_eq!(loc(&tw, pat), Some(LIMBO), "a player was moved into a vault");
+    assert_eq!(journal_len(&mut tw), before_txs, "a custody entry was journaled for an actor");
+}
+
+#[test]
+fn a_withdrawal_may_not_land_inside_another_vaults_backing() {
+    // The engine's own check is `is_vault_backing(to)` — direct only. Standing INSIDE
+    // vault #1's backing, `to = me` is not a backing, so the object lands in vault #1
+    // with no Deposit authorization, no standing check, and no custody effect.
+    let mut tw = boot();
+    let (chest, widget) = vault_fixture(&mut tw);
+    let safe = thing(&mut tw, "safe");
+    assert!(!has_error(&tw.run(GOD, &format!("@vault/create safe=container:#{}", safe.0))));
+    assert!(!has_error(&tw.run(GOD, &format!("@vault/deposit #{}=0", widget.0))));
+    assert_eq!(loc(&tw, widget), Some(chest));
+    tw.world_mut().move_to(GOD, safe).expect("step into the safe");
+    let before_txs = journal_len(&mut tw);
+
+    let ev = tw.run(GOD, &format!("@vault/withdraw #{}=0", widget.0));
+    assert!(has_error(&ev), "a withdrawal into a vault by geography must refuse: {}", texts(&ev));
+    assert_eq!(loc(&tw, widget), Some(chest), "the widget moved into the other vault");
+    assert_eq!(journal_len(&mut tw), before_txs, "the refused withdrawal posted a transaction");
+    // Standing outside it again, the same withdrawal is fine.
+    tw.world_mut().move_to(GOD, LIMBO).expect("step back out");
+    assert!(!has_error(&tw.run(GOD, &format!("@vault/withdraw #{}=0", widget.0))));
+    assert_eq!(loc(&tw, widget), Some(GOD));
+}
+
+#[test]
+fn a_vaults_backing_may_not_be_deposited_into_another_vault() {
+    // Nesting backing #0 inside vault #1 puts everything vault #0 holds under vault
+    // #1's withdraw policy — its holders could extract vault #0's contents without
+    // ever touching vault #0.
+    let mut tw = boot();
+    let (chest, widget) = vault_fixture(&mut tw);
+    let strongroom = thing(&mut tw, "strongroom");
+    assert!(!has_error(&tw.run(GOD, &format!("@vault/create strongroom=container:#{}", strongroom.0))));
+    assert!(!has_error(&tw.run(GOD, &format!("@vault/deposit #{}=0", widget.0))));
+    let before_loc = loc(&tw, chest);
+    let before_txs = journal_len(&mut tw);
+
+    let ev = tw.run(GOD, &format!("@vault/deposit #{}=1", chest.0));
+    assert!(has_error(&ev), "a vault backing must not be depositable: {}", texts(&ev));
+    assert!(texts(&ev).contains("backs a vault"), "expected the backing message, got: {}", texts(&ev));
+    assert_eq!(loc(&tw, chest), before_loc, "the backing moved into the other vault");
+    assert_eq!(journal_len(&mut tw), before_txs, "the refused deposit posted a transaction");
+    assert_eq!(loc(&tw, widget), Some(chest), "the inner vault's contents moved");
+}
+
 #[test]
 fn a_deposited_container_still_exposes_its_contents() {
     let mut tw = boot();
@@ -724,10 +816,13 @@ fn a_frozen_economy_refuses_asset_and_custody_ops() {
     let mut tw = boot();
     let pat = tw.spawn_player("Pat");
     let widget = thing(&mut tw, "widget");
+    let chest = thing(&mut tw, "chest");
     assert!(!has_error(&tw.run(GOD, "@instrument/register gold=0")));
     assert!(!has_error(&tw.run(GOD, "@account/system faucet=gold")));
     assert!(!has_error(&tw.run(GOD, &format!("@account/open #{}=gold", pat.0))));
     assert!(!has_error(&tw.run(GOD, "@econ/mint 0=1 100")));
+    // The vault exists BEFORE the freeze — a frozen economy binds no new ones.
+    assert!(!has_error(&tw.run(GOD, &format!("@vault/create strongbox=container:#{}", chest.0))));
     let mut kv = fold_kv(&mut tw);
     // Break conservation so boot latches the whole-economy freeze.
     patch(&mut kv, "account:1", |v| v["posted_balance"] = serde_json::json!(999));
@@ -737,10 +832,16 @@ fn a_frozen_economy_refuses_asset_and_custody_ops() {
     let ev = tw.run(GOD, &format!("@asset/title #{}=#{}", widget.0, pat.0));
     assert!(has_error(&ev), "a frozen economy must refuse a title op");
     assert!(snap(&tw).asset(widget).is_none(), "a title posted into a frozen economy");
+    // E3-verify L: the non-recovery control writes are refused too — a freeze that
+    // still lets staff bind a fresh vault (or open a fresh wallet) is a freeze with
+    // a door in it.
     let ev = tw.run(GOD, &format!("@vault/create box=container:#{}", widget.0));
-    assert!(!has_error(&ev), "vault creation is a record write, not a post");
+    assert!(has_error(&ev), "a frozen economy must refuse a new vault binding: {}", texts(&ev));
+    assert_eq!(snap(&tw).vaults().count(), 1, "a vault was bound into a frozen economy");
     let ev = tw.run(GOD, &format!("@vault/deposit #{}=0", widget.0));
     assert!(has_error(&ev), "a frozen economy must refuse a custody op");
+    // ...while the recovery verbs stay available.
+    assert!(!has_error(&tw.run(GOD, "@vault/freeze 0")), "vault freeze is a recovery verb");
 }
 
 #[test]

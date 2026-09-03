@@ -35,6 +35,17 @@
 //!    (`custody-mismatch`); **`None` — the provider cannot answer, e.g. its own
 //!    state has not booted yet — is a warning and never a freeze.** Custody effects
 //!    are audit-only: nothing here derives a location from them.
+//!
+//! ## The freeze is DURABLE, and so are the floors
+//!
+//! Freezing is only a decision if it survives: this boot heals the very drift it
+//! froze on and persists the healed docs, so a later boot re-deriving from those
+//! docs alone would come up clean and spending. The latch therefore starts from the
+//! stored `meta.frozen`, is OR-ed with everything this boot finds, and `meta` is
+//! **persisted at the end of every boot** — which also makes the allocator floors
+//! this boot just raised (past the journal, past every `approval:` key it saw,
+//! readable or not) durable, instead of lasting until the next post happens to write
+//! one. Only staff `@econ/unfreeze` clears the latch.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -80,6 +91,8 @@ pub(crate) fn load_boot(
     let mut stored_approvals: BTreeMap<ApprovalRequestId, ApprovalRequest> = BTreeMap::new();
     let mut chunks: Vec<LedgerChunk> = Vec::new();
     let mut meta: Option<serde_json::Value> = None;
+    // Every `approval:{id}` key seen, readable or not (the allocator floor).
+    let mut max_approval_key: Option<u64> = None;
 
     for (key, value) in &data.kv {
         if key == META_KEY {
@@ -127,6 +140,11 @@ pub(crate) fn load_boot(
                 tracing::warn!(%key, "economy: bad approval key; skipping");
                 continue;
             };
+            // The allocator floor is taken from the KEY, before the doc is parsed: a
+            // corrupt doc is skipped, but its id was minted and must never be minted
+            // again onto a different request (a re-mint would let a stale approval
+            // doc, or a journal entry naming that id, attach to someone else's plan).
+            max_approval_key = Some(max_approval_key.map_or(parsed, |m: u64| m.max(parsed)));
             match serde_json::from_value::<ApprovalRequest>(value.clone()) {
                 Ok(r) if r.id == ApprovalRequestId(parsed) => {
                     stored_approvals.insert(r.id, r);
@@ -157,6 +175,10 @@ pub(crate) fn load_boot(
     // same way, and collect the audit-only custody effects.
     let mut running: BTreeMap<AccountId, i128> = BTreeMap::new();
     let mut last_touch: BTreeMap<AccountId, u64> = BTreeMap::new();
+    // How many journal ENTRIES carry a line on each account — `apply` bumps
+    // `revision` exactly once per such entry, so `1 + touches` is the journal's own
+    // revision for the account (invariant: revision is journal authority).
+    let mut touches: BTreeMap<AccountId, u64> = BTreeMap::new();
     let mut snapshot_at_stored: BTreeMap<AccountId, i128> = BTreeMap::new();
     let mut journal_assets: BTreeMap<ObjId, EconomicAsset> = BTreeMap::new();
     let mut asset_at_stored: BTreeMap<ObjId, EconomicAsset> = BTreeMap::new();
@@ -172,6 +194,7 @@ pub(crate) fn load_boot(
     let mut max_txid: u64 = 0;
 
     for (seq, tx) in &entries {
+        let mut touched_here: BTreeSet<AccountId> = BTreeSet::new();
         for line in &tx.lines {
             // A journal line referencing an account with no doc is corruption — the
             // account metadata was lost while its money history survived. Fail closed.
@@ -183,6 +206,9 @@ pub(crate) fn load_boot(
             }
             *running.entry(line.account).or_insert(0) += line.delta.widen();
             last_touch.insert(line.account, *seq);
+            if touched_here.insert(line.account) {
+                *touches.entry(line.account).or_insert(0) += 1;
+            }
             if stored_accounts.get(&line.account).map(|a| a.last_journal_seq) == Some(*seq) {
                 snapshot_at_stored.insert(line.account, *running.get(&line.account).expect("just inserted"));
             }
@@ -227,7 +253,20 @@ pub(crate) fn load_boot(
     }
 
     // Directional self-heal + drift/ahead detection per account.
-    let mut frozen = false;
+    //
+    // The freeze latch starts from the **stored** one: a boot that froze also healed
+    // the drifted docs it found and persisted them, so re-deriving from the docs
+    // alone would come up clean on the very next boot and hand spending authority
+    // back without any staff decision. `#[serde(default)]`-style tolerance (an
+    // absent field reads `false`) keeps pre-E3 meta docs loading.
+    let mut frozen = meta
+        .as_ref()
+        .and_then(|m| m.get("frozen"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if frozen {
+        tracing::error!("economy: the stored whole-economy freeze latch is set; staying frozen (@econ/unfreeze clears it)");
+    }
     let mut healed: Vec<Account> = Vec::new();
     for (id, mut acct) in stored_accounts {
         let derived = i64::try_from(*running.get(&id).unwrap_or(&0)).ok().map(Amount::from_minor);
@@ -249,10 +288,19 @@ pub(crate) fn load_boot(
             tracing::error!(account = id.0, "economy: stored balance drifts from the journal at its claimed seq; freezing");
             frozen = true;
         }
-        // Adopt the journal-derived balance (heals a benign lag; a no-op when clean).
-        if acct.posted_balance != derived || acct.last_journal_seq != last_touch.get(&id).copied().unwrap_or(0) {
+        // Adopt the journal-derived balance (heals a benign lag; a no-op when clean),
+        // and with it the journal-derived REVISION. Replay never re-derived
+        // `revision`, so a lagging doc healed its balance forward and left its
+        // revision behind — and an `expected_revisions` guard written against the
+        // pre-reboot value then passed against a state it was never checked against.
+        // `max` because `revision` is also bumped by doc-authority backstops (the
+        // destruction freeze), which the journal cannot see: never LOWER it.
+        let journal_revision = 1 + touches.get(&id).copied().unwrap_or(0);
+        let stale_seq = acct.last_journal_seq != last_touch.get(&id).copied().unwrap_or(0);
+        if acct.posted_balance != derived || stale_seq || acct.revision < journal_revision {
             acct.posted_balance = derived;
             acct.last_journal_seq = last_touch.get(&id).copied().unwrap_or(0);
+            acct.revision = acct.revision.max(journal_revision);
             healed.push(acct.clone());
         }
         snapshot.put_account(acct);
@@ -273,9 +321,15 @@ pub(crate) fn load_boot(
                 snapshot.put_asset(a);
             }
             Some(doc) => {
+                // Whether THIS title is the one that latched the whole-economy
+                // freeze — it earns its own per-asset latch, so the trace of which
+                // record needs staff attention survives the recovery boot (the
+                // whole-economy freeze is cleared in one motion; a per-asset one is
+                // cleared per record, deliberately).
+                let mut drifted = false;
                 if doc.last_journal_seq > journal_max.unwrap_or(0) {
                     tracing::error!(object = object.0, stored_seq = doc.last_journal_seq, journal_max = ?journal_max, "economy: asset projection ahead of the journal (lost tail); freezing");
-                    frozen = true;
+                    drifted = true;
                 } else {
                     match asset_at_stored.get(object) {
                         // The doc claims a sequence at which this object really had an
@@ -283,20 +337,27 @@ pub(crate) fn load_boot(
                         Some(at) if journal_fields_eq(&doc, at) => {}
                         Some(_) => {
                             tracing::error!(object = object.0, "economy: asset projection drifts from the journal at its claimed seq; freezing");
-                            frozen = true;
+                            drifted = true;
                         }
                         // ...or a sequence at which it had none: an impossible doc.
                         None => {
                             tracing::error!(object = object.0, stored_seq = doc.last_journal_seq, "economy: asset projection claims a sequence it never appears at; freezing");
-                            frozen = true;
+                            drifted = true;
                         }
                     }
                 }
+                frozen |= drifted;
                 // Adopt the journal head (heals a benign lag), keeping the latch.
                 let mut a = derived.clone();
-                a.frozen = doc.frozen;
-                a.frozen_reason = doc.frozen_reason.clone();
-                if !journal_fields_eq(&doc, derived) {
+                a.frozen = doc.frozen || drifted;
+                a.frozen_reason = if doc.frozen {
+                    doc.frozen_reason.clone()
+                } else if drifted {
+                    Some(SmolStr::new_static("drift"))
+                } else {
+                    None
+                };
+                if drifted || !journal_fields_eq(&doc, derived) {
                     healed_assets.push(a.clone());
                 }
                 snapshot.put_asset(a);
@@ -449,11 +510,13 @@ pub(crate) fn load_boot(
         .max(next_after(max_custody_vault))
         .max(next_after(snapshot.vaults().map(|v| v.id.0).max()));
     // C4: floor the approval allocator past every id the JOURNAL has seen and every
-    // stored doc — including the ones just garbage-collected, so a collected id is
-    // never re-minted onto a different request.
+    // stored doc — including the ones just garbage-collected, and the ones whose doc
+    // failed to deserialize (skipped as leaves, but their ids were minted), so a
+    // collected or unreadable id is never re-minted onto a different request.
     let next_approval = meta_u64(&meta, "next_approval_id")
         .max(next_after(max_consumed_approval))
-        .max(next_after(max_stored_approval));
+        .max(next_after(max_stored_approval))
+        .max(next_after(max_approval_key));
 
     // Self-heal writes (only what actually changed, unless frozen — then persist the
     // frozen status of everything).
@@ -480,7 +543,7 @@ pub(crate) fn load_boot(
         api::delete_key(ctx.out, api::approval_key(*id));
     }
 
-    Ok(EconomyStore::from_parts(
+    let store = EconomyStore::from_parts(
         snapshot,
         journal,
         transactions,
@@ -489,7 +552,15 @@ pub(crate) fn load_boot(
         next_vault,
         next_approval,
         frozen,
-    ))
+    );
+    // Persist `meta` at the END of every boot, always. Two things ride on it and
+    // both were previously RAM-only until the next post happened to write one: the
+    // whole-economy **freeze latch** (a boot that froze, healed, and never wrote it
+    // came up spending on the next boot), and the allocator **floors** boot just
+    // raised past the journal (a stale meta plus a lost doc would otherwise re-mint
+    // a live id one boot later, when the doc that raised the floor is gone).
+    api::persist_meta(ctx.out, store.meta_doc());
+    Ok(store)
 }
 
 /// Compare only the **journal-authority** fields of two asset records: the
