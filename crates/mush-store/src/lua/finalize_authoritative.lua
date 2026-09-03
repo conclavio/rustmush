@@ -30,6 +30,7 @@ end
 local receipt = redis.call('GET', KEYS[2])
 if receipt then
   if receipt == ARGV[2] then
+    redis.call('SREM', KEYS[4], ARGV[4])
     return 'FINALIZED'
   end
   return 'TOKEN_CONFLICT'

@@ -25,6 +25,11 @@ if existing_intent then
   if existing_binding ~= ARGV[2] then
     return 'CORRUPT_BINDING'
   end
+  if redis.call('EXISTS', KEYS[2]) == 0 then
+    redis.call('SADD', KEYS[4], ARGV[3])
+  else
+    redis.call('SREM', KEYS[4], ARGV[3])
+  end
   return 'RESUMED'
 end
 

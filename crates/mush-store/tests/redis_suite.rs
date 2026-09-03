@@ -57,7 +57,7 @@ async fn seed_minimal_world(store: &RedisStore) {
 }
 
 fn authoritative_bundle(token_byte: u8, request_byte: u8) -> AuthoritativeBundle {
-    let owner = OwnerId::new("redis-toy").unwrap();
+    let owner = OwnerId::new("redis_toy").unwrap();
     let mut definitions = DefinitionRegistryBuilder::new();
     let action = definitions
         .register(
@@ -227,6 +227,8 @@ redis_gated!(module_list_rejects_type_clobbered_key, store, {
 // ---------------------------------------------------------------------
 
 redis_gated!(authoritative_exact_round_trip_and_discovery, store, {
+    use fred::interfaces::SetsInterface;
+
     seed_minimal_world(&store).await;
     let bundle = authoritative_bundle(11, 21);
 
@@ -312,6 +314,49 @@ redis_gated!(authoritative_exact_round_trip_and_discovery, store, {
         receipt
     );
 
+    // Either exact retry path repairs a stale accelerator member left beside
+    // an already-finalized witness.
+    let added: i64 = store
+        .client()
+        .sadd("auth:pending", bundle.token().to_string())
+        .await
+        .expect("install stale pending accelerator member");
+    assert_eq!(added, 1);
+    assert!(
+        store
+            .reserve_authoritative_intent(bundle.clone())
+            .await
+            .expect("exact retry repairs stale accelerator")
+            .resumed
+    );
+    assert!(
+        store
+            .pending_authoritative_intents()
+            .await
+            .expect("stale accelerator removed")
+            .is_empty()
+    );
+    let added: i64 = store
+        .client()
+        .sadd("auth:pending", bundle.token().to_string())
+        .await
+        .expect("reinstall stale pending accelerator member");
+    assert_eq!(added, 1);
+    assert_eq!(
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .expect("exact reconciliation repairs stale accelerator"),
+        receipt
+    );
+    assert!(
+        store
+            .pending_authoritative_intents()
+            .await
+            .expect("reconciliation removed stale accelerator")
+            .is_empty()
+    );
+
     let world = store
         .load_world()
         .await
@@ -321,7 +366,7 @@ redis_gated!(authoritative_exact_round_trip_and_discovery, store, {
     assert!(world.objects.iter().any(|object| object.id == ObjId(2)));
     assert_eq!(
         store
-            .module_json_get("redis-toy", "action-state/v1/guarded/2")
+            .module_json_get("redis_toy", "action-state/v1/guarded/2")
             .await
             .expect("load materialized module value"),
         Some(serde_json::json!({ "amount": 1 }))
@@ -437,7 +482,7 @@ redis_gated!(
             .await
             .expect("reserve intent");
 
-        let module_key = "mod:redis-toy:action-state/v1/guarded/2";
+        let module_key = "mod:redis_toy:action-state/v1/guarded/2";
         let _: () = store
             .client()
             .set(module_key, "wrong type", None, None, false)

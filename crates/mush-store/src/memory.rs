@@ -437,13 +437,22 @@ impl AuthoritativeStore for InMemoryStore {
                         "exact intent disagrees with its idempotency binding".to_owned(),
                     ));
                 }
-                if let Some(receipt_doc) = inner.authoritative_receipts.get(&token) {
+                let finalized = if let Some(receipt_doc) = inner.authoritative_receipts.get(&token)
+                {
                     let receipt = decode_receipt(receipt_doc)?;
                     if receipt.bundle() != &bundle {
                         return Err(StoreError::AuthoritativeCorrupt(
                             "finalized receipt disagrees with its retained intent".to_owned(),
                         ));
                     }
+                    true
+                } else {
+                    false
+                };
+                if finalized {
+                    inner.authoritative_pending.remove(&token);
+                } else {
+                    inner.authoritative_pending.insert(token);
                 }
                 return Ok(IntentReceipt {
                     token,
@@ -529,7 +538,7 @@ impl AuthoritativeStore for InMemoryStore {
     ) -> BoxFuture<'_, Result<AuthoritativeReceipt, StoreError>> {
         Box::pin(async move {
             let intent_doc = {
-                let inner = self.lock()?;
+                let mut inner = self.lock()?;
                 let intent_doc = inner
                     .authoritative_intents
                     .get(&token)
@@ -540,6 +549,7 @@ impl AuthoritativeStore for InMemoryStore {
                     if receipt.bundle_hash() != expected_bundle_hash {
                         return Err(StoreError::AuthoritativeTokenConflict);
                     }
+                    inner.authoritative_pending.remove(&token);
                     return Ok(receipt);
                 }
                 intent_doc
@@ -565,6 +575,7 @@ impl AuthoritativeStore for InMemoryStore {
                 if existing != receipt {
                     return Err(StoreError::AuthoritativeTokenConflict);
                 }
+                inner.authoritative_pending.remove(&token);
                 return Ok(existing);
             }
             let Some(binding) = inner
@@ -713,6 +724,10 @@ impl AuthoritativeStore for InMemoryStore {
 }
 
 impl ObjectStore for InMemoryStore {
+    fn authoritative_store(&self) -> Option<&dyn AuthoritativeStore> {
+        Some(self)
+    }
+
     fn load_world(&self) -> BoxFuture<'_, Result<Option<WorldSnapshot>, StoreError>> {
         Box::pin(async move {
             let inner = self.lock()?;
@@ -1757,7 +1772,7 @@ mod tests {
         );
         assert!(
             store
-                .reserve_authoritative_intent(bundle)
+                .reserve_authoritative_intent(bundle.clone())
                 .await
                 .unwrap()
                 .resumed
@@ -1780,6 +1795,25 @@ mod tests {
             store.reconcile_authoritative(token, hash).await.unwrap(),
             receipt,
             "reconciliation is idempotent after finalization"
+        );
+        store.lock().unwrap().authoritative_pending.insert(token);
+        assert_eq!(
+            store.pending_authoritative_intents().await.unwrap().len(),
+            1
+        );
+        assert!(
+            store
+                .reserve_authoritative_intent(bundle)
+                .await
+                .unwrap()
+                .resumed
+        );
+        assert!(
+            store
+                .pending_authoritative_intents()
+                .await
+                .unwrap()
+                .is_empty()
         );
         assert_eq!(
             store

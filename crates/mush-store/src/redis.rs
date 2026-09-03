@@ -796,6 +796,10 @@ impl AuthoritativeStore for RedisStore {
                 return Err(StoreError::AuthoritativeTokenConflict);
             }
             if let Some(receipt) = prior_receipt {
+                let _: i64 = self
+                    .client
+                    .srem(AUTHORITATIVE_PENDING_INDEX, token.to_string())
+                    .await?;
                 return Ok(receipt);
             }
             let intent_doc = serde_json::to_string(&bundle)?;
@@ -969,6 +973,17 @@ impl AuthoritativeStore for RedisStore {
 }
 
 impl ObjectStore for RedisStore {
+    fn authoritative_store(&self) -> Option<&dyn AuthoritativeStore> {
+        Some(self)
+    }
+
+    fn bootstrap_writable(&self) -> BoxFuture<'_, Result<(), StoreError>> {
+        Box::pin(async move {
+            self.ensure_index().await;
+            Ok(())
+        })
+    }
+
     fn load_world(&self) -> BoxFuture<'_, Result<Option<WorldSnapshot>, StoreError>> {
         Box::pin(async move {
             let keys = self.scan_keys("obj:*").await?;

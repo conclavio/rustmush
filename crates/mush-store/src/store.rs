@@ -100,6 +100,28 @@ pub trait AuthoritativeStore: ObjectStore {
 /// [`crate::InMemoryStore`] (tests and `mushd --repl`). Both honor the exact
 /// same semantics; the shared behavior suite in [`crate::suite`] proves it.
 pub trait ObjectStore: Send + Sync {
+    /// Expose the exact-token durability capability when this backend
+    /// implements it.
+    ///
+    /// Server boot refuses writable service when this returns `None`. The
+    /// optional shape keeps narrow legacy test doubles usable while K3 is
+    /// migrating callers away from the old write-only surface; production
+    /// backends must return `Some(self)`.
+    fn authoritative_store(&self) -> Option<&dyn AuthoritativeStore> {
+        None
+    }
+
+    /// Perform backend-owned writable bootstrap after authoritative-intent
+    /// recovery has completed.
+    ///
+    /// Redis uses this for search-index creation. Keeping it separate from
+    /// connection establishment lets server boot open a read-capable handle,
+    /// reconcile partial authoritative materializations, and only then permit
+    /// ordinary initialization writes.
+    fn bootstrap_writable(&self) -> BoxFuture<'_, Result<(), StoreError>> {
+        Box::pin(async { Ok(()) })
+    }
+
     /// Load every persisted object plus `next_id` and `schema_version`.
     ///
     /// Returns `Ok(None)` for a **completely empty store** (no objects *and*

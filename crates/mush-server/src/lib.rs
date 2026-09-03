@@ -59,7 +59,7 @@ pub mod staff;
 pub mod world_task;
 
 use crate::gateway_sink::SocketSink;
-use crate::persist::load_or_seed_world;
+use crate::persist::{load_or_seed_world, reconcile_authoritative_for_writable_boot};
 use crate::quarantine::QuarantineSpool;
 use crate::staff::{StaffQueue, register_server_commands_with_cap};
 use crate::world_task::{CreatePlayerErr, ServerDeps, WorldHandle, WorldReadError};
@@ -77,7 +77,7 @@ async fn open_store(config: &Config) -> Result<Arc<dyn ObjectStore>, String> {
         StoreBackend::Redis => {
             let url = &config.store.redis_url;
             tracing::info!(%url, "connecting to Redis");
-            let store = RedisStore::connect(url)
+            let store = RedisStore::connect_read_only(url)
                 .await
                 .map_err(|e| format!("cannot reach Redis at {url}: {e}"))?;
             Ok(Arc::new(store))
@@ -161,6 +161,23 @@ async fn build_engine(
     store: &Arc<dyn ObjectStore>,
     _validated_spool: &QuarantineSpool,
 ) -> Result<(Engine, Arc<StaffQueue>), String> {
+    let authoritative = store.authoritative_store().ok_or_else(|| {
+        "configured store does not implement K3 exact-token durability; refusing writable boot"
+            .to_owned()
+    })?;
+    let recovery = reconcile_authoritative_for_writable_boot(authoritative).await?;
+    tracing::info!(
+        indexed = recovery.indexed,
+        retained = recovery.retained,
+        reconciled = recovery.reconciled,
+        already_finalized = recovery.already_finalized,
+        scan_pages = recovery.scan_pages,
+        "authoritative intent recovery barrier complete"
+    );
+    store
+        .bootstrap_writable()
+        .await
+        .map_err(|error| format!("store writable bootstrap failed: {error}"))?;
     let version = run_migrations(&**store, &core_migrations())
         .await
         .map_err(|e| format!("store migrations failed: {e}"))?;

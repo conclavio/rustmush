@@ -32,7 +32,7 @@ use mushd::accounts::{Accounts, import_accounts_json};
 use mushd::config::{Config, StoreBackend};
 use mushd::ipguard::IpGuard;
 use mushd::modules;
-use mushd::persist::load_or_seed_world;
+use mushd::persist::{load_or_seed_world, reconcile_authoritative_for_writable_boot};
 use mushd::quarantine::QuarantineSpool;
 use mushd::ssh_bridge::{SshBridge, start_listener};
 use mushd::staff::{StaffQueue, register_server_commands_with_cap};
@@ -137,7 +137,7 @@ async fn open_store(config: &Config) -> Result<Arc<dyn ObjectStore>, String> {
         StoreBackend::Redis => {
             let url = &config.store.redis_url;
             tracing::info!(%url, "connecting to Redis");
-            let store = RedisStore::connect(url).await.map_err(|e| {
+            let store = RedisStore::connect_read_only(url).await.map_err(|e| {
                 format!(
                     "cannot reach Redis at {url}: {e}\n\
                      mushd requires its store at boot. Start Redis (or point \
@@ -179,6 +179,23 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     // Store: connect (fail fast), migrate, one-time accounts.json import,
     // then load or seed the world — all before anything serves.
     let store = open_store(&config).await?;
+    let authoritative = store.authoritative_store().ok_or_else(|| {
+        "configured store does not implement K3 exact-token durability; refusing writable boot"
+            .to_owned()
+    })?;
+    let recovery = reconcile_authoritative_for_writable_boot(authoritative).await?;
+    tracing::info!(
+        indexed = recovery.indexed,
+        retained = recovery.retained,
+        reconciled = recovery.reconciled,
+        already_finalized = recovery.already_finalized,
+        scan_pages = recovery.scan_pages,
+        "authoritative intent recovery barrier complete"
+    );
+    store
+        .bootstrap_writable()
+        .await
+        .map_err(|error| format!("store writable bootstrap failed: {error}"))?;
     let version = run_migrations(&*store, &core_migrations())
         .await
         .map_err(|e| format!("store migrations failed: {e}"))?;
