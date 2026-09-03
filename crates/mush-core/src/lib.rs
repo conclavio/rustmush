@@ -121,7 +121,8 @@ pub use commands::{
 };
 pub use engine::{
     ControlMsg, Deferred, DisconnectKind, Effect, Effects, Engine, Inbound, ModuleComposition,
-    StagePreparedActionError, StagedAction, StepOutcome, WorldCommand, register_engine_commands,
+    StagePreparedActionError, StagedAction, StagedActionAdmissionError, StepOutcome, WorldCommand,
+    register_engine_commands,
 };
 pub use flags::{Flags, Powers, Role};
 pub use ledger::{

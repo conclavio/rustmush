@@ -27,6 +27,7 @@ use mush_proto::{OutputEvent, RichText};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
+use crate::action::{GuardRevalidation, GuardRevalidationError, GuardSet};
 use crate::action_state::{
     ActionStateBootRecord, ActionStateError, ActionStateStore, ActionTxn, PreparedInstallation,
     PreparedTxn, StateFamilyHandle,
@@ -424,6 +425,7 @@ pub struct ModuleComposition {
 pub struct StagedAction {
     module_ops: Vec<ModuleOp>,
     installation: PreparedInstallation,
+    guards: GuardSet,
 }
 
 impl fmt::Debug for StagedAction {
@@ -431,6 +433,7 @@ impl fmt::Debug for StagedAction {
         f.debug_struct("StagedAction")
             .field("module_ops", &self.module_ops)
             .field("installation", &self.installation)
+            .field("guards", &self.guards)
             .finish()
     }
 }
@@ -451,6 +454,19 @@ pub enum StagePreparedActionError {
     DirtyWorld,
     #[error("prepared action cannot share a step with legacy module persistence")]
     LegacyModuleOps,
+}
+
+/// Final process-local refusal while moving a staged action into writer
+/// custody. The staged typed images are always aborted before this is
+/// returned.
+#[derive(Clone, Debug, Eq, thiserror::Error, PartialEq)]
+pub enum StagedActionAdmissionError {
+    #[error("{component} registry is unavailable at final action admission")]
+    RegistryUnavailable { component: &'static str },
+    #[error("final action guard evaluation failed: {0}")]
+    Revalidation(#[from] GuardRevalidationError),
+    #[error("prepared action guards became stale before commit admission")]
+    Stale(GuardRevalidation),
 }
 
 impl ModuleComposition {
@@ -783,6 +799,7 @@ impl Engine {
     pub fn stage_prepared_action(
         &mut self,
         prepared: PreparedTxn,
+        guards: GuardSet,
     ) -> Result<(), StagePreparedActionError> {
         if self.staged_action.is_some() {
             let (_, installation) = prepared.into_parts();
@@ -801,6 +818,7 @@ impl Engine {
         self.staged_action = Some(StagedAction {
             module_ops,
             installation,
+            guards,
         });
         Ok(())
     }
@@ -820,9 +838,54 @@ impl Engine {
         self.world.has_dirty() || !self.module_ops.is_empty()
     }
 
-    /// Transfer the one prepared action to the driver.
-    pub fn take_staged_action(&mut self) -> Option<StagedAction> {
-        self.staged_action.take()
+    /// Revalidate every server-created guard against current immutable truth
+    /// and transfer the action to the driver in the same synchronous turn.
+    /// Stale or unevaluable work is aborted before an error is returned.
+    pub fn take_staged_action(
+        &mut self,
+    ) -> Result<Option<StagedAction>, StagedActionAdmissionError> {
+        let Some(staged) = self.staged_action.as_ref() else {
+            return Ok(None);
+        };
+        let revalidation = (|| {
+            let revisions = self.registry.revision_validators().ok_or(
+                StagedActionAdmissionError::RegistryUnavailable {
+                    component: "revision-validator",
+                },
+            )?;
+            let authority = self.registry.authority_guard_validators().ok_or(
+                StagedActionAdmissionError::RegistryUnavailable {
+                    component: "authority-validator",
+                },
+            )?;
+            let definitions = self.registry.definitions().ok_or(
+                StagedActionAdmissionError::RegistryUnavailable {
+                    component: "definition",
+                },
+            )?;
+            staged
+                .guards
+                .revalidate(&self.world, revisions, authority, definitions)
+                .map_err(StagedActionAdmissionError::Revalidation)
+        })();
+        match revalidation {
+            Ok(result) if result.is_current() => Ok(self.staged_action.take()),
+            Ok(result) => {
+                self.abort_staged_action();
+                Err(StagedActionAdmissionError::Stale(result))
+            }
+            Err(error) => {
+                self.abort_staged_action();
+                Err(error)
+            }
+        }
+    }
+
+    fn abort_staged_action(&mut self) {
+        if let Some(staged) = self.staged_action.take() {
+            let (_, installation) = staged.into_parts();
+            self.action_state.abort(installation);
+        }
     }
 
     /// Install typed post-images after the exact applied receipt.

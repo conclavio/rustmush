@@ -1954,7 +1954,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-    use crate::{Engine, GameModule, ModError, Registrar, Registry, World};
+    use crate::{Engine, GameModule, GuardSet, ModError, Registrar, Registry, RevisionSet, World};
 
     #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
     #[serde(deny_unknown_fields)]
@@ -2043,6 +2043,15 @@ mod tests {
         let (ops, installation) = prepared.into_parts();
         engine.install_prepared_action(installation);
         ops
+    }
+
+    fn empty_guards(engine: &Engine) -> GuardSet {
+        engine
+            .registry
+            .server_guard_set_builder(RevisionSet::default())
+            .unwrap()
+            .finish()
+            .unwrap()
     }
 
     fn boot_records(ops: Vec<ModuleOp>) -> Vec<ActionStateBootRecord> {
@@ -2328,9 +2337,10 @@ mod tests {
         let mut txn = engine.action_transaction(&handle).unwrap();
         txn.insert(&handle, &1, CounterState { amount: 1 }).unwrap();
         let prepared = txn.prepare().unwrap();
+        let guards = empty_guards(&engine);
 
         assert_eq!(
-            engine.stage_prepared_action(prepared),
+            engine.stage_prepared_action(prepared, guards),
             Err(crate::StagePreparedActionError::DirtyWorld)
         );
         assert!(!engine.action_state().has_prepared());

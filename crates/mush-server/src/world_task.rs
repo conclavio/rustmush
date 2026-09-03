@@ -1929,6 +1929,19 @@ async fn run(
                         llm.as_ref(),
                     );
                 }
+                FlushOutcome::Refused(detail) => {
+                    refuse_before_submission(
+                        classified_sends,
+                        classified_effects,
+                        failure_actor,
+                        create_completion.take(),
+                        &detail,
+                        &gateway,
+                        &health,
+                        &tx,
+                        llm.as_ref(),
+                    );
+                }
                 FlushOutcome::Rejected(detail) => {
                     abort_without_receipt(
                         classified_sends,
@@ -2058,6 +2071,17 @@ async fn run(
                         llm.as_ref(),
                     );
                 }
+                FlushOutcome::Refused(detail) => refuse_before_submission(
+                    sends,
+                    effects,
+                    local_failure_actor,
+                    None,
+                    &detail,
+                    &gateway,
+                    &health,
+                    &tx,
+                    llm.as_ref(),
+                ),
                 FlushOutcome::Rejected(detail) => abort_without_receipt(
                     sends,
                     effects,
@@ -2231,6 +2255,21 @@ async fn run(
                         health.mode.integrity_frozen(),
                     );
                     tracing::error!("world task shutting down after an unacknowledged write");
+                    break;
+                }
+                FlushOutcome::Refused(detail) => {
+                    refuse_before_submission(
+                        sends,
+                        effects,
+                        None,
+                        None,
+                        &detail,
+                        &gateway,
+                        &health,
+                        &tx,
+                        llm.as_ref(),
+                    );
+                    tracing::warn!(%detail, "shutdown write refused before submission");
                     break;
                 }
                 FlushOutcome::WriterGone => {
@@ -2549,6 +2588,9 @@ enum FlushOutcome {
         receipt: Option<oneshot::Receiver<Result<u64, String>>>,
         prepared_installation: Option<PreparedInstallation>,
     },
+    /// A normal final precondition (for example a revision guard) became
+    /// stale before writer custody. No persistence-integrity breach occurred.
+    Refused(String),
     /// The world-side retained-write invariant rejected the candidate batch;
     /// it was never handed to the writer.
     Rejected(String),
@@ -2605,9 +2647,11 @@ async fn flush_prepared_action(
     retained: &mut RetainedSeals,
     high_water: &AtomicU64,
 ) -> FlushOutcome {
-    let staged: StagedAction = engine
-        .take_staged_action()
-        .expect("prepared flush selected only with a staged action");
+    let staged: StagedAction = match engine.take_staged_action() {
+        Ok(Some(staged)) => staged,
+        Ok(None) => unreachable!("prepared flush selected only with a staged action"),
+        Err(error) => return FlushOutcome::Refused(error.to_string()),
+    };
     let (module_ops, installation) = staged.into_parts();
 
     // Staging checks this invariant once, but later code in the same engine
@@ -4385,6 +4429,43 @@ fn abort_without_receipt(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn refuse_before_submission(
+    sends: Vec<ClassifiedSend>,
+    effects: Vec<(DeliveryClass, Effect)>,
+    failure_actor: Option<ObjId>,
+    create: Option<CreateCompletion>,
+    detail: &str,
+    gateway: &Gateway,
+    health: &StoreHealth,
+    tx: &mpsc::WeakSender<WorldMsg>,
+    llm: Option<&Arc<LlmService>>,
+) {
+    let has_abort_output = sends
+        .iter()
+        .any(|(class, _, _)| matches!(class, DeliveryClass::BestEffort | DeliveryClass::OnAbort));
+    release_classified_sends(gateway, sends, DeliveryOutcome::Aborted);
+    release_classified_effects(health.mode, effects, DeliveryOutcome::Aborted, tx, llm);
+    if let Some(actor) = failure_actor
+        && !has_abort_output
+    {
+        send_sys(
+            gateway,
+            actor,
+            &format!(
+                "Your action was not committed ({}). Please retry against the current state.",
+                bounded_failure_detail(detail)
+            ),
+        );
+    }
+    if let Some(create) = create {
+        let _ = create.reply.send(Err(CreatePlayerErr::World(format!(
+            "action precondition failed: {}",
+            bounded_failure_detail(detail)
+        ))));
+    }
+}
+
 fn bounded_failure_detail(detail: &str) -> &str {
     const MAX_BYTES: usize = 512;
     if detail.len() <= MAX_BYTES {
@@ -4612,10 +4693,12 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
     use mush_core::{
-        ArgShape, AsyncCompletion, CanonicalId, CmdError, CommandSpec, ContextOutcome, Ctx,
-        Deferred, EventHook, GOD, GameModule, HookPoint, InputContext, LIMBO, ModuleBootData,
-        ModuleCtx, ModuleOp, ModuleWrite, QueryHandler, Registrar, StateFamilyDescriptor,
-        StateFamilyHandle, StateFamilyId, TickHandler, WorldEventKind, WorldObserver,
+        ActionError, ArgShape, AsyncCompletion, CanonicalId, CmdError, CommandSpec, ContextOutcome,
+        Ctx, Deferred, EventHook, GOD, GameModule, GuardSet, HookPoint, InputContext, LIMBO,
+        ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, OwnerId, QueryHandler, Registrar,
+        RevisionKey, RevisionKind, RevisionSet, RevisionStamp, RevisionValidator,
+        StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey, TickHandler,
+        WorldEventKind, WorldObserver,
     };
     use mush_proto::{InputMode, PromptSpec};
 
@@ -4726,6 +4809,23 @@ mod tests {
 
     type PreparedLaneHandle = StateFamilyHandle<u64, PreparedLaneState>;
 
+    #[derive(Clone)]
+    struct PreparedLaneGeneration(u64);
+
+    struct PreparedLaneRevision;
+
+    impl RevisionValidator for PreparedLaneRevision {
+        fn current_generation(
+            &self,
+            world: &World,
+            _key: &RevisionKey,
+        ) -> Result<Option<u64>, ActionError> {
+            Ok(world
+                .module_state::<PreparedLaneGeneration>()
+                .map(|generation| generation.0))
+        }
+    }
+
     struct PreparedLaneModule {
         captured: Arc<Mutex<Option<PreparedLaneHandle>>>,
     }
@@ -4736,6 +4836,11 @@ mod tests {
         }
 
         fn register(&mut self, registrar: &mut Registrar<'_>) -> Result<(), mush_core::ModError> {
+            registrar.state(PreparedLaneGeneration(1));
+            registrar.revision_validator(
+                RevisionKind::new(CanonicalId::new("prepared_lane").expect("static revision kind")),
+                PreparedLaneRevision,
+            )?;
             let descriptor = StateFamilyDescriptor::new(
                 StateFamilyId::new("receipt_state").expect("static family id"),
                 CanonicalId::new("u64.decimal.v1").expect("static codec id"),
@@ -4795,6 +4900,36 @@ mod tests {
             .clone()
             .expect("registration captured state-family handle");
         (engine, handle)
+    }
+
+    fn prepared_lane_guards(engine: &Engine, generation: u64) -> GuardSet {
+        let revisions = RevisionSet::from_stamps([RevisionStamp {
+            key: RevisionKey {
+                owner: OwnerId::new("prepared_lane_test").expect("static owner id"),
+                kind: RevisionKind::new(
+                    CanonicalId::new("prepared_lane").expect("static revision kind"),
+                ),
+                subject: SubjectKey::Object { id: GOD },
+                facet: None,
+            },
+            generation,
+        }])
+        .expect("single revision stamp is canonical");
+        engine
+            .registry
+            .server_guard_set_builder(revisions)
+            .expect("composed registry can build guards")
+            .finish()
+            .expect("single revision guard is valid")
+    }
+
+    fn empty_guards(engine: &Engine) -> GuardSet {
+        engine
+            .registry
+            .server_guard_set_builder(RevisionSet::default())
+            .expect("composed registry can build guards")
+            .finish()
+            .expect("empty guard set is valid")
     }
 
     fn prepare_lane_installation(
@@ -5717,8 +5852,9 @@ mod tests {
             .insert(&handle, &41, PreparedLaneState { amount: 7 })
             .expect("test state is valid");
         let prepared = transaction.prepare().expect("test transaction prepares");
+        let guards = empty_guards(&engine);
         engine
-            .stage_prepared_action(prepared)
+            .stage_prepared_action(prepared, guards)
             .expect("clean engine accepts prepared action");
 
         let (writer, mut writer_rx) = mpsc::channel(1);
@@ -5797,6 +5933,78 @@ mod tests {
         assert!(!persistence_integrity.is_latched());
     }
 
+    #[tokio::test]
+    async fn stale_prepared_action_is_refused_before_writer_custody() {
+        let (mut engine, handle) = prepared_lane_fixture();
+        let mut transaction = engine
+            .action_transaction(&handle)
+            .expect("test transaction begins");
+        transaction
+            .insert(&handle, &43, PreparedLaneState { amount: 8 })
+            .expect("test state is valid");
+        let prepared = transaction.prepare().expect("test transaction prepares");
+        let guards = prepared_lane_guards(&engine, 1);
+        engine
+            .stage_prepared_action(prepared, guards)
+            .expect("clean engine accepts prepared action");
+
+        engine
+            .world
+            .module_state_mut::<PreparedLaneGeneration>()
+            .expect("generation state is installed")
+            .0 = 2;
+        assert!(
+            !engine.has_legacy_persistence_work(),
+            "revision changes used by pure validation are not legacy writes"
+        );
+
+        let (writer, mut writer_rx) = mpsc::channel(1);
+        let mut serial = 0;
+        let mut health = StoreHealth::new();
+        let metrics = Metrics::new();
+        let mut retained = RetainedSeals::new();
+        let high_water = AtomicU64::new(0);
+        let outcome = flush_prepared_action(
+            &mut engine,
+            &writer,
+            &mut serial,
+            &mut health,
+            &metrics,
+            &mut retained,
+            &high_water,
+        )
+        .await;
+
+        match outcome {
+            FlushOutcome::Refused(detail) => assert!(
+                detail.contains("guards became stale"),
+                "unexpected refusal: {detail}"
+            ),
+            _ => panic!("stale guards must refuse the prepared submission"),
+        }
+        assert_eq!(serial, 0, "a stale action must consume no commit serial");
+        assert_eq!(health.mode, WorldMode::Writable);
+        assert!(health.last_write_unix.is_none());
+        assert!(
+            matches!(writer_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            "no stale action write may reach writer custody"
+        );
+        assert!(!engine.has_staged_action());
+        assert!(!engine.action_state().has_prepared());
+        assert_eq!(engine.action_state().revision(), 0);
+        assert!(
+            engine
+                .action_state()
+                .get(&handle, &43)
+                .expect("state lookup succeeds")
+                .is_none()
+        );
+        assert!(
+            engine.action_transaction(&handle).is_ok(),
+            "refusal must release the typed-state reservation"
+        );
+    }
+
     #[test]
     fn prepared_action_receipt_mismatch_or_rejection_aborts_installation() {
         enum BadReceipt {
@@ -5858,8 +6066,9 @@ mod tests {
             .insert(&handle, &23, PreparedLaneState { amount: 5 })
             .expect("test state is valid");
         let prepared = transaction.prepare().expect("test transaction prepares");
+        let guards = empty_guards(&engine);
         engine
-            .stage_prepared_action(prepared)
+            .stage_prepared_action(prepared, guards)
             .expect("clean engine accepts prepared action");
 
         let (writer, writer_rx) = mpsc::channel(1);
@@ -5909,8 +6118,9 @@ mod tests {
                 .insert(&handle, &29, PreparedLaneState { amount: 9 })
                 .expect("test state is valid");
             let prepared = transaction.prepare().expect("test transaction prepares");
+            let guards = empty_guards(&engine);
             engine
-                .stage_prepared_action(prepared)
+                .stage_prepared_action(prepared, guards)
                 .expect("clean engine accepts prepared action");
 
             match late_work {

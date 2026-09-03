@@ -400,7 +400,7 @@ pub fn toy_rules_value(definition: DefinitionRef, data: Value) -> RulesValue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mush_core::ActionProviderPrepareError;
+    use mush_core::{ActionProviderPrepareError, RevisionSet};
 
     fn bootstrap_focus(
         world: &mut TestWorld,
@@ -524,9 +524,16 @@ mod tests {
             "prepared effect must not become visible before acknowledgement"
         );
 
+        let guards = world
+            .engine()
+            .registry
+            .server_guard_set_builder(RevisionSet::default())
+            .unwrap()
+            .finish()
+            .unwrap();
         world
             .engine_mut()
-            .stage_prepared_action(prepared)
+            .stage_prepared_action(prepared, guards)
             .expect("clean action step stages");
         assert!(
             world.take_module_ops().is_empty(),
@@ -535,6 +542,7 @@ mod tests {
         let staged = world
             .engine_mut()
             .take_staged_action()
+            .expect("final guard validation succeeds")
             .expect("driver receives prepared action");
         let (ops, installation) = staged.into_parts();
         assert_eq!(ops.len(), 2);

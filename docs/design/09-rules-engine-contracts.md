@@ -625,10 +625,15 @@ and outbox work are not part of this `PreparedTxn`, and legacy output/effect con
 the separate K0 bounds gap described below.
 
 `Engine::stage_prepared_action` refuses to mix a prepared action with dirty `World` state, legacy
-module operations, or another staged action. The server sends its `ModuleJsonSet`/delete records on
-a separate prepared lane, retains the install images in `PendingCommit`, and on an exact matching
-applied serial installs them before releasing held output/effects. A mismatch, writer error, or
-dropped receipt aborts the typed images and freezes persistence integrity. This is a useful K2
+module operations, or another staged action, and requires an explicit server-created `GuardSet`.
+At the last synchronous boundary before writer custody, the single-owner world task revalidates
+that guard set against immutable world truth and the exact frozen module composition. Stale or
+unevaluable work aborts the complete typed image before consuming a serial or sending any write;
+an ordinary stale result is a retryable action refusal, not a persistence-integrity incident. The
+server sends current `ModuleJsonSet`/delete records on a separate prepared lane, retains the install
+images in `PendingCommit`, and on an exact matching applied serial installs them before releasing
+held output/effects. A mismatch, writer error, or dropped receipt aborts the typed images and
+freezes persistence integrity. This is a useful K2
 compatibility bridge, not K3 durability: the serial, store revision, and reservation sequence are
 process-local, and there is no durable intent/token/idempotency witness or whole-bundle
 reconciliation. A crash after store application but before RAM install now reloads a canonical
@@ -1771,7 +1776,7 @@ The repository already contains useful local proofs. They should be adapted, not
 | C5 RNG | injectable `mush-dice::RollCtx`; test-seeded ChaCha in rulesets | idempotency-derived resolution streams, draw transcript, algorithm/version and durable outcome record |
 | C6 causality | `WorldEvent`, scene/canon ledgers, module observers; stable pre-commit request/event IDs and causal references; bounded deterministic trigger queue with duplicate suppression and non-droppable active-work custody | commit-token-bound semantic events, intent-resolution-commit-observation integration, trigger execution inside `ActionTxn` and the durable bundle |
 | C7 tracks/effects | sheet tracks, tactical `ScalarCell`, ruleset-specific damage/effect state | common checked operations, resource/effect addressing, provenance/duration/revision contract and adapters |
-| C8 guards | F3 control channels, unit `control_gen`, expected unit revision, economy plan draft; canonical `RevisionSet`, owner-stamped validator registries, server-created `GuardSet`, and final fail-closed revalidation | actual per-channel leases, reservations, wiring every delayed result through guards, shared idempotency |
+| C8 guards | F3 control channels, unit `control_gen`, expected unit revision, economy plan draft; canonical `RevisionSet`, owner-stamped validator registries, explicit server-created `GuardSet` on every staged typed action, and final fail-closed revalidation at the synchronous writer-custody transition | actual per-channel leases, durable bundle reservation, wiring every delayed result through guards, shared idempotency |
 | C9 projection | per-observer perception and delivery, witness-aware power events | opaque contact references, dedicated view DTOs, shared legal-action/error/LLM projection |
 | C10 ownership | registrar-stamped definition/action/state-family owners; composition-bound opaque typed state handles; provider-stamped transactions that reject cross-owner handles; fail-closed cross-owner tactical references; immutable directional exact-definition bridge registry; shared owner-readiness gates on executable definitions/providers/validators/bridge routes | ownership migration for state outside `ActionStateStore`, executable bridge preparation across typed transactions, freeze aggregation from remaining owner adapters |
 | C11 lifecycle | pre-boot validated poison spool, exact seal retention/isolation, structural world modes, bounded recovery incidents/reports, tactical Active/Frozen/Migrating/Quarantined records, tactics owner-scoped digest-conflict freeze; prepared typed images install or abort on the matching process-local writer receipt; strict atomic state-family decode/validate/canonical boot hydration; legacy isolation of `action-state/*` | exhaustive orphan-owner discovery; exact-target recovery receipts; owner freezes in remaining lifecycle adapters; authoritative account ingress; store-enforced prefix ownership; K3 whole-bundle reconciliation and automated runbook coordinator |
@@ -1898,13 +1903,14 @@ Work:
 Implementation status: item 1's shared identities/provider registry and item 3's state-record
 transaction plus atomic typed boot hydration are implemented; item 4 has a bounded deterministic
 trigger queue, while its execution inside the same transaction/bundle remains open. The
-revision/authority registries and central
-`CommitPending` admission foundation cover parts of items 2 and 6. A provider can now prepare the
-toy two-record action without mutable-world access, and the server can persist those records on a
-separate lane and install/abort their typed images on the matching process-local applied receipt.
+revision/authority registries, mandatory staged-action `GuardSet`, final synchronous guard
+revalidation, and central `CommitPending` admission foundation cover parts of items 2 and 6. A
+provider can now prepare the toy two-record action without mutable-world access, and the server can
+persist those records on a separate lane and install/abort their typed images on the matching
+process-local applied receipt.
 The `action-state/*` keyspace is isolated from legacy module boot, migration, and server write paths.
-That is not the complete coordinator: early exact idempotency, atomic final guard revalidation plus
-bundle reservation, causal/outcome/outbox inclusion, whole-action bounds, store-enforced prefix
+That is not the complete coordinator: early exact idempotency, atomic durable bundle reservation,
+causal/outcome/outbox inclusion, whole-action bounds, store-enforced prefix
 ownership, independent bounded operational lanes, gateway ownership replay, and K3 whole-bundle
 restart reconciliation remain open.
 
