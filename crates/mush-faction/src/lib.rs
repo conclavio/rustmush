@@ -50,6 +50,7 @@ mod commands;
 mod data;
 mod sim;
 mod sim_commands;
+mod standing;
 
 use std::collections::BTreeMap;
 
@@ -65,6 +66,7 @@ pub use data::{
     Visibility, control_key, fac_key, member_key, region_key,
 };
 pub use sim::{Clock, ClockId, Front, FrontId, SimState};
+pub use standing::FactionStandingProvider;
 
 use data::{persist_control, persist_del, persist_faction, persist_region};
 

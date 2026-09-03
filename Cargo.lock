@@ -2003,6 +2003,7 @@ dependencies = [
  "mush-canon",
  "mush-comsys",
  "mush-core",
+ "mush-org",
  "mush-proto",
  "mush-store",
  "mush-testkit",

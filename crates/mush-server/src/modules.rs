@@ -73,9 +73,12 @@ pub fn server_modules_with(weather: mush_weather::WeatherConfig) -> Vec<Box<dyn 
         Box::new(mush_faction::FactionModule::new()),
         Box::new(mush_canon::CanonModule::new()),
         // E1: organization identity + scoped authorization (the economy's
-        // ownership/permission substrate). No predicate providers wired yet — E1c
-        // adds the faction-standing provider.
-        Box::new(mush_org::OrgModule::new()),
+        // ownership/permission substrate). E1c wires the faction-standing predicate
+        // provider so an org AccessPolicy can gate on live faction membership /
+        // officer / intel standing (the faction level model stays faction-side).
+        Box::new(mush_org::OrgModule::with_predicates(vec![std::sync::Arc::new(
+            mush_faction::FactionStandingProvider,
+        )])),
         Box::new(mush_scenes::ScenesModule::new()),
         Box::new(mush_sim::SimulationModule::new()),
         Box::new(mush_mail::MailModule),
