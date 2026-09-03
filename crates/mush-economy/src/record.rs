@@ -319,9 +319,24 @@ pub struct ExternalRef {
 /// E2/E3 keeps compiling (§12).
 pub type CausalRef = ExternalRef;
 
+/// The largest audience list one contract may name (doc 10 T6, E4b2).
+pub const MAX_AUDIENCE: usize = 32;
+
 /// Recorded transaction visibility. **Recorded, not enforced** in E2 — all E2 reads
 /// are staff-gated and the disclosure filter lands in E4 (R-D2).
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// **E4b2 adds [`EconomicVisibility::Audience`]** (doc 10 §15 / T6): a declared
+/// operation is contract-shaped but not necessarily world-visible, and the class
+/// that matters first is "visible to the parties *and* to everyone entitled to
+/// defend" — an audience list, not a public broadcast. The three shipped variants
+/// keep their serde bytes exactly (a unit variant still serializes as `"Parties"`),
+/// so every stored journal entry, plan hash and E2/E3/E4a document still
+/// round-trips, and both digest pins stay green.
+///
+/// The type is no longer `Copy`: an audience carries a list. Everywhere the E2/E3
+/// code copied it, it now clones — a per-post allocation on a value that is written
+/// into the journal entry anyway.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EconomicVisibility {
     /// Only the transacting parties (and staff).
     #[default]
@@ -330,6 +345,42 @@ pub enum EconomicVisibility {
     Staff,
     /// Anyone.
     Public,
+    /// The parties **and** a named audience (doc 10 T6's "eligible defenders" /
+    /// "participating organizations" classes). Canonicalized by principal key
+    /// inside [`crate::consent_hash`], so two orderings of one audience are one
+    /// consent surface.
+    Audience {
+        /// Who else may see it (≤ [`MAX_AUDIENCE`]).
+        members: Vec<PrincipalId>,
+    },
+}
+
+impl EconomicVisibility {
+    /// The named audience, or an empty slice.
+    #[must_use]
+    pub fn members(&self) -> &[PrincipalId] {
+        match self {
+            EconomicVisibility::Audience { members } => members,
+            _ => &[],
+        }
+    }
+    /// Whether this visibility is the one E4c's canon bridge may publish (D-E4-12:
+    /// only a `Public` contract, whose every party accepted that disclosure, ever
+    /// reaches canon — an audience list is emphatically **not** public).
+    #[must_use]
+    pub fn is_public(&self) -> bool {
+        matches!(self, EconomicVisibility::Public)
+    }
+    /// A short label for a listing line.
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self {
+            EconomicVisibility::Parties => "parties",
+            EconomicVisibility::Staff => "staff",
+            EconomicVisibility::Public => "public",
+            EconomicVisibility::Audience { .. } => "audience",
+        }
+    }
 }
 
 // ---- idempotency ----------------------------------------------------------

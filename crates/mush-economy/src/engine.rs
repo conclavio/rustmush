@@ -113,6 +113,14 @@ pub const CAPABILITIES: &[&str] = &[
     "vault.view",
     "vault.deposit",
     "vault.withdraw",
+    // E4b2 (§5): an org contract is drafted, accepted, attested and disputed by
+    // whoever holds these on the contract's own compartment. `contract.accept` is
+    // deliberately NOT a spending right — an org member needs it *and* debit
+    // authority on the account the consideration names (D-E4-4).
+    "contract.draft",
+    "contract.accept",
+    "contract.attest",
+    "contract.dispute",
 ];
 
 // ---- the authorization seam -----------------------------------------------
@@ -573,6 +581,19 @@ fn validate_inner(
             let amount = Amount::from_widened(placed).ok_or(EconomyError::Overflow)?;
             *entry = entry.checked_sub(amount).ok_or(EconomyError::Overflow)?;
         }
+        // ...and, symmetrically, what this plan CAPTURES was already escalated when
+        // it was placed (E4b2). A contract's escrow goes through the account's rule
+        // at `@contract/accept`, exactly as D-E4-11 requires; asking again at
+        // settlement would demand a second approval for the same money — and the
+        // sweep, which settles a `Before`/`After` contract, has nobody to collect it
+        // from, so an approval-ruled payer could fund a contract that could then
+        // never settle. Same reasoning as the authorization pass above, which already
+        // excuses the captured part of the debit.
+        for (&account_id, &captured) in &holds.captured {
+            let entry = approval_deltas.entry(account_id).or_insert(Amount::ZERO);
+            let amount = Amount::from_widened(captured).ok_or(EconomyError::Overflow)?;
+            *entry = entry.checked_add(amount).ok_or(EconomyError::Overflow)?;
+        }
         evaluate_approvals(snapshot, env, hash, &approval_deltas)?
     };
 
@@ -588,7 +609,7 @@ fn validate_inner(
         actor: plan.actor.clone(),
         cause: plan.cause.clone(),
         description: plan.description.clone(),
-        visibility: plan.visibility,
+        visibility: plan.visibility.clone(),
         lines,
         // A normal post never reverses; only `reverse` sets this, from a real tx.
         reverses: None,
@@ -1363,7 +1384,7 @@ fn entry_probe(p: &Prepared) -> EconomicTransaction {
         description: p.description.clone(),
         lines: p.lines.clone(),
         reverses: p.reverses,
-        visibility: p.visibility,
+        visibility: p.visibility.clone(),
         plan_hash: p.plan_hash,
         asset_effects,
         custody_effects: p.custody_effects.clone(),
@@ -1467,7 +1488,7 @@ pub fn apply(
         description: prepared.description.clone(),
         lines: prepared.lines.clone(),
         reverses: prepared.reverses,
-        visibility: prepared.visibility,
+        visibility: prepared.visibility.clone(),
         plan_hash: prepared.plan_hash,
         asset_effects,
         // Custody effects are audit-only here: the world move itself is performed by
@@ -1546,7 +1567,7 @@ pub fn plan_reversal(
         actor,
         description: format!("reversal of transaction {}", original.id),
         cause,
-        visibility: original.visibility,
+        visibility: original.visibility.clone(),
         requested_lines: lines,
         expected_revisions: Vec::new(),
         asset_ops: Vec::new(),

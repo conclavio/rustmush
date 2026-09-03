@@ -94,6 +94,14 @@ pub fn obligation_key(id: ObligationId) -> SmolStr {
 pub fn cadence_key(id: CadenceId) -> SmolStr {
     SmolStr::new(format!("cadence:{}", id.0))
 }
+/// `contract:{id}` — a **container** doc (D-E4-5, §5): contract *state* is doc
+/// authority, its money is the journal. A corrupt one fails the boot, because
+/// proceeding without it would classify a live agreement — and the escrow standing
+/// behind it — as absent.
+#[must_use]
+pub fn contract_key(id: crate::ids::ContractId) -> SmolStr {
+    SmolStr::new(format!("contract:{}", id.0))
+}
 
 // ---- persist helpers ------------------------------------------------------
 
@@ -146,6 +154,12 @@ pub(crate) fn persist_cadence(out: &mut Outbox, c: &crate::clock::CadenceClock) 
     push_op(out, ModuleWrite::JsonSet {
         key: cadence_key(c.id),
         value: serde_json::to_value(c).expect("cadence serializes"),
+    });
+}
+pub(crate) fn persist_contract(out: &mut Outbox, c: &crate::contract::EconomicContract) {
+    push_op(out, ModuleWrite::JsonSet {
+        key: contract_key(c.id),
+        value: serde_json::to_value(c).expect("contract serializes"),
     });
 }
 pub(crate) fn persist_escalation(out: &mut Outbox, e: &crate::escalation::Escalation) {
@@ -477,6 +491,20 @@ impl AuthEval for WorldAuth<'_> {
     ///   pay); a `Place` reaching this method at all would be a shape the engine does
     ///   not produce, so it fails closed.
     fn authorize_hold(&self, actor: &PrincipalId, hold: &Hold, op: &HoldOp) -> bool {
+        // **Escrow is the contract's, and only the contract's** (E4b1 verify fold's
+        // E4b2 handoff, §4.8). A reservation whose purpose is a contract's escrow is
+        // released by that contract's own refund path, captured by its own
+        // settlement, and touched by nothing else — not by its placer, not by the
+        // beneficiary, not by staff, and not by the sweep. `ContractAuth` is the only
+        // authority that answers `true` for one, and it is reachable only through
+        // `post_with(.., PostAuth::Injected(..))` from inside this crate.
+        //
+        // Without this the placer clause below was an open door: the accepting party
+        // places their own escrow, so they would have been able to release it the
+        // instant afterwards and leave a live contract standing on nothing.
+        if matches!(hold.purpose, crate::record::HoldPurpose::Escrow { .. }) {
+            return false;
+        }
         match op {
             HoldOp::Place { .. } => false,
             HoldOp::Capture { .. } => {
@@ -505,6 +533,46 @@ impl AuthEval for WorldAuth<'_> {
             // Expiry is the scheduler's act, not a player verb: only the sweep's own
             // system principal, and the engine additionally requires the sweep cause.
             HoldOp::Expire { .. } => *actor == sweep_principal(),
+        }
+    }
+
+    /// Who currently qualifies as an attestor (E4b2). Re-run **live** at settlement,
+    /// exactly like [`AuthEval::authorize_approver`] (E3's A5 rule).
+    ///
+    /// E4b1 left this at the trait default (`false`), which was invisible until
+    /// contracts went live and then would have been a quiet money bug in the wrong
+    /// direction: a `Capability` or `Staff` attestation, which `reverify` re-qualifies
+    /// through this method, could never re-qualify, so a contract satisfied by one
+    /// could never settle at all.
+    ///
+    /// - `Party(p)`: the actor **is** `p`. Not `acts_for` — a party attestation is a
+    ///   statement by that party about the world, and the whole point of naming the
+    ///   party is that somebody else's word is not theirs.
+    /// - `Capability { scope, capability }`: the capability, live, on a live
+    ///   compartment — the ordinary org question. A capability set with no scope
+    ///   qualifies nobody (there is no compartment to hold it on).
+    /// - `Staff`: the staff predicate the whole crate uses.
+    /// - `Canon { .. }`: never a principal. A canon attestation is recorded by E4c's
+    ///   observer from a canon event, and `reverify` matches it on kind and source
+    ///   without asking this method at all.
+    fn authorize_attestor(&self, actor: &PrincipalId, set: &crate::AttestorSet) -> bool {
+        match set {
+            crate::AttestorSet::Party(p) => actor == p,
+            crate::AttestorSet::Capability { scope, capability } => {
+                let (PrincipalId::Object(a), Some(scope)) = (actor, scope) else { return false };
+                let req = AuthRequest {
+                    actor: *a,
+                    capability: capability.clone(),
+                    scope: *scope,
+                    now: self.w.now(),
+                    amount: None,
+                };
+                authorize_in_world(self.w, &req).is_allow()
+            }
+            crate::AttestorSet::Staff => {
+                matches!(actor, PrincipalId::Object(o) if is_staff(self.w, *o))
+            }
+            crate::AttestorSet::Canon { .. } => false,
         }
     }
 }
@@ -1115,6 +1183,40 @@ pub(crate) fn put_cadence(ctx: &mut Ctx<'_>, c: crate::clock::CadenceClock) {
         store.snapshot.put_cadence(c.clone());
     }
     persist_cadence(ctx.out, &c);
+}
+
+/// Install a contract into RAM and queue its container doc (E4b2, §5).
+///
+/// The latch rule (§4.2) holds here the way it does for an obligation: an
+/// [`crate::EconomicContract`] carries **no journal-authority field**. Its money is
+/// the journal — the escrow holds, the settlement transaction — while its state,
+/// acceptances, attestations and roles are doc authority end to end (D-E4-5), so a
+/// state write can never make a doc disagree with the journal at a sequence it
+/// claims.
+///
+/// [`EconomySnapshot::put_contract`] re-derives the custody locks from the record's
+/// `DepositInto` conditions as it installs it, so the lock lifts on exactly the
+/// state change that is being written and never a moment earlier.
+pub(crate) fn put_contract(ctx: &mut Ctx<'_>, c: crate::contract::EconomicContract) {
+    {
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return };
+        store.snapshot.put_contract(c.clone());
+    }
+    persist_contract(ctx.out, &c);
+}
+
+/// The system principal every contract's escrow is made out to (§5).
+///
+/// It is not a faucet and owns no account. Its whole job is to be a beneficiary
+/// **nobody acts for** ([`WorldAuth::acts_for`] returns `false` for every `System`
+/// principal, staff included), so a reservation whose purpose is a contract's escrow
+/// is capturable only through [`crate::ContractAuth`] — never from a command, never
+/// by the payer who placed it, and never by the payee who is owed it.
+#[must_use]
+pub(crate) fn contract_principal() -> PrincipalId {
+    PrincipalId::System(
+        mush_org::SystemPrincipalId::new("economy.contract").expect("valid system principal"),
+    )
 }
 
 /// Install an escalation record into RAM and queue its leaf doc (E4b1, §4.6).

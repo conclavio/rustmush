@@ -37,7 +37,7 @@ use crate::clock::{Clocks, EconomicClock, EconomicDeadline, EconomicSchedule};
 use crate::engine::{MAX_ASSET_OPS_PER_PLAN, MAX_LINES_PER_TX, ValidateEnv};
 use crate::ids::{AccountId, ContractId, HoldId, InstrumentId, TransactionId, VaultId};
 use crate::obligation::GracePolicy;
-use crate::plan::{AssetOp, EconomyPlan, HoldOp, HoldRevision, RequestedLine};
+use crate::plan::{AssetOp, CustodyOp, EconomyPlan, HoldOp, HoldRevision, RequestedLine};
 use crate::record::{
     AccountStatus, AssetLifecycle, ContractStateKind, EconomicCause, EconomicVisibility,
     Encumbrance, ExternalRef, Hold, HoldPurpose, IdempotencyKey,
@@ -54,6 +54,26 @@ pub const MAX_CONDITIONS: usize = 16;
 pub const MAX_DELIVERABLES: usize = 16;
 /// Maximum payout shares in one split (§9).
 pub const MAX_SHARES: usize = 32;
+/// Maximum outcomes in one outcome table (§3.5's E6 extension, 08e answer 8). The
+/// defaults are `failure`/`partial`/`success`, but the list is **data**, never
+/// hard-coded.
+pub const MAX_OUTCOMES: usize = 8;
+/// Maximum agreements recorded on one dispute (one per party, §9's `MAX_PARTIES`).
+pub const MAX_AGREEMENTS: usize = MAX_PARTIES;
+/// Maximum bytes of a contract's human label.
+pub const MAX_CONTRACT_NAME_BYTES: usize = 64;
+/// How many times one contract may be amended (E4b2).
+///
+/// Each amendment refunds every acceptance and starts the collection again, and each
+/// one advances the **generation** every deterministic key carries, so the bound is
+/// really on how many key generations one contract id can own. Thirty-two is far more
+/// renegotiation than any table wants and short of anything that could look like a
+/// key-space attack.
+pub const MAX_AMENDMENTS: u32 = 32;
+/// Maximum deposits one contract records for return at refund. The module admits
+/// **one** custody op per plan, so a refund can only ever return one object per
+/// post; the cap is the same, stated where the record is bounded.
+pub const MAX_DEPOSITS: usize = 1;
 /// Maximum non-terminal contracts one issuer may hold open (§9; E4b2 enforces).
 pub const MAX_OPEN_CONTRACTS_PER_ISSUER: usize = 16;
 /// Maximum live contracts one party may be named on (§9; E4b2 enforces).
@@ -173,6 +193,58 @@ pub enum Expiry {
     Dispute,
 }
 
+/// How one outcome treats an expense advance (08e answer 7/8).
+///
+/// **Declarative in E4b2**: it is frozen inside the consent hash, so the parties
+/// agreed to it and E6a cannot change it after acceptance, but nothing here
+/// synthesises a money line from it — an outcome's `payouts` must already say where
+/// the advance ends up. E6a's vendor/expense flow is the consumer (§5.1's handoff).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExpenseTreatment {
+    /// No expense advance is part of this contract.
+    #[default]
+    None,
+    /// The advance stays with whoever holds it, whatever this outcome pays.
+    Retained,
+    /// The advance comes back — this outcome's `payouts` must name the payer's
+    /// account for it explicitly.
+    Returned,
+    /// Receipts decide, once attestations are mature enough to carry them (08e
+    /// answer 7: "prefer a fixed expense advance first").
+    Reimbursed,
+}
+
+/// One outcome of a data-driven outcome table (08e answers 7–8, §3.5).
+///
+/// E4a's single [`ContractTerms::split`] is the **degenerate one-outcome case**: a
+/// contract with an empty `outcomes` vector settles exactly as it did in E4a. With
+/// outcomes present, the conditions named by some outcome's `when` become *outcome*
+/// conditions — the ones that decide *which* result happened, and which are
+/// therefore mutually exclusive rather than all-required — while every other
+/// condition stays a **gating** condition that must hold whatever the outcome.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutcomeTerms {
+    /// The outcome's name (`success`, `partial`, `failure` are conventions, never
+    /// hard-coded).
+    pub name: SmolStr,
+    /// The condition indexes that must ALL be satisfied for this outcome to be the
+    /// one that pays (≤ [`MAX_CONDITIONS`]).
+    pub when: Vec<usize>,
+    /// Exactly what this outcome pays, with **no implicit remainder** (08e answer
+    /// 7): the payouts must sum to the escrowed total exactly.
+    pub payouts: Vec<PayoutShare>,
+    /// How this outcome treats an expense advance (declarative — see
+    /// [`ExpenseTreatment`]).
+    #[serde(default)]
+    pub expense_treatment: ExpenseTreatment,
+    /// The indexes of the `deliverables` this outcome causes — a failed run does not
+    /// move the title a successful one would. Deliverables this outcome does not
+    /// name simply do not execute; `Collateral` releases are **not** listed here,
+    /// because a pledge has to come back whatever happened.
+    #[serde(default)]
+    pub asset_consequences: Vec<usize>,
+}
+
 /// The money-and-goods half of the consent surface.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContractTerms {
@@ -180,12 +252,17 @@ pub struct ContractTerms {
     pub consideration: Vec<Consideration>,
     /// What is delivered (≤ [`MAX_DELIVERABLES`]).
     pub deliverables: Vec<Deliverable>,
-    /// How the escrowed total is split (≤ [`MAX_SHARES`]).
+    /// How the escrowed total is split when there is **one** result (≤
+    /// [`MAX_SHARES`]). Ignored when `outcomes` is non-empty.
     pub split: Vec<PayoutShare>,
-    /// Where the floored remainder lands (scenario 17).
+    /// Where the floored remainder lands (scenario 17). Ignored when `outcomes` is
+    /// non-empty — an outcome has no implicit remainder.
     pub remainder_to: AccountId,
     /// What an unsettled deadline does.
     pub on_expiry: Expiry,
+    /// The outcome table (≤ [`MAX_OUTCOMES`]). Empty is E4a's single split.
+    #[serde(default)]
+    pub outcomes: Vec<OutcomeTerms>,
 }
 
 /// Who may attest a condition.
@@ -320,10 +397,122 @@ pub struct ConsentSurface {
     /// When it lapses.
     pub deadline: Option<EconomicDeadline>,
     /// The disclosure every party consents to. Only a `Public` contract ever reaches
-    /// canon (D-E4-12, E15).
+    /// canon (D-E4-12, E15); an [`EconomicVisibility::Audience`] list is the T6
+    /// class that discloses to eligible defenders without publishing.
     pub visibility: EconomicVisibility,
     /// The org compartment, if this is an org contract.
     pub scope: Option<OrgScopeId>,
+    /// **The named adjudicator** (08e answer 6): the authority whose word settles a
+    /// contested condition, named *before* acceptance so runners consent to it when
+    /// they accept. When it is `Some`, an attestation is accepted only from someone
+    /// who qualifies for this set **as well as** the condition's own `by` — an
+    /// adjudicated condition is not something a party can discharge by asserting it.
+    ///
+    /// It lives in the consent surface rather than beside the other roles because it
+    /// is consented *authority*, not attribution: changing it after `Offer` must
+    /// void every acceptance.
+    #[serde(default)]
+    pub adjudicator: Option<AttestorSet>,
+    /// **The permitted evidence sources** (08e answer 6). Empty admits every
+    /// condition kind; a non-empty list is exhaustive, and `check_offerable` refuses
+    /// a condition of any other kind.
+    #[serde(default)]
+    pub evidence: Vec<EvidenceKind>,
+}
+
+/// A condition kind, as the consent surface's permitted-evidence list names it
+/// (08e answer 6). Deliberately a separate enum from [`TypedCondition`]: the list
+/// says which *kinds* of proof the parties agreed to, not which proofs exist.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum EvidenceKind {
+    /// An explicit attestation.
+    Attestation,
+    /// A journaled deposit into a named vault.
+    DepositInto,
+    /// Journal-authority title state.
+    TitleHeld,
+    /// An external provider's fact.
+    Fact,
+    /// An absolute deadline.
+    Before,
+    /// A delay after another condition.
+    After,
+}
+
+impl TypedCondition {
+    /// Which [`EvidenceKind`] this condition is.
+    #[must_use]
+    pub fn evidence_kind(&self) -> EvidenceKind {
+        match self {
+            TypedCondition::Attestation { .. } => EvidenceKind::Attestation,
+            TypedCondition::DepositInto { .. } => EvidenceKind::DepositInto,
+            TypedCondition::TitleHeld { .. } => EvidenceKind::TitleHeld,
+            TypedCondition::Fact { .. } => EvidenceKind::Fact,
+            TypedCondition::Before { .. } => EvidenceKind::Before,
+            TypedCondition::After { .. } => EvidenceKind::After,
+        }
+    }
+}
+
+/// The **separate roles** a contract records (08e answer 22, §3.5).
+///
+/// "A Johnson is the visible representative, not necessarily the payer or author"
+/// (08e answer 4). They may coincide — in the simple two-party sale they all are the
+/// issuer — but the model must not assume it, so each is its own optional field and
+/// none of them is authority: authority is the acceptance, the debit right on the
+/// named account, and (for evidence) the adjudicator in the consent surface.
+///
+/// The fifth role, the **adjudicator**, lives in [`ConsentSurface`] instead, because
+/// it is a power the parties consent to rather than a name they are told.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContractRoles {
+    /// Who wrote it (an ST, a campaign system, a player).
+    pub author: Option<PrincipalId>,
+    /// **The accountable escrow principal** — whose account funds the consideration.
+    pub payer: Option<PrincipalId>,
+    /// The visible representative (the Johnson).
+    pub representative: Option<PrincipalId>,
+    /// Whoever is running the table for it.
+    pub facilitator: Option<PrincipalId>,
+}
+
+/// One party's recorded position on how a dispute should end (level 0, §4.6):
+/// unanimous agreement resolves it without staff.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartyAgreement {
+    /// Who agreed.
+    pub party: PrincipalId,
+    /// What they agreed to.
+    pub resolution: Resolution,
+    /// When (wall clock).
+    pub at: i64,
+}
+
+/// How a dispute ends.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Resolution {
+    /// Settle: re-verify and pay out.
+    Settle,
+    /// Refund: release every escrow hold and return every deposit.
+    Refund,
+}
+
+/// Who put an object into a vault under this contract's `DepositInto`, taken from
+/// the **journal's** last-custody map (never from a claim).
+///
+/// It exists so a refund can put the object back where it came from: the custody
+/// lock has no exception (E4a verify fold, finding 2), so the only way out for a
+/// deposit is the contract's own unwind, and the unwind has to know whose it was.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DepositRecord {
+    /// The deposited object.
+    pub object: ObjId,
+    /// The vault it went into.
+    pub vault: VaultId,
+    /// The principal whose post deposited it (the transaction's actor).
+    pub deposited_by: PrincipalId,
+    /// When (wall clock).
+    pub at: i64,
 }
 
 /// One party's acceptance, bound to the exact consent surface they saw.
@@ -401,6 +590,11 @@ pub struct EconomicContract {
     pub id: ContractId,
     /// Who drafted it.
     pub issuer: PrincipalId,
+    /// A short human label (≤ [`MAX_CONTRACT_NAME_BYTES`]). **Attribution, not
+    /// consent**: it is outside the consent surface, so renaming a draft does not
+    /// void anybody's acceptance, and a name can never be the reason money moves.
+    #[serde(default)]
+    pub name: SmolStr,
     /// Everything acceptances bind to.
     pub consent: ConsentSurface,
     /// The hash of `consent`, **frozen at `Offer`**. It is deliberately stored
@@ -419,6 +613,36 @@ pub struct EconomicContract {
     /// [`MAX_SETTLE_ATTEMPTS`]).
     #[serde(default)]
     pub settle_attempts: u8,
+    /// When it was drafted (wall clock) — the `DRAFT_TTL_SECS` GC clock.
+    #[serde(default)]
+    pub created_at: i64,
+    /// How many times the consent surface has been re-opened by an amendment
+    /// (08e answer 5). It is the **generation** of every deterministic key this
+    /// contract posts under: an amended contract can be refunded a second time, and
+    /// `contract/{id}/refund` would otherwise resolve to the FIRST refund and give
+    /// nothing back — an idempotency HIT quietly stranding the new escrow.
+    #[serde(default)]
+    pub amendments: u32,
+    /// When it entered `Disputed` (wall clock) — the `DISPUTE_TTL_SECS` clock the
+    /// sweep pages on. `None` on a contract that has never been disputed.
+    #[serde(default)]
+    pub disputed_at: Option<i64>,
+    /// Whether the roster is frozen (08e answers 5/7). The **first acceptance**
+    /// locks it: a party who has funded escrow agreed to a specific set of
+    /// counterparties and a specific set of shares, and adding a runner afterwards
+    /// dilutes the split they signed. A later substitution is an amendment, which
+    /// re-opens the surface and re-collects every acceptance.
+    #[serde(default)]
+    pub roster_locked: bool,
+    /// What was deposited under this contract, and by whom (≤ [`MAX_DEPOSITS`]).
+    #[serde(default)]
+    pub deposits: Vec<DepositRecord>,
+    /// Recorded party positions on a dispute (≤ [`MAX_AGREEMENTS`]).
+    #[serde(default)]
+    pub agreements: Vec<PartyAgreement>,
+    /// The separate roles (08e answer 22). Attribution, never authority.
+    #[serde(default)]
+    pub roles: ContractRoles,
     /// Staleness stamp.
     pub revision: u64,
 }
@@ -484,6 +708,16 @@ pub enum ContractError {
     /// The contract is shaped in a way no single plan can carry.
     #[error("infeasible contract: {0}")]
     Infeasible(&'static str),
+    /// Two (or more) outcomes' `when` conditions are all satisfied, so the contract
+    /// does not say what happened — a dispute, never a guess (§3.5).
+    #[error("two outcomes are satisfied at once; the contract does not say which happened")]
+    AmbiguousOutcome,
+    /// No outcome's `when` conditions are satisfied yet.
+    #[error("no outcome is satisfied")]
+    NoOutcome,
+    /// A condition kind the consent surface's permitted-evidence list does not admit.
+    #[error("condition {0} is not a permitted kind of evidence for this contract")]
+    EvidenceNotPermitted(usize),
     /// Checked arithmetic overflowed.
     #[error("arithmetic overflow")]
     Overflow,
@@ -502,6 +736,26 @@ pub fn principal_key(p: &PrincipalId) -> (u8, u64, &str) {
     }
 }
 
+/// The canonical form of a visibility inside a consent hash: an audience list is
+/// sorted by [`principal_key`] and deduplicated, so two orderings of one audience
+/// are **one** consent surface and a party who accepted cannot be told afterwards
+/// that the list "changed" because someone re-typed it.
+///
+/// Every other variant is returned unchanged, so the canonical bytes of `Parties`,
+/// `Staff` and `Public` are exactly what they were before E4b2 existed.
+#[must_use]
+pub fn canonical_visibility(v: &EconomicVisibility) -> EconomicVisibility {
+    match v {
+        EconomicVisibility::Audience { members } => {
+            let mut out: Vec<PrincipalId> = members.clone();
+            out.sort_by(|a, b| principal_key(a).cmp(&principal_key(b)));
+            out.dedup_by(|a, b| principal_key(a) == principal_key(b));
+            EconomicVisibility::Audience { members: out }
+        }
+        other => other.clone(),
+    }
+}
+
 #[derive(Serialize)]
 struct CanonicalConsent<'a> {
     issuer: &'a PrincipalId,
@@ -511,6 +765,10 @@ struct CanonicalConsent<'a> {
     deadline: &'a Option<EconomicDeadline>,
     visibility: EconomicVisibility,
     scope: &'a Option<OrgScopeId>,
+    /// E4b2: the adjudicator and the permitted evidence are part of what a runner
+    /// consents to when they accept (08e answer 6), so they are hashed.
+    adjudicator: &'a Option<AttestorSet>,
+    evidence: &'a [EvidenceKind],
 }
 
 /// The canonical SHA-256 of a consent surface — **everything** an acceptance binds
@@ -537,23 +795,43 @@ pub fn consent_hash(issuer: &PrincipalId, consent: &ConsentSurface) -> [u8; 32] 
         terms: &consent.terms,
         conditions: &consent.conditions,
         deadline: &consent.deadline,
-        visibility: consent.visibility,
+        visibility: canonical_visibility(&consent.visibility),
         scope: &consent.scope,
+        adjudicator: &consent.adjudicator,
+        evidence: &consent.evidence,
     };
     let bytes = serde_json::to_vec(&canonical).expect("canonical consent serializes");
     Sha256::digest(&bytes).into()
 }
 
-/// The deterministic idempotency key for a contract's settlement:
-/// `contract/{id}/settle` (§12's C8 list). Settling twice is `AlreadyPosted`.
+/// One of a contract's deterministic idempotency keys, at a **generation** (§12's C8
+/// list): `contract/{id}/{verb}` at generation 0, `contract/{id}/{verb}/{n}` after
+/// `n` amendments.
+///
+/// Generation 0 is byte-identical to the key E4a specified, so every stored
+/// idempotency record keeps resolving. It exists because an amendment genuinely
+/// re-opens a contract: the same id can refund, activate and settle **again** on the
+/// new terms, and a key that did not move would resolve to the first post and hand
+/// back an `AlreadyPosted` for money that never moved the second time.
+#[must_use]
+pub fn contract_op_key(id: ContractId, verb: &str, generation: u32) -> IdempotencyKey {
+    let key = if generation == 0 {
+        format!("{}/{verb}", id.0)
+    } else {
+        format!("{}/{verb}/{generation}", id.0)
+    };
+    IdempotencyKey::new(SmolStr::new_static("contract"), SmolStr::new(key))
+}
+/// The deterministic idempotency key for a contract's settlement at generation 0:
+/// `contract/{id}/settle`. Settling twice is `AlreadyPosted`.
 #[must_use]
 pub fn settle_key(id: ContractId) -> IdempotencyKey {
-    IdempotencyKey::new(SmolStr::new_static("contract"), SmolStr::new(format!("{}/settle", id.0)))
+    contract_op_key(id, "settle", 0)
 }
-/// The deterministic idempotency key for a contract's refund: `contract/{id}/refund`.
+/// The deterministic idempotency key for a contract's refund at generation 0.
 #[must_use]
 pub fn refund_key(id: ContractId) -> IdempotencyKey {
-    IdempotencyKey::new(SmolStr::new_static("contract"), SmolStr::new(format!("{}/refund", id.0)))
+    contract_op_key(id, "refund", 0)
 }
 
 impl EconomicContract {
@@ -696,6 +974,113 @@ pub fn apply_split(total: Amount, terms: &ContractTerms) -> Result<Vec<(AccountI
     Ok(out)
 }
 
+/// Apply one outcome's payouts to `total` with **no implicit remainder** (08e
+/// answer 7: "no unspecified remainder to the fixer").
+///
+/// [`Share::Exact`] first, then [`Share::Permille`] of what remains, floored — the
+/// same arithmetic [`apply_split`] uses — and then the sum must equal `total`
+/// exactly. A table whose shares leave a rounding crumb is [`ContractError::
+/// SplitInfeasible`] at `Offer`, where a human can still fix it, rather than a
+/// silent payment to whoever happened to be named `remainder_to`.
+pub fn apply_outcome(
+    total: Amount,
+    payouts: &[PayoutShare],
+) -> Result<Vec<(AccountId, Amount)>, ContractError> {
+    let total_w = total.widen();
+    if total_w < 0 {
+        return Err(ContractError::SplitInfeasible);
+    }
+    let mut exact_sum: i128 = 0;
+    let mut permille_sum: u64 = 0;
+    for s in payouts {
+        match s.share {
+            Share::Exact(a) => {
+                if a.is_negative() {
+                    return Err(ContractError::SplitInfeasible);
+                }
+                exact_sum += a.widen();
+            }
+            Share::Permille(p) => permille_sum += u64::from(p),
+        }
+    }
+    if exact_sum > total_w || permille_sum > u64::from(PERMILLE) {
+        return Err(ContractError::SplitInfeasible);
+    }
+    let remaining = total_w - exact_sum;
+    let mut out: Vec<(AccountId, Amount)> = Vec::with_capacity(payouts.len());
+    let mut assigned: i128 = 0;
+    for s in payouts {
+        let amount = match s.share {
+            Share::Exact(a) => a,
+            Share::Permille(p) => {
+                let v = remaining * i128::from(p) / i128::from(PERMILLE);
+                Amount::from_widened(v).ok_or(ContractError::Overflow)?
+            }
+        };
+        assigned += amount.widen();
+        if !amount.is_zero() {
+            out.push((s.to, amount));
+        }
+    }
+    if assigned != total_w {
+        return Err(ContractError::SplitInfeasible);
+    }
+    Ok(out)
+}
+
+// ---- the outcome table (08e answers 7-8) ----------------------------------
+
+/// The condition indexes some outcome's `when` names — the conditions that decide
+/// *which* result happened.
+///
+/// They are deliberately **excluded** from the all-conditions gate: an outcome table
+/// exists precisely because "the run succeeded" and "the run failed" cannot both be
+/// true, so requiring every condition would make an outcome-indexed contract
+/// unsettleable. Everything else stays a gating condition and must hold whatever the
+/// outcome — the deposit that had to be delivered, the title that had to be held,
+/// the delay that had to elapse.
+#[must_use]
+pub fn outcome_conditions(c: &EconomicContract) -> Vec<bool> {
+    let mut out = vec![false; c.consent.conditions.len()];
+    for o in &c.consent.terms.outcomes {
+        for i in &o.when {
+            if let Some(slot) = out.get_mut(*i) {
+                *slot = true;
+            }
+        }
+    }
+    out
+}
+
+/// Which outcome the world says happened: `Ok(None)` when the table is empty (the
+/// E4a single-split case), `Ok(Some(i))` for exactly one satisfied outcome,
+/// [`ContractError::NoOutcome`] when none is, and [`ContractError::AmbiguousOutcome`]
+/// when two are — which §3.5 makes a dispute, because a contract that does not say
+/// what happened must not pay anybody.
+pub fn resolve_outcome(
+    c: &EconomicContract,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> Result<Option<usize>, ContractError> {
+    if c.consent.terms.outcomes.is_empty() {
+        return Ok(None);
+    }
+    let mut hit: Option<usize> = None;
+    for (i, o) in c.consent.terms.outcomes.iter().enumerate() {
+        // An outcome with no `when` is unconditional; two of those are ambiguous,
+        // which is exactly what the check below says.
+        let all = o.when.iter().all(|k| condition_holds(c, *k, snapshot, env));
+        if !all {
+            continue;
+        }
+        if hit.is_some() {
+            return Err(ContractError::AmbiguousOutcome);
+        }
+        hit = Some(i);
+    }
+    hit.map(Some).ok_or(ContractError::NoOutcome)
+}
+
 // ---- feasibility at Offer -------------------------------------------------
 
 fn account_instrument(
@@ -770,7 +1155,51 @@ pub fn check_offerable(
     if let Expiry::Forfeit { to } = consent.terms.on_expiry {
         account_instrument(snapshot, to, &mut instrument)?;
     }
-    apply_split(Amount::from_widened(total).ok_or(ContractError::Overflow)?, &consent.terms)?;
+    let escrow_total = Amount::from_widened(total).ok_or(ContractError::Overflow)?;
+    apply_split(escrow_total, &consent.terms)?;
+
+    // The outcome table (08e answers 7-8). Each outcome's shares must be feasible
+    // AND sum to the escrowed total exactly — no implicit remainder — and every
+    // index it names must exist, or the table would silently never resolve.
+    if consent.terms.outcomes.len() > MAX_OUTCOMES {
+        return Err(ContractError::TooLarge("too many outcomes"));
+    }
+    for o in &consent.terms.outcomes {
+        if o.payouts.len() > MAX_SHARES {
+            return Err(ContractError::TooLarge("too many shares in one outcome"));
+        }
+        if o.when.len() > MAX_CONDITIONS {
+            return Err(ContractError::TooLarge("too many conditions in one outcome"));
+        }
+        if o.when.iter().any(|i| *i >= consent.conditions.len()) {
+            return Err(ContractError::Infeasible("an outcome names a condition that does not exist"));
+        }
+        if o.asset_consequences.iter().any(|i| *i >= consent.terms.deliverables.len()) {
+            return Err(ContractError::Infeasible("an outcome names a deliverable that does not exist"));
+        }
+        for s in &o.payouts {
+            account_instrument(snapshot, s.to, &mut instrument)?;
+        }
+        apply_outcome(escrow_total, &o.payouts)?;
+        if o.payouts.len() + consent.terms.consideration.len() > MAX_LINES_PER_TX {
+            return Err(ContractError::TooLarge("too many settlement lines"));
+        }
+    }
+    // The permitted-evidence list is exhaustive when it is non-empty (08e answer 6):
+    // the parties named which kinds of proof may release their money, and a
+    // condition of any other kind is not something they agreed to.
+    if !consent.evidence.is_empty() {
+        for (i, con) in consent.conditions.iter().enumerate() {
+            if !consent.evidence.contains(&con.evidence_kind()) {
+                return Err(ContractError::EvidenceNotPermitted(i));
+            }
+        }
+    }
+    if let EconomicVisibility::Audience { members } = &consent.visibility
+        && members.len() > crate::record::MAX_AUDIENCE
+    {
+        return Err(ContractError::TooLarge("too many audience members"));
+    }
 
     // Deliverables must fit the ONE plan settlement builds (E3's per-plan caps), and
     // the module admits exactly one custody effect per plan.
@@ -867,28 +1296,73 @@ pub fn reverify(
     if c.satisfied.len() != c.consent.conditions.len() {
         return Err(ContractError::Infeasible("satisfaction vector does not match the conditions"));
     }
+    // With an outcome table, the conditions an outcome's `when` names are the ones
+    // that decide WHICH result happened, and they are mutually exclusive by
+    // construction — requiring all of them would make every outcome-indexed contract
+    // unsettleable. `resolve_outcome` asks about those; this asks about the rest.
+    let outcome_gated = outcome_conditions(c);
+    for i in 0..c.consent.conditions.len() {
+        if outcome_gated.get(i).copied().unwrap_or(false) {
+            continue;
+        }
+        if !condition_holds(c, i, snapshot, env) {
+            return Err(ContractError::ConditionFailed(i));
+        }
+    }
+    Ok(())
+}
+
+/// Whether a recorded attestation satisfies one attestor set.
+///
+/// A `Party` attestation **stands once given** (identity is a fact about the past).
+/// A `Capability`/`Staff` attestor is re-qualified **live**, exactly like an approver
+/// (E3's A5 rule): an attestor who lost the capability stops counting. A `Canon`
+/// reference must be the RIGHT canon reference — kind and (unless the set accepts
+/// any) source (E4a verify fold, finding 5), or a bar brawl would discharge a
+/// smuggling contract.
+#[must_use]
+fn attestation_matches(att: &Attestation, set: &AttestorSet, env: &ValidateEnv<'_>) -> bool {
+    match set {
+        AttestorSet::Party(p) => matches!(&att.by, AttestorRef::Principal(a) if a == p),
+        AttestorSet::Capability { .. } | AttestorSet::Staff => {
+            matches!(&att.by, AttestorRef::Principal(a) if env.auth.authorize_attestor(a, set))
+        }
+        AttestorSet::Canon { kind, source } => {
+            matches!(&att.by, AttestorRef::Canon { kind: k, source: s, .. }
+                if k == kind && source.as_ref().is_none_or(|want| want == s))
+        }
+    }
+}
+
+/// Whether condition `i` holds **right now** — the one place a condition kind is
+/// evaluated, so `reverify`, `resolve_outcome` and the readiness check can never
+/// drift apart. An index past the end is `false` (never a panic).
+#[must_use]
+pub fn condition_holds(
+    c: &EconomicContract,
+    i: usize,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> bool {
+    let Some(condition) = c.consent.conditions.get(i) else { return false };
+    let Some(recorded) = c.satisfied.get(i) else { return false };
     let clocks = Clocks::new(env.now, env.ic_now);
-    for (i, condition) in c.consent.conditions.iter().enumerate() {
-        let ok = match condition {
-            TypedCondition::Attestation { by } => match (&c.satisfied[i], by) {
-                (Some(att), AttestorSet::Party(p)) => {
-                    matches!(&att.by, AttestorRef::Principal(a) if a == p)
+    {
+        match condition {
+            // The condition's own attestor set, OR — when the consent surface names
+            // one — the **adjudicator's** (08e answer 6). A named adjudicator
+            // replaces each condition's set at attestation time, so re-verification
+            // has to accept their word symmetrically or an adjudicated contract
+            // could be attested and then never settle.
+            TypedCondition::Attestation { by } => match recorded {
+                None => false,
+                Some(att) => {
+                    attestation_matches(att, by, env)
+                        || c.consent
+                            .adjudicator
+                            .as_ref()
+                            .is_some_and(|set| attestation_matches(att, set, env))
                 }
-                // A capability or staff attestor is re-qualified LIVE, exactly like
-                // an approver: an attestor who lost the capability stops counting.
-                (Some(att), set @ (AttestorSet::Capability { .. } | AttestorSet::Staff)) => {
-                    matches!(&att.by, AttestorRef::Principal(a) if env.auth.authorize_attestor(a, set))
-                }
-                // Finding 5: a canon citation must be the RIGHT canon citation.
-                // E5's owner answer 20 says progress cites a specific
-                // front/opportunity/operation, so both the kind and (unless the set
-                // accepts any) the source have to match — otherwise any canon
-                // record at all discharged any canon condition.
-                (Some(att), AttestorSet::Canon { kind, source }) => {
-                    matches!(&att.by, AttestorRef::Canon { kind: k, source: s, .. }
-                        if k == kind && source.as_ref().is_none_or(|want| want == s))
-                }
-                (None, _) => false,
             },
             TypedCondition::DepositInto { object, vault } => snapshot
                 .vault(*vault)
@@ -920,12 +1394,46 @@ pub fn reverify(
                     _ => false,
                 }
             }
-        };
-        if !ok {
-            return Err(ContractError::ConditionFailed(i));
         }
     }
-    Ok(())
+}
+
+/// Where a live contract stands right now.
+///
+/// The three answers are genuinely different and must not be collapsed: *not yet* is
+/// the ordinary waiting state, *ready* settles, and **undecidable** is a decision a
+/// human has to make. An ambiguous outcome table read as "not yet" would leave the
+/// escrow frozen forever with nobody told — the contract would be waiting for a
+/// condition that is already true.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Readiness {
+    /// Every gating condition holds and the outcome (if any) is decided.
+    Ready(Option<usize>),
+    /// Something the contract is still waiting for.
+    NotYet,
+    /// The contract cannot settle at all as it stands, and no retry will change it
+    /// (two outcomes satisfied at once; a satisfaction vector that does not match the
+    /// conditions; a mutated consent surface).
+    Undecidable(ContractError),
+}
+
+/// Where `c` stands — the one readiness verdict the command path and the sweep both
+/// read, so they can never disagree about what a contract is waiting for.
+#[must_use]
+pub fn readiness(
+    c: &EconomicContract,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> Readiness {
+    match reverify(c, snapshot, env) {
+        Err(ContractError::ConditionFailed(_)) => Readiness::NotYet,
+        Err(e) => Readiness::Undecidable(e),
+        Ok(()) => match resolve_outcome(c, snapshot, env) {
+            Ok(outcome) => Readiness::Ready(outcome),
+            Err(ContractError::NoOutcome) => Readiness::NotYet,
+            Err(e) => Readiness::Undecidable(e),
+        },
+    }
 }
 
 /// Whether every condition is currently satisfied — the readiness question
@@ -936,10 +1444,163 @@ pub fn conditions_met(
     snapshot: &EconomySnapshot,
     env: &ValidateEnv<'_>,
 ) -> bool {
-    reverify(c, snapshot, env).is_ok()
+    matches!(readiness(c, snapshot, env), Readiness::Ready(_))
 }
 
 // ---- the settlement and refund plans --------------------------------------
+
+/// The claim this contract places on a pledged object at activation, and releases at
+/// settlement or refund (§5, D-E4-8).
+///
+/// A contract that also creates an obligation **is a lease** — the pledge secures a
+/// stream of payments rather than a single settlement — so the claim names its
+/// `lessor` and reads as one in `@asset/show`. Everything else is plain
+/// [`Encumbrance::Collateral`]. Both are contract-placed and contract-released;
+/// neither is ever staff-minted, because the contract IS the consent.
+///
+/// The same function decides the encumbrance at both ends, so a lease can never be
+/// placed as a `Lease` and then looked for as a `Collateral` — which would leave the
+/// claim on the asset forever and make it untransferable (invariant 12).
+#[must_use]
+pub fn contract_encumbrance(c: &EconomicContract, from: &PrincipalId) -> Encumbrance {
+    let leased = c
+        .consent
+        .terms
+        .deliverables
+        .iter()
+        .any(|d| matches!(d, Deliverable::Obligation { .. }));
+    if leased {
+        Encumbrance::Lease { lessor: from.clone(), contract: c.id }
+    } else {
+        Encumbrance::Collateral { contract: c.id }
+    }
+}
+
+/// The `AssetOp::Release`s that take this contract's own claims back off the assets
+/// that really carry them.
+///
+/// The **live check matters**: a contract cancelled while it was still `Offered`
+/// never activated, so nothing was encumbered, and a `Release` naming an encumbrance
+/// the asset does not carry is `NoSuchEncumbrance` — which would fail the whole
+/// refund plan and strand the escrow it was meant to give back. Releasing only what
+/// is actually there keeps the unwind total.
+#[must_use]
+pub fn release_asset_ops(c: &EconomicContract, snapshot: &EconomySnapshot) -> Vec<AssetOp> {
+    c.consent
+        .terms
+        .deliverables
+        .iter()
+        .filter_map(|d| match d {
+            Deliverable::Collateral { object, from } => {
+                let encumbrance = contract_encumbrance(c, from);
+                snapshot
+                    .asset(*object)
+                    .filter(|a| a.encumbrances.contains(&encumbrance))
+                    .map(|_| AssetOp::Release { object: *object, encumbrance })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The asset ops that place this contract's claims at activation — one per
+/// `Collateral` deliverable, in declared order.
+#[must_use]
+pub fn activation_asset_ops(c: &EconomicContract) -> Vec<AssetOp> {
+    c.consent
+        .terms
+        .deliverables
+        .iter()
+        .filter_map(|d| match d {
+            Deliverable::Collateral { object, from } => Some(AssetOp::Encumber {
+                object: *object,
+                encumbrance: contract_encumbrance(c, from),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The deterministic idempotency key for a contract's activation, at its own
+/// generation.
+#[must_use]
+pub fn activate_key(c: &EconomicContract) -> IdempotencyKey {
+    contract_op_key(c.id, "activate", c.amendments)
+}
+
+/// Build the **forfeit** plan for an expired contract whose `on_expiry` is
+/// [`Expiry::Forfeit`] (§5): capture the whole escrow and pay it to `to`.
+///
+/// `to` is inside the consent surface — [`check_offerable`] proves the account
+/// exists, is `Active`, and holds the contract's one instrument — so a forfeit can
+/// only ever pay somewhere every party saw before they funded it.
+///
+/// It is deliberately available only for a **fully accepted** contract: an `Offered`
+/// contract that lapsed never came into force, and taking the money someone escrowed
+/// toward an agreement that never bound anybody is not a forfeit, it is a
+/// confiscation. E4b2's expiry path refunds those instead (§5.1's deviation 3).
+pub fn forfeit_plan(
+    c: &EconomicContract,
+    snapshot: &EconomySnapshot,
+) -> Result<EconomyPlan, ContractError> {
+    if !matches!(c.state, ContractState::Expired) {
+        return Err(ContractError::WrongState(c.id));
+    }
+    let Expiry::Forfeit { to } = c.consent.terms.on_expiry else {
+        return Err(ContractError::Infeasible("this contract does not forfeit on expiry"));
+    };
+    if !c.consent_intact() {
+        return Err(ContractError::ConsentMismatch);
+    }
+    if !c.fully_accepted() {
+        return Err(ContractError::NotAccepted);
+    }
+    check_offerable(c, snapshot)?;
+    let escrow = qualifying_escrow(c, snapshot);
+    let mut hold_ops: Vec<HoldOp> = Vec::with_capacity(escrow.holds.len());
+    let mut expected_hold_revisions: Vec<HoldRevision> = Vec::with_capacity(escrow.holds.len());
+    let mut lines: Vec<RequestedLine> = Vec::with_capacity(escrow.holds.len() + 1);
+    let mut total: i128 = 0;
+    for hold in &escrow.holds {
+        total += hold.amount.widen();
+        hold_ops.push(HoldOp::Capture { hold: hold.id, amount: hold.amount });
+        expected_hold_revisions.push(HoldRevision { hold: hold.id, revision: hold.revision });
+        let debit = hold.amount.checked_neg().ok_or(ContractError::Overflow)?;
+        lines.push(RequestedLine {
+            account: hold.account,
+            delta: debit,
+            memo: SmolStr::new(format!("contract {} forfeit", c.id)),
+        });
+    }
+    let total = Amount::from_widened(total).ok_or(ContractError::Overflow)?;
+    if total.is_zero() {
+        return Err(ContractError::Infeasible("nothing is escrowed to forfeit"));
+    }
+    lines.push(RequestedLine {
+        account: to,
+        delta: total,
+        memo: SmolStr::new(format!("contract {} forfeit", c.id)),
+    });
+    let mut plan = EconomyPlan::new(
+        contract_op_key(c.id, "forfeit", c.amendments),
+        c.issuer.clone(),
+        EconomicCause::Internal { kind: SmolStr::new_static("contract"), id: c.id.0 },
+        lines,
+    );
+    plan.description = format!("forfeit of contract {}", c.id);
+    plan.visibility = c.consent.visibility.clone();
+    // A pledge comes back whatever happened; only the money is forfeit.
+    plan.asset_ops = release_asset_ops(c, snapshot);
+    plan.hold_ops = hold_ops;
+    plan.expected_hold_revisions = expected_hold_revisions;
+    Ok(plan)
+}
+
+/// The deterministic idempotency key for a contract's forfeit at generation 0.
+#[must_use]
+pub fn forfeit_key(id: ContractId) -> IdempotencyKey {
+    contract_op_key(id, "forfeit", 0)
+}
 
 /// Build the settlement plan for a `ReadyToSettle` contract (§3.5).
 ///
@@ -972,6 +1633,7 @@ pub fn settlement_plan(
     }
     check_offerable(c, snapshot)?;
     reverify(c, snapshot, env)?;
+    let outcome = resolve_outcome(c, snapshot, env)?;
 
     // Every escrow hold must still be live — a broken escrow is a dispute, never a
     // settlement that pays out less than the parties agreed — and must actually BE
@@ -1003,7 +1665,12 @@ pub fn settlement_plan(
         });
     }
     let total = Amount::from_widened(total).ok_or(ContractError::Overflow)?;
-    let payouts = apply_split(total, &c.consent.terms)?;
+    // The resolved outcome's exact payouts, or E4a's single split when the table is
+    // empty. An outcome has no implicit remainder (08e answer 7).
+    let payouts = match outcome.and_then(|i| c.consent.terms.outcomes.get(i)) {
+        Some(o) => apply_outcome(total, &o.payouts)?,
+        None => apply_split(total, &c.consent.terms)?,
+    };
 
     let mut lines = debits;
     for (account, amount) in payouts {
@@ -1018,34 +1685,49 @@ pub fn settlement_plan(
     // re-verifies it and its custody lock lifts when the contract leaves the live
     // states), and an `Obligation` template is created by E4b2 as a record, not as a
     // plan op — so only title moves and collateral releases ride the plan.
+    //
+    // With an outcome table, a title moves only if the **resolved outcome** names it
+    // (`asset_consequences`): a failed run does not hand over the goods a successful
+    // one would. A collateral release is deliberately NOT outcome-gated — a pledge
+    // has to come back whichever way the contract went, or the encumbrance strands.
     let mut asset_ops: Vec<AssetOp> = Vec::new();
-    for d in &c.consent.terms.deliverables {
+    let consequences = outcome
+        .and_then(|i| c.consent.terms.outcomes.get(i))
+        .map(|o| o.asset_consequences.clone());
+    for (i, d) in c.consent.terms.deliverables.iter().enumerate() {
         match d {
             Deliverable::TitleTransfer { object, to, .. } => {
+                if consequences.as_ref().is_some_and(|xs| !xs.contains(&i)) {
+                    continue;
+                }
                 asset_ops.push(AssetOp::TransferTitle {
                     object: *object,
                     to: to.clone(),
                     to_scope: c.consent.scope.filter(|_| matches!(to, PrincipalId::Organization(_))),
                 });
             }
-            Deliverable::Collateral { object, .. } => {
-                asset_ops.push(AssetOp::Release {
-                    object: *object,
-                    encumbrance: Encumbrance::Collateral { contract: c.id },
-                });
+            Deliverable::Collateral { object, from } => {
+                // Only what the asset really carries (see `release_asset_ops`).
+                let encumbrance = contract_encumbrance(c, from);
+                if snapshot
+                    .asset(*object)
+                    .is_some_and(|a| a.encumbrances.contains(&encumbrance))
+                {
+                    asset_ops.push(AssetOp::Release { object: *object, encumbrance });
+                }
             }
             Deliverable::DepositInto { .. } | Deliverable::Obligation { .. } => {}
         }
     }
 
     let mut plan = EconomyPlan::new(
-        settle_key(c.id),
+        contract_op_key(c.id, "settle", c.amendments),
         c.issuer.clone(),
         EconomicCause::Internal { kind: SmolStr::new_static("contract"), id: c.id.0 },
         lines,
     );
     plan.description = format!("settlement of contract {}", c.id);
-    plan.visibility = c.consent.visibility;
+    plan.visibility = c.consent.visibility.clone();
     plan.asset_ops = asset_ops;
     plan.hold_ops = hold_ops;
     plan.expected_hold_revisions = expected_hold_revisions;
@@ -1063,6 +1745,20 @@ pub fn settlement_plan(
 ///   nothing left to give back. The state change comes first; the refund follows it.
 /// - only holds that pass [`qualifying_escrow`] are released (finding 3), so a hold
 ///   listed in `escrow` by someone editing the record cannot be freed by this plan.
+///
+/// **E4b2 adds the other two halves of an unwind**, in the same plan and therefore
+/// the same durable bundle:
+///
+/// - every claim this contract placed at activation is released (a pledge outlives
+///   neither the agreement nor its own contract);
+/// - every recorded [`DepositRecord`] is **returned to its depositor** with a
+///   `CustodyOp::Withdraw`. That is the replacement for the deleted custody-lock
+///   exception (E4a verify fold, finding 2): the lock lifts on the state change,
+///   which is why a refund runs *after* it, and the withdrawal is authorized by
+///   [`ContractAuth::unwinding`] and by nothing else. The plan's `actor` becomes the
+///   depositor when it carries a withdrawal, because invariant 15's destination rule
+///   is "the actor, or the actor's location" — returning someone's property to them
+///   is an act performed on their behalf.
 pub fn refund_plan(
     c: &EconomicContract,
     snapshot: &EconomySnapshot,
@@ -1070,66 +1766,209 @@ pub fn refund_plan(
     if !matches!(c.state, ContractState::Cancelled | ContractState::Expired) {
         return Err(ContractError::WrongState(c.id));
     }
+    let returns: Vec<(&DepositRecord, ObjId)> = c
+        .deposits
+        .iter()
+        .filter_map(|d| match &d.deposited_by {
+            PrincipalId::Object(o) => Some((d, *o)),
+            // An org or system depositor has no world object to hand the thing back
+            // to. The lock has lifted with the state change, so `@vault/withdraw`
+            // under the vault's ordinary policy is the route; nothing is stranded.
+            PrincipalId::Organization(_) | PrincipalId::System(_) => None,
+        })
+        .take(MAX_DEPOSITS)
+        .collect();
+    let actor = returns.first().map_or_else(|| c.issuer.clone(), |(d, _)| d.deposited_by.clone());
     let mut plan = EconomyPlan::new(
-        refund_key(c.id),
-        c.issuer.clone(),
+        contract_op_key(c.id, "refund", c.amendments),
+        actor,
         EconomicCause::Internal { kind: SmolStr::new_static("contract"), id: c.id.0 },
         Vec::new(),
     );
     plan.description = format!("refund of contract {}", c.id);
-    plan.visibility = c.consent.visibility;
+    plan.visibility = c.consent.visibility.clone();
     plan.hold_ops = qualifying_escrow(c, snapshot)
         .holds
         .iter()
         .map(|hold| HoldOp::Release { hold: hold.id })
+        .collect();
+    plan.asset_ops = release_asset_ops(c, snapshot);
+    plan.custody_ops = returns
+        .iter()
+        .map(|(d, to)| CustodyOp::Withdraw { object: d.object, vault: d.vault, to: *to })
         .collect();
     Ok(plan)
 }
 
 // ---- ContractAuth ---------------------------------------------------------
 
+/// What a [`ContractAuth`] is being built to do — and therefore the exact set of
+/// operations it authorizes. Nothing outside its own mode's list is ever `true`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContractPurpose {
+    /// **Settlement**: capture this contract's own escrow, credit the payees the
+    /// resolved outcome names, move the titles that outcome causes, release the
+    /// pledges. No release of escrow, no debit authority, no vault op.
+    Settle {
+        /// The accounts the resolved payout actually credits.
+        payees: Vec<AccountId>,
+        /// The `deliverables` indexes whose title moves this settlement carries.
+        titles: Vec<usize>,
+    },
+    /// **Forfeit** (`Expiry::Forfeit { to }`): capture the escrow and credit exactly
+    /// `to`, which the consent surface named and `check_offerable` proved usable.
+    /// No title moves — a forfeited deadline is not a delivery.
+    Forfeit {
+        /// The single account the escrow pays.
+        to: AccountId,
+    },
+    /// **Unwind** (refund, cancellation, expiry-refund, amendment): release this
+    /// contract's own escrow, release its pledges, and return each recorded deposit
+    /// to its depositor. No capture, no credit, no title move.
+    Unwind,
+}
+
 /// The [`crate::AuthEval`] a contract's own acceptances constitute (D-E4-4).
 ///
-/// It authorizes **exactly** the surface: each escrow capture up to that hold's
-/// amount, each credit only to a declared payee, each title transfer whose source
-/// *and* destination party accepted (D-E3-12), and each collateral release.
-/// Everything else — an extra line, an unlisted object, a capture over the hold's
-/// amount, a vault op, an approver — is `false`. No authority is stored anywhere:
-/// this value is built from the live record at settlement and thrown away.
+/// It authorizes **exactly** the surface, and nothing else. Concretely, per
+/// [`ContractPurpose`]:
 ///
-/// It grants **no bare debit authority at all** (E4a verify fold, finding 1). A
-/// contract's power to take money is precisely its power to capture its own escrow,
-/// and that now runs through [`crate::AuthEval::authorize_hold`] plus the engine's
-/// rule that a captured amount is pre-authorized debit authority. Keeping the old
-/// "a debit up to what is escrowed on that account" ceiling *as well* would double
-/// count the escrow: the engine only asks about the part of a debit the captures do
-/// not cover, so 100 in escrow would fund a 100 capture **and** a further 100 of
-/// lines the parties never agreed to.
+/// | op | `Settle` | `Forfeit` | `Unwind` |
+/// |---|---|---|---|
+/// | `HoldOp::Capture` on a **qualifying** escrow hold, ≤ its amount | yes | yes | no |
+/// | `HoldOp::Release` on a qualifying escrow hold | no | no | yes |
+/// | `HoldOp::Place` / `HoldOp::Expire` | no | no | no |
+/// | a **credit** to a named payee | the resolved payouts | exactly `to` | no |
+/// | a **debit** of any size | no | no | no |
+/// | `AssetOp::TransferTitle` for a deliverable both sides accepted | the outcome's | no | no |
+/// | `AssetOp::Encumber`/`Release` of this contract's own pledge | yes | yes | yes |
+/// | `CustodyOp::Withdraw` of a recorded deposit to its depositor | no | no | yes |
+/// | vault deposits, maintenance, approvers, anything else | no | no | no |
+///
+/// No authority is stored anywhere: this value is built from the live record at the
+/// moment of use and thrown away. It grants **no bare debit authority at all** (E4a
+/// verify fold, finding 1) — a contract's power to take money is precisely its power
+/// to capture its own escrow, which runs through
+/// [`crate::AuthEval::authorize_hold`] plus the engine's rule that a captured amount
+/// is pre-authorized debit authority. Keeping a "debit up to what is escrowed on
+/// that account" ceiling *as well* would double count the escrow: the engine only
+/// asks about the part of a debit the captures do not cover, so 100 in escrow would
+/// fund a 100 capture **and** a further 100 of lines the parties never agreed to.
 pub struct ContractAuth<'a> {
     contract: &'a EconomicContract,
     /// The holds that qualify as this contract's escrow (finding 3) — the ONLY ones
     /// its authority reaches. `contract.escrow` is a mutable list of ids and is not
     /// evidence of anything on its own.
     qualifying: Vec<HoldId>,
+    purpose: ContractPurpose,
 }
 
 impl<'a> ContractAuth<'a> {
-    /// Derive the authority from a live contract and the current snapshot.
+    /// The settlement authority over every payee the terms name — E4a's shape, kept
+    /// for a single-split contract and for callers that resolve no outcome.
     #[must_use]
     pub fn new(contract: &'a EconomicContract, snapshot: &EconomySnapshot) -> ContractAuth<'a> {
-        let qualifying = qualifying_escrow(contract, snapshot).holds.iter().map(|h| h.id).collect();
-        ContractAuth { contract, qualifying }
+        ContractAuth::settling(contract, snapshot, None)
     }
-    fn is_payee(&self, account: AccountId) -> bool {
-        self.contract.consent.terms.remainder_to == account
-            || self.contract.consent.terms.split.iter().any(|s| s.to == account)
-            || matches!(self.contract.consent.terms.on_expiry, Expiry::Forfeit { to } if to == account)
+
+    /// The settlement authority for one **resolved outcome**: only that outcome's
+    /// payees may be credited, and only the titles it causes may move.
+    #[must_use]
+    pub fn settling(
+        contract: &'a EconomicContract,
+        snapshot: &EconomySnapshot,
+        outcome: Option<usize>,
+    ) -> ContractAuth<'a> {
+        let terms = &contract.consent.terms;
+        let (payees, titles) = match outcome.and_then(|i| terms.outcomes.get(i)) {
+            Some(o) => (o.payouts.iter().map(|s| s.to).collect(), o.asset_consequences.clone()),
+            None => {
+                let mut payees: Vec<AccountId> = terms.split.iter().map(|s| s.to).collect();
+                payees.push(terms.remainder_to);
+                (payees, (0..terms.deliverables.len()).collect())
+            }
+        };
+        ContractAuth {
+            contract,
+            qualifying: qualifying_ids(contract, snapshot),
+            purpose: ContractPurpose::Settle { payees, titles },
+        }
     }
+
+    /// The forfeit authority: capture the escrow, credit exactly `to`.
+    #[must_use]
+    pub fn forfeiting(
+        contract: &'a EconomicContract,
+        snapshot: &EconomySnapshot,
+        to: AccountId,
+    ) -> ContractAuth<'a> {
+        ContractAuth {
+            contract,
+            qualifying: qualifying_ids(contract, snapshot),
+            purpose: ContractPurpose::Forfeit { to },
+        }
+    }
+
+    /// The unwind authority: release this contract's escrow, release its pledges,
+    /// and hand each recorded deposit back to its depositor.
+    ///
+    /// It deliberately does **not** require [`EconomicContract::fully_accepted`]. A
+    /// contract cancelled while it was still `Offered` has one party's money escrowed
+    /// and no full acceptance, and that money has to come back; requiring unanimity
+    /// to give people their own funds back would strand exactly the contracts that
+    /// never came into force.
+    #[must_use]
+    pub fn unwinding(
+        contract: &'a EconomicContract,
+        snapshot: &EconomySnapshot,
+    ) -> ContractAuth<'a> {
+        ContractAuth {
+            contract,
+            qualifying: qualifying_ids(contract, snapshot),
+            purpose: ContractPurpose::Unwind,
+        }
+    }
+
+    /// What this authority is for.
+    #[must_use]
+    pub fn purpose(&self) -> &ContractPurpose {
+        &self.purpose
+    }
+
+    /// Whether the surface still binds — full acceptance for anything that moves
+    /// money, mere consent-hash integrity for an unwind's give-backs.
+    fn bound(&self) -> bool {
+        match self.purpose {
+            ContractPurpose::Unwind => self.contract.consent_intact(),
+            ContractPurpose::Settle { .. } | ContractPurpose::Forfeit { .. } => {
+                self.contract.fully_accepted()
+            }
+        }
+    }
+
+    /// Whether this contract's own pledge on `object` may be placed or released.
+    fn pledges(&self, object: ObjId, encumbrance: &Encumbrance) -> bool {
+        let mine = match encumbrance {
+            Encumbrance::Collateral { contract } | Encumbrance::Lease { contract, .. } => {
+                *contract == self.contract.id
+            }
+            Encumbrance::Lien { .. } | Encumbrance::Disputed { .. } => false,
+        };
+        mine && self.contract.consent.terms.deliverables.iter().any(|d| {
+            matches!(d, Deliverable::Collateral { object: o, from }
+                if *o == object && &contract_encumbrance(self.contract, from) == encumbrance)
+        })
+    }
+}
+
+/// The ids of the holds that really are this contract's escrow.
+fn qualifying_ids(c: &EconomicContract, snapshot: &EconomySnapshot) -> Vec<HoldId> {
+    qualifying_escrow(c, snapshot).holds.iter().map(|h| h.id).collect()
 }
 
 impl crate::engine::AuthEval for ContractAuth<'_> {
     fn authorize(&self, _actor: &PrincipalId, account: &crate::record::Account, delta: Amount) -> bool {
-        if !self.contract.fully_accepted() {
+        if !self.bound() {
             return false;
         }
         if delta.is_negative() {
@@ -1140,18 +1979,32 @@ impl crate::engine::AuthEval for ContractAuth<'_> {
             // into the settlement — and the answer is no.
             return false;
         }
-        self.is_payee(account.id)
+        match &self.purpose {
+            ContractPurpose::Settle { payees, .. } => payees.contains(&account.id),
+            ContractPurpose::Forfeit { to } => *to == account.id,
+            // An unwind moves no money at all: it hands reservations back, and a
+            // release is an effect, not a credit.
+            ContractPurpose::Unwind => false,
+        }
     }
 
     fn authorize_hold(&self, _actor: &PrincipalId, hold: &Hold, op: &HoldOp) -> bool {
-        if !self.contract.fully_accepted() || !self.qualifying.contains(&hold.id) {
+        if !self.bound() || !self.qualifying.contains(&hold.id) {
             return false;
         }
         match op {
             HoldOp::Capture { hold: id, amount } => {
-                *id == hold.id && !amount.is_negative() && !amount.is_zero() && *amount <= hold.amount
+                !matches!(self.purpose, ContractPurpose::Unwind)
+                    && *id == hold.id
+                    && !amount.is_negative()
+                    && !amount.is_zero()
+                    && *amount <= hold.amount
             }
-            HoldOp::Release { hold: id } => *id == hold.id,
+            // Only an unwind gives escrow back: a settlement that could release
+            // escrow could break the very agreement it is performing.
+            HoldOp::Release { hold: id } => {
+                matches!(self.purpose, ContractPurpose::Unwind) && *id == hold.id
+            }
             HoldOp::Place { .. } | HoldOp::Expire { .. } => false,
         }
     }
@@ -1162,36 +2015,29 @@ impl crate::engine::AuthEval for ContractAuth<'_> {
         asset: Option<&crate::record::EconomicAsset>,
         op: &AssetOp,
     ) -> bool {
-        if !self.contract.fully_accepted() {
+        if !self.bound() {
             return false;
         }
         let Some(asset) = asset else { return false };
         match op {
             AssetOp::TransferTitle { object, to, .. } => {
-                self.contract.consent.terms.deliverables.iter().any(|d| {
-                    matches!(d, Deliverable::TitleTransfer { object: o, from, to: t }
-                        if o == object
-                            && t == to
-                            && from == &asset.title_owner
-                            // D-E3-12: BOTH sides accepted, or a title lands on
-                            // someone who never agreed to its liabilities.
-                            && self.contract.accepted_by(from)
-                            && self.contract.accepted_by(t))
+                let ContractPurpose::Settle { titles, .. } = &self.purpose else { return false };
+                self.contract.consent.terms.deliverables.iter().enumerate().any(|(i, d)| {
+                    titles.contains(&i)
+                        && matches!(d, Deliverable::TitleTransfer { object: o, from, to: t }
+                            if o == object
+                                && t == to
+                                && from == &asset.title_owner
+                                // D-E3-12: BOTH sides accepted, or a title lands on
+                                // someone who never agreed to its liabilities.
+                                && self.contract.accepted_by(from)
+                                && self.contract.accepted_by(t))
                 })
             }
             // Placing and releasing a contract-backed claim are the same question:
-            // is this MY claim, on an object my surface pledges, whose owner accepted?
+            // is this MY claim, on an object my surface pledges?
             AssetOp::Encumber { object, encumbrance } | AssetOp::Release { object, encumbrance } => {
-                let mine = match encumbrance {
-                    Encumbrance::Collateral { contract } | Encumbrance::Lease { contract, .. } => {
-                        *contract == self.contract.id
-                    }
-                    Encumbrance::Lien { .. } | Encumbrance::Disputed { .. } => false,
-                };
-                mine && self.contract.consent.terms.deliverables.iter().any(|d| {
-                    matches!(d, Deliverable::Collateral { object: o, from }
-                        if o == object && self.contract.accepted_by(from))
-                })
+                self.pledges(*object, encumbrance)
             }
             _ => false,
         }
@@ -1203,15 +2049,43 @@ impl crate::engine::AuthEval for ContractAuth<'_> {
         to: &PrincipalId,
         _to_scope: Option<OrgScopeId>,
     ) -> bool {
+        let ContractPurpose::Settle { titles, .. } = &self.purpose else { return false };
         self.contract.fully_accepted()
             && self.contract.accepted_by(to)
-            && self
-                .contract
-                .consent
-                .terms
-                .deliverables
-                .iter()
-                .any(|d| matches!(d, Deliverable::TitleTransfer { to: t, .. } if t == to))
+            && self.contract.consent.terms.deliverables.iter().enumerate().any(|(i, d)| {
+                titles.contains(&i)
+                    && matches!(d, Deliverable::TitleTransfer { to: t, .. } if t == to)
+            })
+    }
+
+    /// The **one** vault op a contract ever authorizes: an unwind returning a
+    /// recorded deposit to the principal the journal says put it there.
+    ///
+    /// This is the replacement for the deleted custody-lock exception (E4a verify
+    /// fold, finding 2). The lock has no exception while the contract is live; it
+    /// lifts on the state change; and the refund that follows that change is the only
+    /// thing that can take the object out, because `WorldAuth` never sees a plan
+    /// carrying it and this method is `false` for every other shape.
+    fn authorize_vault(
+        &self,
+        _actor: &PrincipalId,
+        vault: &crate::record::Vault,
+        op: &CustodyOp,
+    ) -> bool {
+        if !matches!(self.purpose, ContractPurpose::Unwind) || !self.bound() {
+            return false;
+        }
+        match op {
+            CustodyOp::Withdraw { object, vault: v, to } => {
+                *v == vault.id
+                    && self.contract.deposits.iter().any(|d| {
+                        d.object == *object
+                            && d.vault == vault.id
+                            && d.deposited_by == PrincipalId::Object(*to)
+                    })
+            }
+            CustodyOp::Deposit { .. } => false,
+        }
     }
 }
 
@@ -1226,6 +2100,7 @@ mod tests {
             split,
             remainder_to,
             on_expiry: Expiry::Refund,
+            outcomes: Vec::new(),
         }
     }
 

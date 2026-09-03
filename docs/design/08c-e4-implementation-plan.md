@@ -934,7 +934,7 @@ creates the obligation (`cause: Contract(id)`) and the `Lease` encumbrance; canc
 cancels the obligation. `Fact` conditions are accepted at draft in E4b2 but no provider exists
 until E4c, so they resolve `None` (unsatisfied) — E4b2's tests do not exercise them.
 
-Tests (`tests/e4b2.rs`, ~28): **16** a Shadowrun run — Johnson drafts, three runners + Johnson
+Tests (`tests/e4b2.rs`, ~28 — built: **37**): **16** a Shadowrun run — Johnson drafts, three runners + Johnson
 accept (Johnson's escrow hold placed at his accept), the run's condition is attested, settlement
 posts the split once; a second attest / a second settle is a HIT; the split's remainder lands where
 declared (**17** live half); a party who did not accept cannot be debited; an org member with
@@ -949,6 +949,211 @@ settlement (stale `revision`) is refused; expiry → refund / forfeit; dispute f
 parties**: a non-party's `@contract/show`, `@contract/accept`, and every refusal render the
 nonexistent-id text; a party sees the other parties only as the consent surface names them, never
 their balances.
+
+### 5.1 As built (E4b2)
+
+The cut wires E4a's pure consent carrier into the running module: `contract:{id}`
+persistence and its boot reconciliation, the `@contract/*` surface, the escrow
+placement that rides an acceptance, live settlement, unwind and forfeit, the
+`Lease`/`Collateral` encumbrances and the lease's obligation, the sweep's contract
+step, and the E6-driven extensions (outcome table, roster lock + amendment, named
+adjudicator + permitted evidence, separate roles). `tests/e4b2.rs` is **37** tests;
+`mush-economy` is **346** in total, and both digest pins (E2 `9c917eee…`, E3-shaped
+`b780e3a0…`) are green.
+
+**Signatures and new files.**
+
+- New module `src/contract_live.rs` — `may_view_contract`, the `@contract` command
+  surface, and the live machinery the sweep shares with it (`activate`,
+  `promote_and_settle`, `settle`, `unwind`, `expire`, `dispute_with`). It contains
+  **no `unwrap`, no `expect`, no `panic!` and no panicking index**, because the sweep
+  drives the same functions and a panic in a tick handler aborts the world.
+- `contract.rs` gains `readiness(c, snapshot, env) -> Readiness::{Ready(outcome),
+  NotYet, Undecidable(e)}` — the **one** verdict the command path and the sweep both
+  read, so they can never disagree about what a contract is waiting for.
+  `conditions_met` is now `matches!(.., Ready(_))`. The third arm is load-bearing: a
+  contract that cannot settle *at all* as it stands (two outcomes satisfied at once, a
+  satisfaction vector that does not match the conditions, a mutated surface) read as
+  "not yet" would freeze its escrow forever while waiting for a condition that is
+  already true. `Undecidable` disputes and pages at once instead of spending
+  `MAX_SETTLE_ATTEMPTS` on a retry that cannot help.
+- `contract.rs` also gains `forfeit_plan(c, snapshot)` + `forfeit_key`,
+  `activation_asset_ops(c)` + `activate_key(c)`, `contract_encumbrance(c, from)`,
+  `release_asset_ops(c, snapshot)` (only the pledges the asset really carries — a
+  contract cancelled while it was still `Offered` never activated, and a `Release` of
+  an encumbrance that is not there would fail the whole refund and strand the escrow),
+  `resolve_outcome(c, snapshot, env)`, `outcome_conditions(c)`,
+  `condition_holds(c, i, snapshot, env)`, `apply_outcome(total, payouts)` and
+  `canonical_visibility(v)`. `refund_plan(c, snapshot)` keeps its E4a signature and
+  now also emits the pledge releases and the `CustodyOp::Withdraw` that returns each
+  recorded deposit; its `actor` becomes the **depositor** when it carries a
+  withdrawal, because invariant 15's destination rule is "the actor, or the actor's
+  location".
+- `ContractAuth` is bounded by an explicit `ContractPurpose` —
+  `settling(c, snapshot, outcome)` (`new` is `settling(.., None)`),
+  `forfeiting(c, snapshot, to)`, `unwinding(c, snapshot)`. The full table is in the
+  type's own doc comment; the short version is that **a settlement captures and never
+  releases, an unwind releases and never captures, neither ever grants a debit, and
+  the only vault op any of them authorizes is an unwind returning a recorded deposit
+  to its depositor**.
+- `WorldAuth` gains `authorize_attestor` (E4b1 left it at the trait default `false`,
+  which would have made a `Capability`/`Staff` attestation impossible to re-qualify
+  and therefore impossible to settle on) and refuses **every** op on a hold whose
+  purpose is `Escrow { contract }` — the §4.8 handoff, closed at the engine seam
+  rather than at the command.
+- `EconomyStore` gains `next_contract`/`alloc_contract` and `last_custody:
+  BTreeMap<ObjId, CustodyMark>` (RAM-only, journal-derived, like `hold_terminal_at`);
+  `api::contract_key`, `api::put_contract`, `api::contract_principal()`.
+- **The deterministic keys carry a generation** (`contract_op_key(id, verb,
+  generation)`, `generation = c.amendments`). Generation 0 is byte-identical to E4a's
+  `contract/{id}/{verb}`, so every stored idempotency record keeps resolving. It
+  exists because an amendment genuinely re-opens a contract: the same id refunds when
+  it is amended, is funded again, and can be cancelled again — and a fixed
+  `contract/{id}/refund` would resolve to the *first* refund as an idempotency HIT and
+  hand nothing back, stranding the second escrow silently. `MAX_AMENDMENTS` (32)
+  bounds the generations one id can own.
+- `evaluate_approvals` now adds back what a plan **captures**, symmetrically with the
+  placement subtraction D-E4-11 introduced: escrow goes through the payer's
+  `ApprovalRule` at `@contract/accept`, and asking again at settlement would demand a
+  second approval for the same money — which the sweep has nobody to collect.
+
+**Doc shapes.** `contract:{id}` (container; corrupt → fail boot). `meta` gains
+`next_contract_id`. `EconomicContract` gains, all `#[serde(default)]`: `name`,
+`created_at`, `amendments`, `disputed_at`, `roster_locked`,
+`deposits: Vec<DepositRecord>`, `agreements: Vec<PartyAgreement>`,
+`roles: ContractRoles`. `ConsentSurface` gains
+`adjudicator: Option<AttestorSet>` and `evidence: Vec<EvidenceKind>`; `ContractTerms`
+gains `outcomes: Vec<OutcomeTerms>`. No record type changed its **journalled** bytes,
+so every E2/E3/E4a/E4b1 journal still replays.
+
+**The visibility variant (doc 10 §15 / T6).** `EconomicVisibility` gains
+`Audience { members: Vec<PrincipalId> }` and loses `Copy`; the three shipped variants
+keep their serde bytes exactly (a unit variant still serializes as `"Parties"`), which
+is what keeps both digest pins green and every stored plan hash resolving.
+`canonical_visibility` sorts and deduplicates an audience by `principal_key` inside
+`consent_hash`, so two orderings of one audience are one consent surface.
+`may_view_contract` = staff · the issuer · a party · an audience member · **every
+named attestor** (the adjudicator, and whoever each `Attestation` condition names) ·
+a `contract.*`/`economy.account.view` holder on the contract's own compartment ·
+anyone at all when the surface says `Public`. The attestor clause is the same shape
+as the rest: naming somebody as an authority over a contract and then hiding it from
+them makes the authority unusable. Party and audience
+membership ask `WorldAuth::acts_for`, not identity, for the reason E4b1's fold gave
+for holds (A2): an org party would otherwise be invisible to every person in it.
+Everyone else gets `NamedResource::Contract`'s "No such contract." — identical for a
+contract that does not exist and one they may not see.
+
+**Deviations from §5, and why.**
+
+1. **An `Offered` contract that lapses always refunds**, whatever `on_expiry` says.
+   Forfeiting money escrowed toward an agreement that never bound anybody is a
+   confiscation, not a forfeit; `Expiry::Forfeit` and `Expiry::Dispute` therefore
+   apply only to a **fully accepted** contract.
+2. **The builders are `Draft`-only by default**, exactly as §5's block says, and
+   `@contract/offer` sets `roster_locked`. §3.5's "an `Offered` contract may carry an
+   unfrozen party" is an explicit act — `@contract/roster <id>=open` — so "the surface
+   changed after Offer is refused" stays the default it has to be. The **first
+   acceptance** re-locks the roster (08e answers 5/7).
+3. **An amendment voids every acceptance, not only the affected ones.** An acceptance
+   binds to the whole surface's hash — that is E4a's money-safety spine — so
+   `@contract/amend` refunds every escrow placed so far, clears the acceptances,
+   re-opens the roster and returns the contract to `Draft`. 08c §3.5's "re-acceptance
+   from the affected parties only" would need per-party binding, which is a change to
+   the consent model rather than to this cut; recorded as an E6 question.
+4. **A named adjudicator *replaces* each condition's own attestor set** rather than
+   being an extra conjunct. Conjunction is unsatisfiable in the shape the answer
+   describes (a runner's `Party` condition plus a third-party adjudicator), and
+   "attestation from anyone else is refused" reads as replacement.
+   `condition_holds` honours it symmetrically, so the adjudicator's word re-verifies.
+5. **Outcome conditions are excluded from the all-conditions gate.** With an outcome
+   table the conditions some outcome's `when` names decide *which* result happened and
+   are mutually exclusive by construction; requiring all of them would make every
+   outcome-indexed contract unsettleable. Every other condition stays a **gating**
+   condition that must hold whatever the outcome. An empty table is E4a's behaviour
+   exactly.
+6. **`OutcomeTerms::expense_treatment` is declarative.** It is frozen inside the
+   consent hash (so E6a cannot change it after acceptance) and nothing in E4b2 reads
+   it: an outcome's `payouts` must already say where an advance ends up.
+   `asset_consequences` **is** live — it names the deliverable indexes whose title
+   moves that outcome causes, and a `Collateral` release is deliberately not
+   outcome-gated, because a pledge comes back whichever way the contract went.
+7. **`@contract/cancel` on a live contract is staff-only.** A contract in force is not
+   one party's to tear up; the party routes are `@contract/dispute` plus unanimous
+   `@contract/agree <id>=refund` (level 0), or the deadline.
+8. **`@contract/attest` is accepted while `Disputed`.** Evidence usually arrives
+   *because* somebody disputed, and recording it is what lets a resolution settle.
+   It settles nothing: `promote_and_settle` only ever moves an `Active`/`ReadyToSettle`
+   contract, so a disputed contract's escrow stays frozen.
+9. **Syntax made concrete** where §5 was shorthand: `@contract/deliver <id>=title
+   <obj> <from>-><to>` accepts `->` as well as `→`, and gains an `obligation <debit>
+   <credit> <amount> every=<secs>` form (§5 needs the lease's template and named no
+   syntax for it); a share is a bare number (exact) or `N‰`/`Npm` (permille);
+   `@contract/condition <id>=attest <who>` takes `party:<principal>` |
+   `cap:<capability>[:<scope>]` | `staff` | `canon:<kind>[:<source>]`. Four verbs are
+   added beyond §5's list for the §3.5 extensions: `/roster`, `/amend`,
+   `/adjudicator`, `/evidence`, `/outcome`, `/role`.
+10. **Boot's phantom-`Settled` record is minted by boot**, like E4b1's obligation
+    reconciliation records, not through `sweep::page` — the ladder's dedupe/reopen
+    machinery needs a `Ctx` the boot path does not have, and boot's own
+    `MAX_BOOT_ESCALATIONS` cap (now shared across both reconciliation passes) is the
+    bound there. Every **runtime** contract page — a dispute past `DISPUTE_TTL`,
+    settle attempts exhausted, a refused activation, a refused forfeit, a refused
+    refund — goes through `sweep::page` and therefore through subject dedupe and the
+    reopen-rather-than-re-mint rule.
+
+**§5.x — owner abandonment (doc 10 T3) is deferred to E7, and precisely why.**
+
+The brief's condition was *"if E3's asset record admits an untitled state cheaply"*.
+It does not. `EconomicAsset::title_owner` is a non-optional `PrincipalId` with **53
+call sites across 14 files**, five of them test files and one of them outside the
+crate (`mush-sim/tests/custody.rs`); it keys the derived `assets_by_owner` index, it
+is compared field-by-field by boot's `journal_fields_eq` drift detector, and it is
+load-bearing in invariants 12 (encumbered transfer), 13 (assignment), 18 (scope
+coherence), 19–20 (authorization), and 22 (acquisition provenance), plus the boot
+liveness pass, the destruction backstop, `WorldCustody::may_deposit`, and
+`mush-faction`'s read-through. Turning it into `Option<PrincipalId>` is a
+money-adjacent refactor of E3's verified surface, not a variant addition.
+
+The two cheap encodings were both rejected as *unfaithful*, which is worse than
+absent: a new `AssetLifecycle::Abandoned` leaves `title_owner` naming a former owner
+(so "title → none" is a lie the record does not tell) **and** collides with E3's rule
+that a non-`Active` asset takes no asset op, which would make the salvage claim T3
+describes — an ordinary contract that turns possession into title — impossible to
+write; and transferring title to a registered `sys:` principal is an owner, not the
+absence of one, and would need staff authority on every abandonment.
+
+What E7 needs, recorded so it is a mechanical job rather than a rediscovery:
+`title_owner: Option<PrincipalId>`, `assets_by_owner` keyed only for `Some`,
+`journal_fields_eq` unchanged (it compares the field either way), the five invariants
+above reading `Some(owner)`, `AssetEffectKind::Abandoned` + `AssetOp::Abandon
+{ object }` (owner-only, refused while encumbered, clearing assignment and
+maintenance, journaled with the full post-state like every other effect), and
+`AssetOp::Title`/`TransferTitle` accepting an untitled-but-live asset so a salvage
+contract can re-title it.
+
+**Handoffs.**
+
+- **E4c** takes three seams this cut left open at their fail-closed defaults. (a) The
+  `FactProvider`: `TypedCondition::Fact` is accepted at draft and resolves `None`
+  through `NoFacts`, which is unsatisfied, so a `Fact`-gated contract cannot settle
+  until E4c wires a provider. (b) The canon observer: `AttestorRef::Canon` is matched
+  on kind **and** source by `condition_holds`, and `WorldAuth::authorize_attestor`
+  answers `false` for `AttestorSet::Canon` deliberately — a canon attestation is
+  recorded by the observer from a canon event, never claimed by a principal. (c) The
+  notification seam: `contract_live::notify` reaches only `PrincipalId::Object`, so an
+  organization or system party is told nothing today, exactly as `sweep::notify_principal`.
+  E4c's canon bridge should read `EconomicVisibility::is_public()` — an
+  `Audience` list is emphatically **not** public and must never reach canon.
+- **E6a/E6b** get the record shapes they asked for and two open questions:
+  per-party acceptance binding (deviation 3) and a real consumer for
+  `ExpenseTreatment` (deviation 6). The party subsystem (08e answer 21) stays a
+  separate crate; E4b2's roster lock is the economy-side half of it, and a run
+  contract consumes a frozen roster by being amended, not by pointing at a party
+  record.
+- **E5** is unaffected except that a `Contract`-caused obligation is now a real thing
+  boot can see: E4b1's rule "a `Contract` cause whose contract is not live →
+  `Suspended`" was vacuously true (no contracts loaded) and is now the live check,
+  and `@contract/cancel`/expiry cancels a lease's rent outright.
 
 ---
 
@@ -1084,7 +1289,10 @@ owner says so. `cargo fmt` stays off until the pending reformat lands.
 `MAX_CATCH_UP_CAP` 8 (default 3) · default `grace.periods` 1, `MAX_GRACE_PERIODS` 254 ·
 `SWEEP_GAP_DOWNTIME_SECS` 2 × `SWEEP_PERIOD_SECS` · `MAX_HOLD_EXPIRY_REFUSALS` 3 ·
 `MAX_CONSECUTIVE_DEFERS` 16 · `mint_obligation_cap_major` 50 000 (major units, per instrument) ·
-`MAX_PARTIES` 16 · `MAX_CONDITIONS` 16 ·
+`MAX_PARTIES` 16 · `MAX_CONDITIONS` 16 · `MAX_OUTCOMES` 8 (E4b2) ·
+`MAX_AMENDMENTS` 32 (E4b2) · `MAX_DEPOSITS` 1 (E4b2, the module's one-custody-op cap) ·
+`MAX_AUDIENCE` 32 (E4b2) · `MAX_CONTRACT_NAME_BYTES` 64 (E4b2) ·
+`MAX_CONTRACTS_PER_SWEEP` 64 (E4b2) ·
 `MAX_DELIVERABLES` 16 · `MAX_SHARES` 32 · `MAX_OPEN_CONTRACTS_PER_ISSUER` 16 ·
 `MAX_LIVE_CONTRACTS_PER_PARTY` 32 · `MAX_SETTLE_ATTEMPTS` 8 · `DRAFT_TTL` 7 d · `DISPUTE_TTL` 3 d ·
 `ESCALATION_WINDOW` 7 d · `ESCALATION_RENOTIFY` 1 h, then daily · `MAX_OBLIGATION_HISTORY` 32 ·

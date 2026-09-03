@@ -239,12 +239,13 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(cmd_obligation),
     )?;
+    crate::contract_live::register(reg)?;
     Ok(())
 }
 
 // ---- helpers --------------------------------------------------------------
 
-fn is_admin(w: &World, who: ObjId) -> bool {
+pub(crate) fn is_admin(w: &World, who: ObjId) -> bool {
     perm::has_power(w, who, Powers::SIM_ADMIN) || perm::has_role(w, who, Role::Royalty)
 }
 fn require_admin(ctx: &Ctx<'_>) -> Result<(), CmdError> {
@@ -261,7 +262,7 @@ fn require_admin(ctx: &Ctx<'_>) -> Result<(), CmdError> {
 /// authority on top of a state nobody has audited yet. The recovery verbs
 /// (`freeze`/`unfreeze`/`close`) stay available — they are how the freeze is worked
 /// through — and the read verbs never move anything.
-fn refuse_if_frozen(ctx: &Ctx<'_>) -> Result<(), CmdError> {
+pub(crate) fn refuse_if_frozen(ctx: &Ctx<'_>) -> Result<(), CmdError> {
     if ctx.w.module_state::<EconomyStore>().is_some_and(EconomyStore::is_frozen) {
         return Err(CmdError::msg(
             "The economy is frozen; that is not available until staff clear it (@econ/unfreeze).",
@@ -269,18 +270,18 @@ fn refuse_if_frozen(ctx: &Ctx<'_>) -> Result<(), CmdError> {
     }
     Ok(())
 }
-fn info(ctx: &mut Ctx<'_>, msg: impl Into<String>) {
+pub(crate) fn info(ctx: &mut Ctx<'_>, msg: impl Into<String>) {
     let actor = ctx.actor;
     ctx.out.sys_to_actor(actor, "economy", msg.into());
 }
-fn parse_account(s: &str) -> Option<AccountId> {
+pub(crate) fn parse_account(s: &str) -> Option<AccountId> {
     s.trim().trim_start_matches('#').parse::<u64>().ok().map(AccountId)
 }
 /// A unique idempotency key for an interactive command (each invocation is a fresh
 /// intent). Keyed on the next transaction id, which is unique and never reused — so
 /// two identical `@econ/pay`s both post (different keys), while an ambiguously-acked
 /// retry of the SAME post (same key) dedups.
-fn cmd_key(ctx: &Ctx<'_>) -> IdempotencyKey {
+pub(crate) fn cmd_key(ctx: &Ctx<'_>) -> IdempotencyKey {
     let serial = ctx.w.module_state::<EconomyStore>().map_or(0, EconomyStore::peek_next_transaction);
     IdempotencyKey::new(SmolStr::new_static("cmd"), SmolStr::new(serial.to_string()))
 }
@@ -288,12 +289,12 @@ fn cmd_key(ctx: &Ctx<'_>) -> IdempotencyKey {
 // ---- E3b1 shared parsing + the existence-hiding renderer ------------------
 
 /// The row cap every `*/list` obeys (§4.5).
-const LIST_CAP: usize = 20;
+pub(crate) const LIST_CAP: usize = 20;
 
 /// Pull `key=value` options out of a free-form tail, returning the remaining words
 /// and the recognized options (lower-cased keys). Unknown `k=v` words stay in the
 /// remainder, so a purpose containing an `=` is not silently eaten.
-fn parse_opts(s: &str, keys: &[&str]) -> (String, BTreeMap<String, String>) {
+pub(crate) fn parse_opts(s: &str, keys: &[&str]) -> (String, BTreeMap<String, String>) {
     let mut rest: Vec<&str> = Vec::new();
     let mut opts: BTreeMap<String, String> = BTreeMap::new();
     for tok in s.split_whitespace() {
@@ -310,7 +311,7 @@ fn parse_opts(s: &str, keys: &[&str]) -> (String, BTreeMap<String, String>) {
 }
 
 /// `<principal>` = `#obj` (or a matchable name) | `org:<id|name>` | `sys:<name>`.
-fn parse_principal(ctx: &Ctx<'_>, s: &str) -> Option<PrincipalId> {
+pub(crate) fn parse_principal(ctx: &Ctx<'_>, s: &str) -> Option<PrincipalId> {
     let s = s.trim();
     if let Some(rest) = s.strip_prefix("org:") {
         return resolve_org(ctx, rest).map(PrincipalId::Organization);
@@ -339,14 +340,14 @@ fn resolve_org(ctx: &Ctx<'_>, s: &str) -> Option<mush_org::OrgId> {
         .map(|o| o.id)
 }
 
-fn parse_scope(s: &str) -> Option<OrgScopeId> {
+pub(crate) fn parse_scope(s: &str) -> Option<OrgScopeId> {
     s.trim().trim_start_matches('#').parse::<u64>().ok().map(OrgScopeId)
 }
-fn parse_vault_id(s: &str) -> Option<VaultId> {
+pub(crate) fn parse_vault_id(s: &str) -> Option<VaultId> {
     s.trim().trim_start_matches('#').parse::<u64>().ok().map(VaultId)
 }
 
-fn render_principal(ctx: &Ctx<'_>, p: &PrincipalId) -> String {
+pub(crate) fn render_principal(ctx: &Ctx<'_>, p: &PrincipalId) -> String {
     match p {
         PrincipalId::Object(o) => format!("{} (#{})", display_name(ctx.w, *o), o.0),
         PrincipalId::Organization(o) => {
@@ -440,10 +441,10 @@ fn hidden_text(ctx: &Ctx<'_>, resource: NamedResource) -> Option<&'static str> {
         NamedResource::Obligation(o) => {
             (!may_view_obligation(ctx.w, ctx.actor, o)).then_some("No such obligation.")
         }
-        // E4b2 owns the contract verbs and `may_view_contract`; until they exist no
-        // command can name one, and hiding unconditionally is the fail-closed reading
-        // of §4.5: never disclose a resource whose view gate is unwritten.
-        NamedResource::Contract(_) => Some("No such contract."),
+        NamedResource::Contract(c) => {
+            (!crate::contract_live::may_view_contract(ctx.w, ctx.actor, c))
+                .then_some("No such contract.")
+        }
     }
 }
 
@@ -523,7 +524,7 @@ pub fn may_view_obligation(w: &World, actor: ObjId, id: ObligationId) -> bool {
 /// A cap or shape complaint keeps its own text (see `concerns_named_subjects`) —
 /// hiding a payer's own operational error behind "No such account." would be a
 /// disclosure rule eating the game.
-fn refuse(ctx: &Ctx<'_>, subject: NamedResource, also: &[NamedResource], e: &crate::plan::EconomyError) -> CmdError {
+pub(crate) fn refuse(ctx: &Ctx<'_>, subject: NamedResource, also: &[NamedResource], e: &crate::plan::EconomyError) -> CmdError {
     let named = e.named_resources();
     let extra: &[NamedResource] = if e.concerns_named_subjects() { also } else { &[] };
     for r in std::iter::once(subject).chain(named).chain(extra.iter().copied()) {
@@ -584,7 +585,7 @@ fn ops_plan(ctx: &Ctx<'_>, asset_ops: Vec<AssetOp>, custody_ops: Vec<CustodyOp>)
 
 /// Resolve `<obj>` for an asset verb. A name that matches nothing renders as the
 /// nonexistent-asset text (never "I don't see that here", which would leak).
-fn asset_target(ctx: &Ctx<'_>, s: &str) -> Result<ObjId, CmdError> {
+pub(crate) fn asset_target(ctx: &Ctx<'_>, s: &str) -> Result<ObjId, CmdError> {
     match_object(ctx.w, ctx.actor, s).map_err(|_| CmdError::msg("No such asset."))
 }
 
@@ -634,7 +635,7 @@ fn finish_ops(
 }
 
 /// Emit a capped list with the §4.5 "N more" tail.
-fn emit_list(ctx: &mut Ctx<'_>, mut rows: Vec<String>, empty: &str) {
+pub(crate) fn emit_list(ctx: &mut Ctx<'_>, mut rows: Vec<String>, empty: &str) {
     if rows.is_empty() {
         info(ctx, empty.to_string());
         return;
@@ -1391,7 +1392,7 @@ fn econ_approvals(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 /// Parse `<amount>` in an instrument's minor units (integer minor units for E2b —
 /// staff type the raw minor value; the display formats the scale).
-fn parse_amount(s: &str) -> Option<Amount> {
+pub(crate) fn parse_amount(s: &str) -> Option<Amount> {
     s.trim().parse::<i64>().ok().map(Amount::from_minor)
 }
 
@@ -2213,7 +2214,7 @@ fn parse_escalation_id(s: &str) -> Option<EscalationId> {
 /// both read to the placer as an ordinary hold. A deadline in the past is not a
 /// deadline, it is a typo — almost always a `-` that should have been a duration, or
 /// a caller subtracting instead of adding.
-fn parse_deadline(ctx: &Ctx<'_>, s: &str) -> Option<EconomicDeadline> {
+pub(crate) fn parse_deadline(ctx: &Ctx<'_>, s: &str) -> Option<EconomicDeadline> {
     let (clock, rest, base) = match s.trim().strip_prefix("ic:") {
         Some(rest) => (EconomicClock::WorldIc, rest, ctx.w.game_now_unix()),
         None => (EconomicClock::RealUtc, s.trim(), ctx.w.now()),
@@ -2340,6 +2341,7 @@ fn hold_release(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !may_view_hold(ctx.w, ctx.actor, id) {
         return Err(CmdError::msg("No such hold."));
     }
+    refuse_escrow(ctx, id, "released")?;
     let mut plan = EconomyPlan::new(
         cmd_key(ctx),
         PrincipalId::Object(ctx.actor),
@@ -2363,6 +2365,7 @@ fn hold_capture(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !may_view_hold(ctx.w, ctx.actor, id) {
         return Err(CmdError::msg("No such hold."));
     }
+    refuse_escrow(ctx, id, "captured")?;
     let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?;
     let mut words = rhs.split_whitespace();
     let to = words.next().and_then(parse_account).ok_or_else(|| CmdError::msg(USAGE))?;
@@ -2396,6 +2399,29 @@ fn hold_capture(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         outcome,
         "Captured",
     )
+}
+
+/// A contract's escrow is the contract's, and only the contract's (§4.8's E4b2
+/// handoff). `WorldAuth::authorize_hold` already refuses every op on an
+/// `Escrow`-purpose reservation, so this changes no outcome — it replaces
+/// "unauthorized" with the sentence that tells the payer what to do instead, for
+/// somebody who can already see the reservation. A viewer who cannot see it never
+/// reaches this.
+fn refuse_escrow(ctx: &Ctx<'_>, id: HoldId, verb: &str) -> Result<(), CmdError> {
+    let contract = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().hold(id).cloned())
+        .and_then(|h| match h.purpose {
+            HoldPurpose::Escrow { contract } => Some(contract),
+            HoldPurpose::Reservation { .. } | HoldPurpose::Manual { .. } => None,
+        });
+    match contract {
+        None => Ok(()),
+        Some(c) => Err(CmdError::msg(format!(
+            "Hold #{id} is contract #{c}'s escrow: it is {verb} by that contract's own settlement              or refund and by nothing else. See @contract/show #{c}."
+        ))),
+    }
 }
 
 fn render_hold(ctx: &Ctx<'_>, h: &crate::record::Hold, staff: bool, scale: u8) -> Vec<String> {
@@ -3257,16 +3283,25 @@ fn econ_ack(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     .to_string(),
             );
         }
-        None => {
-            if subject == EscalationSubject::Economy {
-                info(
-                    ctx,
-                    "That does not clear the whole-economy freeze: read the boot log, then \
-                     @econ/unfreeze."
-                        .to_string(),
-                );
-            }
-        }
+        None => match subject {
+            EscalationSubject::Economy => info(
+                ctx,
+                "That does not clear the whole-economy freeze: read the boot log, then \
+                 @econ/unfreeze."
+                    .to_string(),
+            ),
+            // E4b2: a contract's alert is not a thing acknowledgement resumes. A
+            // disputed contract's escrow stays frozen until somebody decides which
+            // way it goes, and that decision is its own verb.
+            EscalationSubject::Contract(cid) => info(
+                ctx,
+                format!(
+                    "Contract #{cid} is still disputed: acknowledging does not release its \
+                     escrow. @contract/resolve #{cid}=settle|refund is the decision."
+                ),
+            ),
+            EscalationSubject::Obligation(_) | EscalationSubject::Hold(_) => {}
+        },
     }
     ctx.gate_on_durable_ack();
     Ok(())

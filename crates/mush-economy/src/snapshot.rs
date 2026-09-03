@@ -327,6 +327,15 @@ impl EconomySnapshot {
             }
         }
     }
+    /// Drop a garbage-collected `Draft` contract (the sweep's GC, §4.3 step 4). Its
+    /// custody locks go with it — a draft holds none, because a lock exists only
+    /// while a contract is `Active`/`ReadyToSettle`. The allocator floor comes from
+    /// `meta`'s high-water mark, which every mint persists, so a collected id can
+    /// never be re-minted.
+    pub(crate) fn remove_contract(&mut self, id: ContractId) {
+        self.contract_locks.retain(|_, c| *c != id);
+        self.contracts.remove(&id);
+    }
     /// Drop a dead approval request (the sweep's GC — the same rule boot applies).
     pub(crate) fn remove_approval(&mut self, id: ApprovalRequestId) {
         if let Some(prev) = self.approvals.remove(&id)

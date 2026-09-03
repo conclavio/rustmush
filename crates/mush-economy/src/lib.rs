@@ -92,6 +92,10 @@ mod obligation;
 mod escalation;
 mod sweep;
 
+// E4b2 — contracts live: the `@contract/*` surface and the settlement/unwind
+// machinery the sweep shares with it.
+mod contract_live;
+
 // E2b — the world-attached module (the journal on the E0 Ledger, the atomic
 // full-bundle post, the strict durable money ack-gate, and directional boot
 // self-heal). E3b1 adds the custody seam, asset/vault persistence + boot, the
@@ -124,7 +128,7 @@ pub use plan::{
     HoldOp, HoldRevision, NamedResource, PlanResult, Prepared, RequestedLine,
 };
 pub use record::{
-    Account, AccountStatus, AcquisitionRecord, Approval, ApprovalRequest, ApprovalRule,
+    Account, AccountStatus, AcquisitionRecord, Approval, ApprovalRequest, ApprovalRule, MAX_AUDIENCE,
     ApprovalStatus, AssetAssignment, AssetEffect, AssetEffectKind, AssetLifecycle, CatalogRef,
     CausalRef, ContractStateKind, CreditPolicy, CustodyDirection, CustodyEffect, CustodyRef,
     Decision, EconomicAsset, EconomicCause, EconomicEvent, EconomicTransaction, EconomicVisibility,
@@ -143,12 +147,20 @@ pub use clock::{
 };
 pub use contract::{
     Acceptance, Attestation, AttestorRef, AttestorSet, ConsentSurface, Consideration,
-    ContractAuth, ContractError, ContractState, ContractTerms, DISPUTE_TTL_SECS, DRAFT_TTL_SECS,
-    Deliverable, EconomicContract, Expiry, MAX_CONDITIONS, MAX_DELIVERABLES,
-    MAX_LIVE_CONTRACTS_PER_PARTY, MAX_OPEN_CONTRACTS_PER_ISSUER, MAX_PARTIES, MAX_SETTLE_ATTEMPTS,
-    MAX_SHARES, ObligationTemplate, PERMILLE, PayoutShare, QualifyingEscrow, Share, TypedCondition,
-    apply_split, check_offerable, conditions_met, consent_hash, principal_key, qualifying_escrow,
-    refund_key, refund_plan, reverify, settle_key, settlement_plan,
+    ContractAuth, ContractError, ContractPurpose, ContractRoles, ContractState, ContractTerms,
+    DISPUTE_TTL_SECS, DRAFT_TTL_SECS, Deliverable, DepositRecord, EconomicContract, EvidenceKind,
+    ExpenseTreatment, Expiry, MAX_AGREEMENTS, MAX_AMENDMENTS, MAX_CONDITIONS,
+    MAX_CONTRACT_NAME_BYTES,
+    MAX_DELIVERABLES, MAX_DEPOSITS, MAX_LIVE_CONTRACTS_PER_PARTY, MAX_OPEN_CONTRACTS_PER_ISSUER,
+    MAX_OUTCOMES, MAX_PARTIES, MAX_SETTLE_ATTEMPTS, MAX_SHARES, ObligationTemplate, OutcomeTerms,
+    PERMILLE, PartyAgreement, PayoutShare, QualifyingEscrow, Readiness, Resolution, Share,
+    TypedCondition,
+    activate_key, activation_asset_ops, apply_outcome, apply_split, canonical_visibility,
+    contract_op_key,
+    check_offerable, condition_holds, conditions_met, consent_hash, contract_encumbrance,
+    forfeit_key, forfeit_plan, outcome_conditions, principal_key, qualifying_escrow, refund_key,
+    readiness, refund_plan, release_asset_ops, resolve_outcome, reverify, settle_key,
+    settlement_plan,
 };
 pub use obligation::{
     DEFAULT_GRACE_PERIODS, ForgiveCause, GracePolicy, MAX_GRACE_PERIODS, MAX_OBLIGATION_HISTORY,
@@ -167,14 +179,17 @@ pub use escalation::{
 };
 pub use sweep::SWEEP_TAG;
 
+// E4b2 — contracts live.
+pub use contract_live::may_view_contract;
+
 // E2b/E3b1 public surface.
 pub use api::{
     META_KEY, ObligationSpec, PostOutcome, account_key, approval_key, asset_key, cadence_key,
-    create_system_obligation, create_vault, hold_key, instrument_key,
+    contract_key, create_system_obligation, create_vault, hold_key, instrument_key,
     obligation_key as obligation_doc_key, open_account, post, post_capability, register_instrument,
     reverse, set_account_approval, set_account_status, set_asset_frozen, set_economy_frozen,
     set_vault_status, vault_key,
 };
-pub use commands::may_view_account;
+pub use commands::{may_view_account, may_view_hold, may_view_obligation};
 pub use custody::{ContainerProvider, CustodyError, CustodyProvider, CustodyTable};
 pub use module::{EconomyModule, EconomyScopeUse, EconomyStore, JOURNAL_LOG, NS};

@@ -33,7 +33,9 @@ struct CanonicalPlan<'a> {
     actor: &'a PrincipalId,
     cause: &'a crate::record::EconomicCause,
     description: &'a str,
-    visibility: EconomicVisibility,
+    /// By reference since E4b2 (an audience list is not `Copy`). The serialized
+    /// bytes are identical either way, which is what keeps both digest pins green.
+    visibility: &'a EconomicVisibility,
     lines: Vec<CanonicalLine<'a>>,
     /// v2 (E3a). Skipped when empty, so an E2-shaped plan hashes **byte-identically**
     /// under E3 and journal-derived idempotency for pre-upgrade entries keeps working.
@@ -82,7 +84,7 @@ pub fn plan_hash(plan: &EconomyPlan) -> [u8; 32] {
         actor: &plan.actor,
         cause: &plan.cause,
         description: &plan.description,
-        visibility: plan.visibility,
+        visibility: &plan.visibility,
         lines,
         asset_ops: asset_ops.iter().map(|(_, op)| *op).collect(),
         custody_ops: custody_ops.iter().map(|(_, op)| *op).collect(),
@@ -259,7 +261,7 @@ mod tests {
             actor: &p.actor,
             cause: &p.cause,
             description: &p.description,
-            visibility: p.visibility,
+            visibility: &p.visibility,
             lines: Vec::new(),
             asset_ops: Vec::new(),
             custody_ops: Vec::new(),

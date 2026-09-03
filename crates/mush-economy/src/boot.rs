@@ -62,11 +62,12 @@ use crate::escalation::{
     ESCALATION_GC_AFTER_SECS, Escalation, EscalationKind, EscalationSubject, MAX_BOOT_ESCALATIONS,
     escalation_key,
 };
+use crate::contract::{ContractState, DepositRecord, EconomicContract, TypedCondition};
 use crate::ids::{
-    AccountId, ApprovalRequestId, CadenceId, EscalationId, HoldId, InstrumentId, ObligationId,
-    TransactionId, VaultId,
+    AccountId, ApprovalRequestId, CadenceId, ContractId, EscalationId, HoldId, InstrumentId,
+    ObligationId, TransactionId, VaultId,
 };
-use crate::module::{BootParts, EconomyStore};
+use crate::module::{BootParts, CustodyMark, EconomyStore};
 use crate::obligation::{Obligation, ObligationCause, ObligationStatus, SuspendReason};
 use crate::record::{
     Account, AccountStatus, ApprovalRequest, CustodyDirection, EconomicAsset, EconomicTransaction,
@@ -106,6 +107,7 @@ pub(crate) fn load_boot(
     let mut stored_obligations: BTreeMap<ObligationId, Obligation> = BTreeMap::new();
     let mut stored_cadences: BTreeMap<CadenceId, CadenceClock> = BTreeMap::new();
     let mut stored_escalations: BTreeMap<EscalationId, Escalation> = BTreeMap::new();
+    let mut stored_contracts: BTreeMap<ContractId, EconomicContract> = BTreeMap::new();
     let mut chunks: Vec<LedgerChunk> = Vec::new();
     let mut meta: Option<serde_json::Value> = None;
     // Every `approval:{id}` key seen, readable or not (the allocator floor).
@@ -118,6 +120,7 @@ pub(crate) fn load_boot(
     let mut max_obligation_key: Option<u64> = None;
     let mut max_cadence_key: Option<u64> = None;
     let mut max_escalation_key: Option<u64> = None;
+    let mut max_contract_key: Option<u64> = None;
 
     for (key, value) in &data.kv {
         if key == META_KEY {
@@ -219,6 +222,20 @@ pub(crate) fn load_boot(
                 return Err(ModError::msg(format!("economy: cadence doc {key:?} claims id {}", c.id)));
             }
             stored_cadences.insert(c.id, c);
+        } else if let Some(id) = key.strip_prefix("contract:") {
+            // A **container** (D-E4-5, §5): the contract record IS the agreement, so
+            // a corrupt one fails the boot rather than silently un-owing a settlement
+            // and stranding the escrow standing behind it.
+            let id = id
+                .parse::<u64>()
+                .map_err(|_| ModError::msg(format!("economy: bad contract key {key:?}")))?;
+            max_contract_key = Some(max_contract_key.map_or(id, |m: u64| m.max(id)));
+            let c = serde_json::from_value::<EconomicContract>(value.clone())
+                .map_err(|e| ModError::msg(format!("economy: bad contract doc {key:?}: {e}")))?;
+            if c.id != ContractId(id) {
+                return Err(ModError::msg(format!("economy: contract doc {key:?} claims id {}", c.id)));
+            }
+            stored_contracts.insert(c.id, c);
         } else if let Some(id) = key.strip_prefix("escalation:") {
             // A **leaf** (§4.6), exactly like an approval request: an unreadable alert
             // costs a staffer the alert, never the money it was about. Its id still
@@ -266,7 +283,7 @@ pub(crate) fn load_boot(
     let mut snapshot_at_stored: BTreeMap<AccountId, i128> = BTreeMap::new();
     let mut journal_assets: BTreeMap<ObjId, EconomicAsset> = BTreeMap::new();
     let mut asset_at_stored: BTreeMap<ObjId, EconomicAsset> = BTreeMap::new();
-    let mut last_custody: BTreeMap<ObjId, (VaultId, CustodyDirection)> = BTreeMap::new();
+    let mut last_custody: BTreeMap<ObjId, CustodyMark> = BTreeMap::new();
     let mut max_custody_vault: Option<u64> = None;
     let mut consumed_approval: BTreeMap<ApprovalRequestId, TransactionId> = BTreeMap::new();
     let mut max_consumed_approval: Option<u64> = None;
@@ -366,7 +383,15 @@ pub(crate) fn load_boot(
             *touches.entry(*account).or_insert(0) += 1;
         }
         for effect in &tx.custody_effects {
-            last_custody.insert(effect.object, (effect.vault, effect.direction));
+            // E4b2: the depositor is the transaction's actor — journal authority, so
+            // a contract's refund returns the object to whoever really put it there
+            // rather than to whoever the record claims.
+            last_custody.insert(effect.object, CustodyMark {
+                vault: effect.vault,
+                direction: effect.direction,
+                by: tx.actor.clone(),
+                at: tx.posted_at,
+            });
             max_custody_vault = Some(max_custody_vault.map_or(effect.vault.0, |m: u64| m.max(effect.vault.0)));
         }
         // The journal is the authority on which requests were SPENT: a `Consumed`
@@ -695,6 +720,134 @@ pub(crate) fn load_boot(
     let mut next_escalation = meta_u64(&meta, "next_escalation_id")
         .max(next_after(max_escalation_key))
         .max(next_after(escalations.keys().map(|i| i.0).max()));
+    // Boot's own level-2 records, capped at `MAX_BOOT_ESCALATIONS` across BOTH
+    // reconciliation passes: a broken world must not mint an unbounded alert storm,
+    // and the subject is stopped either way.
+    let mut opened_escalations: Vec<Escalation> = Vec::new();
+
+    // ---- E4b2: contracts (containers, §5) --------------------------------
+    //
+    // Contracts load BEFORE obligations, because a `Contract`-caused obligation's
+    // own reconciliation asks whether its contract is still live — E4b1 answered
+    // "no record, so no" for every one of them, which was the fail-closed reading
+    // and is now the real question.
+    //
+    // Three journal checks, each with a different answer because each means
+    // something different:
+    //
+    // - an `Active`/`ReadyToSettle` contract whose escrow is not `Held` in the
+    //   journal is an agreement standing on money that is gone → **`Disputed`** and
+    //   a loud log (§15.2 "disable and quarantine, reserve no value"). Nothing is
+    //   captured, nothing is released; the escrow, whatever is left of it, freezes.
+    // - a `Settled { transaction }` whose transaction the journal does not have is
+    //   **drift**: a settlement the journal never saw is a doc claiming money moved.
+    //   That is the whole-economy freeze, with the level-2 companion record E4b1
+    //   opens for one.
+    // - a `Settled` transaction the journal has but which was **reversed** →
+    //   `Disputed`. Invariant 28 makes that unreachable (a capture-carrying entry
+    //   cannot be reversed), which is exactly why it is checked: an unreachable
+    //   state that shows up is evidence about the journal, not about the contract.
+    let mut healed_contracts: Vec<EconomicContract> = Vec::new();
+    for (_, mut c) in stored_contracts {
+        let mut quarantine: Option<String> = None;
+        match &c.state {
+            ContractState::Active | ContractState::ReadyToSettle => {
+                for id in &c.escrow {
+                    match journal_holds.get(id) {
+                        Some(h) if h.status.is_held() => {}
+                        _ => {
+                            quarantine = Some(format!(
+                                "contract #{}'s escrow hold #{id} is not held in the journal",
+                                c.id
+                            ));
+                        }
+                    }
+                }
+            }
+            ContractState::Settled { transaction } => {
+                if transactions.contains_key(transaction) {
+                    if snapshot.is_reversed(*transaction) {
+                        quarantine = Some(format!(
+                            "contract #{}'s settlement transaction #{transaction} was reversed",
+                            c.id
+                        ));
+                    }
+                } else {
+                    tracing::error!(
+                        contract = c.id.0,
+                        transaction = transaction.0,
+                        "economy: a settled contract names a transaction the journal does not have; \
+                         freezing the economy"
+                    );
+                    frozen = true;
+                    if opened_escalations.len() < MAX_BOOT_ESCALATIONS
+                        && let Some(id) = mint_escalation(&mut next_escalation)
+                    {
+                        opened_escalations.push(Escalation::page(
+                            id,
+                            EscalationKind::EconomyFrozen,
+                            EscalationSubject::Contract(c.id),
+                            format!(
+                                "contract #{} says it settled as transaction #{transaction}, and the \
+                                 journal has no such transaction. A settlement the journal does not \
+                                 know is drift, so the whole economy is frozen.",
+                                c.id
+                            ),
+                            vec![
+                                format!("@contract/show #{}", c.id),
+                                "@econ/audit".to_string(),
+                                "@econ/unfreeze   (only after the journal is understood)".to_string(),
+                            ],
+                            now,
+                        ));
+                    }
+                }
+            }
+            ContractState::Draft
+            | ContractState::Offered
+            | ContractState::Disputed
+            | ContractState::Cancelled
+            | ContractState::Expired => {}
+        }
+        if let Some(reason) = quarantine {
+            tracing::error!(contract = c.id.0, %reason, "economy: boot quarantined a contract");
+            c.state = ContractState::Disputed;
+            c.revision += 1;
+            healed_contracts.push(c.clone());
+            if opened_escalations.len() < MAX_BOOT_ESCALATIONS
+                && let Some(id) = mint_escalation(&mut next_escalation)
+            {
+                opened_escalations.push(Escalation::page(
+                    id,
+                    EscalationKind::BootReconciliation,
+                    EscalationSubject::Contract(c.id),
+                    reason,
+                    vec![
+                        format!("@contract/show #{}", c.id),
+                        format!("@contract/resolve #{}=refund", c.id),
+                        format!("@contract/resolve #{}=settle", c.id),
+                    ],
+                    now,
+                ));
+            }
+        }
+        // The depositor of every live `DepositInto`, from the journal's last-custody
+        // map (§5). Recording it here is what lets a refund put the object back: the
+        // custody lock has no exception, so the contract's own unwind is the only
+        // route out, and it has to know whose the thing was.
+        if c.state.is_live() {
+            let deposits = derive_deposits(&c, &last_custody);
+            if deposits != c.deposits {
+                c.deposits = deposits;
+                c.revision += 1;
+                healed_contracts.push(c.clone());
+            }
+        }
+        // `put_contract` re-derives the custody locks from the record's own
+        // `DepositInto` conditions, so the locks come back exactly as the live states
+        // describe them and a terminal contract holds nothing.
+        snapshot.put_contract(c);
+    }
 
     // ---- E4b1: obligations (containers, §4.2) ----------------------------
     //
@@ -704,16 +857,16 @@ pub(crate) fn load_boot(
     // the command that fixes it already written out. Nothing is charged, nothing is
     // lost, and a staffer sees the question rather than a silent stall.
     let mut healed_obligations: Vec<Obligation> = Vec::new();
-    let mut opened_escalations: Vec<Escalation> = Vec::new();
     for (_, mut o) in stored_obligations {
         if let Some(reason) = obligation_unusable(ctx.w, &snapshot, &o)
             && o.status.in_due_pool()
         {
             {
                 tracing::error!(obligation = o.id.0, %reason, "economy: boot suspended an obligation it cannot settle");
-                let suspend = if opened_escalations.len() < MAX_BOOT_ESCALATIONS {
-                    let id = EscalationId(next_escalation);
-                    next_escalation = next_escalation.saturating_add(1);
+                let minted = (opened_escalations.len() < MAX_BOOT_ESCALATIONS)
+                    .then(|| mint_escalation(&mut next_escalation))
+                    .flatten();
+                let suspend = if let Some(id) = minted {
                     let record = Escalation::page(
                         id,
                         EscalationKind::BootReconciliation,
@@ -743,8 +896,8 @@ pub(crate) fn load_boot(
     // ---- E3: custody reconciliation (audit-only; never derives a location) --
     let deposited: Vec<(ObjId, VaultId)> = last_custody
         .iter()
-        .filter(|(_, (_, dir))| *dir == CustodyDirection::Deposit)
-        .map(|(o, (v, _))| (*o, *v))
+        .filter(|(_, mark)| mark.direction == CustodyDirection::Deposit)
+        .map(|(o, mark)| (*o, mark.vault))
         .collect();
     let mut mismatched: BTreeSet<ObjId> = BTreeSet::new();
     for (object, vault_id) in deposited {
@@ -870,6 +1023,9 @@ pub(crate) fn load_boot(
         .max(next_after(max_cadence_key))
         .max(next_after(snapshot.cadences().map(|c| c.id.0).max()));
     let next_escalation = next_escalation.max(meta_u64(&meta, "next_escalation_id"));
+    let next_contract = meta_u64(&meta, "next_contract_id")
+        .max(next_after(max_contract_key))
+        .max(next_after(snapshot.contracts().map(|c| c.id.0).max()));
     let last_sweep_real = meta_i64(&meta, "last_sweep_real");
     let last_sweep_ic = meta_i64(&meta, "last_sweep_ic");
 
@@ -903,6 +1059,9 @@ pub(crate) fn load_boot(
     for o in &healed_obligations {
         api::persist_obligation(ctx.out, o);
     }
+    for c in &healed_contracts {
+        api::persist_contract(ctx.out, c);
+    }
     for e in &opened_escalations {
         api::persist_escalation(ctx.out, e);
     }
@@ -924,6 +1083,8 @@ pub(crate) fn load_boot(
         next_obligation,
         next_cadence,
         next_escalation,
+        next_contract,
+        last_custody,
         last_sweep_real,
         last_sweep_ic,
         // S3: the boot marker. Stamped at the END of every boot, so a sweep gap that
@@ -1110,4 +1271,49 @@ fn meta_i64(meta: &Option<serde_json::Value>, field: &str) -> i64 {
 /// overflowing: the safe failure is "no new ids", never "the same id twice".
 fn next_after(max: Option<u64>) -> u64 {
     max.map_or(0, |m| m.saturating_add(1))
+}
+
+/// Mint one boot escalation id, or `None` at the ceiling (E4b1 verify fold, B1/B2).
+/// The allocator floor **saturates**, so at `u64::MAX` this refuses rather than
+/// wrapping a live id back into use; the subject is still quarantined either way.
+fn mint_escalation(next: &mut u64) -> Option<EscalationId> {
+    if *next == u64::MAX {
+        tracing::error!("economy: the escalation allocator is at its ceiling; boot opens no record");
+        return None;
+    }
+    let id = EscalationId(*next);
+    *next = next.saturating_add(1);
+    Some(id)
+}
+
+/// The depositor of every object a live contract's `DepositInto` condition names,
+/// taken from the **journal's** last-custody map (§5).
+///
+/// Only an object the journal last saw going **into** the named vault counts: a
+/// withdrawal mark means the thing is not there to give back, and a deposit into a
+/// different vault is not this contract's deposit. Bounded by
+/// [`crate::contract::MAX_DEPOSITS`] because the module admits one custody op per
+/// plan, so a refund could not return more than one anyway.
+fn derive_deposits(
+    c: &EconomicContract,
+    last_custody: &BTreeMap<ObjId, CustodyMark>,
+) -> Vec<DepositRecord> {
+    let mut out: Vec<DepositRecord> = Vec::new();
+    for condition in &c.consent.conditions {
+        let TypedCondition::DepositInto { object, vault } = condition else { continue };
+        let Some(mark) = last_custody.get(object) else { continue };
+        if mark.vault != *vault || mark.direction != CustodyDirection::Deposit {
+            continue;
+        }
+        if out.len() >= crate::contract::MAX_DEPOSITS {
+            break;
+        }
+        out.push(DepositRecord {
+            object: *object,
+            vault: *vault,
+            deposited_by: mark.by.clone(),
+            at: mark.at,
+        });
+    }
+    out
 }

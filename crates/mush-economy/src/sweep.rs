@@ -112,6 +112,7 @@ pub(crate) fn sweep(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     advance_cadences(ctx, now, ic_now);
     expire_holds(ctx, now, ic_now);
     settle_obligations(ctx, evidence);
+    step_contracts(ctx, now, ic_now);
     collect_garbage(ctx, now);
     renotify(ctx, now);
     stamp_sweep(ctx, now, ic_now);
@@ -1020,6 +1021,152 @@ fn announce(ctx: &mut Ctx<'_>, before: &ObligationStatus, o: &Obligation) {
     }
 }
 
+// ---- step 3: contracts (E4b2, §4.3) ---------------------------------------
+
+/// The most contracts one fire touches (§9's list discipline, applied to work).
+const MAX_CONTRACTS_PER_SWEEP: usize = 64;
+
+/// What this fire must do about one contract.
+///
+/// Decided in a **read-only** pass and then applied by one exhaustive `match`, for
+/// the same reason every other step in this file is shaped that way: the decision is
+/// made against one immutable view of the world, and the mutating pass has no
+/// lookups of its own that could see a half-changed state.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum ContractStep {
+    /// Every condition holds: promote it if it is still `Active`, and settle.
+    Settle,
+    /// Its deadline has passed unsettled: apply `on_expiry` (refund / forfeit /
+    /// dispute).
+    Expire,
+    /// Disputed for longer than [`crate::DISPUTE_TTL_SECS`] with no unanimous party
+    /// agreement: page a human, with the resolving command filled in.
+    Page,
+    /// A `Draft` nobody finished within [`crate::DRAFT_TTL_SECS`]: collect it. A
+    /// draft has no acceptances and therefore no escrow, so there is nothing to give
+    /// back.
+    Collect,
+}
+
+/// The contract step (§4.3 step 3, D-E4-3).
+///
+/// Every deadline is read **on its own clock**, and a clock this sweep cannot
+/// resolve (a `Manual` contract deadline, a cadence with no record) reads as *not
+/// passed* — the same fail-closed rule hold expiry uses. A contract must never lapse
+/// because nobody could tell what time it was.
+fn step_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
+    let clocks = Clocks::new(now, ic_now);
+    let work: Vec<(crate::ids::ContractId, ContractStep)> = {
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
+        let providers = store.providers();
+        let custody = crate::custody::WorldCustody { w: ctx.w, providers };
+        let world = api::WorldAuth { w: ctx.w };
+        let env = crate::engine::ValidateEnv {
+            auth: &world,
+            custody: &custody,
+            facts: &crate::engine::NoFacts,
+            now,
+            ic_now,
+            next_hold_id: store.peek_next_hold(),
+        };
+        let snap = store.snapshot();
+        let lapsed = |c: &crate::contract::EconomicContract| {
+            c.consent.deadline.is_some_and(|d| clocks.passed(&d, snap, i64::MIN))
+        };
+        snap.contracts()
+            .filter_map(|c| {
+                let step = match c.state {
+                    crate::contract::ContractState::Draft => {
+                        (now.saturating_sub(c.created_at) > crate::DRAFT_TTL_SECS)
+                            .then_some(ContractStep::Collect)
+                    }
+                    crate::contract::ContractState::Offered => {
+                        lapsed(c).then_some(ContractStep::Expire)
+                    }
+                    // Readiness first: a contract whose conditions hold should settle
+                    // rather than lapse, even on the fire its deadline passes. That is
+                    // also where a `Before`/`After` condition, or a re-verification
+                    // that was deferred last fire, finally comes true.
+                    crate::contract::ContractState::Active
+                    | crate::contract::ContractState::ReadyToSettle => {
+                        match crate::contract::readiness(c, snap, &env) {
+                            // `Undecidable` goes down the same arm on purpose: the
+                            // settlement path is what turns "this cannot settle at
+                            // all" into a `Disputed` contract and a level-2 page.
+                            crate::contract::Readiness::Ready(_)
+                            | crate::contract::Readiness::Undecidable(_) => {
+                                Some(ContractStep::Settle)
+                            }
+                            crate::contract::Readiness::NotYet => {
+                                lapsed(c).then_some(ContractStep::Expire)
+                            }
+                        }
+                    }
+                    crate::contract::ContractState::Disputed => c
+                        .disputed_at
+                        .is_some_and(|at| now.saturating_sub(at) > crate::DISPUTE_TTL_SECS)
+                        .then_some(ContractStep::Page),
+                    crate::contract::ContractState::Settled { .. }
+                    | crate::contract::ContractState::Cancelled
+                    | crate::contract::ContractState::Expired => None,
+                };
+                step.map(|s| (c.id, s))
+            })
+            .take(MAX_CONTRACTS_PER_SWEEP)
+            .collect()
+    };
+    for (id, step) in work {
+        match step {
+            ContractStep::Settle => {
+                // Every outcome of a settlement attempt is already handled inside:
+                // a refusal leaves the contract `ReadyToSettle` with a loud log, and
+                // `MAX_SETTLE_ATTEMPTS` of them make it `Disputed` and page.
+                let _ = crate::contract_live::promote_and_settle(ctx, id, true);
+            }
+            ContractStep::Expire => crate::contract_live::expire(ctx, id),
+            ContractStep::Page => {
+                page(
+                    ctx,
+                    EscalationKind::SettlementRefused,
+                    EscalationSubject::Contract(id),
+                    None,
+                    format!(
+                        "contract #{id} has been disputed for more than {} days with no unanimous \
+                         party agreement; its escrow is frozen the whole time",
+                        crate::DISPUTE_TTL_SECS / 86_400
+                    ),
+                    vec![
+                        format!("@contract/show #{id}"),
+                        format!("@contract/resolve #{id}=settle"),
+                        format!("@contract/resolve #{id}=refund"),
+                    ],
+                    now,
+                );
+            }
+            ContractStep::Collect => collect_draft(ctx, id),
+        }
+    }
+}
+
+/// Collect one abandoned `Draft` (§4.3 step 4). Re-checked here against the live
+/// store: the read pass is one fire old, and a draft that was offered in between must
+/// not be collected out from under its parties.
+fn collect_draft(ctx: &mut Ctx<'_>, id: crate::ids::ContractId) {
+    let collectable = ctx.w.module_state::<EconomyStore>().is_some_and(|s| {
+        s.snapshot()
+            .contract(id)
+            .is_some_and(|c| c.state == crate::contract::ContractState::Draft && c.escrow.is_empty())
+    });
+    if !collectable {
+        return;
+    }
+    if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
+        store.snapshot.remove_contract(id);
+    }
+    tracing::info!(contract = id.0, "economy: collected an abandoned draft contract");
+    api::delete_key(ctx.out, api::contract_key(id));
+}
+
 // ---- the escalation ladder ------------------------------------------------
 
 /// What an existing record can do for a fresh page (E4b1 verify fold, S4 + B4c).
@@ -1058,7 +1205,7 @@ enum Reuse {
 // error propagation that silently truncates half-done work. Clippy would rather have
 // the `?` back here; the discipline is worth more than the line.
 #[allow(clippy::question_mark)]
-fn page(
+pub(crate) fn page(
     ctx: &mut Ctx<'_>,
     kind: EscalationKind,
     subject: EscalationSubject,

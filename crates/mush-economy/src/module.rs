@@ -32,8 +32,8 @@ use crate::config::EconomyConfig;
 use crate::custody::{ContainerProvider, CustodyProvider, CustodyTable};
 use crate::escalation::Escalation;
 use crate::ids::{
-    AccountId, ApprovalRequestId, CadenceId, EscalationId, HoldId, ObligationId, TransactionId,
-    VaultId,
+    AccountId, ApprovalRequestId, CadenceId, ContractId, EscalationId, HoldId, ObligationId,
+    TransactionId, VaultId,
 };
 use crate::record::{Account, EconomicTransaction, Vault};
 use crate::snapshot::EconomySnapshot;
@@ -88,6 +88,20 @@ pub struct EconomyStore {
     /// unreadable escalation leaf must never have its id re-minted onto a different
     /// alert, or an acknowledgement would resume the wrong subject.
     pub(crate) next_escalation: u64,
+    /// The contract-id allocator (E4b2, §5), floored past every parsable
+    /// `contract:` key plus `meta`. Re-minting one would attach a live escrow hold
+    /// (whose `purpose` names a `ContractId`) to a different agreement.
+    pub(crate) next_contract: u64,
+    /// Where the journal last saw each object's custody, and **who put it there**
+    /// (E4b2). RAM-only and journal-derived, exactly like
+    /// [`EconomyStore::hold_terminal_at`]: it is evidence, not economic truth, so it
+    /// is rebuilt at boot from the `custody_effects` rather than stored, and a
+    /// `CustodyEffect` keeps the byte shape E3 journaled.
+    ///
+    /// A contract records the depositor of its `DepositInto` object from here, so a
+    /// refund can put the thing back where it came from — the custody lock has no
+    /// exception, so the contract's own unwind is the only way out.
+    pub(crate) last_custody: BTreeMap<ObjId, CustodyMark>,
     /// The open + recently-acknowledged level-2/3 escalation records (§4.6), by id.
     /// Leaf docs (`escalation:{id}`): a corrupt one is skipped loudly at boot.
     pub(crate) escalations: BTreeMap<EscalationId, Escalation>,
@@ -149,6 +163,21 @@ pub struct EconomyStore {
     pub(crate) config: EconomyConfig,
 }
 
+/// One object's last journaled custody movement (E4b2): which vault, which way, and
+/// **which principal's post did it**. The depositor is the transaction's `actor`,
+/// which is journal authority — never a claim on the contract record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CustodyMark {
+    /// The vault involved.
+    pub vault: VaultId,
+    /// Which way it moved.
+    pub direction: crate::record::CustodyDirection,
+    /// Who moved it (the transaction's actor).
+    pub by: mush_org::PrincipalId,
+    /// When (wall clock).
+    pub at: i64,
+}
+
 /// Everything [`crate::boot`] derives, handed to [`EconomyStore::from_parts`] as one
 /// value rather than a dozen positional arguments (E4b1 doubled the count).
 pub(crate) struct BootParts {
@@ -165,6 +194,8 @@ pub(crate) struct BootParts {
     pub(crate) next_obligation: u64,
     pub(crate) next_cadence: u64,
     pub(crate) next_escalation: u64,
+    pub(crate) next_contract: u64,
+    pub(crate) last_custody: BTreeMap<ObjId, CustodyMark>,
     pub(crate) last_sweep_real: i64,
     pub(crate) last_sweep_ic: i64,
     pub(crate) last_boot_real: i64,
@@ -190,6 +221,8 @@ impl EconomyStore {
             next_obligation: p.next_obligation,
             next_cadence: p.next_cadence,
             next_escalation: p.next_escalation,
+            next_contract: p.next_contract,
+            last_custody: p.last_custody,
             hold_expiry_failures: BTreeMap::new(),
             obligation_defers: BTreeMap::new(),
             last_sweep_real: p.last_sweep_real,
@@ -295,6 +328,19 @@ impl EconomyStore {
         self.next_escalation = self.next_escalation.checked_add(1)?;
         Some(id)
     }
+    /// Mint the next contract id (E4b2, §5), or `None` at the ceiling — the same
+    /// shape as every other allocator since the E4b1 verify fold (B2): a caller at
+    /// the ceiling logs loudly and refuses that one operation.
+    pub fn alloc_contract(&mut self) -> Option<ContractId> {
+        let id = ContractId(self.next_contract);
+        self.next_contract = self.next_contract.checked_add(1)?;
+        Some(id)
+    }
+    /// Where the journal last saw `object`'s custody, and who moved it (E4b2).
+    #[must_use]
+    pub(crate) fn last_custody(&self, object: ObjId) -> Option<&CustodyMark> {
+        self.last_custody.get(&object)
+    }
     /// One escalation record.
     #[must_use]
     pub fn escalation(&self, id: EscalationId) -> Option<&Escalation> {
@@ -376,6 +422,7 @@ impl EconomyStore {
             "next_obligation_id": self.next_obligation,
             "next_cadence_id": self.next_cadence,
             "next_escalation_id": self.next_escalation,
+            "next_contract_id": self.next_contract,
             "last_sweep_real": self.last_sweep_real,
             "last_sweep_ic": self.last_sweep_ic,
             "last_boot_real": self.last_boot_real,
@@ -392,6 +439,15 @@ impl EconomyStore {
     /// allocator floor may never come from the surviving docs (GC deletes terminal
     /// ones), so it is maintained here and at boot from the journal alone.
     pub(crate) fn index_transaction(&mut self, tx: EconomicTransaction) {
+        // E4b2: the last-custody mark, with the depositor the journal names.
+        for effect in &tx.custody_effects {
+            self.last_custody.insert(effect.object, CustodyMark {
+                vault: effect.vault,
+                direction: effect.direction,
+                by: tx.actor.clone(),
+                at: tx.posted_at,
+            });
+        }
         for effect in &tx.hold_effects {
             match effect.kind {
                 crate::record::HoldEffectKind::Placed => {

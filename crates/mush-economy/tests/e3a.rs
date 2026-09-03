@@ -1161,11 +1161,16 @@ fn the_capability_vocabulary_is_exported_and_complete() {
         "vault.view",
         "vault.deposit",
         "vault.withdraw",
+        // E4b2: an org contract's four verbs, checked on the contract's own scope.
+        "contract.draft",
+        "contract.accept",
+        "contract.attest",
+        "contract.dispute",
     ] {
         assert!(CAPABILITIES.contains(&cap), "{cap} missing from the vocabulary");
         assert!(mush_org::CapabilityId::new(cap).is_some(), "{cap} is not a valid capability id");
     }
-    assert_eq!(CAPABILITIES.len(), 8);
+    assert_eq!(CAPABILITIES.len(), 12);
 }
 
 #[test]

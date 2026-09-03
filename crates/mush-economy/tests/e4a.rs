@@ -1006,6 +1006,8 @@ fn terms() -> ContractTerms {
         split: vec![PayoutShare { to: AccountId(2), share: Share::Permille(500) }],
         remainder_to: AccountId(9),
         on_expiry: Expiry::Refund,
+        // E4b2's outcome table; E4a's single split is the degenerate empty case.
+        outcomes: Vec::new(),
     }
 }
 
@@ -1017,11 +1019,16 @@ fn contract_shell() -> EconomicContract {
         deadline: None,
         visibility: EconomicVisibility::Parties,
         scope: None,
+        // E4b2: the named adjudicator and the permitted-evidence list, both inside
+        // the consent hash. `None`/empty is E4a's shape.
+        adjudicator: None,
+        evidence: Vec::new(),
     };
     let hash = consent_hash(&who(1), &consent);
     EconomicContract {
         id: ContractId(1),
         issuer: who(1),
+        name: smol_str::SmolStr::new_static("shell"),
         consent,
         consent_hash: hash,
         acceptances: vec![
@@ -1032,6 +1039,13 @@ fn contract_shell() -> EconomicContract {
         escrow: vec![HoldId(1)],
         state: ContractState::ReadyToSettle,
         settle_attempts: 0,
+        created_at: NOW,
+        amendments: 0,
+        disputed_at: None,
+        roster_locked: true,
+        deposits: Vec::new(),
+        agreements: Vec::new(),
+        roles: mush_economy::ContractRoles::default(),
         revision: 1,
     }
 }
@@ -1418,7 +1432,23 @@ fn the_refund_plan_releases_every_escrow_hold_and_moves_no_money() {
     let p = refund_plan(&c, &s).expect("refund plan");
     assert!(p.requested_lines.is_empty(), "a refund is effect-only");
     assert_eq!(p.hold_ops, vec![HoldOp::Release { hold: HoldId(1) }]);
-    let auth = ContractAuth::new(&c, &s);
+    // E4b2 narrows `ContractAuth`: a SETTLEMENT authority may capture and may not
+    // release, and an unwind is the other way round. A settlement that could release
+    // its own escrow could break the agreement it is performing.
+    let settling = ContractAuth::new(&c, &s);
+    let hold = s.hold(HoldId(1)).expect("the escrow hold");
+    assert!(
+        !settling.authorize_hold(&who(1), hold, &HoldOp::Release { hold: HoldId(1) }),
+        "a settlement authority released escrow"
+    );
+    let auth = ContractAuth::unwinding(&c, &s);
+    assert!(
+        !auth.authorize_hold(&who(1), hold, &HoldOp::Capture {
+            hold: HoldId(1),
+            amount: Amount::from_minor(1),
+        }),
+        "an unwind authority captured escrow"
+    );
     let env = ValidateEnv {
         auth: &auth,
         custody: &Custody::default(),
