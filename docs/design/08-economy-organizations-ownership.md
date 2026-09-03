@@ -1440,6 +1440,11 @@ production material    logistics account -> system:tacsim.consumed_material
 staff correction       named correction account <-> affected account
 ```
 
+> **As decided for E5 (owner, 2026-09-03):** the "abstract rent sink" row above is superseded — in the
+> WoD abstract personal mode **no** pretend-rent transaction is posted to `system:wod.housing`;
+> abstract housing is a support assessment, not a money flow (08d D-E5-2, owner answer 6). The
+> principal still exists as the landlord for un-owned properties and the title issuer.
+
 Each system principal declares a category, owning module, allowed instruments, and posting
 capability. Telemetry can therefore report sources and sinks by ruleset, cause, principal class,
 period, and instrument. “Set balance to 50,000” is not a normal command; staff uses an attributed

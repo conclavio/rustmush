@@ -568,6 +568,13 @@ their balances.
    "another account"; `Staff`-visibility entries omitted entirely (not "hidden"); descriptions
    shown only to parties. `EconomicVisibility` is thereby **enforced for reads**; recording is
    unchanged. `@contract/show` and `@hold/show` render through the same rule.
+6. **Title issuance for registered system principals** (fed back by E5, 08d §7 item 4; D-E3-13 was
+   "shape only" until now): `mush_economy::issue_title(ctx, object, owner, scope, issuer:
+   SystemPrincipalId)` mints an `EconomicAsset` title record as a journaled `Created` effect with
+   cause `Internal { kind: "title.issue", id }`, authorized only for a system principal registered
+   as a title issuer at boot (`EconomyModule::with_title_issuers(..)` — the frozen-table pattern);
+   a ruleset (E5's `system:wod.housing`, E7's production output) registers its issuer. `@asset/title`
+   stays the staff path. Tests: an unregistered issuer refused; the effect carries the issuer.
 
 Tests (`tests/e4c.rs` + one in `mush-jobs`, ~15): a payload job's approval satisfies a `Fact`
 condition and a payload-less job's does not; a canon commit attests and settles in one batch
