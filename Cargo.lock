@@ -2245,6 +2245,7 @@ dependencies = [
  "ruleset-wod",
  "serde",
  "serde_json",
+ "sha2",
  "smol_str",
  "ssh-key",
  "thiserror 2.0.20",

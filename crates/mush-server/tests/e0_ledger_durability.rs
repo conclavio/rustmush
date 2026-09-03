@@ -231,17 +231,17 @@ async fn flush(
     Some(rx.await.unwrap())
 }
 
-/// Spawn a writer over a fault store, returning everything the tests poke.
-fn spawn(
-    poison: Option<&str>,
-    quarantine_dir: Option<std::path::PathBuf>,
-) -> (
+/// The wiring one spawned writer exposes to a test.
+type Rig = (
     Arc<FaultStore>,
     mpsc::Sender<StoreJob>,
     tokio::task::JoinHandle<()>,
     Arc<AtomicU64>,
     mpsc::UnboundedReceiver<WriterSignal>,
-) {
+);
+
+/// Spawn a writer over a fault store, returning everything the tests poke.
+fn spawn(poison: Option<&str>, quarantine_dir: Option<std::path::PathBuf>) -> Rig {
     let store = FaultStore::new(poison);
     let high_water = Arc::new(AtomicU64::new(0));
     let (signal_tx, signal_rx) = mpsc::unbounded_channel::<WriterSignal>();
@@ -351,6 +351,42 @@ async fn poison_seal_is_quarantined_to_spool_and_frozen() {
     assert!(record["payload"]["sealed"].as_bool().unwrap(), "the full seal payload is preserved");
     assert!(record["payload_hash"].as_str().is_some());
     assert_eq!(record["isolation_attempts"].as_u64().unwrap(), 5);
+
+    drop(writer);
+    tokio::time::timeout(Duration::from_secs(5), join).await.unwrap().unwrap();
+    let _ = std::fs::remove_dir_all(&spool);
+}
+
+/// Re-quarantining the same poison seal is idempotent — one spool record, no
+/// duplicate isolation storm (the content-addressed filename + writer PoisonState
+/// both guard it), so a poison re-emitted many times never truncates or floods.
+#[tokio::test]
+async fn requarantining_a_poison_seal_is_idempotent_one_record() {
+    let spool = std::env::temp_dir().join(format!("rustmush-e0-idem-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&spool);
+    let poison_key = chunk_key("econ", 0);
+    let (store, writer, join, _hw, mut rx) = spawn(Some(poison_key.as_str()), Some(spool.clone()));
+
+    // Send the SAME poison seal three times (as the world's re-emit would).
+    for serial in 1..=3 {
+        let r = send(&writer, serial, vec![seal_op("econ", "econ", 0)]).await;
+        assert!(r.is_err());
+    }
+    let _ = store; // silence unused in case asserts change
+
+    // Exactly one durable record, and exactly one quarantine signal (the freeze
+    // + first quarantine); later re-sends are recognized and skipped.
+    let json_files: Vec<_> = std::fs::read_dir(&spool)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .collect();
+    assert_eq!(json_files.len(), 1, "one content-addressed record, no duplicates/truncation");
+    let quarantines = drain_breaches(&mut rx)
+        .into_iter()
+        .filter(|s| matches!(s, Some((_, _, true))))
+        .count();
+    assert_eq!(quarantines, 1, "the poison is signaled quarantined exactly once, not per re-send");
 
     drop(writer);
     tokio::time::timeout(Duration::from_secs(5), join).await.unwrap().unwrap();

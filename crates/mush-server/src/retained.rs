@@ -25,6 +25,23 @@
 //! serial exists while it is still pending, so `high_water ≥ stamp` holds iff
 //! that exact batch committed.
 //!
+//! ## Scope: seal durability, NOT bundle atomicity (E0 vs E2)
+//!
+//! This retains sealed **ledger chunks** — the authoritative event history — and
+//! guarantees a dropped seal is not lost. It does **not** make a whole
+//! authoritative *write bundle* (journal entry + account projections + holds +
+//! idempotency record + objects/spatial changes) atomic: a batch's non-seal ops
+//! do not self-heal (a dropped `Del` resurrects; a dropped `StreamAppend` is
+//! lost), and Redis `MULTI/EXEC` can partially apply on an execution-time error.
+//! Poison isolation may therefore commit a seal while its companion ops are
+//! absent. Closing that — retaining/replaying the complete bundle, or treating
+//! the ledger as sole authority with a reconciling rebuild of every projection —
+//! is **E2** (the economy layer), which the table is shaped to extend (it can
+//! hold explicitly-tagged bundle members later without re-architecture). E0's
+//! guarantee is narrower and exact: the sealed authoritative history survives a
+//! dropped seal, and money-moves ride the durable ack-gate so a confirmation is
+//! never issued for a batch that did not commit.
+//!
 //! [`reemit_ops`]: RetainedSeals::reemit_ops
 //! [`capture`]: RetainedSeals::capture
 

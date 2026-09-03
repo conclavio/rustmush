@@ -458,6 +458,28 @@ pub enum BreachKind {
         /// The chunk it was found in.
         chunk: u64,
     },
+    /// A `log:` document at chunk index `at` did not deserialize as a
+    /// [`LedgerChunk`] — corrupt authoritative history that must be surfaced, not
+    /// silently skipped (else a fail-closed consumer sees a wholly-malformed tail
+    /// as "clean").
+    MalformedChunk {
+        /// The chunk index from the key of the unparseable doc.
+        at: u64,
+    },
+    /// A `log:` document's key says chunk `at` but its embedded `chunk` field is
+    /// `embedded` — a mismatched/tampered doc that is otherwise ignored.
+    IndexMismatch {
+        /// The chunk index from the key.
+        at: u64,
+        /// The chunk index inside the document.
+        embedded: u64,
+    },
+    /// A chunk index or sequence number arithmetic overflowed while validating —
+    /// treated as corruption rather than wrapping silently.
+    ArithmeticOverflow {
+        /// The chunk being validated when the overflow occurred.
+        chunk: u64,
+    },
 }
 
 /// Scan a module's boot kv for authoritative-ledger contiguity breaches WITHOUT
@@ -479,18 +501,28 @@ pub enum BreachKind {
 #[must_use]
 pub fn scan_contiguity(kv: &[(SmolStr, serde_json::Value)]) -> Vec<ContiguityBreach> {
     let mut by_log: BTreeMap<SmolStr, BTreeMap<u64, LedgerChunk>> = BTreeMap::new();
+    let mut breaches = Vec::new();
     for (key, value) in kv {
         let Some((log_id, chunk_seq)) = parse_chunk_key(key) else {
             continue;
         };
-        if let Ok(doc) = serde_json::from_value::<LedgerChunk>(value.clone())
-            && doc.chunk == chunk_seq
-        {
-            by_log.entry(log_id).or_default().insert(chunk_seq, doc);
+        // A malformed or index-mismatched authoritative doc is a breach — surface
+        // it, never silently drop it (else a wholly-corrupt tail reads as clean).
+        match serde_json::from_value::<LedgerChunk>(value.clone()) {
+            Ok(doc) if doc.chunk == chunk_seq => {
+                by_log.entry(log_id).or_default().insert(chunk_seq, doc);
+            }
+            Ok(doc) => breaches.push(ContiguityBreach {
+                log_id,
+                kind: BreachKind::IndexMismatch { at: chunk_seq, embedded: doc.chunk },
+            }),
+            Err(_) => breaches.push(ContiguityBreach {
+                log_id,
+                kind: BreachKind::MalformedChunk { at: chunk_seq },
+            }),
         }
     }
 
-    let mut breaches = Vec::new();
     for (log_id, chunks) in &by_log {
         let Some(&max) = chunks.keys().next_back() else { continue };
         // Detect missing chunks by walking the PRESENT indices in order (bounded
@@ -498,7 +530,8 @@ pub fn scan_contiguity(kv: &[(SmolStr, serde_json::Value)]) -> Vec<ContiguityBre
         // corrupted/bit-flipped chunk index (e.g. 4e9) must never turn boot
         // validation into a multi-billion-entry allocation. Report the first
         // missing index of each gap, plus a missing chunk-0 prefix; that is
-        // enough to fail closed on a hole.
+        // enough to fail closed on a hole. Arithmetic is checked (a wrap would be
+        // corruption, not a valid successor).
         let mut prev: Option<u64> = None;
         for &idx in chunks.keys() {
             match prev {
@@ -506,10 +539,17 @@ pub fn scan_contiguity(kv: &[(SmolStr, serde_json::Value)]) -> Vec<ContiguityBre
                     log_id: log_id.clone(),
                     kind: BreachKind::MissingChunk { index: 0 },
                 }),
-                Some(p) if idx != p + 1 => breaches.push(ContiguityBreach {
-                    log_id: log_id.clone(),
-                    kind: BreachKind::MissingChunk { index: p + 1 },
-                }),
+                Some(p) => match p.checked_add(1) {
+                    Some(next) if idx != next => breaches.push(ContiguityBreach {
+                        log_id: log_id.clone(),
+                        kind: BreachKind::MissingChunk { index: next },
+                    }),
+                    None => breaches.push(ContiguityBreach {
+                        log_id: log_id.clone(),
+                        kind: BreachKind::ArithmeticOverflow { chunk: p },
+                    }),
+                    _ => {}
+                },
                 _ => {}
             }
             prev = Some(idx);
@@ -527,7 +567,16 @@ pub fn scan_contiguity(kv: &[(SmolStr, serde_json::Value)]) -> Vec<ContiguityBre
                     });
                     expected_seq = e.seq; // resync so one gap does not cascade
                 }
-                expected_seq += 1;
+                match expected_seq.checked_add(1) {
+                    Some(n) => expected_seq = n,
+                    None => {
+                        breaches.push(ContiguityBreach {
+                            log_id: log_id.clone(),
+                            kind: BreachKind::ArithmeticOverflow { chunk: idx },
+                        });
+                        break;
+                    }
+                }
             }
         }
     }
@@ -784,6 +833,33 @@ mod tests {
             .collect();
         assert_eq!(missing.len(), 1, "one bounded gap breach, not a per-index flood");
         assert!(matches!(missing[0].kind, BreachKind::MissingChunk { index: 1 }));
+    }
+
+    #[test]
+    fn scan_contiguity_surfaces_malformed_and_mismatched_chunks() {
+        // A malformed authoritative doc and an index-mismatched one must be
+        // reported, not silently skipped — else a fail-closed consumer reads a
+        // wholly-corrupt tail as "clean".
+        let mismatched = serde_json::to_value(LedgerChunk {
+            chunk: 9, // embedded index disagrees with the key's chunk 1
+            sealed: true,
+            entries: vec![LedgerEntry { seq: 0, value: serde_json::json!(0) }],
+        })
+        .unwrap();
+        let kv = vec![
+            (chunk_key("s", 0), serde_json::json!({"not": "a chunk"})),
+            (chunk_key("s", 1), mismatched),
+        ];
+        let breaches = scan_contiguity(&kv);
+        assert!(
+            breaches.iter().any(|b| matches!(b.kind, BreachKind::MalformedChunk { at: 0 })),
+            "unparseable chunk surfaced: {breaches:?}"
+        );
+        assert!(
+            breaches.iter().any(|b| matches!(b.kind, BreachKind::IndexMismatch { at: 1, embedded: 9 })),
+            "index-mismatched chunk surfaced: {breaches:?}"
+        );
+        assert!(!breaches.is_empty(), "a corrupt tail is never reported clean");
     }
 
     #[test]

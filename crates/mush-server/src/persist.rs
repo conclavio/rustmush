@@ -483,11 +483,12 @@ fn spool_quarantine(
     err: &StoreError,
     attempts: u32,
 ) -> bool {
+    let identity = seal_identity_hash(ns, key, value);
     let record = serde_json::json!({
         "ns": ns,
         "key": key,
         "serial": serial,
-        "payload_hash": payload_hash(value),
+        "payload_hash": identity,
         "payload": value,
         "store_error": err.to_string(),
         "error_transient": err.is_transient(),
@@ -510,65 +511,117 @@ fn spool_quarantine(
         tracing::error!(dir = %dir.display(), error = %e, "could not create the quarantine spool dir");
         return false;
     }
-    let fname = format!("{serial}-{}-{}.json", sanitize(ns), sanitize(key));
-    let path = dir.join(fname);
-    match write_and_fsync(&path, &record) {
+    // Content-addressed filename: two quarantines of the SAME seal (same ns/key/
+    // payload) map to the same file, so a re-quarantine is idempotent and can
+    // never truncate a different record. A distinct seal hashes to a distinct
+    // name — no collision from serial reuse or a non-injective sanitizer.
+    let path = dir.join(format!("{identity}.json"));
+    if path.exists() {
+        // Already written (first write wins, keeping the original record). The
+        // content was fsynced before its rename, but a PRIOR attempt may have
+        // failed the directory fsync (rename ok, dir fsync EIO) — so re-confirm
+        // the directory entry is durable before reporting preserved. Never
+        // falsely report a record whose name could vanish on a crash.
+        return match fsync_dir(dir) {
+            Ok(()) => {
+                tracing::error!(path = %path.display(), "poison ledger seal already quarantined (idempotent)");
+                true
+            }
+            Err(e) => {
+                tracing::error!(
+                    path = %path.display(), error = %e,
+                    "quarantine record exists but its directory entry is NOT durable (dir fsync \
+                     failed) — keeping the seal frozen and re-emitting until it is"
+                );
+                false
+            }
+        };
+    }
+    match write_record_atomic(dir, &path, &identity, &record) {
         Ok(()) => {
             tracing::error!(path = %path.display(), "poison ledger seal quarantined to the spool");
             true
         }
         Err(e) => {
-            tracing::error!(path = %path.display(), error = %e, "FAILED to write the quarantine spool record");
+            tracing::error!(path = %path.display(), error = %e, "FAILED to durably write the quarantine spool record");
             false
         }
     }
 }
 
-/// Write bytes to `path` and fsync the file (and its directory) so the record
-/// survives a crash — the whole point of a separate durable failure domain.
-///
-/// The file *contents* fsync is checked (`?`); it is the durability that lets the
-/// caller report the record preserved. The directory-entry fsync (which makes the
-/// new file's *name* durable) is best-effort — some platforms cannot open a
-/// directory as a file (notably Windows) — but its failure is **logged**, not
-/// silently swallowed, so a genuine dir-sync problem is visible on the deploy
-/// target (Linux) where the name durability matters.
-fn write_and_fsync(path: &Path, record: &serde_json::Value) -> std::io::Result<()> {
+/// Durably write a quarantine record: serialize to a temp file, fsync its
+/// contents, atomically rename it onto the content-addressed name, and fsync the
+/// directory so the new name survives a crash. Crash-atomic — a crash mid-write
+/// leaves only a stale `.tmp` (overwritten next time), never a partial record
+/// under the real name.
+fn write_record_atomic(
+    dir: &Path,
+    final_path: &Path,
+    identity: &str,
+    record: &serde_json::Value,
+) -> std::io::Result<()> {
     use std::io::Write as _;
     let bytes = serde_json::to_vec_pretty(record).map_err(std::io::Error::other)?;
-    let mut f = std::fs::File::create(path)?;
+    // Single writer, so a fixed temp name is safe; truncating a stale temp from a
+    // prior crash is harmless (temps are disposable).
+    let tmp = dir.join(format!("{identity}.tmp"));
+    let mut f = std::fs::File::create(&tmp)?;
     f.write_all(&bytes)?;
     f.sync_all()?;
-    if let Some(parent) = path.parent() {
-        match std::fs::File::open(parent).and_then(|dir| dir.sync_all()) {
-            Ok(()) => {}
-            Err(e) => tracing::warn!(
-                dir = %parent.display(), error = %e,
-                "quarantine spool: directory fsync failed (file contents are durable, but the \
-                 new record's name may not survive a crash on this filesystem)"
-            ),
-        }
-    }
+    drop(f);
+    std::fs::rename(&tmp, final_path)?;
+    fsync_dir(dir)?;
     Ok(())
 }
 
-/// A short, stable content hash of a seal payload for the quarantine record (so
-/// staff can confirm a replayed op matches the quarantined one). Not
-/// cryptographic — a collision-resistant identity is not needed here.
-fn payload_hash(value: &serde_json::Value) -> String {
-    use std::hash::{Hash as _, Hasher as _};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    // Serialize canonically-ish (serde_json Value ordering is stable for objects
-    // via BTreeMap when the `preserve_order` feature is off — the default here).
-    serde_json::to_string(value).unwrap_or_default().hash(&mut h);
-    format!("{:016x}", h.finish())
+/// fsync a directory so a just-created/renamed entry's name is durable. On the
+/// Linux deploy target this is **mandatory** (a failure fails the write, so the
+/// caller keeps the seal frozen + re-emitting rather than falsely reporting it
+/// preserved). Non-Unix platforms cannot open a directory as a file, so it is a
+/// no-op there (dev/test only).
+#[cfg(unix)]
+fn fsync_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::File::open(dir)?.sync_all()
+}
+#[cfg(not(unix))]
+fn fsync_dir(_dir: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
-/// Sanitize a namespace/key for use in a spool filename (keys may contain `:`).
-fn sanitize(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
-        .collect()
+/// A stable, collision-resistant identity for a sealed chunk (its `ns`, key, and
+/// canonical payload bytes) — SHA-256 hex. Used for the content-addressed spool
+/// filename and recorded so staff can confirm a replayed op matches. serde_json
+/// object key order is stable (BTreeMap, `preserve_order` off), so the same seal
+/// hashes identically across runs.
+fn seal_identity_hash(ns: &str, key: &str, value: &serde_json::Value) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(ns.as_bytes());
+    h.update([0u8]);
+    h.update(key.as_bytes());
+    h.update([0u8]);
+    h.update(serde_json::to_vec(value).unwrap_or_default());
+    let digest = h.finalize();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for b in digest {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{b:02x}");
+    }
+    hex
+}
+
+/// Count the unresolved quarantine records in the spool (`*.json`, ignoring
+/// in-flight `*.tmp`). A non-zero count at boot means an authoritative-ledger
+/// poison has NOT been repaired: the world must start frozen (E0 never
+/// auto-resumes). `None` (no spool) and an unreadable dir both yield 0.
+#[must_use]
+pub fn spool_unresolved_count(dir: Option<&Path>) -> usize {
+    let Some(dir) = dir else { return 0 };
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    entries
+        .filter_map(Result::ok)
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .count()
 }
 
 /// Snapshot one drained dirty set into a [`WriteBatch`]: live objects are
@@ -686,6 +739,34 @@ mod tests {
     use super::*;
     use mush_core::{GOD, LIMBO, ObjKind};
     use mush_store::InMemoryStore;
+
+    #[test]
+    fn seal_identity_hash_is_stable_and_distinguishes_seals() {
+        let v = serde_json::json!({"chunk": 0, "sealed": true, "entries": []});
+        let a = seal_identity_hash("scenes", "log:s:0", &v);
+        // Stable across calls (content-addressed).
+        assert_eq!(a, seal_identity_hash("scenes", "log:s:0", &v));
+        // Distinct on ns, key, or payload — no collision from a non-injective
+        // sanitizer (log:s:0 vs log_s_0 differ, as do different namespaces).
+        assert_ne!(a, seal_identity_hash("scenes", "log_s_0", &v));
+        assert_ne!(a, seal_identity_hash("econ", "log:s:0", &v));
+        assert_ne!(a, seal_identity_hash("scenes", "log:s:0", &serde_json::json!({"chunk": 1})));
+        assert_eq!(a.len(), 64, "sha-256 hex");
+    }
+
+    #[test]
+    fn spool_unresolved_count_ignores_tmp_and_missing() {
+        assert_eq!(spool_unresolved_count(None), 0);
+        let dir = std::env::temp_dir().join(format!("rustmush-spool-count-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(spool_unresolved_count(Some(&dir)), 0, "a missing dir is 0");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("abc.json"), b"{}").unwrap();
+        std::fs::write(dir.join("def.json"), b"{}").unwrap();
+        std::fs::write(dir.join("wip.tmp"), b"{}").unwrap(); // in-flight, not counted
+        assert_eq!(spool_unresolved_count(Some(&dir)), 2, "counts *.json, ignores *.tmp");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn batch_snapshots_upserts_deletes_and_next_id() {

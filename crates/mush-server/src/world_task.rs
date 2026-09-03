@@ -623,6 +623,20 @@ async fn run(
     let mut fx = Effects::new();
     let mut serial: u64 = 0;
     let mut health = StoreHealth::new();
+    // E0 restart-safe poison: an unresolved quarantine record in the spool means
+    // an authoritative-ledger breach was NOT repaired before this restart. Start
+    // FROZEN — a poison freeze never auto-resumes merely because the process came
+    // back up (staff repair the ledger + empty the spool, then restart).
+    let unresolved_quarantine = persist::spool_unresolved_count(deps.quarantine_dir.as_deref());
+    if unresolved_quarantine > 0 {
+        health.poison_frozen = true;
+        health.read_only = true;
+        tracing::error!(
+            unresolved = unresolved_quarantine,
+            "BOOT FROZEN: unresolved ledger-quarantine record(s) in the spool; the world starts \
+             READ-ONLY until staff repair the ledger and empty the quarantine spool"
+        );
+    }
     // The E0 retained-write table: unacked sealed ledger chunks, re-emitted on
     // every flush until the commit high-water reaches them. See `crate::retained`.
     let mut retained = RetainedSeals::new();
@@ -643,6 +657,11 @@ async fn run(
         // `fire_due` (a no-op when nothing is scheduled) and falls through to the
         // foot-of-loop flush, which does the actual re-emit + ack.
         let reemit_pending = !retained.is_empty();
+        // Under an authoritative-ledger freeze, do NOT arm the scheduler timer:
+        // its due events would otherwise wake the loop immediately (a past due
+        // fires instantly) and, since `fire_due` is skipped while frozen, spin.
+        // Persistence/re-emit stays live (the re-emit nudge + inbound still run).
+        let sched_armed = next_due.is_some() && !health.poison_frozen;
         let wake = tokio::select! {
             m = rx.recv() => m.map_or(Wake::Closed, Wake::Msg),
             // Writer control signals ride their own unbounded channel (see
@@ -653,7 +672,7 @@ async fn run(
                 Some(sig) => Wake::Signal(sig),
                 None => { signals_open = false; Wake::Timer }
             },
-            () = sleep_until_unix_ms(next_due), if next_due.is_some() => Wake::Timer,
+            () = sleep_until_unix_ms(next_due), if sched_armed => Wake::Timer,
             () = tokio::time::sleep(REEMIT_INTERVAL), if reemit_pending => Wake::Timer,
         };
         let iteration_start = Instant::now();
@@ -806,7 +825,14 @@ async fn run(
                 StepOutcome::Continue
             }
             Wake::Timer => {
-                engine.fire_due(unix_now_ms(), &mut out, &mut fx);
+                // A poison freeze is a hard mutation barrier for scheduled work:
+                // do not fire due timers (scheduled sim, NPC cadence, @wait) — the
+                // ledger is holed and mutating further would compound it. A Timer
+                // wake here is then only the re-emit nudge, which drives the
+                // foot-of-loop persistence flush (re-emit stays live while frozen).
+                if !health.poison_frozen {
+                    engine.fire_due(unix_now_ms(), &mut out, &mut fx);
+                }
                 StepOutcome::Continue
             }
             Wake::Closed => {
