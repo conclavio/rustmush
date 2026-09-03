@@ -2,7 +2,7 @@
 //! module configs. These live here (not in `mush-config`) so `mush-config` need
 //! not depend on `mush-llm` / `mush-weather` / `mush-worldgen` / `ruleset-wod`.
 
-use mush_config::config::{OnboardingCfg, WeatherCfg, WorldgenCfg};
+use mush_config::config::{EconomyCfg, OnboardingCfg, WeatherCfg, WorldgenCfg};
 use serde::Deserialize;
 
 /// Deserialize the raw `[llm]` section into a [`mush_llm::LlmConfig`].
@@ -29,6 +29,30 @@ pub fn weather_config(cfg: &WeatherCfg) -> mush_weather::WeatherConfig {
 pub fn worldgen_config(cfg: &WorldgenCfg) -> mush_worldgen::WorldgenConfig {
     mush_worldgen::WorldgenConfig {
         batch_max_rooms: cfg.batch_max_rooms,
+    }
+}
+
+/// The module-facing [`mush_economy::EconomyConfig`] (E4b1 verify fold, M1).
+///
+/// An absent `[economy]` section deserializes to `EconomyCfg::default()`, whose
+/// values mirror the crate's, so a server with no economy configuration gets exactly
+/// the crate defaults.
+#[must_use]
+pub fn economy_config(cfg: &EconomyCfg) -> mush_economy::EconomyConfig {
+    mush_economy::EconomyConfig {
+        mint_obligation_cap_major: cfg.mint_obligation_cap_major,
+        instruments: cfg
+            .instruments
+            .iter()
+            .map(|(code, caps)| {
+                (
+                    code.clone(),
+                    mush_economy::InstrumentCaps {
+                        mint_obligation_cap_major: caps.mint_obligation_cap_major,
+                    },
+                )
+            })
+            .collect(),
     }
 }
 

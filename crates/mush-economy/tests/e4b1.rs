@@ -21,12 +21,18 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use mush_core::{Audience, GOD, LIMBO, ModuleBootData, ModuleWrite, ObjId, ObjKind, World};
+use mush_core::module::{GameModule, ModError, Registrar};
+use mush_core::{
+    ArgShape, Audience, CmdError, CommandSpec, Ctx, GOD, LIMBO, ModuleBootData, ModuleWrite, ObjId,
+    ObjKind, World,
+};
 use mush_economy::{
-    AccountId, AccountStatus, CustodyError, CustodyProvider, CustodyRef, EconomicCause,
+    AccountId, AccountRevision, AccountStatus, Amount, CadenceId, CustodyError, CustodyProvider,
+    CustodyRef, EconomicCause, EconomicClock, EconomicSchedule, EconomyConfig, EconomyError,
     EconomyPlan, EconomySnapshot, EconomyStore, EscalationKind, EscalationSubject, ForgiveCause,
-    HoldId, HoldStatus, IdempotencyKey, ObligationEvent, ObligationId, ObligationStatus,
-    RequestedLine, SuspendReason,
+    GracePolicy, HoldId, HoldStatus, IdempotencyKey, InstrumentCaps, ObligationCause,
+    ObligationEvent, ObligationId, ObligationSpec, ObligationStatus, PostOutcome, RequestedLine,
+    SuspendReason,
 };
 use mush_proto::OutputEvent;
 use mush_testkit::{TestWorld, text_of};
@@ -1231,4 +1237,1170 @@ fn a_suspended_obligation_leaves_the_due_pool_and_resume_forgives_the_gap() {
     let o = obligation(&tw, id);
     assert!(o.settled_total <= 4, "resuming charged the whole suspended gap");
     assert!(!has_error(&ev), "the resumed sweep errored: {}", texts(&ev));
+}
+
+// ======================================================================
+// ---- E4b1 verify fold ----
+//
+// One test per confirmed finding of the end-of-build adversarial verify, across
+// its three lenses — durability/boot (B*), the sweep and the ladder (S*), and
+// authority/disclosure (A*) — plus the owner's M1 decision on faucet-funded
+// obligations. Each names the shape it pins, because the point of a regression
+// test is to say what would otherwise come back.
+//
+// Two probes live here because the seams they exercise have no command surface:
+// `@vf/post` posts a staged `EconomyPlan` (an optimistic-concurrency guard, a
+// squatted idempotency key), and `@vf/mint` calls `create_system_obligation`,
+// which is deliberately a crate API and not a verb.
+// ======================================================================
+
+#[derive(Default)]
+struct VfState {
+    plan: Option<EconomyPlan>,
+    outcome: Option<Result<PostOutcome, EconomyError>>,
+    spec: Option<(String, ObligationSpec)>,
+    minted: Option<Result<ObligationId, EconomyError>>,
+}
+
+#[derive(Clone, Default)]
+struct Vf(Arc<Mutex<VfState>>);
+
+impl Vf {
+    fn stage_post(&self, p: EconomyPlan) {
+        self.0.lock().expect("probe lock").plan = Some(p);
+    }
+    fn outcome(&self) -> Result<PostOutcome, EconomyError> {
+        self.0.lock().expect("probe lock").outcome.clone().expect("an outcome was recorded")
+    }
+    fn stage_mint(&self, faucet: &str, spec: ObligationSpec) {
+        self.0.lock().expect("probe lock").spec = Some((faucet.to_string(), spec));
+    }
+    fn minted(&self) -> Result<ObligationId, EconomyError> {
+        self.0.lock().expect("probe lock").minted.clone().expect("a mint outcome was recorded")
+    }
+}
+
+struct VfMod(Vf);
+
+impl GameModule for VfMod {
+    fn name(&self) -> &'static str {
+        "vfprobe"
+    }
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        let st = self.0.clone();
+        reg.command(
+            CommandSpec {
+                name: "@vf".into(),
+                shape: ArgShape::EqPair,
+                switches: ["post", "mint"].iter().copied().map(SmolStr::new).collect(),
+                help: "verify-fold probe: post a staged plan / mint a staged system obligation"
+                    .into(),
+                ..CommandSpec::default()
+            },
+            Arc::new(move |ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+                if ctx.switches.has("post") {
+                    let plan =
+                        st.0.lock().expect("probe lock").plan.take().expect("stage a plan first");
+                    let outcome = mush_economy::post(ctx, &plan);
+                    st.0.lock().expect("probe lock").outcome = Some(outcome);
+                    return Ok(());
+                }
+                let (faucet, spec) =
+                    st.0.lock().expect("probe lock").spec.take().expect("stage a spec first");
+                let id = mush_org::SystemPrincipalId::new(&faucet).expect("valid faucet id");
+                let outcome = mush_economy::create_system_obligation(ctx, &id, spec);
+                st.0.lock().expect("probe lock").minted = Some(outcome);
+                Ok(())
+            }),
+        )?;
+        Ok(())
+    }
+}
+
+fn boot_probe() -> (TestWorld, Vf) {
+    boot_probe_with(EconomyConfig::default())
+}
+
+fn boot_probe_with(config: EconomyConfig) -> (TestWorld, Vf) {
+    let vf = Vf::default();
+    let tw = TestWorld::with_modules(vec![
+        Box::new(mush_org::OrgModule::new()),
+        Box::new(mush_economy::EconomyModule::with_custody(vec![]).with_config(config)),
+        Box::new(VfMod(vf.clone())),
+    ]);
+    (tw, vf)
+}
+
+/// A two-line staff plan with an explicit idempotency key — the shape both probes
+/// need and no command offers.
+fn staff_plan(key: IdempotencyKey, from: AccountId, to: AccountId, minor: i64) -> EconomyPlan {
+    EconomyPlan::new(
+        key,
+        mush_org::PrincipalId::Object(GOD),
+        EconomicCause::Staff { reason: "verify fold".into() },
+        vec![
+            RequestedLine {
+                account: from,
+                delta: Amount::from_minor(-minor),
+                memo: SmolStr::default(),
+            },
+            RequestedLine {
+                account: to,
+                delta: Amount::from_minor(minor),
+                memo: SmolStr::default(),
+            },
+        ],
+    )
+}
+
+/// Both namespaces, folded — an org reboot and an economy reboot are one event in
+/// the real server, and rebooting only one would wipe the other's state.
+type Kv2 = HashMap<SmolStr, Vec<(SmolStr, serde_json::Value)>>;
+
+fn fold_all(tw: &mut TestWorld, acc: &mut Kv2) {
+    for op in tw.take_module_ops() {
+        let rows = acc.entry(op.ns.clone()).or_default();
+        match op.op {
+            ModuleWrite::JsonSet { key, value } => {
+                rows.retain(|(k, _)| *k != key);
+                rows.push((key, value));
+            }
+            ModuleWrite::Del { key } => rows.retain(|(k, _)| *k != key),
+            ModuleWrite::StreamAppend { .. } => {}
+        }
+    }
+}
+
+fn reboot_all(tw: &mut TestWorld, kv: &Kv2) {
+    let boot: HashMap<SmolStr, ModuleBootData> = kv
+        .iter()
+        .map(|(ns, rows)| (ns.clone(), ModuleBootData { kv: rows.clone(), streams: HashMap::new() }))
+        .collect();
+    tw.modules_loaded(boot);
+}
+
+fn revision_of(tw: &TestWorld, id: AccountId) -> u64 {
+    snap(tw).account(id).expect("account").revision
+}
+
+fn alerts(tw: &TestWorld) -> Vec<mush_economy::Escalation> {
+    store(tw).escalations().cloned().collect()
+}
+
+/// The one alert about `subject`, or a panic naming what there was instead.
+fn alert_for(tw: &TestWorld, subject: EscalationSubject) -> mush_economy::Escalation {
+    let found: Vec<_> = alerts(tw).into_iter().filter(|e| e.subject == subject).collect();
+    assert_eq!(found.len(), 1, "expected exactly one alert about {subject:?}, got {found:?}");
+    found.into_iter().next().expect("checked")
+}
+
+/// A Thing with an account and no money — a creditor that can be destroyed.
+fn landlord(tw: &mut TestWorld, name: &str) -> (ObjId, AccountId) {
+    let obj = thing(tw, name);
+    ok(tw, GOD, &format!("@account/open #{}=gold", obj.0));
+    let acct = account_of(tw, obj);
+    (obj, acct)
+}
+
+// ---- Lens 1: durability and boot -------------------------------------------
+
+/// B1 — a single key at `u64::MAX` must not take the world down, and must not
+/// wrap the allocator back to zero either.
+#[test]
+fn vf_b1_an_allocator_key_at_the_ceiling_boots_and_mints_nothing() {
+    let mut tw = boot();
+    let r = rig(&mut tw, 100);
+    let _ = owe(&mut tw, &r, 100, "");
+    let mut kv = fold_kv(&mut tw);
+    // A hand-written (or corrupt) leaf at the very top of the id space, and no
+    // `meta` to floor the allocator from instead. `next_after`'s `m + 1` panicked
+    // here in a debug build and wrapped to 0 in a release one — and a wrapped
+    // escalation allocator re-mints live alert ids, so an acknowledgement resumes
+    // the wrong subject.
+    kv.push((
+        SmolStr::new("escalation:18446744073709551615"),
+        serde_json::json!({
+            "id": 18_446_744_073_709_551_615u64,
+            "level": 2,
+            "kind": "SettlementRefused",
+            "subject": { "Obligation": 999 },
+            "context": "a record from the end of the id space",
+            "recommended": [],
+            "opened_at": 0,
+            "acked_by": null,
+            "acked_at": null,
+            "notified_at": 0,
+            "notifications": 0,
+            "revision": 1
+        }),
+    ));
+    drop_key(&mut kv, "meta");
+    reboot(&mut tw, kv.clone());
+
+    assert!(!store(&tw).is_frozen(), "a ceiling key froze the economy");
+    assert_eq!(bal(&tw, r.pat_acct), 100, "boot lost the journal");
+
+    // The allocator is parked AT the ceiling: a page that wants a fresh id gets
+    // none, loudly, and mints nothing — rather than handing out a live id again.
+    merge(&mut kv, drain(&mut tw));
+    freeze(&mut tw, &mut kv);
+    sweep_at(&mut tw, 100);
+    let ids: Vec<u64> = store(&tw).escalations().map(|e| e.id.0).collect();
+    assert_eq!(ids, vec![u64::MAX], "the ceiling allocator minted a colliding id: {ids:?}");
+}
+
+/// B2 — the tick is infallible from dispatch's point of view, so an exhausted
+/// allocator inside it must refuse the operation, not abort the world task.
+#[test]
+fn vf_b2_an_exhausted_alert_allocator_still_stops_the_subject() {
+    let mut tw = boot();
+    let r = rig(&mut tw, 1_000);
+    let (obj, acct) = landlord(&mut tw, "escrow desk");
+    ok(&mut tw, GOD, &format!("@obligation/create {}={} 50 every=100 start=100", r.pat_acct, acct));
+    let id = only_obligation(&tw);
+
+    // Park the escalation allocator at the ceiling BEFORE anything needs to page,
+    // so boot itself reconciles nothing and the exhaustion is met in the tick.
+    let mut kv = fold_kv(&mut tw);
+    patch(&mut kv, "meta", |v| {
+        v["next_escalation_id"] = serde_json::json!(u64::MAX);
+    });
+    reboot(&mut tw, kv);
+
+    // Now break the creditor, so the very next fire wants to page.
+    ok(&mut tw, GOD, &format!("@destroy #{}", obj.0));
+    let ev = sweep_at(&mut tw, 100);
+    assert!(!has_error(&ev), "the sweep errored: {}", texts(&ev));
+
+    // No record could be minted — and the subject stopped anyway, which is the half
+    // that protects money.
+    assert_eq!(store(&tw).escalations().count(), 0, "an exhausted allocator minted a record");
+    let o = obligation(&tw, id);
+    assert!(
+        matches!(&o.status, ObligationStatus::Suspended { reason: SuspendReason::Staff { reason } }
+            if reason.contains("allocator")),
+        "the subject kept running with no alert to stop it: {:?}",
+        o.status
+    );
+    assert!(!store(&tw).is_frozen(), "one exhausted allocator stopped the world");
+}
+
+/// B3 — `revision` is journal authority, and a hold effect touches an account
+/// exactly as a money line does.
+#[test]
+fn vf_b3_revision_does_not_rewind_for_hold_only_entries() {
+    let (mut tw, vf) = boot_probe();
+    let r = rig(&mut tw, 300);
+    // The account doc as it stood BEFORE any reservation, and the revision a guard
+    // written at that moment would carry.
+    let mut kv = fold_kv(&mut tw);
+    let acct_key = format!("account:{}", r.pat_acct.0);
+    let stale = value_of(&kv, &acct_key);
+    let stale_revision = revision_of(&tw, r.pat_acct);
+
+    // Three effect-only entries: two placements and a release. None of them moves a
+    // single money line, and every one of them bumps `revision` in `apply`.
+    ok(&mut tw, GOD, &format!("@hold/place {}=60 a", r.pat_acct));
+    ok(&mut tw, GOD, &format!("@hold/place {}=90 b", r.pat_acct));
+    ok(&mut tw, GOD, &format!("@hold/release {}", HoldId(1)));
+    let live_revision = revision_of(&tw, r.pat_acct);
+    assert_eq!(live_revision, stale_revision + 3, "apply did not bump once per hold entry");
+
+    // Crash: the holds are journaled, the account doc write dropped.
+    merge(&mut kv, drain(&mut tw));
+    patch(&mut kv, &acct_key, |v| *v = stale.clone());
+    reboot(&mut tw, kv);
+
+    assert!(!store(&tw).is_frozen(), "a lagging account doc froze the economy");
+    assert_eq!(
+        revision_of(&tw, r.pat_acct),
+        live_revision,
+        "the reboot rewound `revision` past the hold entries"
+    );
+
+    // ...which is the whole point: a guard captured before the reservations must
+    // still be Stale afterwards. Replaying only the money lines made it pass.
+    let mut plan = staff_plan(
+        IdempotencyKey::new(SmolStr::new_static("vf"), SmolStr::new_static("b3")),
+        r.pat_acct,
+        r.quinn_acct,
+        1,
+    );
+    plan.expected_revisions =
+        vec![AccountRevision { account: r.pat_acct, revision: stale_revision }];
+    vf.stage_post(plan);
+    ok(&mut tw, GOD, "@vf/post");
+    assert!(
+        matches!(vf.outcome(), Err(EconomyError::Stale { .. })),
+        "a stale guard passed after the restart: {:?}",
+        vf.outcome()
+    );
+}
+
+/// B4 (a) — recovery clears exactly what the latch froze, and the next sweep
+/// settles normally with nobody paged.
+#[test]
+fn vf_b4_unfreeze_restores_only_the_accounts_the_latch_froze() {
+    let mut tw = boot();
+    let r = rig(&mut tw, 1_000);
+    let id = owe(&mut tw, &r, 100, "");
+    // An account frozen for its OWN reason: its owner is gone, and no recovery
+    // should hand it back.
+    let (obj, sick) = landlord(&mut tw, "abandoned desk");
+    ok(&mut tw, GOD, &format!("@destroy #{}", obj.0));
+    assert_eq!(snap(&tw).account(sick).expect("account").status, AccountStatus::Frozen);
+
+    let mut kv = fold_kv(&mut tw);
+    freeze(&mut tw, &mut kv);
+    assert_eq!(snap(&tw).account(r.pat_acct).expect("account").status, AccountStatus::Frozen);
+
+    ok(&mut tw, GOD, "@econ/unfreeze");
+    assert_eq!(
+        snap(&tw).account(r.pat_acct).expect("account").status,
+        AccountStatus::Active,
+        "recovery left the accounts it froze frozen"
+    );
+    assert_eq!(snap(&tw).account(r.quinn_acct).expect("account").status, AccountStatus::Active);
+    assert_eq!(
+        snap(&tw).account(sick).expect("account").status,
+        AccountStatus::Frozen,
+        "recovery cleared an account frozen for its own reason"
+    );
+
+    // ...and the economy simply works again: no refusal, no page.
+    let ev = sweep_at(&mut tw, 100);
+    assert!(!has_error(&ev), "the recovered sweep errored: {}", texts(&ev));
+    assert_eq!(obligation(&tw, id).settled_total, 1, "the recovered obligation did not settle");
+    assert_eq!(store(&tw).escalations().count(), 0, "recovery paged a human");
+}
+
+/// B4 (b + c) — one blocked wallet is one decision: one record, naming every
+/// obligation it stopped, recommending the unfreeze rather than a repoint.
+#[test]
+fn vf_b4_two_obligations_behind_one_frozen_account_open_one_record() {
+    let mut tw = boot();
+    let r = rig(&mut tw, 1_000);
+    let (_, desk) = landlord(&mut tw, "escrow desk");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@obligation/create {}={} 10 every=100 start=100", r.pat_acct, r.quinn_acct),
+    );
+    ok(&mut tw, GOD, &format!("@obligation/create {}={desk} 20 every=100 start=100", r.pat_acct));
+
+    // Freeze the shared debtor. (Its owner is alive: this is a recoverable freeze,
+    // not a destroyed principal, and the two have different right answers.)
+    let mut kv = fold_kv(&mut tw);
+    patch(&mut kv, &format!("account:{}", r.pat_acct.0), |v| {
+        v["status"] = serde_json::json!("Frozen");
+    });
+    reboot(&mut tw, kv);
+
+    sweep_at(&mut tw, 100);
+    let records = alerts(&tw);
+    assert_eq!(records.len(), 1, "one frozen wallet paged twice: {records:?}");
+    let record = &records[0];
+    assert_eq!(record.blamed, Some(r.pat_acct), "the record does not name the account it is about");
+    assert!(
+        record.context.contains("obligation #1"),
+        "the record does not name the other obligation it stopped: {}",
+        record.context
+    );
+    assert!(
+        record.recommended.iter().any(|c| c.contains("@account/unfreeze")),
+        "the advice sends staff to repoint a recoverable account: {:?}",
+        record.recommended
+    );
+    assert!(
+        !record.recommended.iter().any(|c| c.contains("@obligation/repoint")),
+        "the advice recommends abandoning the money in a frozen wallet: {:?}",
+        record.recommended
+    );
+    // Both subjects are stopped, on the one record.
+    for id in [ObligationId(0), ObligationId(1)] {
+        assert!(
+            matches!(obligation(&tw, id).status,
+                ObligationStatus::Suspended { reason: SuspendReason::Escalated(e) } if e == record.id),
+            "obligation {id} is not attached to the one open record"
+        );
+    }
+}
+
+/// B5 — `held_amount: 0` was the blind spot: a doc claiming a hold sequence it
+/// never appears at read as a legitimately empty reservation.
+#[test]
+fn vf_b5_a_hold_anchor_the_account_never_appears_at_freezes() {
+    let mut tw = boot();
+    let r = rig(&mut tw, 100);
+    // A second journal entry, so sequence 1 is a REAL sequence to claim.
+    ok(&mut tw, GOD, &format!("@econ/pay {}={} 10", r.pat_acct, r.quinn_acct));
+    let mut kv = fold_kv(&mut tw);
+    // Quinn's account has no hold effect anywhere in the journal, and says it was
+    // last reconciled at sequence 1 with nothing reserved.
+    patch(&mut kv, &format!("account:{}", r.quinn_acct.0), |v| {
+        v["last_hold_seq"] = serde_json::json!(1);
+        v["held_amount"] = serde_json::json!(0);
+    });
+    reboot(&mut tw, kv);
+
+    assert!(
+        store(&tw).is_frozen(),
+        "a hold anchor the account never appears at did not freeze the economy"
+    );
+    assert_eq!(held(&tw, r.quinn_acct), 0, "the impossible projection was not healed");
+}
+
+/// B6 — a clock nobody can read never makes a payment due, which is silence, not
+/// safety.
+#[test]
+fn vf_b6_an_obligation_on_a_missing_cadence_is_suspended_and_paged() {
+    let mut tw = boot();
+    let r = rig(&mut tw, 1_000);
+    let id = owe(&mut tw, &r, 100, "");
+    let mut kv = fold_kv(&mut tw);
+    // Re-point the schedule at a cadence clock that has no record — a campaign
+    // clock deleted, or a doc written by a ruleset that never created it.
+    patch(&mut kv, "obligation:0", |v| {
+        v["schedule"]["clock"] = serde_json::json!({ "Cadence": 5 });
+    });
+    reboot(&mut tw, kv);
+
+    let o = obligation(&tw, id);
+    assert!(
+        matches!(o.status, ObligationStatus::Suspended { reason: SuspendReason::Escalated(_) }),
+        "an obligation on an unreadable clock stayed Active forever: {:?}",
+        o.status
+    );
+    let record = alert_for(&tw, EscalationSubject::Obligation(id));
+    assert_eq!(record.kind, EscalationKind::BootReconciliation);
+    assert!(
+        record.context.contains("cadence clock #5"),
+        "the diagnosis does not name the missing clock: {}",
+        record.context
+    );
+    assert!(
+        record.recommended.iter().any(|c| c.contains("cadence clock #5")),
+        "the advice recommends a repoint that would fix nothing: {:?}",
+        record.recommended
+    );
+}
+
+/// B7 — the journal tail and the freeze latch have exactly one mutator each, and
+/// the world reads them through accessors rather than by reaching into fields.
+#[test]
+fn vf_b7_the_journal_and_the_freeze_latch_are_read_through_accessors() {
+    let mut tw = boot();
+    let r = rig(&mut tw, 100);
+    let seq = store(&tw).journal().next_seq(mush_economy::JOURNAL_LOG);
+    assert!(seq > 0, "the mint did not reach the journal");
+    assert!(!store(&tw).is_frozen());
+
+    ok(&mut tw, GOD, &format!("@econ/pay {}={} 10", r.pat_acct, r.quinn_acct));
+    assert_eq!(
+        store(&tw).journal().next_seq(mush_economy::JOURNAL_LOG),
+        seq + 1,
+        "the accessor does not track the one appender"
+    );
+    let mut kv = fold_kv(&mut tw);
+    freeze(&mut tw, &mut kv);
+    assert!(store(&tw).is_frozen(), "the durable latch is not visible through its accessor");
+}
+
+/// B8 — a doc-authority status write never touches a journal-authority field.
+#[test]
+fn vf_b8_the_destruction_freeze_leaves_the_journal_revision_alone() {
+    let mut tw = boot();
+    let r = rig(&mut tw, 100);
+    let (obj, acct) = landlord(&mut tw, "escrow desk");
+    // Give it a journal history and then empty it, so the destroy gate lets go.
+    ok(&mut tw, GOD, &format!("@econ/pay {}={acct} 50", r.pat_acct));
+    ok(&mut tw, GOD, &format!("@econ/pay {acct}={} 50", r.quinn_acct));
+    let before = revision_of(&tw, acct);
+
+    ok(&mut tw, GOD, &format!("@destroy #{}", obj.0));
+    assert_eq!(snap(&tw).account(acct).expect("account").status, AccountStatus::Frozen);
+    assert_eq!(
+        revision_of(&tw, acct),
+        before,
+        "the destruction backstop bumped a journal-authority field"
+    );
+
+    // ...and the untouched revision is exactly what the journal re-derives, so the
+    // freeze can never read as drift at the next boot.
+    let kv = fold_kv(&mut tw);
+    reboot(&mut tw, kv);
+    assert!(!store(&tw).is_frozen(), "the doc-authority freeze read as drift at boot");
+    assert_eq!(snap(&tw).account(acct).expect("account").status, AccountStatus::Frozen);
+    assert_eq!(revision_of(&tw, acct), before);
+}
+
+// ---- Lens 2: the sweep and the ladder --------------------------------------
+
+/// S1 — the sweep is not exempt from the rules every manual payment obeys.
+#[test]
+fn vf_s1_a_suspended_org_stops_settlement_in_both_directions() {
+    let mut tw = boot();
+    let r = rig(&mut tw, 1_000);
+    ok(&mut tw, GOD, "@org/create Ironhold");
+    let org = tw
+        .world()
+        .module_state::<mush_org::OrgStore>()
+        .expect("org store")
+        .state()
+        .orgs()
+        .next()
+        .expect("the org")
+        .id;
+    ok(&mut tw, GOD, "@account/open org:Ironhold=gold");
+    let org_acct = snap(&tw)
+        .accounts()
+        .find(|a| matches!(a.owner, mush_org::PrincipalId::Organization(_)))
+        .expect("the org wallet")
+        .id;
+    ok(&mut tw, GOD, &format!("@econ/mint {}={org_acct} 1000", r.faucet));
+    // The org owes Pat, and Pat owes the org: settlement in both directions.
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@obligation/create {org_acct}={} 10 every=100 start=100", r.pat_acct),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@obligation/create {}={org_acct} 20 every=100 start=100", r.pat_acct),
+    );
+
+    let mut kv: Kv2 = HashMap::new();
+    fold_all(&mut tw, &mut kv);
+    let key = mush_org::org_key(org);
+    for (k, v) in kv.get_mut("org").expect("org rows") {
+        if *k == key {
+            v["status"] = serde_json::json!("Suspended");
+        }
+    }
+    reboot_all(&mut tw, &kv);
+
+    let (before_org, before_pat) = (bal(&tw, org_acct), bal(&tw, r.pat_acct));
+    sweep_at(&mut tw, 100);
+    assert_eq!(bal(&tw, org_acct), before_org, "a suspended org kept settling");
+    assert_eq!(bal(&tw, r.pat_acct), before_pat, "a suspended org kept collecting");
+    // One blocked wallet, one decision.
+    let records = alerts(&tw);
+    assert_eq!(records.len(), 1, "the two directions paged separately: {records:?}");
+    assert_eq!(records[0].blamed, Some(org_acct));
+}
+
+/// S2 — the per-fire cap is a bound on work, not on iteration.
+#[test]
+fn vf_s2_the_cap_counts_only_cadences_with_work_to_do() {
+    let mut tw = boot();
+    let _ = rig(&mut tw, 100);
+    let mut kv = fold_kv(&mut tw);
+    // 64 clocks that cannot possibly have elapsed, and one that has. Taking the cap
+    // over the whole list spent it on 64 no-ops and never reached the 65th.
+    for i in 0..65u64 {
+        let advanced_at = if i == 64 { 0 } else { 1_000_000 };
+        kv.push((
+            SmolStr::new(format!("cadence:{i}")),
+            serde_json::json!({
+                "id": i,
+                "name": format!("clock{i}"),
+                "source": "RealUtc",
+                "period": 10,
+                "catch_up_cap": 3,
+                "position": 0,
+                "advanced_at": advanced_at,
+                "revision": 1
+            }),
+        ));
+    }
+    reboot(&mut tw, kv);
+    assert_eq!(snap(&tw).cadences().count(), 65);
+
+    sweep_at(&mut tw, 1_000);
+    assert_eq!(
+        snap(&tw).cadence(CadenceId(64)).expect("the 65th clock").position,
+        3,
+        "the only clock with work to do was starved by 64 no-ops"
+    );
+    // ...and the sleeping ones are untouched, so the filter did not simply advance
+    // everything.
+    assert_eq!(snap(&tw).cadence(CadenceId(0)).expect("clock 0").position, 0);
+}
+
+/// S3 — a restart is downtime however short it was, and the no-boot threshold is
+/// two sweep periods rather than four.
+#[test]
+fn vf_s3_a_restart_sized_gap_is_downtime_not_overload() {
+    let mut tw = boot();
+    let r = rig(&mut tw, 10_000);
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@obligation/create {}={} 10 every=15 start=45 catchup=1",
+            r.pat_acct, r.quinn_acct
+        ),
+    );
+    let id = only_obligation(&tw);
+    // The tick is armed one sweep period out, so 45 is the first instant a fire can
+    // land on; the schedule is anchored there to match.
+    sweep_at(&mut tw, 45);
+    assert_eq!(obligation(&tw, id).settled_total, 1, "the first period did not settle");
+
+    // A 45-second outage — SHORTER than the no-boot threshold — across a restart.
+    // Without the boot marker this classified `Overload`, and `Overload` twice in
+    // the window suspends a healthy obligation and pages a staffer.
+    let kv = fold_kv(&mut tw);
+    tw.set_now(90);
+    reboot(&mut tw, kv);
+    sweep_at(&mut tw, 90);
+    let causes = forgive_causes(&tw, id);
+    assert!(!causes.is_empty(), "the gap forgave nothing: {:?}", obligation(&tw, id).history);
+    assert!(
+        causes.iter().all(|c| *c == ForgiveCause::Downtime),
+        "a restart was read as a starved post budget: {causes:?}"
+    );
+
+    // A second gap, 90 seconds and no restart: still downtime, on the threshold
+    // alone. Two of these used to be two Overloads inside one window.
+    sweep_at(&mut tw, 180);
+    let o = obligation(&tw, id);
+    let causes = forgive_causes(&tw, id);
+    assert!(
+        causes.iter().all(|c| *c == ForgiveCause::Downtime),
+        "an ordinary outage was read as overload: {causes:?}"
+    );
+    assert_eq!(o.status, ObligationStatus::Active, "two outages suspended a healthy obligation");
+    assert_eq!(store(&tw).escalations().count(), 0, "two outages paged a human");
+}
+
+fn forgive_causes(tw: &TestWorld, id: ObligationId) -> Vec<ForgiveCause> {
+    obligation(tw, id)
+        .history
+        .iter()
+        .filter_map(|e| match e {
+            ObligationEvent::Forgiven { cause, .. } => Some(*cause),
+            _ => None,
+        })
+        .collect()
+}
+
+/// S4 — an acknowledgement is answered, not overwritten: one record per subject,
+/// reopened when its cause comes back, never re-minted.
+#[test]
+fn vf_s4_an_acknowledged_alert_reopens_instead_of_re_minting() {
+    // (a) The freeze record is one per freeze, however many times it is acked.
+    let mut tw = boot();
+    let r = rig(&mut tw, 1_000);
+    let _ = owe(&mut tw, &r, 100, "");
+    let mut kv = fold_kv(&mut tw);
+    freeze(&mut tw, &mut kv);
+    sweep_at(&mut tw, 100);
+    ok(&mut tw, GOD, "@econ/ack 0");
+    sweep_at(&mut tw, 200);
+    err(&mut tw, GOD, "@econ/ack 0");
+    sweep_at(&mut tw, 300);
+    err(&mut tw, GOD, "@econ/ack 0");
+    assert_eq!(
+        store(&tw).escalations().count(),
+        1,
+        "an acknowledged freeze minted a fresh alert on every fire"
+    );
+
+    // (b) An obligation acked without fixing its cause reopens the SAME record,
+    // once, after the cool-off.
+    let mut tw = boot();
+    let r = rig(&mut tw, 10_000);
+    let (obj, acct) = landlord(&mut tw, "escrow desk");
+    ok(&mut tw, GOD, &format!("@obligation/create {}={acct} 50 every=100 start=100", r.pat_acct));
+    let id = only_obligation(&tw);
+    ok(&mut tw, GOD, &format!("@destroy #{}", obj.0));
+
+    sweep_at(&mut tw, 100);
+    let first = alert_for(&tw, EscalationSubject::Obligation(id)).id;
+    // Acknowledged, but nothing was repointed: the cause is still there.
+    ok(&mut tw, GOD, &format!("@econ/ack {first}"));
+    assert_eq!(obligation(&tw, id).status, ObligationStatus::Active);
+
+    // Past the cool-off, the same record comes back — same id, with a tally.
+    sweep_at(&mut tw, 100 + 3_600 + 60);
+    let records = alerts(&tw);
+    assert_eq!(records.len(), 1, "the reopened cause minted a second alert: {records:?}");
+    assert_eq!(records[0].id, first, "the alert changed id under the staffer");
+    assert!(records[0].is_open(), "the record did not reopen");
+    assert_eq!(records[0].reopened, 1, "the reopen tally is the only record of how often");
+}
+
+/// S5 — `resume` now delivers the forgiveness its own notice promises.
+#[test]
+fn vf_s5_resume_forgives_the_suspended_gap_and_records_why() {
+    let mut tw = boot();
+    let r = rig(&mut tw, 1_000);
+    let id = owe(&mut tw, &r, 100, "");
+    sweep_at(&mut tw, 100);
+    assert_eq!(bal(&tw, r.pat_acct), 900);
+
+    ok(&mut tw, GOD, &format!("@obligation/suspend {id}=audit"));
+    sweep_at(&mut tw, 200);
+    sweep_at(&mut tw, 300);
+    sweep_at(&mut tw, 400);
+
+    let seen = ok(&mut tw, GOD, &format!("@obligation/resume {id}"));
+    assert!(seen.contains("forgiven"), "resume said nothing about the gap: {seen}");
+    let o = obligation(&tw, id);
+    assert!(
+        o.history.iter().any(|e| matches!(
+            e,
+            ObligationEvent::Forgiven { cause: ForgiveCause::Suspension, .. }
+        )),
+        "the forgiveness was not recorded with its cause: {:?}",
+        o.history
+    );
+    assert!(o.schedule.next_due > 400, "the schedule was not re-anchored past the gap");
+
+    // ...and the next fire charges ONE period, not the whole suspension.
+    let before = bal(&tw, r.pat_acct);
+    sweep_at(&mut tw, 500);
+    assert_eq!(bal(&tw, r.pat_acct), before - 100, "resuming charged the suspended gap");
+    assert_eq!(obligation(&tw, id).settled_total, 2);
+}
+
+/// S6 — reservations have a ladder now: a stuck expiry is somebody's money.
+#[test]
+fn vf_s6_a_hold_whose_expiry_keeps_failing_is_paged() {
+    let (mut tw, vf) = boot_probe();
+    let r = rig(&mut tw, 1_000);
+    ok(&mut tw, GOD, &format!("@hold/place {}=60 expires=10 a", r.pat_acct));
+    let hold = only_hold(&tw);
+
+    // Squat the sweep's own deterministic expiry key with a different plan, so
+    // every expiry attempt resolves to an idempotency CONFLICT and the reservation
+    // can never age out. (E4b1 logged that at level 1 and retried forever.)
+    vf.stage_post(staff_plan(
+        IdempotencyKey::new(SmolStr::new_static("hold"), SmolStr::new(format!("{}/expire", hold.0))),
+        r.faucet,
+        r.quinn_acct,
+        1,
+    ));
+    ok(&mut tw, GOD, "@vf/post");
+
+    for t in [100, 200, 300] {
+        sweep_at(&mut tw, t);
+        assert_eq!(store(&tw).escalations().count(), 0, "the ladder paged inside its own cap");
+    }
+    sweep_at(&mut tw, 400);
+
+    assert_eq!(snap(&tw).hold(hold).expect("hold").status, HoldStatus::Held);
+    assert_eq!(held(&tw, r.pat_acct), 60, "the money is still reserved, which is the point");
+    let record = alert_for(&tw, EscalationSubject::Hold(hold));
+    assert!(
+        record.recommended.iter().any(|c| c.contains("@hold/release")),
+        "the alert does not name a way out: {:?}",
+        record.recommended
+    );
+    assert!(store(&tw).expiry_refusals(hold) >= 4, "the run was not counted");
+}
+
+/// S8 — `grace = 255` was infinite grace, because `missed` saturates there.
+#[test]
+fn vf_s8_an_endless_grace_allowance_is_refused() {
+    let mut tw = boot();
+    let r = rig(&mut tw, 1_000);
+    let seen = err(
+        &mut tw,
+        GOD,
+        &format!("@obligation/create {}={} 10 every=100 grace=255", r.pat_acct, r.quinn_acct),
+    );
+    assert!(seen.contains("254"), "the refusal does not say what the limit is: {seen}");
+    assert_eq!(snap(&tw).obligations().count(), 0, "the refused create made a record");
+
+    // The largest allowance the state machine can actually end is accepted.
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@obligation/create {}={} 10 every=100 grace=254", r.pat_acct, r.quinn_acct),
+    );
+    let id = only_obligation(&tw);
+    assert_eq!(obligation(&tw, id).grace.periods, 254);
+}
+
+/// S9 — a documented limit, said out loud where it starts applying.
+#[test]
+fn vf_s9_an_approval_rule_on_the_debtor_is_flagged_at_creation() {
+    let mut tw = boot();
+    let r = rig(&mut tw, 1_000);
+    // A threshold a single period never reaches — the sub-threshold drip, which is
+    // the half a staffer is least likely to notice on their own.
+    ok(&mut tw, GOD, &format!("@account/approval {}=1000 threshold:1", r.pat_acct));
+    let seen = ok(
+        &mut tw,
+        GOD,
+        &format!("@obligation/create {}={} 100 every=100 start=100", r.pat_acct, r.quinn_acct),
+    );
+    assert!(
+        seen.contains("approval rule") && seen.contains("never escalates"),
+        "the standing-order limit was not disclosed: {seen}"
+    );
+    // ...and the drip is real: period after period posts, none of them escalating.
+    sweep_at(&mut tw, 100);
+    sweep_at(&mut tw, 200);
+    assert_eq!(bal(&tw, r.pat_acct), 800, "the sweep did not settle under the threshold");
+    assert_eq!(snap(&tw).approvals().count(), 0, "a sub-threshold period escalated");
+    assert_eq!(store(&tw).escalations().count(), 0);
+}
+
+// ---- Lens 3: authority, commands, existence hiding --------------------------
+
+/// A1 — a reservation made TO someone is not the payer's to take back.
+#[test]
+fn vf_a1_debit_authority_does_not_release_a_third_partys_reservation() {
+    let mut tw = boot();
+    let r = rig(&mut tw, 100);
+    ok(&mut tw, GOD, &format!("@hold/place {}=60 for=#{} escrow", r.pat_acct, r.quinn.0));
+    let hold = only_hold(&tw);
+
+    // Pat owns the account and may spend every unreserved penny in it — and still
+    // may not dissolve the promise standing on it. Escrow the payer can cancel is
+    // not escrow.
+    err(&mut tw, r.pat, &format!("@hold/release {hold}"));
+    assert_eq!(held(&tw, r.pat_acct), 60, "the payer released their own escrow");
+    assert_eq!(snap(&tw).hold(hold).expect("hold").status, HoldStatus::Held);
+
+    // The beneficiary gives it back, which is the whole point of it being theirs.
+    ok(&mut tw, r.quinn, &format!("@hold/release {hold}"));
+    assert_eq!(held(&tw, r.pat_acct), 0);
+}
+
+/// A2 — seeing a reservation and being able to spend it are one predicate.
+#[test]
+fn vf_a2_whoever_acts_for_the_beneficiary_can_see_and_capture() {
+    let mut tw = boot();
+    let r = rig(&mut tw, 300);
+    let nosy = tw.spawn_player("Nosy");
+    ok(&mut tw, GOD, "@org/create Ironhold");
+    ok(&mut tw, GOD, "@account/open org:Ironhold=gold");
+    let org_acct = snap(&tw)
+        .accounts()
+        .find(|a| matches!(a.owner, mush_org::PrincipalId::Organization(_)))
+        .expect("the org wallet")
+        .id;
+    ok(&mut tw, GOD, &format!("@org/grant #{}=Ironhold economy.account.post", r.quinn.0));
+
+    // (a) An ORGANIZATION beneficiary. Nobody in it could see the escrow, so
+    // nobody in it could capture it either.
+    ok(&mut tw, GOD, &format!("@hold/place {}=60 for=org:Ironhold escrow", r.pat_acct));
+    let to_org = only_hold(&tw);
+    let a = err(&mut tw, nosy, &format!("@hold/show {to_org}"));
+    let b = err(&mut tw, nosy, "@hold/show 4242");
+    assert_eq!(a, b, "a stranger can tell the org's escrow from a nonexistent hold");
+    ok(&mut tw, r.quinn, &format!("@hold/show {to_org}"));
+    ok(&mut tw, r.quinn, &format!("@hold/capture {to_org}={org_acct} 60"));
+    assert_eq!(bal(&tw, org_acct), 60, "the org's spender could not capture its own escrow");
+
+    // (b) A THING beneficiary — a shop counter, a guild strongbox — is acted for by
+    // whoever controls it.
+    let counter = tw
+        .world_mut()
+        .create(ObjKind::Thing, "shop counter", r.quinn, Some(LIMBO))
+        .expect("create");
+    ok(&mut tw, GOD, &format!("@hold/place {}=40 for=#{} layaway", r.pat_acct, counter.0));
+    let to_thing = HoldId(2);
+    let c = err(&mut tw, nosy, &format!("@hold/show {to_thing}"));
+    assert_eq!(c, b, "a stranger can tell the counter's escrow from a nonexistent hold");
+    ok(&mut tw, r.quinn, &format!("@hold/show {to_thing}"));
+    ok(&mut tw, r.quinn, &format!("@hold/capture {to_thing}={} 40", r.quinn_acct));
+    assert_eq!(bal(&tw, r.quinn_acct), 40);
+}
+
+/// A3 — a `System` beneficiary is an internal settlement authority, never a
+/// command's, and naming one is staff-only and registry-checked.
+#[test]
+fn vf_a3_a_system_beneficiary_is_staff_named_and_captured_by_nobody() {
+    let mut tw = boot();
+    let r = rig(&mut tw, 200);
+
+    // A player cannot conjure one, and cannot use the refusal to enumerate which
+    // system principals exist.
+    let real = err(&mut tw, r.pat, &format!("@hold/place {}=10 for=sys:faucet x", r.pat_acct));
+    let fake = err(&mut tw, r.pat, &format!("@hold/place {}=10 for=sys:nothing x", r.pat_acct));
+    assert_eq!(real, fake, "the refusal distinguishes a registered faucet from a made-up one");
+    assert!(real.contains("No such principal."), "wrong refusal: {real}");
+    assert_eq!(snap(&tw).holds().count(), 0);
+
+    // Staff may name only a registered one...
+    err(&mut tw, GOD, &format!("@hold/place {}=10 for=sys:nothing x", r.pat_acct));
+    ok(&mut tw, GOD, &format!("@hold/place {}=10 for=sys:faucet escrow", r.pat_acct));
+    let hold = only_hold(&tw);
+
+    // ...and then nobody, staff included, captures it from a command: the arm sits
+    // ABOVE the staff short-circuit deliberately.
+    err(&mut tw, GOD, &format!("@hold/capture {hold}={} 10", r.quinn_acct));
+    assert_eq!(bal(&tw, r.quinn_acct), 0, "a staff command spent a system principal's escrow");
+    assert_eq!(held(&tw, r.pat_acct), 10);
+    // The placer can still hand it back — nothing is stranded.
+    ok(&mut tw, GOD, &format!("@hold/release {hold}"));
+    assert_eq!(held(&tw, r.pat_acct), 0);
+}
+
+/// A4 — one decision per invocation on a manual clock.
+#[test]
+fn vf_a4_six_advances_charge_one_period() {
+    let mut tw = boot();
+    let r = rig(&mut tw, 1_000);
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@obligation/create {}={} 100 every=manual:10 start=10",
+            r.pat_acct, r.quinn_acct
+        ),
+    );
+    let id = only_obligation(&tw);
+
+    ok(&mut tw, GOD, &format!("@obligation/advance {id}"));
+    let seen = ok(&mut tw, GOD, &format!("@obligation/advance {id}"));
+    assert!(seen.contains("Nothing moved"), "the second advance moved the clock again: {seen}");
+    for _ in 0..4 {
+        ok(&mut tw, GOD, &format!("@obligation/advance {id}"));
+    }
+
+    sweep_at(&mut tw, 1_000);
+    assert_eq!(bal(&tw, r.pat_acct), 900, "six advances charged more than one period");
+    let o = obligation(&tw, id);
+    assert_eq!(o.settled_total, 1);
+    assert_eq!(o.forgiven_total, 0, "six advances built a backlog to forgive");
+
+    // The next period is a fresh decision, and it works.
+    ok(&mut tw, GOD, &format!("@obligation/advance {id}"));
+    sweep_at(&mut tw, 1_100);
+    assert_eq!(bal(&tw, r.pat_acct), 800);
+}
+
+/// A5 — invariant 29 covers the whole obligation lifecycle, on both sides.
+#[test]
+fn vf_a5_close_and_reinstate_see_every_unfinished_obligation() {
+    let mut tw = boot();
+    let r = rig(&mut tw, 0);
+    let (obj, acct) = landlord(&mut tw, "escrow desk");
+    ok(&mut tw, GOD, &format!("@obligation/create {}={acct} 100 every=100 start=100", r.pat_acct));
+    let id = only_obligation(&tw);
+
+    // No funds: miss, grace, delinquency — out of the due pool, but not over.
+    sweep_at(&mut tw, 100);
+    sweep_at(&mut tw, 200);
+    assert_eq!(obligation(&tw, id).status, ObligationStatus::Delinquent);
+
+    // The debtor's account is empty and carries no hold, so only the obligation can
+    // be what refuses the close.
+    let seen = err(&mut tw, GOD, &format!("@account/close {}", r.pat_acct));
+    assert!(seen.contains("Obligation"), "a delinquent obligation let its account close: {seen}");
+    assert_eq!(snap(&tw).account(r.pat_acct).expect("account").status, AccountStatus::Active);
+
+    // And reinstating checks that there is still somewhere to settle.
+    ok(&mut tw, GOD, &format!("@destroy #{}", obj.0));
+    assert_eq!(snap(&tw).account(acct).expect("account").status, AccountStatus::Frozen);
+    let seen = err(&mut tw, GOD, &format!("@obligation/reinstate {id}"));
+    assert!(seen.contains("not active"), "reinstate ignored a dead creditor account: {seen}");
+    assert_eq!(obligation(&tw, id).status, ObligationStatus::Delinquent);
+
+    // Repoint it and the same command works — the check is a redirection, not a wall.
+    ok(&mut tw, GOD, &format!("@obligation/repoint {id}=credit {}", r.quinn_acct));
+    ok(&mut tw, GOD, &format!("@obligation/reinstate {id}"));
+    assert_eq!(obligation(&tw, id).status, ObligationStatus::Active);
+}
+
+/// A6 — an open alert is answered, not stepped around.
+#[test]
+fn vf_a6_resume_refuses_an_escalated_suspension() {
+    let mut tw = boot();
+    let r = rig(&mut tw, 1_000);
+    let (obj, acct) = landlord(&mut tw, "escrow desk");
+    ok(&mut tw, GOD, &format!("@obligation/create {}={acct} 50 every=100 start=100", r.pat_acct));
+    let id = only_obligation(&tw);
+    ok(&mut tw, GOD, &format!("@destroy #{}", obj.0));
+    sweep_at(&mut tw, 100);
+    let alert = alert_for(&tw, EscalationSubject::Obligation(id)).id;
+
+    let seen = err(&mut tw, GOD, &format!("@obligation/resume {id}"));
+    assert!(
+        seen.contains(&format!("@econ/ack {alert}")),
+        "resume did not point at the verb that answers the alert: {seen}"
+    );
+    assert!(
+        matches!(obligation(&tw, id).status, ObligationStatus::Suspended { .. }),
+        "resume lifted an escalated suspension and left the alert open"
+    );
+    assert!(alert_for(&tw, EscalationSubject::Obligation(id)).is_open());
+
+    // The one verb that does both still does both.
+    ok(&mut tw, GOD, &format!("@obligation/repoint {id}=credit {}", r.quinn_acct));
+    ok(&mut tw, GOD, &format!("@econ/ack {alert}"));
+    assert_eq!(obligation(&tw, id).status, ObligationStatus::Active);
+}
+
+/// A7 — a deadline in the past is a typo, not a deadline.
+#[test]
+fn vf_a7_a_non_positive_expiry_is_refused() {
+    let mut tw = boot();
+    let r = rig(&mut tw, 1_000);
+    for spec in ["expires=0", "expires=-60", "expires=ic:0", "expires=ic:-5"] {
+        let seen = err(&mut tw, GOD, &format!("@hold/place {}=10 {spec} a", r.pat_acct));
+        assert!(seen.contains("POSITIVE"), "wrong refusal for {spec}: {seen}");
+    }
+    assert_eq!(snap(&tw).holds().count(), 0, "a refused placement reserved money");
+    assert_eq!(held(&tw, r.pat_acct), 0);
+
+    ok(&mut tw, GOD, &format!("@hold/place {}=10 expires=60 a", r.pat_acct));
+    assert_eq!(held(&tw, r.pat_acct), 10);
+}
+
+/// A8 — the help is the surface most staff ever read.
+#[test]
+fn vf_a8_the_obligation_help_documents_what_the_verbs_actually_do() {
+    let mut tw = boot();
+    let seen = ok(&mut tw, GOD, "help @obligation");
+    assert!(seen.contains("manual:"), "the manual clock is undocumented: {seen}");
+    assert!(seen.contains("@econ/alerts"), "the alert surface is undocumented: {seen}");
+    assert!(seen.contains("creditor"), "who may advance/reinstate is undocumented: {seen}");
+    assert!(seen.contains("0-254"), "the grace bound is undocumented: {seen}");
+}
+
+// ---- M1: faucet-funded obligations ------------------------------------------
+
+/// M1 — a standing mint is a ruleset decision made in code, never a staff verb.
+#[test]
+fn vf_m1_a_faucet_obligation_exists_only_through_the_ruleset_entry() {
+    let (mut tw, vf) = boot_probe();
+    let r = rig(&mut tw, 0);
+
+    // The command refuses the shape, as it always did.
+    let seen = err(
+        &mut tw,
+        GOD,
+        &format!("@obligation/create {}={} 100 every=100 start=100", r.faucet, r.quinn_acct),
+    );
+    assert!(seen.contains("standing mint"), "wrong refusal: {seen}");
+    assert_eq!(snap(&tw).obligations().count(), 0);
+
+    // The ruleset's own entry creates it, stamped with the faucet that funds it.
+    vf.stage_mint("faucet", ObligationSpec {
+        debit_account: r.faucet,
+        credit_account: r.quinn_acct,
+        amount: Amount::from_minor(100),
+        schedule: EconomicSchedule::new(EconomicClock::RealUtc, 100, Some(100), 3),
+        grace: GracePolicy::default(),
+        notify_on_success: false,
+        cause: ObligationCause::Ruleset { namespace: "wod.income".into() },
+    });
+    ok(&mut tw, GOD, "@vf/mint");
+    let id = vf.minted().expect("the ruleset entry refused a legitimate income line");
+    assert_eq!(
+        obligation(&tw, id).minted_by,
+        Some(mush_org::PrincipalId::System(
+            mush_org::SystemPrincipalId::new("faucet").expect("id")
+        ))
+    );
+
+    // ...and it settles, which is the whole point: E5's income table needs this to
+    // work, not merely to be refused safely.
+    sweep_at(&mut tw, 100);
+    assert_eq!(bal(&tw, r.quinn_acct), 100, "the faucet obligation did not settle");
+    assert_eq!(obligation(&tw, id).settled_total, 1);
+
+    // A faucet the world never registered mints nothing.
+    vf.stage_mint("ghost", ObligationSpec {
+        debit_account: r.faucet,
+        credit_account: r.quinn_acct,
+        amount: Amount::from_minor(1),
+        schedule: EconomicSchedule::every(1_000, 100),
+        grace: GracePolicy::default(),
+        notify_on_success: false,
+        cause: ObligationCause::Ruleset { namespace: "wod.income".into() },
+    });
+    ok(&mut tw, GOD, "@vf/mint");
+    assert_eq!(vf.minted(), Err(EconomyError::Unauthorized), "an unregistered faucet minted");
+}
+
+/// M1 — the cap binds at creation AND at every settlement, because the record can
+/// be edited after the fact and the config can be lowered afterwards.
+#[test]
+fn vf_m1_the_mint_cap_bounds_creation_and_every_settlement() {
+    let (mut tw, vf) = boot_probe();
+    let r = rig(&mut tw, 0);
+    let spec = |minor: i64| ObligationSpec {
+        debit_account: r.faucet,
+        credit_account: r.quinn_acct,
+        amount: Amount::from_minor(minor),
+        schedule: EconomicSchedule::new(EconomicClock::RealUtc, 100, Some(100), 3),
+        grace: GracePolicy::default(),
+        notify_on_success: false,
+        cause: ObligationCause::Ruleset { namespace: "wod.income".into() },
+    };
+
+    // `gold` has scale 0, so the default 50,000 major units is 50,000 minor.
+    vf.stage_mint("faucet", spec(50_001));
+    ok(&mut tw, GOD, "@vf/mint");
+    assert_eq!(vf.minted(), Err(EconomyError::MintCapExceeded(r.faucet)));
+    assert_eq!(snap(&tw).obligations().count(), 0, "an over-cap mint left a record behind");
+
+    vf.stage_mint("faucet", spec(100));
+    ok(&mut tw, GOD, "@vf/mint");
+    let id = vf.minted().expect("an under-cap income line was refused");
+    sweep_at(&mut tw, 100);
+    assert_eq!(bal(&tw, r.quinn_acct), 100);
+
+    // Now edit the stored record above the cap — the shape a compromised ruleset,
+    // a bad migration, or a hand-edited doc produces. Creation-time checking alone
+    // would have paid it forever.
+    let mut kv = fold_kv(&mut tw);
+    patch(&mut kv, &format!("obligation:{}", id.0), |v| {
+        v["amount"] = serde_json::json!(60_000);
+    });
+    reboot(&mut tw, kv);
+    let before = bal(&tw, r.quinn_acct);
+    sweep_at(&mut tw, 200);
+
+    assert_eq!(bal(&tw, r.quinn_acct), before, "a record edited above the cap kept minting");
+    let record = alert_for(&tw, EscalationSubject::Obligation(id));
+    assert!(
+        record.context.contains("mint cap"),
+        "the alert does not say what the decision is: {}",
+        record.context
+    );
+    assert!(
+        matches!(obligation(&tw, id).status, ObligationStatus::Suspended { .. }),
+        "the over-cap record kept being attempted"
+    );
+}
+
+/// M1 — a per-instrument override, for worlds running several currencies at
+/// different denominations.
+#[test]
+fn vf_m1_a_per_instrument_cap_overrides_the_default() {
+    let mut config = EconomyConfig::default();
+    config.instruments.insert("gold".to_string(), InstrumentCaps { mint_obligation_cap_major: 5 });
+    let (mut tw, vf) = boot_probe_with(config);
+    let r = rig(&mut tw, 0);
+    let spec = |minor: i64| ObligationSpec {
+        debit_account: r.faucet,
+        credit_account: r.quinn_acct,
+        amount: Amount::from_minor(minor),
+        schedule: EconomicSchedule::new(EconomicClock::RealUtc, 100, Some(100), 3),
+        grace: GracePolicy::default(),
+        notify_on_success: false,
+        cause: ObligationCause::Ruleset { namespace: "wod.income".into() },
+    };
+
+    // Well under the crate-wide 50,000, and over this instrument's 5.
+    vf.stage_mint("faucet", spec(6));
+    ok(&mut tw, GOD, "@vf/mint");
+    assert_eq!(vf.minted(), Err(EconomyError::MintCapExceeded(r.faucet)));
+
+    vf.stage_mint("faucet", spec(5));
+    ok(&mut tw, GOD, "@vf/mint");
+    let id = vf.minted().expect("the override refused its own ceiling");
+    sweep_at(&mut tw, 100);
+    assert_eq!(bal(&tw, r.quinn_acct), 5);
+    assert_eq!(obligation(&tw, id).settled_total, 1);
 }

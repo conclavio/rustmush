@@ -648,7 +648,14 @@ pub(crate) fn faction_migrate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // without asking `post` itself.
     let (dest, opened) = match existing {
         Some(id) => (id, false),
-        None => (open_root_account(ctx, org, root, &code), true),
+        None => match open_root_account(ctx, org, root, &code) {
+            Some(id) => (id, true),
+            None => {
+                return Err(CmdError::msg(
+                    "The economy's account allocator is exhausted; nothing was opened or moved.",
+                ));
+            }
+        },
     };
 
     let mut plan = EconomyPlan::new(
@@ -819,12 +826,17 @@ fn root_account(w: &World, org: OrgId, root: OrgScopeId, code: &InstrumentId) ->
 /// Open the org's root-scope wallet for `code` — the same record `@account/open
 /// org:<org>=<instrument>` builds: credit `forbid()`, because an org wallet is not
 /// a faucet and must never be the thing that quietly runs negative.
+///
+/// `None` only when the economy's account allocator is exhausted (`u64::MAX` ids
+/// minted): E4b1's verify fold made every `alloc_*` checked rather than let it
+/// overflow, so the one honest answer here is "no wallet was opened" and the caller
+/// refuses before it posts anything.
 fn open_root_account(
     ctx: &mut Ctx<'_>,
     org: OrgId,
     root: OrgScopeId,
     code: &InstrumentId,
-) -> AccountId {
+) -> Option<AccountId> {
     let label = {
         let store = ctx.w.module_state::<OrgStore>().expect("resolved above");
         let state = store.state();
@@ -832,11 +844,7 @@ fn open_root_account(
         let sname = state.scope(root).map_or_else(|| "root".to_string(), |s| s.name.to_string());
         SmolStr::new(format!("{oname}/{sname}"))
     };
-    let id = ctx
-        .w
-        .module_state_mut::<EconomyStore>()
-        .expect("checked above")
-        .alloc_account();
+    let id = ctx.w.module_state_mut::<EconomyStore>().expect("checked above").alloc_account()?;
     mush_economy::open_account(
         ctx,
         Account {
@@ -855,5 +863,5 @@ fn open_root_account(
             approval: None,
         },
     );
-    id
+    Some(id)
 }

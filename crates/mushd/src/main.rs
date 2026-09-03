@@ -23,7 +23,9 @@ use std::time::Duration;
 use mush_core::{ControlMsg, Engine, Inbound};
 use mush_llm::LlmService;
 use mush_net_web::{Metrics, WebConfig};
-use mush_server::config_ext::{llm_config, onboarding_ruleset, weather_config, worldgen_config};
+use mush_server::config_ext::{
+    economy_config, llm_config, onboarding_ruleset, weather_config, worldgen_config,
+};
 use mush_session::{SessionConfig, SessionManager};
 use mush_store::{InMemoryStore, ObjectStore, RedisStore, core_migrations, run_migrations};
 use serde::Deserialize;
@@ -221,7 +223,8 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     // approval payload handlers see a loaded jobs module. Then run each
     // namespace's store migrations and hand each module its persisted boot
     // data — all before the world task starts serving.
-    let mut mods = modules::server_modules_with(weather_config(&config.weather));
+    let mut mods =
+        modules::server_modules_with(weather_config(&config.weather), economy_config(&config.economy));
     mods.push(modules::worldgen_module_with(
         Arc::clone(&llm),
         worldgen_config(&config.worldgen),

@@ -68,15 +68,22 @@ pub const SCHEMA_KEY: &str = "schema";
 /// concatenation to [`Engine::with_modules`].
 #[must_use]
 pub fn server_modules() -> Vec<Box<dyn GameModule>> {
-    server_modules_with(mush_weather::WeatherConfig::default())
+    server_modules_with(
+        mush_weather::WeatherConfig::default(),
+        mush_economy::EconomyConfig::default(),
+    )
 }
 
-/// [`server_modules`] with an explicit weather config (`[weather]` knobs —
-/// the M10 flavor-variant sizing). `main.rs` uses this so `[weather]` in
-/// `mushd.toml` actually reaches the module; every other caller (tests) takes
-/// the crate defaults via [`server_modules`].
+/// [`server_modules`] with explicit module configs: the `[weather]` knobs (the M10
+/// flavor-variant sizing) and the `[economy]` knobs (E4's mint bound on a ruleset's
+/// faucet-funded obligations). `main.rs` uses this so those sections in `mushd.toml`
+/// actually reach their modules; every other caller (tests) takes the crate defaults
+/// via [`server_modules`].
 #[must_use]
-pub fn server_modules_with(weather: mush_weather::WeatherConfig) -> Vec<Box<dyn GameModule>> {
+pub fn server_modules_with(
+    weather: mush_weather::WeatherConfig,
+    economy: mush_economy::EconomyConfig,
+) -> Vec<Box<dyn GameModule>> {
     vec![
         Box::new(mush_comsys::ComsysModule::new()),
         Box::new(mush_canon::CanonModule::new()),
@@ -122,9 +129,12 @@ pub fn server_modules_with(weather: mush_weather::WeatherConfig) -> Vec<Box<dyn 
         // `custody-mismatch`. With sim ahead of it, the economy's custody
         // reconciliation and vault-backing validation see real state, and a
         // `Some(false)` can be trusted as the drift it claims to be.
-        Box::new(mush_economy::EconomyModule::with_custody(vec![Arc::new(
-            mush_sim::InteriorCustodyProvider,
-        )])),
+        Box::new(
+            mush_economy::EconomyModule::with_custody(vec![Arc::new(
+                mush_sim::InteriorCustodyProvider,
+            )])
+            .with_config(economy),
+        ),
         Box::new(mush_mail::MailModule),
         Box::new(mush_jobs::JobsModule::new()),
         Box::new(mush_weather::WeatherModule::with_config(weather)),

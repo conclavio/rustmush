@@ -28,6 +28,7 @@ use mush_core::{Ctx, Ledger, ObjId};
 use smol_str::SmolStr;
 
 use crate::boot;
+use crate::config::EconomyConfig;
 use crate::custody::{ContainerProvider, CustodyProvider, CustodyTable};
 use crate::escalation::Escalation;
 use crate::ids::{
@@ -52,7 +53,13 @@ pub struct EconomyStore {
     pub(crate) snapshot: EconomySnapshot,
     /// The double-entry journal (append-only; open tail in RAM, cold chunks paged
     /// from `data.kv` at boot).
-    pub journal: Ledger,
+    ///
+    /// `pub(crate)` since the E4b1 verify fold (B7): `install_commit`'s reachability
+    /// argument is *"the journal tail has exactly one mutator, and it is this
+    /// function"* — an argument a `pub` field quietly voided, since any crate holding
+    /// `&mut EconomyStore` could have appended. Nothing outside this crate ever used
+    /// it; [`EconomyStore::journal`] is the read accessor.
+    pub(crate) journal: Ledger,
     /// Every transaction by id — journal-derived at boot, so a cold reversal can read
     /// the original without a store round-trip.
     pub(crate) transactions: BTreeMap<TransactionId, EconomicTransaction>,
@@ -89,12 +96,35 @@ pub struct EconomyStore {
     /// economic truth, so it is re-derived from the journal rather than stored — and
     /// a hold record itself therefore keeps the byte shape E4a journaled.
     pub(crate) hold_terminal_at: BTreeMap<HoldId, i64>,
+    /// How many **consecutive** sweep fires have failed to expire each still-`Held`
+    /// reservation whose deadline has passed (E4b1 verify fold, S6). RAM-only, like
+    /// [`EconomyStore::hold_terminal_at`]: it is a ladder counter, not economic
+    /// truth, and a restart is a fair place for the run to begin again.
+    pub(crate) hold_expiry_failures: BTreeMap<HoldId, u32>,
+    /// How many **consecutive** sweep fires have deferred each obligation's
+    /// settlement as transient (S7). RAM-only for the same reason.
+    pub(crate) obligation_defers: BTreeMap<ObligationId, u32>,
     /// The wall-clock instant of the last completed sweep fire — the evidence
     /// [`crate::classify_forgiveness`] reads to tell downtime from overload. Durable
     /// in `meta`; a sweep that did not run (a frozen economy) does not stamp it.
     pub(crate) last_sweep_real: i64,
     /// The IC instant of the last completed sweep fire (the time-jump evidence).
     pub(crate) last_sweep_ic: i64,
+    /// The wall-clock instant this world's economy last finished booting (E4b1
+    /// verify fold, S3). Durable in `meta`, stamped at the end of every boot: a gap
+    /// between two sweeps that **contains** this instant provably contains a restart,
+    /// which is downtime however short it was — the evidence that stops a 90-second
+    /// restart classifying as `Overload` and paging a staffer on the second one.
+    pub(crate) last_boot_real: i64,
+    /// The accounts **this** recovery latch froze, and only those (E4b1 verify fold,
+    /// B4a). Durable in `meta`, accumulated across every boot the latch survives.
+    ///
+    /// `@econ/unfreeze` clears exactly this list, so an account frozen for its own
+    /// reason — a destroyed owner, a balance that would not fit `i64` — stays frozen
+    /// and stays visible as a thing needing attention. Without it, recovery was
+    /// either "unfreeze every account by hand" or "unfreeze them all and lose the
+    /// list of which ones were really broken".
+    pub(crate) boot_frozen: Vec<AccountId>,
     /// The whole-economy freeze latch (boot drift / conservation break / a dropped
     /// durable write). While set, [`crate::post`] refuses everything, and so do the
     /// non-recovery control verbs (`@account/open`, `@account/approval`,
@@ -104,11 +134,19 @@ pub struct EconomyStore {
     /// detects drift also heals the drifted projections and persists them, so
     /// nothing in the docs would ever re-derive the freeze — only staff
     /// `@econ/unfreeze` clears it.
-    pub frozen: bool,
+    ///
+    /// `pub(crate)` since the E4b1 verify fold (B7): a latch any crate could clear by
+    /// assignment is not a latch. [`EconomyStore::is_frozen`] reads it and
+    /// [`crate::set_economy_frozen`] is the one durable writer.
+    pub(crate) frozen: bool,
     /// The wiring-frozen custody provider table (injected after boot, the
     /// `OrgModule::with_predicates` shape). The built-in `ContainerProvider` is
     /// always last.
     pub(crate) providers: CustodyTable,
+    /// The ruleset's configurable limits (M1), injected after boot the same way.
+    /// Absent configuration is [`EconomyConfig::default`], so a server with no
+    /// `[economy]` section behaves exactly as it did before the setting existed.
+    pub(crate) config: EconomyConfig,
 }
 
 /// Everything [`crate::boot`] derives, handed to [`EconomyStore::from_parts`] as one
@@ -129,6 +167,8 @@ pub(crate) struct BootParts {
     pub(crate) next_escalation: u64,
     pub(crate) last_sweep_real: i64,
     pub(crate) last_sweep_ic: i64,
+    pub(crate) last_boot_real: i64,
+    pub(crate) boot_frozen: Vec<AccountId>,
     pub(crate) frozen: bool,
 }
 
@@ -150,10 +190,15 @@ impl EconomyStore {
             next_obligation: p.next_obligation,
             next_cadence: p.next_cadence,
             next_escalation: p.next_escalation,
+            hold_expiry_failures: BTreeMap::new(),
+            obligation_defers: BTreeMap::new(),
             last_sweep_real: p.last_sweep_real,
             last_sweep_ic: p.last_sweep_ic,
+            last_boot_real: p.last_boot_real,
+            boot_frozen: p.boot_frozen,
             frozen: p.frozen,
             providers: CustodyTable::default(),
+            config: EconomyConfig::default(),
         }
     }
 
@@ -162,10 +207,23 @@ impl EconomyStore {
     pub fn snapshot(&self) -> &EconomySnapshot {
         &self.snapshot
     }
+    /// The double-entry journal (read seam, B7). The tail has exactly one mutator —
+    /// `api::install_commit` — and that is the whole reachability argument its two
+    /// post-move assertions rest on.
+    #[must_use]
+    pub fn journal(&self) -> &Ledger {
+        &self.journal
+    }
     /// Whether the economy is frozen.
     #[must_use]
     pub fn is_frozen(&self) -> bool {
         self.frozen
+    }
+    /// The ruleset's configurable limits (M1) — read **live**, never captured, so a
+    /// lowered mint cap binds the very next settlement.
+    #[must_use]
+    pub fn config(&self) -> &EconomyConfig {
+        &self.config
     }
     /// A transaction by id (for reversal + staff audit).
     #[must_use]
@@ -177,23 +235,30 @@ impl EconomyStore {
         self.transactions.values()
     }
 
-    /// Mint the next account id.
-    pub fn alloc_account(&mut self) -> AccountId {
+    /// Mint the next account id, or `None` at the ceiling (E4b1 verify fold, B2).
+    ///
+    /// Every allocator here used to be `self.next += 1`, which **panics in a debug
+    /// build and silently wraps in a release one** at `u64::MAX` — and one of them
+    /// (`alloc_escalation`) is called from the sweep, where a panic aborts the world
+    /// task. An exhausted allocator is not a reason to lose the world: the mint
+    /// fails, the caller logs loudly and refuses that one operation, and everything
+    /// else keeps running.
+    pub fn alloc_account(&mut self) -> Option<AccountId> {
         let id = AccountId(self.next_account);
-        self.next_account += 1;
-        id
+        self.next_account = self.next_account.checked_add(1)?;
+        Some(id)
     }
-    /// Mint the next vault id (E3b1).
-    pub fn alloc_vault(&mut self) -> VaultId {
+    /// Mint the next vault id (E3b1), or `None` at the ceiling.
+    pub fn alloc_vault(&mut self) -> Option<VaultId> {
         let id = VaultId(self.next_vault);
-        self.next_vault += 1;
-        id
+        self.next_vault = self.next_vault.checked_add(1)?;
+        Some(id)
     }
-    /// Mint the next approval-request id (E3b2).
-    pub fn alloc_approval(&mut self) -> ApprovalRequestId {
+    /// Mint the next approval-request id (E3b2), or `None` at the ceiling.
+    pub fn alloc_approval(&mut self) -> Option<ApprovalRequestId> {
         let id = ApprovalRequestId(self.next_approval);
-        self.next_approval += 1;
-        id
+        self.next_approval = self.next_approval.checked_add(1)?;
+        Some(id)
     }
     /// The wiring-frozen custody provider table (an `Arc` clone — cheap).
     #[must_use]
@@ -206,23 +271,29 @@ impl EconomyStore {
     pub fn peek_next_transaction(&self) -> u64 {
         self.next_transaction
     }
-    /// Mint the next obligation id (E4b1).
-    pub fn alloc_obligation(&mut self) -> ObligationId {
+    /// Mint the next obligation id (E4b1), or `None` at the ceiling.
+    pub fn alloc_obligation(&mut self) -> Option<ObligationId> {
         let id = ObligationId(self.next_obligation);
-        self.next_obligation += 1;
-        id
+        self.next_obligation = self.next_obligation.checked_add(1)?;
+        Some(id)
     }
-    /// Mint the next cadence-clock id (E4b1).
-    pub fn alloc_cadence(&mut self) -> CadenceId {
+    /// Mint the next cadence-clock id (E4b1), or `None` at the ceiling.
+    pub fn alloc_cadence(&mut self) -> Option<CadenceId> {
         let id = CadenceId(self.next_cadence);
-        self.next_cadence += 1;
-        id
+        self.next_cadence = self.next_cadence.checked_add(1)?;
+        Some(id)
     }
-    /// Mint the next escalation id (E4b1, §4.6).
-    pub fn alloc_escalation(&mut self) -> EscalationId {
+    /// Mint the next escalation id (E4b1, §4.6), or `None` at the ceiling.
+    ///
+    /// This is the one allocator the **sweep** calls, so it is the one whose
+    /// overflow would have taken the world task down (B2). A `page` that cannot mint
+    /// an id still suspends its subject, with a `Suspended { Staff }` reason and a
+    /// loud log — the subject stops either way, which is the part that protects
+    /// money.
+    pub fn alloc_escalation(&mut self) -> Option<EscalationId> {
         let id = EscalationId(self.next_escalation);
-        self.next_escalation += 1;
-        id
+        self.next_escalation = self.next_escalation.checked_add(1)?;
+        Some(id)
     }
     /// One escalation record.
     #[must_use]
@@ -247,6 +318,36 @@ impl EconomyStore {
     #[must_use]
     pub fn last_sweep(&self) -> (i64, i64) {
         (self.last_sweep_real, self.last_sweep_ic)
+    }
+    /// When this economy last finished booting (S3's classifier evidence).
+    #[must_use]
+    pub fn last_boot(&self) -> i64 {
+        self.last_boot_real
+    }
+    /// Whether the gap since the last recorded sweep **contains a boot** — the S3
+    /// evidence handed to [`crate::classify_forgiveness`].
+    #[must_use]
+    pub fn gap_spans_boot(&self) -> bool {
+        self.last_boot_real > self.last_sweep_real
+    }
+    /// The accounts the recovery latch froze, in id order (B4a) — exactly what
+    /// `@econ/unfreeze` restores.
+    pub fn boot_frozen(&self) -> impl Iterator<Item = AccountId> + '_ {
+        self.boot_frozen.iter().copied()
+    }
+    /// Forget the boot-freeze list (`@econ/unfreeze` has just restored it).
+    pub(crate) fn clear_boot_frozen(&mut self) {
+        self.boot_frozen.clear();
+    }
+    /// How many consecutive sweep fires have failed to expire this reservation (S6).
+    #[must_use]
+    pub fn expiry_refusals(&self, id: HoldId) -> u32 {
+        self.hold_expiry_failures.get(&id).copied().unwrap_or(0)
+    }
+    /// How many consecutive sweep fires have deferred this obligation (S7).
+    #[must_use]
+    pub fn deferred_fires(&self, id: ObligationId) -> u32 {
+        self.obligation_defers.get(&id).copied().unwrap_or(0)
     }
     /// The next hold id validation may mint. E4b1 resumes `next_hold` from the
     /// **journal's** hold effects at boot (never from surviving docs, which GC
@@ -277,6 +378,8 @@ impl EconomyStore {
             "next_escalation_id": self.next_escalation,
             "last_sweep_real": self.last_sweep_real,
             "last_sweep_ic": self.last_sweep_ic,
+            "last_boot_real": self.last_boot_real,
+            "boot_frozen": self.boot_frozen.iter().map(|a| a.0).collect::<Vec<u64>>(),
             "frozen": self.frozen,
         })
     }
@@ -316,6 +419,7 @@ impl EconomyStore {
 #[derive(Debug, Default)]
 pub struct EconomyModule {
     providers: CustodyTable,
+    config: EconomyConfig,
 }
 
 impl EconomyModule {
@@ -332,7 +436,15 @@ impl EconomyModule {
     #[must_use]
     pub fn with_custody(mut providers: Vec<Arc<dyn CustodyProvider>>) -> EconomyModule {
         providers.push(Arc::new(ContainerProvider));
-        EconomyModule { providers: Arc::new(providers) }
+        EconomyModule { providers: Arc::new(providers), config: EconomyConfig::default() }
+    }
+
+    /// Wire the ruleset's configurable limits (M1). Omitting this is
+    /// [`EconomyConfig::default`] — the pre-M1 behaviour, with the default mint cap.
+    #[must_use]
+    pub fn with_config(mut self, config: EconomyConfig) -> EconomyModule {
+        self.config = config;
+        self
     }
 }
 
@@ -362,8 +474,9 @@ impl GameModule for EconomyModule {
 
     fn on_world_loaded(&mut self, ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModError> {
         let mut store = boot::load_boot(ctx, data, &self.providers)?;
-        // Inject the wiring-frozen table into the freshly booted slot.
+        // Inject the wiring-frozen table and config into the freshly booted slot.
         store.providers = self.providers.clone();
+        store.config = self.config.clone();
         *ctx.w.module_state_mut::<EconomyStore>().expect("economy store slot") = store;
         Ok(())
     }
@@ -479,8 +592,16 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
         let mut accounts = Vec::new();
         for id in ids {
             if let Some(a) = store.snapshot.account_mut(id) {
+                // E3's split, applied here too (E4b1 verify fold, B8): `status` is
+                // doc authority and `revision` is JOURNAL authority (`apply` bumps it
+                // once per touched account per entry, and boot re-derives it as
+                // `1 + touches`). Bumping it from a doc-authority write made the
+                // healthy doc claim a revision its own `last_journal_seq` never
+                // produced — the exact shape `set_account_status` and
+                // `set_asset_frozen` already refuse, and the asset arm below is the
+                // model. Boot's `max` hid the damage; an `expected_revisions` guard
+                // written against the pre-freeze value did not.
                 a.status = AccountStatus::Frozen;
-                a.revision += 1;
                 accounts.push(a.clone());
             }
         }

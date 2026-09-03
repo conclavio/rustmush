@@ -515,6 +515,11 @@ pub enum EconomyError {
     /// Checked arithmetic overflowed (invariant 4).
     #[error("arithmetic overflow")]
     Overflow,
+    /// A faucet-funded obligation's per-period amount is above the configured mint
+    /// cap (E4b1 verify fold, M1). Refused at creation and re-checked at **every**
+    /// settlement, so a record edited above the cap afterwards stops being paid.
+    #[error("that would mint more than the configured cap allows for account {0}")]
+    MintCapExceeded(AccountId),
     /// The authoritative journal could not accept or install the exact prepared
     /// transaction append. No economic post may be confirmed in this state.
     #[error("the authoritative economy journal is unavailable")]
@@ -756,7 +761,9 @@ impl EconomyError {
             EconomyError::NoSuchVault(v)
             | EconomyError::VaultNotActive(v)
             | EconomyError::BackingInvalid(v) => vec![NamedResource::Vault(*v)],
-            EconomyError::InsufficientAvailable(a) | EconomyError::HoldOnUnboundedAccount(a) => {
+            EconomyError::InsufficientAvailable(a)
+            | EconomyError::HoldOnUnboundedAccount(a)
+            | EconomyError::MintCapExceeded(a) => {
                 vec![NamedResource::Account(*a)]
             }
             EconomyError::NoSuchHold(h)

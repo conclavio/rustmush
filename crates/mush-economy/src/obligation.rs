@@ -39,12 +39,39 @@ use mush_org::PrincipalId;
 pub const MAX_OBLIGATION_HISTORY: usize = 32;
 /// The default number of missed periods tolerated before `Delinquent` (§9).
 pub const DEFAULT_GRACE_PERIODS: u8 = 1;
+/// The largest grace allowance a policy may declare (E4b1 verify fold, S8).
+///
+/// `missed` is a `u8` that [`advance`] bumps with `saturating_add`, so it stops at
+/// 255 — and `missed > periods` is therefore never true at `periods: 255`. A grace of
+/// 255 was not "255 periods of slack", it was **infinite** slack: an obligation that
+/// could miss forever and never reach `Delinquent`, so it never left the due pool and
+/// no consequence hook ever saw it. 254 is the largest allowance the comparison can
+/// actually end.
+pub const MAX_GRACE_PERIODS: u8 = 254;
 
 /// How many missed periods an obligation tolerates before going `Delinquent`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GracePolicy {
-    /// Missed periods tolerated (0 = the first miss is delinquency).
+    /// Missed periods tolerated (0 = the first miss is delinquency), ≤
+    /// [`MAX_GRACE_PERIODS`].
     pub periods: u8,
+}
+
+impl GracePolicy {
+    /// Build a policy, **clamping** `periods` to [`MAX_GRACE_PERIODS`] — the
+    /// `EconomicSchedule::new` discipline: a stored record can never authorize an
+    /// allowance the state machine cannot end (S8).
+    #[must_use]
+    pub fn new(periods: u8) -> GracePolicy {
+        GracePolicy { periods: periods.min(MAX_GRACE_PERIODS) }
+    }
+    /// The allowance actually applied, clamped on **read** as well as at
+    /// construction: a doc hand-written (or written by an older build) with 255 must
+    /// not resurrect infinite grace at boot.
+    #[must_use]
+    pub fn allowance(&self) -> u8 {
+        self.periods.min(MAX_GRACE_PERIODS)
+    }
 }
 
 impl Default for GracePolicy {
@@ -93,6 +120,10 @@ pub enum ForgiveCause {
     TimeJump,
     /// Sweeps did run, but this obligation never received post budget.
     Overload,
+    /// The periods fell due while the obligation was **out of the due pool** — nobody
+    /// was attempting them, so nobody may be charged for them (E4b1 verify fold, S5).
+    /// `@obligation/resume` records this for the gap a suspension left behind.
+    Suspension,
 }
 
 /// Obligation lifecycle. `Delinquent` and `Suspended` are **out of the due pool** —
@@ -218,6 +249,20 @@ pub struct Obligation {
     pub status: ObligationStatus,
     /// What created it.
     pub cause: ObligationCause,
+    /// The registered faucet this obligation is allowed to **mint** from, if any
+    /// (E4b1 verify fold, M1).
+    ///
+    /// A `System` debit account creates money out of nothing every period, so it is
+    /// refused everywhere by default: `@obligation/create` will not build one, and
+    /// the sweep's `ObligationAuth` refuses one at every settlement. The single way
+    /// in is [`crate::create_system_obligation`], the ruleset's own mint entry, which
+    /// stamps the faucet here — and even then the per-period amount is re-checked
+    /// against the live [`crate::EconomyConfig`] cap at every settlement, so a doc
+    /// edited above the cap after creation is paged, not paid.
+    ///
+    /// `None` on every record written before M1, and on every record a command makes.
+    #[serde(default)]
+    pub minted_by: Option<PrincipalId>,
     /// How many periods have been **closed** — settled, missed, or forgiven. It is
     /// the index base for the next period's deterministic key
     /// (`obligation/{id}/{periods_settled}`), so a missed period closes too: were it
@@ -442,7 +487,7 @@ pub fn advance(
     // (`next_due == i64::MAX`), so a `Grace` deadline there would be an allowance
     // that never expires and an obligation that never resolves. It goes straight to
     // `Delinquent` and out of the due pool (finding 11).
-    let past_grace = u32::from(missed) > u32::from(o.grace.periods);
+    let past_grace = u32::from(missed) > u32::from(o.grace.allowance());
     next.status = if o.schedule.cadence.is_none() || past_grace {
         ObligationStatus::Delinquent
     } else {
@@ -504,13 +549,23 @@ pub fn forgive_all(o: &Obligation, periods: u32, cause: ForgiveCause, now: i64) 
 /// Classify why periods went unsettled, from the economy's **own** persisted sweep
 /// stamps (`meta.last_sweep_real` / `meta.last_sweep_ic`) — never from a guess.
 ///
-/// `ratio_hint` is the ruleset's expected IC seconds per real second (≥ 1). The
-/// order matters: an IC clock that outran the ratio is a [`ForgiveCause::TimeJump`]
-/// (an epoch or ratio change) even across a restart, because a plain restart advances
-/// both clocks together; a long gap between sweeps with no such jump is
-/// [`ForgiveCause::Downtime`]; anything else means sweeps *did* run and this
-/// obligation simply never got budget — [`ForgiveCause::Overload`], the one cause
-/// that escalates when it repeats (§4.6).
+/// `ratio_hint` is the ruleset's expected IC seconds per real second (≥ 1);
+/// `spans_boot` says whether a **boot happened inside the gap** — the caller reads
+/// that off `meta.last_boot_real` against `meta.last_sweep_real`, and it is the one
+/// piece of evidence that is not a guess about elapsed time.
+///
+/// The order matters: an IC clock that outran the ratio is a
+/// [`ForgiveCause::TimeJump`] (an epoch or ratio change) even across a restart,
+/// because a plain restart advances both clocks together; a gap the economy can
+/// **prove** contains a restart is [`ForgiveCause::Downtime`] however short it was
+/// (E4b1 verify fold, S3 — a 90-second restart is downtime, not a starved post
+/// budget); so is a long gap with no such marker; and anything else means sweeps
+/// *did* run and this obligation simply never got budget —
+/// [`ForgiveCause::Overload`], the one cause that escalates when it repeats (§4.6).
+///
+/// Misreading a restart as `Overload` is the expensive direction: two ordinary
+/// restarts inside [`crate::ESCALATION_WINDOW_SECS`] would suspend a healthy
+/// obligation and page a staffer about a problem that never existed.
 #[must_use]
 pub fn classify_forgiveness(
     last_sweep_real: i64,
@@ -518,6 +573,7 @@ pub fn classify_forgiveness(
     now_real: i64,
     now_ic: i64,
     ratio_hint: i64,
+    spans_boot: bool,
 ) -> ForgiveCause {
     // A sweep stamp in the FUTURE means the wall clock was rewound (an NTP step, a
     // container clock, a restored backup). That is a time jump by definition, and
@@ -535,7 +591,9 @@ pub fn classify_forgiveness(
     if ic_elapsed > allowed {
         return ForgiveCause::TimeJump;
     }
-    if real_elapsed > i128::from(SWEEP_GAP_DOWNTIME_SECS) {
+    // The boot marker beats the clock arithmetic: a gap that provably contains a
+    // restart is downtime at ANY length (S3).
+    if spans_boot || real_elapsed > i128::from(SWEEP_GAP_DOWNTIME_SECS) {
         return ForgiveCause::Downtime;
     }
     ForgiveCause::Overload

@@ -1342,7 +1342,12 @@ fn a_frozen_account_recovers_through_unfreeze_without_disturbing_the_journal() {
     let a = snap(&tw).account(joe_acct).expect("account").clone();
     assert_eq!(a.status, AccountStatus::Active);
     assert_eq!(a.posted_balance.minor(), 100, "the recovery touched the money");
-    assert_eq!(a.revision, revision + 1, "only the backstop's own bump is on the record");
+    // E4b1 verify fold, B8: the destruction backstop is a DOC-authority status write,
+    // so it leaves `revision` — a journal-authority field — exactly where the journal
+    // put it, the same rule `set_account_status` and `set_asset_frozen` already
+    // followed. It used to bump, which made the healthy doc claim a revision its own
+    // `last_journal_seq` never produced.
+    assert_eq!(a.revision, revision, "a doc-authority freeze bumped the journal revision");
 
     // ...and the recovered account survives a reboot as Active.
     let mut kv: Kv = HashMap::new();

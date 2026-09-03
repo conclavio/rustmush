@@ -837,6 +837,7 @@ fn obligation() -> Obligation {
         notify_on_success: false,
         status: ObligationStatus::Active,
         cause: ObligationCause::Staff { reason: "rent".into() },
+        minted_by: None,
         periods_settled: 0,
         history: Vec::new(),
         settled_total: 0,
@@ -980,14 +981,14 @@ fn the_history_tail_is_bounded() {
 #[test]
 fn forgiveness_is_classified_from_the_economys_own_sweep_stamps() {
     // No sweep ran for hours; the IC clock kept pace with the ratio.
-    assert_eq!(classify_forgiveness(0, 0, 10_000, 10_000, 1), ForgiveCause::Downtime);
+    assert_eq!(classify_forgiveness(0, 0, 10_000, 10_000, 1, false), ForgiveCause::Downtime);
     // The IC clock outran the ratio: an epoch or ratio change.
-    assert_eq!(classify_forgiveness(0, 0, 10, 100_000, 1), ForgiveCause::TimeJump);
+    assert_eq!(classify_forgiveness(0, 0, 10, 100_000, 1, false), ForgiveCause::TimeJump);
     // Sweeps ran; this obligation simply never got budget.
-    assert_eq!(classify_forgiveness(0, 0, 30, 30, 1), ForgiveCause::Overload);
+    assert_eq!(classify_forgiveness(0, 0, 30, 30, 1, false), ForgiveCause::Overload);
     // A REWOUND clock is a jump, never an overload: `Overload` escalates on repeat,
     // so reading an NTP step as a starved post budget would page a human for nothing.
-    assert_eq!(classify_forgiveness(500, 500, 400, 400, 1), ForgiveCause::TimeJump);
+    assert_eq!(classify_forgiveness(500, 500, 400, 400, 1, false), ForgiveCause::TimeJump);
 }
 
 // ===========================================================================
@@ -2197,10 +2198,10 @@ fn vf_14b_a_cycle_among_after_anchors_is_refused_at_offer() {
 fn vf_14c_a_rewound_sweep_stamp_is_a_time_jump_not_an_overload() {
     // `Overload` escalates when it repeats, so reading an NTP step or a restored
     // backup as a starved post budget would page a human about nothing.
-    assert_eq!(classify_forgiveness(1_000, 1_000, 999, 999, 1), ForgiveCause::TimeJump);
-    assert_eq!(classify_forgiveness(1_000, 1_000, 0, 0, 1), ForgiveCause::TimeJump);
+    assert_eq!(classify_forgiveness(1_000, 1_000, 999, 999, 1, false), ForgiveCause::TimeJump);
+    assert_eq!(classify_forgiveness(1_000, 1_000, 0, 0, 1, false), ForgiveCause::TimeJump);
     // …while a genuine "sweeps ran, this one got no budget" is untouched.
-    assert_eq!(classify_forgiveness(0, 0, 30, 30, 1), ForgiveCause::Overload);
+    assert_eq!(classify_forgiveness(0, 0, 30, 30, 1, false), ForgiveCause::Overload);
 }
 
 #[test]

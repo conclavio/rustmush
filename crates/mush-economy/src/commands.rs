@@ -211,21 +211,29 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             .copied()
             .map(SmolStr::new)
             .collect(),
-            help: "@obligation/create <debit acct>=<credit acct> <amount> [every=<secs|ic:<secs>>]\n\
-                   \x20   [start=<secs>] [grace=<n>] [catchup=<n>] [notify]      recurring debt (staff)\n\
+            help: "@obligation/create <debit acct>=<credit acct> <amount>\n\
+                   \x20   [every=<secs|ic:<secs>|manual:<secs>>] [start=<secs>] [grace=<n>]\n\
+                   \x20   [catchup=<n>] [notify]                       recurring debt (staff)\n\
                    @obligation/show <id>   @obligation/list\n\
                    @obligation/suspend <id>=<reason>   @obligation/resume <id>    (staff)\n\
                    @obligation/cancel <id>                                       (staff or creditor)\n\
-                   @obligation/advance <id>               step a Manual-clock obligation one period\n\
+                   @obligation/advance <id>               step a manual: clock one period\n\
+                   \x20                                      (staff or creditor — advancing is the\n\
+                   \x20                                      act of charging, so the debtor may not)\n\
                    @obligation/repoint <id>=<debit|credit> <account>             (staff)\n\
                    @obligation/reinstate <id>             Delinquent → Active, re-anchored to the\n\
                    \x20                                      first period due after now\n\
+                   \x20                                      (staff or creditor)\n\
+                   @econ/alerts   @econ/alerts <id>       open economy alerts; one alert's\n\
+                   \x20                                      recommended commands (staff)\n\
                    The sweep attempts due periods on the obligation's own clock. A downtime or\n\
                    time-jump backlog is NEVER charged: the excess periods are forgiven with a\n\
                    recorded cause. A missed period enters grace; past the allowance it goes\n\
                    delinquent and leaves the due pool until someone reinstates it.\n\
-                   every= omitted makes a ONE-SHOT; start= is a delay from now (default: one\n\
-                   period out). Routine settlement is silent unless you pass notify."
+                   every= omitted makes a ONE-SHOT; ic: runs on the in-character clock and\n\
+                   manual: only moves when someone runs @obligation/advance. start= is a delay\n\
+                   from now (default: one period out); grace= is 0-254. Routine settlement is\n\
+                   silent unless you pass notify."
                 .into(),
             ..CommandSpec::default()
         },
@@ -440,23 +448,42 @@ fn hidden_text(ctx: &Ctx<'_>, resource: NamedResource) -> Option<&'static str> {
 }
 
 /// §4.5 view standing over a **hold**: staff, anyone who may view the account it
-/// reserves against, the principal who placed it, or its beneficiary.
+/// reserves against, the principal who placed it, or **anyone who acts for its
+/// beneficiary**.
 ///
 /// The beneficiary clause is the load-bearing one: escrow is a promise made TO
 /// someone, and a payee who cannot see the reservation cannot tell whether they have
 /// been paid a promise or a story.
+///
+/// It asks [`api::WorldAuth::acts_for`] — the *same* predicate that decides who may
+/// capture — rather than an identity match (E4b1 verify fold, A2). An identity match
+/// is wrong in exactly the cases escrow is for: a hold made out to an **organization**
+/// was invisible to every person in it, and a hold made out to a **Thing** (a shop
+/// counter, a guild strongbox) was invisible to the player who controls it. Both
+/// could capture in principle, and every capture verb checks viewability first, so
+/// the promise was unspendable as well as unseeable. Tying the two to one predicate
+/// means seeing a reservation and being able to spend it can never drift apart.
 #[must_use]
 pub fn may_view_hold(w: &World, actor: ObjId, id: HoldId) -> bool {
     if api::is_staff(w, actor) {
         return true;
     }
-    let Some(store) = w.module_state::<EconomyStore>() else { return false };
-    let Some(h) = store.snapshot().hold(id) else { return false };
+    let (placed_by, beneficiary, account) = {
+        let Some(store) = w.module_state::<EconomyStore>() else { return false };
+        let Some(h) = store.snapshot().hold(id) else { return false };
+        (h.placed_by.clone(), h.beneficiary.clone(), h.account)
+    };
     let me = PrincipalId::Object(actor);
-    if h.placed_by == me || h.beneficiary.as_ref() == Some(&me) {
+    if placed_by == me {
         return true;
     }
-    may_view_account(w, actor, h.account)
+    let auth = api::WorldAuth { w };
+    if let Some(b) = &beneficiary
+        && auth.acts_for(&me, b)
+    {
+        return true;
+    }
+    may_view_account(w, actor, account)
 }
 
 /// §4.5 view standing over an **obligation**: staff, either party, or anyone who may
@@ -764,7 +791,13 @@ fn account_open(ctx: &mut Ctx<'_>, system: bool) -> Result<(), CmdError> {
         let obj = match_object(ctx.w, ctx.actor, &lhs)?;
         (PrincipalId::Object(obj), SmolStr::new(display_name(ctx.w, obj)), CreditPolicy::forbid(), None)
     };
-    let id = ctx.w.module_state_mut::<EconomyStore>().expect("economy store").alloc_account();
+    // B2: the allocator refuses at the ceiling instead of overflowing.
+    let id = ctx
+        .w
+        .module_state_mut::<EconomyStore>()
+        .expect("economy store")
+        .alloc_account()
+        .ok_or_else(|| CmdError::msg("The account-id allocator is exhausted; nothing was opened."))?;
     let account = Account {
         id,
         owner: owner.clone(),
@@ -942,15 +975,26 @@ fn account_close(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 "That account still carries an active hold; release or capture it first.",
             ));
         }
+        // E4b1 verify fold, A5: **any** obligation that is not finished, not just one
+        // in the due pool. `in_due_pool()` is `Active | Grace`, so a `Delinquent`
+        // obligation — which `@obligation/reinstate` puts straight back into the pool
+        // — and a `Suspended` one — which `@econ/ack` resumes — both let the account
+        // close underneath them, and the reinstatement then had nowhere to settle.
+        // Only `Cancelled` and `Satisfied` are genuinely over.
         if let Some(o) = snap.obligations().find(|o| {
-            (o.debit_account == id || o.credit_account == id) && o.status.in_due_pool()
+            (o.debit_account == id || o.credit_account == id)
+                && !matches!(
+                    o.status,
+                    ObligationStatus::Cancelled | ObligationStatus::Satisfied
+                )
         }) {
             return Err(account_refusal(
                 ctx,
                 id,
                 format!(
-                    "Obligation #{} still names that account; cancel or repoint it first.",
-                    o.id
+                    "Obligation #{} still names that account ({}); cancel or repoint it first.",
+                    o.id,
+                    render_status(o)
                 ),
             ));
         }
@@ -1159,19 +1203,54 @@ fn cmd_econ(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// clears it: a boot that froze on drift also heals the drifted projections and
 /// persists them, which means no later boot would ever re-derive the freeze.
 ///
-/// It deliberately does NOT unfreeze the accounts, assets, or vaults that the same
-/// recovery boot latched: those name which records need attention, and clearing them
-/// wholesale would erase the reason anyone froze.
+/// It restores exactly the accounts **this latch** froze and no others (E4b1 verify
+/// fold, B4a). Boot records them in `meta.boot_frozen`, so an account frozen for its
+/// own reason — a destroyed owner, a balance that no longer fits `i64` — stays frozen
+/// and stays visible as a thing that needs attention. Before that list existed the
+/// only two options were both wrong: unfreeze fifty accounts by hand, or unfreeze
+/// them all and lose the record of which ones were really broken. The next sweep
+/// then settles normally instead of paging once per stranded obligation.
+///
+/// Assets and vaults keep their own latches, deliberately: those name which titles
+/// and which containers need looking at, and no list can reconstruct that.
 fn econ_unfreeze(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if ctx.w.module_state::<EconomyStore>().is_none_or(|s| !s.is_frozen()) {
         return Err(CmdError::msg("The economy is not frozen."));
     }
     api::set_economy_frozen(ctx, false);
+    let restore: Vec<AccountId> = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .map(|s| s.boot_frozen().collect())
+        .unwrap_or_default();
+    let mut restored = 0usize;
+    for id in restore {
+        let frozen = ctx.w.module_state::<EconomyStore>().is_some_and(|s| {
+            s.snapshot().account(id).is_some_and(|a| a.status == AccountStatus::Frozen)
+        });
+        if frozen && api::set_account_status(ctx, id, AccountStatus::Active) {
+            restored += 1;
+        }
+    }
+    if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
+        store.clear_boot_frozen();
+    }
+    let meta = ctx.w.module_state::<EconomyStore>().map(EconomyStore::meta_doc);
+    if let Some(meta) = meta {
+        api::persist_meta(ctx.out, meta);
+    }
     info(ctx, "The whole-economy freeze is cleared. Posting is live again.".to_string());
     info(
         ctx,
-        "Accounts, assets and vaults frozen by the recovery boot stay frozen: clear them with \
-         @account/unfreeze, @asset/unfreeze and @vault/unfreeze."
+        format!(
+            "{restored} account(s) frozen by that latch are active again; any account frozen for \
+             its own reason stays frozen (@account/unfreeze <id>)."
+        ),
+    );
+    info(
+        ctx,
+        "Assets and vaults frozen by the recovery boot keep their own latches: clear them with \
+         @asset/unfreeze and @vault/unfreeze."
             .to_string(),
     );
     // A control-doc write, not money: the ordinary durable gate (§4.2).
@@ -1947,7 +2026,12 @@ fn vault_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             return Err(CmdError::msg("That object cannot back a vault."));
         }
     }
-    let id = ctx.w.module_state_mut::<EconomyStore>().expect("economy store").alloc_vault();
+    let id = ctx
+        .w
+        .module_state_mut::<EconomyStore>()
+        .expect("economy store")
+        .alloc_vault()
+        .ok_or_else(|| CmdError::msg("The vault-id allocator is exhausted; nothing was created."))?;
     let vault = Vault {
         id,
         owner,
@@ -2122,12 +2206,19 @@ fn parse_escalation_id(s: &str) -> Option<EscalationId> {
 /// `<secs>` or `ic:<secs>` — a duration from **now**, resolved onto the clock it
 /// names. A deadline always carries its clock (§3.1), so a grace period on an IC
 /// schedule can never be compared against wall time by accident.
+///
+/// The duration must be **positive** (E4b1 verify fold, A7). `expires=0` produced a
+/// reservation already past its deadline, and `expires=-60` one a minute past it:
+/// both were accepted, both froze the money until the next sweep fire noticed, and
+/// both read to the placer as an ordinary hold. A deadline in the past is not a
+/// deadline, it is a typo — almost always a `-` that should have been a duration, or
+/// a caller subtracting instead of adding.
 fn parse_deadline(ctx: &Ctx<'_>, s: &str) -> Option<EconomicDeadline> {
     let (clock, rest, base) = match s.trim().strip_prefix("ic:") {
         Some(rest) => (EconomicClock::WorldIc, rest, ctx.w.game_now_unix()),
         None => (EconomicClock::RealUtc, s.trim(), ctx.w.now()),
     };
-    let secs = rest.parse::<i64>().ok()?;
+    let secs = rest.parse::<i64>().ok().filter(|n| *n > 0)?;
     Some(EconomicDeadline { clock, at: base.saturating_add(secs) })
 }
 
@@ -2171,11 +2262,30 @@ fn hold_place(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Some(s) => Some(parse_principal(ctx, s).ok_or_else(|| CmdError::msg("No such principal."))?),
         None => None,
     };
+    // A3: `sys:<name>` is a **staff** word, and only for a faucet/sink that really
+    // exists. Nobody acts for a system principal (`WorldAuth::acts_for`), so a hold
+    // made out to one is capturable only through an internal settlement authority —
+    // which makes it a fine thing for a contract to place and a terrible thing for a
+    // player to be able to conjure: `@hold/place for=sys:anything` from a player
+    // would have frozen their own money into a reservation with no releaser but its
+    // placer. The refusal is the ORDINARY unknown-principal text, so a player cannot
+    // use it to enumerate which system principals a world has registered.
+    if let Some(PrincipalId::System(_)) = &beneficiary {
+        let unknown = || CmdError::msg("No such principal.");
+        if !is_admin(ctx.w, ctx.actor) {
+            return Err(unknown());
+        }
+        let registered = ctx.w.module_state::<EconomyStore>().is_some_and(|s| {
+            s.snapshot().accounts().any(|a| Some(&a.owner) == beneficiary.as_ref())
+        });
+        if !registered {
+            return Err(unknown());
+        }
+    }
     let expires = match opts.get("expires") {
-        Some(s) => Some(
-            parse_deadline(ctx, s)
-                .ok_or_else(|| CmdError::msg("Bad expires= (use seconds, or ic:<seconds>)."))?,
-        ),
+        Some(s) => Some(parse_deadline(ctx, s).ok_or_else(|| {
+            CmdError::msg("Bad expires= (use a POSITIVE number of seconds, or ic:<seconds>).")
+        })?),
         None => None,
     };
     let reason: String = words.collect::<Vec<_>>().join(" ");
@@ -2549,8 +2659,26 @@ fn obligation_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         // an obligation never charges instantly for time nobody had notice of.
         None => cadence.unwrap_or(0),
     };
+    // S8: `grace=255` was not "255 periods of slack", it was infinite slack — the
+    // `missed` counter saturates at 255 and `missed > periods` is then never true, so
+    // the obligation could miss forever without ever reaching `Delinquent` or leaving
+    // the due pool. Refuse the value that means "never delinquent" rather than
+    // silently clamping it: a staffer who typed 255 meant something.
     let grace = match opts.get("grace") {
-        Some(s) => s.parse::<u8>().map_err(|_| CmdError::msg("grace= must be 0-255."))?,
+        Some(s) => {
+            let n = s.parse::<u8>().map_err(|_| {
+                CmdError::msg(format!("grace= must be 0-{}.", crate::MAX_GRACE_PERIODS))
+            })?;
+            if n > crate::MAX_GRACE_PERIODS {
+                return Err(CmdError::msg(format!(
+                    "grace= must be 0-{}: {} would be an allowance that never ends, so the \
+                     obligation could never go delinquent.",
+                    crate::MAX_GRACE_PERIODS,
+                    n
+                )));
+            }
+            n
+        }
         None => crate::DEFAULT_GRACE_PERIODS,
     };
     let catchup = match opts.get("catchup") {
@@ -2561,7 +2689,11 @@ fn obligation_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         EconomicSchedule::new(clock, base.saturating_add(start), cadence, catchup);
     let id = {
         let store = ctx.w.module_state_mut::<EconomyStore>().expect("economy store");
-        store.alloc_obligation()
+        // B2: the allocator can refuse at the ceiling. Nothing is created, and the
+        // refusal says so rather than panicking the world task.
+        store.alloc_obligation().ok_or_else(|| {
+            CmdError::msg("The obligation-id allocator is exhausted; nothing was created.")
+        })?
     };
     let o = Obligation {
         id,
@@ -2571,10 +2703,14 @@ fn obligation_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         credit_account: credit,
         amount,
         schedule,
-        grace: GracePolicy { periods: grace },
+        grace: GracePolicy::new(grace),
         notify_on_success,
         status: ObligationStatus::Active,
         cause: ObligationCause::Staff { reason: SmolStr::new_static("@obligation/create") },
+        // M1: a command never mints. A faucet-funded obligation is a standing mint
+        // and only `mush_economy::create_system_obligation` — the ruleset's own
+        // entry, under the configured cap — can create one.
+        minted_by: None,
         periods_settled: 0,
         history: Vec::new(),
         settled_total: 0,
@@ -2593,6 +2729,31 @@ fn obligation_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         "The sweep attempts it on its own clock. A downtime backlog is forgiven, never charged."
             .to_string(),
     );
+    // S9: a documented limit, said out loud at the moment it starts applying.
+    //
+    // An `ApprovalRule` is a PER-TRANSACTION escalation, and every period of an
+    // obligation is its own transaction — so a per-period amount under the threshold
+    // never escalates however many years it runs (the sub-threshold drip), while one
+    // above it cannot settle at all, because the sweep has nobody to collect
+    // approvals from and pages instead. Neither is silently fixable: a budget
+    // primitive is E5's, and making the sweep collect approvals would park rent
+    // forever waiting for a human. What the staffer can have is the warning, at the
+    // moment they create the thing.
+    let ruled = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_some_and(|s| s.snapshot().account(debit).is_some_and(|a| a.approval.is_some()));
+    if ruled {
+        info(
+            ctx,
+            format!(
+                "Note: account #{debit} carries an approval rule, and a standing obligation is \
+                 not subject to it the way a payment is. Each period is its own transaction: a \
+                 per-period amount under the threshold never escalates however long it runs, and \
+                 one over it cannot settle at all (the sweep cannot collect approvals)."
+            ),
+        );
+    }
     // A container doc, not money: the ordinary durable gate (§4.2).
     ctx.gate_on_durable_ack();
     Ok(())
@@ -2749,21 +2910,72 @@ fn obligation_suspend(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// `@obligation/resume <id>` (staff) — put a **staff-suspended** obligation back in
+/// the due pool, forgiving the gap the suspension left.
+///
+/// Two things the E4b1 build got wrong, both fixed here:
+///
+/// - **An escalated suspension is not staff's to lift with this verb** (E4b1 verify
+///   fold, A6). `Suspended { Escalated(id) }` means an alert is open and a human has
+///   not answered it; `resume` cleared the status and left the alert open, so the
+///   record still said "a decision is pending" while the obligation quietly went
+///   back to attempting the very settlement that had failed. `@econ/ack <id>` is the
+///   verb that answers an alert *and* resumes its subject, and it is one command.
+/// - **The old notice promised forgiveness nothing delivered** (S5). It said the
+///   suspended periods would be forgiven by the next sweep — but nothing re-anchored
+///   the schedule, so the next sweep saw the whole gap as due and charged
+///   `maximum_catch_up` of it. The schedule is re-anchored here, exactly as
+///   `@obligation/reinstate` does, and the forgiveness is **recorded** with
+///   [`crate::ForgiveCause::Suspension`] so the obligation's own history says what
+///   happened instead of the periods vanishing.
 fn obligation_resume(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let o = obligation_of(ctx, ctx.args.lhs())?;
-    let ObligationStatus::Suspended { .. } = o.status else {
+    let ObligationStatus::Suspended { reason } = &o.status else {
         return Err(CmdError::msg(format!("Obligation #{} is not suspended.", o.id)));
     };
+    if let SuspendReason::Escalated(alert) = reason {
+        return Err(CmdError::msg(format!(
+            "Obligation #{} is suspended by alert #{alert}, which is still open. Answer the alert \
+             instead — `@econ/alerts {alert}` shows the recommended fix, and `@econ/ack {alert}` \
+             resumes it once that is done.",
+            o.id
+        )));
+    }
     let now = ctx.w.now();
-    let next = transition(&o, ObligationStatus::Active, Some(ObligationEvent::Resumed { at: now }));
-    let id = next.id;
+    let clock_now = {
+        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
+        Clocks::new(now, ctx.w.game_now_unix())
+            .now_on(o.schedule.clock, store.snapshot(), o.schedule.manual_now)
+    };
+    // The gap, on the obligation's own clock. `forgive_all` re-anchors past `now`
+    // and consumes no period index, so no deterministic key is reused.
+    let mut next = match clock_now {
+        Some(clock_now) => {
+            let due = crate::due_periods(&o.schedule, clock_now);
+            if due > 0 {
+                crate::forgive_all(&o, due, crate::ForgiveCause::Suspension, clock_now)
+            } else {
+                o.clone()
+            }
+        }
+        None => o.clone(),
+    };
+    let forgiven = next.forgiven_total.saturating_sub(o.forgiven_total);
+    next = transition(&next, ObligationStatus::Active, Some(ObligationEvent::Resumed { at: now }));
+    let (id, due_at) = (next.id, next.schedule.next_due);
     api::put_obligation(ctx, next);
-    info(ctx, format!("Obligation #{id} resumed."));
-    info(
-        ctx,
-        "Any periods that fell due while it was suspended are forgiven by the next sweep, not charged."
-            .to_string(),
-    );
+    info(ctx, format!("Obligation #{id} resumed; the next period falls due at {due_at}."));
+    if forgiven > 0 {
+        info(
+            ctx,
+            format!(
+                "{forgiven} period(s) fell due while it was suspended; they are forgiven and \
+                 recorded, not charged."
+            ),
+        );
+    } else {
+        info(ctx, "No period fell due while it was suspended.".to_string());
+    }
     ctx.gate_on_durable_ack();
     Ok(())
 }
@@ -2789,6 +3001,16 @@ fn obligation_cancel(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// `@obligation/advance <id>` — step a **Manual**-clock obligation forward one
 /// period. Staff or the creditor: advancing a manual clock is what makes the next
 /// period fall due, so it is the act of charging, not of paying.
+///
+/// **One period per invocation, and never past an unsettled one** (E4b1 verify fold,
+/// A4). The E4b1 build added a whole cadence to `manual_now` on every call with no
+/// ceiling at all, so six impatient invocations before the next sweep left six
+/// periods due at once — and the sweep then charged `maximum_catch_up` of them in one
+/// fire and forgave the rest, which is a lot of somebody's money for a command whose
+/// help says "one period". The clock now advances at most to `next_due`, and a second
+/// call before the sweep has settled that period is a **no-op with a notice** rather
+/// than a silent multiplier: a decision per invocation, which is what a manual clock
+/// is for.
 fn obligation_advance(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let o = obligation_of(ctx, ctx.args.lhs())?;
     if !is_admin(ctx.w, ctx.actor) && !is_creditor(ctx, &o) {
@@ -2799,13 +3021,35 @@ fn obligation_advance(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             "That obligation is not on a manual clock; it advances on its own.",
         ));
     }
+    // Stepping the clock of a delinquent, suspended, cancelled or satisfied
+    // obligation charges nothing (the sweep will not attempt it) and quietly builds a
+    // backlog that lands the moment somebody reinstates it.
+    if !o.status.in_due_pool() {
+        return Err(CmdError::msg(format!(
+            "Obligation #{} is {} — its clock does not move until it is back in the due pool.",
+            o.id,
+            render_status(&o)
+        )));
+    }
+    if o.schedule.manual_now >= o.schedule.next_due {
+        info(
+            ctx,
+            format!(
+                "Obligation #{}'s clock is already at {} and a period is due at {} but not yet \
+                 settled. Nothing moved; the next sweep will settle it.",
+                o.id, o.schedule.manual_now, o.schedule.next_due
+            ),
+        );
+        return Ok(());
+    }
     let step = o.schedule.cadence.unwrap_or(1).max(1);
     let mut next = o.clone();
-    next.schedule.manual_now = next.schedule.manual_now.saturating_add(step);
+    next.schedule.manual_now =
+        next.schedule.manual_now.saturating_add(step).min(next.schedule.next_due);
     next.revision += 1;
     let (id, position) = (next.id, next.schedule.manual_now);
     api::put_obligation(ctx, next);
-    info(ctx, format!("Obligation #{id}'s manual clock is now at {position}."));
+    info(ctx, format!("Obligation #{id}'s manual clock is now at {position}; one period is due."));
     ctx.gate_on_durable_ack();
     Ok(())
 }
@@ -2883,6 +3127,32 @@ fn obligation_reinstate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     if !matches!(o.status, ObligationStatus::Delinquent) {
         return Err(CmdError::msg(format!("Obligation #{} is not delinquent.", o.id)));
+    }
+    // A5: reinstating puts the obligation straight back in the due pool, so both
+    // sides must still be able to carry it. Without this the very next sweep found a
+    // closed or frozen account, refused, paged a staffer, and suspended the record
+    // again — a round trip through the escalation ladder to learn something the
+    // command could have said at once, and with the fix (`@obligation/repoint`)
+    // already in hand.
+    {
+        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
+        let snap = store.snapshot();
+        for (label, id) in [("debit", o.debit_account), ("credit", o.credit_account)] {
+            match snap.account(id) {
+                Some(a) if a.status == AccountStatus::Active => {}
+                _ => {
+                    return Err(account_refusal(
+                        ctx,
+                        id,
+                        format!(
+                            "Obligation #{}'s {label} account #{id} is not active; repoint it \
+                             (@obligation/repoint #{}={label} <account id>) before reinstating.",
+                            o.id, o.id
+                        ),
+                    ));
+                }
+            }
+        }
     }
     let now = ctx.w.now();
     let clock_now = {

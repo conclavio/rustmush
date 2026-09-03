@@ -180,7 +180,10 @@ async fn build_engine(
     let llm_config = crate::config_ext::llm_config(&config.llm)?;
     let llm =
         Arc::new(LlmService::from_config(&llm_config).map_err(|e| format!("llm config: {e}"))?);
-    let mut mods = modules::server_modules_with(crate::config_ext::weather_config(&config.weather));
+    let mut mods = modules::server_modules_with(
+        crate::config_ext::weather_config(&config.weather),
+        crate::config_ext::economy_config(&config.economy),
+    );
     mods.push(modules::worldgen_module_with(
         Arc::clone(&llm),
         crate::config_ext::worldgen_config(&config.worldgen),

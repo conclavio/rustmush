@@ -38,13 +38,15 @@
 //! (D-E4-6) — the sweep does not use the whole-step durable gate, so it has no
 //! standing to make that claim.
 
+use std::collections::BTreeMap;
+
 use mush_core::{Ctx, SceneId};
 use mush_org::PrincipalId;
 use smol_str::SmolStr;
 
 use crate::amount::Amount;
 use crate::api::{self, PostAuth, PostOutcome};
-use crate::clock::{CadenceSource, Clocks, advance_cadence};
+use crate::clock::{CadenceSource, Clocks, EconomicClock, advance_cadence, cadence_elapsed};
 use crate::engine::AuthEval;
 use crate::escalation::{
     ESCALATION_GC_AFTER_SECS, Escalation, EscalationKind, EscalationSubject,
@@ -67,6 +69,23 @@ const MAX_CADENCES_PER_SWEEP: usize = 64;
 const MAX_GC_PER_SWEEP: usize = 64;
 /// The most escalations one fire re-notifies about.
 const MAX_RENOTIFY_PER_SWEEP: usize = 32;
+/// How many **consecutive** fires may fail to expire one reservation before the
+/// ladder pages a human (E4b1 verify fold, S6).
+///
+/// Holds had no ladder at all: an expiry the engine refuses is a level-1 log line
+/// and the next fire tries again, forever, thirty seconds apart, with money reserved
+/// the whole time and nobody told. Three retries is generous for anything genuinely
+/// transient and short enough that a stuck reservation is somebody's problem within
+/// two minutes.
+const MAX_HOLD_EXPIRY_REFUSALS: u32 = 3;
+/// How many **consecutive** fires may defer one obligation as transient before the
+/// ladder pages a human (S7).
+///
+/// `Disposition::Transient` means "the next fire is the retry" — which is right, and
+/// was unbounded: a journal that never comes back would have retried silently until
+/// someone noticed the rent had stopped. Sixteen fires is eight minutes at the
+/// shipped sweep period: long past any real blip, well short of a shift.
+const MAX_CONSECUTIVE_DEFERS: u32 = 16;
 
 /// One sweep fire (§4.3), in order: cadences → hold expiries → obligation settlement
 /// → GC → escalation re-notification → the sweep stamps.
@@ -88,9 +107,11 @@ pub(crate) fn sweep(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
         return;
     }
     let (last_real, last_ic) = store.last_sweep();
+    let evidence =
+        Evidence { last_real, last_ic, now, ic_now, ratio, spans_boot: store.gap_spans_boot() };
     advance_cadences(ctx, now, ic_now);
     expire_holds(ctx, now, ic_now);
-    settle_obligations(ctx, now, ic_now, ratio, last_real, last_ic);
+    settle_obligations(ctx, evidence);
     collect_garbage(ctx, now);
     renotify(ctx, now);
     stamp_sweep(ctx, now, ic_now);
@@ -115,6 +136,13 @@ fn stamp_sweep(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
 /// position is a human's to move, through `@obligation/advance` and E5's
 /// `@econ/cadence`), so the filter below is belt to that suspenders: the sweep must
 /// never advance a clock nobody asked it to advance.
+///
+/// The per-fire cap is taken over the clocks that have **actually elapsed** (E4b1
+/// verify fold, S2). Taking it over the whole list first meant a world with 64
+/// clocks that never move — a plausible campaign shape, since a cadence is a season
+/// or a payroll cycle — starved the 65th of every fire it ever needed: the cap
+/// consumed 64 no-ops and the one clock with work to do was never reached. Filtering
+/// first makes the cap what it was written to be: a bound on **work**.
 fn advance_cadences(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
     let moved: Vec<crate::clock::CadenceClock> = {
         let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
@@ -122,6 +150,14 @@ fn advance_cadences(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
             .snapshot()
             .cadences()
             .filter(|c| c.source != CadenceSource::Manual)
+            .filter(|c| {
+                let source_now = match c.source {
+                    CadenceSource::RealUtc => now,
+                    CadenceSource::WorldIc => ic_now,
+                    CadenceSource::Manual => return false,
+                };
+                cadence_elapsed(c, source_now) > 0
+            })
             .take(MAX_CADENCES_PER_SWEEP)
             .filter_map(|c| {
                 let source_now = match c.source {
@@ -183,21 +219,77 @@ fn expire_holds(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
         );
         plan.hold_ops = vec![HoldOp::Expire { hold: id }];
         // Exhaustive, like every outcome in this file.
-        match api::post_with(ctx, &plan, PostAuth::World) {
-            Ok(PostOutcome::Posted(_) | PostOutcome::AlreadyPosted(_)) => {}
+        let refusal = match api::post_with(ctx, &plan, PostAuth::World) {
+            Ok(PostOutcome::Posted(_) | PostOutcome::AlreadyPosted(_)) => None,
             Ok(PostOutcome::NeedsApproval(request)) => {
                 // Unreachable: an effect-only expiry has no net debit, so no
                 // `ApprovalRule` can fire on it. Loud rather than silent.
                 tracing::error!(hold = id.0, request = request.0, "economy: a hold expiry asked for approval");
+                Some(format!("the expiry asked for approval (request #{request})"))
             }
             Err(e) => {
                 // A hold whose deadline passed but whose expiry is refused is not a
-                // money problem: the reservation simply stands until the refusal is
-                // fixed. Level 1 — inform, nothing stops.
+                // money problem *yet*: the reservation simply stands until the
+                // refusal is fixed. Level 1 — inform — for the first few fires.
                 tracing::warn!(hold = id.0, error = %e, "economy: sweep could not expire a hold");
+                Some(e.to_string())
             }
-        }
+        };
+        note_expiry_outcome(ctx, id, refusal, now);
     }
+}
+
+/// Fold one expiry attempt into the hold's ladder run (S6).
+///
+/// A success clears the run. A refusal extends it, and past
+/// [`MAX_HOLD_EXPIRY_REFUSALS`] consecutive fires the reservation gets its own
+/// level-2 record: somebody's money has been unavailable for minutes with a deadline
+/// that has already passed, which is exactly the "a human must decide" rung.
+fn note_expiry_outcome(ctx: &mut Ctx<'_>, id: HoldId, refusal: Option<String>, now: i64) {
+    let Some(detail) = refusal else {
+        if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
+            store.hold_expiry_failures.remove(&id);
+        }
+        return;
+    };
+    let (run, exhausted) = {
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return };
+        bump_run(&mut store.hold_expiry_failures, id, MAX_HOLD_EXPIRY_REFUSALS)
+    };
+    if !exhausted {
+        return;
+    }
+    let account = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().hold(id).map(|h| h.account));
+    let mut recommended = vec![format!("@hold/show #{id}"), format!("@hold/release #{id}")];
+    if let Some(a) = account {
+        recommended.push(format!("@account/unfreeze {a}   (if that is why it will not age out)"));
+    }
+    page(
+        ctx,
+        EscalationKind::SettlementRefused,
+        EscalationSubject::Hold(id),
+        account,
+        format!(
+            "hold #{id}'s deadline has passed but the sweep has failed to age it out {run} times \
+             running: {detail}. The money stays unavailable until this is resolved"
+        ),
+        recommended,
+        now,
+    );
+}
+
+/// Extend a consecutive-failure run and say whether it has crossed `cap`.
+///
+/// The whole of the S6/S7 bookkeeping, in one place and pure enough to test: a run
+/// counts *consecutive* failures, saturates rather than wrapping, and reports
+/// "crossed" exactly once per crossing — the caller's `page` dedupes the rest.
+fn bump_run<K: Ord + Copy>(runs: &mut BTreeMap<K, u32>, key: K, cap: u32) -> (u32, bool) {
+    let run = runs.entry(key).or_insert(0);
+    *run = run.saturating_add(1);
+    (*run, *run > cap)
 }
 
 // ---- step 2: obligations --------------------------------------------------
@@ -209,21 +301,48 @@ fn expire_holds(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
 /// other [`AuthEval`] method keeps its default `false`, so a settlement plan can move
 /// no title, no custody, and no reservation.
 ///
-/// A `System` debit is refused outright even when the obligation names one: debiting
-/// a registered faucet creates money from nothing, which is staff-only, full stop
-/// (the A6 rule). `@obligation/create` refuses that shape up front for the same
-/// reason; this is the second lock.
+/// A `System` debit is refused unless the obligation was **minted by the ruleset's
+/// own faucet authority** and its per-period amount is inside the live
+/// [`crate::EconomyConfig`] cap (M1). Debiting a registered faucet creates money from
+/// nothing, so `@obligation/create` refuses the shape outright and there is no
+/// command that does not; the only way in is
+/// [`crate::create_system_obligation`], and even then this seam re-checks the cap at
+/// **every** settlement — a doc edited above the cap after creation is refused here,
+/// not paid.
+///
+/// **The org-liveness gate is in this seam** (E4b1 verify fold, S1). E4b1 shipped
+/// `authorize` as a pure identity check, so a standing obligation kept settling into
+/// and out of a `Suspended` compartment that every *manual* payment was refused for —
+/// the sweep was the one payer in the world that org status did not bind, and a
+/// wound-down division kept collecting rent forever. The two flags are computed
+/// against the live world immediately before the post ([`api::scope_coherent`] for
+/// the debit side, [`api::credit_allowed`] for the credit side — the very predicates
+/// `WorldAuth` applies) and carried in, because `WorldAuth` borrows the world and a
+/// caller holding `&mut Ctx` cannot build one to hand over (§4.1's `PostAuth` note).
+/// [`post_period`] checks them first so the refusal can name the blamed account; this
+/// is the lock that holds if a future caller forgets to.
 struct ObligationAuth {
     debit: AccountId,
     credit: AccountId,
+    debit_live: bool,
+    credit_live: bool,
+    /// The obligation carries a `minted_by` faucet AND its amount is within the live
+    /// mint cap — the one and only route to a `System` debit (M1).
+    mint_allowed: bool,
 }
 
 impl AuthEval for ObligationAuth {
     fn authorize(&self, _actor: &PrincipalId, account: &Account, delta: Amount) -> bool {
         if delta.is_negative() {
-            return account.id == self.debit && !matches!(account.owner, PrincipalId::System(_));
+            if account.id != self.debit || !self.debit_live {
+                return false;
+            }
+            if matches!(account.owner, PrincipalId::System(_)) {
+                return self.mint_allowed;
+            }
+            return true;
         }
-        account.id == self.credit
+        account.id == self.credit && self.credit_live
     }
 }
 
@@ -268,7 +387,10 @@ fn disposition(e: &EconomyError) -> Disposition {
         | EconomyError::ScopeOwnerMismatch
         | EconomyError::ApprovalRequired
         | EconomyError::ApprovalExpired
-        | EconomyError::Overflow => Disposition::Human(EscalationKind::SettlementRefused),
+        | EconomyError::Overflow
+        // M1: a standing mint above its configured cap is exactly a human decision —
+        // raise the cap deliberately, or lower the obligation.
+        | EconomyError::MintCapExceeded(_) => Disposition::Human(EscalationKind::SettlementRefused),
         // Doc 09 C8: a conflict on an internal deterministic key is an integrity
         // incident, and the response is to freeze the SMALLEST scope — this
         // obligation, through the ladder — rather than the economy.
@@ -327,14 +449,7 @@ fn disposition(e: &EconomyError) -> Disposition {
 /// [`crate::MAX_POSTS_PER_SWEEP`] settlement posts per fire. Work left over waits for
 /// the next fire — and if an obligation is starved often enough, the forgiveness it
 /// eventually takes is classified `Overload`, which escalates on repeat.
-fn settle_obligations(
-    ctx: &mut Ctx<'_>,
-    now: i64,
-    ic_now: i64,
-    ratio: i64,
-    last_real: i64,
-    last_ic: i64,
-) {
+fn settle_obligations(ctx: &mut Ctx<'_>, ev: Evidence) {
     let due: Vec<ObligationId> = {
         let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
         let mut pool: Vec<(i64, ObligationId)> = store
@@ -354,33 +469,41 @@ fn settle_obligations(
         if posts >= crate::MAX_POSTS_PER_SWEEP {
             break;
         }
-        settle_one(ctx, id, now, ic_now, ratio, last_real, last_ic, &mut posts);
+        settle_one(ctx, id, ev, &mut posts);
     }
 }
 
-/// One obligation's whole sweep step.
-#[allow(clippy::too_many_arguments)]
-fn settle_one(
-    ctx: &mut Ctx<'_>,
-    id: ObligationId,
+/// Everything [`classify_forgiveness`] needs, carried as one value: the two persisted
+/// sweep stamps, the two live instants, the ruleset's IC ratio, and (E4b1 verify
+/// fold, S3) whether a **boot** happened inside the gap.
+#[derive(Copy, Clone)]
+struct Evidence {
+    last_real: i64,
+    last_ic: i64,
     now: i64,
     ic_now: i64,
     ratio: i64,
-    last_real: i64,
-    last_ic: i64,
-    posts: &mut usize,
-) {
+    spans_boot: bool,
+}
+
+/// One obligation's whole sweep step.
+fn settle_one(ctx: &mut Ctx<'_>, id: ObligationId, ev: Evidence, posts: &mut usize) {
+    let (now, ic_now) = (ev.now, ev.ic_now);
     let clocks = Clocks::new(now, ic_now);
-    let Some((mut o, clock_now)) = ({
+    let found = {
         let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
         let snap = store.snapshot();
-        snap.obligation(id).and_then(|o| {
-            // A schedule on a cadence whose record is missing resolves to `None`, and
-            // every consumer treats that as **not yet**: a clock nobody can read never
-            // makes a payment due.
-            clocks.now_on(o.schedule.clock, snap, o.schedule.manual_now).map(|n| (o.clone(), n))
-        })
-    }) else {
+        snap.obligation(id)
+            .map(|o| (o.clone(), clocks.now_on(o.schedule.clock, snap, o.schedule.manual_now)))
+    };
+    let Some((mut o, clock_now)) = found else { return };
+    // A schedule on a cadence whose record is gone resolves to `None`, and every
+    // consumer reads that as **not yet** — which for a clock that will never be
+    // readable again means "never", silently, forever (E4b1 verify fold, B6). Boot
+    // asks the same question; this is the arm for a cadence that disappears while the
+    // world is up.
+    let Some(clock_now) = clock_now else {
+        page_unresolvable_clock(ctx, o, now);
         return;
     };
     let before = o.status.clone();
@@ -397,7 +520,14 @@ fn settle_one(
     // ordering honest (E4a verify fold, finding 9).
     let mut forgiven_here: Option<ForgiveCause> = None;
     if intent.forgive > 0 {
-        let cause = classify_forgiveness(last_real, last_ic, now, ic_now, ratio);
+        let cause = classify_forgiveness(
+            ev.last_real,
+            ev.last_ic,
+            ev.now,
+            ev.ic_now,
+            ev.ratio,
+            ev.spans_boot,
+        );
         o = if intent.reanchor {
             // The period counter cannot advance without handing two periods one
             // idempotency key: forgive wholesale, consume no index, re-anchor.
@@ -425,18 +555,17 @@ fn settle_one(
             ctx,
             EscalationKind::RepeatedOverload,
             EscalationSubject::Obligation(id),
+            None,
             format!(
                 "obligation #{id} has been forgiven for overload twice inside the escalation \
                  window: it keeps missing its post budget, which usually means its cadence is \
                  far shorter than the sweep period or the pool is starved"
             ),
-            obligation_advice(&o, None),
+            obligation_advice(&o, None, Blocker::Unknown),
             now,
         );
-        if let Some(eid) = record {
-            o = suspend_for(&o, eid, clock_now);
-            notify_both(ctx, &o, format!("Obligation #{id} is suspended pending staff (alert #{eid})."));
-        }
+        o = suspend_paged(&o, record, clock_now);
+        notify_both(ctx, &o, suspension_notice(id, record));
         api::put_obligation(ctx, o);
         return;
     }
@@ -452,6 +581,12 @@ fn settle_one(
         }
         *posts += 1;
         let (disposition, detail, blamed) = post_period(ctx, &o, period);
+        if !matches!(disposition, Disposition::Transient) {
+            // Any other outcome ends the transient run: the journal answered (S7).
+            if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
+                store.obligation_defers.remove(&id);
+            }
+        }
         match disposition {
             Disposition::Settled(outcome) => match advance_obligation(&o, period, outcome, clock_now) {
                 Ok(next) => o = next,
@@ -477,20 +612,44 @@ fn settle_one(
             }
             Disposition::Transient => {
                 tracing::warn!(obligation = id.0, period, detail, "economy: sweep deferred a settlement");
+                // S7: "retry next fire" is only an answer while the retries are
+                // bounded. Past the cap this stops being a blip and becomes a
+                // decision, and the obligation leaves the due pool rather than
+                // retrying silently for the rest of the world's life.
+                let (run, exhausted) = {
+                    let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { break };
+                    bump_run(&mut store.obligation_defers, id, MAX_CONSECUTIVE_DEFERS)
+                };
+                if exhausted {
+                    let record = page(
+                        ctx,
+                        EscalationKind::SettlementRefused,
+                        EscalationSubject::Obligation(id),
+                        blamed,
+                        format!(
+                            "obligation #{id} has been deferred {run} fires running on a refusal \
+                             that was classified transient: {detail}. It is no longer plausibly \
+                             transient"
+                        ),
+                        obligation_advice(&o, blamed, Blocker::Unknown),
+                        now,
+                    );
+                    o = suspend_paged(&o, record, clock_now);
+                }
                 break;
             }
             Disposition::Human(kind) => {
+                let blocker = blocker_for(ctx, blamed);
                 let record = page(
                     ctx,
                     kind,
                     EscalationSubject::Obligation(id),
+                    blamed,
                     format!("obligation #{id} could not settle period {period}: {detail}"),
-                    obligation_advice(&o, blamed),
+                    obligation_advice(&o, blamed, blocker),
                     now,
                 );
-                if let Some(eid) = record {
-                    o = suspend_for(&o, eid, clock_now);
-                }
+                o = suspend_paged(&o, record, clock_now);
                 break;
             }
         }
@@ -520,6 +679,64 @@ fn post_period(
             None,
         );
     };
+    // ---- S1 + M1: the two gates that are the SEAM's, asked before the post ----
+    //
+    // `ObligationAuth` enforces both (that is the lock); asking here as well is what
+    // lets the refusal name the account it is about, which is the difference between
+    // an alert a staffer can act on and one they have to investigate.
+    let gate = {
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return (Disposition::Transient, "the economy store is not loaded".to_string(), None);
+        };
+        let snap = store.snapshot();
+        let debit = snap.account(o.debit_account).cloned();
+        let credit = snap.account(o.credit_account).cloned();
+        let cap = debit.as_ref().and_then(|a| store.config().mint_cap(snap, &a.instrument));
+        (debit, credit, cap)
+    };
+    let (debit, credit, mint_cap) = gate;
+    let debit_live =
+        debit.as_ref().is_none_or(|a| api::scope_coherent(ctx.w, a.scope, &a.owner));
+    let credit_live = credit.as_ref().is_none_or(|a| api::credit_allowed(ctx.w, a));
+    if !debit_live {
+        return (
+            Disposition::Human(EscalationKind::SettlementRefused),
+            "the debit account's organization or compartment is not active, so the sweep may not \
+             take money out of it"
+                .to_string(),
+            Some(o.debit_account),
+        );
+    }
+    if !credit_live {
+        return (
+            Disposition::Human(EscalationKind::SettlementRefused),
+            "the credit account's organization may no longer receive value".to_string(),
+            Some(o.credit_account),
+        );
+    }
+    // M1: a faucet debit is allowed only for a ruleset-minted obligation, and only
+    // while its per-period amount is inside the LIVE cap — re-read every settlement,
+    // so a doc edited above the cap after creation is refused rather than paid.
+    let faucet_debit = debit.as_ref().is_some_and(|a| matches!(a.owner, PrincipalId::System(_)));
+    let mint_allowed = o.minted_by.is_some() && mint_cap.is_some_and(|cap| o.amount <= cap);
+    if faucet_debit && !mint_allowed {
+        let detail = if o.minted_by.is_none() {
+            "its debit side is a system source/sink but nothing minted it: a standing mint needs \
+             the ruleset's faucet authority (create_system_obligation), never a command"
+                .to_string()
+        } else {
+            format!(
+                "its per-period amount is above the configured mint cap ({}); \
+                 raise [economy] mint_obligation_cap_major or lower the obligation",
+                mint_cap.map_or_else(|| "unset".to_string(), |c| c.minor().to_string())
+            )
+        };
+        return (
+            Disposition::Human(EscalationKind::SettlementRefused),
+            detail,
+            Some(o.debit_account),
+        );
+    }
     let plan = EconomyPlan {
         idempotency: obligation_key(o.id, period),
         actor: api::sweep_principal(),
@@ -545,7 +762,13 @@ fn post_period(
         hold_ops: Vec::new(),
         expected_hold_revisions: Vec::new(),
     };
-    let auth = ObligationAuth { debit: o.debit_account, credit: o.credit_account };
+    let auth = ObligationAuth {
+        debit: o.debit_account,
+        credit: o.credit_account,
+        debit_live,
+        credit_live,
+        mint_allowed,
+    };
     match api::post_with(ctx, &plan, PostAuth::Injected(&auth)) {
         Ok(PostOutcome::Posted(t)) => {
             (Disposition::Settled(SettleOutcome::Posted(t)), String::new(), None)
@@ -591,21 +814,82 @@ fn overload_repeats(o: &Obligation, clock_now: i64) -> bool {
 }
 
 /// Suspend an obligation pending a human decision — **this obligation alone** (§4.6).
-fn suspend_for(o: &Obligation, escalation: EscalationId, at: i64) -> Obligation {
+///
+/// `record` is `None` only when the escalation allocator itself is exhausted (E4b1
+/// verify fold, B2). The subject still stops: an alert that could not be minted is a
+/// reason to page harder, never a reason to keep charging an account nobody can fix.
+fn suspend_paged(o: &Obligation, record: Option<EscalationId>, at: i64) -> Obligation {
     let mut next = o.clone();
-    next.status = ObligationStatus::Suspended { reason: SuspendReason::Escalated(escalation) };
+    next.status = match record {
+        Some(id) => ObligationStatus::Suspended { reason: SuspendReason::Escalated(id) },
+        None => ObligationStatus::Suspended {
+            reason: SuspendReason::Staff { reason: SmolStr::new_static("alert-allocator-exhausted") },
+        },
+    };
     next.revision += 1;
     if next.history.len() >= crate::MAX_OBLIGATION_HISTORY {
         next.history.remove(0);
     }
-    next.history.push(ObligationEvent::Escalated { id: escalation, at });
+    if let Some(id) = record {
+        next.history.push(ObligationEvent::Escalated { id, at });
+    }
     next
+}
+
+/// The line both parties are told when their obligation stops.
+fn suspension_notice(id: ObligationId, record: Option<EscalationId>) -> String {
+    match record {
+        Some(eid) => format!("Obligation #{id} is suspended pending staff (alert #{eid})."),
+        None => format!("Obligation #{id} is suspended pending staff."),
+    }
+}
+
+/// What is actually blocking a settlement, when the refusal named an account — the
+/// difference between advice that fixes the problem and advice that does not.
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub(crate) enum Blocker {
+    /// Nothing more specific is known: the account is closed, gone, or refused for a
+    /// reason the sweep cannot name.
+    Unknown,
+    /// The blamed account carries a **per-account recovery freeze** and its owner is
+    /// still here (E4b1 verify fold, B4b). Repointing an obligation away from a
+    /// recoverable frozen wallet is precisely the wrong move — it abandons the money
+    /// sitting in it and re-aims a live debt at some other account — and a recovery
+    /// boot that froze fifty accounts would otherwise have produced fifty alerts all
+    /// recommending exactly that.
+    ///
+    /// A frozen account whose **owner is gone** is a different problem with a
+    /// different answer, and stays `Unknown`: unfreezing it would settle money into a
+    /// destroyed principal's wallet, so repointing really is the fix there.
+    FrozenAccount,
+}
+
+/// Which [`Blocker`] the blamed account represents right now.
+fn blocker_for(ctx: &Ctx<'_>, blamed: Option<AccountId>) -> Blocker {
+    let Some(id) = blamed else { return Blocker::Unknown };
+    let recoverable = ctx.w.module_state::<EconomyStore>().is_some_and(|s| {
+        s.snapshot().account(id).is_some_and(|a| {
+            a.status == AccountStatus::Frozen && crate::boot::principal_live(ctx.w, &a.owner)
+        })
+    });
+    if recoverable { Blocker::FrozenAccount } else { Blocker::Unknown }
 }
 
 /// The recommended commands for an obligation a human must decide about (§4.6),
 /// arguments filled in. `account` names the side that refused, when it is known.
-pub(crate) fn obligation_advice(o: &Obligation, account: Option<AccountId>) -> Vec<String> {
+pub(crate) fn obligation_advice(
+    o: &Obligation,
+    account: Option<AccountId>,
+    blocker: Blocker,
+) -> Vec<String> {
     let mut out = Vec::new();
+    if let (Blocker::FrozenAccount, Some(a)) = (blocker, account) {
+        // B4b: the account exists, holds its money, and is one command from working.
+        out.push(format!("@account/unfreeze {a}"));
+        out.push("@econ/ack #<this alert>   (resumes it once the account is back)".to_string());
+        out.push(format!("@obligation/cancel #{}", o.id));
+        return out;
+    }
     let side = match account {
         Some(a) if a == o.credit_account => Some("credit"),
         Some(a) if a == o.debit_account => Some("debit"),
@@ -622,11 +906,44 @@ pub(crate) fn obligation_advice(o: &Obligation, account: Option<AccountId>) -> V
     out
 }
 
+/// B6's live arm: the schedule's clock cannot be resolved, so no period can ever fall
+/// due. Suspend the subject and page, exactly as boot does for the same shape.
+fn page_unresolvable_clock(ctx: &mut Ctx<'_>, o: Obligation, now: i64) {
+    if !o.status.in_due_pool() {
+        return;
+    }
+    let id = o.id;
+    let clock = match o.schedule.clock {
+        EconomicClock::Cadence(c) => format!("cadence clock #{c}, which has no record"),
+        other => format!("{other:?}, which cannot be resolved"),
+    };
+    let record = page(
+        ctx,
+        EscalationKind::SettlementRefused,
+        EscalationSubject::Obligation(id),
+        None,
+        format!(
+            "obligation #{id}'s schedule runs on {clock}: no period can fall due on it, so it \
+             would have sat in the due pool charging nothing and telling nobody"
+        ),
+        vec![
+            format!("@obligation/show #{id}"),
+            format!("@obligation/cancel #{id}"),
+            "@econ/ack #<this alert>   (resumes it once the clock exists again)".to_string(),
+        ],
+        now,
+    );
+    let next = suspend_paged(&o, record, now);
+    notify_both(ctx, &next, suspension_notice(id, record));
+    api::put_obligation(ctx, next);
+}
+
 fn cause_word(c: ForgiveCause) -> &'static str {
     match c {
         ForgiveCause::Downtime => "downtime",
         ForgiveCause::TimeJump => "a time jump",
         ForgiveCause::Overload => "overload",
+        ForgiveCause::Suspension => "a suspension",
     }
 }
 
@@ -705,11 +1022,36 @@ fn announce(ctx: &mut Ctx<'_>, before: &ObligationStatus, o: &Obligation) {
 
 // ---- the escalation ladder ------------------------------------------------
 
-/// Open one level-2 record (§4.6) and return its id, or `None` if the store is gone.
+/// What an existing record can do for a fresh page (E4b1 verify fold, S4 + B4c).
+enum Reuse {
+    /// Its subject already has a record standing; hand back that id untouched.
+    Standing(EscalationId),
+    /// Its subject has an **acknowledged** record whose cause has come back past the
+    /// cool-off: reopen it in place, same id.
+    Reopen(EscalationId),
+    /// A different subject, but the same **blamed account** inside the escalation
+    /// window: name this subject on that record instead of minting a second one.
+    Note(EscalationId),
+}
+
+/// Open one level-2 record (§4.6) and return its id, or `None` if the store is gone
+/// or the allocator is exhausted (B2).
 ///
-/// One record per subject: a subject that already has an **open** record is not paged
-/// again, so a refusal that repeats every 30 seconds produces one alert, not a
-/// thousand.
+/// Three dedupe rules, all of them about the same thing — a staffer should get one
+/// alert per decision they actually have to make:
+///
+/// 1. **One open record per subject.** A refusal that repeats every 30 seconds
+///    produces one alert, not a thousand. (E4b1 shipped this one.)
+/// 2. **An acknowledged record is REOPENED, never replaced** (S4). Acking without
+///    fixing the cause used to mint a fresh id on the very next fire — a new alert
+///    number every half minute for one unfixed problem, and the record's own history
+///    of how many times it had come back was lost with each one. The same record
+///    comes back after [`crate::ESCALATION_RENOTIFY_SECS`], carrying its `reopened`
+///    tally; inside the cool-off the subject stays attached to the acked record
+///    rather than minting anything.
+/// 3. **One record per blamed account** (B4c). One frozen wallet blocks every
+///    obligation pointing at it; those are not a dozen decisions, they are one, so
+///    the first record names the rest in its context.
 // The sweep's standing rule is **no `?` anywhere in this file** (§4.1): a reader
 // auditing a tick handler should be able to grep for it and find nothing, without
 // having to decide case by case whether a given `?` is an `Option` early-return or an
@@ -720,22 +1062,63 @@ fn page(
     ctx: &mut Ctx<'_>,
     kind: EscalationKind,
     subject: EscalationSubject,
+    blamed: Option<AccountId>,
     context: String,
     recommended: Vec<String>,
     now: i64,
 ) -> Option<EscalationId> {
-    let existing = {
+    let reuse = {
         let Some(store) = ctx.w.module_state::<EconomyStore>() else { return None };
-        store.escalations().find(|e| e.subject == subject && e.is_open()).map(|e| e.id)
+        match store.escalations().find(|e| e.subject == subject) {
+            Some(e) if e.is_open() => Some(Reuse::Standing(e.id)),
+            Some(e) if e.reopen_due(now) => Some(Reuse::Reopen(e.id)),
+            Some(e) => Some(Reuse::Standing(e.id)),
+            None => blamed.and_then(|account| {
+                store
+                    .escalations()
+                    .find(|e| {
+                        e.is_open()
+                            && e.blamed == Some(account)
+                            && now.saturating_sub(e.opened_at) <= crate::ESCALATION_WINDOW_SECS
+                    })
+                    .map(|e| Reuse::Note(e.id))
+            }),
+        }
     };
-    if let Some(id) = existing {
-        return Some(id);
+    match reuse {
+        Some(Reuse::Standing(id)) => return Some(id),
+        Some(Reuse::Reopen(id)) => {
+            let record = ctx.w.module_state::<EconomyStore>().and_then(|s| s.escalation(id).cloned());
+            if let Some(mut record) = record {
+                record.reopen(now);
+                tracing::warn!(escalation = id.0, subject = ?subject, reopened = record.reopened, "economy: an acknowledged escalation reopened — its cause never went away");
+                api::put_escalation(ctx, record);
+            }
+            return Some(id);
+        }
+        Some(Reuse::Note(id)) => {
+            let record = ctx.w.module_state::<EconomyStore>().and_then(|s| s.escalation(id).cloned());
+            if let Some(mut record) = record {
+                record.note_also(&format!("{} is blocked by the same account", subject.render()));
+                tracing::warn!(escalation = id.0, subject = ?subject, "economy: another record is blocked by an already-paged account");
+                api::put_escalation(ctx, record);
+            }
+            return Some(id);
+        }
+        None => {}
     }
     let id = {
         let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return None };
-        store.alloc_escalation()
+        let Some(id) = store.alloc_escalation() else {
+            // B2: at the ceiling the sweep still runs and the subject still stops —
+            // it simply stops with a `Staff` reason instead of an alert id.
+            tracing::error!(subject = ?subject, "economy: the escalation allocator is exhausted; the subject is suspended WITHOUT an alert record");
+            return None;
+        };
+        id
     };
-    let record = Escalation::page(id, kind, subject, context, recommended, now);
+    let record =
+        Escalation::page(id, kind, subject, context, recommended, now).blaming(blamed);
     tracing::warn!(escalation = id.0, subject = ?subject, context = %record.context, "economy: level-2 escalation opened");
     api::put_escalation(ctx, record);
     let meta = ctx.w.module_state::<EconomyStore>().map(EconomyStore::meta_doc);
@@ -746,18 +1129,28 @@ fn page(
 }
 
 /// Level 3's companion record (§4.6): the whole-economy freeze is set, so the sweep
-/// is doing nothing at all. Opened once — while one is open, later fires are silent.
+/// is doing nothing at all. Opened **once per freeze** — not once per fire, and not
+/// once per acknowledgement either (E4b1 verify fold, S4).
+///
+/// The guard is "any Economy record at all", open or acked, rather than "any *open*
+/// one": a staffer who acks the diagnosis has not cleared the freeze (that is
+/// `@econ/unfreeze`'s, deliberately), so re-paging them thirty seconds later with a
+/// fresh id would punish them for reading it. The record is collected seven days
+/// after it is acked, and a freeze still standing then is worth saying again.
 fn open_freeze_record(ctx: &mut Ctx<'_>, now: i64) {
     let already = ctx
         .w
         .module_state::<EconomyStore>()
-        .is_some_and(|s| s.escalations().any(|e| e.subject == EscalationSubject::Economy && e.is_open()));
+        .is_some_and(|s| s.escalations().any(|e| e.subject == EscalationSubject::Economy));
     if already {
         return;
     }
-    let id = {
+    let Some(id) = ({
         let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return };
         store.alloc_escalation()
+    }) else {
+        tracing::error!("economy: the escalation allocator is exhausted; the freeze has no record");
+        return;
     };
     // §4.6: the level-**3** action is the freeze itself (unchanged); the record it
     // now also opens is an ordinary level-2 page — a human must decide, and here is
@@ -869,6 +1262,7 @@ fn collect_garbage(ctx: &mut Ctx<'_>, now: i64) {
         for id in &holds {
             store.snapshot.remove_hold(*id);
             store.hold_terminal_at.remove(id);
+            store.hold_expiry_failures.remove(id);
         }
         for id in &escalations {
             store.escalations.remove(id);
@@ -882,5 +1276,53 @@ fn collect_garbage(ctx: &mut Ctx<'_>, now: i64) {
     }
     for id in &escalations {
         api::delete_key(ctx.out, crate::escalation::escalation_key(*id));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// E4b1 verify fold, S7 — the consecutive-defer ladder's bookkeeping.
+    ///
+    /// This lives here rather than in `tests/e4b1.rs` because the **increment** side
+    /// of an S7 run needs a `Disposition::Transient`, and the only two refusals
+    /// classified transient are `JournalUnavailable` and `EconomyFrozen`: the first
+    /// has no injection seam in the integration harness (the ledger refuses only on
+    /// a sequence/byte overflow that boot itself rejects), and the second makes the
+    /// sweep return before it reaches an obligation at all. What *is* testable, and
+    /// is the whole of the logic the fold added, is the run itself: it counts
+    /// consecutive failures, reports "crossed" exactly once at the cap, saturates
+    /// rather than wrapping, and resets when the caller clears the key.
+    #[test]
+    fn vf_s7_a_transient_defer_run_is_bounded_and_resets() {
+        let mut runs: BTreeMap<ObligationId, u32> = BTreeMap::new();
+        let id = ObligationId(7);
+        // Up to and including the cap: keep retrying, page nobody.
+        for expected in 1..=MAX_CONSECUTIVE_DEFERS {
+            let (run, exhausted) = bump_run(&mut runs, id, MAX_CONSECUTIVE_DEFERS);
+            assert_eq!(run, expected);
+            assert!(!exhausted, "the ladder paged at fire {expected}, inside its own cap");
+        }
+        // The first fire past it crosses.
+        let (run, exhausted) = bump_run(&mut runs, id, MAX_CONSECUTIVE_DEFERS);
+        assert_eq!(run, MAX_CONSECUTIVE_DEFERS + 1);
+        assert!(exhausted, "the ladder never paged past its cap");
+
+        // Any non-transient outcome clears the run, so "consecutive" means it.
+        runs.remove(&id);
+        let (run, exhausted) = bump_run(&mut runs, id, MAX_CONSECUTIVE_DEFERS);
+        assert_eq!((run, exhausted), (1, false), "the run did not reset");
+
+        // A run that somehow reached the ceiling saturates rather than wrapping to
+        // zero — wrapping would silently hand the obligation a fresh allowance.
+        runs.insert(id, u32::MAX);
+        let (run, exhausted) = bump_run(&mut runs, id, MAX_CONSECUTIVE_DEFERS);
+        assert_eq!((run, exhausted), (u32::MAX, true));
+
+        // Runs are per subject: one obligation's deferrals never spend another's.
+        let other = ObligationId(8);
+        let (run, _) = bump_run(&mut runs, other, MAX_CONSECUTIVE_DEFERS);
+        assert_eq!(run, 1);
     }
 }

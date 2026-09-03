@@ -243,8 +243,11 @@ pub(crate) fn subtree(w: &World, root: ObjId) -> Vec<ObjId> {
 /// org must be able to take final settlement — that is what dissolving *is* — while
 /// a `Suspended` or `Closed` one must not, and neither may a compartment whose org
 /// has vanished. An unscoped account takes credit freely, as in E2.
+///
+/// `pub(crate)` since the E4b1 verify fold (S1): the sweep's `ObligationAuth` asks
+/// the **same** question rather than a second, weaker one of its own.
 #[must_use]
-fn credit_allowed(w: &World, account: &Account) -> bool {
+pub(crate) fn credit_allowed(w: &World, account: &Account) -> bool {
     if account.scope.is_none() {
         return true;
     }
@@ -459,11 +462,16 @@ impl AuthEval for WorldAuth<'_> {
     ///
     /// - **`Hold.holder` is never consulted.** It is a caller-chosen idempotency key,
     ///   an attribution label and nothing more (E4a verify fold, finding 8).
-    /// - **Plain debit authority does not capture.** A reservation exists precisely to
-    ///   stand between an account's owner and their own money; letting the owner's
-    ///   wallet rights spend it would make escrow a promise only the payer could break
-    ///   (finding 1). It *does* release — releasing hands the money back to the very
-    ///   account it was reserved on, which takes nothing from anyone.
+    /// - **Plain debit authority does not capture, and does not release a reservation
+    ///   that was made TO someone** (E4b1 verify fold, A1). Releasing hands the money
+    ///   back to the account it was reserved on, which takes nothing from anyone —
+    ///   *unless* the reservation has a beneficiary, in which case it takes away
+    ///   exactly the thing that was promised to them. E4b1 shipped the fallback
+    ///   unconditionally, so the payer could destroy their own escrow with their own
+    ///   wallet rights and the payee's guarantee was worth nothing. The fallback now
+    ///   applies only to a **beneficiary-less** hold; a hold made *to* someone is
+    ///   released by that beneficiary (or anyone who acts for them), by its placer, or
+    ///   by staff.
     /// - **`Place` is not answered here.** The engine asks it as debit authority on
     ///   the account through [`AuthEval::authorize`] (a reservation is a promise to
     ///   pay); a `Place` reaching this method at all would be a shape the engine does
@@ -480,10 +488,14 @@ impl AuthEval for WorldAuth<'_> {
                 self.acts_for(actor, beneficiary)
             }
             HoldOp::Release { .. } => {
-                if *actor == hold.placed_by
-                    || hold.beneficiary.as_ref().is_some_and(|b| self.acts_for(actor, b))
-                {
+                if *actor == hold.placed_by {
                     return true;
+                }
+                // A promise made TO someone is theirs to give back, not the payer's
+                // to take back (A1): with a beneficiary, the beneficiary (or whoever
+                // acts for them, staff included) is the only other releaser.
+                if let Some(beneficiary) = &hold.beneficiary {
+                    return self.acts_for(actor, beneficiary);
                 }
                 let Some(store) = self.w.module_state::<EconomyStore>() else { return false };
                 let Some(account) = store.snapshot().account(hold.account) else { return false };
@@ -504,17 +516,29 @@ impl WorldAuth<'_> {
         scope_coherent(self.w, Some(scope), owner) && holds_capability(self.w, actor, capability, scope)
     }
 
-    /// Whether `actor` acts **for** `who` — the beneficiary question a capture asks.
+    /// Whether `actor` acts **for** `who` — the beneficiary question a capture asks,
+    /// and (E4b1 verify fold, A2) the same question `may_view_hold` asks, so that
+    /// seeing a reservation and spending it can never come apart.
     ///
     /// An object principal is acted for by itself, by anyone who MUSH-controls it,
     /// or by staff. An organization is acted for by a holder of the spending
     /// capability on its root compartment (`economy.account.post` — the E3
     /// vocabulary's spending entry; no new capability is minted, because "may spend
     /// the org's money" is exactly the right to turn its escrow into a payment) or by
-    /// staff. A **system** principal is acted for by nobody: a `System` beneficiary
-    /// is an internal settlement authority ([`crate::ContractAuth`]), never a command.
-    fn acts_for(&self, actor: &PrincipalId, who: &PrincipalId) -> bool {
+    /// staff.
+    ///
+    /// A **system** principal is acted for by **nobody, staff included** (A3). The
+    /// `System` arm sits above the staff short-circuit deliberately: a `System`
+    /// beneficiary is an internal settlement authority ([`crate::ContractAuth`]'s,
+    /// and E4b2's), and a staffer who could capture one from a command would be
+    /// spending a contract's escrow by hand, outside the settlement that is supposed
+    /// to be the only thing that can. Staff have `@econ/mint` and `@econ/reverse` for
+    /// what they legitimately need here.
+    pub(crate) fn acts_for(&self, actor: &PrincipalId, who: &PrincipalId) -> bool {
         let PrincipalId::Object(a) = actor else { return false };
+        if matches!(who, PrincipalId::System(_)) {
+            return false;
+        }
         if is_staff(self.w, *a) {
             return true;
         }
@@ -536,11 +560,21 @@ impl WorldAuth<'_> {
 /// right to age a hold out past its own deadline — and the engine independently
 /// requires the `Internal { kind: "hold.expire" }` cause for that op (invariant 24).
 ///
-/// Nothing constructs this from player input: `parse_principal` accepts `sys:<name>`
-/// only in staff verbs that name an *account* owner, and no command builds a plan
-/// whose `actor` is a system principal.
+/// Nothing constructs this from player input, and the E4b1 verify fold made that
+/// exact (A3, S9):
+///
+/// - No command builds a plan whose `actor` is a system principal, and this
+///   constructor is now `pub(crate)`, so no other crate can name the sweep either.
+/// - `parse_principal` does accept `sys:<name>` — `@account/system` and `@econ/mint`
+///   name one, and so may `@hold/place for=`. Every such verb is **staff-only** and
+///   resolves the name against a **registered** system account first, so a player
+///   cannot conjure a system beneficiary and staff cannot conjure one that does not
+///   already exist.
+/// - Nobody acts for a `System` principal, staff included ([`WorldAuth::acts_for`]),
+///   so a reservation held for one is capturable only through an internal settlement
+///   authority — never from a command.
 #[must_use]
-pub fn sweep_principal() -> PrincipalId {
+pub(crate) fn sweep_principal() -> PrincipalId {
     PrincipalId::System(
         mush_org::SystemPrincipalId::new("economy.sweep").expect("valid system principal"),
     )
@@ -892,8 +926,15 @@ fn mint_or_serve_approval(
 
     let request = {
         let store = ctx.w.module_state_mut::<EconomyStore>().expect("economy store");
+        // B2: the allocator can refuse at the ceiling. A request that cannot be
+        // minted is not an approval that is silently skipped — the post is refused,
+        // loudly, and nothing moves.
+        let Some(id) = store.alloc_approval() else {
+            tracing::error!("economy: the approval-request allocator is exhausted; refusing the post");
+            return Err(EconomyError::Overflow);
+        };
         ApprovalRequest {
-            id: store.alloc_approval(),
+            id,
             plan_hash: need.plan_hash,
             accounts: need.accounts.clone(),
             requested_by: requester.clone(),
@@ -922,6 +963,134 @@ pub(crate) fn put_approval(ctx: &mut Ctx<'_>, request: ApprovalRequest) {
         store.snapshot.put_approval(request.clone());
     }
     persist_approval(ctx.out, &request);
+}
+
+/// Everything [`create_system_obligation`] needs that is not the faucet itself.
+///
+/// A struct rather than eight positional arguments, and deliberately **not** an
+/// `Obligation`: the id, the two principals, the counters, the history and
+/// `minted_by` are the economy's to fill in, not the ruleset's.
+#[derive(Clone, Debug)]
+pub struct ObligationSpec {
+    /// The faucet's own account (its owner must be the faucet principal).
+    pub debit_account: AccountId,
+    /// Who is paid each period.
+    pub credit_account: AccountId,
+    /// How much, per period — bounded by the live [`crate::EconomyConfig`] cap.
+    pub amount: Amount,
+    /// When and how often.
+    pub schedule: crate::clock::EconomicSchedule,
+    /// How much slack before delinquency.
+    pub grace: crate::obligation::GracePolicy,
+    /// Whether a routine success notifies.
+    pub notify_on_success: bool,
+    /// What created it (a ruleset namespace, normally).
+    pub cause: crate::obligation::ObligationCause,
+}
+
+/// **The ruleset's mint entry** (E4b1 verify fold, M1): create a recurring payment
+/// funded by a registered faucet.
+///
+/// Every other route to a `System` debit is closed and stays closed —
+/// `@obligation/create` refuses the shape, and the sweep's `ObligationAuth` refuses
+/// it again at every settlement. A faucet-funded obligation is a **standing mint**:
+/// the scheduler will execute it forever, with nobody in the loop, so opening it is
+/// not a staff verb (a staffer can be socially engineered, and `@econ/mint` already
+/// covers the one-off case). It is a call the ruleset makes in code, under four
+/// locks:
+///
+/// 1. **The faucet must be registered** — it must own the debit account, which only
+///    `@account/system` creates. A name nobody registered mints nothing.
+/// 2. **The debit account must be that faucet's own**, `Active`, and the credit
+///    account must be a live account in the same instrument. No implicit exchange,
+///    and no minting into a closed wallet.
+/// 3. **The amount must be inside the configured cap**
+///    ([`crate::EconomyConfig::mint_cap`]), refused as
+///    [`EconomyError::MintCapExceeded`] otherwise.
+/// 4. **The cap is re-checked at every settlement**, live, so lowering it in the
+///    config binds the next sweep and a record edited above it afterwards is paged
+///    rather than paid.
+///
+/// The record is a container doc like any other obligation; the ordinary durable
+/// gate applies, because nothing has moved yet.
+pub fn create_system_obligation(
+    ctx: &mut Ctx<'_>,
+    faucet: &mush_org::SystemPrincipalId,
+    spec: ObligationSpec,
+) -> Result<ObligationId, EconomyError> {
+    let owner = PrincipalId::System(faucet.clone());
+    if spec.amount.is_zero() || spec.amount.is_negative() {
+        return Err(EconomyError::ZeroLine(0));
+    }
+    if spec.debit_account == spec.credit_account {
+        return Err(EconomyError::ScopeOwnerMismatch);
+    }
+    let (debtor, creditor) = {
+        let store = ctx.w.module_state::<EconomyStore>().ok_or(EconomyError::EconomyFrozen)?;
+        if store.frozen {
+            return Err(EconomyError::EconomyFrozen);
+        }
+        let snap = store.snapshot();
+        let debit =
+            snap.account(spec.debit_account).ok_or(EconomyError::NoSuchAccount(spec.debit_account))?;
+        let credit = snap
+            .account(spec.credit_account)
+            .ok_or(EconomyError::NoSuchAccount(spec.credit_account))?;
+        // Lock 1 + 2: this account IS the named faucet's, and both sides are live.
+        if debit.owner != owner {
+            return Err(EconomyError::Unauthorized);
+        }
+        if debit.status != crate::record::AccountStatus::Active {
+            return Err(EconomyError::InactiveAccount(spec.debit_account));
+        }
+        if credit.status != crate::record::AccountStatus::Active {
+            return Err(EconomyError::InactiveAccount(spec.credit_account));
+        }
+        if debit.instrument != credit.instrument {
+            return Err(EconomyError::NotBalanced(debit.instrument.clone()));
+        }
+        // Lock 3: the configured ceiling, in this instrument's own minor units. An
+        // unrepresentable cap refuses — it is not an absent one.
+        let cap = store
+            .config()
+            .mint_cap(snap, &debit.instrument)
+            .ok_or(EconomyError::MintCapExceeded(spec.debit_account))?;
+        if spec.amount > cap {
+            return Err(EconomyError::MintCapExceeded(spec.debit_account));
+        }
+        (debit.owner.clone(), credit.owner.clone())
+    };
+    let id = {
+        let store = ctx.w.module_state_mut::<EconomyStore>().ok_or(EconomyError::EconomyFrozen)?;
+        store.alloc_obligation().ok_or(EconomyError::Overflow)?
+    };
+    let o = crate::obligation::Obligation {
+        id,
+        debtor,
+        creditor,
+        debit_account: spec.debit_account,
+        credit_account: spec.credit_account,
+        amount: spec.amount,
+        schedule: spec.schedule,
+        grace: crate::obligation::GracePolicy::new(spec.grace.periods),
+        notify_on_success: spec.notify_on_success,
+        status: crate::obligation::ObligationStatus::Active,
+        cause: spec.cause,
+        minted_by: Some(owner),
+        periods_settled: 0,
+        history: Vec::new(),
+        settled_total: 0,
+        missed_total: 0,
+        forgiven_total: 0,
+        revision: 1,
+    };
+    put_obligation(ctx, o);
+    let meta = ctx.w.module_state::<EconomyStore>().map(EconomyStore::meta_doc);
+    if let Some(meta) = meta {
+        persist_meta(ctx.out, meta);
+    }
+    ctx.gate_on_durable_ack();
+    Ok(id)
 }
 
 /// Install an obligation into RAM and queue its container doc (E4b1).
@@ -1105,11 +1274,20 @@ fn prepare_commit(
 ///    single-threaded, so the only way to interleave a second post is for something
 ///    *between* `prepare_commit` and here to re-enter the economy. The one call in
 ///    that window is `run_custody_effects`, which drives [`crate::CustodyProvider`]s
-///    with a `&mut Ctx`. No shipped provider re-enters (`ContainerProvider` and
-///    `mush_sim::InteriorCustodyProvider` move an object and consult hooks), and the
-///    `CarryAttempt` hook chain they run has no `Ctx` and so cannot post.
+///    with a `&mut Ctx`. No shipped provider re-enters: `ContainerProvider` and
+///    `mush_sim::InteriorCustodyProvider` move an object and consult the
+///    `CarryAttempt` hook chain, whose signature is
+///    `carry_attempt(&self, w: &mut World, mover, obj, dest) -> Result<(), RichText>`
+///    (`mush_core::module`). That `&mut World` reaches the economy store, but posting
+///    needs a `Ctx` — the `Outbox` that carries the journal append, every projection
+///    write, and the durable gate — and a hook has none. So a hook can read the
+///    economy, and can even mutate the store's own fields, but it **cannot post**:
+///    the allocator and the ledger tail have no path to move under it.
 /// 2. **The journal tail cannot move either**, for the same reason: `apply_prepared`
-///    is the only appender and only this function calls it.
+///    is the only appender and only this function calls it. E4b1's verify fold (B7)
+///    narrowed `EconomyStore::journal` and `::frozen` to `pub(crate)` so that "one
+///    mutator" is a property of the type and not a convention — no crate outside this
+///    one ever used either field, and both now have read accessors.
 ///
 /// So a fired assertion means a provider (or a future hook) re-entered the posting
 /// path — a **programming** error that must be found in test, not a desync silently

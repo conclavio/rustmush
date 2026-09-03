@@ -298,7 +298,11 @@ economic profile; the platform economy is untouched. In `abstract` no personal `
 exists or is shown. In `exact` ruleset-wod registers `wod.usd` (scale 2), the faucet/sink principals
 `system:wod.income`, `system:wod.housing` (also the title issuer), `system:wod.chargen`, and the
 Resources-to-income table (`[wod.economy.income]`, one amount per dot) is authoritative **only** in
-this mode (answer 3).
+this mode (answer 3). Each income line is a **faucet-funded obligation** created through
+`mush_economy::create_system_obligation` with `system:wod.income` as the caller's faucet — never
+`@obligation/create`, which refuses a `System` debit outright — and every per-period amount in the
+table is bounded by `[economy].mint_obligation_cap_major` (per-instrument override
+`[economy.instruments."wod.usd"]`), re-checked at every settlement (08c §4.8, M1).
 
 **Mode transitions on a live deployment** (adversarial F9): flipping `personal_mode` is a staff act
 followed by `@wod/economy migrate`, a one-shot reconciliation that lists what changed and what it

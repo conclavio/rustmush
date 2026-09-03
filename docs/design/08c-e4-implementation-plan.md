@@ -596,7 +596,7 @@ either side, or beneficiary/party, or staff). `@hold/list account=` follows E3's
 empty for a viewable-but-empty account, identical "No such account." for nonexistent and
 unviewable alike.
 
-### 4.5 E4b1 tests (`tests/e4b1.rs`, ~28 — built: 33)
+### 4.5 E4b1 tests (`tests/e4b1.rs`, ~28 — built: 33; 61 after the verify fold)
 
 **13** two holds racing the same available refuse the second through the live seam; a payment that
 would dip into held funds is refused; **14** capture, release, and expiry each: `fold_kv` + `reboot`
@@ -753,7 +753,146 @@ sweep period after boot. Nothing depends on it, because catch-up is computed fro
   along with the escalation re-notification fan-out.
 - **E5** owns `@econ/cadence` (creating and manually advancing cadence clocks), the
   `Delinquent` consequence hook now that `@obligation/reinstate` exists as the manual
-  path, and the faucet-funded-income decision in deviation 6.
+  path, and the faucet-funded-income decision in deviation 6 — **answered by M1**
+  below: `create_system_obligation` plus the `[economy]` mint cap.
+
+**Verify-fold deltas (E4b1's end-of-build adversarial verify).** The as-built above
+describes the cut as it shipped; these are the rules that changed when its three
+lenses were folded back in. §4.8 records the outcome.
+
+- **Boot floors saturate, and allocators refuse at the ceiling.** `next_after` is
+  `saturating_add`, so one key at `u64::MAX` cannot panic the boot or wrap a floor to
+  zero; every `EconomyStore::alloc_*` returns `Option` and a caller at the ceiling
+  logs loudly and refuses that one operation. A `sweep::page` that cannot mint still
+  suspends its subject, with a `Suspended { Staff }` reason.
+- **`revision` is journal authority over lines ∪ hold effects.** Replay counts a hold
+  effect as a touch exactly as `apply` does, so a place/release run cannot rewind an
+  account's revision at boot and an `expected_revisions` guard stays `Stale` across a
+  restart. `on_obj_destroyed` no longer bumps `revision` at all — a doc-authority
+  status write never moves a journal-authority field (the asset arm was already the
+  model).
+- **Boot's directional checks have no zero-shaped blind spot.** An account doc that
+  claims a `last_journal_seq` or `last_hold_seq` it never appears at freezes, the way
+  the asset and hold projections already did; `unwrap_or(0)` could not tell "no effect
+  there" from "nothing reserved there".
+- **Recovery is scoped and remembered.** Boot records the accounts *its own* latch
+  froze in `meta.boot_frozen`, and `@econ/unfreeze` restores exactly those — an
+  account frozen for its own reason stays frozen and stays visible.
+- **Boot stamps `meta.last_boot_real`.** `classify_forgiveness` takes "the gap spans a
+  boot" and calls that `Downtime` at any length; `SWEEP_GAP_DOWNTIME_SECS` drops to
+  `2 × SWEEP_PERIOD_SECS` for gaps with no boot marker. A 90-second restart used to
+  classify `Overload`, which escalates on repeat.
+- **An unresolvable clock is a decision, not silence.** A schedule on a `Cadence(id)`
+  with no record is suspended and paged (at boot and in the sweep) instead of sitting
+  `Active` and never due.
+- **The ladder dedupes by subject *and* by blamed account.** One open record per
+  subject; an **acknowledged** record whose cause persists is *reopened* — same id,
+  a bounded `reopened` tally — after `ESCALATION_RENOTIFY_SECS`, never re-minted; and
+  one blocked account carries one record per `ESCALATION_WINDOW_SECS`, naming the
+  other subjects it stopped in its `context`. The whole-economy freeze opens one
+  record per freeze, acked or not. `Escalation` gains `blamed` and `reopened`, both
+  `#[serde(default)]`.
+- **The sweep obeys the org-liveness rules every manual payment obeys.**
+  `ObligationAuth` carries the `api::scope_coherent` (debit) / `api::credit_allowed`
+  (credit) verdicts, computed immediately before the post; `post_period` asks first so
+  the refusal can name the blamed account. A wound-down division stops collecting.
+- **Per-fire caps bound work, not iteration.** The cadence step filters on
+  `cadence_elapsed(..) > 0` *before* `take(MAX_CADENCES_PER_SWEEP)`.
+- **Holds and transient defers have ladders.** Three consecutive refused expiries page
+  `EscalationSubject::Hold`; sixteen consecutive `Transient` defers page the
+  obligation. Both runs are RAM-only counters on `EconomyStore`, read through
+  `expiry_refusals` / `deferred_fires`.
+- **`@obligation/resume` delivers what it promises.** It refuses a
+  `SuspendReason::Escalated` suspension (pointing at `@econ/ack <id>`, the one verb
+  that answers an alert *and* resumes its subject), and for a staff suspension it
+  re-anchors the schedule and records the gap as `Forgiven` with the new
+  `ForgiveCause::Suspension`.
+- **Bounds that were not bounds.** `grace` is capped at `MAX_GRACE_PERIODS` = 254
+  (255 was infinite grace, because `missed` saturates there); `expires=` must be
+  strictly positive; `@obligation/advance` moves a manual clock at most to `next_due`
+  and is a no-op with a notice while a period is due and unsettled;
+  `@account/close` is blocked by any obligation that is not `Cancelled`/`Satisfied`,
+  and `@obligation/reinstate` re-checks that both accounts are `Active`.
+- **Reservations are promises, and are read through one predicate.** Plain debit
+  authority releases only a **beneficiary-less** hold; `may_view_hold` asks
+  `WorldAuth::acts_for` for the beneficiary clause, so an org's spender and a Thing's
+  controller can see (and therefore capture) escrow made out to them. Nobody acts for
+  a `System` principal, **staff included** — that arm sits above the staff
+  short-circuit — and `@hold/place for=sys:<name>` is staff-only and refused unless
+  the principal owns a registered account, with the ordinary unknown-principal text.
+- **Narrowed surface.** `EconomyStore::journal`/`frozen` are `pub(crate)` with read
+  accessors (`journal()`, `is_frozen()`), which is what makes `install_commit`'s
+  "one mutator" argument a property of the type; `api::sweep_principal` is
+  `pub(crate)`. `install_commit`'s reachability comment now names the
+  `carry_attempt(&mut World, …)` hook chain and why a `&mut World` without a `Ctx`
+  cannot post.
+- **M1 — faucet-funded obligations (owner decision).** `@obligation/create` keeps
+  refusing a `System` debit. The one route is
+  `mush_economy::create_system_obligation(ctx, faucet, ObligationSpec)`: the faucet
+  must own the debit account (so it is registered), both sides must be `Active` and
+  share an instrument, and the per-period amount must sit inside
+  `EconomyConfig::mint_cap` — `EconomyError::MintCapExceeded` otherwise. The record
+  stores `minted_by: Some(PrincipalId::System(..))` (`#[serde(default)]`), and
+  `ObligationAuth` permits a `System` debit **only** for such a record and re-reads
+  the cap at every settlement, so a doc edited above it afterwards is paged rather
+  than paid. `EconomyConfig { mint_obligation_cap_major: 50_000, instruments }` is
+  wired through `mush-config`'s `[economy]` section →
+  `mush_server::config_ext::economy_config` → `EconomyModule::with_config`; an absent
+  section is the crate default.
+
+### 4.8 E4b1 verify outcome
+
+Three adversarial lenses over the shipped cut, plus one owner decision. **25
+findings folded**, `tests/e4b1.rs` goes 33 → 61, `mush-economy` 280 → 309, the
+workspace 2 389, both digest pins green.
+
+- **Durability and boot (B1–B8).** Two HIGH: a boot floor that panicked (or wrapped)
+  on a key at `u64::MAX`, and five allocators that overflowed — one of them inside the
+  tick, where a panic aborts the world. Two MEDIUM: `revision` rewinding for hold-only
+  entries (which silently un-`Stale`d an optimistic guard across a restart), and
+  freeze recovery that could only be all-or-nothing. One MEDIUM more: a lease pointing
+  at a deleted cadence clock sat `Active` and never due. Two LOW: `held_amount`'s
+  anchor check going blind at zero, and an obligation blocked by a frozen account
+  being told to repoint away from its own money. One INFO: the destruction backstop
+  bumping a journal-authority field.
+- **The sweep and the ladder (S1–S9).** One MEDIUM-HIGH: the sweep was the only payer
+  in the world that org status did not bind, so a suspended division kept collecting
+  rent. Three MEDIUM: cadence #65 starving behind 64 no-ops, a 60–120 s restart
+  classifying as `Overload` (which escalates on repeat), and `@econ/ack` re-minting a
+  fresh alert id every thirty seconds for one unfixed cause. The rest bound what was
+  unbounded — hold expiries, transient defers, `grace = 255` — or made `resume`'s
+  notice true.
+- **Authority and disclosure (A1–A8).** Two HIGH: plain debit authority destroying a
+  third party's escrow (a promise only the payer could break), and `may_view_hold`
+  hiding a reservation from the very principals who were entitled to capture it —
+  an org's spender, a Thing's controller. Two MEDIUM: staff acting for a `System`
+  beneficiary, and `@obligation/advance` multiplying a manual clock without bound.
+  Invariant 29 was widened to the whole obligation lifecycle. The rest are LOW: an
+  escalated suspension lifted silently, a non-positive `expires=`, stale help.
+- **M1 (owner).** E5's income table needs a standing mint; a standing mint needs a
+  bound and an authority that is not a staff verb. Both now exist.
+
+**Handoffs.**
+
+- **E5** owns `@econ/cadence`, and must test B6 and S2 against **real** cadence
+  clocks: E4b1 has no command that creates one, so both are pinned here through
+  injected `cadence:{id}` docs. E5's income table is `create_system_obligation`'s
+  first caller (08d §5.1).
+- **E4b2** must gate `@hold/release` on `HoldPurpose::Escrow`: a contract's escrow is
+  released by the contract's own refund path and by nothing else, so the placer clause
+  A1 leaves open has to close when contracts start placing holds.
+- **Documented, not fixed:** an `ApprovalRule` is a per-transaction escalation and
+  every obligation period is its own transaction, so a per-period amount **under** the
+  threshold never escalates however long it runs (the sub-threshold drip) and one
+  **over** it cannot settle at all. `@obligation/create` says so at creation. A budget
+  primitive is E5's.
+- **Not reachable from the integration harness:** S7's *increment* path needs a
+  `Disposition::Transient`, and both refusals classified transient
+  (`JournalUnavailable`, `EconomyFrozen`) are unreachable through `TestWorld` — the
+  ledger refuses only on overflows boot itself rejects, and a frozen economy returns
+  before the sweep reaches an obligation. The run's bookkeeping is unit-tested in
+  `sweep.rs::tests::vf_s7_a_transient_defer_run_is_bounded_and_resets`.
+
 
 ---
 
@@ -942,7 +1081,10 @@ owner says so. `cargo fmt` stays off until the pending reformat lands.
 
 `SWEEP_PERIOD_SECS` 30 · `MAX_HOLD_OPS_PER_PLAN` 32 · `MAX_ACTIVE_HOLDS_PER_ACCOUNT` 64 ·
 `MAX_HOLD_EXPIRIES_PER_SWEEP` 64 · `MAX_OBLIGATIONS_PER_SWEEP` 64 · `MAX_POSTS_PER_SWEEP` 128 ·
-`MAX_CATCH_UP_CAP` 8 (default 3) · default `grace.periods` 1 · `MAX_PARTIES` 16 · `MAX_CONDITIONS` 16 ·
+`MAX_CATCH_UP_CAP` 8 (default 3) · default `grace.periods` 1, `MAX_GRACE_PERIODS` 254 ·
+`SWEEP_GAP_DOWNTIME_SECS` 2 × `SWEEP_PERIOD_SECS` · `MAX_HOLD_EXPIRY_REFUSALS` 3 ·
+`MAX_CONSECUTIVE_DEFERS` 16 · `mint_obligation_cap_major` 50 000 (major units, per instrument) ·
+`MAX_PARTIES` 16 · `MAX_CONDITIONS` 16 ·
 `MAX_DELIVERABLES` 16 · `MAX_SHARES` 32 · `MAX_OPEN_CONTRACTS_PER_ISSUER` 16 ·
 `MAX_LIVE_CONTRACTS_PER_PARTY` 32 · `MAX_SETTLE_ATTEMPTS` 8 · `DRAFT_TTL` 7 d · `DISPUTE_TTL` 3 d ·
 `ESCALATION_WINDOW` 7 d · `ESCALATION_RENOTIFY` 1 h, then daily · `MAX_OBLIGATION_HISTORY` 32 ·

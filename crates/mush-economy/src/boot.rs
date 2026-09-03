@@ -303,9 +303,7 @@ pub(crate) fn load_boot(
             }
             *running.entry(line.account).or_insert(0) += line.delta.widen();
             last_touch.insert(line.account, *seq);
-            if touched_here.insert(line.account) {
-                *touches.entry(line.account).or_insert(0) += 1;
-            }
+            touched_here.insert(line.account);
             if stored_accounts.get(&line.account).map(|a| a.last_journal_seq) == Some(*seq) {
                 snapshot_at_stored.insert(line.account, *running.get(&line.account).expect("just inserted"));
             }
@@ -335,6 +333,15 @@ pub(crate) fn load_boot(
                     post.account
                 )));
             }
+            // E4b1 verify fold, B3: a hold effect touches its account exactly as a
+            // line does — `apply` bumps `revision` once per entry over
+            // `balance_deltas ∪ held_deltas`. Replay counted only the lines, so a
+            // place/release pair left the re-derived revision BELOW the value that
+            // was live before the crash; boot's `max` then kept the doc's higher
+            // number for a doc that survived and silently rewound one that did not,
+            // and an `expected_revisions` guard captured before the holds stopped
+            // being `Stale` after the restart.
+            touched_here.insert(post.account);
             max_hold_id = Some(max_hold_id.map_or(post.id.0, |m: u64| m.max(post.id.0)));
             let signed = if effect.kind == HoldEffectKind::Placed {
                 post.amount.widen()
@@ -352,6 +359,11 @@ pub(crate) fn load_boot(
                     .insert(post.account, *running_held.get(&post.account).expect("just inserted"));
             }
             journal_holds.insert(post.id, post);
+        }
+        // One revision per ENTRY per touched account — lines ∪ hold effects, the
+        // exact set `apply` folds over (B3).
+        for account in &touched_here {
+            *touches.entry(*account).or_insert(0) += 1;
         }
         for effect in &tx.custody_effects {
             last_custody.insert(effect.object, (effect.vault, effect.direction));
@@ -417,6 +429,18 @@ pub(crate) fn load_boot(
             frozen = true;
         }
         // DRIFT: the stored balance disagrees with the journal at its own claimed seq.
+        //
+        // ...or claims a sequence at which the account has no line at all (E4b1
+        // verify fold, B5): the asset and hold projections have always treated that
+        // as an impossible doc and frozen on it, and the account arm has to, because
+        // `unwrap_or(0)` reads exactly like a legitimately zero balance. A doc
+        // claiming a sequence it never appears at, with a zero balance, was the one
+        // shape that walked straight through. `last_journal_seq == 0` is the "never
+        // touched" sentinel and is not a claim.
+        if acct.last_journal_seq != 0 && !snapshot_at_stored.contains_key(&id) {
+            tracing::error!(account = id.0, stored_seq = acct.last_journal_seq, "economy: account projection claims a sequence it never appears at; freezing");
+            frozen = true;
+        }
         let claimed = snapshot_at_stored.get(&id).copied().unwrap_or(0);
         if Amount::from_widened(claimed) != Some(acct.posted_balance) {
             tracing::error!(account = id.0, "economy: stored balance drifts from the journal at its claimed seq; freezing");
@@ -434,6 +458,14 @@ pub(crate) fn load_boot(
         let mut held_ok = true;
         if acct.last_hold_seq > journal_max.unwrap_or(0) && acct.last_hold_seq != 0 {
             tracing::error!(account = id.0, stored_seq = acct.last_hold_seq, journal_max = ?journal_max, "economy: held projection ahead of the journal (lost tail); freezing");
+            frozen = true;
+        }
+        // The third rule, mirrored from the asset and hold arms (B5): a doc claiming
+        // a hold sequence at which this account has NO hold effect is impossible, and
+        // `held_amount: 0` is precisely where the comparison below goes blind —
+        // `unwrap_or(0)` cannot tell "no effect there" from "reserved nothing there".
+        if acct.last_hold_seq != 0 && !held_at_stored.contains_key(&id) {
+            tracing::error!(account = id.0, stored_seq = acct.last_hold_seq, "economy: held projection claims a sequence it never appears at; freezing");
             frozen = true;
         }
         let claimed_held = held_at_stored.get(&id).copied().unwrap_or(0);
@@ -687,7 +719,7 @@ pub(crate) fn load_boot(
                         EscalationKind::BootReconciliation,
                         EscalationSubject::Obligation(o.id),
                         reason,
-                        repoint_advice(o.id),
+                        boot_advice(&o),
                         now,
                     );
                     opened_escalations.push(record);
@@ -782,13 +814,32 @@ pub(crate) fn load_boot(
     // Asset latches are per-asset and deliberately untouched: the whole-economy
     // freeze already refuses every asset op, and clobbering the latches would erase
     // which titles actually need staff attention.
+    //
+    // E4b1 verify fold, B4a: record WHICH accounts this latch froze. Recovery used to
+    // be a choice between unfreezing every account by hand and unfreezing them all —
+    // which silently cleared the accounts frozen for their own reasons (a destroyed
+    // owner, a balance that would not fit `i64`) and erased the list of what was
+    // really broken. The list accumulates across every boot the latch survives,
+    // because a second recovery boot sees the accounts already `Frozen` and would
+    // otherwise record nothing at all; only `@econ/unfreeze` clears it.
+    let mut boot_frozen: Vec<AccountId> = meta
+        .as_ref()
+        .and_then(|m| m.get("boot_frozen"))
+        .and_then(serde_json::Value::as_array)
+        .map(|xs| xs.iter().filter_map(serde_json::Value::as_u64).map(AccountId).collect())
+        .unwrap_or_default();
     if frozen {
         let ids: Vec<AccountId> = snapshot.accounts().map(|a| a.id).collect();
         for id in ids {
-            if let Some(a) = snapshot.account_mut(id) {
+            if let Some(a) = snapshot.account_mut(id)
+                && a.status == crate::record::AccountStatus::Active
+            {
                 a.status = crate::record::AccountStatus::Frozen;
+                boot_frozen.push(id);
             }
         }
+        boot_frozen.sort_unstable();
+        boot_frozen.dedup();
     }
 
     // Allocators: meta is authoritative but floored at one past the journal-derived
@@ -875,6 +926,11 @@ pub(crate) fn load_boot(
         next_escalation,
         last_sweep_real,
         last_sweep_ic,
+        // S3: the boot marker. Stamped at the END of every boot, so a sweep gap that
+        // contains it provably contains a restart — evidence, not an inference from
+        // how long the gap was.
+        last_boot_real: now,
+        boot_frozen,
         frozen,
     });
     // Persist `meta` at the END of every boot, always. Two things ride on it and
@@ -908,7 +964,10 @@ fn live(w: &World, o: ObjId) -> bool {
     w.get(o).is_some_and(|x| !x.flags.contains(Flags::GOING))
 }
 
-fn principal_live(w: &World, p: &PrincipalId) -> bool {
+/// Whether a principal still exists in the world (an org or system principal has no
+/// world object to lose). `pub(crate)` since the E4b1 verify fold: the sweep asks the
+/// same question before recommending `@account/unfreeze` (B4b).
+pub(crate) fn principal_live(w: &World, p: &PrincipalId) -> bool {
     match p {
         PrincipalId::Object(o) => live(w, *o),
         // Org and system principals have no world object to lose.
@@ -966,6 +1025,22 @@ fn obligation_unusable(w: &World, snapshot: &EconomySnapshot, o: &Obligation) ->
     if !principal_live(w, &o.creditor) {
         return Some(format!("obligation #{}'s creditor no longer exists", o.id));
     }
+    // E4b1 verify fold, B6: a schedule whose clock cannot be resolved is not "not yet
+    // due", it is **never** due. `Clocks::now_on` answers `None` for a
+    // `Cadence(id)` with no record and every consumer reads that as "not yet", so a
+    // lease pointing at a deleted campaign clock sat `Active` in the due pool
+    // forever, charging nothing and telling nobody. It is exactly the shape the other
+    // three questions here exist for: outside the record, unfixable by the sweep, and
+    // a decision only a human can make.
+    if let crate::clock::EconomicClock::Cadence(c) = o.schedule.clock
+        && snapshot.cadence(c).is_none()
+    {
+        return Some(format!(
+            "obligation #{}'s schedule runs on cadence clock #{c}, which has no record: no period \
+             can ever fall due on it",
+            o.id
+        ));
+    }
     for (label, id) in [("debit", o.debit_account), ("credit", o.credit_account)] {
         match snapshot.account(id) {
             None => return Some(format!("obligation #{}'s {label} account #{id} is gone", o.id)),
@@ -998,7 +1073,19 @@ fn obligation_unusable(w: &World, snapshot: &EconomySnapshot, o: &Obligation) ->
 /// The recommended commands for an obligation a human must now decide about (§4.6).
 /// The staffer is going to paste the alert into an LLM anyway, so the alert carries
 /// the answer: repoint it at a working account, or end it.
-fn repoint_advice(id: ObligationId) -> Vec<String> {
+///
+/// A schedule on a **missing cadence clock** gets its own advice (B6) — repointing an
+/// account fixes nothing when the problem is that no period can fall due at all, and
+/// an alert whose recommended command cannot work is worse than no recommendation.
+fn boot_advice(o: &Obligation) -> Vec<String> {
+    let id = o.id;
+    if let crate::clock::EconomicClock::Cadence(c) = o.schedule.clock {
+        return vec![
+            format!("@obligation/show #{id}   (its schedule runs on cadence clock #{c})"),
+            format!("@obligation/cancel #{id}"),
+            "@econ/ack #<this alert>   (resumes it once the clock exists again)".to_string(),
+        ];
+    }
     vec![
         format!("@obligation/repoint #{id}=credit <account id>"),
         format!("@obligation/repoint #{id}=debit <account id>"),
@@ -1013,6 +1100,14 @@ fn meta_u64(meta: &Option<serde_json::Value>, field: &str) -> u64 {
 fn meta_i64(meta: &Option<serde_json::Value>, field: &str) -> i64 {
     meta.as_ref().and_then(|m| m.get(field)).and_then(serde_json::Value::as_i64).unwrap_or(0)
 }
+/// One past the largest id seen, **saturating** (E4b1 verify fold, B1).
+///
+/// `m + 1` panicked in a debug build (and wrapped to `0` in a release one) on a
+/// single hand-written or corrupt key at `u64::MAX` — `escalation:18446744073709551615`
+/// was enough to make the world refuse to boot, or worse, to floor every allocator at
+/// zero and re-mint live ids. Saturating parks the allocator at the ceiling, where
+/// [`EconomyStore::alloc_escalation`] and friends now refuse to mint (B2) instead of
+/// overflowing: the safe failure is "no new ids", never "the same id twice".
 fn next_after(max: Option<u64>) -> u64 {
-    max.map_or(0, |m| m + 1)
+    max.map_or(0, |m| m.saturating_add(1))
 }

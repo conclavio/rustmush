@@ -99,6 +99,7 @@ mod sweep;
 mod api;
 mod boot;
 mod commands;
+mod config;
 mod custody;
 mod module;
 
@@ -150,11 +151,14 @@ pub use contract::{
     refund_key, refund_plan, reverify, settle_key, settlement_plan,
 };
 pub use obligation::{
-    DEFAULT_GRACE_PERIODS, ForgiveCause, GracePolicy, MAX_OBLIGATION_HISTORY, Obligation,
-    ObligationCause, ObligationError, ObligationEvent, ObligationStatus, SettleOutcome,
+    DEFAULT_GRACE_PERIODS, ForgiveCause, GracePolicy, MAX_GRACE_PERIODS, MAX_OBLIGATION_HISTORY,
+    Obligation, ObligationCause, ObligationError, ObligationEvent, ObligationStatus, SettleOutcome,
     SuspendReason, SweepIntent, advance as advance_obligation, classify_forgiveness, due_now,
     forgive, forgive_all, obligation_key, plan_sweep,
 };
+
+// E4b1 verify fold (M1) — the ruleset's configurable limits.
+pub use config::{DEFAULT_MINT_OBLIGATION_CAP_MAJOR, EconomyConfig, InstrumentCaps};
 
 // E4b1 — the ladder + the sweep.
 pub use escalation::{
@@ -165,10 +169,11 @@ pub use sweep::SWEEP_TAG;
 
 // E2b/E3b1 public surface.
 pub use api::{
-    META_KEY, PostOutcome, account_key, approval_key, asset_key, cadence_key, create_vault,
-    hold_key, instrument_key, obligation_key as obligation_doc_key, open_account, post,
-    post_capability, register_instrument, reverse, set_account_approval, set_account_status,
-    set_asset_frozen, set_economy_frozen, set_vault_status, sweep_principal, vault_key,
+    META_KEY, ObligationSpec, PostOutcome, account_key, approval_key, asset_key, cadence_key,
+    create_system_obligation, create_vault, hold_key, instrument_key,
+    obligation_key as obligation_doc_key, open_account, post, post_capability, register_instrument,
+    reverse, set_account_approval, set_account_status, set_asset_frozen, set_economy_frozen,
+    set_vault_status, vault_key,
 };
 pub use commands::may_view_account;
 pub use custody::{ContainerProvider, CustodyError, CustodyProvider, CustodyTable};

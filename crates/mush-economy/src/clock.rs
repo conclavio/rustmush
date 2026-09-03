@@ -38,9 +38,18 @@ pub const DEFAULT_CATCH_UP: u8 = 3;
 /// with it; E4a only needs it to reason about what a "no sweep ran" gap looks like.
 pub const SWEEP_PERIOD_SECS: i64 = 30;
 /// How large a gap between two recorded sweeps means **no sweep ran** across it —
-/// the [`classify_forgiveness`] evidence threshold. Four sweep periods: a
-/// short overload never reads as downtime, a restart always does.
-pub const SWEEP_GAP_DOWNTIME_SECS: i64 = 4 * SWEEP_PERIOD_SECS;
+/// the [`crate::classify_forgiveness`] evidence threshold when the gap does *not*
+/// span a boot.
+///
+/// **Two** sweep periods (E4b1 verify fold, S3). Four was too generous: a 60–120 s
+/// outage — a restart, a stop-the-world GC, a hypervisor pause — produced a gap in
+/// which no sweep ran and yet classified as `Overload`, the one cause that escalates
+/// on repeat, so two ordinary restarts inside the escalation window paged a staffer
+/// about a starved post budget that never existed. The boot stamp
+/// (`meta.last_boot_real`) is the primary evidence now; this threshold only has to
+/// catch the outages no boot marker explains, and one missed fire plus slack is
+/// enough for that.
+pub const SWEEP_GAP_DOWNTIME_SECS: i64 = 2 * SWEEP_PERIOD_SECS;
 
 /// Which clock a deadline or schedule is expressed on (D-E4-2).
 ///

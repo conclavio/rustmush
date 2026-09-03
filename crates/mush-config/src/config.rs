@@ -24,6 +24,8 @@
 //! | `[rulesets].enabled` | `["wod"]` | ruleset module(s) to load; unknown ids are a hard boot error |
 //! | `[weather].flavor_variants` | `10` | M10 `@weather/generate` variants requested per (climate,state) bucket |
 //! | `[worldgen].batch_max_rooms` | `40` | M10 `@gen/building` interior-walk cap (rooms per batch) |
+//! | `[economy].mint_obligation_cap_major` | `50000` | E4 per-period ceiling on a faucet-funded obligation, in major units |
+//! | `[economy.instruments."<code>"].mint_obligation_cap_major` | (the above) | per-instrument override of that ceiling |
 //! | `[llm]` | `enabled = false` | M7 LLM layer (providers, routes, budgets); into [`mush_llm::LlmConfig`] |
 //!
 //! The `[web]` table deserializes straight into
@@ -36,6 +38,7 @@
 //! is a hard error (silently ignoring a typo'd config is worse than not
 //! starting).
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
@@ -276,6 +279,51 @@ impl Default for WeatherCfg {
     }
 }
 
+/// `[economy.instruments."<code>"]` — per-instrument overrides of the `[economy]`
+/// limits, for worlds running several currencies at different denominations.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+pub struct EconomyInstrumentCfg {
+    /// This instrument's per-period faucet-obligation ceiling, in **major** units.
+    pub mint_obligation_cap_major: u64,
+}
+
+impl Default for EconomyInstrumentCfg {
+    fn default() -> Self {
+        // Mirrors `mush_economy::DEFAULT_MINT_OBLIGATION_CAP_MAJOR` (kept as a
+        // literal so `mush-config` needs no `mush-economy` dep).
+        EconomyInstrumentCfg { mint_obligation_cap_major: 50_000 }
+    }
+}
+
+/// `[economy]` section — the E4b1 verify fold's mint bound (M1).
+///
+/// The economy's hard invariants are not configurable. What is configurable is how
+/// large a hole a ruleset may open in the mint: E5's income table funds careers and
+/// stipends from a registered faucet through `mush_economy::create_system_obligation`,
+/// and such an obligation is a **standing mint** the scheduler executes forever. The
+/// cap bounds one period of one such obligation.
+///
+/// Written in **major** units — the number a game-runner thinks in ("50,000 a
+/// month"), not minor units — and scaled by each instrument's own `scale` at use.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+pub struct EconomyCfg {
+    /// The per-period ceiling on a faucet-funded obligation, in major units, for
+    /// every instrument without an override. Defaults to the `mush-economy` crate
+    /// default (50,000); the typed conversion into `mush_economy::EconomyConfig`
+    /// lives in `mush-server`.
+    pub mint_obligation_cap_major: u64,
+    /// Per-instrument overrides, keyed by instrument code (`wod.usd`).
+    pub instruments: BTreeMap<String, EconomyInstrumentCfg>,
+}
+
+impl Default for EconomyCfg {
+    fn default() -> Self {
+        EconomyCfg { mint_obligation_cap_major: 50_000, instruments: BTreeMap::new() }
+    }
+}
+
 /// `[worldgen]` section — the M10 batch `@gen/building` knobs.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -477,6 +525,9 @@ pub struct Config {
     /// `[worldgen]` — the M10 batch `@gen/building` knobs (max rooms per
     /// batch). Off-config defaults match the crate.
     pub worldgen: WorldgenCfg,
+    /// `[economy]` — the mint bound on a ruleset's faucet-funded obligations (E4b1
+    /// verify fold, M1). Off-config defaults match the crate.
+    pub economy: EconomyCfg,
     /// `[onboarding]` — the `chargen_required` gate + start rooms (M9). Off by
     /// default; consumed by the WoD ruleset via [`OnboardingCfg::to_ruleset`].
     pub onboarding: OnboardingCfg,
@@ -505,6 +556,7 @@ impl Default for Config {
             rulesets: RulesetsCfg::default(),
             weather: WeatherCfg::default(),
             worldgen: WorldgenCfg::default(),
+            economy: EconomyCfg::default(),
             onboarding: OnboardingCfg::default(),
             llm: empty_toml_table(),
             ipc: IpcCfg::default(),
@@ -624,6 +676,39 @@ mod tests {
                 .unwrap()
                 .to_ic_seconds()
         );
+    }
+
+    /// E4b1 verify fold, M1: the `[economy]` mint bound parses, the per-instrument
+    /// override is keyed by instrument code, and an **absent** section is exactly the
+    /// crate defaults — a server that has never heard of `[economy]` behaves as it
+    /// did before the setting existed.
+    #[test]
+    fn vf_m1_economy_section_parses_and_defaults() {
+        let cfg = Config::default();
+        assert_eq!(cfg.economy.mint_obligation_cap_major, 50_000);
+        assert!(cfg.economy.instruments.is_empty());
+
+        let cfg: Config = toml::from_str(
+            "[server]\nname = \"x\"\n\n\
+             [economy]\nmint_obligation_cap_major = 2500\n\n\
+             [economy.instruments.\"wod.usd\"]\nmint_obligation_cap_major = 9\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.economy.mint_obligation_cap_major, 2_500);
+        assert_eq!(
+            cfg.economy.instruments.get("wod.usd").map(|c| c.mint_obligation_cap_major),
+            Some(9)
+        );
+        // An instrument with no override is not in the map at all; the caller falls
+        // back to the section-wide value.
+        assert!(!cfg.economy.instruments.contains_key("wod.eur"));
+
+        // A section naming only an override keeps the default ceiling for the rest.
+        let cfg: Config = toml::from_str(
+            "[economy.instruments.\"wod.usd\"]\nmint_obligation_cap_major = 1\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.economy.mint_obligation_cap_major, 50_000);
     }
 
     #[test]

@@ -27,7 +27,7 @@ use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use crate::ids::{ContractId, EscalationId, HoldId, ObligationId};
+use crate::ids::{AccountId, ContractId, EscalationId, HoldId, ObligationId};
 
 /// The largest free-text diagnosis one record carries (a bound, like every other
 /// stored string in the crate).
@@ -113,6 +113,15 @@ pub struct Escalation {
     pub kind: EscalationKind,
     /// What was stopped.
     pub subject: EscalationSubject,
+    /// The account the refusal **named**, when it named one (E4b1 verify fold, B4c).
+    ///
+    /// One frozen wallet can block a dozen obligations, and paging once per
+    /// obligation turns one staff decision into a dozen alerts saying the same thing.
+    /// The blamed account is the real subject of that decision, so the ladder opens
+    /// **one** record per blamed account per [`crate::ESCALATION_WINDOW_SECS`] and
+    /// names the other affected records in its [`Escalation::context`].
+    #[serde(default)]
+    pub blamed: Option<AccountId>,
     /// The diagnosis, in words (≤ [`MAX_ESCALATION_CONTEXT_BYTES`]).
     pub context: String,
     /// The recommended command(s), **arguments filled in** (≤
@@ -128,6 +137,17 @@ pub struct Escalation {
     pub notified_at: i64,
     /// How many times it has re-notified.
     pub notifications: u32,
+    /// How many times an acknowledgement was **overtaken by the cause coming back**
+    /// (E4b1 verify fold, S4).
+    ///
+    /// Acknowledging an alert whose cause nobody fixed used to mint a brand-new
+    /// record on the very next fire, so a staffer who acked without repointing got a
+    /// fresh id every thirty seconds and the alert history became noise. The record is
+    /// **reopened** instead — same id, same history — after a cool-off of
+    /// [`crate::ESCALATION_RENOTIFY_SECS`], and this counter is how a reader tells
+    /// "handled once" from "handled six times and still coming back".
+    #[serde(default)]
+    pub reopened: u32,
     /// Staleness stamp.
     pub revision: u64,
 }
@@ -158,15 +178,7 @@ impl Escalation {
         now: i64,
     ) -> Escalation {
         let mut context: String = context.into();
-        // Bounded like every other stored string: truncate on a char boundary so the
-        // doc always serializes and always deserializes.
-        if context.len() > MAX_ESCALATION_CONTEXT_BYTES {
-            let mut cut = MAX_ESCALATION_CONTEXT_BYTES;
-            while cut > 0 && !context.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            context.truncate(cut);
-        }
+        clamp_context(&mut context);
         let mut recommended = recommended;
         recommended.truncate(MAX_RECOMMENDED_COMMANDS);
         Escalation {
@@ -174,6 +186,7 @@ impl Escalation {
             level,
             kind,
             subject,
+            blamed: None,
             context,
             recommended,
             opened_at: now,
@@ -181,8 +194,53 @@ impl Escalation {
             acked_at: None,
             notified_at: now,
             notifications: 0,
+            reopened: 0,
             revision: 1,
         }
+    }
+
+    /// Name the account this record is really about (B4c) — the dedupe key for
+    /// "one frozen wallet, one alert".
+    #[must_use]
+    pub fn blaming(mut self, account: Option<AccountId>) -> Escalation {
+        self.blamed = account;
+        self
+    }
+
+    /// Append one more affected record to the diagnosis, under the byte cap (B4c).
+    /// A line that would not fit is dropped rather than truncated mid-sentence: the
+    /// record already says what the decision is.
+    pub fn note_also(&mut self, line: &str) {
+        let addition = format!("; {line}");
+        if self.context.len().saturating_add(addition.len()) > MAX_ESCALATION_CONTEXT_BYTES {
+            return;
+        }
+        if self.context.contains(line) {
+            return;
+        }
+        self.context.push_str(&addition);
+        clamp_context(&mut self.context);
+        self.revision = self.revision.saturating_add(1);
+    }
+
+    /// Whether an **acknowledged** record whose cause has come back should be
+    /// reopened rather than replaced (S4): the cool-off keeps a refusal that repeats
+    /// every thirty seconds from re-opening thirty seconds after it was handled.
+    #[must_use]
+    pub fn reopen_due(&self, now: i64) -> bool {
+        self.acked_at
+            .is_some_and(|at| now.saturating_sub(at) >= crate::ESCALATION_RENOTIFY_SECS)
+    }
+
+    /// Reopen this record in place — **same id**, same history, the acknowledgement
+    /// cleared and the reopen tally bumped (S4).
+    pub fn reopen(&mut self, now: i64) {
+        self.acked_by = None;
+        self.acked_at = None;
+        self.notified_at = now;
+        self.notifications = 0;
+        self.reopened = self.reopened.saturating_add(1);
+        self.revision = self.revision.saturating_add(1);
     }
 
     /// Whether this record is still waiting on a human.
@@ -211,15 +269,33 @@ impl Escalation {
             None => String::new(),
             Some(who) => format!(" [acked by #{}]", who.0),
         };
+        let again = if self.reopened == 0 {
+            String::new()
+        } else {
+            format!(" [reopened {}×]", self.reopened)
+        };
         format!(
-            "#{} L{} {} — {}: {}{}",
+            "#{} L{} {} — {}: {}{}{}",
             self.id,
             self.level,
             self.kind.label(),
             self.subject.render(),
             self.context,
+            again,
             state
         )
+    }
+}
+
+/// Bound a diagnosis, truncating on a char boundary so the doc always serializes
+/// and always deserializes.
+fn clamp_context(context: &mut String) {
+    if context.len() > MAX_ESCALATION_CONTEXT_BYTES {
+        let mut cut = MAX_ESCALATION_CONTEXT_BYTES;
+        while cut > 0 && !context.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        context.truncate(cut);
     }
 }
 
