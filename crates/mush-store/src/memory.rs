@@ -1256,6 +1256,127 @@ mod tests {
             .expect("seed minimal world");
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum AuthoritativeFaultMode {
+        Clean,
+        BeforeIntent,
+        AfterIntent,
+        AfterNMaterializationOps(usize),
+        AckLostAfterFinalize,
+        TokenConflict,
+    }
+
+    struct FaultStore {
+        inner: InMemoryStore,
+        mode: AuthoritativeFaultMode,
+    }
+
+    impl FaultStore {
+        fn new(mode: AuthoritativeFaultMode) -> Self {
+            Self {
+                inner: InMemoryStore::new(),
+                mode,
+            }
+        }
+
+        fn heal(&mut self) {
+            self.mode = AuthoritativeFaultMode::Clean;
+        }
+
+        async fn reserve(
+            &mut self,
+            bundle: AuthoritativeBundle,
+        ) -> Result<Option<IntentReceipt>, StoreError> {
+            match self.mode {
+                AuthoritativeFaultMode::BeforeIntent => {
+                    self.heal();
+                    Ok(None)
+                }
+                AuthoritativeFaultMode::AfterIntent => {
+                    let _ = self.inner.reserve_authoritative_intent(bundle).await?;
+                    self.heal();
+                    Ok(None)
+                }
+                _ => self
+                    .inner
+                    .reserve_authoritative_intent(bundle)
+                    .await
+                    .map(Some),
+            }
+        }
+
+        async fn reconcile(
+            &mut self,
+            token: CommitToken,
+            expected_bundle_hash: CanonicalHash,
+        ) -> Result<Option<AuthoritativeReceipt>, StoreError> {
+            match self.mode {
+                AuthoritativeFaultMode::AfterNMaterializationOps(count) => {
+                    self.materialize_prefix(token, expected_bundle_hash, count)?;
+                    self.heal();
+                    Ok(None)
+                }
+                AuthoritativeFaultMode::AckLostAfterFinalize => {
+                    let _ = self
+                        .inner
+                        .reconcile_authoritative(token, expected_bundle_hash)
+                        .await?;
+                    self.heal();
+                    Ok(None)
+                }
+                AuthoritativeFaultMode::TokenConflict => {
+                    self.heal();
+                    self.inner
+                        .reconcile_authoritative(token, CanonicalHash::from_bytes([0xee; 32]))
+                        .await
+                        .map(Some)
+                }
+                _ => self
+                    .inner
+                    .reconcile_authoritative(token, expected_bundle_hash)
+                    .await
+                    .map(Some),
+            }
+        }
+
+        fn materialize_prefix(
+            &self,
+            token: CommitToken,
+            expected_bundle_hash: CanonicalHash,
+            count: usize,
+        ) -> Result<(), StoreError> {
+            let mut inner = self.inner.lock()?;
+            let intent_doc = inner
+                .authoritative_intents
+                .get(&token)
+                .ok_or(StoreError::AuthoritativeIntentMissing)?;
+            let bundle = decode_intent(intent_doc)?;
+            if bundle.bundle_hash() != expected_bundle_hash {
+                return Err(StoreError::AuthoritativeTokenConflict);
+            }
+            if validate_retained_intent(&inner, token, &bundle)?.is_some() {
+                return Err(StoreError::AuthoritativeCorrupt(
+                    "fault harness cannot partially apply a finalized intent".to_owned(),
+                ));
+            }
+            let planned = plan_replay(&bundle)?;
+            if count > planned.len() {
+                return Err(StoreError::Invalid(format!(
+                    "fault cut after {count} operations exceeds {} replay writes",
+                    planned.len()
+                )));
+            }
+            validate_replay_recovery(&inner, &bundle)?;
+            apply_replay(&mut inner, &planned[..count]);
+            if !replay_matches(&inner, &planned[..count]) {
+                return Err(StoreError::AuthoritativeCorrupt(
+                    "fault harness prefix readback mismatch".to_owned(),
+                ));
+            }
+            Ok(())
+        }
+    }
+
     fn authoritative_bundle(token_byte: u8, ingress_byte: u8) -> AuthoritativeBundle {
         authoritative_bundle_for_object(token_byte, ingress_byte, ObjId(2), Some(3))
     }
@@ -1453,6 +1574,109 @@ mod tests {
                 .unwrap(),
             BundleStatus::PendingExact
         );
+    }
+
+    #[tokio::test]
+    async fn authoritative_fault_matrix_converges_without_rerunning_the_bundle()
+    -> Result<(), StoreError> {
+        let modes = [
+            AuthoritativeFaultMode::BeforeIntent,
+            AuthoritativeFaultMode::AfterIntent,
+            AuthoritativeFaultMode::AfterNMaterializationOps(0),
+            AuthoritativeFaultMode::AfterNMaterializationOps(1),
+            AuthoritativeFaultMode::AfterNMaterializationOps(2),
+            AuthoritativeFaultMode::AfterNMaterializationOps(3),
+            AuthoritativeFaultMode::AckLostAfterFinalize,
+            AuthoritativeFaultMode::TokenConflict,
+        ];
+
+        for mode in modes {
+            let mut store = FaultStore::new(mode);
+            seed_minimal_world(&store.inner).await;
+            let bundle = authoritative_bundle(51, 61);
+            let token = bundle.token();
+            let hash = bundle.bundle_hash();
+            let key = bundle.idempotency().clone();
+            let ingress_hash = bundle.ingress_hash();
+
+            if store.reserve(bundle.clone()).await?.is_none() {
+                match mode {
+                    AuthoritativeFaultMode::BeforeIntent => assert_eq!(
+                        store.inner.authoritative_status(token, hash).await?,
+                        BundleStatus::Absent
+                    ),
+                    AuthoritativeFaultMode::AfterIntent => assert_eq!(
+                        store.inner.authoritative_status(token, hash).await?,
+                        BundleStatus::PendingExact
+                    ),
+                    _ => unreachable!("only intent faults lose the reserve result"),
+                }
+                store
+                    .reserve(bundle.clone())
+                    .await?
+                    .expect("healed exact reservation");
+            }
+
+            let first_reconcile = store.reconcile(token, hash).await;
+            match mode {
+                AuthoritativeFaultMode::AfterNMaterializationOps(_)
+                | AuthoritativeFaultMode::AckLostAfterFinalize => {
+                    assert!(first_reconcile?.is_none());
+                }
+                AuthoritativeFaultMode::TokenConflict => {
+                    assert!(matches!(
+                        first_reconcile,
+                        Err(StoreError::AuthoritativeTokenConflict)
+                    ));
+                }
+                _ => {
+                    first_reconcile?.expect("clean reconciliation");
+                }
+            }
+
+            let receipt = store
+                .reconcile(token, hash)
+                .await?
+                .expect("exact recovery receipt");
+            assert_eq!(receipt.bundle(), &bundle, "fault mode {mode:?}");
+            assert_eq!(
+                store.inner.authoritative_status(token, hash).await?,
+                BundleStatus::FinalizedExact(Box::new(receipt.clone())),
+                "fault mode {mode:?}"
+            );
+            assert_eq!(
+                store
+                    .inner
+                    .authoritative_idempotency_status(&key, ingress_hash)
+                    .await?,
+                IdempotencyStatus::FinalizedExact(Box::new(receipt.clone())),
+                "fault mode {mode:?}"
+            );
+            assert!(
+                store
+                    .inner
+                    .reserve_authoritative_intent(bundle.clone())
+                    .await?
+                    .resumed,
+                "fault mode {mode:?}"
+            );
+            assert_eq!(
+                store.inner.reconcile_authoritative(token, hash).await?,
+                receipt,
+                "fault mode {mode:?}"
+            );
+            let inner = store.inner.lock()?;
+            assert_eq!(inner.authoritative_intents.len(), 1, "fault mode {mode:?}");
+            assert_eq!(inner.authoritative_receipts.len(), 1, "fault mode {mode:?}");
+            assert!(
+                inner.authoritative_pending.is_empty(),
+                "fault mode {mode:?}"
+            );
+            assert_eq!(inner.next_id, Some(3), "fault mode {mode:?}");
+            assert!(inner.objects.contains_key(&2), "fault mode {mode:?}");
+        }
+
+        Ok(())
     }
 
     #[test]

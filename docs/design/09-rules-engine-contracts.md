@@ -3,7 +3,7 @@
 **Status:** Implementing 0.7 — K0/K1 exit criteria landed; K2 includes strict atomic boot hydration,
 final commit-admission guard revalidation, and a process-local applied-ack installation lane; K3's
 canonical exact bundle and in-memory intent/reconciliation contract are underway, while Redis,
-the server coordinator, fault matrix, and all five end-to-end proving gates remain open
+the server coordinator, process/quarantine fault cases, and all five end-to-end proving gates remain open
 
 **Scope:** the shared contracts that must be stable before RustMUSH substantially expands character,
 tactical, economic, and AI-driven rules
@@ -1772,7 +1772,7 @@ The repository already contains useful local proofs. They should be adapted, not
 | Contract | Current foundation | Missing shared contract |
 |---|---|---|
 | C1 definitions | shared canonical owner/kind/id/digest identities; bounded `RulesValue`; immutable global definition registry; exact-reference closure; one provider semantic validator per owner/kind; bounded monotonic owner-readiness latch; tactics exact-digest owner fan-out; dry-run migration registry; tactics/sim adapters | owner-freeze discovery in remaining rules-bearing adapters, executing one migration through K3 durability, broader production provider coverage |
-| C2 plan/commit | `mush-sim::Transition`, `UnitMutationPlan`, world single writer, `WriteBatch`, K0 exact receipt gate, typed output/effect custody and one `CommitPending` batch; K2 action invocation/provider metadata; engine-owned typed state families; owner-scoped bounded multi-record `ActionTxn`; one-shot `PreparedTxn`; separate staged writer lane retaining typed images until an exact process-local applied serial; canonical bounded K3 bundle/token/replay/outbox models; in-memory exact intent reservation, early idempotency lookup, replay/readback/finalization, object-plus-allocator admission, and hash-aware status | Redis authoritative protocol; server coordinator and restart integration; fault matrix; compact witness/checkpoint retention; full legacy migration |
+| C2 plan/commit | `mush-sim::Transition`, `UnitMutationPlan`, world single writer, `WriteBatch`, K0 exact receipt gate, typed output/effect custody and one `CommitPending` batch; K2 action invocation/provider metadata; engine-owned typed state families; owner-scoped bounded multi-record `ActionTxn`; one-shot `PreparedTxn`; separate staged writer lane retaining typed images until an exact process-local applied serial; canonical bounded K3 bundle/token/replay/outbox models; in-memory exact intent reservation, early idempotency lookup, replay/readback/finalization, object-plus-allocator admission, hash-aware status, and store-level cut-point convergence matrix | Redis authoritative protocol; server coordinator and restart integration; process/IPC/quarantine fault matrix; compact witness/checkpoint retention; full legacy migration |
 | C3 legal actions | contextual behavior commands, required channels, command-subject links, LLM tool manifests, exact owner-stamped action-provider registry | separate internal/projected legal actions, bounded offer store, one submission path for human/UI/AI/LLM |
 | C4 time/windows | scheduler, `GameClock`, Timestop turns, passive domain clock, Journey timing, mobility switching | typed clock identity/provider, generic window generations, simultaneous intent collection/order, restart/catch-up policy |
 | C5 RNG | injectable `mush-dice::RollCtx`; test-seeded ChaCha in rulesets | idempotency-derived resolution streams, draw transcript, algorithm/version and durable outcome record |
@@ -1935,8 +1935,10 @@ Exit criteria:
 in-memory `AuthoritativeStore` contract now implement exact intent reservation, early idempotency
 lookup, exact replay/readback/finalization, hash-aware status, bounded retained-intent capacity,
 object allocator admission, a pending accelerator, and an independent bounded full-intent scan.
-This is the contract test bed, not durable production support: Redis, fault injection, boot/world
-coordination, quarantine, checkpoints, and durable-outbox dispatch remain in the work below.
+The memory harness covers loss before/after intent, every materialization prefix (including object
+before allocator), token conflict, and acknowledgement loss after finalization. This is the contract
+test bed, not durable production support: Redis, boot/world/process coordination, quarantine,
+checkpoints, and durable-outbox dispatch remain in the work below.
 
 Work:
 
