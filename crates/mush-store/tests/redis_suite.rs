@@ -593,6 +593,8 @@ redis_gated!(authoritative_durable_outbox_round_trip, store, {
 });
 
 redis_gated!(authoritative_epoch_retirement_is_watermark_first, store, {
+    use fred::interfaces::KeysInterface;
+
     seed_minimal_world(&store).await;
     let old = authoritative_bundle_for_epoch(13, 23, 0);
     let old_token = old.token();
@@ -612,12 +614,42 @@ redis_gated!(authoritative_epoch_retirement_is_watermark_first, store, {
         .await
         .expect("checkpoint old epoch");
 
+    // Force a deterministic failure after the epoch watermark advances but
+    // before this compact witness can be purged. The old idempotency address
+    // must remain closed throughout the interruption, and retry must resume
+    // cleanup rather than regress or require a one-shot transaction.
+    let parent_key = format!("auth:outbox:parent:{old_token}");
+    let parent_doc: String = store.client().get(&parent_key).await.unwrap();
+    store
+        .client()
+        .set::<(), _, _>(&parent_key, "not-json", None, None, false)
+        .await
+        .unwrap();
+    assert!(matches!(
+        store.retire_authoritative_epochs(&scope, 1).await,
+        Err(StoreError::AuthoritativeCorrupt(_))
+    ));
+    assert_eq!(
+        store
+            .authoritative_idempotency_status(&old_key, old.ingress_hash())
+            .await
+            .unwrap(),
+        IdempotencyStatus::Retired {
+            minimum_accepted_epoch: 1
+        }
+    );
+    store
+        .client()
+        .set::<(), _, _>(&parent_key, parent_doc, None, None, false)
+        .await
+        .unwrap();
+
     let retirement = store
         .retire_authoritative_epochs(&scope, 1)
         .await
         .expect("retire old epoch");
     assert_eq!(retirement.retired_tombstones, 1);
-    assert!(!retirement.resumed);
+    assert!(retirement.resumed);
     assert_eq!(
         store
             .authoritative_idempotency_status(&old_key, old.ingress_hash())

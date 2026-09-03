@@ -23,6 +23,37 @@ struct RetryOnceAdapter {
     calls: AtomicUsize,
 }
 
+struct SuccessAdapter {
+    owner: OwnerId,
+    adapter: CanonicalId,
+    expected_item: CanonicalHash,
+    calls: AtomicUsize,
+    observed_attempt: AtomicUsize,
+}
+
+impl DurableOutboxAdapter for SuccessAdapter {
+    fn owner(&self) -> &OwnerId {
+        &self.owner
+    }
+
+    fn adapter(&self) -> &CanonicalId {
+        &self.adapter
+    }
+
+    fn deliver<'a>(
+        &'a self,
+        item: &'a AuthoritativeOutboxRecord,
+    ) -> BoxFuture<'a, Result<(), DurableDeliveryError>> {
+        Box::pin(async move {
+            assert_eq!(item.item_id(), self.expected_item);
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.observed_attempt
+                .store(item.attempts() as usize, Ordering::SeqCst);
+            Ok(())
+        })
+    }
+}
+
 impl DurableOutboxAdapter for RetryOnceAdapter {
     fn owner(&self) -> &OwnerId {
         &self.owner
@@ -184,6 +215,63 @@ async fn finalized_outbox_is_rediscovered_retried_and_then_checkpoints_parent() 
             .intents
             .is_empty(),
         "terminal delivery releases the parent's full replay intent"
+    );
+}
+
+#[tokio::test]
+async fn ambiguous_in_flight_attempt_is_redelivered_with_the_same_stable_identity() {
+    let store = InMemoryStore::new();
+    let world = World::new_minimal();
+    store
+        .write(WriteBatch {
+            serial: 1,
+            upserts: world.iter().cloned().collect(),
+            next_id: Some(world.next_id()),
+            ..WriteBatch::default()
+        })
+        .await
+        .unwrap();
+    let bundle = bundle();
+    let token = bundle.token();
+    let hash = bundle.bundle_hash();
+    store.reserve_authoritative_intent(bundle).await.unwrap();
+    store.reconcile_authoritative(token, hash).await.unwrap();
+    let pending = store.pending_authoritative_outbox().await.unwrap();
+    let item_id = pending[0].item_id();
+    let payload_hash = pending[0].intent().payload_hash();
+
+    // Simulate a process dying after persisting attempt 1 and sending it, but
+    // before recording the adapter result.
+    let started = store
+        .begin_authoritative_outbox_attempt(item_id, payload_hash, 0)
+        .await
+        .unwrap();
+    assert_eq!(started.attempts(), 1);
+
+    let adapter = Arc::new(SuccessAdapter {
+        owner: OwnerId::new("delivery_test").unwrap(),
+        adapter: CanonicalId::new("webhook").unwrap(),
+        expected_item: item_id,
+        calls: AtomicUsize::new(0),
+        observed_attempt: AtomicUsize::new(0),
+    });
+    let mut registry = DurableOutboxRegistry::new();
+    registry.register(adapter.clone()).unwrap();
+    let report = dispatch_authoritative_outbox(
+        &store,
+        &registry,
+        DurableOutboxPolicy::new(3, Duration::from_secs(1)).unwrap(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(report.delivered, 1);
+    assert_eq!(report.checkpointed_parents, 1);
+    assert_eq!(adapter.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        adapter.observed_attempt.load(Ordering::SeqCst),
+        1,
+        "recovery must reuse the ambiguous attempt number"
     );
 }
 
