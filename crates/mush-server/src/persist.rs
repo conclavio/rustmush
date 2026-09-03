@@ -19,15 +19,14 @@
 //!   [`StoreError::is_transient`]) it retries the same batch with
 //!   exponential backoff forever — order is preserved, nothing is dropped —
 //!   and tells the world task to pause mutations
-//!   ([`WriterSignal::StoreStatus`]) until the store recovers (PLAN risk 3). A
-//!   *deterministic* failure (serialization, a type-clobbered key) would
-//!   fail identically forever, so the batch is dropped with a loud error
-//!   instead of wedging the writer behind it. **Self-healing is partial**:
-//!   object upserts are full snapshots, so RAM heals the store on the next
-//!   write touching those objects — but a dropped batch's *module ops* do
-//!   not heal (a dropped `Del` resurrects its doc at next boot; a dropped
-//!   `StreamAppend` is lost), so the affected `mod:*` keys are logged for
-//!   manual repair.
+//!   ([`crate::world_task::WriterSignal::StoreStatus`]) until the store recovers
+//!   (PLAN risk 3). A
+//!   *deterministic* failure (serialization, a type-clobbered key) would fail
+//!   identically forever, so that batch is diagnosed/quarantined and the writer
+//!   latches halted. Every later queued write receives `Err` without touching
+//!   the store: committing past an unresolved predecessor would break FIFO
+//!   durability and compound RAM/store divergence. Recovery happens from exact
+//!   retained/quarantine material after restart, not speculative later writes.
 //!
 //! Durability-critical batches (`durable: true`, e.g. Player creation)
 //! carry a receipt oneshot; the caller gates its confirmation output on it,
@@ -36,20 +35,20 @@
 //! every batch queued before it.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use mush_core::{ObjId, World};
 use mush_config::metrics::Metrics;
-use mush_store::{ModuleOp, ModuleWrite, ObjectStore, StoreError, WriteBatch};
+use mush_core::{ObjId, World};
+use mush_store::{ModuleOp, ModuleWrite, ObjectStore, StoreError, WorldSnapshot, WriteBatch};
 use smol_str::SmolStr;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
+use crate::quarantine::QuarantineSpool;
+use crate::world_task::WriterSignalSender;
 use mush_config::unix_now_s;
-use crate::world_task::WriterSignal;
 
 /// How many times a sealed chunk is retried **in isolation** (alone, in its own
 /// batch) before it is declared a deterministic poison and quarantined (E0). The
@@ -77,9 +76,48 @@ const RETRY_INITIAL: Duration = Duration::from_millis(100);
 /// Retry backoff ceiling.
 const RETRY_MAX: Duration = Duration::from_secs(5);
 
+/// A confirmed poison seal is allowed to leave RAM only after the independent
+/// quarantine sink has durably verified it. Runtime I/O failures therefore
+/// retry in place with bounded backoff while the world is frozen; returning to
+/// the ordinary writer loop would make the retry unreachable behind the
+/// integrity halt and a process crash could then erase the sole copy.
+const QUARANTINE_RETRY_INITIAL: Duration = Duration::from_millis(100);
+const QUARANTINE_RETRY_MAX: Duration = Duration::from_secs(5);
+
+/// Process-local, monotonic persistence-integrity latch shared by the world,
+/// writer, and shutdown coordinator.
+///
+/// This is deliberately independent of the asynchronously propagated
+/// [`crate::world_task::WriterSignal`]: once either side observes a breach, ordinary snapshots
+/// fail closed immediately and for the rest of this process lifetime.
+#[derive(Clone, Debug, Default)]
+pub struct PersistenceIntegrityLatch {
+    latched: Arc<AtomicBool>,
+}
+
+impl PersistenceIntegrityLatch {
+    /// Construct a healthy, not-yet-latched state.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether a persistence-integrity breach has occurred this process life.
+    #[must_use]
+    pub fn is_latched(&self) -> bool {
+        self.latched.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn latch(&self) {
+        self.latched.store(true, Ordering::Release);
+    }
+}
+
 /// One unit of work for the store-writer task.
 pub enum StoreJob {
-    /// Apply one batch (acked in order; retried forever on failure).
+    /// Apply one batch, acknowledged in FIFO order. Transient failures retry;
+    /// a deterministic rejection latches the writer and every later write is
+    /// refused without touching the store.
     Write {
         /// The batch.
         batch: WriteBatch,
@@ -87,56 +125,117 @@ pub enum StoreJob {
         /// fire-and-forget ordinary command batches.
         notify: Option<oneshot::Sender<Result<u64, String>>>,
     },
-    /// Trigger a background snapshot (`@dump`), ordered behind everything
-    /// queued before it.
+    /// Trigger an ordinary background snapshot (`@dump`), ordered behind
+    /// everything queued before it and refused after an integrity breach.
+    ///
+    /// A future forensic export must be a separate operation with a separate
+    /// destination and evidence-preservation contract. Ordinary Redis BGSAVE
+    /// must never be relabeled as forensic output.
     Bgsave {
         /// Resolved when the store acknowledged the BGSAVE request.
         done: oneshot::Sender<Result<(), String>>,
     },
 }
 
-/// Spawn the store-writer task. `signals` is the dedicated UNBOUNDED channel the
-/// writer publishes health transitions ([`WriterSignal::StoreStatus`]) and
-/// ledger breaches on — unbounded so the writer can never block sending one and
-/// deadlock against the world's job-queue back-pressure. The task drains its
+/// Spawn the store-writer task. `signals` is the dedicated bounded/coalescing
+/// mailbox where the writer publishes health transitions
+/// ([`crate::world_task::WriterSignal::StoreStatus`]) and ledger breaches. Publishing takes a
+/// short synchronous lock and arms a capacity-one wake token; it never awaits
+/// the world or deadlocks against job-queue back-pressure. The task drains its
 /// queue and exits when every job sender is dropped.
 pub fn spawn_store_writer(
     store: Arc<dyn ObjectStore>,
-    signals: mpsc::UnboundedSender<WriterSignal>,
+    signals: WriterSignalSender,
     metrics: Arc<Metrics>,
     high_water: Arc<AtomicU64>,
-    quarantine_dir: Option<PathBuf>,
+    quarantine_spool: QuarantineSpool,
+    integrity: PersistenceIntegrityLatch,
 ) -> (mpsc::Sender<StoreJob>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel(WRITER_QUEUE);
-    let join = tokio::spawn(writer_loop(store, rx, signals, metrics, high_water, quarantine_dir));
+    let join = tokio::spawn(writer_loop(
+        store,
+        rx,
+        signals,
+        metrics,
+        high_water,
+        quarantine_spool,
+        integrity,
+    ));
     (tx, join)
 }
 
 async fn writer_loop(
     store: Arc<dyn ObjectStore>,
     mut rx: mpsc::Receiver<StoreJob>,
-    signals: mpsc::UnboundedSender<WriterSignal>,
+    signals: WriterSignalSender,
     metrics: Arc<Metrics>,
     high_water: Arc<AtomicU64>,
-    quarantine_dir: Option<PathBuf>,
+    quarantine_spool: QuarantineSpool,
+    integrity: PersistenceIntegrityLatch,
 ) {
     tracing::info!("store writer running");
     let mut healthy = true;
     // E0 poison-seal bookkeeping, persisted across jobs so a re-emitted seal is
     // recognized rather than re-isolated/re-spooled/re-frozen every cycle.
     let mut poison = PoisonState::default();
+    // Once a batch leaves RAM ahead of durable truth, no later write may commit
+    // past it. Drain the bounded queue so every receipt completes, but fail
+    // those jobs locally until an explicit recovery/restart builds a fresh
+    // writer. Ordinary BGSAVE is refused too: snapshotting known-ambiguous
+    // durable state would turn the breach into a misleading recovery point.
+    let mut integrity_halt: Option<String> = None;
     while let Some(job) = rx.recv().await {
         match job {
             StoreJob::Write { batch, notify } => {
-                let result = write_with_retry(
-                    &*store,
-                    batch,
-                    &mut healthy,
-                    &signals,
-                    quarantine_dir.as_deref(),
-                    &mut poison,
-                )
-                .await;
+                let batch_serial = batch.serial;
+                let result = if let Some(reason) = &integrity_halt {
+                    integrity.latch();
+                    tracing::error!(
+                        serial = batch_serial,
+                        halt_reason = reason,
+                        "store writer integrity-halted; rejecting queued write without touching store"
+                    );
+                    let detail = format!(
+                        "persistence integrity halted after an unresolved predecessor: {reason}"
+                    );
+                    preserve_terminal_seals(
+                        &signals,
+                        &quarantine_spool,
+                        batch_serial,
+                        &StoreError::Invalid(detail.clone()),
+                        sealed_chunks_in(&batch),
+                        &mut poison,
+                    )
+                    .await;
+                    Err(detail)
+                } else {
+                    let result = write_with_retry(
+                        &*store,
+                        batch,
+                        &mut healthy,
+                        &signals,
+                        &quarantine_spool,
+                        &mut poison,
+                        &integrity,
+                    )
+                    .await;
+                    if let Err(detail) = &result {
+                        // Defensive backstop: every terminal result must make
+                        // the process-wide snapshot barrier visible before the
+                        // writer considers another queued job.
+                        integrity.latch();
+                        let reason = bounded_detail(format!(
+                            "batch {batch_serial} was not committed: {detail}"
+                        ));
+                        tracing::error!(
+                            serial = batch_serial,
+                            %reason,
+                            "store writer latched integrity halt; later writes will be refused"
+                        );
+                        integrity_halt = Some(reason);
+                    }
+                    result
+                };
                 // The batch has left the queue (acked or dropped): drop the
                 // depth the world task incremented on enqueue, and stamp the
                 // last-ack time on success (the metrics surface's store health).
@@ -157,7 +256,11 @@ async fn writer_loop(
                 }
             }
             StoreJob::Bgsave { done } => {
-                let result = store.bgsave().await.map_err(|e| e.to_string());
+                let result = if integrity.is_latched() {
+                    Err("persistence integrity is latched; ordinary BGSAVE refused".to_owned())
+                } else {
+                    store.bgsave().await.map_err(|e| e.to_string())
+                };
                 if let Err(e) = &result {
                     tracing::error!(error = %e, "bgsave failed");
                 }
@@ -176,21 +279,50 @@ async fn writer_loop(
 /// batch; `Err` when the batch was **dropped** — the store is closed
 /// (abnormal teardown) or the failure is deterministic
 /// ([`StoreError::is_transient`] is false) and retrying it forever would
-/// wedge every batch queued behind it. Dropped batches are loudly logged;
-/// RAM remains ahead of the store until the affected objects are next
-/// written (full-object upserts self-heal).
+/// wedge every batch queued behind it. The caller latches a writer halt on any
+/// `Err`; later batches complete with `Err` without touching the store, so
+/// nothing can commit out of FIFO order past this unresolved predecessor.
 async fn write_with_retry(
     store: &dyn ObjectStore,
     batch: WriteBatch,
     healthy: &mut bool,
-    signals: &mpsc::UnboundedSender<WriterSignal>,
-    quarantine_dir: Option<&Path>,
+    signals: &WriterSignalSender,
+    quarantine_spool: &QuarantineSpool,
     poison: &mut PoisonState,
+    integrity: &PersistenceIntegrityLatch,
 ) -> Result<u64, String> {
     let mut delay = RETRY_INITIAL;
     loop {
         match store.write(batch.clone()).await {
             Ok(receipt) => {
+                if receipt.serial != batch.serial {
+                    // Publish the fail-closed fact before preserving seals:
+                    // quarantine I/O may retry for longer than the shutdown
+                    // grace period, and shutdown must already know not to
+                    // snapshot the ambiguous store.
+                    integrity.latch();
+                    let detail = format!(
+                        "store acknowledged batch {} with mismatched receipt serial {}",
+                        batch.serial, receipt.serial
+                    );
+                    tracing::error!(
+                        expected = batch.serial,
+                        received = receipt.serial,
+                        "store violated exact write-receipt identity"
+                    );
+                    notify_deterministic_failure(signals, detail.clone());
+                    let terminal = StoreError::Invalid(detail.clone());
+                    preserve_terminal_seals(
+                        signals,
+                        quarantine_spool,
+                        batch.serial,
+                        &terminal,
+                        sealed_chunks_in(&batch),
+                        poison,
+                    )
+                    .await;
+                    return Err(detail);
+                }
                 if !*healthy {
                     *healthy = true;
                     tracing::info!(serial = receipt.serial, "store writes recovered");
@@ -199,21 +331,44 @@ async fn write_with_retry(
                 return Ok(receipt.serial);
             }
             Err(StoreError::Closed) => {
+                // The acknowledgement is now unknowable. Latch before any
+                // potentially long preservation work so shutdown cannot race
+                // ahead and produce an ordinary snapshot.
+                integrity.latch();
                 // Shutdown already released the store; nothing to retry
                 // against. (The orderly path drains this writer first, so
                 // this only happens on abnormal teardown.)
                 tracing::error!(serial = batch.serial, "store closed; batch dropped");
+                notify_deterministic_failure(
+                    signals,
+                    format!("store closed while dropping batch {}", batch.serial),
+                );
+                preserve_terminal_seals(
+                    signals,
+                    quarantine_spool,
+                    batch.serial,
+                    &StoreError::Closed,
+                    sealed_chunks_in(&batch),
+                    poison,
+                )
+                .await;
                 return Err("store closed; batch dropped".to_string());
             }
             Err(e) if !e.is_transient() => {
-                // Deterministic failure: every retry would fail identically,
-                // wedging persistence behind one poisoned batch. Drop it,
-                // scream, and keep the pipeline moving. Object upserts
-                // self-heal (full snapshots re-sent on the next touch), but
-                // dropped MODULE ops do NOT: a dropped `Del` resurrects its
-                // document at next boot and a dropped `StreamAppend` is
-                // simply gone — log the affected keys so an operator can
-                // repair by hand.
+                // A deterministic drop makes RAM/durable truth diverge. Make
+                // that fact synchronously visible to the writer and shutdown
+                // coordinator before diagnosis or quarantine can block.
+                integrity.latch();
+                // Deterministic failure: every retry would fail identically.
+                // Diagnose and return it; the writer loop latches halted before
+                // considering any later queued write. Dropped module ops need
+                // exact recovery: a dropped `Del` could resurrect its document
+                // and a dropped `StreamAppend` cannot be reconstructed from a
+                // later object snapshot.
+                notify_deterministic_failure(
+                    signals,
+                    format!("deterministic drop of batch {}: {e}", batch.serial),
+                );
                 if !batch.module_ops.is_empty() {
                     let mut keys: Vec<String> = Vec::new();
                     let mut ledger_keys: Vec<String> = Vec::new();
@@ -256,13 +411,21 @@ async fn write_with_retry(
                 // merely caught as collateral (heals in isolation).
                 let seals = sealed_chunks_in(&batch);
                 if !seals.is_empty() {
-                    handle_poison_seals(store, signals, quarantine_dir, batch.serial, &e, seals, poison)
-                        .await;
+                    handle_poison_seals(
+                        store,
+                        signals,
+                        quarantine_spool,
+                        batch.serial,
+                        &e,
+                        seals,
+                        poison,
+                    )
+                    .await;
                 }
                 tracing::error!(
                     serial = batch.serial, error = %e,
                     "store write failed with a non-retryable error; BATCH DROPPED \
-                     (object docs are behind RAM until those objects are next written)"
+                     (writer will reject all later writes until recovery/restart)"
                 );
                 return Err(format!("non-retryable store error: {e}"));
             }
@@ -279,27 +442,43 @@ async fn write_with_retry(
     }
 }
 
-/// Non-blocking send of a store-health transition on the unbounded signal
-/// channel (E0). The writer must never block on this (see [`WriterSignal`]);
-/// unbounded `send` returns immediately, and `Err` means the world is gone.
-fn notify_status(signals: &mpsc::UnboundedSender<WriterSignal>, healthy: bool, detail: String) {
-    if signals.send(WriterSignal::StoreStatus { healthy, detail }).is_err() {
-        tracing::debug!("world task gone; store status transition dropped");
+/// Non-blocking publication of a coalesced store-health transition (E0).
+fn notify_status(signals: &WriterSignalSender, healthy: bool, detail: String) {
+    signals.store_status(healthy, detail);
+}
+
+/// A deterministic dropped batch means RAM may be ahead of durable truth even
+/// when no authoritative ledger seal happened to ride in that batch. Latch the
+/// same non-auto-lifting integrity barrier before the writer finishes the job.
+fn notify_deterministic_failure(signals: &WriterSignalSender, detail: String) {
+    signals.deterministic_failure(bounded_detail(detail));
+}
+
+fn bounded_detail(mut detail: String) -> String {
+    const MAX_DETAIL_BYTES: usize = 4 * 1024;
+    if detail.len() > MAX_DETAIL_BYTES {
+        let mut boundary = MAX_DETAIL_BYTES;
+        while !detail.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        detail.truncate(boundary);
     }
+    detail
 }
 
 /// Non-blocking signal of an authoritative-ledger breach to the world (E0).
 /// `seal` names a specific isolated seal to drop from re-emit (quarantined poison
 /// or healed collateral); `None` is the initial fail-closed freeze. Rides the
-/// unbounded signal channel so it can never block the writer.
+/// coalescing mailbox so it can never block the writer. `false` means an exact
+/// resolution did not fit; the caller must retain its identity and republish it
+/// when the corresponding seal is re-emitted.
+#[must_use]
 fn notify_ledger_breach(
-    signals: &mpsc::UnboundedSender<WriterSignal>,
+    signals: &WriterSignalSender,
     detail: String,
-    seal: Option<(SmolStr, SmolStr, bool)>,
-) {
-    if signals.send(WriterSignal::LedgerBreach { detail, seal }).is_err() {
-        tracing::debug!("world task gone; ledger breach signal dropped");
-    }
+    seal: Option<(SmolStr, SmolStr, String, bool)>,
+) -> bool {
+    signals.ledger_breach(detail, seal)
 }
 
 /// Writer-local bookkeeping for the poison-seal posture, persisted across jobs.
@@ -311,11 +490,72 @@ struct PoisonState {
     /// Whether the fail-closed freeze has already been signaled this process
     /// life — the freeze never auto-lifts, so it is signaled exactly once.
     frozen_signaled: bool,
-    /// Seals already isolated: value = whether durably resolved (quarantine
-    /// spooled + signaled, or healed + signaled). A `false` entry is a confirmed
-    /// poison whose spool write failed — re-attempt the spool (only), never
-    /// re-isolate. A missing entry means "not yet seen; isolate it".
-    handled: std::collections::HashMap<(SmolStr, SmolStr), bool>,
+    /// Seals already isolated and durably resolved (quarantine spooled or
+    /// healed). A missing entry means "not yet seen; isolate it". The outcome
+    /// remains in this bounded map so every retained re-emit republishes an
+    /// exact resolution if the coalescing mailbox was temporarily saturated.
+    handled: std::collections::HashMap<(SmolStr, SmolStr, String), SealResolutionKind>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SealResolutionKind {
+    Healed,
+    Quarantined,
+}
+
+impl SealResolutionKind {
+    const fn quarantined(self) -> bool {
+        matches!(self, SealResolutionKind::Quarantined)
+    }
+}
+
+fn remember_resolution(
+    poison: &mut PoisonState,
+    id: &(SmolStr, SmolStr, String),
+    kind: SealResolutionKind,
+) -> bool {
+    if let Some(existing) = poison.handled.get_mut(id) {
+        if *existing != kind {
+            // A quarantine record is the conservative terminal truth if two
+            // recovery paths ever disagree about one exact payload.
+            *existing = SealResolutionKind::Quarantined;
+        }
+        return true;
+    }
+    if poison.handled.len() >= crate::retained::MAX_RETAINED_SEALS {
+        // Production cannot reach this without the world violating the same
+        // custody bound. Do not evict an older exact identity: the current
+        // payload remains in world retention and will be retried/re-spooled.
+        tracing::error!(
+            ns = %id.0,
+            key = %id.1,
+            "writer exact-resolution custody exhausted; leaving seal retained for retry"
+        );
+        return false;
+    }
+    poison.handled.insert(id.clone(), kind);
+    true
+}
+
+fn publish_resolution(
+    signals: &WriterSignalSender,
+    detail: String,
+    id: &(SmolStr, SmolStr, String),
+    kind: SealResolutionKind,
+) -> bool {
+    let accepted = notify_ledger_breach(
+        signals,
+        detail,
+        Some((id.0.clone(), id.1.clone(), id.2.clone(), kind.quarantined())),
+    );
+    if !accepted {
+        tracing::error!(
+            ns = %id.0,
+            key = %id.1,
+            "exact seal resolution did not fit mailbox; retaining identity for re-emit retry"
+        );
+    }
+    accepted
 }
 
 /// The sealed chunks a batch carried, as `(ns, key, value)` — the retention/
@@ -325,12 +565,77 @@ fn sealed_chunks_in(batch: &WriteBatch) -> Vec<(SmolStr, SmolStr, serde_json::Va
         .module_ops
         .iter()
         .filter_map(|op| match &op.op {
-            ModuleWrite::JsonSet { key, value } if mush_core::is_sealed_chunk(key, value) => {
+            ModuleWrite::JsonSet { key, value }
+                if !op.ns.contains(':')
+                    && op.ns.len() <= mush_core::MAX_MODULE_NAMESPACE_BYTES
+                    && mush_core::is_sealed_chunk(key, value) =>
+            {
                 Some((op.ns.clone(), key.clone(), value.clone()))
             }
             _ => None,
         })
         .collect()
+}
+
+/// Preserve every authoritative seal in a batch whose acknowledgement can no
+/// longer be trusted (closed store, wrong receipt identity, or another terminal
+/// transport invariant). These are not diagnosed as poison: the quarantine
+/// record is an exact unresolved spill, and writable boot remains blocked until
+/// recovery determines whether the store also received the bytes.
+async fn preserve_terminal_seals(
+    signals: &WriterSignalSender,
+    quarantine_spool: &QuarantineSpool,
+    serial: u64,
+    terminal_error: &StoreError,
+    seals: Vec<(SmolStr, SmolStr, serde_json::Value)>,
+    poison: &mut PoisonState,
+) {
+    if seals.is_empty() {
+        return;
+    }
+    if !poison.frozen_signaled {
+        poison.frozen_signaled = true;
+        let _accepted = notify_ledger_breach(
+            signals,
+            format!(
+                "untrusted acknowledgement for batch {serial}: {terminal_error}; preserving exact seals"
+            ),
+            None,
+        );
+    }
+    for (ns, key, value) in seals {
+        let id = (
+            ns.clone(),
+            key.clone(),
+            crate::quarantine::seal_identity_hash(&ns, &key, &value),
+        );
+        if let Some(kind) = poison.handled.get(&id).copied() {
+            let _accepted = publish_resolution(
+                signals,
+                format!("seal {ns}/{key} resolution republished after retained re-emit"),
+                &id,
+                kind,
+            );
+            continue;
+        }
+        spool_quarantine_until_preserved(
+            quarantine_spool,
+            &ns,
+            &key,
+            &value,
+            serial,
+            terminal_error,
+            0,
+        )
+        .await;
+        let _remembered = remember_resolution(poison, &id, SealResolutionKind::Quarantined);
+        let _accepted = publish_resolution(
+            signals,
+            format!("seal {ns}/{key} preserved after an untrusted acknowledgement"),
+            &id,
+            SealResolutionKind::Quarantined,
+        );
+    }
 }
 
 /// Handle the sealed chunks of a batch that a deterministic store rejection just
@@ -340,12 +645,13 @@ fn sealed_chunks_in(batch: &WriteBatch) -> Vec<(SmolStr, SmolStr, serde_json::Va
 /// (durably quarantine it, then drop it from re-emit). A transient failure during
 /// isolation is the store's fault, not the seal's — leave it for normal re-emit.
 /// `poison` makes this idempotent across the world's re-emits of the same seal:
-/// an already-resolved seal is skipped; a poison whose spool failed re-attempts
-/// only the spool, never the whole isolation storm.
+/// an already-resolved seal is skipped. A poison whose spool is temporarily
+/// unavailable never returns to ordinary processing; it retries preservation
+/// in place while the bounded writer queue applies backpressure.
 async fn handle_poison_seals(
     store: &dyn ObjectStore,
-    signals: &mpsc::UnboundedSender<WriterSignal>,
-    quarantine_dir: Option<&Path>,
+    signals: &WriterSignalSender,
+    quarantine_spool: &QuarantineSpool,
     serial: u64,
     orig_err: &StoreError,
     seals: Vec<(SmolStr, SmolStr, serde_json::Value)>,
@@ -355,7 +661,7 @@ async fn handle_poison_seals(
     // once (the freeze never auto-lifts, so re-sending it every cycle is noise).
     if !poison.frozen_signaled {
         poison.frozen_signaled = true;
-        notify_ledger_breach(
+        let _accepted = notify_ledger_breach(
             signals,
             format!("deterministic drop of batch {serial}: {orig_err}"),
             None,
@@ -363,31 +669,34 @@ async fn handle_poison_seals(
     }
 
     for (ns, key, value) in seals {
-        let id = (ns.clone(), key.clone());
-        match poison.handled.get(&id) {
-            // Already resolved (quarantined or healed + signaled): the world will
-            // drop it from re-emit as soon as it processes that signal. Skip.
-            Some(true) => continue,
-            // Known poison whose spool write failed before: re-attempt ONLY the
-            // spool (cheap), never the whole isolation. If it now lands, resolve.
-            Some(false) => {
-                if spool_quarantine(quarantine_dir, &ns, &key, &value, serial, orig_err, POISON_ISOLATION_ATTEMPTS) {
-                    poison.handled.insert(id, true);
-                    notify_ledger_breach(
-                        signals,
-                        format!("seal {ns}/{key} quarantined as poison (spool recovered)"),
-                        Some((ns, key, true)),
-                    );
-                }
-                continue;
-            }
-            // First encounter: isolate below.
-            None => {}
+        // A key alone is not a recovery identity: if corrupt/malicious input
+        // presents different bytes under an already-handled sealed key, those
+        // bytes must be isolated and preserved independently rather than
+        // inheriting the earlier payload's resolution.
+        let id = (
+            ns.clone(),
+            key.clone(),
+            crate::quarantine::seal_identity_hash(&ns, &key, &value),
+        );
+        if let Some(kind) = poison.handled.get(&id).copied() {
+            // The world retained this exact payload because it has not observed
+            // the terminal resolution yet. Republish on every re-emit; this is
+            // the lossless retry path for a briefly saturated mailbox.
+            let _accepted = publish_resolution(
+                signals,
+                format!("seal {ns}/{key} resolution republished after retained re-emit"),
+                &id,
+                kind,
+            );
+            continue;
         }
 
         let mut attempts: u32 = 0;
+        let mut deterministic_attempts: u32 = 0;
+        let mut deterministic_fingerprint: Option<String> = None;
+        let mut transient_delay = RETRY_INITIAL;
         loop {
-            attempts += 1;
+            attempts = attempts.saturating_add(1);
             let single = WriteBatch {
                 // `serial` is informational here; an isolated write never
                 // advances the commit high-water (that would clear sibling seals
@@ -396,55 +705,125 @@ async fn handle_poison_seals(
                 serial,
                 module_ops: vec![ModuleOp {
                     ns: ns.clone(),
-                    op: ModuleWrite::JsonSet { key: key.clone(), value: value.clone() },
+                    op: ModuleWrite::JsonSet {
+                        key: key.clone(),
+                        value: value.clone(),
+                    },
                 }],
                 ..WriteBatch::default()
             };
             match store.write(single).await {
-                Ok(_) => {
+                Ok(receipt) if receipt.serial == serial => {
                     tracing::warn!(
                         %ns, %key, attempts,
                         "ledger seal committed in isolation — collateral, not poison; healed"
                     );
-                    poison.handled.insert(id, true);
-                    notify_ledger_breach(
+                    let _remembered = remember_resolution(poison, &id, SealResolutionKind::Healed);
+                    let _accepted = publish_resolution(
                         signals,
                         format!("seal {ns}/{key} healed in isolation"),
-                        Some((ns, key, false)),
+                        &id,
+                        SealResolutionKind::Healed,
                     );
                     break;
                 }
+                Ok(receipt) => {
+                    let detail = format!(
+                        "isolated seal {ns}/{key} expected receipt serial {serial}, got {}",
+                        receipt.serial
+                    );
+                    tracing::error!(
+                        %ns,
+                        %key,
+                        expected = serial,
+                        received = receipt.serial,
+                        "isolated seal returned a mismatched receipt; leaving recovery material retained"
+                    );
+                    notify_deterministic_failure(signals, detail);
+                    // A receipt for a different identity proves neither commit
+                    // nor poison. Spill the exact bytes as unresolved recovery
+                    // material before the outer failed predecessor halts.
+                    let terminal = StoreError::Invalid(format!(
+                        "isolated seal receipt mismatch: expected {serial}, got {}",
+                        receipt.serial
+                    ));
+                    preserve_terminal_seals(
+                        signals,
+                        quarantine_spool,
+                        serial,
+                        &terminal,
+                        vec![(ns.clone(), key.clone(), value.clone())],
+                        poison,
+                    )
+                    .await;
+                    break;
+                }
                 Err(e2) if !e2.is_transient() => {
-                    if attempts >= POISON_ISOLATION_ATTEMPTS {
-                        let preserved =
-                            spool_quarantine(quarantine_dir, &ns, &key, &value, serial, &e2, attempts);
-                        if preserved {
-                            tracing::error!(
-                                %ns, %key, attempts,
-                                "ledger seal is a confirmed deterministic POISON — quarantined to \
-                                 the spool and dropped from re-emit; the world stays frozen until \
-                                 staff repair and restart"
-                            );
-                            poison.handled.insert(id, true);
-                            notify_ledger_breach(
-                                signals,
-                                format!("seal {ns}/{key} quarantined as poison"),
-                                Some((ns, key, true)),
-                            );
-                        } else {
-                            // Could not preserve it durably: NEVER discard. Keep
-                            // it in the world's re-emit (do not signal quarantine)
-                            // and keep the world frozen; remember it as poison so
-                            // future re-emits only re-attempt the spool, never the
-                            // whole isolation storm. Page for manual intervention.
-                            tracing::error!(
-                                %ns, %key,
-                                "CRITICAL: a poison ledger seal could NOT be preserved in the \
-                                 quarantine spool; it is NOT dropped from re-emit and the world \
-                                 stays frozen — manual intervention required"
-                            );
-                            poison.handled.insert(id, false);
+                    let fingerprint = bounded_detail(e2.to_string());
+                    match deterministic_fingerprint.as_ref() {
+                        None => {
+                            deterministic_fingerprint = Some(fingerprint);
+                            deterministic_attempts = 1;
                         }
+                        Some(previous) if previous == &fingerprint => {
+                            deterministic_attempts = deterministic_attempts.saturating_add(1);
+                        }
+                        Some(previous) => {
+                            tracing::error!(
+                                %ns,
+                                %key,
+                                previous,
+                                current = %fingerprint,
+                                "isolated seal failure fingerprint changed; preserving as unresolved rather than declaring poison"
+                            );
+                            spool_quarantine_until_preserved(
+                                quarantine_spool,
+                                &ns,
+                                &key,
+                                &value,
+                                serial,
+                                &e2,
+                                attempts,
+                            )
+                            .await;
+                            let _remembered =
+                                remember_resolution(poison, &id, SealResolutionKind::Quarantined);
+                            let _accepted = publish_resolution(
+                                signals,
+                                format!(
+                                    "seal {ns}/{key} preserved after ambiguous isolation failures"
+                                ),
+                                &id,
+                                SealResolutionKind::Quarantined,
+                            );
+                            break;
+                        }
+                    }
+                    if deterministic_attempts >= POISON_ISOLATION_ATTEMPTS {
+                        spool_quarantine_until_preserved(
+                            quarantine_spool,
+                            &ns,
+                            &key,
+                            &value,
+                            serial,
+                            &e2,
+                            deterministic_attempts,
+                        )
+                        .await;
+                        tracing::error!(
+                            %ns, %key, attempts,
+                            "ledger seal is a confirmed deterministic POISON — quarantined to \
+                             the spool and dropped from re-emit; the world stays frozen until \
+                             recovery verifies a repair"
+                        );
+                        let _remembered =
+                            remember_resolution(poison, &id, SealResolutionKind::Quarantined);
+                        let _accepted = publish_resolution(
+                            signals,
+                            format!("seal {ns}/{key} quarantined as poison"),
+                            &id,
+                            SealResolutionKind::Quarantined,
+                        );
                         break;
                     }
                     // Same-fingerprint isolated retry: pure diagnosis, no backoff
@@ -453,29 +832,29 @@ async fn handle_poison_seals(
                 Err(_transient) => {
                     tracing::warn!(
                         %ns, %key,
-                        "transient store error while isolating a ledger seal; leaving it for \
-                         normal re-emit once the store recovers"
+                        retry_ms = u64::try_from(transient_delay.as_millis()).unwrap_or(u64::MAX),
+                        "transient store error while isolating a ledger seal; retaining it inside \
+                         the fail-stopped writer and retrying after backoff"
                     );
-                    // Do NOT record it: once the store recovers the normal re-emit
-                    // commits it and the high-water clears it.
-                    break;
+                    // Returning here would make recovery unreachable: the
+                    // outer writer latches its integrity halt and rejects every
+                    // later ordinary re-emit. Keep custody until either exact
+                    // commit or durable spill.
+                    deterministic_fingerprint = None;
+                    deterministic_attempts = 0;
+                    tokio::time::sleep(transient_delay).await;
+                    transient_delay = (transient_delay * 2).min(RETRY_MAX);
                 }
             }
         }
     }
 }
 
-/// Durably preserve a confirmed-poison sealed chunk in the quarantine spool — a
-/// separate failure domain from the (possibly-damaged) store — so it is never
-/// discarded and can be replayed after repair. Writes a full recovery record and
-/// **fsyncs** it. Returns whether it was durably preserved.
-///
-/// With no spool directory configured (tests / the compat `spawn`), the full
-/// payload is logged at critical severity and this reports success so the world
-/// stops re-emitting a seal that can never commit — a degraded mode the real
-/// server never uses (it always configures a spool under the data dir).
+/// Durably preserve a confirmed-poison sealed chunk in the required quarantine
+/// spool. Production cannot construct the writer without an opened durable
+/// implementation; tests opt into an explicit in-memory implementation.
 fn spool_quarantine(
-    dir: Option<&Path>,
+    spool: &QuarantineSpool,
     ns: &str,
     key: &str,
     value: &serde_json::Value,
@@ -483,145 +862,78 @@ fn spool_quarantine(
     err: &StoreError,
     attempts: u32,
 ) -> bool {
-    let identity = seal_identity_hash(ns, key, value);
-    let record = serde_json::json!({
-        "ns": ns,
-        "key": key,
-        "serial": serial,
-        "payload_hash": identity,
-        "payload": value,
-        "store_error": err.to_string(),
-        "error_transient": err.is_transient(),
-        "isolation_attempts": attempts,
-        "quarantined_unix": unix_now_s(),
-        "server_version": env!("CARGO_PKG_VERSION"),
-    });
-
-    let Some(dir) = dir else {
-        tracing::error!(
-            ns, key, serial, %record,
-            "no quarantine spool configured — the poison seal is preserved ONLY in this log \
-             line; the world drops it from re-emit to avoid a busy-loop (real deployments \
-             always configure a spool)"
-        );
-        return true;
-    };
-
-    if let Err(e) = std::fs::create_dir_all(dir) {
-        tracing::error!(dir = %dir.display(), error = %e, "could not create the quarantine spool dir");
-        return false;
-    }
-    // Content-addressed filename: two quarantines of the SAME seal (same ns/key/
-    // payload) map to the same file, so a re-quarantine is idempotent and can
-    // never truncate a different record. A distinct seal hashes to a distinct
-    // name — no collision from serial reuse or a non-injective sanitizer.
-    let path = dir.join(format!("{identity}.json"));
-    if path.exists() {
-        // Already written (first write wins, keeping the original record). The
-        // content was fsynced before its rename, but a PRIOR attempt may have
-        // failed the directory fsync (rename ok, dir fsync EIO) — so re-confirm
-        // the directory entry is durable before reporting preserved. Never
-        // falsely report a record whose name could vanish on a crash.
-        return match fsync_dir(dir) {
-            Ok(()) => {
-                tracing::error!(path = %path.display(), "poison ledger seal already quarantined (idempotent)");
-                true
-            }
-            Err(e) => {
-                tracing::error!(
-                    path = %path.display(), error = %e,
-                    "quarantine record exists but its directory entry is NOT durable (dir fsync \
-                     failed) — keeping the seal frozen and re-emitting until it is"
-                );
-                false
-            }
-        };
-    }
-    match write_record_atomic(dir, &path, &identity, &record) {
-        Ok(()) => {
-            tracing::error!(path = %path.display(), "poison ledger seal quarantined to the spool");
+    match spool.quarantine(ns, key, value, serial, err, attempts) {
+        Ok(true) => {
+            tracing::error!(
+                ns,
+                key,
+                "poison ledger seal quarantined to the required spool"
+            );
             true
         }
-        Err(e) => {
-            tracing::error!(path = %path.display(), error = %e, "FAILED to durably write the quarantine spool record");
+        Ok(false) => false,
+        Err(error) => {
+            tracing::error!(ns, key, %error, "FAILED to preserve poison ledger seal in quarantine spool");
             false
         }
     }
 }
 
-/// Durably write a quarantine record: serialize to a temp file, fsync its
-/// contents, atomically rename it onto the content-addressed name, and fsync the
-/// directory so the new name survives a crash. Crash-atomic — a crash mid-write
-/// leaves only a stale `.tmp` (overwritten next time), never a partial record
-/// under the real name.
-fn write_record_atomic(
-    dir: &Path,
-    final_path: &Path,
-    identity: &str,
-    record: &serde_json::Value,
-) -> std::io::Result<()> {
-    use std::io::Write as _;
-    let bytes = serde_json::to_vec_pretty(record).map_err(std::io::Error::other)?;
-    // Single writer, so a fixed temp name is safe; truncating a stale temp from a
-    // prior crash is harmless (temps are disposable).
-    let tmp = dir.join(format!("{identity}.tmp"));
-    let mut f = std::fs::File::create(&tmp)?;
-    f.write_all(&bytes)?;
-    f.sync_all()?;
-    drop(f);
-    std::fs::rename(&tmp, final_path)?;
-    fsync_dir(dir)?;
-    Ok(())
-}
-
-/// fsync a directory so a just-created/renamed entry's name is durable. On the
-/// Linux deploy target this is **mandatory** (a failure fails the write, so the
-/// caller keeps the seal frozen + re-emitting rather than falsely reporting it
-/// preserved). Non-Unix platforms cannot open a directory as a file, so it is a
-/// no-op there (dev/test only).
-#[cfg(unix)]
-fn fsync_dir(dir: &Path) -> std::io::Result<()> {
-    std::fs::File::open(dir)?.sync_all()
-}
-#[cfg(not(unix))]
-fn fsync_dir(_dir: &Path) -> std::io::Result<()> {
-    Ok(())
-}
-
-/// A stable, collision-resistant identity for a sealed chunk (its `ns`, key, and
-/// canonical payload bytes) — SHA-256 hex. Used for the content-addressed spool
-/// filename and recorded so staff can confirm a replayed op matches. serde_json
-/// object key order is stable (BTreeMap, `preserve_order` off), so the same seal
-/// hashes identically across runs.
-fn seal_identity_hash(ns: &str, key: &str, value: &serde_json::Value) -> String {
-    use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
-    h.update(ns.as_bytes());
-    h.update([0u8]);
-    h.update(key.as_bytes());
-    h.update([0u8]);
-    h.update(serde_json::to_vec(value).unwrap_or_default());
-    let digest = h.finalize();
-    let mut hex = String::with_capacity(digest.len() * 2);
-    for b in digest {
-        use std::fmt::Write as _;
-        let _ = write!(hex, "{b:02x}");
+/// Do not release the only known-good bytes of an authoritative seal while its
+/// independent recovery sink is unavailable. The store writer stays inside
+/// this loop (and has already frozen the world), which bounds queued work and
+/// lets an operator repair the spool without restarting the process that still
+/// owns the payload.
+async fn spool_quarantine_until_preserved(
+    spool: &QuarantineSpool,
+    ns: &str,
+    key: &str,
+    value: &serde_json::Value,
+    serial: u64,
+    err: &StoreError,
+    attempts: u32,
+) {
+    let mut delay = QUARANTINE_RETRY_INITIAL;
+    loop {
+        if spool_quarantine(spool, ns, key, value, serial, err, attempts) {
+            return;
+        }
+        tracing::error!(
+            ns,
+            key,
+            retry_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+            "CRITICAL: poison seal is still RAM-only because quarantine preservation failed; \
+             keeping the writer fail-stopped and retrying"
+        );
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(QUARANTINE_RETRY_MAX);
     }
-    hex
 }
 
-/// Count the unresolved quarantine records in the spool (`*.json`, ignoring
-/// in-flight `*.tmp`). A non-zero count at boot means an authoritative-ledger
-/// poison has NOT been repaired: the world must start frozen (E0 never
-/// auto-resumes). `None` (no spool) and an unreadable dir both yield 0.
-#[must_use]
-pub fn spool_unresolved_count(dir: Option<&Path>) -> usize {
-    let Some(dir) = dir else { return 0 };
-    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
-    entries
-        .filter_map(Result::ok)
-        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
-        .count()
+/// Durably spill every valid sealed-ledger operation from a batch that never
+/// entered the writer's custody (retention conflict or closed queue). This is
+/// the world side of the same fail-stop contract: returning means either there
+/// were no authoritative seals or every exact payload has a verified recovery
+/// record that will block ordinary writable boot.
+pub(crate) async fn preserve_unqueued_seals(
+    spool: &QuarantineSpool,
+    ops: &[ModuleOp],
+    serial: u64,
+    detail: &str,
+) {
+    let error = StoreError::Invalid(bounded_detail(detail.to_owned()));
+    for (ns, key, value) in ops.iter().filter_map(|op| match &op.op {
+        ModuleWrite::JsonSet { key, value }
+            if !op.ns.contains(':')
+                && op.ns.len() <= mush_core::MAX_MODULE_NAMESPACE_BYTES
+                && mush_core::is_sealed_chunk(key, value) =>
+        {
+            Some((op.ns.as_str(), key.as_str(), value))
+        }
+        _ => None,
+    }) {
+        spool_quarantine_until_preserved(spool, ns, key, value, serial, &error, 0).await;
+    }
 }
 
 /// Snapshot one drained dirty set into a [`WriteBatch`]: live objects are
@@ -666,8 +978,9 @@ const MAX_TOMBSTONE_GAP: usize = 1_000_000;
 /// first command. Either way the returned world carries an empty dirty set
 /// and the current wall clock.
 ///
-/// Fails fast (naming any corrupt docs the load skipped, so the operator
-/// can connect cause to effect) when:
+/// Fails fast when:
+/// - any corrupt object document was discovered — silently omitting an
+///   otherwise independent object would be authoritative state loss;
 /// - `meta:next_id` is implausibly far beyond the stored object count
 ///   ([`MAX_TOMBSTONE_GAP`]) — checked **before** hydration allocates;
 /// - hydration itself rejects the data (dangling references, duplicate
@@ -682,55 +995,64 @@ pub async fn load_or_seed_world(store: &dyn ObjectStore) -> Result<World, String
         .await
         .map_err(|e| format!("loading world from store: {e}"))?
     {
-        Some(snapshot) => {
-            let count = snapshot.objects.len();
-            let corrupt_note = if snapshot.corrupt_docs > 0 {
-                format!(
-                    " ({} corrupt object doc(s) were skipped during the load — \
-                     likely the cause; see the log)",
-                    snapshot.corrupt_docs
-                )
-            } else {
-                String::new()
-            };
-            if (snapshot.next_id as usize).saturating_sub(count) > MAX_TOMBSTONE_GAP {
-                return Err(format!(
-                    "persisted next_id {} is implausibly far beyond the {count} stored \
-                     object(s); refusing to allocate — meta:next_id looks corrupt{corrupt_note}",
-                    snapshot.next_id
-                ));
-            }
-            let world = World::from_objects(snapshot.objects, snapshot.next_id)
-                .map_err(|e| format!("persisted world is inconsistent: {e}{corrupt_note}"))?;
-            for (id, name) in [(mush_core::LIMBO, "Limbo"), (mush_core::GOD, "God")] {
-                if world.get(id).is_none() {
-                    return Err(format!(
-                        "persisted world is missing {name} ({id}); refusing to boot an \
-                         unusable world{corrupt_note}"
-                    ));
-                }
-            }
-            tracing::info!(
-                objects = count,
-                next_id = snapshot.next_id,
-                "world loaded from store"
-            );
-            world
-        }
+        Some(snapshot) => hydrate_world_snapshot(snapshot)?,
         None => {
             let mut world = World::new_minimal();
             let dirty = world.take_dirty();
             let seed = batch_from_dirty(&world, dirty, 0, true);
-            store
+            let receipt = store
                 .write(seed)
                 .await
                 .map_err(|e| format!("writing world seed batch: {e}"))?;
+            if receipt.serial != 0 {
+                return Err(format!(
+                    "writing world seed batch: expected receipt serial 0, got {}",
+                    receipt.serial
+                ));
+            }
             tracing::info!("empty store: seeded minimal world (Limbo #0, God #1)");
             world
         }
     };
     let mut world = world;
     world.set_now(unix_now_s());
+    Ok(world)
+}
+
+/// Validate and hydrate one non-empty store snapshot. Kept separate from the
+/// async read so fail-closed handling of loader-reported corruption is directly
+/// regression-testable without exposing raw-store mutation hooks.
+fn hydrate_world_snapshot(snapshot: WorldSnapshot) -> Result<World, String> {
+    let WorldSnapshot {
+        objects,
+        next_id,
+        corrupt_docs,
+        ..
+    } = snapshot;
+    if corrupt_docs > 0 {
+        return Err(format!(
+            "persisted world contains {corrupt_docs} corrupt object doc(s); refusing to boot \
+             because omitting authoritative objects would lose state (see the store log for keys)"
+        ));
+    }
+
+    let count = objects.len();
+    if (next_id as usize).saturating_sub(count) > MAX_TOMBSTONE_GAP {
+        return Err(format!(
+            "persisted next_id {next_id} is implausibly far beyond the {count} stored \
+             object(s); refusing to allocate — meta:next_id looks corrupt"
+        ));
+    }
+    let world = World::from_objects(objects, next_id)
+        .map_err(|e| format!("persisted world is inconsistent: {e}"))?;
+    for (id, name) in [(mush_core::LIMBO, "Limbo"), (mush_core::GOD, "God")] {
+        if world.get(id).is_none() {
+            return Err(format!(
+                "persisted world is missing {name} ({id}); refusing to boot an unusable world"
+            ));
+        }
+    }
+    tracing::info!(objects = count, next_id, "world loaded from store");
     Ok(world)
 }
 
@@ -743,29 +1065,31 @@ mod tests {
     #[test]
     fn seal_identity_hash_is_stable_and_distinguishes_seals() {
         let v = serde_json::json!({"chunk": 0, "sealed": true, "entries": []});
-        let a = seal_identity_hash("scenes", "log:s:0", &v);
+        let a = crate::quarantine::seal_identity_hash("scenes", "log:s:0", &v);
         // Stable across calls (content-addressed).
-        assert_eq!(a, seal_identity_hash("scenes", "log:s:0", &v));
+        assert_eq!(
+            a,
+            crate::quarantine::seal_identity_hash("scenes", "log:s:0", &v)
+        );
         // Distinct on ns, key, or payload — no collision from a non-injective
         // sanitizer (log:s:0 vs log_s_0 differ, as do different namespaces).
-        assert_ne!(a, seal_identity_hash("scenes", "log_s_0", &v));
-        assert_ne!(a, seal_identity_hash("econ", "log:s:0", &v));
-        assert_ne!(a, seal_identity_hash("scenes", "log:s:0", &serde_json::json!({"chunk": 1})));
+        assert_ne!(
+            a,
+            crate::quarantine::seal_identity_hash("scenes", "log_s_0", &v)
+        );
+        assert_ne!(
+            a,
+            crate::quarantine::seal_identity_hash("econ", "log:s:0", &v)
+        );
+        assert_ne!(
+            a,
+            crate::quarantine::seal_identity_hash(
+                "scenes",
+                "log:s:0",
+                &serde_json::json!({"chunk": 1}),
+            )
+        );
         assert_eq!(a.len(), 64, "sha-256 hex");
-    }
-
-    #[test]
-    fn spool_unresolved_count_ignores_tmp_and_missing() {
-        assert_eq!(spool_unresolved_count(None), 0);
-        let dir = std::env::temp_dir().join(format!("rustmush-spool-count-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(spool_unresolved_count(Some(&dir)), 0, "a missing dir is 0");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("abc.json"), b"{}").unwrap();
-        std::fs::write(dir.join("def.json"), b"{}").unwrap();
-        std::fs::write(dir.join("wip.tmp"), b"{}").unwrap(); // in-flight, not counted
-        assert_eq!(spool_unresolved_count(Some(&dir)), 2, "counts *.json, ignores *.tmp");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -817,6 +1141,24 @@ mod tests {
         assert!(
             err.contains("Limbo") || err.contains("God"),
             "error must name the missing anchor object: {err}"
+        );
+    }
+
+    #[test]
+    fn boot_refuses_any_loader_reported_corrupt_object() {
+        let world = World::new_minimal();
+        let snapshot = WorldSnapshot {
+            objects: world.iter().cloned().collect(),
+            next_id: world.next_id(),
+            schema_version: 1,
+            corrupt_docs: 1,
+        };
+
+        let error = hydrate_world_snapshot(snapshot)
+            .expect_err("one corrupt independent object must stop boot");
+        assert!(
+            error.contains("1 corrupt object doc") && error.contains("refusing to boot"),
+            "{error}"
         );
     }
 

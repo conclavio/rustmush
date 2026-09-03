@@ -1,0 +1,17 @@
+[package]
+name = "mush-contract-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Shared fixtures and vertical contract gates for the RustMUSH action kernel"
+publish = false
+
+[dependencies]
+mush-core.workspace = true
+mush-testkit.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

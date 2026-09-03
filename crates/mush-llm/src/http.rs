@@ -4,10 +4,11 @@
 
 use std::time::Duration;
 
+use futures::StreamExt;
 use reqwest::StatusCode;
 use reqwest::header::HeaderMap;
 
-use crate::provider::LlmError;
+use crate::provider::{LlmError, MAX_PROVIDER_RESPONSE_BYTES};
 
 /// A shared rustls-backed HTTP client. Per-request timeouts are applied at the
 /// call site, so none is set here.
@@ -20,7 +21,71 @@ pub fn client() -> Result<reqwest::Client, LlmError> {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .map_err(|e| LlmError::Network(scrub(&e.to_string())))
+        .map_err(|e| LlmError::Network(snippet(&e.to_string())))
+}
+
+/// Refuse a response whose declared body length exceeds the provider boundary.
+/// A missing, invalid, or misleading header is handled by per-chunk accounting.
+pub fn ensure_response_size(resp: &reqwest::Response) -> Result<(), LlmError> {
+    if resp
+        .content_length()
+        .is_some_and(|len| len > MAX_PROVIDER_RESPONSE_BYTES as u64)
+    {
+        return Err(response_too_large());
+    }
+    Ok(())
+}
+
+/// Account one received body chunk without ever crossing the provider boundary.
+/// Callers must stop polling the response after this returns an error.
+pub fn account_response_chunk(seen: &mut usize, chunk_len: usize) -> Result<(), LlmError> {
+    let Some(total) = seen.checked_add(chunk_len) else {
+        return Err(response_too_large());
+    };
+    if total > MAX_PROVIDER_RESPONSE_BYTES {
+        return Err(response_too_large());
+    }
+    *seen = total;
+    Ok(())
+}
+
+/// Read an ordinary provider response under the same wire-size bound used by
+/// the streaming adapters.
+pub async fn response_text(resp: reqwest::Response) -> Result<String, LlmError> {
+    ensure_response_size(&resp)?;
+    let capacity = resp.content_length().unwrap_or(0) as usize;
+    let mut body = Vec::with_capacity(capacity);
+    let mut seen = 0usize;
+    let mut chunks = resp.bytes_stream();
+    while let Some(chunk) = chunks.next().await {
+        let chunk = chunk.map_err(|e| transport_error(&e))?;
+        account_response_chunk(&mut seen, chunk.len())?;
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8(body).map_err(|e| LlmError::MalformedOutput(format!("response utf-8: {e}")))
+}
+
+/// Read a non-success body without allowing failure diagnostics themselves to
+/// become an unbounded allocation. The HTTP status remains authoritative when
+/// the body is oversized or unreadable; the read failure becomes its bounded
+/// diagnostic snippet.
+pub async fn error_response_text(resp: reqwest::Response) -> String {
+    match response_text(resp).await {
+        Ok(body) => body,
+        Err(err) => snippet(&err.to_string()),
+    }
+}
+
+/// Map an SSE framing/parser failure to the existing transport error type,
+/// scrubbing and bounding any provider-controlled diagnostic text.
+pub fn stream_protocol_error(message: &str) -> LlmError {
+    LlmError::Network(snippet(message))
+}
+
+fn response_too_large() -> LlmError {
+    LlmError::MalformedOutput(format!(
+        "provider response exceeds {MAX_PROVIDER_RESPONSE_BYTES}-byte limit"
+    ))
 }
 
 /// Map a non-success HTTP status + response body to an [`LlmError`]. The body
@@ -45,7 +110,7 @@ pub fn transport_error(e: &reqwest::Error) -> LlmError {
     if e.is_timeout() {
         LlmError::Timeout
     } else {
-        LlmError::Network(scrub(&e.to_string()))
+        LlmError::Network(snippet(&e.to_string()))
     }
 }
 
@@ -59,14 +124,34 @@ pub fn retry_after(headers: &HeaderMap) -> Option<Duration> {
 
 /// A ≤400-char, scrubbed snippet of a response body for error messages.
 fn snippet(body: &str) -> String {
-    let scrubbed = scrub(body);
+    // Bound work before scrubbing as well as after it. In particular, a
+    // malicious multi-megabyte token must not create a second multi-megabyte
+    // allocation merely to produce a 400-character diagnostic.
+    let mut input = String::new();
+    let mut input_truncated = false;
+    for (i, c) in body.chars().enumerate() {
+        if i >= 800 {
+            input_truncated = true;
+            break;
+        }
+        input.push(c);
+    }
+
+    let scrubbed = scrub(&input);
     let mut out = String::new();
-    for (i, c) in scrubbed.chars().enumerate() {
-        if i >= 400 {
-            out.push('…');
+    let mut output_truncated = false;
+    for c in scrubbed.chars() {
+        if out.chars().count() >= 400 {
+            output_truncated = true;
             break;
         }
         out.push(c);
+    }
+    if input_truncated || output_truncated {
+        if out.chars().count() == 400 {
+            out.pop();
+        }
+        out.push('…');
     }
     out
 }
@@ -145,5 +230,24 @@ mod tests {
     fn scrub_leaves_ordinary_text_alone() {
         let s = "invalid request: model z-ai/glm-5.3 not found";
         assert_eq!(scrub(s), s);
+    }
+
+    #[test]
+    fn response_chunk_accounting_accepts_exact_limit_and_rejects_next_byte() {
+        let mut seen = 0;
+        account_response_chunk(&mut seen, MAX_PROVIDER_RESPONSE_BYTES).unwrap();
+        assert_eq!(seen, MAX_PROVIDER_RESPONSE_BYTES);
+        assert!(matches!(
+            account_response_chunk(&mut seen, 1),
+            Err(LlmError::MalformedOutput(_))
+        ));
+        assert_eq!(seen, MAX_PROVIDER_RESPONSE_BYTES);
+    }
+
+    #[test]
+    fn diagnostic_snippet_is_bounded_before_and_after_scrubbing() {
+        let out = snippet(&"x".repeat(MAX_PROVIDER_RESPONSE_BYTES));
+        assert!(out.chars().count() <= 400);
+        assert!(out.ends_with('…'));
     }
 }

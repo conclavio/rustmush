@@ -17,9 +17,7 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 use mush_net_ssh::{AuthResult, CharSummary, CreateErr, NewConn, SshConfig, SshHooks, SshServer};
-use mush_proto::{
-    NarrativeKind, ObjRef, OutputEvent, PanelFrameKind, RichText, SmolStr, WhoEntry,
-};
+use mush_proto::{NarrativeKind, ObjRef, OutputEvent, PanelFrameKind, RichText, SmolStr, WhoEntry};
 use russh::ChannelMsg;
 use tokio::sync::mpsc;
 
@@ -791,7 +789,10 @@ async fn auth_none_advertises_publickey_and_key_miss_is_not_counted() {
         .authenticate_publickey("nick", signing_key(WRONG_PRIV))
         .await
         .expect("auth attempt");
-    assert!(!wrong.success(), "an unregistered key must not authenticate");
+    assert!(
+        !wrong.success(),
+        "an unregistered key must not authenticate"
+    );
     assert_eq!(
         hooks.auth_failures.load(Ordering::Relaxed),
         0,

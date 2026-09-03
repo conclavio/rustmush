@@ -687,7 +687,10 @@ mod tests {
             toml::from_str("[onboarding]\nchargen_required = true\nstart_room = 5").unwrap();
         assert!(cfg.onboarding.chargen_required);
         assert_eq!(cfg.onboarding.start_room_id(), mush_core::ObjId(5));
-        assert_eq!(cfg.onboarding.start_room_unapproved_id(), mush_core::ObjId(5));
+        assert_eq!(
+            cfg.onboarding.start_room_unapproved_id(),
+            mush_core::ObjId(5)
+        );
 
         // Both rooms explicit.
         let cfg: Config = toml::from_str(
@@ -695,7 +698,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(cfg.onboarding.start_room_id(), mush_core::ObjId(5));
-        assert_eq!(cfg.onboarding.start_room_unapproved_id(), mush_core::ObjId(9));
+        assert_eq!(
+            cfg.onboarding.start_room_unapproved_id(),
+            mush_core::ObjId(9)
+        );
     }
 
     #[test]

@@ -42,7 +42,9 @@ fn obj_live(ctx: &ModuleCtx<'_>, obj: mush_core::ObjId) -> bool {
 pub(crate) fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<OrgStore, ModError> {
     // The audit ledger rehydrates its open tail directly from the log chunks.
     let mut audit = Ledger::new();
-    audit.restore_from_kv(&data.kv);
+    audit
+        .restore_from_kv(&data.kv)
+        .map_err(|error| ModError::msg(format!("org: audit ledger restore refused: {error}")))?;
 
     let mut orgs: BTreeMap<OrgId, Organization> = BTreeMap::new();
     let mut scopes: BTreeMap<OrgScopeId, OrgScope> = BTreeMap::new();

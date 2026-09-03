@@ -324,13 +324,12 @@ impl TuiApp {
         };
         // The secondary pane only claims space when it is open AND there is
         // room for it beside the main frame and rail.
-        let sec_w = if self.secondary != SecondaryPane::Hidden
-            && area.width > rail_w + SECONDARY_W + 20
-        {
-            SECONDARY_W
-        } else {
-            0
-        };
+        let sec_w =
+            if self.secondary != SecondaryPane::Hidden && area.width > rail_w + SECONDARY_W + 20 {
+                SECONDARY_W
+            } else {
+                0
+            };
         let [main, secondary_area, rail] = Layout::horizontal([
             Constraint::Min(1),
             Constraint::Length(sec_w),
@@ -355,15 +354,15 @@ impl TuiApp {
         let (title, lines) = match self.secondary {
             SecondaryPane::Mail => (
                 "@mail",
-                self.mail.as_ref().map(|d| {
-                    render_mail_panel(d, &self.theme, self.caps.color)
-                }),
+                self.mail
+                    .as_ref()
+                    .map(|d| render_mail_panel(d, &self.theme, self.caps.color)),
             ),
             SecondaryPane::Intel => (
                 "+intel",
-                self.intel.as_ref().map(|d| {
-                    render_intel_panel(d, &self.theme, self.caps.color)
-                }),
+                self.intel
+                    .as_ref()
+                    .map(|d| render_intel_panel(d, &self.theme, self.caps.color)),
             ),
             // Not drawn when hidden (the caller gates on sec_w > 0).
             SecondaryPane::Hidden => ("", None),
@@ -440,7 +439,10 @@ impl TuiApp {
 
 /// A dim placeholder span (owned).
 fn dim_span(text: &str) -> ratatui::text::Span<'static> {
-    ratatui::text::Span::styled(text.to_string(), Style::default().add_modifier(Modifier::DIM))
+    ratatui::text::Span::styled(
+        text.to_string(),
+        Style::default().add_modifier(Modifier::DIM),
+    )
 }
 
 /// Rows a logical line of display width `w` occupies in a `width`-wide pane
@@ -707,7 +709,8 @@ mod tests {
                 ],
             }),
         });
-        let backend = super::super::backend::SshBackend::new(120, 24, mush_proto::ColorDepth::Ansi16);
+        let backend =
+            super::super::backend::SshBackend::new(120, 24, mush_proto::ColorDepth::Ansi16);
         let mut term = ratatui::Terminal::new(backend).unwrap();
         term.draw(|f| app.draw(f)).unwrap();
         let bytes = term.backend_mut().take_output();
@@ -721,7 +724,8 @@ mod tests {
         let mut app = TuiApp::new(caps());
         app.apply_event(&OutputEvent::Sys(RichText::plain("hi")));
         for (w, h) in [(1u16, 1u16), (2, 1), (80, 1), (1, 24), (10, 3)] {
-            let backend = super::super::backend::SshBackend::new(w, h, mush_proto::ColorDepth::Ansi16);
+            let backend =
+                super::super::backend::SshBackend::new(w, h, mush_proto::ColorDepth::Ansi16);
             let mut term = ratatui::Terminal::new(backend).unwrap();
             term.draw(|f| app.draw(f)).unwrap();
         }
@@ -738,7 +742,8 @@ mod tests {
         });
         // On narrow widths the pane simply drops out; must not panic.
         for (w, h) in [(1u16, 1u16), (10, 3), (40, 5), (120, 24)] {
-            let backend = super::super::backend::SshBackend::new(w, h, mush_proto::ColorDepth::Ansi16);
+            let backend =
+                super::super::backend::SshBackend::new(w, h, mush_proto::ColorDepth::Ansi16);
             let mut term = ratatui::Terminal::new(backend).unwrap();
             term.draw(|f| app.draw(f)).unwrap();
         }

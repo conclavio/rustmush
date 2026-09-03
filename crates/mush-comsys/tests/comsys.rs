@@ -6,12 +6,14 @@
 
 use std::collections::HashMap;
 
-use mush_comsys::{ChannelId, ComsysModule, ComsysState, DEFAULT_CHANNEL, NS};
+use mush_comsys::{
+    Channel, ChannelId, ComsysModule, ComsysState, DEFAULT_CHANNEL, MAX_HISTORY_CAP, Membership, NS,
+};
 use mush_core::engine::{Effects, Engine, Inbound};
 use mush_core::module::{ModuleBootData, emit_world_event};
 use mush_core::{
-    Audience, Deferred, DisconnectKind, GOD, LIMBO, ModuleOp, ModuleWrite, ObjId, ObjKind, Outbox,
-    Registry, World, WorldEvent, register_core_commands, register_engine_commands,
+    Audience, Deferred, DisconnectKind, GOD, GameModule, LIMBO, ModuleOp, ModuleWrite, ObjId,
+    ObjKind, Outbox, Registry, World, WorldEvent, register_core_commands, register_engine_commands,
 };
 use mush_proto::{NarrativeKind, OutputEvent};
 use mush_store::{InMemoryStore, ObjectStore, WriteBatch};
@@ -334,6 +336,65 @@ fn speaking_marks_message_and_mirrors_docs() {
         )
         .count();
     assert_eq!(member_docs, 3);
+}
+
+#[test]
+fn speaking_with_many_offline_members_only_updates_the_live_audience() {
+    const OFFLINE_MEMBERS: u32 = 10_000;
+
+    let (mut engine, nick, ann) = setup();
+    let public = state(&engine).channel_by_name(DEFAULT_CHANNEL).unwrap().id;
+    engine.world.set_live_conns(ann, 0);
+    engine.world.set_connected(ann, false);
+    {
+        let st = engine
+            .world
+            .module_state_mut::<ComsysState>()
+            .expect("comsys state");
+        for raw in 10_000..10_000 + OFFLINE_MEMBERS {
+            let player = ObjId(raw);
+            st.members.insert(
+                (player, public),
+                Membership {
+                    player,
+                    channel: public,
+                    alias: "pub".into(),
+                    title: None,
+                    gagged: false,
+                    last_read: 0,
+                },
+            );
+        }
+    }
+
+    let out = run(&mut engine, nick, "pub bounded fanout");
+
+    assert_eq!(recipients(&out), vec![GOD, nick]);
+    let st = state(&engine);
+    assert_eq!(st.members.get(&(GOD, public)).unwrap().last_read, 1);
+    assert_eq!(st.members.get(&(nick, public)).unwrap().last_read, 1);
+    assert_eq!(st.members.get(&(ann, public)).unwrap().last_read, 0);
+    assert_eq!(
+        st.members
+            .range((ObjId(10_000), public)..=(ObjId(19_999), public))
+            .filter(|(_, membership)| membership.channel == public)
+            .filter(|(_, membership)| membership.last_read != 0)
+            .count(),
+        0,
+        "offline cursors must not advance"
+    );
+
+    let member_docs = engine
+        .take_module_ops()
+        .into_iter()
+        .filter(|op| {
+            matches!(
+                &op.op,
+                ModuleWrite::JsonSet { key, .. } if key.starts_with("member:")
+            )
+        })
+        .count();
+    assert_eq!(member_docs, 2, "only delivered cursors are mirrored");
 }
 
 // ----------------------------------------------------------------------
@@ -1132,6 +1193,79 @@ fn corrupt_channel_doc_fails_boot_and_preserves_memberships() {
             ModuleWrite::Del { key } if key.starts_with("member:")
         )),
         "corrupt-channel recovery must never delete membership docs"
+    );
+}
+
+#[test]
+fn persisted_history_cap_boundaries_are_safe_stream_requests() {
+    let module = ComsysModule::new();
+    for cap in [1, MAX_HISTORY_CAP] {
+        let mut channel = Channel::new(ChannelId(7), "Boundary");
+        channel.history.cap = cap;
+        let kv = vec![(
+            SmolStr::new("chan:7"),
+            serde_json::to_value(channel).expect("channel serializes"),
+        )];
+        assert_eq!(
+            module.boot_stream_requests(&kv).unwrap(),
+            vec![(SmolStr::new("hist:7"), cap)]
+        );
+    }
+}
+
+#[test]
+fn unsafe_persisted_history_cap_fails_before_stream_request_and_at_module_boot() {
+    let module = ComsysModule::new();
+    for cap in [0, MAX_HISTORY_CAP + 1] {
+        let mut channel = Channel::new(ChannelId(7), "Unsafe");
+        channel.history.cap = cap;
+        let value = serde_json::to_value(&channel).expect("channel serializes");
+        let kv = vec![(SmolStr::new("chan:7"), value.clone())];
+        let err = module
+            .boot_stream_requests(&kv)
+            .expect_err("unsafe cap must not produce a store request");
+        assert!(
+            err.to_string()
+                .contains(&format!("outside 1-{MAX_HISTORY_CAP}")),
+            "{err}"
+        );
+
+        // Defend the direct/in-process module boot seam too: callers that
+        // already assembled ModuleBootData cannot bypass the same bound.
+        let mut engine = Engine::with_modules(
+            World::new_minimal(),
+            Registry::new(),
+            vec![Box::new(ComsysModule::new())],
+        )
+        .unwrap();
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        let err = engine
+            .modules_loaded(
+                HashMap::from([(
+                    SmolStr::new(NS),
+                    ModuleBootData {
+                        kv: vec![(SmolStr::new("chan:7"), value)],
+                        streams: HashMap::new(),
+                    },
+                )]),
+                &mut out,
+                &mut fx,
+            )
+            .expect_err("unsafe cap must fail direct module boot");
+        assert!(
+            err.to_string()
+                .contains(&format!("outside 1-{MAX_HISTORY_CAP}")),
+            "{err}"
+        );
+    }
+
+    let too_wide = vec![(
+        SmolStr::new("chan:8"),
+        serde_json::json!({"history": {"cap": u64::from(u32::MAX) + 1}}),
+    )];
+    assert!(
+        module.boot_stream_requests(&too_wide).is_err(),
+        "a cap that cannot fit the store API's u32 count must fail closed"
     );
 }
 

@@ -475,6 +475,37 @@ pub struct Registry {
     /// Pre-detach veto gates, consulted by `@behavior/remove` via
     /// [`Registry::check_detach`].
     detach_gates: Vec<Arc<dyn DetachGate>>,
+    /// K1 definition composition is mutable only while modules register.
+    pub(crate) definition_builder: crate::mechanics::DefinitionRegistryBuilder,
+    /// K1 cross-owner bridge declarations, frozen after definitions.
+    pub(crate) bridge_builder: crate::mechanics::BridgeRegistryBuilder,
+    /// K1 pure, exact-version migration declarations.
+    pub(crate) definition_migration_builder: crate::mechanics::DefinitionMigrationRegistryBuilder,
+    /// K2 action providers, mutable only while modules register.
+    pub(crate) action_provider_builder: crate::action::ActionProviderRegistryBuilder,
+    /// K2 revision validators, mutable only while modules register.
+    pub(crate) revision_validator_builder: crate::action::RevisionValidatorRegistryBuilder,
+    /// K2 authority validators, mutable only while modules register.
+    pub(crate) authority_guard_validator_builder:
+        crate::action::AuthorityGuardValidatorRegistryBuilder,
+    /// K2 engine-owned typed state families, mutable only while modules register.
+    pub(crate) state_family_builder: crate::action_state::StateFamilyRegistryBuilder,
+    /// Process-lifetime, one-way readiness for the bounded composed owner roster.
+    pub(crate) mechanics_owner_readiness: Option<crate::mechanics::MechanicalOwnerReadiness>,
+    /// Frozen before any persisted rules-bearing record is loaded.
+    pub(crate) definitions: Option<crate::mechanics::DefinitionRegistry>,
+    /// Frozen directional bridge lookup.
+    pub(crate) bridges: Option<crate::mechanics::BridgeRegistry>,
+    /// Frozen dry-run-only definition migrations.
+    pub(crate) definition_migrations: Option<crate::mechanics::DefinitionMigrationRegistry>,
+    /// Frozen exact-action provider lookup.
+    pub(crate) action_providers: Option<crate::action::ActionProviderRegistry>,
+    /// Frozen exact revision-validator lookup.
+    pub(crate) revision_validators: Option<crate::action::RevisionValidatorRegistry>,
+    /// Frozen exact authority-validator lookup.
+    pub(crate) authority_guard_validators: Option<crate::action::AuthorityGuardValidatorRegistry>,
+    /// Frozen owner-stamped state-family registry.
+    pub(crate) state_families: Option<crate::action_state::StateFamilyRegistry>,
 }
 
 impl Registry {
@@ -561,7 +592,9 @@ impl Registry {
             // A channelled command MUST be Operated-exclusive, or a non-Operated
             // reach (Container/Carried/Ambient) would resolve it with the channel
             // gate never firing — an authority bypass.
-            if cmd.required_channel.is_some() && cmd.reach.as_slice() != [crate::behavior::CommandReach::Operated] {
+            if cmd.required_channel.is_some()
+                && cmd.reach.as_slice() != [crate::behavior::CommandReach::Operated]
+            {
                 return Err(BehaviorRegError::ChannelledNotOperated {
                     id: spec.id.to_string(),
                     verb: cmd.spec.name.to_lowercase(),
@@ -626,7 +659,11 @@ impl Registry {
     pub fn required_channels(&self) -> std::collections::BTreeSet<crate::behavior::ChannelId> {
         self.behaviors
             .values()
-            .flat_map(|spec| spec.commands.iter().filter_map(|c| c.required_channel.clone()))
+            .flat_map(|spec| {
+                spec.commands
+                    .iter()
+                    .filter_map(|c| c.required_channel.clone())
+            })
             .collect()
     }
 
@@ -1143,6 +1180,7 @@ fn run_handler(
     out: &mut Outbox,
     body: impl FnOnce(&mut Ctx<'_>) -> Result<(), CmdError>,
 ) {
+    let events_before = out.len();
     let deferred_before = out.deferred().len();
     let result = {
         let mut ctx = Ctx {
@@ -1157,6 +1195,7 @@ fn run_handler(
         body(&mut ctx)
     };
     if let Err(e) = result {
+        out.retain_abort_since(events_before);
         out.truncate_deferred(deferred_before);
         out.error(actor, e.to_string());
     }

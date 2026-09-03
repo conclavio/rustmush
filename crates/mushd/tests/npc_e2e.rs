@@ -380,7 +380,10 @@ async fn world_knowledge_framing_and_secret_exclusion_in_the_assembled_prompt() 
         })
         .collect();
     for needle in ["PERNPCSECRETTOKEN", "POOLSECRETTOKEN"] {
-        assert!(!system.contains(needle), "secret leaked into system: {needle}");
+        assert!(
+            !system.contains(needle),
+            "secret leaked into system: {needle}"
+        );
         assert!(!user.contains(needle), "secret leaked into user: {needle}");
     }
 

@@ -268,7 +268,12 @@ pub(crate) fn discipline_perceptibility(name: &str, actor: &str) -> Option<ActPe
             format!("You watch {actor} strike with impossible strength."),
         )
     } else if eq("Protean") {
-        ActPerceptibility::new(vis, 5, None, format!("You see {actor}'s flesh warp inhumanly."))
+        ActPerceptibility::new(
+            vis,
+            5,
+            None,
+            format!("You see {actor}'s flesh warp inhumanly."),
+        )
     } else if eq("Vicissitude") {
         ActPerceptibility::new(
             vis,
@@ -284,7 +289,9 @@ pub(crate) fn discipline_perceptibility(name: &str, actor: &str) -> Option<ActPe
             format!("You watch shadows crawl unnaturally toward {actor}."),
         )
     } else {
-        default_perceptibility(format!("You notice {actor} exert some preternatural power."))
+        default_perceptibility(format!(
+            "You notice {actor} exert some preternatural power."
+        ))
     };
     Some(perc)
 }
@@ -308,9 +315,13 @@ pub(crate) fn discipline_perceptibility_for_expr(
     });
     match name {
         Some(n) => discipline_perceptibility(&n, actor).unwrap_or_else(|| {
-            default_perceptibility(format!("You notice {actor} exert some preternatural power."))
+            default_perceptibility(format!(
+                "You notice {actor} exert some preternatural power."
+            ))
         }),
-        None => default_perceptibility(format!("You notice {actor} exert some preternatural power.")),
+        None => default_perceptibility(format!(
+            "You notice {actor} exert some preternatural power."
+        )),
     }
 }
 

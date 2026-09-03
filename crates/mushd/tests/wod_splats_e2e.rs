@@ -97,7 +97,7 @@ async fn boot_server(dir: &Path) -> SocketAddr {
             guard: Arc::new(IpGuard::new()),
             staff,
             llm: None,
-            quarantine_dir: None,
+            quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
         },
     );
     let world = handles.handle;
@@ -132,11 +132,31 @@ async fn login_create(
     (handle, term)
 }
 
-/// Send a burst of lines back-to-back (per-connection ordering guarantees they
-/// all land before the next command this connection issues).
+fn command_ack(line: &str) -> String {
+    if let Some(template) = line.strip_prefix("+chargen/template ") {
+        return format!("Template set to {template}.");
+    }
+    if line.starts_with("+chargen/attr ") || line.starts_with("+chargen/abil ") {
+        return "Priorities set.".to_string();
+    }
+    if let Some(assignment) = line.strip_prefix("+stat ") {
+        let (field, value) = assignment.split_once('=').expect("field=value");
+        return format!("Set {field} = {value}.");
+    }
+    if let Some(assignment) = line.strip_prefix("+sphere ") {
+        let (sphere, value) = assignment.split_once('=').expect("sphere=value");
+        return format!("{sphere} set to {value}");
+    }
+    panic!("no commit acknowledgement defined for {line:?}");
+}
+
+/// Send each chargen mutation only after the previous mutation's commit-bound
+/// success output has arrived.
 async fn send_all(term: &mut Term, lines: &[&str]) {
     for l in lines {
+        let mark = term.mark();
         term.send_line(l).await;
+        term.expect_after(mark, &command_ack(l)).await;
     }
 }
 

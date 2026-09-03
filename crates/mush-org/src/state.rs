@@ -213,7 +213,10 @@ impl OrgState {
                 self.grants_by_grantee.remove(&prev.grantee);
             }
         }
-        self.grants_by_grantee.entry(g.grantee).or_default().insert(g.id);
+        self.grants_by_grantee
+            .entry(g.grantee)
+            .or_default()
+            .insert(g.id);
         self.grants.insert(g.id, g);
     }
     pub(crate) fn remove_grant(&mut self, id: GrantId) {
@@ -227,7 +230,10 @@ impl OrgState {
         }
     }
     pub(crate) fn put_delegation(&mut self, d: Delegation) {
-        self.delegations_by_grantee.entry(d.grantee).or_default().insert(d.id);
+        self.delegations_by_grantee
+            .entry(d.grantee)
+            .or_default()
+            .insert(d.id);
         self.delegations.insert(d.id, d);
     }
     pub(crate) fn put_policy(&mut self, p: AccessPolicy) {
@@ -260,8 +266,13 @@ impl OrgState {
             self.remove_membership(org, obj);
             report.memberships.push(org);
         }
-        let grant_ids: Vec<GrantId> =
-            self.grants_by_grantee.get(&obj).into_iter().flatten().copied().collect();
+        let grant_ids: Vec<GrantId> = self
+            .grants_by_grantee
+            .get(&obj)
+            .into_iter()
+            .flatten()
+            .copied()
+            .collect();
         for g in grant_ids {
             self.remove_grant(g);
             report.grants.push(g);

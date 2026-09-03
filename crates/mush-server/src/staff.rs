@@ -350,7 +350,8 @@ fn newpassword_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError
     if perm::role_of(ctx.w, target) > perm::role_of(ctx.w, ctx.actor) {
         return Err(CmdError::msg("Permission denied."));
     }
-    mush_config::accounts::validate_password(password).map_err(|e| CmdError::msg(format!("{e}.")))?;
+    mush_config::accounts::validate_password(password)
+        .map_err(|e| CmdError::msg(format!("{e}.")))?;
     let name = ctx
         .w
         .get(target)
@@ -389,8 +390,7 @@ fn looks_like_private_key(s: &str) -> bool {
 /// fingerprint ride the op. The account is resolved store-side from `ctx.actor`
 /// (invariant S5: only ever the caller's own account).
 fn sshkey_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    const USAGE: &str =
-        "Usage: @sshkey/add <ssh public key line>, @sshkey/list, or @sshkey/del <index-or-fingerprint>.";
+    const USAGE: &str = "Usage: @sshkey/add <ssh public key line>, @sshkey/list, or @sshkey/del <index-or-fingerprint>.";
     if ctx.switches.has("add") {
         let line = ctx.args.raw().trim();
         if line.is_empty() {
@@ -1009,7 +1009,11 @@ mod tests {
             .unwrap();
 
         let out = run(&mut engine, nick, &format!("@sshkey/add {PUB_LINE}"));
-        assert!(sys_texts(&out).is_empty(), "no echo on success: {out:?}", out = sys_texts(&out));
+        assert!(
+            sys_texts(&out).is_empty(),
+            "no echo on success: {out:?}",
+            out = sys_texts(&out)
+        );
         let ops = queue.drain();
         assert_eq!(ops.len(), 1);
         let want_fp = PublicKey::from_openssh(PUB_LINE)
@@ -1042,7 +1046,9 @@ mod tests {
         let out = run(&mut engine, GOD, &format!("@sshkey/add {privkey}"));
         let texts = sys_texts(&out);
         assert!(
-            texts.iter().any(|t| t.contains("PRIVATE key") && t.contains("PUBLIC key")),
+            texts
+                .iter()
+                .any(|t| t.contains("PRIVATE key") && t.contains("PUBLIC key")),
             "specific private-key guidance expected: {texts:?}"
         );
         // The raw secret bytes must appear in NO reply.
@@ -1050,7 +1056,10 @@ mod tests {
             texts.iter().all(|t| !t.contains("secret-material")),
             "the pasted private key must never be echoed: {texts:?}"
         );
-        assert!(queue.drain().is_empty(), "a private-key paste queues nothing");
+        assert!(
+            queue.drain().is_empty(),
+            "a private-key paste queues nothing"
+        );
     }
 
     #[test]
@@ -1113,7 +1122,11 @@ mod tests {
 
         // A valid, free name queues a NewChar carrying the caller + the cap.
         let out = run(&mut engine, nick, "@newchar Casey");
-        assert!(sys_texts(&out).is_empty(), "no echo on success: {:?}", sys_texts(&out));
+        assert!(
+            sys_texts(&out).is_empty(),
+            "no echo on success: {:?}",
+            sys_texts(&out)
+        );
         let ops = queue.drain();
         assert_eq!(ops.len(), 1);
         assert_eq!(ops[0].actor, nick);

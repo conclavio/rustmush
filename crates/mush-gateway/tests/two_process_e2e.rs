@@ -31,9 +31,9 @@ use mush_core::GOD;
 use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore};
 use russh::ChannelMsg;
 
-use mush_gateway::{GatewayOptions, ServerSource};
 use mush_config::accounts::hash_password;
 use mush_config::config::Config;
+use mush_gateway::{GatewayOptions, ServerSource};
 
 const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 const GM_PASSWORD: &str = "gm-secret-1";
@@ -109,13 +109,18 @@ impl Term {
         while !strip_ansi(&self.seen[mark..]).contains(needle) {
             let msg = tokio::time::timeout_at(deadline, self.channel.wait())
                 .await
-                .unwrap_or_else(|_| panic!("timeout waiting for {needle:?}; seen: {:?}", self.seen));
+                .unwrap_or_else(|_| {
+                    panic!("timeout waiting for {needle:?}; seen: {:?}", self.seen)
+                });
             match msg {
                 Some(ChannelMsg::Data { data }) => {
                     self.seen.push_str(&String::from_utf8_lossy(&data));
                 }
                 Some(_) => {}
-                None => panic!("channel closed waiting for {needle:?}; seen: {:?}", self.seen),
+                None => panic!(
+                    "channel closed waiting for {needle:?}; seen: {:?}",
+                    self.seen
+                ),
             }
         }
     }
@@ -281,7 +286,11 @@ async fn two_process_connect_play_boot_disconnect() {
 /// scenarios below.
 async fn boot_split(
     gw_store: Arc<dyn ObjectStore>,
-) -> (SocketAddr, std::thread::JoinHandle<()>, std::thread::JoinHandle<()>) {
+) -> (
+    SocketAddr,
+    std::thread::JoinHandle<()>,
+    std::thread::JoinHandle<()>,
+) {
     let (ipc_tx, ipc_rx) = tokio::sync::oneshot::channel();
     let server_cfg = test_config("server2");
     let server_thread = std::thread::spawn(move || {
@@ -375,7 +384,8 @@ async fn two_process_multiconnect_linkdead_and_newpassword() {
     let after_drop = god1.mark();
     drop(alice);
     drop(a_handle);
-    god1.expect_after(after_drop, "Alice has gone link-dead.").await;
+    god1.expect_after(after_drop, "Alice has gone link-dead.")
+        .await;
 
     // --- @newpassword runs cross-process on the staff-op task (never the world
     //     loop) and returns without hanging; in this split test the server's

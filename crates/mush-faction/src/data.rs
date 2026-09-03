@@ -844,7 +844,10 @@ mod tests {
         st.factions.get_mut(&id).unwrap().hidden = true;
         join(&mut st, ObjId(10), id, 1, Visibility::Covert);
         let f = st.factions.get(&id).unwrap().clone();
-        assert!(!st.faction_listed(ObjId(99), false, &f), "outsider: no such faction");
+        assert!(
+            !st.faction_listed(ObjId(99), false, &f),
+            "outsider: no such faction"
+        );
         assert!(st.faction_listed(ObjId(10), false, &f), "member sees it");
         assert!(st.faction_listed(ObjId(99), true, &f), "staff see it");
     }
@@ -883,9 +886,15 @@ mod tests {
         for i in 0..(RESOURCE_LOG_CAP as i64 + 5) {
             f.apply_resource("Nuyen", 10, "payday", ObjId(1), i);
         }
-        assert_eq!(f.resources.get("nuyen"), Some(&(10 * (RESOURCE_LOG_CAP as i64 + 5))));
+        assert_eq!(
+            f.resources.get("nuyen"),
+            Some(&(10 * (RESOURCE_LOG_CAP as i64 + 5)))
+        );
         assert_eq!(f.resource_log.len(), RESOURCE_LOG_CAP, "log stays bounded");
-        assert_eq!(f.resource_log.last().unwrap().ts, RESOURCE_LOG_CAP as i64 + 4);
+        assert_eq!(
+            f.resource_log.last().unwrap().ts,
+            RESOURCE_LOG_CAP as i64 + 4
+        );
         // Kinds are case-normalized so "Nuyen" and "nuyen" are one pool.
         f.apply_resource("NUYEN", -10, "spent", ObjId(1), 99);
         assert_eq!(f.resources.len(), 1);
@@ -906,10 +915,8 @@ mod tests {
         let back: ControlRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(back, rec);
         // Sparse docs default sensibly.
-        let sparse: ControlRecord = serde_json::from_str(
-            r#"{"region":1,"faction":2,"kind":"de_jure","since":5}"#,
-        )
-        .unwrap();
+        let sparse: ControlRecord =
+            serde_json::from_str(r#"{"region":1,"faction":2,"kind":"de_jure","since":5}"#).unwrap();
         assert_eq!(sparse.kind, ControlKind::DeJure);
         assert_eq!(sparse.strength, 1);
         assert!(sparse.contested_by.is_empty());

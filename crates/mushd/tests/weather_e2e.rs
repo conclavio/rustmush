@@ -54,12 +54,15 @@ async fn rain_rolls_in_demo() {
 
     // Both rooms join the zone; only the Plaza is OUTDOORS. (The Cellar
     // carries no weather flag, so it is INDOORS by default — silent.)
+    let mark = god.mark();
     god.send_line(&format!("@zone #{plaza}=#{zone}")).await;
-    god.expect("Zoned.").await;
+    god.expect_after(mark, "Zoned.").await;
+    let mark = god.mark();
     god.send_line(&format!("@zone #{cellar}=#{zone}")).await;
-    god.expect("Zoned.").await;
+    god.expect_after(mark, "Zoned.").await;
+    let mark = god.mark();
     god.send_line(&format!("@set #{plaza}=OUTDOORS")).await;
-    god.expect("Set.").await;
+    god.expect_after(mark, "Set.").await;
 
     // Opt the zone into weather.
     god.send_line(&format!("@weather/climate #{zone}={CLIMATE}"))
@@ -81,11 +84,13 @@ async fn rain_rolls_in_demo() {
     // --- Rain rolls in. -------------------------------------------------
     // Pin to rain, then to storm: the `rain->storm` transition pool has a
     // single line, so the broadcast to the OUTDOORS room is deterministic.
+    let mark = god.mark();
     god.send_line(&format!("@weather #{zone}=rain")).await;
-    god.expect("Pinned").await;
+    god.expect_after(mark, "Pinned").await;
     let mark = alice.mark();
+    let god_mark = god.mark();
     god.send_line(&format!("@weather #{zone}=storm")).await;
-    god.expect("Pinned").await;
+    god.expect_after(god_mark, "Pinned").await;
     alice
         .expect_after(mark, "The rain hardens and thunder rolls in close.")
         .await;

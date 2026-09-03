@@ -285,7 +285,7 @@ impl ChargenWizard {
         let (ledgers, issues) = match budget_report(&self.cmd, ctx) {
             Ok(r) => r,
             Err(e) => {
-                ctx.out.error(me, e.to_string());
+                ctx.out.best_effort_error(me, e.to_string());
                 return;
             }
         };

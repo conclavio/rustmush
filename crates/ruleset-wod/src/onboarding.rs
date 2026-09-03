@@ -26,8 +26,7 @@ use std::sync::Arc;
 
 use mush_core::{
     CommandGate, Ctx, EventHook, LIMBO, ObjId, ObjKind, Registry, Role, World, WorldEvent,
-    WorldObserver,
-    perm,
+    WorldObserver, perm,
 };
 use mush_ruleset::ApprovalState;
 

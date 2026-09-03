@@ -24,7 +24,9 @@
 use std::io;
 use std::net::SocketAddr;
 #[cfg(unix)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::time::Duration;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -156,8 +158,12 @@ impl IpcListener {
 
 /// Bind the server-side IPC listener at `endpoint`.
 ///
-/// For a Unix endpoint a stale socket file left by a previous run is removed
-/// first (best effort) so the bind does not fail with `EADDRINUSE`.
+/// For a Unix endpoint, an existing socket is probed before stale cleanup. A
+/// listener that accepts the probe is left untouched and binding fails with
+/// [`io::ErrorKind::AddrInUse`]; only a socket inode whose connect is refused
+/// is removed. Non-socket filesystem entries and inconclusive probes are also
+/// preserved and rejected. This prevents a replacement process from unlinking
+/// a still-live server's pathname and binding alongside it.
 ///
 /// # Errors
 ///
@@ -167,10 +173,92 @@ pub async fn listen(endpoint: &IpcEndpoint) -> io::Result<IpcListener> {
         IpcEndpoint::Tcp(addr) => Ok(IpcListener::Tcp(TcpListener::bind(addr).await?)),
         #[cfg(unix)]
         IpcEndpoint::Unix(path) => {
-            // A leftover socket file from a crashed run blocks re-bind.
-            let _ = tokio::fs::remove_file(path).await;
+            prepare_unix_socket_path(path).await?;
             Ok(IpcListener::Unix(UnixListener::bind(path)?))
         }
+    }
+}
+
+/// A liveness probe is deliberately short. Timeout is inconclusive and must
+/// fail closed: unlinking an endpoint merely because its accept backlog is slow
+/// could create two live listeners (and therefore two authoritative servers).
+#[cfg(unix)]
+const UNIX_SOCKET_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// Make `path` bindable without ever unlinking an apparently live listener.
+#[cfg(unix)]
+async fn prepare_unix_socket_path(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
+
+    let metadata = match tokio::fs::symlink_metadata(path).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if !metadata.file_type().is_socket() {
+        return Err(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            format!("refusing to replace non-socket IPC path {}", path.display()),
+        ));
+    }
+
+    match tokio::time::timeout(UNIX_SOCKET_PROBE_TIMEOUT, UnixStream::connect(path)).await {
+        Ok(Ok(stream)) => {
+            drop(stream);
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                format!("IPC listener at {} is already live", path.display()),
+            ));
+        }
+        Ok(Err(error)) if error.kind() == io::ErrorKind::ConnectionRefused => {}
+        // It disappeared between metadata and connect. Do not run an unlink:
+        // bind directly, which safely loses with AddrInUse if another owner
+        // creates a replacement first.
+        Ok(Err(error)) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Ok(Err(error)) => {
+            return Err(io::Error::new(
+                error.kind(),
+                format!(
+                    "cannot establish that existing IPC socket {} is stale: {error}",
+                    path.display()
+                ),
+            ));
+        }
+        Err(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                format!(
+                    "timed out probing existing IPC socket {}; refusing to unlink it",
+                    path.display()
+                ),
+            ));
+        }
+    }
+
+    // Refuse to unlink if the pathname changed under the liveness probe. This
+    // narrows the unavoidable pathname TOCTOU and, in particular, preserves a
+    // fresh listener that replaced the refused stale inode.
+    let current = match tokio::fs::symlink_metadata(path).await {
+        Ok(current) => current,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if current.dev() != metadata.dev() || current.ino() != metadata.ino() {
+        return Err(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            format!(
+                "IPC socket {} changed during stale probe; refusing to unlink it",
+                path.display()
+            ),
+        ));
+    }
+
+    match tokio::fs::remove_file(path).await {
+        Ok(()) => Ok(()),
+        // The stale inode may have been cleaned by its exiting owner after our
+        // refused connect. Binding the now-absent path is safe.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -274,6 +362,18 @@ mod tests {
     use crate::{IPC_VERSION, ToGateway, ToServer, WireInbound};
     use mush_core::ObjId;
 
+    #[cfg(unix)]
+    fn unique_unix_path(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        std::env::temp_dir().join(format!(
+            "rustmush-ipc-{tag}-{}-{}.sock",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
     #[tokio::test]
     async fn tcp_round_trips_both_directions() {
         let listener = listen(&IpcEndpoint::parse("127.0.0.1:0").unwrap())
@@ -325,5 +425,70 @@ mod tests {
         assert!(matches!(bye, ToGateway::Bye));
         drop(w);
         server.await.unwrap();
+    }
+
+    /// A hot-restart candidate must never steal a live Unix pathname. Unix
+    /// permits unlinking a bound socket while its listener remains alive, so
+    /// the old unconditional cleanup would let both servers coexist.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_listen_refuses_to_unlink_a_live_listener() {
+        let path = unique_unix_path("live");
+        let endpoint = IpcEndpoint::Unix(path.clone());
+        let first = listen(&endpoint).await.expect("first listener binds");
+
+        let error = match listen(&endpoint).await {
+            Ok(_) => panic!("a live listener must not be replaced"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
+
+        // Its pathname is still usable after the refused replacement.
+        let stream = UnixStream::connect(&path)
+            .await
+            .expect("original listener pathname remains live");
+        drop(stream);
+        drop(first);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// A crashed Unix listener leaves an inode that refuses connections. That
+    /// exact stale case remains recoverable without weakening the live-listener
+    /// guard above.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_listen_replaces_a_refused_stale_socket() {
+        let path = unique_unix_path("stale");
+        let endpoint = IpcEndpoint::Unix(path.clone());
+        let stale = UnixListener::bind(&path).expect("stale listener binds");
+        drop(stale);
+
+        let replacement = listen(&endpoint)
+            .await
+            .expect("refused stale socket is replaced");
+        let stream = UnixStream::connect(&path)
+            .await
+            .expect("replacement listener is reachable");
+        drop(stream);
+        drop(replacement);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Misconfiguration must not turn IPC startup into an arbitrary unlink of
+    /// an ordinary file (or symlink) at the configured path.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_listen_preserves_non_socket_paths() {
+        let path = unique_unix_path("ordinary");
+        std::fs::write(&path, b"keep me").expect("create ordinary path");
+        let endpoint = IpcEndpoint::Unix(path.clone());
+
+        let error = match listen(&endpoint).await {
+            Ok(_) => panic!("ordinary path must not be unlinked"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
+        assert_eq!(std::fs::read(&path).unwrap(), b"keep me");
+        let _ = std::fs::remove_file(path);
     }
 }

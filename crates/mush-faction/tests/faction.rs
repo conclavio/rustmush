@@ -159,7 +159,11 @@ fn hidden_faction_is_indistinguishable_from_missing() {
         joined(&out)
     );
     let out = run(&mut engine, bob, "+faction Black Hand");
-    assert!(joined(&out).contains("No such faction."), "{}", joined(&out));
+    assert!(
+        joined(&out).contains("No such faction."),
+        "{}",
+        joined(&out)
+    );
     // The member sees it.
     let out = run(&mut engine, ann, "+factions");
     assert!(joined(&out).contains("Black Hand"), "{}", joined(&out));
@@ -175,7 +179,11 @@ fn structural_edges_are_acyclic_and_front_edges_stay_covert() {
         GOD,
         "@faction/edge Court of Chicago=chapter/Camarilla",
     );
-    assert!(joined(&out).contains("chapter of Camarilla"), "{}", joined(&out));
+    assert!(
+        joined(&out).contains("chapter of Camarilla"),
+        "{}",
+        joined(&out)
+    );
     // Closing the loop in the same kind is refused.
     let out = run(
         &mut engine,
@@ -198,7 +206,11 @@ fn structural_edges_are_acyclic_and_front_edges_stay_covert() {
     // FrontFor defaults covert: players never see it, staff do.
     run(&mut engine, GOD, "@faction/create Setites");
     run(&mut engine, GOD, "@faction/create Temple of Set");
-    run(&mut engine, GOD, "@faction/edge Temple of Set=front/Setites");
+    run(
+        &mut engine,
+        GOD,
+        "@faction/edge Temple of Set=front/Setites",
+    );
     let out = run(&mut engine, bob, "+faction Temple of Set");
     assert!(
         !joined(&out).to_lowercase().contains("front for"),
@@ -213,12 +225,20 @@ fn structural_edges_are_acyclic_and_front_edges_stay_covert() {
 fn admin_gate_royalty_or_faction_admin_power() {
     let (mut engine, nick, _ann, _bob) = setup();
     let out = run(&mut engine, nick, "@faction/create Anarchs");
-    assert!(joined(&out).contains("Permission denied."), "{}", joined(&out));
+    assert!(
+        joined(&out).contains("Permission denied."),
+        "{}",
+        joined(&out)
+    );
     assert!(state(&engine).faction_by_name("Anarchs").is_none());
     // The granular power admits without a staff role.
     engine.world.get_mut(nick).unwrap().powers = Powers::FACTION_ADMIN;
     let out = run(&mut engine, nick, "@faction/create Anarchs");
-    assert!(joined(&out).contains("Created faction Anarchs"), "{}", joined(&out));
+    assert!(
+        joined(&out).contains("Created faction Anarchs"),
+        "{}",
+        joined(&out)
+    );
 }
 
 // ----------------------------------------------------------------------
@@ -307,7 +327,11 @@ fn manual_channel_joins_are_never_the_modules_to_remove() {
     // silently re-join them.
     run(&mut engine, nick, "delcom camarilla");
     assert!(!on_channel(&engine, nick, chan));
-    run(&mut engine, GOD, "@faction/mod Camarilla=Nick/title:Sheriff");
+    run(
+        &mut engine,
+        GOD,
+        "@faction/mod Camarilla=Nick/title:Sheriff",
+    );
     assert!(
         !on_channel(&engine, nick, chan),
         "a cosmetic edit must not revert a deliberate delcom"
@@ -379,11 +403,23 @@ fn aliases_are_validated_like_names() {
     );
     // Illegal charset (the '/'-separated command grammar) is refused too.
     let out = run(&mut engine, GOD, "@faction/set Camarilla=aliases:Cam/Ivory");
-    assert!(joined(&out).contains("not a usable name"), "{}", joined(&out));
+    assert!(
+        joined(&out).contains("not a usable name"),
+        "{}",
+        joined(&out)
+    );
     // A legal alias resolves; destroy still hits the right faction.
-    run(&mut engine, GOD, "@faction/set Camarilla=aliases:The Ivory Tower");
+    run(
+        &mut engine,
+        GOD,
+        "@faction/set Camarilla=aliases:The Ivory Tower",
+    );
     let out = run(&mut engine, GOD, "@faction/destroy Undertow");
-    assert!(joined(&out).contains("Destroyed faction Undertow"), "{}", joined(&out));
+    assert!(
+        joined(&out).contains("Destroyed faction Undertow"),
+        "{}",
+        joined(&out)
+    );
     assert!(state(&engine).faction_by_name("The Ivory Tower").is_some());
 }
 
@@ -545,11 +581,20 @@ fn persistence_round_trip_rebuilds_identical_state() {
         (GOD, "@faction/add Camarilla=Ann/vis:covert"),
         (GOD, "@faction/add Undertow=Bob/vis:members"),
         (GOD, "@faction/edge Undertow=subordinate/Camarilla"),
-        (GOD, "@faction/resource Camarilla=influence.police/3/precinct captains"),
+        (
+            GOD,
+            "@faction/resource Camarilla=influence.police/3/precinct captains",
+        ),
         (GOD, "@region/create The Waterfront"),
         (GOD, "@region/note The Waterfront=Docks and warehouses."),
-        (GOD, "@faction/control The Waterfront=Undertow/defacto/strength:2"),
-        (GOD, "@faction/contest The Waterfront=Undertow/defacto/Camarilla"),
+        (
+            GOD,
+            "@faction/control The Waterfront=Undertow/defacto/strength:2",
+        ),
+        (
+            GOD,
+            "@faction/contest The Waterfront=Undertow/defacto/Camarilla",
+        ),
     ] {
         let out = run(&mut engine, actor, line);
         let text = joined(&out);
@@ -640,7 +685,11 @@ fn destroy_cascades_members_edges_and_control() {
     run(&mut engine, GOD, "@faction/create Camarilla");
     run(&mut engine, GOD, "@faction/create Undertow");
     run(&mut engine, GOD, "@faction/add Undertow=Nick");
-    run(&mut engine, GOD, "@faction/edge Undertow=subordinate/Camarilla");
+    run(
+        &mut engine,
+        GOD,
+        "@faction/edge Undertow=subordinate/Camarilla",
+    );
     run(&mut engine, GOD, "@region/create The Waterfront");
     run(
         &mut engine,
@@ -663,7 +712,9 @@ fn destroy_cascades_members_edges_and_control() {
     );
     let region = st.region_by_name("The Waterfront").unwrap();
     assert!(
-        st.control.get(&region.id).unwrap()[0].contested_by.is_empty(),
+        st.control.get(&region.id).unwrap()[0]
+            .contested_by
+            .is_empty(),
         "contested_by entries naming the destroyed faction are pruned"
     );
 
@@ -699,11 +750,17 @@ fn membership_visibility_matrix_members_and_officers() {
     let text = joined(&out);
     assert!(text.contains("Nick"), "{text}");
     assert!(text.contains("Ann"), "{text}");
-    assert!(!text.contains("Bob"), "OfficersKnow leaked to member: {text}");
+    assert!(
+        !text.contains("Bob"),
+        "OfficersKnow leaked to member: {text}"
+    );
     // Nick (officer) sees all three.
     let out = run(&mut engine, nick, "+faction Setites");
     let text = joined(&out);
-    assert!(text.contains("Bob"), "officer must see OfficersKnow: {text}");
+    assert!(
+        text.contains("Bob"),
+        "officer must see OfficersKnow: {text}"
+    );
     // Bob sees himself even though his record is OfficersKnow and he isn't
     // an officer.
     let out = run(&mut engine, bob, "+faction Setites");

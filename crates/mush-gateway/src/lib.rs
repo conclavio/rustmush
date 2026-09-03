@@ -25,7 +25,7 @@
 //! [`ToGateway`]: mush_ipc::ToGateway
 //! [`ServiceReq`]: mush_ipc::ServiceReq
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -39,12 +39,13 @@ use mush_config::ipguard::IpGuard;
 use mush_config::metrics::Metrics;
 use mush_core::DisconnectKind;
 use mush_ipc::{
-    AttachRec, BoxRead, BoxWrite, DetachCause, FrameReader, GatewayLink, IPC_VERSION, InputSend,
-    IpcEndpoint, ServiceReq, ServiceResp, ToGateway, ToServer, WireInbound,
+    AttachRec, BoxRead, BoxWrite, ConnectionAdmission, DetachCause, FrameReader, GatewayLink,
+    IPC_VERSION, InputSend, IpcEndpoint, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
+    MAX_IN_FLIGHT_SERVICE_REQUESTS, ServiceReq, ServiceResp, ToGateway, ToServer, WireInbound,
 };
 use mush_net_web::{WebConfig, WebHooks};
 use mush_proto::{OutputEvent, RichText};
-use mush_session::{CharKey, SessionConfig, SessionManager};
+use mush_session::{CharKey, DetachOutcome, DetachReason, SessionConfig, SessionManager};
 use mush_store::ObjectStore;
 use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot};
@@ -151,8 +152,8 @@ pub struct GatewayOptions {
     pub restart_ready: Option<oneshot::Sender<RestartTrigger>>,
 }
 
-/// The shared table of parked service-request waiters, plus a `down` flag the
-/// reader raises when the boundary tears down.
+/// The bounded shared table of parked service-request waiters, plus a `down`
+/// flag the reader raises when the boundary tears down.
 ///
 /// The `down` flag is what makes a mid-request boundary loss fail *fast* instead
 /// of hanging forever (F3): the reader ([`gateway_reader`]) sets it and drops
@@ -162,10 +163,147 @@ pub struct GatewayOptions {
 /// already been drained and then await a reply that will never come. Both
 /// resolve to `None`, which the bridges map to the WorldGone rejection, exactly
 /// as the in-process path resolves when the world task drops its oneshot.
+/// Admission also happens under this lock, so the table can never exceed
+/// [`MAX_IN_FLIGHT_SERVICE_REQUESTS`]; a request above that ceiling gets a
+/// typed [`ServiceResp::Busy`] before any must-deliver frame is enqueued.
 struct Pending {
     waiters: HashMap<u64, oneshot::Sender<ServiceResp>>,
     /// Raised once the boundary is gone; no further waiters may park.
     down: bool,
+    /// Edge latch: an abusive caller at the custody ceiling must not turn the
+    /// overload warning itself into an unbounded log flood.
+    capacity_warned: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PendingAdmission {
+    Registered,
+    Down,
+    Busy,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LifecyclePhase {
+    /// Capacity has been reserved, but the local session attach and its
+    /// `ConnUp` have not completed yet.
+    Reserved,
+    /// The matching `ConnUp` was accepted into the writer FIFO.
+    Live,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ConnectionCustody {
+    actor: mush_core::ObjId,
+    phase: LifecyclePhase,
+    /// Reserving a reconnect converts an existing link-dead obligation into a
+    /// connection obligation. If admission is cancelled before `ConnUp`, put
+    /// that obligation back rather than silently forgetting its cleanup.
+    restore_linkdead_on_cancel: bool,
+}
+
+/// Restart-surviving, hard-bounded lifecycle custody.
+///
+/// A slot is held by each reserved/live physical connection. When the last
+/// connection for an actor is lost, its slot is converted (not released) into
+/// a pending-linkdead obligation until `SessionGone` is posted. This prevents
+/// a churner from accumulating arbitrarily many delayed reapers while the IPC
+/// writer is healthy and then releasing all of them into a stalled FIFO.
+struct LifecycleCustody {
+    connections: HashMap<u64, ConnectionCustody>,
+    pending_linkdead: HashSet<mush_core::ObjId>,
+    admission_warned: bool,
+    cap: usize,
+}
+
+impl LifecycleCustody {
+    fn new(queue_cap: usize) -> LifecycleCustody {
+        LifecycleCustody {
+            connections: HashMap::new(),
+            pending_linkdead: HashSet::new(),
+            admission_warned: false,
+            cap: queue_cap.clamp(1, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS),
+        }
+    }
+
+    fn obligations(&self) -> usize {
+        self.connections.len() + self.pending_linkdead.len()
+    }
+
+    fn cancel_reserved(&mut self, conn: u64) {
+        let Some(custody) = self.connections.get(&conn).copied() else {
+            return;
+        };
+        if custody.phase != LifecyclePhase::Reserved {
+            return;
+        }
+        self.connections.remove(&conn);
+        if custody.restore_linkdead_on_cancel {
+            let actor_is_live = self
+                .connections
+                .values()
+                .any(|other| other.actor == custody.actor && other.phase == LifecyclePhase::Live);
+            if !actor_is_live {
+                if let Some((_, replacement)) = self.connections.iter_mut().find(|(_, other)| {
+                    other.actor == custody.actor && other.phase == LifecyclePhase::Reserved
+                }) {
+                    // Preserve exactly one restoration responsibility across
+                    // concurrent reconnect attempts. If this replacement is
+                    // cancelled too, the original link-dead obligation comes
+                    // back; if it reaches ConnUp, the obligation is satisfied.
+                    replacement.restore_linkdead_on_cancel = true;
+                } else {
+                    self.pending_linkdead.insert(custody.actor);
+                }
+            }
+        }
+        if self.obligations() < self.cap {
+            self.admission_warned = false;
+        }
+    }
+
+    fn observe_conn_down(&mut self, conn: u64, actor: mush_core::ObjId, reason: DisconnectKind) {
+        if let Some(custody) = self.connections.remove(&conn) {
+            if custody.actor != actor {
+                tracing::error!(
+                    conn,
+                    expected_actor = %custody.actor,
+                    actual_actor = %actor,
+                    "ConnDown actor disagrees with lifecycle custody"
+                );
+            }
+            let actor_still_live = self
+                .connections
+                .values()
+                .any(|other| other.actor == custody.actor);
+            if reason == DisconnectKind::Lost && !actor_still_live {
+                // Convert the last lost connection's slot into the delayed
+                // SessionGone obligation; do not release capacity yet.
+                self.pending_linkdead.insert(custody.actor);
+            }
+        }
+        if self.obligations() < self.cap {
+            self.admission_warned = false;
+        }
+    }
+
+    fn observe_session_gone(&mut self, actor: mush_core::ObjId) -> Vec<u64> {
+        self.pending_linkdead.remove(&actor);
+        let cancelled: Vec<u64> = self
+            .connections
+            .iter()
+            .filter_map(|(&conn, custody)| {
+                (custody.actor == actor && custody.phase == LifecyclePhase::Reserved)
+                    .then_some(conn)
+            })
+            .collect();
+        for conn in &cancelled {
+            self.connections.remove(conn);
+        }
+        if self.obligations() < self.cap {
+            self.admission_warned = false;
+        }
+        cancelled
+    }
 }
 
 /// A `to_server` sender paired with the shared external depth gauge (M18). The
@@ -192,6 +330,9 @@ pub(crate) struct ToServerTx {
     cap: usize,
     /// `[ipc].high_water_warn_pct` — percent of `cap` at which a crossing warns.
     high_water_pct: u8,
+    /// Shared across boundary restarts. Every producer (including reverse
+    /// session-control handling) observes the same lifecycle reservations.
+    lifecycle: Arc<Mutex<LifecycleCustody>>,
 }
 
 impl ToServerTx {
@@ -202,6 +343,7 @@ impl ToServerTx {
         metrics: Arc<Metrics>,
         cap: usize,
         high_water_pct: u8,
+        lifecycle: Arc<Mutex<LifecycleCustody>>,
     ) -> ToServerTx {
         ToServerTx {
             tx,
@@ -210,6 +352,7 @@ impl ToServerTx {
             hw_warned: Arc::new(AtomicBool::new(false)),
             cap,
             high_water_pct,
+            lifecycle,
         }
     }
 
@@ -218,12 +361,134 @@ impl ToServerTx {
         self.depth.load(Ordering::Relaxed)
     }
 
-    /// Enqueue one MUST-DELIVER frame: bump the gauge (recording the high-water),
-    /// then send. Returns `false` only when the receiver is gone (boundary down),
-    /// in which case the gauge bump is undone so it never leaks. NEVER sheds — the
-    /// input-shed decision lives in [`SocketGatewayLink`] and only touches
-    /// `Cmd`/`Query`.
+    /// Reserve lifecycle capacity before a caller attaches the connection to
+    /// its local session table. No frame exists yet, so a refusal here sheds no
+    /// must-deliver work.
+    fn try_reserve_connection(&self, conn: u64, actor: mush_core::ObjId) -> ConnectionAdmission {
+        let queue_cap = self.cap.max(1);
+        let queue_depth = self.depth();
+        let mut lifecycle = self.lifecycle.lock().expect("lifecycle custody poisoned");
+
+        if lifecycle.connections.contains_key(&conn) {
+            tracing::error!(conn, %actor, "duplicate lifecycle reservation refused");
+            return ConnectionAdmission::Busy;
+        }
+
+        let reuses_linkdead = lifecycle.pending_linkdead.contains(&actor);
+        let at_custody_cap = !reuses_linkdead && lifecycle.obligations() >= lifecycle.cap;
+        let at_queue_cap = queue_depth >= queue_cap as u64;
+        if at_custody_cap || at_queue_cap {
+            if !lifecycle.admission_warned {
+                tracing::warn!(
+                    conn,
+                    %actor,
+                    queue_len = queue_depth,
+                    queue_cap,
+                    lifecycle_obligations = lifecycle.obligations(),
+                    lifecycle_cap = lifecycle.cap,
+                    "connection admission refused before lifecycle custody"
+                );
+                lifecycle.admission_warned = true;
+            }
+            return ConnectionAdmission::Busy;
+        }
+
+        if reuses_linkdead {
+            lifecycle.pending_linkdead.remove(&actor);
+        }
+        lifecycle.connections.insert(
+            conn,
+            ConnectionCustody {
+                actor,
+                phase: LifecyclePhase::Reserved,
+                restore_linkdead_on_cancel: reuses_linkdead,
+            },
+        );
+        lifecycle.admission_warned = false;
+        ConnectionAdmission::Reserved
+    }
+
+    /// Cancel a reservation that never reached `ConnUp`.
+    fn cancel_connection_reservation(&self, conn: u64) {
+        self.lifecycle
+            .lock()
+            .expect("lifecycle custody poisoned")
+            .cancel_reserved(conn);
+    }
+
+    /// Enqueue one frame after applying lifecycle bookkeeping. New `ConnUp`
+    /// frames require a prior reservation; once reserved they are never shed,
+    /// even if other must-deliver traffic fills the queue before the attach is
+    /// posted. Teardown converts/releases that bounded custody while preserving
+    /// the one FIFO's `ConnUp`-before-input ordering.
     pub(crate) fn send(&self, msg: ToServer) -> bool {
+        if let ToServer::Inbound(WireInbound::ConnUp { conn, actor, .. }) = &msg {
+            let conn = *conn;
+            let actor = *actor;
+            let mut lifecycle = self.lifecycle.lock().expect("lifecycle custody poisoned");
+            let valid_reservation = matches!(
+                lifecycle.connections.get(&conn),
+                Some(ConnectionCustody {
+                    actor: reserved_actor,
+                    phase: LifecyclePhase::Reserved,
+                    ..
+                }) if *reserved_actor == actor
+            );
+            if !valid_reservation {
+                tracing::error!(conn, %actor, "ConnUp without matching lifecycle reservation refused");
+                return false;
+            }
+
+            let sent = self.enqueue_raw(msg);
+            if sent {
+                let custody = lifecycle
+                    .connections
+                    .get_mut(&conn)
+                    .expect("validated lifecycle reservation disappeared");
+                custody.phase = LifecyclePhase::Live;
+                custody.restore_linkdead_on_cancel = false;
+            } else {
+                lifecycle.cancel_reserved(conn);
+            }
+            return sent;
+        }
+
+        if let ToServer::Inbound(WireInbound::ConnDown {
+            conn,
+            actor,
+            reason,
+        }) = &msg
+        {
+            let conn = *conn;
+            let actor = *actor;
+            let reason = *reason;
+            // Hold the lifecycle lock through enqueue so a concurrent `ConnUp`
+            // for this conn/actor cannot overtake its teardown in the FIFO.
+            let mut lifecycle = self.lifecycle.lock().expect("lifecycle custody poisoned");
+            lifecycle.observe_conn_down(conn, actor, reason);
+            return self.enqueue_raw(msg);
+        }
+
+        if let ToServer::Inbound(WireInbound::SessionGone { actor }) = &msg {
+            let actor = *actor;
+            // Serialize expiry against reservations. If expiry won while a
+            // reconnect was merely reserved, invalidate that reservation: its
+            // later ConnUp fails and rolls the local attach back, preserving
+            // SessionGone-before-any-fresh-ConnUp ordering.
+            let mut lifecycle = self.lifecycle.lock().expect("lifecycle custody poisoned");
+            let cancelled = lifecycle.observe_session_gone(actor);
+            for conn in cancelled {
+                tracing::warn!(conn, %actor, "link-dead expiry cancelled an in-progress reconnect reservation");
+            }
+            return self.enqueue_raw(msg);
+        }
+
+        self.enqueue_raw(msg)
+    }
+
+    /// Bump the gauge (recording the high-water), then enqueue. Returns `false`
+    /// only when the receiver is gone, undoing the gauge bump in that case.
+    fn enqueue_raw(&self, msg: ToServer) -> bool {
         let depth = self.depth.fetch_add(1, Ordering::Relaxed) + 1;
         self.observe_depth(depth);
         if self.tx.send(msg).is_ok() {
@@ -263,6 +528,73 @@ struct BoundaryConn {
     tx: ToServerTx,
     pending: Arc<Mutex<Pending>>,
 }
+
+impl BoundaryConn {
+    /// Send one correlated service request over THIS exact boundary.
+    ///
+    /// Keeping registration and send on the connection lets the restart
+    /// supervisor prove a fresh server is resynchronized before publishing it
+    /// through [`BoundaryHandle`]. The ordinary [`SocketGatewayLink`] path uses
+    /// the same helper after allocating a process-unique request id.
+    fn request_with_id(
+        self: &Arc<Self>,
+        id: u64,
+        req: ServiceReq,
+    ) -> BoxFuture<'static, Option<ServiceResp>> {
+        let (otx, orx) = oneshot::channel();
+        // Park the waiter BEFORE sending so a fast reply can never race ahead
+        // of registration. Admission and boundary teardown share this lock, so
+        // a waiter cannot slip into an already-drained table.
+        let admission = {
+            let mut p = self.pending.lock().expect("pending table poisoned");
+            if p.down {
+                PendingAdmission::Down
+            } else if p.waiters.len() >= MAX_IN_FLIGHT_SERVICE_REQUESTS
+                || p.waiters.contains_key(&id)
+            {
+                if !p.capacity_warned {
+                    tracing::warn!(
+                        id,
+                        pending = p.waiters.len(),
+                        cap = MAX_IN_FLIGHT_SERVICE_REQUESTS,
+                        "ipc service-request custody full or correlation id already live; refusing request"
+                    );
+                    p.capacity_warned = true;
+                }
+                PendingAdmission::Busy
+            } else {
+                p.waiters.insert(id, otx);
+                PendingAdmission::Registered
+            }
+        };
+        match admission {
+            PendingAdmission::Down => return Box::pin(async move { None }),
+            PendingAdmission::Busy => {
+                return Box::pin(async move { Some(ServiceResp::Busy) });
+            }
+            PendingAdmission::Registered => {}
+        }
+
+        // A ServiceReq is must-deliver once its bounded waiter custody has been
+        // admitted. A failed enqueue removes that exact waiter immediately.
+        let sent = self.tx.send(ToServer::Request { id, req });
+        let pending = Arc::clone(&self.pending);
+        Box::pin(async move {
+            if !sent {
+                let mut p = pending.lock().expect("pending table poisoned");
+                p.waiters.remove(&id);
+                p.capacity_warned = false;
+                return None;
+            }
+            orx.await.ok()
+        })
+    }
+}
+
+/// Input contexts may absorb one additional queue-capacity burst so a normal
+/// pasted mail body is less likely to shed, but exemption from the transport
+/// rate limiter must never mean unbounded custody in the IPC queue.
+const INPUT_CONTEXT_QUEUE_MULTIPLIER: usize = 2;
 
 /// The gateway's swappable pointer to the CURRENT server boundary, or `None`
 /// during a restart gap (D3). Cloned into [`SocketGatewayLink`] so every input
@@ -327,6 +659,9 @@ type ManifestCache = Arc<Mutex<HelloManifest>>;
 pub struct SocketGatewayLink {
     boundary: BoundaryHandle,
     next_id: AtomicU64,
+    /// Stable across server restarts so held sessions and delayed link-dead
+    /// cleanup retain the same bounded custody ledger as each fresh writer.
+    lifecycle: Arc<Mutex<LifecycleCustody>>,
     /// The gateway's session manager — consulted by the input-shed to never drop
     /// a flood-exempt (input-context) connection's `Cmd`/`Query` (M18), mirroring
     /// how such a paste bypasses the flood throttle.
@@ -339,18 +674,30 @@ pub struct SocketGatewayLink {
 }
 
 impl SocketGatewayLink {
+    /// Allocate a correlation id without ever wrapping back into the live id
+    /// space. Exhaustion is practically unreachable, but wrapping could pair
+    /// a reply with the wrong parked waiter, so it must fail closed.
+    fn allocate_request_id(&self) -> Option<u64> {
+        self.next_id
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current.checked_add(1)
+            })
+            .ok()
+    }
+
     /// A fresh, empty pending-request table for one boundary connection.
     fn pending_table() -> Arc<Mutex<Pending>> {
         Arc::new(Mutex::new(Pending {
             waiters: HashMap::new(),
             down: false,
+            capacity_warned: false,
         }))
     }
 
     /// Whether `msg` is a flood-exempt connection's input (an input-context
-    /// paste — mail/chargen). Such input bypasses the input-shed exactly as it
-    /// bypasses the flood throttle. Only `Cmd`/`Query` carry an actor to check;
-    /// everything else returns `false` (it is not sheddable anyway).
+    /// paste — mail/chargen). Such input receives a bounded extra burst window;
+    /// it never bypasses IPC custody limits entirely. Only `Cmd`/`Query` carry
+    /// an actor to check; everything else returns `false`.
     fn is_input_exempt(&self, msg: &ToServer) -> bool {
         let actor = match msg {
             ToServer::Inbound(WireInbound::Cmd { actor, .. })
@@ -363,13 +710,39 @@ impl SocketGatewayLink {
     /// The shared send + input-shed decision behind both
     /// [`to_server`](GatewayLink::to_server) and
     /// [`to_server_input`](GatewayLink::to_server_input) (M18). ONLY
-    /// `Cmd`/`Query` are sheddable: at/over `to_server_cap` (and not flood-exempt)
-    /// they are DROPPED — counted, logged, high-water recorded — and never
-    /// enqueued. Every must-deliver frame (lifecycle, control, `ReAnnounce`, ...)
-    /// always enqueues (I1). A missing boundary (restart gap / shutdown) resolves
-    /// to [`InputSend::Gone`].
+    /// `Cmd`/`Query` are sheddable: ordinary input is dropped at
+    /// `to_server_cap`; input-context traffic gets one additional bounded cap
+    /// of burst room and is then dropped too. Every must-deliver frame
+    /// (lifecycle, control, `ReAnnounce`, ...) always enqueues (I1). A missing
+    /// boundary (restart gap / shutdown) resolves to [`InputSend::Gone`].
     fn classify_send(&self, msg: ToServer) -> InputSend {
         let Some(conn) = self.boundary.current() else {
+            // Session teardown can race a server restart gap. No peer exists to
+            // receive these frames, but the next ReAnnounce snapshot is built
+            // from the already-updated SessionManager, so update the stable
+            // custody ledger locally or gap-time disconnects would leak slots.
+            let mut lifecycle = self.lifecycle.lock().expect("lifecycle custody poisoned");
+            match &msg {
+                ToServer::Inbound(WireInbound::ConnUp { conn, .. }) => {
+                    lifecycle.cancel_reserved(*conn);
+                }
+                ToServer::Inbound(WireInbound::ConnDown {
+                    conn,
+                    actor,
+                    reason,
+                }) => lifecycle.observe_conn_down(*conn, *actor, *reason),
+                ToServer::Inbound(WireInbound::SessionGone { actor }) => {
+                    let cancelled = lifecycle.observe_session_gone(*actor);
+                    for conn in cancelled {
+                        tracing::warn!(
+                            conn,
+                            %actor,
+                            "gap-time link-dead expiry cancelled a reconnect reservation"
+                        );
+                    }
+                }
+                _ => {}
+            }
             return InputSend::Gone;
         };
         let sheddable = matches!(
@@ -379,7 +752,14 @@ impl SocketGatewayLink {
         );
         if sheddable {
             let depth = conn.tx.depth();
-            if depth >= self.to_server_cap as u64 && !self.is_input_exempt(&msg) {
+            let exempt = self.is_input_exempt(&msg);
+            let input_cap = if exempt {
+                self.to_server_cap
+                    .saturating_mul(INPUT_CONTEXT_QUEUE_MULTIPLIER)
+            } else {
+                self.to_server_cap
+            };
+            if depth >= input_cap as u64 {
                 let is_cmd = matches!(&msg, ToServer::Inbound(WireInbound::Cmd { .. }));
                 self.metrics.ipc_frame_shed();
                 // Record the true occupancy that triggered the shed.
@@ -387,7 +767,8 @@ impl SocketGatewayLink {
                 tracing::warn!(
                     dir = "to_server",
                     queue_len = depth,
-                    cap = self.to_server_cap,
+                    cap = input_cap,
+                    input_context = exempt,
                     dropped_total = self.metrics.ipc_frames_shed_total(),
                     kind = if is_cmd { "cmd" } else { "query" },
                     "ipc queue full; shedding input frame"
@@ -404,6 +785,24 @@ impl SocketGatewayLink {
 }
 
 impl GatewayLink for SocketGatewayLink {
+    fn try_reserve_connection(&self, conn: u64, actor: mush_core::ObjId) -> ConnectionAdmission {
+        let Some(boundary) = self.boundary.current() else {
+            return ConnectionAdmission::Gone;
+        };
+        boundary.tx.try_reserve_connection(conn, actor)
+    }
+
+    fn cancel_connection_reservation(&self, conn: u64) {
+        if let Some(boundary) = self.boundary.current() {
+            boundary.tx.cancel_connection_reservation(conn);
+        } else {
+            self.lifecycle
+                .lock()
+                .expect("lifecycle custody poisoned")
+                .cancel_reserved(conn);
+        }
+    }
+
     fn to_server(&self, msg: ToServer) -> BoxFuture<'_, bool> {
         // A shed `Cmd`/`Query` or a missing boundary (restart gap / shutdown)
         // resolves `false`, which the bridges map to the WorldGone / busy
@@ -427,41 +826,11 @@ impl GatewayLink for SocketGatewayLink {
         let Some(conn) = self.boundary.current() else {
             return Box::pin(async move { None });
         };
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let (otx, orx) = oneshot::channel();
-        // Park the waiter BEFORE sending so a fast reply can never race ahead
-        // of the registration — but only if this boundary is still up. The
-        // `down` check and the insert happen under the SAME lock the reader's
-        // teardown drain takes, so a request can never slip into a table that
-        // was already drained (which would then await a reply that can never
-        // arrive). If the boundary is gone we skip the send entirely and
-        // resolve to `None` (→ WorldGone), matching the in-process path.
-        let registered = {
-            let mut p = conn.pending.lock().expect("pending table poisoned");
-            if p.down {
-                false
-            } else {
-                p.waiters.insert(id, otx);
-                true
-            }
+        let Some(id) = self.allocate_request_id() else {
+            tracing::error!("ipc service-request correlation id space exhausted; refusing request");
+            return Box::pin(async move { Some(ServiceResp::Unavailable) });
         };
-        // A `ServiceReq` is MUST-DELIVER (it has a parked oneshot); it always
-        // enqueues through `ToServerTx::send` and is never shed (I1).
-        let sent = registered && conn.tx.send(ToServer::Request { id, req });
-        let pending = Arc::clone(&conn.pending);
-        Box::pin(async move {
-            if !sent {
-                if registered {
-                    pending
-                        .lock()
-                        .expect("pending table poisoned")
-                        .waiters
-                        .remove(&id);
-                }
-                return None;
-            }
-            orx.await.ok()
-        })
+        conn.request_with_id(id, req)
     }
 
     fn is_restarting(&self) -> bool {
@@ -556,11 +925,14 @@ async fn gateway_reader(
                 transport.set_flood_exempt(char, exempt);
             }
             ToGateway::Reply { id, resp } => {
-                let waiter = pending
-                    .lock()
-                    .expect("pending table poisoned")
-                    .waiters
-                    .remove(&id);
+                let waiter = {
+                    let mut p = pending.lock().expect("pending table poisoned");
+                    let waiter = p.waiters.remove(&id);
+                    if p.waiters.len() < MAX_IN_FLIGHT_SERVICE_REQUESTS {
+                        p.capacity_warned = false;
+                    }
+                    waiter
+                };
                 if let Some(otx) = waiter {
                     let _ = otx.send(resp);
                 } else {
@@ -591,7 +963,11 @@ async fn gateway_reader(
                 // tracks the current server. The already-running web listener
                 // keeps its boot-time WebConfig snapshot; the cache update keeps
                 // the gateway's view current for any later read.
-                tracing::info!(proto, server, "late Hello (already handshaked); refreshing manifest");
+                tracing::info!(
+                    proto,
+                    server,
+                    "late Hello (already handshaked); refreshing manifest"
+                );
                 *manifest.lock().expect("manifest cache poisoned") =
                     HelloManifest { features, panels };
             }
@@ -612,6 +988,7 @@ async fn gateway_reader(
     let dropped = {
         let mut p = pending.lock().expect("pending table poisoned");
         p.down = true;
+        p.capacity_warned = false;
         p.waiters.drain().count()
     };
     if dropped > 0 {
@@ -632,31 +1009,42 @@ fn cause_to_kind(cause: DetachCause) -> DisconnectKind {
 /// the per-connection announce + last-connection disconnect (the server side of
 /// `@boot` in split mode). Dropping the returned handles closes the transports.
 fn close_char_sessions(
-    sessions: &SessionManager,
+    sessions: &Arc<SessionManager>,
     to_server_tx: &ToServerTx,
     char: u64,
     cause: DetachCause,
 ) {
     let actor = char_key_obj(CharKey(char));
-    let reason = cause_to_kind(cause);
     let Some(sess) = sessions.session_of_char(CharKey(char)) else {
         return;
     };
-    for handle in sessions.close_session(sess) {
-        let _ = to_server_tx.send(ToServer::Inbound(WireInbound::ConnDown {
-            conn: handle.id.0,
-            actor,
-            reason,
-        }));
-        // `handle` drops here → its output sender closes → the transport pump
-        // closes the socket once its queue drains.
+    match cause {
+        DetachCause::Booted => {
+            for handle in sessions.close_session(sess) {
+                let _ = to_server_tx.send(ToServer::Inbound(WireInbound::ConnDown {
+                    conn: handle.id.0,
+                    actor,
+                    reason: DisconnectKind::Boot,
+                }));
+                // `handle` drops here → its output sender closes → the
+                // transport pump closes the socket once its queue drains.
+            }
+        }
+        DetachCause::SlowClient => {
+            // Slow-client teardown is unclean. Preserve the session and its
+            // resume ring after the final connection is removed, then reap it
+            // through the normal grace-window path.
+            for handle in sessions.conns_of_session(sess) {
+                detach_one_conn(sessions, to_server_tx, handle.id.0, cause);
+            }
+        }
     }
 }
 
 /// Detach one specific connection (`@newpassword`/slow-client in split mode),
 /// reporting its `ConnDown` back to the server.
 fn detach_one_conn(
-    sessions: &SessionManager,
+    sessions: &Arc<SessionManager>,
     to_server_tx: &ToServerTx,
     conn: u64,
     cause: DetachCause,
@@ -666,18 +1054,32 @@ fn detach_one_conn(
         .session_of_conn(conn_id)
         .and_then(|s| sessions.character_of(s))
         .map(char_key_obj);
-    if sessions
-        .detach(conn_id, mush_session::DetachReason::Booted)
-        .is_none()
-    {
+    let detach_reason = match cause {
+        DetachCause::Booted => DetachReason::Booted,
+        DetachCause::SlowClient => DetachReason::SlowClient,
+    };
+    let Some(outcome) = sessions.detach(conn_id, detach_reason) else {
         return;
-    }
+    };
     if let Some(actor) = actor {
         let _ = to_server_tx.send(ToServer::Inbound(WireInbound::ConnDown {
             conn,
             actor,
             reason: cause_to_kind(cause),
         }));
+        if let DetachOutcome::Linkdead { grace } = outcome {
+            let reaper_sessions = Arc::clone(sessions);
+            let reaper_boundary = to_server_tx.clone();
+            crate::delivery::spawn_linkdead_reaper(reaper_sessions, grace, move |expired_actor| {
+                let boundary = reaper_boundary.clone();
+                async move {
+                    let _ = boundary.send(ToServer::Inbound(WireInbound::SessionGone {
+                        actor: expired_actor,
+                    }));
+                    std::ops::ControlFlow::Continue(())
+                }
+            });
+        }
     }
 }
 
@@ -688,15 +1090,13 @@ fn detach_one_conn(
 /// left untouched. Resolves the whole thing locally on the gateway's own
 /// `SessionManager`, so the server never needs a reverse session query (D4).
 fn close_web_sessions(
-    sessions: &SessionManager,
+    sessions: &Arc<SessionManager>,
     to_server_tx: &ToServerTx,
     chars: Vec<u64>,
     notice: Option<&mush_proto::OutputEvent>,
     cause: DetachCause,
 ) {
-    let reason = cause_to_kind(cause);
     for char in chars {
-        let actor = char_key_obj(CharKey(char));
         let Some(sess) = sessions.session_of_char(CharKey(char)) else {
             continue;
         };
@@ -708,15 +1108,10 @@ fn close_web_sessions(
             if let Some(ev) = notice {
                 let _ = sessions.send_to_conn(conn, Arc::new(ev.clone()));
             }
-            // Dropping the handle (inside `detach`) closes its transport once
-            // the notice drains.
-            if sessions.detach(conn, mush_session::DetachReason::Booted).is_some() {
-                let _ = to_server_tx.send(ToServer::Inbound(WireInbound::ConnDown {
-                    conn: conn.0,
-                    actor,
-                    reason,
-                }));
-            }
+            // Dropping the handle (inside `detach_one_conn`) closes its
+            // transport once the notice drains. Although the only current
+            // producer uses `Booted`, keep the wire cause authoritative here.
+            detach_one_conn(sessions, to_server_tx, conn.0, cause);
         }
     }
 }
@@ -768,8 +1163,8 @@ fn spawn_server_child(
 
 /// The production [`ServerLauncher`]: spawn (and, on each restart, respawn) a
 /// `mush-server` CHILD PROCESS bound to the config's fixed `[ipc].listen`
-/// endpoint (D1). `kill_on_drop` is armed on the child so a gateway exit — or a
-/// dropped [`LaunchedServer::exited`] future — reaps it.
+/// endpoint (D1). `kill_on_drop` is armed as a final runtime-teardown backstop;
+/// the supervisor still requires positive exit confirmation before respawn.
 struct SpawnLauncher {
     config_path: PathBuf,
     endpoint: IpcEndpoint,
@@ -782,8 +1177,8 @@ impl ServerLauncher for SpawnLauncher {
         Box::pin(async move {
             let mut child = spawn_server_child(&config_path, &endpoint)?;
             // Own the child in a task that resolves the `exited` future when it
-            // dies; `kill_on_drop` (set at spawn) reaps it if the future is
-            // dropped mid-restart.
+            // dies. The exit-only API cannot force that task to drop, so the
+            // supervisor fails closed if this confirmation misses its deadline.
             let (exit_tx, exit_rx) = oneshot::channel();
             tokio::spawn(async move {
                 match child.wait().await {
@@ -834,6 +1229,9 @@ struct BoundaryTuning {
 struct BoundaryEnv {
     manifest: ManifestCache,
     tuning: BoundaryTuning,
+    /// One custody ledger for the gateway process, reused by each respawned
+    /// server boundary.
+    lifecycle: Arc<Mutex<LifecycleCustody>>,
 }
 
 /// Connect to a (freshly launched) server endpoint, run the [`ToGateway::Hello`]
@@ -871,8 +1269,7 @@ async fn connect_and_wire(
                     "ipc version mismatch: server speaks {proto}, gateway speaks {IPC_VERSION}"
                 ));
             }
-            *manifest.lock().expect("manifest cache poisoned") =
-                HelloManifest { features, panels };
+            *manifest.lock().expect("manifest cache poisoned") = HelloManifest { features, panels };
             tracing::info!(proto, server, "handshake ok");
         }
         Some(other) => return Err(format!("expected Hello, got {other:?}")),
@@ -890,6 +1287,7 @@ async fn connect_and_wire(
         Arc::clone(&env.tuning.metrics),
         env.tuning.to_server_cap,
         env.tuning.high_water_pct,
+        Arc::clone(&env.lifecycle),
     );
     let pending = SocketGatewayLink::pending_table();
     let conn = Arc::new(BoundaryConn {
@@ -963,8 +1361,10 @@ fn restarting_notice() -> OutputEvent {
     ))
 }
 
-/// The resync notice broadcast once the server is back and re-attached (D3),
-/// just before the server pushes each session its fresh room render (D2).
+/// The resync notice broadcast only after the fresh server has accepted the
+/// full attachment snapshot and crossed an exact world-loop barrier (D2/D3).
+/// A player's fresh room render is produced by that replay and may arrive just
+/// before this line; once this line arrives, gameplay input is commit-ready.
 fn reconnected_notice() -> OutputEvent {
     OutputEvent::Sys(RichText::tag(
         "system",
@@ -1019,8 +1419,9 @@ const CRASH_WINDOW: Duration = Duration::from_secs(30);
 const BACKOFF_BASE: Duration = Duration::from_millis(200);
 /// Cap on the per-restart backoff.
 const BACKOFF_CAP: Duration = Duration::from_secs(5);
-/// How long to wait for an old instance to fully exit before proceeding anyway
-/// (its `kill_on_drop` reaps a truly stuck child).
+/// How long to wait for an old instance to fully exit before failing closed.
+/// A timeout never permits a replacement launch: this exit-only API cannot yet
+/// force-kill and reap a stuck child safely.
 const EXIT_WAIT: Duration = Duration::from_secs(5);
 /// Connect/handshake budget for the FIRST server boot in [`serve`]. Generous, so
 /// a slow first bind under heavy load (e.g. a full `cargo test --workspace` run
@@ -1031,6 +1432,88 @@ const INITIAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// initial boot: a respawn that cannot connect should fail fast and count toward
 /// [`MAX_CONSECUTIVE_FAILURES`] rather than stalling the gap on a dead server.
 const RECONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Maximum time a fresh Hello-speaking server gets to consume the attachment
+/// snapshot and cross the world-loop readiness barrier. An alive socket with a
+/// wedged world must not strand every held player in the restart gap forever;
+/// expiry closes this attempt so boundary teardown drains the parked waiter and
+/// the crash guard can retry.
+const RESYNC_TIMEOUT: Duration = Duration::from_secs(10);
+/// Correlation id reserved for the supervisor's private resync barrier. The
+/// ordinary monotonic allocator can advance TO `u64::MAX`, but then refuses its
+/// next allocation, so it never returns this value as a live request id.
+const RESYNC_BARRIER_REQUEST_ID: u64 = u64::MAX;
+
+/// Wait for one shutdown component to finish inside the old-instance grace
+/// window. A timeout is a safety boundary, not permission to launch another
+/// server: until the old process is known to be gone, a replacement could
+/// overlap it as a second authoritative store writer.
+async fn wait_for_exit<F, T>(what: &'static str, future: F) -> bool
+where
+    F: std::future::Future<Output = T>,
+{
+    match tokio::time::timeout(EXIT_WAIT, future).await {
+        Ok(_) => true,
+        Err(_) => {
+            tracing::error!(
+                what,
+                timeout_ms = EXIT_WAIT.as_millis() as u64,
+                "server shutdown component did not finish; refusing to respawn while its ownership is uncertain"
+            );
+            false
+        }
+    }
+}
+
+/// Enter the fail-stop posture for an instance whose exit could not be
+/// established. The caller has already put [`BoundaryHandle`] into its gap, so
+/// input remains refused. Returning from the supervisor is deliberate: without
+/// an owned kill-and-reap handle, retrying could create two live worlds.
+fn announce_uncertain_exit(sessions: &SessionManager) {
+    broadcast(sessions, server_down_notice());
+}
+
+/// Replay the gateway-owned attachment roster onto a fresh server and wait for
+/// an exact world-loop barrier before the connection becomes player-visible.
+///
+/// Both frames use the same FIFO boundary: `ReAnnounce` is therefore accepted
+/// by the world before `Barrier`, and a barrier held by CommitPending resolves
+/// only after the exact persistence receipt and the coalesced roster have been
+/// applied. Until this returns, the public [`BoundaryHandle`] remains in its
+/// restart gap, so no gameplay input can race tentative startup state.
+async fn resync_boundary(
+    conn: &Arc<BoundaryConn>,
+    sessions: &SessionManager,
+) -> Result<usize, String> {
+    let recs = build_attach_recs(sessions);
+    let count = recs.len();
+    if count > MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS {
+        return Err(format!(
+            "held roster has {count} records; protocol cap is {MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS}"
+        ));
+    }
+    // Send even an empty snapshot: this is the explicit full-roster replay for
+    // the new server lifetime, not an optional stream of attachment deltas.
+    if !conn.tx.send(ToServer::ReAnnounce(recs)) {
+        return Err("fresh boundary closed while enqueueing ReAnnounce".to_string());
+    }
+
+    match tokio::time::timeout(
+        RESYNC_TIMEOUT,
+        conn.request_with_id(RESYNC_BARRIER_REQUEST_ID, ServiceReq::Barrier),
+    )
+    .await
+    {
+        Ok(Some(ServiceResp::Barrier)) => Ok(count),
+        Ok(Some(other)) => Err(format!(
+            "fresh server refused the post-ReAnnounce barrier with {other:?}"
+        )),
+        Ok(None) => Err("fresh boundary closed before the post-ReAnnounce barrier".to_string()),
+        Err(_) => Err(format!(
+            "fresh server did not cross the post-ReAnnounce barrier within {} ms",
+            RESYNC_TIMEOUT.as_millis()
+        )),
+    }
+}
 
 impl CrashGuard {
     fn new() -> CrashGuard {
@@ -1041,12 +1524,24 @@ impl CrashGuard {
         }
     }
 
+    /// Drop attempts that no longer belong to the rolling crash window.
+    ///
+    /// This must run before *both* the admission check and a new attempt is
+    /// recorded. Otherwise a server that recovered after a short crash burst
+    /// could be refused hours later because stale timestamps were only pruned
+    /// after `tripped` had already made its decision.
+    fn prune_window(&mut self, now: Instant) {
+        self.recent
+            .retain(|&attempt| now.saturating_duration_since(attempt) <= CRASH_WINDOW);
+    }
+
     /// Whether the loop has tripped the guard and must give up. Trips on EITHER
-    /// too many fast attempts inside the wall-clock window OR too many
-    /// consecutive failed attempts (which may each burn the full connect
-    /// deadline, so they slip through the window).
-    fn tripped(&self) -> bool {
-        self.recent.len() > MAX_RESTARTS_IN_WINDOW
+    /// the configured number of fast attempts inside the wall-clock window OR
+    /// too many consecutive failed attempts (which may each burn the full
+    /// connect deadline, so they slip through the window).
+    fn tripped(&mut self) -> bool {
+        self.prune_window(Instant::now());
+        self.recent.len() >= MAX_RESTARTS_IN_WINDOW
             || self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES
     }
 
@@ -1054,15 +1549,12 @@ impl CrashGuard {
     /// growing backoff). Call once per attempt, before the launch.
     fn record_attempt(&mut self) {
         let now = Instant::now();
-        let healthy_gap = self
-            .recent
-            .last()
-            .is_none_or(|&last| now.duration_since(last) > CRASH_WINDOW);
+        self.prune_window(now);
+        let healthy_gap = self.recent.is_empty();
         if healthy_gap {
             // A restart after a healthy run is not part of a loop.
             self.consecutive = 0;
         }
-        self.recent.retain(|&t| now.duration_since(t) <= CRASH_WINDOW);
         self.recent.push(now);
         self.consecutive = self.consecutive.saturating_add(1);
     }
@@ -1083,9 +1575,7 @@ impl CrashGuard {
     /// restarts, capped).
     fn backoff(&self) -> Duration {
         let shift = self.consecutive.saturating_sub(1).min(5);
-        BACKOFF_BASE
-            .saturating_mul(1u32 << shift)
-            .min(BACKOFF_CAP)
+        BACKOFF_BASE.saturating_mul(1u32 << shift).min(BACKOFF_CAP)
     }
 }
 
@@ -1141,19 +1631,23 @@ async fn supervise(
         // deliberate restart. On a crash the reader already terminated (that is
         // what resolved `wired.down` in the select above), so re-awaiting the
         // same completed handle would panic.
-        if !crashed {
-            let _ = (&mut wired.down).await;
+        if !crashed && !wait_for_exit("old boundary reader", &mut wired.down).await {
+            announce_uncertain_exit(&sessions);
+            return;
         }
         // Let the old instance fully exit (release its listen socket) before we
-        // reconnect — bounded, since `kill_on_drop` backstops a stuck child.
-        let _ = tokio::time::timeout(EXIT_WAIT, instance.exited).await;
+        // reconnect. This exit-only launcher API cannot yet force-kill a stuck
+        // child, so an unconfirmed exit is fail-stop: never risk overlapping
+        // authoritative worlds/store writers.
+        if !wait_for_exit("old server instance", instance.exited).await {
+            announce_uncertain_exit(&sessions);
+            return;
+        }
 
         // --- RECONNECT: respawn + reconnect, retrying under the crash guard. ---
         let reconnected = loop {
             if guard.tripped() {
-                tracing::error!(
-                    "server restart loop tripped the crash-loop guard; giving up"
-                );
+                tracing::error!("server restart loop tripped the crash-loop guard; giving up");
                 broadcast(&sessions, server_down_notice());
                 break None;
             }
@@ -1167,15 +1661,43 @@ async fn supervise(
                     continue;
                 }
             };
-            match connect_and_wire(&new_instance.endpoint, &sessions, RECONNECT_TIMEOUT, &env).await {
-                Ok(w) => {
-                    guard.record_success();
-                    break Some((new_instance, w));
-                }
+            match connect_and_wire(&new_instance.endpoint, &sessions, RECONNECT_TIMEOUT, &env).await
+            {
+                Ok(mut w) => match resync_boundary(&w.conn, &sessions).await {
+                    Ok(count) => {
+                        tracing::info!(
+                            count,
+                            "re-announced held sessions; fresh world crossed the readiness barrier"
+                        );
+                        guard.record_success();
+                        break Some((new_instance, w));
+                    }
+                    Err(e) => {
+                        // Hello without this exact barrier is not a successful
+                        // reconnect: keep the public boundary in its gap, close
+                        // this private attempt, and let the crash guard retry.
+                        guard.record_failure();
+                        tracing::error!(error = %e, "post-reconnect resync failed; retrying");
+                        let _ = w.close.send(());
+                        if !wait_for_exit("failed-resync boundary reader", &mut w.down).await {
+                            announce_uncertain_exit(&sessions);
+                            return;
+                        }
+                        if !wait_for_exit("failed-resync server instance", new_instance.exited)
+                            .await
+                        {
+                            announce_uncertain_exit(&sessions);
+                            return;
+                        }
+                    }
+                },
                 Err(e) => {
                     guard.record_failure();
                     tracing::error!(error = %e, "reconnect after restart failed; retrying");
-                    let _ = tokio::time::timeout(EXIT_WAIT, new_instance.exited).await;
+                    if !wait_for_exit("failed-connect server instance", new_instance.exited).await {
+                        announce_uncertain_exit(&sessions);
+                        return;
+                    }
                 }
             }
         };
@@ -1185,16 +1707,10 @@ async fn supervise(
             return;
         };
 
-        // --- RESYNC (D2): boundary back up, re-attach every held session. ---
+        // --- RESUME (D2): resync + its exact barrier completed above. Only now
+        // publish the fresh boundary and tell players input is safe again. ---
         boundary.connect(Arc::clone(&new_wired.conn));
         broadcast(&sessions, reconnected_notice());
-        let recs = build_attach_recs(&sessions);
-        if !recs.is_empty() {
-            let count = recs.len();
-            if new_wired.conn.tx.send(ToServer::ReAnnounce(recs)) {
-                tracing::info!(count, "re-announced held sessions to the new server");
-            }
-        }
         instance = new_instance;
         wired = new_wired;
     }
@@ -1241,9 +1757,13 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
     // web ingress serves over `/metrics` + `/healthz` and the SSH/web bridges
     // count connections into.
     let metrics = Arc::new(Metrics::new());
+    let lifecycle = Arc::new(Mutex::new(LifecycleCustody::new(
+        config.ipc_to_server_cap(),
+    )));
     let link = Arc::new(SocketGatewayLink {
         boundary: boundary.clone(),
         next_id: AtomicU64::new(1),
+        lifecycle: Arc::clone(&lifecycle),
         sessions: Arc::clone(&sessions),
         metrics: Arc::clone(&metrics),
         to_server_cap: config.ipc_to_server_cap(),
@@ -1254,6 +1774,7 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
     // The M18 boundary tuning + manifest, threaded into every (re)connect.
     let env = BoundaryEnv {
         manifest: Arc::clone(&manifest),
+        lifecycle,
         tuning: BoundaryTuning {
             metrics: Arc::clone(&metrics),
             to_server_cap: config.ipc_to_server_cap(),
@@ -1266,11 +1787,14 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
     // an instance and keep the launcher for respawns; for Connect we wire once.
     let (launcher, first_instance): (Option<Box<dyn ServerLauncher>>, Option<LaunchedServer>) =
         match opts.source {
-            ServerSource::Connect(ep) => (None, Some(LaunchedServer {
-                endpoint: ep,
-                // Nothing to wait on — the sibling server owns its own lifecycle.
-                exited: Box::pin(std::future::pending()),
-            })),
+            ServerSource::Connect(ep) => (
+                None,
+                Some(LaunchedServer {
+                    endpoint: ep,
+                    // Nothing to wait on — the sibling server owns its own lifecycle.
+                    exited: Box::pin(std::future::pending()),
+                }),
+            ),
             ServerSource::Spawn { config_path } => {
                 let endpoint = config.ipc_endpoint().map_err(|e| e.to_string())?;
                 let launcher: Box<dyn ServerLauncher> = Box::new(SpawnLauncher {
@@ -1303,9 +1827,10 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
 
     let guard = Arc::new(IpGuard::new());
     if let Ok(bans) = store.get_bans().await {
-        guard.load_sitebans(bans.into_iter().filter_map(|b| {
-            b.ip.parse().ok().map(|ip| (ip, b.until_unix))
-        }));
+        guard.load_sitebans(
+            bans.into_iter()
+                .filter_map(|b| b.ip.parse().ok().map(|ip| (ip, b.until_unix))),
+        );
     }
 
     let link_dyn: Arc<dyn GatewayLink> = link;
@@ -1449,7 +1974,9 @@ async fn stop_web(web_stop: Option<oneshot::Sender<()>>, web_join: Option<JoinHa
         let _ = stop.send(());
     }
     if let Some(join) = web_join
-        && tokio::time::timeout(Duration::from_secs(5), join).await.is_err()
+        && tokio::time::timeout(Duration::from_secs(5), join)
+            .await
+            .is_err()
     {
         tracing::warn!("web server did not stop in time; continuing shutdown");
     }
@@ -1474,7 +2001,9 @@ fn install_sighup_handler(trigger: RestartTrigger) {
         while hup.recv().await.is_some() {
             tracing::info!("SIGHUP received; restarting the server child");
             if !trigger.try_restart() {
-                tracing::warn!("SIGHUP restart dropped (supervisor gone or restart already queued)");
+                tracing::warn!(
+                    "SIGHUP restart dropped (supervisor gone or restart already queued)"
+                );
             }
         }
     });
@@ -1506,6 +2035,7 @@ async fn open_store(config: &Config) -> Result<Arc<dyn ObjectStore>, String> {
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
+    use std::sync::atomic::AtomicUsize;
 
     use mush_core::ObjId;
     use mush_ipc::WireInbound;
@@ -1519,12 +2049,21 @@ mod tests {
         tx: mpsc::UnboundedSender<ToServer>,
         cap: usize,
         depth: u64,
-    ) -> (ToServerTx, Arc<Metrics>) {
+    ) -> (ToServerTx, Arc<Metrics>, Arc<Mutex<LifecycleCustody>>) {
         let metrics = Arc::new(Metrics::new());
         let gauge = Arc::new(AtomicU64::new(depth));
+        let lifecycle = Arc::new(Mutex::new(LifecycleCustody::new(cap)));
         (
-            ToServerTx::new(tx, gauge, Arc::clone(&metrics), cap, 80),
+            ToServerTx::new(
+                tx,
+                gauge,
+                Arc::clone(&metrics),
+                cap,
+                80,
+                Arc::clone(&lifecycle),
+            ),
             metrics,
+            lifecycle,
         )
     }
 
@@ -1537,7 +2076,7 @@ mod tests {
         tx: mpsc::UnboundedSender<ToServer>,
         pending: Arc<Mutex<Pending>>,
     ) -> SocketGatewayLink {
-        let (to_server, metrics) = test_tx(tx, usize::MAX, 0);
+        let (to_server, metrics, lifecycle) = test_tx(tx, usize::MAX, 0);
         let boundary = BoundaryHandle::default();
         boundary.connect(Arc::new(BoundaryConn {
             tx: to_server,
@@ -1546,6 +2085,7 @@ mod tests {
         SocketGatewayLink {
             boundary,
             next_id: AtomicU64::new(1),
+            lifecycle,
             sessions: Arc::new(SessionManager::new()),
             metrics,
             to_server_cap: usize::MAX,
@@ -1553,7 +2093,7 @@ mod tests {
     }
 
     /// Build a link whose boundary's `to_server` gauge is FORCED at/over `cap`
-    /// (M18), sharing `sessions` (for the flood-exempt bypass) and one registry.
+    /// (M18), sharing `sessions` (for the bounded input-context burst) and one registry.
     /// Returns the link, the writer-side receiver, and the registry.
     fn shedding_link(
         sessions: Arc<SessionManager>,
@@ -1563,9 +2103,20 @@ mod tests {
         mpsc::UnboundedReceiver<ToServer>,
         Arc<Metrics>,
     ) {
+        shedding_link_at_depth(sessions, cap, cap as u64)
+    }
+
+    fn shedding_link_at_depth(
+        sessions: Arc<SessionManager>,
+        cap: usize,
+        depth: u64,
+    ) -> (
+        SocketGatewayLink,
+        mpsc::UnboundedReceiver<ToServer>,
+        Arc<Metrics>,
+    ) {
         let (tx, rx) = mpsc::unbounded_channel::<ToServer>();
-        // Pre-charge the gauge to `cap` so the very next Cmd/Query is at/over it.
-        let (to_server, metrics) = test_tx(tx, cap, cap as u64);
+        let (to_server, metrics, lifecycle) = test_tx(tx, cap, depth);
         let pending = SocketGatewayLink::pending_table();
         let boundary = BoundaryHandle::default();
         boundary.connect(Arc::new(BoundaryConn {
@@ -1575,6 +2126,7 @@ mod tests {
         let link = SocketGatewayLink {
             boundary,
             next_id: AtomicU64::new(1),
+            lifecycle,
             sessions,
             metrics: Arc::clone(&metrics),
             to_server_cap: cap,
@@ -1607,7 +2159,7 @@ mod tests {
     /// connection is untouched.
     #[tokio::test]
     async fn close_web_sessions_drops_only_structured_conns() {
-        let sessions = SessionManager::new();
+        let sessions = Arc::new(SessionManager::new());
         let char: u64 = 7;
 
         // One SSH (ANSI) connection and one web (structured) connection on the
@@ -1615,13 +2167,12 @@ mod tests {
         let (ssh_tx, _ssh_rx) = mpsc::channel::<Arc<OutputEvent>>(8);
         let ssh = ConnectionHandle::new(ConnId(1), addr(1), ansi_caps(false), ssh_tx);
         let (web_tx, mut web_rx) = mpsc::channel::<Arc<Envelope>>(8);
-        let web =
-            ConnectionHandle::new_structured(ConnId(2), addr(2), ansi_caps(true), web_tx);
+        let web = ConnectionHandle::new_structured(ConnId(2), addr(2), ansi_caps(true), web_tx);
         sessions.attach(ssh, CharKey(char), "boss".to_string());
         sessions.attach(web, CharKey(char), "boss".to_string());
 
         let (to_server_raw, mut to_server_rx) = mpsc::unbounded_channel::<ToServer>();
-        let (to_server_tx, _metrics) = test_tx(to_server_raw, usize::MAX, 0);
+        let (to_server_tx, _metrics, _lifecycle) = test_tx(to_server_raw, usize::MAX, 0);
         let notice = OutputEvent::Disconnect {
             reason: RichText::tag("system", "log in again"),
         };
@@ -1662,6 +2213,72 @@ mod tests {
         );
     }
 
+    /// Reverse slow-client control is an unclean detach: the last connection
+    /// must become link-dead (retaining its resume ring) and report `Lost`, not
+    /// be locally destroyed as `Booted`. Its eventual `SessionGone` also
+    /// releases the bounded lifecycle obligation.
+    #[tokio::test]
+    async fn reverse_slow_client_detach_is_linkdead_then_session_gone() {
+        let sessions = Arc::new(SessionManager::with_config(SessionConfig {
+            linkdead_grace: Duration::ZERO,
+            ..SessionConfig::default()
+        }));
+        let actor = ObjId(7);
+        let (web_tx, _web_rx) = mpsc::channel::<Arc<Envelope>>(8);
+        let web = ConnectionHandle::new_structured(ConnId(1), addr(1), ansi_caps(true), web_tx);
+        let (sess, _) = sessions.attach(web, char_key(actor), "boss".to_string());
+
+        let (to_server_raw, mut to_server_rx) = mpsc::unbounded_channel::<ToServer>();
+        let (to_server_tx, _metrics, lifecycle) = test_tx(to_server_raw, 1, 0);
+        lifecycle.lock().unwrap().connections.insert(
+            1,
+            ConnectionCustody {
+                actor,
+                phase: LifecyclePhase::Live,
+                restore_linkdead_on_cancel: false,
+            },
+        );
+
+        detach_one_conn(&sessions, &to_server_tx, 1, DetachCause::SlowClient);
+
+        assert!(sessions.session_of_conn(ConnId(1)).is_none());
+        assert_eq!(
+            sessions.session_of_char(char_key(actor)),
+            Some(sess),
+            "the resumable session must survive its last slow connection"
+        );
+        assert!(matches!(
+            to_server_rx.try_recv(),
+            Ok(ToServer::Inbound(WireInbound::ConnDown {
+                conn: 1,
+                actor: reported_actor,
+                reason: DisconnectKind::Lost,
+            })) if reported_actor == actor
+        ));
+        assert_eq!(
+            lifecycle.lock().unwrap().obligations(),
+            1,
+            "ConnDown(Lost) converts connection custody into expiry custody"
+        );
+
+        let expiry = tokio::time::timeout(Duration::from_secs(1), to_server_rx.recv())
+            .await
+            .expect("zero-grace reaper must run")
+            .expect("reaper boundary remains live");
+        assert!(matches!(
+            expiry,
+            ToServer::Inbound(WireInbound::SessionGone {
+                actor: reported_actor,
+            }) if reported_actor == actor
+        ));
+        assert!(sessions.session_of_char(char_key(actor)).is_none());
+        assert_eq!(
+            lifecycle.lock().unwrap().obligations(),
+            0,
+            "SessionGone releases the delayed lifecycle obligation"
+        );
+    }
+
     /// F3 (no hang on mid-request teardown): a service request parked in the
     /// pending table must resolve to `None` — not block forever — when the
     /// boundary tears down (the reader raises `down` and drops every waiter)
@@ -1699,17 +2316,212 @@ mod tests {
         assert!(res.is_none(), "a torn-down request must resolve to None");
     }
 
+    /// A reconnect is not player-ready at Hello. The supervisor must first
+    /// enqueue the full held roster and then cross an exact barrier on that
+    /// SAME FIFO boundary; only that result permits publishing "Reconnected".
+    #[tokio::test]
+    async fn resync_orders_full_roster_before_readiness_barrier() {
+        let sessions = Arc::new(SessionManager::new());
+        let (output_tx, _output_rx) = mpsc::channel::<Arc<OutputEvent>>(8);
+        let handle = ConnectionHandle::new(ConnId(77), addr(7), ansi_caps(false), output_tx);
+        sessions.attach(handle, CharKey(42), "boss".to_string());
+
+        let (raw_tx, mut raw_rx) = mpsc::unbounded_channel::<ToServer>();
+        let (tx, _metrics, _lifecycle) = test_tx(raw_tx, usize::MAX, 0);
+        let pending = SocketGatewayLink::pending_table();
+        let conn = Arc::new(BoundaryConn {
+            tx,
+            pending: Arc::clone(&pending),
+        });
+
+        let resync = tokio::spawn({
+            let conn = Arc::clone(&conn);
+            let sessions = Arc::clone(&sessions);
+            async move { resync_boundary(&conn, &sessions).await }
+        });
+
+        match raw_rx.recv().await.expect("resync emitted its roster") {
+            ToServer::ReAnnounce(recs) => {
+                assert_eq!(recs.len(), 1);
+                assert_eq!(recs[0].conn, 77);
+                assert_eq!(recs[0].actor, ObjId(42));
+            }
+            other => panic!("expected ReAnnounce first, got {other:?}"),
+        }
+        let barrier_id = match raw_rx.recv().await.expect("resync emitted its barrier") {
+            ToServer::Request {
+                id,
+                req: ServiceReq::Barrier,
+            } => id,
+            other => panic!("expected Barrier second, got {other:?}"),
+        };
+        assert_eq!(barrier_id, RESYNC_BARRIER_REQUEST_ID);
+        assert!(
+            !resync.is_finished(),
+            "Hello + roster enqueue must not be mistaken for world readiness"
+        );
+
+        let waiter = pending
+            .lock()
+            .unwrap()
+            .waiters
+            .remove(&barrier_id)
+            .expect("resync barrier parked one exact waiter");
+        waiter.send(ServiceResp::Barrier).unwrap();
+        assert_eq!(resync.await.unwrap(), Ok(1));
+    }
+
+    /// An alive IPC socket with a wedged world must not strand the supervisor
+    /// gap forever. The bounded wait fails the resync attempt, after which the
+    /// supervisor closes that boundary and its ordinary teardown drain releases
+    /// the one parked correlation waiter.
+    #[tokio::test(start_paused = true)]
+    async fn resync_readiness_barrier_times_out_and_teardown_drains_waiter() {
+        let sessions = Arc::new(SessionManager::new());
+        let (raw_tx, mut raw_rx) = mpsc::unbounded_channel::<ToServer>();
+        let (tx, _metrics, _lifecycle) = test_tx(raw_tx, usize::MAX, 0);
+        let pending = SocketGatewayLink::pending_table();
+        let conn = Arc::new(BoundaryConn {
+            tx,
+            pending: Arc::clone(&pending),
+        });
+
+        let resync = tokio::spawn({
+            let conn = Arc::clone(&conn);
+            let sessions = Arc::clone(&sessions);
+            async move { resync_boundary(&conn, &sessions).await }
+        });
+        assert!(matches!(
+            raw_rx.recv().await,
+            Some(ToServer::ReAnnounce(recs)) if recs.is_empty()
+        ));
+        assert!(matches!(
+            raw_rx.recv().await,
+            Some(ToServer::Request {
+                id: RESYNC_BARRIER_REQUEST_ID,
+                req: ServiceReq::Barrier,
+            })
+        ));
+
+        tokio::time::advance(RESYNC_TIMEOUT).await;
+        let err = resync
+            .await
+            .unwrap()
+            .expect_err("a wedged readiness barrier must time out");
+        assert!(err.contains("did not cross"));
+        assert_eq!(
+            pending.lock().unwrap().waiters.len(),
+            1,
+            "the exact waiter remains owned by this boundary until teardown"
+        );
+
+        // Mirror gateway_reader teardown after the supervisor fires `close`.
+        let dropped = {
+            let mut p = pending.lock().unwrap();
+            p.down = true;
+            p.capacity_warned = false;
+            p.waiters.drain().count()
+        };
+        assert_eq!(dropped, 1);
+        assert!(pending.lock().unwrap().waiters.is_empty());
+    }
+
+    struct CountingLauncher {
+        launches: Arc<AtomicUsize>,
+    }
+
+    impl ServerLauncher for CountingLauncher {
+        fn launch(&self) -> BoxFuture<'static, Result<LaunchedServer, String>> {
+            self.launches.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err("a replacement must not be launched".to_string()) })
+        }
+    }
+
+    /// An EOF is not proof that the old server process has exited. If its exit
+    /// future remains pending past `EXIT_WAIT`, the supervisor must stay in the
+    /// gap and stop WITHOUT calling the launcher: otherwise a stuck old world
+    /// and its replacement could write the authoritative store concurrently.
+    #[tokio::test(start_paused = true)]
+    async fn uncertain_old_instance_exit_fail_stops_without_respawn() {
+        let sessions = Arc::new(SessionManager::new());
+        let metrics = Arc::new(Metrics::new());
+        let lifecycle = Arc::new(Mutex::new(LifecycleCustody::new(8)));
+        let (raw_tx, _raw_rx) = mpsc::unbounded_channel();
+        let conn = Arc::new(BoundaryConn {
+            tx: ToServerTx::new(
+                raw_tx,
+                Arc::new(AtomicU64::new(0)),
+                Arc::clone(&metrics),
+                8,
+                80,
+                Arc::clone(&lifecycle),
+            ),
+            pending: SocketGatewayLink::pending_table(),
+        });
+        let boundary = BoundaryHandle::default();
+        boundary.connect(Arc::clone(&conn));
+
+        // A completed reader models the crash/EOF trigger, while the instance
+        // itself deliberately never reports exit.
+        let down = tokio::spawn(async {});
+        let (close, _close_rx) = oneshot::channel();
+        let first_wired = WiredBoundary { conn, down, close };
+        let first_instance = LaunchedServer {
+            endpoint: IpcEndpoint::parse("127.0.0.1:1").unwrap(),
+            exited: Box::pin(std::future::pending()),
+        };
+        let launches = Arc::new(AtomicUsize::new(0));
+        let launcher: Box<dyn ServerLauncher> = Box::new(CountingLauncher {
+            launches: Arc::clone(&launches),
+        });
+        let (_restart_tx, restart_rx) = mpsc::channel(1);
+        let env = BoundaryEnv {
+            manifest: Arc::new(Mutex::new(HelloManifest::default())),
+            tuning: BoundaryTuning {
+                metrics,
+                to_server_cap: 8,
+                high_water_pct: 80,
+                write_timeout: Duration::from_secs(1),
+            },
+            lifecycle,
+        };
+
+        let supervisor = tokio::spawn(supervise(
+            launcher,
+            boundary.clone(),
+            sessions,
+            restart_rx,
+            first_instance,
+            first_wired,
+            env,
+        ));
+        tokio::task::yield_now().await;
+        tokio::time::advance(EXIT_WAIT + Duration::from_millis(1)).await;
+        supervisor
+            .await
+            .expect("fail-stop supervisor must return after the exit deadline");
+
+        assert_eq!(
+            launches.load(Ordering::SeqCst),
+            0,
+            "an unconfirmed old instance must prevent every replacement launch"
+        );
+        assert!(boundary.current().is_none(), "boundary must remain in Gap");
+        assert!(boundary.is_restarting(), "Gap must continue refusing input");
+    }
+
     /// The crash-loop guard (R3): a server that keeps dying fast trips the
     /// guard. Called back-to-back (no healthy gap), the first
-    /// `MAX_RESTARTS_IN_WINDOW` restarts are allowed and the next is refused —
+    /// `MAX_RESTARTS_IN_WINDOW` restarts are allowed; once that many attempts
+    /// occupy the window, another is refused —
     /// the supervisor then gives up and tells players rather than respawning
     /// forever.
     #[test]
     fn crash_guard_trips_after_max_restarts_in_window() {
         let mut guard = CrashGuard::new();
         // Mirror the supervisor: check `tripped()` before each attempt, then
-        // record it. The attempt past MAX_RESTARTS_IN_WINDOW must trip.
-        for i in 0..=MAX_RESTARTS_IN_WINDOW {
+        // record it. Exactly MAX_RESTARTS_IN_WINDOW attempts are admitted.
+        for i in 0..MAX_RESTARTS_IN_WINDOW {
             assert!(
                 !guard.tripped(),
                 "restart {i} within the window must be allowed"
@@ -1718,8 +2530,30 @@ mod tests {
         }
         assert!(
             guard.tripped(),
-            "the restart past MAX_RESTARTS_IN_WINDOW must trip the guard"
+            "an attempt after MAX_RESTARTS_IN_WINDOW must trip the guard"
         );
+    }
+
+    /// Window timestamps are rolling state, not a lifetime failure count. A
+    /// healthy interval must age an old burst out before the next admission
+    /// decision, rather than tripping on stale entries and never reaching the
+    /// pruning in `record_attempt`.
+    #[test]
+    fn crash_guard_prunes_stale_window_before_admission() {
+        let mut guard = CrashGuard::new();
+        let stale = Instant::now()
+            .checked_sub(CRASH_WINDOW + Duration::from_millis(1))
+            .expect("test instant supports a short subtraction");
+        guard.recent = vec![stale; MAX_RESTARTS_IN_WINDOW];
+        guard.consecutive = u32::try_from(MAX_RESTARTS_IN_WINDOW).unwrap();
+
+        assert!(
+            !guard.tripped(),
+            "stale attempts must be pruned before the guard decides"
+        );
+        assert!(guard.recent.is_empty());
+        guard.record_attempt();
+        assert_eq!(guard.consecutive, 1, "a healthy gap resets backoff");
     }
 
     /// A server that never comes back — every relaunch/reconnect fails, each
@@ -1733,14 +2567,20 @@ mod tests {
             assert!(!guard.tripped(), "failed attempt {i} must be allowed");
             guard.record_attempt();
             guard.record_failure();
+            // Model attempts whose connect deadlines put them outside the
+            // rolling window. The independent consecutive-failure ceiling must
+            // still catch them.
+            let stale = Instant::now()
+                .checked_sub(CRASH_WINDOW + Duration::from_millis(1))
+                .expect("test instant supports a short subtraction");
+            guard.recent.fill(stale);
         }
         assert!(
             guard.tripped(),
             "MAX_CONSECUTIVE_FAILURES failed attempts must trip the guard"
         );
-        // A success clears the failure streak (and the window still holds only
-        // MAX_CONSECUTIVE_FAILURES == MAX_RESTARTS_IN_WINDOW timestamps, not more,
-        // so the window bound is not tripped either).
+        // A success clears the failure streak; the deliberately stale window
+        // entries are independently pruned by the admission check.
         guard.record_success();
         assert!(
             !guard.tripped(),
@@ -1780,7 +2620,9 @@ mod tests {
         pending.lock().unwrap().down = true;
         let link = test_link(tx, Arc::clone(&pending));
 
-        let res = link.request(ServiceReq::NameFree { name: "x".into() }).await;
+        let res = link
+            .request(ServiceReq::NameFree { name: "x".into() })
+            .await;
         assert!(res.is_none(), "a request past a down boundary must be None");
         assert!(
             pending.lock().unwrap().waiters.is_empty(),
@@ -1789,6 +2631,85 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "nothing should have been queued to the writer for a down boundary"
+        );
+    }
+
+    /// Correlation ids are never allowed to wrap and alias a still-live
+    /// waiter. Once the process-local id space is exhausted, requests fail
+    /// closed before reserving custody or emitting a wire frame.
+    #[tokio::test]
+    async fn service_request_id_exhaustion_fails_before_enqueue() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<ToServer>();
+        let pending = SocketGatewayLink::pending_table();
+        let link = test_link(tx, Arc::clone(&pending));
+        link.next_id.store(u64::MAX, Ordering::Relaxed);
+
+        assert_eq!(
+            link.request(ServiceReq::Barrier).await,
+            Some(ServiceResp::Unavailable)
+        );
+        assert!(pending.lock().unwrap().waiters.is_empty());
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// Correlated requests have their own hard custody ceiling. Reaching it
+    /// refuses the next request with a typed Busy response *before* a waiter or
+    /// must-deliver wire frame is created; releasing one slot admits the next
+    /// request normally and its exact reply still resolves the parked waiter.
+    #[tokio::test]
+    async fn service_request_waiters_are_bounded_and_refused_before_enqueue() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<ToServer>();
+        let pending = SocketGatewayLink::pending_table();
+        let link = test_link(tx, Arc::clone(&pending));
+        let mut held_receivers = Vec::with_capacity(MAX_IN_FLIGHT_SERVICE_REQUESTS);
+        {
+            let mut p = pending.lock().unwrap();
+            for id in 0..MAX_IN_FLIGHT_SERVICE_REQUESTS as u64 {
+                let (reply, receiver) = oneshot::channel();
+                p.waiters.insert(id, reply);
+                held_receivers.push(receiver);
+            }
+        }
+
+        assert_eq!(
+            link.request(ServiceReq::Barrier).await,
+            Some(ServiceResp::Busy),
+            "the request above the ceiling must be refused explicitly"
+        );
+        assert_eq!(
+            pending.lock().unwrap().waiters.len(),
+            MAX_IN_FLIGHT_SERVICE_REQUESTS,
+            "Busy refusal must not grow waiter custody"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "a request refused before custody must not create a wire frame"
+        );
+
+        // The Busy attempt consumed correlation id 1 before custody refused it,
+        // so release the allocator's CURRENT next id. Freeing some other slot
+        // would correctly exercise the duplicate-id refusal instead.
+        let next_id = link.next_id.load(Ordering::Relaxed);
+        pending.lock().unwrap().waiters.remove(&next_id);
+        let admitted = link.request(ServiceReq::Barrier);
+        let id = match rx.try_recv().expect("admitted request was enqueued") {
+            ToServer::Request {
+                id,
+                req: ServiceReq::Barrier,
+            } => id,
+            other => panic!("expected a Barrier request, got {other:?}"),
+        };
+        let waiter = pending
+            .lock()
+            .unwrap()
+            .waiters
+            .remove(&id)
+            .expect("the admitted request parked a waiter");
+        waiter.send(ServiceResp::Barrier).unwrap();
+        assert_eq!(admitted.await, Some(ServiceResp::Barrier));
+        assert!(
+            pending.lock().unwrap().waiters.len() < MAX_IN_FLIGHT_SERVICE_REQUESTS,
+            "resolved requests release custody"
         );
     }
 
@@ -1812,18 +2733,33 @@ mod tests {
         })
     }
 
-    /// The input-shed (M18): with the `to_server` gauge forced at/over cap, a
-    /// `Cmd` is shed (`Shed` + counter++ + nothing enqueued) and a `Query` is
-    /// shed too — but every MUST-DELIVER frame (`ConnDown`, `ConnUp`, a
-    /// `ServiceReq`) STILL enqueues (I1). `to_server` maps the shed to `false`.
+    /// The input-shed (M18): with the `to_server` gauge at/over cap, `Cmd` and
+    /// `Query` shed. A ConnUp reserved *before* the crossing and all teardown /
+    /// admitted-service frames remain must-deliver, while a brand-new ConnUp is
+    /// refused at the pre-custody admission point.
     #[tokio::test]
     async fn input_shed_drops_cmd_query_but_never_must_deliver() {
         let sessions = Arc::new(SessionManager::new());
-        let (link, mut rx, metrics) = shedding_link(Arc::clone(&sessions), 8);
+        let (link, mut rx, metrics) = shedding_link_at_depth(Arc::clone(&sessions), 8, 7);
         let actor = ObjId(7);
 
+        // Reserve while there is room, then let unrelated must-deliver work
+        // take the writer gauge to the cap. The reservation is the admission
+        // boundary: its eventual ConnUp may no longer be shed.
+        assert_eq!(
+            link.try_reserve_connection(1, actor),
+            ConnectionAdmission::Reserved
+        );
+        assert!(
+            link.to_server(ToServer::Control(mush_core::ControlMsg::Dump))
+                .await
+        );
+
         // A Cmd at/over cap is shed: Shed outcome, counter bump, nothing queued.
-        assert_eq!(link.to_server_input(cmd(actor, "say hi")).await, InputSend::Shed);
+        assert_eq!(
+            link.to_server_input(cmd(actor, "say hi")).await,
+            InputSend::Shed
+        );
         assert_eq!(metrics.ipc_frames_shed_total(), 1);
         // `to_server` surfaces the shed as `false` (→ bridge "busy" notice).
         assert!(!link.to_server(cmd(actor, "say hi")).await);
@@ -1831,9 +2767,24 @@ mod tests {
         // A Query is shed too (silent at the bridge, but counted here).
         assert_eq!(link.to_server_input(query(actor)).await, InputSend::Shed);
         assert_eq!(metrics.ipc_frames_shed_total(), 3);
+        assert!(matches!(rx.try_recv(), Ok(ToServer::Control(_))));
         assert!(rx.try_recv().is_err(), "shed frames must never enqueue");
 
-        // MUST-DELIVER lifecycle frames STILL enqueue at/over cap (I1).
+        // The already-reserved ConnUp and its teardown STILL enqueue at/over
+        // cap. ConnUp remains before ConnDown in the single FIFO.
+        assert!(
+            link.to_server(ToServer::Inbound(WireInbound::ConnUp {
+                conn: 1,
+                actor,
+                caps_structured: false,
+                from_linkdead: false,
+            }))
+            .await
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ToServer::Inbound(WireInbound::ConnUp { .. }))
+        ));
         assert!(
             link.to_server(ToServer::Inbound(WireInbound::ConnDown {
                 conn: 1,
@@ -1846,6 +2797,154 @@ mod tests {
             rx.try_recv(),
             Ok(ToServer::Inbound(WireInbound::ConnDown { .. }))
         ));
+
+        // New lifecycle custody is refused before local session mutation once
+        // the queue is full; no must-deliver frame has been created or dropped.
+        assert_eq!(
+            link.try_reserve_connection(2, ObjId(8)),
+            ConnectionAdmission::Busy
+        );
+
+        // A ServiceReq (CreatePlayer) is must-deliver: it enqueues synchronously
+        // even over cap (a dropped ServiceReq would hang its oneshot — I1).
+        let fut = link.request(ServiceReq::CreatePlayer { name: "neo".into() });
+        assert!(matches!(rx.try_recv(), Ok(ToServer::Request { .. })));
+        drop(fut); // never resolves (no reply); we only assert it enqueued.
+
+        // The shed counter never moved for the must-deliver frames.
+        assert_eq!(metrics.ipc_frames_shed_total(), 3);
+    }
+
+    /// Live connections plus delayed link-dead cleanup share one hard custody
+    /// budget. Reservations allocate no wire frame, and the first request over
+    /// the cap is refused before a caller can mutate its SessionManager.
+    #[test]
+    fn lifecycle_obligations_are_bounded_before_session_custody() {
+        let sessions = Arc::new(SessionManager::new());
+        let (link, mut rx, _metrics) = shedding_link_at_depth(sessions, 4, 0);
+
+        for conn in 1..=4 {
+            assert_eq!(
+                link.try_reserve_connection(conn, ObjId(conn as u32)),
+                ConnectionAdmission::Reserved
+            );
+        }
+        assert_eq!(
+            link.try_reserve_connection(5, ObjId(5)),
+            ConnectionAdmission::Busy
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "reservations must not create lifecycle frames"
+        );
+
+        link.cancel_connection_reservation(1);
+        assert_eq!(
+            link.try_reserve_connection(5, ObjId(5)),
+            ConnectionAdmission::Reserved,
+            "cancelling unused custody must make exactly one slot available"
+        );
+    }
+
+    /// Losing the last connection converts its slot into a link-dead cleanup
+    /// obligation. It is not reusable by an unrelated actor until SessionGone,
+    /// while the same actor may reconnect by converting that exact slot back.
+    #[tokio::test]
+    async fn linkdead_cleanup_holds_lifecycle_capacity_until_session_gone() {
+        let sessions = Arc::new(SessionManager::new());
+        let (link, mut rx, _metrics) = shedding_link_at_depth(sessions, 1, 0);
+        let actor = ObjId(7);
+
+        assert_eq!(
+            link.try_reserve_connection(1, actor),
+            ConnectionAdmission::Reserved
+        );
+        assert!(
+            link.to_server(ToServer::Inbound(WireInbound::ConnUp {
+                conn: 1,
+                actor,
+                caps_structured: false,
+                from_linkdead: false,
+            }))
+            .await
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ToServer::Inbound(WireInbound::ConnUp { .. }))
+        ));
+        link.boundary
+            .current()
+            .expect("test boundary")
+            .tx
+            .depth
+            .fetch_sub(1, Ordering::Relaxed);
+
+        assert!(
+            link.to_server(ToServer::Inbound(WireInbound::ConnDown {
+                conn: 1,
+                actor,
+                reason: DisconnectKind::Lost,
+            }))
+            .await
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ToServer::Inbound(WireInbound::ConnDown { .. }))
+        ));
+        link.boundary
+            .current()
+            .expect("test boundary")
+            .tx
+            .depth
+            .fetch_sub(1, Ordering::Relaxed);
+
+        assert_eq!(
+            link.try_reserve_connection(2, ObjId(8)),
+            ConnectionAdmission::Busy,
+            "an unrelated actor cannot consume pending cleanup custody"
+        );
+        assert_eq!(
+            link.try_reserve_connection(2, actor),
+            ConnectionAdmission::Reserved,
+            "the link-dead actor may convert its own obligation into reconnect custody"
+        );
+        link.cancel_connection_reservation(2);
+
+        assert!(
+            link.to_server(ToServer::Inbound(WireInbound::SessionGone { actor }))
+                .await
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ToServer::Inbound(WireInbound::SessionGone { .. }))
+        ));
+        link.boundary
+            .current()
+            .expect("test boundary")
+            .tx
+            .depth
+            .fetch_sub(1, Ordering::Relaxed);
+        assert_eq!(
+            link.try_reserve_connection(3, ObjId(8)),
+            ConnectionAdmission::Reserved,
+            "SessionGone releases the cleanup slot"
+        );
+    }
+
+    /// A transport can disappear while the supervisor has removed the old
+    /// boundary. ReAnnounce will omit it, so no wire frame is needed, but the
+    /// restart-surviving custody ledger must still observe both loss and expiry.
+    #[tokio::test]
+    async fn lifecycle_teardown_during_restart_gap_does_not_leak_custody() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<ToServer>();
+        let pending = SocketGatewayLink::pending_table();
+        let link = test_link(tx, pending);
+        let actor = ObjId(7);
+
+        assert_eq!(
+            link.try_reserve_connection(1, actor),
+            ConnectionAdmission::Reserved
+        );
         assert!(
             link.to_server(ToServer::Inbound(WireInbound::ConnUp {
                 conn: 1,
@@ -1860,33 +2959,61 @@ mod tests {
             Ok(ToServer::Inbound(WireInbound::ConnUp { .. }))
         ));
 
-        // A ServiceReq (CreatePlayer) is must-deliver: it enqueues synchronously
-        // even over cap (a dropped ServiceReq would hang its oneshot — I1).
-        let fut = link.request(ServiceReq::CreatePlayer { name: "neo".into() });
-        assert!(matches!(rx.try_recv(), Ok(ToServer::Request { .. })));
-        drop(fut); // never resolves (no reply); we only assert it enqueued.
+        link.boundary.enter_gap();
+        assert!(
+            !link
+                .to_server(ToServer::Inbound(WireInbound::ConnDown {
+                    conn: 1,
+                    actor,
+                    reason: DisconnectKind::Lost,
+                }))
+                .await
+        );
+        assert_eq!(link.lifecycle.lock().unwrap().obligations(), 1);
 
-        // The shed counter never moved for the must-deliver frames.
-        assert_eq!(metrics.ipc_frames_shed_total(), 3);
+        assert!(
+            !link
+                .to_server(ToServer::Inbound(WireInbound::SessionGone { actor }))
+                .await
+        );
+        assert_eq!(link.lifecycle.lock().unwrap().obligations(), 0);
+        assert!(
+            rx.try_recv().is_err(),
+            "gap-time teardown has no stale writer"
+        );
     }
 
-    /// A flood-exempt connection's input (an input-context paste — mail/chargen)
-    /// is NEVER shed, even with the gauge over cap — mirroring how it bypasses
-    /// the flood throttle.
+    /// A flood-exempt connection's input gets one bounded extra burst window,
+    /// but cannot grow the physically unbounded must-deliver FIFO forever.
     #[tokio::test]
-    async fn flood_exempt_input_is_never_shed() {
+    async fn flood_exempt_input_has_a_bounded_burst_window() {
         let sessions = Arc::new(SessionManager::new());
         let actor = ObjId(7);
         sessions.set_flood_exempt(char_key(actor), true);
         let (link, mut rx, metrics) = shedding_link(Arc::clone(&sessions), 8);
 
         // Over cap, but flood-exempt → enqueued, not shed.
-        assert_eq!(link.to_server_input(cmd(actor, "pasted line")).await, InputSend::Sent);
+        assert_eq!(
+            link.to_server_input(cmd(actor, "pasted line")).await,
+            InputSend::Sent
+        );
         assert_eq!(metrics.ipc_frames_shed_total(), 0);
         assert!(matches!(
             rx.try_recv(),
             Ok(ToServer::Inbound(WireInbound::Cmd { .. }))
         ));
+
+        let (bounded, mut bounded_rx, metrics) = shedding_link_at_depth(
+            Arc::clone(&sessions),
+            8,
+            (8 * INPUT_CONTEXT_QUEUE_MULTIPLIER) as u64,
+        );
+        assert_eq!(
+            bounded.to_server_input(cmd(actor, "too much paste")).await,
+            InputSend::Shed
+        );
+        assert_eq!(metrics.ipc_frames_shed_total(), 1);
+        assert!(bounded_rx.try_recv().is_err());
     }
 
     /// A minimal [`AuthBackend`] for the bridge-level notice test.
@@ -1916,6 +3043,351 @@ mod tests {
         }
     }
 
+    fn answer_request(pending: &Arc<Mutex<Pending>>, id: u64, response: ServiceResp) {
+        pending
+            .lock()
+            .expect("pending table poisoned")
+            .waiters
+            .remove(&id)
+            .expect("request waiter exists")
+            .send(response)
+            .expect("request receiver remains live");
+    }
+
+    /// Connect publication is fenced behind both the exact post-ConnUp
+    /// barrier and an engine-side association check. SessionInfo and the
+    /// initial world read/`look` may not overtake either proof.
+    #[tokio::test]
+    async fn enter_game_waits_for_durable_and_engine_connection_readiness() {
+        use crate::bridge_common::GameBridge;
+        use mush_config::ipguard::IpGuard;
+
+        let sessions = Arc::new(SessionManager::new());
+        let (tx, mut wire_rx) = mpsc::unbounded_channel::<ToServer>();
+        let pending = SocketGatewayLink::pending_table();
+        let link = Arc::new(test_link(tx, Arc::clone(&pending)));
+        let link_dyn: Arc<dyn GatewayLink> = link;
+        let bridge = Arc::new(GameBridge::with_link(
+            Arc::new(FakeAuth),
+            Arc::clone(&sessions),
+            link_dyn,
+            Arc::new(IpGuard::new()),
+        ));
+        let (ssh_tx, mut ssh_rx) = mpsc::channel::<Arc<OutputEvent>>(8);
+        let handle = ConnectionHandle::new(ConnId(77), addr(7), ansi_caps(false), ssh_tx);
+        let entered = tokio::spawn({
+            let bridge = Arc::clone(&bridge);
+            async move {
+                bridge
+                    .enter_game(handle, ObjId(7), "boss", "Boss", false)
+                    .await
+            }
+        });
+
+        assert!(matches!(
+            wire_rx.recv().await,
+            Some(ToServer::Inbound(WireInbound::ConnUp {
+                conn: 77,
+                actor: ObjId(7),
+                ..
+            }))
+        ));
+        assert!(
+            ssh_rx.try_recv().is_err(),
+            "SessionInfo overtook ConnUp fence"
+        );
+
+        let barrier_id = match wire_rx.recv().await.expect("barrier request") {
+            ToServer::Request {
+                id,
+                req: ServiceReq::Barrier,
+            } => id,
+            other => panic!("expected Barrier after ConnUp, got {other:?}"),
+        };
+        assert!(ssh_rx.try_recv().is_err(), "SessionInfo overtook Barrier");
+        answer_request(&pending, barrier_id, ServiceResp::Barrier);
+
+        let ready_id = match wire_rx.recv().await.expect("readiness request") {
+            ToServer::Request {
+                id,
+                req:
+                    ServiceReq::ConnectionReady {
+                        conn: 77,
+                        actor: ObjId(7),
+                    },
+            } => id,
+            other => panic!("expected ConnectionReady after Barrier, got {other:?}"),
+        };
+        assert!(
+            ssh_rx.try_recv().is_err(),
+            "SessionInfo overtook engine readiness proof"
+        );
+        answer_request(&pending, ready_id, ServiceResp::ConnectionReady(true));
+
+        let context_id = match wire_rx.recv().await.expect("context request") {
+            ToServer::Request {
+                id,
+                req: ServiceReq::InInputContext { actor: ObjId(7) },
+            } => id,
+            other => panic!("expected InInputContext after readiness, got {other:?}"),
+        };
+        assert!(matches!(
+            ssh_rx.recv().await.as_deref(),
+            Some(OutputEvent::SessionInfo { .. })
+        ));
+        answer_request(&pending, context_id, ServiceResp::InInputContext(false));
+        assert!(matches!(
+            wire_rx.recv().await,
+            Some(ToServer::Inbound(WireInbound::Cmd {
+                conn: 77,
+                actor: ObjId(7),
+                ref line,
+            })) if line == "look"
+        ));
+        assert!(entered.await.expect("enter task panicked").is_ok());
+    }
+
+    /// A failed exact fence occurs after ConnUp entered lifecycle custody, so
+    /// it must produce a compensating clean ConnDown and erase the local
+    /// session without ever publishing SessionInfo.
+    #[tokio::test]
+    async fn enter_game_barrier_failure_compensates_and_removes_fresh_session() {
+        use crate::bridge_common::{ConnectErr, GameBridge};
+        use mush_config::ipguard::IpGuard;
+
+        let sessions = Arc::new(SessionManager::new());
+        let (tx, mut wire_rx) = mpsc::unbounded_channel::<ToServer>();
+        let pending = SocketGatewayLink::pending_table();
+        let link = Arc::new(test_link(tx, Arc::clone(&pending)));
+        let lifecycle = Arc::clone(&link.lifecycle);
+        let link_dyn: Arc<dyn GatewayLink> = link;
+        let bridge = Arc::new(GameBridge::with_link(
+            Arc::new(FakeAuth),
+            Arc::clone(&sessions),
+            link_dyn,
+            Arc::new(IpGuard::new()),
+        ));
+        let (ssh_tx, mut ssh_rx) = mpsc::channel::<Arc<OutputEvent>>(8);
+        let handle = ConnectionHandle::new(ConnId(78), addr(8), ansi_caps(false), ssh_tx);
+        let entered = tokio::spawn({
+            let bridge = Arc::clone(&bridge);
+            async move {
+                bridge
+                    .enter_game(handle, ObjId(7), "boss", "Boss", false)
+                    .await
+            }
+        });
+
+        assert!(matches!(
+            wire_rx.recv().await,
+            Some(ToServer::Inbound(WireInbound::ConnUp { conn: 78, .. }))
+        ));
+        let barrier_id = match wire_rx.recv().await.expect("barrier request") {
+            ToServer::Request {
+                id,
+                req: ServiceReq::Barrier,
+            } => id,
+            other => panic!("expected Barrier, got {other:?}"),
+        };
+        answer_request(&pending, barrier_id, ServiceResp::Unavailable);
+        assert!(matches!(
+            wire_rx.recv().await,
+            Some(ToServer::Inbound(WireInbound::ConnDown {
+                conn: 78,
+                actor: ObjId(7),
+                reason: DisconnectKind::Boot,
+            }))
+        ));
+        assert_eq!(
+            entered.await.expect("enter task panicked"),
+            Err(ConnectErr::WorldGone)
+        );
+        assert_eq!(sessions.connection_count(), 0);
+        assert_eq!(sessions.session_count(), 0);
+        assert_eq!(lifecycle.lock().unwrap().obligations(), 0);
+        assert!(
+            ssh_rx.try_recv().is_err(),
+            "failed connect published output"
+        );
+    }
+
+    /// A successful ordering fence is not enough when the world refused or
+    /// ignored ConnUp. The explicit negative engine association must unwind
+    /// exactly like a failed fence, before local readiness is published.
+    #[tokio::test]
+    async fn enter_game_untracked_connection_compensates_without_session_info() {
+        use crate::bridge_common::{ConnectErr, GameBridge};
+        use mush_config::ipguard::IpGuard;
+
+        let sessions = Arc::new(SessionManager::new());
+        let (tx, mut wire_rx) = mpsc::unbounded_channel::<ToServer>();
+        let pending = SocketGatewayLink::pending_table();
+        let link = Arc::new(test_link(tx, Arc::clone(&pending)));
+        let link_dyn: Arc<dyn GatewayLink> = link;
+        let bridge = Arc::new(GameBridge::with_link(
+            Arc::new(FakeAuth),
+            Arc::clone(&sessions),
+            link_dyn,
+            Arc::new(IpGuard::new()),
+        ));
+        let (ssh_tx, mut ssh_rx) = mpsc::channel::<Arc<OutputEvent>>(8);
+        let handle = ConnectionHandle::new(ConnId(80), addr(10), ansi_caps(false), ssh_tx);
+        let entered = tokio::spawn({
+            let bridge = Arc::clone(&bridge);
+            async move {
+                bridge
+                    .enter_game(handle, ObjId(7), "boss", "Boss", false)
+                    .await
+            }
+        });
+
+        assert!(matches!(
+            wire_rx.recv().await,
+            Some(ToServer::Inbound(WireInbound::ConnUp { conn: 80, .. }))
+        ));
+        let barrier_id = match wire_rx.recv().await.expect("barrier request") {
+            ToServer::Request {
+                id,
+                req: ServiceReq::Barrier,
+            } => id,
+            other => panic!("expected Barrier, got {other:?}"),
+        };
+        answer_request(&pending, barrier_id, ServiceResp::Barrier);
+        let ready_id = match wire_rx.recv().await.expect("readiness request") {
+            ToServer::Request {
+                id,
+                req: ServiceReq::ConnectionReady { conn: 80, .. },
+            } => id,
+            other => panic!("expected ConnectionReady, got {other:?}"),
+        };
+        answer_request(&pending, ready_id, ServiceResp::ConnectionReady(false));
+        assert!(matches!(
+            wire_rx.recv().await,
+            Some(ToServer::Inbound(WireInbound::ConnDown {
+                conn: 80,
+                reason: DisconnectKind::Boot,
+                ..
+            }))
+        ));
+        assert_eq!(
+            entered.await.expect("enter task panicked"),
+            Err(ConnectErr::WorldGone)
+        );
+        assert_eq!(sessions.connection_count(), 0);
+        assert_eq!(sessions.session_count(), 0);
+        assert!(
+            ssh_rx.try_recv().is_err(),
+            "failed connect published output"
+        );
+    }
+
+    /// A failed reconnect fence restores the pre-existing link-dead session
+    /// and uses `Lost` for the compensating edge; treating it as a clean boot
+    /// would destroy the resume ring/session the reconnect meant to revive.
+    #[tokio::test]
+    async fn enter_game_barrier_failure_restores_revived_linkdead_session() {
+        use crate::bridge_common::{ConnectErr, GameBridge};
+        use mush_config::ipguard::IpGuard;
+
+        let sessions = Arc::new(SessionManager::new());
+        let (old_tx, _old_rx) = mpsc::channel::<Arc<OutputEvent>>(1);
+        let old = ConnectionHandle::new(ConnId(70), addr(7), ansi_caps(false), old_tx);
+        let (sess, _) = sessions.attach(old, CharKey(7), "boss".to_string());
+        assert!(matches!(
+            sessions.detach(ConnId(70), mush_session::DetachReason::Lost),
+            Some(mush_session::DetachOutcome::Linkdead { .. })
+        ));
+
+        let (tx, mut wire_rx) = mpsc::unbounded_channel::<ToServer>();
+        let pending = SocketGatewayLink::pending_table();
+        let link = Arc::new(test_link(tx, Arc::clone(&pending)));
+        let link_dyn: Arc<dyn GatewayLink> = link;
+        let bridge = Arc::new(GameBridge::with_link(
+            Arc::new(FakeAuth),
+            Arc::clone(&sessions),
+            link_dyn,
+            Arc::new(IpGuard::new()),
+        ));
+        let (ssh_tx, mut ssh_rx) = mpsc::channel::<Arc<OutputEvent>>(8);
+        let handle = ConnectionHandle::new(ConnId(79), addr(9), ansi_caps(false), ssh_tx);
+        let entered = tokio::spawn({
+            let bridge = Arc::clone(&bridge);
+            async move {
+                bridge
+                    .enter_game(handle, ObjId(7), "boss", "Boss", false)
+                    .await
+            }
+        });
+
+        assert!(matches!(
+            wire_rx.recv().await,
+            Some(ToServer::Inbound(WireInbound::ConnUp {
+                conn: 79,
+                from_linkdead: true,
+                ..
+            }))
+        ));
+        let barrier_id = match wire_rx.recv().await.expect("barrier request") {
+            ToServer::Request {
+                id,
+                req: ServiceReq::Barrier,
+            } => id,
+            other => panic!("expected Barrier, got {other:?}"),
+        };
+        answer_request(&pending, barrier_id, ServiceResp::Unavailable);
+        assert!(matches!(
+            wire_rx.recv().await,
+            Some(ToServer::Inbound(WireInbound::ConnDown {
+                conn: 79,
+                actor: ObjId(7),
+                reason: DisconnectKind::Lost,
+            }))
+        ));
+        assert_eq!(
+            entered.await.expect("enter task panicked"),
+            Err(ConnectErr::WorldGone)
+        );
+        assert_eq!(sessions.connection_count(), 0);
+        assert_eq!(sessions.session_count(), 1);
+        assert_eq!(sessions.session_of_char(CharKey(7)), Some(sess));
+        assert!(sessions.is_linkdead(sess));
+        assert!(
+            ssh_rx.try_recv().is_err(),
+            "failed reconnect published output"
+        );
+    }
+
+    /// Lifecycle overload is decided before SessionManager mutation. This is
+    /// especially important for a link-dead reconnect: attaching and then
+    /// rolling back as a clean boot would destroy the session/ring it meant to
+    /// revive.
+    #[tokio::test]
+    async fn lifecycle_busy_refuses_before_local_session_attach() {
+        use crate::bridge_common::{ConnectErr, GameBridge};
+        use mush_config::ipguard::IpGuard;
+
+        let sessions = Arc::new(SessionManager::new());
+        let (link, _rx, _metrics) = shedding_link(Arc::clone(&sessions), 1);
+        let link_dyn: Arc<dyn GatewayLink> = Arc::new(link);
+        let bridge = GameBridge::with_link(
+            Arc::new(FakeAuth),
+            Arc::clone(&sessions),
+            link_dyn,
+            Arc::new(IpGuard::new()),
+        );
+        let (ssh_tx, _ssh_rx) = mpsc::channel::<Arc<OutputEvent>>(8);
+        let handle = ConnectionHandle::new(ConnId(77), addr(7), ansi_caps(false), ssh_tx);
+
+        assert_eq!(
+            bridge
+                .enter_game(handle, ObjId(7), "boss", "Boss", false)
+                .await,
+            Err(ConnectErr::Busy)
+        );
+        assert_eq!(sessions.connection_count(), 0);
+        assert_eq!(sessions.session_count(), 0);
+    }
+
     /// End-to-end (M18): a shed `Cmd` through the shared [`GameBridge::line`]
     /// surfaces the "The server is busy; try again." Sys notice to the player,
     /// and the connection is NOT closed (`LineOutcome::Continue`).
@@ -1942,7 +3414,9 @@ mod tests {
 
         assert_eq!(bridge.line(ConnId(1), "hello").await, LineOutcome::Continue);
 
-        let ev = ssh_rx.try_recv().expect("a notice must reach the connection");
+        let ev = ssh_rx
+            .try_recv()
+            .expect("a notice must reach the connection");
         let rendered = format!("{ev:?}");
         assert!(
             matches!(&*ev, OutputEvent::Sys(_)) && rendered.contains("busy"),

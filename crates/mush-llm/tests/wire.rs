@@ -23,6 +23,19 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
+fn openai_response_of_size(total_bytes: usize) -> (Vec<u8>, usize) {
+    const PREFIX: &str = r#"{"model":"m","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":""#;
+    const SUFFIX: &str = r#""}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#;
+    assert!(total_bytes >= PREFIX.len() + SUFFIX.len());
+    let text_bytes = total_bytes - PREFIX.len() - SUFFIX.len();
+    let mut body = Vec::with_capacity(total_bytes);
+    body.extend_from_slice(PREFIX.as_bytes());
+    body.extend(std::iter::repeat_n(b'x', text_bytes));
+    body.extend_from_slice(SUFFIX.as_bytes());
+    assert_eq!(body.len(), total_bytes);
+    (body, text_bytes)
+}
+
 fn provider_cfg(kind: ProviderKind, base_url: String) -> ProviderConfig {
     ProviderConfig {
         kind,
@@ -550,6 +563,114 @@ fn provider_debug_never_contains_the_key() {
         !format!("{ap:?}").contains(secret),
         "AnthropicProvider Debug leaked the key"
     );
+}
+
+// -- Provider response body boundary --------------------------------------
+
+#[tokio::test]
+async fn openai_declared_oversize_response_is_rejected() {
+    let server = MockServer::start().await;
+    let (body, _) = openai_response_of_size(mush_llm::MAX_PROVIDER_RESPONSE_BYTES + 1);
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                // wiremock/hyper derives the exact Content-Length from this
+                // fixed body, exercising the header preflight.
+                .set_body_raw(body, "application/json"),
+        )
+        .mount(&server)
+        .await;
+
+    let cfg = provider_cfg(ProviderKind::Openai, server.uri());
+    let provider = OpenAiProvider::new("openrouter", &cfg, None).unwrap();
+    let err = provider
+        .complete(&CompletionRequest::simple("hi"), TIMEOUT)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, LlmError::MalformedOutput(_)), "got {err:?}");
+    assert!(err.to_string().contains("response exceeds"));
+}
+
+#[tokio::test]
+async fn anthropic_chunked_oversize_response_is_rejected() {
+    let server = MockServer::start().await;
+    let (body, _) = openai_response_of_size(mush_llm::MAX_PROVIDER_RESPONSE_BYTES + 1);
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(body, "application/json")
+                // Force HTTP/1.1 transfer coding so there is no declared
+                // length to preflight; the incremental counter must stop it.
+                .insert_header("transfer-encoding", "chunked"),
+        )
+        .mount(&server)
+        .await;
+
+    let cfg = provider_cfg(ProviderKind::Anthropic, server.uri());
+    let provider = AnthropicProvider::new("anthropic", &cfg, "k".to_string()).unwrap();
+    let err = provider
+        .complete(&CompletionRequest::simple("hi"), TIMEOUT)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, LlmError::MalformedOutput(_)), "got {err:?}");
+    assert!(err.to_string().contains("response exceeds"));
+}
+
+#[tokio::test]
+async fn openai_response_at_exact_limit_succeeds() {
+    let server = MockServer::start().await;
+    let (body, expected_text_bytes) =
+        openai_response_of_size(mush_llm::MAX_PROVIDER_RESPONSE_BYTES);
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, "application/json"))
+        .mount(&server)
+        .await;
+
+    let cfg = provider_cfg(ProviderKind::Openai, server.uri());
+    let provider = OpenAiProvider::new("openrouter", &cfg, None).unwrap();
+    let response = provider
+        .complete(&CompletionRequest::simple("hi"), TIMEOUT)
+        .await
+        .unwrap();
+    assert_eq!(response.text().len(), expected_text_bytes);
+}
+
+#[tokio::test]
+async fn openai_chunked_stream_stops_at_response_limit() {
+    let server = MockServer::start().await;
+    let sse = format!(
+        "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"content\":\"{}\"}}}}]}}\n\n",
+        "x".repeat(mush_llm::MAX_PROVIDER_RESPONSE_BYTES)
+    );
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(sse, "text/event-stream")
+                .insert_header("transfer-encoding", "chunked"),
+        )
+        .mount(&server)
+        .await;
+
+    let cfg = provider_cfg(ProviderKind::Openai, server.uri());
+    let provider = OpenAiProvider::new("openrouter", &cfg, None).unwrap();
+    let mut stream = provider
+        .stream(&CompletionRequest::simple("hi"), TIMEOUT)
+        .await
+        .expect("chunked response has no declared oversize length");
+    let err = loop {
+        match stream.next().await {
+            Some(Err(err)) => break err,
+            Some(Ok(StreamEvent::Done(_))) => panic!("oversized stream emitted Done"),
+            Some(Ok(_)) => {}
+            None => panic!("oversized stream ended without an error"),
+        }
+    };
+    assert!(matches!(err, LlmError::MalformedOutput(_)), "got {err:?}");
+    assert!(err.to_string().contains("response exceeds"));
 }
 
 // -- from_config: keyless vs named-but-unset -------------------------------

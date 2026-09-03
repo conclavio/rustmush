@@ -60,7 +60,10 @@ fn canon(s: &str) -> Result<SmolStr, MobilityError> {
     if t.len() > MOBILITY_ID_MAX {
         return Err(MobilityError::IdTooLong(t));
     }
-    if !t.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'.') {
+    if !t
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'.')
+    {
         return Err(MobilityError::MalformedId(t));
     }
     if t.starts_with('.') || t.ends_with('.') || t.split('.').any(str::is_empty) {
@@ -69,9 +72,18 @@ fn canon(s: &str) -> Result<SmolStr, MobilityError> {
     Ok(SmolStr::new(t))
 }
 
-/// Define a canonical, `SmolStr`-backed mobility id newtype. Construction
-/// (including via `serde`) always canonicalizes, so the in-memory and on-wire
-/// forms are stable.
+fn parse_canonical(s: &str) -> Result<SmolStr, MobilityError> {
+    let canonical = canon(s)?;
+    if canonical.as_str() != s {
+        return Err(MobilityError::NonCanonicalId {
+            canonical: canonical.to_string(),
+        });
+    }
+    Ok(canonical)
+}
+
+/// Define a canonical, `SmolStr`-backed mobility id newtype. Trusted authoring
+/// input is canonicalized; persisted/wire input must already be canonical.
 macro_rules! mobility_id {
     ($(#[$m:meta])* $name:ident) => {
         $(#[$m])*
@@ -97,7 +109,7 @@ macro_rules! mobility_id {
         impl TryFrom<SmolStr> for $name {
             type Error = MobilityError;
             fn try_from(s: SmolStr) -> Result<$name, MobilityError> {
-                $name::new(s)
+                Ok($name(parse_canonical(s.as_str())?))
             }
         }
         impl From<$name> for SmolStr {
@@ -144,34 +156,11 @@ mobility_id! {
     MobilityModeId
 }
 
-/// Opaque, schema-tagged, versioned ruleset physics for a mode — kinematics,
-/// terrain response, whatever the setting needs. The engine stores and carries
-/// it and does NO math with it (design 06 §3.3, "kinematics maths to the
-/// ruleset"); this mirrors `mush-sim`'s `RulesValue` opaque pose.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ModeRules {
-    /// The ruleset schema id that interprets `data`.
-    pub schema: SmolStr,
-    /// Schema version (for ruleset-side migration).
-    pub version: u32,
-    /// The opaque payload.
-    #[serde(default)]
-    pub data: serde_json::Value,
-}
-
-impl ModeRules {
-    /// A schema-tagged rules blob.
-    #[must_use]
-    pub fn new(schema: impl Into<SmolStr>, version: u32, data: serde_json::Value) -> ModeRules {
-        ModeRules { schema: schema.into(), version, data }
-    }
-    /// An empty (`{}`) v1 blob under `schema` — a placeholder until the ruleset
-    /// fills it in.
-    #[must_use]
-    pub fn empty(schema: impl Into<SmolStr>) -> ModeRules {
-        ModeRules::new(schema, 1, serde_json::Value::Object(serde_json::Map::new()))
-    }
-}
+/// Opaque, exactly schema-referenced ruleset physics for a mode — kinematics,
+/// terrain response, whatever the setting needs. This alias deliberately uses
+/// the shared mechanics value: mobility data must carry the same owner, kind,
+/// exact version, and digest as every other rules-bearing payload.
+pub type ModeRules = mush_core::RulesValue;
 
 /// One self-contained mode a unit can be in (design: modes are inline on the
 /// profile, not registry templates — the field that varies most per unit is the
@@ -179,6 +168,7 @@ impl ModeRules {
 /// nothing this cut). Its atoms (`mediums`/`locomotion`/`tags`) must be declared
 /// in the [`MobilityRegistry`] the profile is validated against.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MobilityMode {
     /// The mode's id (unique within its profile).
     pub id: MobilityModeId,
@@ -270,7 +260,16 @@ impl MobilityVocabulary {
         for m in ["ground", "air", "water", "space"] {
             v.declare_medium(MediumId::new(m).expect("base medium id"));
         }
-        for l in ["legged", "wheeled", "tracked", "hover", "rotor", "fixed_wing", "displacement", "thrust"] {
+        for l in [
+            "legged",
+            "wheeled",
+            "tracked",
+            "hover",
+            "rotor",
+            "fixed_wing",
+            "displacement",
+            "thrust",
+        ] {
             v.declare_locomotion(LocomotionId::new(l).expect("base locomotion id"));
         }
         for t in ["amphibious", "jump", "vtol", "submersible"] {
@@ -298,7 +297,11 @@ impl MobilityVocabulary {
     /// Freeze into the read-only registry used to validate profiles.
     #[must_use]
     pub fn freeze(self) -> MobilityRegistry {
-        MobilityRegistry { mediums: self.mediums, locomotions: self.locomotions, tags: self.tags }
+        MobilityRegistry {
+            mediums: self.mediums,
+            locomotions: self.locomotions,
+            tags: self.tags,
+        }
     }
 }
 
@@ -359,6 +362,7 @@ impl MobilityRegistry {
 /// A profile's mode, stored ONCE. The current mode resolves virtually off the
 /// clock; see [`MobilityProfile::effective_mode`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum ModeState {
     /// Settled in one mode.
     Settled(MobilityModeId),
@@ -390,6 +394,7 @@ pub struct MobilityProfile {
 /// validity is re-checked separately by the future boot pass, since a ruleset
 /// may change its vocabulary between boots.
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ProfileRepr {
     modes: Vec<MobilityMode>,
     mode: ModeState,
@@ -397,7 +402,10 @@ struct ProfileRepr {
 
 impl From<MobilityProfile> for ProfileRepr {
     fn from(p: MobilityProfile) -> ProfileRepr {
-        ProfileRepr { modes: p.modes, mode: p.mode }
+        ProfileRepr {
+            modes: p.modes,
+            mode: p.mode,
+        }
     }
 }
 impl TryFrom<ProfileRepr> for MobilityProfile {
@@ -428,7 +436,10 @@ impl MobilityProfile {
 
     /// The intrinsic-invariant constructor shared by `new` and deserialize:
     /// non-empty, unique mode ids, and every id named by `mode` present.
-    fn from_parts(modes: Vec<MobilityMode>, mode: ModeState) -> Result<MobilityProfile, MobilityError> {
+    pub(crate) fn from_parts(
+        modes: Vec<MobilityMode>,
+        mode: ModeState,
+    ) -> Result<MobilityProfile, MobilityError> {
         if modes.is_empty() {
             return Err(MobilityError::EmptyProfile);
         }
@@ -533,7 +544,12 @@ impl MobilityProfile {
     /// # Errors
     /// [`MobilityError::ModeNotAvailable`] if `to` is not one of this profile's
     /// modes; [`MobilityError::AlreadyInMode`] if already settled in `to`.
-    pub fn begin_switch(&mut self, to: &MobilityModeId, now: i64, dur_s: u32) -> Result<(), MobilityError> {
+    pub fn begin_switch(
+        &mut self,
+        to: &MobilityModeId,
+        now: i64,
+        dur_s: u32,
+    ) -> Result<(), MobilityError> {
         if self.mode_by_id(to).is_none() {
             return Err(MobilityError::ModeNotAvailable(to.clone()));
         }
@@ -555,7 +571,11 @@ impl MobilityProfile {
         self.mode = if ready_at <= now {
             ModeState::Settled(to.clone())
         } else {
-            ModeState::Switching { from, to: to.clone(), ready_at }
+            ModeState::Switching {
+                from,
+                to: to.clone(),
+                ready_at,
+            }
         };
         Ok(())
     }
@@ -570,7 +590,8 @@ impl MobilityProfile {
     /// Whether the effective mode at `now` traverses `medium`. `false` mid-switch.
     #[must_use]
     pub fn in_medium(&self, medium: &MediumId, now: i64) -> bool {
-        self.effective(now).is_some_and(|m| m.mediums.contains(medium))
+        self.effective(now)
+            .is_some_and(|m| m.mediums.contains(medium))
     }
     /// Whether the effective mode at `now` uses `loco`. `false` mid-switch.
     #[must_use]
@@ -588,7 +609,8 @@ impl MobilityProfile {
     /// Whether the named mode traverses `medium` (regardless of the current switch).
     #[must_use]
     pub fn mode_in_medium(&self, mode: &MobilityModeId, medium: &MediumId) -> bool {
-        self.mode_by_id(mode).is_some_and(|m| m.mediums.contains(medium))
+        self.mode_by_id(mode)
+            .is_some_and(|m| m.mediums.contains(medium))
     }
 }
 
@@ -603,8 +625,14 @@ pub enum MobilityError {
     #[error("mobility id {0:?} is too long (max {MOBILITY_ID_MAX})")]
     IdTooLong(String),
     /// An id had characters outside `[a-z0-9_.]` or a bad dot segment.
-    #[error("mobility id {0:?} must be lowercase [a-z0-9_.] with no leading/trailing/empty dot segment")]
+    #[error(
+        "mobility id {0:?} must be lowercase [a-z0-9_.] with no leading/trailing/empty dot segment"
+    )]
     MalformedId(String),
+    /// Persisted/wire input was valid only after normalization. Reject it so
+    /// distinct byte strings cannot collapse to one authoritative identity.
+    #[error("mobility id is noncanonical; use {canonical:?}")]
+    NonCanonicalId { canonical: String },
     /// A profile had no modes.
     #[error("a mobility profile must have at least one mode")]
     EmptyProfile,

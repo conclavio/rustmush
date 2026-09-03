@@ -137,21 +137,31 @@ fn service() -> Arc<LlmService> {
 /// reporting to `principal` (the domitor it files intel for).
 fn make_informant_bartender(rig: &mut Rig, npc_name: &str, template: &str, principal: &str) {
     let out = rig.staff(&format!("@agent/create {npc_name}"));
-    assert!(out.contains(&format!("Created NPC agent {npc_name}")), "{out}");
+    assert!(
+        out.contains(&format!("Created NPC agent {npc_name}")),
+        "{out}"
+    );
     rig.staff(&format!("@agent/set {npc_name}/persona=a watchful barkeep"));
     rig.staff(&format!("@agent/set {npc_name}/tier=major"));
-    rig.staff(&format!("@agent/set {npc_name}/fallback=The bartender says nothing."));
+    rig.staff(&format!(
+        "@agent/set {npc_name}/fallback=The bartender says nothing."
+    ));
     let out = rig.staff(&format!("@agent/sheet {npc_name}={template}"));
     assert!(out.contains("sheet"), "{out}");
     let out = rig.staff(&format!("@agent/set {npc_name}/principal={principal}"));
-    assert!(out.contains(&format!("Set principal on {npc_name}")), "{out}");
+    assert!(
+        out.contains(&format!("Set principal on {npc_name}")),
+        "{out}"
+    );
 }
 
 /// Make an existing player a vampire with `dominate` dots of the (subtle,
 /// Auspex-gated) Dominate Discipline.
 fn make_dominator(rig: &mut Rig, name: &str, dominate: i32) {
     rig.staff(&format!("@sheet/set {name}/template=vampire"));
-    rig.staff(&format!("@sheet/set {name}/disciplines:Dominate={dominate}"));
+    rig.staff(&format!(
+        "@sheet/set {name}/disciplines:Dominate={dominate}"
+    ));
 }
 
 /// Everything an `Audience::Actor(who)` event delivered to `who`, as plain text
@@ -226,7 +236,10 @@ async fn ghoul_witnesses_subtle_power_and_files_intel_bystander_sees_nothing() {
     let out = rig.actor_sys(marcus, "+intel");
     assert!(out.contains("Your intel log"), "{out}");
     assert!(out.contains("Vlad"), "the power user is reported: {out}");
-    assert!(out.contains("[poweruse]"), "filed as a witnessed power use: {out}");
+    assert!(
+        out.contains("[poweruse]"),
+        "filed as a witnessed power use: {out}"
+    );
     assert!(
         out.contains("witnessed directly by Ghoulkeep"),
         "provenance recorded (V5): {out}"

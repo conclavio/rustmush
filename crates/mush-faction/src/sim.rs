@@ -24,7 +24,7 @@ use mush_core::{Deferred, ModuleOp, ModuleWrite, Outbox};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use crate::data::{ControlKind, FactionId, RegionId, Visibility, NS};
+use crate::data::{ControlKind, FactionId, NS, RegionId, Visibility};
 
 /// A front id (durable, monotonic per world).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -193,12 +193,24 @@ fn push_op(out: &mut Outbox, op: ModuleWrite) {
 
 pub(crate) fn persist_front(out: &mut Outbox, f: &Front) {
     let value = serde_json::to_value(f).expect("front doc serializes");
-    push_op(out, ModuleWrite::JsonSet { key: front_key(f.id), value });
+    push_op(
+        out,
+        ModuleWrite::JsonSet {
+            key: front_key(f.id),
+            value,
+        },
+    );
 }
 
 pub(crate) fn persist_clock(out: &mut Outbox, c: &Clock) {
     let value = serde_json::to_value(c).expect("clock doc serializes");
-    push_op(out, ModuleWrite::JsonSet { key: clock_key(c.id), value });
+    push_op(
+        out,
+        ModuleWrite::JsonSet {
+            key: clock_key(c.id),
+            value,
+        },
+    );
 }
 
 pub(crate) fn persist_sim_meta(out: &mut Outbox, st: &SimState) {
@@ -278,8 +290,12 @@ pub(crate) fn load_boot(
 
     for (key, value) in kv {
         if key == SIM_META_KEY {
-            next_front = value.get("next_front_id").and_then(serde_json::Value::as_u64);
-            next_clock = value.get("next_clock_id").and_then(serde_json::Value::as_u64);
+            next_front = value
+                .get("next_front_id")
+                .and_then(serde_json::Value::as_u64);
+            next_clock = value
+                .get("next_clock_id")
+                .and_then(serde_json::Value::as_u64);
         } else if key.starts_with("front:") {
             match serde_json::from_value::<Front>(value) {
                 Ok(f) => {
@@ -376,14 +392,26 @@ mod tests {
         // A clock whose owning front is RESOLVED is frozen: never watched.
         st.fronts.insert(
             FrontId(7),
-            Front { id: FrontId(7), faction: FactionId(0), title: "closed".into(), resolved: true },
+            Front {
+                id: FrontId(7),
+                faction: FactionId(0),
+                title: "closed".into(),
+                resolved: true,
+            },
         );
         let mut c4 = clock(4, 0);
         c4.id = st.alloc_clock_id();
         c4.front = FrontId(7);
         let c4id = c4.id;
         st.clocks.insert(c4id, c4);
-        assert!(!st.clocks_watching("scene.concluded").contains(&c4id), "resolved front freezes its clock");
-        assert_eq!(st.clocks_watching("scene.concluded"), vec![c1.id], "only the live front's clock advances");
+        assert!(
+            !st.clocks_watching("scene.concluded").contains(&c4id),
+            "resolved front freezes its clock"
+        );
+        assert_eq!(
+            st.clocks_watching("scene.concluded"),
+            vec![c1.id],
+            "only the live front's clock advances"
+        );
     }
 }

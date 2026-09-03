@@ -19,9 +19,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use mush_config::config::Config;
 use mush_core::GOD;
 use mush_ipc::{FrameReader, ToGateway, ToServer, WireInbound, write_frame};
-use mush_config::config::Config;
 
 fn scratch_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("mush-ipcteardown-{tag}-{}", std::process::id()));
@@ -72,7 +72,9 @@ async fn boot_server() -> mush_ipc::IpcEndpoint {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn wedged_gateway_is_torn_down_by_write_timeout() {
     let endpoint = boot_server().await;
-    let (reader, mut writer) = mush_ipc::connect(&endpoint).await.expect("connect boundary");
+    let (reader, mut writer) = mush_ipc::connect(&endpoint)
+        .await
+        .expect("connect boundary");
     let mut frames = FrameReader::new(reader);
 
     // Handshake: the server greets with Hello first.
@@ -81,7 +83,10 @@ async fn wedged_gateway_is_torn_down_by_write_timeout() {
         .expect("hello within timeout")
         .expect("hello read ok")
         .expect("a Hello frame");
-    assert!(matches!(hello, ToGateway::Hello { .. }), "first frame is Hello");
+    assert!(
+        matches!(hello, ToGateway::Hello { .. }),
+        "first frame is Hello"
+    );
 
     // Attach a connection playing God, then FLOOD input the world will answer
     // with a large burst of output. We deliberately DO NOT read any of it, so

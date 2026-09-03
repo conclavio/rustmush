@@ -76,7 +76,7 @@ impl EventHook for PerceptionHook {
             return Perceive::Abstain;
         }
         match st.perception_verdict(observer, subject) {
-            Some(true) => Perceive::Abstain, // pierced the veil
+            Some(true) => Perceive::Abstain,         // pierced the veil
             Some(false) | None => Perceive::Conceal, // failed, or not yet rolled (fail-safe)
         }
     }
@@ -112,7 +112,9 @@ impl WorldObserver for PerceptionObserver {
             WorldEvent::Moved { who, .. } => {
                 // `who` as a concealed subject that changed rooms: its old
                 // verdicts are stale, re-roll the room it is now in.
-                if let Some(rating) = ctx.state::<WodState>().and_then(|st| st.concealed_rating(who))
+                if let Some(rating) = ctx
+                    .state::<WodState>()
+                    .and_then(|st| st.concealed_rating(who))
                 {
                     if let Some(st) = ctx.state_mut::<WodState>() {
                         st.clear_perceptions_for_subject(who);
@@ -550,7 +552,8 @@ pub(crate) fn power_perceptibility_for_pool(
 ) -> Option<ActPerceptibility> {
     // A Discipline named in the pool (its map key rides a `PoolTerm::label`).
     for term in &resolved.terms {
-        if let Some(p) = crate::splats::vampire::discipline_perceptibility(&term.label, actor_name) {
+        if let Some(p) = crate::splats::vampire::discipline_perceptibility(&term.label, actor_name)
+        {
             return Some(p);
         }
     }

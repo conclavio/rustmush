@@ -38,8 +38,8 @@
 use std::sync::Arc;
 
 use mush_config::accounts::{
-    burn_dummy_verify, hash_password, run_blocking, validate_account_name,
-    validate_character_name, validate_password, verify_hash,
+    burn_dummy_verify, hash_password, run_blocking, validate_account_name, validate_character_name,
+    validate_password, verify_hash,
 };
 use mush_config::unix_now_s;
 use mush_ipc::{CreatePlayerError, GatewayLink, ServiceReq, ServiceResp};
@@ -153,6 +153,32 @@ impl Accounts {
         }
     }
 
+    /// Advisory name check with transport failures kept distinct from the
+    /// authoritative "taken" answer. In particular, bounded IPC overload must
+    /// not masquerade as `NameFree(false)` and leak into player-facing state as
+    /// a false collision.
+    async fn require_name_free(&self, char_name: &str) -> Result<(), CreateErr> {
+        match self
+            .link
+            .request(ServiceReq::NameFree {
+                name: char_name.to_string(),
+            })
+            .await
+        {
+            Some(ServiceResp::NameFree(true)) => Ok(()),
+            Some(ServiceResp::NameFree(false)) => Err(CreateErr::CharacterNameTaken),
+            Some(ServiceResp::Busy) => Err(CreateErr::World(
+                "the game server is busy; please try again shortly".to_string(),
+            )),
+            Some(ServiceResp::Unavailable) | None => {
+                Err(CreateErr::World(CreatePlayerError::WorldGone.to_string()))
+            }
+            Some(other) => Err(CreateErr::World(format!(
+                "unexpected name-check response: {other:?}"
+            ))),
+        }
+    }
+
     /// Fetch an account doc, mapping store failures to a logged `None`
     /// (auth paths fail closed and uniform).
     async fn fetch(&self, account: &str) -> Option<AccountRec> {
@@ -192,6 +218,14 @@ impl Accounts {
                 return Err(CreateErr::CharacterNameTaken);
             }
             Some(ServiceResp::CreatePlayer(Err(e))) => return Err(CreateErr::World(e.to_string())),
+            Some(ServiceResp::Busy) => {
+                return Err(CreateErr::World(
+                    "the game server is busy; please try again shortly".to_string(),
+                ));
+            }
+            Some(ServiceResp::Unavailable) => {
+                return Err(CreateErr::World(CreatePlayerError::WorldGone.to_string()));
+            }
             // The world is gone or answered unexpectedly: same failure the
             // direct `WorldGone` path reported.
             _ => return Err(CreateErr::World(CreatePlayerError::WorldGone.to_string())),
@@ -282,16 +316,7 @@ impl AuthBackend for Accounts {
         validate_character_name(char_name)?;
         // Advisory pre-check: catch a taken character name BEFORE the
         // account record exists (the world create re-validates atomically).
-        if !matches!(
-            self.link
-                .request(ServiceReq::NameFree {
-                    name: char_name.to_string(),
-                })
-                .await,
-            Some(ServiceResp::NameFree(true))
-        ) {
-            return Err(CreateErr::CharacterNameTaken);
-        }
+        self.require_name_free(char_name).await?;
         let hash = {
             let password = password.to_string();
             run_blocking(move || hash_password(&password)).await??
@@ -327,16 +352,7 @@ impl AuthBackend for Accounts {
         if rec.characters.len() >= self.max_characters {
             return Err(CreateErr::CharacterLimit);
         }
-        if !matches!(
-            self.link
-                .request(ServiceReq::NameFree {
-                    name: char_name.to_string(),
-                })
-                .await,
-            Some(ServiceResp::NameFree(true))
-        ) {
-            return Err(CreateErr::CharacterNameTaken);
-        }
+        self.require_name_free(char_name).await?;
         self.create_and_link(account, char_name).await
     }
 }

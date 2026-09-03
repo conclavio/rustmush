@@ -102,7 +102,7 @@ async fn boot_server(dir: &Path) -> SocketAddr {
             guard: Arc::new(IpGuard::new()),
             staff,
             llm: None,
-            quarantine_dir: None,
+            quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
         },
     );
     let world = handles.handle;
@@ -162,12 +162,14 @@ async fn m6_wod_full_journey() {
     // ================= chargen (priority point-buy) =================
     nick.send_line("+chargen").await;
     nick.expect("Chargen started.").await;
+    let mark = nick.mark();
     nick.send_line("+chargen/attr physical=7 social=5 mental=3")
         .await;
-    nick.expect("Priorities set.").await;
+    nick.expect_after(mark, "Priorities set.").await;
+    let mark = nick.mark();
     nick.send_line("+chargen/abil talents=13 skills=9 knowledges=5")
         .await;
-    nick.expect("Priorities set.").await;
+    nick.expect_after(mark, "Priorities set.").await;
 
     // Attributes (physical 7 = 3+3+1, social 5 = 2+2+1, mental 3 = 1+1+1).
     for c in [
@@ -197,10 +199,13 @@ async fn m6_wod_full_journey() {
         "+stat backgrounds:Resources=3",
         "+stat backgrounds:Contacts=2",
     ] {
+        let mark = nick.mark();
         nick.send_line(c).await;
+        let assignment = c.strip_prefix("+stat ").expect("a +stat command");
+        let (field, value) = assignment.split_once('=').expect("field=value");
+        nick.expect_after(mark, &format!("Set {field} = {value}."))
+            .await;
     }
-    // The last stat's budget line confirms the whole burst landed.
-    nick.expect("Set backgrounds:Contacts = 2.").await;
 
     let mark = nick.mark();
     nick.send_line("+chargen/status").await;

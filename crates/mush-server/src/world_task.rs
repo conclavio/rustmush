@@ -11,24 +11,20 @@
 //!    next deadline ([`Scheduler::next_due`](mush_core::Scheduler::next_due));
 //! 2. feed wall time in ([`Engine::set_now`]), then [`Engine::step`] (or
 //!    [`Engine::fire_due`] on a timer wake);
-//! 3. **deliver**: resolve each queued [`Audience`] against world state
-//!    (room → connected actor ids — treaty ruling 2's world half) and hand
-//!    per-character sends to the `SessionManager` (its connection half),
-//!    `Arc`-wrapping each event once;
-//! 4. **spawn effects**: every [`Effect`] drained from the engine becomes a
-//!    detached tokio task whose completion re-enters as
-//!    [`Inbound::Apply`]`(`[`WorldCommand`]`)` (treaty ruling 3);
-//! 5. **write through** (M2): whatever the step dirtied is snapshotted via
+//! 3. **classify and resolve**: each queued [`Audience`] is resolved against
+//!    current world state and retained with its [`DeliveryClass`]; effects keep
+//!    the same typed relationship to durable truth;
+//! 4. **write through** (M2): whatever the step dirtied is snapshotted via
 //!    `World::take_dirty()` into ONE [`WriteBatch`](mush_store::WriteBatch)
 //!    and sent to the store-writer task immediately — no timer batching
 //!    (`@destroy`ed husks are swept to tombstones first, so the same batch
-//!    carries their store deletes). Ordinary command batches are
-//!    fire-and-forget (the writer retries transient failures forever, in
-//!    order); durability-critical flows carry a receipt oneshot and their
-//!    confirmations wait for the ack — Player creation via its typed reply,
-//!    and any step whose handler called `Ctx::gate_on_durable_ack` (mail
-//!    send, job approval) via a held-output gate: the step's resolved
-//!    output is transmitted only once the store acks its durable batch;
+//!    carries their store deletes). Every non-empty batch carries an exact
+//!    receipt. Commit-bound output and **all external effects** remain held
+//!    until that receipt matches; a deterministic failure releases no success
+//!    and launches no effect. A clean read-only step responds immediately;
+//! 5. **release**: after acknowledgement, eligible output crosses to the
+//!    session/gateway layer and eligible effects become detached tasks whose
+//!    completions re-enter as [`Inbound::Apply`]`(`[`WorldCommand`]`)`;
 //! 6. **staff ops** (M2): `@siteban`/`@dump`/`@shutdown` handlers
 //!    (registered by [`crate::staff`]) queued typed ops during the step;
 //!    ban ops are executed by ONE sequential executor task (staff commands
@@ -67,27 +63,33 @@
 //! session manager remains the authority on peer addresses; the M1 WHO
 //! format does not show them.)
 
-use std::sync::Arc;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use mush_core::commands::movement::find_exit;
-use mush_core::{
-    Audience, ControlMsg, DisconnectKind, Effect, Effects, Engine, Flags, Inbound, ObjId, ObjKind,
-    Outbox, Registry, Role, ScheduledKind, StepOutcome, TickCadence, World, WorldCommand,
-    WorldEvent, can_perceive, event_subject, is_ignoring, narrative_actor, register_core_commands,
-    register_engine_commands,
-};
 use mush_config::ipguard::IpGuard;
 use mush_config::metrics::{LlmFeatureStat, LlmTodaySpend, Metrics, WorldSample};
+use mush_core::commands::movement::find_exit;
+use mush_core::{
+    Audience, ControlMsg, DeliveryClass, DeliveryOutcome, DisconnectKind, Effect, Effects, Engine,
+    Flags, Inbound, IncidentId, ObjId, ObjKind, Outbox, PreparedInstallation, Registry, Role,
+    ScheduledKind, StagedAction, StepOutcome, TickCadence, World, WorldCommand, WorldEvent,
+    can_perceive, event_subject, is_ignoring, narrative_actor, register_core_commands,
+    register_engine_commands,
+};
+use mush_ipc::{MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, SendTarget};
 use mush_llm::LlmService;
 use mush_proto::{OutputEvent, RichText};
-use mush_store::{AccountRec, InMemoryStore, ObjectStore, SshKeyRec};
-use tokio::sync::{mpsc, oneshot};
+use mush_store::{AccountRec, InMemoryStore, ObjectStore, SshKeyRec, WriteBatch};
+use sha2::{Digest, Sha256};
+use smol_str::SmolStr;
+use tokio::sync::mpsc::error::{TryRecvError, TrySendError};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::gateway_sink::GatewaySink;
-use crate::persist::{self, StoreJob};
+use crate::persist::{self, PersistenceIntegrityLatch, StoreJob};
 use crate::retained::RetainedSeals;
 use crate::staff::{StaffOp, StaffOpKind, StaffQueue};
 
@@ -100,6 +102,27 @@ use mush_config::{unix_now_ms, unix_now_s};
 
 /// Capacity of the world task's inbound channel.
 const INBOUND_CAPACITY: usize = 1024;
+
+/// Barrier waiters retained behind one exact receipt. Further callers fail
+/// closed (`WorldHandle::barrier` returns false) instead of growing an
+/// unbounded side queue during a prolonged store outage.
+const MAX_PENDING_BARRIERS: usize = 256;
+
+/// Latest full gateway reannounce snapshot retained while one exact receipt is
+/// pending. A reannounce is replaceable state, not an ordered event stream, so
+/// newer snapshots coalesce over older ones. This matches the independently
+/// enforced lifecycle-obligation ceiling at the IPC boundary.
+const MAX_PENDING_REATTACH_RECORDS: usize = MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS;
+
+/// Conservative logical byte charges for fixed-shape operational custody. The
+/// count ceilings are the physical bound; these charges make the byte budget
+/// explicit and stable across allocator/platform layout changes.
+const PENDING_BARRIER_CHARGE_BYTES: usize = 256;
+const PENDING_REATTACH_CHARGE_BYTES: usize = 64;
+const MAX_PENDING_REATTACH_BYTES: usize =
+    MAX_PENDING_REATTACH_RECORDS * PENDING_REATTACH_CHARGE_BYTES;
+const MAX_PENDING_OPERATIONAL_BYTES: usize =
+    MAX_PENDING_BARRIERS * PENDING_BARRIER_CHARGE_BYTES + MAX_PENDING_REATTACH_BYTES;
 
 /// Capacity of the sequential staff-op executor's queue (rare wizard
 /// commands; the bound only matters as backpressure).
@@ -138,27 +161,15 @@ pub enum CreatePlayerErr {
     /// The world task is gone (shutdown).
     #[error("the world is shutting down")]
     WorldGone,
+    /// Another authoritative action is awaiting its exact receipt. The caller
+    /// may retry; the request was refused before touching world state.
+    #[error("the world is committing another action; please try again shortly")]
+    Busy,
     /// The store is unavailable (read-only mode): creating a Player would
     /// mutate RAM with no prospect of a timely durable ack, so creation is
     /// refused up front instead of leaving the requester hanging.
     #[error("the database is temporarily unavailable; please try again shortly")]
     StoreUnavailable,
-}
-
-/// Widen the in-process [`CreatePlayerErr`] into the boundary-protocol
-/// [`mush_ipc::CreatePlayerError`] carried by
-/// [`ServiceResp::CreatePlayer`](mush_ipc::ServiceResp::CreatePlayer). The two
-/// mirror each other variant-for-variant (and share their `Display` text), so
-/// the reply crosses the seam without `mush-ipc` depending on `mushd`.
-impl From<CreatePlayerErr> for mush_ipc::CreatePlayerError {
-    fn from(e: CreatePlayerErr) -> mush_ipc::CreatePlayerError {
-        match e {
-            CreatePlayerErr::NameTaken => mush_ipc::CreatePlayerError::NameTaken,
-            CreatePlayerErr::World(s) => mush_ipc::CreatePlayerError::World(s),
-            CreatePlayerErr::WorldGone => mush_ipc::CreatePlayerError::WorldGone,
-            CreatePlayerErr::StoreUnavailable => mush_ipc::CreatePlayerError::StoreUnavailable,
-        }
-    }
 }
 
 /// One held connection to silently re-attach after a server restart (M16c).
@@ -192,7 +203,7 @@ pub enum WorldMsg {
     /// iteration rebuilds the whole live-connection map after a boot.
     ReAttach {
         /// The held connections to re-attach.
-        recs: Vec<ReAttachRec>,
+        recs: Box<[ReAttachRec]>,
     },
     /// Create a Player object (account/character creation): the world task
     /// creates it in the start room, writes the creation batch through the
@@ -212,7 +223,7 @@ pub enum WorldMsg {
         /// The name to probe.
         name: String,
         /// `true` = free.
-        reply: oneshot::Sender<bool>,
+        reply: oneshot::Sender<Result<bool, WorldReadError>>,
     },
     /// Is this actor currently inside an input context (chargen wizard, mail
     /// compose, ...)? The connect flow probes this after `ConnUp` so it can
@@ -224,30 +235,56 @@ pub enum WorldMsg {
         /// The actor to probe.
         actor: ObjId,
         /// `true` = inside a context.
-        reply: oneshot::Sender<bool>,
+        reply: oneshot::Sender<Result<bool, WorldReadError>>,
+    },
+    /// Verify that an admitted `ConnUp` produced the exact engine-side
+    /// connection-to-actor association before the gateway publishes its local
+    /// session as ready.
+    ConnectionReady {
+        /// The physical connection id.
+        conn: u64,
+        /// The expected actor.
+        actor: ObjId,
+        /// `true` only for the exact tracked association.
+        reply: oneshot::Sender<Result<bool, WorldReadError>>,
     },
     /// Ordering barrier: replied to once every message queued before it has
     /// been processed *and its output delivered*. The QUIT flow uses this to
     /// flush a quitting player's in-flight output before detaching them.
     Barrier {
-        /// Signalled when the barrier is reached.
-        reply: oneshot::Sender<()>,
+        /// Completed only when the preceding delivery boundary succeeds.
+        reply: oneshot::Sender<Result<(), WorldReadError>>,
     },
+}
+
+/// A typed refusal for a world read that cannot safely observe authoritative
+/// state right now.
+///
+/// In particular, [`WorldMode::CommitPending`] has already installed the
+/// tentative in-RAM post-image but has not received its exact durable receipt.
+/// Returning `false` from `NameFree` in that window would lie that a name is
+/// taken; returning an input-context default could feed an automatic `look`
+/// into a live editor. Callers must keep these outcomes distinct from a real
+/// negative answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum WorldReadError {
+    /// A serialization point is active; retry after the pending commit resolves.
+    #[error("the world is busy committing another action")]
+    Busy,
+    /// The world task disappeared or is not able to answer this read.
+    #[error("the world is unavailable")]
+    Unavailable,
 }
 
 /// A control signal from the store-writer task to the world loop (health
 /// transitions and authoritative-ledger breaches).
 ///
-/// These ride a **dedicated unbounded channel**, NOT the bounded inbound
-/// [`WorldMsg`] queue. The writer must never block sending one: the world loop
-/// blocks on `writer.send(StoreJob)` when the writer's job queue is full, and if
-/// the writer then blocked on a *bounded* signal send (with the world unable to
-/// drain it while parked on that queue) the two would deadlock — the exact
-/// hazard the E0 design kept the commit high-water off a channel to avoid. An
-/// unbounded send never blocks, so the writer always makes progress draining its
-/// queue, which unblocks the world, which then drains these. Signals are rare
-/// (health transitions; per-incident breach messages), so unboundedness costs no
-/// real memory, and nothing is dropped — a freeze/quarantine must always arrive.
+/// These are drained from [`WriterSignalReceiver`]'s bounded, coalescing
+/// mailbox. The channel itself carries only a capacity-one wake token; mandatory
+/// state lives in fixed slots plus an exact-resolution map bounded by the same
+/// identity limit as [`RetainedSeals`]. The writer only takes a short sync lock
+/// and `try_send`s the wake, so it can never await the world and deadlock against
+/// store-job backpressure.
 pub enum WriterSignal {
     /// Store-writer health transition: `false` enters read-only mode (mutations
     /// paused, Wizards alerted), `true` lifts it (unless a ledger-breach freeze
@@ -260,18 +297,326 @@ pub enum WriterSignal {
     },
     /// An **authoritative-ledger breach** (E0): a batch carrying a sealed ledger
     /// chunk was dropped by a *deterministic* store rejection. Latches the
-    /// non-auto-lifting freeze ([`StoreHealth::poison_frozen`]).
+    /// non-auto-lifting [`WorldMode::IntegrityFrozen`] state.
     LedgerBreach {
         /// Human detail for the staff freeze alert.
         detail: String,
         /// Per-seal resolution once the writer has isolated one:
-        /// `Some((ns, key, quarantined))` — `quarantined = true` is a confirmed
-        /// poison seal (drop it from re-emit and keep it out; it is preserved in
-        /// the quarantine spool), `false` is a seal healed in isolation (durable
-        /// now; just drop it from re-emit). `None` is the initial fail-closed
-        /// freeze with no specific seal yet resolved.
-        seal: Option<(smol_str::SmolStr, smol_str::SmolStr, bool)>,
+        /// `Some((ns, key, payload_sha256, quarantined))` — the digest makes the
+        /// resolution exact even if corrupt input presents two payloads under
+        /// one key. `quarantined = true` is a confirmed poison seal (drop it
+        /// from re-emit and keep it out; it is preserved in the quarantine
+        /// spool), `false` is a seal healed in isolation (durable now; just drop
+        /// it from re-emit). `None` is the initial fail-closed freeze with no
+        /// specific seal yet resolved.
+        seal: Option<(smol_str::SmolStr, smol_str::SmolStr, String, bool)>,
     },
+    /// A non-ledger write batch was rejected deterministically. RAM may now
+    /// contain an uncommitted mutation, so continuing writable would compound
+    /// divergence; latch the same world integrity barrier.
+    DeterministicFailure {
+        /// Bounded store/writer diagnostic for incident identity and paging.
+        detail: String,
+    },
+}
+
+const WRITER_SIGNAL_DETAIL_BYTES: usize = 4 * 1024;
+const MAX_WRITER_RESOLUTION_BYTES: usize = 16 * 1024 * 1024;
+
+type WriterSealIdentity = (SmolStr, SmolStr, String);
+
+struct BufferedSealResolution {
+    detail: String,
+    quarantined: bool,
+}
+
+#[derive(Default)]
+struct WriterSignalState {
+    store_status: Option<(bool, String)>,
+    deterministic_failure: Option<String>,
+    ledger_breach: Option<String>,
+    resolutions: BTreeMap<WriterSealIdentity, BufferedSealResolution>,
+    resolution_bytes: usize,
+}
+
+/// Non-blocking writer half of the mandatory control mailbox.
+#[derive(Clone)]
+pub struct WriterSignalSender {
+    state: Arc<Mutex<WriterSignalState>>,
+    wake: mpsc::Sender<()>,
+}
+
+impl WriterSignalSender {
+    pub(crate) fn store_status(&self, healthy: bool, detail: String) {
+        self.with_state(|state| {
+            // Only the latest transition matters before the world observes it:
+            // fail→recover coalescing to healthy leaves the correct final mode;
+            // recover→fail leaves it read-only.
+            state.store_status = Some((healthy, bound_writer_detail(detail)));
+        });
+        self.wake();
+    }
+
+    pub(crate) fn deterministic_failure(&self, detail: String) {
+        self.with_state(|state| {
+            // The first root cause is the useful paging identity. The process
+            // integrity latch is monotonic, so further details need not grow a
+            // queue in order to preserve the freeze fact.
+            state
+                .deterministic_failure
+                .get_or_insert_with(|| bound_writer_detail(detail));
+        });
+        self.wake();
+    }
+
+    /// Publish a ledger freeze or one exact seal resolution. `false` means the
+    /// exact-resolution buffer was unexpectedly saturated; the caller must
+    /// keep the identity in writer-local custody and retry it when the retained
+    /// seal is re-emitted. No resolution may be discarded on this path.
+    #[must_use]
+    pub(crate) fn ledger_breach(
+        &self,
+        detail: String,
+        seal: Option<(SmolStr, SmolStr, String, bool)>,
+    ) -> bool {
+        let detail = bound_writer_detail(detail);
+        let accepted = self.with_state(|state| {
+            let Some((ns, key, payload_hash, quarantined)) = seal else {
+                state.ledger_breach.get_or_insert(detail);
+                return true;
+            };
+            let identity = (ns, key, payload_hash);
+            if let Some(existing) = state.resolutions.get_mut(&identity) {
+                if existing.quarantined != quarantined {
+                    // Contradictory resolution is itself an integrity breach.
+                    // Quarantine is the conservative terminal posture.
+                    existing.quarantined = true;
+                    state.ledger_breach.get_or_insert_with(|| {
+                        "writer reported contradictory outcomes for one exact seal identity"
+                            .to_string()
+                    });
+                }
+                return true;
+            }
+            let accounted_bytes = identity
+                .0
+                .len()
+                .saturating_add(identity.1.len())
+                .saturating_add(identity.2.len())
+                .saturating_add(detail.len());
+            let projected_bytes = state.resolution_bytes.saturating_add(accounted_bytes);
+            if state.resolutions.len() >= crate::retained::MAX_RETAINED_SEALS
+                || projected_bytes > MAX_WRITER_RESOLUTION_BYTES
+            {
+                state.ledger_breach.get_or_insert_with(|| {
+                    "exact writer-resolution mailbox saturated; identity remains retained for retry"
+                        .to_string()
+                });
+                return false;
+            }
+            state.resolution_bytes = projected_bytes;
+            state.resolutions.insert(
+                identity,
+                BufferedSealResolution {
+                    detail,
+                    quarantined,
+                },
+            );
+            true
+        });
+        self.wake();
+        accepted
+    }
+
+    fn with_state<T>(&self, f: impl FnOnce(&mut WriterSignalState) -> T) -> T {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        f(&mut state)
+    }
+
+    fn wake(&self) {
+        match self.wake.try_send(()) {
+            Ok(()) | Err(TrySendError::Full(())) => {}
+            Err(TrySendError::Closed(())) => {
+                tracing::debug!(
+                    "world task gone; mandatory writer signal retained until sender drop"
+                );
+            }
+        }
+    }
+}
+
+/// World half of the mandatory writer-control mailbox.
+pub struct WriterSignalReceiver {
+    state: Arc<Mutex<WriterSignalState>>,
+    wake: mpsc::Receiver<()>,
+    ready: VecDeque<WriterSignal>,
+}
+
+impl WriterSignalReceiver {
+    /// Await one coalesced signal. A single wake drains every fact published up
+    /// to the lock acquisition; a racing publisher either lands in that drain
+    /// or leaves the capacity-one token armed for the next call.
+    pub async fn recv(&mut self) -> Option<WriterSignal> {
+        loop {
+            if let Some(signal) = self.ready.pop_front() {
+                return Some(signal);
+            }
+            match self.wake.recv().await {
+                Some(()) => self.drain_state(),
+                None => {
+                    self.drain_state();
+                    return self.ready.pop_front();
+                }
+            }
+        }
+    }
+
+    /// Non-blocking receive used by deterministic writer tests.
+    pub fn try_recv(&mut self) -> Result<WriterSignal, TryRecvError> {
+        loop {
+            if let Some(signal) = self.ready.pop_front() {
+                return Ok(signal);
+            }
+            match self.wake.try_recv() {
+                Ok(()) => self.drain_state(),
+                Err(TryRecvError::Empty) => return Err(TryRecvError::Empty),
+                Err(TryRecvError::Disconnected) => {
+                    self.drain_state();
+                    return self.ready.pop_front().ok_or(TryRecvError::Disconnected);
+                }
+            }
+        }
+    }
+
+    fn drain_state(&mut self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((healthy, detail)) = state.store_status.take() {
+            self.ready
+                .push_back(WriterSignal::StoreStatus { healthy, detail });
+        }
+        if let Some(detail) = state.deterministic_failure.take() {
+            self.ready
+                .push_back(WriterSignal::DeterministicFailure { detail });
+        }
+        if let Some(detail) = state.ledger_breach.take() {
+            self.ready
+                .push_back(WriterSignal::LedgerBreach { detail, seal: None });
+        }
+        for ((ns, key, payload_hash), resolution) in std::mem::take(&mut state.resolutions) {
+            self.ready.push_back(WriterSignal::LedgerBreach {
+                detail: resolution.detail,
+                seal: Some((ns, key, payload_hash, resolution.quarantined)),
+            });
+        }
+        state.resolution_bytes = 0;
+    }
+}
+
+/// Construct the bounded/coalescing mandatory writer-control mailbox.
+#[must_use]
+pub fn writer_signal_channel() -> (WriterSignalSender, WriterSignalReceiver) {
+    let state = Arc::new(Mutex::new(WriterSignalState::default()));
+    let (wake_tx, wake_rx) = mpsc::channel(1);
+    (
+        WriterSignalSender {
+            state: Arc::clone(&state),
+            wake: wake_tx,
+        },
+        WriterSignalReceiver {
+            state,
+            wake: wake_rx,
+            ready: VecDeque::new(),
+        },
+    )
+}
+
+fn bound_writer_detail(mut detail: String) -> String {
+    if detail.len() > WRITER_SIGNAL_DETAIL_BYTES {
+        let mut boundary = WRITER_SIGNAL_DETAIL_BYTES;
+        while !detail.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        detail.truncate(boundary);
+    }
+    detail
+}
+
+/// Driver-local identity of the authoritative commit whose acknowledgement is
+/// currently pending. K3 replaces the serial payload with the exact durable
+/// bundle token; keeping it opaque here prevents callers from treating a bare
+/// writer serial as an authorization credential.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommitToken(u64);
+
+impl CommitToken {
+    /// Construct a provisional driver token from the monotonically increasing
+    /// writer serial. K3 will instead source this from the exact bundle token.
+    #[must_use]
+    pub const fn from_serial(serial: u64) -> Self {
+        Self(serial)
+    }
+}
+
+/// The single structural authority over what the world loop may execute.
+///
+/// Modes are deliberately mutually exclusive. In particular, an integrity
+/// freeze cannot be accidentally lifted by toggling an unrelated store-health
+/// boolean, and admission never infers this state from command text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorldMode {
+    /// Boot validation is still in progress; mutating ingress is not attached.
+    Booting,
+    /// Durable recovery/reconciliation is still in progress.
+    Recovering {
+        /// Incident being recovered, when recovery was incident-driven.
+        incident: Option<IncidentId>,
+    },
+    /// Normal operation.
+    Writable,
+    /// One authoritative commit is awaiting its exact acknowledgement.
+    CommitPending {
+        /// The commit which owns the serialization point.
+        token: CommitToken,
+    },
+    /// The persistence backend is transiently unavailable.
+    StoreReadOnly {
+        /// Stable identity for this observed outage.
+        incident: IncidentId,
+    },
+    /// Integrity is uncertain; only observation, recovery and shutdown remain.
+    IntegrityFrozen {
+        /// Stable identity of the integrity incident.
+        incident: IncidentId,
+    },
+}
+
+impl WorldMode {
+    /// Whether ordinary world mutation may execute.
+    #[must_use]
+    pub const fn is_writable(self) -> bool {
+        matches!(self, Self::Writable)
+    }
+
+    /// Whether store-backed mutation is unavailable in this mode.
+    #[must_use]
+    pub const fn store_read_only(self) -> bool {
+        matches!(
+            self,
+            Self::StoreReadOnly { .. } | Self::IntegrityFrozen { .. }
+        )
+    }
+
+    /// Whether an authoritative integrity incident is latched.
+    #[must_use]
+    pub const fn integrity_frozen(self) -> bool {
+        matches!(self, Self::IntegrityFrozen { .. })
+    }
 }
 
 /// The world loop's in-task mirror of store-writer health — the small
@@ -279,19 +624,11 @@ pub enum WriterSignal {
 /// health *transitions*; the loop keeps the current picture).
 #[derive(Clone, Copy, Debug)]
 pub struct StoreHealth {
-    /// Whether the world is in read-only mode (writes failing).
-    pub read_only: bool,
+    /// The world's one authoritative execution/admission mode.
+    pub mode: WorldMode,
     /// Unix seconds when the most recent batch was handed to the writer
     /// (`None` before the first write of this boot).
     pub last_write_unix: Option<i64>,
-    /// A **non-auto-lifting** freeze latched by an authoritative-ledger breach
-    /// (E0): a *deterministic* store rejection of a batch carrying a sealed
-    /// chunk means the ledger's durability is in question, so the world fails
-    /// closed and — unlike the transient read-only mode — does **not** lift on
-    /// the store merely recovering. It clears only on an explicit staff-verified
-    /// resume (today: repair the store/spool and restart). While set,
-    /// `read_only` is held true regardless of transient recovery.
-    pub poison_frozen: bool,
 }
 
 impl StoreHealth {
@@ -299,9 +636,8 @@ impl StoreHealth {
     #[must_use]
     pub fn new() -> StoreHealth {
         StoreHealth {
-            read_only: false,
+            mode: WorldMode::Writable,
             last_write_unix: None,
-            poison_frozen: false,
         }
     }
 }
@@ -312,15 +648,216 @@ impl Default for StoreHealth {
     }
 }
 
+fn incident_id(domain: &str, detail: &str) -> IncidentId {
+    let mut hasher = Sha256::new();
+    hasher.update(domain.as_bytes());
+    hasher.update([0]);
+    hasher.update(detail.as_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0_u8; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    IncidentId(u64::from_be_bytes(bytes))
+}
+
+/// Structural ingress classes used by the mode gate. This list names execution
+/// effects rather than command spellings; adding a new [`WorldMsg`],
+/// [`Inbound`], [`WriterSignal`] or [`StaffOpKind`] cannot compile until its
+/// class is chosen in the exhaustive classifiers below.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IngressClass {
+    /// A gameplay/world read whose answer depends on authoritative world or
+    /// module state. It may not observe the tentative post-image of an
+    /// unacknowledged commit.
+    WorldRead,
+    /// Receipt/order bookkeeping which does not inspect gameplay state.
+    OrderingBarrier,
+    Command,
+    TransportBookkeeping,
+    ConnectionHooks,
+    WorldMutation,
+    AsyncApply,
+    Timer,
+    WriterRecovery,
+    StaffStatus,
+    StaffMutation,
+    ExternalEffect,
+    Shutdown,
+}
+
+/// Why structurally classified work was refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RefusalReason {
+    NotReady,
+    CommitPending,
+    StoreUnavailable,
+    IntegrityFrozen,
+}
+
+impl RefusalReason {
+    fn text(self) -> &'static str {
+        match self {
+            Self::NotReady => "The world is still starting; please try again shortly.",
+            Self::CommitPending => {
+                "The world is committing another action; please retry in a moment."
+            }
+            Self::StoreUnavailable => {
+                "The database is currently unavailable; commands that change the world are paused."
+            }
+            Self::IntegrityFrozen => {
+                "The world is integrity-frozen; mutating actions are paused while recovery runs."
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Admission {
+    Allow,
+    Refuse(RefusalReason),
+    /// Store-read-only mode retains the legacy conservative command parser.
+    /// Hard integrity modes never take this branch: every command is refused
+    /// structurally before its verb or input-context contents are inspected.
+    CheckStoreReadOnlyCommand,
+}
+
+fn classify_inbound(msg: &Inbound) -> IngressClass {
+    match msg {
+        Inbound::Cmd { .. } => IngressClass::Command,
+        Inbound::Query { .. } => IngressClass::WorldRead,
+        Inbound::ConnUp { .. } | Inbound::ConnDown { .. } | Inbound::SessionGone { .. } => {
+            IngressClass::ConnectionHooks
+        }
+        Inbound::Apply(_) => IngressClass::AsyncApply,
+        Inbound::Control(ControlMsg::Shutdown) => IngressClass::Shutdown,
+        Inbound::Control(ControlMsg::Dump) => IngressClass::StaffMutation,
+    }
+}
+
+fn classify_world_msg(msg: &WorldMsg) -> IngressClass {
+    match msg {
+        WorldMsg::Inbound(msg) => classify_inbound(msg),
+        WorldMsg::ReAttach { .. } => IngressClass::TransportBookkeeping,
+        WorldMsg::CreatePlayer { .. } => IngressClass::WorldMutation,
+        WorldMsg::NameFree { .. }
+        | WorldMsg::InInputContext { .. }
+        | WorldMsg::ConnectionReady { .. } => IngressClass::WorldRead,
+        WorldMsg::Barrier { .. } => IngressClass::OrderingBarrier,
+    }
+}
+
+/// Work whose producer has already transferred semantic/lifecycle custody and
+/// therefore cannot be answered Busy or dropped merely because another exact
+/// receipt is pending. One such item may be held locally to preserve FIFO.
+/// Ordinary commands and typed service mutations are refused immediately so
+/// they cannot head-of-line block later operational traffic.
+fn must_defer_behind_commit(msg: &WorldMsg) -> bool {
+    matches!(
+        msg,
+        WorldMsg::Inbound(
+            Inbound::ConnUp { .. }
+                | Inbound::ConnDown { .. }
+                | Inbound::SessionGone { .. }
+                | Inbound::Apply(_)
+        )
+    )
+}
+
+fn classify_writer_signal(signal: &WriterSignal) -> IngressClass {
+    match signal {
+        WriterSignal::StoreStatus { .. }
+        | WriterSignal::LedgerBreach { .. }
+        | WriterSignal::DeterministicFailure { .. } => IngressClass::WriterRecovery,
+    }
+}
+
+fn classify_staff_op(kind: &StaffOpKind) -> IngressClass {
+    match kind {
+        StaffOpKind::ListBans
+        | StaffOpKind::ListSshKeys { .. }
+        | StaffOpKind::Ps
+        | StaffOpKind::Stats => IngressClass::StaffStatus,
+        StaffOpKind::Shutdown => IngressClass::Shutdown,
+        StaffOpKind::SetBan { .. }
+        | StaffOpKind::ClearBan { .. }
+        | StaffOpKind::Dump
+        | StaffOpKind::Boot { .. }
+        | StaffOpKind::NewPassword { .. }
+        | StaffOpKind::AddSshKey { .. }
+        | StaffOpKind::DelSshKey { .. }
+        | StaffOpKind::NewChar { .. } => IngressClass::StaffMutation,
+    }
+}
+
+const fn admission_for(mode: WorldMode, class: IngressClass) -> Admission {
+    use Admission::{Allow, CheckStoreReadOnlyCommand, Refuse};
+    use IngressClass::{
+        AsyncApply, Command, ConnectionHooks, ExternalEffect, OrderingBarrier, Shutdown,
+        StaffMutation, StaffStatus, Timer, TransportBookkeeping, WorldMutation, WorldRead,
+        WriterRecovery,
+    };
+
+    match mode {
+        WorldMode::Writable => Allow,
+        WorldMode::Booting | WorldMode::Recovering { .. } => match class {
+            WorldRead | OrderingBarrier | TransportBookkeeping | WriterRecovery | StaffStatus
+            | Shutdown => Allow,
+            Command | ConnectionHooks | WorldMutation | AsyncApply | Timer | StaffMutation
+            | ExternalEffect => Refuse(RefusalReason::NotReady),
+        },
+        WorldMode::CommitPending { .. } => match class {
+            OrderingBarrier | TransportBookkeeping | WriterRecovery | StaffStatus | Shutdown => {
+                Allow
+            }
+            WorldRead | Command | ConnectionHooks | WorldMutation | AsyncApply | Timer
+            | StaffMutation | ExternalEffect => Refuse(RefusalReason::CommitPending),
+        },
+        WorldMode::StoreReadOnly { .. } => match class {
+            WorldRead | OrderingBarrier | TransportBookkeeping | ConnectionHooks
+            | WriterRecovery | StaffStatus | Shutdown => Allow,
+            Command => CheckStoreReadOnlyCommand,
+            WorldMutation | AsyncApply | Timer | StaffMutation | ExternalEffect => {
+                Refuse(RefusalReason::StoreUnavailable)
+            }
+        },
+        WorldMode::IntegrityFrozen { .. } => match class {
+            WorldRead | OrderingBarrier | TransportBookkeeping | WriterRecovery | StaffStatus
+            | Shutdown => Allow,
+            Command | ConnectionHooks | WorldMutation | AsyncApply | Timer | StaffMutation
+            | ExternalEffect => Refuse(RefusalReason::IntegrityFrozen),
+        },
+    }
+}
+
+fn admit_world_msg(mode: WorldMode, world: &World, msg: &WorldMsg) -> Admission {
+    let admission = admission_for(mode, classify_world_msg(msg));
+    if admission != Admission::CheckStoreReadOnlyCommand {
+        return admission;
+    }
+    let WorldMsg::Inbound(inbound) = msg else {
+        unreachable!("only Inbound::Cmd is classified as Command")
+    };
+    if refuse_store_read_only(world, inbound).is_some() {
+        Admission::Refuse(RefusalReason::StoreUnavailable)
+    } else {
+        Admission::Allow
+    }
+}
+
 /// Cloneable handle for sending into the world task.
 #[derive(Clone)]
 pub struct WorldHandle {
     tx: mpsc::Sender<WorldMsg>,
+    shutdown: Option<watch::Sender<bool>>,
 }
 
 impl WorldHandle {
     /// Send one engine inbound message; `false` if the world task is gone.
     pub async fn inbound(&self, msg: Inbound) -> bool {
+        if matches!(msg, Inbound::Control(ControlMsg::Shutdown))
+            && let Some(shutdown) = &self.shutdown
+        {
+            return shutdown.send(true).is_ok();
+        }
         self.tx.send(WorldMsg::Inbound(msg)).await.is_ok()
     }
 
@@ -329,9 +866,24 @@ impl WorldHandle {
     /// announce/hook/event, then the reloaded room is pushed to each reconnected
     /// player (one render per session, fanned to its connections). Rebuilds
     /// `connected`/`live_conns`/`session_start` for the whole held roster in one
-    /// world-loop iteration. Fire-and-forget; `false` if the world task is gone.
+    /// world-loop iteration. Fire-and-forget; `false` if the world task is gone
+    /// or the caller violates the bounded lifecycle-roster protocol. The latter
+    /// is rejected atomically before any record reaches the world.
     pub async fn reattach(&self, recs: Vec<ReAttachRec>) -> bool {
-        self.tx.send(WorldMsg::ReAttach { recs }).await.is_ok()
+        if recs.len() > MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS {
+            tracing::error!(
+                records = recs.len(),
+                cap = MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
+                "reattach roster violates bounded lifecycle custody; refusing whole snapshot"
+            );
+            return false;
+        }
+        self.tx
+            .send(WorldMsg::ReAttach {
+                recs: recs.into_boxed_slice(),
+            })
+            .await
+            .is_ok()
     }
 
     /// Ask the world task to create a Player named `name`. Resolves only
@@ -352,9 +904,12 @@ impl WorldHandle {
         rx.await.unwrap_or(Err(CreatePlayerErr::WorldGone))
     }
 
-    /// Whether an actor name is currently unclaimed. `false` when the world
-    /// task is gone (conservative).
-    pub async fn name_free(&self, name: &str) -> bool {
+    /// Whether an actor name is currently unclaimed.
+    ///
+    /// A read arriving during [`WorldMode::CommitPending`] receives
+    /// [`WorldReadError::Busy`] instead of seeing tentative RAM or inventing a
+    /// false "taken" answer. A gone task is [`WorldReadError::Unavailable`].
+    pub async fn name_free(&self, name: &str) -> Result<bool, WorldReadError> {
         let (reply, rx) = oneshot::channel();
         if self
             .tx
@@ -365,16 +920,16 @@ impl WorldHandle {
             .await
             .is_err()
         {
-            return false;
+            return Err(WorldReadError::Unavailable);
         }
-        rx.await.unwrap_or(false)
+        rx.await.unwrap_or(Err(WorldReadError::Unavailable))
     }
 
     /// Whether `actor` is currently inside an input context (chargen wizard,
-    /// mail compose, ...). `false` when the world task is gone (conservative:
-    /// the caller then proceeds as if not in a context). Probed by the connect
-    /// flow to decide whether to send the initial auto-`look`.
-    pub async fn in_input_context(&self, actor: ObjId) -> bool {
+    /// mail compose, ...). Probed by the connect flow to decide whether to send
+    /// the initial auto-`look`; busy/unavailable is typed so that flow can fail
+    /// closed instead of guessing that no context exists.
+    pub async fn in_input_context(&self, actor: ObjId) -> Result<bool, WorldReadError> {
         let (reply, rx) = oneshot::channel();
         if self
             .tx
@@ -382,20 +937,46 @@ impl WorldHandle {
             .await
             .is_err()
         {
-            return false;
+            return Err(WorldReadError::Unavailable);
         }
-        rx.await.unwrap_or(false)
+        rx.await.unwrap_or(Err(WorldReadError::Unavailable))
     }
 
-    /// Round-trip barrier: resolves once everything sent through this handle
-    /// before the call has been processed and its output delivered. `false`
-    /// if the world task is gone.
-    pub async fn barrier(&self) -> bool {
+    /// Whether the engine tracks `conn` as belonging to `actor`. This is the
+    /// correlated post-`ConnUp` readiness proof used by the gateway; unlike an
+    /// ordering barrier alone, it detects lifecycle ingress refused by a hard
+    /// world mode or ignored for a missing actor.
+    pub async fn connection_ready(&self, conn: u64, actor: ObjId) -> Result<bool, WorldReadError> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(WorldMsg::ConnectionReady { conn, actor, reply })
+            .await
+            .is_err()
+        {
+            return Err(WorldReadError::Unavailable);
+        }
+        rx.await.unwrap_or(Err(WorldReadError::Unavailable))
+    }
+
+    /// Typed round-trip barrier: resolves once everything sent through this
+    /// handle before the call has been processed and its output delivered.
+    /// Bounded pending-custody overload stays retryable [`WorldReadError::Busy`]
+    /// while an aborted receipt, explicit refusal, or vanished task is
+    /// [`WorldReadError::Unavailable`].
+    pub async fn barrier_result(&self) -> Result<(), WorldReadError> {
         let (reply, rx) = oneshot::channel();
         if self.tx.send(WorldMsg::Barrier { reply }).await.is_err() {
-            return false;
+            return Err(WorldReadError::Unavailable);
         }
-        rx.await.is_ok()
+        rx.await.unwrap_or(Err(WorldReadError::Unavailable))
+    }
+
+    /// Compatibility wrapper for internal callers that only need a completion
+    /// bit. Service boundaries use [`Self::barrier_result`] so Busy is not
+    /// collapsed into an unavailable failure.
+    pub async fn barrier(&self) -> bool {
+        self.barrier_result().await.is_ok()
     }
 }
 
@@ -425,20 +1006,16 @@ pub struct ServerDeps {
     /// each throttled sample; the store writer stamps write-queue depth and
     /// last-ack age. Read back by `mush-net-web`'s `/healthz` + `/metrics`.
     pub metrics: Arc<Metrics>,
-    /// Directory for the E0 authoritative-ledger **quarantine spool** — a
-    /// separate failure domain from the (possibly-damaged) store. When the
-    /// writer confirms a sealed chunk is a deterministic poison it writes a full
-    /// recovery record here (fsynced) before dropping it from re-emit, so a
-    /// poison seal is preserved for staff repair, never silently discarded.
-    /// `None` disables spooling (tests / the compat [`spawn`]): a confirmed
-    /// poison is then only logged at critical severity.
-    pub quarantine_dir: Option<std::path::PathBuf>,
+    /// Required E0 authoritative-ledger quarantine sink. Production supplies a
+    /// durable, boot-validated spool; tests opt into the explicit in-memory
+    /// implementation. There is no log-only preservation mode.
+    pub quarantine_spool: crate::quarantine::QuarantineSpool,
 }
 
 impl ServerDeps {
     /// Throwaway deps for tests and the compat [`spawn`]: fresh in-memory
     /// store, fresh guard, fresh (never-populated) staff queue, no LLM, a
-    /// throwaway metrics registry, and no quarantine spool.
+    /// throwaway metrics registry, and an explicit in-memory quarantine spool.
     #[must_use]
     pub fn in_memory() -> ServerDeps {
         ServerDeps {
@@ -447,7 +1024,7 @@ impl ServerDeps {
             staff: Arc::new(StaffQueue::new()),
             llm: None,
             metrics: Arc::new(Metrics::new()),
-            quarantine_dir: None,
+            quarantine_spool: crate::quarantine::QuarantineSpool::in_memory(),
         }
     }
 }
@@ -463,6 +1040,9 @@ pub struct PersistHandles {
     pub world_join: JoinHandle<()>,
     /// The store-writer task (drains after the world task ends).
     pub writer_join: JoinHandle<()>,
+    /// Process-local fail-closed snapshot barrier shared by the world,
+    /// store writer, and shutdown coordinator.
+    pub persistence_integrity: PersistenceIntegrityLatch,
 }
 
 /// Boot the standard engine: minimal world (Limbo `#0`, God `#1`) with
@@ -520,8 +1100,24 @@ pub fn spawn_persist_with_gateway(
     deps: ServerDeps,
     make_gateway: impl FnOnce(mpsc::WeakSender<WorldMsg>) -> Gateway,
 ) -> PersistHandles {
+    spawn_persist_with_gateway_mode(engine, deps, None, make_gateway)
+}
+
+/// Shared spawn implementation. Production always supplies `None`; unit tests
+/// can start the real loop in a hard mode to exercise the execution gate rather
+/// than merely asserting its classification table.
+fn spawn_persist_with_gateway_mode(
+    engine: Engine,
+    deps: ServerDeps,
+    initial_mode: Option<WorldMode>,
+    make_gateway: impl FnOnce(mpsc::WeakSender<WorldMsg>) -> Gateway,
+) -> PersistHandles {
     let (tx, rx) = mpsc::channel(INBOUND_CAPACITY);
-    let handle = WorldHandle { tx: tx.clone() };
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let handle = WorldHandle {
+        tx: tx.clone(),
+        shutdown: Some(shutdown_tx),
+    };
     // Build the delivery sink now that the inbound queue exists: the all-in-one
     // in-process sink wires its policing feedback onto this loop's own inbound
     // queue via the weak sender; the socket sink ignores it.
@@ -532,11 +1128,16 @@ pub fn spawn_persist_with_gateway(
     // both ways — never a channel, so it can never deadlock against the writer's
     // job queue.
     let high_water = Arc::new(AtomicU64::new(0));
-    // The writer's control signals (health transitions, ledger breaches) ride a
-    // DEDICATED UNBOUNDED channel, never the bounded inbound queue — an unbounded
-    // send never blocks, so the writer can never deadlock against the world's
-    // `writer.send(StoreJob)` back-pressure (see `WriterSignal`).
-    let (signal_tx, signal_rx) = mpsc::unbounded_channel::<WriterSignal>();
+    // The writer's mandatory control facts (health transitions, breach latch,
+    // exact seal resolutions) ride a dedicated coalescing mailbox, never the
+    // bounded inbound queue. The mailbox keeps facts in bounded state and uses
+    // only a capacity-one wake token, so publishing cannot await the world or
+    // deadlock against `writer.send(StoreJob)` back-pressure.
+    let (signal_tx, signal_rx) = writer_signal_channel();
+    // This latch is not an eventually delivered world-mode notification. Both
+    // the writer and world publish breaches directly into it, and the shutdown
+    // coordinator reads the same atomic before any ordinary snapshot.
+    let persistence_integrity = PersistenceIntegrityLatch::new();
     // The writer publishes the commit high-water, stamps the metrics registry
     // (write-queue depth + last-ack age) as it drains each batch, and sends its
     // control signals over `signal_tx`.
@@ -545,7 +1146,8 @@ pub fn spawn_persist_with_gateway(
         signal_tx,
         Arc::clone(&deps.metrics),
         Arc::clone(&high_water),
-        deps.quarantine_dir.clone(),
+        deps.quarantine_spool.clone(),
+        persistence_integrity.clone(),
     );
     // Sequential executor for staff store ops (@siteban set/clear/list):
     // ONE task draining ONE queue, so two staff commands issued in order
@@ -576,11 +1178,15 @@ pub fn spawn_persist_with_gateway(
         gateway,
         high_water,
         signal_rx,
+        shutdown_rx,
+        persistence_integrity.clone(),
+        initial_mode,
     ));
     PersistHandles {
         handle,
         world_join,
         writer_join,
+        persistence_integrity,
     }
 }
 
@@ -589,8 +1195,122 @@ pub fn spawn_persist_with_gateway(
 enum Wake {
     Msg(WorldMsg),
     Signal(WriterSignal),
+    CommitAck(Result<Result<u64, String>, oneshot::error::RecvError>),
     Timer,
+    Shutdown,
+    ShutdownDeadline,
     Closed,
+}
+
+type ClassifiedSend = (DeliveryClass, SendTarget, Arc<OutputEvent>);
+
+struct CreateCompletion {
+    id: ObjId,
+    reply: oneshot::Sender<Result<ObjId, CreatePlayerErr>>,
+}
+
+/// One authoritative batch whose presentation and external work remain held
+/// until the writer returns the receipt for this exact serial.
+struct PendingCommit {
+    token: CommitToken,
+    receipt: oneshot::Receiver<Result<u64, String>>,
+    sends: Vec<ClassifiedSend>,
+    effects: Vec<(DeliveryClass, Effect)>,
+    failure_actor: Option<ObjId>,
+    create: Option<CreateCompletion>,
+    /// Typed action-state images installed only after this exact receipt.
+    prepared_installation: Option<PreparedInstallation>,
+    barriers: Vec<oneshot::Sender<Result<(), WorldReadError>>>,
+    /// Gateway reannounce is a full replaceable snapshot. Retain only the
+    /// newest bounded snapshot while the exact receipt is unresolved; applying
+    /// each one immediately would append another rendered room view to
+    /// `sends` and make transport churn an unbounded custody side channel.
+    coalesced_reattach: Option<Box<[ReAttachRec]>>,
+    exit_after_ack: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PendingCustody {
+    barriers: usize,
+    reattach_records: usize,
+    operational_bytes: usize,
+    sends: usize,
+    effects: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReattachOverload {
+    records: usize,
+    logical_bytes: usize,
+}
+
+struct CompletedPending {
+    outcome: DeliveryOutcome,
+    barriers: Vec<oneshot::Sender<Result<(), WorldReadError>>>,
+    coalesced_reattach: Option<Box<[ReAttachRec]>>,
+}
+
+impl PendingCommit {
+    fn retain_barrier(&mut self, reply: oneshot::Sender<Result<(), WorldReadError>>) -> bool {
+        if self.barriers.len() >= MAX_PENDING_BARRIERS {
+            let _ = reply.send(Err(WorldReadError::Busy));
+            return false;
+        }
+        self.barriers.push(reply);
+        true
+    }
+
+    /// Replace the prior full snapshot atomically. The public handle converts
+    /// to `Box<[T]>` before enqueue, so retained allocation tracks the bounded
+    /// record count rather than a transport-controlled Vec capacity.
+    fn coalesce_reattach(
+        &mut self,
+        recs: Box<[ReAttachRec]>,
+    ) -> Result<bool, (Box<[ReAttachRec]>, ReattachOverload)> {
+        let records = recs.len();
+        let logical_bytes = records.saturating_mul(PENDING_REATTACH_CHARGE_BYTES);
+        if records > MAX_PENDING_REATTACH_RECORDS || logical_bytes > MAX_PENDING_REATTACH_BYTES {
+            return Err((
+                recs,
+                ReattachOverload {
+                    records,
+                    logical_bytes,
+                },
+            ));
+        }
+        let replaced = self.coalesced_reattach.replace(recs).is_some();
+        debug_assert!(self.custody().operational_bytes <= MAX_PENDING_OPERATIONAL_BYTES);
+        Ok(replaced)
+    }
+
+    fn custody(&self) -> PendingCustody {
+        let barriers = self.barriers.len();
+        let reattach_records = self
+            .coalesced_reattach
+            .as_deref()
+            .map_or(0, <[ReAttachRec]>::len);
+        PendingCustody {
+            barriers,
+            reattach_records,
+            operational_bytes: barriers
+                .saturating_mul(PENDING_BARRIER_CHARGE_BYTES)
+                .saturating_add(reattach_records.saturating_mul(PENDING_REATTACH_CHARGE_BYTES)),
+            sends: self.sends.len(),
+            effects: self.effects.len(),
+        }
+    }
+}
+
+fn publish_pending_custody(metrics: &Metrics, pending: Option<&PendingCommit>) {
+    let custody = pending.map_or_else(PendingCustody::default, PendingCommit::custody);
+    let as_u64 = |value: usize| u64::try_from(value).unwrap_or(u64::MAX);
+    metrics.set_commit_pending_custody(
+        as_u64(custody.barriers),
+        as_u64(custody.reattach_records),
+        as_u64(custody.operational_bytes),
+        as_u64(custody.sends),
+        as_u64(custody.effects),
+    );
 }
 
 #[allow(clippy::too_many_lines)] // the world loop is one cohesive state machine
@@ -604,7 +1324,10 @@ async fn run(
     staff_ops: mpsc::Sender<StaffOp>,
     gateway: Gateway,
     high_water: Arc<AtomicU64>,
-    mut signals: mpsc::UnboundedReceiver<WriterSignal>,
+    mut signals: WriterSignalReceiver,
+    mut shutdown: watch::Receiver<bool>,
+    persistence_integrity: PersistenceIntegrityLatch,
+    initial_mode: Option<WorldMode>,
 ) {
     tracing::info!("world task running");
     let boot_unix = unix_now_s();
@@ -623,26 +1346,58 @@ async fn run(
     let mut fx = Effects::new();
     let mut serial: u64 = 0;
     let mut health = StoreHealth::new();
+    if let Some(mode) = initial_mode {
+        if mode.integrity_frozen() {
+            persistence_integrity.latch();
+        }
+        health.mode = mode;
+    }
     // E0 restart-safe poison: an unresolved quarantine record in the spool means
     // an authoritative-ledger breach was NOT repaired before this restart. Start
     // FROZEN — a poison freeze never auto-resumes merely because the process came
     // back up (staff repair the ledger + empty the spool, then restart).
-    let unresolved_quarantine = persist::spool_unresolved_count(deps.quarantine_dir.as_deref());
+    let unresolved_quarantine = deps.quarantine_spool.opened_state().unresolved_records;
     if unresolved_quarantine > 0 {
-        health.poison_frozen = true;
-        health.read_only = true;
+        persistence_integrity.latch();
+        health.mode = WorldMode::IntegrityFrozen {
+            incident: incident_id("boot-quarantine", &unresolved_quarantine.to_string()),
+        };
         tracing::error!(
             unresolved = unresolved_quarantine,
             "BOOT FROZEN: unresolved ledger-quarantine record(s) in the spool; the world starts \
              READ-ONLY until staff repair the ledger and empty the quarantine spool"
         );
     }
+    metrics.set_persistence_state(
+        health.mode.store_read_only(),
+        health.mode.integrity_frozen(),
+    );
     // The E0 retained-write table: unacked sealed ledger chunks, re-emitted on
     // every flush until the commit high-water reaches them. See `crate::retained`.
     let mut retained = RetainedSeals::new();
-    // Whether the writer's control-signal channel is still open (disabled once
-    // the writer is gone, so the closed channel does not busy-loop the select).
+    // At most one authoritative mutation batch may be in flight. Its
+    // commit-bound presentation/effects are held here. Receipt/order/status
+    // traffic and writer recovery remain live, but gameplay/world reads are
+    // refused with a typed Busy response: RAM already contains the tentative
+    // post-image, so it is not an authoritative query snapshot yet.
+    let mut pending_commit: Option<PendingCommit> = None;
+    // If a must-retain async completion or connection-lifecycle message is
+    // already dequeued while another exact receipt is outstanding, retain that
+    // ONE message locally and stop polling `rx`. This preserves FIFO without
+    // inventing a second unbounded input queue; the bounded channel supplies
+    // backpressure until the commit resolves. Ordinary Cmd/CreatePlayer/Dump
+    // work is refused immediately and never occupies this slot. Operational
+    // traffic behind a retained Apply/lifecycle message is still head-of-line
+    // blocked: the separately bounded semantic/lifecycle lane remains K2 work.
+    let mut deferred_world_msg: Option<WorldMsg> = None;
+    // Store-backed staff operations drained beside a local operation remain
+    // ordered behind any commit that local operation starts.
+    let mut deferred_staff_ops: Vec<StaffOp> = Vec::new();
+    // Whether the writer's control mailbox is still open (disabled once the
+    // writer is gone and its final latched facts have been drained, so the
+    // closed wake channel does not busy-loop the select).
     let mut signals_open = true;
+    let mut inbound_open = true;
     // Rate-limit the retained-depth alarm so a genuinely wedged store logs once
     // per crossing, not every re-emit tick.
     let mut retained_alarmed = false;
@@ -650,34 +1405,91 @@ async fn run(
     // aggregation) so it never rides the hot path more than once a second.
     // `None` forces a sample on the first iteration.
     let mut last_sample: Option<Instant> = None;
+    // Top-level shutdown has a priority watch lane, so it cannot be trapped
+    // behind the bounded world queue while a commit holds one deferred message.
+    let mut shutdown_requested = false;
+    let mut shutdown_deadline: Option<Instant> = None;
     loop {
+        let admission_mode = match (&pending_commit, health.mode) {
+            // IntegrityFrozen is stricter than every in-flight state and may
+            // never be hidden. A transient StoreReadOnly transition is not:
+            // while an exact predecessor receipt remains unresolved,
+            // CommitPending must continue to reject every potentially mutating
+            // command/input-context line. Otherwise later RAM mutations and
+            // success output could overtake the missing receipt.
+            (_, mode @ WorldMode::IntegrityFrozen { .. }) => mode,
+            (Some(pending), _) => WorldMode::CommitPending {
+                token: pending.token,
+            },
+            (None, mode) => mode,
+        };
         let next_due = engine.sched.next_due();
         // Arm the E0 re-emit nudge while any sealed chunk is unacked, so an idle
         // world still re-flushes a dropped seal. A bare `Timer` wake just runs
         // `fire_due` (a no-op when nothing is scheduled) and falls through to the
         // foot-of-loop flush, which does the actual re-emit + ack.
-        let reemit_pending = !retained.is_empty();
+        let reemit_pending = pending_commit.is_none() && !retained.is_empty();
         // Under an authoritative-ledger freeze, do NOT arm the scheduler timer:
         // its due events would otherwise wake the loop immediately (a past due
         // fires instantly) and, since `fire_due` is skipped while frozen, spin.
         // Persistence/re-emit stays live (the re-emit nudge + inbound still run).
-        let sched_armed = next_due.is_some() && !health.poison_frozen;
-        let wake = tokio::select! {
-            m = rx.recv() => m.map_or(Wake::Closed, Wake::Msg),
-            // Writer control signals ride their own unbounded channel (see
-            // `WriterSignal`). `None` means the writer is gone; disable this arm
-            // (avoid a busy-loop) rather than closing the world — the world's
-            // lifetime is driven by its inbound channel, not this one.
+        let sched_armed = next_due.is_some()
+            && admission_for(admission_mode, IngressClass::Timer) == Admission::Allow;
+        let ready_deferred = if pending_commit.is_none() {
+            deferred_world_msg.take()
+        } else {
+            None
+        };
+        let wake = if let Some(msg) = ready_deferred {
+            Wake::Msg(msg)
+        } else {
+            tokio::select! {
+            m = rx.recv(), if inbound_open && deferred_world_msg.is_none() => {
+                m.map_or(Wake::Closed, Wake::Msg)
+            },
+            // Writer control facts ride their own bounded/coalescing mailbox
+            // (see `WriterSignal`). `None` means the writer is gone and every
+            // final latched fact was drained; disable this arm (avoiding a
+            // busy-loop) rather than closing the world — the world's lifetime
+            // is driven by its inbound channel, not this one.
             s = signals.recv(), if signals_open => match s {
                 Some(sig) => Wake::Signal(sig),
                 None => { signals_open = false; Wake::Timer }
             },
+            ack = async {
+                match pending_commit.as_mut() {
+                    Some(pending) => (&mut pending.receipt).await,
+                    None => std::future::pending().await,
+                }
+            } => Wake::CommitAck(ack),
             () = sleep_until_unix_ms(next_due), if sched_armed => Wake::Timer,
             () = tokio::time::sleep(REEMIT_INTERVAL), if reemit_pending => Wake::Timer,
+            changed = shutdown.changed(), if !shutdown_requested => {
+                if changed.is_ok() && *shutdown.borrow_and_update() {
+                    Wake::Shutdown
+                } else {
+                    Wake::Closed
+                }
+            },
+            () = async {
+                match shutdown_deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+                    None => std::future::pending().await,
+                }
+            } => Wake::ShutdownDeadline,
+            }
         };
         let iteration_start = Instant::now();
         let now_unix = unix_now_s();
-        engine.set_now(now_unix);
+        // CommitPending freezes guard-producing truth; boot/recovery and an
+        // integrity freeze likewise do not advance the world's logical clock.
+        // Transient StoreReadOnly retains the historical wall-clock behavior.
+        if matches!(
+            admission_mode,
+            WorldMode::Writable | WorldMode::StoreReadOnly { .. }
+        ) {
+            engine.set_now(now_unix);
+        }
         // Liveness heartbeat (PLAN "Observability"): stamp the loop's most
         // recent iteration start every iteration, before the (possibly slow)
         // step. A loop wedged inside a sync handler stops advancing this while
@@ -687,142 +1499,229 @@ async fn run(
         // Whose flood-exempt flag to re-sync after the step (the acting
         // player of a Cmd — the only path that pushes/pops input contexts).
         let mut flood_sync: Option<ObjId> = None;
+        let mut create_completion: Option<CreateCompletion> = None;
+        let mut failure_actor: Option<ObjId> = None;
         let outcome = match wake {
-            Wake::Msg(WorldMsg::Inbound(msg)) => {
-                if let Inbound::Cmd { actor, .. } = &msg {
-                    flood_sync = Some(*actor);
+            Wake::Msg(msg) => {
+                if matches!(&msg, WorldMsg::Inbound(Inbound::Cmd { .. })) {
                     metrics.command_processed();
                 }
-                if health.read_only
-                    && let Some(refused) = refuse_read_only(&engine.world, &msg)
-                {
-                    let (actor, text) = refused;
-                    gateway.deliver(
-                        SendTarget::Char(u64::from(actor.0)),
-                        Arc::new(OutputEvent::Sys(RichText::tag("error", text))),
-                    );
-                    StepOutcome::Continue
-                } else {
-                    engine.step(msg, &mut out, &mut fx)
-                }
-            }
-            Wake::Msg(WorldMsg::ReAttach { recs }) => {
-                // M16c silent re-attach: rebuild every held connection's
-                // world-side state without a connect announce/hook/event, then
-                // the engine pushes each session a fresh `look` from the
-                // reloaded world. Its output is delivered by the normal
-                // `deliver` at the foot of the loop, so each reconnected player
-                // receives a current room render across the boundary.
-                let count = recs.len();
-                for rec in recs {
-                    engine.reattach(rec.conn, rec.actor, rec.caps_structured, &mut out);
-                }
-                tracing::info!(count, "re-attached held connections after restart");
-                StepOutcome::Continue
-            }
-            Wake::Msg(WorldMsg::CreatePlayer { name, reply }) => {
-                if health.read_only {
-                    // A creation now would mutate RAM behind a stuck writer
-                    // queue and hang the requester on an ack that cannot
-                    // come until the store recovers. Fail closed instead.
-                    let _ = reply.send(Err(CreatePlayerErr::StoreUnavailable));
-                } else {
-                    match create_player(&mut engine, &name) {
-                        Ok(id) => {
-                            // Tell module observers a Player now exists
-                            // (comsys auto-joins the default channel here).
-                            // Emitted BEFORE the flush so whatever the
-                            // observers persist rides the same durable
-                            // creation batch.
-                            engine.emit_world_event(
-                                &WorldEvent::ObjCreated {
-                                    obj: id,
-                                    kind: ObjKind::Player,
-                                    creator: mush_core::GOD,
-                                },
-                                &mut out,
-                                &mut fx,
-                            );
-                            // Flush the creation batch (durable) and defer
-                            // the reply until the store acks — the whole
-                            // point of the gate.
-                            match flush_dirty(
-                                &mut engine,
-                                &writer,
-                                &mut serial,
-                                true,
-                                &mut health,
-                                &metrics,
-                                &mut retained,
-                                &high_water,
-                            )
-                            .await
+                match admit_world_msg(admission_mode, &engine.world, &msg) {
+                    Admission::Refuse(reason) => {
+                        if reason == RefusalReason::CommitPending && must_defer_behind_commit(&msg)
+                        {
+                            debug_assert!(deferred_world_msg.is_none());
+                            deferred_world_msg = Some(msg);
+                        } else {
+                            refuse_world_msg(msg, reason, &gateway);
+                        }
+                        StepOutcome::Continue
+                    }
+                    Admission::CheckStoreReadOnlyCommand => {
+                        unreachable!("admit_world_msg resolves store-read-only commands")
+                    }
+                    Admission::Allow => match msg {
+                        WorldMsg::Inbound(msg) => {
+                            if let Inbound::Cmd { actor, .. } = &msg {
+                                flood_sync = Some(*actor);
+                                failure_actor = Some(*actor);
+                            }
+                            if matches!(&msg, Inbound::Control(ControlMsg::Shutdown))
+                                && pending_commit.is_some()
                             {
-                                FlushOutcome::Queued(Some(ack_rx)) => {
-                                    tokio::spawn(async move {
-                                        let result = match ack_rx.await {
-                                            Ok(Ok(_)) => Ok(id),
-                                            Ok(Err(e)) => Err(CreatePlayerErr::World(format!(
-                                                "store write failed: {e}"
-                                            ))),
-                                            Err(_) => Err(CreatePlayerErr::WorldGone),
-                                        };
-                                        let _ = reply.send(result);
-                                    });
-                                }
-                                // Nothing dirtied — cannot actually happen
-                                // for a create; reply rather than hang.
-                                FlushOutcome::Clean | FlushOutcome::Queued(None) => {
-                                    let _ = reply.send(Ok(id));
-                                }
-                                // The writer is gone (teardown): the batch
-                                // was DROPPED, so this creation is not
-                                // durable — never confirm it.
-                                FlushOutcome::WriterGone => {
-                                    let _ = reply.send(Err(CreatePlayerErr::WorldGone));
-                                }
+                                // Shutdown remains admissible while a commit is in
+                                // flight, but its global notice must not overtake
+                                // the earlier commit-bound presentation.
+                                debug_assert!(deferred_world_msg.is_none());
+                                deferred_world_msg = Some(WorldMsg::Inbound(msg));
+                                StepOutcome::Continue
+                            } else {
+                                engine.step(msg, &mut out, &mut fx)
                             }
                         }
-                        Err(e) => {
-                            // A dropped receiver: the requester gave up.
-                            let _ = reply.send(Err(e));
+                        WorldMsg::ReAttach { recs } => {
+                            if let Some(pending) = pending_commit.as_mut() {
+                                // ReAnnounce is a full snapshot, so an older
+                                // snapshot has no independent meaning. Applying
+                                // each snapshot here would append another room
+                                // render to `pending.sends` while the receipt is
+                                // hung. Retain one bounded latest snapshot and
+                                // apply it immediately after receipt resolution.
+                                match pending.coalesce_reattach(recs) {
+                                    Ok(replaced) => {
+                                        if replaced {
+                                            metrics.commit_pending_reattach_coalesced();
+                                        }
+                                    }
+                                    Err((_recs, overload)) => {
+                                        // `WorldHandle::reattach` and the split
+                                        // boundary both reject this atomically
+                                        // before enqueue. Reaching this arm is
+                                        // therefore an internal invariant breach;
+                                        // importantly, no prefix is applied.
+                                        metrics.commit_pending_reattach_rejected();
+                                        tracing::error!(
+                                            records = overload.records,
+                                            logical_bytes = overload.logical_bytes,
+                                            max_records = MAX_PENDING_REATTACH_RECORDS,
+                                            max_bytes = MAX_PENDING_REATTACH_BYTES,
+                                            "internal oversized reattach snapshot refused atomically"
+                                        );
+                                    }
+                                }
+                            } else {
+                                // M16c silent re-attach: rebuild every held
+                                // connection's world-side state without a
+                                // connect announce/hook/event, then push each
+                                // session a fresh room render.
+                                apply_reattach_snapshot(&mut engine, &recs, &mut out);
+                                tracing::info!(
+                                    count = recs.len(),
+                                    "re-attached held connections after restart"
+                                );
+                            }
+                            StepOutcome::Continue
                         }
+                        WorldMsg::CreatePlayer { name, reply } => {
+                            match create_player(&mut engine, &name) {
+                                Ok(id) => {
+                                    // Tell module observers a Player now exists
+                                    // (comsys auto-joins the default channel here).
+                                    // Emitted BEFORE the flush so whatever the
+                                    // observers persist rides the same durable
+                                    // creation batch.
+                                    engine.emit_world_event(
+                                        &WorldEvent::ObjCreated {
+                                            obj: id,
+                                            kind: ObjKind::Player,
+                                            creator: mush_core::GOD,
+                                        },
+                                        &mut out,
+                                        &mut fx,
+                                    );
+                                    // The common post-step commit path below owns
+                                    // the exact receipt and completes this typed
+                                    // reply only after releasing committed output.
+                                    create_completion = Some(CreateCompletion { id, reply });
+                                }
+                                Err(e) => {
+                                    // A dropped receiver: the requester gave up.
+                                    let _ = reply.send(Err(e));
+                                }
+                            }
+                            StepOutcome::Continue
+                        }
+                        WorldMsg::NameFree { name, reply } => {
+                            let _ = reply.send(Ok(engine.world.resolve_player(&name).is_none()));
+                            StepOutcome::Continue
+                        }
+                        WorldMsg::InInputContext { actor, reply } => {
+                            let _ = reply.send(Ok(engine.world.input_depth(actor) > 0));
+                            StepOutcome::Continue
+                        }
+                        WorldMsg::ConnectionReady { conn, actor, reply } => {
+                            let _ = reply.send(Ok(engine.actor_of(conn) == Some(actor)));
+                            StepOutcome::Continue
+                        }
+                        WorldMsg::Barrier { reply } => {
+                            if let Some(pending) = pending_commit.as_mut() {
+                                // Processing is not delivery: keep the barrier
+                                // behind the prior exact receipt and held output.
+                                if !pending.retain_barrier(reply) {
+                                    metrics.commit_pending_barrier_refused();
+                                    tracing::warn!(
+                                        cap = MAX_PENDING_BARRIERS,
+                                        "commit-pending barrier waiter cap reached; refusing waiter"
+                                    );
+                                }
+                            } else {
+                                let _ = reply.send(Ok(()));
+                            }
+                            StepOutcome::Continue
+                        }
+                    },
+                }
+            }
+            Wake::Signal(signal) => {
+                debug_assert_eq!(
+                    classify_writer_signal(&signal),
+                    IngressClass::WriterRecovery
+                );
+                match signal {
+                    WriterSignal::StoreStatus { healthy, detail } => {
+                        apply_store_status(&engine.world, &gateway, &mut health, healthy, &detail);
+                    }
+                    WriterSignal::LedgerBreach { detail, seal } => {
+                        // Resolve a specific seal the writer isolated: a confirmed poison
+                        // is quarantined (stop re-emitting it — it can never commit and
+                        // is preserved in the spool); a collateral seal healed in
+                        // isolation is simply dropped from re-emit (already durable).
+                        if let Some((ns, key, payload_hash, quarantined)) = seal {
+                            let matched = if quarantined {
+                                retained.quarantine(ns.clone(), key.clone(), payload_hash.clone())
+                            } else {
+                                retained.healed(ns.clone(), key.clone(), &payload_hash)
+                            };
+                            if !matched {
+                                let mismatch = format!(
+                                    "writer resolution did not match the exact retained seal {ns}/{key} ({payload_hash})"
+                                );
+                                tracing::error!(
+                                    %ns,
+                                    %key,
+                                    %payload_hash,
+                                    "refusing to clear a retained seal for an unmatched writer resolution"
+                                );
+                                apply_integrity_freeze(
+                                    &engine.world,
+                                    &gateway,
+                                    &mut health,
+                                    &persistence_integrity,
+                                    &mismatch,
+                                );
+                            }
+                        }
+                        apply_integrity_freeze(
+                            &engine.world,
+                            &gateway,
+                            &mut health,
+                            &persistence_integrity,
+                            &detail,
+                        );
+                    }
+                    WriterSignal::DeterministicFailure { detail } => {
+                        apply_integrity_freeze(
+                            &engine.world,
+                            &gateway,
+                            &mut health,
+                            &persistence_integrity,
+                            &detail,
+                        );
                     }
                 }
                 StepOutcome::Continue
             }
-            Wake::Msg(WorldMsg::NameFree { name, reply }) => {
-                let _ = reply.send(engine.world.resolve_player(&name).is_none());
-                StepOutcome::Continue
-            }
-            Wake::Msg(WorldMsg::InInputContext { actor, reply }) => {
-                let _ = reply.send(engine.world.input_depth(actor) > 0);
-                StepOutcome::Continue
-            }
-            Wake::Msg(WorldMsg::Barrier { reply }) => {
-                // Every earlier message was processed (and delivered) in its
-                // own iteration; reaching here *is* the barrier.
-                let _ = reply.send(());
-                StepOutcome::Continue
-            }
-            Wake::Signal(WriterSignal::StoreStatus { healthy, detail }) => {
-                apply_store_status(&engine.world, &gateway, &mut health, healthy, &detail);
-                StepOutcome::Continue
-            }
-            Wake::Signal(WriterSignal::LedgerBreach { detail, seal }) => {
-                // Resolve a specific seal the writer isolated: a confirmed poison
-                // is quarantined (stop re-emitting it — it can never commit and
-                // is preserved in the spool); a collateral seal healed in
-                // isolation is simply dropped from re-emit (already durable).
-                if let Some((ns, key, quarantined)) = seal {
-                    if quarantined {
-                        retained.quarantine(ns, key);
-                    } else {
-                        retained.healed(ns, key);
-                    }
+            Wake::CommitAck(ack) => {
+                let pending = pending_commit
+                    .take()
+                    .expect("commit receipt cannot resolve without a pending commit");
+                let exit_after_ack = pending.exit_after_ack;
+                let completed = complete_pending_commit(
+                    pending,
+                    ack,
+                    &mut engine,
+                    &gateway,
+                    &mut health,
+                    &persistence_integrity,
+                    &tx,
+                    llm.as_ref(),
+                );
+                finish_pending_operational(&mut engine, &gateway, completed);
+                if exit_after_ack {
+                    StepOutcome::Shutdown
+                } else {
+                    StepOutcome::Continue
                 }
-                apply_ledger_freeze(&engine.world, &gateway, &mut health, &detail);
-                StepOutcome::Continue
             }
             Wake::Timer => {
                 // A poison freeze is a hard mutation barrier for scheduled work:
@@ -830,14 +1729,76 @@ async fn run(
                 // ledger is holed and mutating further would compound it. A Timer
                 // wake here is then only the re-emit nudge, which drives the
                 // foot-of-loop persistence flush (re-emit stays live while frozen).
-                if !health.poison_frozen {
+                if admission_for(admission_mode, IngressClass::Timer) == Admission::Allow {
                     engine.fire_due(unix_now_ms(), &mut out, &mut fx);
                 }
                 StepOutcome::Continue
             }
-            Wake::Closed => {
-                tracing::info!("world inbound channel closed; world task exiting");
+            Wake::Shutdown => {
+                shutdown_requested = true;
+                if pending_commit.is_some() {
+                    // Supersede the one already-dequeued ordinary message and
+                    // stop polling the bounded queue. The shutdown request did
+                    // not need queue capacity, and the prior exact commit gets
+                    // a bounded grace period to finish normally.
+                    if let Some(blocked) = deferred_world_msg.take() {
+                        refuse_world_msg(blocked, RefusalReason::CommitPending, &gateway);
+                    }
+                    deferred_world_msg =
+                        Some(WorldMsg::Inbound(Inbound::Control(ControlMsg::Shutdown)));
+                    shutdown_deadline = Some(Instant::now() + Duration::from_secs(15));
+                    StepOutcome::Continue
+                } else {
+                    engine.step(Inbound::Control(ControlMsg::Shutdown), &mut out, &mut fx)
+                }
+            }
+            Wake::ShutdownDeadline => {
+                let detail = "shutdown deadline expired before the exact commit receipt";
+                let retained_ops = retained.reemit_ops();
+                persist::preserve_unqueued_seals(
+                    &deps.quarantine_spool,
+                    &retained_ops,
+                    serial,
+                    detail,
+                )
+                .await;
+                if let Some(pending) = pending_commit.take() {
+                    let completed = complete_pending_commit(
+                        pending,
+                        Ok(Err(detail.to_owned())),
+                        &mut engine,
+                        &gateway,
+                        &mut health,
+                        &persistence_integrity,
+                        &tx,
+                        llm.as_ref(),
+                    );
+                    finish_pending_operational(&mut engine, &gateway, completed);
+                }
+                metrics.set_persistence_state(
+                    health.mode.store_read_only(),
+                    health.mode.integrity_frozen(),
+                );
+                publish_pending_custody(&metrics, None);
+                tracing::error!(
+                    "world task stopped after bounded shutdown grace; exact retained seals were preserved before exit"
+                );
                 break;
+            }
+            Wake::Closed => {
+                inbound_open = false;
+                shutdown_requested = true;
+                if let Some(pending) = pending_commit.as_mut() {
+                    pending.exit_after_ack = true;
+                    shutdown_deadline = Some(Instant::now() + Duration::from_secs(15));
+                    tracing::warn!(
+                        "world inbound channel closed with a commit pending; waiting a bounded grace period for exact custody"
+                    );
+                    StepOutcome::Continue
+                } else {
+                    tracing::info!("world inbound channel closed; world task exiting");
+                    break;
+                }
             }
         };
         // Flood-exempt sync: while the acting player sits in an input
@@ -848,111 +1809,172 @@ async fn run(
             // mutating the gateway's throttle directly (M16b: serialized).
             gateway.set_flood_exempt(u64::from(actor.0), engine.world.input_depth(actor) > 0);
         }
-        if let Some((gate_actor, gate_strict)) = engine.take_durable_gate() {
-            // The step asked for the durable-ack output gate (mail send,
-            // XP approval — PLAN's ack-gated confirmations): resolve the
-            // step's audiences against CURRENT world state, flush its
-            // batch durable, and transmit the held output only once the
-            // store acks. Slow-client policing is skipped for held sends
-            // (a handful of lines; drops are still counted by the session
-            // layer). Later steps' output may overtake the held lines by
-            // up to one ack round-trip — accepted.
-            let resolved = resolve_sends(&engine.registry, &engine.world, &mut out);
-            spawn_effects(&mut fx, &tx, llm.as_ref());
-            match flush_dirty(
+        // Every world step uses the same typed delivery boundary. A clean
+        // read-only step releases immediately; a dirty step always requests
+        // an exact receipt and holds commit-bound output/effects until it
+        // resolves. `DurableGate` supplies the preferred failure recipient;
+        // its strict bit is subsumed by this boundary because no authoritative
+        // success output is released after any failed write.
+        if let Some((gate_actor, _strict)) = engine.take_durable_gate() {
+            failure_actor = Some(gate_actor);
+        }
+        let mut classified_sends =
+            resolve_classified_sends(&engine.registry, &engine.world, &mut out);
+        let mut classified_effects = fx.drain_classified();
+        if let Some(pending) = pending_commit.as_mut() {
+            debug_assert!(create_completion.is_none());
+            // CommitPending always has precedence over transient read-only
+            // status. Only explicitly receipt-independent presentation may
+            // pass; no command/hook output is inferred clean merely from a
+            // store-health mode or command allowlist.
+            release_independent_while_pending(
+                &gateway,
+                &mut classified_sends,
+                &mut classified_effects,
+                health.mode,
+                &tx,
+                llm.as_ref(),
+            );
+            pending.sends.extend(classified_sends);
+            pending.effects.extend(classified_effects);
+        } else {
+            match flush_engine_step(
                 &mut engine,
                 &writer,
                 &mut serial,
-                true,
                 &mut health,
                 &metrics,
                 &mut retained,
                 &high_water,
+                &deps.quarantine_spool,
+                &persistence_integrity,
             )
             .await
             {
-                FlushOutcome::Queued(Some(ack_rx)) => {
-                    let gateway = gateway.clone();
-                    tokio::spawn(async move {
-                        match ack_rx.await {
-                            Ok(Ok(_)) => {
-                                gateway.transmit(resolved);
-                            }
-                            Ok(Err(e)) => {
-                                if gate_strict {
-                                    // Money (invariant 9 / E2 R-R1): a dropped durable
-                                    // write must NEVER surface a posted confirmation.
-                                    // Suppress the held output and tell the actor the
-                                    // command did not confirm (the economy is frozen
-                                    // by the E0 poison-seal and reconciled at boot).
-                                    send_sys(
-                                        &gateway,
-                                        gate_actor,
-                                        &format!(
-                                            "Your last command was NOT confirmed: its \
-                                             durable write failed ({e}). It did not \
-                                             commit; nothing was posted."
-                                        ),
-                                    );
-                                } else {
-                                    // The write was dropped (non-retryable):
-                                    // deliver what happened in RAM, but never
-                                    // pretend it is durable.
-                                    gateway.transmit(resolved);
-                                    send_sys(
-                                        &gateway,
-                                        gate_actor,
-                                        &format!(
-                                            "WARNING: the database write for your last \
-                                             command failed ({e}); its effects may not \
-                                             survive a restart."
-                                        ),
-                                    );
-                                }
-                            }
-                            // Teardown: the writer vanished before acking —
-                            // the batch may be lost; never confirm.
-                            Err(_) => {}
-                        }
+                FlushOutcome::Clean => {
+                    if create_completion.is_some() {
+                        // Creating a player necessarily dirties the world. A
+                        // clean result is an invariant breach, never success.
+                        abort_without_receipt(
+                            classified_sends,
+                            classified_effects,
+                            failure_actor,
+                            create_completion.take(),
+                            "player creation produced no authoritative write",
+                            &engine.world,
+                            &gateway,
+                            &mut health,
+                            &persistence_integrity,
+                            &tx,
+                            llm.as_ref(),
+                        );
+                    } else {
+                        release_classified_sends(
+                            &gateway,
+                            classified_sends,
+                            DeliveryOutcome::NoWrite,
+                        );
+                        release_classified_effects(
+                            health.mode,
+                            classified_effects,
+                            DeliveryOutcome::NoWrite,
+                            &tx,
+                            llm.as_ref(),
+                        );
+                    }
+                }
+                FlushOutcome::Queued {
+                    receipt: Some(receipt),
+                    prepared_installation,
+                } => {
+                    release_best_effort_before_ack(
+                        &gateway,
+                        &mut classified_sends,
+                        &mut classified_effects,
+                        health.mode,
+                        &tx,
+                        llm.as_ref(),
+                    );
+                    pending_commit = Some(PendingCommit {
+                        token: CommitToken::from_serial(serial),
+                        receipt,
+                        sends: classified_sends,
+                        effects: classified_effects,
+                        failure_actor,
+                        create: create_completion.take(),
+                        prepared_installation,
+                        barriers: Vec::new(),
+                        coalesced_reattach: None,
+                        exit_after_ack: outcome == StepOutcome::Shutdown,
                     });
                 }
-                // Nothing was actually dirty: nothing to gate on.
-                FlushOutcome::Clean | FlushOutcome::Queued(None) => {
-                    gateway.transmit(resolved);
+                FlushOutcome::Queued {
+                    receipt: None,
+                    prepared_installation,
+                } => {
+                    if let Some(installation) = prepared_installation {
+                        engine.abort_prepared_action(installation);
+                    }
+                    abort_without_receipt(
+                        classified_sends,
+                        classified_effects,
+                        failure_actor,
+                        create_completion.take(),
+                        "durable writer accepted a batch without returning its receipt",
+                        &engine.world,
+                        &gateway,
+                        &mut health,
+                        &persistence_integrity,
+                        &tx,
+                        llm.as_ref(),
+                    );
                 }
-                // The batch was DROPPED (writer gone, teardown): the write
-                // is not durable — never deliver the confirmation.
-                FlushOutcome::WriterGone => {}
+                FlushOutcome::Rejected(detail) => {
+                    abort_without_receipt(
+                        classified_sends,
+                        classified_effects,
+                        failure_actor,
+                        create_completion.take(),
+                        &detail,
+                        &engine.world,
+                        &gateway,
+                        &mut health,
+                        &persistence_integrity,
+                        &tx,
+                        llm.as_ref(),
+                    );
+                }
+                FlushOutcome::WriterGone => {
+                    abort_without_receipt(
+                        classified_sends,
+                        classified_effects,
+                        failure_actor,
+                        create_completion.take(),
+                        "store writer disappeared before accepting the authoritative batch",
+                        &engine.world,
+                        &gateway,
+                        &mut health,
+                        &persistence_integrity,
+                        &tx,
+                        llm.as_ref(),
+                    );
+                }
             }
-        } else {
-            deliver(&engine.registry, &engine.world, &gateway, &mut out);
-            spawn_effects(&mut fx, &tx, llm.as_ref());
-            // Write-through: one batch per processed message that dirtied
-            // the world (fire-and-forget; the writer preserves order and
-            // retries).
-            let _ = flush_dirty(
-                &mut engine,
-                &writer,
-                &mut serial,
-                false,
-                &mut health,
-                &metrics,
-                &mut retained,
-                &high_water,
-            )
-            .await;
         }
         // Staff ops the step's handlers queued. Local ops (@boot/@ps/@stats)
         // run inline here — the engine, scheduler, and session manager are
         // all at hand — AFTER the delivery above, so a @boot target's
         // Disconnect message reaches their connections before the session
         // is closed. Store ops go to the async executors, as in M2.
-        let (local_ops, store_ops): (Vec<StaffOp>, Vec<StaffOp>) = deps
-            .staff
-            .drain()
-            .into_iter()
-            .partition(|op| op.kind.is_local());
+        let (local_ops, store_ops): (Vec<StaffOp>, Vec<StaffOp>) = if pending_commit.is_none() {
+            admit_staff_ops(health.mode, deps.staff.drain(), &gateway)
+                .into_iter()
+                .partition(|op| op.kind.is_local())
+        } else {
+            (Vec::new(), Vec::new())
+        };
         if !local_ops.is_empty() {
+            let local_failure_actor = local_ops.first().map(|op| op.actor);
             run_local_staff_ops(
                 &mut engine,
                 &gateway,
@@ -964,21 +1986,119 @@ async fn run(
                 llm.as_ref(),
                 &metrics,
             );
-            deliver(&engine.registry, &engine.world, &gateway, &mut out);
-            spawn_effects(&mut fx, &tx, llm.as_ref());
-            let _ = flush_dirty(
+            let mut sends = resolve_classified_sends(&engine.registry, &engine.world, &mut out);
+            let mut effects = fx.drain_classified();
+            match flush_dirty(
                 &mut engine,
                 &writer,
                 &mut serial,
-                false,
+                true,
                 &mut health,
                 &metrics,
                 &mut retained,
                 &high_water,
+                &deps.quarantine_spool,
+                &persistence_integrity,
             )
-            .await;
+            .await
+            {
+                FlushOutcome::Clean => {
+                    release_classified_sends(&gateway, sends, DeliveryOutcome::NoWrite);
+                    release_classified_effects(
+                        health.mode,
+                        effects,
+                        DeliveryOutcome::NoWrite,
+                        &tx,
+                        llm.as_ref(),
+                    );
+                }
+                FlushOutcome::Queued {
+                    receipt: Some(receipt),
+                    prepared_installation,
+                } => {
+                    release_best_effort_before_ack(
+                        &gateway,
+                        &mut sends,
+                        &mut effects,
+                        health.mode,
+                        &tx,
+                        llm.as_ref(),
+                    );
+                    pending_commit = Some(PendingCommit {
+                        token: CommitToken::from_serial(serial),
+                        receipt,
+                        sends,
+                        effects,
+                        failure_actor: local_failure_actor,
+                        create: None,
+                        prepared_installation,
+                        barriers: Vec::new(),
+                        coalesced_reattach: None,
+                        exit_after_ack: false,
+                    });
+                }
+                FlushOutcome::Queued {
+                    receipt: None,
+                    prepared_installation,
+                } => {
+                    if let Some(installation) = prepared_installation {
+                        engine.abort_prepared_action(installation);
+                    }
+                    abort_without_receipt(
+                        sends,
+                        effects,
+                        local_failure_actor,
+                        None,
+                        "durable writer accepted a staff batch without returning its receipt",
+                        &engine.world,
+                        &gateway,
+                        &mut health,
+                        &persistence_integrity,
+                        &tx,
+                        llm.as_ref(),
+                    );
+                }
+                FlushOutcome::Rejected(detail) => abort_without_receipt(
+                    sends,
+                    effects,
+                    local_failure_actor,
+                    None,
+                    &detail,
+                    &engine.world,
+                    &gateway,
+                    &mut health,
+                    &persistence_integrity,
+                    &tx,
+                    llm.as_ref(),
+                ),
+                FlushOutcome::WriterGone => abort_without_receipt(
+                    sends,
+                    effects,
+                    local_failure_actor,
+                    None,
+                    "store writer disappeared before accepting a staff batch",
+                    &engine.world,
+                    &gateway,
+                    &mut health,
+                    &persistence_integrity,
+                    &tx,
+                    llm.as_ref(),
+                ),
+            }
         }
-        let staff_shutdown = run_staff_ops(&deps, &gateway, &writer, &staff_ops, store_ops).await;
+        deferred_staff_ops.extend(store_ops);
+        let staff_shutdown = if pending_commit.is_none() {
+            run_staff_ops(
+                &deps,
+                &gateway,
+                &writer,
+                &staff_ops,
+                std::mem::take(&mut deferred_staff_ops),
+            )
+            .await
+        } else {
+            false
+        };
         // Loop-lag watchdog (PLAN risk 2): the single-writer loop must stay
         // fast; a slow iteration means a slow sync handler or writer-queue
         // backpressure. The engine mirrors last/max for `@stats`; the metrics
@@ -1006,6 +2126,11 @@ async fn run(
             retained_alarmed = false;
             tracing::info!("retained sealed-chunk backlog cleared");
         }
+        metrics.set_persistence_state(
+            health.mode.store_read_only(),
+            health.mode.integrity_frozen(),
+        );
+        publish_pending_custody(&metrics, pending_commit.as_ref());
         // Publish the world-owned gauges (throttled). Done at the end of the
         // iteration so it reflects the just-applied state, and cheaply skipped
         // when the last sample is under a second old.
@@ -1017,7 +2142,7 @@ async fn run(
             &metrics,
             &mut last_sample,
         );
-        if outcome == StepOutcome::Shutdown {
+        if outcome == StepOutcome::Shutdown && pending_commit.is_none() {
             tracing::info!("world task shut down cleanly");
             break;
         }
@@ -1027,22 +2152,130 @@ async fn run(
             // identical; main's shutdown sequence (writer drain → store
             // drain → BGSAVE) runs when this task's join resolves.
             let outcome = engine.step(Inbound::Control(ControlMsg::Shutdown), &mut out, &mut fx);
-            deliver(&engine.registry, &engine.world, &gateway, &mut out);
-            spawn_effects(&mut fx, &tx, llm.as_ref());
-            let _ = flush_dirty(
+            debug_assert_eq!(outcome, StepOutcome::Shutdown);
+            let mut sends = resolve_classified_sends(&engine.registry, &engine.world, &mut out);
+            let mut effects = fx.drain_classified();
+            match flush_dirty(
                 &mut engine,
                 &writer,
                 &mut serial,
-                false,
+                true,
                 &mut health,
                 &metrics,
                 &mut retained,
                 &high_water,
+                &deps.quarantine_spool,
+                &persistence_integrity,
             )
-            .await;
-            debug_assert_eq!(outcome, StepOutcome::Shutdown);
-            tracing::info!("world task shut down cleanly");
-            break;
+            .await
+            {
+                FlushOutcome::Clean => {
+                    release_classified_sends(&gateway, sends, DeliveryOutcome::NoWrite);
+                    release_classified_effects(
+                        health.mode,
+                        effects,
+                        DeliveryOutcome::NoWrite,
+                        &tx,
+                        llm.as_ref(),
+                    );
+                    tracing::info!("world task shut down cleanly");
+                    break;
+                }
+                FlushOutcome::Queued {
+                    receipt: Some(receipt),
+                    prepared_installation,
+                } => {
+                    release_best_effort_before_ack(
+                        &gateway,
+                        &mut sends,
+                        &mut effects,
+                        health.mode,
+                        &tx,
+                        llm.as_ref(),
+                    );
+                    pending_commit = Some(PendingCommit {
+                        token: CommitToken::from_serial(serial),
+                        receipt,
+                        sends,
+                        effects,
+                        failure_actor: None,
+                        create: None,
+                        prepared_installation,
+                        barriers: Vec::new(),
+                        coalesced_reattach: None,
+                        exit_after_ack: true,
+                    });
+                }
+                FlushOutcome::Queued {
+                    receipt: None,
+                    prepared_installation,
+                } => {
+                    if let Some(installation) = prepared_installation {
+                        engine.abort_prepared_action(installation);
+                    }
+                    abort_without_receipt(
+                        sends,
+                        effects,
+                        None,
+                        None,
+                        "shutdown's authoritative write did not receive an acknowledgement",
+                        &engine.world,
+                        &gateway,
+                        &mut health,
+                        &persistence_integrity,
+                        &tx,
+                        llm.as_ref(),
+                    );
+                    metrics.set_persistence_state(
+                        health.mode.store_read_only(),
+                        health.mode.integrity_frozen(),
+                    );
+                    tracing::error!("world task shutting down after an unacknowledged write");
+                    break;
+                }
+                FlushOutcome::WriterGone => {
+                    abort_without_receipt(
+                        sends,
+                        effects,
+                        None,
+                        None,
+                        "shutdown's authoritative write did not receive an acknowledgement",
+                        &engine.world,
+                        &gateway,
+                        &mut health,
+                        &persistence_integrity,
+                        &tx,
+                        llm.as_ref(),
+                    );
+                    metrics.set_persistence_state(
+                        health.mode.store_read_only(),
+                        health.mode.integrity_frozen(),
+                    );
+                    tracing::error!("world task shutting down after an unacknowledged write");
+                    break;
+                }
+                FlushOutcome::Rejected(detail) => {
+                    abort_without_receipt(
+                        sends,
+                        effects,
+                        None,
+                        None,
+                        &detail,
+                        &engine.world,
+                        &gateway,
+                        &mut health,
+                        &persistence_integrity,
+                        &tx,
+                        llm.as_ref(),
+                    );
+                    metrics.set_persistence_state(
+                        health.mode.store_read_only(),
+                        health.mode.integrity_frozen(),
+                    );
+                    tracing::error!("world task shutting down after a rejected write");
+                    break;
+                }
+            }
         }
     }
     // Dropping `writer` here closes the job queue; the writer task drains
@@ -1050,7 +2283,86 @@ async fn run(
     // sequence via `PersistHandles::writer_join`).
 }
 
-/// In read-only mode, decide whether an inbound message must be refused.
+/// Complete a refused message without ever handing it to the engine. Requests
+/// with typed replies receive a conservative answer instead of hanging; work
+/// without a reply is dropped with a bounded diagnostic.
+fn refuse_world_msg(msg: WorldMsg, reason: RefusalReason, gateway: &Gateway) {
+    match msg {
+        WorldMsg::Inbound(Inbound::Cmd { actor, .. })
+        | WorldMsg::Inbound(Inbound::ConnUp { actor, .. }) => {
+            send_sys(gateway, actor, reason.text());
+        }
+        WorldMsg::Inbound(Inbound::Query { conn, id, .. }) => {
+            // Preserve request correlation: a web/TUI query refusal is a typed
+            // Reply to this connection, never an unrelated actor Sys line.
+            gateway.transmit(vec![(
+                SendTarget::Conn(conn),
+                Arc::new(OutputEvent::Reply {
+                    id,
+                    event: Box::new(OutputEvent::Sys(RichText::tag("error", reason.text()))),
+                }),
+            )]);
+        }
+        WorldMsg::Inbound(Inbound::ConnDown { actor, .. })
+        | WorldMsg::Inbound(Inbound::SessionGone { actor }) => {
+            tracing::warn!(%actor, ?reason, "connection hook suppressed by world mode");
+        }
+        WorldMsg::Inbound(Inbound::Apply(_)) => {
+            tracing::warn!(?reason, "async apply suppressed by world mode");
+        }
+        WorldMsg::Inbound(Inbound::Control(ControlMsg::Dump)) => {
+            tracing::warn!(?reason, "dump control suppressed by world mode");
+        }
+        WorldMsg::Inbound(Inbound::Control(ControlMsg::Shutdown)) => {
+            unreachable!("shutdown is admitted in every world mode")
+        }
+        WorldMsg::ReAttach { .. } => {
+            unreachable!("transport-only reattach is admitted in every world mode")
+        }
+        WorldMsg::CreatePlayer { reply, .. } => {
+            let error = if reason == RefusalReason::CommitPending {
+                CreatePlayerErr::Busy
+            } else {
+                CreatePlayerErr::StoreUnavailable
+            };
+            let _ = reply.send(Err(error));
+        }
+        WorldMsg::NameFree { reply, .. } => {
+            let error = if reason == RefusalReason::CommitPending {
+                WorldReadError::Busy
+            } else {
+                WorldReadError::Unavailable
+            };
+            let _ = reply.send(Err(error));
+        }
+        WorldMsg::InInputContext { reply, .. } => {
+            let error = if reason == RefusalReason::CommitPending {
+                WorldReadError::Busy
+            } else {
+                WorldReadError::Unavailable
+            };
+            let _ = reply.send(Err(error));
+        }
+        WorldMsg::ConnectionReady { reply, .. } => {
+            let error = if reason == RefusalReason::CommitPending {
+                WorldReadError::Busy
+            } else {
+                WorldReadError::Unavailable
+            };
+            let _ = reply.send(Err(error));
+        }
+        WorldMsg::Barrier { reply } => {
+            let error = if reason == RefusalReason::CommitPending {
+                WorldReadError::Busy
+            } else {
+                WorldReadError::Unavailable
+            };
+            let _ = reply.send(Err(error));
+        }
+    }
+}
+
+/// In store-read-only mode, decide whether an inbound message must be refused.
 /// Returns `Some((actor, message))` to refuse, `None` to let it through.
 ///
 /// Only `Cmd` lines are ever refused, and only when the verb is not on the
@@ -1064,7 +2376,7 @@ async fn run(
 /// command that slips through an allowlisted verb would still be queued for
 /// the writer and retried in order, so the gate bounds divergence rather
 /// than guarding correctness.
-fn refuse_read_only(world: &World, msg: &Inbound) -> Option<(ObjId, String)> {
+fn refuse_store_read_only(world: &World, msg: &Inbound) -> Option<(ObjId, String)> {
     let Inbound::Cmd { actor, line, .. } = msg else {
         return None;
     };
@@ -1145,22 +2457,24 @@ fn apply_store_status(
         // A ledger-breach freeze does NOT lift on the store merely recovering —
         // it needs an explicit staff-verified resume (repair + restart). Only
         // the transient read-only mode auto-lifts here.
-        if health.read_only && !health.poison_frozen {
-            health.read_only = false;
+        if matches!(health.mode, WorldMode::StoreReadOnly { .. }) {
+            health.mode = WorldMode::Writable;
             tracing::info!("store recovered; leaving read-only mode");
             broadcast_wizards(
                 world,
                 gateway,
                 "GAME: store writes recovered; the world is writable again.",
             );
-        } else if health.poison_frozen {
+        } else if health.mode.integrity_frozen() {
             tracing::warn!(
                 "store writes recovered, but the world stays read-only: an \
                  authoritative-ledger breach requires a staff-verified resume"
             );
         }
-    } else if !health.read_only {
-        health.read_only = true;
+    } else if matches!(health.mode, WorldMode::Writable) {
+        health.mode = WorldMode::StoreReadOnly {
+            incident: incident_id("store-read-only", detail),
+        };
         tracing::error!(detail, "store write failure; entering read-only mode");
         broadcast_wizards(
             world,
@@ -1173,27 +2487,37 @@ fn apply_store_status(
     }
 }
 
-/// Latch the non-auto-lifting freeze on an authoritative-ledger breach (E0):
-/// enter read-only, set [`StoreHealth::poison_frozen`] so a later transient
-/// recovery cannot lift it, and alert Wizards. Idempotent — the writer may send
-/// several breach messages (the initial freeze plus one per isolated seal); only
-/// the first transition alerts.
-fn apply_ledger_freeze(world: &World, gateway: &Gateway, health: &mut StoreHealth, detail: &str) {
-    if health.poison_frozen {
+/// Latch the non-auto-lifting freeze on any deterministic persistence breach:
+/// enter [`WorldMode::IntegrityFrozen`] so a later transient recovery cannot
+/// lift it, and alert Wizards. Idempotent — the writer may send an initial
+/// failure plus per-seal resolution details; only the first transition alerts.
+fn apply_integrity_freeze(
+    world: &World,
+    gateway: &Gateway,
+    health: &mut StoreHealth,
+    persistence_integrity: &PersistenceIntegrityLatch,
+    detail: &str,
+) {
+    // Publish the process-wide barrier even if the in-loop mode already says
+    // frozen. Shutdown reads this atomic directly and must not depend on a
+    // queued writer signal or a later world-loop iteration.
+    persistence_integrity.latch();
+    if health.mode.integrity_frozen() {
         return;
     }
-    health.poison_frozen = true;
-    health.read_only = true;
+    health.mode = WorldMode::IntegrityFrozen {
+        incident: incident_id("deterministic-persistence-breach", detail),
+    };
     tracing::error!(
         detail,
-        "AUTHORITATIVE-LEDGER BREACH: a sealed chunk was dropped by a deterministic \
-         store rejection; entering read-only until a staff-verified resume (repair + restart)"
+        "PERSISTENCE INTEGRITY BREACH: a batch was dropped by a deterministic store \
+         rejection; entering read-only until a staff-verified resume (repair + restart)"
     );
     broadcast_wizards(
         world,
         gateway,
         &format!(
-            "GAME: authoritative-ledger breach ({detail}); the world is now READ-ONLY. \
+            "GAME: persistence integrity breach ({detail}); the world is now READ-ONLY. \
              Mutations stay paused until staff repair the ledger and restart — the store \
              recovering on its own will NOT lift this."
         ),
@@ -1221,9 +2545,129 @@ enum FlushOutcome {
     Clean,
     /// A batch was handed to the writer. Carries the receipt receiver when
     /// the batch was durable.
-    Queued(Option<oneshot::Receiver<Result<u64, String>>>),
+    Queued {
+        receipt: Option<oneshot::Receiver<Result<u64, String>>>,
+        prepared_installation: Option<PreparedInstallation>,
+    },
+    /// The world-side retained-write invariant rejected the candidate batch;
+    /// it was never handed to the writer.
+    Rejected(String),
     /// The writer's queue is closed (teardown); the batch was dropped.
     WriterGone,
+}
+
+/// Select exactly one persistence class for a gameplay step. Prepared action
+/// state never passes through the legacy dirty/module/retained-seal batcher.
+#[allow(clippy::too_many_arguments)]
+async fn flush_engine_step(
+    engine: &mut Engine,
+    writer: &mpsc::Sender<StoreJob>,
+    serial: &mut u64,
+    health: &mut StoreHealth,
+    metrics: &Metrics,
+    retained: &mut RetainedSeals,
+    high_water: &AtomicU64,
+    quarantine_spool: &crate::quarantine::QuarantineSpool,
+    persistence_integrity: &PersistenceIntegrityLatch,
+) -> FlushOutcome {
+    if engine.has_staged_action() {
+        flush_prepared_action(
+            engine, writer, serial, health, metrics, retained, high_water,
+        )
+        .await
+    } else {
+        flush_dirty(
+            engine,
+            writer,
+            serial,
+            true,
+            health,
+            metrics,
+            retained,
+            high_water,
+            quarantine_spool,
+            persistence_integrity,
+        )
+        .await
+    }
+}
+
+/// Submit one already-built action-state write set and retain its typed RAM
+/// images for the matching applied acknowledgement. This is a K2 compatibility
+/// bridge over the current process-local serial receipt, not K3's durable
+/// token/idempotency protocol.
+async fn flush_prepared_action(
+    engine: &mut Engine,
+    writer: &mpsc::Sender<StoreJob>,
+    serial: &mut u64,
+    health: &mut StoreHealth,
+    metrics: &Metrics,
+    retained: &mut RetainedSeals,
+    high_water: &AtomicU64,
+) -> FlushOutcome {
+    let staged: StagedAction = engine
+        .take_staged_action()
+        .expect("prepared flush selected only with a staged action");
+    let (module_ops, installation) = staged.into_parts();
+
+    // Staging checks this invariant once, but later code in the same engine
+    // step must not be able to add legacy dirtiness and silently move it to a
+    // subsequent commit. Recheck at the last boundary before writer custody.
+    if engine.has_legacy_persistence_work() {
+        engine.abort_prepared_action(installation);
+        return FlushOutcome::Rejected(
+            "prepared action reached submission alongside legacy persistence work".to_owned(),
+        );
+    }
+
+    // An older unacknowledged ledger seal is a durability predecessor. It may
+    // not be folded into, or overtaken by, this state-family transaction.
+    retained.ack(high_water.load(Ordering::Relaxed));
+    if !retained.is_empty() {
+        engine.abort_prepared_action(installation);
+        return FlushOutcome::Rejected(
+            "prepared action reached submission with an unresolved legacy ledger predecessor"
+                .to_owned(),
+        );
+    }
+    if *serial == u64::MAX {
+        engine.abort_prepared_action(installation);
+        return FlushOutcome::Rejected(
+            "authoritative writer serial exhausted; restart/recovery required".to_owned(),
+        );
+    }
+    *serial = serial
+        .checked_add(1)
+        .expect("u64::MAX was rejected before prepared batch construction");
+    let batch = WriteBatch {
+        serial: *serial,
+        module_ops,
+        durable: true,
+        ..WriteBatch::default()
+    };
+    debug_assert!(!batch.is_empty());
+    let (notify, receipt) = oneshot::channel();
+    if writer
+        .send(StoreJob::Write {
+            batch,
+            notify: Some(notify),
+        })
+        .await
+        .is_err()
+    {
+        engine.abort_prepared_action(installation);
+        tracing::error!(
+            serial = *serial,
+            "store writer gone before accepting prepared action"
+        );
+        return FlushOutcome::WriterGone;
+    }
+    metrics.add_store_write_queue_depth(1);
+    health.last_write_unix = Some(unix_now_s());
+    FlushOutcome::Queued {
+        receipt: Some(receipt),
+        prepared_installation: Some(installation),
+    }
 }
 
 /// Snapshot the world's dirty set into one batch and hand it to the writer,
@@ -1243,7 +2687,15 @@ async fn flush_dirty(
     metrics: &Metrics,
     retained: &mut RetainedSeals,
     high_water: &AtomicU64,
+    quarantine_spool: &crate::quarantine::QuarantineSpool,
+    persistence_integrity: &PersistenceIntegrityLatch,
 ) -> FlushOutcome {
+    if *serial == u64::MAX {
+        tracing::error!("authoritative writer serial exhausted; refusing to reuse a commit token");
+        return FlushOutcome::Rejected(
+            "authoritative writer serial exhausted; restart/recovery required".to_owned(),
+        );
+    }
     // Apply the durable-commit high-water first (E0), so a seal already acked
     // by the writer is not needlessly re-emitted into this batch.
     retained.ack(high_water.load(Ordering::Relaxed));
@@ -1273,7 +2725,9 @@ async fn flush_dirty(
         // Swept ids were re-marked dirty (as deletions); fold them in.
         dirty.append(&mut engine.world.take_dirty());
     }
-    *serial += 1;
+    *serial = serial
+        .checked_add(1)
+        .expect("u64::MAX was rejected before batch construction");
     let mut batch = persist::batch_from_dirty(&engine.world, dirty, *serial, durable);
     module_ops.append(&mut reemit);
     batch.module_ops = module_ops;
@@ -1283,35 +2737,79 @@ async fn flush_dirty(
     // Record (and re-stamp) every sealed chunk this batch carries to this
     // serial, just before handing it off — `capture` reflects "sent to the
     // writer", and the only path where the send below fails is teardown.
-    retained.capture(&batch.module_ops, *serial);
+    if let Err(retention_error) = retained.capture(&batch.module_ops, *serial) {
+        // Capture is atomic, so the table still owns every previously accepted
+        // seal and none of this candidate. Latch before durable spill: the
+        // quarantine sink can retry beyond shutdown's grace period, and an
+        // ordinary snapshot must already be prohibited while preservation is
+        // in progress.
+        persistence_integrity.latch();
+        tracing::error!(
+            error = %retention_error,
+            serial = *serial,
+            retained_seals = retained.custody_depth(),
+            retained_bytes = retained.custody_bytes(),
+            "authoritative batch rejected before enqueue: retained-seal custody invariant"
+        );
+        let detail = retention_error.to_string();
+        persist::preserve_unqueued_seals(quarantine_spool, &batch.module_ops, *serial, &detail)
+            .await;
+        return FlushOutcome::Rejected(detail);
+    }
     let (notify, receipt) = if durable {
         let (tx, rx) = oneshot::channel();
         (Some(tx), Some(rx))
     } else {
         (None, None)
     };
-    if writer
-        .send(StoreJob::Write { batch, notify })
-        .await
-        .is_err()
-    {
+    if let Err(send_error) = writer.send(StoreJob::Write { batch, notify }).await {
+        let StoreJob::Write { batch, .. } = send_error.0 else {
+            unreachable!("flush_dirty sends only StoreJob::Write")
+        };
         tracing::error!(
             serial = *serial,
             "store writer gone; batch dropped (teardown)"
         );
+        persist::preserve_unqueued_seals(
+            quarantine_spool,
+            &batch.module_ops,
+            *serial,
+            "store writer queue closed before accepting authoritative batch",
+        )
+        .await;
         return FlushOutcome::WriterGone;
     }
     // The writer decrements this as it drains each batch; together they track
     // the store write-queue depth for `/metrics` and `@stats`.
     metrics.add_store_write_queue_depth(1);
     health.last_write_unix = Some(unix_now_s());
-    FlushOutcome::Queued(receipt)
+    FlushOutcome::Queued {
+        receipt,
+        prepared_installation: None,
+    }
 }
 
 /// Handle the **local** staff ops (`@boot`, `@ps`, `@stats`) inline in the
 /// world loop: they need the `Engine` (scheduler, world, loop-lag mirror)
 /// and the session manager, and never touch the store. Output rides the
 /// normal outbox; the caller delivers it right after.
+fn admit_staff_ops(mode: WorldMode, ops: Vec<StaffOp>, gateway: &Gateway) -> Vec<StaffOp> {
+    let mut admitted = Vec::with_capacity(ops.len());
+    for op in ops {
+        match admission_for(mode, classify_staff_op(&op.kind)) {
+            Admission::Allow => admitted.push(op),
+            Admission::Refuse(reason) => {
+                tracing::warn!(actor = %op.actor, ?reason, "staff operation suppressed by world mode");
+                send_sys(gateway, op.actor, reason.text());
+            }
+            Admission::CheckStoreReadOnlyCommand => {
+                unreachable!("typed staff operations never use command-text classification")
+            }
+        }
+    }
+    admitted
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_local_staff_ops(
     engine: &mut Engine,
@@ -1439,13 +2937,14 @@ fn cadence_text(c: TickCadence) -> String {
 /// scene ticks, and totals. Pure over the engine — unit-testable.
 #[must_use]
 pub fn render_ps(engine: &Engine, now_ms: i64) -> String {
-    let entries = engine.sched.pending_entries();
+    let snapshot = engine.sched.pending_entries();
+    let entries = snapshot.entries();
     let mut next_fire: std::collections::HashMap<(String, String), i64> =
         std::collections::HashMap::new();
     let mut waits = Vec::new();
     let mut scenes = Vec::new();
     let mut control = 0usize;
-    for &(due, kind) in &entries {
+    for &(due, kind) in entries {
         let remain_s = (due - now_ms).max(0) / 1000;
         match kind {
             ScheduledKind::WaitCmd { actor, line } => {
@@ -1495,7 +2994,12 @@ pub fn render_ps(engine: &Engine, now_ms: i64) -> String {
     if control > 0 {
         text.push_str(&format!("\nControl timers: {control}"));
     }
-    text.push_str(&format!("\nTotal scheduled entries: {}", entries.len()));
+    text.push_str(&format!("\nTotal scheduled entries: {}", snapshot.total()));
+    text.push_str(&format!(
+        "\nDisplayed earliest entries: {} ({} omitted)",
+        entries.len(),
+        snapshot.omitted()
+    ));
     text
 }
 
@@ -1632,7 +3136,8 @@ fn maybe_publish_sample(
         things: counts.things as i64,
         players: counts.players as i64,
         npcs: counts.npcs as i64,
-        store_read_only: health.read_only,
+        store_read_only: health.mode.store_read_only(),
+        integrity_frozen: health.mode.integrity_frozen(),
         npc_active,
         npc_thinking,
     });
@@ -1749,7 +3254,7 @@ pub fn render_stats(
     let connected = w.connected().count();
     let (lag_last, lag_max) = engine.loop_lag_ms();
     let uptime = (now_unix - boot_unix).max(0);
-    let store = if health.read_only {
+    let store = if health.mode.store_read_only() {
         "READ-ONLY (writes failing; mutations paused)".to_string()
     } else {
         "healthy".to_string()
@@ -1811,6 +3316,35 @@ pub fn render_stats(
                 "\n  {feature}: {inp} in + {out} out tokens, ${cost:.4}"
             ));
         }
+    }
+    if let (Some(definitions), Some(bridges), Some(migrations), Some(fingerprint)) = (
+        engine.registry.definitions(),
+        engine.registry.bridges(),
+        engine.registry.definition_migrations(),
+        engine.registry.mechanics_fingerprint(),
+    ) {
+        let summary = definitions.summary();
+        text.push_str(&format!(
+            "\nMechanics: {} definitions from {} owners, {} bridges, {} migrations; fingerprint {}",
+            summary.definition_count,
+            summary.owner_count,
+            bridges.iter().len(),
+            migrations.iter().len(),
+            fingerprint,
+        ));
+    }
+    for report in engine.registry.recovery_reports(w) {
+        text.push_str(&format!(
+            "\nRecovery {}: {} active, {} frozen, {} migrating, {} quarantined; {} incidents, {} migration plans{}",
+            report.owner,
+            report.active,
+            report.frozen,
+            report.migrating,
+            report.quarantined,
+            report.incident_count,
+            report.migration_plan_count,
+            if report.details_truncated { " (detail truncated)" } else { "" },
+        ));
     }
     text.push_str(&format!(
         "\nDb size: {total} objects (next id #{})",
@@ -1969,10 +3503,8 @@ async fn run_newpassword(
 ) -> String {
     let hash = {
         let password = password.to_string();
-        match tokio::task::spawn_blocking(move || {
-            mush_config::accounts::hash_password(&password)
-        })
-        .await
+        match tokio::task::spawn_blocking(move || mush_config::accounts::hash_password(&password))
+            .await
         {
             Ok(Ok(h)) => h,
             Ok(Err(e)) => return format!("@newpassword failed: {e}."),
@@ -2053,8 +3585,12 @@ async fn run_newpassword(
     // All-in-one: walk the shared manager (through the in-process sink) directly
     // — announce + bookkeeping through the world when the connection is still
     // up, then close each structured (web) connection.
-    let world = world.upgrade().map(|tx| WorldHandle { tx });
-    let chars: Vec<u64> = account.characters.iter().map(|c| u64::from(c.id.0)).collect();
+    let world = world.upgrade().map(|tx| WorldHandle { tx, shutdown: None });
+    let chars: Vec<u64> = account
+        .characters
+        .iter()
+        .map(|c| u64::from(c.id.0))
+        .collect();
     let mut booted = 0u32;
     for (conn, char) in gateway.structured_conns_of(&chars) {
         let actor = ObjId(u32::try_from(char).unwrap_or(u32::MAX));
@@ -2262,18 +3798,24 @@ async fn run_newchar(
     };
     // (2) Cap check BEFORE any create (N2).
     if account.characters.len() >= max_characters {
-        return format!(
-            "@newchar: you already have the maximum of {max_characters} characters."
-        );
+        return format!("@newchar: you already have the maximum of {max_characters} characters.");
     }
     // The world handle for the durable, ack-gated create path. A dropped world
     // (teardown) means we cannot create; fail closed rather than orphan.
-    let Some(world) = world.upgrade().map(|tx| WorldHandle { tx }) else {
+    let Some(world) = world.upgrade().map(|tx| WorldHandle { tx, shutdown: None }) else {
         return "@newchar failed: the world is shutting down.".to_string();
     };
     // Advisory name pre-check BEFORE create (N2); the create re-checks atomically.
-    if !world.name_free(name).await {
-        return format!("@newchar: the name {name:?} is already taken.");
+    match world.name_free(name).await {
+        Ok(true) => {}
+        Ok(false) => return format!("@newchar: the name {name:?} is already taken."),
+        Err(WorldReadError::Busy) => {
+            return "@newchar: the world is committing another action; please retry shortly."
+                .to_string();
+        }
+        Err(WorldReadError::Unavailable) => {
+            return "@newchar failed: the world is unavailable.".to_string();
+        }
     }
     // (3) Create through the established server create path — durable + ack-gated,
     // and it emits ObjCreated (comsys auto-join) exactly like account creation.
@@ -2363,12 +3905,7 @@ async fn staff_ops_loop(
                 name,
                 by,
                 password,
-            } => {
-                run_newpassword(
-                    &*store, &gateway, &world, target, &name, &by, &password.0,
-                )
-                .await
-            }
+            } => run_newpassword(&*store, &gateway, &world, target, &name, &by, &password.0).await,
             StaffOpKind::ListBans => match store.get_bans().await {
                 Ok(bans) if bans.is_empty() => "No active sitebans.".to_string(),
                 Ok(mut bans) => {
@@ -2389,9 +3926,7 @@ async fn staff_ops_loop(
                 openssh,
                 fingerprint,
             } => run_add_sshkey(&*store, subject, &openssh, &fingerprint).await,
-            StaffOpKind::ListSshKeys { actor: subject } => {
-                run_list_sshkeys(&*store, subject).await
-            }
+            StaffOpKind::ListSshKeys { actor: subject } => run_list_sshkeys(&*store, subject).await,
             StaffOpKind::DelSshKey {
                 actor: subject,
                 which,
@@ -2453,33 +3988,55 @@ fn create_player(engine: &mut Engine, name: &str) -> Result<ObjId, CreatePlayerE
     }
 }
 
+/// Apply one complete gateway roster without firing connection hooks. Kept as
+/// a single helper so immediate reattach and post-receipt coalesced reattach
+/// cannot drift on partial-snapshot semantics.
+fn apply_reattach_snapshot(engine: &mut Engine, recs: &[ReAttachRec], out: &mut Outbox) {
+    for rec in recs {
+        engine.reattach(rec.conn, rec.actor, rec.caps_structured, out);
+    }
+}
+
 // `SendTarget` (the fully resolved send destination) now lives in `mush-ipc`
 // as the server->gateway `Deliver` payload; its `Char`/`Conn` arms carry raw
 // `u64` routing keys (`mush-ipc` must not depend on `mush-session`). `mushd`
 // widens a `CharKey`/`SessConnId` in and out at the two boundary points below,
 // exactly as before.
-use mush_ipc::SendTarget;
-
 /// Resolve every queued audience against **current** world state into
 /// per-character (or per-connection) sends. The world half of treaty
 /// ruling 2 lives here: `Room` audiences become the room's *connected
 /// actors*; the session manager later takes it from character to
 /// connections. Split from [`transmit`] so a durable-gated step can
 /// resolve now and deliver after the store ack.
+#[cfg(test)]
 fn resolve_sends(
     reg: &Registry,
     world: &World,
     out: &mut Outbox,
 ) -> Vec<(SendTarget, Arc<OutputEvent>)> {
+    resolve_classified_sends(reg, world, out)
+        .into_iter()
+        .map(|(_class, target, event)| (target, event))
+        .collect()
+}
+
+/// Resolve audiences while retaining each item's durability relationship.
+/// Resolution happens at the end of the producing step, before later
+/// transport-only work can change the connected-recipient set.
+fn resolve_classified_sends(
+    reg: &Registry,
+    world: &World,
+    out: &mut Outbox,
+) -> Vec<ClassifiedSend> {
     let mut sends = Vec::new();
-    for (audience, event) in out.take() {
+    for (class, audience, event) in out.take_classified() {
         let ev = Arc::new(event);
         match audience {
             Audience::Actor(actor) => {
-                sends.push((SendTarget::Char(u64::from(actor.0)), ev));
+                sends.push((class, SendTarget::Char(u64::from(actor.0)), ev));
             }
             Audience::Conn(conn) => {
-                sends.push((SendTarget::Conn(conn), ev));
+                sends.push((class, SendTarget::Conn(conn), ev));
             }
             Audience::Room {
                 room,
@@ -2517,23 +4074,317 @@ fn resolve_sends(
                     {
                         continue;
                     }
-                    sends.push((SendTarget::Char(u64::from(occupant.0)), Arc::clone(&ev)));
+                    sends.push((
+                        class,
+                        SendTarget::Char(u64::from(occupant.0)),
+                        Arc::clone(&ev),
+                    ));
                 }
             }
-            Audience::All => sends.push((SendTarget::All, ev)),
+            Audience::All => sends.push((class, SendTarget::All, ev)),
         }
     }
     sends
 }
 
-/// Resolve (server side) and transmit (gateway side) in one pass — the
-/// ordinary, un-gated delivery path. `resolve_sends` reads `World` (the
-/// M11/M14 perception gating); the resolved `(SendTarget, OutputEvent)` pairs,
-/// each a [`ToGateway::Deliver`](mush_ipc::ToGateway), cross to the gateway via
-/// the in-process sink, which maps them onto the session manager and reports
-/// slow clients (or the socket sink, which serializes them to the boundary).
-fn deliver(reg: &Registry, world: &World, gateway: &Gateway, out: &mut Outbox) {
-    gateway.transmit(resolve_sends(reg, world, out));
+fn release_classified_sends(
+    gateway: &Gateway,
+    sends: Vec<ClassifiedSend>,
+    outcome: DeliveryOutcome,
+) -> usize {
+    let released: Vec<_> = sends
+        .into_iter()
+        .filter_map(|(class, target, event)| class.releases_on(outcome).then_some((target, event)))
+        .collect();
+    let count = released.len();
+    gateway.transmit(released);
+    count
+}
+
+fn release_classified_effects(
+    mode: WorldMode,
+    effects: Vec<(DeliveryClass, Effect)>,
+    outcome: DeliveryOutcome,
+    tx: &mpsc::WeakSender<WorldMsg>,
+    llm: Option<&Arc<LlmService>>,
+) {
+    if outcome == DeliveryOutcome::Aborted {
+        if !effects.is_empty() {
+            tracing::debug!(
+                dropped = effects.len(),
+                "all external effects discarded after authoritative abort"
+            );
+        }
+        return;
+    }
+    let mut released = Vec::new();
+    let mut outcome_dropped = 0_usize;
+    for (class, effect) in effects {
+        if class.releases_on(outcome) {
+            released.push(effect);
+        } else {
+            outcome_dropped += 1;
+        }
+    }
+    if outcome_dropped > 0 {
+        tracing::debug!(
+            dropped = outcome_dropped,
+            ?outcome,
+            "external effects discarded by delivery outcome"
+        );
+    }
+    match admission_for(mode, IngressClass::ExternalEffect) {
+        Admission::Allow => spawn_effect_list(released, tx, llm),
+        Admission::Refuse(reason) => {
+            if !released.is_empty() {
+                tracing::warn!(
+                    dropped = released.len(),
+                    ?reason,
+                    "external effects suppressed by world mode"
+                );
+            }
+        }
+        Admission::CheckStoreReadOnlyCommand => {
+            unreachable!("effect launch never uses command-text classification")
+        }
+    }
+}
+
+/// Best-effort status may cross the boundary while a write is pending. Every
+/// other class remains owned by the exact receipt.
+fn release_best_effort_before_ack(
+    gateway: &Gateway,
+    sends: &mut Vec<ClassifiedSend>,
+    _effects: &mut Vec<(DeliveryClass, Effect)>,
+    _mode: WorldMode,
+    _tx: &mpsc::WeakSender<WorldMsg>,
+    _llm: Option<&Arc<LlmService>>,
+) {
+    let (immediate_sends, held_sends): (Vec<_>, Vec<_>) = std::mem::take(sends)
+        .into_iter()
+        .partition(|(class, _, _)| *class == DeliveryClass::BestEffort);
+    *sends = held_sends;
+    gateway.transmit(
+        immediate_sends
+            .into_iter()
+            .map(|(_, target, event)| (target, event))
+            .collect(),
+    );
+
+    // BestEffort relaxes presentation durability only. External work never
+    // launches while any authoritative receipt is outstanding.
+}
+
+/// Operational work admitted while another commit is pending is independent
+/// for BestEffort/OnAbort purposes. Gameplay/world reads are refused before
+/// this point because RAM contains the tentative post-image. Reattach renders
+/// are commit-bound and therefore join the outstanding receipt rather than
+/// exposing that image early.
+fn release_independent_while_pending(
+    gateway: &Gateway,
+    sends: &mut Vec<ClassifiedSend>,
+    _effects: &mut Vec<(DeliveryClass, Effect)>,
+    _mode: WorldMode,
+    _tx: &mpsc::WeakSender<WorldMsg>,
+    _llm: Option<&Arc<LlmService>>,
+) {
+    let is_independent =
+        |class: DeliveryClass| matches!(class, DeliveryClass::BestEffort | DeliveryClass::OnAbort);
+    let (immediate_sends, held_sends): (Vec<_>, Vec<_>) = std::mem::take(sends)
+        .into_iter()
+        .partition(|(class, _, _)| is_independent(*class));
+    *sends = held_sends;
+    gateway.transmit(
+        immediate_sends
+            .into_iter()
+            .map(|(_, target, event)| (target, event))
+            .collect(),
+    );
+
+    // Even independently clean work cannot launch an external effect while an
+    // older authoritative write is unresolved. These remain in `effects` and
+    // join that exact receipt below.
+}
+
+// Keep every authority involved in resolving an exact receipt explicit at this
+// single boundary; hiding the mutable health/latch pair in ambient state would
+// make it easier to freeze the world without publishing the shutdown barrier.
+#[allow(clippy::too_many_arguments)]
+fn complete_pending_commit(
+    pending: PendingCommit,
+    ack: Result<Result<u64, String>, oneshot::error::RecvError>,
+    engine: &mut Engine,
+    gateway: &Gateway,
+    health: &mut StoreHealth,
+    persistence_integrity: &PersistenceIntegrityLatch,
+    tx: &mpsc::WeakSender<WorldMsg>,
+    llm: Option<&Arc<LlmService>>,
+) -> CompletedPending {
+    let expected_serial = pending.token.0;
+    let PendingCommit {
+        sends,
+        effects,
+        failure_actor,
+        create,
+        prepared_installation,
+        barriers,
+        coalesced_reattach,
+        ..
+    } = pending;
+    let (outcome, failure) = match ack {
+        Ok(Ok(serial)) if serial == expected_serial => (DeliveryOutcome::Committed, None),
+        Ok(Ok(serial)) => (
+            DeliveryOutcome::Aborted,
+            Some(format!(
+                "commit receipt identity mismatch: expected serial {expected_serial}, received {serial}"
+            )),
+        ),
+        Ok(Err(detail)) => (DeliveryOutcome::Aborted, Some(detail)),
+        Err(_) => (
+            DeliveryOutcome::Aborted,
+            Some("store writer dropped the exact commit receipt".to_string()),
+        ),
+    };
+    let has_abort_output = sends
+        .iter()
+        .any(|(class, _, _)| matches!(class, DeliveryClass::BestEffort | DeliveryClass::OnAbort));
+    if let Some(installation) = prepared_installation {
+        if outcome == DeliveryOutcome::Committed {
+            // The exact applied receipt is the only transition that makes the
+            // prepared typed post-images live. No provider, validator, codec,
+            // serializer, or readiness callback runs here.
+            engine.install_prepared_action(installation);
+        } else {
+            engine.abort_prepared_action(installation);
+        }
+    }
+    release_classified_sends(gateway, sends, outcome);
+    let effect_mode = if outcome == DeliveryOutcome::Committed && !health.mode.integrity_frozen() {
+        // A successful receipt is itself the recovery fact for this batch;
+        // StoreStatus(true) may still be queued behind it in the select.
+        WorldMode::Writable
+    } else {
+        health.mode
+    };
+    release_classified_effects(effect_mode, effects, outcome, tx, llm);
+
+    match (create, failure.as_deref()) {
+        (Some(create), None) => {
+            let _ = create.reply.send(Ok(create.id));
+        }
+        (Some(create), Some(detail)) => {
+            let _ = create.reply.send(Err(CreatePlayerErr::World(format!(
+                "store write failed: {}",
+                bounded_failure_detail(detail)
+            ))));
+        }
+        (None, _) => {}
+    }
+
+    if let Some(detail) = failure {
+        apply_integrity_freeze(
+            &engine.world,
+            gateway,
+            health,
+            persistence_integrity,
+            &detail,
+        );
+        if let Some(actor) = failure_actor
+            && !has_abort_output
+        {
+            send_commit_failure(gateway, actor, &detail);
+        }
+    }
+    CompletedPending {
+        outcome,
+        barriers,
+        coalesced_reattach,
+    }
+}
+
+/// Finish transport-only work that accumulated behind an exact receipt. The
+/// coalesced roster is applied before any ordering barrier is released. Its
+/// room views use the same receipt disposition as the snapshots they replace:
+/// visible on commit, dropped on abort, while connection bookkeeping is rebuilt
+/// in either case just as it was before coalescing.
+fn finish_pending_operational(engine: &mut Engine, gateway: &Gateway, completed: CompletedPending) {
+    if let Some(recs) = completed.coalesced_reattach {
+        let count = recs.len();
+        let mut reattach_out = Outbox::new();
+        apply_reattach_snapshot(engine, &recs, &mut reattach_out);
+        let sends = resolve_classified_sends(&engine.registry, &engine.world, &mut reattach_out);
+        release_classified_sends(gateway, sends, completed.outcome);
+        tracing::info!(
+            count,
+            "applied coalesced reattach snapshot after exact receipt"
+        );
+    }
+    // A barrier completes after both authoritative release and any preceding
+    // coalesced transport snapshot, never merely after its message was dequeued.
+    let barrier_result = if completed.outcome == DeliveryOutcome::Committed {
+        Ok(())
+    } else {
+        Err(WorldReadError::Unavailable)
+    };
+    for barrier in completed.barriers {
+        let _ = barrier.send(barrier_result);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn abort_without_receipt(
+    sends: Vec<ClassifiedSend>,
+    effects: Vec<(DeliveryClass, Effect)>,
+    failure_actor: Option<ObjId>,
+    create: Option<CreateCompletion>,
+    detail: &str,
+    world: &World,
+    gateway: &Gateway,
+    health: &mut StoreHealth,
+    persistence_integrity: &PersistenceIntegrityLatch,
+    tx: &mpsc::WeakSender<WorldMsg>,
+    llm: Option<&Arc<LlmService>>,
+) {
+    let has_abort_output = sends
+        .iter()
+        .any(|(class, _, _)| matches!(class, DeliveryClass::BestEffort | DeliveryClass::OnAbort));
+    release_classified_sends(gateway, sends, DeliveryOutcome::Aborted);
+    release_classified_effects(health.mode, effects, DeliveryOutcome::Aborted, tx, llm);
+    apply_integrity_freeze(world, gateway, health, persistence_integrity, detail);
+    if let Some(actor) = failure_actor
+        && !has_abort_output
+    {
+        send_commit_failure(gateway, actor, detail);
+    }
+    if let Some(create) = create {
+        let _ = create.reply.send(Err(CreatePlayerErr::World(format!(
+            "store write failed: {}",
+            bounded_failure_detail(detail)
+        ))));
+    }
+}
+
+fn bounded_failure_detail(detail: &str) -> &str {
+    const MAX_BYTES: usize = 512;
+    if detail.len() <= MAX_BYTES {
+        return detail;
+    }
+    let mut boundary = MAX_BYTES;
+    while !detail.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    &detail[..boundary]
+}
+
+fn send_commit_failure(gateway: &Gateway, actor: ObjId, detail: &str) {
+    send_sys(
+        gateway,
+        actor,
+        &format!(
+            "The database rejected your last action ({}). Its success output and external effects were suppressed; the world is now integrity-frozen.",
+            bounded_failure_detail(detail)
+        ),
+    );
 }
 
 /// Spawn one detached task per drained [`Effect`]; each completion re-enters
@@ -2543,8 +4394,12 @@ fn deliver(reg: &Registry, world: &World, gateway: &Gateway, out: &mut Outbox) {
 /// weak one), so the world task outlives every pending completion; once the
 /// last handle *and* the last effect are gone, the channel closes and the
 /// task ends.
-fn spawn_effects(fx: &mut Effects, tx: &mpsc::WeakSender<WorldMsg>, llm: Option<&Arc<LlmService>>) {
-    for effect in fx.drain() {
+fn spawn_effect_list(
+    effects: Vec<Effect>,
+    tx: &mpsc::WeakSender<WorldMsg>,
+    llm: Option<&Arc<LlmService>>,
+) {
+    for effect in effects {
         match effect {
             Effect::SlowTest {
                 actor,
@@ -2711,7 +4566,10 @@ fn spawn_effects(fx: &mut Effects, tx: &mpsc::WeakSender<WorldMsg>, llm: Option<
                             .await
                             .is_err()
                         {
-                            tracing::debug!(correlation, "wod st completion after shutdown dropped");
+                            tracing::debug!(
+                                correlation,
+                                "wod st completion after shutdown dropped"
+                            );
                         }
                     });
                 } else {
@@ -2729,9 +4587,420 @@ fn spawn_effects(fx: &mut Effects, tx: &mpsc::WeakSender<WorldMsg>, llm: Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mush_core::module::{ContextOutcome, InputContext};
-    use mush_core::{Ctx, GOD};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    use mush_core::{
+        ArgShape, AsyncCompletion, CanonicalId, CmdError, CommandSpec, ContextOutcome, Ctx,
+        Deferred, EventHook, GOD, GameModule, HookPoint, InputContext, LIMBO, ModuleBootData,
+        ModuleCtx, ModuleOp, ModuleWrite, QueryHandler, Registrar, StateFamilyDescriptor,
+        StateFamilyHandle, StateFamilyId, TickHandler, WorldEventKind, WorldObserver,
+    };
     use mush_proto::{InputMode, PromptSpec};
+
+    struct BlackholeGateway;
+
+    impl GatewaySink for BlackholeGateway {
+        fn transmit(&self, _sends: Vec<(SendTarget, Arc<OutputEvent>)>) {}
+
+        fn set_flood_exempt(&self, _char: u64, _exempt: bool) {}
+
+        fn is_socket(&self) -> bool {
+            false
+        }
+
+        fn close_session(&self, _char: u64, _cause: mush_ipc::DetachCause) {}
+
+        fn close_web_sessions(
+            &self,
+            _chars: Vec<u64>,
+            _notice: Option<OutputEvent>,
+            _cause: mush_ipc::DetachCause,
+        ) {
+        }
+
+        fn close_char_connections(&self, _char: u64) -> Vec<u64> {
+            Vec::new()
+        }
+
+        fn structured_conns_of(&self, _chars: &[u64]) -> Vec<(u64, u64)> {
+            Vec::new()
+        }
+
+        fn detach_conn_local(&self, _conn: u64) {}
+
+        fn session_counts(&self) -> (i64, i64) {
+            (0, 0)
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingGateway {
+        sends: Mutex<Vec<(SendTarget, Arc<OutputEvent>)>>,
+    }
+
+    impl RecordingGateway {
+        fn reply_text(&self, id: u64) -> Option<String> {
+            self.sends
+                .lock()
+                .expect("recording gateway poisoned")
+                .iter()
+                .find_map(|(_, event)| match event.as_ref() {
+                    OutputEvent::Reply {
+                        id: reply_id,
+                        event,
+                    } if *reply_id == id => match event.as_ref() {
+                        OutputEvent::Sys(text) => Some(text.to_plain_text()),
+                        other => Some(format!("{other:?}")),
+                    },
+                    _ => None,
+                })
+        }
+    }
+
+    impl GatewaySink for RecordingGateway {
+        fn transmit(&self, sends: Vec<(SendTarget, Arc<OutputEvent>)>) {
+            self.sends
+                .lock()
+                .expect("recording gateway poisoned")
+                .extend(sends);
+        }
+
+        fn set_flood_exempt(&self, _char: u64, _exempt: bool) {}
+
+        fn is_socket(&self) -> bool {
+            false
+        }
+
+        fn close_session(&self, _char: u64, _cause: mush_ipc::DetachCause) {}
+
+        fn close_web_sessions(
+            &self,
+            _chars: Vec<u64>,
+            _notice: Option<OutputEvent>,
+            _cause: mush_ipc::DetachCause,
+        ) {
+        }
+
+        fn close_char_connections(&self, _char: u64) -> Vec<u64> {
+            Vec::new()
+        }
+
+        fn structured_conns_of(&self, _chars: &[u64]) -> Vec<(u64, u64)> {
+            Vec::new()
+        }
+
+        fn detach_conn_local(&self, _conn: u64) {}
+
+        fn session_counts(&self) -> (i64, i64) {
+            (0, 0)
+        }
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct PreparedLaneState {
+        amount: u8,
+    }
+
+    type PreparedLaneHandle = StateFamilyHandle<u64, PreparedLaneState>;
+
+    struct PreparedLaneModule {
+        captured: Arc<Mutex<Option<PreparedLaneHandle>>>,
+    }
+
+    impl GameModule for PreparedLaneModule {
+        fn name(&self) -> &'static str {
+            "prepared_lane_test"
+        }
+
+        fn register(&mut self, registrar: &mut Registrar<'_>) -> Result<(), mush_core::ModError> {
+            let descriptor = StateFamilyDescriptor::new(
+                StateFamilyId::new("receipt_state").expect("static family id"),
+                CanonicalId::new("u64.decimal.v1").expect("static codec id"),
+                CanonicalId::new("prepared_lane_state.v1").expect("static schema id"),
+                1,
+                CanonicalId::new("prepared_lane_state.range.v1").expect("static validator id"),
+                CanonicalId::new("prepared_lane_state.json.v1").expect("static serializer id"),
+            )
+            .expect("static state-family descriptor");
+            let handle = registrar.state_family(
+                descriptor,
+                |key: &u64| Ok(key.to_string()),
+                |_value: &PreparedLaneState| Ok(()),
+                |value: &PreparedLaneState| Ok(serde_json::json!({ "amount": value.amount })),
+            )?;
+            *self.captured.lock().expect("capture mutex poisoned") = Some(handle);
+            Ok(())
+        }
+
+        fn on_world_loaded(
+            &mut self,
+            ctx: &mut ModuleCtx<'_>,
+            _data: ModuleBootData,
+        ) -> Result<(), mush_core::ModError> {
+            ctx.persist(ModuleOp {
+                ns: "prepared_lane_test".into(),
+                op: ModuleWrite::JsonSet {
+                    key: "late_legacy_work".into(),
+                    value: serde_json::json!({ "queued": true }),
+                },
+            });
+            Ok(())
+        }
+    }
+
+    fn prepared_lane_fixture() -> (Engine, PreparedLaneHandle) {
+        let captured = Arc::new(Mutex::new(None));
+        let module = PreparedLaneModule {
+            captured: Arc::clone(&captured),
+        };
+        let mut engine = Engine::with_modules(
+            World::new_minimal(),
+            Registry::new(),
+            vec![Box::new(module)],
+        )
+        .expect("prepared-lane test module composes");
+        // The minimal world's seed objects are unrelated legacy dirtiness;
+        // prepared action state must enter the dedicated persistence lane.
+        engine.world.take_dirty();
+        let handle = captured
+            .lock()
+            .expect("capture mutex poisoned")
+            .clone()
+            .expect("registration captured state-family handle");
+        (engine, handle)
+    }
+
+    fn prepare_lane_installation(
+        engine: &mut Engine,
+        handle: &PreparedLaneHandle,
+        key: u64,
+        amount: u8,
+    ) -> PreparedInstallation {
+        let mut transaction = engine
+            .action_transaction(handle)
+            .expect("test transaction begins");
+        transaction
+            .insert(handle, &key, PreparedLaneState { amount })
+            .expect("test state is valid");
+        let prepared = transaction.prepare().expect("test transaction prepares");
+        let (_module_ops, installation) = prepared.into_parts();
+        installation
+    }
+
+    fn pending_with_prepared_installation(
+        serial: u64,
+        installation: PreparedInstallation,
+    ) -> PendingCommit {
+        let (_receipt_tx, receipt) = oneshot::channel();
+        PendingCommit {
+            token: CommitToken::from_serial(serial),
+            receipt,
+            sends: Vec::new(),
+            effects: Vec::new(),
+            failure_actor: None,
+            create: None,
+            prepared_installation: Some(installation),
+            barriers: Vec::new(),
+            coalesced_reattach: None,
+            exit_after_ack: false,
+        }
+    }
+
+    #[derive(Clone, Debug, Default)]
+    struct GateProbeState {
+        mutations: usize,
+    }
+
+    #[derive(Default)]
+    struct GateProbeCounts {
+        command: AtomicUsize,
+        input_context: AtomicUsize,
+        connection_hook: AtomicUsize,
+        observer: AtomicUsize,
+        async_apply: AtomicUsize,
+        timer: AtomicUsize,
+    }
+
+    impl GateProbeCounts {
+        fn total(&self) -> usize {
+            [
+                &self.command,
+                &self.input_context,
+                &self.connection_hook,
+                &self.observer,
+                &self.async_apply,
+                &self.timer,
+            ]
+            .into_iter()
+            .map(|counter| counter.load(AtomicOrdering::SeqCst))
+            .sum()
+        }
+    }
+
+    fn record_probe_mutation(ctx: &mut Ctx<'_>, counter: &AtomicUsize, key: &str) {
+        counter.fetch_add(1, AtomicOrdering::SeqCst);
+        ctx.state_mut::<GateProbeState>()
+            .expect("gate probe state installed")
+            .mutations += 1;
+        ctx.persist(ModuleOp {
+            ns: "gate_probe".into(),
+            op: ModuleWrite::JsonSet {
+                key: key.into(),
+                value: serde_json::json!({ "executed": true }),
+            },
+        });
+    }
+
+    struct ProbeConnected(Arc<GateProbeCounts>);
+
+    impl EventHook for ProbeConnected {
+        fn connected(&self, ctx: &mut Ctx<'_>, _actor: ObjId) {
+            record_probe_mutation(ctx, &self.0.connection_hook, "connection_hook");
+        }
+    }
+
+    struct ProbeObserver(Arc<GateProbeCounts>);
+
+    impl WorldObserver for ProbeObserver {
+        fn on_event(&self, ctx: &mut Ctx<'_>, _ev: &WorldEvent) {
+            record_probe_mutation(ctx, &self.0.observer, "observer");
+        }
+    }
+
+    struct ProbeAsync(Arc<GateProbeCounts>);
+
+    impl AsyncCompletion for ProbeAsync {
+        fn on_complete(&self, ctx: &mut Ctx<'_>, _correlation: u64, _payload: &str) {
+            record_probe_mutation(ctx, &self.0.async_apply, "async_apply");
+        }
+    }
+
+    struct ProbeTick(Arc<GateProbeCounts>);
+
+    impl TickHandler for ProbeTick {
+        fn tick(&self, ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::SceneId>) {
+            record_probe_mutation(ctx, &self.0.timer, "timer");
+            ctx.out.defer(Deferred::Effect(Effect::SlowTest {
+                actor: GOD,
+                correlation: 99,
+                seconds: 0,
+            }));
+        }
+    }
+
+    struct ProbeQuery {
+        input_actor: ObjId,
+    }
+
+    impl QueryHandler for ProbeQuery {
+        fn query(
+            &self,
+            world: &World,
+            _actor: ObjId,
+            _params: &serde_json::Value,
+        ) -> Result<OutputEvent, RichText> {
+            let mutations = world
+                .module_state::<GateProbeState>()
+                .expect("gate probe state installed")
+                .mutations;
+            Ok(OutputEvent::Sys(RichText::plain(format!(
+                "objects={} mutations={mutations} input_depth={}",
+                world.iter().count(),
+                world.input_depth(self.input_actor)
+            ))))
+        }
+    }
+
+    struct GateProbeModule {
+        counts: Arc<GateProbeCounts>,
+        input_actor: ObjId,
+    }
+
+    impl GameModule for GateProbeModule {
+        fn name(&self) -> &'static str {
+            "gate_probe"
+        }
+
+        fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), mush_core::ModError> {
+            reg.state(GateProbeState::default());
+
+            let counts = Arc::clone(&self.counts);
+            reg.command(
+                CommandSpec {
+                    name: "gate-mutate".into(),
+                    shape: ArgShape::None,
+                    help: "test-only gate mutation".into(),
+                    ..CommandSpec::default()
+                },
+                Arc::new(move |ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+                    counts.command.fetch_add(1, AtomicOrdering::SeqCst);
+                    let created = ctx
+                        .w
+                        .create(ObjKind::Thing, "gate-leak", ctx.actor, Some(LIMBO))
+                        .map_err(|error| CmdError::msg(error.to_string()))?;
+                    ctx.emit_world_event(&WorldEvent::ObjCreated {
+                        obj: created,
+                        kind: ObjKind::Thing,
+                        creator: ctx.actor,
+                    });
+                    ctx.state_mut::<GateProbeState>()
+                        .expect("gate probe state installed")
+                        .mutations += 1;
+                    ctx.persist(ModuleOp {
+                        ns: "gate_probe".into(),
+                        op: ModuleWrite::JsonSet {
+                            key: "command".into(),
+                            value: serde_json::json!({ "executed": true }),
+                        },
+                    });
+                    ctx.out.defer(Deferred::Effect(Effect::SlowTest {
+                        actor: ctx.actor,
+                        correlation: 7,
+                        seconds: 0,
+                    }));
+                    Ok(())
+                }),
+            )?;
+            reg.hook(
+                HookPoint::Connected,
+                Arc::new(ProbeConnected(Arc::clone(&self.counts))),
+            );
+            reg.subscribe(
+                WorldEventKind::ObjCreated,
+                Arc::new(ProbeObserver(Arc::clone(&self.counts))),
+            );
+            reg.tick(
+                "due",
+                TickCadence::Fast(Duration::from_millis(1)),
+                Arc::new(ProbeTick(Arc::clone(&self.counts))),
+            )?;
+            reg.async_completion(Arc::new(ProbeAsync(Arc::clone(&self.counts))))?;
+            reg.query_handler(
+                "gate_probe.snapshot",
+                Arc::new(ProbeQuery {
+                    input_actor: self.input_actor,
+                }),
+            )?;
+            Ok(())
+        }
+    }
+
+    struct ProbeInputContext(Arc<GateProbeCounts>);
+
+    impl InputContext for ProbeInputContext {
+        fn prompt(&self, _world: &World) -> PromptSpec {
+            PromptSpec {
+                mode: InputMode::Normal,
+                text: Some(RichText::plain("probe>")),
+            }
+        }
+
+        fn feed(&mut self, ctx: &mut Ctx<'_>, _line: &str) -> ContextOutcome {
+            record_probe_mutation(ctx, &self.0.input_context, "input_context");
+            ContextOutcome::Consumed
+        }
+    }
 
     fn cmd(line: &str) -> Inbound {
         Inbound::Cmd {
@@ -2739,6 +5008,1294 @@ mod tests {
             actor: GOD,
             line: line.to_string(),
         }
+    }
+
+    #[test]
+    fn inbound_classifier_covers_every_variant() {
+        let cases = [
+            (cmd("look"), IngressClass::Command),
+            (
+                Inbound::Query {
+                    conn: 1,
+                    actor: GOD,
+                    id: 7,
+                    name: "who".into(),
+                    args: serde_json::json!({}),
+                },
+                IngressClass::WorldRead,
+            ),
+            (
+                Inbound::ConnUp {
+                    conn: 1,
+                    actor: GOD,
+                    caps_structured: false,
+                    from_linkdead: false,
+                },
+                IngressClass::ConnectionHooks,
+            ),
+            (
+                Inbound::ConnDown {
+                    conn: 1,
+                    actor: GOD,
+                    reason: DisconnectKind::Lost,
+                },
+                IngressClass::ConnectionHooks,
+            ),
+            (
+                Inbound::SessionGone { actor: GOD },
+                IngressClass::ConnectionHooks,
+            ),
+            (
+                Inbound::Apply(WorldCommand::SlowTestDone {
+                    actor: GOD,
+                    correlation: 9,
+                    text: "done".to_string(),
+                }),
+                IngressClass::AsyncApply,
+            ),
+            (
+                Inbound::Control(ControlMsg::Shutdown),
+                IngressClass::Shutdown,
+            ),
+            (
+                Inbound::Control(ControlMsg::Dump),
+                IngressClass::StaffMutation,
+            ),
+        ];
+        for (msg, expected) in cases {
+            assert_eq!(classify_inbound(&msg), expected);
+        }
+    }
+
+    #[test]
+    fn world_message_classifier_covers_every_variant() {
+        assert_eq!(
+            classify_world_msg(&WorldMsg::Inbound(cmd("look"))),
+            IngressClass::Command
+        );
+        assert_eq!(
+            classify_world_msg(&WorldMsg::ReAttach {
+                recs: Vec::new().into_boxed_slice(),
+            }),
+            IngressClass::TransportBookkeeping
+        );
+        let (reply, _rx) = oneshot::channel();
+        assert_eq!(
+            classify_world_msg(&WorldMsg::CreatePlayer {
+                name: "Newbie".to_string(),
+                reply,
+            }),
+            IngressClass::WorldMutation
+        );
+        let (reply, _rx) = oneshot::channel();
+        assert_eq!(
+            classify_world_msg(&WorldMsg::NameFree {
+                name: "Newbie".to_string(),
+                reply,
+            }),
+            IngressClass::WorldRead
+        );
+        let (reply, _rx) = oneshot::channel();
+        assert_eq!(
+            classify_world_msg(&WorldMsg::InInputContext { actor: GOD, reply }),
+            IngressClass::WorldRead
+        );
+        let (reply, _rx) = oneshot::channel();
+        assert_eq!(
+            classify_world_msg(&WorldMsg::ConnectionReady {
+                conn: 1,
+                actor: GOD,
+                reply,
+            }),
+            IngressClass::WorldRead
+        );
+        let (reply, _rx) = oneshot::channel();
+        assert_eq!(
+            classify_world_msg(&WorldMsg::Barrier { reply }),
+            IngressClass::OrderingBarrier
+        );
+    }
+
+    #[test]
+    fn only_transferred_semantic_or_lifecycle_custody_uses_deferred_slot() {
+        assert!(!must_defer_behind_commit(&WorldMsg::Inbound(cmd("look"))));
+        let (reply, _rx) = oneshot::channel();
+        assert!(!must_defer_behind_commit(&WorldMsg::CreatePlayer {
+            name: "RetryMe".to_string(),
+            reply,
+        }));
+        assert!(must_defer_behind_commit(&WorldMsg::Inbound(
+            Inbound::ConnDown {
+                conn: 9,
+                actor: GOD,
+                reason: DisconnectKind::Quit,
+            }
+        )));
+        assert!(must_defer_behind_commit(&WorldMsg::Inbound(
+            Inbound::Apply(WorldCommand::SlowTestDone {
+                actor: GOD,
+                correlation: 1,
+                text: "done".to_string(),
+            })
+        )));
+    }
+
+    #[test]
+    fn writer_and_staff_classifiers_cover_every_variant() {
+        assert_eq!(
+            classify_writer_signal(&WriterSignal::StoreStatus {
+                healthy: true,
+                detail: String::new(),
+            }),
+            IngressClass::WriterRecovery
+        );
+        assert_eq!(
+            classify_writer_signal(&WriterSignal::LedgerBreach {
+                detail: "breach".to_string(),
+                seal: None,
+            }),
+            IngressClass::WriterRecovery
+        );
+        assert_eq!(
+            classify_writer_signal(&WriterSignal::DeterministicFailure {
+                detail: "rejected".to_string(),
+            }),
+            IngressClass::WriterRecovery
+        );
+
+        let ip = "127.0.0.1".parse().unwrap();
+        let cases = [
+            (
+                StaffOpKind::SetBan {
+                    ip,
+                    until_unix: None,
+                    reason: "test".to_string(),
+                },
+                IngressClass::StaffMutation,
+            ),
+            (StaffOpKind::ClearBan { ip }, IngressClass::StaffMutation),
+            (StaffOpKind::ListBans, IngressClass::StaffStatus),
+            (StaffOpKind::Dump, IngressClass::StaffMutation),
+            (StaffOpKind::Shutdown, IngressClass::Shutdown),
+            (
+                StaffOpKind::Boot {
+                    target: GOD,
+                    message: String::new(),
+                },
+                IngressClass::StaffMutation,
+            ),
+            (
+                StaffOpKind::NewPassword {
+                    target: GOD,
+                    name: "God".to_string(),
+                    by: "God".to_string(),
+                    password: crate::staff::Secret("secret".to_string()),
+                },
+                IngressClass::StaffMutation,
+            ),
+            (
+                StaffOpKind::AddSshKey {
+                    actor: GOD,
+                    openssh: "ssh-ed25519 AAAA".to_string(),
+                    fingerprint: "SHA256:test".to_string(),
+                },
+                IngressClass::StaffMutation,
+            ),
+            (
+                StaffOpKind::ListSshKeys { actor: GOD },
+                IngressClass::StaffStatus,
+            ),
+            (
+                StaffOpKind::DelSshKey {
+                    actor: GOD,
+                    which: "1".to_string(),
+                },
+                IngressClass::StaffMutation,
+            ),
+            (
+                StaffOpKind::NewChar {
+                    actor: GOD,
+                    name: "Alt".to_string(),
+                    max_characters: 2,
+                },
+                IngressClass::StaffMutation,
+            ),
+            (StaffOpKind::Ps, IngressClass::StaffStatus),
+            (StaffOpKind::Stats, IngressClass::StaffStatus),
+        ];
+        for (op, expected) in cases {
+            assert_eq!(classify_staff_op(&op), expected);
+        }
+    }
+
+    #[test]
+    fn writer_mailbox_coalesces_without_losing_mandatory_facts() {
+        let (tx, mut rx) = writer_signal_channel();
+        tx.store_status(false, "first failure".to_string());
+        tx.store_status(true, String::new());
+        tx.deterministic_failure("deterministic root cause".to_string());
+        assert!(tx.ledger_breach("ledger freeze".to_string(), None));
+        assert!(tx.ledger_breach(
+            "exact resolution".to_string(),
+            Some((
+                SmolStr::new("econ"),
+                SmolStr::new("log:cash:0"),
+                "a".repeat(64),
+                true,
+            )),
+        ));
+
+        let signals: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(signals.iter().any(|signal| matches!(
+            signal,
+            WriterSignal::StoreStatus {
+                healthy: true,
+                detail
+            } if detail.is_empty()
+        )));
+        assert!(signals.iter().any(|signal| matches!(
+            signal,
+            WriterSignal::DeterministicFailure { detail }
+                if detail == "deterministic root cause"
+        )));
+        assert!(
+            signals
+                .iter()
+                .any(|signal| matches!(signal, WriterSignal::LedgerBreach { seal: None, .. }))
+        );
+        assert!(signals.iter().any(|signal| matches!(
+            signal,
+            WriterSignal::LedgerBreach {
+                seal: Some((ns, key, hash, true)),
+                ..
+            } if ns == "econ" && key == "log:cash:0" && hash == &"a".repeat(64)
+        )));
+        assert_eq!(signals.len(), 4);
+    }
+
+    #[test]
+    fn writer_mailbox_refuses_exact_overflow_and_accepts_retry_after_drain() {
+        let (tx, mut rx) = writer_signal_channel();
+        for index in 0..crate::retained::MAX_RETAINED_SEALS {
+            assert!(tx.ledger_breach(
+                "resolved".to_string(),
+                Some((
+                    SmolStr::new("econ"),
+                    SmolStr::new(format!("log:cash:{index}")),
+                    format!("{index:064x}"),
+                    false,
+                )),
+            ));
+        }
+        let overflow = (
+            SmolStr::new("econ"),
+            SmolStr::new("log:cash:overflow"),
+            "f".repeat(64),
+            true,
+        );
+        assert!(
+            !tx.ledger_breach("overflow".to_string(), Some(overflow.clone())),
+            "an exact identity must be refused, never shed, when custody is full"
+        );
+
+        let first_drain: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert_eq!(
+            first_drain
+                .iter()
+                .filter(|signal| matches!(signal, WriterSignal::LedgerBreach { seal: Some(_), .. }))
+                .count(),
+            crate::retained::MAX_RETAINED_SEALS
+        );
+        assert!(first_drain.iter().any(|signal| matches!(
+            signal,
+            WriterSignal::LedgerBreach { seal: None, detail }
+                if detail.contains("mailbox saturated")
+        )));
+
+        assert!(tx.ledger_breach("overflow retry".to_string(), Some(overflow.clone())));
+        let retried = rx.try_recv().expect("retry must arm a fresh wake");
+        assert!(matches!(
+            retried,
+            WriterSignal::LedgerBreach {
+                seal: Some((ns, key, hash, true)),
+                ..
+            } if ns == overflow.0 && key == overflow.1 && hash == overflow.2
+        ));
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn hard_modes_admit_only_safe_reads_ordering_recovery_and_shutdown() {
+        const ALL_CLASSES: [IngressClass; 13] = [
+            IngressClass::WorldRead,
+            IngressClass::OrderingBarrier,
+            IngressClass::Command,
+            IngressClass::TransportBookkeeping,
+            IngressClass::ConnectionHooks,
+            IngressClass::WorldMutation,
+            IngressClass::AsyncApply,
+            IngressClass::Timer,
+            IngressClass::WriterRecovery,
+            IngressClass::StaffStatus,
+            IngressClass::StaffMutation,
+            IngressClass::ExternalEffect,
+            IngressClass::Shutdown,
+        ];
+        let modes = [
+            WorldMode::Booting,
+            WorldMode::Recovering { incident: None },
+            WorldMode::CommitPending {
+                token: CommitToken::from_serial(7),
+            },
+            WorldMode::IntegrityFrozen {
+                incident: IncidentId(11),
+            },
+        ];
+        for mode in modes {
+            for class in ALL_CLASSES {
+                let should_allow = matches!(
+                    class,
+                    IngressClass::OrderingBarrier
+                        | IngressClass::TransportBookkeeping
+                        | IngressClass::WriterRecovery
+                        | IngressClass::StaffStatus
+                        | IngressClass::Shutdown
+                ) || (class == IngressClass::WorldRead
+                    && !matches!(mode, WorldMode::CommitPending { .. }));
+                assert_eq!(
+                    admission_for(mode, class) == Admission::Allow,
+                    should_allow,
+                    "mode={mode:?}, class={class:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn commit_pending_world_reads_are_typed_refusals_but_ordering_stays_live() {
+        let pending = WorldMode::CommitPending {
+            token: CommitToken::from_serial(17),
+        };
+        assert_eq!(
+            admission_for(pending, IngressClass::WorldRead),
+            Admission::Refuse(RefusalReason::CommitPending)
+        );
+        for class in [
+            IngressClass::OrderingBarrier,
+            IngressClass::TransportBookkeeping,
+            IngressClass::WriterRecovery,
+            IngressClass::StaffStatus,
+            IngressClass::Shutdown,
+        ] {
+            assert_eq!(admission_for(pending, class), Admission::Allow);
+        }
+    }
+
+    async fn assert_live_hard_mode_gate(mode: WorldMode) {
+        let counts = Arc::new(GateProbeCounts::default());
+        let mut world = World::new_minimal();
+        let input_actor = world
+            .create(ObjKind::Player, "InputProbe", GOD, Some(LIMBO))
+            .expect("input probe player");
+        world.push_input_context(
+            input_actor,
+            Some("gate_probe".into()),
+            Box::new(ProbeInputContext(Arc::clone(&counts))),
+        );
+        // Make the registered 1 ms tick overdue, then clear setup dirtiness so
+        // any store write below can only have come from a forbidden seam.
+        world.set_now(unix_now_s().saturating_sub(1));
+        let _ = world.take_dirty();
+        let engine = Engine::with_modules(
+            world,
+            base_registry(),
+            vec![Box::new(GateProbeModule {
+                counts: Arc::clone(&counts),
+                input_actor,
+            })],
+        )
+        .expect("gate probe module composes");
+
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+        let staff = Arc::new(StaffQueue::new());
+        staff.push(StaffOp {
+            actor: GOD,
+            kind: StaffOpKind::SetBan {
+                ip: "127.0.0.77".parse().expect("test IP"),
+                until_unix: None,
+                reason: "must remain blocked".to_string(),
+            },
+        });
+        let recorder = Arc::new(RecordingGateway::default());
+        let sink = Arc::clone(&recorder);
+        let handles = spawn_persist_with_gateway_mode(
+            engine,
+            ServerDeps {
+                store: Arc::clone(&store),
+                guard: Arc::new(IpGuard::new()),
+                staff,
+                llm: None,
+                metrics: Arc::new(Metrics::new()),
+                quarantine_spool: crate::quarantine::QuarantineSpool::in_memory(),
+            },
+            Some(mode),
+            move |_| -> Gateway { sink },
+        );
+        let PersistHandles {
+            handle,
+            world_join,
+            writer_join,
+            ..
+        } = handles;
+
+        // Ordinary command handler + observer + deferred effect.
+        assert!(
+            handle
+                .inbound(Inbound::Cmd {
+                    conn: 1,
+                    actor: GOD,
+                    line: "gate-mutate".to_string(),
+                })
+                .await
+        );
+        // The same structural command class while an input context owns the
+        // line: admission must happen before the context's `feed` callback.
+        assert!(
+            handle
+                .inbound(Inbound::Cmd {
+                    conn: 2,
+                    actor: input_actor,
+                    line: "captured payload".to_string(),
+                })
+                .await
+        );
+        // Connection lifecycle hooks, typed world mutation, async completion,
+        // and staff control all enter through distinct production seams.
+        assert!(
+            handle
+                .inbound(Inbound::ConnUp {
+                    conn: 3,
+                    actor: input_actor,
+                    caps_structured: false,
+                    from_linkdead: false,
+                })
+                .await
+        );
+        assert_eq!(
+            handle.create_player("BlockedPlayer").await,
+            Err(CreatePlayerErr::StoreUnavailable),
+            "CreatePlayer must be refused in {mode:?}"
+        );
+        assert!(
+            handle
+                .inbound(Inbound::Apply(WorldCommand::ModuleAsyncDone {
+                    module: "gate_probe".into(),
+                    actor: GOD,
+                    correlation: 11,
+                    payload: "{}".to_string(),
+                }))
+                .await
+        );
+        assert!(handle.inbound(Inbound::Control(ControlMsg::Dump)).await);
+
+        // Barriers are order bookkeeping, not gameplay reads. Two round trips
+        // ensure the first iteration's staff-queue drain has also completed.
+        assert!(
+            handle.barrier().await,
+            "first barrier remains live in {mode:?}"
+        );
+        assert!(
+            handle.barrier().await,
+            "second barrier remains live in {mode:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        assert_eq!(
+            counts.total(),
+            0,
+            "a forbidden engine/module callback executed in {mode:?}"
+        );
+        assert_eq!(
+            handle.name_free("BlockedPlayer").await,
+            Ok(true),
+            "refused creation must not change the player index in {mode:?}"
+        );
+        assert_eq!(
+            handle.in_input_context(input_actor).await,
+            Ok(true),
+            "refused input must not consume the context in {mode:?}"
+        );
+
+        let query_id = 700 + u64::from(input_actor.0);
+        assert!(
+            handle
+                .inbound(Inbound::Query {
+                    conn: 9,
+                    actor: GOD,
+                    id: query_id,
+                    name: "gate_probe.snapshot".into(),
+                    args: serde_json::json!({}),
+                })
+                .await
+        );
+        assert!(handle.barrier().await, "query delivery barrier in {mode:?}");
+        assert_eq!(
+            recorder.reply_text(query_id).as_deref(),
+            Some("objects=3 mutations=0 input_depth=1"),
+            "world and module snapshots changed in {mode:?}"
+        );
+        assert!(
+            store.load_world().await.expect("read test world").is_none(),
+            "forbidden world state reached the store in {mode:?}"
+        );
+        assert!(
+            store
+                .module_json_get("gate_probe", "command")
+                .await
+                .expect("read probe module doc")
+                .is_none(),
+            "forbidden module state reached the store in {mode:?}"
+        );
+        assert!(
+            store.get_bans().await.expect("read test bans").is_empty(),
+            "forbidden staff mutation reached the store in {mode:?}"
+        );
+
+        // Exercise the final external-effect launch gate independently of the
+        // command/tick producers above. If it launches, the zero-delay test
+        // effect re-enters this live channel as an Apply message.
+        let (effect_tx, mut effect_rx) = mpsc::channel(1);
+        let effect_weak = effect_tx.downgrade();
+        release_classified_effects(
+            mode,
+            vec![(
+                DeliveryClass::BestEffort,
+                Effect::SlowTest {
+                    actor: GOD,
+                    correlation: 123,
+                    seconds: 0,
+                },
+            )],
+            DeliveryOutcome::NoWrite,
+            &effect_weak,
+            None,
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(
+            matches!(effect_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            "an external effect launched in {mode:?}"
+        );
+
+        // Transport-only reattach and shutdown remain live. An empty roster is
+        // enough to prove the production message is admitted without adding
+        // intentional connection bookkeeping to the state-equality checks.
+        assert!(handle.reattach(Vec::new()).await);
+        assert!(handle.barrier().await, "reattach ordering in {mode:?}");
+        assert!(handle.inbound(Inbound::Control(ControlMsg::Shutdown)).await);
+        tokio::time::timeout(Duration::from_secs(2), world_join)
+            .await
+            .expect("hard-mode world shutdown timed out")
+            .expect("hard-mode world task panicked");
+        tokio::time::timeout(Duration::from_secs(2), writer_join)
+            .await
+            .expect("hard-mode writer shutdown timed out")
+            .expect("hard-mode writer task panicked");
+    }
+
+    #[tokio::test]
+    async fn live_hard_modes_block_every_mutating_execution_seam() {
+        for mode in [
+            WorldMode::Booting,
+            WorldMode::Recovering {
+                incident: Some(IncidentId(41)),
+            },
+            WorldMode::IntegrityFrozen {
+                incident: IncidentId(42),
+            },
+        ] {
+            assert_live_hard_mode_gate(mode).await;
+        }
+    }
+
+    fn pending_for_custody_test() -> PendingCommit {
+        let (_receipt_tx, receipt) = oneshot::channel();
+        PendingCommit {
+            token: CommitToken::from_serial(7),
+            receipt,
+            sends: vec![(
+                DeliveryClass::OnCommit,
+                SendTarget::Char(u64::from(GOD.0)),
+                Arc::new(OutputEvent::Sys(RichText::plain("held output"))),
+            )],
+            effects: vec![(
+                DeliveryClass::OnCommit,
+                Effect::SlowTest {
+                    actor: GOD,
+                    correlation: 9,
+                    seconds: 0,
+                },
+            )],
+            failure_actor: Some(GOD),
+            create: None,
+            prepared_installation: None,
+            barriers: Vec::new(),
+            coalesced_reattach: None,
+            exit_after_ack: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn prepared_action_installs_only_after_its_exact_receipt() {
+        let (mut engine, handle) = prepared_lane_fixture();
+        let mut transaction = engine
+            .action_transaction(&handle)
+            .expect("test transaction begins");
+        transaction
+            .insert(&handle, &41, PreparedLaneState { amount: 7 })
+            .expect("test state is valid");
+        let prepared = transaction.prepare().expect("test transaction prepares");
+        engine
+            .stage_prepared_action(prepared)
+            .expect("clean engine accepts prepared action");
+
+        let (writer, mut writer_rx) = mpsc::channel(1);
+        let mut serial = 0;
+        let mut health = StoreHealth::new();
+        let metrics = Metrics::new();
+        let mut retained = RetainedSeals::new();
+        let high_water = AtomicU64::new(0);
+        let outcome = flush_prepared_action(
+            &mut engine,
+            &writer,
+            &mut serial,
+            &mut health,
+            &metrics,
+            &mut retained,
+            &high_water,
+        )
+        .await;
+        let FlushOutcome::Queued {
+            receipt: Some(receipt),
+            prepared_installation: Some(installation),
+        } = outcome
+        else {
+            panic!("prepared action must queue with its receipt and install image");
+        };
+        let StoreJob::Write {
+            batch,
+            notify: Some(notify),
+        } = writer_rx.recv().await.expect("prepared write was queued")
+        else {
+            panic!("prepared lane must request an exact writer receipt");
+        };
+        assert_eq!(batch.serial, serial);
+        assert_eq!(batch.module_ops.len(), 1);
+
+        assert_eq!(engine.action_state().revision(), 0);
+        assert!(engine.action_state().has_prepared());
+        assert!(
+            engine
+                .action_state()
+                .get(&handle, &41)
+                .expect("state lookup succeeds")
+                .is_none(),
+            "queue acceptance must not expose the typed post-image"
+        );
+
+        notify
+            .send(Ok(batch.serial))
+            .expect("world still owns the exact receipt");
+        let ack = receipt.await;
+        let pending = pending_with_prepared_installation(batch.serial, installation);
+        let gateway: Gateway = Arc::new(BlackholeGateway);
+        let persistence_integrity = PersistenceIntegrityLatch::new();
+        let (tx, _rx) = mpsc::channel(1);
+        let completed = complete_pending_commit(
+            pending,
+            ack,
+            &mut engine,
+            &gateway,
+            &mut health,
+            &persistence_integrity,
+            &tx.downgrade(),
+            None,
+        );
+
+        assert_eq!(completed.outcome, DeliveryOutcome::Committed);
+        assert_eq!(engine.action_state().revision(), 1);
+        assert!(!engine.action_state().has_prepared());
+        assert_eq!(
+            engine
+                .action_state()
+                .get(&handle, &41)
+                .expect("state lookup succeeds"),
+            Some(&PreparedLaneState { amount: 7 })
+        );
+        assert!(!persistence_integrity.is_latched());
+    }
+
+    #[test]
+    fn prepared_action_receipt_mismatch_or_rejection_aborts_installation() {
+        enum BadReceipt {
+            WrongSerial,
+            StoreRejected,
+        }
+
+        for bad_receipt in [BadReceipt::WrongSerial, BadReceipt::StoreRejected] {
+            let (mut engine, handle) = prepared_lane_fixture();
+            let installation = prepare_lane_installation(&mut engine, &handle, 17, 3);
+            let pending = pending_with_prepared_installation(7, installation);
+            let ack: Result<Result<u64, String>, oneshot::error::RecvError> = match bad_receipt {
+                BadReceipt::WrongSerial => Ok(Ok(8)),
+                BadReceipt::StoreRejected => Ok(Err("deterministic store rejection".to_owned())),
+            };
+            let gateway: Gateway = Arc::new(BlackholeGateway);
+            let mut health = StoreHealth::new();
+            let persistence_integrity = PersistenceIntegrityLatch::new();
+            let (tx, _rx) = mpsc::channel(1);
+
+            let completed = complete_pending_commit(
+                pending,
+                ack,
+                &mut engine,
+                &gateway,
+                &mut health,
+                &persistence_integrity,
+                &tx.downgrade(),
+                None,
+            );
+
+            assert_eq!(completed.outcome, DeliveryOutcome::Aborted);
+            assert_eq!(engine.action_state().revision(), 0);
+            assert!(!engine.action_state().has_prepared());
+            assert!(
+                engine
+                    .action_state()
+                    .get(&handle, &17)
+                    .expect("state lookup succeeds")
+                    .is_none(),
+                "a bad receipt must discard the complete typed post-image"
+            );
+            assert!(health.mode.integrity_frozen());
+            assert!(persistence_integrity.is_latched());
+            assert!(
+                engine.action_transaction(&handle).is_ok(),
+                "abort must release the state-store reservation"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn prepared_action_writer_loss_aborts_before_receipt_custody() {
+        let (mut engine, handle) = prepared_lane_fixture();
+        let mut transaction = engine
+            .action_transaction(&handle)
+            .expect("test transaction begins");
+        transaction
+            .insert(&handle, &23, PreparedLaneState { amount: 5 })
+            .expect("test state is valid");
+        let prepared = transaction.prepare().expect("test transaction prepares");
+        engine
+            .stage_prepared_action(prepared)
+            .expect("clean engine accepts prepared action");
+
+        let (writer, writer_rx) = mpsc::channel(1);
+        drop(writer_rx);
+        let mut serial = 0;
+        let mut health = StoreHealth::new();
+        let metrics = Metrics::new();
+        let mut retained = RetainedSeals::new();
+        let high_water = AtomicU64::new(0);
+        let outcome = flush_prepared_action(
+            &mut engine,
+            &writer,
+            &mut serial,
+            &mut health,
+            &metrics,
+            &mut retained,
+            &high_water,
+        )
+        .await;
+
+        assert!(matches!(outcome, FlushOutcome::WriterGone));
+        assert_eq!(engine.action_state().revision(), 0);
+        assert!(!engine.action_state().has_prepared());
+        assert!(
+            engine
+                .action_state()
+                .get(&handle, &23)
+                .expect("state lookup succeeds")
+                .is_none()
+        );
+        assert!(engine.action_transaction(&handle).is_ok());
+    }
+
+    #[tokio::test]
+    async fn prepared_action_refuses_legacy_work_added_after_staging() {
+        enum LateLegacyWork {
+            WorldDirty,
+            ModuleOp,
+        }
+
+        for late_work in [LateLegacyWork::WorldDirty, LateLegacyWork::ModuleOp] {
+            let (mut engine, handle) = prepared_lane_fixture();
+            let mut transaction = engine
+                .action_transaction(&handle)
+                .expect("test transaction begins");
+            transaction
+                .insert(&handle, &29, PreparedLaneState { amount: 9 })
+                .expect("test state is valid");
+            let prepared = transaction.prepare().expect("test transaction prepares");
+            engine
+                .stage_prepared_action(prepared)
+                .expect("clean engine accepts prepared action");
+
+            match late_work {
+                LateLegacyWork::WorldDirty => {
+                    engine
+                        .world
+                        .create(ObjKind::Thing, "late dirty object", GOD, Some(LIMBO))
+                        .expect("test object creation succeeds");
+                }
+                LateLegacyWork::ModuleOp => {
+                    let mut out = Outbox::new();
+                    let mut effects = Effects::new();
+                    engine
+                        .modules_loaded(std::collections::HashMap::new(), &mut out, &mut effects)
+                        .expect("test module queues its boot persistence op");
+                }
+            }
+            assert!(engine.has_legacy_persistence_work());
+
+            let (writer, mut writer_rx) = mpsc::channel(1);
+            let mut serial = 0;
+            let mut health = StoreHealth::new();
+            let metrics = Metrics::new();
+            let mut retained = RetainedSeals::new();
+            let high_water = AtomicU64::new(0);
+            let outcome = flush_prepared_action(
+                &mut engine,
+                &writer,
+                &mut serial,
+                &mut health,
+                &metrics,
+                &mut retained,
+                &high_water,
+            )
+            .await;
+
+            match outcome {
+                FlushOutcome::Rejected(detail) => assert!(
+                    detail.contains("alongside legacy persistence work"),
+                    "unexpected refusal: {detail}"
+                ),
+                _ => panic!("late legacy work must reject the prepared submission"),
+            }
+            assert_eq!(serial, 0, "a refused mixed step must consume no serial");
+            assert!(
+                matches!(writer_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+                "no prefix of a mixed step may reach writer custody"
+            );
+            assert!(!engine.has_staged_action());
+            assert!(!engine.action_state().has_prepared());
+            assert_eq!(engine.action_state().revision(), 0);
+            assert!(
+                engine
+                    .action_state()
+                    .get(&handle, &29)
+                    .expect("state lookup succeeds")
+                    .is_none()
+            );
+            assert!(
+                engine.has_legacy_persistence_work(),
+                "the rejected prepared image must not discard independent legacy work"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn aborted_exact_receipt_refuses_barrier_and_suppresses_held_success() {
+        let mut pending = pending_for_custody_test();
+        let (barrier_tx, barrier_rx) = oneshot::channel();
+        assert!(pending.retain_barrier(barrier_tx));
+
+        let mut engine = Engine::new(World::new_minimal(), base_registry());
+        let recorder = Arc::new(RecordingGateway::default());
+        let gateway: Gateway = recorder.clone();
+        let mut health = StoreHealth::new();
+        let persistence_integrity = PersistenceIntegrityLatch::new();
+        let (tx, _rx) = mpsc::channel(1);
+        let completed = complete_pending_commit(
+            pending,
+            Ok(Err("deterministic rejection".to_string())),
+            &mut engine,
+            &gateway,
+            &mut health,
+            &persistence_integrity,
+            &tx.downgrade(),
+            None,
+        );
+        finish_pending_operational(&mut engine, &gateway, completed);
+
+        assert_eq!(
+            barrier_rx.await,
+            Ok(Err(WorldReadError::Unavailable)),
+            "an aborted receipt must never be promoted into a barrier ack"
+        );
+        let sends = recorder.sends.lock().expect("recording gateway poisoned");
+        assert!(
+            sends.iter().any(|(_, event)| matches!(
+                event.as_ref(),
+                OutputEvent::Sys(text)
+                    if text.to_plain_text().contains("database rejected your last action")
+            )),
+            "the requester must receive the commit-failure refusal"
+        );
+        assert!(
+            sends.iter().all(|(_, event)| !matches!(
+                event.as_ref(),
+                OutputEvent::Sys(text) if text.to_plain_text() == "held output"
+            )),
+            "a deterministic receipt failure must suppress held OnCommit success"
+        );
+    }
+
+    #[test]
+    fn prolonged_commit_pending_operational_traffic_has_fixed_custody() {
+        let mut pending = pending_for_custody_test();
+        let baseline_sends = pending.sends.len();
+        let baseline_effects = pending.effects.len();
+
+        // Repeated full snapshots replace one another; they never append room
+        // renders to the authoritative batch while its receipt is unresolved.
+        for conn in 1..=10_000_u64 {
+            let replaced = pending
+                .coalesce_reattach(
+                    vec![ReAttachRec {
+                        conn,
+                        actor: GOD,
+                        caps_structured: conn % 2 == 0,
+                    }]
+                    .into_boxed_slice(),
+                )
+                .expect("one-record roster is within the protocol cap");
+            assert_eq!(replaced, conn > 1);
+        }
+
+        let mut refused = 0;
+        for _ in 0..(MAX_PENDING_BARRIERS + 10_000) {
+            let (reply, _rx) = oneshot::channel();
+            if !pending.retain_barrier(reply) {
+                refused += 1;
+            }
+        }
+
+        let custody = pending.custody();
+        assert_eq!(custody.barriers, MAX_PENDING_BARRIERS);
+        assert_eq!(custody.reattach_records, 1);
+        assert!(custody.operational_bytes <= MAX_PENDING_OPERATIONAL_BYTES);
+        assert_eq!(custody.sends, baseline_sends);
+        assert_eq!(custody.effects, baseline_effects);
+        assert_eq!(refused, 10_000);
+        assert_eq!(
+            pending
+                .coalesced_reattach
+                .as_deref()
+                .expect("latest roster")[0]
+                .conn,
+            10_000,
+            "only the newest full snapshot remains"
+        );
+    }
+
+    #[test]
+    fn oversized_pending_reattach_is_atomic_and_preserves_previous_snapshot() {
+        let mut pending = pending_for_custody_test();
+        pending
+            .coalesce_reattach(
+                vec![ReAttachRec {
+                    conn: 41,
+                    actor: GOD,
+                    caps_structured: false,
+                }]
+                .into_boxed_slice(),
+            )
+            .expect("initial bounded roster");
+
+        let oversized = (0..=MAX_PENDING_REATTACH_RECORDS)
+            .map(|i| ReAttachRec {
+                conn: u64::try_from(i).expect("test index fits u64") + 100,
+                actor: GOD,
+                caps_structured: true,
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let (_rejected, overload) = pending
+            .coalesce_reattach(oversized)
+            .expect_err("oversized roster must not enter pending custody");
+        assert_eq!(overload.records, MAX_PENDING_REATTACH_RECORDS + 1);
+        assert_eq!(
+            pending.coalesced_reattach.as_deref().expect("old roster")[0].conn,
+            41,
+            "no prefix of a malformed replacement may reach server-side custody"
+        );
+    }
+
+    #[tokio::test]
+    async fn world_handle_refuses_oversized_reattach_before_enqueue() {
+        let (tx, mut rx) = mpsc::channel(2);
+        let handle = WorldHandle { tx, shutdown: None };
+        let mut sparse = Vec::with_capacity(100_000);
+        sparse.push(ReAttachRec {
+            conn: 41,
+            actor: GOD,
+            caps_structured: false,
+        });
+        assert!(handle.reattach(sparse).await);
+        let WorldMsg::ReAttach { recs } = rx.recv().await.expect("bounded roster enqueued") else {
+            panic!("expected reattach message");
+        };
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].conn, 41);
+        // The message type is `Box<[ReAttachRec]>`, so the caller's 100,000
+        // element spare Vec capacity cannot cross into channel custody.
+        assert_eq!(
+            std::mem::size_of_val(recs.as_ref()),
+            std::mem::size_of::<ReAttachRec>()
+        );
+
+        let oversized = (0..=MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS)
+            .map(|i| ReAttachRec {
+                conn: u64::try_from(i).expect("test index fits u64"),
+                actor: GOD,
+                caps_structured: false,
+            })
+            .collect();
+
+        assert!(!handle.reattach(oversized).await);
+        assert!(
+            matches!(rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            "an oversized roster must be refused as one unit, never partially enqueued"
+        );
+    }
+
+    #[tokio::test]
+    async fn refused_command_does_not_block_pending_reattach_or_barrier() {
+        let engine = boot_engine();
+        let (tx, rx) = mpsc::channel(INBOUND_CAPACITY);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let handle = WorldHandle {
+            tx: tx.clone(),
+            shutdown: Some(shutdown_tx),
+        };
+        let (writer, mut writer_rx) = mpsc::channel(2);
+        let (staff_tx, _staff_rx) = mpsc::channel(STAFF_OPS_CAPACITY);
+        let (_signal_tx, signal_rx) = writer_signal_channel();
+        let metrics = Arc::new(Metrics::new());
+        let mut deps = ServerDeps::in_memory();
+        deps.metrics = Arc::clone(&metrics);
+        let recorder = Arc::new(RecordingGateway::default());
+        let gateway: Gateway = recorder.clone();
+        let world_join = tokio::spawn(run(
+            engine,
+            rx,
+            tx.downgrade(),
+            writer,
+            deps,
+            staff_tx,
+            gateway,
+            Arc::new(AtomicU64::new(0)),
+            signal_rx,
+            shutdown_rx,
+            PersistenceIntegrityLatch::new(),
+            None,
+        ));
+
+        assert!(
+            handle
+                .inbound(Inbound::Cmd {
+                    conn: 1,
+                    actor: GOD,
+                    line: "@create receipt-anchor".to_string(),
+                })
+                .await
+        );
+        let (serial, receipt) = match tokio::time::timeout(Duration::from_secs(2), writer_rx.recv())
+            .await
+            .expect("dirty command must enqueue a write")
+            .expect("writer channel open")
+        {
+            StoreJob::Write {
+                batch,
+                notify: Some(receipt),
+            } => (batch.serial, receipt),
+            _ => panic!("expected an exact-receipt write"),
+        };
+        let (baseline_sends, baseline_effects) =
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let snapshot = metrics.snapshot();
+                    if snapshot.commit_pending_sends > 0 {
+                        break (
+                            snapshot.commit_pending_sends,
+                            snapshot.commit_pending_effects,
+                        );
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("world must publish initial exact-receipt custody");
+
+        // This command is retryable input, not accepted semantic custody. It
+        // must receive Busy immediately and leave the FIFO available for the
+        // operational messages behind it.
+        assert!(
+            handle
+                .inbound(Inbound::Cmd {
+                    conn: 2,
+                    actor: GOD,
+                    line: "@create must-not-exist".to_string(),
+                })
+                .await
+        );
+        for conn in 10_000..11_000_u64 {
+            assert!(
+                handle
+                    .reattach(vec![ReAttachRec {
+                        conn,
+                        actor: GOD,
+                        caps_structured: false,
+                    }])
+                    .await
+            );
+        }
+        let barrier = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.barrier().await }
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let snapshot = metrics.snapshot();
+                if snapshot.commit_pending_barriers == 1
+                    && snapshot.commit_pending_reattach_records == 1
+                    && snapshot.commit_pending_reattach_coalesced_total == 999
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("operational traffic must remain live behind a refused command");
+        assert!(
+            !barrier.is_finished(),
+            "barrier must still wait for the receipt"
+        );
+        assert_eq!(metrics.snapshot().commit_pending_sends, baseline_sends);
+        assert_eq!(metrics.snapshot().commit_pending_effects, baseline_effects);
+
+        receipt
+            .send(Ok(serial))
+            .expect("world still owns the exact receipt");
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), barrier)
+                .await
+                .expect("barrier must complete after receipt")
+                .expect("barrier task")
+        );
+        assert_eq!(handle.name_free("must-not-exist").await, Ok(true));
+        assert!(
+            recorder
+                .sends
+                .lock()
+                .expect("recording gateway poisoned")
+                .iter()
+                .any(|(_, event)| matches!(
+                    event.as_ref(),
+                    OutputEvent::Sys(text)
+                        if text.to_plain_text().contains("committing another action")
+                )),
+            "the refused command must receive a retryable Busy response"
+        );
+        assert_eq!(metrics.snapshot().commit_pending_barriers, 0);
+        assert_eq!(metrics.snapshot().commit_pending_reattach_records, 0);
+
+        assert!(handle.inbound(Inbound::Control(ControlMsg::Shutdown)).await);
+        tokio::time::timeout(Duration::from_secs(2), world_join)
+            .await
+            .expect("world shutdown timed out")
+            .expect("world task panicked");
+    }
+
+    #[tokio::test]
+    async fn authoritative_abort_launches_no_external_effect_even_if_best_effort() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let weak = tx.downgrade();
+        let (_receipt_tx, receipt) = oneshot::channel();
+        let pending = PendingCommit {
+            token: CommitToken::from_serial(7),
+            receipt,
+            sends: Vec::new(),
+            effects: vec![(
+                DeliveryClass::BestEffort,
+                Effect::SlowTest {
+                    actor: GOD,
+                    correlation: 77,
+                    seconds: 0,
+                },
+            )],
+            failure_actor: None,
+            create: None,
+            prepared_installation: None,
+            barriers: Vec::new(),
+            coalesced_reattach: None,
+            exit_after_ack: false,
+        };
+        let mut engine = Engine::new(World::new_minimal(), base_registry());
+        let gateway: Gateway = Arc::new(BlackholeGateway);
+        let mut health = StoreHealth::new();
+        let persistence_integrity = PersistenceIntegrityLatch::new();
+        complete_pending_commit(
+            pending,
+            Ok(Err("deterministic rejection".to_string())),
+            &mut engine,
+            &gateway,
+            &mut health,
+            &persistence_integrity,
+            &weak,
+            None,
+        );
+        tokio::task::yield_now().await;
+        assert!(health.mode.integrity_frozen());
+        assert!(
+            persistence_integrity.is_latched(),
+            "a rejected exact receipt must publish the process-wide snapshot barrier"
+        );
+        assert!(
+            matches!(rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            "an aborted dirty step must not launch even a BestEffort external effect"
+        );
+    }
+
+    #[test]
+    fn integrity_freeze_never_uses_command_text_or_context_allowlist() {
+        let frozen = WorldMode::IntegrityFrozen {
+            incident: IncidentId(12),
+        };
+        let mut world = World::new_minimal();
+        for line in ["look", "WHO", "say hi", "@shutdown", ""] {
+            assert!(matches!(
+                admit_world_msg(frozen, &world, &WorldMsg::Inbound(cmd(line))),
+                Admission::Refuse(RefusalReason::IntegrityFrozen)
+            ));
+        }
+        world.push_input_context(GOD, None, Box::new(Sink));
+        assert!(matches!(
+            admit_world_msg(frozen, &world, &WorldMsg::Inbound(cmd("~q"))),
+            Admission::Refuse(RefusalReason::IntegrityFrozen)
+        ));
     }
 
     /// The conservative allowlist really is a pin: module verbs — comsys
@@ -2759,13 +6316,13 @@ mod tests {
             "@channel/recall pub",
         ] {
             assert!(
-                refuse_read_only(&world, &cmd(line)).is_some(),
+                refuse_store_read_only(&world, &cmd(line)).is_some(),
                 "{line:?} must be refused while read-only"
             );
         }
         for line in ["look", "WHO", "say hi", "\"hi", ":waves", "help mail"] {
             assert!(
-                refuse_read_only(&world, &cmd(line)).is_none(),
+                refuse_store_read_only(&world, &cmd(line)).is_none(),
                 "{line:?} must pass while read-only"
             );
         }
@@ -2796,13 +6353,13 @@ mod tests {
         world.push_input_context(GOD, None, Box::new(Sink));
         for line in ["~q", "--", "body text", "@create orb", "pub Hello", "l"] {
             assert!(
-                refuse_read_only(&world, &cmd(line)).is_none(),
+                refuse_store_read_only(&world, &cmd(line)).is_none(),
                 "{line:?} must pass while composing"
             );
         }
         // Popped: the gate applies again.
         world.pop_input_context(GOD);
-        assert!(refuse_read_only(&world, &cmd("@create orb")).is_some());
+        assert!(refuse_store_read_only(&world, &cmd("@create orb")).is_some());
     }
 
     // ------------------------------------------------------------------
@@ -2862,7 +6419,9 @@ mod tests {
         let alice = world
             .create(ObjKind::Player, "Alice", GOD, Some(hall))
             .unwrap();
-        let bob = world.create(ObjKind::Player, "Bob", GOD, Some(hall)).unwrap();
+        let bob = world
+            .create(ObjKind::Player, "Bob", GOD, Some(hall))
+            .unwrap();
         let wraith = world
             .create(ObjKind::Player, "Wraith", GOD, Some(hall))
             .unwrap();
@@ -2912,13 +6471,22 @@ mod tests {
         // D2(c): examine dumps raw contents — it too must drop Wraith for
         // Alice while still listing him for Bob.
         let mut out = Outbox::new();
-        dispatch(&reg, &mut world, alice, &format!("examine {hall}"), &mut out);
+        dispatch(
+            &reg,
+            &mut world,
+            alice,
+            &format!("examine {hall}"),
+            &mut out,
+        );
         let alice_ex = examine_contents(&out, alice);
         assert!(
             !alice_ex.contains("Wraith"),
             "examine leaked Wraith to Alice: {alice_ex:?}"
         );
-        assert!(alice_ex.contains("Bob"), "examine still lists Bob: {alice_ex:?}");
+        assert!(
+            alice_ex.contains("Bob"),
+            "examine still lists Bob: {alice_ex:?}"
+        );
         let mut out = Outbox::new();
         dispatch(&reg, &mut world, bob, &format!("examine {hall}"), &mut out);
         assert!(
@@ -2979,8 +6547,12 @@ mod tests {
 
         let mut world = World::new_minimal();
         let hall = world.create(ObjKind::Room, "Hall", GOD, None).unwrap();
-        let a = world.create(ObjKind::Player, "Ann", GOD, Some(hall)).unwrap();
-        let b = world.create(ObjKind::Player, "Bee", GOD, Some(hall)).unwrap();
+        let a = world
+            .create(ObjKind::Player, "Ann", GOD, Some(hall))
+            .unwrap();
+        let b = world
+            .create(ObjKind::Player, "Bee", GOD, Some(hall))
+            .unwrap();
         for p in [a, b] {
             world.set_connected(p, true);
         }

@@ -78,7 +78,7 @@ async fn rig_with(config: SessionConfig) -> Rig {
             guard: Arc::clone(&guard),
             staff,
             llm: None,
-            quarantine_dir: None,
+            quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
         },
     );
     let accounts = Arc::new(Accounts::new(Arc::clone(&store), handles.handle.clone(), 3));

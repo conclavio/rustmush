@@ -10,24 +10,27 @@
 use mush_core::{ControlMsg as CoreControl, DisconnectKind, Inbound, ObjId, WorldCommand};
 use mush_ipc::codec::{decode_frame, encode_frame_into};
 use mush_ipc::{
-    AttachRec, CreatePlayerError, DetachCause, FrameDecoder, IPC_VERSION, MAX_FRAME_LEN, ServiceReq,
-    ServiceResp, ToGateway, ToServer, WireInbound, WireInboundError, encode_frame,
+    AttachRec, CreatePlayerError, DetachCause, FrameDecoder, IPC_VERSION, MAX_FRAME_LEN,
+    MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, MAX_IN_FLIGHT_SERVICE_REQUESTS, ServiceReq, ServiceResp,
+    ToGateway, ToServer, WireInbound, WireInboundError, encode_frame,
 };
 use mush_proto::{OutputEvent, PanelFrameKind, RichText};
 
 /// Encode one message and decode it back, asserting equality.
 fn round_trip_to_server(msg: &ToServer) {
     let bytes = encode_frame(msg).expect("encode ToServer");
-    let (got, consumed): (ToServer, usize) =
-        decode_frame(&bytes).expect("decode ToServer").expect("a whole frame");
+    let (got, consumed): (ToServer, usize) = decode_frame(&bytes)
+        .expect("decode ToServer")
+        .expect("a whole frame");
     assert_eq!(consumed, bytes.len(), "the frame consumes the whole buffer");
     assert_eq!(&got, msg, "ToServer round-trips");
 }
 
 fn round_trip_to_gateway(msg: &ToGateway) {
     let bytes = encode_frame(msg).expect("encode ToGateway");
-    let (got, consumed): (ToGateway, usize) =
-        decode_frame(&bytes).expect("decode ToGateway").expect("a whole frame");
+    let (got, consumed): (ToGateway, usize) = decode_frame(&bytes)
+        .expect("decode ToGateway")
+        .expect("a whole frame");
     assert_eq!(consumed, bytes.len(), "the frame consumes the whole buffer");
     assert_eq!(&got, msg, "ToGateway round-trips");
 }
@@ -115,6 +118,13 @@ fn every_to_server() -> Vec<ToServer> {
         },
         ToServer::Request {
             id: 103,
+            req: ServiceReq::ConnectionReady {
+                conn: 5,
+                actor: ObjId(11),
+            },
+        },
+        ToServer::Request {
+            id: 104,
             req: ServiceReq::Barrier,
         },
         ToServer::Control(CoreControl::Shutdown),
@@ -183,7 +193,19 @@ fn every_to_gateway() -> Vec<ToGateway> {
         },
         ToGateway::Reply {
             id: 103,
+            resp: ServiceResp::ConnectionReady(true),
+        },
+        ToGateway::Reply {
+            id: 104,
             resp: ServiceResp::Barrier,
+        },
+        ToGateway::Reply {
+            id: 104,
+            resp: ServiceResp::Busy,
+        },
+        ToGateway::Reply {
+            id: 105,
+            resp: ServiceResp::Unavailable,
         },
         // Server → gateway session control.
         ToGateway::SetFloodExempt {
@@ -245,6 +267,14 @@ fn every_to_gateway_variant_round_trips() {
 #[test]
 fn version_is_present_and_travels_in_hello() {
     assert_eq!(IPC_VERSION, 1, "the boundary protocol version is pinned");
+    assert_eq!(
+        MAX_IN_FLIGHT_SERVICE_REQUESTS, 256,
+        "service-request custody is a fixed cross-boundary contract"
+    );
+    assert_eq!(
+        MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, 256,
+        "connection-lifecycle custody is a fixed cross-boundary contract"
+    );
     let hello = ToGateway::Hello {
         proto: IPC_VERSION,
         server: "mushd".to_string(),
@@ -257,6 +287,28 @@ fn version_is_present_and_travels_in_hello() {
         ToGateway::Hello { proto, .. } => assert_eq!(proto, IPC_VERSION),
         other => panic!("expected Hello, got {other:?}"),
     }
+}
+
+/// The lifecycle ceiling also bounds the one-frame restart snapshot. Account
+/// and character names use their maximum accepted lengths here, so the full
+/// roster cannot discover at restart time that it exceeds `MAX_FRAME_LEN`.
+#[test]
+fn maximum_lifecycle_reannounce_snapshot_fits_one_frame() {
+    let recs = (0..MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS)
+        .map(|i| AttachRec {
+            conn: i as u64,
+            actor: ObjId(i as u32),
+            account: Some("a".repeat(20)),
+            char_name: "c".repeat(20),
+            caps_structured: i % 2 == 0,
+        })
+        .collect();
+    let bytes = encode_frame(&ToServer::ReAnnounce(recs)).expect("bounded roster encodes");
+    assert!(
+        bytes.len() <= MAX_FRAME_LEN,
+        "bounded roster frame is {} bytes, maximum is {MAX_FRAME_LEN}",
+        bytes.len()
+    );
 }
 
 /// A framed stream of many messages decodes in order regardless of how the

@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use mush_core::output::display_name;
 use mush_core::{
-    ArgShape, CmdError, CommandSpec, Ctx, Flags, ModError, ObjId, ObjKind, Powers, Registrar,
-    Role, World, perm,
+    ArgShape, CmdError, CommandSpec, Ctx, Flags, ModError, ObjId, ObjKind, Powers, Registrar, Role,
+    World, perm,
 };
 use smol_str::SmolStr;
 
@@ -58,9 +58,9 @@ fn require_admin(ctx: &Ctx<'_>) -> Result<(), CmdError> {
 fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= MAX_NAME_LEN
-        && name.chars().all(|c| {
-            c.is_ascii_alphanumeric() || matches!(c, ' ' | '-' | '_' | '\'' | '.')
-        })
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '-' | '_' | '\'' | '.'))
 }
 
 fn parse_bool(s: &str) -> Result<bool, CmdError> {
@@ -442,11 +442,9 @@ fn parse_member_spec(ctx: &Ctx<'_>, spec: &str) -> Result<MemberSpec, CmdError> 
                 );
             }
             "vis" | "visibility" => {
-                vis = Some(
-                    Visibility::parse(v).ok_or_else(|| {
-                        CmdError::msg("visibility: public, members, officers, or covert.")
-                    })?,
-                );
+                vis = Some(Visibility::parse(v).ok_or_else(|| {
+                    CmdError::msg("visibility: public, members, officers, or covert.")
+                })?);
             }
             "title" => title = Some(SmolStr::new(v)),
             other => {
@@ -459,7 +457,10 @@ fn parse_member_spec(ctx: &Ctx<'_>, spec: &str) -> Result<MemberSpec, CmdError> 
 
 fn faction_add(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let f = resolve_faction(ctx, ctx.args.lhs(), false)?;
-    let rhs = rhs_required(ctx, "@faction/add <faction>=<player>[/level:<n>][/vis:<v>][/title:<t>]")?;
+    let rhs = rhs_required(
+        ctx,
+        "@faction/add <faction>=<player>[/level:<n>][/vis:<v>][/title:<t>]",
+    )?;
     let (who, level, vis, title) = parse_member_spec(ctx, &rhs)?;
     let kind = ctx.w.get(who).map(|o| o.kind);
     if !matches!(kind, Some(ObjKind::Player | ObjKind::Npc)) {
@@ -497,7 +498,10 @@ fn faction_add(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 fn faction_mod(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let f = resolve_faction(ctx, ctx.args.lhs(), false)?;
-    let rhs = rhs_required(ctx, "@faction/mod <faction>=<player>[/level:<n>][/vis:<v>][/title:<t>]")?;
+    let rhs = rhs_required(
+        ctx,
+        "@faction/mod <faction>=<player>[/level:<n>][/vis:<v>][/title:<t>]",
+    )?;
     let (who, level, vis, title) = parse_member_spec(ctx, &rhs)?;
     let (m, was_eligible) = {
         let st = state(ctx);
@@ -567,7 +571,10 @@ fn faction_remove(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 fn faction_edge(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let from = resolve_faction(ctx, ctx.args.lhs(), false)?;
-    let rhs = rhs_required(ctx, "@faction/edge <from>=<kind>/<to>[/vis:<v>][/note:<text>]")?;
+    let rhs = rhs_required(
+        ctx,
+        "@faction/edge <from>=<kind>/<to>[/vis:<v>][/note:<text>]",
+    )?;
     let mut segs = rhs.split('/').map(str::trim);
     let kind = segs
         .next()
@@ -582,7 +589,9 @@ fn faction_edge(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let mut note = String::new();
     for seg in segs {
         match split_kv(seg) {
-            Some((k, v)) if k.eq_ignore_ascii_case("vis") || k.eq_ignore_ascii_case("visibility") => {
+            Some((k, v))
+                if k.eq_ignore_ascii_case("vis") || k.eq_ignore_ascii_case("visibility") =>
+            {
                 vis = Visibility::parse(v).ok_or_else(|| {
                     CmdError::msg("visibility: public, members, officers, or covert.")
                 })?;
@@ -646,7 +655,12 @@ fn faction_unedge(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     persist_faction(ctx.out, &updated);
     info(
         ctx,
-        format!("{} is no longer {} {}.", updated.name, kind.label(), to.name),
+        format!(
+            "{} is no longer {} {}.",
+            updated.name,
+            kind.label(),
+            to.name
+        ),
     );
     Ok(())
 }
@@ -724,7 +738,10 @@ fn faction_resource(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .unwrap_or(0);
     info(
         ctx,
-        format!("{}: {} {delta:+} -> {total} ({reason}).", updated.name, kind),
+        format!(
+            "{}: {} {delta:+} -> {total} ({reason}).",
+            updated.name, kind
+        ),
     );
     Ok(())
 }
@@ -847,7 +864,9 @@ fn parse_control_spec(
                         .map_err(|_| CmdError::msg("strength must be 0-255."))?,
                 );
             }
-            Some((k, v)) if k.eq_ignore_ascii_case("vis") || k.eq_ignore_ascii_case("visibility") => {
+            Some((k, v))
+                if k.eq_ignore_ascii_case("vis") || k.eq_ignore_ascii_case("visibility") =>
+            {
                 vis = Some(Visibility::parse(v).ok_or_else(|| {
                     CmdError::msg("visibility: public, members, officers, or covert.")
                 })?);
@@ -895,12 +914,7 @@ fn faction_control(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     persist_control(ctx.out, region.id, &records);
     info(
         ctx,
-        format!(
-            "{} holds {} ({}).",
-            faction.name,
-            region.name,
-            kind.label()
-        ),
+        format!("{} holds {} ({}).", faction.name, region.name, kind.label()),
     );
     Ok(())
 }
@@ -946,7 +960,10 @@ fn faction_uncontrol(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 fn faction_contest(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let region = resolve_region(ctx, ctx.args.lhs())?;
-    let rhs = rhs_required(ctx, "@faction/contest <region>=<holder>/<kind>/<challenger>  (toggles)")?;
+    let rhs = rhs_required(
+        ctx,
+        "@faction/contest <region>=<holder>/<kind>/<challenger>  (toggles)",
+    )?;
     let mut segs = rhs.splitn(3, '/').map(str::trim);
     let holder = resolve_faction(ctx, segs.next().unwrap_or(""), false)?;
     let kind = segs
@@ -971,14 +988,14 @@ fn faction_contest(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         else {
             return Err(CmdError::msg("No such control record."));
         };
-        let now_contested = if let Some(pos) = rec.contested_by.iter().position(|c| *c == challenger.id)
-        {
-            rec.contested_by.remove(pos);
-            false
-        } else {
-            rec.contested_by.push(challenger.id);
-            true
-        };
+        let now_contested =
+            if let Some(pos) = rec.contested_by.iter().position(|c| *c == challenger.id) {
+                rec.contested_by.remove(pos);
+                false
+            } else {
+                rec.contested_by.push(challenger.id);
+                true
+            };
         (recs.clone(), now_contested)
     };
     persist_control(ctx.out, region.id, &records);
@@ -1115,8 +1132,11 @@ fn faction_staff_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let actor = ctx.actor;
     let st = state_ref(ctx);
     if st.factions.is_empty() {
-        ctx.out
-            .sys_to_actor(actor, "faction", "No factions exist. (@faction/create <name>)");
+        ctx.out.sys_to_actor(
+            actor,
+            "faction",
+            "No factions exist. (@faction/create <name>)",
+        );
         return Ok(());
     }
     let lines: Vec<String> = st
@@ -1129,7 +1149,11 @@ fn faction_staff_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 f.name,
                 if f.hidden { " [HIDDEN]" } else { "" },
                 st.members_of(f.id).count(),
-                if st.members_of(f.id).count() == 1 { "" } else { "s" }
+                if st.members_of(f.id).count() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
             )
         })
         .collect();
@@ -1263,19 +1287,18 @@ fn region_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let actor = ctx.actor;
     let st = state_ref(ctx);
     if st.regions.is_empty() {
-        ctx.out
-            .sys_to_actor(actor, "faction", "No regions exist. (@region/create <name>)");
+        ctx.out.sys_to_actor(
+            actor,
+            "faction",
+            "No regions exist. (@region/create <name>)",
+        );
         return Ok(());
     }
     let lines: Vec<String> = st
         .regions
         .values()
         .map(|r| {
-            let zones: Vec<String> = r
-                .zones
-                .iter()
-                .map(|z| display_name(ctx.w, *z))
-                .collect();
+            let zones: Vec<String> = r.zones.iter().map(|z| display_name(ctx.w, *z)).collect();
             format!(
                 "  {:>3}  {}  ({}){}",
                 r.id.to_string(),
@@ -1421,7 +1444,10 @@ fn cmd_faction_info(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // Principals and resources are internal knowledge.
     if is_member || staff {
         for p in &f.principals {
-            lines.push(format!("  Voice of the faction: {}", display_name(ctx.w, *p)));
+            lines.push(format!(
+                "  Voice of the faction: {}",
+                display_name(ctx.w, *p)
+            ));
         }
     }
     if is_officer || staff {

@@ -77,7 +77,11 @@ pub(crate) fn load_boot(
         return Err(ModError::msg("economy: journal contiguity breach; refusing to boot on a hole"));
     }
     let mut journal = Ledger::new();
-    journal.restore_from_kv(&data.kv);
+    journal.restore_from_kv(&data.kv).map_err(|error| {
+        ModError::msg(format!(
+            "economy: authoritative journal restore refused: {error}"
+        ))
+    })?;
 
     // Parse the persisted docs. Instruments + accounts + vaults are containers (a
     // corrupt one fails the boot — proceeding would classify live money, or a live

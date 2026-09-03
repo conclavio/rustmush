@@ -9,8 +9,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mush_core::{
-    Effects, Engine, GOD, Inbound, LIMBO, ModError, ObjId, ObjKind, Outbox, Registrar, TickCadence,
-    World,
+    DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionValidationContext, Effects,
+    Engine, GOD, Inbound, IncidentId, LIMBO, MAX_PENDING_ENTRIES_PER_INSPECTION, ModError,
+    ModuleBootReport, ObjId, ObjKind, Outbox, OwnerId, RecoveryReporter, Registrar, ScheduledKind,
+    TickCadence, World,
 };
 use mush_proto::{ClientCaps, ClientKind, ColorDepth, OutputEvent};
 use mush_session::{ConnId, ConnectionHandle, SessionManager};
@@ -21,8 +23,8 @@ use tokio::sync::mpsc;
 use mushd::ipguard::IpGuard;
 use mushd::staff::{StaffQueue, register_server_commands};
 use mushd::world_task::{
-    self, LlmStatsLine, PersistHandles, ServerDeps, StatsExtra, StoreHealth, WorldHandle, char_key,
-    render_ps, render_stats,
+    self, LlmStatsLine, PersistHandles, ServerDeps, StatsExtra, StoreHealth, WorldHandle,
+    WorldMode, char_key, render_ps, render_stats,
 };
 
 type EventRx = mpsc::Receiver<Arc<OutputEvent>>;
@@ -63,7 +65,7 @@ fn spawn_staffed(
             guard: Arc::new(IpGuard::new()),
             staff,
             llm: None,
-            quarantine_dir: None,
+            quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
         },
     )
 }
@@ -88,32 +90,35 @@ async fn attach_direct(
             })
             .await
     );
+    assert!(
+        world.barrier().await,
+        "direct test attachment must cross its exact ConnUp barrier"
+    );
     rx
 }
 
 /// Receive until an event's text contains `needle`; returns every text seen
 /// up to and including it (so callers can assert absences).
 async fn collect_until(rx: &mut EventRx, needle: &str) -> Vec<String> {
-    let deadline = Duration::from_secs(60);
-    let fut = async {
-        let mut seen = Vec::new();
-        loop {
-            match rx.recv().await {
-                Some(ev) => {
-                    let t = text_of(&ev);
-                    let hit = t.contains(needle);
-                    seen.push(t);
-                    if hit {
-                        return seen;
-                    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let mut seen = Vec::new();
+    loop {
+        let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now()) else {
+            panic!("timed out waiting for {needle:?}; saw {seen:?}");
+        };
+        match tokio::time::timeout(remaining, rx.recv()).await {
+            Ok(Some(ev)) => {
+                let t = text_of(&ev);
+                let hit = t.contains(needle);
+                seen.push(t);
+                if hit {
+                    return seen;
                 }
-                None => panic!("channel closed waiting for {needle:?}; saw {seen:?}"),
             }
+            Ok(None) => panic!("channel closed waiting for {needle:?}; saw {seen:?}"),
+            Err(_) => panic!("timed out waiting for {needle:?}; saw {seen:?}"),
         }
-    };
-    tokio::time::timeout(deadline, fut)
-        .await
-        .unwrap_or_else(|_| panic!("timed out waiting for {needle:?}"))
+    }
 }
 
 /// Await the channel closing (all senders dropped), draining what remains.
@@ -253,6 +258,10 @@ async fn ignored_room_speech_is_filtered_per_listener() {
                 })
                 .await
         );
+        // These are distinct player actions. Cross the exact persistence
+        // barrier before enqueueing the next one so this ordering assertion
+        // does not rely on the pre-K0 deferred-command behavior.
+        assert!(world.barrier().await);
     }
 
     // Carol (no mutes) hears Bob, then herself.
@@ -288,6 +297,56 @@ impl mush_core::GameModule for PulseMod {
             TickCadence::Coarse(Duration::from_secs(60)),
             Arc::new(|_: &mut mush_core::Ctx<'_>, _: &str, _: Option<mush_core::SceneId>| {}),
         )
+    }
+}
+
+struct StatsRecovery;
+
+impl RecoveryReporter for StatsRecovery {
+    fn report(&self, _world: &World) -> ModuleBootReport {
+        let mut report = ModuleBootReport::new(OwnerId::new("spoofed").unwrap());
+        report.active = 2;
+        report.frozen = 1;
+        report.incident_count = 1;
+        report
+    }
+}
+
+struct StatsMechanicsMod;
+
+impl mush_core::GameModule for StatsMechanicsMod {
+    fn name(&self) -> &'static str {
+        "stats_mechanics"
+    }
+
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.definition_validator(
+            DefinitionKind::new("schema").unwrap(),
+            |context: &DefinitionValidationContext<'_>| {
+                let entry = context.definition();
+                if entry.reference().key().id.as_str() == "sample"
+                    && entry.reference().version() == 1
+                    && entry.payload() == &serde_json::json!({"safe": true})
+                    && entry.references().is_empty()
+                    && entry.is_current()
+                {
+                    Ok(())
+                } else {
+                    Err("unexpected stats test definition".into())
+                }
+            },
+        )?;
+        reg.definition(
+            DefinitionDescriptor::new(
+                DefinitionKind::new("schema").unwrap(),
+                DefinitionId::new("sample").unwrap(),
+                1,
+                serde_json::json!({"safe": true}),
+            )
+            .unwrap()
+            .as_current(),
+        )?;
+        reg.recovery_reporter(Arc::new(StatsRecovery))
     }
 }
 
@@ -336,6 +395,54 @@ fn render_ps_shows_waits_ticks_and_counts() {
 }
 
 #[test]
+fn render_ps_bounds_a_large_pending_set_and_reports_exact_omissions() {
+    let mut engine = Engine::new(World::new_minimal(), world_task::base_registry());
+
+    // Later entries are inserted first: the diagnostic must select by the
+    // scheduler's `(due, seq)` firing order, not heap iteration or insertion
+    // prefix, while retaining only its fixed display budget.
+    for i in 0..300 {
+        engine.sched.insert(
+            20_000,
+            ScheduledKind::WaitCmd {
+                actor: GOD,
+                line: format!("say late-{i:03}"),
+            },
+        );
+    }
+    for i in 0..300 {
+        engine.sched.insert(
+            10_000,
+            ScheduledKind::WaitCmd {
+                actor: GOD,
+                line: format!("say early-{i:03}"),
+            },
+        );
+    }
+
+    let text = render_ps(&engine, 0);
+    assert!(text.contains("Total scheduled entries: 600"), "{text}");
+    assert!(
+        text.contains(&format!(
+            "Displayed earliest entries: {MAX_PENDING_ENTRIES_PER_INSPECTION} (344 omitted)"
+        )),
+        "{text}"
+    );
+    assert_eq!(
+        text.lines()
+            .filter(|line| line.starts_with("  God  in "))
+            .count(),
+        MAX_PENDING_ENTRIES_PER_INSPECTION,
+        "only the bounded earliest set may be rendered"
+    );
+    assert!(text.contains("say early-000"), "{text}");
+    assert!(text.contains("say early-255"), "{text}");
+    assert!(!text.contains("say early-256"), "{text}");
+    assert!(!text.contains("say late-"), "{text}");
+    assert_eq!(engine.sched.len(), 600, "inspection must not dequeue work");
+}
+
+#[test]
 fn render_stats_reports_counts_lag_and_store_health() {
     let mut world = World::new_minimal();
     world.set_now(2_000);
@@ -350,15 +457,19 @@ fn render_stats_reports_counts_lag_and_store_health() {
         .create(ObjKind::Thing, "ball", GOD, Some(hall))
         .unwrap();
     world.set_connected(nick, true);
-    let mut engine = Engine::new(world, world_task::base_registry());
+    let mut engine = Engine::with_modules(
+        world,
+        world_task::base_registry(),
+        vec![Box::new(StatsMechanicsMod)],
+    )
+    .unwrap();
     engine.record_loop_lag(12);
     engine.record_loop_lag(7);
 
     let now = 10_000i64;
     let health = StoreHealth {
-        read_only: false,
+        mode: WorldMode::Writable,
         last_write_unix: Some(now - 5),
-        poison_frozen: false,
     };
     // The enriched aggregates (M9 observability): transport-split connections,
     // write-queue depth, NPC counts, p99 lag, and today's LLM spend.
@@ -402,6 +513,18 @@ fn render_stats_reports_counts_lag_and_store_health() {
     assert!(text.contains("NPC agents: 4 active, 1 thinking"), "{text}");
     assert!(
         text.contains(
+            "Mechanics: 1 definitions from 1 owners, 0 bridges, 0 migrations; fingerprint "
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "Recovery stats_mechanics: 2 active, 1 frozen, 0 migrating, 0 quarantined; 1 incidents, 0 migration plans"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
             "IPC boundary: 7 frames shed, 2 write timeouts, 3 to_gw overflows; high-water to_server 900, to_gw 4096"
         ),
         "{text}"
@@ -420,7 +543,9 @@ fn render_stats_reports_counts_lag_and_store_health() {
     // form; the LLM block is simply absent).
     let health = StoreHealth::new();
     let ro = StoreHealth {
-        read_only: true,
+        mode: WorldMode::StoreReadOnly {
+            incident: IncidentId(1),
+        },
         ..health
     };
     let text = render_stats(&engine, &ro, now, now, &StatsExtra::default());
@@ -449,6 +574,10 @@ async fn ps_and_stats_deliver_through_the_world_task() {
             })
             .await
     );
+    // @wait is intentionally silent, so its exact world/store barrier is the
+    // acknowledgement that the scheduled mutation committed before @ps reads
+    // the scheduler. A concurrent command is correctly Busy in CommitPending.
+    assert!(world.barrier().await, "@wait must commit before @ps");
     assert!(
         world
             .inbound(Inbound::Cmd {

@@ -12,6 +12,7 @@ use futures::{SinkExt, StreamExt};
 use mush_net_web::{ResumeErr, ResumeOk, WEB_CONN_ID_BASE, WebConfig};
 use mush_proto::{ClientCommand, Envelope, OutputEvent, Query};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::error::ProtocolError;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
@@ -259,6 +260,54 @@ async fn resume_bad_session_closes_4401_without_attach() {
 }
 
 #[tokio::test]
+async fn resume_busy_closes_1013_without_fresh_attach() {
+    let hooks = Arc::new(MockWebHooks::new());
+    hooks.state().resume_result = Some(Err(ResumeErr::Busy));
+    let addr = spawn_server(hooks.clone(), test_config()).await;
+
+    let (mut ws, _) = connect_ws(addr, "char=7&resume=5").await.unwrap();
+    let (code, reason) = recv_close(&mut ws).await;
+    assert_eq!(code, 1013, "temporary admission pressure is retryable");
+    assert_eq!(reason, "server busy; try again");
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let st = hooks.state();
+    assert_eq!(st.resumes.len(), 1, "resume was attempted exactly once");
+    assert!(
+        st.connects.is_empty(),
+        "Busy must not fall back to a fresh attach and bypass resume admission"
+    );
+    assert!(
+        st.disconnects.is_empty(),
+        "never attached -> no disconnected callback"
+    );
+}
+
+#[tokio::test]
+async fn resume_unavailable_closes_1012_without_fresh_attach() {
+    let hooks = Arc::new(MockWebHooks::new());
+    hooks.state().resume_result = Some(Err(ResumeErr::Unavailable));
+    let addr = spawn_server(hooks.clone(), test_config()).await;
+
+    let (mut ws, _) = connect_ws(addr, "char=7&resume=5").await.unwrap();
+    let (code, reason) = recv_close(&mut ws).await;
+    assert_eq!(code, 1012, "boundary loss is a service-restart condition");
+    assert_eq!(reason, "game restarting; reconnect shortly");
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let st = hooks.state();
+    assert_eq!(st.resumes.len(), 1, "resume was attempted exactly once");
+    assert!(
+        st.connects.is_empty(),
+        "Unavailable must not fall back to a fresh attach during the same outage"
+    );
+    assert!(
+        st.disconnects.is_empty(),
+        "never attached -> no disconnected callback"
+    );
+}
+
+#[tokio::test]
 async fn connect_refusal_closes_4401_with_reason() {
     let hooks = Arc::new(MockWebHooks::new());
     hooks.state().connect_err = Some("That character is unavailable.".into());
@@ -300,8 +349,43 @@ async fn oversize_frame_closes_the_connection() {
     let big = format!("{{\"t\":\"line\",\"d\":\"{}\"}}", "x".repeat(80 * 1024));
     ws.send(Message::Text(big.into())).await.unwrap();
 
-    let (code, _) = recv_close(&mut ws).await;
-    assert_eq!(code, 1008);
+    // The server's frame-size guard rejects this from the frame header,
+    // before consuming the declared payload. Its 1008 close is therefore
+    // best-effort: on Windows, dropping a TCP socket with unread inbound
+    // bytes can surface to the peer as WSAECONNRESET before the close frame.
+    // Either outcome proves the transport was closed; when the close frame
+    // wins the race, its protocol code must still be correct.
+    let close = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Close(Some(frame)))) => {
+                    break Some(u16::from(frame.code));
+                }
+                Some(Ok(Message::Close(None))) => panic!("server close omitted the protocol code"),
+                Some(Err(WsError::Io(err)))
+                    if matches!(
+                        err.kind(),
+                        std::io::ErrorKind::BrokenPipe
+                            | std::io::ErrorKind::ConnectionAborted
+                            | std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::UnexpectedEof
+                    ) =>
+                {
+                    break None;
+                }
+                Some(Err(WsError::Protocol(ProtocolError::ResetWithoutClosingHandshake)))
+                | Some(Err(WsError::ConnectionClosed))
+                | None => break None,
+                Some(Err(err)) => panic!("unexpected websocket error during teardown: {err}"),
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for oversize connection teardown");
+    if let Some(code) = close {
+        assert_eq!(code, 1008);
+    }
     hooks
         .wait_for("disconnected after oversize", |st| {
             st.disconnects.len() == 1

@@ -446,10 +446,13 @@ impl WodState {
     pub fn conceal_persist_op(&self) -> ModuleOp {
         let mut subjects: BTreeMap<u32, ConcealEntry> = BTreeMap::new();
         for (&subject, &rating) in &self.concealed {
-            subjects.insert(subject.0, ConcealEntry {
-                rating,
-                verdicts: BTreeMap::new(),
-            });
+            subjects.insert(
+                subject.0,
+                ConcealEntry {
+                    rating,
+                    verdicts: BTreeMap::new(),
+                },
+            );
         }
         // Attach each verdict to its (concealed) subject. Verdicts only ever
         // exist for a concealed subject, so any without a subject entry — there
@@ -460,7 +463,10 @@ impl WodState {
             }
         }
         let doc = ConcealDoc { subjects };
-        json_set(KEY_CONCEAL, serde_json::to_value(&doc).expect("conceal doc serializes"))
+        json_set(
+            KEY_CONCEAL,
+            serde_json::to_value(&doc).expect("conceal doc serializes"),
+        )
     }
 
     /// A `JsonSet` mirroring every actor's [`PendingAction`]. Emit after every
@@ -469,7 +475,10 @@ impl WodState {
     pub fn pending_persist_op(&self) -> ModuleOp {
         let doc: BTreeMap<u32, &PendingAction> =
             self.pending.iter().map(|(k, v)| (k.0, v)).collect();
-        json_set(KEY_PENDING, serde_json::to_value(&doc).expect("pending doc serializes"))
+        json_set(
+            KEY_PENDING,
+            serde_json::to_value(&doc).expect("pending doc serializes"),
+        )
     }
 
     /// A `JsonSet` mirroring every actor's in-progress [`ExtendedRoll`]. Emit
@@ -478,7 +487,10 @@ impl WodState {
     pub fn extended_persist_op(&self) -> ModuleOp {
         let doc: BTreeMap<u32, &ExtendedRoll> =
             self.extended.iter().map(|(k, v)| (k.0, v)).collect();
-        json_set(KEY_EXTENDED, serde_json::to_value(&doc).expect("extended doc serializes"))
+        json_set(
+            KEY_EXTENDED,
+            serde_json::to_value(&doc).expect("extended doc serializes"),
+        )
     }
 
     // ------------------------------------------------------------------

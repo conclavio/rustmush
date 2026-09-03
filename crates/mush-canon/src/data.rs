@@ -185,10 +185,7 @@ impl CanonState {
     /// resolution needs the store-read seam.)
     #[must_use]
     pub fn superseded_in_tail(&self) -> BTreeSet<CanonId> {
-        self.recent()
-            .iter()
-            .filter_map(|e| e.supersedes)
-            .collect()
+        self.recent().iter().filter_map(|e| e.supersedes).collect()
     }
 }
 
@@ -265,10 +262,21 @@ mod tests {
         let _ = st.alloc_id(); // 0
         let _ = st.alloc_id(); // 1
         // Append event 0, then a retcon (event 1 supersedes 0).
-        let (_, op0) = st.ledger.append(LOG, serde_json::to_value(ev(0, CanonScope::Public, &[])).unwrap());
+        let prepared = st
+            .ledger
+            .prepare_append(
+                LOG,
+                serde_json::to_value(ev(0, CanonScope::Public, &[])).unwrap(),
+            )
+            .unwrap();
+        let (_, op0) = st.ledger.apply_prepared(prepared).unwrap();
         let mut retcon = ev(1, CanonScope::Public, &[]);
         retcon.supersedes = Some(CanonId(0));
-        let (_, op1) = st.ledger.append(LOG, serde_json::to_value(&retcon).unwrap());
+        let prepared = st
+            .ledger
+            .prepare_append(LOG, serde_json::to_value(&retcon).unwrap())
+            .unwrap();
+        let (_, op1) = st.ledger.apply_prepared(prepared).unwrap();
         let _ = (op0, op1);
         let recent = st.recent();
         assert_eq!(recent.len(), 2);

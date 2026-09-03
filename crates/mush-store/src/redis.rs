@@ -84,8 +84,7 @@ use crate::store::ObjectStore;
 use crate::types::{
     AccountRec, BanRec, CharacterRef, ModuleWrite, SshKeyRec, StoreError, TokenRecord,
     WorldSnapshot, WriteBatch, WriteReceipt, validate_module_key, validate_module_ns,
-    validate_module_op,
-    validate_token_hash,
+    validate_module_op, validate_token_hash,
 };
 
 /// Prefix of per-object JSON docs.
@@ -169,6 +168,28 @@ fn is_wrong_type_err(e: &fred::error::Error) -> bool {
     msg.contains("wrongtype") || msg.contains("wrong redis type")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NonJsonModuleKey {
+    Stream,
+    Gone,
+}
+
+/// Classify a module key after `JSON.GET` has already reported wrong type.
+/// Only a positively identified stream may be omitted from the JSON listing;
+/// every other live Redis type is authoritative corruption.
+fn classify_non_json_module_key(
+    full_key: &str,
+    redis_type: &str,
+) -> Result<NonJsonModuleKey, StoreError> {
+    match redis_type {
+        "stream" => Ok(NonJsonModuleKey::Stream),
+        "none" => Ok(NonJsonModuleKey::Gone),
+        unexpected => Err(StoreError::Corrupt(format!(
+            "module key {full_key:?} has unexpected Redis type {unexpected:?}"
+        ))),
+    }
+}
+
 /// `JSON.GET key $` → the raw doc, unwrapped from RedisJSON's one-element
 /// path-match array. `Ok(None)` when the key is gone.
 async fn json_doc(client: &Client, key: &str) -> Result<Option<serde_json::Value>, StoreError> {
@@ -196,12 +217,23 @@ impl RedisStore {
     /// Fails fast if the server is unreachable — per PLAN, boot dies with a
     /// clear error rather than running without persistence.
     pub async fn connect(url: &str) -> Result<RedisStore, StoreError> {
+        let store = RedisStore::connect_read_only(url).await?;
+        store.ensure_index().await;
+        Ok(store)
+    }
+
+    /// Connect without running any write-capable bootstrap.
+    ///
+    /// This narrow constructor exists for quarantine recovery: callers may
+    /// issue authoritative reads before deciding whether ordinary writable
+    /// boot is safe. In particular it does **not** call [`Self::ensure_index`]
+    /// or run migrations. The returned type still implements [`ObjectStore`],
+    /// so recovery code must expose it only through a read-only interface.
+    pub async fn connect_read_only(url: &str) -> Result<RedisStore, StoreError> {
         let builder = RedisStore::configured_builder(url)?;
         let client = builder.build()?;
         client.init().await?;
-        let store = RedisStore { client };
-        store.ensure_index().await;
-        Ok(store)
+        Ok(RedisStore { client })
     }
 
     /// The client [`Builder`] [`connect`](RedisStore::connect) uses: RESP3,
@@ -900,14 +932,26 @@ impl ObjectStore for RedisStore {
             let mut out = Vec::with_capacity(keys.len());
             for full_key in &keys {
                 // The namespace mixes JSON docs and streams under one
-                // prefix; JSON.GET on a stream key is a wrong-type error —
-                // skip it, that key belongs to stream_range. Other errors
-                // propagate.
+                // prefix. JSON.GET on either a legitimate stream *or* a
+                // type-clobbered key is a wrong-type error, so the error by
+                // itself is not enough to decide that this key belongs to
+                // stream_range. Positively identify the Redis type before
+                // skipping it; otherwise corrupt authoritative state could
+                // silently disappear during boot.
                 let doc = match json_doc(&self.client, full_key).await {
                     Ok(doc) => doc,
                     Err(StoreError::Redis(e)) if is_wrong_type_err(&e) => {
-                        tracing::debug!(key = full_key, "skipping non-JSON module key");
-                        continue;
+                        let redis_type: String = self.client.r#type(full_key.as_str()).await?;
+                        match classify_non_json_module_key(full_key, &redis_type)? {
+                            NonJsonModuleKey::Stream => {
+                                tracing::debug!(key = full_key, "skipping module stream key");
+                                continue;
+                            }
+                            // The key may legitimately expire or be deleted
+                            // between SCAN/JSON.GET/TYPE. There is no state
+                            // left to hydrate in that case.
+                            NonJsonModuleKey::Gone => continue,
+                        }
                     }
                     Err(e) => return Err(e),
                 };
@@ -1012,6 +1056,27 @@ impl ObjectStore for RedisStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn module_listing_only_skips_proven_streams_or_gone_keys() {
+        assert_eq!(
+            classify_non_json_module_key("mod:m:history", "stream").expect("stream"),
+            NonJsonModuleKey::Stream
+        );
+        assert_eq!(
+            classify_non_json_module_key("mod:m:vanished", "none").expect("gone"),
+            NonJsonModuleKey::Gone
+        );
+
+        for unexpected in ["string", "hash", "list", "set", "zset", "ReJSON-RL"] {
+            let err = classify_non_json_module_key("mod:m:doc", unexpected)
+                .expect_err("every other live type must fail closed");
+            assert!(
+                matches!(err, StoreError::Corrupt(ref message) if message.contains(unexpected)),
+                "unexpected classification for {unexpected:?}: {err:?}"
+            );
+        }
+    }
 
     /// The outage-detection settings must actually be on the builder: fred
     /// defaults to `default_command_timeout = 0` (commands buffer forever

@@ -25,18 +25,18 @@
 use std::collections::HashMap;
 
 use mush_core::{
-    Audience, Effects, Engine, GameModule, GOD, Inbound, LIMBO, ModuleBootData, ModuleOp, ObjId,
+    Audience, Effects, Engine, GOD, GameModule, Inbound, LIMBO, ModuleBootData, ModuleOp, ObjId,
     ObjKind, Outbox,
 };
 use mush_dice::sr5::{Sr5Extended, Sr5Opts, Sr5Outcome, Sr5Pool};
 use mush_jobs::JobsModule;
 use mush_proto::OutputEvent;
 use mush_store::{InMemoryStore, ObjectStore, WriteBatch};
-use mush_testkit::{boot_world, TestWorld};
+use mush_testkit::{TestWorld, boot_world};
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use ruleset_shadowrun::state::Sr5State;
 use ruleset_shadowrun::ShadowrunRuleset;
+use ruleset_shadowrun::state::Sr5State;
 use smol_str::SmolStr;
 
 /// A fixed RNG seed shared by both engine instances (register-time), so the
@@ -154,14 +154,22 @@ async fn sr_extended_roll_survives_a_hot_restart() {
     let nick_ext: Sr5Extended = pre.extended(nick).expect("Nick extended roll").clone();
     assert_eq!(nick_ext.threshold, 20);
     assert_eq!(nick_ext.rolls.len(), 1, "one interval recorded");
-    assert_eq!(nick_ext.next_pool, 9, "the pool shrank by one after interval 1");
+    assert_eq!(
+        nick_ext.next_pool, 9,
+        "the pool shrank by one after interval 1"
+    );
     assert!(pre.extended(ghost).is_some(), "Ghost extended set");
-    assert!(!pre.recent_logs(nick, 1).is_empty(), "Nick has a logged roll pre-restart");
+    assert!(
+        !pre.recent_logs(nick, 1).is_empty(),
+        "Nick has a logged roll pre-restart"
+    );
 
     // The write-through ops the scene emitted, folded into one store batch.
     let ops = tw.take_module_ops();
     assert!(
-        ops.iter().any(|o| matches!(&o.op, mush_core::ModuleWrite::JsonSet { key, .. } if key == "extended")),
+        ops.iter().any(
+            |o| matches!(&o.op, mush_core::ModuleWrite::JsonSet { key, .. } if key == "extended")
+        ),
         "the extended roll emitted an extended doc"
     );
     let boot = roundtrip(ops).await;
@@ -182,7 +190,11 @@ async fn sr_extended_roll_survives_a_hot_restart() {
                 .expect("recreate player")
         })
         .collect();
-    assert_eq!(ids, vec![nick, probe], "the reboot recreates the same object ids");
+    assert_eq!(
+        ids,
+        vec![nick, probe],
+        "the reboot recreates the same object ids"
+    );
     for &p in &ids {
         conn(&mut engine, p);
     }
@@ -200,7 +212,9 @@ async fn sr_extended_roll_survives_a_hot_restart() {
     // the corrected extended doc.
     let fixups = engine.take_module_ops();
     assert!(
-        fixups.iter().any(|o| matches!(&o.op, mush_core::ModuleWrite::JsonSet { key, .. } if key == "extended")),
+        fixups.iter().any(
+            |o| matches!(&o.op, mush_core::ModuleWrite::JsonSet { key, .. } if key == "extended")
+        ),
         "pruning an orphan entry re-persists the corrected extended doc: {fixups:?}"
     );
 
@@ -219,13 +233,18 @@ async fn sr_extended_roll_survives_a_hot_restart() {
     );
 
     // --- The transient log ring was NOT persisted (it re-hydrates empty) ---
-    assert!(post.recent_logs(nick, 1).is_empty(), "logs are not persisted (Nick)");
+    assert!(
+        post.recent_logs(nick, 1).is_empty(),
+        "logs are not persisted (Nick)"
+    );
 
     // --- The RNG was NOT persisted (re-seeded on boot). A fresh roll on the
     // reboot reproduces the pristine seed-0 stream; had the advanced RNG been
     // restored it would not match. Probe rolls FIRST, before any other RNG use. ---
     let mut expect_rng = ChaCha8Rng::seed_from_u64(S);
-    let faces: Vec<u8> = (0..5).map(|_| (expect_rng.next_u32() % 6) as u8 + 1).collect();
+    let faces: Vec<u8> = (0..5)
+        .map(|_| (expect_rng.next_u32() % 6) as u8 + 1)
+        .collect();
     let expected = Sr5Pool::score(&faces, &Sr5Opts::default());
     cmd(&mut engine, probe, "+roll 5");
     let got: Sr5Outcome = state(&engine)
@@ -243,10 +262,23 @@ async fn sr_extended_roll_survives_a_hot_restart() {
     // interval accumulates on top of the restored total and shrinks the pool
     // further (10 → 9 pre-restart, now 9 → 8). ---
     cmd(&mut engine, nick, "+roll logic+computer extended 20");
-    let cont = state(&engine).extended(nick).expect("Nick extended continues").clone();
-    assert_eq!(cont.threshold, 20, "same test (not reset to a fresh threshold)");
-    assert_eq!(cont.rolls.len(), 2, "the restored interval plus the new one");
-    assert_eq!(cont.next_pool, 8, "the pool kept shrinking from the restored 9");
+    let cont = state(&engine)
+        .extended(nick)
+        .expect("Nick extended continues")
+        .clone();
+    assert_eq!(
+        cont.threshold, 20,
+        "same test (not reset to a fresh threshold)"
+    );
+    assert_eq!(
+        cont.rolls.len(),
+        2,
+        "the restored interval plus the new one"
+    );
+    assert_eq!(
+        cont.next_pool, 8,
+        "the pool kept shrinking from the restored 9"
+    );
     assert!(
         cont.accumulated >= nick_ext.accumulated,
         "the new interval accumulated on top of the restored successes"

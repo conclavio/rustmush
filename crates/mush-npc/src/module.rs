@@ -232,7 +232,9 @@ impl GameModule for NpcModule {
             } else if key.starts_with("lore:") {
                 match serde_json::from_value::<LorePool>(value) {
                     Ok(pool) => pools.insert(pool),
-                    Err(e) => tracing::error!(%key, error = %e, "npc: unparseable lore pool skipped"),
+                    Err(e) => {
+                        tracing::error!(%key, error = %e, "npc: unparseable lore pool skipped")
+                    }
                 }
             } else if let Some(id) = key.strip_prefix("intel:") {
                 match (
@@ -512,7 +514,11 @@ fn file_intel(ctx: &mut Ctx<'_>, npc: ObjId, subject: ObjId, kind: IntelKind, de
             .module_state::<FactionState>()
             .is_some_and(|st| st.factions.contains_key(&faction));
         if !live {
-            tracing::debug!(npc = npc.0, faction = faction.0, "npc: intel principal faction gone; not filing");
+            tracing::debug!(
+                npc = npc.0,
+                faction = faction.0,
+                "npc: intel principal faction gone; not filing"
+            );
             return;
         }
     }
@@ -679,8 +685,7 @@ fn cmd_intel(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     records.sort_by_key(|(r, _)| r.ts);
 
     let arg = ctx.args.raw().trim().to_string();
-    let (records, filter): (Vec<(IntelRecord, Option<SmolStr>)>, Option<String>) = if arg
-        .is_empty()
+    let (records, filter): (Vec<(IntelRecord, Option<SmolStr>)>, Option<String>) = if arg.is_empty()
     {
         (records, None)
     } else {
@@ -1206,7 +1211,9 @@ fn cmd_agent(grounding: &dyn AgentGrounding, ctx: &mut Ctx<'_>) -> Result<(), Cm
                 }
             ),
         );
-        let filed = ctx.state::<NpcHostState>().map_or(0, |h| h.intel.filed_by(npc));
+        let filed = ctx
+            .state::<NpcHostState>()
+            .map_or(0, |h| h.intel.filed_by(npc));
         ctx.out.info(
             ctx.actor,
             format!("  Intel filed: {filed} {}.", records_word(filed)),
@@ -1587,8 +1594,10 @@ fn agent_lore_tags(ctx: &mut Ctx<'_>, npc: ObjId, list: &str) -> Result<(), CmdE
         undefined = tags.clone();
     }
     if !defined.is_empty() {
-        ctx.out
-            .info(ctx.actor, format!("  Resolves pools: {}.", defined.join(", ")));
+        ctx.out.info(
+            ctx.actor,
+            format!("  Resolves pools: {}.", defined.join(", ")),
+        );
     }
     if !undefined.is_empty() {
         ctx.out.info(
@@ -1796,9 +1805,7 @@ fn lore_clear(ctx: &mut Ctx<'_>, tag: &str) -> Result<(), CmdError> {
 fn parse_lore_spec(rhs: &str) -> Result<LoreEntry, CmdError> {
     let rhs = rhs.trim();
     let (tier_tok, rest) = rhs.split_once(char::is_whitespace).ok_or_else(|| {
-        CmdError::msg(
-            "Usage: ...=<tier> [subject:] <fact>. Tier is public, guarded, or secret.",
-        )
+        CmdError::msg("Usage: ...=<tier> [subject:] <fact>. Tier is public, guarded, or secret.")
     })?;
     let secrecy = parse_secrecy(tier_tok)?;
     let rest = rest.trim();
@@ -1870,7 +1877,8 @@ fn parse_index(s: &str) -> Result<usize, CmdError> {
 fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
     let s = s.trim_start();
     let head = s.get(..prefix.len())?;
-    head.eq_ignore_ascii_case(prefix).then(|| &s[prefix.len()..])
+    head.eq_ignore_ascii_case(prefix)
+        .then(|| &s[prefix.len()..])
 }
 
 /// If `s` (after leading whitespace) begins with the whole word `word`
@@ -2382,9 +2390,7 @@ fn delete_pool(ctx: &mut Ctx<'_>, tag: &str) -> bool {
         .is_some_and(|h| h.lore_pools.remove(tag));
     ctx.persist(ModuleOp {
         ns: SmolStr::new(NS),
-        op: ModuleWrite::Del {
-            key: pool_key(tag),
-        },
+        op: ModuleWrite::Del { key: pool_key(tag) },
     });
     removed
 }

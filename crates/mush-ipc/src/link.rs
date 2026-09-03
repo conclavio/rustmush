@@ -15,7 +15,7 @@
 
 use futures::future::BoxFuture;
 
-use crate::{ServiceReq, ServiceResp, ToServer};
+use crate::{ObjId, ServiceReq, ServiceResp, ToServer};
 
 /// The outcome of an input-path (`Cmd`/`Query`) send through [`GatewayLink`]
 /// ([`to_server_input`](GatewayLink::to_server_input)). Distinguishes the M18
@@ -28,10 +28,24 @@ pub enum InputSend {
     Sent,
     /// Dropped by the M18 input-shed: the gateway->server (`to_server`) queue
     /// was at/over its cap (a wedged or slow server). Only live input
-    /// (`Cmd`/`Query`) is ever shed; every must-deliver frame always enqueues.
+    /// (`Cmd`/`Query`) is ever shed. A new connection may separately be refused
+    /// *before* lifecycle custody is reserved; after reservation, its
+    /// must-deliver frames always enqueue.
     Shed,
     /// The boundary is gone — a restart gap
     /// ([`is_restarting`](GatewayLink::is_restarting)) or a terminal shutdown.
+    Gone,
+}
+
+/// Result of reserving split-gateway lifecycle custody before local session
+/// mutation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectionAdmission {
+    /// A bounded slot is reserved; the matching `ConnUp` is now must-deliver.
+    Reserved,
+    /// The boundary is live but its queue or lifecycle ledger is at capacity.
+    Busy,
+    /// No server boundary exists (restart gap or shutdown).
     Gone,
 }
 
@@ -40,6 +54,23 @@ pub enum InputSend {
 /// Object-safe (returns [`BoxFuture`], the workspace's `dyn`-async idiom) so the
 /// bridges can hold an `Arc<dyn GatewayLink>`.
 pub trait GatewayLink: Send + Sync {
+    /// Reserve bounded connection-lifecycle custody before the caller mutates
+    /// its local session table.
+    ///
+    /// The split gateway uses this admission point to cap live connections plus
+    /// pending link-dead cleanup and to stop taking new custody when its IPC
+    /// writer is backed up. The all-in-one implementation uses the permissive
+    /// default because its world channel supplies its own backpressure. A
+    /// successful reservation must be followed promptly by a matching
+    /// `ConnUp`, or cancelled with [`cancel_connection_reservation`](Self::cancel_connection_reservation).
+    fn try_reserve_connection(&self, _conn: u64, _actor: ObjId) -> ConnectionAdmission {
+        ConnectionAdmission::Reserved
+    }
+
+    /// Cancel a successful lifecycle reservation which never produced a
+    /// `ConnUp`. Implementations which do not reserve custody may ignore it.
+    fn cancel_connection_reservation(&self, _conn: u64) {}
+
     /// Send one one-way [`ToServer`] message — a live-input
     /// [`WireInbound`](crate::WireInbound) arm ([`ToServer::Inbound`]) or
     /// operator [`ToServer::Control`]. Resolves to `false` when the server is
@@ -65,7 +96,9 @@ pub trait GatewayLink: Send + Sync {
     /// Issue a correlated service request ([`ServiceReq`]) and await its
     /// [`ServiceResp`]. Resolves to `None` only when the request could not be
     /// delivered at all; per-request failure (e.g. player-creation refusal) is
-    /// carried inside the returned [`ServiceResp`].
+    /// carried inside the returned [`ServiceResp`]. Bounded split-process
+    /// admission returns [`ServiceResp::Busy`] before taking custody when its
+    /// correlated-request ceiling is full.
     fn request(&self, req: ServiceReq) -> BoxFuture<'_, Option<ServiceResp>>;
 
     /// Whether the boundary is currently in a **restart gap** — the server is

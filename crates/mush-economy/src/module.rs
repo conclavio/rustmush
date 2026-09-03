@@ -146,12 +146,6 @@ impl EconomyStore {
     pub(crate) fn providers(&self) -> CustodyTable {
         self.providers.clone()
     }
-    /// Mint the next transaction id.
-    pub(crate) fn alloc_transaction(&mut self) -> TransactionId {
-        let id = TransactionId(self.next_transaction);
-        self.next_transaction += 1;
-        id
-    }
     /// The next transaction id WITHOUT allocating it (a unique idempotency-key seed
     /// for interactive commands).
     #[must_use]

@@ -10,19 +10,20 @@
 //! drop that strands a seal today). The seal must survive.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
 use mush_config::metrics::Metrics;
 use mush_core::{LedgerChunk, LedgerEntry, ModuleOp, ModuleWrite, chunk_key};
-use mush_server::persist::{spawn_store_writer, StoreJob};
+use mush_server::persist::{PersistenceIntegrityLatch, StoreJob, spawn_store_writer};
+use mush_server::quarantine::QuarantineSpool;
 use mush_server::retained::RetainedSeals;
-use mush_server::world_task::WriterSignal;
+use mush_server::world_task::{WriterSignal, WriterSignalReceiver, writer_signal_channel};
 use mush_store::{
-    AccountRec, BanRec, InMemoryStore, ObjectStore, SshKeyRec, StoreError, TokenRecord, WorldSnapshot,
-    WriteBatch, WriteReceipt,
+    AccountRec, BanRec, InMemoryStore, ObjectStore, SshKeyRec, StoreError, TokenRecord,
+    WorldSnapshot, WriteBatch, WriteReceipt,
 };
 use smol_str::SmolStr;
 use tokio::sync::{mpsc, oneshot};
@@ -33,6 +34,7 @@ struct FaultStore {
     inner: InMemoryStore,
     poison_key: Mutex<Option<SmolStr>>,
     drops: AtomicUsize,
+    bgsaves: AtomicUsize,
 }
 
 impl FaultStore {
@@ -41,6 +43,7 @@ impl FaultStore {
             inner: InMemoryStore::new(),
             poison_key: Mutex::new(poison.map(SmolStr::new)),
             drops: AtomicUsize::new(0),
+            bgsaves: AtomicUsize::new(0),
         })
     }
 
@@ -58,7 +61,10 @@ impl ObjectStore for FaultStore {
         Box::pin(async move {
             let poison = self.poison_key.lock().unwrap().clone();
             if let Some(pk) = poison
-                && batch.module_ops.iter().any(|op| FaultStore::key_of(op) == &pk)
+                && batch
+                    .module_ops
+                    .iter()
+                    .any(|op| FaultStore::key_of(op) == &pk)
             {
                 self.drops.fetch_add(1, Ordering::Relaxed);
                 // Non-transient → the writer DROPS the batch (collateral seal loss).
@@ -77,6 +83,7 @@ impl ObjectStore for FaultStore {
     }
 
     fn bgsave(&self) -> BoxFuture<'_, Result<(), StoreError>> {
+        self.bgsaves.fetch_add(1, Ordering::Relaxed);
         self.inner.bgsave()
     }
 
@@ -87,7 +94,10 @@ impl ObjectStore for FaultStore {
     fn create_account(&self, _: AccountRec) -> BoxFuture<'_, Result<(), StoreError>> {
         unimplemented!("fault store: unused")
     }
-    fn get_account<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<Option<AccountRec>, StoreError>> {
+    fn get_account<'a>(
+        &'a self,
+        _: &'a str,
+    ) -> BoxFuture<'a, Result<Option<AccountRec>, StoreError>> {
         unimplemented!("fault store: unused")
     }
     fn link_character<'a>(
@@ -132,7 +142,10 @@ impl ObjectStore for FaultStore {
     fn token_put(&self, _: String, _: TokenRecord) -> BoxFuture<'_, Result<(), StoreError>> {
         unimplemented!("fault store: unused")
     }
-    fn token_get<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<Option<TokenRecord>, StoreError>> {
+    fn token_get<'a>(
+        &'a self,
+        _: &'a str,
+    ) -> BoxFuture<'a, Result<Option<TokenRecord>, StoreError>> {
         unimplemented!("fault store: unused")
     }
     fn token_touch<'a>(&'a self, _: &'a str, _: i64) -> BoxFuture<'a, Result<bool, StoreError>> {
@@ -176,9 +189,7 @@ impl ObjectStore for FaultStore {
 /// returning each message's `seal` field. The writer sends these synchronously
 /// (awaited) before it replies with the batch result, so by the time the caller
 /// has the result they are all present.
-fn drain_breaches(
-    rx: &mut mpsc::UnboundedReceiver<WriterSignal>,
-) -> Vec<Option<(SmolStr, SmolStr, bool)>> {
+fn drain_breaches(rx: &mut WriterSignalReceiver) -> Vec<Option<(SmolStr, SmolStr, String, bool)>> {
     let mut out = Vec::new();
     while let Ok(msg) = rx.try_recv() {
         if let WriterSignal::LedgerBreach { seal, .. } = msg {
@@ -193,17 +204,29 @@ fn seal_op(ns: &str, log: &str, chunk: u64) -> ModuleOp {
     let value = serde_json::to_value(LedgerChunk {
         chunk,
         sealed: true,
-        entries: vec![LedgerEntry { seq: 0, value: serde_json::json!("event") }],
+        entries: vec![LedgerEntry {
+            seq: 0,
+            value: serde_json::json!("event"),
+        }],
     })
     .unwrap();
-    ModuleOp { ns: SmolStr::new(ns), op: ModuleWrite::JsonSet { key: chunk_key(log, chunk), value } }
+    ModuleOp {
+        ns: SmolStr::new(ns),
+        op: ModuleWrite::JsonSet {
+            key: chunk_key(log, chunk),
+            value,
+        },
+    }
 }
 
 /// A poison non-ledger op.
 fn poison_op(ns: &str, key: &str) -> ModuleOp {
     ModuleOp {
         ns: SmolStr::new(ns),
-        op: ModuleWrite::JsonSet { key: SmolStr::new(key), value: serde_json::json!({"x": 1}) },
+        op: ModuleWrite::JsonSet {
+            key: SmolStr::new(key),
+            value: serde_json::json!({"x": 1}),
+        },
     }
 }
 
@@ -224,10 +247,23 @@ async fn flush(
         return None;
     }
     *serial += 1;
-    let batch = WriteBatch { serial: *serial, module_ops: ops, durable: true, ..WriteBatch::default() };
-    retained.capture(&batch.module_ops, *serial);
+    let batch = WriteBatch {
+        serial: *serial,
+        module_ops: ops,
+        durable: true,
+        ..WriteBatch::default()
+    };
+    retained
+        .capture(&batch.module_ops, *serial)
+        .expect("test batch must not contain conflicting immutable seals");
     let (tx, rx) = oneshot::channel();
-    writer.send(StoreJob::Write { batch, notify: Some(tx) }).await.unwrap();
+    writer
+        .send(StoreJob::Write {
+            batch,
+            notify: Some(tx),
+        })
+        .await
+        .unwrap();
     Some(rx.await.unwrap())
 }
 
@@ -237,29 +273,45 @@ type Rig = (
     mpsc::Sender<StoreJob>,
     tokio::task::JoinHandle<()>,
     Arc<AtomicU64>,
-    mpsc::UnboundedReceiver<WriterSignal>,
+    WriterSignalReceiver,
 );
 
 /// Spawn a writer over a fault store, returning everything the tests poke.
-fn spawn(poison: Option<&str>, quarantine_dir: Option<std::path::PathBuf>) -> Rig {
+fn spawn(poison: Option<&str>, quarantine_spool: QuarantineSpool) -> Rig {
     let store = FaultStore::new(poison);
     let high_water = Arc::new(AtomicU64::new(0));
-    let (signal_tx, signal_rx) = mpsc::unbounded_channel::<WriterSignal>();
+    let (signal_tx, signal_rx) = writer_signal_channel();
     let (writer, join) = spawn_store_writer(
         Arc::clone(&store) as Arc<dyn ObjectStore>,
         signal_tx,
         Arc::new(Metrics::new()),
         Arc::clone(&high_water),
-        quarantine_dir,
+        quarantine_spool,
+        PersistenceIntegrityLatch::new(),
     );
     (store, writer, join, high_water, signal_rx)
 }
 
 /// Send one durable batch and await the writer's result.
-async fn send(writer: &mpsc::Sender<StoreJob>, serial: u64, ops: Vec<ModuleOp>) -> Result<u64, String> {
-    let batch = WriteBatch { serial, module_ops: ops, durable: true, ..WriteBatch::default() };
+async fn send(
+    writer: &mpsc::Sender<StoreJob>,
+    serial: u64,
+    ops: Vec<ModuleOp>,
+) -> Result<u64, String> {
+    let batch = WriteBatch {
+        serial,
+        module_ops: ops,
+        durable: true,
+        ..WriteBatch::default()
+    };
     let (tx, rx) = oneshot::channel();
-    writer.send(StoreJob::Write { batch, notify: Some(tx) }).await.unwrap();
+    writer
+        .send(StoreJob::Write {
+            batch,
+            notify: Some(tx),
+        })
+        .await
+        .unwrap();
     rx.await.unwrap()
 }
 
@@ -267,19 +319,52 @@ async fn send(writer: &mpsc::Sender<StoreJob>, serial: u64, ops: Vec<ModuleOp>) 
 /// retained table clears on the ack. No faults, no re-emit needed.
 #[tokio::test]
 async fn happy_path_commit_advances_high_water_and_clears_retained() {
-    let (store, writer, join, high_water, _rx) = spawn(None, None);
+    let (store, writer, join, high_water, _rx) = spawn(None, QuarantineSpool::in_memory());
     let mut retained = RetainedSeals::new();
     let mut serial = 0u64;
 
-    let r = flush(&mut retained, &writer, &mut serial, vec![seal_op("scenes", "s", 0)], &high_water).await;
+    let r = flush(
+        &mut retained,
+        &writer,
+        &mut serial,
+        vec![seal_op("scenes", "s", 0)],
+        &high_water,
+    )
+    .await;
     assert_eq!(r, Some(Ok(1)));
     assert_eq!(high_water.load(Ordering::Relaxed), 1);
     retained.ack(high_water.load(Ordering::Relaxed));
     assert!(retained.is_empty(), "the commit high-water clears the seal");
-    assert!(store.module_json_get("scenes", chunk_key("s", 0).as_str()).await.unwrap().is_some());
+    assert!(
+        store
+            .module_json_get("scenes", chunk_key("s", 0).as_str())
+            .await
+            .unwrap()
+            .is_some()
+    );
 
     drop(writer);
-    tokio::time::timeout(Duration::from_secs(5), join).await.unwrap().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), join)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+/// The fail-closed barrier is not a blanket snapshot ban: before any breach,
+/// an ordinary BGSAVE still runs in FIFO order through the backing store.
+#[tokio::test]
+async fn bgsave_reaches_store_while_integrity_is_clear() {
+    let (store, writer, join, _high_water, _rx) = spawn(None, QuarantineSpool::in_memory());
+    let (done, receipt) = oneshot::channel();
+    writer.send(StoreJob::Bgsave { done }).await.unwrap();
+    receipt.await.unwrap().unwrap();
+    assert_eq!(store.bgsaves.load(Ordering::Relaxed), 1);
+
+    drop(writer);
+    tokio::time::timeout(Duration::from_secs(5), join)
+        .await
+        .unwrap()
+        .unwrap();
 }
 
 /// A seal caught as COLLATERAL of another op's deterministic poison: the writer
@@ -288,30 +373,76 @@ async fn happy_path_commit_advances_high_water_and_clears_retained() {
 /// from re-emit.
 #[tokio::test]
 async fn collateral_seal_heals_in_isolation_and_freezes() {
-    let (store, writer, join, high_water, mut rx) = spawn(Some("comsys:poison"), None);
+    let (store, writer, join, high_water, mut rx) =
+        spawn(Some("comsys:poison"), QuarantineSpool::in_memory());
 
     // A batch whose poison is a NON-seal op; the seal is collateral.
-    let r = send(&writer, 1, vec![poison_op("comsys", "comsys:poison"), seal_op("scenes", "s", 0)]).await;
+    let r = send(
+        &writer,
+        1,
+        vec![
+            poison_op("comsys", "comsys:poison"),
+            seal_op("scenes", "s", 0),
+        ],
+    )
+    .await;
     assert!(r.is_err(), "the poisoned batch drops: {r:?}");
-    assert_eq!(high_water.load(Ordering::Relaxed), 0, "a dropped batch never advances the high-water");
+    assert_eq!(
+        high_water.load(Ordering::Relaxed),
+        0,
+        "a dropped batch never advances the high-water"
+    );
 
     // The writer isolated the seal, which committed alone → durable.
-    let stored = store.module_json_get("scenes", chunk_key("s", 0).as_str()).await.unwrap();
-    let chunk: LedgerChunk = serde_json::from_value(stored.expect("seal healed in isolation")).unwrap();
+    let stored = store
+        .module_json_get("scenes", chunk_key("s", 0).as_str())
+        .await
+        .unwrap();
+    let chunk: LedgerChunk =
+        serde_json::from_value(stored.expect("seal healed in isolation")).unwrap();
     assert!(chunk.sealed && chunk.entries.len() == 1);
 
     // World signals: an initial freeze (None) then the healed seal (quarantined=false).
     let breaches = drain_breaches(&mut rx);
-    assert!(breaches.iter().any(|s| s.is_none()), "an initial fail-closed freeze was signaled: {breaches:?}");
+    assert!(
+        breaches.iter().any(|s| s.is_none()),
+        "an initial fail-closed freeze was signaled: {breaches:?}"
+    );
     assert!(
         breaches
             .iter()
-            .any(|s| matches!(s, Some((_, k, false)) if k == &chunk_key("s", 0))),
+            .any(|s| matches!(s, Some((_, k, _, false)) if k == &chunk_key("s", 0))),
         "the collateral seal was signaled healed: {breaches:?}"
     );
 
     drop(writer);
-    tokio::time::timeout(Duration::from_secs(5), join).await.unwrap().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), join)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+/// A deterministic drop is an integrity breach even when no sealed ledger
+/// chunk rode in the batch: RAM may already contain the uncommitted mutation.
+#[tokio::test]
+async fn non_ledger_deterministic_drop_latches_integrity_failure() {
+    let (_store, writer, join, _high_water, mut rx) =
+        spawn(Some("comsys:poison"), QuarantineSpool::in_memory());
+    let result = send(&writer, 1, vec![poison_op("comsys", "comsys:poison")]).await;
+    assert!(result.is_err());
+
+    let signals: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+    assert!(signals.iter().any(|signal| matches!(
+        signal,
+        WriterSignal::DeterministicFailure { detail }
+            if detail.contains("deterministic drop of batch 1")
+    )));
+
+    drop(writer);
+    tokio::time::timeout(Duration::from_secs(5), join)
+        .await
+        .unwrap()
+        .unwrap();
 }
 
 /// A seal that is ITSELF the deterministic poison: isolated retries all fail, so
@@ -323,37 +454,64 @@ async fn poison_seal_is_quarantined_to_spool_and_frozen() {
     let _ = std::fs::remove_dir_all(&spool);
     // The seal's own chunk key is the poison: every write carrying it fails.
     let poison_key = chunk_key("econ", 0);
-    let (store, writer, join, high_water, mut rx) = spawn(Some(poison_key.as_str()), Some(spool.clone()));
+    let (store, writer, join, high_water, mut rx) = spawn(
+        Some(poison_key.as_str()),
+        QuarantineSpool::open(spool.clone()).unwrap(),
+    );
 
     let r = send(&writer, 1, vec![seal_op("econ", "econ", 0)]).await;
     assert!(r.is_err(), "the poison-seal batch drops: {r:?}");
     assert_eq!(high_water.load(Ordering::Relaxed), 0);
     // The original drop + POISON_ISOLATION_ATTEMPTS isolated retries all failed.
-    assert!(store.drops.load(Ordering::Relaxed) >= 6, "isolation retried the poison: {}", store.drops.load(Ordering::Relaxed));
+    assert!(
+        store.drops.load(Ordering::Relaxed) >= 6,
+        "isolation retried the poison: {}",
+        store.drops.load(Ordering::Relaxed)
+    );
     // Never committed.
-    assert!(store.module_json_get("econ", poison_key.as_str()).await.unwrap().is_none());
+    assert!(
+        store
+            .module_json_get("econ", poison_key.as_str())
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     // World signals: freeze (None) + quarantine (quarantined=true).
     let breaches = drain_breaches(&mut rx);
-    assert!(breaches.iter().any(|s| s.is_none()), "fail-closed freeze signaled: {breaches:?}");
     assert!(
-        breaches.iter().any(|s| matches!(s, Some((_, k, true)) if k == &poison_key)),
+        breaches.iter().any(|s| s.is_none()),
+        "fail-closed freeze signaled: {breaches:?}"
+    );
+    assert!(
+        breaches
+            .iter()
+            .any(|s| matches!(s, Some((_, k, _, true)) if k == &poison_key)),
         "the poison seal was signaled quarantined: {breaches:?}"
     );
 
     // The spool holds a durable recovery record with the full payload + hash.
-    let files: Vec<_> = std::fs::read_dir(&spool).unwrap().filter_map(Result::ok).collect();
+    let files: Vec<_> = std::fs::read_dir(&spool)
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect();
     assert_eq!(files.len(), 1, "exactly one quarantine record was spooled");
     let record: serde_json::Value =
         serde_json::from_slice(&std::fs::read(files[0].path()).unwrap()).unwrap();
     assert_eq!(record["ns"], "econ");
     assert_eq!(record["key"], poison_key.as_str());
-    assert!(record["payload"]["sealed"].as_bool().unwrap(), "the full seal payload is preserved");
+    assert!(
+        record["payload"]["sealed"].as_bool().unwrap(),
+        "the full seal payload is preserved"
+    );
     assert!(record["payload_hash"].as_str().is_some());
     assert_eq!(record["isolation_attempts"].as_u64().unwrap(), 5);
 
     drop(writer);
-    tokio::time::timeout(Duration::from_secs(5), join).await.unwrap().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), join)
+        .await
+        .unwrap()
+        .unwrap();
     let _ = std::fs::remove_dir_all(&spool);
 }
 
@@ -365,7 +523,10 @@ async fn requarantining_a_poison_seal_is_idempotent_one_record() {
     let spool = std::env::temp_dir().join(format!("rustmush-e0-idem-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&spool);
     let poison_key = chunk_key("econ", 0);
-    let (store, writer, join, _hw, mut rx) = spawn(Some(poison_key.as_str()), Some(spool.clone()));
+    let (store, writer, join, _hw, mut rx) = spawn(
+        Some(poison_key.as_str()),
+        QuarantineSpool::open(spool.clone()).unwrap(),
+    );
 
     // Send the SAME poison seal three times (as the world's re-emit would).
     for serial in 1..=3 {
@@ -381,15 +542,72 @@ async fn requarantining_a_poison_seal_is_idempotent_one_record() {
         .filter_map(Result::ok)
         .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
         .collect();
-    assert_eq!(json_files.len(), 1, "one content-addressed record, no duplicates/truncation");
+    assert_eq!(
+        json_files.len(),
+        1,
+        "one content-addressed record, no duplicates/truncation"
+    );
     let quarantines = drain_breaches(&mut rx)
         .into_iter()
-        .filter(|s| matches!(s, Some((_, _, true))))
+        .filter(|s| matches!(s, Some((_, _, _, true))))
         .count();
-    assert_eq!(quarantines, 1, "the poison is signaled quarantined exactly once, not per re-send");
+    assert_eq!(
+        quarantines, 1,
+        "the poison is signaled quarantined exactly once, not per re-send"
+    );
 
     drop(writer);
-    tokio::time::timeout(Duration::from_secs(5), join).await.unwrap().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), join)
+        .await
+        .unwrap()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&spool);
+}
+
+/// A content digest, not merely `(namespace, key)`, is the poison-resolution
+/// identity. If corrupt input presents different sealed bytes under an already
+/// handled key, the second payload is independently isolated and preserved.
+#[tokio::test]
+async fn distinct_payloads_under_one_poison_key_are_both_quarantined() {
+    let spool =
+        std::env::temp_dir().join(format!("rustmush-e0-generations-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&spool);
+    let poison_key = chunk_key("econ", 0);
+    let (_store, writer, join, _hw, mut rx) = spawn(
+        Some(poison_key.as_str()),
+        QuarantineSpool::open(spool.clone()).unwrap(),
+    );
+
+    let first = seal_op("econ", "econ", 0);
+    let mut second = seal_op("econ", "econ", 0);
+    let ModuleWrite::JsonSet { value, .. } = &mut second.op else {
+        unreachable!()
+    };
+    value["entries"][0]["value"] = serde_json::json!("different event bytes");
+    // Both generations occur in the one rejected predecessor. After that job,
+    // the writer deliberately halts and will not inspect later jobs.
+    assert!(send(&writer, 1, vec![first, second]).await.is_err());
+
+    let records = std::fs::read_dir(&spool)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        .count();
+    assert_eq!(records, 2, "each distinct poison payload must survive");
+    assert_eq!(
+        drain_breaches(&mut rx)
+            .into_iter()
+            .filter(|seal| matches!(seal, Some((_, _, _, true))))
+            .count(),
+        2,
+        "each payload receives its own durable quarantine resolution"
+    );
+
+    drop(writer);
+    tokio::time::timeout(Duration::from_secs(5), join)
+        .await
+        .unwrap()
+        .unwrap();
     let _ = std::fs::remove_dir_all(&spool);
 }
 
@@ -401,52 +619,83 @@ async fn a_good_seal_bundled_with_a_poison_seal_is_not_lost() {
     let spool = std::env::temp_dir().join(format!("rustmush-e0-multi-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&spool);
     let poison_key = chunk_key("econ", 0);
-    let (store, writer, join, _hw, mut rx) = spawn(Some(poison_key.as_str()), Some(spool.clone()));
+    let (store, writer, join, _hw, mut rx) = spawn(
+        Some(poison_key.as_str()),
+        QuarantineSpool::open(spool.clone()).unwrap(),
+    );
 
     // One batch carrying BOTH a poison seal (econ) and a healthy seal (scenes).
-    let r = send(&writer, 1, vec![seal_op("econ", "econ", 0), seal_op("scenes", "s", 0)]).await;
-    assert!(r.is_err(), "the batch drops because of the poison seal: {r:?}");
+    let r = send(
+        &writer,
+        1,
+        vec![seal_op("econ", "econ", 0), seal_op("scenes", "s", 0)],
+    )
+    .await;
+    assert!(
+        r.is_err(),
+        "the batch drops because of the poison seal: {r:?}"
+    );
 
     // The healthy seal committed in isolation → durable. The poison never did.
     assert!(
-        store.module_json_get("scenes", chunk_key("s", 0).as_str()).await.unwrap().is_some(),
+        store
+            .module_json_get("scenes", chunk_key("s", 0).as_str())
+            .await
+            .unwrap()
+            .is_some(),
         "the good seal bundled with poison must be preserved, not lost"
     );
-    assert!(store.module_json_get("econ", poison_key.as_str()).await.unwrap().is_none());
+    assert!(
+        store
+            .module_json_get("econ", poison_key.as_str())
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     // Signals: the good seal healed (false), the poison quarantined (true).
     let breaches = drain_breaches(&mut rx);
     assert!(
-        breaches.iter().any(|s| matches!(s, Some((_, k, false)) if k == &chunk_key("s", 0))),
+        breaches
+            .iter()
+            .any(|s| matches!(s, Some((_, k, _, false)) if k == &chunk_key("s", 0))),
         "good seal healed: {breaches:?}"
     );
     assert!(
-        breaches.iter().any(|s| matches!(s, Some((_, k, true)) if k == &poison_key)),
+        breaches
+            .iter()
+            .any(|s| matches!(s, Some((_, k, _, true)) if k == &poison_key)),
         "poison seal quarantined: {breaches:?}"
     );
 
     drop(writer);
-    tokio::time::timeout(Duration::from_secs(5), join).await.unwrap().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), join)
+        .await
+        .unwrap()
+        .unwrap();
     let _ = std::fs::remove_dir_all(&spool);
 }
 
-/// Resilience: even if the world never sees the heal signal (channel gone), the
-/// retained table's re-emit + ack still converges a collateral seal to durable.
+/// After an unresolved predecessor, later queued writes are completed with an
+/// error without touching the store. Ordinary BGSAVE fails closed too; a
+/// future forensic export is a separate operation and destination.
 #[tokio::test]
-async fn reemit_backstops_a_lost_heal_signal() {
+async fn writer_halts_after_drop_instead_of_committing_past_it() {
     // The poison is a non-seal op present ONLY in flush 1; the re-emit batch
     // carries the seal alone, so it commits.
     let store = FaultStore::new(Some("scenes:once"));
     let high_water = Arc::new(AtomicU64::new(0));
     // No world listener at all: the heal/freeze signals are dropped on the floor.
-    let (signal_tx, signal_rx) = mpsc::unbounded_channel::<WriterSignal>();
+    let (signal_tx, signal_rx) = writer_signal_channel();
     drop(signal_rx);
+    let persistence_integrity = PersistenceIntegrityLatch::new();
     let (writer, join) = spawn_store_writer(
         Arc::clone(&store) as Arc<dyn ObjectStore>,
         signal_tx,
         Arc::new(Metrics::new()),
         Arc::clone(&high_water),
-        None,
+        QuarantineSpool::in_memory(),
+        persistence_integrity.clone(),
     );
     let mut retained = RetainedSeals::new();
     let mut serial = 0u64;
@@ -457,7 +706,10 @@ async fn reemit_backstops_a_lost_heal_signal() {
         &mut retained,
         &writer,
         &mut serial,
-        vec![poison_op("scenes", "scenes:once"), seal_op("scenes", "s", 0)],
+        vec![
+            poison_op("scenes", "scenes:once"),
+            seal_op("scenes", "s", 0),
+        ],
         &high_water,
     )
     .await;
@@ -465,13 +717,42 @@ async fn reemit_backstops_a_lost_heal_signal() {
     // The heal signal was lost, so the world still holds the seal pending.
     assert_eq!(retained.depth(), 1, "re-emit backstop still holds the seal");
 
-    // Flush 2: the retained seal re-emits and (poison cleared) commits → acked.
+    // Flush 2 would succeed at the backing store now that the one-shot poison
+    // was consumed. The writer must nevertheless reject it locally: committing
+    // serial 2 past missing serial 1 would violate FIFO truth.
     let r2 = flush(&mut retained, &writer, &mut serial, vec![], &high_water).await;
-    assert_eq!(r2, Some(Ok(2)), "the re-emit converges the seal to durable: {r2:?}");
+    assert!(matches!(r2, Some(Err(_))), "halted writer rejects: {r2:?}");
+    assert_eq!(high_water.load(Ordering::Relaxed), 0);
     retained.ack(high_water.load(Ordering::Relaxed));
-    assert!(retained.is_empty(), "re-emit + ack cleared it despite the lost signal");
-    assert!(store.module_json_get("scenes", chunk_key("s", 0).as_str()).await.unwrap().is_some());
+    assert!(
+        !retained.is_empty(),
+        "without its exact resolution signal, retained state waits for recovery"
+    );
+    assert!(
+        store
+            .module_json_get("scenes", chunk_key("s", 0).as_str())
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    let (done, receipt) = oneshot::channel();
+    writer.send(StoreJob::Bgsave { done }).await.unwrap();
+    let bgsave_error = receipt.await.unwrap().unwrap_err();
+    assert!(
+        bgsave_error.contains("integrity is latched"),
+        "ordinary BGSAVE must explain the fail-closed barrier: {bgsave_error}"
+    );
+    assert!(persistence_integrity.is_latched());
+    assert_eq!(
+        store.bgsaves.load(Ordering::Relaxed),
+        0,
+        "a rejected BGSAVE must not reach the backing store"
+    );
 
     drop(writer);
-    tokio::time::timeout(Duration::from_secs(5), join).await.unwrap().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), join)
+        .await
+        .unwrap()
+        .unwrap();
 }

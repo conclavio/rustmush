@@ -365,7 +365,13 @@ GET  /ws?token=...&char=ID -> WebSocket upgrade -> the session
 GET  /healthz
 ```
 
-Asset serving: `rust-embed` (verified maintained) with a build.rs that runs `vite build` when `web/dist` is stale; debug builds read from disk (rust-embed's default) so frontend iteration needs no rebuild. During frontend dev, `vite dev` proxies `/api` and `/ws` to the Rust server — standard, zero custom tooling.
+Asset serving: `rust-embed` (verified maintained). The frontend build is an explicit
+release prerequisite (`cd web && npm ci && npm run build`); `build.rs` rejects a
+release build when `web/dist/index.html` is absent, but never invokes npm itself.
+Debug builds read `web/dist` from disk (rust-embed's default), so a fresh Rust-only
+checkout is valid and serves a diagnostic 404 until the frontend is built. During
+frontend development, `vite dev` proxies `/api` and `/ws` to the Rust server —
+standard, zero custom tooling.
 
 ### 6.2 Web auth: opaque tokens, not JWT
 

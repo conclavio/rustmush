@@ -183,10 +183,19 @@ mod tests {
         let mut s = HashSet::new();
         s.insert(PrincipalId::Object(ObjId(5)));
         s.insert(PrincipalId::Organization(OrgId(5)));
-        s.insert(PrincipalId::System(SystemPrincipalId::new("shadowrun.contracts").unwrap()));
-        assert_eq!(s.len(), 3, "the three principal kinds are distinct even at the same numeric id");
+        s.insert(PrincipalId::System(
+            SystemPrincipalId::new("shadowrun.contracts").unwrap(),
+        ));
+        assert_eq!(
+            s.len(),
+            3,
+            "the three principal kinds are distinct even at the same numeric id"
+        );
         // Object equality is by id alone (no generation) — round-trips through serde.
         let p = PrincipalId::Object(ObjId(5));
-        assert_eq!(serde_json::from_str::<PrincipalId>(&serde_json::to_string(&p).unwrap()).unwrap(), p);
+        assert_eq!(
+            serde_json::from_str::<PrincipalId>(&serde_json::to_string(&p).unwrap()).unwrap(),
+            p
+        );
     }
 }

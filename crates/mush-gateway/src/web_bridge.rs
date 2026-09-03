@@ -51,7 +51,7 @@ use std::sync::{Arc, Mutex};
 
 use futures::future::BoxFuture;
 use mush_core::{DisconnectKind, ObjId};
-use mush_ipc::{InputSend, ServiceReq, ToServer, WireInbound};
+use mush_ipc::{ConnectionAdmission, InputSend, ToServer, WireInbound};
 use mush_net_web::{
     CharSummary, LoginErr, LoginOk, NewWebConn, RegisterErr, ResumeErr, ResumeOk, SessionStart,
     TokenIdentity, WebHooks,
@@ -288,7 +288,7 @@ impl<A: AuthBackend + 'static> WebBridge<A> {
                     reason: DisconnectKind::Boot,
                 }))
                 .await;
-            self.core.link.request(ServiceReq::Barrier).await;
+            self.core.delivery_barrier(conn, "web boot").await;
         }
         send_event_to_conn(
             &self.core.sessions,
@@ -508,6 +508,14 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
             let conn_id = ConnId(conn.id);
             let handle =
                 ConnectionHandle::new_structured(conn_id, conn.addr, Self::web_caps(), conn.tx);
+            match self.core.link.try_reserve_connection(conn_id.0, actor) {
+                ConnectionAdmission::Reserved => {}
+                ConnectionAdmission::Busy => {
+                    tracing::warn!(conn = conn_id.0, %actor, "web resume refused: lifecycle custody busy");
+                    return Err(ResumeErr::Busy);
+                }
+                ConnectionAdmission::Gone => return Err(ResumeErr::Unavailable),
+            }
             // Track BEFORE attach (LOW finding: track_conn revocation
             // race) — see the matching comment in `connect_character`;
             // removed again if the world's ConnUp confirmation fails.
@@ -533,14 +541,13 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                 }))
                 .await
             {
-                self.core
-                    .sessions
-                    .detach(conn_id, mush_session::DetachReason::Booted);
+                self.core.link.cancel_connection_reservation(conn_id.0);
+                self.core.rollback_local_attach(conn_id, from_linkdead);
                 self.conn_tokens
                     .lock()
                     .expect("conn_tokens lock")
                     .remove(&conn_id.0);
-                return Err(ResumeErr::BadSession);
+                return Err(ResumeErr::Unavailable);
             }
             let live_from = replayed.last().map_or(last_seq, |env| env.seq) + 1;
             tracing::info!(
@@ -765,6 +772,106 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    use mush_ipc::{GatewayLink, ServiceReq, ServiceResp};
+    use mush_proto::Envelope;
+    use mush_store::InMemoryStore;
+    use tokio::sync::{Notify, mpsc};
+
+    struct ResumeAuth {
+        actor: ObjId,
+    }
+
+    impl AuthBackend for ResumeAuth {
+        async fn verify(&self, _account: &str, _password: &str) -> crate::accounts::AuthOutcome {
+            crate::accounts::AuthOutcome::BadCredentials
+        }
+
+        async fn characters(&self, _account: &str) -> Vec<crate::accounts::CharSummary> {
+            vec![crate::accounts::CharSummary {
+                id: self.actor,
+                name: "Pilot".to_string(),
+            }]
+        }
+
+        async fn create(
+            &self,
+            _account: &str,
+            _password: &str,
+            _char_name: &str,
+        ) -> Result<crate::accounts::CharSummary, CreateErr> {
+            Err(CreateErr::Io("unused test backend".to_string()))
+        }
+
+        async fn create_character(
+            &self,
+            _account: &str,
+            _char_name: &str,
+        ) -> Result<crate::accounts::CharSummary, CreateErr> {
+            Err(CreateErr::Io("unused test backend".to_string()))
+        }
+    }
+
+    #[derive(Default)]
+    struct FailedConnUpState {
+        pending_linkdead: bool,
+        reserved: bool,
+        cancellations: usize,
+        attempted_conn_up: usize,
+        delivered: Vec<ToServer>,
+    }
+
+    /// Models the exact restart race: reservation succeeds, then the boundary
+    /// disappears before the matching ConnUp can take wire custody.
+    struct FailConnUpLink {
+        state: Arc<Mutex<FailedConnUpState>>,
+        session_gone: Arc<Notify>,
+    }
+
+    impl GatewayLink for FailConnUpLink {
+        fn try_reserve_connection(&self, _conn: u64, _actor: ObjId) -> ConnectionAdmission {
+            let mut state = self.state.lock().unwrap();
+            assert!(
+                state.pending_linkdead,
+                "the reconnect reuses expiry custody"
+            );
+            assert!(!state.reserved, "only one reservation is expected");
+            state.pending_linkdead = false;
+            state.reserved = true;
+            ConnectionAdmission::Reserved
+        }
+
+        fn cancel_connection_reservation(&self, _conn: u64) {
+            let mut state = self.state.lock().unwrap();
+            if state.reserved {
+                state.reserved = false;
+                state.pending_linkdead = true;
+                state.cancellations += 1;
+            }
+        }
+
+        fn to_server(&self, msg: ToServer) -> BoxFuture<'_, bool> {
+            let delivered = {
+                let mut state = self.state.lock().unwrap();
+                if matches!(&msg, ToServer::Inbound(WireInbound::ConnUp { .. })) {
+                    state.attempted_conn_up += 1;
+                    false
+                } else {
+                    if matches!(&msg, ToServer::Inbound(WireInbound::SessionGone { .. })) {
+                        state.pending_linkdead = false;
+                        self.session_gone.notify_one();
+                    }
+                    state.delivered.push(msg);
+                    true
+                }
+            };
+            Box::pin(async move { delivered })
+        }
+
+        fn request(&self, _req: ServiceReq) -> BoxFuture<'_, Option<ServiceResp>> {
+            Box::pin(async { None })
+        }
+    }
+
     #[test]
     fn tokens_are_64_hex_chars_and_unique() {
         let a = mint_token();
@@ -783,5 +890,122 @@ mod tests {
         );
         assert_eq!(token_hash("abc").len(), 64);
         assert_ne!(token_hash("abc"), token_hash("abd"));
+    }
+
+    #[tokio::test]
+    async fn failed_resume_conn_up_restores_linkdead_without_conn_down() {
+        let actor = ObjId(7);
+        let sessions = Arc::new(SessionManager::with_config(mush_session::SessionConfig {
+            linkdead_grace: std::time::Duration::ZERO,
+            ..mush_session::SessionConfig::default()
+        }));
+
+        // Establish a real resumable session with one ring event, then make it
+        // link-dead without arming an old timer. The failed resume below owns
+        // responsibility for restoring and re-arming it.
+        let (old_tx, _old_rx) = mpsc::channel::<Arc<Envelope>>(8);
+        let old_conn = ConnId(10);
+        let old = ConnectionHandle::new_structured(
+            old_conn,
+            "127.0.0.1".parse().unwrap(),
+            WebBridge::<ResumeAuth>::web_caps(),
+            old_tx,
+        );
+        let (sess, _) = sessions.attach(old, char_key(actor), "acct".to_string());
+        sessions.send_to_char(
+            char_key(actor),
+            Arc::new(OutputEvent::Sys(RichText::tag("system", "retained event"))),
+        );
+        let ring_seq = sessions.last_seq(sess).expect("session sequence");
+        assert!(matches!(
+            sessions.detach(old_conn, mush_session::DetachReason::Lost),
+            Some(mush_session::DetachOutcome::Linkdead { .. })
+        ));
+
+        let token = "restart-race-token";
+        let now = unix_now_s();
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+        store
+            .token_put(
+                token_hash(token),
+                TokenRecord {
+                    account: "acct".to_string(),
+                    created: now,
+                    expires: now + TOKEN_TTL_S,
+                },
+            )
+            .await
+            .unwrap();
+
+        let state = Arc::new(Mutex::new(FailedConnUpState {
+            pending_linkdead: true,
+            ..FailedConnUpState::default()
+        }));
+        let session_gone = Arc::new(Notify::new());
+        let link = Arc::new(FailConnUpLink {
+            state: Arc::clone(&state),
+            session_gone: Arc::clone(&session_gone),
+        });
+        let bridge = WebBridge::with_link(
+            Arc::new(ResumeAuth { actor }),
+            Arc::clone(&sessions),
+            link,
+            Arc::new(IpGuard::new()),
+            store,
+            Vec::new(),
+        );
+        let (new_tx, _new_rx) = mpsc::channel::<Arc<Envelope>>(8);
+        let new_conn = ConnId(11);
+
+        let result = bridge
+            .resume(
+                NewWebConn {
+                    id: new_conn.0,
+                    addr: "127.0.0.2".parse().unwrap(),
+                    tx: new_tx,
+                },
+                token,
+                u64::from(actor.0),
+                0,
+            )
+            .await;
+        assert!(matches!(result, Err(ResumeErr::Unavailable)));
+
+        // Before the zero-grace reaper gets CPU, the exact old session and its
+        // ring are back in link-dead state. There was no world-visible ConnUp,
+        // therefore rollback must not fabricate a ConnDown.
+        assert_eq!(sessions.session_of_char(char_key(actor)), Some(sess));
+        assert!(sessions.session_of_conn(new_conn).is_none());
+        let replayed = sessions.replay_since(sess, 0).expect("ring retained");
+        assert_eq!(replayed.last().map(|env| env.seq), Some(ring_seq));
+        assert_eq!(bridge.core.sessions.connection_count(), 0);
+        assert!(!bridge.conn_tokens.lock().unwrap().contains_key(&new_conn.0));
+        {
+            let state = state.lock().unwrap();
+            assert_eq!(state.attempted_conn_up, 1);
+            assert_eq!(state.cancellations, 1);
+            assert!(!state.reserved);
+            assert!(state.pending_linkdead, "expiry custody was restored");
+            assert!(
+                state
+                    .delivered
+                    .iter()
+                    .all(|msg| !matches!(msg, ToServer::Inbound(WireInbound::ConnDown { .. })))
+            );
+        }
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), session_gone.notified())
+            .await
+            .expect("restored linkdead session must be reaped");
+        assert!(sessions.session_of_char(char_key(actor)).is_none());
+        let state = state.lock().unwrap();
+        assert!(
+            !state.pending_linkdead,
+            "SessionGone released expiry custody"
+        );
+        assert!(matches!(
+            state.delivered.as_slice(),
+            [ToServer::Inbound(WireInbound::SessionGone { actor: gone })] if *gone == actor
+        ));
     }
 }

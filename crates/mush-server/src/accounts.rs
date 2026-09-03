@@ -11,7 +11,8 @@ use futures::future::BoxFuture;
 use mush_core::Inbound;
 use mush_ipc::{GatewayLink, ServiceReq, ServiceResp, ToServer};
 
-use crate::world_task::WorldHandle;
+use crate::world_task::{WorldHandle, WorldReadError};
+use crate::{barrier_response, create_player_response};
 
 impl GatewayLink for WorldHandle {
     fn to_server(&self, msg: ToServer) -> BoxFuture<'_, bool> {
@@ -50,16 +51,26 @@ impl GatewayLink for WorldHandle {
         Box::pin(async move {
             Some(match req {
                 ServiceReq::CreatePlayer { name } => {
-                    ServiceResp::CreatePlayer(self.create_player(&name).await.map_err(Into::into))
+                    create_player_response(self.create_player(&name).await)
                 }
-                ServiceReq::NameFree { name } => ServiceResp::NameFree(self.name_free(&name).await),
-                ServiceReq::InInputContext { actor } => {
-                    ServiceResp::InInputContext(self.in_input_context(actor).await)
+                ServiceReq::NameFree { name } => match self.name_free(&name).await {
+                    Ok(free) => ServiceResp::NameFree(free),
+                    Err(WorldReadError::Busy) => ServiceResp::Busy,
+                    Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
+                },
+                ServiceReq::InInputContext { actor } => match self.in_input_context(actor).await {
+                    Ok(active) => ServiceResp::InInputContext(active),
+                    Err(WorldReadError::Busy) => ServiceResp::Busy,
+                    Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
+                },
+                ServiceReq::ConnectionReady { conn, actor } => {
+                    match self.connection_ready(conn, actor).await {
+                        Ok(ready) => ServiceResp::ConnectionReady(ready),
+                        Err(WorldReadError::Busy) => ServiceResp::Busy,
+                        Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
+                    }
                 }
-                ServiceReq::Barrier => {
-                    self.barrier().await;
-                    ServiceResp::Barrier
-                }
+                ServiceReq::Barrier => barrier_response(self.barrier_result().await),
             })
         })
     }

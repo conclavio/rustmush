@@ -52,8 +52,8 @@ use mush_session::{FloodBucket, FloodVerdict, sanitize_line};
 use russh::server::{Auth, Config, Handler, Msg, Response, Server as _, Session};
 use russh::{Channel, ChannelId, Disconnect, MethodKind, MethodSet};
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
 use tokio::sync::Notify;
+use tokio::sync::mpsc;
 
 use crate::editor::{EchoMode, EditorAction, LineEditor};
 use crate::hooks::{AuthResult, CharSummary, NewConn, SshHooks};
@@ -1439,10 +1439,7 @@ fn spawn_output_pump(
             // (design M15 D5 — never types the WHO command, never stamps
             // idle). No bytes here; the reply repaints via the event path.
             if let Wake::Tick = wake {
-                let is_tui = matches!(
-                    shared.lock().expect("conn state poisoned").mode,
-                    Mode::Tui
-                );
+                let is_tui = matches!(shared.lock().expect("conn state poisoned").mode, Mode::Tui);
                 if is_tui {
                     hooks.query(conn_id, "who".to_owned()).await;
                 }
@@ -1517,10 +1514,7 @@ fn spawn_output_pump(
 
         // If the connection tore down while still on the alternate screen,
         // restore it so the client is never stuck there (invariant T5).
-        let was_tui = matches!(
-            shared.lock().expect("conn state poisoned").mode,
-            Mode::Tui
-        );
+        let was_tui = matches!(shared.lock().expect("conn state poisoned").mode, Mode::Tui);
         if was_tui {
             let _ = tokio::time::timeout(
                 WRITE_TIMEOUT,

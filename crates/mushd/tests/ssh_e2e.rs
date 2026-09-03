@@ -203,7 +203,7 @@ async fn boot_duo_server(dir: &std::path::Path, seed_key: bool, with_staff: bool
                 guard: Arc::new(IpGuard::new()),
                 staff,
                 llm: None,
-                quarantine_dir: None,
+                quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
             },
         )
         .handle
@@ -409,7 +409,8 @@ async fn m19_sshkey_command_registers_key_e2e() {
         "the just-added key must authenticate on the next connection"
     );
     let mut tk = shell_term(&hk).await;
-    tk.expect("Connected as Ada (account duo, 1 connection).").await;
+    tk.expect("Connected as Ada (account duo, 1 connection).")
+        .await;
 
     // --- list shows the fingerprint + comment; then delete it. ------------
     let m = nick.mark();
@@ -478,7 +479,8 @@ async fn m20_newchar_creates_playable_second_character_e2e() {
     // --- a bad name is refused up front; nothing is created (N2). ---------
     let m = nick.mark();
     nick.send_line("@newchar 9bad").await;
-    nick.expect_after(m, "character names start with a letter").await;
+    nick.expect_after(m, "character names start with a letter")
+        .await;
 
     // --- a name already held is refused up front (N2). --------------------
     let m = nick.mark();

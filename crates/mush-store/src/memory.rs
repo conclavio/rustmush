@@ -30,8 +30,7 @@ use crate::store::ObjectStore;
 use crate::types::{
     AccountRec, BanRec, CharacterRef, ModuleWrite, SshKeyRec, StoreError, TokenRecord,
     WorldSnapshot, WriteBatch, WriteReceipt, validate_module_key, validate_module_ns,
-    validate_module_op,
-    validate_token_hash,
+    validate_module_op, validate_token_hash,
 };
 
 /// See the [module docs](self).
@@ -553,12 +552,8 @@ impl ObjectStore for InMemoryStore {
                 if doc_ns != ns {
                     continue;
                 }
-                match serde_json::from_str(doc) {
-                    Ok(value) => out.push((key.clone(), value)),
-                    Err(e) => {
-                        tracing::error!(ns, key, error = %e, "skipping corrupt module doc");
-                    }
-                }
+                let value = serde_json::from_str(doc)?;
+                out.push((key.clone(), value));
             }
             Ok(out)
         })
@@ -732,5 +727,27 @@ mod tests {
         let entries = store.stream_range("m", "log", 10).await.expect("range");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].0, "1-0");
+    }
+
+    #[tokio::test]
+    async fn module_json_list_returns_corrupt_stored_json_as_an_error() {
+        let store = InMemoryStore::new();
+        store
+            .lock()
+            .expect("store lock")
+            .module_kv
+            .insert(("m".into(), "broken".into()), "{not-json".into());
+
+        let error = store
+            .module_json_list("m")
+            .await
+            .expect_err("corrupt module JSON must never disappear from boot discovery");
+        assert!(matches!(error, StoreError::Serde(_)), "{error:?}");
+
+        let error = store
+            .module_json_get("m", "broken")
+            .await
+            .expect_err("corrupt module JSON must also fail an exact read");
+        assert!(matches!(error, StoreError::Serde(_)), "{error:?}");
     }
 }

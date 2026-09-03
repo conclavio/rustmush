@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use mush_core::{
     ArgShape, Audience, BehaviorBinding, BehaviorCommand, BehaviorId, BehaviorSpec, BehaviorTarget,
-    CmdError, CommandReach, CommandSpec, Ctx, Effects, GOD, GameModule, LIMBO, ModError,
-    Flags, ModuleBootData, ModuleWrite, ObjId, ObjKind, Outbox, Registrar, WorldEvent,
+    CmdError, CommandReach, CommandSpec, Ctx, Effects, Flags, GOD, GameModule, LIMBO, ModError,
+    ModuleBootData, ModuleWrite, ObjId, ObjKind, Outbox, Registrar, WorldEvent,
 };
 use mush_proto::OutputEvent;
 use mush_sim::{Presence, SimulationModule, SpatialParent, SpatialState};
@@ -23,7 +23,8 @@ struct ToyUnitModule;
 
 fn fire(ctx: &mut Ctx<'_>, t: &BehaviorTarget) -> Result<(), CmdError> {
     let actor = ctx.actor;
-    ctx.out.sys_to_actor(actor, "toy", format!("BANG from {}", t.subject));
+    ctx.out
+        .sys_to_actor(actor, "toy", format!("BANG from {}", t.subject));
     Ok(())
 }
 
@@ -36,7 +37,12 @@ impl GameModule for ToyUnitModule {
         spec.allowed_kinds = vec![ObjKind::Thing, ObjKind::Player, ObjKind::Npc];
         spec.commands = vec![
             BehaviorCommand::new(
-                CommandSpec { name: "fire".into(), shape: ArgShape::None, help: "fire".into(), ..CommandSpec::default() },
+                CommandSpec {
+                    name: "fire".into(),
+                    shape: ArgShape::None,
+                    help: "fire".into(),
+                    ..CommandSpec::default()
+                },
                 Arc::new(fire),
             )
             .with_reach(vec![CommandReach::Operated]),
@@ -49,11 +55,18 @@ impl GameModule for ToyUnitModule {
 // ---- harness -----------------------------------------------------------
 
 fn boot() -> TestWorld {
-    TestWorld::with_modules(vec![Box::new(SimulationModule::new()), Box::new(ToyUnitModule)])
+    TestWorld::with_modules(vec![
+        Box::new(SimulationModule::new()),
+        Box::new(ToyUnitModule),
+    ])
 }
 
 fn texts(events: &[(Audience, OutputEvent)]) -> String {
-    events.iter().map(|(_, e)| text_of(e)).collect::<Vec<_>>().join("\n")
+    events
+        .iter()
+        .map(|(_, e)| text_of(e))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn has_error(events: &[(Audience, OutputEvent)]) -> bool {
@@ -64,7 +77,15 @@ fn has_error(events: &[(Audience, OutputEvent)]) -> bool {
 
 fn bind(tw: &mut TestWorld, obj: ObjId, behavior: &str) {
     tw.world_mut()
-        .attach_behavior(obj, BehaviorId::new(behavior).unwrap(), BehaviorBinding { schema_version: 1, attached_by: GOD, attached_at: 0 })
+        .attach_behavior(
+            obj,
+            BehaviorId::new(behavior).unwrap(),
+            BehaviorBinding {
+                schema_version: 1,
+                attached_by: GOD,
+                attached_at: 0,
+            },
+        )
         .unwrap();
 }
 
@@ -73,11 +94,17 @@ fn loc(tw: &TestWorld, id: ObjId) -> Option<ObjId> {
 }
 
 fn state(tw: &TestWorld) -> &SpatialState {
-    tw.world().module_state::<SpatialState>().expect("sim state")
+    tw.world()
+        .module_state::<SpatialState>()
+        .expect("sim state")
 }
 
 fn subjects(tw: &TestWorld, actor: ObjId) -> Vec<ObjId> {
-    tw.world().command_subjects_of(actor).iter().map(|l| l.subject).collect()
+    tw.world()
+        .command_subjects_of(actor)
+        .iter()
+        .map(|l| l.subject)
+        .collect()
 }
 
 /// Deterministic fixture: Field(#2 domain host), Bay(#3 sim.interior),
@@ -93,12 +120,30 @@ struct Fx {
 }
 
 fn fixture(tw: &mut TestWorld) -> Fx {
-    let field = tw.world_mut().create(ObjKind::Room, "Field", GOD, None).unwrap();
-    let bay = tw.world_mut().create(ObjKind::Room, "Bay", GOD, None).unwrap();
-    let carrier = tw.world_mut().create(ObjKind::Thing, "Leopard", GOD, Some(LIMBO)).unwrap();
-    let mech = tw.world_mut().create(ObjKind::Thing, "Atlas", GOD, Some(LIMBO)).unwrap();
-    let ba = tw.world_mut().create(ObjKind::Thing, "Elemental", GOD, Some(LIMBO)).unwrap();
-    let grunt = tw.world_mut().create(ObjKind::Thing, "Grunt", GOD, Some(LIMBO)).unwrap();
+    let field = tw
+        .world_mut()
+        .create(ObjKind::Room, "Field", GOD, None)
+        .unwrap();
+    let bay = tw
+        .world_mut()
+        .create(ObjKind::Room, "Bay", GOD, None)
+        .unwrap();
+    let carrier = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Leopard", GOD, Some(LIMBO))
+        .unwrap();
+    let mech = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Atlas", GOD, Some(LIMBO))
+        .unwrap();
+    let ba = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Elemental", GOD, Some(LIMBO))
+        .unwrap();
+    let grunt = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Grunt", GOD, Some(LIMBO))
+        .unwrap();
     bind(tw, field, "sim.domain");
     bind(tw, bay, "sim.interior");
     for u in [carrier, mech, ba, grunt] {
@@ -106,18 +151,42 @@ fn fixture(tw: &mut TestWorld) -> Fx {
     }
     bind(tw, mech, "toy.unit");
     // A durable pilot Player (#8) so assignments survive a reboot.
-    let pilot = tw.world_mut().create(ObjKind::Player, "Ann", GOD, Some(LIMBO)).unwrap();
-    Fx { field, bay, carrier, mech, ba, grunt, pilot }
+    let pilot = tw
+        .world_mut()
+        .create(ObjKind::Player, "Ann", GOD, Some(LIMBO))
+        .unwrap();
+    Fx {
+        field,
+        bay,
+        carrier,
+        mech,
+        ba,
+        grunt,
+        pilot,
+    }
 }
 
 fn sub(line: &str) -> String {
     let mut s = line.to_string();
-    for (name, id) in [("Field", 2), ("Bay", 3), ("Leopard", 4), ("Atlas", 5), ("Elemental", 6), ("Grunt", 7)] {
+    for (name, id) in [
+        ("Field", 2),
+        ("Bay", 3),
+        ("Leopard", 4),
+        ("Atlas", 5),
+        ("Elemental", 6),
+        ("Grunt", 7),
+    ] {
         let mut out = String::new();
         let mut rest = s.as_str();
         while let Some(i) = rest.find(name) {
-            let before = rest[..i].chars().last().is_none_or(|c| !c.is_alphanumeric() && c != '_');
-            let after = rest[i + name.len()..].chars().next().is_none_or(|c| !c.is_alphanumeric() && c != '_');
+            let before = rest[..i]
+                .chars()
+                .last()
+                .is_none_or(|c| !c.is_alphanumeric() && c != '_');
+            let after = rest[i + name.len()..]
+                .chars()
+                .next()
+                .is_none_or(|c| !c.is_alphanumeric() && c != '_');
             out.push_str(&rest[..i]);
             if before && after {
                 out.push_str(&format!("#{id}"));
@@ -166,7 +235,13 @@ fn fold_kv(tw: &mut TestWorld) -> Vec<(SmolStr, serde_json::Value)> {
 fn reboot_with(kv: Vec<(SmolStr, serde_json::Value)>) -> (TestWorld, Fx) {
     let mut tw2 = boot();
     let fx = fixture(&mut tw2);
-    tw2.modules_loaded(HashMap::from([(SmolStr::new("sim"), ModuleBootData { kv, streams: HashMap::new() })]));
+    tw2.modules_loaded(HashMap::from([(
+        SmolStr::new("sim"),
+        ModuleBootData {
+            kv,
+            streams: HashMap::new(),
+        },
+    )]));
     (tw2, fx)
 }
 
@@ -193,10 +268,20 @@ fn pilot_station_grants_only_the_pilot_unit_commands() {
     assert!(texts(&tw.run(ann, "fire")).contains("Huh?"), "no link yet");
     ok(&mut tw, "@spatial/station Atlas=pilot,pilot");
     ok(&mut tw, &format!("@spatial/assign Atlas=pilot,#{}", ann.0));
-    assert_eq!(subjects(&tw, ann), vec![fx.mech], "pilot holds the unit as a command subject");
-    assert!(texts(&tw.run(ann, "fire")).contains(&format!("BANG from {}", fx.mech)), "pilot fires");
+    assert_eq!(
+        subjects(&tw, ann),
+        vec![fx.mech],
+        "pilot holds the unit as a command subject"
+    );
+    assert!(
+        texts(&tw.run(ann, "fire")).contains(&format!("BANG from {}", fx.mech)),
+        "pilot fires"
+    );
     // Bob (no station) cannot.
-    assert!(texts(&tw.run(bob, "fire")).contains("Huh?"), "non-pilot cannot fire");
+    assert!(
+        texts(&tw.run(bob, "fire")).contains("Huh?"),
+        "non-pilot cannot fire"
+    );
     // Unassigning revokes it.
     ok(&mut tw, "@spatial/unassign Atlas=pilot");
     assert!(subjects(&tw, ann).is_empty());
@@ -208,12 +293,30 @@ fn embark_into_a_bay_suppresses_presence() {
     let mut tw = boot();
     let fx = fixture(&mut tw);
     dropship_setup(&mut tw);
-    assert_eq!(loc(&tw, fx.carrier), Some(fx.field), "carrier presents into the domain room");
-    assert_eq!(loc(&tw, fx.mech), Some(fx.bay), "projects into the bay room");
+    assert_eq!(
+        loc(&tw, fx.carrier),
+        Some(fx.field),
+        "carrier presents into the domain room"
+    );
+    assert_eq!(
+        loc(&tw, fx.mech),
+        Some(fx.bay),
+        "projects into the bay room"
+    );
     let st = state(&tw);
     assert_eq!(mush_sim::presence(st, fx.mech), Some(Presence::Suppressed));
-    assert_eq!(mush_sim::effective_domain(st, fx.mech), Some(mush_sim::DomainId(0)), "locality via the moving anchor");
-    assert!(!st.derived.projected.get(&mush_sim::DomainId(0)).is_some_and(|s| s.contains(&fx.mech)), "no independent projection");
+    assert_eq!(
+        mush_sim::effective_domain(st, fx.mech),
+        Some(mush_sim::DomainId(0)),
+        "locality via the moving anchor"
+    );
+    assert!(
+        !st.derived
+            .projected
+            .get(&mush_sim::DomainId(0))
+            .is_some_and(|s| s.contains(&fx.mech)),
+        "no independent projection"
+    );
     assert!(st.derived.local_objects[&mush_sim::DomainId(0)].contains(&fx.mech));
 }
 
@@ -222,21 +325,48 @@ fn carrier_transfer_carries_the_bay_occupant_then_egress() {
     let mut tw = boot();
     let fx = fixture(&mut tw);
     dropship_setup(&mut tw);
-    let field2 = tw.world_mut().create(ObjKind::Room, "Field2", GOD, None).unwrap();
+    let field2 = tw
+        .world_mut()
+        .create(ObjKind::Room, "Field2", GOD, None)
+        .unwrap();
     bind(&mut tw, field2, "sim.domain");
-    ok(&mut tw, &format!("@domain/create #{}=sim.passive", field2.0));
+    ok(
+        &mut tw,
+        &format!("@domain/create #{}=sim.passive", field2.0),
+    );
     // Transfer the carrier to domain #1: the mech's placement record is
     // untouched but its effective domain follows.
     ok(&mut tw, "@spatial/place/domain Leopard=1");
     let st = state(&tw);
-    assert!(matches!(st.parent_of(fx.mech), SpatialParent::Interior { .. }), "record unchanged");
-    assert_eq!(mush_sim::effective_domain(st, fx.mech), Some(mush_sim::DomainId(1)), "domain followed");
-    assert_eq!(loc(&tw, fx.mech), Some(fx.bay), "still physically in the bay");
+    assert!(
+        matches!(st.parent_of(fx.mech), SpatialParent::Interior { .. }),
+        "record unchanged"
+    );
+    assert_eq!(
+        mush_sim::effective_domain(st, fx.mech),
+        Some(mush_sim::DomainId(1)),
+        "domain followed"
+    );
+    assert_eq!(
+        loc(&tw, fx.mech),
+        Some(fx.bay),
+        "still physically in the bay"
+    );
     // Egress the mech onto the new domain (staff).
     ok(&mut tw, "@spatial/egress Atlas");
     let st = state(&tw);
-    assert!(matches!(st.parent_of(fx.mech), SpatialParent::Direct { domain: mush_sim::DomainId(1), .. }));
-    assert_eq!(loc(&tw, fx.mech), Some(field2), "landed in the new domain's presentation room");
+    assert!(matches!(
+        st.parent_of(fx.mech),
+        SpatialParent::Direct {
+            domain: mush_sim::DomainId(1),
+            ..
+        }
+    ));
+    assert_eq!(
+        loc(&tw, fx.mech),
+        Some(field2),
+        "landed in the new domain's presentation room"
+    );
     assert_eq!(mush_sim::presence(st, fx.mech), Some(Presence::Independent));
 }
 
@@ -249,13 +379,26 @@ fn attach_battle_armor_is_exposed() {
     ok(&mut tw, "@spatial/mount Atlas=ba,2,exposed");
     ok(&mut tw, "@spatial/place/attached Elemental=Atlas,ba");
     let st = state(&tw);
-    assert_eq!(mush_sim::presence(st, fx.ba), Some(Presence::DerivedExposed));
-    assert_eq!(loc(&tw, fx.ba), Some(fx.field), "exposed: alongside the host");
+    assert_eq!(
+        mush_sim::presence(st, fx.ba),
+        Some(Presence::DerivedExposed)
+    );
+    assert_eq!(
+        loc(&tw, fx.ba),
+        Some(fx.field),
+        "exposed: alongside the host"
+    );
     assert!(st.derived.projected[&mush_sim::DomainId(0)].contains(&fx.ba));
     // Detach: the BA becomes the host's sibling, Direct in the domain.
     ok(&mut tw, "@spatial/detach Elemental");
     let st = state(&tw);
-    assert!(matches!(st.parent_of(fx.ba), SpatialParent::Direct { domain: mush_sim::DomainId(0), .. }));
+    assert!(matches!(
+        st.parent_of(fx.ba),
+        SpatialParent::Direct {
+            domain: mush_sim::DomainId(0),
+            ..
+        }
+    ));
     assert_eq!(st.children_of(fx.mech).len(), 0, "no longer attached");
 }
 
@@ -267,7 +410,10 @@ fn infantry_cargo_has_locality_but_no_controls() {
     ok(&mut tw, "@spatial/slot Bay=troop,4");
     ok(&mut tw, "@spatial/place/interior Grunt=Bay,troop");
     let st = state(&tw);
-    assert_eq!(mush_sim::effective_domain(st, fx.grunt), Some(mush_sim::DomainId(0)));
+    assert_eq!(
+        mush_sim::effective_domain(st, fx.grunt),
+        Some(mush_sim::DomainId(0))
+    );
     assert_eq!(mush_sim::presence(st, fx.grunt), Some(Presence::Suppressed));
     // Cargo has no station, hence no command subject and no unit commands.
     assert!(subjects(&tw, fx.grunt).is_empty());
@@ -293,7 +439,13 @@ fn player_egress_leaves_the_space_and_bystanders_cannot() {
     let t = texts(&tw.run(ann, "egress"));
     assert!(t.contains("You egress"), "{t}");
     let st = state(&tw);
-    assert!(matches!(st.parent_of(ann), SpatialParent::Direct { domain: mush_sim::DomainId(0), .. }));
+    assert!(matches!(
+        st.parent_of(ann),
+        SpatialParent::Direct {
+            domain: mush_sim::DomainId(0),
+            ..
+        }
+    ));
     assert_eq!(loc(&tw, ann), Some(fx.field));
     // `disembark` is an alias.
     ok(&mut tw, &format!("@spatial/place/interior #{}=Bay", ann.0));
@@ -316,7 +468,12 @@ fn occupied_station_refuses_destroy() {
     // With the station gone, destruction is allowed.
     let t = say(&mut tw, "@destroy Atlas");
     assert!(!t.contains("crewed"), "{t}");
-    assert!(tw.world().get(_fx.mech).is_none_or(|o| o.flags.contains(Flags::GOING)), "destroyed");
+    assert!(
+        tw.world()
+            .get(_fx.mech)
+            .is_none_or(|o| o.flags.contains(Flags::GOING)),
+        "destroyed"
+    );
 }
 
 #[test]
@@ -334,14 +491,25 @@ fn destroying_a_crewed_unit_programmatically_drops_records_and_links() {
     tw.world_mut().destroy(fx.mech).unwrap();
     let mut out = Outbox::new();
     let mut fxx = Effects::new();
-    tw.engine_mut().emit_world_event(&WorldEvent::ObjDestroyed { obj: fx.mech }, &mut out, &mut fxx);
+    tw.engine_mut().emit_world_event(
+        &WorldEvent::ObjDestroyed { obj: fx.mech },
+        &mut out,
+        &mut fxx,
+    );
     let st = state(&tw);
-    assert!(!st.stations.contains_key(&fx.mech) && !st.assignments.contains_key(&fx.mech), "records gone");
+    assert!(
+        !st.stations.contains_key(&fx.mech) && !st.assignments.contains_key(&fx.mech),
+        "records gone"
+    );
     assert!(subjects(&tw, ann).is_empty(), "link scrubbed");
     // Persisted deletes.
     let ops = tw.take_module_ops();
-    assert!(ops.iter().any(|o| matches!(&o.op, ModuleWrite::Del { key } if key == &format!("stations:{}", fx.mech.0))));
-    assert!(ops.iter().any(|o| matches!(&o.op, ModuleWrite::Del { key } if key == &format!("assignment:{}", fx.mech.0))));
+    assert!(ops.iter().any(
+        |o| matches!(&o.op, ModuleWrite::Del { key } if key == &format!("stations:{}", fx.mech.0))
+    ));
+    assert!(ops.iter().any(
+        |o| matches!(&o.op, ModuleWrite::Del { key } if key == &format!("assignment:{}", fx.mech.0))
+    ));
 }
 
 #[test]
@@ -356,11 +524,21 @@ fn unplacing_a_unit_revokes_its_crew_links() {
     assert_eq!(subjects(&tw, ann), vec![fx.mech]);
     // Unplaced unit grants no control.
     ok(&mut tw, "@spatial/unplace Atlas");
-    assert!(subjects(&tw, ann).is_empty(), "unplaced unit does not grant control");
-    assert!(state(&tw).assignments.contains_key(&fx.mech), "assignment survived the unplace");
+    assert!(
+        subjects(&tw, ann).is_empty(),
+        "unplaced unit does not grant control"
+    );
+    assert!(
+        state(&tw).assignments.contains_key(&fx.mech),
+        "assignment survived the unplace"
+    );
     // Re-placing restores the crew link.
     ok(&mut tw, "@spatial/place/domain Atlas=0");
-    assert_eq!(subjects(&tw, ann), vec![fx.mech], "re-placing restores control");
+    assert_eq!(
+        subjects(&tw, ann),
+        vec![fx.mech],
+        "re-placing restores control"
+    );
 }
 
 #[test]
@@ -376,9 +554,19 @@ fn reboot_preserves_stations_assignments_and_republishes_links() {
     // The pilot is part of the fixture, so she exists BEFORE modules_loaded and
     // the boot republish reattaches her link with no re-assignment.
     assert_eq!(state(&tw2), state(&tw), "records + indexes survive reboot");
-    assert!(state(&tw2).stations.contains_key(&fx2.mech) && state(&tw2).assignments.contains_key(&fx2.mech));
-    assert_eq!(subjects(&tw2, fx2.pilot), vec![fx2.mech], "control link republished at boot");
-    assert!(texts(&tw2.run(fx2.pilot, "fire")).contains("BANG"), "pilot fires after reboot");
+    assert!(
+        state(&tw2).stations.contains_key(&fx2.mech)
+            && state(&tw2).assignments.contains_key(&fx2.mech)
+    );
+    assert_eq!(
+        subjects(&tw2, fx2.pilot),
+        vec![fx2.mech],
+        "control link republished at boot"
+    );
+    assert!(
+        texts(&tw2.run(fx2.pilot, "fire")).contains("BANG"),
+        "pilot fires after reboot"
+    );
 }
 
 #[test]
@@ -403,14 +591,20 @@ fn boot_drops_assignments_whose_actor_or_host_is_gone() {
     }
     let (tw2, fx2) = reboot_with(kv);
     // The dangling seat is dropped; no assignment survives.
-    assert!(!state(&tw2).assignments.contains_key(&fx2.mech), "dangling assignment dropped at boot");
+    assert!(
+        !state(&tw2).assignments.contains_key(&fx2.mech),
+        "dangling assignment dropped at boot"
+    );
 }
 
 #[test]
 fn control_links_are_per_unit_at_highest_role_and_survive_partial_unassign() {
     let mut tw = boot();
     let fx = fixture(&mut tw);
-    let mech2 = tw.world_mut().create(ObjKind::Thing, "Locust", GOD, Some(LIMBO)).unwrap();
+    let mech2 = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Locust", GOD, Some(LIMBO))
+        .unwrap();
     bind(&mut tw, mech2, "sim.participant");
     bind(&mut tw, mech2, "toy.unit");
     ok(&mut tw, "@domain/create Field=sim.passive");
@@ -421,12 +615,29 @@ fn control_links_are_per_unit_at_highest_role_and_survive_partial_unassign() {
     ok(&mut tw, "@spatial/station Atlas=gun,gunner");
     ok(&mut tw, "@spatial/station Atlas=cockpit,pilot");
     ok(&mut tw, &format!("@spatial/assign Atlas=gun,#{}", ann.0));
-    ok(&mut tw, &format!("@spatial/assign Atlas=cockpit,#{}", ann.0));
-    assert_eq!(subjects(&tw, ann), vec![fx.mech], "one link per unit even with two stations");
-    assert_eq!(tw.world().command_subjects_of(ann)[0].relation.as_str(), "pilot", "highest role wins");
+    ok(
+        &mut tw,
+        &format!("@spatial/assign Atlas=cockpit,#{}", ann.0),
+    );
+    assert_eq!(
+        subjects(&tw, ann),
+        vec![fx.mech],
+        "one link per unit even with two stations"
+    );
+    assert_eq!(
+        tw.world().command_subjects_of(ann)[0].relation.as_str(),
+        "pilot",
+        "highest role wins"
+    );
     // Also crew mech2; Ann holds links to both units.
-    ok(&mut tw, &format!("@spatial/station #{}=cockpit,pilot", mech2.0));
-    ok(&mut tw, &format!("@spatial/assign #{}=cockpit,#{}", mech2.0, ann.0));
+    ok(
+        &mut tw,
+        &format!("@spatial/station #{}=cockpit,pilot", mech2.0),
+    );
+    ok(
+        &mut tw,
+        &format!("@spatial/assign #{}=cockpit,#{}", mech2.0, ann.0),
+    );
     let mut subs = subjects(&tw, ann);
     subs.sort();
     let mut want = vec![fx.mech, mech2];
@@ -439,7 +650,17 @@ fn control_links_are_per_unit_at_highest_role_and_survive_partial_unassign() {
     assert_eq!(subs, want, "partial unassign keeps the survivors");
     // Redefining the surviving station's role updates the link priority in place.
     ok(&mut tw, "@spatial/station Atlas=cockpit,gunner");
-    assert_eq!(tw.world().command_subjects_of(ann).iter().find(|l| l.subject == fx.mech).unwrap().relation.as_str(), "gunner", "role redefine refreshes the link");
+    assert_eq!(
+        tw.world()
+            .command_subjects_of(ann)
+            .iter()
+            .find(|l| l.subject == fx.mech)
+            .unwrap()
+            .relation
+            .as_str(),
+        "gunner",
+        "role redefine refreshes the link"
+    );
     // Fully unassign Atlas: only the mech2 link remains.
     ok(&mut tw, "@spatial/unassign Atlas=cockpit");
     assert_eq!(subjects(&tw, ann), vec![mech2]);
@@ -449,10 +670,19 @@ fn control_links_are_per_unit_at_highest_role_and_survive_partial_unassign() {
 fn destroying_a_presentation_room_quarantines_crewed_directs_and_revokes_control() {
     let mut tw = boot();
     let fx = fixture(&mut tw);
-    let hq = tw.world_mut().create(ObjKind::Thing, "HQ", GOD, Some(LIMBO)).unwrap();
-    let stage = tw.world_mut().create(ObjKind::Room, "Stage", GOD, None).unwrap();
+    let hq = tw
+        .world_mut()
+        .create(ObjKind::Thing, "HQ", GOD, Some(LIMBO))
+        .unwrap();
+    let stage = tw
+        .world_mut()
+        .create(ObjKind::Room, "Stage", GOD, None)
+        .unwrap();
     bind(&mut tw, hq, "sim.domain");
-    ok(&mut tw, &format!("@domain/create #{}=sim.passive,#{}", hq.0, stage.0));
+    ok(
+        &mut tw,
+        &format!("@domain/create #{}=sim.passive,#{}", hq.0, stage.0),
+    );
     ok(&mut tw, "@spatial/place/domain Atlas=0");
     let ann = fx.pilot;
     ok(&mut tw, "@spatial/station Atlas=pilot,pilot");
@@ -462,9 +692,16 @@ fn destroying_a_presentation_room_quarantines_crewed_directs_and_revokes_control
     tw.world_mut().destroy(stage).unwrap();
     let mut out = Outbox::new();
     let mut fxx = Effects::new();
-    tw.engine_mut().emit_world_event(&WorldEvent::ObjDestroyed { obj: stage }, &mut out, &mut fxx);
-    assert!(state(&tw).is_quarantined(fx.mech), "direct quarantined when its presentation room dies");
-    assert!(subjects(&tw, ann).is_empty(), "a quarantined unit grants no control");
+    tw.engine_mut()
+        .emit_world_event(&WorldEvent::ObjDestroyed { obj: stage }, &mut out, &mut fxx);
+    assert!(
+        state(&tw).is_quarantined(fx.mech),
+        "direct quarantined when its presentation room dies"
+    );
+    assert!(
+        subjects(&tw, ann).is_empty(),
+        "a quarantined unit grants no control"
+    );
 }
 
 #[test]
@@ -483,7 +720,13 @@ fn egress_refuses_unanchored_and_reports_unknown_egress() {
     assert!(t.contains("No egress `doors`"), "{t}");
     // No-arg egress lands the unit Direct in the domain.
     ok(&mut tw, "@spatial/egress Atlas");
-    assert!(matches!(state(&tw).parent_of(fx.mech), SpatialParent::Direct { domain: mush_sim::DomainId(0), .. }));
+    assert!(matches!(
+        state(&tw).parent_of(fx.mech),
+        SpatialParent::Direct {
+            domain: mush_sim::DomainId(0),
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -493,13 +736,22 @@ fn boot_drops_assignment_whose_station_is_gone() {
     ok(&mut tw, "@domain/create Field=sim.passive");
     ok(&mut tw, "@spatial/place/domain Atlas=0");
     ok(&mut tw, "@spatial/station Atlas=pilot,pilot");
-    ok(&mut tw, &format!("@spatial/assign Atlas=pilot,#{}", fx.pilot.0));
+    ok(
+        &mut tw,
+        &format!("@spatial/assign Atlas=pilot,#{}", fx.pilot.0),
+    );
     let mut kv = fold_kv(&mut tw);
     // The station definition vanishes but the assignment doc remains.
     kv.retain(|(k, _)| k.as_str() != format!("stations:{}", fx.mech.0));
     let (tw2, fx2) = reboot_with(kv);
-    assert!(!state(&tw2).assignments.contains_key(&fx2.mech), "a seat for a gone station is dropped at boot");
-    assert!(subjects(&tw2, fx2.pilot).is_empty(), "no stale control link");
+    assert!(
+        !state(&tw2).assignments.contains_key(&fx2.mech),
+        "a seat for a gone station is dropped at boot"
+    );
+    assert!(
+        subjects(&tw2, fx2.pilot).is_empty(),
+        "no stale control link"
+    );
 }
 
 #[test]
@@ -510,7 +762,10 @@ fn boot_fails_on_stations_key_host_mismatch() {
     tw.modules_loaded(HashMap::from([(
         SmolStr::new("sim"),
         ModuleBootData {
-            kv: vec![(SmolStr::new("stations:5"), serde_json::json!({ "host": 6, "stations": {} }))],
+            kv: vec![(
+                SmolStr::new("stations:5"),
+                serde_json::json!({ "host": 6, "stations": {} }),
+            )],
             streams: HashMap::new(),
         },
     )]));
@@ -537,17 +792,34 @@ fn a_station_grants_channels_and_priority_defaults_by_role() {
     ok(&mut tw, "@spatial/place/domain Atlas=0");
     let ann = fx.pilot;
     // pilot grants movement (priority defaults to 2); gunner grants weapons (1).
-    ok(&mut tw, "@spatial/station Atlas=cockpit,pilot,channels:movement");
-    ok(&mut tw, "@spatial/station Atlas=gun,gunner,channels:weapons");
-    ok(&mut tw, &format!("@spatial/assign Atlas=cockpit,#{}", ann.0));
+    ok(
+        &mut tw,
+        "@spatial/station Atlas=cockpit,pilot,channels:movement",
+    );
+    ok(
+        &mut tw,
+        "@spatial/station Atlas=gun,gunner,channels:weapons",
+    );
+    ok(
+        &mut tw,
+        &format!("@spatial/assign Atlas=cockpit,#{}", ann.0),
+    );
     ok(&mut tw, &format!("@spatial/assign Atlas=gun,#{}", ann.0));
     // The actor's single link UNIONS both seats' channels; relation = the
     // max-priority seat (pilot), priority = 2.
     let mut chans = channels_of(&tw, ann, fx.mech);
     chans.sort();
-    assert_eq!(chans, vec!["movement".to_string(), "weapons".to_string()], "channels union across seats");
+    assert_eq!(
+        chans,
+        vec!["movement".to_string(), "weapons".to_string()],
+        "channels union across seats"
+    );
     let link = tw.world().command_subjects_of(ann)[0].clone();
-    assert_eq!(link.relation.as_str(), "pilot", "relation = max-priority seat");
+    assert_eq!(
+        link.relation.as_str(),
+        "pilot",
+        "relation = max-priority seat"
+    );
     assert_eq!(link.priority, 2, "pilot's default priority");
 }
 
@@ -558,8 +830,15 @@ fn explicit_station_priority_overrides_the_role_default() {
     ok(&mut tw, "@domain/create Field=sim.passive");
     ok(&mut tw, "@spatial/place/domain Atlas=0");
     ok(&mut tw, "@spatial/station Atlas=cockpit,gunner,priority:9");
-    ok(&mut tw, &format!("@spatial/assign Atlas=cockpit,#{}", fx.pilot.0));
-    assert_eq!(tw.world().command_subjects_of(fx.pilot)[0].priority, 9, "explicit priority wins over role default");
+    ok(
+        &mut tw,
+        &format!("@spatial/assign Atlas=cockpit,#{}", fx.pilot.0),
+    );
+    assert_eq!(
+        tw.world().command_subjects_of(fx.pilot)[0].priority,
+        9,
+        "explicit priority wins over role default"
+    );
 }
 
 #[test]
@@ -568,9 +847,15 @@ fn control_epoch_bumps_on_assign_unassign_and_survives_reboot() {
     let fx = fixture(&mut tw);
     ok(&mut tw, "@domain/create Field=sim.passive");
     ok(&mut tw, "@spatial/place/domain Atlas=0");
-    ok(&mut tw, "@spatial/station Atlas=cockpit,pilot,channels:movement");
+    ok(
+        &mut tw,
+        "@spatial/station Atlas=cockpit,pilot,channels:movement",
+    );
     let g0 = state(&tw).control_generation(fx.mech);
-    ok(&mut tw, &format!("@spatial/assign Atlas=cockpit,#{}", fx.pilot.0));
+    ok(
+        &mut tw,
+        &format!("@spatial/assign Atlas=cockpit,#{}", fx.pilot.0),
+    );
     let g1 = state(&tw).control_generation(fx.mech);
     assert!(g1 > g0, "assign bumps the control epoch ({g0} -> {g1})");
     ok(&mut tw, "@spatial/unassign Atlas=cockpit");
@@ -579,7 +864,11 @@ fn control_epoch_bumps_on_assign_unassign_and_survives_reboot() {
     // Monotonic across reboot.
     let kv = fold_kv(&mut tw);
     let (tw2, fx2) = reboot_with(kv);
-    assert_eq!(state(&tw2).control_generation(fx2.mech), g2, "epoch persists across reboot");
+    assert_eq!(
+        state(&tw2).control_generation(fx2.mech),
+        g2,
+        "epoch persists across reboot"
+    );
 }
 
 #[test]
@@ -588,10 +877,19 @@ fn the_authority_inspector_shows_granted_channels() {
     let fx = fixture(&mut tw);
     ok(&mut tw, "@domain/create Field=sim.passive");
     ok(&mut tw, "@spatial/place/domain Atlas=0");
-    ok(&mut tw, "@spatial/station Atlas=cockpit,pilot,channels:movement");
-    ok(&mut tw, &format!("@spatial/assign Atlas=cockpit,#{}", fx.pilot.0));
+    ok(
+        &mut tw,
+        "@spatial/station Atlas=cockpit,pilot,channels:movement",
+    );
+    ok(
+        &mut tw,
+        &format!("@spatial/assign Atlas=cockpit,#{}", fx.pilot.0),
+    );
     let t = say(&mut tw, &format!("@spatial/authority #{}", fx.pilot.0));
-    assert!(t.contains("movement") && t.contains("pilot"), "inspector shows channels + relation: {t}");
+    assert!(
+        t.contains("movement") && t.contains("pilot"),
+        "inspector shows channels + relation: {t}"
+    );
 }
 
 #[test]
@@ -608,12 +906,53 @@ fn a_legacy_m29_station_doc_without_channels_or_priority_loads() {
             "cockpit": { "role": "pilot", "space": null, "policy": { "schema": "sim.passive", "version": 1, "data": null } }
         }
     });
-    let (tw2, fx2) = reboot_with(vec![(key, doc)]);
+    let (mut tw2, fx2) = reboot_with(vec![(key, doc)]);
     let st = state(&tw2);
-    let hs = st.stations.get(&fx2.mech).expect("legacy station doc loaded");
-    let spec = hs.stations.get(&mush_sim::StationId::new("cockpit").unwrap()).unwrap();
-    assert!(spec.channels.is_empty(), "legacy station grants no channels");
+    let hs = st
+        .stations
+        .get(&fx2.mech)
+        .expect("legacy station doc loaded");
+    let spec = hs
+        .stations
+        .get(&mush_sim::StationId::new("cockpit").unwrap())
+        .unwrap();
+    assert!(
+        spec.channels.is_empty(),
+        "legacy station grants no channels"
+    );
     assert_eq!(spec.priority, 0, "legacy station defaults to priority 0");
+    let exact = mush_sim::passive_definition_ref();
+    assert_eq!(
+        spec.policy.schema(),
+        &exact,
+        "legacy policy maps to the built-in exact definition"
+    );
+    assert!(spec.policy.data().is_null());
+    let encoded = serde_json::to_value(&spec.policy).unwrap();
+    assert!(
+        encoded["schema"].is_object(),
+        "shared v2 schema is an exact reference: {encoded}"
+    );
+    assert_eq!(encoded["schema"]["key"]["owner"], serde_json::json!("sim"));
+    assert_eq!(
+        encoded["schema"]["key"]["kind"],
+        serde_json::json!("schema")
+    );
+    assert_eq!(encoded["schema"]["key"]["id"], serde_json::json!("passive"));
+    assert_eq!(encoded["schema"]["version"], serde_json::json!(1));
+    assert!(
+        encoded.get("version").is_none(),
+        "legacy top-level version is not re-emitted"
+    );
+    let definitions = tw2
+        .registry()
+        .definitions()
+        .expect("composition froze definitions");
+    assert_eq!(definitions.get_exact(&exact).unwrap().reference(), &exact);
+    assert!(
+        tw2.take_module_ops().is_empty(),
+        "a clean legacy read is not eagerly rewritten"
+    );
 }
 
 #[test]
@@ -624,13 +963,22 @@ fn the_control_epoch_bumps_at_every_control_change_site() {
     // A plain placed participant (no station) grows NO cgen doc and stays at 0.
     let _ = tw.take_module_ops();
     ok(&mut tw, "@spatial/place/domain Atlas=0");
-    assert_eq!(state(&tw).control_generation(fx.mech), 0, "a plain placed object has no epoch");
+    assert_eq!(
+        state(&tw).control_generation(fx.mech),
+        0,
+        "a plain placed object has no epoch"
+    );
     assert!(
-        !tw.take_module_ops().iter().any(|o| matches!(&o.op, ModuleWrite::JsonSet { key, .. } if key.starts_with("cgen:"))),
+        !tw.take_module_ops()
+            .iter()
+            .any(|o| matches!(&o.op, ModuleWrite::JsonSet { key, .. } if key.starts_with("cgen:"))),
         "no cgen doc for a non-host object"
     );
     // Defining, redefining, unplacing, and replacing a control host each bump.
-    ok(&mut tw, "@spatial/station Atlas=cockpit,pilot,channels:movement");
+    ok(
+        &mut tw,
+        "@spatial/station Atlas=cockpit,pilot,channels:movement",
+    );
     let a = state(&tw).control_generation(fx.mech);
     assert!(a > 0, "station define bumps");
     ok(&mut tw, "@spatial/station Atlas=cockpit,pilot,priority:5");
@@ -640,7 +988,10 @@ fn the_control_epoch_bumps_at_every_control_change_site() {
     let c = state(&tw).control_generation(fx.mech);
     assert!(c > b, "unplace of a control host bumps");
     ok(&mut tw, "@spatial/place/domain Atlas=0");
-    assert!(state(&tw).control_generation(fx.mech) > c, "re-place of a control host bumps");
+    assert!(
+        state(&tw).control_generation(fx.mech) > c,
+        "re-place of a control host bumps"
+    );
 }
 
 #[test]
@@ -649,13 +1000,61 @@ fn destroying_a_crew_actor_bumps_its_unit_epoch() {
     let fx = fixture(&mut tw);
     ok(&mut tw, "@domain/create Field=sim.passive");
     ok(&mut tw, "@spatial/place/domain Atlas=0");
-    ok(&mut tw, "@spatial/station Atlas=cockpit,pilot,channels:movement");
-    ok(&mut tw, &format!("@spatial/assign Atlas=cockpit,#{}", fx.pilot.0));
+    ok(
+        &mut tw,
+        "@spatial/station Atlas=cockpit,pilot,channels:movement",
+    );
+    ok(
+        &mut tw,
+        &format!("@spatial/assign Atlas=cockpit,#{}", fx.pilot.0),
+    );
     let g = state(&tw).control_generation(fx.mech);
     // Destroying the pilot vacates its seat: the unit's control changed -> bump.
     tw.world_mut().destroy(fx.pilot).unwrap();
     let mut out = Outbox::new();
     let mut fxx = Effects::new();
-    tw.engine_mut().emit_world_event(&WorldEvent::ObjDestroyed { obj: fx.pilot }, &mut out, &mut fxx);
-    assert!(state(&tw).control_generation(fx.mech) > g, "destroying a crew actor bumps its unit's epoch");
+    tw.engine_mut().emit_world_event(
+        &WorldEvent::ObjDestroyed { obj: fx.pilot },
+        &mut out,
+        &mut fxx,
+    );
+    assert!(
+        state(&tw).control_generation(fx.mech) > g,
+        "destroying a crew actor bumps its unit's epoch"
+    );
+}
+
+#[test]
+fn exhausted_control_generation_refuses_structural_change_without_mutation() {
+    let mut tw = boot();
+    let fx = fixture(&mut tw);
+    ok(&mut tw, "@domain/create Field=sim.passive");
+    ok(&mut tw, "@spatial/place/domain Atlas=0");
+    ok(
+        &mut tw,
+        "@spatial/station Atlas=cockpit,pilot,channels:movement",
+    );
+    ok(
+        &mut tw,
+        &format!("@spatial/assign Atlas=cockpit,#{}", fx.pilot.0),
+    );
+    tw.world_mut()
+        .module_state_mut::<SpatialState>()
+        .expect("sim state")
+        .control_gen
+        .insert(fx.mech, u64::MAX);
+    let before = state(&tw).clone();
+    let before_location = loc(&tw, fx.mech);
+    let before_subjects = subjects(&tw, fx.pilot);
+    let _ = tw.take_module_ops();
+
+    let refused = say(&mut tw, "@spatial/unplace Atlas");
+    assert!(refused.contains("exhausted its control"), "{refused}");
+    assert_eq!(state(&tw), &before, "refusal mutated sim state");
+    assert_eq!(loc(&tw, fx.mech), before_location);
+    assert_eq!(subjects(&tw, fx.pilot), before_subjects);
+    assert!(
+        tw.take_module_ops().is_empty(),
+        "refusal emitted persistence"
+    );
 }

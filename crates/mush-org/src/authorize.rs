@@ -120,8 +120,13 @@ pub trait PredicateEval {
     /// provider resolved it; `None` when the provider/predicate is unregistered or
     /// unresolvable — the engine then **suppresses an Allow and satisfies a Deny**.
     /// The provider returns only a boolean + never leaks the underlying value.
-    fn eval(&self, provider: &str, predicate: &str, arguments: &serde_json::Value, actor: ObjId)
-    -> Option<bool>;
+    fn eval(
+        &self,
+        provider: &str,
+        predicate: &str,
+        arguments: &serde_json::Value,
+        actor: ObjId,
+    ) -> Option<bool>;
 }
 
 /// A [`PredicateEval`] that resolves nothing — every registered predicate is
@@ -175,7 +180,9 @@ pub fn authorize(state: &OrgState, req: &AuthRequest, predicates: &dyn Predicate
 
     // Grants via the actor's active-membership roles.
     for role_id in state.active_roles(org, req.actor) {
-        let Some(role) = state.role(*role_id) else { continue };
+        let Some(role) = state.role(*role_id) else {
+            continue;
+        };
         for gt in &role.grants {
             if gt.capability != req.capability {
                 continue;
@@ -222,12 +229,19 @@ pub fn authorize(state: &OrgState, req: &AuthRequest, predicates: &dyn Predicate
                 // "any member of org o" is `OrganizationMember`, actor-gated below.
                 PolicySubject::Organization(_) => false,
                 PolicySubject::OrganizationMember(o) => {
-                    *o == org && state.membership(org, req.actor).is_some_and(|m| m.status == crate::MembershipStatus::Active)
+                    *o == org
+                        && state
+                            .membership(org, req.actor)
+                            .is_some_and(|m| m.status == crate::MembershipStatus::Active)
                 }
                 PolicySubject::OrganizationRole { org: o, role } => {
                     *o == org && state.active_roles(org, req.actor).contains(role)
                 }
-                PolicySubject::RegisteredPredicate { provider, predicate, arguments } => {
+                PolicySubject::RegisteredPredicate {
+                    provider,
+                    predicate,
+                    arguments,
+                } => {
                     match predicates.eval(provider, predicate, arguments, req.actor) {
                         Some(b) => b,
                         // Unresolvable: suppress an Allow, satisfy a Deny.
@@ -253,7 +267,10 @@ pub fn authorize(state: &OrgState, req: &AuthRequest, predicates: &dyn Predicate
         return Decision::Deny(DenyReason::ExplicitDeny);
     }
     if grant_ok || policy_allow {
-        return Decision::Allow(AuthWitness { at: req.now, source_revisions: revs });
+        return Decision::Allow(AuthWitness {
+            at: req.now,
+            source_revisions: revs,
+        });
     }
     Decision::Deny(near.unwrap_or(DenyReason::NoAuthority))
 }
@@ -297,7 +314,7 @@ fn template_authorizes(state: &OrgState, gt: &GrantTemplate, req: &AuthRequest) 
 /// [`DenyReason::LimitExceeded`].
 fn limit_ok(limit: Option<GrantLimit>, req: &AuthRequest) -> GrantCheck {
     match (limit.and_then(|l| l.max_amount), req.amount) {
-        (None, _) => GrantCheck::Ok,               // unlimited grant
+        (None, _) => GrantCheck::Ok, // unlimited grant
         (Some(_), None) => GrantCheck::Fail(DenyReason::AmountRequired),
         (Some(max), Some(a)) if a <= max => GrantCheck::Ok,
         (Some(_), Some(_)) => GrantCheck::Fail(DenyReason::LimitExceeded),
@@ -370,9 +387,14 @@ fn scope_contains(state: &OrgState, selector: &ScopeSelector, target: OrgScopeId
     match selector {
         ScopeSelector::Exact(s) => *s == target,
         ScopeSelector::SubtreeLive(root) => is_descendant_or_self(state, *root, target),
-        ScopeSelector::SubtreeFrozen { root, snapshot_revision } => {
+        ScopeSelector::SubtreeFrozen {
+            root,
+            snapshot_revision,
+        } => {
             is_descendant_or_self(state, *root, target)
-                && state.scope(target).is_some_and(|t| t.created_rev <= *snapshot_revision)
+                && state
+                    .scope(target)
+                    .is_some_and(|t| t.created_rev <= *snapshot_revision)
         }
     }
 }
@@ -396,7 +418,11 @@ fn is_descendant_or_self(state: &OrgState, root: OrgScopeId, target: OrgScopeId)
 
 /// Whether `outer` covers every scope `inner` covers (delegation narrow-only).
 /// Conservative + fail-closed.
-pub(crate) fn selector_subsumes(state: &OrgState, outer: &ScopeSelector, inner: &ScopeSelector) -> bool {
+pub(crate) fn selector_subsumes(
+    state: &OrgState,
+    outer: &ScopeSelector,
+    inner: &ScopeSelector,
+) -> bool {
     // The inner anchor must sit inside the outer selector's set.
     if !scope_contains(state, outer, inner.root()) {
         return false;
@@ -406,9 +432,18 @@ pub(crate) fn selector_subsumes(state: &OrgState, outer: &ScopeSelector, inner: 
         (ScopeSelector::SubtreeLive(_), _) => true,
         // A frozen outer may narrow to an exact scope, or a no-later frozen subtree,
         // but NOT to a live subtree (which could widen past the frozen snapshot).
-        (ScopeSelector::SubtreeFrozen { snapshot_revision: os, .. }, inner) => match inner {
+        (
+            ScopeSelector::SubtreeFrozen {
+                snapshot_revision: os,
+                ..
+            },
+            inner,
+        ) => match inner {
             ScopeSelector::Exact(_) => true,
-            ScopeSelector::SubtreeFrozen { snapshot_revision: is, .. } => is <= os,
+            ScopeSelector::SubtreeFrozen {
+                snapshot_revision: is,
+                ..
+            } => is <= os,
             ScopeSelector::SubtreeLive(_) => false,
         },
         // An exact outer can only cover the identical exact scope.

@@ -17,8 +17,8 @@ use mush_core::{
 use smol_str::SmolStr;
 
 use crate::data::{
-    Channel, ComsysState, MAX_TITLE_LEN, Membership, chan_key, hist_key, member_key,
-    persist_channel, persist_del, persist_membership, persist_meta,
+    Channel, ComsysState, MAX_HISTORY_CAP, MAX_TITLE_LEN, Membership, chan_key, hist_key,
+    member_key, persist_channel, persist_del, persist_membership, persist_meta,
 };
 use crate::speak::{channel_notice, render_recall};
 
@@ -27,9 +27,6 @@ const MAX_ALIAS_LEN: usize = 16;
 
 /// Longest accepted channel name.
 const MAX_CHANNEL_NAME_LEN: usize = 32;
-
-/// Cap on `@channel/set <chan>=cap=<n>`.
-const MAX_HISTORY_CAP: u32 = 10_000;
 
 /// Default `@channel/recall` depth.
 const DEFAULT_RECALL: usize = 10;

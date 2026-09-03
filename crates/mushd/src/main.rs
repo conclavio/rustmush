@@ -7,7 +7,9 @@
 //! session layer, the store-backed accounts, and the SSH bridge. Runs until
 //! Ctrl-C, SIGTERM (Unix), or an in-game `@shutdown`, then shuts down in
 //! order: announce → world task ends → writer
-//! drains → `store.drain()` → BGSAVE → exit. `--repl` preserves the M0
+//! drains → `store.drain()` → eligible BGSAVE → exit. The final snapshot is
+//! skipped if the writer did not drain or persistence integrity is latched.
+//! `--repl` preserves the M0
 //! synchronous stdin REPL for offline poking (fully in-memory, no store).
 //!
 //! Usage: `mushd [--repl] [--config <path>]` (config defaults to
@@ -31,6 +33,7 @@ use mushd::config::{Config, StoreBackend};
 use mushd::ipguard::IpGuard;
 use mushd::modules;
 use mushd::persist::load_or_seed_world;
+use mushd::quarantine::QuarantineSpool;
 use mushd::ssh_bridge::{SshBridge, start_listener};
 use mushd::staff::{StaffQueue, register_server_commands_with_cap};
 use mushd::web_bridge::WebBridge;
@@ -49,6 +52,12 @@ const WRITER_DRAIN_TIMEOUT: Duration = Duration::from_secs(15);
 /// SIGKILL. The store client's own command timeout usually fires first;
 /// this is the belt to that suspender.
 const SHUTDOWN_STORE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// An ordinary shutdown snapshot is safe only after every queued write has a
+/// terminal result and no component observed an integrity breach.
+const fn shutdown_bgsave_allowed(writer_drained: bool, integrity_latched: bool) -> bool {
+    writer_drained && !integrity_latched
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -78,6 +87,17 @@ fn main() -> ExitCode {
         }
     };
 
+    // Validate the integrity store before logging is allowed to create or
+    // append any startup file. Retain this exact instance (and its exclusive
+    // lifetime lock) through recovery, ordinary boot, and the writer.
+    let quarantine_spool = match QuarantineSpool::open(config.server.data_dir.join("quarantine")) {
+        Ok(spool) => spool,
+        Err(error) => {
+            eprintln!("mushd: quarantine spool preflight failed: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     // Structured logging per `[log]` (level/format + optional daily-rotating
     // file output). The guard keeps the non-blocking file appender's worker
     // alive for the whole process; it drops at the end of `main`.
@@ -101,7 +121,7 @@ fn main() -> ExitCode {
         .enable_all()
         .build()
         .expect("tokio runtime");
-    match runtime.block_on(serve(config)) {
+    match runtime.block_on(serve(config, quarantine_spool)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("mushd: {e}");
@@ -134,11 +154,13 @@ async fn open_store(config: &Config) -> Result<Arc<dyn ObjectStore>, String> {
     }
 }
 
-async fn serve(config: Config) -> Result<(), String> {
+async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<(), String> {
     let listen = config.ssh_listen().map_err(|e| e.to_string())?;
     let data_dir = config.server.data_dir.clone();
-    std::fs::create_dir_all(&data_dir)
-        .map_err(|e| format!("cannot create data dir {}: {e}", data_dir.display()))?;
+    // The pre-opened spool still owns the single-deployment lock. Compare any
+    // valid active records through the store's read-only connection before
+    // migrations, account import, world seeding, or module boot can write.
+    mush_server::prepare_quarantine_for_writable_boot(&config, &mut quarantine_spool, None).await?;
     tracing::info!(
         name = %config.server.name,
         data_dir = %data_dir.display(),
@@ -165,17 +187,6 @@ async fn serve(config: Config) -> Result<(), String> {
     if imported > 0 {
         tracing::info!(imported, "M1 accounts.json imported");
     }
-    let mut world = load_or_seed_world(&*store).await?;
-    // Install the IC game clock from [game] before the world starts serving.
-    // ic_ratio / ic_epoch are read once here (hot-reload comes later).
-    let clock = config.game.game_clock().map_err(|e| e.to_string())?;
-    world.set_game_clock(clock);
-    tracing::info!(
-        ic_ratio = clock.ic_ratio,
-        ic_epoch = %config.game.ic_epoch,
-        "game clock installed",
-    );
-
     // Command table: core + engine + server staff commands (@siteban/@dump/
     // @boot/@ps/@stats push typed ops onto the queue the world task
     // drains), plus the markdown help topics.
@@ -195,8 +206,7 @@ async fn serve(config: Config) -> Result<(), String> {
     // worldgen module and the world task's `Effect::ModuleAsync` driver share
     // this one handle.
     let llm_cfg = llm_config(&config.llm)?;
-    let llm =
-        Arc::new(LlmService::from_config(&llm_cfg).map_err(|e| format!("llm config: {e}"))?);
+    let llm = Arc::new(LlmService::from_config(&llm_cfg).map_err(|e| format!("llm config: {e}"))?);
     tracing::info!(
         enabled = llm_cfg.enabled,
         providers = llm_cfg.providers.len(),
@@ -204,7 +214,7 @@ async fn serve(config: Config) -> Result<(), String> {
         "llm service built"
     );
 
-    // Game modules: the built-ins (comsys, mail, jobs, weather, script), then
+    // Game modules: the built-ins (including sim + tactics), then
     // the M7 worldgen module, then the config-selected rulesets
     // ([rulesets].enabled — M6: "wod"). Everything after the built-ins
     // registers cleanly against the one registry; rulesets go last so their
@@ -230,8 +240,22 @@ async fn serve(config: Config) -> Result<(), String> {
         tracing::info!(rulesets = ?config.rulesets.enabled, "rulesets enabled");
     }
     mods.extend(rulesets);
-    let mut engine = Engine::with_modules(world, registry, mods)
-        .map_err(|e| format!("module registration: {e}"))?;
+    // Compose and freeze every mechanics registry before persisted world data
+    // is loaded. This makes the C1 boot order structural instead of relying on
+    // individual modules to avoid early interpretation.
+    let composition =
+        Engine::compose_modules(registry, mods).map_err(|e| format!("module registration: {e}"))?;
+    let mut world = load_or_seed_world(&*store).await?;
+    // Install the IC game clock from [game] before module state and ticks are
+    // materialized into the engine.
+    let clock = config.game.game_clock().map_err(|e| e.to_string())?;
+    world.set_game_clock(clock);
+    tracing::info!(
+        ic_ratio = clock.ic_ratio,
+        ic_epoch = %config.game.ic_epoch,
+        "game clock installed",
+    );
+    let mut engine = Engine::from_composition(world, composition);
     modules::boot_modules(&mut engine, &*store).await?;
 
     // The web hello manifest, collected while the registry is still in
@@ -288,9 +312,10 @@ async fn serve(config: Config) -> Result<(), String> {
             metrics: Arc::clone(&metrics),
             // E0 quarantine spool: a separate durable failure domain under the
             // data dir for confirmed-poison ledger seals.
-            quarantine_dir: Some(data_dir.join("quarantine")),
+            quarantine_spool,
         },
     );
+    let persistence_integrity = handles.persistence_integrity.clone();
     let world = handles.handle;
     let mut world_join = handles.world_join;
     let writer_join = handles.writer_join;
@@ -318,8 +343,8 @@ async fn serve(config: Config) -> Result<(), String> {
     // world handle, same guard — plus the token store and the panel
     // manifest. Served by mush-net-web on its own task; stopped gracefully
     // in the shutdown tail.
-    let mut web_config = WebConfig::deserialize(config.web.clone())
-        .map_err(|e| format!("[web] config: {e}"))?;
+    let mut web_config =
+        WebConfig::deserialize(config.web.clone()).map_err(|e| format!("[web] config: {e}"))?;
     web_config.server_name = format!(
         "{} (rustmush {})",
         config.server.name,
@@ -390,18 +415,23 @@ async fn serve(config: Config) -> Result<(), String> {
     }
     // Shutdown order (PLAN gap closures): the world task has stopped
     // mutating; its dropped job sender lets the writer drain every pending
-    // batch, then the drain barrier + BGSAVE make the store current and
-    // snapshotted before we exit.
+    // batch. Only a cleanly drained writer with no integrity breach may be
+    // followed by the ordinary final BGSAVE.
     drop(world);
-    if tokio::time::timeout(WRITER_DRAIN_TIMEOUT, writer_join)
-        .await
-        .is_err()
-    {
-        tracing::error!(
-            "store writer did not drain in time (store down?); exiting anyway — \
-             any batches still queued behind the outage are lost"
-        );
-    }
+    let writer_drained = match tokio::time::timeout(WRITER_DRAIN_TIMEOUT, writer_join).await {
+        Ok(Ok(())) => true,
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, "store writer task failed during shutdown");
+            false
+        }
+        Err(_) => {
+            tracing::error!(
+                "store writer did not drain in time (store down?); exiting anyway — \
+                 any batches still queued behind the outage are lost"
+            );
+            false
+        }
+    };
     // Each tail step is individually bounded so a dead store can never
     // wedge shutdown (systemd would otherwise escalate to SIGKILL).
     match tokio::time::timeout(SHUTDOWN_STORE_TIMEOUT, store.drain()).await {
@@ -409,10 +439,24 @@ async fn serve(config: Config) -> Result<(), String> {
         Ok(Err(e)) => tracing::error!(error = %e, "store drain failed"),
         Err(_) => tracing::error!("store drain timed out (store down?)"),
     }
-    match tokio::time::timeout(SHUTDOWN_STORE_TIMEOUT, store.bgsave()).await {
-        Ok(Ok(())) => tracing::info!("shutdown BGSAVE triggered"),
-        Ok(Err(e)) => tracing::error!(error = %e, "shutdown BGSAVE failed"),
-        Err(_) => tracing::error!("shutdown BGSAVE timed out (store down?)"),
+    let integrity_latched = persistence_integrity.is_latched();
+    if shutdown_bgsave_allowed(writer_drained, integrity_latched) {
+        match tokio::time::timeout(SHUTDOWN_STORE_TIMEOUT, store.bgsave()).await {
+            Ok(Ok(())) => tracing::info!("shutdown BGSAVE triggered"),
+            Ok(Err(e)) => tracing::error!(error = %e, "shutdown BGSAVE failed"),
+            Err(_) => tracing::error!("shutdown BGSAVE timed out (store down?)"),
+        }
+    } else if !writer_drained {
+        tracing::error!(
+            "shutdown BGSAVE skipped: store writer did not drain cleanly; snapshotting could \
+             capture incomplete durable state"
+        );
+    } else {
+        debug_assert!(integrity_latched);
+        tracing::error!(
+            "shutdown BGSAVE skipped: persistence integrity is latched; ordinary snapshots \
+             are forbidden until exact recovery"
+        );
     }
     if tokio::time::timeout(SHUTDOWN_STORE_TIMEOUT, store.close())
         .await
@@ -456,4 +500,17 @@ fn banner(name: &str) -> String {
          \x20  Connect to an existing account, or create a new one:\n\
          ------------------------------------------------------------------"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shutdown_bgsave_allowed;
+
+    #[test]
+    fn shutdown_bgsave_requires_clean_drain_and_clear_integrity() {
+        assert!(shutdown_bgsave_allowed(true, false));
+        assert!(!shutdown_bgsave_allowed(false, false));
+        assert!(!shutdown_bgsave_allowed(true, true));
+        assert!(!shutdown_bgsave_allowed(false, true));
+    }
 }

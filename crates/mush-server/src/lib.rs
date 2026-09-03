@@ -28,6 +28,7 @@
 //! [`ServiceReq`]: mush_ipc::ServiceReq
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use std::time::Duration;
 
@@ -37,13 +38,14 @@ use mush_config::ipguard::IpGuard;
 use mush_config::metrics::Metrics;
 use mush_core::{ControlMsg, Engine, Inbound};
 use mush_ipc::{
-    BoxWrite, FrameReader, IPC_VERSION, IpcEndpoint, ServiceReq, ServiceResp, ToGateway, ToServer,
+    BoxWrite, FrameReader, IPC_VERSION, IpcEndpoint, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
+    MAX_IN_FLIGHT_SERVICE_REQUESTS, ServiceReq, ServiceResp, ToGateway, ToServer,
 };
 use mush_llm::LlmService;
 use mush_store::{InMemoryStore, ObjectStore, RedisStore, core_migrations, run_migrations};
-use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 pub mod accounts;
 pub mod config_ext;
@@ -51,14 +53,16 @@ pub mod gateway_sink;
 pub mod help;
 pub mod modules;
 pub mod persist;
+pub mod quarantine;
 pub mod retained;
 pub mod staff;
 pub mod world_task;
 
 use crate::gateway_sink::SocketSink;
 use crate::persist::load_or_seed_world;
+use crate::quarantine::QuarantineSpool;
 use crate::staff::{StaffQueue, register_server_commands_with_cap};
-use crate::world_task::{ServerDeps, WorldHandle};
+use crate::world_task::{CreatePlayerErr, ServerDeps, WorldHandle, WorldReadError};
 
 pub use gateway_sink::{GatewaySink, SocketSink as ServerSocketSink};
 
@@ -85,6 +89,69 @@ async fn open_store(config: &Config) -> Result<Arc<dyn ObjectStore>, String> {
     }
 }
 
+/// Open only the read side of the configured store for quarantine recovery.
+///
+/// Redis connection setup deliberately skips search-index bootstrap; schema
+/// migrations, world seeds, imports, and module boot remain downstream of the
+/// exact-match decision. The returned store is kept private and is handed to
+/// [`QuarantineSpool`] only through its one-method read interface.
+async fn open_quarantine_recovery_store(config: &Config) -> Result<Arc<dyn ObjectStore>, String> {
+    match config.store_backend().map_err(|error| error.to_string())? {
+        StoreBackend::Redis => {
+            let url = &config.store.redis_url;
+            let store = RedisStore::connect_read_only(url)
+                .await
+                .map_err(|error| format!("cannot read Redis quarantine targets: {error}"))?;
+            Ok(Arc::new(store))
+        }
+        StoreBackend::Memory => Ok(Arc::new(InMemoryStore::new())),
+    }
+}
+
+/// Resolve exact authoritative matches, then enforce the quarantine gate.
+///
+/// This is the complete pre-write recovery plane shared by the split server
+/// and all-in-one `mushd`. It performs only `module_json_get` calls against the
+/// authoritative store. Any missing/different/unreadable target, invalid or
+/// full evidence archive, or unresolved active record prevents migrations and
+/// every other ordinary boot mutation.
+///
+/// # Errors
+///
+/// Returns an operator-facing recovery error while the spool's lifetime lock
+/// remains held by the caller.
+pub async fn prepare_quarantine_for_writable_boot(
+    config: &Config,
+    spool: &mut QuarantineSpool,
+    supplied_store: Option<&dyn ObjectStore>,
+) -> Result<(), String> {
+    spool
+        .require_bound_path(&config.server.data_dir.join("quarantine"))
+        .map_err(|error| format!("quarantine spool preflight failed: {error}"))?;
+    if spool.opened_state().unresolved_records == 0 {
+        return Ok(());
+    }
+
+    let report = match supplied_store {
+        Some(reader) => spool.reconcile_exact_matches(reader).await,
+        None => {
+            let reader = open_quarantine_recovery_store(config).await?;
+            spool.reconcile_exact_matches(&*reader).await
+        }
+    }
+    .map_err(|error| format!("quarantine exact-target recovery failed: {error}"))?;
+    tracing::info!(
+        examined = report.examined,
+        resolved = report.resolved,
+        remaining_records = report.remaining.unresolved_records,
+        remaining_bytes = report.remaining.unresolved_bytes,
+        "quarantine exact-target recovery pass complete"
+    );
+    spool
+        .require_resolved_for_boot()
+        .map_err(|error| format!("quarantine recovery required: {error}"))
+}
+
 /// Boot the full engine (world load/seed + modules + rulesets), exactly the
 /// roster the all-in-one binary builds. Returns the engine plus the
 /// [`StaffQueue`] its `@siteban`/`@boot`/... handlers push into — the SAME
@@ -92,6 +159,7 @@ async fn open_store(config: &Config) -> Result<Arc<dyn ObjectStore>, String> {
 async fn build_engine(
     config: &Config,
     store: &Arc<dyn ObjectStore>,
+    _validated_spool: &QuarantineSpool,
 ) -> Result<(Engine, Arc<StaffQueue>), String> {
     let version = run_migrations(&**store, &core_migrations())
         .await
@@ -101,10 +169,6 @@ async fn build_engine(
     if imported > 0 {
         tracing::info!(imported, "M1 accounts.json imported");
     }
-    let mut world = load_or_seed_world(&**store).await?;
-    let clock = config.game.game_clock().map_err(|e| e.to_string())?;
-    world.set_game_clock(clock);
-
     let staff = Arc::new(StaffQueue::new());
     let mut registry = world_task::base_registry();
     register_server_commands_with_cap(&mut registry, &staff, config.game.max_characters as usize)
@@ -129,8 +193,15 @@ async fn build_engine(
     )
     .map_err(|e| format!("ruleset selection: {e}"))?;
     mods.extend(rulesets);
-    let mut engine = Engine::with_modules(world, registry, mods)
-        .map_err(|e| format!("module registration: {e}"))?;
+    // Compose and freeze every mechanics registry before any persisted world
+    // record is loaded. Rules-bearing attrs must never be interpreted against
+    // a half-built definition/bridge set (K1 / C1 boot ordering).
+    let composition =
+        Engine::compose_modules(registry, mods).map_err(|e| format!("module registration: {e}"))?;
+    let mut world = load_or_seed_world(&**store).await?;
+    let clock = config.game.game_clock().map_err(|e| e.to_string())?;
+    world.set_game_clock(clock);
+    let mut engine = Engine::from_composition(world, composition);
     modules::boot_modules(&mut engine, &**store).await?;
     Ok((engine, staff))
 }
@@ -147,7 +218,10 @@ async fn build_engine(
 ///
 /// Boot failures (store unreachable, bad config, module registration) and
 /// fatal I/O on the listener.
-pub async fn serve(config: Config, bound: Option<oneshot::Sender<IpcEndpoint>>) -> Result<(), String> {
+pub async fn serve(
+    config: Config,
+    bound: Option<oneshot::Sender<IpcEndpoint>>,
+) -> Result<(), String> {
     serve_with_store(config, bound, None).await
 }
 
@@ -167,12 +241,38 @@ pub async fn serve_with_store(
     bound: Option<oneshot::Sender<IpcEndpoint>>,
     store: Option<Arc<dyn ObjectStore>>,
 ) -> Result<(), String> {
+    // K0 integrity preflight is deliberately the first filesystem-backed boot
+    // action. A partial, unreadable, malformed, or hash-invalid spool prevents
+    // migrations, world seeding, and module boot writes.
+    let quarantine_spool = QuarantineSpool::open(config.server.data_dir.join("quarantine"))
+        .map_err(|e| format!("quarantine spool preflight failed: {e}"))?;
+    serve_with_quarantine_spool(config, bound, store, quarantine_spool).await
+}
+
+/// Run the server with an already-open quarantine spool.
+///
+/// The standalone binary uses this entry point so the structurally validated
+/// spool and its exclusive lifetime lock survive logging/runtime setup and the
+/// transition into recovery and normal service. Library callers normally use
+/// [`serve`] or [`serve_with_store`].
+///
+/// # Errors
+///
+/// Boot failures (including unresolved quarantine), store failures, and fatal
+/// I/O on the listener.
+pub async fn serve_with_quarantine_spool(
+    config: Config,
+    bound: Option<oneshot::Sender<IpcEndpoint>>,
+    store: Option<Arc<dyn ObjectStore>>,
+    mut quarantine_spool: QuarantineSpool,
+) -> Result<(), String> {
     let endpoint = config.ipc_endpoint().map_err(|e| e.to_string())?;
+    prepare_quarantine_for_writable_boot(&config, &mut quarantine_spool, store.as_deref()).await?;
     let store = match store {
         Some(s) => s,
         None => open_store(&config).await?,
     };
-    let (engine, staff) = build_engine(&config, &store).await?;
+    let (engine, staff) = build_engine(&config, &store, &quarantine_spool).await?;
 
     // The web hello manifest, collected while the registry is still in hand — a
     // verbatim port of `mushd::main`'s assembly (crates/mushd/src/main.rs): every
@@ -210,7 +310,7 @@ pub async fn serve_with_store(
     // E0 quarantine spool: a separate failure domain from the store, under the
     // configured data dir. A confirmed poison seal is fsynced here before being
     // dropped from re-emit, so it is preserved for staff repair.
-    deps.quarantine_dir = Some(config.server.data_dir.join("quarantine"));
+    deps.quarantine_spool = quarantine_spool;
 
     // Cloned out BEFORE `deps` is moved into the world spawn: the writer task and
     // the [`SocketSink`] stamp shed/timeout/high-water onto the SAME registry the
@@ -236,6 +336,7 @@ pub async fn serve_with_store(
     });
     let world = handles.handle;
     let world_join = handles.world_join;
+    let store_writer_join = handles.writer_join;
 
     let listener = mush_ipc::listen(&endpoint)
         .await
@@ -260,7 +361,7 @@ pub async fn serve_with_store(
     // handlers) is dropped, OR early on a per-frame write timeout / a `teardown`
     // notification (a `to_gw` overflow) — either drops the writer's socket half,
     // EOFing the boundary into the supervise → relaunch → re-attach heal (M18).
-    let writer_join = tokio::spawn(writer_loop(
+    let ipc_writer_join = tokio::spawn(writer_loop(
         writer_half,
         to_gw_rx,
         features,
@@ -272,7 +373,7 @@ pub async fn serve_with_store(
 
     // Reader: pump the gateway's `ToServer` traffic into the world. Runs until
     // the gateway closes the boundary (clean EOF) or a protocol fault.
-    let reader_result = reader_loop(reader_half, world.clone(), reply_sink).await;
+    let reader_result = reader_loop(reader_half, world.clone(), reply_sink, &metrics).await;
     match reader_result {
         Ok(()) => tracing::info!("gateway disconnected (clean EOF)"),
         Err(e) => tracing::warn!(error = %e, "ipc reader ended on error"),
@@ -284,7 +385,12 @@ pub async fn serve_with_store(
     let _ = world_join.await;
     drop(to_gw_tx);
     drop(world);
-    let _ = writer_join.await;
+    // Keep custody of the actual persistence writer (distinct from the IPC
+    // writer above) and wait for it to drain before this runtime can return.
+    // Detaching it here would let process teardown discard a batch after the
+    // world believed shutdown sequencing had transferred custody.
+    let _ = store_writer_join.await;
+    let _ = ipc_writer_join.await;
     tracing::info!("mush-server exiting");
     Ok(())
 }
@@ -384,7 +490,11 @@ async fn writer_loop(
     }
     // Best-effort Bye on a clean shutdown — timeout-guarded so a wedged peer
     // cannot hang the exit.
-    let _ = tokio::time::timeout(write_timeout, mush_ipc::write_frame(&mut w, &ToGateway::Bye)).await;
+    let _ = tokio::time::timeout(
+        write_timeout,
+        mush_ipc::write_frame(&mut w, &ToGateway::Bye),
+    )
+    .await;
 }
 
 /// Write one frame under `write_timeout`. Returns `true` on success; on a write
@@ -421,12 +531,49 @@ async fn write_or_teardown(
 /// reply the world produces asynchronously never blocks the reader — and,
 /// critically, the world loop itself never awaits the boundary (D4): it only
 /// ever *receives* here.
+#[derive(Clone)]
+struct ServiceRequestLimiter {
+    slots: Arc<Semaphore>,
+    /// Edge latch so a hostile raw peer cannot convert Busy refusals into a
+    /// warning-log flood. A successful admission rearms the warning.
+    overload_warned: Arc<AtomicBool>,
+}
+
+impl ServiceRequestLimiter {
+    fn new() -> Self {
+        Self {
+            slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT_SERVICE_REQUESTS)),
+            overload_warned: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn try_admit(&self) -> Result<OwnedSemaphorePermit, ServiceResp> {
+        match Arc::clone(&self.slots).try_acquire_owned() {
+            Ok(permit) => {
+                self.overload_warned.store(false, Ordering::Relaxed);
+                Ok(permit)
+            }
+            Err(_) => {
+                if !self.overload_warned.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(
+                        cap = MAX_IN_FLIGHT_SERVICE_REQUESTS,
+                        "ipc service-request handlers full; refusing request"
+                    );
+                }
+                Err(ServiceResp::Busy)
+            }
+        }
+    }
+}
+
 async fn reader_loop(
     r: mush_ipc::BoxRead,
     world: WorldHandle,
     reply_sink: SocketSink,
+    metrics: &Metrics,
 ) -> std::io::Result<()> {
     let mut reader = FrameReader::new(r);
+    let service_requests = ServiceRequestLimiter::new();
     while let Some(msg) = reader.read::<ToServer>().await? {
         match msg {
             ToServer::Inbound(wire) => {
@@ -436,16 +583,30 @@ async fn reader_loop(
                 world.inbound(Inbound::Control(ctrl)).await;
             }
             ToServer::Request { id, req } => {
-                let world = world.clone();
-                // The `Reply` is must-deliver: `SocketSink::send` tries the
-                // bounded `to_gw` and, on a full channel, tears the boundary
-                // down rather than dropping it (a dropped Reply would hang the
-                // caller's oneshot — I1).
-                let sink = reply_sink.clone();
-                tokio::spawn(async move {
-                    let resp = handle_request(&world, req).await;
-                    sink.send(ToGateway::Reply { id, resp });
-                });
+                match service_requests.try_admit() {
+                    Ok(permit) => {
+                        let world = world.clone();
+                        // The `Reply` is must-deliver: `SocketSink::send` tries the
+                        // bounded `to_gw` and, on a full channel, tears the boundary
+                        // down rather than dropping it (a dropped Reply would hang the
+                        // caller's oneshot — I1).
+                        let sink = reply_sink.clone();
+                        tokio::spawn(async move {
+                            // Hold the owned permit through response enqueue; task
+                            // count and correlated server custody are therefore both
+                            // bounded by the same hard protocol ceiling.
+                            let _permit = permit;
+                            let resp = handle_request(&world, req).await;
+                            sink.send(ToGateway::Reply { id, resp });
+                        });
+                    }
+                    Err(resp) => {
+                        // The raw peer exceeded bounded admission. It still gets
+                        // exactly one correlated, must-deliver reply; no waiter is
+                        // stranded and no detached handler is spawned.
+                        reply_sink.send(ToGateway::Reply { id, resp });
+                    }
+                }
             }
             // M16c re-attach: the gateway replays its full held-online roster
             // after (re)connecting to a freshly booted server. Rebuild each
@@ -454,6 +615,22 @@ async fn reader_loop(
             // durable module state from Redis) is intact; only the RAM-only
             // connection map needs restoring.
             ToServer::ReAnnounce(recs) => {
+                if recs.len() > MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS {
+                    metrics.ipc_reannounce_protocol_violation();
+                    tracing::error!(
+                        records = recs.len(),
+                        cap = MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
+                        "peer sent an oversized ReAnnounce; tearing down the boundary before applying any record"
+                    );
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "ReAnnounce has {} records; protocol cap is {}",
+                            recs.len(),
+                            MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS
+                        ),
+                    ));
+                }
                 let recs = recs
                     .into_iter()
                     .map(|r| world_task::ReAttachRec {
@@ -462,7 +639,15 @@ async fn reader_loop(
                         caps_structured: r.caps_structured,
                     })
                     .collect();
-                world.reattach(recs).await;
+                if !world.reattach(recs).await {
+                    tracing::error!(
+                        "world refused ReAnnounce; tearing down boundary so the gateway can replay its retained roster"
+                    );
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "world unavailable or refused ReAnnounce",
+                    ));
+                }
             }
             // Per-connection session bookkeeping — the forked server keeps no
             // session mirror (the gateway owns it), so accept and ignore.
@@ -478,16 +663,109 @@ async fn reader_loop(
 async fn handle_request(world: &WorldHandle, req: ServiceReq) -> ServiceResp {
     match req {
         ServiceReq::CreatePlayer { name } => {
-            ServiceResp::CreatePlayer(world.create_player(&name).await.map_err(Into::into))
+            create_player_response(world.create_player(&name).await)
         }
-        ServiceReq::NameFree { name } => ServiceResp::NameFree(world.name_free(&name).await),
-        ServiceReq::InInputContext { actor } => {
-            ServiceResp::InInputContext(world.in_input_context(actor).await)
+        ServiceReq::NameFree { name } => match world.name_free(&name).await {
+            Ok(free) => ServiceResp::NameFree(free),
+            Err(WorldReadError::Busy) => ServiceResp::Busy,
+            Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
+        },
+        ServiceReq::InInputContext { actor } => match world.in_input_context(actor).await {
+            Ok(active) => ServiceResp::InInputContext(active),
+            Err(WorldReadError::Busy) => ServiceResp::Busy,
+            Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
+        },
+        ServiceReq::ConnectionReady { conn, actor } => {
+            match world.connection_ready(conn, actor).await {
+                Ok(ready) => ServiceResp::ConnectionReady(ready),
+                Err(WorldReadError::Busy) => ServiceResp::Busy,
+                Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
+            }
         }
-        ServiceReq::Barrier => {
-            world.barrier().await;
-            ServiceResp::Barrier
+        ServiceReq::Barrier => barrier_response(world.barrier_result().await),
+    }
+}
+
+/// Map the world task's barrier completion bit without ever promoting failure
+/// into an acknowledgement. Shared by split and in-process links so the two
+/// deployments cannot drift on this durability/ordering boundary.
+fn barrier_response(result: Result<(), WorldReadError>) -> ServiceResp {
+    match result {
+        Ok(()) => ServiceResp::Barrier,
+        Err(WorldReadError::Busy) => ServiceResp::Busy,
+        Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
+    }
+}
+
+/// Map player creation without collapsing retryable CommitPending overload
+/// into a false store failure. The protocol already has a request-level Busy
+/// disposition, so no wire-enum extension/version bump is needed.
+fn create_player_response(result: Result<mush_core::ObjId, CreatePlayerErr>) -> ServiceResp {
+    match result {
+        Ok(id) => ServiceResp::CreatePlayer(Ok(id)),
+        Err(CreatePlayerErr::Busy) => ServiceResp::Busy,
+        Err(CreatePlayerErr::NameTaken) => {
+            ServiceResp::CreatePlayer(Err(mush_ipc::CreatePlayerError::NameTaken))
         }
+        Err(CreatePlayerErr::World(detail)) => {
+            ServiceResp::CreatePlayer(Err(mush_ipc::CreatePlayerError::World(detail)))
+        }
+        Err(CreatePlayerErr::WorldGone) => {
+            ServiceResp::CreatePlayer(Err(mush_ipc::CreatePlayerError::WorldGone))
+        }
+        Err(CreatePlayerErr::StoreUnavailable) => {
+            ServiceResp::CreatePlayer(Err(mush_ipc::CreatePlayerError::StoreUnavailable))
+        }
+    }
+}
+
+#[cfg(test)]
+mod service_request_tests {
+    use super::{
+        CreatePlayerErr, MAX_IN_FLIGHT_SERVICE_REQUESTS, ServiceRequestLimiter, ServiceResp,
+        WorldReadError, barrier_response, create_player_response,
+    };
+
+    #[test]
+    fn failed_world_barrier_is_never_promoted_to_an_ack() {
+        assert_eq!(barrier_response(Ok(())), ServiceResp::Barrier);
+        assert_eq!(
+            barrier_response(Err(WorldReadError::Busy)),
+            ServiceResp::Busy
+        );
+        assert_eq!(
+            barrier_response(Err(WorldReadError::Unavailable)),
+            ServiceResp::Unavailable
+        );
+    }
+
+    #[test]
+    fn commit_pending_player_create_maps_to_request_busy() {
+        assert_eq!(
+            create_player_response(Err(CreatePlayerErr::Busy)),
+            ServiceResp::Busy
+        );
+    }
+
+    /// The server independently defends against a nonconforming/raw peer: at
+    /// most the fixed number of handler permits can exist, the next admission
+    /// gets a typed Busy response, and finishing one handler reopens exactly a
+    /// slot instead of permanently wedging service traffic.
+    #[test]
+    fn detached_service_handlers_have_a_hard_admission_ceiling() {
+        let limiter = ServiceRequestLimiter::new();
+        let mut permits = Vec::with_capacity(MAX_IN_FLIGHT_SERVICE_REQUESTS);
+        for _ in 0..MAX_IN_FLIGHT_SERVICE_REQUESTS {
+            permits.push(limiter.try_admit().expect("slot below the ceiling"));
+        }
+        assert_eq!(limiter.slots.available_permits(), 0);
+        assert!(matches!(limiter.try_admit(), Err(ServiceResp::Busy)));
+
+        drop(permits.pop());
+        assert!(
+            limiter.try_admit().is_ok(),
+            "a completed request must release one handler slot"
+        );
     }
 }
 
@@ -515,7 +793,11 @@ mod writer_tests {
     struct WedgedWriter;
 
     impl AsyncWrite for WedgedWriter {
-        fn poll_write(self: Pin<&mut Self>, _: &mut Context<'_>, _: &[u8]) -> Poll<io::Result<usize>> {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &[u8],
+        ) -> Poll<io::Result<usize>> {
             Poll::Pending
         }
         fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {

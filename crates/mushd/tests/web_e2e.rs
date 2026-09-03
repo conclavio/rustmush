@@ -193,7 +193,7 @@ async fn boot_inner(
             guard: Arc::clone(&guard),
             staff,
             llm: None,
-            quarantine_dir: None,
+            quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
         },
     );
     let accounts = Arc::new(Accounts::new(Arc::clone(&store), handles.handle.clone(), 3));
@@ -894,57 +894,69 @@ async fn newpassword_boots_the_accounts_web_connections() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread")]
-async fn spa_and_healthz_are_served() {
+async fn spa_if_built_and_healthz_are_served() {
     let rig = boot("spa", SessionConfig::default(), 0).await;
     let client = reqwest::Client::new();
 
-    // The app shell at /, no-cache so deploys are picked up.
+    // Debug builds intentionally tolerate a fresh clone with no web/dist:
+    // the frontend is built independently and rust-embed reads it from disk
+    // when present. Exercise the full SPA contract when it has been built.
     let index = client.get(rig.url("/")).send().await.unwrap();
-    assert_eq!(index.status(), 200);
-    assert!(
-        index
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.starts_with("text/html")),
-        "index is html"
-    );
-    assert_eq!(
-        index
-            .headers()
-            .get("cache-control")
-            .and_then(|v| v.to_str().ok()),
-        Some("no-cache")
-    );
-    let html = index.text().await.unwrap();
-    assert!(html.contains("<div id=\"app\">"), "the SPA shell: {html}");
+    if index.status() == 404 {
+        let body = index.text().await.unwrap();
+        assert!(
+            body.contains("web client not built"),
+            "unexpected missing-SPA response: {body}"
+        );
+    } else {
+        assert_eq!(index.status(), 200);
+        assert!(
+            index
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.starts_with("text/html")),
+            "index is html"
+        );
+        assert_eq!(
+            index
+                .headers()
+                .get("cache-control")
+                .and_then(|v| v.to_str().ok()),
+            Some("no-cache")
+        );
+        let html = index.text().await.unwrap();
+        assert!(html.contains("<div id=\"app\">"), "the SPA shell: {html}");
 
-    // The hashed bundle it references serves immutable.
-    let js_path = html
-        .split('"')
-        .find(|s| s.starts_with("/assets/") && s.ends_with(".js"))
-        .expect("index.html references a hashed js bundle")
-        .to_string();
-    let js = client.get(rig.url(&js_path)).send().await.unwrap();
-    assert_eq!(js.status(), 200);
-    assert_eq!(
-        js.headers()
-            .get("cache-control")
-            .and_then(|v| v.to_str().ok()),
-        Some("public, max-age=31536000, immutable")
-    );
-    assert!(
-        js.headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.starts_with("text/javascript")),
-        "bundle is javascript"
-    );
+        // The hashed bundle it references serves immutable.
+        let js_path = html
+            .split('"')
+            .find(|s| s.starts_with("/assets/") && s.ends_with(".js"))
+            .expect("index.html references a hashed js bundle")
+            .to_string();
+        let js = client.get(rig.url(&js_path)).send().await.unwrap();
+        assert_eq!(js.status(), 200);
+        assert_eq!(
+            js.headers()
+                .get("cache-control")
+                .and_then(|v| v.to_str().ok()),
+            Some("public, max-age=31536000, immutable")
+        );
+        assert!(
+            js.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.starts_with("text/javascript")),
+            "bundle is javascript"
+        );
 
-    // SPA deep links fall back to the shell; the API namespace never does.
-    let deep = client.get(rig.url("/some/route")).send().await.unwrap();
-    assert_eq!(deep.status(), 200);
-    assert!(deep.text().await.unwrap().contains("<div id=\"app\">"));
+        // SPA deep links fall back to the shell.
+        let deep = client.get(rig.url("/some/route")).send().await.unwrap();
+        assert_eq!(deep.status(), 200);
+        assert!(deep.text().await.unwrap().contains("<div id=\"app\">"));
+    }
+
+    // The API namespace never falls back to the SPA.
     let api = client.get(rig.url("/api/nope")).send().await.unwrap();
     assert_eq!(api.status(), 404);
 

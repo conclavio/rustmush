@@ -131,7 +131,11 @@ impl<'t> LineAcc<'t> {
 
 /// Render one event to scrollback lines. Returns empty for variants the TUI
 /// routes elsewhere (`Who`, `Prompt`) or drops (`Panel`, `Ping`, `Resumed`).
-pub fn render_event(event: &OutputEvent, caps: &ClientCaps, theme: &AnsiTheme) -> Vec<Line<'static>> {
+pub fn render_event(
+    event: &OutputEvent,
+    caps: &ClientCaps,
+    theme: &AnsiTheme,
+) -> Vec<Line<'static>> {
     let mut w = LineAcc::new(theme, caps.color);
     match event {
         OutputEvent::Room(view) => render_room(&mut w, view),
@@ -319,7 +323,11 @@ fn render_channel(
 /// Render a WHO listing into rail lines: a bold header, one row per entry
 /// (name + idle, the rail is narrow), then a bold count footer. Rows are
 /// left to the rail `Paragraph`/`List` to clip at the rail width.
-pub fn render_who_rail(entries: &[WhoEntry], theme: &AnsiTheme, depth: ColorDepth) -> Vec<Line<'static>> {
+pub fn render_who_rail(
+    entries: &[WhoEntry],
+    theme: &AnsiTheme,
+    depth: ColorDepth,
+) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(entries.len() + 2);
     let bold = Style::default().add_modifier(Modifier::BOLD);
     lines.push(Line::from(Span::styled(
@@ -377,7 +385,10 @@ pub fn render_mail_panel(
     let entries = data.get("entries").and_then(serde_json::Value::as_array);
     let count = entries.map_or(0, Vec::len);
     lines.push(Line::from(Span::styled(
-        format!("{folder} — {count} message{}", if count == 1 { "" } else { "s" }),
+        format!(
+            "{folder} — {count} message{}",
+            if count == 1 { "" } else { "s" }
+        ),
         system,
     )));
 
@@ -389,7 +400,10 @@ pub fn render_mail_panel(
         return lines;
     }
     for e in entries {
-        let index = e.get("index").and_then(serde_json::Value::as_u64).unwrap_or(0);
+        let index = e
+            .get("index")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
         let status = e
             .get("status")
             .and_then(serde_json::Value::as_str)
@@ -435,7 +449,10 @@ pub fn render_intel_panel(
     let records = data.get("records").and_then(serde_json::Value::as_array);
     let count = records.map_or(0, Vec::len);
     lines.push(Line::from(Span::styled(
-        format!("Intel — {count} record{}", if count == 1 { "" } else { "s" }),
+        format!(
+            "Intel — {count} record{}",
+            if count == 1 { "" } else { "s" }
+        ),
         system,
     )));
 
@@ -557,7 +574,9 @@ mod tests {
     #[test]
     fn who_and_prompt_yield_no_scrollback() {
         let theme = AnsiTheme::classic();
-        assert!(render_event(&OutputEvent::Who(vec![]), &caps(ColorDepth::Ansi16), &theme).is_empty());
+        assert!(
+            render_event(&OutputEvent::Who(vec![]), &caps(ColorDepth::Ansi16), &theme).is_empty()
+        );
         let prompt = OutputEvent::Prompt(mush_proto::PromptSpec {
             mode: mush_proto::InputMode::Masked,
             text: Some(RichText::plain("pw>")),

@@ -1,6 +1,8 @@
 # Cross-ruleset mechanical contracts and proving gates
 
-**Status:** Draft 0.2 for design review
+**Status:** Implementing 0.5 — K0/K1 exit criteria landed; the K2 typed-state and bounded logical-
+transaction foundation is implemented, including a process-local applied-ack installation lane;
+K3 exact-token durability and all five end-to-end proving gates remain open
 
 **Scope:** the shared contracts that must be stable before RustMUSH substantially expands character,
 tactical, economic, and AI-driven rules
@@ -377,6 +379,19 @@ preserved in `Frozen` state and may be thawed after the same definition returns.
 untrusted, or non-migratable bytes are preserved in `Quarantined` state for explicit repair. A
 digest conflict for an already-used exact version is an owner/module integrity freeze.
 
+The K1 runtime implements that distinction with a bounded, composition-roster readiness latch.
+The first integrity incident for an owner wins for the process lifetime. Executable exact
+definition, action-provider, revision-validator, authority-validator, and bridge-route lookups then
+return a typed owner-not-ready error; they never disguise the incident as missing content. Recovery
+can still inspect immutable definition/bridge/migration metadata through explicitly structural APIs,
+but those paths do not authorize callbacks or interpretation. `mush-tactics` checks every exact
+definition owner named by a unit (not only its root schema), fans one qualifying digest conflict out
+to all intact dependent unit records, and leaves unrelated owners active. Malformed records remain
+record-local quarantine. If a core object is already being destroyed when the post-event observer
+runs, that observer cannot reverse the object's prior `GOING` transition; for a frozen owner it
+removes the unit from the active index and preserves the authoritative module record instead of
+emitting a delete.
+
 ### C2. One action -> plan -> commit protocol
 
 #### Contract
@@ -451,16 +466,69 @@ eligible for `Owned/Finished` only when their entire mutation has moved to the a
 protocol.
 
 For initial correctness, only one authoritative action bundle may be in flight. While it awaits
-resolution, the world enters `CommitPending`: pure queries and transport-only connection
-bookkeeping continue, but no world or module mutation, hook, timer, or asynchronous apply is
-accepted. Pipelined MVCC is explicitly deferred until measurements show the single-flight rule is
-inadequate.
+resolution, the world enters `CommitPending`: receipt/order bookkeeping, status, recovery,
+shutdown, and transport-only connection bookkeeping remain admitted (subject to the FIFO caveat
+below), but no gameplay/world read, world
+or module mutation, hook, timer, or asynchronous apply is accepted. Legacy K0 handlers have already
+installed their tentative RAM post-image at this point, so world reads receive a typed `Busy`
+rather than observing it; `NameFree(false)` and other fabricated defaults are forbidden. The K2
+prepared-action lane instead leaves typed action state at its acknowledged pre-state and retains
+the post-images privately, but the shared admission policy still refuses gameplay/world reads until
+the receipt resolves. Serving pure queries from that pre-state remains a future policy choice.
+Pipelined MVCC is explicitly deferred until measurements show the single-flight rule is inadequate.
 
-`CommitPending` never means “append every later message to an unbounded queue.” Retryable mutating
-ingress receives a bounded `Busy/CommitPending` refusal. Reconstructible timers and hooks coalesce
-by stable key or remain overdue in their authoritative scheduler record. Must-retain completions
-use a separately byte/count-bounded durable mailbox with backpressure and an explicit saturation
-incident. No class silently grows in memory while the store is hung.
+`CommitPending` never means “append every later message to an unbounded queue.” In the current K0
+compatibility path, retryable `Cmd`, query, `CreatePlayer`, and dump requests receive an immediate
+typed/bounded refusal and do not occupy the one deferred FIFO slot. Barriers are capped at 256
+waiters. Gateway `ReAnnounce` is a full replaceable roster: while a receipt is pending, the world
+retains only the latest snapshot, capped at the gateway's 256 lifecycle obligations and stored as a
+tight fixed-record slice. Together those operational items have an explicit 81,920-byte logical
+custody ceiling. Repeated reannounce therefore cannot append another room render to
+`PendingCommit.sends`; the latest snapshot is applied after the exact receipt and before its
+barriers complete. Oversized rosters are protocol violations, atomically rejected before any
+record is applied, and tear down the split boundary so the gateway-owned roster is replayed.
+
+The replaceable-snapshot claim is scoped to pending custody on a freshly booted server: neither the
+older nor newer pending snapshot has been applied yet. `Engine::reattach` itself is additive/update
+bookkeeping; it does not remove a connection absent from a later roster. Normal operation avoids a
+stale live-world roster because a boundary gap terminates that server world and individual
+`ConnDown`/`SessionGone` messages own removal. If same-world repeated full reconciliation becomes a
+supported protocol, it needs an explicit generation plus remove-missing semantics; do not infer
+that behavior from this coalescer.
+
+Fresh connection publication uses the same exact boundary. The gateway reserves bounded lifecycle
+custody before changing its local session table, sends `ConnUp`, waits for an exact typed barrier,
+and then asks the engine to prove the exact `(connection, actor)` association. Only after both
+proofs does it publish `SessionInfo`, inspect the actor's input context, and enqueue the initial
+room view. `Busy` remains retryable while an aborted receipt is `Unavailable`; neither is promoted
+to a barrier acknowledgement. A failed fence or negative association emits a compensating
+`ConnDown` (`Lost` for a revived link-dead session, `Boot` otherwise), restores local session state,
+and publishes no successful connection event. The association check is necessary because an
+ordering barrier alone can succeed after a hard world mode refused the preceding connection hook.
+
+This does **not** yet make every operational lane independently live. An `Apply`, `ConnUp`,
+`ConnDown`, or `SessionGone` has already transferred semantic/lifecycle custody and cannot be
+dropped as retryable input. The world retains one such dequeued item and stops polling the bounded
+main FIFO, so a barrier or reannounce physically behind it remains head-of-line blocked until the
+current receipt resolves. Memory remains bounded by the single deferred item plus the 1,024-entry
+inbound channel, whose awaited send provides backpressure, but liveness is conditional. K2 must
+route semantic completions and lifecycle obligations through separately count/byte-bounded lanes
+with explicit saturation/backpressure and sequence-aware barrier ordering; merely scanning around
+the main FIFO would break its ordering contract.
+
+The eventual contract remains: reconstructible timers and hooks coalesce by stable key or remain
+overdue in their authoritative scheduler record, and must-retain completions use a separately
+byte/count-bounded durable mailbox with an explicit saturation incident. No class may silently grow
+in memory while the store is hung.
+
+The K0 writer-to-world control seam follows the same rule now: a capacity-one wake channel points
+at fixed coalescing slots for health and breach state plus an exact-resolution map capped at 1,024
+seal identities and 16 MiB. Publishing never awaits the world. If the exact map is full, the writer
+does not shed the resolution: its bounded poison table retains the outcome and republishes it when
+the still-retained seal is re-emitted. The world-owned seal table uses the same 1,024-identity cap
+and a 64 MiB encoded-payload cap. Capture preflights the complete candidate atomically; refusal
+latches persistence integrity before every exact candidate seal is preserved to the quarantine
+domain.
 
 #### Prepared installation
 
@@ -483,6 +551,12 @@ pub struct PreparedTxn {
 }
 ```
 
+That is the target K3 materialization, not the shape currently persisted. The K2 implementation is
+deliberately narrower: it carries owner/provider identity, transaction counts, one store
+reservation/revision pair, and the prepared state records. It has no durable commit token,
+authoritative outcome, causal event set, replay writes, idempotency binding, or durable-outbox
+intents yet.
+
 The bundle writes and RAM install images are derived from these same records. Canonical bytes are
 serialized and hashed before the typed values move into `PreparedTxn`; neither provider logic nor
 serialization runs again after acknowledgement. `InstallImage::install` is infallible and
@@ -495,7 +569,66 @@ During migration, the action may not plan against RAM containing an earlier unac
 dirty write. Before reading its pre-state, the coordinator drains and exactly acknowledges every
 predecessor write that could contribute to that state, or absorbs the complete dirty dependency
 set into `PreparedTxn`. Once a state key/prefix is registered as authoritative-bundle-owned, the
-store rejects legacy fire-and-forget writes to it.
+store rejects legacy fire-and-forget writes to it. That final prefix-registration/rejection rule is
+a K3 requirement; the current `action-state/v1` keys are not yet protected from ordinary legacy
+module writes at the store boundary.
+
+#### K2 state-ownership decision (accepted: Option 1)
+
+Option 1 is the accepted architecture and its initial typed-state foundation is implemented. The
+alternatives remain here as decision rationale:
+
+1. **Engine-owned typed state families (accepted).** A registrar declares each bounded
+   `StateFamilyId`, key codec, value schema/version, owner, validator, and canonical serializer,
+   then receives an opaque owner-stamped `StateFamilyHandle<K, V>`. The engine stores authoritative
+   family records in an `ActionStateStore`. `ActionTxn` exposes only read/insert/replace/remove
+   operations through those handles; action providers receive no unrestricted `&mut World`, raw
+   `ModuleStateMap`, or arbitrary persistence operations. Finalization consumes the transaction
+   into one non-cloneable `PreparedTxn`, serializes every post-image once, and creates infallible
+   install images from the same typed values.
+2. **Provider-owned state with prepare/install callbacks.** Providers retain their maps and return
+   opaque canonical bytes plus an install closure. This requires less migration, but the engine
+   cannot mechanically prove that preparation left live state untouched, that a callback did not
+   access another owner's state, or that post-ack installation is infallible. Those guarantees
+   become conventions and per-provider review.
+3. **Clone the whole `World` for each action.** This preserves existing APIs but makes action cost
+   proportional to world size, complicates concurrent operational reads, and still does not
+   isolate external/module-owned state. It is rejected as a production design.
+
+The implementation freezes registered state families with the deployment registry and includes
+their stable descriptor/callback IDs in its mechanics fingerprint. Handles are owner-stamped,
+typed, and bound to the exact registry composition. A provider transaction is stamped from its
+registration rather than a caller-provided owner, can access only that owner's handles, and has no
+`World`, `Ctx`, raw `ModuleStateMap`, or arbitrary persistence API. `insert`, `replace`, and
+`remove` validate live-pre-state semantics; any ignored error poisons finalization. Mutations are
+ordered by canonical `StateKey`, each key may be mutated only once in the initial implementation,
+and `prepare` produces one non-cloneable materialization plus private typed install images without
+running a provider or serializer after that point.
+
+The state-record portion has hard ceilings of 1,024 mutation operations, 256 KiB canonical bytes
+per record, and 16 MiB across those canonical state records; callers may only tighten the
+per-transaction limits. The 16 MiB limit must not yet be described as a bound on the complete
+authoritative bundle: outcomes, guards, causal events, replay writes, allocator changes, delivery,
+and outbox work are not part of this `PreparedTxn`, and legacy output/effect construction retains
+the separate K0 bounds gap described below.
+
+`Engine::stage_prepared_action` refuses to mix a prepared action with dirty `World` state, legacy
+module operations, or another staged action. The server sends its `ModuleJsonSet`/delete records on
+a separate prepared lane, retains the install images in `PendingCommit`, and on an exact matching
+applied serial installs them before releasing held output/effects. A mismatch, writer error, or
+dropped receipt aborts the typed images and freezes persistence integrity. This is a useful K2
+compatibility bridge, not K3 durability: the serial is process-local, there is no durable
+intent/token/idempotency witness or restart reconciliation, and a crash after store application but
+before RAM install cannot hydrate the committed typed state on boot.
+
+The toy `focus -> brace -> guarded` slice exercises two-record preparation, refusal, abort, stable
+ordering, and install-after-ack-boundary behavior in core/contract tests. It is not Gate 1: typed
+clock expiry, causal effects, early idempotency, authoritative receipt/outcome, restart hydration,
+projected offers, and real end-to-end bundle recovery remain open. State-family registration also
+has no value decoder or generic boot hydration path yet. Existing module maps remain a legacy
+compatibility surface and migrate one action family at a time. Authenticated ingress remains a
+separate opaque server-minted type: transport JSON never gets to assert a principal, actor, or
+internal deterministic idempotency key merely because it can encode the same shape.
 
 #### After-commit work
 
@@ -519,8 +652,30 @@ repeat delivery: adapters pass the stable item ID as an idempotency key when sup
 must tolerate/label duplicates. This is at-least-once, not magical exactly-once integration. An
 action intent cannot be compacted while one of its durable outbox items is unresolved.
 
-The current durable gate starts async effects before acknowledgement and emits resolved output even
-after a deterministic write error. The action path must not inherit that behavior.
+The K0 durable gate now classifies and holds output/effects until the exact writer receipt, and a
+deterministic abort releases only explicitly abort-safe diagnostics. It still installs legacy RAM
+mutations before acknowledgement. The K2 typed-state lane now keeps its owned post-images private
+until an exact matching applied serial, but it has not migrated legacy handlers and is not the K3
+exact-token/restart-reconcilable protocol.
+
+There is a deliberate remaining K0 bound gap at construction time. `Outbox`, `Effects`, and the
+initial `PendingCommit.sends/effects` are count-unbounded, and several individual items are
+byte-unbounded (`OutputEvent::Panel` JSON, rich text and room/who collections,
+`Effect::ModuleAsync.payload`, and its async-completion payload). Once the loop sees an overflow,
+a legacy handler may already have changed authoritative RAM. A global cap imposed there would
+force one of three policies:
+
+1. refuse persistence and integrity-freeze with the already-mutated RAM post-image;
+2. commit the state while truncating required presentation/effects, violating their semantic
+   delivery class; or
+3. roll back the legacy mutation or build it in bounded scratch state before live installation.
+
+K0 chooses none of those silently. It exposes the held send/effect counts as metrics and prevents
+later operational traffic from growing them during a hung receipt. K2 implements option 3 for
+typed state records: `ActionTxn`/`PreparedTxn` preflights their operation count and canonical bytes
+before any live mutation or store submission. It does not yet bound the complete action outcome,
+event, presentation, or effect set. New authoritative state-family actions must use the prepared
+path; legacy handlers remain a measured compatibility risk until migrated.
 
 ### C3. Legal-action projection
 
@@ -711,6 +866,15 @@ Same-commit triggers execute through one deterministic queue. Initial hard defau
 - maximum serialized plan/event bytes: 1 MiB;
 - duplicate key: `(root, source_event, handler, target)` executes once;
 - ordering: phase, provider registration ordinal, source-event ordinal, target key.
+
+Dequeuing does not relinquish custody. The queue permits exactly one active work item and returns a
+non-cloneable token bound to that queue instance. Derived events require that live token, and the
+coordinator must return it through explicit completion after handler execution. Dropping or
+forgetting dequeued work prevents successful cascade finalization; a second dequeue while work is
+active poisons the action. Provider readiness is checked again at completion so a concurrent owner
+freeze wins over apparent handler success. Until trigger handlers are driven through the same
+`ActionTxn` and durable bundle, this is an accidental-misuse guard rather than a sandbox against
+trusted in-process provider code.
 
 Exceeding any bound aborts the entire action with zero mutation. Mechanical triggers are prepared
 in the same bundle. Analytics, LLM deliberation, and other post-commit reactions are deferred as
@@ -958,11 +1122,12 @@ Intent discovery may be page- and per-tick-work-bounded, but it is logically exh
 remains `Recovering` until the pending index and cursor scan reach a verified end; timeout, cursor
 failure, or an intent beyond the first page can never fall through to writable boot.
 
-The current E0 spool count happens after module boot hooks and treats an unreadable directory as
-empty. Replace it with `QuarantineSpool::open() -> Result<SpoolState, BootError>` before migrations
-or boot writes. It must parse and hash-verify versioned records; an unreadable directory, malformed
-record, or crash-left `.tmp` is unresolved integrity state, never “zero incidents.” Production
-paths must not support log-only poison preservation.
+The K0 implementation opens `QuarantineSpool` before migrations or boot writes and parse/hash
+verifies every bounded versioned record. A crash-left temp containing one complete exact record is
+promoted by deterministic no-overwrite recovery; a partial, malformed, or conflicting temp, an
+unreadable directory, or a malformed final record blocks boot as unresolved integrity state.
+Production paths have no log-only poison-preservation fallback. Exact-target reconciliation and a
+durable resolution receipt remain required before a valid incident can clear automatically.
 
 Use a structural world mode rather than overlapping booleans:
 
@@ -1012,6 +1177,143 @@ an authoritative world-ledger or bundle conflict freezes the world.
 Recovery is previewed, revision-bound, attributable, audited, and acknowledgement-gated. A spool
 record moves to resolved state only after reading back the exact target bytes/hash. “Delete the
 file” is not a recovery protocol.
+
+#### Automated recovery before human escalation
+
+Paging is the terminal branch of a bounded recovery state machine, not the first reaction to an
+incident. For every recognized failure class the owner registers deterministic probes and repairs,
+each with preconditions, an exact before/after digest, an attempt limit, and a verification step.
+The recovery coordinator must, in order:
+
+1. re-read and re-verify the authoritative bytes so a transient or stale observation cannot page;
+2. retry only operations declared retry-safe, using the same identity/token;
+3. search trusted installed providers and retained versions for the exact referenced definition and
+   its closed dependency set;
+4. dry-run any registered migration or reconstruction and require its guards to still match;
+5. apply a repair only through the acknowledgement-gated recovery transaction, then read back the
+   exact result;
+6. otherwise freeze the smallest scope that preserves invariants, keep unrelated scopes live, and
+   create or update one deduplicated incident;
+7. page staff only when no registered operation can prove a safe result, or when bounded automated
+   attempts are exhausted.
+
+An LLM may summarize diagnostics, rank already-registered runbook choices, and explain a proposed
+repair. It is never the authority that invents a migration, chooses between ambiguous truths, or
+writes authoritative state. Successful recovery closes the incident and cancels pending pages;
+acknowledging a page merely records human custody and does not unfreeze anything.
+
+#### On-call staff paging
+
+`page staff` means dispatch through a first-class protected operational service. It is not a log
+line, in-game page, or broadcast to every Wizard. The initial model is:
+
+```rust
+pub struct OnCallPolicy {
+    pub rotation: Vec<OnCallMemberId>,
+    pub acknowledgement_timeout: Duration,
+    pub retry_schedule: Vec<Duration>,
+    pub escalation_limit: u16,
+}
+
+pub struct OnCallMember {
+    pub staff: ObjId,
+    pub active: bool,
+    pub endpoints: Vec<VerifiedContactRef>,
+}
+
+pub enum ContactKind { Sms, Email, Discord }
+```
+
+Each participating Wizard supplies a cell-phone number for SMS and an email address; once Discord
+integration exists, the Wizard also links and verifies a Discord account rather than entering an
+unverified display name. Endpoint ownership is verified out of band (SMS/email challenge or
+Discord OAuth/challenge), periodically re-verified, revocable, and referenced by opaque IDs.
+Numbers, addresses, verification tokens, and provider credentials live encrypted in an operations
+store with narrowly scoped access. They never live on MUSH objects, enter gameplay persistence,
+appear in the canon/epistemic ledger, reach LLM context, or appear in ordinary staff diagnostics.
+
+An alert contains only a stable incident ID, severity, affected scope/owner, safe bounded summary,
+service/world identity, start time, and a runbook/status link. Quarantined payloads, player secrets,
+and credentials are fetched separately after authorization. Critical incidents page the active
+primary over SMS plus email (and verified Discord when available); lack of acknowledgement advances
+through the rotation and retry schedule, then escalates to the configured fallback. Lower severity
+can remain in the staff incident feed or email. Repeated signals coalesce by incident ID, delivery
+attempts and acknowledgements are audited, quiet hours never suppress critical pages, and rate
+limits prevent one poison condition from becoming an alert storm.
+
+#### Staff runbooks and the LLM incident copilot
+
+Runbooks are staff-authored, reviewed, versioned operational definitions rather than free-form
+prompts. Initial scenario families should include player safety/harassment, database and durability,
+security/privacy, transport/provider outage, and a combined abuse-of-service class—informally,
+“database harassment”—where hostile gameplay input deliberately creates load, queue pressure,
+idempotency conflicts, pathological records, or repeated recovery incidents.
+
+Each runbook declares its exact version, applicability predicates, required staff role, evidence
+sources, privacy class, typed steps, safe automatic actions, confirmation/dual-approval boundaries,
+stop conditions, verification, rollback or containment, communication templates, attempt/time
+bounds, and escalation target. Steps call registered diagnostic or recovery adapters; they do not
+embed arbitrary shell commands. Every observation records provenance, every execution records its
+inputs and result, and an incident stays bound to the runbook version that was selected. Staff can
+amend a runbook only through the normal review path, never midway through an incident without a new
+version and an explicit handoff.
+
+A minimal implementation model is:
+
+```rust
+pub struct RunbookRef { pub id: RunbookId, pub version: u32, pub digest: DefinitionDigest }
+
+pub struct RunbookDefinition {
+    pub reference: RunbookRef,
+    pub applies_when: Vec<IncidentPredicateId>,
+    pub required_role: StaffRole,
+    pub steps: Vec<RunbookStep>,
+    pub escalation: EscalationPolicyId,
+}
+
+pub enum RunbookStep {
+    Observe { adapter: DiagnosticId, evidence_class: PrivacyClass },
+    Automatic { adapter: RecoveryId, attempts: u16, timeout_ms: u32 },
+    Approval { roles: Vec<StaffRole>, quorum: u8, expires_ms: u32 },
+    Contain { adapter: ContainmentId, reversible: bool },
+    Verify { predicate: VerificationId },
+    Communicate { template: MessageTemplateId },
+    Escalate,
+}
+
+pub struct IncidentRun {
+    pub id: IncidentId,
+    pub runbook: RunbookRef,
+    pub tracks: Vec<IncidentTrackRef>,
+    pub next_step: u32,
+    pub evidence: Vec<EvidenceRef>,
+    pub actions: Vec<ActionReceipt>,
+    pub state: IncidentRunState,
+}
+```
+
+Every collection and diagnostic field above has a hard count/byte bound. `RunbookRef.digest`
+prevents reviewed prose or executable adapter bindings from changing underneath a live incident;
+an upgrade creates a new version and an audited handoff. `ActionReceipt` records the exact adapter,
+inputs hash, approval witnesses, start/end times, result, and postcondition witness, so staff and a
+later incident review can distinguish advice from actions that actually ran.
+
+The LLM is a copilot over those definitions. It may correlate sanitized signals, retrieve and rank
+applicable approved runbooks, summarize evidence with links to its sources, fill non-secret step
+parameters, explain risks, draft player/staff communications, and guide the operator to the next
+permitted choice. The deterministic coordinator—not the model—executes pre-approved automatic
+steps and verifies their postconditions. The model cannot invent an executable step, widen scope,
+read paging credentials, make a final harassment finding, impose irreversible discipline, delete
+evidence, choose between ambiguous authoritative histories, or declare an incident repaired.
+
+Mixed incidents keep linked but access-controlled tracks: a moderation track preserves the minimum
+necessary player evidence and handles immediate reversible safety containment, while an operations
+track rate-limits the vector, freezes the smallest affected scope, and repairs exact durable state.
+This avoids copying sensitive conversation into database diagnostics or exposing infrastructure
+secrets to moderators who do not need them. Closing either track requires its own typed verification;
+the parent incident closes only when both are resolved. Runbooks should have fixture-driven drills
+and post-incident review so staff experience, including novel failure modes, becomes reviewed policy
+instead of disappearing into chat history.
 
 Make authoritative Ledger writes preparatory: `prepare_append` validates entry/chunk byte limits
 and checked sequence/chunk arithmetic without mutation; `apply_prepared` runs inside `ActionTxn`.
@@ -1448,22 +1750,24 @@ The repository already contains useful local proofs. They should be adapted, not
 
 | Contract | Current foundation | Missing shared contract |
 |---|---|---|
-| C1 definitions | tactical `DefinitionRef`, `RulesValue`, mobility vocabulary, unit catalog; versioned sheet schemas | owner/kind/digest, immutable frozen global registry, complete validation/migration, fail-closed missing definitions |
-| C2 plan/commit | `mush-sim::Transition`, `UnitMutationPlan`, world single writer, `WriteBatch`, durable output gate | multi-record scratch transaction, authoritative bundle token/status, exact idempotency, install-after-ack, after-commit effects |
-| C3 legal actions | contextual behavior commands, required channels, command-subject links, LLM tool manifests | separate internal/projected legal actions, one submission path for human/UI/AI/LLM |
+| C1 definitions | shared canonical owner/kind/id/digest identities; bounded `RulesValue`; immutable global definition registry; exact-reference closure; one provider semantic validator per owner/kind; bounded monotonic owner-readiness latch; tactics exact-digest owner fan-out; dry-run migration registry; tactics/sim adapters | owner-freeze discovery in remaining rules-bearing adapters, executing one migration through K3 durability, broader production provider coverage |
+| C2 plan/commit | `mush-sim::Transition`, `UnitMutationPlan`, world single writer, `WriteBatch`, K0 exact receipt gate, typed output/effect custody and one `CommitPending` batch; K2 action invocation/provider metadata; engine-owned typed state families; owner-scoped bounded multi-record `ActionTxn`; one-shot `PreparedTxn`; separate staged writer lane retaining typed images until an exact process-local applied serial | K3 authoritative bundle token/intent/status and restart reconciliation; exact early idempotency; outcomes/events/replay writes/allocator/outbox in the same bounded bundle; full coordinator and legacy migration |
+| C3 legal actions | contextual behavior commands, required channels, command-subject links, LLM tool manifests, exact owner-stamped action-provider registry | separate internal/projected legal actions, bounded offer store, one submission path for human/UI/AI/LLM |
 | C4 time/windows | scheduler, `GameClock`, Timestop turns, passive domain clock, Journey timing, mobility switching | typed clock identity/provider, generic window generations, simultaneous intent collection/order, restart/catch-up policy |
 | C5 RNG | injectable `mush-dice::RollCtx`; test-seeded ChaCha in rulesets | idempotency-derived resolution streams, draw transcript, algorithm/version and durable outcome record |
-| C6 causality | `WorldEvent`, scene/canon ledgers, module observers | stable action/event IDs, intent-resolution-commit-observation split, bounded deterministic trigger queue |
+| C6 causality | `WorldEvent`, scene/canon ledgers, module observers; stable pre-commit request/event IDs and causal references; bounded deterministic trigger queue with duplicate suppression and non-droppable active-work custody | commit-token-bound semantic events, intent-resolution-commit-observation integration, trigger execution inside `ActionTxn` and the durable bundle |
 | C7 tracks/effects | sheet tracks, tactical `ScalarCell`, ruleset-specific damage/effect state | common checked operations, resource/effect addressing, provenance/duration/revision contract and adapters |
-| C8 guards | F3 control channels, unit `control_gen`, expected unit revision, economy plan draft | actual per-channel leases, reservations, common revision validators, delayed-result guard set, shared idempotency |
+| C8 guards | F3 control channels, unit `control_gen`, expected unit revision, economy plan draft; canonical `RevisionSet`, owner-stamped validator registries, server-created `GuardSet`, and final fail-closed revalidation | actual per-channel leases, reservations, wiring every delayed result through guards, shared idempotency |
 | C9 projection | per-observer perception and delivery, witness-aware power events | opaque contact references, dedicated view DTOs, shared legal-action/error/LLM projection |
-| C10 ownership | module namespaces, ruleset IDs, behavior owners | ownership on every definition/instance/action and a unique versioned bridge registry |
-| C11 lifecycle | destroy/move gates, spatial quarantine, E0 poison spool/freeze, boot validators | pre-boot integrity open, common lifecycle/incidents, non-destructive migration/recovery, full ingress freeze |
+| C10 ownership | registrar-stamped definition/action/state-family owners; composition-bound opaque typed state handles; provider-stamped transactions that reject cross-owner handles; fail-closed cross-owner tactical references; immutable directional exact-definition bridge registry; shared owner-readiness gates on executable definitions/providers/validators/bridge routes | ownership migration for state outside `ActionStateStore`, executable bridge preparation across typed transactions, freeze aggregation from remaining owner adapters |
+| C11 lifecycle | pre-boot validated poison spool, exact seal retention/isolation, structural world modes, bounded recovery incidents/reports, tactical Active/Frozen/Migrating/Quarantined records, tactics owner-scoped digest-conflict freeze; prepared typed images install or abort on the matching process-local writer receipt | state-family decoder and boot hydration; exact-target recovery receipts; owner freezes in remaining lifecycle adapters; authoritative account ingress; K3 whole-bundle reconciliation and automated runbook coordinator |
 | C12 presentation | `OutputEvent::Panel`, registered panel feeds, keyframe/delta kind, line fallback renderers | schema/projection/state revisions, delta base/sequence, commit receipt, resync/deduplication |
 
-None of the five gates currently traverses all of these through one action pipeline. That is the
-reason for using toy vertical slices rather than declaring the contracts finished from their local
-precursors.
+None of the five gates currently traverses all of these through one action pipeline. The toy
+`focus -> brace -> guarded` tests cover the local multi-record prepare/abort/install invariant, not
+durable-token recovery, restart hydration, clock expiry, idempotency, projection, or presentation.
+That is the reason for using toy vertical slices rather than declaring the contracts finished from
+their local precursors.
 
 ---
 
@@ -1575,6 +1879,16 @@ Work:
 7. Assign gateway requests stable UIDs; add explicit rejected/busy/owned/finished dispositions,
    bounded custody/backpressure, and ownership acknowledgement/replay across the split-process
    boundary.
+
+Implementation status: item 1's shared identities/provider registry and item 3's state-record
+transaction are implemented; item 4 has a bounded deterministic trigger queue, while its execution
+inside the same transaction/bundle remains open. The revision/authority registries and central
+`CommitPending` admission foundation cover parts of items 2 and 6. A provider can now prepare the
+toy two-record action without mutable-world access, and the server can persist those records on a
+separate lane and install/abort their typed images on the matching process-local applied receipt.
+That is not the complete coordinator: early exact idempotency, atomic final guard revalidation plus
+bundle reservation, causal/outcome/outbox inclusion, whole-action bounds, independent bounded
+operational lanes, gateway ownership replay, and K3 restart reconciliation remain open.
 
 Exit criteria:
 

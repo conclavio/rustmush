@@ -70,8 +70,8 @@ use smol_str::SmolStr;
 
 pub use data::{
     ChanMsg, Channel, ChannelColor, ChannelFlags, ChannelId, ChannelPerms, ComsysState,
-    DEFAULT_ALIAS, DEFAULT_CHANNEL, DEFAULT_HISTORY_CAP, HistoryPolicy, META_KEY, Membership, NS,
-    chan_key, hist_key, member_key,
+    DEFAULT_ALIAS, DEFAULT_CHANNEL, DEFAULT_HISTORY_CAP, HistoryPolicy, MAX_HISTORY_CAP, META_KEY,
+    Membership, NS, chan_key, hist_key, member_key,
 };
 pub use query::{BacklogQuery, MAX_BACKLOG_LIMIT, StateQuery};
 pub use speak::ComsysAliases;
@@ -128,15 +128,35 @@ impl GameModule for ComsysModule {
     /// every kv doc `chan:{id}`, load the newest `history.cap` entries of
     /// stream `hist:{id}` (a channel that never persisted history simply
     /// has no stream — the load yields nothing).
-    fn boot_stream_requests(&self, kv: &[(SmolStr, serde_json::Value)]) -> Vec<(SmolStr, u32)> {
-        kv.iter()
-            .filter_map(|(key, value)| {
-                let id = key.strip_prefix("chan:")?;
-                let cap = value.get("history")?.get("cap")?.as_u64()?;
-                let cap = u32::try_from(cap).unwrap_or(u32::MAX).max(1);
-                Some((SmolStr::new(format!("hist:{id}")), cap))
-            })
-            .collect()
+    fn boot_stream_requests(
+        &self,
+        kv: &[(SmolStr, serde_json::Value)],
+    ) -> Result<Vec<(SmolStr, u32)>, ModError> {
+        let mut requests = Vec::new();
+        for (key, value) in kv {
+            let Some(id) = key.strip_prefix("chan:") else {
+                continue;
+            };
+            let Some(history) = value.get("history") else {
+                continue;
+            };
+            let cap = history
+                .get("cap")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|cap| u32::try_from(cap).ok())
+                .ok_or_else(|| {
+                    ModError::msg(format!(
+                        "comsys: channel doc {key:?} has an invalid history cap"
+                    ))
+                })?;
+            if !(1..=MAX_HISTORY_CAP).contains(&cap) {
+                return Err(ModError::msg(format!(
+                    "comsys: channel doc {key:?} history cap {cap} is outside 1-{MAX_HISTORY_CAP}"
+                )));
+            }
+            requests.push((SmolStr::new(format!("hist:{id}")), cap));
+        }
+        Ok(requests)
     }
 }
 
@@ -255,6 +275,12 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
                 .map_err(|_| ModError::msg(format!("comsys: bad channel key {key:?}")))?;
             let chan = serde_json::from_value::<Channel>(value)
                 .map_err(|e| ModError::msg(format!("comsys: bad channel doc {key:?}: {e}")))?;
+            if !(1..=MAX_HISTORY_CAP).contains(&chan.history.cap) {
+                return Err(ModError::msg(format!(
+                    "comsys: channel doc {key:?} history cap {} is outside 1-{MAX_HISTORY_CAP}",
+                    chan.history.cap
+                )));
+            }
             if chan.id != ChannelId(id) {
                 return Err(ModError::msg(format!(
                     "comsys: channel doc {key:?} claims id {}",

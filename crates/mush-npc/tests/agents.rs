@@ -13,6 +13,7 @@ use mush_core::{
     Attr, ConnId, Ctx, Effect, Effects, Engine, GOD, Inbound, ObjId, ObjKind, Outbox, ParsedArgs,
     Registry, SwitchSet, World, register_core_commands,
 };
+use mush_faction::Principal;
 use mush_llm::{
     BudgetConfig, BudgetLimit, CompletionResponse, ContentBlock, LlmProvider, LlmService,
     MockProvider, RouteConfig, StopReason, Usage,
@@ -22,7 +23,6 @@ use mush_npc::{
     NpcModule, NpcTier, PROFILE_ATTR, SUMMARY_ATTR, Secrecy, TurnKind, TurnSnapshot, intel_key,
     pool_key, run_npc_turn_async, user_prompt,
 };
-use mush_faction::Principal;
 use mush_ruleset::{AbilityError, AbilityOutcome, AgentCapabilityProfile, AgentToolSpec};
 use smol_str::SmolStr;
 
@@ -1085,7 +1085,10 @@ async fn agent_lore_add_list_del_clear_round_trips() {
     assert!(out.contains("Added world-knowledge entry #1"), "{out}");
     rig.staff("@agent/lore Bartender=guarded the sheriff: takes bribes");
     let out = rig.staff("@agent/lore Bartender=secret the vault: code is 1234");
-    assert!(out.contains("NEVER sent to the NPC LLM"), "secret warning: {out}");
+    assert!(
+        out.contains("NEVER sent to the NPC LLM"),
+        "secret warning: {out}"
+    );
 
     // The attr holds all three, with parsed subject/tier.
     let k = read_knowledge_attr(&rig, npc);
@@ -1170,7 +1173,10 @@ async fn secret_lore_never_enters_the_snapshot() {
     // Both public facts survive; no Secret entry is present at all.
     let facts: Vec<&str> = snap.knowledge.iter().map(|e| e.fact.as_str()).collect();
     assert!(facts.contains(&"the ale is watered"), "{facts:?}");
-    assert!(facts.contains(&"the crypt is under the chapel"), "{facts:?}");
+    assert!(
+        facts.contains(&"the crypt is under the chapel"),
+        "{facts:?}"
+    );
     assert!(
         snap.knowledge.iter().all(|e| e.secrecy != Secrecy::Secret),
         "a Secret entry entered the snapshot"
@@ -1205,7 +1211,8 @@ async fn familiarity_from_memory_reaches_the_user_prompt() {
         let h = rig.host_mut();
         h.long_term.remember(npc, "Alice", "tips well", 10);
         h.long_term.remember(npc, "Alice", "owes for a drink", 20);
-        h.long_term.remember(npc, "Alice", "asked about the cellar", 30);
+        h.long_term
+            .remember(npc, "Alice", "asked about the cellar", 30);
     }
 
     let snap = rig.dialogue_snapshot(alice, 1002, "say evening");
@@ -1314,7 +1321,7 @@ struct CloakModule;
 
 impl mush_core::GameModule for CloakModule {
     fn name(&self) -> &'static str {
-        "cloak-test"
+        "cloak_test"
     }
 
     fn register(&mut self, reg: &mut mush_core::Registrar<'_>) -> Result<(), mush_core::ModError> {
@@ -1326,12 +1333,7 @@ impl mush_core::GameModule for CloakModule {
 struct CloakHook;
 
 impl mush_core::EventHook for CloakHook {
-    fn perceives(
-        &self,
-        w: &World,
-        _observer: ObjId,
-        subject: ObjId,
-    ) -> mush_core::Perceive {
+    fn perceives(&self, w: &World, _observer: ObjId, subject: ObjId) -> mush_core::Perceive {
         if attr_flag(w, subject, "cloaked") {
             mush_core::Perceive::Conceal
         } else {
@@ -1382,7 +1384,11 @@ async fn informant_files_watched_subject_speech() {
     assert_eq!(r.subject, bob);
     assert_eq!(r.subject_name, "Bob");
     assert_eq!(r.kind, IntelKind::Spoke);
-    assert!(r.detail.contains("shipment lands at midnight"), "{}", r.detail);
+    assert!(
+        r.detail.contains("shipment lands at midnight"),
+        "{}",
+        r.detail
+    );
     assert_eq!(r.room_name, "Bar");
     assert!(
         r.provenance.contains("witnessed directly by Spy"),
@@ -1431,7 +1437,10 @@ async fn unwatched_ordinary_subject_is_not_filed() {
     rig.run(bob, "say just passing through");
 
     assert!(
-        rig.host().intel.for_principal(Principal::Character(boss)).is_empty(),
+        rig.host()
+            .intel
+            .for_principal(Principal::Character(boss))
+            .is_empty(),
         "an unwatched, non-notable subject files nothing"
     );
 }
@@ -1452,7 +1461,11 @@ async fn willingness_gate_blocks_filing() {
         let spy = rig.npc("Spy", bar, &none_principal);
         let bob = rig.player("Bob", bar, true);
         rig.run(bob, "say hello");
-        assert_eq!(rig.host().intel.filed_by(spy), 0, "no principal ⇒ files nothing");
+        assert_eq!(
+            rig.host().intel.filed_by(spy),
+            0,
+            "no principal ⇒ files nothing"
+        );
     }
     // (b) loyal=false ⇒ nothing filed.
     {
@@ -1463,7 +1476,11 @@ async fn willingness_gate_blocks_filing() {
         let spy = rig.npc("Spy", bar, &informant(boss, false, &["bob"]));
         let bob = rig.player("Bob", bar, true);
         rig.run(bob, "say hello");
-        assert_eq!(rig.host().intel.filed_by(spy), 0, "a disloyal informant files nothing");
+        assert_eq!(
+            rig.host().intel.filed_by(spy),
+            0,
+            "a disloyal informant files nothing"
+        );
     }
     // (c) disabled ⇒ nothing filed.
     {
@@ -1476,7 +1493,11 @@ async fn willingness_gate_blocks_filing() {
         let spy = rig.npc("Spy", bar, &prof);
         let bob = rig.player("Bob", bar, true);
         rig.run(bob, "say hello");
-        assert_eq!(rig.host().intel.filed_by(spy), 0, "a disabled informant files nothing");
+        assert_eq!(
+            rig.host().intel.filed_by(spy),
+            0,
+            "a disabled informant files nothing"
+        );
     }
 }
 
@@ -1492,7 +1513,10 @@ async fn never_reports_principal_or_self() {
 
     rig.run(boss, "say I am here");
     assert!(
-        rig.host().intel.for_principal(Principal::Character(boss)).is_empty(),
+        rig.host()
+            .intel
+            .for_principal(Principal::Character(boss))
+            .is_empty(),
         "the principal is never a subject of its own intel"
     );
 }
@@ -1501,10 +1525,7 @@ async fn never_reports_principal_or_self() {
 /// `Concealed` even with an empty watch list — a pierce is always reported.
 #[tokio::test]
 async fn perceived_concealed_subject_is_always_filed() {
-    let mut rig = Rig::with_modules(vec![
-        Box::new(NpcModule::new()),
-        Box::new(CloakModule),
-    ]);
+    let mut rig = Rig::with_modules(vec![Box::new(NpcModule::new()), Box::new(CloakModule)]);
     rig.set_now(1000);
     let bar = rig.room("Bar");
     let boss = rig.player("Boss", bar, true);
@@ -1650,10 +1671,7 @@ async fn npc_actor_power_use_files_intel_for_a_witnessing_informant() {
 /// NO record, even when it is on the watch list.
 #[tokio::test]
 async fn unperceived_subject_is_never_filed() {
-    let mut rig = Rig::with_modules(vec![
-        Box::new(NpcModule::new()),
-        Box::new(CloakModule),
-    ]);
+    let mut rig = Rig::with_modules(vec![Box::new(NpcModule::new()), Box::new(CloakModule)]);
     rig.set_now(1000);
     let bar = rig.room("Bar");
     let boss = rig.player("Boss", bar, true);
@@ -1668,7 +1686,10 @@ async fn unperceived_subject_is_never_filed() {
     rig.run(bob, "say can you hear me?");
 
     assert!(
-        rig.host().intel.for_principal(Principal::Character(boss)).is_empty(),
+        rig.host()
+            .intel
+            .for_principal(Principal::Character(boss))
+            .is_empty(),
         "an informant files nothing about a subject it could not perceive (P1)"
     );
 }
@@ -1686,9 +1707,16 @@ async fn intel_survives_on_world_loaded_round_trip() {
     rig.run(bob, "say the vault code is on the ledger");
 
     // Capture the log as persistence would serialize it.
-    let recs: Vec<IntelRecord> = rig.host().intel.for_principal(Principal::Character(boss)).to_vec();
+    let recs: Vec<IntelRecord> = rig
+        .host()
+        .intel
+        .for_principal(Principal::Character(boss))
+        .to_vec();
     assert_eq!(recs.len(), 1);
-    let kv = vec![(intel_key(Principal::Character(boss)), serde_json::to_value(&recs).unwrap())];
+    let kv = vec![(
+        intel_key(Principal::Character(boss)),
+        serde_json::to_value(&recs).unwrap(),
+    )];
     let mut boot = std::collections::HashMap::new();
     boot.insert(
         SmolStr::new("npc"),
@@ -1704,7 +1732,11 @@ async fn intel_survives_on_world_loaded_round_trip() {
     assert_eq!(reloaded.len(), 1, "the intel doc reloaded");
     assert_eq!(reloaded[0].subject, bob);
     assert_eq!(reloaded[0].kind, IntelKind::Spoke);
-    assert!(reloaded[0].detail.contains("vault code"), "{}", reloaded[0].detail);
+    assert!(
+        reloaded[0].detail.contains("vault code"),
+        "{}",
+        reloaded[0].detail
+    );
 }
 
 /// P5-adjacent: filing keys strictly by principal — one NPC serving two
@@ -1724,8 +1756,20 @@ async fn filing_does_not_leak_across_principals() {
     rig.run(target, "say nothing to see here");
 
     // Each principal got exactly one record; neither sees the other's.
-    assert_eq!(rig.host().intel.for_principal(Principal::Character(boss_a)).len(), 1);
-    assert_eq!(rig.host().intel.for_principal(Principal::Character(boss_b)).len(), 1);
+    assert_eq!(
+        rig.host()
+            .intel
+            .for_principal(Principal::Character(boss_a))
+            .len(),
+        1
+    );
+    assert_eq!(
+        rig.host()
+            .intel
+            .for_principal(Principal::Character(boss_b))
+            .len(),
+        1
+    );
     assert!(
         rig.host()
             .intel
@@ -1805,7 +1849,10 @@ async fn intel_pull_shows_only_own_principal_records() {
     assert!(out.contains("Target"), "{out}");
     assert!(out.contains("[spoke]"), "{out}");
     assert!(out.contains("meet is at dawn"), "{out}");
-    assert!(out.contains("witnessed directly by SpyA"), "provenance shown: {out}");
+    assert!(
+        out.contains("witnessed directly by SpyA"),
+        "provenance shown: {out}"
+    );
     assert!(
         !out.contains("SpyB"),
         "no cross-principal leak into Ander's log: {out}"
@@ -1859,11 +1906,22 @@ async fn intel_pull_clear_empties_the_log() {
     let _spy = rig.npc("Spy", bar, &informant(boss, true, &["bob"]));
     let bob = rig.player("Bob", bar, true);
     rig.run(bob, "say something worth filing");
-    assert_eq!(rig.host().intel.for_principal(Principal::Character(boss)).len(), 1);
+    assert_eq!(
+        rig.host()
+            .intel
+            .for_principal(Principal::Character(boss))
+            .len(),
+        1
+    );
 
     let out = rig.actor_sys(boss, "+intel/clear");
     assert!(out.contains("Cleared 1 personal intel record"), "{out}");
-    assert!(rig.host().intel.for_principal(Principal::Character(boss)).is_empty());
+    assert!(
+        rig.host()
+            .intel
+            .for_principal(Principal::Character(boss))
+            .is_empty()
+    );
 
     let out = rig.actor_sys(boss, "+intel");
     assert!(out.contains("no intel on file"), "{out}");

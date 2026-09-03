@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use mush_core::{
-    Audience, Effect, Effects, GOD, Inbound, LIMBO, ModuleOp, ModuleWrite, ObjId, ObjKind, Outbox,
-    Powers, WorldCommand,
+    Audience, DeliveryClass, Effect, Effects, GOD, Inbound, LIMBO, ModuleOp, ModuleWrite, ObjId,
+    ObjKind, Outbox, Powers, WorldCommand,
 };
 use mush_llm::{
     BudgetConfig, BudgetLimit, CompletionResponse, ContentBlock, LlmProvider, LlmService,
@@ -14,7 +14,9 @@ use mush_llm::{
 };
 use mush_proto::OutputEvent;
 use mush_testkit::TestWorld;
-use mush_worldgen::{GenOutcome, GenSnapshot, StoredDraft, WorldgenModule, run_worldgen_async};
+use mush_worldgen::{
+    DraftPayload, GenOutcome, GenSnapshot, StoredDraft, WorldgenModule, run_worldgen_async,
+};
 use serde_json::json;
 
 // ----------------------------------------------------------------------
@@ -151,6 +153,45 @@ fn apply_done(
         &mut fx,
     );
     out.take()
+}
+
+fn apply_done_classified(
+    tw: &mut TestWorld,
+    module: &str,
+    actor: ObjId,
+    correlation: u64,
+    payload: String,
+) -> Vec<(DeliveryClass, Audience, OutputEvent)> {
+    let mut out = Outbox::new();
+    let mut fx = Effects::new();
+    tw.engine_mut().step(
+        Inbound::Apply(WorldCommand::ModuleAsyncDone {
+            module: module.into(),
+            actor,
+            correlation,
+            payload,
+        }),
+        &mut out,
+        &mut fx,
+    );
+    out.take_classified()
+}
+
+fn actor_sys_class(
+    events: &[(DeliveryClass, Audience, OutputEvent)],
+    actor: ObjId,
+    needle: &str,
+) -> Option<DeliveryClass> {
+    events
+        .iter()
+        .find_map(|(class, audience, event)| match (audience, event) {
+            (Audience::Actor(recipient), OutputEvent::Sys(text))
+                if *recipient == actor && text.to_plain_text().contains(needle) =>
+            {
+                Some(*class)
+            }
+            _ => None,
+        })
 }
 
 /// The `Sys` lines addressed to `actor`.
@@ -1092,6 +1133,143 @@ async fn run_brief(
     let (module, correlation, payload) = module_async(&effects);
     let result = run_worldgen_async(llm, &payload).await;
     apply_done(tw, &module, GOD, correlation, result)
+}
+
+#[test]
+fn building_brief_failure_diagnostic_is_commit_bound() {
+    let (mut tw, _mock, _llm, [hall, ..]) = building_world();
+    let (_open, effects) = step_cmd(&mut tw, GOD, "@gen/building here=A mansion.");
+    let (module, correlation, _) = module_async(&effects);
+    let _ = tw.take_module_ops();
+
+    let payload = serde_json::to_string(&GenOutcome::BriefErr {
+        entrance: hall,
+        builder: GOD,
+        message: "brief provider failed".into(),
+        retryable: true,
+    })
+    .unwrap();
+    let events = apply_done_classified(&mut tw, &module, GOD, correlation, payload);
+
+    assert_eq!(
+        actor_sys_class(&events, GOD, "brief provider failed"),
+        Some(DeliveryClass::OnCommit)
+    );
+    let ops = tw.take_module_ops();
+    assert!(ops.iter().any(|op| {
+        op.ns == "worldgen"
+            && matches!(&op.op, ModuleWrite::JsonSet { key, .. }
+                if key.as_str() == format!("building:{}:{}", hall.0, GOD.0))
+    }));
+}
+
+#[test]
+fn building_room_failure_diagnostics_are_commit_bound() {
+    for (budget, needle) in [
+        (false, "needs attention: room provider failed"),
+        (true, "Budget reached mid-building"),
+    ] {
+        let (mut tw, _mock, _llm, [hall, ..]) = building_world();
+        let (_open, effects) = step_cmd(&mut tw, GOD, "@gen/building here=A mansion.");
+        let (module, correlation, _) = module_async(&effects);
+        let _ = tw.take_module_ops();
+
+        let payload = serde_json::to_string(&GenOutcome::Err {
+            room: hall,
+            builder: GOD,
+            message: "room provider failed".into(),
+            retryable: true,
+            building: Some(hall),
+            budget,
+        })
+        .unwrap();
+        let events = apply_done_classified(&mut tw, &module, GOD, correlation, payload);
+
+        assert_eq!(
+            actor_sys_class(&events, GOD, needle),
+            Some(DeliveryClass::OnCommit),
+            "budget={budget}: {events:?}"
+        );
+        assert!(tw.take_module_ops().iter().any(|op| {
+            op.ns == "worldgen"
+                && matches!(&op.op, ModuleWrite::JsonSet { key, .. }
+                    if key.as_str() == format!("building:{}:{}", hall.0, GOD.0))
+        }));
+    }
+}
+
+#[test]
+fn vanished_batch_room_diagnostic_is_commit_bound() {
+    let (mut tw, _mock, _llm, [hall, parlor, ..]) = building_world();
+    let (_open, effects) = step_cmd(&mut tw, GOD, "@gen/building here=A mansion.");
+    let (module, correlation, _) = module_async(&effects);
+    tw.world_mut().destroy(parlor).unwrap();
+    tw.world_mut().sweep();
+    let _ = tw.take_module_ops();
+
+    let payload = serde_json::to_string(&GenOutcome::Ok {
+        room: parlor,
+        builder: GOD,
+        draft: DraftPayload {
+            desc: "nowhere".into(),
+            ..DraftPayload::default()
+        },
+        prose: "A mansion.".into(),
+        prompt_hash: "hash".into(),
+        model: "test/mock".into(),
+        building: Some(hall),
+    })
+    .unwrap();
+    let events = apply_done_classified(&mut tw, &module, GOD, correlation, payload);
+
+    assert_eq!(
+        actor_sys_class(&events, GOD, "no longer exists"),
+        Some(DeliveryClass::OnCommit),
+        "{events:?}"
+    );
+    assert!(tw.take_module_ops().iter().any(|op| {
+        op.ns == "worldgen"
+            && matches!(&op.op, ModuleWrite::JsonSet { key, .. }
+                if key.as_str() == format!("building:{}:{}", hall.0, GOD.0))
+    }));
+}
+
+#[test]
+fn lost_batch_room_control_diagnostic_is_commit_bound() {
+    let (mut tw, _mock, _llm, [hall, ..]) = building_world();
+    let builder = tw.spawn_player("Builder");
+    tw.world_mut().get_mut(builder).unwrap().powers = Powers::BUILDER_LLM;
+    tw.world_mut().get_mut(hall).unwrap().owner = builder;
+    tw.world_mut().move_to(builder, hall).unwrap();
+    let (_open, effects) = step_cmd(&mut tw, builder, "@gen/building here=A mansion.");
+    let (module, correlation, _) = module_async(&effects);
+    tw.world_mut().get_mut(hall).unwrap().owner = GOD;
+    let _ = tw.take_module_ops();
+
+    let payload = serde_json::to_string(&GenOutcome::Ok {
+        room: hall,
+        builder,
+        draft: DraftPayload {
+            desc: "A generated hall.".into(),
+            ..DraftPayload::default()
+        },
+        prose: "A mansion.".into(),
+        prompt_hash: "hash".into(),
+        model: "test/mock".into(),
+        building: Some(hall),
+    })
+    .unwrap();
+    let events = apply_done_classified(&mut tw, &module, builder, correlation, payload);
+
+    assert_eq!(
+        actor_sys_class(&events, builder, "no longer control"),
+        Some(DeliveryClass::OnCommit)
+    );
+    assert!(tw.take_module_ops().iter().any(|op| {
+        op.ns == "worldgen"
+            && matches!(&op.op, ModuleWrite::JsonSet { key, .. }
+                if key.as_str() == format!("building:{}:{}", hall.0, builder.0))
+    }));
 }
 
 #[tokio::test]

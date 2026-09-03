@@ -137,6 +137,16 @@ pub enum ResumeErr {
     /// [`connect_character`](WebHooks::connect_character) and tells the
     /// client `resumed { replayed: false }`.
     TooOld,
+    /// The session is valid and resumable, but the game cannot accept another
+    /// lifecycle obligation right now. The transport must ask the client to
+    /// retry later; it must not misreport this as an expired credential or
+    /// fall back to a fresh attach.
+    Busy,
+    /// The session is valid, but the game boundary disappeared while the
+    /// resume was being attached (normally a server restart race). The
+    /// transport should ask the client to reconnect shortly, without treating
+    /// the token as expired.
+    Unavailable,
     /// The token/character pair no longer names a resumable session.
     BadSession,
 }

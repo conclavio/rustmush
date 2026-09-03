@@ -249,8 +249,9 @@ fn wod_roll(
     let power_use = match crate::perception::power_perceptibility_for_pool(&resolved, &npc_name) {
         Some(perc) => {
             emit_panel(out, npc, &line, &outcome);
-            let npc_winners =
-                crate::perception::project_perceptual_act(dispatch, w, out, npc, &perc, &line, false);
+            let npc_winners = crate::perception::project_perceptual_act(
+                dispatch, w, out, npc, &perc, &line, false,
+            );
             Some(json!({
                 "witnesses": npc_winners,
                 "detail": format!("used {expr_label}"),

@@ -12,9 +12,7 @@
 
 use std::sync::Arc;
 
-use mush_core::{
-    ConnId, Effects, Engine, GOD, Inbound, ObjId, ObjKind, Outbox, World,
-};
+use mush_core::{ConnId, Effects, Engine, GOD, Inbound, ObjId, ObjKind, Outbox, World};
 use mush_llm::{BudgetConfig, LlmProvider, LlmService, MockProvider, RouteConfig};
 use mush_proto::OutputEvent;
 use mush_store::InMemoryStore;
@@ -147,7 +145,9 @@ fn make_informant_bartender(rig: &mut Rig, template: &str, principal: &str) {
 /// Make an existing player a vampire with `obfuscate` dots of Obfuscate.
 fn make_vampire(rig: &mut Rig, name: &str, obfuscate: i32) {
     rig.staff(&format!("@sheet/set {name}/template=vampire"));
-    rig.staff(&format!("@sheet/set {name}/disciplines:Obfuscate={obfuscate}"));
+    rig.staff(&format!(
+        "@sheet/set {name}/disciplines:Obfuscate={obfuscate}"
+    ));
 }
 
 // ----------------------------------------------------------------------
@@ -179,8 +179,14 @@ async fn ghoul_informant_pierces_and_files_intel_the_domitor_pulls() {
     // Marcus debriefs his asset: a concealed-pierce record about Vlad.
     let out = rig.actor_sys(marcus, "+intel");
     assert!(out.contains("Your intel log"), "{out}");
-    assert!(out.contains("Vlad"), "the pierced vampire is reported: {out}");
-    assert!(out.contains("[concealed]"), "filed as a pierced concealment: {out}");
+    assert!(
+        out.contains("Vlad"),
+        "the pierced vampire is reported: {out}"
+    );
+    assert!(
+        out.contains("[concealed]"),
+        "filed as a pierced concealment: {out}"
+    );
     assert!(
         out.contains("trying to stay hidden"),
         "the notable detail is rendered: {out}"

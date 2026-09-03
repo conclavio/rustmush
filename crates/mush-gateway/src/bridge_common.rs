@@ -23,10 +23,12 @@
 
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use mush_core::{DisconnectKind, ObjId};
-use mush_ipc::{GatewayLink, InputSend, ServiceReq, ServiceResp, ToServer, WireInbound};
+use mush_ipc::{
+    ConnectionAdmission, GatewayLink, InputSend, ServiceReq, ServiceResp, ToServer, WireInbound,
+};
 // Shared with the SSH transport's own line cap (`mush-net-ssh::editor`) so
 // both agree on one bound (MEDIUM finding).
 use mush_net_ssh::MAX_LINE_CHARS;
@@ -41,6 +43,14 @@ use mush_config::ipguard::IpGuard;
 
 use crate::accounts::{AuthBackend, AuthOutcome, CreateErr};
 use crate::delivery::{char_key, char_key_obj, send_event_to_conn};
+
+/// QUIT/boot may wait briefly for an exact delivery acknowledgement, but a
+/// wedged world must not hold a transport forever. Busy admission is retried a
+/// small, fixed number of times inside one total deadline; every other failure
+/// is an explicit degraded teardown.
+const DELIVERY_BARRIER_ATTEMPTS: usize = 3;
+const DELIVERY_BARRIER_TIMEOUT: Duration = Duration::from_secs(5);
+const DELIVERY_BARRIER_RETRY_DELAY: Duration = Duration::from_millis(25);
 
 /// One character offered on a character-select surface (welcome screen,
 /// web character picker). The `id` is a widened `ObjId`, opaque to
@@ -79,6 +89,9 @@ pub enum ConnectErr {
     /// The world task is gone (shutdown in progress).
     #[error("the game is shutting down")]
     WorldGone,
+    /// The split boundary is live, but bounded lifecycle/IPC custody is full.
+    #[error("the game is busy; please try again in a moment")]
+    Busy,
 }
 
 /// What the transport should do after feeding a line.
@@ -146,6 +159,74 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             link,
             guard,
         }
+    }
+
+    /// Await the exact world-delivery barrier used before a local transport
+    /// teardown. This is deliberately bounded: an exact `Barrier` is the only
+    /// success response, `Busy` gets a few retries, and boundary/protocol/world
+    /// failures return `false` for an explicit degraded detach.
+    pub(crate) async fn delivery_barrier(&self, conn: ConnId, operation: &'static str) -> bool {
+        let deadline = Instant::now() + DELIVERY_BARRIER_TIMEOUT;
+        for attempt in 1..=DELIVERY_BARRIER_ATTEMPTS {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let response =
+                match tokio::time::timeout(remaining, self.link.request(ServiceReq::Barrier)).await
+                {
+                    Ok(response) => response,
+                    Err(_) => {
+                        tracing::warn!(conn = conn.0, operation, "delivery barrier timed out");
+                        return false;
+                    }
+                };
+            match response {
+                Some(ServiceResp::Barrier) => return true,
+                Some(ServiceResp::Busy) if attempt < DELIVERY_BARRIER_ATTEMPTS => {
+                    tracing::warn!(
+                        conn = conn.0,
+                        operation,
+                        attempt,
+                        "delivery barrier admission busy; retrying"
+                    );
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    tokio::time::sleep(DELIVERY_BARRIER_RETRY_DELAY.min(remaining)).await;
+                }
+                Some(ServiceResp::Busy) => {
+                    tracing::warn!(
+                        conn = conn.0,
+                        operation,
+                        attempts = DELIVERY_BARRIER_ATTEMPTS,
+                        "delivery barrier remained busy; degrading to bounded teardown"
+                    );
+                    return false;
+                }
+                Some(ServiceResp::Unavailable) | None => {
+                    tracing::warn!(
+                        conn = conn.0,
+                        operation,
+                        "delivery barrier unavailable; degrading to bounded teardown"
+                    );
+                    return false;
+                }
+                Some(other) => {
+                    tracing::error!(
+                        conn = conn.0,
+                        operation,
+                        ?other,
+                        "delivery barrier returned the wrong response type"
+                    );
+                    return false;
+                }
+            }
+        }
+        tracing::warn!(
+            conn = conn.0,
+            operation,
+            "delivery barrier deadline elapsed; degrading to bounded teardown"
+        );
+        false
     }
 
     /// The actor a connection is playing, if attached.
@@ -229,6 +310,15 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         caps_structured: bool,
     ) -> Result<EnterOutcome, ConnectErr> {
         let conn_id = handle.id;
+        // Reserve split-process lifecycle custody BEFORE `SessionManager`
+        // mutation. Once this succeeds, ConnUp is must-deliver; an overloaded
+        // boundary refuses here, so a failed admission cannot revive and then
+        // accidentally destroy a link-dead session during rollback.
+        match self.link.try_reserve_connection(conn_id.0, actor) {
+            ConnectionAdmission::Reserved => {}
+            ConnectionAdmission::Busy => return Err(ConnectErr::Busy),
+            ConnectionAdmission::Gone => return Err(ConnectErr::WorldGone),
+        }
         let (sess, outcome) = self
             .sessions
             .attach(handle, char_key(actor), account.to_string());
@@ -255,9 +345,40 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             }))
             .await
         {
-            self.sessions.detach(conn_id, DetachReason::Booted);
+            self.link.cancel_connection_reservation(conn_id.0);
+            self.rollback_local_attach(conn_id, from_linkdead);
             return Err(ConnectErr::WorldGone);
         }
+        // `ConnUp` may run persistent connect/reconnect hooks. Fence their
+        // exact durable outcome before publishing the local session or asking
+        // any gameplay/world-read question: hard-mode correctly refuses those
+        // reads while the hook's commit is still pending, and treating that
+        // refusal as "not in an input context" would either skip the initial
+        // room view or feed `look` into a live input context.
+        if !self.delivery_barrier(conn_id, "connect readiness").await {
+            self.compensate_announced_attach(conn_id, actor, from_linkdead)
+                .await;
+            return Err(ConnectErr::WorldGone);
+        }
+
+        // A barrier proves ordering/durability, but it does not by itself prove
+        // the preceding lifecycle message was admitted (hard boot/recovery
+        // modes may refuse connection hooks) or that its actor existed. Require
+        // the exact engine-side association before publishing SessionInfo.
+        if !matches!(
+            self.link
+                .request(ServiceReq::ConnectionReady {
+                    conn: conn_id.0,
+                    actor,
+                })
+                .await,
+            Some(ServiceResp::ConnectionReady(true))
+        ) {
+            self.compensate_announced_attach(conn_id, actor, from_linkdead)
+                .await;
+            return Err(ConnectErr::WorldGone);
+        }
+
         send_event_to_conn(
             &self.sessions,
             conn_id,
@@ -273,9 +394,15 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         // on reconnect). Dispatching "look" then would feed it to the context
         // as body/input text (the wizard reads it as a bogus template name),
         // so skip it and let the context's own prompt stand.
-        if !matches!(
-            self.link.request(ServiceReq::InInputContext { actor }).await,
-            Some(ServiceResp::InInputContext(true))
+        // Fail closed on Busy/unavailable/unexpected responses. Sending an
+        // automatic `look` is safe only after an exact negative answer; if the
+        // actor is actually composing mail or in chargen, guessing false would
+        // feed `look` into that input context as user data.
+        if matches!(
+            self.link
+                .request(ServiceReq::InInputContext { actor })
+                .await,
+            Some(ServiceResp::InInputContext(false))
         ) {
             self.link
                 .to_server(ToServer::Inbound(WireInbound::Cmd {
@@ -499,7 +626,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                     reason: DisconnectKind::Quit,
                 }))
                 .await;
-            self.link.request(ServiceReq::Barrier).await;
+            self.delivery_barrier(conn, "quit").await;
         }
         send_event_to_conn(
             &self.sessions,
@@ -527,5 +654,62 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                     .await;
             }
         });
+    }
+
+    /// Undo a failed local session attach.
+    ///
+    /// This helper changes only the local session table; a caller whose
+    /// `ConnUp` entered world custody must enqueue its compensating `ConnDown`
+    /// first. If the attach had revived a link-dead session, detach it as
+    /// unclean so the prior session and resume ring are restored, then re-arm
+    /// expiry. A failed brand-new attach is closed cleanly and leaves no
+    /// phantom local session.
+    pub(crate) fn rollback_local_attach(&self, conn: ConnId, revived_linkdead: bool) {
+        let reason = if revived_linkdead {
+            DetachReason::Lost
+        } else {
+            DetachReason::Booted
+        };
+        if let Some(DetachOutcome::Linkdead { grace }) = self.sessions.detach(conn, reason) {
+            tracing::info!(
+                conn = conn.0,
+                grace_s = grace.as_secs(),
+                "failed reconnect rolled back to linkdead"
+            );
+            self.arm_linkdead_reaper(grace);
+        }
+    }
+
+    /// Undo an attach after `ConnUp` entered world custody. The compensating
+    /// lifecycle edge is must-deliver once a boundary accepts it; if the
+    /// boundary has vanished, restart resynchronization omits the local
+    /// connection after the rollback below.
+    async fn compensate_announced_attach(
+        &self,
+        conn: ConnId,
+        actor: ObjId,
+        revived_linkdead: bool,
+    ) {
+        let reason = if revived_linkdead {
+            DisconnectKind::Lost
+        } else {
+            DisconnectKind::Boot
+        };
+        if !self
+            .link
+            .to_server(ToServer::Inbound(WireInbound::ConnDown {
+                conn: conn.0,
+                actor,
+                reason,
+            }))
+            .await
+        {
+            tracing::warn!(
+                conn = conn.0,
+                %actor,
+                "connect cleanup retained only by restart resynchronization"
+            );
+        }
+        self.rollback_local_attach(conn, revived_linkdead);
     }
 }

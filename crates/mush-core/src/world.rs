@@ -518,6 +518,14 @@ impl World {
         std::mem::take(&mut self.dirty)
     }
 
+    /// Whether authoritative object state has an unflushed legacy mutation.
+    /// Used by the engine to keep prepared action-state submissions separate
+    /// from the compatibility snapshot lane.
+    #[must_use]
+    pub(crate) fn has_dirty(&self) -> bool {
+        !self.dirty.is_empty()
+    }
+
     // ------------------------------------------------------------------
     // Exclusive-scene membership (the timestop index)
     // ------------------------------------------------------------------

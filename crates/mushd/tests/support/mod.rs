@@ -107,6 +107,40 @@ impl Term {
         }
     }
 
+    /// Wait for one of several post-mark strings and return its index.
+    pub async fn expect_one_of_after(&mut self, mark: usize, needles: &[&str]) -> usize {
+        assert!(!needles.is_empty(), "at least one needle is required");
+        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
+        loop {
+            let output = strip_ansi(&self.seen[mark..]);
+            if let Some((index, _)) = needles
+                .iter()
+                .enumerate()
+                .find(|(_, needle)| output.contains(**needle))
+            {
+                return index;
+            }
+            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "timeout waiting for one of {needles:?}; seen: {:?}",
+                        self.seen,
+                    )
+                });
+            match msg {
+                Some(ChannelMsg::Data { data }) => {
+                    self.seen.push_str(&String::from_utf8_lossy(&data));
+                }
+                Some(_) => {}
+                None => panic!(
+                    "channel closed waiting for one of {needles:?}; seen: {:?}",
+                    self.seen,
+                ),
+            }
+        }
+    }
+
     pub async fn send_line(&mut self, line: &str) {
         let bytes = format!("{line}\r").into_bytes();
         self.channel.data(&bytes[..]).await.expect("send line");
@@ -210,8 +244,8 @@ pub fn write_config(dir: &Path, store_section: &str) -> PathBuf {
 
 /// Boot the full production wiring — world task, session layer,
 /// store-backed accounts, IP guard, SSH listener — with the real
-/// [`server_modules`](mushd::modules::server_modules) list (comsys, mail,
-/// jobs, weather, script) booted exactly as `main.rs` does
+/// [`server_modules`](mushd::modules::server_modules) list (including sim and
+/// tactics) booted exactly as `main.rs` does
 /// (`Engine::with_modules` → `boot_modules`), on an ephemeral SSH port with
 /// an in-memory store. A `boss` account linked to God (`#1`) is seeded so a
 /// staff connection can drive builder commands over the same front door as
@@ -268,7 +302,7 @@ pub async fn boot_module_server(dir: &Path, server_name: &str, boss_password: &s
             guard: Arc::new(mushd::ipguard::IpGuard::new()),
             staff,
             llm: None,
-            quarantine_dir: None,
+            quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
         },
     );
     let world = handles.handle;
@@ -354,7 +388,7 @@ pub async fn boot_worldgen_server(
             guard: Arc::new(mushd::ipguard::IpGuard::new()),
             staff,
             llm: Some(llm),
-            quarantine_dir: None,
+            quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
         },
     );
     let world = handles.handle;
@@ -424,6 +458,10 @@ impl ChildServer {
         let mut child = Command::new(env!("CARGO_BIN_EXE_mushd"))
             .arg("--config")
             .arg(config)
+            // The harness waits on INFO-level readiness/durability lines.
+            // Never inherit a developer/CI `RUST_LOG=warn` that suppresses
+            // those protocol markers and turns a healthy child into a timeout.
+            .env("RUST_LOG", "info")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

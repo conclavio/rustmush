@@ -108,7 +108,11 @@ pub fn presence(st: &SpatialState, obj: ObjId) -> Option<Presence> {
                 .get(&host)
                 .and_then(|m| m.mounts.get(&mount))
                 .is_some_and(|m| m.exposed);
-            Some(if exposed { Presence::DerivedExposed } else { Presence::Suppressed })
+            Some(if exposed {
+                Presence::DerivedExposed
+            } else {
+                Presence::Suppressed
+            })
         }
         SpatialParent::Unplaced => None,
     }
@@ -141,7 +145,11 @@ pub fn project(st: &SpatialState, w: &World, obj: ObjId) -> Option<ObjId> {
                 return Some(host);
             }
             SpatialParent::Unplaced => {
-                return if st.is_quarantined(cur) { Some(st.recovery_room) } else { None };
+                return if st.is_quarantined(cur) {
+                    Some(st.recovery_room)
+                } else {
+                    None
+                };
             }
         }
     }
@@ -181,7 +189,10 @@ pub fn rebuild(st: &SpatialState) -> Derived {
                 d.anchored_spaces.entry(*host).or_default().insert(s.object);
             }
             SpaceAnchor::FixedDomain { domain, .. } => {
-                d.spaces_in_domain.entry(*domain).or_default().insert(s.object);
+                d.spaces_in_domain
+                    .entry(*domain)
+                    .or_default()
+                    .insert(s.object);
             }
             SpaceAnchor::Unanchored => {}
         }
@@ -201,7 +212,10 @@ pub fn rebuild(st: &SpatialState) -> Derived {
     }
     for a in st.assignments.values() {
         for seat in a.seats.values() {
-            d.assignments_by_actor.entry(seat.actor).or_default().insert(a.host);
+            d.assignments_by_actor
+                .entry(seat.actor)
+                .or_default()
+                .insert(a.host);
         }
     }
     d
@@ -214,7 +228,9 @@ pub fn rebuild(st: &SpatialState) -> Derived {
 #[must_use]
 pub fn space_domain(st: &SpatialState, space: ObjId) -> Option<DomainId> {
     match &st.spaces.get(&space)?.anchor {
-        SpaceAnchor::FixedDomain { domain, .. } => st.domains.contains_key(domain).then_some(*domain),
+        SpaceAnchor::FixedDomain { domain, .. } => {
+            st.domains.contains_key(domain).then_some(*domain)
+        }
         SpaceAnchor::MovingObject { host } => effective_domain(st, *host),
         SpaceAnchor::Unanchored => None,
     }
@@ -248,4 +264,3 @@ pub fn verify_projections(st: &SpatialState, w: &World) -> Vec<(ObjId, ObjId, Op
     }
     bad
 }
-

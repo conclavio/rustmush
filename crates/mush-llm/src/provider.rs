@@ -8,6 +8,13 @@ use smol_str::SmolStr;
 
 use crate::types::{CompletionRequest, CompletionResponse, LlmStream};
 
+/// Maximum accepted wire response body from an LLM provider (4 MiB).
+///
+/// The bound applies to both ordinary JSON responses and streaming SSE
+/// responses. A declared larger `Content-Length` is refused before the body is
+/// read; responses without a trustworthy length are counted as chunks arrive.
+pub const MAX_PROVIDER_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+
 /// A registered provider's stable id (`"anthropic"`, `"openrouter"`,
 /// `"local-ollama"`). Derived from a route's model-id prefix by
 /// [`crate::service`].

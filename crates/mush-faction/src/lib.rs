@@ -104,10 +104,16 @@ impl GameModule for FactionModule {
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.state(FactionState::default());
         reg.state(sim::SimState::default());
-        reg.subscribe(WorldEventKind::ObjDestroyed, std::sync::Arc::new(on_obj_destroyed));
+        reg.subscribe(
+            WorldEventKind::ObjDestroyed,
+            std::sync::Arc::new(on_obj_destroyed),
+        );
         // Consequence-driven simulation: a canon event advances matching
         // faction clocks (the scene-outcome → clock loop).
-        reg.subscribe(WorldEventKind::CanonRecorded, std::sync::Arc::new(on_canon_recorded));
+        reg.subscribe(
+            WorldEventKind::CanonRecorded,
+            std::sync::Arc::new(on_canon_recorded),
+        );
         commands::register(reg)?;
         sim_commands::register(reg)?;
         Ok(())
@@ -120,10 +126,8 @@ impl GameModule for FactionModule {
     ) -> Result<(), ModError> {
         // Split the simulation docs (fronts/clocks) from the registry docs so
         // each boot loader sees only its own keys.
-        let (sim_kv, fac_kv): (Vec<_>, Vec<_>) = data
-            .kv
-            .into_iter()
-            .partition(|(k, _)| is_sim_key(k));
+        let (sim_kv, fac_kv): (Vec<_>, Vec<_>) =
+            data.kv.into_iter().partition(|(k, _)| is_sim_key(k));
         load_boot(
             ctx,
             ModuleBootData {
@@ -195,9 +199,9 @@ fn on_canon_recorded(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
         sim.clocks_watching(kind)
             .into_iter()
             .filter(|&cid| {
-                sim.clocks.get(&cid).is_some_and(|c| {
-                    entities.iter().any(|&e| fac.is_member(e, c.faction))
-                })
+                sim.clocks
+                    .get(&cid)
+                    .is_some_and(|c| entities.iter().any(|&e| fac.is_member(e, c.faction)))
             })
             .collect()
     };

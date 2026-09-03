@@ -143,7 +143,8 @@ pub struct BehaviorBinding {
     pub attached_at: i64,
 }
 
-/// The current [`BehaviorBinding::schema_version`] written by `@behavior/add`.
+/// Default [`BehaviorBinding::schema_version`] for behavior registrations that
+/// do not select a newer marker schema.
 pub const BINDING_SCHEMA_VERSION: u32 = 1;
 
 // ----------------------------------------------------------------------
@@ -170,6 +171,10 @@ pub struct BehaviorSpec {
     pub id: BehaviorId,
     /// Owning module namespace — filled in by the [`Registrar`](crate::module::Registrar).
     pub owner: SmolStr,
+    /// Marker schema authored by the generic `@behavior/add` command. The
+    /// owning module chooses this at registration; callers must not guess a
+    /// process-wide version for module-owned bindings.
+    pub binding_schema_version: u32,
     /// Kinds this behavior may attach to; empty means any kind.
     pub allowed_kinds: Vec<ObjKind>,
     /// Behaviors that may not coexist with this one on the same object.
@@ -195,6 +200,7 @@ impl BehaviorSpec {
         BehaviorSpec {
             id,
             owner: SmolStr::default(),
+            binding_schema_version: BINDING_SCHEMA_VERSION,
             allowed_kinds: Vec::new(),
             conflicts: Vec::new(),
             destroy: DestroyPolicy::Allow,
@@ -208,6 +214,13 @@ impl BehaviorSpec {
     #[must_use]
     pub fn with_command(mut self, cmd: BehaviorCommand) -> BehaviorSpec {
         self.commands.push(cmd);
+        self
+    }
+
+    /// Select the durable marker schema authored by generic attachment.
+    #[must_use]
+    pub const fn with_binding_schema_version(mut self, version: u32) -> BehaviorSpec {
+        self.binding_schema_version = version;
         self
     }
 }
@@ -268,7 +281,9 @@ impl ChannelId {
     pub fn new(s: impl AsRef<str>) -> Option<ChannelId> {
         let t = s.as_ref().trim().to_ascii_lowercase();
         if t.is_empty()
-            || !t.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'.' || b == b'-')
+            || !t.bytes().all(|b| {
+                b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'.' || b == b'-'
+            })
         {
             return None;
         }
@@ -543,13 +558,31 @@ pub fn resolve_behavior_command(
     // non-Operated reach for the same subject is considered.
     let no_channels = BTreeSet::new();
     for link in w.command_subjects_of(actor) {
-        push_candidate(&mut candidates, link.subject, CommandReach::Operated, Some(link.priority), &link.channels);
+        push_candidate(
+            &mut candidates,
+            link.subject,
+            CommandReach::Operated,
+            Some(link.priority),
+            &link.channels,
+        );
     }
-    push_candidate(&mut candidates, actor, CommandReach::Actor, None, &no_channels);
+    push_candidate(
+        &mut candidates,
+        actor,
+        CommandReach::Actor,
+        None,
+        &no_channels,
+    );
     if let Some(loc) = actor_obj.location
         && w.get(loc).is_some_and(|o| o.kind != ObjKind::Room)
     {
-        push_candidate(&mut candidates, loc, CommandReach::Container, None, &no_channels);
+        push_candidate(
+            &mut candidates,
+            loc,
+            CommandReach::Container,
+            None,
+            &no_channels,
+        );
     }
     let carried = w
         .contents_of(actor)
@@ -558,10 +591,22 @@ pub fn resolve_behavior_command(
         .filter(|&c| w.get(c).is_some_and(|o| !o.behaviors.is_empty()))
         .take(MAX_CARRIED_SCAN);
     for c in carried {
-        push_candidate(&mut candidates, c, CommandReach::Carried, None, &no_channels);
+        push_candidate(
+            &mut candidates,
+            c,
+            CommandReach::Carried,
+            None,
+            &no_channels,
+        );
     }
     if let Some(room) = w.containing_room(actor) {
-        push_candidate(&mut candidates, room, CommandReach::Ambient, None, &no_channels);
+        push_candidate(
+            &mut candidates,
+            room,
+            CommandReach::Ambient,
+            None,
+            &no_channels,
+        );
     }
 
     let verb_lc = verb.to_lowercase();
@@ -647,8 +692,7 @@ pub fn resolve_behavior_command(
 pub trait DestroyGate: Send + Sync {
     /// Return `Err(reason)` to refuse destroying `target`; `reason` is shown to
     /// `actor`.
-    fn check(&self, w: &World, reg: &Registry, actor: ObjId, target: ObjId)
-    -> Result<(), String>;
+    fn check(&self, w: &World, reg: &Registry, actor: ObjId, target: ObjId) -> Result<(), String>;
 }
 
 /// A pre-detach veto: consulted by `@behavior/remove` before a binding is
@@ -711,7 +755,10 @@ fn behavior_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let spec = spec.ok_or_else(|| CmdError::msg(format!("No such behavior: `{id}`.")))?;
         // Read everything needed from the object before the mutable borrow.
         let (kind, already, conflict) = {
-            let obj = ctx.w.get(target).ok_or_else(|| CmdError::msg("No such object."))?;
+            let obj = ctx
+                .w
+                .get(target)
+                .ok_or_else(|| CmdError::msg("No such object."))?;
             let conflict = spec
                 .conflicts
                 .iter()
@@ -744,7 +791,7 @@ fn behavior_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             )));
         }
         let binding = BehaviorBinding {
-            schema_version: BINDING_SCHEMA_VERSION,
+            schema_version: spec.binding_schema_version,
             attached_by: ctx.actor,
             attached_at: ctx.w.now(),
         };
@@ -776,7 +823,10 @@ fn behavior_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("Permission denied."));
     }
     let lines: Vec<String> = {
-        let obj = ctx.w.get(target).ok_or_else(|| CmdError::msg("No such object."))?;
+        let obj = ctx
+            .w
+            .get(target)
+            .ok_or_else(|| CmdError::msg("No such object."))?;
         obj.behaviors
             .iter()
             .map(|(id, b)| {
@@ -836,7 +886,16 @@ mod tests {
         for ok in ["sim.domain", "tactics.unit", "a.b.c", "x9.y_z"] {
             assert!(BehaviorId::new(ok).is_ok(), "{ok} should be valid");
         }
-        for bad in ["", "nodot", "sim.", ".domain", "Sim.Domain", "sim domain", "sim..d", "a-b.c"] {
+        for bad in [
+            "",
+            "nodot",
+            "sim.",
+            ".domain",
+            "Sim.Domain",
+            "sim domain",
+            "sim..d",
+            "a-b.c",
+        ] {
             assert!(BehaviorId::new(bad).is_err(), "{bad:?} should be invalid");
         }
         assert_eq!(BehaviorId::new("sim.domain").unwrap().namespace(), "sim");

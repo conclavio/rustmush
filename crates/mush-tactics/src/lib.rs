@@ -53,13 +53,19 @@ pub use mobility::{
     LocomotionId, MediumId, MobilityError, MobilityMode, MobilityModeId, MobilityProfile,
     MobilityRegistry, MobilityTag, MobilityVocabulary, ModeRules, ModeState,
 };
-pub use module::{TacticsModule, UnitStore};
+pub use module::{
+    MAX_UNIT_BINDING_REPAIRS, MAX_UNIT_RECORD_BYTES, TacticsModule, UNIT_BINDING_VERSION,
+    UNIT_RECORD_VERSION, UnitBindingRepair, UnitRecordStatus, UnitStore,
+};
 pub use unit::{
-    apply, CapabilityId, CapabilityInit, CapabilityKey, CellAddr, CellId, CellSpec, ComponentId,
+    CapabilityId, CapabilityInit, CapabilityKey, CellAddr, CellId, CellSpec, ComponentId,
     ComponentSpec, ConditionId, DefinitionRef, FacetId, FacetSpec, InstallPoint, InstallSlotId,
-    InstalledComponent, Journal, JournalEntry, RulesValue, ScalarCell, SectionId, SectionSpec,
-    SectionState, TacticalUnit, UnitCatalog, UnitCatalogBuilder, UnitError, UnitMutationOp,
-    UnitMutationPlan, UnitSpec,
+    InstalledComponent, Journal, JournalEntry, LegacyUnitV1Decoded, LegacyUnitV1Error,
+    MAX_UNIT_CAPABILITIES, MAX_UNIT_CATALOG_BYTES, MAX_UNIT_CATALOG_DEFINITIONS, MAX_UNIT_CELLS,
+    MAX_UNIT_COMPONENTS, MAX_UNIT_FACETS, MAX_UNIT_MOBILITY_MODES, MAX_UNIT_MUTATION_OPERATIONS,
+    MAX_UNIT_SECTIONS, MAX_UNIT_SLOTS, MAX_UNIT_SPEC_BYTES, RulesValue, ScalarCell, SectionId,
+    SectionSpec, SectionState, TacticalUnit, UnitCatalog, UnitCatalogBuilder, UnitError,
+    UnitMutationOp, UnitMutationPlan, UnitSpec, UnitSpecBody, apply, decode_legacy_unit_v1,
 };
 
 /// The module id (also its persistence namespace).

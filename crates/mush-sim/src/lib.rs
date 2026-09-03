@@ -24,21 +24,24 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mush_core::{
-    BehaviorId, BehaviorSpec, Ctx, DestroyGate, DestroyPolicy, DetachGate, EventHook, GameModule,
-    HookPoint, ModError, ModuleBootData, ModuleCtx, ObjId, ObjKind, Registrar, Registry, Role,
-    TickCadence, World, WorldEvent, WorldEventKind,
+    BehaviorId, BehaviorSpec, Ctx, DefinitionKind, DestroyGate, DestroyPolicy, DetachGate,
+    EventHook, GameModule, HookPoint, ModError, ModuleBootData, ModuleCtx, ObjId, ObjKind,
+    Registrar, Registry, Role, TickCadence, World, WorldEvent, WorldEventKind,
 };
 use mush_proto::RichText;
 
-pub use data::{
-    CapacitySpec, DEFAULT_RECOVERY_ROOM, Derived, DomainClock, DomainId, DomainRecord, DomainStatus,
-    EgressSpec, HostAssignments, HostMounts, HostStations, InteriorSpaceRecord, MAX_SPATIAL_DEPTH,
-    MountId, MountSpec, NS, PASSIVE_DRIVER, PlacementRecord, Presence, RulesValue, SlotId,
-    SpaceAnchor, SpatialParent, SpatialState, StationAssignment, StationId, StationSpec,
-    UnplacedInfo, cgen_key,
-};
 pub use custody::InteriorCustodyProvider;
-pub use graph::{effective_domain, presence, project, space_domain, verify_indexes, verify_projections};
+pub use data::{
+    CapacitySpec, DEFAULT_RECOVERY_ROOM, Derived, DomainClock, DomainId, DomainRecord,
+    DomainStatus, EgressSpec, HeldPlacement, HostAssignments, HostMounts, HostStations,
+    InteriorSpaceRecord, MAX_SPATIAL_DEPTH, MountId, MountSpec, NS, PASSIVE_DRIVER,
+    PlacementRecord, Presence, RulesValue, SlotId, SpaceAnchor, SpatialCounterError, SpatialParent,
+    SpatialState, StationAssignment, StationId, StationSpec, UnplacedInfo, cgen_key,
+    passive_definition_ref, passive_rules_value,
+};
+pub use graph::{
+    effective_domain, presence, project, space_domain, verify_indexes, verify_projections,
+};
 pub use route::{Journey, JourneyStatus, Leg, RouteState};
 pub use transition::{Plan, SpatialError, Transition, apply, plan, run};
 
@@ -87,7 +90,9 @@ fn domain_spec() -> BehaviorSpec {
     s.allowed_kinds = vec![ObjKind::Room, ObjKind::Thing];
     s.destroy = DestroyPolicy::Refuse;
     s.min_role = Role::Wizard;
-    s.help = "Hosts a simulation domain (@domain/create). Refuses @destroy; retire the domain first.".into();
+    s.help =
+        "Hosts a simulation domain (@domain/create). Refuses @destroy; retire the domain first."
+            .into();
     s
 }
 
@@ -96,7 +101,8 @@ fn interior_spec() -> BehaviorSpec {
     s.allowed_kinds = vec![ObjKind::Room];
     s.destroy = DestroyPolicy::Refuse;
     s.min_role = Role::Wizard;
-    s.help = "An interior space (a hangar, a bay) that can hold placed units (@spatial/space).".into();
+    s.help =
+        "An interior space (a hangar, a bay) that can hold placed units (@spatial/space).".into();
     s
 }
 
@@ -118,6 +124,13 @@ struct PlacementGate;
 
 fn placed_or_quarantined(w: &World, obj: ObjId) -> Option<String> {
     let st = state(w)?;
+    if let Some(held) = st.held_placement(obj) {
+        return Some(format!(
+            "{} has a held unreadable placement ({}); staff must repair or migrate it.",
+            mush_core::output::display_name(w, obj),
+            held.key
+        ));
+    }
     if st.is_quarantined(obj) {
         return Some(format!(
             "{} is quarantined; staff recover it with @spatial/recover.",
@@ -144,13 +157,25 @@ fn placed_or_quarantined(w: &World, obj: ObjId) -> Option<String> {
 }
 
 impl EventHook for PlacementGate {
-    fn move_attempt(&self, w: &mut World, actor: ObjId, _exit: Option<ObjId>, _dest: ObjId) -> Result<(), RichText> {
+    fn move_attempt(
+        &self,
+        w: &mut World,
+        actor: ObjId,
+        _exit: Option<ObjId>,
+        _dest: ObjId,
+    ) -> Result<(), RichText> {
         match gate_reason(w, actor) {
             Some(reason) => Err(RichText::tag("error", reason)),
             None => Ok(()),
         }
     }
-    fn carry_attempt(&self, w: &mut World, _mover: ObjId, obj: ObjId, _dest: ObjId) -> Result<(), RichText> {
+    fn carry_attempt(
+        &self,
+        w: &mut World,
+        _mover: ObjId,
+        obj: ObjId,
+        _dest: ObjId,
+    ) -> Result<(), RichText> {
         match gate_reason(w, obj) {
             Some(reason) => Err(RichText::tag("error", reason)),
             None => Ok(()),
@@ -170,37 +195,87 @@ fn gate_reason(w: &World, obj: ObjId) -> Option<String> {
 struct StructuralDestroyGate;
 
 impl DestroyGate for StructuralDestroyGate {
-    fn check(&self, w: &World, _reg: &Registry, _actor: ObjId, target: ObjId) -> Result<(), String> {
+    fn check(
+        &self,
+        w: &World,
+        _reg: &Registry,
+        _actor: ObjId,
+        target: ObjId,
+    ) -> Result<(), String> {
         let Some(st) = state(w) else { return Ok(()) };
+        if let Some(held) = st.held_placement(target) {
+            return Err(format!(
+                "{} has a held unreadable placement ({}); repair or migrate it before destruction.",
+                name(w, target),
+                held.key
+            ));
+        }
         if target == st.recovery_room && target != mush_core::LIMBO {
-            return Err(format!("{} is the spatial recovery room; reconfigure it first.", name(w, target)));
+            return Err(format!(
+                "{} is the spatial recovery room; reconfigure it first.",
+                name(w, target)
+            ));
         }
         if let Some(d) = st.domain_of_host(target) {
-            return Err(format!("{} hosts domain #{}; retire it first (@domain/retire).", name(w, target), d.id));
+            return Err(format!(
+                "{} hosts domain #{}; retire it first (@domain/retire).",
+                name(w, target),
+                d.id
+            ));
         }
         if let Some(ds) = st.derived.presentation_of.get(&target) {
-            let live: Vec<String> = ds.iter().filter(|d| st.domains.get(d).is_some_and(|r| r.status != DomainStatus::Retired)).map(|d| format!("#{d}")).collect();
+            let live: Vec<String> = ds
+                .iter()
+                .filter(|d| {
+                    st.domains
+                        .get(d)
+                        .is_some_and(|r| r.status != DomainStatus::Retired)
+                })
+                .map(|d| format!("#{d}"))
+                .collect();
             if !live.is_empty() {
-                return Err(format!("{} is the presentation room of domain(s) {}; re-point them first (@domain/present).", name(w, target), live.join(", ")));
+                return Err(format!(
+                    "{} is the presentation room of domain(s) {}; re-point them first (@domain/present).",
+                    name(w, target),
+                    live.join(", ")
+                ));
             }
         }
         if st.spaces.contains_key(&target) {
-            return Err(format!("{} is an interior space; @spatial/unspace it first.", name(w, target)));
+            return Err(format!(
+                "{} is an interior space; @spatial/unspace it first.",
+                name(w, target)
+            ));
         }
         if let Some(spaces) = st.derived.anchored_spaces.get(&target) {
-            let occupied: Vec<String> = spaces.iter().filter(|s| !st.children_of(**s).is_empty()).map(|s| name(w, *s)).collect();
+            let occupied: Vec<String> = spaces
+                .iter()
+                .filter(|s| !st.children_of(**s).is_empty())
+                .map(|s| name(w, *s))
+                .collect();
             if !occupied.is_empty() {
-                return Err(format!("{} carries occupied interior(s) {}; empty them first.", name(w, target), occupied.join(", ")));
+                return Err(format!(
+                    "{} carries occupied interior(s) {}; empty them first.",
+                    name(w, target),
+                    occupied.join(", ")
+                ));
             }
         }
         if let Some(a) = st.assignments.get(&target)
             && !a.seats.is_empty()
         {
-            return Err(format!("{} has {} crewed station(s); @spatial/unassign first.", name(w, target), a.seats.len()));
+            return Err(format!(
+                "{} has {} crewed station(s); @spatial/unassign first.",
+                name(w, target),
+                a.seats.len()
+            ));
         }
         let deps = st.children_of(target).len();
         if deps > 0 {
-            return Err(format!("{} still has {deps} placed dependent(s); move them first.", name(w, target)));
+            return Err(format!(
+                "{} still has {deps} placed dependent(s); move them first.",
+                name(w, target)
+            ));
         }
         Ok(())
     }
@@ -211,24 +286,50 @@ impl DestroyGate for StructuralDestroyGate {
 struct SimDetachGate;
 
 impl DetachGate for SimDetachGate {
-    fn check(&self, w: &World, _reg: &Registry, _actor: ObjId, obj: ObjId, behavior: &BehaviorId) -> Result<(), String> {
+    fn check(
+        &self,
+        w: &World,
+        _reg: &Registry,
+        _actor: ObjId,
+        obj: ObjId,
+        behavior: &BehaviorId,
+    ) -> Result<(), String> {
         let Some(st) = state(w) else { return Ok(()) };
         match behavior.as_str() {
             "sim.domain" => {
                 if let Some(d) = st.domain_of_host(obj) {
-                    return Err(format!("{} still hosts domain #{}; @domain/retire it first.", name(w, obj), d.id));
+                    return Err(format!(
+                        "{} still hosts domain #{}; @domain/retire it first.",
+                        name(w, obj),
+                        d.id
+                    ));
                 }
             }
             "sim.interior" => {
                 if st.spaces.contains_key(&obj) {
-                    return Err(format!("{} is still an interior space; @spatial/unspace it first.", name(w, obj)));
+                    return Err(format!(
+                        "{} is still an interior space; @spatial/unspace it first.",
+                        name(w, obj)
+                    ));
                 }
             }
+            "sim.participant" if st.held_placement(obj).is_some() => {
+                return Err(format!(
+                    "{} has a held unreadable placement; repair or migrate it first.",
+                    name(w, obj)
+                ));
+            }
             "sim.participant" if st.is_quarantined(obj) => {
-                return Err(format!("{} is quarantined; @spatial/recover it first.", name(w, obj)));
+                return Err(format!(
+                    "{} is quarantined; @spatial/recover it first.",
+                    name(w, obj)
+                ));
             }
             "sim.participant" if st.is_placed(obj) => {
-                return Err(format!("{} is still placed; @spatial/unplace it first.", name(w, obj)));
+                return Err(format!(
+                    "{} is still placed; @spatial/unplace it first.",
+                    name(w, obj)
+                ));
             }
             _ => {}
         }
@@ -244,7 +345,9 @@ fn name(w: &World, id: ObjId) -> String {
 /// path is refused by the gates above): retire what the husk hosted and
 /// quarantine what depended on it, per the domain-loss rule.
 fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
-    let WorldEvent::ObjDestroyed { obj } = ev else { return };
+    let WorldEvent::ObjDestroyed { obj } = ev else {
+        return;
+    };
     let obj = *obj;
     route::on_traveler_destroyed(ctx, obj);
     let Some(st) = state(ctx.w) else { return };
@@ -259,7 +362,12 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
         .map(|s| s.iter().copied().collect())
         .unwrap_or_default();
     let was_space = st.spaces.contains_key(&obj);
-    let riding_spaces: Vec<ObjId> = st.derived.anchored_spaces.get(&obj).map(|s| s.iter().copied().collect()).unwrap_or_default();
+    let riding_spaces: Vec<ObjId> = st
+        .derived
+        .anchored_spaces
+        .get(&obj)
+        .map(|s| s.iter().copied().collect())
+        .unwrap_or_default();
     let dependents: Vec<ObjId> = st.children_of(obj).iter().copied().collect();
     let was_placed = st.placements.contains_key(&obj);
     // Units this actor (if it is one) crews — its seats die with it.
@@ -279,14 +387,25 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
         .unwrap_or_default();
     let directs_of_orphaned: Vec<ObjId> = orphaned_domains
         .iter()
-        .flat_map(|d| st.derived.domain_direct.get(d).into_iter().flatten().copied())
+        .flat_map(|d| {
+            st.derived
+                .domain_direct
+                .get(d)
+                .into_iter()
+                .flatten()
+                .copied()
+        })
         .collect();
     // Every actor whose crew link must be re-derived: the FULL subtree of every
     // quarantine root (Quarantine unplaces subtrees, so a crewed grandchild is
     // disturbed too), plus the husk's own crew (its seat record dies).
     let crew_refresh: std::collections::BTreeSet<ObjId> = {
         let mut set = std::collections::BTreeSet::new();
-        for root in dependents.iter().chain(direct_in_hosted.iter()).chain(directs_of_orphaned.iter()) {
+        for root in dependents
+            .iter()
+            .chain(direct_in_hosted.iter())
+            .chain(directs_of_orphaned.iter())
+        {
             for unit in st.subtree(*root) {
                 if let Some(a) = st.assignments.get(&unit) {
                     set.extend(a.seats.values().map(|seat| seat.actor));
@@ -306,19 +425,41 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
         .chain(direct_in_hosted.iter())
         .chain(directs_of_orphaned.iter())
     {
-        let _ = run(ctx, &Transition::Quarantine { root: *root, reason: format!("{obj} was destroyed") });
+        let _ = run(
+            ctx,
+            &Transition::Quarantine {
+                root: *root,
+                reason: format!("{obj} was destroyed"),
+            },
+        );
     }
     // Spaces fixed in the lost domain, or riding the husk, become unanchored.
     for sp in fixed_spaces.iter().chain(riding_spaces.iter()) {
-        let _ = run(ctx, &Transition::Space { space: *sp, anchor: SpaceAnchor::Unanchored });
+        let _ = run(
+            ctx,
+            &Transition::Space {
+                space: *sp,
+                anchor: SpaceAnchor::Unanchored,
+            },
+        );
     }
     // A domain whose presentation room died is paused: it cannot project.
     for d in &orphaned_domains {
         let paused = ctx.w.module_state_mut::<SpatialState>().and_then(|s| {
             let rec = s.domains.get_mut(d)?;
             (rec.status == DomainStatus::Active).then(|| {
+                // Losing the presentation room is an infallible safety
+                // backstop. At exhaustion, retain MAX and leave the domain
+                // permanently paused rather than keeping it executable.
+                let revision = rec.revision.saturating_add(1);
+                if revision == rec.revision {
+                    tracing::error!(
+                        domain = %d,
+                        "sim: domain revision exhausted; pausing at terminal revision"
+                    );
+                }
                 rec.status = DomainStatus::Paused;
-                rec.revision += 1;
+                rec.revision = revision;
                 rec.clone()
             })
         });
@@ -327,13 +468,26 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
         }
     }
     // Retire the records the husk owned.
-    let s = ctx.w.module_state_mut::<SpatialState>().expect("sim state slot installed at registration");
+    let s = ctx
+        .w
+        .module_state_mut::<SpatialState>()
+        .expect("sim state slot installed at registration");
     let mut dels: Vec<smol_str::SmolStr> = Vec::new();
     if let Some(d) = hosted
         && let Some(rec) = s.domains.get_mut(&d)
     {
+        // Retirement on destruction is terminal and cannot be allowed to
+        // fail. Saturating at MAX closes the domain while making every future
+        // non-terminal revision change refuse.
+        let revision = rec.revision.saturating_add(1);
+        if revision == rec.revision {
+            tracing::error!(
+                domain = %d,
+                "sim: domain revision exhausted; retiring at terminal revision"
+            );
+        }
         rec.status = DomainStatus::Retired;
-        rec.revision += 1;
+        rec.revision = revision;
         let rec = rec.clone();
         data::persist_domain(ctx.out, &rec);
     }
@@ -371,8 +525,21 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
             }
             data::persist_assignments(ctx.out, &rec);
         }
-        let g = s.bump_control_gen(*unit);
-        data::persist_control_gen(ctx.out, *unit, g);
+        match s.bump_control_gen(*unit) {
+            Ok(generation) => data::persist_control_gen(ctx.out, *unit, generation),
+            Err(error) => {
+                // Revocation is already enforced by the assignment/link
+                // removal and execution-time channel check. Keep MAX so no
+                // later grant can reuse this epoch, and complete destruction.
+                let generation = s.control_generation(*unit);
+                tracing::error!(
+                    unit = %unit,
+                    %error,
+                    "sim: control generation exhausted while revoking destroyed actor"
+                );
+                data::persist_control_gen(ctx.out, *unit, generation);
+            }
+        }
     }
     s.derived = graph::rebuild(s);
     for k in dels {
@@ -392,6 +559,12 @@ impl GameModule for SimulationModule {
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        reg.definition_validator(
+            DefinitionKind::new("schema").map_err(|error| ModError::msg(error.to_string()))?,
+            data::validate_schema_definition,
+        )?;
+        let passive = reg.definition(data::passive_definition_descriptor())?;
+        debug_assert_eq!(passive, data::passive_definition_ref());
         reg.state(SpatialState::new(self.config.recovery_room));
         reg.state(route::RouteState::default());
         reg.behavior(domain_spec())?;
@@ -402,17 +575,28 @@ impl GameModule for SimulationModule {
         reg.destroy_gate(Arc::new(StructuralDestroyGate));
         reg.detach_gate(Arc::new(SimDetachGate));
         reg.subscribe(WorldEventKind::ObjDestroyed, Arc::new(on_obj_destroyed));
-        reg.tick(route::SWEEP_TAG, TickCadence::Coarse(Duration::from_secs(route::SWEEP_SECS)), Arc::new(route::sweep))?;
+        reg.tick(
+            route::SWEEP_TAG,
+            TickCadence::Coarse(Duration::from_secs(route::SWEEP_SECS)),
+            Arc::new(route::sweep),
+        )?;
         commands::register(reg)?;
         Ok(())
     }
 
-    fn on_world_loaded(&mut self, ctx: &mut ModuleCtx<'_>, mut data: ModuleBootData) -> Result<(), ModError> {
+    fn on_world_loaded(
+        &mut self,
+        ctx: &mut ModuleCtx<'_>,
+        mut data: ModuleBootData,
+    ) -> Result<(), ModError> {
         let (journeys, dead_journeys) = boot::extract_journeys(&mut data);
         let q = boot::load_boot(ctx, data, self.config.recovery_room)?;
         boot::install_journeys(ctx, journeys, dead_journeys);
         if q > 0 {
-            tracing::warn!(quarantined = q, "sim: boot quarantined placements; see @spatial/quarantine");
+            tracing::warn!(
+                quarantined = q,
+                "sim: boot quarantined placements; see @spatial/quarantine"
+            );
         }
         Ok(())
     }

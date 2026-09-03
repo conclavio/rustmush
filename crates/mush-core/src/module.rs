@@ -1,8 +1,8 @@
 //! The merged module API (treaty ruling 4): [`GameModule`] + [`Registrar`].
 //!
 //! Modules are compiled-in crates handed to
-//! [`Engine::with_modules`](crate::engine::Engine::with_modules) as
-//! `Box<dyn GameModule>` **before** world load. Each module's
+//! [`Engine::compose_modules`](crate::engine::Engine::compose_modules) as
+//! `Box<dyn GameModule>` **before** persisted world load. Each module's
 //! [`GameModule::register`] runs once against a [`Registrar`], which is a
 //! thin, identity-carrying view over the existing
 //! [`Registry`](crate::cmd::Registry) — commands and alias stages land in
@@ -92,6 +92,14 @@ impl ModError {
 // ----------------------------------------------------------------------
 // Module persistence ops (shared contract with mush-store)
 // ----------------------------------------------------------------------
+
+/// Maximum UTF-8 bytes in a module persistence namespace. Shared by the
+/// producer, store, and quarantine sink so an accepted authoritative operation
+/// can always be represented by its recovery envelope.
+pub const MAX_MODULE_NAMESPACE_BYTES: usize = 256;
+
+/// Maximum UTF-8 bytes in a key within a module persistence namespace.
+pub const MAX_MODULE_KEY_BYTES: usize = 4 * 1024;
 
 /// One write against a module's persisted namespace.
 ///
@@ -684,6 +692,14 @@ pub trait QueryHandler: Send + Sync {
     ) -> Result<OutputEvent, RichText>;
 }
 
+/// Read-only, bounded recovery diagnostics contributed by a mechanics-owning
+/// module. The registrar stamps the owner when reports are collected, so a
+/// reporter cannot accidentally attribute its incidents to another module.
+pub trait RecoveryReporter: Send + Sync {
+    /// Snapshot current lifecycle counts and bounded incident/migration detail.
+    fn report(&self, world: &World) -> crate::mechanics::ModuleBootReport;
+}
+
 /// Typed re-entry of a module's deferred async work
 /// ([`Effect::ModuleAsync`](crate::engine::Effect::ModuleAsync) →
 /// [`WorldCommand::ModuleAsyncDone`](crate::engine::WorldCommand::ModuleAsyncDone),
@@ -1045,6 +1061,9 @@ pub struct ModuleTables {
     ticks: Vec<TickReg>,
     panel_feeds: Vec<(SmolStr, SmolStr)>,
     query_handlers: HashMap<SmolStr, (SmolStr, Arc<dyn QueryHandler>)>,
+    /// Canonical module owner -> its read-only recovery diagnostics.
+    recovery_reporters:
+        std::collections::BTreeMap<crate::mechanics::OwnerId, Arc<dyn RecoveryReporter>>,
     job_queues: Vec<JobQueueSpec>,
     script_apis: Vec<(SmolStr, SmolStr)>,
     migrations: HashMap<SmolStr, Vec<Migration>>,
@@ -1061,16 +1080,223 @@ impl fmt::Debug for ModuleTables {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "ModuleTables(ns:{} markers:{} ticks:{} observers:{})",
+            "ModuleTables(ns:{} markers:{} ticks:{} observers:{} recovery:{})",
             self.attr_ns.len(),
             self.markers.len(),
             self.ticks.len(),
-            self.observers.len()
+            self.observers.len(),
+            self.recovery_reporters.len()
         )
     }
 }
 
 impl Registry {
+    /// Freeze the K1 definition/bridge/migration registries and K2 action providers.
+    /// Called exactly once by [`Engine::compose_modules`](crate::Engine::compose_modules)
+    /// after every module has registered and before persisted world data loads.
+    pub(crate) fn freeze_mechanics(
+        &mut self,
+        module_owners: &BTreeSet<crate::mechanics::OwnerId>,
+    ) -> Result<(), ModError> {
+        if module_owners.len() > crate::mechanics::MAX_MECHANICS_OWNERS {
+            return Err(ModError::msg(format!(
+                "mechanics owner roster has {} entries; maximum is {}",
+                module_owners.len(),
+                crate::mechanics::MAX_MECHANICS_OWNERS
+            )));
+        }
+        if self.definitions.is_some()
+            || self.bridges.is_some()
+            || self.definition_migrations.is_some()
+            || self.action_providers.is_some()
+            || self.revision_validators.is_some()
+            || self.authority_guard_validators.is_some()
+            || self.state_families.is_some()
+            || self.mechanics_owner_readiness.is_some()
+        {
+            return Err(ModError::msg("mechanics registries were already frozen"));
+        }
+        let mut definitions = std::mem::take(&mut self.definition_builder)
+            .freeze()
+            .map_err(|e| ModError::msg(format!("definition registry: {e}")))?;
+        let owner_readiness = crate::mechanics::MechanicalOwnerReadiness::for_owners(module_owners);
+        definitions.bind_owner_readiness(owner_readiness.clone());
+        let bridges = std::mem::take(&mut self.bridge_builder)
+            .freeze_for_owners_with_readiness(&definitions, module_owners, owner_readiness.clone())
+            .map_err(|e| ModError::msg(format!("bridge registry: {e}")))?;
+        let action_providers = std::mem::take(&mut self.action_provider_builder)
+            .freeze_for_owners_with_readiness(&definitions, module_owners, owner_readiness.clone())
+            .map_err(|e| ModError::msg(format!("action provider registry: {e}")))?;
+        let state_families = std::mem::take(&mut self.state_family_builder)
+            .freeze_for_owners_with_readiness(module_owners, owner_readiness.clone())
+            .map_err(|e| ModError::msg(format!("state family registry: {e}")))?;
+        let revision_validators = std::mem::take(&mut self.revision_validator_builder)
+            .freeze_for_owners_with_readiness(module_owners, owner_readiness.clone())
+            .map_err(|e| ModError::msg(format!("revision validator registry: {e}")))?;
+        let authority_guard_validators =
+            std::mem::take(&mut self.authority_guard_validator_builder)
+                .freeze_for_owners_with_readiness(module_owners, owner_readiness.clone())
+                .map_err(|e| ModError::msg(format!("authority validator registry: {e}")))?;
+        let definition_migrations = std::mem::take(&mut self.definition_migration_builder)
+            .freeze_for_composition(&definitions, owner_readiness.clone())
+            .map_err(|e| ModError::msg(format!("definition migration registry: {e}")))?;
+        self.definitions = Some(definitions);
+        self.mechanics_owner_readiness = Some(owner_readiness);
+        self.bridges = Some(bridges);
+        self.action_providers = Some(action_providers);
+        self.revision_validators = Some(revision_validators);
+        self.authority_guard_validators = Some(authority_guard_validators);
+        self.state_families = Some(state_families);
+        self.definition_migrations = Some(definition_migrations);
+        Ok(())
+    }
+
+    /// The immutable exact definition registry, once module composition has
+    /// completed. `None` is possible only on a bare, uncomposed [`Registry`].
+    #[must_use]
+    pub fn definitions(&self) -> Option<&crate::mechanics::DefinitionRegistry> {
+        self.definitions.as_ref()
+    }
+
+    /// Permanently disable executable mechanics owned by one composed module.
+    /// The first incident wins and the transition is monotonic for this process.
+    pub fn freeze_mechanics_owner(
+        &self,
+        owner: &crate::mechanics::OwnerId,
+        incident: crate::mechanics::IncidentId,
+        reason: crate::mechanics::RecoveryReason,
+    ) -> Result<
+        crate::mechanics::MechanicalOwnerFreeze,
+        crate::mechanics::MechanicalOwnerReadinessError,
+    > {
+        self.mechanics_owner_readiness
+            .as_ref()
+            .ok_or(crate::mechanics::MechanicalOwnerReadinessError::RegistryUnavailable)?
+            .freeze(owner, incident, reason)
+    }
+
+    /// Return the incident holding an owner, or `None` when it remains ready.
+    pub fn mechanics_owner_freeze(
+        &self,
+        owner: &crate::mechanics::OwnerId,
+    ) -> Result<
+        Option<crate::mechanics::MechanicalOwnerFreeze>,
+        crate::mechanics::MechanicalOwnerReadinessError,
+    > {
+        self.mechanics_owner_readiness
+            .as_ref()
+            .ok_or(crate::mechanics::MechanicalOwnerReadinessError::RegistryUnavailable)?
+            .freeze_for(owner)
+    }
+
+    /// Fail closed unless an owner belongs to the frozen composition roster and
+    /// has not encountered an integrity incident.
+    pub fn require_mechanics_owner_ready(
+        &self,
+        owner: &crate::mechanics::OwnerId,
+    ) -> Result<(), crate::mechanics::MechanicalOwnerReadinessError> {
+        self.mechanics_owner_readiness
+            .as_ref()
+            .ok_or(crate::mechanics::MechanicalOwnerReadinessError::RegistryUnavailable)?
+            .require_ready(owner)
+    }
+
+    /// The immutable exact cross-owner bridge registry after composition.
+    #[must_use]
+    pub fn bridges(&self) -> Option<&crate::mechanics::BridgeRegistry> {
+        self.bridges.as_ref()
+    }
+
+    /// Pure definition migrations available for dry-run planning. These are
+    /// deliberately separate from the legacy eager namespace migrations.
+    #[must_use]
+    pub fn definition_migrations(&self) -> Option<&crate::mechanics::DefinitionMigrationRegistry> {
+        self.definition_migrations.as_ref()
+    }
+
+    /// Exact, immutable action-provider lookup after module composition.
+    #[must_use]
+    pub fn action_providers(&self) -> Option<&crate::action::ActionProviderRegistry> {
+        self.action_providers.as_ref()
+    }
+
+    /// Exact, immutable revision-validator lookup after module composition.
+    #[must_use]
+    pub fn revision_validators(&self) -> Option<&crate::action::RevisionValidatorRegistry> {
+        self.revision_validators.as_ref()
+    }
+
+    /// Exact, immutable authority-validator lookup after module composition.
+    #[must_use]
+    pub fn authority_guard_validators(
+        &self,
+    ) -> Option<&crate::action::AuthorityGuardValidatorRegistry> {
+        self.authority_guard_validators.as_ref()
+    }
+
+    /// Immutable owner-stamped state-family registry after composition.
+    #[must_use]
+    pub fn state_families(&self) -> Option<&crate::action_state::StateFamilyRegistry> {
+        self.state_families.as_ref()
+    }
+
+    /// Start a server-owned guard bundle bound to this exact frozen module
+    /// composition. A bare or not-yet-composed registry fails closed.
+    pub fn server_guard_set_builder(
+        &self,
+        revisions: crate::action::RevisionSet,
+    ) -> Result<crate::action::ServerGuardSetBuilder, crate::action::GuardSetBuildError> {
+        let readiness = self
+            .mechanics_owner_readiness
+            .as_ref()
+            .ok_or(crate::action::GuardSetBuildError::RegistryUnavailable)?;
+        Ok(crate::action::ServerGuardSetBuilder::new(
+            revisions,
+            readiness.clone(),
+        ))
+    }
+
+    /// Start a deterministic trigger queue bound to this exact frozen module
+    /// composition. Provider tokens from any other composition are rejected.
+    pub fn causal_trigger_queue(
+        &self,
+        root_request: crate::action::RequestUid,
+    ) -> Result<crate::action::CausalTriggerQueue, crate::action::CascadeError> {
+        let readiness = self
+            .mechanics_owner_readiness
+            .as_ref()
+            .ok_or(crate::action::CascadeError::RegistryUnavailable)?;
+        Ok(crate::action::CausalTriggerQueue::new(
+            root_request,
+            readiness.clone(),
+        ))
+    }
+
+    /// One deployment fingerprint over all frozen mechanics registries.
+    #[must_use]
+    pub fn mechanics_fingerprint(&self) -> Option<crate::mechanics::DefinitionDigest> {
+        let definitions = self.definitions.as_ref()?;
+        let bridges = self.bridges.as_ref()?;
+        let migrations = self.definition_migrations.as_ref()?;
+        let actions = self.action_providers.as_ref()?;
+        let revisions = self.revision_validators.as_ref()?;
+        let authority = self.authority_guard_validators.as_ref()?;
+        let state_families = self.state_families.as_ref()?;
+        crate::mechanics::DefinitionDigest::for_canonical_value(
+            "mechanics_registry.v4",
+            &serde_json::json!({
+                "definitions": definitions.fingerprint().to_hex(),
+                "bridges": bridges.fingerprint().to_hex(),
+                "migrations": migrations.fingerprint().to_hex(),
+                "actions": actions.fingerprint().to_hex(),
+                "revision_validators": revisions.fingerprint().to_hex(),
+                "authority_validators": authority.fingerprint().to_hex(),
+                "state_families": state_families.fingerprint().to_hex(),
+            }),
+        )
+        .ok()
+    }
+
     /// The module that owns attribute namespace `ns` (`"wod"` for
     /// `wod:*`), if any. Lookup is case-insensitive.
     #[must_use]
@@ -1160,6 +1386,44 @@ impl Registry {
             .map(|(m, h)| (m, Arc::clone(h)))
     }
 
+    /// Collect every module's bounded recovery report in canonical owner
+    /// order. Raw quarantined payloads are intentionally never exposed here.
+    #[must_use]
+    pub fn recovery_reports(&self, world: &World) -> Vec<crate::mechanics::ModuleBootReport> {
+        self.mods
+            .recovery_reporters
+            .iter()
+            .map(|(owner, reporter)| {
+                let mut report = reporter.report(world);
+                let incident_details = u64::try_from(report.incidents.len()).unwrap_or(u64::MAX);
+                let migration_details =
+                    u64::try_from(report.migration_plans.len()).unwrap_or(u64::MAX);
+                report.incident_count = report.incident_count.max(incident_details);
+                report.migration_plan_count = report.migration_plan_count.max(migration_details);
+                if report.incidents.len() > crate::mechanics::MAX_BOOT_REPORT_DETAILS {
+                    report
+                        .incidents
+                        .truncate(crate::mechanics::MAX_BOOT_REPORT_DETAILS);
+                    report.details_truncated = true;
+                }
+                if report.migration_plans.len() > crate::mechanics::MAX_BOOT_REPORT_DETAILS {
+                    report
+                        .migration_plans
+                        .truncate(crate::mechanics::MAX_BOOT_REPORT_DETAILS);
+                    report.details_truncated = true;
+                }
+                report.owner = owner.clone();
+                // Incident attribution is registrar-owned just like the
+                // top-level report. Reasons may legitimately name a different
+                // provider, but an incident itself may not spoof its owner.
+                for incident in &mut report.incidents {
+                    incident.owner = owner.clone();
+                }
+                report
+            })
+            .collect()
+    }
+
     /// All registered job queues.
     #[must_use]
     pub fn job_queues(&self) -> &[JobQueueSpec] {
@@ -1209,11 +1473,13 @@ impl Registry {
 // ----------------------------------------------------------------------
 
 /// A compiled-in game module (comsys, mail, jobs, weather, rulesets).
-/// Registered as `Box<dyn GameModule>` **before** world load via
-/// [`Engine::with_modules`](crate::engine::Engine::with_modules).
+/// Registered as `Box<dyn GameModule>` **before** persisted world load via
+/// [`Engine::compose_modules`](crate::engine::Engine::compose_modules).
 pub trait GameModule: Send {
     /// Stable module id — also the persistence namespace and the identity
-    /// commands registered here carry (`ctx.module`).
+    /// commands registered here carry (`ctx.module`). It must already be a
+    /// canonical [`OwnerId`](crate::mechanics::OwnerId): lowercase ASCII
+    /// letters, digits, `_`, and non-empty `.`-separated segments.
     fn name(&self) -> &'static str;
 
     /// Register everything (commands, hooks, ticks, …). Runs once at
@@ -1237,9 +1503,14 @@ pub trait GameModule: Send {
     /// Pure over `kv` — called after the kv listing and before
     /// [`GameModule::on_world_loaded`], so a module whose stream keys are
     /// derived from its docs (comsys `hist:{id}` per `chan:{id}`) can name
-    /// them without the driver knowing its layout. Default: none.
-    fn boot_stream_requests(&self, _kv: &[(SmolStr, serde_json::Value)]) -> Vec<(SmolStr, u32)> {
-        Vec::new()
+    /// them without the driver knowing its layout. Invalid persisted metadata
+    /// must return an error here, before the driver performs any stream read.
+    /// Default: none.
+    fn boot_stream_requests(
+        &self,
+        _kv: &[(SmolStr, serde_json::Value)],
+    ) -> Result<Vec<(SmolStr, u32)>, ModError> {
+        Ok(Vec::new())
     }
 }
 
@@ -1250,21 +1521,345 @@ pub trait GameModule: Send {
 pub struct Registrar<'a> {
     module: SmolStr,
     reg: &'a mut Registry,
+    mechanics_authority: MechanicsRegistrationAuthority,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MechanicsRegistrationAuthority {
+    Legacy,
+    ModuleComposition,
 }
 
 impl<'a> Registrar<'a> {
-    /// A registrar acting as `module` over `reg`.
+    /// A registrar acting as `module` over `reg` for legacy/non-mechanical
+    /// registration surfaces.
+    ///
+    /// Mechanics registration is deliberately unavailable through this public
+    /// constructor: otherwise any caller holding a bare [`Registry`] could
+    /// claim the name of a later composed module and pre-populate its
+    /// owner-stamped definitions or executable callbacks. Mechanics are
+    /// admitted only by the registrar created around the actual
+    /// [`GameModule::register`] composition callback.
+    ///
+    /// ```compile_fail
+    /// use mush_core::{Registrar, Registry};
+    /// let mut registry = Registry::new();
+    /// let _ = Registrar::for_composition(&mut registry, "spoofed");
+    /// ```
     pub fn new(reg: &'a mut Registry, module: &str) -> Registrar<'a> {
         Registrar {
             module: SmolStr::new(module),
             reg,
+            mechanics_authority: MechanicsRegistrationAuthority::Legacy,
         }
+    }
+
+    /// Create the capability-bearing registrar used only while composing the
+    /// concrete module whose `name()` supplied `module`.
+    pub(crate) fn for_composition(reg: &'a mut Registry, module: &str) -> Registrar<'a> {
+        Registrar {
+            module: SmolStr::new(module),
+            reg,
+            mechanics_authority: MechanicsRegistrationAuthority::ModuleComposition,
+        }
+    }
+
+    fn require_mechanics_registration_authority(&self) -> Result<(), ModError> {
+        if self.mechanics_authority != MechanicsRegistrationAuthority::ModuleComposition {
+            return Err(ModError::msg(format!(
+                "module {}: mechanics registration requires the Engine::compose_modules callback",
+                self.module
+            )));
+        }
+        Ok(())
     }
 
     /// The registering module's id.
     #[must_use]
     pub fn module(&self) -> &str {
         &self.module
+    }
+
+    /// Register one immutable rules definition owned by this module. The
+    /// descriptor cannot spoof an owner or digest: this registrar stamps the
+    /// former and the shared builder computes the latter.
+    pub fn definition(
+        &mut self,
+        descriptor: crate::mechanics::DefinitionDescriptor,
+    ) -> Result<crate::mechanics::DefinitionRef, ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.definitions.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: definition registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .definition_builder
+            .register_provider_definition(owner, descriptor)
+            .map_err(|e| {
+                ModError::msg(format!(
+                    "module {}: definition registration: {e}",
+                    self.module
+                ))
+            })
+    }
+
+    /// Register the one semantic validator for a definition kind owned by
+    /// this module.
+    ///
+    /// The shared registry validates canonical identity, bounds, and exact
+    /// dependency availability. This callback is the typed provider's half of
+    /// that contract: it must strictly decode and completely validate each
+    /// payload of `kind`, including checking that references derived from the
+    /// decoded body exactly equal the descriptor's declared references.
+    /// Composition fails if a kind registered through [`Self::definition`]
+    /// has no validator, if this pair is registered twice, or if validation
+    /// rejects any definition.
+    pub fn definition_validator<V>(
+        &mut self,
+        kind: crate::mechanics::DefinitionKind,
+        validator: V,
+    ) -> Result<(), ModError>
+    where
+        V: crate::mechanics::DefinitionValidator + 'static,
+    {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.definitions.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: definition registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .definition_builder
+            .register_provider_validator(owner, kind, Arc::new(validator))
+            .map_err(|e| {
+                ModError::msg(format!(
+                    "module {}: definition validator registration: {e}",
+                    self.module
+                ))
+            })
+    }
+
+    /// Register an object-safe action provider for one exact action definition.
+    ///
+    /// The registrar stamps the provider owner. The referenced definition must
+    /// have kind `action`, the same owner, and an exact registered digest when
+    /// module composition freezes.
+    pub fn action_provider<P>(
+        &mut self,
+        action: crate::mechanics::DefinitionRef,
+        provider: P,
+    ) -> Result<(), ModError>
+    where
+        P: crate::action::ActionProvider + 'static,
+    {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.action_providers.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: action provider registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .action_provider_builder
+            .register(owner, action, Arc::new(provider))
+            .map_err(|e| {
+                ModError::msg(format!(
+                    "module {}: action provider registration: {e}",
+                    self.module
+                ))
+            })
+    }
+
+    /// Declare one engine-owned typed state family and receive its opaque
+    /// owner-stamped capability.
+    ///
+    /// The descriptor names the durable key/schema/validation/serialization
+    /// contracts. The callbacks are trusted module code, but live values can
+    /// be read or mutated only through the returned handle and a bounded
+    /// [`ActionTxn`](crate::ActionTxn). No family is installed in the legacy
+    /// [`ModuleStateMap`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn state_family<K, V, KC, VV, VS>(
+        &mut self,
+        descriptor: crate::action_state::StateFamilyDescriptor,
+        key_codec: KC,
+        validator: VV,
+        serializer: VS,
+    ) -> Result<crate::action_state::StateFamilyHandle<K, V>, ModError>
+    where
+        K: Send + Sync + 'static,
+        V: Clone + Send + Sync + 'static,
+        KC: crate::action_state::StateKeyCodec<K> + 'static,
+        VV: crate::action_state::StateValueValidator<V> + 'static,
+        VS: crate::action_state::StateValueSerializer<V> + 'static,
+    {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.state_families.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: state-family registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .state_family_builder
+            .register(owner, descriptor, key_codec, validator, serializer)
+            .map_err(|e| {
+                ModError::msg(format!(
+                    "module {}: state-family registration: {e}",
+                    self.module
+                ))
+            })
+    }
+
+    /// Register the immutable-world evaluator for one revision kind owned by
+    /// this module. Owner identity is stamped; no dotted-id inference occurs.
+    pub fn revision_validator<V>(
+        &mut self,
+        kind: crate::action::RevisionKind,
+        validator: V,
+    ) -> Result<(), ModError>
+    where
+        V: crate::action::RevisionValidator + 'static,
+    {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.revision_validators.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: revision validator registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .revision_validator_builder
+            .register(owner, kind, Arc::new(validator))
+            .map_err(|e| {
+                ModError::msg(format!(
+                    "module {}: revision validator registration: {e}",
+                    self.module
+                ))
+            })
+    }
+
+    /// Register this module's final evaluator for one policy-owned authority
+    /// guard category. Definition guards remain centrally exact-validated.
+    pub fn authority_guard_validator<V>(
+        &mut self,
+        kind: crate::action::AuthorityGuardKind,
+        validator: V,
+    ) -> Result<(), ModError>
+    where
+        V: crate::action::AuthorityGuardValidator + 'static,
+    {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.authority_guard_validators.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: authority validator registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .authority_guard_validator_builder
+            .register(owner, kind, Arc::new(validator))
+            .map_err(|e| {
+                ModError::msg(format!(
+                    "module {}: authority validator registration: {e}",
+                    self.module
+                ))
+            })
+    }
+
+    /// Register one directional cross-owner interaction bridge. K1 records
+    /// only exact ownership/resolution; executable preparation arrives in K2.
+    pub fn interaction_bridge(
+        &mut self,
+        descriptor: crate::mechanics::BridgeDescriptor,
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.bridges.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: bridge registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .bridge_builder
+            .register(owner, descriptor)
+            .map_err(|e| ModError::msg(format!("module {}: bridge registration: {e}", self.module)))
+    }
+
+    /// Register a pure, contiguous exact-definition migration edge. It is
+    /// available for boot dry-runs only and never enters the eager namespace
+    /// migration path below.
+    pub fn definition_migration(
+        &mut self,
+        descriptor: crate::mechanics::DefinitionMigrationDescriptor,
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.definition_migrations.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: definition migration registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .definition_migration_builder
+            .register(owner, descriptor)
+            .map_err(|e| {
+                ModError::msg(format!(
+                    "module {}: definition migration registration: {e}",
+                    self.module
+                ))
+            })
     }
 
     /// Register a command. Identical to core registration except the entry
@@ -1306,10 +1901,7 @@ impl<'a> Registrar<'a> {
     /// declaration bound to objects via `@behavior/add`. The id must be unique
     /// across modules; a collision is a [`ModError::Conflict`]. `spec.owner` is
     /// overwritten with this module's identity.
-    pub fn behavior(
-        &mut self,
-        mut spec: crate::behavior::BehaviorSpec,
-    ) -> Result<(), ModError> {
+    pub fn behavior(&mut self, mut spec: crate::behavior::BehaviorSpec) -> Result<(), ModError> {
         spec.owner = self.module.clone();
         let module = self.module.clone();
         self.reg.register_behavior(spec).map_err(|e| {
@@ -1493,6 +2085,39 @@ impl<'a> Registrar<'a> {
             .tables_mut()
             .query_handlers
             .insert(key, (self.module.clone(), handler));
+        Ok(())
+    }
+
+    /// Publish this module's bounded lifecycle/incident summary to staff
+    /// diagnostics. A module may register exactly one reporter.
+    pub fn recovery_reporter(
+        &mut self,
+        reporter: Arc<dyn RecoveryReporter>,
+    ) -> Result<(), ModError> {
+        self.require_mechanics_registration_authority()?;
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        if self
+            .reg
+            .tables_mut()
+            .recovery_reporters
+            .contains_key(&owner)
+        {
+            return Err(ModError::Conflict {
+                module: self.module.clone(),
+                what: "recovery reporter",
+                name: self.module.clone(),
+                owner: self.module.clone(),
+            });
+        }
+        self.reg
+            .tables_mut()
+            .recovery_reporters
+            .insert(owner, reporter);
         Ok(())
     }
 
@@ -1837,14 +2462,11 @@ impl Ctx<'_> {
         self.out.defer(Deferred::Persist(op));
     }
 
-    /// Gate this step's output on the store's durable acknowledgement of
-    /// its write batch (PLAN: "durability-critical ops — account creation,
-    /// mail send, XP approval — gate their confirmation output on the
-    /// ack"). The world task flushes the step's batch with `durable: true`
-    /// and holds **all** of the step's queued output until the store acks;
-    /// if the write ultimately fails, the acting player is warned. Use it
-    /// from the command that emits a "sent"/"approved" confirmation whose
-    /// loss would be a lie after a crash.
+    /// Mark the acting player as the preferred recipient for a durable-write
+    /// failure diagnostic. The server already receipt-gates every dirty step's
+    /// commit-bound output and all external effects; this marker preserves the
+    /// stronger, command-specific warning for flows such as mail send and XP
+    /// approval.
     pub fn gate_on_durable_ack(&mut self) {
         self.out.defer(Deferred::DurableGate { actor: self.actor, strict: false });
     }

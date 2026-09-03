@@ -3,8 +3,10 @@
 //!
 //! Boot order (driven from `main.rs` / test rigs via [`boot_modules`]):
 //!
-//! 1. [`Engine::with_modules`] has already run every module's `register`
-//!    (commands, hooks, ticks, state slots) against the one registry.
+//! 1. [`Engine::compose_modules`] has already run every module's `register`
+//!    (commands, hooks, ticks, state slots) against the one registry and
+//!    frozen mechanics before world hydration; [`Engine::from_composition`]
+//!    then installed the result on the loaded world.
 //! 2. [`run_module_migrations`] brings each registered namespace's
 //!    persisted documents up to its module's current schema (BGSAVE first —
 //!    the mandatory pre-migrate snapshot), **before** any module parses
@@ -20,8 +22,9 @@
 //!
 //! The module list itself is [`server_modules`]: comsys first (its
 //! [`AliasStage`](mush_core::AliasStage) is the earliest alias stage in
-//! dispatch), then mail, then jobs, then weather, then script (both M5).
-//! Their persistence namespaces are disjoint, so the order is mostly
+//! dispatch), then canon, org, faction, scenes, simulation, tactics, economy,
+//! mail, jobs, weather, then script (both M5).
+//! Their persistence namespaces are disjoint, so the order is otherwise
 //! cosmetic — but it is the registration order hooks and observers fire in,
 //! and it is the order `on_world_loaded` runs in, so keep it stable.
 //!
@@ -102,6 +105,7 @@ pub fn server_modules_with(weather: mush_weather::WeatherConfig) -> Vec<Box<dyn 
         Box::new(mush_faction::FactionModule::new()),
         Box::new(mush_scenes::ScenesModule::new()),
         Box::new(mush_sim::SimulationModule::new()),
+        Box::new(mush_tactics::TacticsModule::new()),
         // E2: the accountable-value engine — the double-entry journal, accounts, and
         // the strict durable money ack-gate. After org (it authorizes through it).
         // E3b1 freezes the custody provider table at wiring: the built-in container
@@ -365,7 +369,10 @@ async fn load_one(
         .map(|(k, v)| (SmolStr::new(k), v))
         .collect();
     let mut streams = HashMap::new();
-    for (key, count) in module.boot_stream_requests(&kv) {
+    let stream_requests = module
+        .boot_stream_requests(&kv)
+        .map_err(|e| format!("validating module stream requests for {ns:?}: {e}"))?;
+    for (key, count) in stream_requests {
         let entries = store
             .stream_range(ns, &key, count)
             .await
@@ -402,17 +409,24 @@ async fn ns_version(store: &dyn ObjectStore, ns: &str) -> Result<Option<u32>, St
 /// Write one batch of module ops through the store, ack awaited (boot runs
 /// before the world task, so it writes directly).
 async fn write_ops(store: &dyn ObjectStore, ops: Vec<ModuleOp>) -> Result<(), String> {
+    const BOOT_SERIAL: u64 = 0;
     let batch = WriteBatch {
-        serial: 0,
+        serial: BOOT_SERIAL,
         durable: true,
         module_ops: ops,
         ..WriteBatch::default()
     };
-    store
+    let receipt = store
         .write(batch)
         .await
-        .map(|_| ())
-        .map_err(|e| format!("module boot write: {e}"))
+        .map_err(|e| format!("module boot write: {e}"))?;
+    if receipt.serial != BOOT_SERIAL {
+        return Err(format!(
+            "module boot write: expected receipt serial {BOOT_SERIAL}, got {}",
+            receipt.serial
+        ));
+    }
+    Ok(())
 }
 
 /// A `JsonSet` stamping a namespace's schema version.
@@ -531,7 +545,8 @@ pub async fn run_module_migrations(
 /// The full module boot sequence over an already-constructed engine (see
 /// the module docs): migrations → boot data → `modules_loaded` → durable
 /// write-through of whatever boot persisted. Call between
-/// [`Engine::with_modules`] and spawning the world task.
+/// [`Engine::from_composition`] (or the compatibility
+/// [`Engine::with_modules`] wrapper) and spawning the world task.
 pub async fn boot_modules(engine: &mut Engine, store: &dyn ObjectStore) -> Result<(), String> {
     run_module_migrations(store, engine.registry.migrations()).await?;
     let boot = load_module_boot(store, engine.modules()).await?;
@@ -759,15 +774,18 @@ mod tests {
 
     #[test]
     fn server_modules_register_without_collision() {
-        // The full production list (comsys, faction, scenes, mail, jobs,
-        // weather, script) shares one registry: registration must not collide,
-        // and every module must be present in boot order.
+        // The full production list (including org/economy and sim/tactics) shares one
+        // registry: registration must not collide, and every module must be present
+        // in the load-bearing boot order.
         use mush_testkit::TestWorld;
         let tw = TestWorld::with_modules(server_modules());
         let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
         assert_eq!(
             names,
-            ["comsys", "canon", "org", "faction", "scenes", "sim", "economy", "mail", "jobs", "weather", "script"]
+            [
+                "comsys", "canon", "org", "faction", "scenes", "sim", "tactics", "economy", "mail",
+                "jobs", "weather", "script"
+            ]
         );
     }
 
@@ -783,10 +801,17 @@ mod tests {
             assert!(vocab.contains(&id), "the wiring vocabulary omits {c}");
         }
         for c in ["org.role.manage", "org.grant.delegate"] {
-            assert!(vocab.contains(&mush_org::CapabilityId::new(c).expect("well-formed")), "{c}");
+            assert!(
+                vocab.contains(&mush_org::CapabilityId::new(c).expect("well-formed")),
+                "{c}"
+            );
         }
         assert_eq!(vocab.len(), mush_economy::CAPABILITIES.len() + 2);
-        assert!(!vocab.contains(&mush_org::CapabilityId::new("economy.acount.post").expect("well-formed")));
+        assert!(
+            !vocab.contains(
+                &mush_org::CapabilityId::new("economy.acount.post").expect("well-formed")
+            )
+        );
     }
 
     #[test]
@@ -893,8 +918,8 @@ mod tests {
         assert_eq!(
             names,
             [
-                "comsys", "canon", "org", "faction", "scenes", "sim", "economy", "mail", "jobs", "weather", "script",
-                "worldgen", "wod"
+                "comsys", "canon", "org", "faction", "scenes", "sim", "tactics", "economy", "mail",
+                "jobs", "weather", "script", "worldgen", "wod"
             ]
         );
         assert!(tw.registry().spec_of("@gen").is_some());
@@ -1005,7 +1030,10 @@ mod tests {
         let names: Vec<&str> = tw.engine().modules().iter().map(|m| m.name()).collect();
         assert_eq!(
             names,
-            ["comsys", "canon", "org", "faction", "scenes", "sim", "economy", "mail", "jobs", "weather", "script", "wod"]
+            [
+                "comsys", "canon", "org", "faction", "scenes", "sim", "tactics", "economy", "mail",
+                "jobs", "weather", "script", "wod"
+            ]
         );
         // The ruleset's surface is live: +roll / +sheet registered, the
         // wod.roll panel feed present, and the chargen/xp job queues too.

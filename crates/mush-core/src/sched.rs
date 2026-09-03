@@ -3,7 +3,9 @@
 //!
 //! The scheduler holds **no clock and no futures** — the driving loop asks
 //! [`Scheduler::next_due`] how long to sleep, feeds real time back in, and
-//! calls [`Scheduler::pop_due`] to collect everything that has come due.
+//! calls [`Scheduler::pop_due`] to collect a bounded slice of what has come
+//! due. If more than [`MAX_SCHEDULED_FIRES_PER_STEP`] timers share a wake,
+//! the remainder stays due for the next world step; no timer is discarded.
 //! Ties on the deadline fire in insertion order (`seq` is the tiebreaker),
 //! so same-second `@wait`s replay deterministically.
 //!
@@ -18,6 +20,22 @@ use smol_str::SmolStr;
 
 use crate::module::SceneId;
 use crate::obj::ObjId;
+
+/// Maximum number of due timers removed in one world step.
+///
+/// A synchronized deadline can cover many actors or scenes even though each
+/// actor's `@wait` queue is independently capped. Keeping this slice bounded
+/// prevents one wake from constructing an arbitrarily large batch while the
+/// still-due heap entries provide lossless back-pressure.
+pub const MAX_SCHEDULED_FIRES_PER_STEP: usize = 256;
+
+/// Maximum number of pending timers retained by one diagnostic snapshot.
+///
+/// The scheduler itself may legitimately contain more entries (for example,
+/// one bounded `@wait` queue per connected actor). Inspection must not turn
+/// that aggregate into an unbounded allocation, so [`Scheduler::pending_entries`]
+/// retains only the earliest entries while still reporting the exact total.
+pub const MAX_PENDING_ENTRIES_PER_INSPECTION: usize = 256;
 
 /// What fires when a scheduled deadline comes due.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,6 +76,38 @@ pub enum ScheduledKind {
 /// Handle to one scheduled entry, for [`Scheduler::cancel`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TimerId(u64);
+
+/// A bounded, deterministic view of the scheduler's pending entries.
+///
+/// `entries` contains at most [`MAX_PENDING_ENTRIES_PER_INSPECTION`] timers in
+/// firing order. [`PendingEntrySnapshot::total`] and
+/// [`PendingEntrySnapshot::omitted`] describe the complete live scheduler,
+/// including entries not retained in this view.
+#[derive(Debug)]
+pub struct PendingEntrySnapshot<'a> {
+    entries: Vec<(i64, &'a ScheduledKind)>,
+    total: usize,
+}
+
+impl<'a> PendingEntrySnapshot<'a> {
+    /// The retained earliest entries as `(due_unix_ms, kind)` pairs.
+    #[must_use]
+    pub fn entries(&self) -> &[(i64, &'a ScheduledKind)] {
+        &self.entries
+    }
+
+    /// Exact number of live pending entries, retained and omitted combined.
+    #[must_use]
+    pub const fn total(&self) -> usize {
+        self.total
+    }
+
+    /// Exact number of live pending entries omitted from this bounded view.
+    #[must_use]
+    pub fn omitted(&self) -> usize {
+        self.total.saturating_sub(self.entries.len())
+    }
+}
 
 /// One heap entry. Ordered by `(due_ms, seq)` **only** — `seq` is unique,
 /// so the order is total and `Eq` stays consistent with `Ord` even though
@@ -141,11 +191,16 @@ impl Scheduler {
         self.heap.peek().map(|Reverse(e)| e.due_ms)
     }
 
-    /// Remove and return every pending entry with `due_ms <= now_ms`, in
-    /// `(due_ms, seq)` order. Cancelled entries are silently discarded.
+    /// Remove and return at most [`MAX_SCHEDULED_FIRES_PER_STEP`] pending
+    /// entries with `due_ms <= now_ms`, in `(due_ms, seq)` order.
+    ///
+    /// Cancelled entries are silently discarded and do not consume the
+    /// budget. Any additional due entries remain in the heap, so
+    /// [`Scheduler::next_due`] continues to return their original deadline
+    /// and the driving loop drains them in later steps without losing work.
     pub fn pop_due(&mut self, now_ms: i64) -> Vec<ScheduledKind> {
-        let mut fired = Vec::new();
-        loop {
+        let mut fired = Vec::with_capacity(MAX_SCHEDULED_FIRES_PER_STEP);
+        while fired.len() < MAX_SCHEDULED_FIRES_PER_STEP {
             self.prune_cancelled_head();
             match self.heap.peek() {
                 Some(Reverse(e)) if e.due_ms <= now_ms => {
@@ -159,19 +214,40 @@ impl Scheduler {
         fired
     }
 
-    /// Snapshot every pending (not cancelled, not fired) entry as
-    /// `(due_unix_ms, kind)`, in firing order — the `@ps` inspection
-    /// surface. O(n log n); fine for a staff command.
+    /// Snapshot the earliest pending (not cancelled, not fired) entries in
+    /// firing order for diagnostic inspection.
+    ///
+    /// The heap is scanned once, but only
+    /// [`MAX_PENDING_ENTRIES_PER_INSPECTION`] references are retained. A
+    /// max-heap over that bounded selection evicts its latest member whenever
+    /// an earlier entry is found, giving O(n log limit) time and O(limit)
+    /// auxiliary memory without perturbing the live scheduler.
     #[must_use]
-    pub fn pending_entries(&self) -> Vec<(i64, &ScheduledKind)> {
-        let mut v: Vec<(i64, u64, &ScheduledKind)> = self
-            .heap
-            .iter()
-            .filter(|Reverse(e)| self.pending.contains(&e.seq))
-            .map(|Reverse(e)| (e.due_ms, e.seq, &e.kind))
+    pub fn pending_entries(&self) -> PendingEntrySnapshot<'_> {
+        let mut earliest: BinaryHeap<&Entry> =
+            BinaryHeap::with_capacity(MAX_PENDING_ENTRIES_PER_INSPECTION);
+        let mut total = 0usize;
+
+        for Reverse(entry) in &self.heap {
+            if !self.pending.contains(&entry.seq) {
+                continue;
+            }
+            total = total.saturating_add(1);
+
+            if earliest.len() < MAX_PENDING_ENTRIES_PER_INSPECTION {
+                earliest.push(entry);
+            } else if earliest.peek().is_some_and(|latest| entry < *latest) {
+                let _ = earliest.pop();
+                earliest.push(entry);
+            }
+        }
+
+        let entries = earliest
+            .into_sorted_vec()
+            .into_iter()
+            .map(|entry| (entry.due_ms, &entry.kind))
             .collect();
-        v.sort_unstable_by_key(|&(due, seq, _)| (due, seq));
-        v.into_iter().map(|(due, _, kind)| (due, kind)).collect()
+        PendingEntrySnapshot { entries, total }
     }
 
     /// Number of pending (not cancelled, not fired) entries.
@@ -313,5 +389,76 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn pop_due_defers_the_257th_entry_without_reordering_it() {
+        let mut s = Scheduler::new();
+        for i in 0..=MAX_SCHEDULED_FIRES_PER_STEP {
+            s.insert(500, ctl(&format!("timer-{i:03}")));
+        }
+
+        let first = s.pop_due(500);
+        assert_eq!(first.len(), MAX_SCHEDULED_FIRES_PER_STEP);
+        for (i, kind) in first.iter().enumerate() {
+            assert_eq!(kind, &ctl(&format!("timer-{i:03}")));
+        }
+        assert_eq!(s.len(), 1);
+        assert_eq!(s.next_due(), Some(500), "the remainder stays due");
+
+        assert_eq!(
+            s.pop_due(500),
+            vec![ctl(&format!("timer-{:03}", MAX_SCHEDULED_FIRES_PER_STEP))]
+        );
+        assert!(s.is_empty());
+    }
+
+    #[test]
+    fn cancelled_due_entries_do_not_consume_the_fire_budget() {
+        let mut s = Scheduler::new();
+        for i in 0..MAX_SCHEDULED_FIRES_PER_STEP {
+            let cancelled = s.insert(500, ctl(&format!("cancelled-{i:03}")));
+            assert!(s.cancel(cancelled));
+            s.insert(500, ctl(&format!("live-{i:03}")));
+        }
+
+        let fired = s.pop_due(500);
+        assert_eq!(fired.len(), MAX_SCHEDULED_FIRES_PER_STEP);
+        for (i, kind) in fired.iter().enumerate() {
+            assert_eq!(kind, &ctl(&format!("live-{i:03}")));
+        }
+        assert!(s.is_empty());
+        assert_eq!(s.next_due(), None);
+    }
+
+    #[test]
+    fn pending_inspection_retains_only_the_earliest_entries_with_exact_counts() {
+        let mut s = Scheduler::new();
+
+        // Insert later entries first so a heap-iteration prefix cannot happen
+        // to satisfy the test. The bounded selector must find the true
+        // earliest set, then restore insertion order for their tied deadline.
+        for i in 0..300 {
+            s.insert(10_000, ctl(&format!("late-{i:03}")));
+        }
+        let mut early = Vec::new();
+        for i in 0..300 {
+            early.push(s.insert(1_000, ctl(&format!("early-{i:03}"))));
+        }
+        for id in early.iter().take(10) {
+            assert!(s.cancel(*id));
+        }
+
+        let snapshot = s.pending_entries();
+        assert_eq!(snapshot.total(), 590);
+        assert_eq!(snapshot.entries().len(), MAX_PENDING_ENTRIES_PER_INSPECTION);
+        assert_eq!(snapshot.omitted(), 334);
+        for (offset, &(due, kind)) in snapshot.entries().iter().enumerate() {
+            assert_eq!(due, 1_000);
+            assert_eq!(kind, &ctl(&format!("early-{:03}", offset + 10)));
+        }
+
+        // Inspection is read-only: all live entries remain scheduled.
+        assert_eq!(s.len(), 590);
     }
 }

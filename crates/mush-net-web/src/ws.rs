@@ -79,6 +79,9 @@ mod close_code {
     pub const PROTOCOL: u16 = 1008;
     /// RFC 6455 "try again later" — client too slow to keep up.
     pub const SLOW: u16 = 1013;
+    /// RFC 6455 "service restart" — the game boundary disappeared during
+    /// connection setup; reconnecting shortly is safe.
+    pub const SERVICE_RESTART: u16 = 1012;
     /// Application: token/session no longer valid at attach time.
     pub const BAD_SESSION: u16 = 4401;
     /// RFC 6455 going away — keepalive timed out or the game side closed
@@ -283,6 +286,19 @@ async fn handle_socket(
                         return;
                     }
                 }
+            }
+            Err(ResumeErr::Busy) => {
+                close(&mut socket, close_code::SLOW, "server busy; try again").await;
+                return;
+            }
+            Err(ResumeErr::Unavailable) => {
+                close(
+                    &mut socket,
+                    close_code::SERVICE_RESTART,
+                    "game restarting; reconnect shortly",
+                )
+                .await;
+                return;
             }
             Err(ResumeErr::BadSession) => {
                 close(&mut socket, close_code::BAD_SESSION, "session expired").await;

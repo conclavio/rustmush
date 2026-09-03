@@ -8,8 +8,8 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use mush_gateway::{GatewayOptions, ServerSource, serve};
 use mush_config::config::Config;
+use mush_gateway::{GatewayOptions, ServerSource, serve};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();

@@ -99,6 +99,10 @@ async fn attach_direct_buffered(
             })
             .await
     );
+    assert!(
+        world.barrier().await,
+        "direct test connection must cross the ConnUp commit/order boundary"
+    );
     rx
 }
 

@@ -34,6 +34,12 @@ pub const DEFAULT_ALIAS: &str = "pub";
 /// Default history cap (ring length and stream `MAXLEN`).
 pub const DEFAULT_HISTORY_CAP: u32 = 200;
 
+/// Largest history ring and persisted stream tail accepted from either a
+/// command or an authoritative channel document. Boot validates this before
+/// asking the store for a stream range, so a corrupt/type-clobbered cap cannot
+/// turn one channel record into an effectively unbounded allocation request.
+pub const MAX_HISTORY_CAP: u32 = 10_000;
+
 /// Longest accepted `comtitle` (characters).
 pub const MAX_TITLE_LEN: usize = 60;
 

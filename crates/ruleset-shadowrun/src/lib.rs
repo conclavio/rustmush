@@ -232,7 +232,8 @@ impl GameModule for ShadowrunRuleset {
         // Phase 1 — decode + validate against the live world (immutable borrow).
         let extended = match &extended_doc {
             Some(v) => Some(
-                Sr5State::decode_extended(v, |id| ctx.w.get(id).is_some()).map_err(ModError::msg)?,
+                Sr5State::decode_extended(v, |id| ctx.w.get(id).is_some())
+                    .map_err(ModError::msg)?,
             ),
             None => None,
         };

@@ -230,9 +230,15 @@ mod tests {
         };
         let json = serde_json::to_string(&p).unwrap();
         let back: AgentProfile = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.principal, Some(Principal::Character(mush_core::ObjId(42))));
+        assert_eq!(
+            back.principal,
+            Some(Principal::Character(mush_core::ObjId(42)))
+        );
         assert!(!back.loyal);
-        assert_eq!(back.watch, vec!["alice".to_string(), "the docks".to_string()]);
+        assert_eq!(
+            back.watch,
+            vec!["alice".to_string(), "the docks".to_string()]
+        );
     }
 
     #[test]
@@ -240,7 +246,10 @@ mod tests {
         // Before M21 the persisted form was a bare dbref number; it must keep
         // deserializing as a character principal.
         let p: AgentProfile = serde_json::from_str(r#"{"principal": 42}"#).unwrap();
-        assert_eq!(p.principal, Some(Principal::Character(mush_core::ObjId(42))));
+        assert_eq!(
+            p.principal,
+            Some(Principal::Character(mush_core::ObjId(42)))
+        );
         // The faction form round-trips.
         let p: AgentProfile = serde_json::from_str(r#"{"principal": {"faction": 3}}"#).unwrap();
         assert_eq!(

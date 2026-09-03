@@ -19,13 +19,18 @@
 //! `@slowtest` is the M1 prototype of this seam: a fake 3-second "LLM
 //! call" proving typed re-entry without ever blocking the game loop.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use std::fmt;
 use std::sync::Arc;
 
 use mush_proto::{OutputEvent, RichText};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
+use crate::action_state::{
+    ActionStateError, ActionStateStore, ActionTxn, PreparedInstallation, PreparedTxn,
+    StateFamilyHandle,
+};
 use crate::cmd::{
     ArgShape, CmdError, CommandSpec, Ctx, ParsedArgs, Registry, RegistryError, SwitchSet, dispatch,
 };
@@ -35,7 +40,7 @@ use crate::module::{
     self, GameModule, ModError, ModuleBootData, ModuleOp, SceneId, TickCadence, WorldEvent,
 };
 use crate::obj::{GOD, ObjId};
-use crate::output::{ConnId, Outbox, name_span};
+use crate::output::{ConnId, DeliveryClass, Outbox, name_span};
 use crate::sched::{ScheduledKind, Scheduler, TimerId};
 use crate::world::World;
 
@@ -180,6 +185,14 @@ pub enum Effect {
 pub enum Deferred {
     /// Spawn this async work (via the [`Effects`] queue).
     Effect(Effect),
+    /// Spawn async work under an explicit durability class. The legacy
+    /// [`Effect`](Self::Effect) arm is exactly `OnCommit`.
+    ClassifiedEffect {
+        /// When the driver may release the effect.
+        class: DeliveryClass,
+        /// Future-free effect description.
+        effect: Effect,
+    },
     /// Schedule `kind` to fire `delay_ms` after the world's current time.
     ScheduleIn {
         /// Delay relative to [`World::now`], in milliseconds.
@@ -212,11 +225,9 @@ pub enum Deferred {
         /// The scene.
         scene: SceneId,
     },
-    /// Gate this step's output on the store's durable ack
-    /// ([`Ctx::gate_on_durable_ack`](crate::cmd::Ctx::gate_on_durable_ack)):
-    /// the driving loop flushes the step's batch `durable: true` and holds
-    /// the step's queued output until the receipt resolves, warning `actor`
-    /// if the write ultimately fails.
+    /// Select the actor for the dirty step's durable-write failure diagnostic
+    /// ([`Ctx::gate_on_durable_ack`](crate::cmd::Ctx::gate_on_durable_ack)).
+    /// Receipt-gating itself is unconditional at the server boundary.
     DurableGate {
         /// The acting player whose confirmation is being gated.
         actor: ObjId,
@@ -234,6 +245,7 @@ pub enum Deferred {
 #[derive(Debug, Default)]
 pub struct Effects {
     queue: Vec<Effect>,
+    classes: Vec<DeliveryClass>,
 }
 
 impl Effects {
@@ -245,18 +257,40 @@ impl Effects {
 
     /// Queue one effect.
     pub fn push(&mut self, effect: Effect) {
+        self.push_classified(DeliveryClass::OnCommit, effect);
+    }
+
+    /// Queue one effect with an explicit durability relationship.
+    pub fn push_classified(&mut self, class: DeliveryClass, effect: Effect) {
         self.queue.push(effect);
+        self.classes.push(class);
     }
 
     /// Drain the queue in push order, leaving it empty.
     pub fn drain(&mut self) -> Vec<Effect> {
+        debug_assert_eq!(self.queue.len(), self.classes.len());
+        self.classes.clear();
         std::mem::take(&mut self.queue)
+    }
+
+    /// Drain typed effects in push order.
+    pub fn drain_classified(&mut self) -> Vec<(DeliveryClass, Effect)> {
+        debug_assert_eq!(self.queue.len(), self.classes.len());
+        let effects = std::mem::take(&mut self.queue);
+        let classes = std::mem::take(&mut self.classes);
+        classes.into_iter().zip(effects).collect()
     }
 
     /// The queued effects, in push order (for tests/inspection).
     #[must_use]
     pub fn queued(&self) -> &[Effect] {
         &self.queue
+    }
+
+    /// Durability classes parallel to [`queued`](Self::queued).
+    #[must_use]
+    pub fn classes(&self) -> &[DeliveryClass] {
+        &self.classes
     }
 
     /// Number of queued effects.
@@ -372,6 +406,67 @@ struct SceneTickInfo {
     every_ms: i64,
 }
 
+/// A fully registered, mechanically frozen module set awaiting installation
+/// into a [`World`].
+///
+/// Composition is deliberately separate from [`Engine`] construction so a
+/// driver can finish and validate every module-owned registry before it loads
+/// persisted world or module records. State slots are validated here but are
+/// not installed until [`Engine::from_composition`] receives the world.
+pub struct ModuleComposition {
+    registry: Registry,
+    modules: Vec<Box<dyn GameModule>>,
+    state_inits: Vec<module::StateInit>,
+}
+
+/// One prepared action submission crossing the synchronous engine/driver
+/// boundary. It is deliberately separate from legacy [`ModuleOp`] custody.
+pub struct StagedAction {
+    module_ops: Vec<ModuleOp>,
+    installation: PreparedInstallation,
+}
+
+impl fmt::Debug for StagedAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StagedAction")
+            .field("module_ops", &self.module_ops)
+            .field("installation", &self.installation)
+            .finish()
+    }
+}
+
+impl StagedAction {
+    /// Split the already-built persistence writes from the post-ack images.
+    pub fn into_parts(self) -> (Vec<ModuleOp>, PreparedInstallation) {
+        (self.module_ops, self.installation)
+    }
+}
+
+/// Refusal to stage a prepared action beside legacy mutable work.
+#[derive(Clone, Copy, Debug, Eq, thiserror::Error, PartialEq)]
+pub enum StagePreparedActionError {
+    #[error("another prepared action is already staged")]
+    AlreadyStaged,
+    #[error("prepared action cannot share a step with legacy object mutations")]
+    DirtyWorld,
+    #[error("prepared action cannot share a step with legacy module persistence")]
+    LegacyModuleOps,
+}
+
+impl ModuleComposition {
+    /// The frozen command/module/mechanics registry.
+    #[must_use]
+    pub fn registry(&self) -> &Registry {
+        &self.registry
+    }
+
+    /// The registered modules, in registration order.
+    #[must_use]
+    pub fn modules(&self) -> &[Box<dyn GameModule>] {
+        &self.modules
+    }
+}
+
 /// The sync world engine: world + command registry + scheduler + modules +
 /// connection bookkeeping. The tokio loop in `mushd` owns exactly one of
 /// these.
@@ -384,6 +479,10 @@ pub struct Engine {
     pub sched: Scheduler,
     /// The registered game modules (for [`Engine::modules_loaded`]).
     modules: Vec<Box<dyn GameModule>>,
+    /// Engine-owned authoritative state for registered action families.
+    action_state: ActionStateStore,
+    /// At most one prepared action awaiting transfer to the driver.
+    staged_action: Option<StagedAction>,
     /// Module persistence ops drained from handlers, awaiting
     /// [`Engine::take_module_ops`] (the world task folds them into the
     /// current `WriteBatch`).
@@ -413,11 +512,17 @@ impl Engine {
     /// [`register_engine_commands`]).
     #[must_use]
     pub fn new(world: World, registry: Registry) -> Engine {
+        let action_state = registry
+            .state_families()
+            .cloned()
+            .map_or_else(ActionStateStore::unregistered, ActionStateStore::new);
         Engine {
             world,
             registry,
             sched: Scheduler::new(),
             modules: Vec::new(),
+            action_state,
+            staged_action: None,
             module_ops: Vec::new(),
             scene_ticks: HashMap::new(),
             durable_gate: None,
@@ -444,47 +549,62 @@ impl Engine {
         (self.lag_last_ms, self.lag_max_ms)
     }
 
-    /// [`Engine::new`] plus game modules: each module's
-    /// [`GameModule::register`] runs here (against the one registry),
-    /// declared state slots are installed on the world, and every
-    /// `Coarse`/`Fast` tick is armed for its first fire one period from
-    /// [`World::now`] — call [`World::set_now`] (or
-    /// [`Engine::set_now`]) first, or the first fires land immediately
-    /// (they self-heal: re-arming is relative to fire time).
+    /// Compose and validate game modules without a world.
     ///
-    /// After the driver has loaded each module's persisted data, it calls
-    /// [`Engine::modules_loaded`].
-    pub fn with_modules(
-        world: World,
+    /// Each module's [`GameModule::register`] runs against the one registry,
+    /// then the mechanical registries are frozen. State-slot ownership is
+    /// validated but the slots are retained in the returned composition and
+    /// cannot affect a world until [`Engine::from_composition`] is called.
+    pub fn compose_modules(
         mut registry: Registry,
         mut modules: Vec<Box<dyn GameModule>>,
-    ) -> Result<Engine, ModError> {
-        // Duplicate module names would silently merge persistence
-        // namespaces and clobber each other's boot data — refuse at boot.
-        let mut seen_names: std::collections::HashSet<&'static str> =
-            std::collections::HashSet::new();
+    ) -> Result<ModuleComposition, ModError> {
+        // A mechanics owner is the canonical form of a module name. Preflight
+        // the complete roster before calling even one `register`: otherwise
+        // e.g. `Foo` and `foo` could become the same OwnerId while appearing
+        // to be distinct module names, silently sharing definition ownership.
+        // Defer the non-canonical spelling error until after the collision pass
+        // so a roster containing both spellings gets the better diagnostic.
+        let mut seen_owners: HashMap<crate::mechanics::OwnerId, &'static str> = HashMap::new();
+        let mut noncanonical_name: Option<(&'static str, String)> = None;
         for m in &modules {
-            if !seen_names.insert(m.name()) {
+            let name = m.name();
+            let owner = crate::mechanics::OwnerId::new(name).map_err(|error| {
+                ModError::msg(format!(
+                    "module name {name:?} is not a valid mechanics owner id: {error}"
+                ))
+            })?;
+            if let Some(registered) = seen_owners.insert(owner.clone(), name) {
                 return Err(ModError::msg(format!(
-                    "two modules share the name {:?}",
-                    m.name()
+                    "module names {registered:?} and {name:?} resolve to the same canonical mechanics owner {owner:?}"
                 )));
             }
+            if owner.as_str() != name && noncanonical_name.is_none() {
+                noncanonical_name = Some((name, owner.to_string()));
+            }
         }
+        if let Some((name, canonical)) = noncanonical_name {
+            return Err(ModError::msg(format!(
+                "module name {name:?} is not canonical; use {canonical:?}"
+            )));
+        }
+        let module_owners: BTreeSet<_> = seen_owners.keys().cloned().collect();
         for m in &mut modules {
             let name = m.name();
-            let mut registrar = module::Registrar::new(&mut registry, name);
+            let mut registrar = module::Registrar::for_composition(&mut registry, name);
             m.register(&mut registrar)?;
         }
-        let mut engine = Engine::new(world, registry);
-        engine.modules = modules;
+        // Definition/action/bridge composition is complete before any world
+        // state exists or persisted record can be interpreted.
+        registry.freeze_mechanics(&module_owners)?;
+
         // State-slot conflict check: a second module declaring the same
         // TypeId would silently wipe the first module's slot (and with it
         // e.g. every registered jobs payload handler). A module
         // re-declaring its OWN slot keeps the last value.
-        let inits = engine.registry.take_state_inits();
+        let state_inits = registry.take_state_inits();
         let mut slot_owners: HashMap<std::any::TypeId, SmolStr> = HashMap::new();
-        for init in &inits {
+        for init in &state_inits {
             if let Some(owner) = slot_owners.get(&init.type_id()) {
                 if owner != init.module() {
                     return Err(ModError::msg(format!(
@@ -497,11 +617,56 @@ impl Engine {
                 slot_owners.insert(init.type_id(), init.module().clone());
             }
         }
-        for init in inits {
+
+        Ok(ModuleComposition {
+            registry,
+            modules,
+            state_inits,
+        })
+    }
+
+    /// Install a validated [`ModuleComposition`] into `world` and arm its
+    /// periodic module ticks.
+    ///
+    /// Every `Coarse`/`Fast` tick is first due one period from
+    /// [`World::now`]. Call [`World::set_now`] before this method when the
+    /// world's clock should start anywhere other than its default.
+    #[must_use]
+    pub fn from_composition(world: World, composition: ModuleComposition) -> Engine {
+        let ModuleComposition {
+            registry,
+            modules,
+            state_inits,
+        } = composition;
+        let mut engine = Engine::new(world, registry);
+        engine.modules = modules;
+        for init in state_inits {
             engine.world.module_state_apply(init);
         }
-        let base_ms = engine.world.now().saturating_mul(1000);
-        let periodic: Vec<(SmolStr, SmolStr, i64)> = engine
+        engine.arm_registered_periodic_ticks();
+        engine
+    }
+
+    /// [`Engine::new`] plus game modules. This compatibility wrapper composes
+    /// and freezes the module registries, then immediately installs the
+    /// resulting state slots into `world`.
+    ///
+    /// After the driver has loaded each module's persisted data, it calls
+    /// [`Engine::modules_loaded`].
+    pub fn with_modules(
+        world: World,
+        registry: Registry,
+        modules: Vec<Box<dyn GameModule>>,
+    ) -> Result<Engine, ModError> {
+        let composition = Self::compose_modules(registry, modules)?;
+        Ok(Self::from_composition(world, composition))
+    }
+
+    /// Arm every registered non-scene module tick relative to the world's
+    /// current clock.
+    fn arm_registered_periodic_ticks(&mut self) {
+        let base_ms = self.world.now().saturating_mul(1000);
+        let periodic: Vec<(SmolStr, SmolStr, i64)> = self
             .registry
             .module_ticks()
             .iter()
@@ -515,12 +680,11 @@ impl Engine {
             })
             .collect();
         for (module, tag, period) in periodic {
-            engine.sched.insert(
+            self.sched.insert(
                 base_ms.saturating_add(period),
                 ScheduledKind::ModuleTick { module, tag },
             );
         }
-        Ok(engine)
     }
 
     /// Deliver each module its persisted boot data (loaded by the driver
@@ -564,6 +728,102 @@ impl Engine {
     /// atomic commit).
     pub fn take_module_ops(&mut self) -> Vec<ModuleOp> {
         std::mem::take(&mut self.module_ops)
+    }
+
+    /// Read-only access to engine-owned action state.
+    #[must_use]
+    pub const fn action_state(&self) -> &ActionStateStore {
+        &self.action_state
+    }
+
+    /// Begin a handle-scoped transaction, primarily for bootstrapping and
+    /// contract tests. Registered action providers use the stricter
+    /// provider-owner dispatch path.
+    pub fn action_transaction<'a, K, V>(
+        &'a mut self,
+        handle: &StateFamilyHandle<K, V>,
+    ) -> Result<ActionTxn<'a>, ActionStateError>
+    where
+        K: Send + Sync + 'static,
+        V: Clone + Send + Sync + 'static,
+    {
+        self.action_state.transaction(handle)
+    }
+
+    /// Resolve and run the exact registered provider against the private
+    /// owner-scoped action store. Providers receive no `World`, `Ctx`, raw
+    /// module state, or persistence surface.
+    pub fn prepare_registered_action(
+        &mut self,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+    ) -> Result<PreparedTxn, crate::action::ActionProviderPrepareError> {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        providers.prepare_invocation(action, invocation, &mut self.action_state)
+    }
+
+    /// Move a logical action's persistence and install images into the one
+    /// driver-facing prepared lane.
+    ///
+    /// A prepared action is never mixed with the legacy dirty-object/module
+    /// snapshot path. On refusal its store reservation is explicitly aborted,
+    /// leaving byte-identical live action state.
+    pub fn stage_prepared_action(
+        &mut self,
+        prepared: PreparedTxn,
+    ) -> Result<(), StagePreparedActionError> {
+        if self.staged_action.is_some() {
+            let (_, installation) = prepared.into_parts();
+            self.action_state.abort(installation);
+            return Err(StagePreparedActionError::AlreadyStaged);
+        }
+        let (module_ops, installation) = prepared.into_parts();
+        if self.world.has_dirty() {
+            self.action_state.abort(installation);
+            return Err(StagePreparedActionError::DirtyWorld);
+        }
+        if !self.module_ops.is_empty() {
+            self.action_state.abort(installation);
+            return Err(StagePreparedActionError::LegacyModuleOps);
+        }
+        self.staged_action = Some(StagedAction {
+            module_ops,
+            installation,
+        });
+        Ok(())
+    }
+
+    /// Whether one prepared action awaits transfer to the world task.
+    #[must_use]
+    pub const fn has_staged_action(&self) -> bool {
+        self.staged_action.is_some()
+    }
+
+    /// Whether legacy world/module persistence work currently exists outside
+    /// the prepared-action lane. The driver rechecks this immediately before
+    /// submission so work introduced after staging cannot create a mixed
+    /// authoritative batch.
+    #[must_use]
+    pub fn has_legacy_persistence_work(&self) -> bool {
+        self.world.has_dirty() || !self.module_ops.is_empty()
+    }
+
+    /// Transfer the one prepared action to the driver.
+    pub fn take_staged_action(&mut self) -> Option<StagedAction> {
+        self.staged_action.take()
+    }
+
+    /// Install typed post-images after the exact applied receipt.
+    pub fn install_prepared_action(&mut self, installation: PreparedInstallation) {
+        self.action_state.install(installation);
+    }
+
+    /// Discard typed post-images after an indeterminate/refused receipt.
+    pub fn abort_prepared_action(&mut self, installation: PreparedInstallation) {
+        self.action_state.abort(installation);
     }
 
     /// The registered game modules, in registration order. The driver uses
@@ -683,11 +943,15 @@ impl Engine {
         outcome
     }
 
-    /// Fire every scheduled entry due at `now_ms` (unix milliseconds):
+    /// Fire one bounded slice of scheduled entries due at `now_ms` (unix
+    /// milliseconds):
     /// `WaitCmd` dispatches its line as its actor; module ticks run their
     /// registered [`TickHandler`](crate::module::TickHandler) and re-arm;
     /// scene ticks additionally stop when their scene is gone. The driving
-    /// loop calls this when the [`Scheduler::next_due`] sleep elapses.
+    /// loop calls this when the [`Scheduler::next_due`] sleep elapses. If a
+    /// synchronized deadline exceeds
+    /// [`crate::sched::MAX_SCHEDULED_FIRES_PER_STEP`], the untouched remainder
+    /// stays due and is drained by subsequent loop iterations.
     pub fn fire_due(&mut self, now_ms: i64, out: &mut Outbox, fx: &mut Effects) {
         for kind in self.sched.pop_due(now_ms) {
             match kind {
@@ -919,10 +1183,13 @@ impl Engine {
     ///
     /// On the actor's FIRST re-attached connection — and only when it is not
     /// sitting in an input context (post-restart contexts are empty, so this
-    /// normally proceeds) — it dispatches a fresh `look`, pushing the
-    /// reconnected player a current room render from the reloaded world (D2).
-    /// The render addresses the actor, so a multi-connected session renders once
-    /// and the gateway fans it out to every held connection.
+    /// normally proceeds) — it invokes the read-only room renderer directly,
+    /// pushing the reconnected player a current view from the reloaded world
+    /// (D2). It must not dispatch the text `look`: exits resolve before commands,
+    /// so an exit carrying that alias could otherwise turn transport reattach
+    /// into movement during an integrity freeze. The render addresses the actor,
+    /// so a multi-connected session renders once and the gateway fans it out to
+    /// every held connection.
     pub fn reattach(
         &mut self,
         conn: ConnId,
@@ -931,8 +1198,11 @@ impl Engine {
         out: &mut Outbox,
     ) {
         let first = self.conn_up_inner(conn, actor, caps_structured, false, false, out);
-        if first && self.world.input_depth(actor) == 0 {
-            dispatch(&self.registry, &mut self.world, actor, "look", out);
+        if first
+            && self.world.input_depth(actor) == 0
+            && let Some(room) = self.world.get(actor).and_then(|record| record.location)
+        {
+            crate::commands::show_room(&self.registry, &self.world, actor, room, out);
         }
     }
 
@@ -1023,7 +1293,7 @@ impl Engine {
             },
             None => OutputEvent::Sys(RichText::tag("error", format!("Unknown query {name:?}."))),
         };
-        out.to_conn(
+        out.best_effort_to_conn(
             conn,
             OutputEvent::Reply {
                 id,
@@ -1082,12 +1352,15 @@ impl Engine {
         for d in out.take_deferred() {
             match d {
                 Deferred::Effect(e) => fx.push(e),
+                Deferred::ClassifiedEffect { class, effect } => {
+                    fx.push_classified(class, effect);
+                }
                 Deferred::ScheduleIn { delay_ms, kind } => {
                     if let ScheduledKind::WaitCmd { actor, .. } = &kind {
                         let actor = *actor;
                         let n = self.pending_waits.entry(actor).or_insert(0);
                         if *n >= WAIT_QUEUE_MAX {
-                            out.error(actor, "Too many commands queued.");
+                            out.best_effort_error(actor, "Too many commands queued.");
                             continue;
                         }
                         *n += 1;
@@ -1279,7 +1552,7 @@ mod tests {
     use crate::commands::register_core_commands;
     use crate::flags::Flags;
     use crate::obj::{GOD, LIMBO, ObjKind};
-    use crate::output::Audience;
+    use crate::output::{Audience, DeliveryOutcome};
     use mush_proto::NarrativeKind;
 
     /// Engine with core + engine commands, God connected via conn 1, and a
@@ -1318,6 +1591,35 @@ mod tests {
                 other => format!("{other:?}"),
             })
             .collect()
+    }
+
+    #[test]
+    fn module_composition_defers_state_install_until_world_is_supplied() {
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        struct DeferredState(u32);
+
+        struct StateModule;
+        impl GameModule for StateModule {
+            fn name(&self) -> &'static str {
+                "state_module"
+            }
+
+            fn register(&mut self, reg: &mut module::Registrar<'_>) -> Result<(), ModError> {
+                reg.state(DeferredState(7));
+                Ok(())
+            }
+        }
+
+        let composition =
+            Engine::compose_modules(Registry::new(), vec![Box::new(StateModule)]).unwrap();
+        assert_eq!(composition.modules().len(), 1);
+        assert_eq!(composition.state_inits.len(), 1);
+
+        let engine = Engine::from_composition(World::new_minimal(), composition);
+        assert_eq!(
+            engine.world.module_state::<DeferredState>(),
+            Some(&DeferredState(7))
+        );
     }
 
     fn room_saw(out: &Outbox, room: ObjId, needle: &str) -> bool {
@@ -1377,6 +1679,18 @@ mod tests {
         // announce (and without re-firing Connected), but with the full
         // connection state rebuilt and a fresh look pushed to the player.
         let (mut engine, nick) = setup();
+        // Exit matching precedes command lookup. This hostile-but-valid alias
+        // proves reattach renders directly instead of dispatching a command.
+        let trap = engine
+            .world
+            .create(ObjKind::Room, "Trap", GOD, None)
+            .unwrap();
+        let look_exit = engine
+            .world
+            .create(ObjKind::Exit, "look", GOD, Some(LIMBO))
+            .unwrap();
+        engine.world.link_exit(look_exit, Some(trap)).unwrap();
+        let _ = engine.world.take_dirty();
         let (mut out, _fx) = (Outbox::new(), Effects::new());
         engine.reattach(2, nick, false, &mut out);
 
@@ -1397,6 +1711,11 @@ mod tests {
         assert_eq!(engine.connections_of(nick), 1);
         assert!(engine.world.session_stat(nick).is_some());
         assert_eq!(engine.actor_of(2), Some(nick));
+        assert_eq!(engine.world.get(nick).unwrap().location, Some(LIMBO));
+        assert!(
+            engine.world.take_dirty().is_empty(),
+            "transport-only reattach must not dirty durable world state"
+        );
         // The reconnected player is pushed a fresh room render (D2): the room
         // title reaches them even though nothing was announced to the room.
         assert!(
@@ -1785,6 +2104,7 @@ mod tests {
             &mut fx,
         );
         assert!(texts(&out).iter().any(|t| t == "Thinking..."));
+        assert_eq!(fx.classes(), &[DeliveryClass::OnCommit]);
         let effects = fx.drain();
         let Some(Effect::SlowTest {
             actor,
@@ -1986,6 +2306,36 @@ mod tests {
     }
 
     #[test]
+    fn fire_due_releases_only_the_bounded_slice_of_wait_slots() {
+        use crate::sched::MAX_SCHEDULED_FIRES_PER_STEP;
+
+        let (mut engine, _) = setup();
+        let missing_actor = ObjId(u32::MAX);
+        let total = MAX_SCHEDULED_FIRES_PER_STEP + 1;
+        for i in 0..total {
+            engine.sched.insert(
+                1_001_000,
+                ScheduledKind::WaitCmd {
+                    actor: missing_actor,
+                    line: format!("say timer-{i:03}"),
+                },
+            );
+        }
+        engine.pending_waits.insert(missing_actor, total as u32);
+
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.fire_due(1_001_000, &mut out, &mut fx);
+        assert!(out.is_empty(), "waits for a missing actor are silent");
+        assert_eq!(engine.sched.len(), 1);
+        assert_eq!(engine.sched.next_due(), Some(1_001_000));
+        assert_eq!(engine.pending_waits.get(&missing_actor), Some(&1));
+
+        engine.fire_due(1_001_000, &mut out, &mut fx);
+        assert!(engine.sched.is_empty());
+        assert!(!engine.pending_waits.contains_key(&missing_actor));
+    }
+
+    #[test]
     fn wait_validates_arguments() {
         let (mut engine, _) = setup();
         for bad in [
@@ -2104,6 +2454,72 @@ mod tests {
         );
         assert!(out.events().is_empty(), "slots must free after firing");
         assert_eq!(engine.sched.len(), 1);
+    }
+
+    #[test]
+    fn wait_queue_refusal_survives_a_dirty_step_as_best_effort() {
+        let (mut engine, nick) = setup();
+        engine
+            .registry
+            .register(
+                CommandSpec {
+                    name: "mixedwait".into(),
+                    shape: ArgShape::None,
+                    help: "test-only dirty step plus wait".into(),
+                    ..CommandSpec::default()
+                },
+                Arc::new(|ctx: &mut Ctx<'_>| {
+                    ctx.w.set_attr(
+                        ctx.actor,
+                        "mixedwait",
+                        crate::attr::Attr::text("committed", ctx.actor),
+                    )?;
+                    ctx.out.defer(Deferred::ScheduleIn {
+                        delay_ms: 60_000,
+                        kind: ScheduledKind::WaitCmd {
+                            actor: ctx.actor,
+                            line: "look".to_string(),
+                        },
+                    });
+                    Ok(())
+                }),
+            )
+            .unwrap();
+        for _ in 0..WAIT_QUEUE_MAX {
+            let (mut out, mut fx) = (Outbox::new(), Effects::new());
+            engine.step(
+                Inbound::Cmd {
+                    conn: 2,
+                    actor: nick,
+                    line: "@wait 60=look".into(),
+                },
+                &mut out,
+                &mut fx,
+            );
+        }
+        let _ = engine.world.take_dirty();
+
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Cmd {
+                conn: 2,
+                actor: nick,
+                line: "mixedwait".into(),
+            },
+            &mut out,
+            &mut fx,
+        );
+
+        assert!(engine.world.take_dirty().contains(&nick));
+        assert_eq!(out.classes(), &[DeliveryClass::BestEffort]);
+        assert!(out.classes()[0].releases_on(DeliveryOutcome::Committed));
+        assert!(out.classes()[0].releases_on(DeliveryOutcome::Aborted));
+        assert!(
+            texts(&out)
+                .iter()
+                .any(|line| line == "Too many commands queued.")
+        );
+        assert_eq!(engine.sched.len() as u32, WAIT_QUEUE_MAX);
     }
 
     #[test]

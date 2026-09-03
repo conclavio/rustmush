@@ -146,7 +146,12 @@ async fn post_json(url: &str, body: Value) -> reqwest::Response {
 
 /// Register an account + first character over the gateway's REST surface;
 /// returns (token, char key).
-async fn register(web: SocketAddr, account: &str, password: &str, char_name: &str) -> (String, u64) {
+async fn register(
+    web: SocketAddr,
+    account: &str,
+    password: &str,
+    char_name: &str,
+) -> (String, u64) {
     let url = format!("http://{web}/api/auth/register");
     let resp = post_json(
         &url,
@@ -200,7 +205,10 @@ async fn expect_env(ws: &mut Ws, needle: &str) -> Envelope {
             return env;
         }
         seen.push(text);
-        assert!(seen.len() < 200, "no envelope containing {needle:?} in {seen:?}");
+        assert!(
+            seen.len() < 200,
+            "no envelope containing {needle:?} in {seen:?}"
+        );
     }
 }
 
@@ -246,10 +254,16 @@ async fn web_client_serves_through_split_gateway() {
     // comsys), plus the wod ruleset's sheet feature + feed — proving the server
     // shipped its real manifest over IPC and the gateway wired it into WebConfig.
     let (features, panels) = expect_hello(&mut ws).await;
-    assert!(!features.is_empty(), "features must not be empty: {features:?}");
+    assert!(
+        !features.is_empty(),
+        "features must not be empty: {features:?}"
+    );
     assert!(!panels.is_empty(), "panels must not be empty: {panels:?}");
     for f in ["channels", "mail", "wod"] {
-        assert!(features.iter().any(|x| x == f), "feature {f} in {features:?}");
+        assert!(
+            features.iter().any(|x| x == f),
+            "feature {f} in {features:?}"
+        );
     }
     for p in ["comsys", "mail", "who"] {
         assert!(panels.iter().any(|x| x == p), "panel {p} in {panels:?}");
@@ -270,7 +284,10 @@ async fn web_client_serves_through_split_gateway() {
     send_line(&mut ws, "say hi over the split web").await;
     let echo = expect_env(&mut ws, "Nick says, \"hi over the split web\"").await;
     assert!(matches!(echo.event, OutputEvent::Narrative { .. }));
-    assert!(echo.seq > room.seq, "seqs stay monotonic across the round trip");
+    assert!(
+        echo.seq > room.seq,
+        "seqs stay monotonic across the round trip"
+    );
 
     drop(ws);
     let _ = (server_thread, gateway_thread);
