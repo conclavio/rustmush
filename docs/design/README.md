@@ -14,6 +14,7 @@ critique pass. They are the *reference* design; where they conflict with each ot
 | [06-object-behaviors-spatial-domains.md](06-object-behaviors-spatial-domains.md) | First-class object behavior, nested spatial relationships, simulation domains, and the TacSim implementation path |
 | [07-npc-control-and-tactical-ai.md](07-npc-control-and-tactical-ai.md) | Link-loss automation, allegiance, typed orders, hybrid tactical AI, belief state, and NPC mobility |
 | [08-economy-organizations-ownership.md](08-economy-organizations-ownership.md) | Cross-ruleset economy, first-class organizations, scoped authorization, asset ownership/custody, contracts, housing, and production |
+| [09-rules-engine-contracts.md](09-rules-engine-contracts.md) | Twelve shared mechanical contracts, authoritative action transactions, and five minimum cross-ruleset proving gates |
 
 `06-object-behaviors-spatial-domains.md` and its later companion proposals are
 implementation-informed drafts produced by dedicated design conversations deferred in `PLAN.md`.
