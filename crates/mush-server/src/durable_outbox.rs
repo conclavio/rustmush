@@ -12,8 +12,11 @@ use futures::future::BoxFuture;
 use mush_core::{CanonicalId, OwnerId};
 use mush_store::{
     AuthoritativeOutboxAttemptResult, AuthoritativeOutboxRecord, AuthoritativeOutboxState,
-    AuthoritativeStore, MAX_AUTHORITATIVE_OUTBOX_ERROR_BYTES, StoreError,
+    AuthoritativeStore, MAX_AUTHORITATIVE_OUTBOX_ERROR_BYTES, ObjectStore, StoreError,
 };
+use tokio::sync::watch;
+
+const DURABLE_OUTBOX_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// One adapter's delivery result. Retryability is explicit; arbitrary adapter
 /// errors are never guessed from text.
@@ -89,6 +92,7 @@ pub enum DurableOutboxRegistryError {
 pub struct DurableOutboxPolicy {
     pub max_attempts: u32,
     pub attempt_timeout: Duration,
+    pub max_items_per_pass: usize,
 }
 
 impl DurableOutboxPolicy {
@@ -102,7 +106,14 @@ impl DurableOutboxPolicy {
         Ok(Self {
             max_attempts,
             attempt_timeout,
+            max_items_per_pass: 16,
         })
+    }
+
+    #[must_use]
+    pub fn with_max_items_per_pass(mut self, max_items_per_pass: usize) -> Self {
+        self.max_items_per_pass = max_items_per_pass.max(1);
+        self
     }
 }
 
@@ -111,6 +122,7 @@ impl Default for DurableOutboxPolicy {
         Self {
             max_attempts: 8,
             attempt_timeout: Duration::from_secs(10),
+            max_items_per_pass: 16,
         }
     }
 }
@@ -139,11 +151,19 @@ pub async fn dispatch_authoritative_outbox(
         ..DurableOutboxDispatchReport::default()
     };
 
+    let mut processed = 0_usize;
     for item in pending {
         let Some(adapter) = registry.get(&item) else {
             report.missing_adapters += 1;
             continue;
         };
+        // Scan past unavailable adapters before applying the per-pass delivery
+        // budget. Otherwise one unknown adapter at the front of the stable
+        // pending order could starve every installed adapter forever.
+        if processed >= policy.max_items_per_pass.max(1) {
+            continue;
+        }
+        processed += 1;
         let payload_hash = item.intent().payload_hash();
         if item.attempts() >= policy.max_attempts {
             let terminal = store
@@ -235,6 +255,67 @@ pub async fn dispatch_authoritative_outbox(
         }
     }
     Ok(report)
+}
+
+/// Poll finalized delivery work for the lifetime of the world task. Cancelling
+/// a pass is safe: an attempt is persisted before its adapter call and is
+/// therefore rediscovered as ambiguous in-flight work on the next pass/boot.
+pub async fn run_authoritative_outbox_worker(
+    store: Arc<dyn ObjectStore>,
+    registry: Arc<DurableOutboxRegistry>,
+    policy: DurableOutboxPolicy,
+    mut stop: watch::Receiver<bool>,
+) {
+    let mut last_missing = 0_usize;
+    loop {
+        let Some(authoritative) = store.authoritative_store() else {
+            tracing::error!("durable outbox worker has no authoritative store; stopping");
+            return;
+        };
+        let dispatch = dispatch_authoritative_outbox(authoritative, &registry, policy);
+        tokio::select! {
+            biased;
+            changed = stop.changed() => {
+                if changed.is_err() || *stop.borrow_and_update() {
+                    return;
+                }
+            }
+            result = dispatch => match result {
+                Ok(report) => {
+                    if report.missing_adapters != 0 && report.missing_adapters != last_missing {
+                        tracing::error!(
+                            missing_adapters = report.missing_adapters,
+                            discovered = report.discovered,
+                            "durable outbox work is retained because its adapter is unavailable"
+                        );
+                    }
+                    last_missing = report.missing_adapters;
+                    if report.attempted != 0 || report.dead_lettered != 0 {
+                        tracing::info!(
+                            attempted = report.attempted,
+                            delivered = report.delivered,
+                            retry_pending = report.retry_pending,
+                            dead_lettered = report.dead_lettered,
+                            checkpointed_parents = report.checkpointed_parents,
+                            "durable outbox dispatch pass complete"
+                        );
+                    }
+                }
+                Err(error) => {
+                    tracing::error!(%error, "durable outbox dispatch failed; retaining work for retry");
+                }
+            }
+        }
+
+        tokio::select! {
+            changed = stop.changed() => {
+                if changed.is_err() || *stop.borrow_and_update() {
+                    return;
+                }
+            }
+            () = tokio::time::sleep(DURABLE_OUTBOX_POLL_INTERVAL) => {}
+        }
+    }
 }
 
 async fn checkpoint_terminal_parent(

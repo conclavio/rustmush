@@ -338,6 +338,7 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     let world = handles.handle;
     let mut world_join = handles.world_join;
     let writer_join = handles.writer_join;
+    let outbox_join = handles.outbox_join;
 
     // Store-backed auth + the SSH hooks bridge.
     let accounts = Arc::new(Accounts::new(
@@ -437,6 +438,12 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     // batch. Only a cleanly drained writer with no integrity breach may be
     // followed by the ordinary final BGSAVE.
     drop(world);
+    if tokio::time::timeout(WRITER_DRAIN_TIMEOUT, outbox_join)
+        .await
+        .is_err()
+    {
+        tracing::error!("durable outbox worker did not stop in time");
+    }
     let writer_drained = match tokio::time::timeout(WRITER_DRAIN_TIMEOUT, writer_join).await {
         Ok(Ok(())) => true,
         Ok(Err(e)) => {

@@ -376,6 +376,7 @@ pub async fn serve_with_quarantine_spool(
     let world = handles.handle;
     let world_join = handles.world_join;
     let store_writer_join = handles.writer_join;
+    let outbox_join = handles.outbox_join;
 
     let listener = mush_ipc::listen(&endpoint)
         .await
@@ -424,6 +425,7 @@ pub async fn serve_with_quarantine_spool(
     let _ = world_join.await;
     drop(to_gw_tx);
     drop(world);
+    let _ = outbox_join.await;
     // Keep custody of the actual persistence writer (distinct from the IPC
     // writer above) and wait for it to drain before this runtime can return.
     // Detaching it here would let process teardown discard a batch after the

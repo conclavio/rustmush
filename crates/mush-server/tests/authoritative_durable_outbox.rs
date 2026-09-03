@@ -11,7 +11,7 @@ use mush_core::{
 };
 use mush_server::durable_outbox::{
     DurableDeliveryError, DurableOutboxAdapter, DurableOutboxPolicy, DurableOutboxRegistry,
-    dispatch_authoritative_outbox,
+    dispatch_authoritative_outbox, run_authoritative_outbox_worker,
 };
 use mush_store::{
     AuthoritativeOutboxRecord, AuthoritativeStore, InMemoryStore, ObjectStore, WriteBatch,
@@ -185,4 +185,63 @@ async fn finalized_outbox_is_rediscovered_retried_and_then_checkpoints_parent() 
             .is_empty(),
         "terminal delivery releases the parent's full replay intent"
     );
+}
+
+#[tokio::test]
+async fn production_worker_recovers_and_stops_with_world_lifetime() {
+    let store = Arc::new(InMemoryStore::new());
+    let world = World::new_minimal();
+    store
+        .write(WriteBatch {
+            serial: 1,
+            upserts: world.iter().cloned().collect(),
+            next_id: Some(world.next_id()),
+            ..WriteBatch::default()
+        })
+        .await
+        .unwrap();
+    let bundle = bundle();
+    let token = bundle.token();
+    let hash = bundle.bundle_hash();
+    store.reserve_authoritative_intent(bundle).await.unwrap();
+    store.reconcile_authoritative(token, hash).await.unwrap();
+
+    let adapter = Arc::new(RetryOnceAdapter {
+        owner: OwnerId::new("delivery_test").unwrap(),
+        adapter: CanonicalId::new("webhook").unwrap(),
+        calls: AtomicUsize::new(0),
+    });
+    let mut registry = DurableOutboxRegistry::new();
+    registry.register(adapter.clone()).unwrap();
+    let object_store: Arc<dyn ObjectStore> = store.clone();
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let worker = tokio::spawn(run_authoritative_outbox_worker(
+        object_store,
+        Arc::new(registry),
+        DurableOutboxPolicy::new(3, Duration::from_millis(100)).unwrap(),
+        stop_rx,
+    ));
+
+    tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            if store
+                .scan_authoritative_intents(None, 1)
+                .await
+                .unwrap()
+                .intents
+                .is_empty()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("worker must retry, deliver, and checkpoint");
+    assert_eq!(adapter.calls.load(Ordering::SeqCst), 2);
+    stop_tx.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(1), worker)
+        .await
+        .expect("worker stops promptly")
+        .unwrap();
 }

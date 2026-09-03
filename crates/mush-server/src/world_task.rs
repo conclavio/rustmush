@@ -90,6 +90,9 @@ use tokio::sync::mpsc::error::{TryRecvError, TrySendError};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
+use crate::durable_outbox::{
+    DurableOutboxPolicy, DurableOutboxRegistry, run_authoritative_outbox_worker,
+};
 use crate::gateway_sink::GatewaySink;
 use crate::persist::{self, AuthoritativeCommitFailure, PersistenceIntegrityLatch, StoreJob};
 use crate::retained::RetainedSeals;
@@ -1052,6 +1055,8 @@ pub struct PersistHandles {
     pub world_join: JoinHandle<()>,
     /// The store-writer task (drains after the world task ends).
     pub writer_join: JoinHandle<()>,
+    /// Recovery-driven durable external-delivery worker.
+    pub outbox_join: JoinHandle<()>,
     /// Process-local fail-closed snapshot barrier shared by the world,
     /// store writer, and shutdown coordinator.
     pub persistence_integrity: PersistenceIntegrityLatch,
@@ -1112,7 +1117,23 @@ pub fn spawn_persist_with_gateway(
     deps: ServerDeps,
     make_gateway: impl FnOnce(mpsc::WeakSender<WorldMsg>) -> Gateway,
 ) -> PersistHandles {
-    spawn_persist_with_gateway_mode(engine, deps, None, make_gateway)
+    spawn_persist_with_gateway_and_outbox(
+        engine,
+        deps,
+        Arc::new(DurableOutboxRegistry::new()),
+        make_gateway,
+    )
+}
+
+/// Spawn with an explicit frozen durable-delivery registry. Work for a missing
+/// adapter remains pending and is surfaced as an operational error.
+pub fn spawn_persist_with_gateway_and_outbox(
+    engine: Engine,
+    deps: ServerDeps,
+    durable_outbox: Arc<DurableOutboxRegistry>,
+    make_gateway: impl FnOnce(mpsc::WeakSender<WorldMsg>) -> Gateway,
+) -> PersistHandles {
+    spawn_persist_with_gateway_mode(engine, deps, durable_outbox, None, make_gateway)
 }
 
 /// Shared spawn implementation. Production always supplies `None`; unit tests
@@ -1121,6 +1142,7 @@ pub fn spawn_persist_with_gateway(
 fn spawn_persist_with_gateway_mode(
     engine: Engine,
     deps: ServerDeps,
+    durable_outbox: Arc<DurableOutboxRegistry>,
     initial_mode: Option<WorldMode>,
     make_gateway: impl FnOnce(mpsc::WeakSender<WorldMsg>) -> Gateway,
 ) -> PersistHandles {
@@ -1161,6 +1183,17 @@ fn spawn_persist_with_gateway_mode(
         deps.quarantine_spool.clone(),
         persistence_integrity.clone(),
     );
+    // The delivery worker is independent of the world/write FIFO: finalized
+    // items survive crashes in the store and are safe to rediscover. Its
+    // lifetime sender is owned by the world task, so every world exit stops
+    // the worker without keeping the inbound channel alive.
+    let (outbox_lifetime, outbox_stop) = watch::channel(false);
+    let outbox_join = tokio::spawn(run_authoritative_outbox_worker(
+        Arc::clone(&deps.store),
+        durable_outbox,
+        DurableOutboxPolicy::default(),
+        outbox_stop,
+    ));
     // Sequential executor for staff store ops (@siteban set/clear/list):
     // ONE task draining ONE queue, so two staff commands issued in order
     // can never race each other in the store or the IpGuard mirror. It
@@ -1193,11 +1226,13 @@ fn spawn_persist_with_gateway_mode(
         shutdown_rx,
         persistence_integrity.clone(),
         initial_mode,
+        outbox_lifetime,
     ));
     PersistHandles {
         handle,
         world_join,
         writer_join,
+        outbox_join,
         persistence_integrity,
     }
 }
@@ -1404,6 +1439,7 @@ async fn run(
     mut shutdown: watch::Receiver<bool>,
     persistence_integrity: PersistenceIntegrityLatch,
     initial_mode: Option<WorldMode>,
+    _outbox_lifetime: watch::Sender<bool>,
 ) {
     tracing::info!("world task running");
     let boot_unix = unix_now_s();
@@ -5808,6 +5844,7 @@ mod tests {
                 metrics: Arc::new(Metrics::new()),
                 quarantine_spool: crate::quarantine::QuarantineSpool::in_memory(),
             },
+            Arc::new(DurableOutboxRegistry::new()),
             Some(mode),
             move |_| -> Gateway { sink },
         );
@@ -6710,6 +6747,7 @@ mod tests {
             shutdown_rx,
             PersistenceIntegrityLatch::new(),
             None,
+            watch::channel(false).0,
         ));
 
         assert!(
