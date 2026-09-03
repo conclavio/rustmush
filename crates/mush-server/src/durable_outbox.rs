@@ -248,6 +248,15 @@ pub async fn dispatch_authoritative_outbox(
                 report.delivered += 1;
             } else {
                 report.dead_lettered += 1;
+                tracing::error!(
+                    item_id = %completed.item_id(),
+                    parent_token = %completed.parent_token(),
+                    owner = %completed.intent().owner(),
+                    adapter = %completed.intent().adapter(),
+                    attempts = completed.attempts(),
+                    state = ?completed.state(),
+                    "durable outbox item reached terminal dead-letter state"
+                );
             }
             checkpoint_terminal_parent(store, &completed, &mut report).await?;
         } else {

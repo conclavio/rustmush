@@ -411,6 +411,35 @@ reviewed repair runbook; the server will not infer or apply that repair. A
 first-class audited recovery command remains roadmap work, and the original
 evidence must be retained.
 
+### Durable external-delivery recovery
+
+Durable webhooks, Discord sends, jobs, and similar post-commit work use the K3
+authoritative outbox. They are never launched before their parent action has an
+exact finalized witness. The server polls the bounded pending index, persists an
+attempt marker before calling the registered adapter, and supplies the stable
+item ID as the adapter's idempotency key. A process crash or timeout after the
+external send but before its acknowledgement may therefore repeat the send with
+the same ID; adapters must deduplicate that ID or explicitly tolerate duplicate
+delivery.
+
+The default worker processes at most 16 installed-adapter items per pass, uses a
+10-second attempt timeout and eight-attempt budget, and polls once per second.
+An unavailable adapter does not discard or checkpoint its item and cannot starve
+installed adapters later in the pending order. It emits
+`durable outbox work is retained because its adapter is unavailable`; treat that
+as deployment/configuration drift and restore the exact `(owner, adapter)`
+registration.
+
+A permanent adapter refusal or exhausted retry budget produces
+`durable outbox item reached terminal dead-letter state`, including the stable
+item ID, parent token, owner, adapter, attempt count, and bounded terminal state.
+This does not roll back the already-committed game action or integrity-freeze the
+world: the failure is itself durably recorded, and permits the parent action to
+checkpoint only after every sibling item is `Delivered` or `DeadLetter`.
+Terminal item records remain tied to that compact witness until a later
+watermark-first epoch retirement removes the receipt, idempotency binding,
+parent manifest, and terminal items together.
+
 ### Automatic recovery ladder and staff handoff
 
 Recovery should exhaust bounded, programmatic proof before waking a person. For

@@ -1,12 +1,13 @@
 # Cross-ruleset mechanical contracts and proving gates
 
-**Status:** Implementing 0.11 — K0/K1 exit criteria landed; K2 includes strict atomic boot hydration
-and final commit-admission guard revalidation; K3 now pairs typed post-images with a complete exact
-bundle, carries that bundle through the FIFO writer's reserve/reconcile protocol, and installs RAM
-only after the matching 128-bit token/hash receipt. Canonical store protocols and the pre-hydration
-recovery barrier are implemented, while semantic bundle assembly by production providers, early
-idempotency, process/quarantine fault cases, and all five end-to-end proving gates
-remain open
+**Status:** Implementing 0.11 — K0/K1 formal exit criteria landed. K2 has strict atomic boot
+hydration, bounded typed transactions, final guard revalidation, and provider registration, but its
+same-bundle trigger executor, independently bounded must-retain lanes, and split-gateway request
+custody protocol remain open. The self-contained K3 persistence kernel is implemented: exact bundle
+reservation/reconciliation, pre-hydration recovery, store-owned authoritative prefixes, compact
+checkpoints, watermark-first epoch retirement, a production coordinator plus first tactics provider,
+and recovery-driven durable-outbox dispatch. Transport/legal-offer integration and the IPC portions
+of Gate 5 remain cross-cut work with K2/K5; all five end-to-end proving gates remain open.
 
 **Scope:** the shared contracts that must be stable before RustMUSH substantially expands character,
 tactical, economic, and AI-driven rules
@@ -1775,7 +1776,7 @@ The repository already contains useful local proofs. They should be adapted, not
 | Contract | Current foundation | Missing shared contract |
 |---|---|---|
 | C1 definitions | shared canonical owner/kind/id/digest identities; bounded `RulesValue`; immutable global definition registry; exact-reference closure; one provider semantic validator per owner/kind; bounded monotonic owner-readiness latch; tactics exact-digest owner fan-out; dry-run migration registry; tactics/sim adapters | owner-freeze discovery in remaining rules-bearing adapters, executing one migration through K3 durability, broader production provider coverage |
-| C2 plan/commit | `mush-sim::Transition`, `UnitMutationPlan`, world single writer, `WriteBatch`, K0 exact receipt gate, typed output/effect custody and one `CommitPending` batch; K2 action invocation/provider metadata; engine-owned typed state families; owner-scoped bounded multi-record `ActionTxn`; one-shot `PreparedTxn`; exact staged pairing between typed post-images and an immutable K3 bundle; FIFO reserve/reconcile custody; exact 128-bit token/hash receipt validation before RAM install; canonical bounded K3 bundle/token/replay/outbox models; in-memory exact intent protocol and cut-point matrix; Redis checked-Lua intent/idempotency reservation plus replay/readback/finalization; object-plus-allocator admission; hash-aware status; live Redis 8.10 fault execution; exhaustive pre-hydration server recovery; bounded runtime deterministic retries and whole-bundle dead-letter; compact finalized checkpoints; typestate early-idempotency coordinator and first real tactics provider | transport/parser/legal-offer coordinator wiring; remaining process/IPC fault matrix; epoch retirement for compact tombstones; broader provider and legacy migration |
+| C2 plan/commit | `mush-sim::Transition`, `UnitMutationPlan`, world single writer, `WriteBatch`, K0 exact receipt gate, typed output/effect custody and one `CommitPending` batch; K2 action invocation/provider metadata; engine-owned typed state families; owner-scoped bounded multi-record `ActionTxn`; one-shot `PreparedTxn`; exact staged pairing between typed post-images and an immutable K3 bundle; FIFO reserve/reconcile custody; exact 128-bit token/hash receipt validation before RAM install; canonical bounded K3 bundle/token/replay/outbox models; in-memory exact intent protocol and cut-point matrix; Redis checked-Lua intent/idempotency reservation plus replay/readback/finalization; object-plus-allocator admission; hash-aware status; live Redis 8.10 fault execution; exhaustive pre-hydration server recovery; bounded runtime deterministic retries and whole-bundle dead-letter; compact finalized checkpoints; watermark-first epoch retirement; typestate early-idempotency coordinator and first real tactics provider; recovery-driven bounded durable-outbox worker with stable-ID at-least-once delivery | transport/parser/legal-offer coordinator wiring; same-bundle trigger execution; independent must-retain lanes; gateway UID/custody/dispositions and remaining process/IPC fault matrix; broader provider and legacy migration |
 | C3 legal actions | contextual behavior commands, required channels, command-subject links, LLM tool manifests, exact owner-stamped action-provider registry | separate internal/projected legal actions, bounded offer store, one submission path for human/UI/AI/LLM |
 | C4 time/windows | scheduler, `GameClock`, Timestop turns, passive domain clock, Journey timing, mobility switching | typed clock identity/provider, generic window generations, simultaneous intent collection/order, restart/catch-up policy |
 | C5 RNG | injectable `mush-dice::RollCtx`; test-seeded ChaCha in rulesets | idempotency-derived resolution streams, draw transcript, algorithm/version and durable outcome record |
@@ -1784,7 +1785,7 @@ The repository already contains useful local proofs. They should be adapted, not
 | C8 guards | F3 control channels, unit `control_gen`, expected unit revision, economy plan draft; canonical `RevisionSet`, owner-stamped validator registries, explicit server-created `GuardSet` on every staged typed action, final fail-closed revalidation at the synchronous writer-custody transition, durable exact-bundle reservation, and coordinator-owned early idempotency preflight | actual per-channel leases and wiring every delayed result through guards |
 | C9 projection | per-observer perception and delivery, witness-aware power events | opaque contact references, dedicated view DTOs, shared legal-action/error/LLM projection |
 | C10 ownership | registrar-stamped definition/action/state-family owners; composition-bound opaque typed state handles; provider-stamped transactions that reject cross-owner handles; fail-closed cross-owner tactical references; immutable directional exact-definition bridge registry; shared owner-readiness gates on executable definitions/providers/validators/bridge routes | ownership migration for state outside `ActionStateStore`, executable bridge preparation across typed transactions, freeze aggregation from remaining owner adapters |
-| C11 lifecycle | pre-boot validated unified poison spool; v1 Ledger read compatibility plus tagged v2 Ledger/bundle records sharing one lock, capacity gate, and evidence archive; exact seal retention/isolation; structural world modes; bounded recovery incidents/reports; tactical Active/Frozen/Migrating/Quarantined records; tactics owner-scoped digest-conflict freeze; prepared typed images install or abort on the matching legacy serial or K3 token/hash receipt; strict atomic state-family decode/validate/canonical boot hydration; legacy isolation of `action-state/*`; bounded in-memory and Redis pending indexes plus independent paged full-intent discovery; exhaustive bounded boot reconciliation before world hydration or writable bootstrap; exact retry repair of stale pending-index membership; canonical retained-intent storage validation; atomic reconstruction of derived Redis count/byte counters from exhaustive boot discovery; exact bundle quarantine recovery with live Redis WRONGTYPE proof; coordinator abort of typed reservations on pre-stage assembly failure | exhaustive orphan-owner discovery; full C11 resolution receipts; owner freezes in remaining lifecycle adapters; authoritative account ingress; store-enforced prefix ownership and automated runbook |
+| C11 lifecycle | pre-boot validated unified poison spool; v1 Ledger read compatibility plus tagged v2 Ledger/bundle records sharing one lock, capacity gate, and evidence archive; exact seal retention/isolation; structural world modes; bounded recovery incidents/reports; tactical Active/Frozen/Migrating/Quarantined records; tactics owner-scoped digest-conflict freeze; prepared typed images install or abort on the matching legacy serial or K3 token/hash receipt; strict atomic state-family decode/validate/canonical boot hydration; legacy isolation of `action-state/*`; store-enforced ownership of authoritative module prefixes; bounded in-memory and Redis pending indexes plus independent paged full-intent discovery; exhaustive bounded boot reconciliation before world hydration or writable bootstrap; exact retry repair of stale pending-index membership; canonical retained-intent storage validation; atomic reconstruction of derived Redis count/byte counters from exhaustive boot discovery; exact bundle quarantine recovery with live Redis WRONGTYPE proof; coordinator abort of typed reservations on pre-stage assembly failure; exact checkpoint/epoch/outbox cleanup and retry | exhaustive orphan-owner discovery; full C11 resolution receipts; owner freezes in remaining lifecycle adapters; authoritative account ingress; automated runbook |
 | C12 presentation | `OutputEvent::Panel`, registered panel feeds, keyframe/delta kind, line fallback renderers | schema/projection/state revisions, delta base/sequence, commit receipt, resync/deduplication |
 
 None of the five gates currently traverses all of these through one action pipeline. The first real
@@ -1916,10 +1917,12 @@ process-local applied receipt. A provider that supplies a complete K3 bundle can
 only when its owner and replay writes exactly match those typed post-images; the server then retains
 the images across FIFO reserve/reconcile and installs them only after an exact token/hash receipt.
 The `action-state/*` keyspace is isolated from legacy module boot, migration, and server write paths.
-That is not the complete coordinator: production providers do not yet assemble the semantic
-causal/outcome/outbox portion of the bundle, and early exact idempotency, whole-action bounds,
-store-enforced prefix ownership, independent bounded operational lanes, gateway ownership replay,
-and recovery-driven projection/outbox delivery remain open.
+The production coordinator now performs early exact-idempotency preflight and assembles the bounded
+semantic causal/outcome/outbox portion of a complete bundle; the first `mush-tactics` provider uses
+it directly. What remains at K2 is execution of the bounded trigger queue inside the same
+transaction/bundle, independent bounded operational lanes, gateway ownership replay/dispositions,
+and transport-authenticated entry into the coordinator. Recovery-driven durable-outbox delivery is
+implemented; viewer projection and keyframe recovery remain C9/C12 work.
 
 Exit criteria:
 
@@ -1970,9 +1973,18 @@ reservations on every pre-stage assembly failure. `mush-tactics` owns the first 
 `brace` writes a typed `stance` family only through that authoritative lane; exact retries return
 the compact outcome without provider execution, and restart hydration is proven before a later
 action reads revision 1 and prepares revision 2. Linux CI already supplies Redis 8 for the
-live-gated suite. Production support still requires epoch/watermark retirement for compact
-tombstones, transport/parser/legal-offer wiring into the coordinator, more real providers, the
-remaining process/IPC fault cases, and durable-outbox dispatch.
+live-gated suite. Compact witnesses now retire by durable per-scope epoch watermark: pending or
+uncheckpointed work blocks advancement, deletion follows the watermark, and an interrupted purge
+resumes without reopening an expired key. Finalization materializes an exact per-parent outbox
+manifest; terminal records survive checkpointing and are removed with their retired parent. A
+bounded production worker rediscovers finalized outbox items, persists the attempt before delivery,
+reuses stable item IDs for ambiguous send/ack loss, records retry or terminal state, and checkpoints
+the parent only after all items are terminal. Missing adapters retain work and cannot starve
+installed adapters. The remaining K3 exit work is cross-cut: transport/parser/legal-offer entry into
+the coordinator, gateway UID ownership transfer and its process/IPC fault cases, recoverable
+projection/keyframes, and broader provider/legacy migration. Those depend respectively on unfinished
+K2 custody/trigger work and K5/C9/C12 projection; the self-contained K3 store, coordinator, and
+durable-delivery kernel is complete.
 
 Work:
 

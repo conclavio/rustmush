@@ -647,10 +647,13 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use mush_core::{
-        CanonicalId, ModError, Registrar, StateFamilyDescriptor, StateFamilyHandle, StateFamilyId,
-        World,
+        AuthoritativeBundle, AuthoritativeBundleDraft, AuthoritativeKey, CanonicalHash,
+        CanonicalId, CommitToken, DefinitionDescriptor, DefinitionId, DefinitionKind,
+        DefinitionRegistryBuilder, GOD, IdempotencyKey, IdempotencyScope, ModError, OwnerId,
+        PreparedCausalRef, PrincipalId, Registrar, ReplayWrite, RequestUid, RulesValue,
+        ScopedIdempotencyKey, StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, World,
     };
-    use mush_store::InMemoryStore;
+    use mush_store::{AuthoritativeStore, InMemoryStore};
 
     /// A module that persists one doc under ns "toy" and registers a v1→v2
     /// migration renaming field `a` to `b`.
@@ -819,6 +822,85 @@ mod tests {
         }
     }
 
+    /// Seed a module document through the same authoritative prefix owner that
+    /// production uses. Reserved `action-state/*` fixtures must never bypass
+    /// the store guard through the legacy module-write API.
+    async fn seed_authoritative_json(
+        store: &InMemoryStore,
+        namespace: &str,
+        key: &str,
+        value: serde_json::Value,
+    ) {
+        let owner = OwnerId::new(namespace).unwrap();
+        let mut definitions = DefinitionRegistryBuilder::new();
+        let action = definitions
+            .register(
+                owner.clone(),
+                DefinitionDescriptor::new(
+                    DefinitionKind::new("action").unwrap(),
+                    DefinitionId::new("boot_fixture").unwrap(),
+                    1,
+                    serde_json::json!({}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let outcome = definitions
+            .register(
+                owner.clone(),
+                DefinitionDescriptor::new(
+                    DefinitionKind::new("outcome").unwrap(),
+                    DefinitionId::new("boot_fixture_written").unwrap(),
+                    1,
+                    serde_json::json!({}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let request = RequestUid::from_bytes([0xA1; 16]);
+        let bundle = AuthoritativeBundle::new(AuthoritativeBundleDraft {
+            token: CommitToken::from_bytes([0xA2; 16]),
+            request,
+            idempotency: ScopedIdempotencyKey::new(
+                IdempotencyScope {
+                    principal: PrincipalId::Object { id: GOD },
+                    owner: owner.clone(),
+                    namespace: CanonicalId::new("boot_fixture").unwrap(),
+                },
+                0,
+                IdempotencyKey::Request(request),
+            ),
+            ingress_hash: CanonicalHash::from_bytes([0xA3; 32]),
+            request_hash: CanonicalHash::from_bytes([0xA4; 32]),
+            plan_hash: CanonicalHash::from_bytes([0xA5; 32]),
+            action: action.clone(),
+            provider: owner.clone(),
+            cause: PreparedCausalRef::new(request, None, 0).unwrap(),
+            definitions: vec![action, outcome.clone()],
+            writes: vec![ReplayWrite::ModuleJsonSet {
+                namespace: owner,
+                key: AuthoritativeKey::parse_canonical(key).unwrap(),
+                value,
+            }],
+            outcome: RulesValue::new(outcome, serde_json::json!({"seeded": true})).unwrap(),
+            eligible_witnesses: vec![PrincipalId::Object { id: GOD }],
+            durable_outbox: vec![],
+        })
+        .unwrap();
+        let token = bundle.token();
+        let hash = bundle.bundle_hash();
+        store.reserve_authoritative_intent(bundle).await.unwrap();
+        store.reconcile_authoritative(token, hash).await.unwrap();
+        store.checkpoint_authoritative(token, hash).await.unwrap();
+    }
+
+    async fn seed_authoritative_op(store: &InMemoryStore, op: ModuleOp) {
+        let ModuleWrite::JsonSet { key, value } = op.op else {
+            panic!("authoritative boot fixture must be a JSON set");
+        };
+        seed_authoritative_json(store, &op.ns, &key, value).await;
+    }
+
     struct ReservedBootWrite;
 
     impl GameModule for ReservedBootWrite {
@@ -871,9 +953,7 @@ mod tests {
     #[tokio::test]
     async fn boot_hydrates_typed_state_before_module_callbacks() {
         let store = InMemoryStore::new();
-        write_ops(&store, vec![boot_state_op("7", 3)])
-            .await
-            .unwrap();
+        seed_authoritative_op(&store, boot_state_op("7", 3)).await;
         let (mut engine, handle, streams_requested, loaded) = state_boot_engine();
 
         boot_modules(&mut engine, &store).await.unwrap();
@@ -894,7 +974,7 @@ mod tests {
             unreachable!()
         };
         value["schema"]["version"] = serde_json::json!(2);
-        write_ops(&store, vec![op]).await.unwrap();
+        seed_authoritative_op(&store, op).await;
         let (mut engine, handle, streams_requested, loaded) = state_boot_engine();
 
         let error = boot_modules(&mut engine, &store).await.unwrap_err();
@@ -913,7 +993,7 @@ mod tests {
             unreachable!()
         };
         *key = "action-state/v2/boot/7".into();
-        write_ops(&store, vec![op]).await.unwrap();
+        seed_authoritative_op(&store, op).await;
         let (mut engine, _, streams_requested, loaded) = state_boot_engine();
 
         let error = boot_modules(&mut engine, &store).await.unwrap_err();
@@ -965,24 +1045,16 @@ mod tests {
     async fn module_migrations_never_transform_reserved_action_state() {
         let store = InMemoryStore::new();
         let reserved = serde_json::json!({ "a": "must remain byte-equivalent" });
+        seed_authoritative_json(&store, "toy", "action-state/v1/example/1", reserved.clone()).await;
         write_ops(
             &store,
-            vec![
-                ModuleOp {
-                    ns: "toy".into(),
-                    op: ModuleWrite::JsonSet {
-                        key: "action-state/v1/example/1".into(),
-                        value: reserved.clone(),
-                    },
+            vec![ModuleOp {
+                ns: "toy".into(),
+                op: ModuleWrite::JsonSet {
+                    key: "doc:1".into(),
+                    value: serde_json::json!({ "a": 42 }),
                 },
-                ModuleOp {
-                    ns: "toy".into(),
-                    op: ModuleWrite::JsonSet {
-                        key: "doc:1".into(),
-                        value: serde_json::json!({ "a": 42 }),
-                    },
-                },
-            ],
+            }],
         )
         .await
         .unwrap();
@@ -1042,17 +1114,17 @@ mod tests {
     #[tokio::test]
     async fn action_state_keys_never_reach_module_boot_data() {
         let store = InMemoryStore::new();
+        seed_authoritative_json(
+            &store,
+            "toy",
+            "action-state/v99/future/1",
+            serde_json::json!({ "opaque": true }),
+        )
+        .await;
         write_ops(
             &store,
             vec![
                 stamp("toy", 2),
-                ModuleOp {
-                    ns: "toy".into(),
-                    op: ModuleWrite::JsonSet {
-                        key: "action-state/v99/future/1".into(),
-                        value: serde_json::json!({ "opaque": true }),
-                    },
-                },
                 ModuleOp {
                     ns: "toy".into(),
                     op: ModuleWrite::JsonSet {
