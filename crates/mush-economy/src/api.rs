@@ -28,12 +28,17 @@ use crate::custody::{CustodyError, WorldCustody};
 use crate::engine::{
     APPROVAL_TTL_SECS, AuthEval, NoFacts, ValidateEnv, apply, plan_reversal, validate,
 };
-use crate::ids::{AccountId, ApprovalRequestId, InstrumentId, TransactionId, VaultId};
+use crate::ids::{
+    AccountId, ApprovalRequestId, CadenceId, HoldId, InstrumentId, ObligationId, TransactionId,
+    VaultId,
+};
 use crate::module::{EconomyStore, JOURNAL_LOG, NS};
-use crate::plan::{ApprovalNeed, AssetOp, CustodyOp, EconomyError, EconomyPlan, PlanResult, Prepared};
+use crate::plan::{
+    ApprovalNeed, AssetOp, CustodyOp, EconomyError, EconomyPlan, HoldOp, PlanResult, Prepared,
+};
 use crate::record::{
     Account, ApprovalRequest, ApprovalStatus, CustodyDirection, EconomicAsset, EconomicCause,
-    EconomicTransaction, InstrumentDef, Vault,
+    EconomicTransaction, Hold, InstrumentDef, Vault,
 };
 use crate::snapshot::EconomySnapshot;
 
@@ -70,6 +75,25 @@ pub fn vault_key(id: VaultId) -> SmolStr {
 pub fn approval_key(id: ApprovalRequestId) -> SmolStr {
     SmolStr::new(format!("approval:{}", id.0))
 }
+/// `hold:{id}` — a **journal-derived projection** (E4b1, D-E4-1). A hold carries no
+/// doc-authority latch at all, so a missing (or unreadable) doc is rebuilt silently
+/// from the journal; only a doc that DISAGREES with the journal at its own claimed
+/// sequence, or one ahead of it, freezes the economy.
+#[must_use]
+pub fn hold_key(id: HoldId) -> SmolStr {
+    SmolStr::new(format!("hold:{}", id.0))
+}
+/// `obligation:{id}` — a **container** doc (D-E4-5): obligation *state* is doc
+/// authority, its money is the journal. A corrupt one fails the boot.
+#[must_use]
+pub fn obligation_key(id: ObligationId) -> SmolStr {
+    SmolStr::new(format!("obligation:{}", id.0))
+}
+/// `cadence:{id}` — a **container** doc (D-E4-2): the economy-owned campaign clock.
+#[must_use]
+pub fn cadence_key(id: CadenceId) -> SmolStr {
+    SmolStr::new(format!("cadence:{}", id.0))
+}
 
 // ---- persist helpers ------------------------------------------------------
 
@@ -104,6 +128,30 @@ pub(crate) fn persist_approval(out: &mut Outbox, r: &ApprovalRequest) {
     push_op(out, ModuleWrite::JsonSet {
         key: approval_key(r.id),
         value: serde_json::to_value(r).expect("approval request serializes"),
+    });
+}
+pub(crate) fn persist_hold(out: &mut Outbox, h: &crate::record::Hold) {
+    push_op(out, ModuleWrite::JsonSet {
+        key: hold_key(h.id),
+        value: serde_json::to_value(h).expect("hold serializes"),
+    });
+}
+pub(crate) fn persist_obligation(out: &mut Outbox, o: &crate::obligation::Obligation) {
+    push_op(out, ModuleWrite::JsonSet {
+        key: obligation_key(o.id),
+        value: serde_json::to_value(o).expect("obligation serializes"),
+    });
+}
+pub(crate) fn persist_cadence(out: &mut Outbox, c: &crate::clock::CadenceClock) {
+    push_op(out, ModuleWrite::JsonSet {
+        key: cadence_key(c.id),
+        value: serde_json::to_value(c).expect("cadence serializes"),
+    });
+}
+pub(crate) fn persist_escalation(out: &mut Outbox, e: &crate::escalation::Escalation) {
+    push_op(out, ModuleWrite::JsonSet {
+        key: crate::escalation::escalation_key(e.id),
+        value: serde_json::to_value(e).expect("escalation serializes"),
     });
 }
 pub(crate) fn delete_key(out: &mut Outbox, key: SmolStr) {
@@ -401,6 +449,52 @@ impl AuthEval for WorldAuth<'_> {
             }
         }
     }
+
+    /// Invariant 25 / E4a's handoff: **`authorize_hold` decides everything about who
+    /// may touch a reservation.** The beneficiary captures, the placer (or the
+    /// beneficiary, or debit authority on the account, or staff) releases, and the
+    /// sweep — and only the sweep — expires.
+    ///
+    /// Three deliberate absences:
+    ///
+    /// - **`Hold.holder` is never consulted.** It is a caller-chosen idempotency key,
+    ///   an attribution label and nothing more (E4a verify fold, finding 8).
+    /// - **Plain debit authority does not capture.** A reservation exists precisely to
+    ///   stand between an account's owner and their own money; letting the owner's
+    ///   wallet rights spend it would make escrow a promise only the payer could break
+    ///   (finding 1). It *does* release — releasing hands the money back to the very
+    ///   account it was reserved on, which takes nothing from anyone.
+    /// - **`Place` is not answered here.** The engine asks it as debit authority on
+    ///   the account through [`AuthEval::authorize`] (a reservation is a promise to
+    ///   pay); a `Place` reaching this method at all would be a shape the engine does
+    ///   not produce, so it fails closed.
+    fn authorize_hold(&self, actor: &PrincipalId, hold: &Hold, op: &HoldOp) -> bool {
+        match op {
+            HoldOp::Place { .. } => false,
+            HoldOp::Capture { .. } => {
+                let Some(beneficiary) = &hold.beneficiary else {
+                    // A reservation for nobody in particular has no one who may spend
+                    // it — it can only be released or aged out.
+                    return false;
+                };
+                self.acts_for(actor, beneficiary)
+            }
+            HoldOp::Release { .. } => {
+                if *actor == hold.placed_by
+                    || hold.beneficiary.as_ref().is_some_and(|b| self.acts_for(actor, b))
+                {
+                    return true;
+                }
+                let Some(store) = self.w.module_state::<EconomyStore>() else { return false };
+                let Some(account) = store.snapshot().account(hold.account) else { return false };
+                let Some(probe) = hold.amount.checked_neg() else { return false };
+                self.authorize(actor, account, probe)
+            }
+            // Expiry is the scheduler's act, not a player verb: only the sweep's own
+            // system principal, and the engine additionally requires the sweep cause.
+            HoldOp::Expire { .. } => *actor == sweep_principal(),
+        }
+    }
 }
 
 impl WorldAuth<'_> {
@@ -409,6 +503,47 @@ impl WorldAuth<'_> {
         let Some(scope) = scope else { return false };
         scope_coherent(self.w, Some(scope), owner) && holds_capability(self.w, actor, capability, scope)
     }
+
+    /// Whether `actor` acts **for** `who` — the beneficiary question a capture asks.
+    ///
+    /// An object principal is acted for by itself, by anyone who MUSH-controls it,
+    /// or by staff. An organization is acted for by a holder of the spending
+    /// capability on its root compartment (`economy.account.post` — the E3
+    /// vocabulary's spending entry; no new capability is minted, because "may spend
+    /// the org's money" is exactly the right to turn its escrow into a payment) or by
+    /// staff. A **system** principal is acted for by nobody: a `System` beneficiary
+    /// is an internal settlement authority ([`crate::ContractAuth`]), never a command.
+    fn acts_for(&self, actor: &PrincipalId, who: &PrincipalId) -> bool {
+        let PrincipalId::Object(a) = actor else { return false };
+        if is_staff(self.w, *a) {
+            return true;
+        }
+        match who {
+            PrincipalId::Object(o) => *a == *o || mush_core::perm::controls(self.w, *a, *o),
+            PrincipalId::Organization(org) => {
+                let Some(store) = self.w.module_state::<mush_org::OrgStore>() else { return false };
+                let Some(root) = store.state().org(*org).map(|o| o.root_scope) else { return false };
+                scope_coherent(self.w, Some(root), who)
+                    && holds_capability(self.w, *a, "economy.account.post", root)
+            }
+            PrincipalId::System(_) => false,
+        }
+    }
+}
+
+/// The system principal every economy **sweep** post is attributed to (§4.3). It is
+/// not a faucet and owns no account: `WorldAuth` grants it exactly one thing — the
+/// right to age a hold out past its own deadline — and the engine independently
+/// requires the `Internal { kind: "hold.expire" }` cause for that op (invariant 24).
+///
+/// Nothing constructs this from player input: `parse_principal` accepts `sys:<name>`
+/// only in staff verbs that name an *account* owner, and no command builds a plan
+/// whose `actor` is a system principal.
+#[must_use]
+pub fn sweep_principal() -> PrincipalId {
+    PrincipalId::System(
+        mush_org::SystemPrincipalId::new("economy.sweep").expect("valid system principal"),
+    )
 }
 
 // ---- instrument + account creation (non-money writes) ---------------------
@@ -567,16 +702,44 @@ pub enum PostOutcome {
 /// mutation) → apply + index → queue the bundle → strict gate. A provider `Err`
 /// returns before the store is touched.
 pub fn post(ctx: &mut Ctx<'_>, plan: &EconomyPlan) -> Result<PostOutcome, EconomyError> {
+    post_with(ctx, plan, PostAuth::World)
+}
+
+/// Which [`AuthEval`] a post is validated against (§4.1).
+///
+/// [`WorldAuth`] borrows the world, and a caller holding `&mut Ctx` cannot build one
+/// to hand in — so the *choice* is passed instead and the bridge is constructed
+/// inside [`post_with`], where the borrow lives exactly as long as validation does.
+pub(crate) enum PostAuth<'a> {
+    /// The live org bridge — every player-facing post.
+    World,
+    /// An injected authority: the sweep's per-obligation one, and (E4b2)
+    /// [`crate::ContractAuth`], whose acceptances ARE the settlement authority.
+    Injected(&'a dyn AuthEval),
+}
+
+/// [`post`] with an explicit authority (§4.1). `post` is the only public entry;
+/// the sweep and (E4b2) settlement reach the same validate → custody → install
+/// sequence through here, so an internal post is never a second, weaker code path.
+pub(crate) fn post_with(
+    ctx: &mut Ctx<'_>,
+    plan: &EconomyPlan,
+    auth: PostAuth<'_>,
+) -> Result<PostOutcome, EconomyError> {
     let (outcome, providers) = {
         let store = ctx.w.module_state::<EconomyStore>().ok_or(EconomyError::EconomyFrozen)?;
         if store.frozen {
             return Err(EconomyError::EconomyFrozen);
         }
         let providers = store.providers();
-        let auth = WorldAuth { w: ctx.w };
+        let world_auth = WorldAuth { w: ctx.w };
+        let auth: &dyn AuthEval = match auth {
+            PostAuth::World => &world_auth,
+            PostAuth::Injected(a) => a,
+        };
         let custody = WorldCustody { w: ctx.w, providers: providers.clone() };
         let env = ValidateEnv {
-            auth: &auth,
+            auth,
             custody: &custody,
             // E4c wires the real provider; until then every `Fact` condition is
             // unknown, which is unsatisfied.
@@ -761,6 +924,39 @@ pub(crate) fn put_approval(ctx: &mut Ctx<'_>, request: ApprovalRequest) {
     persist_approval(ctx.out, &request);
 }
 
+/// Install an obligation into RAM and queue its container doc (E4b1).
+///
+/// The latch rule (§4.2) is trivially satisfied here and worth stating: an
+/// [`crate::Obligation`] carries **no journal-authority field at all**. Its money is
+/// the journal — every settled period is an ordinary transaction — while its status,
+/// schedule and history are doc authority end to end (D-E4-5), so a status write can
+/// never make a doc disagree with the journal at a sequence it claims.
+pub(crate) fn put_obligation(ctx: &mut Ctx<'_>, o: crate::obligation::Obligation) {
+    {
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return };
+        store.snapshot.put_obligation(o.clone());
+    }
+    persist_obligation(ctx.out, &o);
+}
+
+/// Install a cadence clock into RAM and queue its container doc (E4b1, D-E4-2).
+pub(crate) fn put_cadence(ctx: &mut Ctx<'_>, c: crate::clock::CadenceClock) {
+    {
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return };
+        store.snapshot.put_cadence(c.clone());
+    }
+    persist_cadence(ctx.out, &c);
+}
+
+/// Install an escalation record into RAM and queue its leaf doc (E4b1, §4.6).
+pub(crate) fn put_escalation(ctx: &mut Ctx<'_>, e: crate::escalation::Escalation) {
+    {
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return };
+        store.put_escalation(e.clone());
+    }
+    persist_escalation(ctx.out, &e);
+}
+
 /// Common tail: turn a [`PlanResult`] into a durable-gated outcome or an error.
 fn finish(
     ctx: &mut Ctx<'_>,
@@ -803,9 +999,10 @@ fn finish(
             let commit = prepare_commit(ctx, &prepared, now)?;
             // §4.2 step 2: the world moves BEFORE the store advances, and only from
             // the prepared effects (never the plan's ops — see `AlreadyPosted` above,
-            // which performs zero world mutation).
+            // which performs zero world mutation). **This is the last fallible act
+            // of a post** (08c §12): `install_commit` below cannot fail.
             run_custody_effects(ctx, &prepared, providers)?;
-            let txid = install_commit(ctx, commit)?;
+            let txid = install_commit(ctx, commit);
             // Invariant 9 / R-R1: the "posted" confirmation must never outrun the
             // durable ack — strict so a dropped write suppresses it entirely.
             ctx.gate_on_durable_ack_strict();
@@ -826,6 +1023,7 @@ struct PreparedEconomyCommit {
     transaction: EconomicTransaction,
     account_docs: Vec<Account>,
     asset_docs: Vec<EconomicAsset>,
+    hold_docs: Vec<Hold>,
     approval_doc: Option<ApprovalRequest>,
 }
 
@@ -852,14 +1050,26 @@ fn prepare_commit(
             tracing::error!(%error, "economy journal refused a validated transaction post-image");
             EconomyError::JournalUnavailable
         })?;
-    let account_docs = prepared
+    // Every account whose `posted_balance`/`last_journal_seq` moved — AND (E4b1)
+    // every account whose `held_amount`/`last_hold_seq` moved, which an effect-only
+    // placement does without touching a single money line (D11).
+    let touched_accounts: std::collections::BTreeSet<AccountId> = prepared
         .touched_accounts()
-        .filter_map(|id| snapshot.account(id).cloned())
+        .chain(prepared.hold_effects.iter().map(|e| e.hold.account))
         .collect();
+    let account_docs =
+        touched_accounts.into_iter().filter_map(|id| snapshot.account(id).cloned()).collect();
     let asset_docs = prepared
         .asset_effects
         .iter()
         .filter_map(|effect| snapshot.asset(effect.object).cloned())
+        .collect();
+    // Every touched `hold:{id}` projection (§4.2). The post-state is already in the
+    // journal entry; this is the read-side doc, healed from the journal at boot.
+    let hold_docs = prepared
+        .hold_effects
+        .iter()
+        .filter_map(|effect| snapshot.hold(effect.hold.id).cloned())
         .collect();
     let approval_doc = prepared
         .consumed_approval
@@ -873,14 +1083,40 @@ fn prepare_commit(
         transaction,
         account_docs,
         asset_docs,
+        hold_docs,
         approval_doc,
     })
 }
 
-fn install_commit(
-    ctx: &mut Ctx<'_>,
-    commit: PreparedEconomyCommit,
-) -> Result<TransactionId, EconomyError> {
+/// Install a prepared commit. **Infallible** (08c §12, E4b1).
+///
+/// K's two-phase split left `install_commit` returning `Err` *after*
+/// `run_custody_effects` had already moved an object in the world — which
+/// contradicts this file's own rule that `post` is a handler's last fallible call,
+/// and would leave the world ahead of the journal with nothing to roll it back.
+/// E4b1 turns the two post-move checks into **asserted invariants**, keeping the
+/// custody move as the last fallible act (`mush-org`'s split is the shape).
+///
+/// The reachability argument for each, in full, because that is what makes an
+/// assertion legitimate rather than optimistic:
+///
+/// 1. **The allocator cannot move between prepare and install.** `next_transaction`
+///    advances in exactly one place — this function — and the world task is
+///    single-threaded, so the only way to interleave a second post is for something
+///    *between* `prepare_commit` and here to re-enter the economy. The one call in
+///    that window is `run_custody_effects`, which drives [`crate::CustodyProvider`]s
+///    with a `&mut Ctx`. No shipped provider re-enters (`ContainerProvider` and
+///    `mush_sim::InteriorCustodyProvider` move an object and consult hooks), and the
+///    `CarryAttempt` hook chain they run has no `Ctx` and so cannot post.
+/// 2. **The journal tail cannot move either**, for the same reason: `apply_prepared`
+///    is the only appender and only this function calls it.
+///
+/// So a fired assertion means a provider (or a future hook) re-entered the posting
+/// path — a **programming** error that must be found in test, not a desync silently
+/// converted into `JournalUnavailable` after the world had already moved. The
+/// regression test in `tests/e4b1.rs` drives exactly such a provider and proves it
+/// is the assertion, not a mismatch, that fires.
+fn install_commit(ctx: &mut Ctx<'_>, commit: PreparedEconomyCommit) -> TransactionId {
     let PreparedEconomyCommit {
         txid,
         next_transaction,
@@ -890,23 +1126,24 @@ fn install_commit(
         transaction,
         account_docs,
         asset_docs,
+        hold_docs,
         approval_doc,
     } = commit;
     let (journal_op, meta) = {
         let store = ctx.w.module_state_mut::<EconomyStore>().expect("economy store");
-        if store.peek_next_transaction() != txid.0 {
-            tracing::error!(
-                expected = txid.0,
-                actual = store.peek_next_transaction(),
-                "economy transaction allocator changed after preparation"
-            );
-            return Err(EconomyError::JournalUnavailable);
-        }
-        let (applied_seq, journal_op) = store.journal.apply_prepared(journal).map_err(|error| {
-            tracing::error!(%error, "economy journal changed after transaction preparation");
-            EconomyError::JournalUnavailable
-        })?;
-        debug_assert_eq!(journal_seq, applied_seq, "prepared journal seq is exact");
+        assert_eq!(
+            store.peek_next_transaction(),
+            txid.0,
+            "economy: the transaction allocator moved between prepare and install — \
+             something re-entered post() after the custody move (see install_commit)"
+        );
+        let (applied_seq, journal_op) = store.journal.apply_prepared(journal).unwrap_or_else(|error| {
+            panic!(
+                "economy: the journal tail moved between prepare and install ({error}) — \
+                 something re-entered post() after the custody move (see install_commit)"
+            )
+        });
+        assert_eq!(journal_seq, applied_seq, "economy: prepared journal seq is exact");
         store.next_transaction = next_transaction;
         store.snapshot = snapshot;
         store.index_transaction(transaction);
@@ -919,9 +1156,12 @@ fn install_commit(
     for a in &asset_docs {
         persist_asset(ctx.out, a);
     }
+    for h in &hold_docs {
+        persist_hold(ctx.out, h);
+    }
     if let Some(r) = &approval_doc {
         persist_approval(ctx.out, r);
     }
     persist_meta(ctx.out, meta);
-    Ok(txid)
+    txid
 }

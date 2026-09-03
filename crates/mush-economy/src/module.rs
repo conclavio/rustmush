@@ -29,7 +29,11 @@ use smol_str::SmolStr;
 
 use crate::boot;
 use crate::custody::{ContainerProvider, CustodyProvider, CustodyTable};
-use crate::ids::{AccountId, ApprovalRequestId, TransactionId, VaultId};
+use crate::escalation::Escalation;
+use crate::ids::{
+    AccountId, ApprovalRequestId, CadenceId, EscalationId, HoldId, ObligationId, TransactionId,
+    VaultId,
+};
 use crate::record::{Account, EconomicTransaction, Vault};
 use crate::snapshot::EconomySnapshot;
 
@@ -64,9 +68,33 @@ pub struct EconomyStore {
     /// every **journal-derived** hold effect — never from surviving `hold:{id}` docs,
     /// because GC deletes terminal ones and re-minting a garbage-collected id under a
     /// stale `Contract.escrow` reference would attach live escrow to a dead contract.
-    /// Until then [`EconomyStore::peek_next_hold`] floors it from the snapshot, so the
-    /// pure path can never mint a colliding id.
+    /// [`EconomyStore::peek_next_hold`] additionally floors it from the snapshot, so
+    /// the pure path can never mint a colliding id even mid-plan.
     pub(crate) next_hold: u64,
+    /// The obligation-id allocator (E4b1); never reused, resumed from `meta` floored
+    /// past every parsable `obligation:` key — including a corrupt one, whose id was
+    /// still minted.
+    pub(crate) next_obligation: u64,
+    /// The cadence-clock-id allocator (E4b1), floored the same way.
+    pub(crate) next_cadence: u64,
+    /// The escalation-id allocator (E4b1, §4.6), floored the same way — an
+    /// unreadable escalation leaf must never have its id re-minted onto a different
+    /// alert, or an acknowledgement would resume the wrong subject.
+    pub(crate) next_escalation: u64,
+    /// The open + recently-acknowledged level-2/3 escalation records (§4.6), by id.
+    /// Leaf docs (`escalation:{id}`): a corrupt one is skipped loudly at boot.
+    pub(crate) escalations: BTreeMap<EscalationId, Escalation>,
+    /// When each **terminal** hold became terminal (wall clock), journal-derived at
+    /// boot and stamped at install. RAM-only on purpose: it is a GC schedule, not
+    /// economic truth, so it is re-derived from the journal rather than stored — and
+    /// a hold record itself therefore keeps the byte shape E4a journaled.
+    pub(crate) hold_terminal_at: BTreeMap<HoldId, i64>,
+    /// The wall-clock instant of the last completed sweep fire — the evidence
+    /// [`crate::classify_forgiveness`] reads to tell downtime from overload. Durable
+    /// in `meta`; a sweep that did not run (a frozen economy) does not stamp it.
+    pub(crate) last_sweep_real: i64,
+    /// The IC instant of the last completed sweep fire (the time-jump evidence).
+    pub(crate) last_sweep_ic: i64,
     /// The whole-economy freeze latch (boot drift / conservation break / a dropped
     /// durable write). While set, [`crate::post`] refuses everything, and so do the
     /// non-recovery control verbs (`@account/open`, `@account/approval`,
@@ -83,30 +111,48 @@ pub struct EconomyStore {
     pub(crate) providers: CustodyTable,
 }
 
+/// Everything [`crate::boot`] derives, handed to [`EconomyStore::from_parts`] as one
+/// value rather than a dozen positional arguments (E4b1 doubled the count).
+pub(crate) struct BootParts {
+    pub(crate) snapshot: EconomySnapshot,
+    pub(crate) journal: Ledger,
+    pub(crate) transactions: BTreeMap<TransactionId, EconomicTransaction>,
+    pub(crate) escalations: BTreeMap<EscalationId, Escalation>,
+    pub(crate) hold_terminal_at: BTreeMap<HoldId, i64>,
+    pub(crate) next_account: u64,
+    pub(crate) next_transaction: u64,
+    pub(crate) next_vault: u64,
+    pub(crate) next_approval: u64,
+    pub(crate) next_hold: u64,
+    pub(crate) next_obligation: u64,
+    pub(crate) next_cadence: u64,
+    pub(crate) next_escalation: u64,
+    pub(crate) last_sweep_real: i64,
+    pub(crate) last_sweep_ic: i64,
+    pub(crate) frozen: bool,
+}
+
 impl EconomyStore {
     /// Assemble a store from boot-derived parts (used by [`crate::boot`]). The
     /// provider table is empty here — the module injects the frozen one after boot.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn from_parts(
-        snapshot: EconomySnapshot,
-        journal: Ledger,
-        transactions: BTreeMap<TransactionId, EconomicTransaction>,
-        next_account: u64,
-        next_transaction: u64,
-        next_vault: u64,
-        next_approval: u64,
-        frozen: bool,
-    ) -> EconomyStore {
+    pub(crate) fn from_parts(p: BootParts) -> EconomyStore {
         EconomyStore {
-            snapshot,
-            journal,
-            transactions,
-            next_account,
-            next_transaction,
-            next_vault,
-            next_approval,
-            next_hold: 0,
-            frozen,
+            snapshot: p.snapshot,
+            journal: p.journal,
+            transactions: p.transactions,
+            escalations: p.escalations,
+            hold_terminal_at: p.hold_terminal_at,
+            next_account: p.next_account,
+            next_transaction: p.next_transaction,
+            next_vault: p.next_vault,
+            next_approval: p.next_approval,
+            next_hold: p.next_hold,
+            next_obligation: p.next_obligation,
+            next_cadence: p.next_cadence,
+            next_escalation: p.next_escalation,
+            last_sweep_real: p.last_sweep_real,
+            last_sweep_ic: p.last_sweep_ic,
+            frozen: p.frozen,
             providers: CustodyTable::default(),
         }
     }
@@ -160,8 +206,52 @@ impl EconomyStore {
     pub fn peek_next_transaction(&self) -> u64 {
         self.next_transaction
     }
-    /// The next hold id validation may mint, floored at one past every hold the
-    /// snapshot knows (E4a; E4b1 replaces the floor with the journal-derived one).
+    /// Mint the next obligation id (E4b1).
+    pub fn alloc_obligation(&mut self) -> ObligationId {
+        let id = ObligationId(self.next_obligation);
+        self.next_obligation += 1;
+        id
+    }
+    /// Mint the next cadence-clock id (E4b1).
+    pub fn alloc_cadence(&mut self) -> CadenceId {
+        let id = CadenceId(self.next_cadence);
+        self.next_cadence += 1;
+        id
+    }
+    /// Mint the next escalation id (E4b1, §4.6).
+    pub fn alloc_escalation(&mut self) -> EscalationId {
+        let id = EscalationId(self.next_escalation);
+        self.next_escalation += 1;
+        id
+    }
+    /// One escalation record.
+    #[must_use]
+    pub fn escalation(&self, id: EscalationId) -> Option<&Escalation> {
+        self.escalations.get(&id)
+    }
+    /// Every escalation record, in id order.
+    pub fn escalations(&self) -> impl Iterator<Item = &Escalation> {
+        self.escalations.values()
+    }
+    /// Install (or replace) an escalation record in RAM. The doc write is
+    /// [`crate::api::persist_escalation`]'s; both always happen together.
+    pub(crate) fn put_escalation(&mut self, e: Escalation) {
+        self.escalations.insert(e.id, e);
+    }
+    /// When a terminal hold became terminal, if this store knows (GC evidence).
+    #[must_use]
+    pub(crate) fn hold_terminal_at(&self, id: HoldId) -> Option<i64> {
+        self.hold_terminal_at.get(&id).copied()
+    }
+    /// The last completed sweep's two stamps (wall, IC).
+    #[must_use]
+    pub fn last_sweep(&self) -> (i64, i64) {
+        (self.last_sweep_real, self.last_sweep_ic)
+    }
+    /// The next hold id validation may mint. E4b1 resumes `next_hold` from the
+    /// **journal's** hold effects at boot (never from surviving docs, which GC
+    /// deletes); the snapshot floor stays as the belt, so a stale allocator can never
+    /// aim a placement at a live reservation even mid-plan.
     #[must_use]
     pub fn peek_next_hold(&self) -> u64 {
         self.next_hold.max(self.snapshot.next_hold_floor())
@@ -181,14 +271,43 @@ impl EconomyStore {
             "next_transaction_id": self.next_transaction,
             "next_vault_id": self.next_vault,
             "next_approval_id": self.next_approval,
+            "next_hold_id": self.next_hold,
+            "next_obligation_id": self.next_obligation,
+            "next_cadence_id": self.next_cadence,
+            "next_escalation_id": self.next_escalation,
+            "last_sweep_real": self.last_sweep_real,
+            "last_sweep_ic": self.last_sweep_ic,
             "frozen": self.frozen,
         })
     }
 
     /// Record a posted transaction into the RAM indexes (called by `apply`-adjacent
     /// module code after the pure apply advances the snapshot).
+    ///
+    /// E4b1 also advances the hold allocator past every reservation this transaction
+    /// **placed**, and stamps the GC clock of every one it made terminal. The
+    /// allocator floor may never come from the surviving docs (GC deletes terminal
+    /// ones), so it is maintained here and at boot from the journal alone.
     pub(crate) fn index_transaction(&mut self, tx: EconomicTransaction) {
+        for effect in &tx.hold_effects {
+            match effect.kind {
+                crate::record::HoldEffectKind::Placed => {
+                    self.next_hold = self.next_hold.max(effect.hold.id.0.saturating_add(1));
+                }
+                crate::record::HoldEffectKind::Captured
+                | crate::record::HoldEffectKind::Released
+                | crate::record::HoldEffectKind::Expired => {
+                    self.hold_terminal_at.insert(effect.hold.id, tx.posted_at);
+                }
+            }
+        }
         self.transactions.insert(tx.id, tx);
+    }
+
+    /// Stamp the end of a sweep fire (§4.3) — the classifier's evidence.
+    pub(crate) fn stamp_sweep(&mut self, real: i64, ic: i64) {
+        self.last_sweep_real = real;
+        self.last_sweep_ic = ic;
     }
 }
 
@@ -226,6 +345,17 @@ impl GameModule for EconomyModule {
         reg.state(EconomyStore::default());
         reg.subscribe(WorldEventKind::ObjDestroyed, Arc::new(on_obj_destroyed));
         reg.destroy_gate(Arc::new(EconomicDestroyGate));
+        // The ONE economy tick (D-E4-3): holds, obligations and GC on a single
+        // bounded `Coarse` sweep. The core scheduler is in-RAM and re-armed from
+        // scratch at boot, so there are deliberately no per-record timers — every
+        // catch-up is computed from schedule arithmetic, never from a tick count.
+        reg.tick(
+            crate::sweep::SWEEP_TAG,
+            mush_core::module::TickCadence::Coarse(std::time::Duration::from_secs(
+                crate::SWEEP_PERIOD_SECS.unsigned_abs(),
+            )),
+            Arc::new(crate::sweep::sweep),
+        )?;
         crate::commands::register(reg)?;
         Ok(())
     }

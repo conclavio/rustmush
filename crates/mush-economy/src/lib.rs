@@ -88,6 +88,10 @@ mod clock;
 mod contract;
 mod obligation;
 
+// E4b1 — the graded escalation ladder and the one economy sweep tick.
+mod escalation;
+mod sweep;
+
 // E2b — the world-attached module (the journal on the E0 Ledger, the atomic
 // full-bundle post, the strict durable money ack-gate, and directional boot
 // self-heal). E3b1 adds the custody seam, asset/vault persistence + boot, the
@@ -152,11 +156,19 @@ pub use obligation::{
     forgive, forgive_all, obligation_key, plan_sweep,
 };
 
+// E4b1 — the ladder + the sweep.
+pub use escalation::{
+    ESCALATION_GC_AFTER_SECS, Escalation, EscalationKind, EscalationSubject,
+    MAX_BOOT_ESCALATIONS, MAX_ESCALATION_CONTEXT_BYTES, MAX_RECOMMENDED_COMMANDS, escalation_key,
+};
+pub use sweep::SWEEP_TAG;
+
 // E2b/E3b1 public surface.
 pub use api::{
-    META_KEY, PostOutcome, account_key, approval_key, asset_key, create_vault, instrument_key,
-    open_account, post, post_capability, register_instrument, reverse, set_account_approval,
-    set_account_status, set_asset_frozen, set_economy_frozen, set_vault_status, vault_key,
+    META_KEY, PostOutcome, account_key, approval_key, asset_key, cadence_key, create_vault,
+    hold_key, instrument_key, obligation_key as obligation_doc_key, open_account, post,
+    post_capability, register_instrument, reverse, set_account_approval, set_account_status,
+    set_asset_frozen, set_economy_frozen, set_vault_status, sweep_principal, vault_key,
 };
 pub use commands::may_view_account;
 pub use custody::{ContainerProvider, CustodyError, CustodyProvider, CustodyTable};

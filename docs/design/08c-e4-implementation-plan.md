@@ -596,7 +596,7 @@ either side, or beneficiary/party, or staff). `@hold/list account=` follows E3's
 empty for a viewable-but-empty account, identical "No such account." for nonexistent and
 unviewable alike.
 
-### 4.5 E4b1 tests (`tests/e4b1.rs`, ~28)
+### 4.5 E4b1 tests (`tests/e4b1.rs`, ~28 — built: 33)
 
 **13** two holds racing the same available refuse the second through the live seam; a payment that
 would dip into held funds is refused; **14** capture, release, and expiry each: `fold_kv` + `reboot`
@@ -614,6 +614,146 @@ in the record, `@econ/ack` resumes it after repointing; `@account/close` refused
 hold; `reverse` refused on a capture. Plus the boot quartet for `hold:{id}`, the `held_amount` drift
 freeze anchored on `last_hold_seq`, the `next_hold_id` floor after GC, escalation-id floors, and the
 hidden-party renderings for holds and obligations.
+
+### 4.7 As built (E4b1)
+
+The cut wires E4a into the running module: an internal posting entry, four new
+persisted record kinds and their boot rules, the one economy sweep, the escalation
+ladder, `WorldAuth::authorize_hold`, and the `@hold`/`@obligation`/`@econ/alerts|ack`
+surface. `tests/e4b1.rs` is **33** tests; `mush-economy` is 280 in total, and both
+digest pins (E2 `9c917eee…`, E3-shaped `b780e3a0…`) are green.
+
+**Signatures and new files.**
+
+- `api::post_with(ctx, plan, auth: PostAuth<'_>)` is the crate-internal entry; `post`
+  is `post_with(ctx, plan, PostAuth::World)` and stays the only public one.
+  `PostAuth::{World, Injected(&dyn AuthEval)}` replaces the plan's bare
+  `auth: &dyn AuthEval` for one borrow-checker reason worth recording: `WorldAuth`
+  holds `&World`, and a caller already holding `&mut Ctx` cannot construct one to pass
+  in. The *choice* is passed instead and the bridge is built inside `post_with`, where
+  the borrow lives exactly as long as validation. E4b2's `ContractAuth` goes in as
+  `Injected` over a locally-cloned contract.
+- **`install_commit` is infallible** (§12): `fn install_commit(ctx, commit) ->
+  TransactionId`. Its two post-move checks are asserted invariants carrying the
+  reachability argument (the allocator and the journal tail each have exactly one
+  mutator, this function; the only call between `prepare_commit` and it is
+  `run_custody_effects`, whose providers do not re-enter and whose `CarryAttempt` hook
+  chain has no `Ctx`). The custody move remains the last fallible act.
+  `tests/e4b1.rs::a_provider_that_re_enters_post_trips_the_install_invariant` drives a
+  stub `CustodyProvider` that posts from inside `move_into` and proves the **assertion**
+  fires, not a `JournalUnavailable` desync after the world has already moved.
+- New modules: `src/sweep.rs` (the tick) and `src/escalation.rs` (the ladder's record).
+- `WorldAuth::authorize_hold`: `Capture` → the actor **acts for the beneficiary**
+  (object: itself, `perm::controls`, or staff; organization: `economy.account.post` on
+  its root compartment, or staff — no new capability was minted, because "may spend the
+  org's money" is exactly the right to turn its escrow into a payment; system:
+  never from a command, and a beneficiary-less hold is capturable by nobody).
+  `Release` → the placer, the beneficiary, debit authority on the account, or staff.
+  `Expire` → `api::sweep_principal()` (`sys:economy.sweep`) only, with the engine's
+  cause gate unchanged. `Place` fails closed here (the engine asks it as debit
+  authority through `authorize`). `Hold.holder` is never read.
+- `EconomyStore` gains `next_obligation`/`next_cadence`/`next_escalation`,
+  `escalations`, `hold_terminal_at` (RAM-only GC evidence, journal-derived), and
+  `last_sweep_real`/`last_sweep_ic`; `from_parts` now takes a `BootParts` struct.
+  `index_transaction` advances `next_hold` past every `Placed` effect and stamps the
+  terminal instant of every other one.
+
+**Doc shapes.** `hold:{id}` (projection), `obligation:{id}` (container),
+`cadence:{id}` (container), `escalation:{id}` (leaf). `meta` gains `next_hold_id`,
+`next_obligation_id`, `next_cadence_id`, `next_escalation_id`, `last_sweep_real`,
+`last_sweep_ic`. `Escalation { id, level, kind, subject, context, recommended,
+opened_at, acked_by, acked_at, notified_at, notifications, revision }` with
+`EscalationKind::{SettlementRefused, RepeatedOverload, KeyConflict, EconomyFrozen,
+BootReconciliation}` and `EscalationSubject::{Obligation, Hold, Contract, Economy}`.
+No record type changed its journalled bytes, so every E2/E3/E4a journal still replays.
+
+**Boot, as implemented.** `hold:{id}` lags → heals silently; disagrees at its own
+claimed seq, or is ahead → freeze; missing **or unreadable** → rebuilt silently from
+the journal (a hold has no doc-authority field at all, so an unreadable one costs
+nothing — this is the one place the plan's table said only "missing"); unjournaled →
+warn, not loaded. `Account.held_amount` is Σ the account's `Held` holds, compared at
+`last_hold_seq` and healed/frozen with the same directional rules. `obligation:` and
+`cadence:` corrupt → fail boot; an obligation whose debtor/creditor object is missing
+or `GOING`, whose account is missing or closed, or whose `Contract` cause is not live
+→ `Suspended` + re-persist, **never deleted**, and (per D-E4-14, capped at
+`MAX_BOOT_ESCALATIONS` = 16) paged with the fix written out. `escalation:` corrupt →
+skip loudly, id still floors. Floors: `next_hold` from `max(hold_effects.hold.id)+1`
+**and `meta` only** — never from surviving docs; `next_obligation`/`next_cadence`/
+`next_escalation` from every parsable key plus `meta`. `meta` is persisted at the end
+of every boot, as E3 established.
+
+**The sweep.** `TickCadence::Coarse(30 s)`, tag `economy.sweep`, actor `GOD` (never
+read for authority; the *plan's* actor is `sys:economy.sweep`). Order per fire:
+cadence clocks → hold expiries (≤ 64, key `hold/{id}/expire`) → obligations (≤ 64
+records, ≤ 128 posts, key `obligation/{id}/{period}`, forgive-then-attempt) → GC
+(expired approvals, terminal holds and acked alerts past 7 d) → escalation
+re-notification → the sweep stamps. `sweep.rs` contains no `?`, no `unwrap`, no
+`expect`, and no panicking index; `sweep::disposition` matches **every**
+`EconomyError` variant by name with no `_` arm, so a new refusal has to be classified
+deliberately as `Short` (grace), `Transient` (retry), or `Human` (page). `advance`'s
+`OutOfOrder` and a duplicate outcome are surfaced through a loud log, never a panic.
+
+**Deviations from §4, and why.**
+
+1. **A cadence step was added to the sweep** (D-E4-2 says cadence clocks are "advanced
+   by the sweep"; §4.3's numbered list predates that). Manual cadences are untouched,
+   which `advance_cadence` also enforces. No `@econ/cadence` command ships — §4.4 does
+   not list one and E5 owns the consumer — so in E4b1 cadences exist only through
+   persistence, boot and the sweep.
+2. **The frozen sweep does not stamp `meta.last_sweep_*`.** §4.3 says "every fire";
+   a fire that did nothing did not run, and stamping would let a long freeze classify
+   as `Overload` (which escalates on repeat) instead of `Downtime`.
+3. **The freeze's companion record is level 2, the freeze itself is the level-3
+   action** — §4.6's table read literally. One record per open subject, so a refusal
+   that repeats every 30 s produces one alert, not a thousand.
+4. **`@econ/ack` does not clear the whole-economy freeze**, and says so: that latch is
+   `@econ/unfreeze`'s, deliberately.
+5. **Escalation re-notification is a loud log plus a stamp**, not a broadcast: §4.6
+   assigns the staff-channel fan-out to E4c's server glue, and this crate has no way
+   to reach staff. `@econ/alerts` is the pull side and is live now.
+6. **`@obligation/create` refuses a `System` debit account** (a standing mint), and
+   `ObligationAuth` refuses it again at every settlement. E5's faucet-funded income
+   needs an explicit decision before that opens.
+7. **Commands added beyond §4.4's list:** `@obligation/reinstate` (the brief's own
+   addition — E4a leaves `Delinquent` with no automatic recovery) and
+   `@econ/alerts <id>`, which prints one record's recommended commands.
+8. **Syntax made concrete** where §4.4 was shorthand: `@obligation/repoint <id>=<debit|
+   credit> <account>`; `every=<secs|ic:<secs>|manual:<secs>>`; `expires=`/`start=` are
+   durations **from now** on the clock they name.
+9. **Hold ids start at 1**, not 0: E4a's `EconomySnapshot::next_hold_floor` returns 1
+   for an empty snapshot and `peek_next_hold` takes the max. Harmless (the journal
+   floor is the real allocator now) and left alone rather than perturbing a verified
+   pure surface.
+
+**Line-number drift.** Every `file:line` in §4 predates the K merge and none of them
+survived it: `post` is `api.rs:569-591` (not 566-579); `ValidateEnv` is
+`engine.rs:290-308` (not 218-225) and is built at `api.rs:578`; `TickHandler` is
+`mush-core/src/module.rs:230-236` and `Registrar::tick` is `:1986-2006` (not
+`module.rs:224-227` / `:1394-1415`); the tick `Ctx { actor: GOD }` is
+`mush-core/src/engine.rs:996-1005` (not `:733-743`). One claim is **wrong**, not just
+moved: §4.3's "the first sweep after a restart fires immediately
+(`engine.rs:447-453`)" — `Engine::arm_registered_periodic_ticks`
+(`mush-core/src/engine.rs:667-688`) arms at `now + period`, so the first fire is one
+sweep period after boot. Nothing depends on it, because catch-up is computed from
+`next_due` and never from tick count.
+
+**Handoffs.**
+
+- **E4b2** posts settlement through `post_with(ctx, plan, PostAuth::Injected(&auth))`
+  with a `ContractAuth` built over a cloned contract (the same borrow constraint that
+  shaped `PostAuth`). `contract:{id}` boot, the custody-lock re-derivation, and the
+  sweep's contract step slot in beside the existing ones; `EscalationSubject::Contract`
+  and `EscalationKind::{SettlementRefused, KeyConflict}` already exist for the dispute
+  and `MAX_SETTLE_ATTEMPTS` triggers, and `sweep::page` is the one way to open a
+  record. A contract-caused obligation is already suspended at boot when its contract
+  is not live.
+- **E4c** takes the notification seam: `sweep::notify_principal` reaches only
+  `PrincipalId::Object`, so an organization or system party is told nothing today —
+  the `EconomyObserver` events and the staff-channel broadcast are where that lands,
+  along with the escalation re-notification fan-out.
+- **E5** owns `@econ/cadence` (creating and manually advancing cadence clocks), the
+  `Delinquent` consequence hook now that `@obligation/reinstate` exists as the manual
+  path, and the faucet-funded-income decision in deviation 6.
 
 ---
 

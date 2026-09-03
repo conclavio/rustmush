@@ -313,6 +313,28 @@ impl EconomySnapshot {
         self.holds_by_account.entry(hold.account).or_default().insert(hold.id);
         self.holds.insert(hold.id, hold);
     }
+    /// Drop a **terminal** hold from the projection (the sweep's GC, §4.3 step 4).
+    /// Its whole history stays in the journal forever; only the read-side record and
+    /// its `hold:{id}` doc go. The allocator floor is journal-derived precisely so a
+    /// collected id can never be re-minted (D-E4-1).
+    pub(crate) fn remove_hold(&mut self, id: HoldId) {
+        if let Some(prev) = self.holds.remove(&id)
+            && let Some(set) = self.holds_by_account.get_mut(&prev.account)
+        {
+            set.remove(&id);
+            if set.is_empty() {
+                self.holds_by_account.remove(&prev.account);
+            }
+        }
+    }
+    /// Drop a dead approval request (the sweep's GC — the same rule boot applies).
+    pub(crate) fn remove_approval(&mut self, id: ApprovalRequestId) {
+        if let Some(prev) = self.approvals.remove(&id)
+            && self.approvals_by_hash.get(&prev.plan_hash) == Some(&id)
+        {
+            self.approvals_by_hash.remove(&prev.plan_hash);
+        }
+    }
     /// Insert/replace a cadence clock.
     pub fn put_cadence(&mut self, cadence: CadenceClock) {
         self.cadences.insert(cadence.id, cadence);
