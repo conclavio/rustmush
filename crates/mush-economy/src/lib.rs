@@ -134,22 +134,22 @@ pub use snapshot::EconomySnapshot;
 pub use clock::{
     CadenceClock, CadenceSource, Clocks, DEFAULT_CATCH_UP, EconomicClock, EconomicDeadline,
     EconomicSchedule, MAX_CATCH_UP_CAP, SWEEP_GAP_DOWNTIME_SECS, SWEEP_PERIOD_SECS, advance,
-    advance_cadence, advance_cadence_manual, cadence_elapsed, due_periods,
+    advance_cadence, advance_cadence_manual, cadence_elapsed, due_periods, reanchor,
 };
 pub use contract::{
     Acceptance, Attestation, AttestorRef, AttestorSet, ConsentSurface, Consideration,
     ContractAuth, ContractError, ContractState, ContractTerms, DISPUTE_TTL_SECS, DRAFT_TTL_SECS,
     Deliverable, EconomicContract, Expiry, MAX_CONDITIONS, MAX_DELIVERABLES,
     MAX_LIVE_CONTRACTS_PER_PARTY, MAX_OPEN_CONTRACTS_PER_ISSUER, MAX_PARTIES, MAX_SETTLE_ATTEMPTS,
-    MAX_SHARES, ObligationTemplate, PERMILLE, PayoutShare, Share, TypedCondition, apply_split,
-    check_offerable, conditions_met, consent_hash, is_contract_key, principal_key, refund_key,
-    refund_plan, reverify, settle_key, settlement_plan,
+    MAX_SHARES, ObligationTemplate, PERMILLE, PayoutShare, QualifyingEscrow, Share, TypedCondition,
+    apply_split, check_offerable, conditions_met, consent_hash, principal_key, qualifying_escrow,
+    refund_key, refund_plan, reverify, settle_key, settlement_plan,
 };
 pub use obligation::{
     DEFAULT_GRACE_PERIODS, ForgiveCause, GracePolicy, MAX_OBLIGATION_HISTORY, Obligation,
-    ObligationCause, ObligationEvent, ObligationStatus, SettleOutcome, SuspendReason, SweepIntent,
-    advance as advance_obligation, classify_forgiveness, due_now, forgive, obligation_key,
-    plan_sweep,
+    ObligationCause, ObligationError, ObligationEvent, ObligationStatus, SettleOutcome,
+    SuspendReason, SweepIntent, advance as advance_obligation, classify_forgiveness, due_now,
+    forgive, forgive_all, obligation_key, plan_sweep,
 };
 
 // E2b/E3b1 public surface.

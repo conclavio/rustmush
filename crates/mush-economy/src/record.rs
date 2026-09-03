@@ -804,6 +804,13 @@ pub struct Hold {
     /// The **placing plan's idempotency key** — doc 09 C8's `holder` (§12). Two
     /// retries of one placement therefore name one holder, and an audit can trace a
     /// reservation back to the exact intent that made it.
+    ///
+    /// **It is an attribution label, never authority.** The key is caller-chosen:
+    /// `post` is public, so anyone who may post at all may name any key that is not
+    /// already taken. Nothing in the engine, in `ContractAuth`, or in the sweep may
+    /// branch on it — who may capture, release or expire a hold is
+    /// [`crate::AuthEval::authorize_hold`]'s question and nobody else's (E4a verify
+    /// fold, finding 8).
     pub holder: IdempotencyKey,
     /// When it lapses, on a named clock (`None` = never).
     pub expires: Option<EconomicDeadline>,

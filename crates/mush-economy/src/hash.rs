@@ -124,11 +124,16 @@ pub(crate) fn custody_op_key(op: &CustodyOp) -> CustodyOpKey {
 }
 
 /// The total sort key of a hold op (E4a, invariant 27): `(hold-or-account id, op
-/// ordinal, canonical bytes)`. A `Place` has no hold id yet, so it sorts by the
-/// account it reserves against; the byte tiebreak keeps the order total, and the
-/// ordinal puts every `Place` before every capture/release/expiry so a plan that
-/// places and spends in one breath applies deterministically. The engine sorts by
-/// the same key, so the order ops APPLY in is the order they are HASHED in.
+/// ordinal, canonical bytes)`.
+///
+/// The **subject id sorts first**, and a `Place` has no hold id yet, so it sorts by
+/// the account it reserves against — an id from an unrelated space. So this is
+/// emphatically *not* "every `Place` before every capture": a `Place` on account 9
+/// sorts after a capture of hold 3. The ordinal only breaks ties between ops that
+/// share a subject id, and the canonical bytes break the rest, which is all
+/// invariant 27 needs: the order is **total and deterministic**, so two plans
+/// differing only in op order are one plan and the order ops APPLY in (the engine
+/// sorts by this same key) is the order they are HASHED in.
 pub(crate) fn hold_op_key(op: &HoldOp) -> HoldOpKey {
     (op.subject(), op.ordinal(), canonical_bytes(op))
 }

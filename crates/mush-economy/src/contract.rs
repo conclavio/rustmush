@@ -40,7 +40,7 @@ use crate::obligation::GracePolicy;
 use crate::plan::{AssetOp, EconomyPlan, HoldOp, HoldRevision, RequestedLine};
 use crate::record::{
     AccountStatus, AssetLifecycle, ContractStateKind, EconomicCause, EconomicVisibility,
-    Encumbrance, ExternalRef, IdempotencyKey,
+    Encumbrance, ExternalRef, Hold, HoldPurpose, IdempotencyKey,
 };
 use crate::snapshot::EconomySnapshot;
 
@@ -209,8 +209,8 @@ pub enum AttestorSet {
     Canon {
         /// The canon event kind.
         kind: SmolStr,
-        /// The specific source it must name.
-        source: SmolStr,
+        /// The specific source it must name; `None` accepts any source of that kind.
+        source: Option<SmolStr>,
     },
 }
 
@@ -220,9 +220,20 @@ pub enum AttestorRef {
     /// A principal (a party, a capability holder, staff).
     Principal(PrincipalId),
     /// A canon record.
+    ///
+    /// It carries the `kind` and `source` it was recorded under, not just its id,
+    /// because [`reverify`] has to answer "does this attestation satisfy *this*
+    /// [`AttestorSet::Canon`]?" and the pure engine cannot read the canon store to
+    /// find out (E4a verify fold, finding 5). Without them any canon reference at
+    /// all satisfied any canon condition — a bar brawl would have discharged a
+    /// smuggling contract.
     Canon {
         /// `canon:{id}`.
         canon: SmolStr,
+        /// The canon event kind the record carries.
+        kind: SmolStr,
+        /// The specific front/opportunity/operation it names.
+        source: SmolStr,
     },
     /// An external fact provider's answer.
     Fact(ExternalRef),
@@ -443,6 +454,23 @@ pub enum ContractError {
     /// An escrow hold is no longer `Held` — the escrow has been broken.
     #[error("hold {0} is no longer held")]
     HoldNotHeld(HoldId),
+    /// A [`Consideration`] in the consent surface has no qualifying escrow hold
+    /// behind it (E4a verify fold, finding 3): either it was never funded, or the
+    /// hold that was supposed to fund it is gone, or what `escrow` lists is not
+    /// this contract's escrow at all.
+    #[error("the escrow does not cover every consideration")]
+    EscrowIncomplete,
+    /// A refund was asked of a contract that has not been cancelled or expired
+    /// (E4a verify fold, finding 6): a refund releases escrow, so on a live or
+    /// settled contract it is an unwind, not a refund.
+    #[error("contract {0} is not cancelled or expired")]
+    WrongState(ContractId),
+    /// A `Before`/`After` condition on an [`EconomicClock::Manual`] clock (E4a
+    /// verify fold, finding 10). A manual clock's position is carried by the record
+    /// that names it, and a condition has no such record — so the deadline would be
+    /// read against whatever the caller happened to pass.
+    #[error("condition {0} names a clock this contract cannot resolve")]
+    UnsupportedClock(usize),
     /// Two accounts in the same contract hold different instruments; there is no
     /// implicit exchange in this economy.
     #[error("the contract mixes instruments")]
@@ -476,6 +504,7 @@ pub fn principal_key(p: &PrincipalId) -> (u8, u64, &str) {
 
 #[derive(Serialize)]
 struct CanonicalConsent<'a> {
+    issuer: &'a PrincipalId,
     parties: Vec<&'a PrincipalId>,
     terms: &'a ContractTerms,
     conditions: &'a [TypedCondition],
@@ -485,7 +514,13 @@ struct CanonicalConsent<'a> {
 }
 
 /// The canonical SHA-256 of a consent surface — **everything** an acceptance binds
-/// to (B5): parties, terms, conditions, deadline, visibility, and scope.
+/// to (B5): the issuer, parties, terms, conditions, deadline, visibility, and scope.
+///
+/// The `issuer` is in here because it is part of what a party agrees to (E4a verify
+/// fold, finding 14a): who offered a contract decides who answers for it, who its
+/// `MAX_OPEN_CONTRACTS_PER_ISSUER` budget belongs to, and — since `settlement_plan`
+/// stamps the settlement's `actor` from it — whose name the ledger records. It lives
+/// on [`EconomicContract`] rather than inside [`ConsentSurface`], so it is passed in.
 ///
 /// Parties are sorted by [`principal_key`] so the hash is order-independent; every
 /// other vector's order *is* consented content (`conditions` are indexed by
@@ -493,10 +528,11 @@ struct CanonicalConsent<'a> {
 /// Deterministic for the same reason [`crate::plan_hash`] is: field-ordered structs,
 /// no floats, no maps.
 #[must_use]
-pub fn consent_hash(consent: &ConsentSurface) -> [u8; 32] {
+pub fn consent_hash(issuer: &PrincipalId, consent: &ConsentSurface) -> [u8; 32] {
     let mut parties: Vec<&PrincipalId> = consent.parties.iter().collect();
     parties.sort_by(|a, b| principal_key(a).cmp(&principal_key(b)));
     let canonical = CanonicalConsent {
+        issuer,
         parties,
         terms: &consent.terms,
         conditions: &consent.conditions,
@@ -520,24 +556,12 @@ pub fn refund_key(id: ContractId) -> IdempotencyKey {
     IdempotencyKey::new(SmolStr::new_static("contract"), SmolStr::new(format!("{}/refund", id.0)))
 }
 
-/// Whether `key` is one of contract `id`'s two deterministic keys.
-///
-/// This is the custody lock's second gate (§3.5). A plan's `cause` is caller-settable
-/// — `post` is public — so the cause alone would let anyone who could name a live
-/// contract unlock its deposit. Its deterministic keys cannot be borrowed silently:
-/// a forger who uses one either collides with the real settlement (an idempotency
-/// conflict, which doc 09 C8 says to treat as an integrity incident) or *is* it.
-#[must_use]
-pub fn is_contract_key(key: &IdempotencyKey, id: ContractId) -> bool {
-    key == &settle_key(id) || key == &refund_key(id)
-}
-
 impl EconomicContract {
     /// Whether the stored `consent_hash` still describes the consent surface. A
     /// mutation after `Offer` makes this `false` and every acceptance void.
     #[must_use]
     pub fn consent_intact(&self) -> bool {
-        consent_hash(&self.consent) == self.consent_hash
+        consent_hash(&self.issuer, &self.consent) == self.consent_hash
     }
     /// Whether `party` has an acceptance bound to the **current** consent hash.
     #[must_use]
@@ -553,20 +577,69 @@ impl EconomicContract {
     pub fn fully_accepted(&self) -> bool {
         self.consent_intact() && self.consent.parties.iter().all(|p| self.accepted_by(p))
     }
-    /// The escrowed total per account, counting only holds still `Held`.
+    /// The escrowed total per account, counting only **qualifying** holds
+    /// ([`qualifying_escrow`]).
     #[must_use]
     pub fn escrowed_by_account(&self, snapshot: &EconomySnapshot) -> BTreeMap<AccountId, Amount> {
         let mut out: BTreeMap<AccountId, Amount> = BTreeMap::new();
-        for id in &self.escrow {
-            let Some(hold) = snapshot.hold(*id) else { continue };
-            if !hold.status.is_held() {
-                continue;
-            }
+        for hold in qualifying_escrow(self, snapshot).holds {
             let slot = out.entry(hold.account).or_insert(Amount::ZERO);
             *slot = slot.checked_add(hold.amount).unwrap_or(*slot);
         }
         out
     }
+}
+
+/// Which of a contract's listed escrow holds actually back its consent surface.
+#[derive(Clone, Debug)]
+pub struct QualifyingEscrow<'a> {
+    /// The qualifying holds, in the order `escrow` lists them.
+    pub holds: Vec<&'a Hold>,
+    /// Whether **every** [`Consideration`] in the terms is matched by one of them —
+    /// the precondition for a settlement that pays out what the parties agreed.
+    pub complete: bool,
+}
+
+/// The subset of `c.escrow` that is real escrow for `c` (E4a verify fold, finding 3).
+///
+/// `escrow` is an ordinary mutable field on the contract record: whoever can edit a
+/// contract can list *any* hold id in it, including a stranger's `Manual` hold. Left
+/// untrusted, that one line would raise [`ContractAuth`]'s debit ceiling on the
+/// stranger's account, let [`refund_plan`] release their money, and pad
+/// [`settlement_plan`]'s payout total with funds nobody consented to move.
+///
+/// So a listed hold counts only when all three of these hold:
+///
+/// - its `purpose` is `Escrow { contract: c.id }` — it was placed **for this
+///   contract**, which the accept path is the only thing that does;
+/// - it is still `Held`;
+/// - its `(account, amount)` matches a [`Consideration`] in the consent surface, and
+///   each consideration is claimed by **at most one** hold (so two holds cannot both
+///   stand for one agreed payment).
+#[must_use]
+pub fn qualifying_escrow<'a>(
+    c: &EconomicContract,
+    snapshot: &'a EconomySnapshot,
+) -> QualifyingEscrow<'a> {
+    let considerations = &c.consent.terms.consideration;
+    let mut claimed = vec![false; considerations.len()];
+    let mut holds: Vec<&Hold> = Vec::with_capacity(c.escrow.len());
+    for id in &c.escrow {
+        let Some(hold) = snapshot.hold(*id) else { continue };
+        if !hold.status.is_held() {
+            continue;
+        }
+        if hold.purpose != (HoldPurpose::Escrow { contract: c.id }) {
+            continue;
+        }
+        let matched = considerations.iter().enumerate().position(|(i, con)| {
+            !claimed[i] && con.account == hold.account && con.amount == hold.amount
+        });
+        let Some(i) = matched else { continue };
+        claimed[i] = true;
+        holds.push(hold);
+    }
+    QualifyingEscrow { holds, complete: claimed.iter().all(|c| *c) }
 }
 
 // ---- the deterministic split (scenario 17) --------------------------------
@@ -730,13 +803,46 @@ pub fn check_offerable(
     // Conditions must be resolvable: an `After` anchor must exist and never be
     // itself (a self-anchored condition can never become true).
     for (i, con) in consent.conditions.iter().enumerate() {
-        if let TypedCondition::After { condition, .. } = con
-            && (*condition >= consent.conditions.len() || *condition == i)
-        {
-            return Err(ContractError::BadConditionRef(i));
+        match con {
+            TypedCondition::After { condition, clock, .. } => {
+                if *condition >= consent.conditions.len() || *condition == i {
+                    return Err(ContractError::BadConditionRef(i));
+                }
+                // Finding 10: a `Manual` clock's position is carried by the record
+                // that names it, and a condition carries none — so `reverify` would
+                // read the delay against a position nobody set. Refuse at Offer,
+                // where a human can still fix the draft.
+                if *clock == EconomicClock::Manual {
+                    return Err(ContractError::UnsupportedClock(i));
+                }
+            }
+            TypedCondition::Before { deadline } if deadline.clock == EconomicClock::Manual => {
+                return Err(ContractError::UnsupportedClock(i));
+            }
+            TypedCondition::DepositInto { vault, .. } => {
+                snapshot.vault(*vault).ok_or(ContractError::NoSuchVault(*vault))?;
+            }
+            _ => {}
         }
-        if let TypedCondition::DepositInto { vault, .. } = con {
-            snapshot.vault(*vault).ok_or(ContractError::NoSuchVault(*vault))?;
+    }
+    // …and no CYCLE among the `After` anchors (finding 14b). Two conditions that
+    // anchor on each other pass the pairwise check above and are individually
+    // plausible, but neither can ever be satisfied — the contract is unsettleable,
+    // its escrow is stuck until expiry, and nothing says why. Each node has at most
+    // one outgoing edge, so following the chain is enough; the walk is bounded by
+    // MAX_CONDITIONS (16) both ways.
+    for i in 0..consent.conditions.len() {
+        if !matches!(consent.conditions[i], TypedCondition::After { .. }) {
+            continue;
+        }
+        let mut seen = vec![false; consent.conditions.len()];
+        let mut at = i;
+        while let Some(TypedCondition::After { condition, .. }) = consent.conditions.get(at) {
+            if seen[at] {
+                return Err(ContractError::BadConditionRef(i));
+            }
+            seen[at] = true;
+            at = *condition;
         }
     }
     Ok(())
@@ -773,8 +879,14 @@ pub fn reverify(
                 (Some(att), set @ (AttestorSet::Capability { .. } | AttestorSet::Staff)) => {
                     matches!(&att.by, AttestorRef::Principal(a) if env.auth.authorize_attestor(a, set))
                 }
-                (Some(att), AttestorSet::Canon { .. }) => {
-                    matches!(&att.by, AttestorRef::Canon { .. })
+                // Finding 5: a canon citation must be the RIGHT canon citation.
+                // E5's owner answer 20 says progress cites a specific
+                // front/opportunity/operation, so both the kind and (unless the set
+                // accepts any) the source have to match — otherwise any canon
+                // record at all discharged any canon condition.
+                (Some(att), AttestorSet::Canon { kind, source }) => {
+                    matches!(&att.by, AttestorRef::Canon { kind: k, source: s, .. }
+                        if k == kind && source.as_ref().is_none_or(|want| want == s))
                 }
                 (None, _) => false,
             },
@@ -788,8 +900,13 @@ pub fn reverify(
             // is E4c and defaults to unknown, so a contract cannot settle on a fact
             // nobody can answer.
             TypedCondition::Fact { fact } => env.facts.resolve(fact) == Some(true),
+            // Defence in depth for finding 10: `check_offerable` refuses a `Manual`
+            // deadline outright, but a hand-built or migrated record could carry
+            // one — so the manual position handed in here is `i64::MAX`, i.e. the
+            // deadline has ALWAYS passed and the condition is unsatisfied. A clock
+            // this engine cannot resolve must never be the reason money moves.
             TypedCondition::Before { deadline } => clocks
-                .now_on(deadline.clock, snapshot, 0)
+                .now_on(deadline.clock, snapshot, i64::MAX)
                 .is_some_and(|now| now <= deadline.at),
             TypedCondition::After { condition, delay, clock } => {
                 match c.satisfied.get(*condition).and_then(|s| s.as_ref()) {
@@ -832,9 +949,17 @@ pub fn conditions_met(
 /// and the whole settlement is one durable bundle or nothing. Cause
 /// `Internal { kind: "contract", id }`, key `contract/{id}/settle`, so settling twice
 /// is `AlreadyPosted` (scenario 16).
+///
+/// It takes the live [`ValidateEnv`] because it **re-verifies every condition
+/// first** (E4a verify fold, finding 6). Handing back a settlement for a contract
+/// whose deposit has been withdrawn or whose attestor lost their capability — and
+/// leaving the re-check to whoever remembers to call [`reverify`] separately — is
+/// the exact shape of a payout on an unmet condition, so there is no way to get the
+/// plan without the proof.
 pub fn settlement_plan(
     c: &EconomicContract,
     snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
 ) -> Result<EconomyPlan, ContractError> {
     if !matches!(c.state, ContractState::ReadyToSettle | ContractState::Active) {
         return Err(ContractError::State(c.id));
@@ -846,21 +971,30 @@ pub fn settlement_plan(
         return Err(ContractError::NotAccepted);
     }
     check_offerable(c, snapshot)?;
+    reverify(c, snapshot, env)?;
 
-    // Every escrow hold must still be live: a broken escrow is a dispute, never a
-    // settlement that pays out less than the parties agreed.
-    let mut hold_ops: Vec<HoldOp> = Vec::with_capacity(c.escrow.len());
-    let mut expected_hold_revisions: Vec<HoldRevision> = Vec::with_capacity(c.escrow.len());
-    let mut debits: Vec<RequestedLine> = Vec::with_capacity(c.escrow.len());
-    let mut total: i128 = 0;
+    // Every escrow hold must still be live — a broken escrow is a dispute, never a
+    // settlement that pays out less than the parties agreed — and must actually BE
+    // this contract's escrow (finding 3): a hold that merely got listed in `escrow`
+    // is not money anyone consented to spend.
     for id in &c.escrow {
         let hold = snapshot.hold(*id).ok_or(ContractError::NoSuchHold(*id))?;
         if !hold.status.is_held() {
             return Err(ContractError::HoldNotHeld(*id));
         }
+    }
+    let escrow = qualifying_escrow(c, snapshot);
+    if !escrow.complete {
+        return Err(ContractError::EscrowIncomplete);
+    }
+    let mut hold_ops: Vec<HoldOp> = Vec::with_capacity(escrow.holds.len());
+    let mut expected_hold_revisions: Vec<HoldRevision> = Vec::with_capacity(escrow.holds.len());
+    let mut debits: Vec<RequestedLine> = Vec::with_capacity(escrow.holds.len());
+    let mut total: i128 = 0;
+    for hold in &escrow.holds {
         total += hold.amount.widen();
-        hold_ops.push(HoldOp::Capture { hold: *id, amount: hold.amount });
-        expected_hold_revisions.push(HoldRevision { hold: *id, revision: hold.revision });
+        hold_ops.push(HoldOp::Capture { hold: hold.id, amount: hold.amount });
+        expected_hold_revisions.push(HoldRevision { hold: hold.id, revision: hold.revision });
         let debit = hold.amount.checked_neg().ok_or(ContractError::Overflow)?;
         debits.push(RequestedLine {
             account: hold.account,
@@ -918,10 +1052,24 @@ pub fn settlement_plan(
     Ok(plan)
 }
 
-/// Build the refund plan: release every escrow hold and nothing else. Effect-only
-/// (legal under invariant 10), key `contract/{id}/refund`.
-#[must_use]
-pub fn refund_plan(c: &EconomicContract) -> EconomyPlan {
+/// Build the refund plan: release every **qualifying** escrow hold and nothing else.
+/// Effect-only (legal under invariant 10), key `contract/{id}/refund`.
+///
+/// Two guards the E4a verify fold added:
+///
+/// - the contract must already be `Cancelled` or `Expired` (finding 6). A refund
+///   releases escrow, so on a live contract it is a way to strip the funding out
+///   from under an agreement that is still standing, and on a `Settled` one there is
+///   nothing left to give back. The state change comes first; the refund follows it.
+/// - only holds that pass [`qualifying_escrow`] are released (finding 3), so a hold
+///   listed in `escrow` by someone editing the record cannot be freed by this plan.
+pub fn refund_plan(
+    c: &EconomicContract,
+    snapshot: &EconomySnapshot,
+) -> Result<EconomyPlan, ContractError> {
+    if !matches!(c.state, ContractState::Cancelled | ContractState::Expired) {
+        return Err(ContractError::WrongState(c.id));
+    }
     let mut plan = EconomyPlan::new(
         refund_key(c.id),
         c.issuer.clone(),
@@ -930,8 +1078,12 @@ pub fn refund_plan(c: &EconomicContract) -> EconomyPlan {
     );
     plan.description = format!("refund of contract {}", c.id);
     plan.visibility = c.consent.visibility;
-    plan.hold_ops = c.escrow.iter().map(|hold| HoldOp::Release { hold: *hold }).collect();
-    plan
+    plan.hold_ops = qualifying_escrow(c, snapshot)
+        .holds
+        .iter()
+        .map(|hold| HoldOp::Release { hold: hold.id })
+        .collect();
+    Ok(plan)
 }
 
 // ---- ContractAuth ---------------------------------------------------------
@@ -939,23 +1091,34 @@ pub fn refund_plan(c: &EconomicContract) -> EconomyPlan {
 /// The [`crate::AuthEval`] a contract's own acceptances constitute (D-E4-4).
 ///
 /// It authorizes **exactly** the surface: each escrow capture up to that hold's
-/// amount, each debit up to what is escrowed on that account, each credit only to a
-/// declared payee, each title transfer whose source *and* destination party accepted
-/// (D-E3-12), and each collateral release. Everything else — an extra line, an
-/// unlisted object, a capture over the hold's amount, a vault op, an approver — is
-/// `false`. No authority is stored anywhere: this value is built from the live record
-/// at settlement and thrown away.
+/// amount, each credit only to a declared payee, each title transfer whose source
+/// *and* destination party accepted (D-E3-12), and each collateral release.
+/// Everything else — an extra line, an unlisted object, a capture over the hold's
+/// amount, a vault op, an approver — is `false`. No authority is stored anywhere:
+/// this value is built from the live record at settlement and thrown away.
+///
+/// It grants **no bare debit authority at all** (E4a verify fold, finding 1). A
+/// contract's power to take money is precisely its power to capture its own escrow,
+/// and that now runs through [`crate::AuthEval::authorize_hold`] plus the engine's
+/// rule that a captured amount is pre-authorized debit authority. Keeping the old
+/// "a debit up to what is escrowed on that account" ceiling *as well* would double
+/// count the escrow: the engine only asks about the part of a debit the captures do
+/// not cover, so 100 in escrow would fund a 100 capture **and** a further 100 of
+/// lines the parties never agreed to.
 pub struct ContractAuth<'a> {
     contract: &'a EconomicContract,
-    escrowed: BTreeMap<AccountId, Amount>,
+    /// The holds that qualify as this contract's escrow (finding 3) — the ONLY ones
+    /// its authority reaches. `contract.escrow` is a mutable list of ids and is not
+    /// evidence of anything on its own.
+    qualifying: Vec<HoldId>,
 }
 
 impl<'a> ContractAuth<'a> {
     /// Derive the authority from a live contract and the current snapshot.
     #[must_use]
     pub fn new(contract: &'a EconomicContract, snapshot: &EconomySnapshot) -> ContractAuth<'a> {
-        let escrowed = contract.escrowed_by_account(snapshot);
-        ContractAuth { contract, escrowed }
+        let qualifying = qualifying_escrow(contract, snapshot).holds.iter().map(|h| h.id).collect();
+        ContractAuth { contract, qualifying }
     }
     fn is_payee(&self, account: AccountId) -> bool {
         self.contract.consent.terms.remainder_to == account
@@ -970,15 +1133,18 @@ impl crate::engine::AuthEval for ContractAuth<'_> {
             return false;
         }
         if delta.is_negative() {
-            // A debit may only take what this contract actually escrowed there.
-            let Some(escrowed) = self.escrowed.get(&account.id) else { return false };
-            return delta.checked_neg().is_some_and(|d| d <= *escrowed);
+            // No bare debit authority (finding 1): a contract takes money by
+            // CAPTURING its escrow, and the engine excuses exactly that much of the
+            // debit on its own. Anything the engine still has to ask about here is,
+            // by construction, a line beyond the escrow — an extra pair smuggled
+            // into the settlement — and the answer is no.
+            return false;
         }
         self.is_payee(account.id)
     }
 
-    fn authorize_hold(&self, _actor: &PrincipalId, hold: &crate::record::Hold, op: &HoldOp) -> bool {
-        if !self.contract.fully_accepted() || !self.contract.escrow.contains(&hold.id) {
+    fn authorize_hold(&self, _actor: &PrincipalId, hold: &Hold, op: &HoldOp) -> bool {
+        if !self.contract.fully_accepted() || !self.qualifying.contains(&hold.id) {
             return false;
         }
         match op {

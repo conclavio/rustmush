@@ -227,6 +227,20 @@ pub struct Obligation {
     /// The bounded audit tail (≤ [`MAX_OBLIGATION_HISTORY`]); the journal is the
     /// real history.
     pub history: Vec<ObligationEvent>,
+    /// How many periods have **settled**, ever.
+    ///
+    /// `history` is a FIFO of 32, so the tally it used to be read from evaporates on
+    /// the 33rd event — and "has this tenant ever paid?" is exactly the question a
+    /// landlord asks after a long run (E4a verify fold, finding 14d). These three
+    /// counters are the durable tally; the tail stays the human-readable detail.
+    #[serde(default)]
+    pub settled_total: u32,
+    /// How many periods have been **missed**, ever.
+    #[serde(default)]
+    pub missed_total: u32,
+    /// How many periods have been **forgiven**, ever (D-E4-14).
+    #[serde(default)]
+    pub forgiven_total: u32,
     /// Staleness stamp.
     pub revision: u64,
 }
@@ -237,6 +251,17 @@ pub struct Obligation {
 #[must_use]
 pub fn obligation_key(id: ObligationId, period: u32) -> IdempotencyKey {
     IdempotencyKey::new(SmolStr::new_static("obligation"), SmolStr::new(format!("{}/{}", id.0, period)))
+}
+
+/// Why an obligation transition was refused.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ObligationError {
+    /// An outcome arrived for a period **ahead** of the ones already closed (E4a
+    /// verify fold, finding 9). Folding it would leave a hole in the period index —
+    /// the deterministic key base — and would silently skip the forgiveness step
+    /// [`plan_sweep`] asked for before those attempts.
+    #[error("that settlement outcome is out of order")]
+    OutOfOrder,
 }
 
 /// What one sweep step should do with one obligation.
@@ -251,6 +276,12 @@ pub struct SweepIntent {
     pub forgive_from: u32,
     /// The last forgiven period index (exclusive).
     pub forgive_to: u32,
+    /// The period counter cannot advance any further without overflowing `u32`, so
+    /// `forgive` periods are forgiven **wholesale**: no index is consumed, no period
+    /// is attempted, and the schedule is re-anchored past `now` by [`forgive_all`]
+    /// (E4a verify fold, finding 13). `forgive_from == forgive_to` whenever this is
+    /// set, because nothing is being indexed.
+    pub reanchor: bool,
 }
 
 impl SweepIntent {
@@ -279,22 +310,39 @@ pub fn plan_sweep(o: &Obligation, now: i64) -> SweepIntent {
     }
     let cap = u32::from(o.schedule.maximum_catch_up.clamp(1, crate::clock::MAX_CATCH_UP_CAP));
     let base = o.periods_settled;
+    // The period index is the deterministic KEY base, so it may never be saturated
+    // into: `base.saturating_add(..)` at the ceiling hands several periods the same
+    // `obligation/{id}/{period}` key, and the second post of the sweep then resolves
+    // to `AlreadyPosted` against the first — a period silently paid by another
+    // period's transaction. When the counter cannot advance, forgive everything
+    // instead and re-anchor the schedule (finding 13).
+    if base.checked_add(due).is_none() || base.checked_add(cap).is_none() {
+        return SweepIntent {
+            attempt: Vec::new(),
+            forgive: due,
+            forgive_from: base,
+            forgive_to: base,
+            reanchor: true,
+        };
+    }
     if due <= cap {
         return SweepIntent {
-            attempt: (0..due).map(|k| base.saturating_add(k)).collect(),
+            attempt: (0..due).map(|k| base + k).collect(),
             forgive: 0,
             forgive_from: base,
             forgive_to: base,
+            reanchor: false,
         };
     }
     let forgive = due - cap;
     let from = base;
-    let to = base.saturating_add(forgive);
+    let to = base + forgive;
     SweepIntent {
-        attempt: (0..cap).map(|k| to.saturating_add(k)).collect(),
+        attempt: (0..cap).map(|k| to + k).collect(),
         forgive,
         forgive_from: from,
         forgive_to: to,
+        reanchor: false,
     }
 }
 
@@ -328,17 +376,40 @@ fn push_event(o: &mut Obligation, event: ObligationEvent) {
 
 /// Fold one period's settlement outcome into the obligation.
 ///
-/// Total and pure: an outcome for a period already closed (`period <
-/// periods_settled`) is a duplicate and returns the record unchanged, so a
-/// re-delivered sweep result can never move a status twice.
-#[must_use]
-pub fn advance(o: &Obligation, period: u32, outcome: SettleOutcome, now: i64) -> Obligation {
-    if period < o.periods_settled || !o.status.in_due_pool() {
-        return o.clone();
+/// Pure, and **exactly one period at a time** (E4a verify fold, finding 9):
+///
+/// - `period < periods_settled` — already closed: a duplicate, `Ok(unchanged)`, so a
+///   re-delivered sweep result can never move a status twice.
+/// - `period > periods_settled` — [`ObligationError::OutOfOrder`]. Folding it would
+///   leave a hole in the key index, and it is also the gate that keeps
+///   [`plan_sweep`]'s contract honest: the intent's `attempt` list starts *past* the
+///   periods it asked to have forgiven, so a caller who skips [`forgive`] and posts
+///   the attempts straight away is refused instead of silently swallowing them.
+/// - `period == periods_settled` — closed by this outcome. A settled outcome records
+///   [`ObligationEvent::Settled`] **whatever the status**: money did move, and
+///   dropping the record because the obligation had gone `Delinquent` would lose a
+///   real payment. The *status* is only recomputed for an obligation in the due pool,
+///   so a `Delinquent`/`Suspended` one keeps its state until E4b1's `reinstate` (or
+///   E5's hook) moves it deliberately.
+pub fn advance(
+    o: &Obligation,
+    period: u32,
+    outcome: SettleOutcome,
+    now: i64,
+) -> Result<Obligation, ObligationError> {
+    if period < o.periods_settled {
+        return Ok(o.clone());
+    }
+    if period > o.periods_settled {
+        return Err(ObligationError::OutOfOrder);
+    }
+    // A miss on an obligation already out of the due pool changes nothing: it was
+    // never attempted, so there is nothing to record.
+    if !outcome.is_settled() && !o.status.in_due_pool() {
+        return Ok(o.clone());
     }
     let mut next = o.clone();
-    let steps = period.saturating_sub(o.periods_settled).saturating_add(1);
-    next.schedule = advance_schedule(&o.schedule, steps);
+    next.schedule = advance_schedule(&o.schedule, 1);
     next.periods_settled = period.saturating_add(1);
     next.revision += 1;
 
@@ -348,21 +419,31 @@ pub fn advance(o: &Obligation, period: u32, outcome: SettleOutcome, now: i64) ->
             _ => None,
         };
         push_event(&mut next, ObligationEvent::Settled { period, at: now, transaction });
-        // A settled period clears the grace run; a one-shot is finished.
-        next.status = if o.schedule.cadence.is_none() {
-            ObligationStatus::Satisfied
-        } else {
-            ObligationStatus::Active
-        };
-        return next;
+        next.settled_total = next.settled_total.saturating_add(1);
+        // A settled period clears the grace run and a one-shot is finished — but
+        // only for an obligation the sweep was actually attending to.
+        if o.status.in_due_pool() {
+            next.status = if o.schedule.cadence.is_none() {
+                ObligationStatus::Satisfied
+            } else {
+                ObligationStatus::Active
+            };
+        }
+        return Ok(next);
     }
 
     push_event(&mut next, ObligationEvent::Missed { period, at: now });
+    next.missed_total = next.missed_total.saturating_add(1);
     let missed = match &o.status {
         ObligationStatus::Grace { missed, .. } => missed.saturating_add(1),
         _ => 1,
     };
-    next.status = if u32::from(missed) > u32::from(o.grace.periods) {
+    // A one-shot has no NEXT period to grace into: its schedule is finished
+    // (`next_due == i64::MAX`), so a `Grace` deadline there would be an allowance
+    // that never expires and an obligation that never resolves. It goes straight to
+    // `Delinquent` and out of the due pool (finding 11).
+    let past_grace = u32::from(missed) > u32::from(o.grace.periods);
+    next.status = if o.schedule.cadence.is_none() || past_grace {
         ObligationStatus::Delinquent
     } else {
         ObligationStatus::Grace {
@@ -372,7 +453,7 @@ pub fn advance(o: &Obligation, period: u32, outcome: SettleOutcome, now: i64) ->
             deadline: EconomicDeadline { clock: next.schedule.clock, at: next.schedule.next_due },
         }
     };
-    next
+    Ok(next)
 }
 
 /// Forgive the periods `[from, to)` — advance past them without charging, and record
@@ -386,8 +467,37 @@ pub fn forgive(o: &Obligation, from: u32, to: u32, cause: ForgiveCause, now: i64
     let periods = to - from;
     next.schedule = advance_schedule(&o.schedule, periods);
     next.periods_settled = to;
+    next.forgiven_total = next.forgiven_total.saturating_add(periods);
     next.revision += 1;
     push_event(&mut next, ObligationEvent::Forgiven { periods, from, to, cause, at: now });
+    next
+}
+
+/// Forgive `periods` **wholesale**, consuming no period index at all: the schedule
+/// is re-anchored to the first due instant after `now` and `periods_settled` stays
+/// exactly where it was.
+///
+/// The counterpart of [`SweepIntent::reanchor`] (E4a verify fold, finding 13). It
+/// exists because the period index is the deterministic key base and is a `u32`: an
+/// obligation whose counter is at the ceiling cannot advance without handing two
+/// periods the same `obligation/{id}/{period}` key. Forgiving without indexing is the
+/// only safe answer, and doc 08 §2 already says a backlog is never charged.
+#[must_use]
+pub fn forgive_all(o: &Obligation, periods: u32, cause: ForgiveCause, now: i64) -> Obligation {
+    let mut next = o.clone();
+    next.schedule = crate::clock::reanchor(&o.schedule, now);
+    next.forgiven_total = next.forgiven_total.saturating_add(periods);
+    next.revision += 1;
+    let index = o.periods_settled;
+    push_event(&mut next, ObligationEvent::Forgiven {
+        periods,
+        // Nothing was indexed, so the span is empty — the `periods` count is the
+        // honest record of how much was let go.
+        from: index,
+        to: index,
+        cause,
+        at: now,
+    });
     next
 }
 
@@ -409,6 +519,14 @@ pub fn classify_forgiveness(
     now_ic: i64,
     ratio_hint: i64,
 ) -> ForgiveCause {
+    // A sweep stamp in the FUTURE means the wall clock was rewound (an NTP step, a
+    // container clock, a restored backup). That is a time jump by definition, and
+    // clamping the elapsed span to zero would have read it as `Overload` — the one
+    // cause that escalates on repeat, so a rewound clock would page a human about a
+    // starved post budget that never existed (E4a verify fold, finding 14c).
+    if last_sweep_real > now_real {
+        return ForgiveCause::TimeJump;
+    }
     let real_elapsed = i128::from(now_real).saturating_sub(i128::from(last_sweep_real)).max(0);
     let ic_elapsed = i128::from(now_ic).saturating_sub(i128::from(last_sweep_ic)).max(0);
     let ratio = i128::from(ratio_hint.max(1));

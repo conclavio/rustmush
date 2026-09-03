@@ -381,7 +381,55 @@ degenerate case of each:
 - One out-of-crate line: `mush-faction/src/econ.rs` `Account` literal gains `last_hold_seq: 0`.
 - Digest pins: E2 `9c917eee…d74e` and E3-shaped `b780e3a0…5949`, both green.
 
-### 3.6 E4a tests (`tests/e4a.rs`, ~45 — built: 66)
+**Verify-fold deltas (E4a verify fold).** The lines above describe `29282fe`; the adversarial
+verify at the end of the cut changed seven of them, and §3.7 records the whole outcome:
+
+- **`Capture` binds to a debit.** `authorize_hold` is **mandatory** for `Capture` — the plain
+  `authorize(actor, account, debit)` fallback is gone. The plan's gross debit on `hold.account`
+  must be ≥ Σ its captures there (`EconomyError::CaptureUnbacked(HoldId)`), and the captured
+  amount **is** pre-authorized debit authority: the gross-debit pass asks
+  `authorize(actor, acct, −(gross_debit − Σ captured))` only when that uncovered part is > 0, and
+  the net pass is asked about the same residual. `ContractAuth::authorize` therefore grants **no
+  bare debit authority at all** (a negative delta is `false`) — its old "up to what is escrowed on
+  that account" ceiling would double-count the escrow now that the captures are excused.
+- **The custody lock has no exception.** An object custody-locked by a live (`Active`/
+  `ReadyToSettle`) contract's `DepositInto` condition cannot be withdrawn by **any** plan; both
+  halves of the old cause+key gate were forgeable from outside (`cause` is caller-settable and the
+  two keys are derived from a readable id). The lock lifts on the **state change**;
+  `contract::is_contract_key` is deleted.
+- **Escrow is qualified, never listed.** A hold in `Contract.escrow` counts only when
+  `purpose == HoldPurpose::Escrow { contract: c.id }`, `status == Held`, and `(account, amount)`
+  matches a `Consideration` — each consideration claimed by at most one hold (`qualifying_escrow`).
+  `settlement_plan` requires every consideration matched (`ContractError::EscrowIncomplete`);
+  `refund_plan`, `escrowed_by_account` and `ContractAuth::authorize_hold` see only qualifying holds.
+- **Signatures.** `settlement_plan(c, snapshot, env: &ValidateEnv)` calls `reverify` itself;
+  `refund_plan(c, snapshot) -> Result<EconomyPlan, ContractError>` requires state ∈ {`Cancelled`,
+  `Expired`} (`ContractError::WrongState`). `consent_hash(issuer, consent)` — the issuer is part of
+  what a party agreed to. `advance(o, period, outcome, now) -> Result<Obligation,
+  ObligationError>`: `period < periods_settled` is a duplicate (`Ok(unchanged)`), `>` is
+  `OutOfOrder` (which also enforces forgive-before-attempts), `==` closes the period and records
+  `Settled` **whatever the status** — the status itself only moves for an obligation in the due
+  pool.
+- **Obligations.** A one-shot that misses goes straight to `Delinquent` (there is no next period to
+  grace into). `plan_sweep` never saturates into the key index: when `periods_settled + due` or
+  `+ cap` would overflow it sets `SweepIntent::reanchor` and forgives wholesale via
+  `forgive_all` + `clock::reanchor`, consuming no index. `Obligation` gains
+  `settled_total`/`missed_total`/`forgiven_total: u32` (`#[serde(default)]`) so the 32-entry FIFO
+  history never loses the tally. `classify_forgiveness` reads a rewound wall clock
+  (`last_sweep_real > now_real`) as `TimeJump`, never `Overload`.
+- **Clocks.** `advance_cadence` clamps `catch_up_cap` to `1..=MAX_CATCH_UP_CAP` and returns a
+  `CadenceSource::Manual` cadence **unchanged** (only `advance_cadence_manual` moves it).
+  `check_offerable` refuses `Before`/`After` on `EconomicClock::Manual`
+  (`ContractError::UnsupportedClock`) and refuses any **cycle** among `After` anchors;
+  `reverify`'s `Before` passes `i64::MAX` as `manual_now`, so an unresolvable deadline reads as
+  passed and the condition is unsatisfied.
+- **Smaller.** Every hold op requires its account `Active` (`InactiveAccount`); a `Place` that
+  mints an id the snapshot already holds is `EconomyError::HoldIdReused`;
+  `AttestorRef::Canon { canon, kind, source }` and `AttestorSet::Canon { kind, source: Option<_> }`
+  are matched on kind **and** source at `reverify`; `Hold.holder` is documented as an attribution
+  label, never authority.
+
+### 3.6 E4a tests (`tests/e4a.rs`, ~45 — built: 66; 83 after the verify fold)
 
 Holds: place/capture/release/expire on hand-built snapshots; available enforcement — two holds
 that together exceed available refuse the second (scenario 13 pure half); a debit that ignores a
@@ -399,6 +447,51 @@ unlisted object, or a capture over the hold's amount; `settlement_plan` split wi
 remainder (scenario 17 pure half); infeasible split or oversized deliverables refused at Offer;
 `After` becomes true only `delay` after its anchor; `refund_plan`. Hash v3: E3-shaped plan ==
 hard-coded digest; hold-op order independence.
+
+### 3.7 E4a verify outcome
+
+Every finding below was confirmed by a probe against `29282fe` and folded in; each carries a
+regression test in `tests/e4a.rs` under `// ---- E4a verify fold ----`, named `vf_<n>_…`.
+
+- **Authorization (critical/high).** `Capture` accepted plain debit authority on the account, so an
+  account's owner could spend a reservation standing between them and their own money; and nothing
+  tied a capture to a debit, so an effect-only capture destroyed a reservation and a capture on X
+  with a debit on Y spent one account's escrow to move another's (finding 1). The custody lock's
+  cause+key gate was forgeable from outside (2). A hold merely listed in `Contract.escrow` raised
+  the contract's ceiling, was releasable by its refund, and padded its settlement total (3).
+- **Allocator (high).** A stale `next_hold_id` re-minted a live hold's id, and `apply` would have
+  overwritten the reservation it was standing on (4).
+- **Settlement (medium).** `settlement_plan` did not re-verify, so an unmet condition could be paid
+  by a caller who forgot the separate `reverify`; `refund_plan` would release escrow in any state
+  (6). A canon attestation matched on nothing but "is a canon reference" (5).
+- **Clocks (high/medium).** `Before`/`After` on a `Manual` clock read the deadline against a
+  position nobody set (10). `advance_cadence` self-advanced a manual cadence and took zero periods
+  on a stored cap of 0 (12).
+- **Obligations (high/medium).** `advance` dropped a settlement outcome for an obligation out of
+  the due pool — real money, silently unrecorded — and folded out-of-order periods (9). A one-shot
+  that missed entered a grace whose deadline never expires (11). `plan_sweep` saturated into the
+  period index, handing several periods one idempotency key (13).
+- **Low.** The consent hash omitted the issuer (14a); `After` anchors could form a cycle nothing
+  detected (14b); a rewound sweep stamp classified as `Overload`, which escalates on repeat (14c);
+  the 32-entry history FIFO was the only tally of settled/missed/forgiven periods (14d); and
+  `hash.rs`'s invariant-27 comment claimed a `Place`-first order the key does not produce (14e).
+- **Account status (low).** Hold ops did not check the account's status, so an effect-only release
+  or expiry was the one way left to move a frozen account's numbers (7).
+- **Attribution (doc).** `Hold.holder` is caller-chosen; nothing may branch on it (8).
+
+**Handoffs.**
+
+- **E4b1** must derive `next_hold_id` from the **journal** (`max(hold_effects.hold.id) + 1`), never
+  from surviving docs — `HoldIdReused` is the backstop, not the mechanism. `WorldAuth::
+  authorize_hold` now decides *everything* about who may touch a reservation: the **beneficiary**
+  captures, the **placer** (or beneficiary, or staff) releases, the **sweep** expires. And
+  `Delinquent` has no automatic recovery path: `advance` records a late payment but deliberately
+  leaves the status alone, so E4b1 adds a staff/landlord `reinstate` verb or the E5 consequence
+  hook owns the transition — until one exists, a delinquent obligation stays out of the due pool.
+- **E4b2**'s `refund_plan` runs **after** the state change (which is what lifts the custody lock)
+  and, in the same step, returns each deposited object to its depositor with a `CustodyOp::Withdraw`
+  authorized by `ContractAuth` — that is the replacement for the deleted lock exception, and
+  `ContractAuth` will need a `Deliverable::DepositInto`-derived withdrawal rule to grant it.
 
 ---
 

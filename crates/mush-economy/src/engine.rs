@@ -166,10 +166,14 @@ pub trait AuthEval {
     ///
     /// The seam owns the policy: a `Release` is the placer's, the beneficiary's
     /// (releasing their own claim), or staff's; an `Expire` is the sweep's; a
-    /// `Capture` reaches here only when plain debit authority on the account said
-    /// no, which is exactly how a contract settlement — authorized by its
-    /// acceptances rather than by any actor — captures escrow
-    /// ([`crate::ContractAuth`]).
+    /// `Capture` is the beneficiary's, which for escrow means the contract's own
+    /// acceptances ([`crate::ContractAuth`]).
+    ///
+    /// **Every** hold op asks this, `Capture` included: plain debit authority on the
+    /// account is emphatically NOT enough (E4a verify fold, finding 1). A reservation
+    /// exists precisely to stand between the account's owner and the money, so
+    /// letting the owner's own wallet rights spend it would make escrow a promise
+    /// only the payer could break.
     ///
     /// Defaults to `false` like every other E3+ method, so an impl written against
     /// E3 keeps compiling and simply cannot move a reservation.
@@ -437,6 +441,26 @@ fn validate_inner(
     // placements count while its own captures release what they consume (D-E4-9).
     let holds = resolve_hold_ops(plan, snapshot, env)?;
 
+    // Invariant 23's other half (E4a verify fold, finding 1): a `Capture` SPENDS
+    // reserved value, so this plan must actually debit the hold's own account by at
+    // least what it captures there. Without this an effect-only capture would
+    // silently destroy a reservation (freeing the payer's funds and leaving the
+    // beneficiary with nothing), and a capture on X paired with a debit on Y would
+    // let a `ContractAuth`-shaped authority spend one account's escrow to move a
+    // different account's money.
+    for (&account_id, &captured) in &holds.captured {
+        let gross = gross_debit.get(&account_id).copied().unwrap_or(0);
+        let debited = gross.checked_neg().ok_or(EconomyError::Overflow)?;
+        if debited < captured {
+            let hold = holds
+                .capture_hold
+                .get(&account_id)
+                .copied()
+                .expect("a captured account always records its first hold");
+            return Err(EconomyError::CaptureUnbacked(hold).into());
+        }
+    }
+
     // Invariant 4 + credit policy: fold each net delta into the account's balance
     // with checked arithmetic and refuse a credit-policy breach.
     let mut balance_deltas: BTreeMap<AccountId, Amount> = BTreeMap::new();
@@ -495,14 +519,36 @@ fn validate_inner(
     // capability policy). The net still drives balances, the credit policy, and the
     // approval rules; the DEBIT question is asked about every account some line
     // actually debits.
+    //
+    // E4a verify fold, finding 1: what this plan CAPTURES on an account is already
+    // authorized debit authority. The placement proved debit authority at the time
+    // (invariant 25), and `authorize_hold` has just proved this actor may spend that
+    // exact reservation - so only the UNCOVERED part of the debit needs live
+    // authority. That is what a hold is for: a settlement whose whole debit is
+    // covered by escrow must post without the payer being asked again, or a party
+    // could break an agreement they already funded simply by losing their wallet
+    // rights. A plan that captures nothing has `covered == 0` and this loop is
+    // byte-for-byte E3's.
     for (&account_id, &net) in &balance_deltas {
         let account = snapshot.account(account_id).expect("resolved above");
-        if !env.auth.authorize(&plan.actor, account, net) {
-            return Err(EconomyError::Unauthorized.into());
+        let covered = holds.captured.get(&account_id).copied().unwrap_or(0);
+        let net_probe = net.widen().checked_add(covered).ok_or(EconomyError::Overflow)?;
+        // A fully covered net (`net_probe == 0`) asks nothing at all: probing it as
+        // a zero delta would ask the CREDIT question ("is this account a payee?") of
+        // an account that is only paying.
+        if covered == 0 || net_probe != 0 {
+            let probe = Amount::from_widened(net_probe).ok_or(EconomyError::Overflow)?;
+            if !env.auth.authorize(&plan.actor, account, probe) {
+                return Err(EconomyError::Unauthorized.into());
+            }
         }
         let Some(&debit128) = gross_debit.get(&account_id) else { continue };
-        let debit = Amount::from_widened(debit128).ok_or(EconomyError::Overflow)?;
-        if debit != net && !env.auth.authorize(&plan.actor, account, debit) {
+        let uncovered = debit128.checked_add(covered).ok_or(EconomyError::Overflow)?;
+        if uncovered >= 0 {
+            continue;
+        }
+        let debit = Amount::from_widened(uncovered).ok_or(EconomyError::Overflow)?;
+        if uncovered != net_probe && !env.auth.authorize(&plan.actor, account, debit) {
             return Err(EconomyError::Unauthorized.into());
         }
     }
@@ -868,6 +914,13 @@ struct HoldResolution {
     /// How much this plan reserves on each account - the input D-E4-11 feeds to the
     /// account's `ApprovalRule` alongside its net debit.
     placed: BTreeMap<AccountId, i128>,
+    /// How much this plan CAPTURES from each account's holds (positive). Two things
+    /// read it (E4a verify fold, finding 1): the money lines must actually debit at
+    /// least this much on the same account, and that much of the debit needs no
+    /// further live authority - the placement already proved it.
+    captured: BTreeMap<AccountId, i128>,
+    /// The first hold captured on each account, so an unbacked capture can name one.
+    capture_hold: BTreeMap<AccountId, HoldId>,
 }
 
 /// Resolve `plan.hold_ops` into journal effects, proving invariants 23-26.
@@ -886,6 +939,8 @@ fn resolve_hold_ops(
         held_deltas: BTreeMap::new(),
         place_accounts: BTreeSet::new(),
         placed: BTreeMap::new(),
+        captured: BTreeMap::new(),
+        capture_hold: BTreeMap::new(),
     };
     if plan.hold_ops.is_empty() {
         return Ok(out);
@@ -939,6 +994,14 @@ fn resolve_hold_ops(
                     return Err(EconomyError::Unauthorized);
                 }
                 let id = HoldId(env.next_hold_id.checked_add(minted).ok_or(EconomyError::Overflow)?);
+                // The allocator floor is the CALLER's (`ValidateEnv::next_hold_id`),
+                // and a stale one silently aims a placement at a hold that is still
+                // live: `apply` would overwrite it, its reservation would vanish
+                // from `held_amount`, and the escrow it was holding would become
+                // spendable (E4a verify fold, finding 4). Refuse rather than mint.
+                if snapshot.hold(id).is_some() {
+                    return Err(EconomyError::HoldIdReused(id));
+                }
                 minted += 1;
                 *out.held_deltas.entry(*account).or_insert(0) += amount.widen();
                 *out.placed.entry(*account).or_insert(0) += amount.widen();
@@ -969,21 +1032,20 @@ fn resolve_hold_ops(
                 if amount.is_negative() || amount.is_zero() || *amount > live.amount {
                     return Err(EconomyError::CaptureExceedsHold(*hold));
                 }
-                let acct = snapshot
-                    .account(live.account)
-                    .ok_or(EconomyError::NoSuchAccount(live.account))?;
-                let debit = amount.checked_neg().ok_or(EconomyError::Overflow)?;
-                // Invariant 25: debit authority on the account, OR an authority the
-                // seam recognizes for this exact hold - which is how a contract
-                // settlement, authorized by acceptances rather than by any actor,
-                // spends escrow (`ContractAuth`).
-                if !env.auth.authorize(actor, acct, debit) && !env.auth.authorize_hold(actor, live, op)
-                {
+                // Invariant 25 (E4a verify fold, finding 1): the hold seam is
+                // MANDATORY, with no fallback to plain debit authority on the
+                // account. A hold stands between an account's owner and their own
+                // money on someone else's behalf; if the owner's wallet rights could
+                // spend it, escrow would be a promise only the payer could break and
+                // `ContractAuth`'s careful per-hold ceiling would be decoration.
+                if !env.auth.authorize_hold(actor, live, op) {
                     return Err(EconomyError::Unauthorized);
                 }
                 // The WHOLE hold leaves `held`: the captured part becomes a real
                 // debit line and the remainder is released by this same effect.
                 *out.held_deltas.entry(live.account).or_insert(0) -= live.amount.widen();
+                *out.captured.entry(live.account).or_insert(0) += amount.widen();
+                out.capture_hold.entry(live.account).or_insert(*hold);
                 let mut post = live.clone();
                 // `apply` stamps the real transaction id (the acquisition pattern).
                 post.status =
@@ -1033,8 +1095,16 @@ fn resolve_hold_ops(
     Ok(out)
 }
 
-/// Fetch a hold that is still `Held`, and prove its account exists (so `apply`'s
-/// projection fold is infallible). Invariant 24's shared precondition.
+/// Fetch a hold that is still `Held`, and prove its account exists **and is
+/// `Active`** (so `apply`'s projection fold is infallible). Invariant 24's shared
+/// precondition.
+///
+/// The account check is not tidiness: `held_amount` is a projection on the account
+/// record, so every hold op writes to it. A frozen or closed account is exactly the
+/// state a staffer freezes *to stop things moving*, and every money line already
+/// refuses there (`validate`'s line loop) — an effect-only release or expiry would
+/// otherwise be the one way to keep changing a frozen account's numbers (E4a verify
+/// fold, finding 7).
 fn live_hold(snapshot: &EconomySnapshot, id: HoldId) -> Result<(&Hold, &Account), EconomyError> {
     let hold = snapshot.hold(id).ok_or(EconomyError::NoSuchHold(id))?;
     if !hold.status.is_held() {
@@ -1042,6 +1112,9 @@ fn live_hold(snapshot: &EconomySnapshot, id: HoldId) -> Result<(&Hold, &Account)
     }
     let account =
         snapshot.account(hold.account).ok_or(EconomyError::NoSuchAccount(hold.account))?;
+    if account.status != AccountStatus::Active {
+        return Err(EconomyError::InactiveAccount(hold.account));
+    }
     Ok((hold, account))
 }
 
@@ -1112,20 +1185,23 @@ fn resolve_custody_ops(
                     return Err(EconomyError::NotInVault(*object));
                 }
                 // A live contract's `DepositInto` condition custody-LOCKS the object
-                // it names (S3.5): only that contract's own settlement or refund may
-                // take it out, or a seller could sell the deposit out from under the
-                // buyer between attestation and settlement.
-                if let Some(owner) = snapshot.custody_lock(*object, vault_id) {
-                    // BOTH gates: the contract's own cause and one of its two
-                    // deterministic keys. `cause` alone is caller-settable through the
-                    // public `post`, so it would be no gate at all.
-                    let by_owner = matches!(
-                        &plan.cause,
-                        EconomicCause::Internal { kind, id } if kind == "contract" && *id == owner.0
-                    ) && crate::contract::is_contract_key(&plan.idempotency, owner);
-                    if !by_owner {
-                        return Err(EconomyError::CustodyLocked(*object));
-                    }
+                // it names (§3.5): while the contract is `Active`/`ReadyToSettle`
+                // **no plan whatsoever** may withdraw it, or a seller could sell the
+                // deposit out from under the buyer between attestation and
+                // settlement.
+                //
+                // E4a verify fold, finding 2: there is no exception, not even for the
+                // owning contract. Both halves of the old one were forgeable from
+                // outside — `cause` is caller-settable through the public `post`, and
+                // a contract's two idempotency keys are `contract/{id}/settle` and
+                // `contract/{id}/refund`, derived from an id anyone who can see the
+                // contract can read. The real unlock is the STATE change: settlement
+                // and cancellation both move the contract out of the live states
+                // first, which lifts the lock, and E4b2's refund then returns the
+                // object to its depositor with a `ContractAuth`-authorized `Withdraw`
+                // in the same step.
+                if snapshot.custody_lock(*object, vault_id).is_some() {
+                    return Err(EconomyError::CustodyLocked(*object));
                 }
                 // A2: an unconstrained destination is a laundering primitive. The
                 // seam checks live/`GOING`/reachability; the snapshot check below is

@@ -299,9 +299,11 @@ impl HoldOp {
             }
         }
     }
-    /// The canonical op ordinal — the second key of the total order, and the order
-    /// ops are applied in (a `Place` before any capture/release, so a plan that
-    /// places and captures in one breath is deterministic).
+    /// The canonical op ordinal — the **second** key of the total order, which only
+    /// breaks ties between ops on the same subject id. It does **not** put every
+    /// `Place` first: a `Place` is keyed by its account and a capture by its hold,
+    /// and those two id spaces are unrelated. What the order guarantees is that it
+    /// is total and deterministic, so the applied order is the hashed order.
     #[must_use]
     pub fn ordinal(&self) -> u8 {
         match self {
@@ -676,6 +678,19 @@ pub enum EconomyError {
     /// other inside one bundle.
     #[error("more than one hold op on hold {0}")]
     DuplicateHoldOp(HoldId),
+    /// A `Capture` this plan's money lines do not back: the gross debit on the
+    /// hold's account is smaller than what the plan captures there (E4a verify
+    /// fold, finding 1). A capture SPENDS reserved value, so a plan that captures
+    /// without debiting — or that captures on one account and debits another —
+    /// would consume the reservation while the money went somewhere the hold never
+    /// promised.
+    #[error("hold {0}'s capture is not backed by a debit on its own account")]
+    CaptureUnbacked(HoldId),
+    /// A `Place` minted an id the snapshot already knows (E4a verify fold, finding
+    /// 4): the caller's allocator floor is stale, and applying it would overwrite a
+    /// live reservation with a brand-new one. Never silently re-mint.
+    #[error("hold id {0} is already in use")]
+    HoldIdReused(HoldId),
     /// An expected-hold-revision guard did not match current reservation state.
     #[error("stale plan: hold {hold} expected revision {expected}, found {found:?}")]
     StaleHold {
@@ -748,7 +763,9 @@ impl EconomyError {
             | EconomyError::HoldNotHeld(h)
             | EconomyError::CaptureExceedsHold(h)
             | EconomyError::HoldNotExpired(h)
-            | EconomyError::DuplicateHoldOp(h) => vec![NamedResource::Hold(*h)],
+            | EconomyError::DuplicateHoldOp(h)
+            | EconomyError::CaptureUnbacked(h)
+            | EconomyError::HoldIdReused(h) => vec![NamedResource::Hold(*h)],
             EconomyError::StaleHold { hold, .. } => vec![NamedResource::Hold(*hold)],
             EconomyError::NoSuchContract(c)
             | EconomyError::ContractState(c)

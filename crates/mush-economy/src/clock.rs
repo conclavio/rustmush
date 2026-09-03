@@ -167,6 +167,33 @@ pub fn advance(s: &EconomicSchedule, n: u32) -> EconomicSchedule {
     out
 }
 
+/// Re-anchor `s` to the first due instant **strictly after** `now`, without
+/// counting how many periods that skipped.
+///
+/// The escape hatch for a schedule whose period index can no longer be advanced —
+/// `periods_settled + due` would overflow `u32` (E4a verify fold, finding 13). Every
+/// pending period is forgiven wholesale and the schedule starts again from `now`;
+/// nothing is charged and no key index moves, which is the only way to keep the
+/// deterministic `obligation/{id}/{period}` keys unique. A one-shot (or a corrupt
+/// non-positive cadence) is simply done.
+#[must_use]
+pub fn reanchor(s: &EconomicSchedule, now: i64) -> EconomicSchedule {
+    let mut out = *s;
+    let Some(cadence) = s.cadence.filter(|c| *c > 0) else {
+        out.next_due = i64::MAX;
+        return out;
+    };
+    if now < s.next_due {
+        return out;
+    }
+    // i128 throughout: `now - next_due` spans the i64 range at the extremes.
+    let elapsed = i128::from(now) - i128::from(s.next_due);
+    let periods = elapsed / i128::from(cadence) + 1;
+    let next = i128::from(s.next_due).saturating_add(periods.saturating_mul(i128::from(cadence)));
+    out.next_due = i64::try_from(next).unwrap_or(i64::MAX);
+    out
+}
+
 // ---- cadence clocks (D-E4-2) ----------------------------------------------
 
 /// What a [`CadenceClock`] advances from.
@@ -231,13 +258,24 @@ pub fn cadence_elapsed(c: &CadenceClock, source_now: i64) -> u64 {
 /// beyond the cap). `advanced_at` moves to the last whole period boundary either
 /// way, so a forgiven period is genuinely skipped rather than replayed at the next
 /// advance — doc 08 §2 forbids charging a downtime backlog.
+///
+/// A [`CadenceSource::Manual`] cadence is returned **unchanged**: its position is a
+/// human's to move ([`advance_cadence_manual`]), and reading a wall or IC instant as
+/// its source would let the sweep advance a clock nobody asked to advance (E4a
+/// verify fold, finding 12).
 #[must_use]
 pub fn advance_cadence(c: &CadenceClock, source_now: i64) -> (CadenceClock, u64) {
+    if c.source == CadenceSource::Manual {
+        return (c.clone(), 0);
+    }
     let elapsed = cadence_elapsed(c, source_now);
     if elapsed == 0 {
         return (c.clone(), 0);
     }
-    let cap = u64::from(c.catch_up_cap.min(MAX_CATCH_UP_CAP));
+    // Clamped at BOTH ends, exactly like `EconomicSchedule::new`: a stored
+    // `catch_up_cap` of 0 would take no periods at all while `advanced_at` still
+    // moved, silently swallowing every period forever.
+    let cap = u64::from(c.catch_up_cap.clamp(1, MAX_CATCH_UP_CAP));
     let taken = elapsed.min(cap);
     let mut out = c.clone();
     out.position = out.position.saturating_add(taken);
