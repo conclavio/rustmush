@@ -57,6 +57,14 @@ async fn seed_minimal_world(store: &RedisStore) {
 }
 
 fn authoritative_bundle(token_byte: u8, request_byte: u8) -> AuthoritativeBundle {
+    authoritative_bundle_for_epoch(token_byte, request_byte, 0)
+}
+
+fn authoritative_bundle_for_epoch(
+    token_byte: u8,
+    request_byte: u8,
+    epoch: u64,
+) -> AuthoritativeBundle {
     let owner = OwnerId::new("redis_toy").unwrap();
     let mut definitions = DefinitionRegistryBuilder::new();
     let action = definitions
@@ -94,7 +102,7 @@ fn authoritative_bundle(token_byte: u8, request_byte: u8) -> AuthoritativeBundle
                 owner: owner.clone(),
                 namespace: CanonicalId::new("brace").unwrap(),
             },
-            0,
+            epoch,
             IdempotencyKey::Request(request),
         ),
         ingress_hash: CanonicalHash::from_bytes([request_byte; 32]),
@@ -180,6 +188,9 @@ redis_gated!(serde_obj_round_trip, store, {
 // covers `mod:*` too.
 redis_gated!(module_batch_atomicity, store, {
     suite::module_batch_atomicity(&store).await;
+});
+redis_gated!(authoritative_module_prefix_is_store_owned, store, {
+    suite::authoritative_module_prefix_is_store_owned(&store).await;
 });
 redis_gated!(module_kv_round_trip, store, {
     suite::module_kv_round_trip(&store).await;
@@ -460,6 +471,92 @@ redis_gated!(authoritative_checkpoint_is_atomic_and_retryable, store, {
     let resumed = store.checkpoint_authoritative(token, hash).await.unwrap();
     assert!(resumed.resumed);
     assert_eq!(resumed.released_intent_bytes, 0);
+});
+
+redis_gated!(authoritative_epoch_retirement_is_watermark_first, store, {
+    seed_minimal_world(&store).await;
+    let old = authoritative_bundle_for_epoch(13, 23, 0);
+    let old_token = old.token();
+    let old_hash = old.bundle_hash();
+    let old_key = old.idempotency().clone();
+    let scope = old_key.scope().clone();
+    store
+        .reserve_authoritative_intent(old.clone())
+        .await
+        .expect("reserve old epoch");
+    store
+        .reconcile_authoritative(old_token, old_hash)
+        .await
+        .expect("finalize old epoch");
+    store
+        .checkpoint_authoritative(old_token, old_hash)
+        .await
+        .expect("checkpoint old epoch");
+
+    let retirement = store
+        .retire_authoritative_epochs(&scope, 1)
+        .await
+        .expect("retire old epoch");
+    assert_eq!(retirement.retired_tombstones, 1);
+    assert!(!retirement.resumed);
+    assert_eq!(
+        store
+            .authoritative_idempotency_status(&old_key, old.ingress_hash())
+            .await
+            .unwrap(),
+        IdempotencyStatus::Retired {
+            minimum_accepted_epoch: 1
+        }
+    );
+    assert!(matches!(
+        store.reserve_authoritative_intent(old).await,
+        Err(StoreError::AuthoritativeEpochRetired {
+            requested_epoch: 0,
+            minimum_accepted_epoch: 1,
+        })
+    ));
+    assert_eq!(
+        store
+            .authoritative_status(old_token, old_hash)
+            .await
+            .unwrap(),
+        BundleStatus::Absent
+    );
+
+    let current = authoritative_bundle_for_epoch(14, 24, 1);
+    let current_token = current.token();
+    let current_hash = current.bundle_hash();
+    store
+        .reserve_authoritative_intent(current)
+        .await
+        .expect("reserve current epoch");
+    assert!(matches!(
+        store.retire_authoritative_epochs(&scope, 2).await,
+        Err(StoreError::AuthoritativeEpochPending {
+            requested_minimum_epoch: 2,
+            retained_intents: 1,
+        })
+    ));
+    store
+        .reconcile_authoritative(current_token, current_hash)
+        .await
+        .expect("finalize current epoch");
+    assert!(matches!(
+        store.retire_authoritative_epochs(&scope, 2).await,
+        Err(StoreError::AuthoritativeEpochPending { .. })
+    ));
+    store
+        .checkpoint_authoritative(current_token, current_hash)
+        .await
+        .expect("checkpoint current epoch");
+    assert_eq!(
+        store
+            .retire_authoritative_epochs(&scope, 2)
+            .await
+            .expect("retire current epoch")
+            .retired_tombstones,
+        1
+    );
 });
 
 redis_gated!(

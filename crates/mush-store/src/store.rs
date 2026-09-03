@@ -34,13 +34,16 @@
 //! [`load_world`]: ObjectStore::load_world
 
 use futures::future::BoxFuture;
-use mush_core::{AuthoritativeBundle, CanonicalHash, CommitToken, ObjId, ScopedIdempotencyKey};
+use mush_core::{
+    AuthoritativeBundle, CanonicalHash, CommitToken, IdempotencyScope, ObjId, ScopedIdempotencyKey,
+};
 
 use crate::types::{
-    AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeIntentPage, AuthoritativeReceipt,
-    AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec, BundleStatus, IdempotencyStatus,
-    IntentReceipt, PendingAuthoritativeIntent, SshKeyRec, StoreError, TokenRecord, WorldSnapshot,
-    WriteBatch, WriteReceipt,
+    AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeEpochRetirement,
+    AuthoritativeIntentPage, AuthoritativeReceipt, AuthoritativeRetentionUsage,
+    AuthoritativeScanCursor, BanRec, BundleStatus, IdempotencyStatus, IntentReceipt,
+    PendingAuthoritativeIntent, SshKeyRec, StoreError, TokenRecord, WorldSnapshot, WriteBatch,
+    WriteReceipt,
 };
 
 /// Exact-intent persistence used by the K3 action coordinator.
@@ -81,6 +84,17 @@ pub trait AuthoritativeStore: ObjectStore {
         token: CommitToken,
         expected_bundle_hash: CanonicalHash,
     ) -> BoxFuture<'_, Result<AuthoritativeCheckpointReceipt, StoreError>>;
+
+    /// Advance one idempotency scope's durable retry horizon and remove every
+    /// compact receipt/binding below it. Implementations must refuse while a
+    /// full intent remains below the proposed watermark. Redis may commit the
+    /// watermark before finishing bounded tombstone cleanup; after an error,
+    /// retrying the same minimum is required and safe.
+    fn retire_authoritative_epochs<'a>(
+        &'a self,
+        scope: &'a IdempotencyScope,
+        minimum_accepted_epoch: u64,
+    ) -> BoxFuture<'a, Result<AuthoritativeEpochRetirement, StoreError>>;
 
     /// Inspect only an exact expected token/hash pair.
     fn authoritative_status(

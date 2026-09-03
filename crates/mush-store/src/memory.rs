@@ -25,17 +25,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures::future::BoxFuture;
 use mush_core::{
-    AuthoritativeBundle, CanonicalHash, CommitToken, Obj, ObjId, ReplayWrite, ScopedIdempotencyKey,
+    AuthoritativeBundle, CanonicalHash, CommitToken, IdempotencyScope, Obj, ObjId, ReplayWrite,
+    ScopedIdempotencyKey,
 };
 
 use crate::store::{AuthoritativeStore, ObjectStore};
 use crate::types::{
-    AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeIntentPage, AuthoritativeReceipt,
-    AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec, BundleStatus, CharacterRef,
-    IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
-    MAX_RETAINED_AUTHORITATIVE_BYTES, MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleWrite,
-    PendingAuthoritativeIntent, SshKeyRec, StoreError, TokenRecord, WorldSnapshot, WriteBatch,
-    WriteReceipt, validate_module_key, validate_module_ns, validate_module_op, validate_token_hash,
+    AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeEpochRetirement,
+    AuthoritativeIntentPage, AuthoritativeReceipt, AuthoritativeRetentionUsage,
+    AuthoritativeScanCursor, BanRec, BundleStatus, CharacterRef, IdempotencyStatus, IntentReceipt,
+    MAX_AUTHORITATIVE_DISCOVERY_PAGE, MAX_RETAINED_AUTHORITATIVE_BYTES,
+    MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleWrite, PendingAuthoritativeIntent, SshKeyRec,
+    StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt, validate_module_key,
+    validate_module_ns, validate_module_op, validate_token_hash,
 };
 
 /// See the [module docs](self).
@@ -74,6 +76,9 @@ struct Inner {
     authoritative_receipts: BTreeMap<CommitToken, String>,
     /// Early lookup binding installed atomically with the full intent.
     authoritative_idempotency: BTreeMap<ScopedIdempotencyKey, IdempotencyBinding>,
+    /// Durable per-scope retry horizon. Epochs below this watermark can never
+    /// become vacant again after their compact receipts are removed.
+    authoritative_minimum_epochs: BTreeMap<IdempotencyScope, u64>,
     /// Independently enumerable recovery index. Later fault tests deliberately
     /// damage this index and prove exhaustive intent discovery repairs it.
     authoritative_pending: BTreeSet<CommitToken>,
@@ -468,6 +473,17 @@ impl AuthoritativeStore for InMemoryStore {
             let ingress_hash = bundle.ingress_hash();
             let doc = serde_json::to_string(&bundle)?;
             let mut inner = self.lock()?;
+            let minimum_accepted_epoch = inner
+                .authoritative_minimum_epochs
+                .get(key.scope())
+                .copied()
+                .unwrap_or(0);
+            if key.epoch() < minimum_accepted_epoch {
+                return Err(StoreError::AuthoritativeEpochRetired {
+                    requested_epoch: key.epoch(),
+                    minimum_accepted_epoch,
+                });
+            }
 
             if let Some(existing_doc) = inner.authoritative_intents.get(&token) {
                 let existing = decode_intent(existing_doc)?;
@@ -566,6 +582,16 @@ impl AuthoritativeStore for InMemoryStore {
     ) -> BoxFuture<'a, Result<IdempotencyStatus, StoreError>> {
         Box::pin(async move {
             let inner = self.lock()?;
+            let minimum_accepted_epoch = inner
+                .authoritative_minimum_epochs
+                .get(key.scope())
+                .copied()
+                .unwrap_or(0);
+            if key.epoch() < minimum_accepted_epoch {
+                return Ok(IdempotencyStatus::Retired {
+                    minimum_accepted_epoch,
+                });
+            }
             let Some(binding) = inner.authoritative_idempotency.get(key) else {
                 return Ok(IdempotencyStatus::Vacant);
             };
@@ -728,6 +754,76 @@ impl AuthoritativeStore for InMemoryStore {
                 receipt,
                 released_intent_bytes: intent_doc.len(),
                 resumed: false,
+            })
+        })
+    }
+
+    fn retire_authoritative_epochs<'a>(
+        &'a self,
+        scope: &'a IdempotencyScope,
+        minimum_accepted_epoch: u64,
+    ) -> BoxFuture<'a, Result<AuthoritativeEpochRetirement, StoreError>> {
+        Box::pin(async move {
+            let mut inner = self.lock()?;
+            let previous_minimum_epoch = inner
+                .authoritative_minimum_epochs
+                .get(scope)
+                .copied()
+                .unwrap_or(0);
+            if minimum_accepted_epoch < previous_minimum_epoch {
+                return Err(StoreError::AuthoritativeEpochRegression {
+                    current_minimum_epoch: previous_minimum_epoch,
+                    requested_minimum_epoch: minimum_accepted_epoch,
+                });
+            }
+
+            let mut retained_intents = 0_usize;
+            for intent_doc in inner.authoritative_intents.values() {
+                let bundle = decode_intent(intent_doc)?;
+                if bundle.idempotency().scope() == scope
+                    && bundle.idempotency().epoch() < minimum_accepted_epoch
+                {
+                    retained_intents = retained_intents.checked_add(1).ok_or_else(|| {
+                        StoreError::AuthoritativeCorrupt(
+                            "retained epoch intent count overflowed".to_owned(),
+                        )
+                    })?;
+                }
+            }
+            if retained_intents != 0 {
+                return Err(StoreError::AuthoritativeEpochPending {
+                    requested_minimum_epoch: minimum_accepted_epoch,
+                    retained_intents,
+                });
+            }
+
+            // Validate every candidate and its exact binding before advancing
+            // the watermark or deleting one byte: the in-memory backend keeps
+            // the complete retirement atomic under this lock.
+            let mut retired = Vec::new();
+            for (token, receipt_doc) in &inner.authoritative_receipts {
+                let receipt = decode_checkpoint_receipt(receipt_doc)?;
+                if receipt.idempotency().scope() == scope
+                    && receipt.idempotency().epoch() < minimum_accepted_epoch
+                {
+                    validate_receipt_binding(&inner, *token, &receipt)?;
+                    retired.push((*token, receipt.idempotency().clone()));
+                }
+            }
+
+            inner
+                .authoritative_minimum_epochs
+                .insert(scope.clone(), minimum_accepted_epoch);
+            for (token, idempotency) in &retired {
+                inner.authoritative_receipts.remove(token);
+                inner.authoritative_idempotency.remove(idempotency);
+            }
+            Ok(AuthoritativeEpochRetirement {
+                scope: scope.clone(),
+                previous_minimum_epoch,
+                minimum_accepted_epoch,
+                retired_tombstones: retired.len(),
+                resumed: previous_minimum_epoch == minimum_accepted_epoch,
             })
         })
     }
@@ -1564,6 +1660,24 @@ mod tests {
         object_id: ObjId,
         next_id: Option<u32>,
     ) -> AuthoritativeBundle {
+        authoritative_bundle_for_epoch(
+            token_byte,
+            ingress_byte,
+            request_byte,
+            object_id,
+            next_id,
+            0,
+        )
+    }
+
+    fn authoritative_bundle_for_epoch(
+        token_byte: u8,
+        ingress_byte: u8,
+        request_byte: u8,
+        object_id: ObjId,
+        next_id: Option<u32>,
+        epoch: u64,
+    ) -> AuthoritativeBundle {
         let owner = OwnerId::new("toy").unwrap();
         let mut definitions = DefinitionRegistryBuilder::new();
         let action = definitions
@@ -1618,7 +1732,7 @@ mod tests {
                     owner: owner.clone(),
                     namespace: CanonicalId::new("brace").unwrap(),
                 },
-                0,
+                epoch,
                 IdempotencyKey::Request(request),
             ),
             ingress_hash: CanonicalHash::from_bytes([ingress_byte; 32]),
@@ -2082,6 +2196,99 @@ mod tests {
         assert!(inner.authoritative_intents.is_empty());
         assert_eq!(inner.authoritative_receipts.len(), 1);
         assert!(inner.authoritative_pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn authoritative_epoch_retirement_is_monotonic_and_never_reopens_old_keys() {
+        let store = InMemoryStore::new();
+        seed_minimal_world(&store).await;
+        let old = authoritative_bundle_for_epoch(101, 102, 103, ObjId(2), Some(3), 0);
+        let old_token = old.token();
+        let old_hash = old.bundle_hash();
+        let old_key = old.idempotency().clone();
+        let scope = old_key.scope().clone();
+
+        store
+            .reserve_authoritative_intent(old.clone())
+            .await
+            .unwrap();
+        store
+            .reconcile_authoritative(old_token, old_hash)
+            .await
+            .unwrap();
+        store
+            .checkpoint_authoritative(old_token, old_hash)
+            .await
+            .unwrap();
+
+        let retired = store.retire_authoritative_epochs(&scope, 1).await.unwrap();
+        assert_eq!(retired.previous_minimum_epoch, 0);
+        assert_eq!(retired.minimum_accepted_epoch, 1);
+        assert_eq!(retired.retired_tombstones, 1);
+        assert!(!retired.resumed);
+        assert_eq!(
+            store
+                .authoritative_idempotency_status(&old_key, old.ingress_hash())
+                .await
+                .unwrap(),
+            IdempotencyStatus::Retired {
+                minimum_accepted_epoch: 1
+            }
+        );
+        assert!(matches!(
+            store.reserve_authoritative_intent(old).await,
+            Err(StoreError::AuthoritativeEpochRetired {
+                requested_epoch: 0,
+                minimum_accepted_epoch: 1,
+            })
+        ));
+        assert_eq!(
+            store
+                .authoritative_status(old_token, old_hash)
+                .await
+                .unwrap(),
+            BundleStatus::Absent
+        );
+
+        let resumed = store.retire_authoritative_epochs(&scope, 1).await.unwrap();
+        assert!(resumed.resumed);
+        assert_eq!(resumed.retired_tombstones, 0);
+        assert!(matches!(
+            store.retire_authoritative_epochs(&scope, 0).await,
+            Err(StoreError::AuthoritativeEpochRegression {
+                current_minimum_epoch: 1,
+                requested_minimum_epoch: 0,
+            })
+        ));
+
+        let current = authoritative_bundle_for_epoch(104, 105, 106, ObjId(3), Some(4), 1);
+        let current_token = current.token();
+        let current_hash = current.bundle_hash();
+        store.reserve_authoritative_intent(current).await.unwrap();
+        assert!(matches!(
+            store.retire_authoritative_epochs(&scope, 2).await,
+            Err(StoreError::AuthoritativeEpochPending {
+                requested_minimum_epoch: 2,
+                retained_intents: 1,
+            })
+        ));
+        store
+            .reconcile_authoritative(current_token, current_hash)
+            .await
+            .unwrap();
+        assert!(matches!(
+            store.retire_authoritative_epochs(&scope, 2).await,
+            Err(StoreError::AuthoritativeEpochPending {
+                requested_minimum_epoch: 2,
+                retained_intents: 1,
+            })
+        ));
+        store
+            .checkpoint_authoritative(current_token, current_hash)
+            .await
+            .unwrap();
+        let retired = store.retire_authoritative_epochs(&scope, 2).await.unwrap();
+        assert_eq!(retired.retired_tombstones, 1);
     }
 
     #[test]

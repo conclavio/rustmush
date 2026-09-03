@@ -1,9 +1,9 @@
 //! Domain types shared by every [`crate::ObjectStore`] implementation.
 
 use mush_core::{
-    AuthoritativeBundle, CanonicalHash, CommitToken, DefinitionRef, MAX_MODULE_KEY_BYTES,
-    MAX_MODULE_NAMESPACE_BYTES, Obj, ObjId, OwnerId, PreparedCausalRef, PrincipalId, RequestUid,
-    RulesValue, ScopedIdempotencyKey,
+    AuthoritativeBundle, CanonicalHash, CommitToken, DefinitionRef, IdempotencyScope,
+    MAX_MODULE_KEY_BYTES, MAX_MODULE_NAMESPACE_BYTES, Obj, ObjId, OwnerId, PreparedCausalRef,
+    PrincipalId, RequestUid, RulesValue, ScopedIdempotencyKey, is_action_state_persistence_key,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
@@ -145,7 +145,13 @@ pub(crate) fn validate_module_op(op: &ModuleOp) -> Result<(), StoreError> {
         | ModuleWrite::Del { key }
         | ModuleWrite::StreamAppend { key, .. } => key,
     };
-    validate_module_key(key)
+    validate_module_key(key)?;
+    if is_action_state_persistence_key(key) {
+        return Err(StoreError::Invalid(format!(
+            "module key {key:?} is owned by authoritative action persistence"
+        )));
+    }
+    Ok(())
 }
 
 /// Acknowledgement of a durably applied [`WriteBatch`].
@@ -463,6 +469,21 @@ pub struct AuthoritativeCheckpointReceipt {
     pub resumed: bool,
 }
 
+/// Durable watermark-first retirement of complete idempotency epochs.
+///
+/// Once this succeeds, keys in `scope` below `minimum_accepted_epoch` can
+/// never be reserved or observed as vacant again. `retired_tombstones` counts
+/// compact receipt/binding pairs removed during this call; a retry may report
+/// zero after the watermark and cleanup already completed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthoritativeEpochRetirement {
+    pub scope: IdempotencyScope,
+    pub previous_minimum_epoch: u64,
+    pub minimum_accepted_epoch: u64,
+    pub retired_tombstones: usize,
+    pub resumed: bool,
+}
+
 /// Exact status for one token and expected bundle hash.
 #[derive(Clone, Debug, PartialEq)]
 pub enum BundleStatus {
@@ -475,6 +496,12 @@ pub enum BundleStatus {
 /// Result of the pre-parse `(scoped key, ingress hash)` lookup.
 #[derive(Clone, Debug, PartialEq)]
 pub enum IdempotencyStatus {
+    /// The caller's complete epoch is outside the durable retry horizon. It
+    /// must obtain a new epoch/key; treating this as vacant would permit a
+    /// duplicate action after tombstone deletion.
+    Retired {
+        minimum_accepted_epoch: u64,
+    },
     Vacant,
     PendingExact {
         token: CommitToken,
@@ -639,6 +666,34 @@ pub enum StoreError {
     /// for the action reaches a terminal state.
     #[error("authoritative commit has unresolved durable outbox work")]
     AuthoritativeOutboxPending,
+    /// Reservation raced with or followed durable retirement of this epoch.
+    #[error(
+        "authoritative idempotency epoch {requested_epoch} is retired; minimum accepted epoch is {minimum_accepted_epoch}"
+    )]
+    AuthoritativeEpochRetired {
+        requested_epoch: u64,
+        minimum_accepted_epoch: u64,
+    },
+    /// A minimum epoch may only move forward.
+    #[error(
+        "authoritative minimum epoch cannot regress from {current_minimum_epoch} to {requested_minimum_epoch}"
+    )]
+    AuthoritativeEpochRegression {
+        current_minimum_epoch: u64,
+        requested_minimum_epoch: u64,
+    },
+    /// Full replay custody still exists below the proposed watermark.
+    #[error(
+        "authoritative epoch retirement is blocked by {retained_intents} retained intents below epoch {requested_minimum_epoch}"
+    )]
+    AuthoritativeEpochPending {
+        requested_minimum_epoch: u64,
+        retained_intents: usize,
+    },
+    /// Concurrent reservations/checkpoints repeatedly changed the retained
+    /// set while retirement was proving it empty. Retrying is safe.
+    #[error("authoritative epoch retirement raced with active commits")]
+    AuthoritativeEpochContention,
     /// A stored authoritative intent or finalized witness failed strict decode.
     #[error("authoritative persistence record is corrupt: {0}")]
     AuthoritativeCorrupt(String),
@@ -710,8 +765,12 @@ impl StoreError {
             | StoreError::AuthoritativeIntentMissing
             | StoreError::AuthoritativeNotFinalized
             | StoreError::AuthoritativeOutboxPending
+            | StoreError::AuthoritativeEpochRetired { .. }
+            | StoreError::AuthoritativeEpochRegression { .. }
+            | StoreError::AuthoritativeEpochPending { .. }
             | StoreError::AuthoritativeCorrupt(_)
             | StoreError::AuthoritativeCapacity { .. } => false,
+            StoreError::AuthoritativeEpochContention => true,
         }
     }
 }

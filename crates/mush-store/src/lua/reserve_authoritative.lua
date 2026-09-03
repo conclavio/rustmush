@@ -1,7 +1,9 @@
 -- KEYS: intent, receipt, idempotency binding, pending set, retained count,
--- retained bytes, object allocator, then every ObjectSet target.
+-- retained bytes, object allocator, minimum epoch, retained generation,
+-- then every ObjectSet target.
 -- ARGV: intent doc, binding doc, token, candidate bytes, max count, max bytes,
--- proposed allocator (empty when absent), object count, then ObjectSet ids.
+-- proposed allocator (empty when absent), object count, request epoch, then
+-- ObjectSet ids.
 
 local function key_type(key)
   local result = redis.call('TYPE', key)
@@ -11,9 +13,43 @@ local function key_type(key)
   return result
 end
 
+local function canonical_decimal(value)
+  return value and string.match(value, '^%d+$') and
+    (value == '0' or string.sub(value, 1, 1) ~= '0')
+end
+
+local function decimal_less(left, right)
+  if string.len(left) ~= string.len(right) then
+    return string.len(left) < string.len(right)
+  end
+  return left < right
+end
+
 local pending_type = key_type(KEYS[4])
 if pending_type ~= 'none' and pending_type ~= 'set' then
   return 'CORRUPT_PENDING'
+end
+
+local minimum_type = key_type(KEYS[8])
+if minimum_type ~= 'none' and minimum_type ~= 'string' then
+  return 'CORRUPT_EPOCH_WATERMARK'
+end
+local minimum_epoch = redis.call('GET', KEYS[8]) or '0'
+if not canonical_decimal(minimum_epoch) or not canonical_decimal(ARGV[9]) then
+  return 'CORRUPT_EPOCH_WATERMARK'
+end
+if decimal_less(ARGV[9], minimum_epoch) then
+  return 'EPOCH_RETIRED:' .. minimum_epoch
+end
+
+local generation_type = key_type(KEYS[9])
+if generation_type ~= 'none' and generation_type ~= 'string' then
+  return 'CORRUPT_GENERATION'
+end
+local generation = redis.call('GET', KEYS[9]) or '0'
+if not canonical_decimal(generation) or
+   decimal_less('9223372036854775806', generation) then
+  return 'CORRUPT_GENERATION'
 end
 
 local existing_intent = redis.call('GET', KEYS[1])
@@ -86,15 +122,15 @@ if ARGV[7] ~= '' then
 end
 
 local object_count = tonumber(ARGV[8])
-if not object_count or object_count < 0 or object_count ~= (#KEYS - 7) then
+if not object_count or object_count < 0 or object_count ~= (#KEYS - 9) then
   return 'CORRUPT_ARGUMENTS'
 end
 for index = 1, object_count do
-  local object_id = tonumber(ARGV[8 + index])
+  local object_id = tonumber(ARGV[9 + index])
   if not object_id or object_id < 0 then
     return 'CORRUPT_ARGUMENTS'
   end
-  local exists = redis.call('EXISTS', KEYS[7 + index]) ~= 0
+  local exists = redis.call('EXISTS', KEYS[9 + index]) ~= 0
   if exists then
     if not allocator_doc or object_id >= current_next_id then
       return 'CORRUPT_OBJECT_ALLOCATOR'
@@ -112,6 +148,7 @@ for index = 1, object_count do
   end
 end
 
+redis.call('INCR', KEYS[9])
 redis.call('SET', KEYS[1], ARGV[1])
 redis.call('SET', KEYS[3], ARGV[2])
 redis.call('SADD', KEYS[4], ARGV[3])

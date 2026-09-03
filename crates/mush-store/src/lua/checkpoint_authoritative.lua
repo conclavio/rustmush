@@ -3,7 +3,7 @@
 -- so a concurrent or externally clobbered witness can never be overwritten.
 --
 -- KEYS: intent, receipt, idempotency binding, pending set, retained count,
--- retained bytes.
+-- retained bytes, retained generation.
 -- ARGV: exact intent doc, exact prior receipt doc, compact checkpoint receipt,
 -- exact binding doc, token, exact intent bytes.
 
@@ -13,6 +13,12 @@ local function key_type(key)
     return result['ok']
   end
   return result
+end
+
+
+local function canonical_decimal(value)
+  return value and string.match(value, '^%d+$') and
+    (value == '0' or string.sub(value, 1, 1) ~= '0')
 end
 
 local pending_type = key_type(KEYS[4])
@@ -57,6 +63,18 @@ if not retained_count or not retained_bytes or not intent_bytes or
   return 'CORRUPT_COUNTER'
 end
 
+local generation_type = key_type(KEYS[7])
+if generation_type ~= 'none' and generation_type ~= 'string' then
+  return 'CORRUPT_GENERATION'
+end
+local generation = redis.call('GET', KEYS[7]) or '0'
+if not canonical_decimal(generation) or
+   (string.len(generation) == 19 and generation > '9223372036854775806') or
+   string.len(generation) > 19 then
+  return 'CORRUPT_GENERATION'
+end
+
+redis.call('INCR', KEYS[7])
 redis.call('SET', KEYS[2], ARGV[3])
 redis.call('DEL', KEYS[1])
 redis.call('SET', KEYS[5], tostring(retained_count - 1))

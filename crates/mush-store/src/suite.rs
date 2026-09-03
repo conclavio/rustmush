@@ -856,6 +856,61 @@ pub async fn module_batch_atomicity(store: &dyn ObjectStore) {
     );
 }
 
+/// The store itself—not only the server driver—rejects every legacy module
+/// operation aimed at the authoritative typed-state keyspace. The refusal is
+/// atomic with unrelated object/module/allocator writes in the same batch.
+pub async fn authoritative_module_prefix_is_store_owned(store: &dyn ObjectStore) {
+    let (seed, _) = minimal_seed_batch(1);
+    store.write(seed).await.expect("seed");
+
+    for reserved in [
+        json_set(
+            "toy",
+            "action-state/v1/focus/1",
+            serde_json::json!({"amount": 2}),
+        ),
+        mod_del("toy", "action-state/v1/focus/1"),
+        stream_append(
+            "toy",
+            "action-state/v1/focus/1",
+            serde_json::json!({"amount": 2}),
+            10,
+        ),
+    ] {
+        let error = store
+            .write(WriteBatch {
+                serial: 2,
+                upserts: vec![thing(2, "must-not-land")],
+                module_ops: vec![
+                    json_set("toy", "ordinary", serde_json::json!({"ok": true})),
+                    reserved,
+                ],
+                next_id: Some(3),
+                ..WriteBatch::default()
+            })
+            .await
+            .expect_err("legacy write into authoritative prefix must fail");
+        assert!(
+            matches!(error, StoreError::Invalid(ref message) if message.contains("owned by authoritative action persistence")),
+            "unexpected reserved-prefix refusal: {error:?}"
+        );
+        let snapshot = store.load_world().await.unwrap().unwrap();
+        assert_eq!(snapshot.next_id, 2);
+        assert_eq!(snapshot.objects.len(), 2);
+        assert_eq!(
+            store.module_json_get("toy", "ordinary").await.unwrap(),
+            None
+        );
+        assert_eq!(
+            store
+                .module_json_get("toy", "action-state/v1/focus/1")
+                .await
+                .unwrap(),
+            None
+        );
+    }
+}
+
 /// KV set / overwrite / delete / get / list, including namespace isolation:
 /// `mod:a` and `mod:ab` share a string prefix, and keys may contain `:` —
 /// neither may bleed into the other's listing.

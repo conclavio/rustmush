@@ -81,7 +81,8 @@
 use futures::TryStreamExt;
 use futures::future::BoxFuture;
 use mush_core::{
-    AuthoritativeBundle, CanonicalHash, CommitToken, Obj, ObjId, ReplayWrite, ScopedIdempotencyKey,
+    AuthoritativeBundle, CanonicalHash, CommitToken, IdempotencyScope, Obj, ObjId, ReplayWrite,
+    ScopedIdempotencyKey,
 };
 use serde::{Deserialize, Serialize};
 
@@ -99,12 +100,13 @@ use fred::types::{Key, RespVersion, Value};
 
 use crate::store::{AuthoritativeStore, ObjectStore};
 use crate::types::{
-    AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeIntentPage, AuthoritativeReceipt,
-    AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec, BundleStatus, CharacterRef,
-    IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
-    MAX_RETAINED_AUTHORITATIVE_BYTES, MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleWrite,
-    PendingAuthoritativeIntent, SshKeyRec, StoreError, TokenRecord, WorldSnapshot, WriteBatch,
-    WriteReceipt, validate_module_key, validate_module_ns, validate_module_op, validate_token_hash,
+    AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeEpochRetirement,
+    AuthoritativeIntentPage, AuthoritativeReceipt, AuthoritativeRetentionUsage,
+    AuthoritativeScanCursor, BanRec, BundleStatus, CharacterRef, IdempotencyStatus, IntentReceipt,
+    MAX_AUTHORITATIVE_DISCOVERY_PAGE, MAX_RETAINED_AUTHORITATIVE_BYTES,
+    MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleWrite, PendingAuthoritativeIntent, SshKeyRec,
+    StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt, validate_module_key,
+    validate_module_ns, validate_module_op, validate_token_hash,
 };
 
 /// Prefix of per-object JSON docs.
@@ -135,10 +137,16 @@ pub const AUTHORITATIVE_PENDING_INDEX: &str = "auth:pending";
 pub const AUTHORITATIVE_RETAINED_COUNT: &str = "auth:retained_count";
 /// Encoded full-intent bytes retained until checkpoint compaction.
 pub const AUTHORITATIVE_RETAINED_BYTES: &str = "auth:retained_bytes";
+/// Prefix of durable per-scope minimum accepted idempotency epochs.
+pub const AUTHORITATIVE_MINIMUM_EPOCH_PREFIX: &str = "auth:min_epoch:";
+/// Changes whenever the set of retained full intents changes.
+pub const AUTHORITATIVE_RETAINED_GENERATION: &str = "auth:retained_generation";
 
 const RESERVE_AUTHORITATIVE_LUA: &str = include_str!("lua/reserve_authoritative.lua");
 const FINALIZE_AUTHORITATIVE_LUA: &str = include_str!("lua/finalize_authoritative.lua");
 const CHECKPOINT_AUTHORITATIVE_LUA: &str = include_str!("lua/checkpoint_authoritative.lua");
+const ADVANCE_AUTHORITATIVE_EPOCH_LUA: &str = include_str!("lua/advance_authoritative_epoch.lua");
+const PURGE_AUTHORITATIVE_RECEIPT_LUA: &str = include_str!("lua/purge_authoritative_receipt.lua");
 const REPAIR_AUTHORITATIVE_RETENTION_LUA: &str =
     include_str!("lua/repair_authoritative_retention.lua");
 
@@ -195,6 +203,18 @@ fn authoritative_idempotency_key(key: &ScopedIdempotencyKey) -> Result<String, S
     )
     .map_err(|error| StoreError::Invalid(format!("invalid idempotency identity: {error}")))?;
     Ok(format!("{AUTHORITATIVE_IDEMPOTENCY_PREFIX}{digest}"))
+}
+
+fn authoritative_minimum_epoch_key(scope: &IdempotencyScope) -> Result<String, StoreError> {
+    let value = serde_json::to_value(scope)?;
+    let digest = CanonicalHash::for_canonical_value(
+        "authoritative_idempotency_scope.v1",
+        1,
+        &value,
+        64 * 1024,
+    )
+    .map_err(|error| StoreError::Invalid(format!("invalid idempotency scope: {error}")))?;
+    Ok(format!("{AUTHORITATIVE_MINIMUM_EPOCH_PREFIX}{digest}"))
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -315,6 +335,20 @@ fn authoritative_script_error(code: &str) -> StoreError {
         ));
     }
     StoreError::AuthoritativeCorrupt(format!("Redis authoritative script returned {code:?}"))
+}
+
+fn parse_redis_u64(kind: &str, value: Option<String>) -> Result<u64, StoreError> {
+    value.map_or(Ok(0), |value| {
+        value
+            .parse::<u64>()
+            .ok()
+            .filter(|parsed| parsed.to_string() == value)
+            .ok_or_else(|| {
+                StoreError::AuthoritativeCorrupt(format!(
+                    "Redis authoritative {kind} is not a canonical u64"
+                ))
+            })
+    })
 }
 
 /// The `SCAN` pattern for one module namespace. Two safety properties:
@@ -765,6 +799,8 @@ impl AuthoritativeStore for RedisStore {
                 AUTHORITATIVE_RETAINED_COUNT.to_owned(),
                 AUTHORITATIVE_RETAINED_BYTES.to_owned(),
                 META_NEXT_ID.to_owned(),
+                authoritative_minimum_epoch_key(bundle.idempotency().scope())?,
+                AUTHORITATIVE_RETAINED_GENERATION.to_owned(),
             ];
             keys.extend(object_sets.iter().map(|id| obj_key(*id)));
             let mut args = vec![
@@ -776,6 +812,7 @@ impl AuthoritativeStore for RedisStore {
                 MAX_RETAINED_AUTHORITATIVE_BYTES.to_string(),
                 proposed_next_id.map_or_else(String::new, |next_id| next_id.to_string()),
                 object_sets.len().to_string(),
+                bundle.idempotency().epoch().to_string(),
             ];
             args.extend(object_sets.iter().map(|id| id.0.to_string()));
             let code: String = self
@@ -785,7 +822,17 @@ impl AuthoritativeStore for RedisStore {
             let resumed = match code.as_str() {
                 "NEW" => false,
                 "RESUMED" => true,
-                _ => return Err(authoritative_script_error(&code)),
+                _ => {
+                    if let Some(minimum) = code.strip_prefix("EPOCH_RETIRED:")
+                        && let Ok(minimum_accepted_epoch) = minimum.parse::<u64>()
+                    {
+                        return Err(StoreError::AuthoritativeEpochRetired {
+                            requested_epoch: bundle.idempotency().epoch(),
+                            minimum_accepted_epoch,
+                        });
+                    }
+                    return Err(authoritative_script_error(&code));
+                }
             };
             let Some(stored) = self.load_validated_authoritative(token).await? else {
                 return Err(StoreError::AuthoritativeCorrupt(
@@ -813,6 +860,17 @@ impl AuthoritativeStore for RedisStore {
         ingress_hash: CanonicalHash,
     ) -> BoxFuture<'a, Result<IdempotencyStatus, StoreError>> {
         Box::pin(async move {
+            let minimum_accepted_epoch = parse_redis_u64(
+                "minimum epoch",
+                self.client
+                    .get(authoritative_minimum_epoch_key(key.scope())?)
+                    .await?,
+            )?;
+            if key.epoch() < minimum_accepted_epoch {
+                return Ok(IdempotencyStatus::Retired {
+                    minimum_accepted_epoch,
+                });
+            }
             let binding_doc: Option<String> =
                 self.client.get(authoritative_idempotency_key(key)?).await?;
             let Some(binding_doc) = binding_doc else {
@@ -1003,6 +1061,7 @@ impl AuthoritativeStore for RedisStore {
                         AUTHORITATIVE_PENDING_INDEX.to_owned(),
                         AUTHORITATIVE_RETAINED_COUNT.to_owned(),
                         AUTHORITATIVE_RETAINED_BYTES.to_owned(),
+                        AUTHORITATIVE_RETAINED_GENERATION.to_owned(),
                     ],
                     vec![
                         intent_doc.clone(),
@@ -1032,6 +1091,193 @@ impl AuthoritativeStore for RedisStore {
             Ok(AuthoritativeCheckpointReceipt {
                 receipt: stored,
                 released_intent_bytes: if resumed { 0 } else { intent_doc.len() },
+                resumed,
+            })
+        })
+    }
+
+    fn retire_authoritative_epochs<'a>(
+        &'a self,
+        scope: &'a IdempotencyScope,
+        minimum_accepted_epoch: u64,
+    ) -> BoxFuture<'a, Result<AuthoritativeEpochRetirement, StoreError>> {
+        Box::pin(async move {
+            let minimum_key = authoritative_minimum_epoch_key(scope)?;
+            let requested = minimum_accepted_epoch.to_string();
+            let mut advance = None;
+
+            // SCAN is deliberately independent of the pending accelerator.
+            // The generation CAS makes the absence proof stable across a
+            // concurrent reservation or checkpoint.
+            for _ in 0..16 {
+                let generation = parse_redis_u64(
+                    "retained generation",
+                    self.client
+                        .get::<Option<String>, _>(AUTHORITATIVE_RETAINED_GENERATION)
+                        .await?,
+                )?;
+                let mut cursor = None;
+                let mut retained_intents = 0_usize;
+                loop {
+                    let page = self
+                        .scan_authoritative_intents(cursor, MAX_AUTHORITATIVE_DISCOVERY_PAGE)
+                        .await?;
+                    for bundle in page.intents {
+                        if bundle.idempotency().scope() == scope
+                            && bundle.idempotency().epoch() < minimum_accepted_epoch
+                        {
+                            retained_intents =
+                                retained_intents.checked_add(1).ok_or_else(|| {
+                                    StoreError::AuthoritativeCorrupt(
+                                        "retained epoch intent count overflowed".to_owned(),
+                                    )
+                                })?;
+                        }
+                    }
+                    let Some(next) = page.next_cursor else { break };
+                    cursor = Some(next);
+                }
+                if retained_intents != 0 {
+                    return Err(StoreError::AuthoritativeEpochPending {
+                        requested_minimum_epoch: minimum_accepted_epoch,
+                        retained_intents,
+                    });
+                }
+
+                let code: String = self
+                    .client
+                    .eval(
+                        ADVANCE_AUTHORITATIVE_EPOCH_LUA,
+                        vec![
+                            minimum_key.clone(),
+                            AUTHORITATIVE_RETAINED_GENERATION.to_owned(),
+                        ],
+                        vec![generation.to_string(), requested.clone()],
+                    )
+                    .await?;
+                if code == "RETRY" {
+                    continue;
+                }
+                if let Some(previous) = code.strip_prefix("ADVANCED:") {
+                    advance = Some((
+                        parse_redis_u64("previous minimum epoch", Some(previous.to_owned()))?,
+                        false,
+                    ));
+                    break;
+                }
+                if let Some(previous) = code.strip_prefix("RESUMED:") {
+                    advance = Some((
+                        parse_redis_u64("previous minimum epoch", Some(previous.to_owned()))?,
+                        true,
+                    ));
+                    break;
+                }
+                if let Some(current) = code.strip_prefix("REGRESSION:") {
+                    return Err(StoreError::AuthoritativeEpochRegression {
+                        current_minimum_epoch: parse_redis_u64(
+                            "minimum epoch",
+                            Some(current.to_owned()),
+                        )?,
+                        requested_minimum_epoch: minimum_accepted_epoch,
+                    });
+                }
+                return Err(authoritative_script_error(&code));
+            }
+            let Some((previous_minimum_epoch, resumed)) = advance else {
+                return Err(StoreError::AuthoritativeEpochContention);
+            };
+
+            // Watermark is now durable. Delete compact exact tombstones one
+            // at a time under byte-for-byte CAS. A crash or error can leave a
+            // safe prefix behind; retrying this same retirement completes it.
+            let mut retired_tombstones = 0_usize;
+            let mut cursor = "0".to_owned();
+            loop {
+                let (next, keys): (String, Vec<Key>) = self
+                    .client
+                    .scan_page(
+                        cursor,
+                        format!("{AUTHORITATIVE_RECEIPT_PREFIX}*"),
+                        Some(u32::try_from(MAX_AUTHORITATIVE_DISCOVERY_PAGE).unwrap()),
+                        None,
+                    )
+                    .await?;
+                let unique: std::collections::BTreeSet<String> = keys
+                    .iter()
+                    .filter_map(|key| key.as_str().map(ToOwned::to_owned))
+                    .collect();
+                for receipt_key in unique {
+                    let token = receipt_key
+                        .strip_prefix(AUTHORITATIVE_RECEIPT_PREFIX)
+                        .ok_or_else(|| {
+                            StoreError::AuthoritativeCorrupt(
+                                "Redis receipt scan returned a key outside its prefix".to_owned(),
+                            )
+                        })
+                        .and_then(|token| {
+                            CommitToken::from_hex(token).map_err(|error| {
+                                StoreError::AuthoritativeCorrupt(format!(
+                                    "Redis authoritative receipt key has invalid token: {error}"
+                                ))
+                            })
+                        })?;
+                    let Some(loaded) = self.load_validated_authoritative(token).await? else {
+                        continue;
+                    };
+                    let LoadedAuthoritative::Checkpointed(receipt) = loaded else {
+                        continue;
+                    };
+                    if receipt.idempotency().scope() != scope
+                        || receipt.idempotency().epoch() >= minimum_accepted_epoch
+                    {
+                        continue;
+                    }
+                    let receipt_doc = serde_json::to_string(&receipt)?;
+                    let binding = RedisIdempotencyBinding::for_receipt(&receipt);
+                    let binding_doc = serde_json::to_string(&binding)?;
+                    let code: String = self
+                        .client
+                        .eval(
+                            PURGE_AUTHORITATIVE_RECEIPT_LUA,
+                            vec![
+                                receipt_key,
+                                authoritative_idempotency_key(receipt.idempotency())?,
+                                authoritative_intent_key(token),
+                                minimum_key.clone(),
+                            ],
+                            vec![receipt_doc, binding_doc, requested.clone()],
+                        )
+                        .await?;
+                    match code.as_str() {
+                        "PURGED" => {
+                            retired_tombstones =
+                                retired_tombstones.checked_add(1).ok_or_else(|| {
+                                    StoreError::AuthoritativeCorrupt(
+                                        "retired tombstone count overflowed".to_owned(),
+                                    )
+                                })?;
+                        }
+                        "RESUMED" => {}
+                        "RETAINED_INTENT" => {
+                            return Err(StoreError::AuthoritativeEpochPending {
+                                requested_minimum_epoch: minimum_accepted_epoch,
+                                retained_intents: 1,
+                            });
+                        }
+                        _ => return Err(authoritative_script_error(&code)),
+                    }
+                }
+                if next == "0" {
+                    break;
+                }
+                cursor = next;
+            }
+
+            Ok(AuthoritativeEpochRetirement {
+                scope: scope.clone(),
+                previous_minimum_epoch,
+                minimum_accepted_epoch,
+                retired_tombstones,
                 resumed,
             })
         })

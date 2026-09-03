@@ -17,6 +17,9 @@ use serde_json::json;
 /// Result of the mandatory durable lookup that precedes parsing and planning.
 #[derive(Debug)]
 pub enum ActionPreflight {
+    /// This request belongs to an epoch outside the durable retry horizon.
+    /// The caller must obtain a fresh epoch/key; it must never be replanned.
+    Retired { minimum_accepted_epoch: u64 },
     /// No binding exists; this opaque permit is the only input accepted by
     /// [`ActionCoordinator::prepare_and_stage`].
     Vacant(Box<ActionPermit>),
@@ -68,6 +71,11 @@ impl ActionCoordinator {
             .authoritative_idempotency_status(ingress.idempotency(), ingress.ingress_hash())
             .await?
         {
+            IdempotencyStatus::Retired {
+                minimum_accepted_epoch,
+            } => Ok(ActionPreflight::Retired {
+                minimum_accepted_epoch,
+            }),
             IdempotencyStatus::Vacant => {
                 Ok(ActionPreflight::Vacant(Box::new(ActionPermit { ingress })))
             }
