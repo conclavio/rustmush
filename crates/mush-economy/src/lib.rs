@@ -28,6 +28,27 @@
 //!   key plus a `reverses`/`is_reversed` guard (R-B4).
 //! - **Authorization is injected + live.** The [`AuthEval`] seam keeps this crate
 //!   independent of the org module and is re-evaluated at every post (R-D4).
+//!
+//! ## E3a — assets, vaults, approvals (still pure)
+//!
+//! A transaction now carries **money and/or title and custody** in one durable
+//! bundle: [`AssetOp`]/[`CustodyOp`] in the plan, [`AssetEffect`]/[`CustodyEffect`]
+//! in the journal entry, [`EconomicAsset`]/[`Vault`]/[`ApprovalRequest`] in the
+//! snapshot, and invariants 10–22 in [`validate`]. Three spine points:
+//!
+//! - **Effects are journal authority** (D-E3-1): each [`AssetEffect`] carries the
+//!   full post-state, so replay rebuilds title from the journal alone and a dropped
+//!   `asset:{obj}` doc can never desync title from the money that bought it. The
+//!   `frozen` latch is doc authority, never inside an effect — the `Account.status`
+//!   split.
+//! - **Approvals are re-derived, never stored as "satisfied"** (D-E3-2): a request
+//!   binds the [`plan_hash`], and every recorded approver is re-qualified LIVE
+//!   through [`AuthEval::authorize_approver`] at post time.
+//! - **Both sides of a title transfer need authority** (D-E3-12): title carries
+//!   liabilities that a money credit does not, so receiving is not free.
+//!
+//! The world-attached half (persistence, boot heal, the custody providers, the
+//! commands, the approval workflow) is E3b.
 
 // E2a — the pure library.
 mod amount;
@@ -48,16 +69,24 @@ mod module;
 
 pub use amount::{Amount, MAX_SCALE};
 pub use engine::{
-    AllowAll, AuthEval, MAX_DESCRIPTION_BYTES, MAX_ENTRY_BYTES, MAX_LINES_PER_TX, MAX_MEMO_BYTES,
-    apply, plan_reversal, validate,
+    APPROVAL_TTL_SECS, AllowAll, AuthEval, CAPABILITIES, CustodyEval, MAX_APPROVERS_PER_REQUEST,
+    MAX_ASSET_OPS_PER_PLAN, MAX_CUSTODY_OPS_PER_PLAN, MAX_DESCRIPTION_BYTES,
+    MAX_ENCUMBRANCES_PER_ASSET, MAX_ENTRY_BYTES, MAX_LINES_PER_TX, MAX_MEMO_BYTES,
+    MAX_REASON_BYTES, NoCustody, ValidateEnv, apply, plan_reversal, validate,
 };
 pub use hash::plan_hash;
-pub use ids::{AccountId, InstrumentId, TransactionId};
-pub use plan::{AccountRevision, EconomyError, EconomyPlan, PlanResult, Prepared, RequestedLine};
+pub use ids::{AccountId, ApprovalRequestId, InstrumentId, TransactionId, VaultId};
+pub use plan::{
+    AccountRevision, ApprovalNeed, AssetOp, AssetRevision, CustodyOp, EconomyError, EconomyPlan,
+    PlanResult, Prepared, RequestedLine,
+};
 pub use record::{
-    Account, AccountStatus, CausalRef, CreditPolicy, EconomicCause, EconomicTransaction,
-    EconomicVisibility, IdempotencyKey, IdempotencyRecord, InstrumentDef, InstrumentKind,
-    InstrumentStatus, JournalLine, NegativePolicy, object_principal,
+    Account, AccountStatus, AcquisitionRecord, Approval, ApprovalRequest, ApprovalRule,
+    ApprovalStatus, AssetAssignment, AssetEffect, AssetEffectKind, AssetLifecycle, CatalogRef,
+    CausalRef, CreditPolicy, CustodyDirection, CustodyEffect, CustodyRef, Decision, EconomicAsset,
+    EconomicCause, EconomicTransaction, EconomicVisibility, Encumbrance, IdempotencyKey,
+    IdempotencyRecord, InstrumentDef, InstrumentKind, InstrumentStatus, JournalLine,
+    NegativePolicy, Vault, VaultStatus, Verdict, object_principal,
 };
 pub use snapshot::EconomySnapshot;
 

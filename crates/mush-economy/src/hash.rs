@@ -17,7 +17,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::ids::TransactionId;
-use crate::plan::EconomyPlan;
+use crate::plan::{AssetOp, CustodyOp, EconomyPlan};
 use crate::record::EconomicVisibility;
 use mush_org::PrincipalId;
 
@@ -35,6 +35,13 @@ struct CanonicalPlan<'a> {
     description: &'a str,
     visibility: EconomicVisibility,
     lines: Vec<CanonicalLine<'a>>,
+    /// v2 (E3a). Skipped when empty, so an E2-shaped plan hashes **byte-identically**
+    /// under E3 and journal-derived idempotency for pre-upgrade entries keeps working.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    asset_ops: Vec<&'a AssetOp>,
+    /// v2 (E3a). Skipped when empty, as above.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    custody_ops: Vec<&'a CustodyOp>,
 }
 
 /// The canonical SHA-256 hash of `plan`'s economic identity.
@@ -49,18 +56,56 @@ pub fn plan_hash(plan: &EconomyPlan) -> [u8; 32] {
     lines.sort_by(|a, b| {
         (a.account, a.delta, a.memo).cmp(&(b.account, b.delta, b.memo))
     });
+    // Total order over the ops (B7): asset ops by (object, discriminant, canonical
+    // bytes) — the byte tiebreak makes it total even for two ops of the same kind on
+    // the same object; custody ops by (object, vault, discriminant), which is total
+    // because at most one custody op per object survives validation.
+    let mut asset_ops: Vec<(AssetOpKey, &AssetOp)> =
+        plan.asset_ops.iter().map(|op| (asset_op_key(op), op)).collect();
+    asset_ops.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut custody_ops: Vec<(CustodyOpKey, &CustodyOp)> =
+        plan.custody_ops.iter().map(|op| (custody_op_key(op), op)).collect();
+    custody_ops.sort_by_key(|(k, _)| *k);
     let canonical = CanonicalPlan {
         actor: &plan.actor,
         cause: &plan.cause,
         description: &plan.description,
         visibility: plan.visibility,
         lines,
+        asset_ops: asset_ops.iter().map(|(_, op)| *op).collect(),
+        custody_ops: custody_ops.iter().map(|(_, op)| *op).collect(),
     };
     // serde_json over field-ordered structs + a sorted Vec is deterministic here
     // (no floats, no maps). This is the tactics `canon()` discipline for money.
     let bytes = serde_json::to_vec(&canonical).expect("canonical plan serializes");
     let out: [u8; 32] = Sha256::digest(&bytes).into();
     out
+}
+
+/// The canonical serialization of one op — the byte tiebreak of the asset-op total
+/// order. Deterministic for the same reason the whole plan is: field-ordered structs,
+/// no floats, no maps.
+fn canonical_bytes<T: Serialize>(op: &T) -> Vec<u8> {
+    serde_json::to_vec(op).expect("canonical op serializes")
+}
+
+/// The total sort key of an asset op — see [`asset_op_key`].
+pub(crate) type AssetOpKey = (u32, u8, Vec<u8>);
+/// The total sort key of a custody op — see [`custody_op_key`].
+pub(crate) type CustodyOpKey = (u32, u64, u8);
+
+/// The total sort key of an asset op: `(object, op ordinal, canonical bytes)`. The
+/// byte tiebreak is what makes the order TOTAL — two `Release`s on the same object
+/// differ only in their payload (B7). The engine sorts by the same key, so the order
+/// ops are APPLIED in is exactly the order they are HASHED in.
+pub(crate) fn asset_op_key(op: &AssetOp) -> AssetOpKey {
+    (op.object().0, op.ordinal(), canonical_bytes(op))
+}
+
+/// The total sort key of a custody op: `(object, vault, direction)`. Total because
+/// validation admits at most one custody op per object.
+pub(crate) fn custody_op_key(op: &CustodyOp) -> CustodyOpKey {
+    (op.object().0, op.vault().0, op.ordinal())
 }
 
 /// The canonical hash of the reversal of `target` — derived from the TARGET alone,
@@ -73,4 +118,72 @@ pub fn plan_hash(plan: &EconomyPlan) -> [u8; 32] {
 pub fn reversal_hash(target: TransactionId) -> [u8; 32] {
     let out: [u8; 32] = Sha256::digest(format!("econ.reverse:{}", target.0).as_bytes()).into();
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use mush_core::ObjId;
+    use mush_org::PrincipalId;
+
+    use super::*;
+    use crate::amount::Amount;
+    use crate::ids::AccountId;
+    use crate::plan::RequestedLine;
+    use crate::record::{EconomicCause, IdempotencyKey};
+
+    /// The digest of [`pin_plan`] computed on the **pre-v2** (E2a) hash function and
+    /// hard-coded here (D-E3-10 / C7): a later field reorder, a renamed variant, or a
+    /// v2 op vector that stops skipping when empty all break this, loudly, instead of
+    /// silently orphaning every stored idempotency record.
+    const PIN_DIGEST: &str = "9c917eee84e001912480fdb8306b9a762ed2e3f50d1014e34ae38601c490d74e";
+
+    fn pin_plan() -> EconomyPlan {
+        let mut p = EconomyPlan::new(
+            IdempotencyKey::new("pin", "v2"),
+            PrincipalId::Object(ObjId(7)),
+            EconomicCause::Staff { reason: "pin".into() },
+            vec![
+                RequestedLine {
+                    account: AccountId(1),
+                    delta: Amount::from_minor(-250),
+                    memo: "out".into(),
+                },
+                RequestedLine {
+                    account: AccountId(2),
+                    delta: Amount::from_minor(250),
+                    memo: "in".into(),
+                },
+            ],
+        );
+        p.description = "hash pin".into();
+        p
+    }
+
+    fn hex(bytes: &[u8; 32]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn v2_reproduces_the_hard_coded_e2_digest_for_a_money_only_plan() {
+        assert_eq!(hex(&plan_hash(&pin_plan())), PIN_DIGEST);
+    }
+
+    #[test]
+    fn empty_op_vectors_are_skipped_entirely() {
+        // Not merely "the same as an empty array" — absent, which is what makes the
+        // pinned E2 digest reproduce.
+        let p = pin_plan();
+        let json = serde_json::to_string(&CanonicalPlan {
+            actor: &p.actor,
+            cause: &p.cause,
+            description: &p.description,
+            visibility: p.visibility,
+            lines: Vec::new(),
+            asset_ops: Vec::new(),
+            custody_ops: Vec::new(),
+        })
+        .unwrap();
+        assert!(!json.contains("asset_ops"), "empty asset_ops must not serialize");
+        assert!(!json.contains("custody_ops"), "empty custody_ops must not serialize");
+    }
 }

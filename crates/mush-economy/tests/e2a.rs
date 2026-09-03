@@ -6,8 +6,8 @@ use mush_core::ObjId;
 use mush_economy::{
     Account, AccountStatus, AuthEval, Amount, CreditPolicy, EconomicCause, EconomyError,
     EconomyPlan, EconomySnapshot, IdempotencyKey, InstrumentDef, InstrumentId, InstrumentKind,
-    InstrumentStatus, NegativePolicy, PlanResult, RequestedLine, TransactionId, apply, plan_hash,
-    plan_reversal, validate, AccountId,
+    InstrumentStatus, NegativePolicy, PlanResult, RequestedLine, TransactionId, ValidateEnv, apply,
+    plan_hash, plan_reversal, validate, AccountId,
 };
 use mush_org::PrincipalId;
 
@@ -28,7 +28,7 @@ fn account(id: u64, instrument: &str, credit: CreditPolicy, balance: i64) -> Acc
         id: AccountId(id), owner: PrincipalId::Object(ObjId(id as u32)), instrument: iid(instrument),
         scope: None, name: format!("acct{id}").into(), status: AccountStatus::Active,
         posted_balance: Amount::from_minor(balance), held_amount: Amount::ZERO, credit,
-        last_journal_seq: 0, revision: 1,
+        last_journal_seq: 0, revision: 1, approval: None,
     }
 }
 fn snap(instruments: &[(&str, u8)], accounts: Vec<Account>) -> EconomySnapshot {
@@ -52,14 +52,19 @@ fn plan(ns: &str, key: &str, lines: Vec<RequestedLine>) -> EconomyPlan {
         lines,
     )
 }
+/// The E2 environment: everything authorized, no custody provider (E2 plans move no
+/// objects), clock at the same 1000 the tests post at.
+fn env(auth: &dyn AuthEval) -> ValidateEnv<'_> {
+    ValidateEnv { auth, custody: &mush_economy::NoCustody, now: 1000 }
+}
 fn post(s: &EconomySnapshot, p: &EconomyPlan, txid: u64, seq: u64) -> (EconomySnapshot, mush_economy::EconomicTransaction) {
-    match validate(p, s, &mush_economy::AllowAll) {
+    match validate(p, s, &env(&mush_economy::AllowAll)) {
         PlanResult::Post(prepared) => apply(s, &prepared, TransactionId(txid), seq, 1000),
         other => panic!("expected Post, got {other:?}"),
     }
 }
 fn refuse(s: &EconomySnapshot, p: &EconomyPlan) -> EconomyError {
-    match validate(p, s, &mush_economy::AllowAll) {
+    match validate(p, s, &env(&mush_economy::AllowAll)) {
         PlanResult::Refused(e) => e,
         other => panic!("expected Refused, got {other:?}"),
     }
@@ -120,7 +125,7 @@ fn refuses_every_invalid_shape_without_mutation() {
     // Nonexistent account.
     assert_eq!(refuse(&s, &plan("x", "ghost", vec![line(1, -10, ""), line(99, 10, "")])), EconomyError::NoSuchAccount(AccountId(99)));
     // Unauthorized (auth denies) — separate eval.
-    let denied = match validate(&plan("x", "auth", vec![line(1, -10, ""), line(2, 10, "")]), &s, &DenyAll) {
+    let denied = match validate(&plan("x", "auth", vec![line(1, -10, ""), line(2, 10, "")]), &s, &env(&DenyAll)) {
         PlanResult::Refused(e) => e,
         other => panic!("expected Refused, got {other:?}"),
     };
@@ -146,7 +151,7 @@ fn idempotency_same_plan_returns_original_conflict_on_different() {
     let p = plan("transfer", "dup", vec![line(1, -100, "pay"), line(2, 100, "recv")]);
     let (s2, tx) = post(&s, &p, 7, 1);
     // Same key + same plan against the post-state -> AlreadyPosted(original), no new tx.
-    match validate(&p, &s2, &mush_economy::AllowAll) {
+    match validate(&p, &s2, &env(&mush_economy::AllowAll)) {
         PlanResult::AlreadyPosted(id) => assert_eq!(id, tx.id),
         other => panic!("expected AlreadyPosted, got {other:?}"),
     }
@@ -298,13 +303,13 @@ fn fuzz_never_panics_and_preserves_conservation() {
         // Extreme amounts included (near i64 bounds) to probe overflow handling.
         let amt = (next() as i64).wrapping_rem(1 << 40).wrapping_sub(1 << 39);
         let p = plan("fuzz", &format!("k{txid}"), vec![line(a, -amt, ""), line(b, amt, "")]);
-        match validate(&p, &s, &mush_economy::AllowAll) {
+        match validate(&p, &s, &env(&mush_economy::AllowAll)) {
             PlanResult::Post(prepared) => {
                 let (s2, _tx) = apply(&s, &prepared, TransactionId(txid), txid, 1000);
                 s = s2;
                 txid += 1;
             }
-            PlanResult::Refused(_) | PlanResult::AlreadyPosted(_) => {}
+            PlanResult::Refused(_) | PlanResult::AlreadyPosted(_) | PlanResult::NeedsApproval(_) => {}
         }
         // Conservation invariant holds after every step (zero-sum ledger).
         assert_eq!(instrument_sum(&s, "gold"), 0, "gold conservation broke at txid {txid}");

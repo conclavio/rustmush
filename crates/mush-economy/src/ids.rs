@@ -36,6 +36,19 @@ int_id! {
     /// reversal names the id it inverts, and the idempotency index maps to it.
     TransactionId
 }
+int_id! {
+    /// Monotonic vault id; never reused (E3a). A vault is a custody container bound
+    /// to a world object (an ordinary container or a `mush-sim` interior); the
+    /// allocator + `meta` resume live in the E3b module. Assets themselves are keyed
+    /// by `ObjId`, which is never recycled, so they need no id of their own.
+    VaultId
+}
+int_id! {
+    /// Monotonic approval-request id; never reused (E3a). A request binds a
+    /// `plan_hash` to the approvals collected for it; at most ONE live (pending)
+    /// request exists per hash.
+    ApprovalRequestId
+}
 
 /// A registered instrument code: a canonical, validated `SmolStr` — a namespaced
 /// currency/commodity code (`sr.nuyen`, `tacsim.cbill`, `wod.resources`). Trim +

@@ -8,12 +8,12 @@
 //! shape still matches doc 08.
 
 use mush_core::ObjId;
-use mush_org::{OrgScopeId, PrincipalId};
+use mush_org::{ApprovalPolicy, OrgScopeId, PrincipalId};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::amount::Amount;
-use crate::ids::{AccountId, InstrumentId, TransactionId};
+use crate::ids::{AccountId, ApprovalRequestId, InstrumentId, TransactionId, VaultId};
 
 // ---- instruments ----------------------------------------------------------
 
@@ -112,6 +112,11 @@ pub struct Account {
     pub last_journal_seq: u64,
     /// Staleness stamp (optimistic-concurrency for economic data).
     pub revision: u64,
+    /// Per-account high-value escalation (E3a, D-E3-2): a net debit exceeding
+    /// `threshold` requires an [`ApprovalRequest`] bound to the plan hash. `None`
+    /// (the default, so every E2 account doc still deserializes) means no escalation.
+    #[serde(default)]
+    pub approval: Option<ApprovalRule>,
 }
 
 impl Account {
@@ -203,6 +208,20 @@ pub struct EconomicTransaction {
     pub visibility: EconomicVisibility,
     /// The canonical plan hash that produced this post (idempotency + approval link).
     pub plan_hash: [u8; 32],
+    /// The title/assignment/encumbrance/maintenance changes this transaction carried
+    /// (E3a). **Journal-authority**: an `asset:{obj}` doc is a projection replay
+    /// rebuilds, so a companion-doc drop can never desync title from the money that
+    /// bought it (D-E3-1). `#[serde(default)]` so every E2 entry still deserializes.
+    #[serde(default)]
+    pub asset_effects: Vec<AssetEffect>,
+    /// The custody movements this transaction carried (E3a). Audit-only: the world
+    /// move itself is performed by the E3b module through the custody provider.
+    #[serde(default)]
+    pub custody_effects: Vec<CustodyEffect>,
+    /// The approval request this post consumed, if a per-account [`ApprovalRule`]
+    /// fired (E3a).
+    #[serde(default)]
+    pub consumed_approval: Option<ApprovalRequestId>,
 }
 
 /// One line of a double-entry transaction: a signed delta to one account, in that
@@ -321,6 +340,335 @@ pub struct IdempotencyRecord {
     pub transaction: TransactionId,
     /// When (unix seconds).
     pub posted_at: i64,
+}
+
+// ---- assets (E3a) ---------------------------------------------------------
+
+/// A titled economic asset — the four-axis separation of doc 08 §9.1 (title /
+/// custody / operation / maintenance), keyed by the world object it describes
+/// (`ObjId` is never recycled, so the asset needs no id of its own).
+///
+/// Every field above the latch is **journal authority**: an [`AssetEffect`] carries
+/// the full post-state of exactly these, so boot replay rebuilds the asset from the
+/// journal alone and a dropped `asset:{obj}` doc can never lose a paid-for title
+/// (D-E3-1). The `frozen` latch below is **doc authority** — never inside an effect,
+/// ignored by replay and by drift comparison — exactly the `Account.status` split
+/// (E2b boot compares `posted_balance`, never `status`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EconomicAsset {
+    /// The world object this asset titles.
+    pub object: ObjId,
+    /// Who holds title.
+    pub title_owner: PrincipalId,
+    /// Org compartment for an org-owned asset — the policy anchor, exactly as
+    /// `Account.scope`. Invariant 18: `Some(scope)` ⇒
+    /// `title_owner == PrincipalId::Organization(scope.org)`.
+    pub scope: Option<OrgScopeId>,
+    /// Who currently has it assigned (a relationship with the title owner, cleared
+    /// on transfer — invariant 13).
+    pub assignment: Option<AssetAssignment>,
+    /// The account upkeep debits (invariant 14); cleared on transfer.
+    pub maintenance_account: Option<AccountId>,
+    /// The opaque pre-registry catalog reference (the §9.4 `CatalogId` precursor).
+    pub catalog: Option<CatalogRef>,
+    /// Claims against the asset (≤ [`crate::MAX_ENCUMBRANCES_PER_ASSET`]).
+    pub encumbrances: Vec<Encumbrance>,
+    /// The transaction that first titled / last transferred it while money moved
+    /// (invariant 22 — the §9.4 provenance seed).
+    pub acquisition: Option<AcquisitionRecord>,
+    /// Journaled lifecycle.
+    pub lifecycle: AssetLifecycle,
+    /// The journal sequence of the last effect folded into this projection.
+    pub last_journal_seq: u64,
+    /// Staleness stamp (bumped once per effect).
+    pub revision: u64,
+    /// **Doc-authority latch** — never carried in an effect. A frozen asset takes no
+    /// asset op (the destroy/recovery backstop, E3b).
+    #[serde(default)]
+    pub frozen: bool,
+    /// Why it was frozen.
+    #[serde(default)]
+    pub frozen_reason: Option<SmolStr>,
+}
+
+/// Who has an asset assigned, and for what — the assignment axis, distinct from
+/// title, custody, and operation (D5).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetAssignment {
+    /// The assignee.
+    pub assigned_to: PrincipalId,
+    /// Free-text purpose (≤ [`crate::MAX_REASON_BYTES`]).
+    pub purpose: SmolStr,
+    /// Optional expiry (unix seconds; recorded, not enforced by the pure engine).
+    pub valid_until: Option<i64>,
+}
+
+/// A claim against an asset. Serde-**tagged** so E4's `Lease`/`Collateral` (which
+/// need a `ContractId`) can be added without changing the persisted shape of the two
+/// E3 variants.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum Encumbrance {
+    /// A priced claim by a creditor. **Staff-only to create in E3** (invariant 19):
+    /// without a `ContractId` an unpriced lien is a hostage primitive.
+    Lien {
+        /// Who holds the claim.
+        creditor: PrincipalId,
+        /// How much.
+        amount: Amount,
+        /// In which instrument.
+        instrument: InstrumentId,
+    },
+    /// A recorded dispute over title.
+    Disputed {
+        /// Who disputes.
+        claimant: PrincipalId,
+        /// Why (≤ [`crate::MAX_REASON_BYTES`]).
+        reason: String,
+    },
+}
+
+/// Journaled asset lifecycle.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AssetLifecycle {
+    /// Normal; the only state an asset op may touch.
+    Active,
+    /// Written off (destroyed/lost/scrapped). Terminal in E3.
+    WrittenOff,
+}
+
+/// An opaque ruleset catalog reference — the pre-registry precursor of doc 08
+/// §9.4's `CatalogId` (E6/E8 build the registry; `mush-economy` never interprets it).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct CatalogRef {
+    /// The owning ruleset.
+    pub ruleset: SmolStr,
+    /// The catalog code within that ruleset.
+    pub code: SmolStr,
+}
+
+/// How an asset was acquired — stamped when a title op rides a transaction that also
+/// moved money (invariant 22).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcquisitionRecord {
+    /// The transaction that paid for it.
+    pub transaction: TransactionId,
+    /// When (unix seconds).
+    pub at: i64,
+}
+
+// ---- vaults (E3a) ---------------------------------------------------------
+
+/// A custody container: a named, policy-bearing wrapper around a world backing
+/// object (doc 08 §9.3). Custody is **not** title (D5) — depositing an object into a
+/// vault moves no title, and titling an object grants no custody standing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Vault {
+    /// Identity (never reused).
+    pub id: VaultId,
+    /// Who owns the vault.
+    pub owner: PrincipalId,
+    /// Org compartment (invariant 18 applies exactly as for accounts and assets).
+    pub scope: Option<OrgScopeId>,
+    /// Display name.
+    pub name: SmolStr,
+    /// What physically holds the contents (one vault per backing).
+    pub backing: CustodyRef,
+    /// Doc-authority lifecycle.
+    pub status: VaultStatus,
+    /// Staleness stamp.
+    pub revision: u64,
+}
+
+/// Vault lifecycle (doc authority, like `AccountStatus`).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VaultStatus {
+    /// Normal; the only state a custody op may touch.
+    Active,
+    /// Frozen by staff / recovery — no deposits or withdrawals.
+    Frozen,
+    /// Closed.
+    Closed,
+}
+
+/// What backs a vault. `Ord` so it can key the one-vault-per-backing index.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum CustodyRef {
+    /// An ordinary container object (the built-in provider, E3b1).
+    Container(ObjId),
+    /// A `mush-sim` spatial interior (E3c).
+    SpatialInterior(ObjId),
+    /// A provider-registered backing with no single world object.
+    Registered {
+        /// The registering provider.
+        provider: SmolStr,
+        /// The provider's id for it.
+        id: u64,
+    },
+}
+
+impl CustodyRef {
+    /// The world object backing this vault, if it has one. `Registered` backings
+    /// have none — the pure engine therefore cannot name a `to`/`from` location for
+    /// them and refuses their custody ops fail-closed (`BackingInvalid`).
+    #[must_use]
+    pub fn object(&self) -> Option<ObjId> {
+        match self {
+            CustodyRef::Container(o) | CustodyRef::SpatialInterior(o) => Some(*o),
+            CustodyRef::Registered { .. } => None,
+        }
+    }
+}
+
+// ---- approvals (E3a) ------------------------------------------------------
+
+/// Per-account high-value escalation (D-E3-2). A net debit **strictly exceeding**
+/// `threshold` requires a satisfied [`ApprovalRequest`] bound to the plan hash.
+///
+/// [`ApprovalPolicy::OneAuthorizedActor`] is refused (it can never gate anything —
+/// the one authorized actor is the poster); clear the rule instead.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApprovalRule {
+    /// The escalation threshold, in the account's instrument.
+    pub threshold: Amount,
+    /// The policy that must be satisfied above it.
+    pub policy: ApprovalPolicy,
+}
+
+/// A collected approval for one exact plan hash. There is deliberately **no
+/// `Satisfied` status**: whether the recorded approvers satisfy the policy is
+/// re-derived LIVE in [`crate::validate`] (an approver who lost the capability stops
+/// counting — the `mush-org` delegation discipline).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApprovalRequest {
+    /// Identity (never reused).
+    pub id: ApprovalRequestId,
+    /// The exact plan this approves. Approvals authorize an **intent, not a state**:
+    /// `expected_*_revisions` are outside the hash.
+    pub plan_hash: [u8; 32],
+    /// The accounts whose rules fired.
+    pub accounts: Vec<AccountId>,
+    /// Who asked (never counts as an approver — four-eyes).
+    pub requested_by: PrincipalId,
+    /// The recorded approvers (≤ [`crate::MAX_APPROVERS_PER_REQUEST`]).
+    pub approvals: Vec<Approval>,
+    /// The full audit trail, approvals and denials alike (same cap).
+    pub decisions: Vec<Decision>,
+    /// When it was created (unix seconds).
+    pub created_at: i64,
+    /// When it stops counting (`created_at + APPROVAL_TTL_SECS`).
+    pub expires_at: i64,
+    /// Lifecycle.
+    pub status: ApprovalStatus,
+    /// Staleness stamp.
+    pub revision: u64,
+}
+
+/// One recorded approval.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Approval {
+    /// Who approved.
+    pub approver: ObjId,
+    /// When (unix seconds).
+    pub at: i64,
+}
+
+/// One recorded decision — the audit trail (a denial is kept, not just dropped).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Decision {
+    /// Who decided.
+    pub actor: ObjId,
+    /// When (unix seconds).
+    pub at: i64,
+    /// What they decided.
+    pub verdict: Verdict,
+}
+
+/// Approve or deny.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Verdict {
+    /// In favour.
+    Approved,
+    /// Against.
+    Denied,
+}
+
+/// Approval-request lifecycle.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ApprovalStatus {
+    /// Live — the only status [`crate::validate`] will count.
+    Pending,
+    /// Spent by a post (at most once).
+    Consumed {
+        /// The transaction that consumed it.
+        transaction: TransactionId,
+    },
+    /// Withdrawn by the requester or staff.
+    Cancelled,
+    /// Aged out past `expires_at`.
+    Expired,
+}
+
+// ---- journal effects (E3a) ------------------------------------------------
+
+/// One asset change carried by a transaction. `post` is the **full journal-authority
+/// post-state** of the asset after this effect — `frozen`/`frozen_reason` are always
+/// `false`/`None` inside an effect and are ignored by replay and drift comparison.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetEffect {
+    /// Which asset.
+    pub object: ObjId,
+    /// What kind of change (audit + display; the state is `post`).
+    pub kind: AssetEffectKind,
+    /// The complete asset after the change.
+    pub post: EconomicAsset,
+}
+
+/// What an [`AssetEffect`] did.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AssetEffectKind {
+    /// A title record was created.
+    Created,
+    /// Title moved to another principal.
+    TitleTransferred,
+    /// The asset was assigned.
+    Assigned,
+    /// The assignment was cleared.
+    Unassigned,
+    /// A claim was recorded.
+    Encumbered,
+    /// A claim was released.
+    Released,
+    /// The maintenance payer changed.
+    MaintenanceSet,
+    /// The asset was written off.
+    WrittenOff,
+}
+
+/// One custody movement carried by a transaction — **audit only**: the world move is
+/// performed by the E3b module through the custody provider, in the same terminal
+/// bundle.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustodyEffect {
+    /// The object that moved.
+    pub object: ObjId,
+    /// The vault involved.
+    pub vault: VaultId,
+    /// Which way.
+    pub direction: CustodyDirection,
+    /// Where it came from, when known to the recorder.
+    pub from: Option<ObjId>,
+    /// Where it went.
+    pub to: ObjId,
+}
+
+/// Which way a [`CustodyEffect`] moved.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CustodyDirection {
+    /// Into the vault.
+    Deposit,
+    /// Out of the vault.
+    Withdraw,
 }
 
 /// Convenience: an `ObjId` as an object principal (the common actor form).

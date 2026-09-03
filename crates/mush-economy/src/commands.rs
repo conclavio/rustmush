@@ -207,6 +207,8 @@ fn account_open(ctx: &mut Ctx<'_>, system: bool) -> Result<(), CmdError> {
         credit,
         last_journal_seq: 0,
         revision: 1,
+        // High-value escalation is opt-in per account (E3b2 sets it).
+        approval: None,
     };
     api::open_account(ctx, account);
     info(ctx, format!("Opened account #{id} ({instrument}){}.", if system { " [system source/sink]" } else { "" }));
@@ -378,6 +380,12 @@ fn finish(ctx: &mut Ctx<'_>, outcome: Result<PostOutcome, crate::plan::EconomyEr
         }
         Ok(PostOutcome::AlreadyPosted(id)) => {
             info(ctx, format!("Already posted as transaction #{id}."));
+            Ok(())
+        }
+        Ok(PostOutcome::NeedsApproval(id)) => {
+            // E3b2 mints the request and serves `@account/approve`; E3a's seam
+            // surfaces `ApprovalRequired` instead, so this arm is forward wiring.
+            info(ctx, format!("Approval required: request #{id}."));
             Ok(())
         }
         Err(e) => Err(CmdError::msg(e.to_string())),

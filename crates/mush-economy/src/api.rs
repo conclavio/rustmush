@@ -18,8 +18,8 @@ use mush_org::{AuthRequest, CapabilityId, PrincipalId, authorize_in_world};
 use smol_str::SmolStr;
 
 use crate::amount::Amount;
-use crate::engine::{AuthEval, apply, plan_reversal, validate};
-use crate::ids::{AccountId, InstrumentId, TransactionId};
+use crate::engine::{AuthEval, NoCustody, ValidateEnv, apply, plan_reversal, validate};
+use crate::ids::{AccountId, ApprovalRequestId, InstrumentId, TransactionId};
 use crate::module::{EconomyStore, JOURNAL_LOG, NS};
 use crate::plan::{EconomyError, EconomyPlan, PlanResult, Prepared};
 use crate::record::{Account, EconomicCause, InstrumentDef};
@@ -149,6 +149,11 @@ pub enum PostOutcome {
     Posted(TransactionId),
     /// The idempotency key already resolved to this transaction (no new post).
     AlreadyPosted(TransactionId),
+    /// A per-account [`crate::ApprovalRule`] fired: nothing posted, and this request
+    /// must be satisfied first. **E3b2** mints and serves these; in E3a the seam
+    /// surfaces [`EconomyError::ApprovalRequired`] instead, so the variant exists for
+    /// the callers that will match on it.
+    NeedsApproval(ApprovalRequestId),
 }
 
 /// Post a validated plan: the whole money path. Refuses when the economy is frozen,
@@ -161,7 +166,11 @@ pub fn post(ctx: &mut Ctx<'_>, plan: &EconomyPlan) -> Result<PostOutcome, Econom
             return Err(EconomyError::EconomyFrozen);
         }
         let auth = WorldAuth { w: ctx.w };
-        validate(plan, store.snapshot(), &auth)
+        // Custody providers arrive in E3b1; until then `NoCustody` refuses every
+        // custody op, which is the correct fail-closed behaviour (a plan that moves
+        // objects is refused rather than half-applied).
+        let env = ValidateEnv { auth: &auth, custody: &NoCustody, now: ctx.w.now() };
+        validate(plan, store.snapshot(), &env)
     };
     finish(ctx, outcome)
 }
@@ -204,6 +213,11 @@ fn finish(ctx: &mut Ctx<'_>, outcome: PlanResult) -> Result<PostOutcome, Economy
             ctx.gate_on_durable_ack_strict();
             Ok(PostOutcome::AlreadyPosted(id))
         }
+        // E3a stops here: the plan is well-formed and authorized but needs approvals,
+        // and minting/serving the ApprovalRequest (and returning
+        // `PostOutcome::NeedsApproval`) is E3b2's job. Refusing is the fail-closed
+        // half — nothing posts.
+        PlanResult::NeedsApproval(_) => Err(EconomyError::ApprovalRequired),
         PlanResult::Refused(e) => Err(e),
         PlanResult::Post(prepared) => {
             let now = ctx.w.now();

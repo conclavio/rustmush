@@ -1,32 +1,54 @@
-//! The pure posting engine (E2a) — [`validate`], [`apply`], and [`reversal_plan`].
+//! The pure posting engine (E2a, extended in E3a) — [`validate`], [`apply`], and
+//! [`plan_reversal`].
 //!
 //! [`validate`] answers *may this plan post, against this immutable snapshot, for
-//! this actor?* over the nine §7.1 invariants, and returns a [`Prepared`] that
-//! [`apply`] folds **infallibly** (validation already proved it against the pre-state
-//! — the M32 `unit::apply` shape). It is pure and world-free; authorization is
-//! injected as an [`AuthEval`] so `mush-economy` never depends on the org module.
+//! this actor?* over the §7.1 invariants (E2a's nine plus E3a's 10–22), and returns a
+//! [`Prepared`] that [`apply`] folds **infallibly** (validation already proved it
+//! against the pre-state — the M32 `unit::apply` shape). It is pure and world-free;
+//! authorization is injected as an [`AuthEval`] and world custody as a [`CustodyEval`]
+//! so `mush-economy` never depends on the org or sim modules.
 //!
 //! The boundedness caps (R-B5) are validate invariants, not an afterthought: an
 //! oversized entry would build a journal chunk past `MAX_SAFE_CHUNK_BYTES` and latch
 //! the E0 poison-freeze at APPLY time — so "infallible apply" would be false. Every
-//! accepted plan provably serializes below [`MAX_ENTRY_BYTES`].
+//! accepted plan provably serializes below [`MAX_ENTRY_BYTES`], effects included.
+//!
+//! E3a widens a transaction from "money only" to "money **and/or** title and custody
+//! in one durable bundle". Three properties keep that safe:
+//!
+//! - **One authority, live.** Every money line AND every asset/custody op is
+//!   authorized for the ONE `plan.actor`, at post time (D-E3-4). Counterparty consent
+//!   is E4.
+//! - **Journal-carried effects.** An [`AssetEffect`] holds the FULL post-state of the
+//!   asset, so replay rebuilds title from the journal alone and a dropped projection
+//!   doc can never desync title from the money that bought it (D-E3-1).
+//! - **Fail-closed seams.** Every new [`AuthEval`] method defaults to `false` and
+//!   [`CustodyEval`] has a `NoCustody` fake that refuses everything, so a caller that
+//!   has not yet wired a provider simply cannot move custody.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use mush_org::PrincipalId;
+use mush_core::ObjId;
+use mush_org::{ApprovalPolicy, OrgScopeId, PrincipalId};
 
 use crate::amount::Amount;
-use crate::hash::plan_hash;
-use crate::ids::{AccountId, InstrumentId, TransactionId};
-use crate::plan::{EconomyError, EconomyPlan, PlanResult, Prepared};
+use crate::hash::{asset_op_key, custody_op_key, plan_hash};
+use crate::ids::{AccountId, ApprovalRequestId, InstrumentId, TransactionId};
+use crate::plan::{
+    ApprovalNeed, AssetOp, CustodyOp, EconomyError, EconomyPlan, PlanResult, Prepared,
+};
 use crate::record::{
-    Account, AccountStatus, EconomicTransaction, IdempotencyRecord, InstrumentStatus, JournalLine,
+    Account, AccountStatus, AcquisitionRecord, ApprovalRule, AssetAssignment, AssetEffect,
+    AssetEffectKind, AssetLifecycle, CustodyDirection, CustodyEffect, EconomicAsset,
+    EconomicTransaction, Encumbrance, IdempotencyRecord, InstrumentStatus, JournalLine, Vault,
+    VaultStatus,
 };
 use crate::snapshot::EconomySnapshot;
 
 // ---- boundedness caps (R-B5) ----------------------------------------------
 
-/// Maximum journal lines in one transaction.
+/// Maximum journal lines in one transaction. Also caps `expected_revisions` (G5: an
+/// unbounded revision vector is a cheap way to make validation expensive).
 pub const MAX_LINES_PER_TX: usize = 256;
 /// Maximum bytes in a line memo.
 pub const MAX_MEMO_BYTES: usize = 512;
@@ -36,33 +58,180 @@ pub const MAX_DESCRIPTION_BYTES: usize = 4096;
 /// `MAX_SAFE_CHUNK_BYTES` poison threshold, so no accepted plan can build a chunk
 /// the store rejects — a fresh chunk holding one accepted entry stays well under.
 pub const MAX_ENTRY_BYTES: usize = 256 * 1024;
+/// Maximum asset ops in one plan. Also caps `expected_asset_revisions`.
+pub const MAX_ASSET_OPS_PER_PLAN: usize = 32;
+/// Maximum custody ops in one plan (at most one per object, so also the object cap).
+pub const MAX_CUSTODY_OPS_PER_PLAN: usize = 32;
+/// Maximum claims one asset may carry. Every later effect re-serializes the full
+/// post-state, so this is a real entry-size input, not just tidiness.
+pub const MAX_ENCUMBRANCES_PER_ASSET: usize = 16;
+/// Maximum bytes of any free-text reason/purpose that ends up inside an effect.
+pub const MAX_REASON_BYTES: usize = 512;
+/// Maximum approvers counted on one request (G1).
+pub const MAX_APPROVERS_PER_REQUEST: usize = 8;
+/// How long an approval request stays live (real seconds).
+pub const APPROVAL_TTL_SECS: i64 = 86_400;
+
+/// The economy capability vocabulary (§4.8) — every capability the economy asks
+/// `mush-org` about. Wiring freezes the vocabulary; this is the authoritative list
+/// the module and its commands check against, so a typo'd grant is visible.
+pub const CAPABILITIES: &[&str] = &[
+    "economy.account.post",
+    "economy.account.view",
+    "economy.account.approve",
+    "asset.title.transfer",
+    "asset.assign",
+    "vault.view",
+    "vault.deposit",
+    "vault.withdraw",
+];
 
 // ---- the authorization seam -----------------------------------------------
 
-/// Resolves *may this actor move value on this account, now?* — re-evaluated LIVE at
-/// every post (R-D4), never a captured revision. `mush-economy` defines the seam;
-/// E2b bridges it to `mush_org::authorize_in_world`. A system source/sink line is
-/// the module's own to authorize; a player line checks the actor against the
-/// account's scope.
+/// Resolves *may this actor do this, now?* — re-evaluated LIVE at every post (R-D4),
+/// never a captured revision. `mush-economy` defines the seam; E2b/E3b bridge it to
+/// `mush_org::authorize_in_world`. A system source/sink line is the module's own to
+/// authorize; a player line checks the actor against the account's scope.
+///
+/// Every method except the E2 money one **defaults to `false`**: a foreign impl
+/// written against E2 keeps compiling and simply cannot move title, custody, or
+/// maintenance, and cannot make an approver count.
 pub trait AuthEval {
     /// `true` if `actor` may apply `delta` to `account`; `false` denies (mapped to
     /// [`EconomyError::Unauthorized`]).
     fn authorize(&self, actor: &PrincipalId, account: &Account, delta: Amount) -> bool;
+
+    /// `true` if `actor` may perform `op` on `asset` (`None` for `Title`, which
+    /// creates one). The seam owns the policy: owner / `asset.title.transfer` on the
+    /// asset's scope / staff, with `Title` and `Encumber` staff-only in E3
+    /// (invariants 19–20) and `Release(Lien)` additionally open to its creditor.
+    fn authorize_asset(&self, _actor: &PrincipalId, _asset: Option<&EconomicAsset>, _op: &AssetOp) -> bool {
+        false
+    }
+    /// `true` if `actor` may put title INTO `to`/`to_scope` — the destination half of
+    /// D-E3-12 (title carries liabilities, so receiving is not free the way a money
+    /// credit is). The seam also resolves the org identity of `to_scope`, which the
+    /// pure engine cannot see.
+    fn authorize_title_receipt(&self, _actor: &PrincipalId, _to: &PrincipalId, _to_scope: Option<OrgScopeId>) -> bool {
+        false
+    }
+    /// `true` if `actor` may perform `op` against `vault` (`vault.deposit` /
+    /// `vault.withdraw` on the vault's scope, its owner, or staff).
+    fn authorize_vault(&self, _actor: &PrincipalId, _vault: &Vault, _op: &CustodyOp) -> bool {
+        false
+    }
+    /// `true` if `actor` may point maintenance at `account` — implemented as "may
+    /// post from it" (invariant 14; a zero-delta probe through [`AuthEval::authorize`]
+    /// is NOT enough, because crediting is free).
+    fn authorize_maintenance(&self, _actor: &PrincipalId, _account: &Account) -> bool {
+        false
+    }
+    /// `true` if `approver` currently qualifies under `policy` for `account` — re-run
+    /// LIVE at post (A5: approvers frozen at approve time are a fail-open). Holds
+    /// `economy.account.approve` on the account's scope; `Threshold.from_role` also
+    /// requires that role via `OrgMembership`; `NamedSet` requires set membership.
+    fn authorize_approver(&self, _approver: ObjId, _account: &Account, _policy: &ApprovalPolicy) -> bool {
+        false
+    }
 }
 
 /// An [`AuthEval`] that authorizes everything — for tests and trusted internal posts.
+///
+/// **E3a note:** this now authorizes *title* as well as money — asset ops, title
+/// receipt, vault ops, maintenance, and every approver. Never hand one to a path that
+/// takes player input.
 pub struct AllowAll;
 impl AuthEval for AllowAll {
     fn authorize(&self, _: &PrincipalId, _: &Account, _: Amount) -> bool {
         true
     }
+    fn authorize_asset(&self, _: &PrincipalId, _: Option<&EconomicAsset>, _: &AssetOp) -> bool {
+        true
+    }
+    fn authorize_title_receipt(&self, _: &PrincipalId, _: &PrincipalId, _: Option<OrgScopeId>) -> bool {
+        true
+    }
+    fn authorize_vault(&self, _: &PrincipalId, _: &Vault, _: &CustodyOp) -> bool {
+        true
+    }
+    fn authorize_maintenance(&self, _: &PrincipalId, _: &Account) -> bool {
+        true
+    }
+    fn authorize_approver(&self, _: ObjId, _: &Account, _: &ApprovalPolicy) -> bool {
+        true
+    }
+}
+
+// ---- the custody seam -----------------------------------------------------
+
+/// Resolves the WORLD facts a custody op needs — is the backing a usable container,
+/// does the vault hold this object, does the actor have standing over it, is the
+/// destination legal. `mush-economy` is world-free, so every one of these is asked of
+/// the embedder (E3b1's container provider, E3c's `mush-sim` interiors).
+///
+/// Standing is deliberately **not** "owns it": carrying it (`Obj.location == actor`
+/// exactly, never an ancestor walk) or being co-located with it as title owner /
+/// assignee / MUSH controller / staff (invariant 15).
+pub trait CustodyEval {
+    /// Whether the vault's backing is a live, usable custody container.
+    fn backing_valid(&self, vault: &Vault) -> bool;
+    /// Whether the vault (transitively, depth-capped) holds `obj`.
+    fn holds(&self, vault: &Vault, obj: ObjId) -> bool;
+    /// Whether `actor` has custody standing over `obj` to deposit it.
+    fn may_deposit(&self, obj: ObjId, actor: &PrincipalId) -> bool;
+    /// Whether `to` is a legal withdrawal destination for `actor` (the actor or the
+    /// actor's current location; live, not `GOING`).
+    fn destination_ok(&self, actor: &PrincipalId, to: ObjId) -> bool;
+}
+
+/// A [`CustodyEval`] that refuses everything — the fail-closed default for callers
+/// with no custody provider wired (E3a's own `post` seam, and the reversal path,
+/// which never touches custody).
+pub struct NoCustody;
+impl CustodyEval for NoCustody {
+    fn backing_valid(&self, _: &Vault) -> bool {
+        false
+    }
+    fn holds(&self, _: &Vault, _: ObjId) -> bool {
+        false
+    }
+    fn may_deposit(&self, _: ObjId, _: &PrincipalId) -> bool {
+        false
+    }
+    fn destination_ok(&self, _: &PrincipalId, _: ObjId) -> bool {
+        false
+    }
+}
+
+/// Everything [`validate`] needs beyond the plan and the snapshot: the two live
+/// seams and a clock (approval expiry is a time question the pure engine cannot
+/// answer on its own).
+pub struct ValidateEnv<'a> {
+    /// Live authorization.
+    pub auth: &'a dyn AuthEval,
+    /// Live world custody.
+    pub custody: &'a dyn CustodyEval,
+    /// Wall-clock unix seconds.
+    pub now: i64,
 }
 
 // ---- validate -------------------------------------------------------------
 
+/// The non-`Post` outcomes of the inner validation, so `NeedsApproval` (a plan that
+/// is well-formed and authorized but unapproved) never collapses into a refusal.
+enum Fail {
+    Refused(EconomyError),
+    NeedsApproval(ApprovalNeed),
+}
+impl From<EconomyError> for Fail {
+    fn from(e: EconomyError) -> Fail {
+        Fail::Refused(e)
+    }
+}
+
 /// Validate `plan` against `snapshot` for its actor. Pure + total; mutates nothing.
 #[must_use]
-pub fn validate(plan: &EconomyPlan, snapshot: &EconomySnapshot, auth: &dyn AuthEval) -> PlanResult {
+pub fn validate(plan: &EconomyPlan, snapshot: &EconomySnapshot, env: &ValidateEnv<'_>) -> PlanResult {
     let hash = plan_hash(plan);
 
     // Idempotency FIRST: an exact repeat short-circuits to the original id; a reuse
@@ -74,36 +243,35 @@ pub fn validate(plan: &EconomyPlan, snapshot: &EconomySnapshot, auth: &dyn AuthE
         return PlanResult::Refused(EconomyError::IdempotencyConflict);
     }
 
-    match validate_inner(plan, snapshot, auth, hash) {
+    match validate_inner(plan, snapshot, env, hash, false) {
         Ok(prepared) => PlanResult::Post(Box::new(prepared)),
-        Err(e) => PlanResult::Refused(e),
+        Err(Fail::Refused(e)) => PlanResult::Refused(e),
+        Err(Fail::NeedsApproval(need)) => PlanResult::NeedsApproval(Box::new(need)),
     }
 }
 
 fn validate_inner(
     plan: &EconomyPlan,
     snapshot: &EconomySnapshot,
-    auth: &dyn AuthEval,
+    env: &ValidateEnv<'_>,
     hash: [u8; 32],
-) -> Result<Prepared, EconomyError> {
+    skip_approval: bool,
+) -> Result<Prepared, Fail> {
     // Boundedness caps (R-B5) — cheap, first, so a huge plan is refused before work.
-    if plan.requested_lines.len() > MAX_LINES_PER_TX {
-        return Err(EconomyError::TooLarge("too many lines"));
-    }
-    if plan.description.len() > MAX_DESCRIPTION_BYTES {
-        return Err(EconomyError::TooLarge("description too long"));
-    }
-    for l in &plan.requested_lines {
-        if l.memo.len() > MAX_MEMO_BYTES {
-            return Err(EconomyError::TooLarge("memo too long"));
-        }
-    }
+    caps(plan)?;
 
     // Expected-revision staleness on ECONOMIC data (authorization is live, below).
     for e in &plan.expected_revisions {
         let cur = snapshot.account(e.account).map(|a| a.revision);
         if cur != Some(e.revision) {
-            return Err(EconomyError::Stale { account: e.account, expected: e.revision, found: cur });
+            return Err(EconomyError::Stale { account: e.account, expected: e.revision, found: cur }.into());
+        }
+    }
+    // Invariant 16: the same guard on TITLE data.
+    for e in &plan.expected_asset_revisions {
+        let cur = snapshot.asset(e.object).map(|a| a.revision);
+        if cur != Some(e.revision) {
+            return Err(EconomyError::StaleAsset { object: e.object, expected: e.revision, found: cur }.into());
         }
     }
 
@@ -116,18 +284,18 @@ fn validate_inner(
 
     for (i, rl) in plan.requested_lines.iter().enumerate() {
         if rl.delta.is_zero() {
-            return Err(EconomyError::ZeroLine(i));
+            return Err(EconomyError::ZeroLine(i).into());
         }
         non_zero += 1;
         let account = snapshot.account(rl.account).ok_or(EconomyError::NoSuchAccount(rl.account))?;
         if account.status != AccountStatus::Active {
-            return Err(EconomyError::InactiveAccount(rl.account));
+            return Err(EconomyError::InactiveAccount(rl.account).into());
         }
         let instrument = snapshot
             .instrument(&account.instrument)
             .ok_or_else(|| EconomyError::NoSuchInstrument(account.instrument.clone()))?;
         if instrument.status != InstrumentStatus::Active {
-            return Err(EconomyError::InactiveInstrument(account.instrument.clone()));
+            return Err(EconomyError::InactiveInstrument(account.instrument.clone()).into());
         }
         *per_account.entry(rl.account).or_insert(0) += rl.delta.widen();
         *per_instrument.entry(account.instrument.clone()).or_insert(0) += rl.delta.widen();
@@ -139,14 +307,17 @@ fn validate_inner(
         });
     }
 
-    // Invariant 1: at least two non-zero lines.
-    if non_zero < 2 {
-        return Err(EconomyError::TooFewLines);
+    // Invariant 10 (extends invariant 1): a transaction needs ≥2 non-zero money
+    // lines, OR ≥1 asset/custody effect. When money lines exist at all, invariants
+    // 1–4 hold unchanged — one lonely line is still refused.
+    let has_ops = !plan.asset_ops.is_empty() || !plan.custody_ops.is_empty();
+    if non_zero < 2 && !(non_zero == 0 && has_ops) {
+        return Err(EconomyError::TooFewLines.into());
     }
     // Invariant 3: each instrument balances to exactly zero.
     for (instrument, sum) in &per_instrument {
         if *sum != 0 {
-            return Err(EconomyError::NotBalanced(instrument.clone()));
+            return Err(EconomyError::NotBalanced(instrument.clone()).into());
         }
     }
 
@@ -158,7 +329,7 @@ fn validate_inner(
         let account = snapshot.account(account_id).expect("resolved above");
         let new_balance = account.posted_balance.checked_add(net).ok_or(EconomyError::Overflow)?;
         if !account.credit.permits(new_balance) {
-            return Err(EconomyError::CreditViolation(account_id));
+            return Err(EconomyError::CreditViolation(account_id).into());
         }
         balance_deltas.insert(account_id, net);
     }
@@ -166,10 +337,23 @@ fn validate_inner(
     // Authorization — re-evaluated LIVE per touched account (R-D4).
     for (&account_id, &net) in &balance_deltas {
         let account = snapshot.account(account_id).expect("resolved above");
-        if !auth.authorize(&plan.actor, account, net) {
-            return Err(EconomyError::Unauthorized);
+        if !env.auth.authorize(&plan.actor, account, net) {
+            return Err(EconomyError::Unauthorized.into());
         }
     }
+
+    // Invariants 11–14 + 18–20: title. Invariant 15: custody.
+    let asset_effects = resolve_asset_ops(plan, snapshot, env)?;
+    let custody_effects = resolve_custody_ops(plan, snapshot, env)?;
+
+    // Invariant 17: approval. NOT evaluated on the reversal path — a staff reversal
+    // is not a new spend, and an ApprovalRule must never be a shield against
+    // clawback (A7).
+    let consumed_approval = if skip_approval {
+        None
+    } else {
+        evaluate_approvals(snapshot, env, hash, &balance_deltas)?
+    };
 
     // Canonical line order (matches the hash's total key) so the persisted entry is
     // deterministic regardless of request order.
@@ -188,34 +372,512 @@ fn validate_inner(
         // A normal post never reverses; only `reverse` sets this, from a real tx.
         reverses: None,
         balance_deltas,
+        // Invariant 22: provenance is stamped only when the same transaction moved
+        // money (a free re-titling is not an acquisition).
+        stamp_acquisition: non_zero > 0,
+        asset_effects,
+        custody_effects,
+        consumed_approval,
     };
 
     // Boundedness: the serialized entry must fit MAX_ENTRY_BYTES so apply can never
-    // build a poison-sized chunk (R-B5). Measure the real entry shape.
+    // build a poison-sized chunk (R-B5). Measure the real entry shape — effects
+    // included (invariant 21); they are by far the largest part of an E3 entry.
     let probe = entry_probe(&prepared);
     let size = serde_json::to_vec(&probe).map(|v| v.len()).unwrap_or(usize::MAX);
     if size > MAX_ENTRY_BYTES {
-        return Err(EconomyError::TooLarge("serialized entry exceeds the per-entry cap"));
+        return Err(EconomyError::TooLarge("serialized entry exceeds the per-entry cap").into());
     }
 
     Ok(prepared)
 }
 
-/// Build the exact `EconomicTransaction` shape that would be journaled, with
-/// placeholder id/seq/time, purely to measure its serialized size in validate.
+/// The cheap first block: every count/length cap, before any lookup work.
+fn caps(plan: &EconomyPlan) -> Result<(), EconomyError> {
+    if plan.requested_lines.len() > MAX_LINES_PER_TX {
+        return Err(EconomyError::TooLarge("too many lines"));
+    }
+    if plan.expected_revisions.len() > MAX_LINES_PER_TX {
+        return Err(EconomyError::TooLarge("too many expected revisions"));
+    }
+    if plan.description.len() > MAX_DESCRIPTION_BYTES {
+        return Err(EconomyError::TooLarge("description too long"));
+    }
+    for l in &plan.requested_lines {
+        if l.memo.len() > MAX_MEMO_BYTES {
+            return Err(EconomyError::TooLarge("memo too long"));
+        }
+    }
+    if plan.asset_ops.len() > MAX_ASSET_OPS_PER_PLAN {
+        return Err(EconomyError::TooLarge("too many asset ops"));
+    }
+    if plan.custody_ops.len() > MAX_CUSTODY_OPS_PER_PLAN {
+        return Err(EconomyError::TooLarge("too many custody ops"));
+    }
+    if plan.expected_asset_revisions.len() > MAX_ASSET_OPS_PER_PLAN {
+        return Err(EconomyError::TooLarge("too many expected asset revisions"));
+    }
+    // Invariant 21: every free-text field that lands inside an effect is capped, and
+    // the full post-state re-serializes them on each later effect.
+    for op in &plan.asset_ops {
+        match op {
+            AssetOp::WriteOff { reason, .. } if reason.len() > MAX_REASON_BYTES => {
+                return Err(EconomyError::TooLarge("write-off reason too long"));
+            }
+            AssetOp::Assign { purpose, .. } if purpose.len() > MAX_REASON_BYTES => {
+                return Err(EconomyError::TooLarge("assignment purpose too long"));
+            }
+            AssetOp::Encumber { encumbrance, .. } | AssetOp::Release { encumbrance, .. } => {
+                if let Encumbrance::Disputed { reason, .. } = encumbrance
+                    && reason.len() > MAX_REASON_BYTES
+                {
+                    return Err(EconomyError::TooLarge("dispute reason too long"));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+// ---- invariants 11–14, 18–20: the title ops -------------------------------
+
+/// Invariant 18's structural half: a scoped account/asset/vault must be owned by an
+/// organization. WHICH organization (`scope.org == owner`) needs the org state, so it
+/// is resolved live by the seam ([`AuthEval::authorize_title_receipt`] /
+/// `authorize_asset`), which is the only party that can see it.
+fn scope_owner_coherent(scope: Option<OrgScopeId>, owner: &PrincipalId) -> bool {
+    scope.is_none() || matches!(owner, PrincipalId::Organization(_))
+}
+
+fn resolve_asset_ops(
+    plan: &EconomyPlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> Result<Vec<AssetEffect>, EconomyError> {
+    if plan.asset_ops.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Canonical order — the SAME total order the plan hash uses, so the applied order
+    // is the hashed order and two plans differing only in op order are one plan.
+    let mut keyed: Vec<(_, &AssetOp)> = plan.asset_ops.iter().map(|op| (asset_op_key(op), op)).collect();
+    keyed.sort_by(|a, b| a.0.cmp(&b.0));
+    // An exactly-duplicated op is a conflicting plan, not a no-op (adjacent after the
+    // sort, since the key includes the op's canonical bytes).
+    for w in keyed.windows(2) {
+        if w[0].0 == w[1].0 {
+            return Err(EconomyError::DuplicateAssetOp(w[0].1.object()));
+        }
+    }
+
+    // Invariant 11: per object, at most one title-changing op, at most one
+    // assignment-changing op, at most one maintenance op. (Release/Encumber may
+    // repeat — invariant 12 needs to clear several claims in one plan.)
+    let mut title_changing: BTreeMap<ObjId, usize> = BTreeMap::new();
+    let mut assignment: BTreeMap<ObjId, usize> = BTreeMap::new();
+    let mut maintenance: BTreeMap<ObjId, usize> = BTreeMap::new();
+    for (_, op) in &keyed {
+        let obj = op.object();
+        if op.is_title_changing() {
+            *title_changing.entry(obj).or_insert(0) += 1;
+        }
+        if matches!(op, AssetOp::Assign { .. } | AssetOp::Unassign { .. }) {
+            *assignment.entry(obj).or_insert(0) += 1;
+        }
+        if matches!(op, AssetOp::SetMaintenance { .. }) {
+            *maintenance.entry(obj).or_insert(0) += 1;
+        }
+    }
+    for counts in [&title_changing, &assignment, &maintenance] {
+        if let Some((obj, _)) = counts.iter().find(|(_, n)| **n > 1) {
+            return Err(EconomyError::DuplicateAssetOp(*obj));
+        }
+    }
+
+    let actor = &plan.actor;
+    let mut work: BTreeMap<ObjId, EconomicAsset> = BTreeMap::new();
+    let mut effects: Vec<AssetEffect> = Vec::with_capacity(keyed.len());
+
+    for (_, op) in keyed {
+        let object = op.object();
+        let effect_kind = match op {
+            AssetOp::Title { owner, scope, catalog, .. } => {
+                if work.contains_key(&object) || snapshot.asset(object).is_some() {
+                    return Err(EconomyError::AssetExists(object));
+                }
+                if !scope_owner_coherent(*scope, owner) {
+                    return Err(EconomyError::ScopeOwnerMismatch);
+                }
+                // Invariant 20: creating a title is staff-only in E3 (the seam says so).
+                if !env.auth.authorize_asset(actor, None, op) {
+                    return Err(EconomyError::Unauthorized);
+                }
+                work.insert(object, EconomicAsset {
+                    object,
+                    title_owner: owner.clone(),
+                    scope: *scope,
+                    assignment: None,
+                    maintenance_account: None,
+                    catalog: catalog.clone(),
+                    encumbrances: Vec::new(),
+                    acquisition: None,
+                    lifecycle: AssetLifecycle::Active,
+                    last_journal_seq: 0,
+                    revision: 1,
+                    frozen: false,
+                    frozen_reason: None,
+                });
+                AssetEffectKind::Created
+            }
+            _ => {
+                // Invariant 11: the asset must exist, be Active, and not be frozen.
+                let mut post = match work.get(&object) {
+                    Some(a) => a.clone(),
+                    None => {
+                        let a = snapshot.asset(object).ok_or(EconomyError::NoSuchAsset(object))?;
+                        if a.frozen {
+                            return Err(EconomyError::AssetFrozen(object));
+                        }
+                        a.clone()
+                    }
+                };
+                if post.lifecycle != AssetLifecycle::Active {
+                    return Err(EconomyError::AssetNotActive(object));
+                }
+                if !env.auth.authorize_asset(actor, Some(&post), op) {
+                    return Err(EconomyError::Unauthorized);
+                }
+                let kind = apply_asset_op(op, &mut post, snapshot, env, actor)?;
+                post.revision += 1;
+                work.insert(object, post);
+                kind
+            }
+        };
+        let mut post = work.get(&object).expect("just inserted").clone();
+        // The doc-authority latch is NEVER carried in an effect (D-E3-1).
+        post.frozen = false;
+        post.frozen_reason = None;
+        effects.push(AssetEffect { object, kind: effect_kind, post });
+    }
+    Ok(effects)
+}
+
+/// Fold one non-`Title` op into the working post-state, proving its invariants.
+/// `post` arrives as the pre-state and leaves as the post-state (its `revision` is
+/// bumped by the caller, once per effect).
+fn apply_asset_op(
+    op: &AssetOp,
+    post: &mut EconomicAsset,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+    actor: &PrincipalId,
+) -> Result<AssetEffectKind, EconomyError> {
+    match op {
+        AssetOp::Title { .. } => unreachable!("Title is handled by the caller"),
+        AssetOp::TransferTitle { object, to, to_scope } => {
+            // Invariant 12: no claim may ride along. Releases sort first, so this
+            // sees the post-release state.
+            if !post.encumbrances.is_empty() {
+                return Err(EconomyError::Encumbered(*object));
+            }
+            // Invariant 18 (A4: an attacker-chosen `to_scope` must not smuggle an
+            // asset into an org compartment).
+            if !scope_owner_coherent(*to_scope, to) {
+                return Err(EconomyError::ScopeOwnerMismatch);
+            }
+            // Invariant 20 / D-E3-12: BOTH sides. `authorize_asset` covered the
+            // source; the destination is its own question because title carries
+            // liabilities a money credit does not.
+            if !env.auth.authorize_title_receipt(actor, to, *to_scope) {
+                return Err(EconomyError::Unauthorized);
+            }
+            post.title_owner = to.clone();
+            post.scope = *to_scope;
+            // Invariant 13: both are relationships with the OLD owner.
+            post.assignment = None;
+            post.maintenance_account = None;
+            Ok(AssetEffectKind::TitleTransferred)
+        }
+        AssetOp::Assign { object, to, purpose, valid_until } => {
+            // Invariant 13: assignment is a relationship with someone else.
+            if *to == post.title_owner {
+                return Err(EconomyError::AssignmentToOwner(*object));
+            }
+            post.assignment = Some(AssetAssignment {
+                assigned_to: to.clone(),
+                purpose: purpose.clone(),
+                valid_until: *valid_until,
+            });
+            Ok(AssetEffectKind::Assigned)
+        }
+        AssetOp::Unassign { .. } => {
+            post.assignment = None;
+            Ok(AssetEffectKind::Unassigned)
+        }
+        AssetOp::Encumber { encumbrance, .. } => {
+            if post.encumbrances.len() >= MAX_ENCUMBRANCES_PER_ASSET {
+                return Err(EconomyError::TooLarge("too many encumbrances on one asset"));
+            }
+            // Invariant 19 (staff-only) is the seam's answer to `authorize_asset`,
+            // already asked by the caller — the pure engine just records the claim.
+            post.encumbrances.push(encumbrance.clone());
+            Ok(AssetEffectKind::Encumbered)
+        }
+        AssetOp::Release { object, encumbrance } => {
+            let at = post
+                .encumbrances
+                .iter()
+                .position(|e| e == encumbrance)
+                .ok_or(EconomyError::NoSuchEncumbrance(*object))?;
+            post.encumbrances.remove(at);
+            Ok(AssetEffectKind::Released)
+        }
+        AssetOp::SetMaintenance { account, .. } => {
+            if let Some(id) = account {
+                let acct = snapshot.account(*id).ok_or(EconomyError::NoSuchAccount(*id))?;
+                if acct.status != AccountStatus::Active {
+                    return Err(EconomyError::InactiveAccount(*id));
+                }
+                // Invariant 14: the payer must belong to the asset's owner or share
+                // its compartment...
+                let same_owner = acct.owner == post.title_owner;
+                let same_scope = acct.scope.is_some() && acct.scope == post.scope;
+                if !(same_owner || same_scope) {
+                    return Err(EconomyError::ScopeOwnerMismatch);
+                }
+                // ...and the actor must actually be able to DEBIT it (crediting is
+                // free, so a zero-delta probe through `authorize` proves nothing).
+                if !env.auth.authorize_maintenance(actor, acct) {
+                    return Err(EconomyError::Unauthorized);
+                }
+            }
+            post.maintenance_account = *account;
+            Ok(AssetEffectKind::MaintenanceSet)
+        }
+        AssetOp::WriteOff { object, .. } => {
+            // Invariant 12 again: writing off an encumbered asset would strand the
+            // claim.
+            if !post.encumbrances.is_empty() {
+                return Err(EconomyError::Encumbered(*object));
+            }
+            post.lifecycle = AssetLifecycle::WrittenOff;
+            Ok(AssetEffectKind::WrittenOff)
+        }
+    }
+}
+
+// ---- invariant 15: custody ------------------------------------------------
+
+fn resolve_custody_ops(
+    plan: &EconomyPlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> Result<Vec<CustodyEffect>, EconomyError> {
+    if plan.custody_ops.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut keyed: Vec<(_, &CustodyOp)> = plan.custody_ops.iter().map(|op| (custody_op_key(op), op)).collect();
+    keyed.sort_by_key(|(k, _)| *k);
+    // At most one custody op per object per plan — two would race each other inside
+    // one bundle (and make the hash's (object, vault, kind) order non-total).
+    let mut seen: BTreeSet<ObjId> = BTreeSet::new();
+    for (_, op) in &keyed {
+        if !seen.insert(op.object()) {
+            return Err(EconomyError::DuplicateCustodyOp(op.object()));
+        }
+    }
+
+    let actor = &plan.actor;
+    let mut effects = Vec::with_capacity(keyed.len());
+    for (_, op) in keyed {
+        let vault_id = op.vault();
+        let vault = snapshot.vault(vault_id).ok_or(EconomyError::NoSuchVault(vault_id))?;
+        if vault.status != VaultStatus::Active {
+            return Err(EconomyError::VaultNotActive(vault_id));
+        }
+        if !env.custody.backing_valid(vault) {
+            return Err(EconomyError::BackingInvalid(vault_id));
+        }
+        // The vault's own policy (vault.deposit / vault.withdraw), live.
+        if !env.auth.authorize_vault(actor, vault, op) {
+            return Err(EconomyError::Unauthorized);
+        }
+        // A backing with no world object cannot name a from/to for the audit trail;
+        // refuse rather than invent one (E3b's providers back vaults with objects).
+        let backing = vault.backing.object().ok_or(EconomyError::BackingInvalid(vault_id))?;
+
+        let effect = match op {
+            CustodyOp::Deposit { object, .. } => {
+                if !env.custody.may_deposit(*object, actor) {
+                    return Err(EconomyError::NoCustodyStanding(*object));
+                }
+                CustodyEffect {
+                    object: *object,
+                    vault: vault_id,
+                    direction: CustodyDirection::Deposit,
+                    // The pure engine does not resolve world locations; the live
+                    // module fills the origin in when it performs the move.
+                    from: None,
+                    to: backing,
+                }
+            }
+            CustodyOp::Withdraw { object, to, .. } => {
+                if !env.custody.holds(vault, *object) {
+                    return Err(EconomyError::NotInVault(*object));
+                }
+                // A2: an unconstrained destination is a laundering primitive. The
+                // seam checks live/`GOING`/reachability; the snapshot check below is
+                // the one the pure engine owns — entering a vault is a Deposit, with
+                // its own standing check, never a withdrawal's side effect.
+                if snapshot.is_vault_backing(*to) {
+                    return Err(EconomyError::BadDestination(*to));
+                }
+                if !env.custody.destination_ok(actor, *to) {
+                    return Err(EconomyError::BadDestination(*to));
+                }
+                CustodyEffect {
+                    object: *object,
+                    vault: vault_id,
+                    direction: CustodyDirection::Withdraw,
+                    from: Some(backing),
+                    to: *to,
+                }
+            }
+        };
+        effects.push(effect);
+    }
+    Ok(effects)
+}
+
+// ---- invariant 17: approval -----------------------------------------------
+
+/// How many approvals a policy demands. `OneAuthorizedActor` is inert (the one
+/// authorized actor is the poster) and is reported separately.
+fn required_approvals(policy: &ApprovalPolicy) -> Option<usize> {
+    match policy {
+        ApprovalPolicy::OneAuthorizedActor => None,
+        ApprovalPolicy::Threshold { approvals, .. } | ApprovalPolicy::NamedSet { approvals, .. } => {
+            Some(usize::from(*approvals))
+        }
+    }
+}
+
+fn evaluate_approvals(
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+    hash: [u8; 32],
+    balance_deltas: &BTreeMap<AccountId, Amount>,
+) -> Result<Option<ApprovalRequestId>, Fail> {
+    // Which accounts' rules fire? A rule escalates on the NET DEBIT: an account that
+    // nets a credit, or nets a debit at or below the threshold, is unaffected. A
+    // per-op limit is not a budget (A12) — two approved plans both post.
+    let mut firing: Vec<(AccountId, &ApprovalRule)> = Vec::new();
+    for (&account_id, &net) in balance_deltas {
+        let account = snapshot.account(account_id).expect("resolved above");
+        let Some(rule) = account.approval.as_ref() else { continue };
+        if !net.is_negative() {
+            continue;
+        }
+        // `i64::MIN` has no positive counterpart; treat it as exceeding any threshold
+        // rather than wrapping into a credit.
+        let exceeds = net.checked_neg().is_none_or(|debit| debit > rule.threshold);
+        if exceeds {
+            firing.push((account_id, rule));
+        }
+    }
+    if firing.is_empty() {
+        return Ok(None);
+    }
+    // A11: `OneAuthorizedActor` can never gate anything, so a rule carrying it is
+    // refused at set time; if one is somehow stored, fail CLOSED rather than let a
+    // high-value debit through unapproved.
+    let mut required: Vec<(AccountId, &ApprovalRule, usize)> = Vec::with_capacity(firing.len());
+    for (account_id, rule) in firing {
+        let Some(n) = required_approvals(&rule.policy) else {
+            return Err(EconomyError::ApprovalRequired.into());
+        };
+        required.push((account_id, rule, n));
+    }
+    let accounts: Vec<AccountId> = required.iter().map(|(a, _, _)| *a).collect();
+    if required.iter().all(|(_, _, n)| *n == 0) {
+        return Ok(None);
+    }
+    let need = || Fail::NeedsApproval(ApprovalNeed { plan_hash: hash, accounts: accounts.clone() });
+
+    // One LIVE request per hash (A1). An expired or missing one is `NeedsApproval`,
+    // not a refusal — the remedy is a fresh request, and the plan is otherwise fine.
+    let Some(request) = snapshot.live_approval_for_hash(&hash) else {
+        return Err(need());
+    };
+    if env.now >= request.expires_at {
+        return Err(need());
+    }
+    for (account_id, rule, n) in &required {
+        if *n == 0 {
+            continue;
+        }
+        if !request.accounts.contains(account_id) {
+            return Err(need());
+        }
+        let account = snapshot.account(*account_id).expect("resolved above");
+        // A5: re-qualify every recorded approver LIVE. An approver who has since lost
+        // the capability, the role, or their place in the named set stops counting —
+        // the approval is not a captured credential.
+        let mut qualified: BTreeSet<ObjId> = BTreeSet::new();
+        for approval in request.approvals.iter().take(MAX_APPROVERS_PER_REQUEST) {
+            // Four-eyes: the requester never approves their own request.
+            if request.requested_by == PrincipalId::Object(approval.approver) {
+                continue;
+            }
+            if env.auth.authorize_approver(approval.approver, account, &rule.policy) {
+                qualified.insert(approval.approver);
+            }
+        }
+        if qualified.len() < *n {
+            return Err(need());
+        }
+    }
+    Ok(Some(request.id))
+}
+
+// ---- the entry probe ------------------------------------------------------
+
+/// Build the exact `EconomicTransaction` shape that would be journaled, purely to
+/// measure its serialized size in validate.
+///
+/// The three values only `apply` knows — the transaction id, the journal sequence,
+/// and the acquisition stamp — are filled with their WIDEST form here, so the probe
+/// is an upper bound on the real entry rather than an optimistic sample (invariant
+/// 21: an accepted plan must provably fit, not usually fit).
 fn entry_probe(p: &Prepared) -> EconomicTransaction {
+    let asset_effects: Vec<AssetEffect> = p
+        .asset_effects
+        .iter()
+        .map(|e| {
+            let mut e = e.clone();
+            e.post.last_journal_seq = u64::MAX;
+            e.post.acquisition = Some(AcquisitionRecord {
+                transaction: TransactionId(u64::MAX),
+                at: i64::MAX,
+            });
+            e
+        })
+        .collect();
     EconomicTransaction {
-        id: TransactionId(0),
-        journal_seq: 0,
+        id: TransactionId(u64::MAX),
+        journal_seq: u64::MAX,
         idempotency: p.idempotency.clone(),
         cause: p.cause.clone(),
         actor: p.actor.clone(),
-        posted_at: 0,
+        posted_at: i64::MAX,
         description: p.description.clone(),
         lines: p.lines.clone(),
         reverses: p.reverses,
         visibility: p.visibility,
         plan_hash: p.plan_hash,
+        asset_effects,
+        custody_effects: p.custody_effects.clone(),
+        consumed_approval: p.consumed_approval,
     }
 }
 
@@ -242,6 +904,31 @@ pub fn apply(
         account.last_journal_seq = journal_seq;
         account.revision += 1;
     }
+
+    // Fold the title effects. Each carries the FULL post-state; the two things only
+    // `apply` knows — the journal sequence and the transaction id — are stamped here,
+    // and the doc-authority freeze latch is carried across from the live record
+    // rather than being taken from the (always-zeroed) effect.
+    let mut asset_effects = Vec::with_capacity(prepared.asset_effects.len());
+    for effect in &prepared.asset_effects {
+        let mut effect = effect.clone();
+        effect.post.last_journal_seq = journal_seq;
+        effect.post.frozen = false;
+        effect.post.frozen_reason = None;
+        if prepared.stamp_acquisition
+            && matches!(effect.kind, AssetEffectKind::Created | AssetEffectKind::TitleTransferred)
+        {
+            effect.post.acquisition = Some(AcquisitionRecord { transaction: txid, at: posted_at });
+        }
+        let mut live = effect.post.clone();
+        if let Some(prev) = next.asset(effect.object) {
+            live.frozen = prev.frozen;
+            live.frozen_reason = prev.frozen_reason.clone();
+        }
+        next.put_asset(live);
+        asset_effects.push(effect);
+    }
+
     let tx = EconomicTransaction {
         id: txid,
         journal_seq,
@@ -254,6 +941,11 @@ pub fn apply(
         reverses: prepared.reverses,
         visibility: prepared.visibility,
         plan_hash: prepared.plan_hash,
+        asset_effects,
+        // Custody effects are audit-only here: the world move itself is performed by
+        // the E3b module through the custody provider, in the same terminal bundle.
+        custody_effects: prepared.custody_effects.clone(),
+        consumed_approval: prepared.consumed_approval,
     };
     next.put_idempotency(IdempotencyRecord {
         idempotency: prepared.idempotency.clone(),
@@ -263,6 +955,10 @@ pub fn apply(
     });
     if let Some(target) = prepared.reverses {
         next.mark_reversed(target);
+    }
+    // At most once: a consumed request can never satisfy a second plan.
+    if let Some(request) = prepared.consumed_approval {
+        next.consume_approval(request, txid);
     }
     (next, tx)
 }
@@ -279,6 +975,16 @@ pub fn apply(
 /// [`PlanResult::AlreadyPosted`]; the at-most-once [`EconomySnapshot::is_reversed`]
 /// guard is the backstop. A reversal may itself be reversed — a distinct new
 /// transaction with its own deterministic key.
+///
+/// **E3a.** It keeps its E2 signature: money is all it reverses, so it builds an
+/// in-crate [`NoCustody`] and takes `now` from the original's `posted_at` (nothing on
+/// this path reads the clock — invariant 17 is skipped). Two E3 rules apply:
+///
+/// - A target carrying asset/custody effects is **refused** ([`EconomyError::HasEffects`]):
+///   money-only compensation would pay the buyer back and leave them the title (C5).
+///   Compensate with an explicit `@asset/transfer`; there is no `/force` in E3.
+/// - Invariant 17 is **skipped** (A7): a staff reversal is not a new spend, so an
+///   `ApprovalRule` must never become a shield against clawback.
 #[must_use]
 pub fn plan_reversal(
     original: &EconomicTransaction,
@@ -287,6 +993,9 @@ pub fn plan_reversal(
     snapshot: &EconomySnapshot,
     auth: &dyn AuthEval,
 ) -> PlanResult {
+    if !original.asset_effects.is_empty() || !original.custody_effects.is_empty() {
+        return PlanResult::Refused(EconomyError::HasEffects);
+    }
     // Inverse lines; `i64::MIN` has no negation (cannot arise from a balanced posted
     // set in practice, but refused rather than wrapped).
     let mut lines = Vec::with_capacity(original.lines.len());
@@ -304,6 +1013,9 @@ pub fn plan_reversal(
         visibility: original.visibility,
         requested_lines: lines,
         expected_revisions: Vec::new(),
+        asset_ops: Vec::new(),
+        custody_ops: Vec::new(),
+        expected_asset_revisions: Vec::new(),
     };
     // The reversal's identity is the TARGET, not the caller's cause/actor — so a
     // re-reverse with a different staff reason still resolves to AlreadyPosted.
@@ -320,11 +1032,14 @@ pub fn plan_reversal(
     if snapshot.is_reversed(original.id) {
         return PlanResult::Refused(EconomyError::AlreadyReversed(original.id));
     }
-    match validate_inner(&plan, snapshot, auth, hash) {
+    let env = ValidateEnv { auth, custody: &NoCustody, now: original.posted_at };
+    match validate_inner(&plan, snapshot, &env, hash, true) {
         Ok(mut prepared) => {
             prepared.reverses = Some(original.id);
             PlanResult::Post(Box::new(prepared))
         }
-        Err(e) => PlanResult::Refused(e),
+        Err(Fail::Refused(e)) => PlanResult::Refused(e),
+        // Unreachable: `skip_approval` is set on this path.
+        Err(Fail::NeedsApproval(_)) => PlanResult::Refused(EconomyError::ApprovalRequired),
     }
 }
