@@ -1,5 +1,6 @@
 //! Durable, restart-stable root keys for K4 authoritative resolution RNG.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use mush_core::{
@@ -57,6 +58,16 @@ impl DurableResolutionKeyStore {
     pub fn load_or_create(&self) -> Result<ResolutionKeyRing, ResolutionKeyStoreError> {
         self.inner.load_or_create()
     }
+
+    /// Rotate only if every version still pinned by unresolved durable work
+    /// fits in the bounded successor ring. Missing or excessive references
+    /// fail before a successor key or manifest is created.
+    pub fn rotate_retaining(
+        &self,
+        required_versions: &BTreeSet<u32>,
+    ) -> Result<ResolutionKeyRing, ResolutionKeyStoreError> {
+        self.inner.rotate_retaining(required_versions)
+    }
 }
 
 #[cfg(test)]
@@ -99,5 +110,34 @@ mod tests {
         assert_eq!(resolution.load_or_create().unwrap().current_version(), 2);
         assert_eq!(offer.load_or_create().unwrap().current_version(), 1);
         remove(&resolution);
+    }
+
+    #[test]
+    fn rotation_preserves_live_window_versions_and_refuses_impossible_sets() {
+        let store = temp_store("references");
+        store.load_or_create().unwrap();
+        let required = BTreeSet::from([1]);
+        for expected in 2..=6 {
+            assert_eq!(
+                store.rotate_retaining(&required).unwrap().current_version(),
+                expected
+            );
+            assert!(store.inner.key_path(1).exists());
+        }
+
+        assert!(matches!(
+            store.rotate_retaining(&BTreeSet::from([2])),
+            Err(ResolutionKeyStoreError::UnknownRequiredVersion { version: 2 })
+        ));
+        assert!(matches!(
+            store.rotate_retaining(&BTreeSet::from([1, 4, 5, 6])),
+            Err(ResolutionKeyStoreError::RequiredVersionLimit {
+                required: 4,
+                max_retained: 3,
+            })
+        ));
+        assert!(!store.inner.key_path(7).exists());
+        assert!(!store.inner.manifest_path(7).exists());
+        remove(&store);
     }
 }

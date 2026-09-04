@@ -1035,6 +1035,31 @@ impl ActionStateStore {
             .transpose()
     }
 
+    /// Exact resolution-secret versions pinned by unresolved durable action
+    /// windows. The server uses this bounded set to refuse a key rotation
+    /// that would prune material still needed after restart.
+    #[must_use]
+    pub fn unresolved_window_resolution_secret_versions(&self) -> BTreeSet<u32> {
+        self.records
+            .values()
+            .filter_map(|stored| {
+                stored
+                    .value
+                    .as_ref()
+                    .as_any()
+                    .downcast_ref::<crate::action_window::ActionWindowRecord>()
+            })
+            .filter(|record| {
+                matches!(
+                    record.phase(),
+                    crate::action_window::ActionWindowPhase::Open
+                        | crate::action_window::ActionWindowPhase::Closed
+                )
+            })
+            .filter_map(|record| record.window().resolution_secret_version())
+            .collect()
+    }
+
     /// Return the exact canonical live post-image for diagnostics/tests.
     pub fn canonical<K, V>(
         &self,

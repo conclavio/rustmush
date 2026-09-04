@@ -8,8 +8,8 @@ use mush_core::{
     CanonicalHash, CanonicalId, DefinitionId, DefinitionKey, DefinitionKind, DefinitionRef, Engine,
     GOD, IdempotencyKey, IdempotencyScope, IngressEnvelope, IngressPayload, IngressSurfaceVersion,
     OfferExecutionContext, OfferKeyRing, OfferSecret, OfferSubmission, OwnerId, PerceivedRef,
-    PrincipalId, ProjectionScopeId, RequestUid, RevisionSet, ScopedIdempotencyKey,
-    StagedActionPersistence,
+    PrincipalId, ProjectionScopeId, RequestUid, ResolutionKeyRing, ResolutionSecret, RevisionSet,
+    ScopedIdempotencyKey, StagedActionPersistence,
 };
 use mush_server::action_coordinator::{ActionCoordinator, ActionPreflight, SemanticActionStatus};
 use mush_server::modules::boot_modules;
@@ -97,18 +97,7 @@ async fn commit_toy_window_operation(
     world: &mut TestWorld,
     invocation: &ActionInvocation,
 ) -> (AuthoritativeBundle, IngressEnvelope) {
-    let envelope = IngressEnvelope::new(
-        invocation.request(),
-        invocation.principal().clone(),
-        IngressSurfaceVersion::new(CanonicalId::new("test.window").unwrap(), 1).unwrap(),
-        IngressPayload::structured(json!({
-            "action": "window_operation",
-            "parameters": invocation.parameters(),
-        }))
-        .unwrap(),
-        invocation.idempotency().clone(),
-    )
-    .unwrap();
+    let envelope = toy_window_envelope(invocation);
     let permit = match ActionCoordinator::preflight(store, envelope.clone())
         .await
         .unwrap()
@@ -152,6 +141,21 @@ async fn commit_toy_window_operation(
         .unwrap();
     assert!(checkpoint.receipt.matches_bundle(&bundle));
     (bundle, envelope)
+}
+
+fn toy_window_envelope(invocation: &ActionInvocation) -> IngressEnvelope {
+    IngressEnvelope::new(
+        invocation.request(),
+        invocation.principal().clone(),
+        IngressSurfaceVersion::new(CanonicalId::new("test.window").unwrap(), 1).unwrap(),
+        IngressPayload::structured(json!({
+            "action": "window_operation",
+            "parameters": invocation.parameters(),
+        }))
+        .unwrap(),
+        invocation.idempotency().clone(),
+    )
+    .unwrap()
 }
 
 #[tokio::test]
@@ -229,6 +233,10 @@ async fn action_window_close_restart_and_resolution_share_exact_authority() {
     assert_eq!(closed.phase(), ActionWindowPhase::Closed);
     assert_eq!(closed.revision(), 4);
     assert_eq!(
+        restarted.engine().resolution_key_rotation_references(),
+        std::collections::BTreeSet::from([1])
+    );
+    assert_eq!(
         closed
             .resolution_order()
             .unwrap()
@@ -247,6 +255,58 @@ async fn action_window_close_restart_and_resolution_share_exact_authority() {
             "now": toy_scene_turn(21),
         }),
     );
+
+    // A deployment that pruned the pinned key fails before staging and
+    // leaves the closed post-image untouched.
+    restarted.engine_mut().set_resolution_keys(
+        ResolutionKeyRing::new(ResolutionSecret::new(2, [0x72; 32]).unwrap(), []).unwrap(),
+    );
+    let missing_envelope = toy_window_envelope(&resolve);
+    let missing_permit = match ActionCoordinator::preflight(&store, missing_envelope)
+        .await
+        .unwrap()
+    {
+        ActionPreflight::Vacant(permit) => permit,
+        other => panic!("unattempted resolution was not vacant: {other:?}"),
+    };
+    let window_action = toy_definitions().window_action;
+    let window_guards = guards(restarted.engine(), &window_action);
+    let error = ActionCoordinator::prepare_and_stage(
+        missing_permit,
+        restarted.engine_mut(),
+        &window_action,
+        &resolve,
+        window_guards,
+    )
+    .expect_err("missing pinned secret must fail closed");
+    assert!(error.to_string().contains("resolution RNG is unavailable"));
+    assert!(
+        restarted
+            .engine_mut()
+            .take_staged_action()
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        restarted
+            .engine()
+            .action_state()
+            .get(&restarted_families.windows, &window_id)
+            .unwrap()
+            .unwrap()
+            .phase(),
+        ActionWindowPhase::Closed
+    );
+
+    // Rotate after close while retaining the live reference. Resolution must
+    // use the version pinned when the window opened, not the new current key.
+    restarted.engine_mut().set_resolution_keys(
+        ResolutionKeyRing::new(
+            ResolutionSecret::new(2, [0x72; 32]).unwrap(),
+            [ResolutionSecret::new(1, [0x71; 32]).unwrap()],
+        )
+        .unwrap(),
+    );
     let (resolve_bundle, resolve_envelope) =
         commit_toy_window_operation(&store, &mut restarted, &resolve).await;
     assert_eq!(resolve_bundle.writes().len(), 1);
@@ -255,6 +315,7 @@ async fn action_window_close_restart_and_resolution_share_exact_authority() {
         .resolution()
         .expect("window resolution retains its RNG transcript");
     assert_eq!(resolution.action(), resolve_bundle.token());
+    assert_eq!(resolution.secret_version(), 1);
     assert_eq!(resolution.outcome(), resolve_bundle.outcome());
     assert_eq!(resolution.draws().len(), 1);
     let consumed = restarted
@@ -270,6 +331,12 @@ async fn action_window_close_restart_and_resolution_share_exact_authority() {
         }
     );
     assert_eq!(consumed.revision(), 5);
+    assert!(
+        restarted
+            .engine()
+            .resolution_key_rotation_references()
+            .is_empty()
+    );
 
     match ActionCoordinator::preflight(&store, resolve_envelope)
         .await

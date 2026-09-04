@@ -1009,6 +1009,10 @@ impl ActionProvider for GuardedExpiryProvider {
 /// Exact simultaneous window used by the K4 durability fixture.
 #[must_use]
 pub fn toy_action_window() -> ActionWindow {
+    toy_action_window_with_secret(1)
+}
+
+fn toy_action_window_with_secret(resolution_secret_version: u32) -> ActionWindow {
     let owner = OwnerId::new(TOY_OWNER).expect("static owner");
     let local = CanonicalId::new("round_7").expect("static window id");
     ActionWindow::new(ActionWindowDraft {
@@ -1022,6 +1026,7 @@ pub fn toy_action_window() -> ActionWindow {
         restart: WindowRestartPolicy::CloseIfElapsed,
         timeout: WindowTimeoutPolicy::Close,
         max_catch_up: 3,
+        resolution_secret_version: Some(resolution_secret_version),
     })
     .expect("static toy window is valid")
 }
@@ -1173,6 +1178,16 @@ impl ActionProvider for ActionWindowProvider {
         match operation {
             "open" => {
                 Self::require_fields(parameters, &["operation"])?;
+                let definition = toy_action_window_with_secret(
+                    context.current_resolution_secret_version().map_err(|_| {
+                        ActionError::new(
+                            ActionErrorCode::Unavailable,
+                            false,
+                            "authoritative resolution keys are unavailable",
+                        )
+                        .expect("static window error is bounded")
+                    })?,
+                );
                 let record = ActionWindowRecord::open(definition);
                 txn.insert(&self.windows, &window_id, record.clone())
                     .map_err(|error| BraceProvider::state_error(&error))?;
@@ -1277,8 +1292,18 @@ impl ActionProvider for ActionWindowProvider {
                 txn.replace(&self.windows, &window_id, consumed.clone())
                     .map_err(|error| BraceProvider::state_error(&error))?;
 
+                let secret_version =
+                    record.window().resolution_secret_version().ok_or_else(|| {
+                        ActionError::new(
+                            ActionErrorCode::Integrity,
+                            false,
+                            "random window has no pinned resolution secret",
+                        )
+                        .expect("static window error is bounded")
+                    })?;
                 let mut rng = context
-                    .start_resolution(
+                    .start_resolution_at(
+                        secret_version,
                         &CanonicalId::new("toy_window_resolve").expect("static resolution domain"),
                         inputs_hash,
                     )

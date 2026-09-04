@@ -78,21 +78,56 @@ impl<F: KeyFamily> DurableKeyStore<F> {
     }
 
     pub(crate) fn rotate(&self) -> Result<F::Ring, DurableKeyStoreError<F::RingError>> {
+        self.rotate_retaining(&BTreeSet::new())
+    }
+
+    pub(crate) fn rotate_retaining(
+        &self,
+        required_versions: &BTreeSet<u32>,
+    ) -> Result<F::Ring, DurableKeyStoreError<F::RingError>> {
         self.prepare_directory()?;
         let Some((current_version, current_path)) = self.latest_manifest()? else {
-            return self.provision_initial();
+            return if required_versions.is_empty() {
+                self.provision_initial()
+            } else {
+                Err(DurableKeyStoreError::UnknownRequiredVersion {
+                    version: *required_versions
+                        .first()
+                        .expect("non-empty required version set"),
+                })
+            };
         };
         let manifest = self.read_manifest(current_version, &current_path)?;
         let _ = self.ring_from_manifest(&manifest)?;
+        let available: BTreeSet<_> = std::iter::once(manifest.current)
+            .chain(manifest.retained.iter().copied())
+            .collect();
+        if let Some(version) = required_versions
+            .iter()
+            .find(|version| !available.contains(version))
+        {
+            return Err(DurableKeyStoreError::UnknownRequiredVersion { version: *version });
+        }
+        let max_retained = F::MAX_VERSIONS.saturating_sub(1);
+        if required_versions.len() > max_retained {
+            return Err(DurableKeyStoreError::RequiredVersionLimit {
+                required: required_versions.len(),
+                max_retained,
+            });
+        }
         let next = current_version
             .checked_add(1)
             .ok_or(DurableKeyStoreError::VersionExhausted)?;
         self.create_or_recover_key(next)?;
 
-        let mut retained = Vec::with_capacity(F::MAX_VERSIONS.saturating_sub(1));
-        retained.push(manifest.current);
-        retained.extend(manifest.retained.iter().copied());
-        retained.truncate(F::MAX_VERSIONS.saturating_sub(1));
+        let mut retained_set = required_versions.clone();
+        for version in std::iter::once(manifest.current).chain(manifest.retained.iter().copied()) {
+            if retained_set.len() >= max_retained {
+                break;
+            }
+            retained_set.insert(version);
+        }
+        let retained = retained_set.into_iter().rev().collect();
         let successor = KeyRingManifest {
             format_version: FORMAT_VERSION,
             current: next,
@@ -619,6 +654,15 @@ pub enum DurableKeyStoreError<E> {
     DirectoryEntryLimit { max: usize },
     #[error("durable key version space is exhausted")]
     VersionExhausted,
+    #[error("required durable key version {version} is not present in the current key ring")]
+    UnknownRequiredVersion { version: u32 },
+    #[error(
+        "{required} durable key versions are still referenced; at most {max_retained} can be retained across rotation"
+    )]
+    RequiredVersionLimit {
+        required: usize,
+        max_retained: usize,
+    },
     #[error("invalid typed key ring: {0}")]
     Ring(E),
 }

@@ -214,6 +214,14 @@ impl<'a> PrepareCtx<'a> {
         self.commit_token
     }
 
+    /// Current durable root-secret version. Long-lived work records this
+    /// value before it can outlive a rotation boundary.
+    pub fn current_resolution_secret_version(&self) -> Result<u32, PrepareContextError> {
+        self.keys
+            .map(ResolutionKeyRing::current_version)
+            .ok_or(PrepareContextError::KeyRingUnavailable)
+    }
+
     /// Open the only RNG stream set available to this action preparation.
     /// The provider supplies an action-specific domain and a canonical hash of
     /// every truth input used by its formula; the kernel supplies identity and
@@ -228,6 +236,23 @@ impl<'a> PrepareCtx<'a> {
         }
         let keys = self.keys.ok_or(PrepareContextError::KeyRingUnavailable)?;
         let rng = keys.start(self.idempotency, domain, inputs_hash)?;
+        self.resolution_opened = true;
+        Ok(rng)
+    }
+
+    /// Resume/start a resolution under an exact version pinned by durable
+    /// accepted work such as an action window.
+    pub fn start_resolution_at(
+        &mut self,
+        secret_version: u32,
+        domain: &CanonicalId,
+        inputs_hash: CanonicalHash,
+    ) -> Result<ResolutionRng, PrepareContextError> {
+        if self.resolution_opened {
+            return Err(PrepareContextError::AlreadyOpened);
+        }
+        let keys = self.keys.ok_or(PrepareContextError::KeyRingUnavailable)?;
+        let rng = keys.resume(secret_version, self.idempotency, domain, inputs_hash)?;
         self.resolution_opened = true;
         Ok(rng)
     }
@@ -929,6 +954,10 @@ mod tests {
         let token = CommitToken::from_bytes([0x44; 16]);
         let mut missing = PrepareCtx::new(&idempotency, token, None);
         assert_eq!(
+            missing.current_resolution_secret_version().unwrap_err(),
+            PrepareContextError::KeyRingUnavailable
+        );
+        assert_eq!(
             missing.start_resolution(&domain, inputs()).unwrap_err(),
             PrepareContextError::KeyRingUnavailable
         );
@@ -936,6 +965,10 @@ mod tests {
         let ring = ring();
         let mut context = PrepareCtx::new(&idempotency, token, Some(&ring));
         assert_eq!(context.commit_token(), token);
+        assert_eq!(
+            context.current_resolution_secret_version().unwrap(),
+            ring.current_version()
+        );
         assert_eq!(
             context
                 .start_resolution(&domain, inputs())
@@ -946,6 +979,14 @@ mod tests {
         assert_eq!(
             context.start_resolution(&domain, inputs()).unwrap_err(),
             PrepareContextError::AlreadyOpened
+        );
+        let mut retained = PrepareCtx::new(&idempotency, token, Some(&ring));
+        assert_eq!(
+            retained
+                .start_resolution_at(1, &domain, inputs())
+                .unwrap()
+                .secret_version(),
+            1
         );
         assert!(!format!("{context:?}").contains("34, 34"));
     }

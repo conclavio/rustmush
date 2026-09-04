@@ -138,6 +138,8 @@ pub struct ActionWindow {
     restart: WindowRestartPolicy,
     timeout: WindowTimeoutPolicy,
     max_catch_up: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolution_secret_version: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -153,6 +155,8 @@ struct ActionWindowWire {
     restart: WindowRestartPolicy,
     timeout: WindowTimeoutPolicy,
     max_catch_up: u32,
+    #[serde(default)]
+    resolution_secret_version: Option<u32>,
 }
 
 impl<'de> Deserialize<'de> for ActionWindow {
@@ -172,6 +176,7 @@ impl<'de> Deserialize<'de> for ActionWindow {
             restart: wire.restart,
             timeout: wire.timeout,
             max_catch_up: wire.max_catch_up,
+            resolution_secret_version: wire.resolution_secret_version,
         })
         .map_err(serde::de::Error::custom)
     }
@@ -190,6 +195,10 @@ pub struct ActionWindowDraft {
     pub restart: WindowRestartPolicy,
     pub timeout: WindowTimeoutPolicy,
     pub max_catch_up: u32,
+    /// Root-secret version pinned when the window opens, when its eventual
+    /// resolution uses authoritative randomness. `None` is valid for a
+    /// wholly deterministic window.
+    pub resolution_secret_version: Option<u32>,
 }
 
 impl ActionWindow {
@@ -208,6 +217,9 @@ impl ActionWindow {
                 actual: draft.max_catch_up,
                 max: MAX_WINDOW_CATCH_UP,
             });
+        }
+        if draft.resolution_secret_version == Some(0) {
+            return Err(ActionWindowError::ZeroResolutionSecretVersion);
         }
         if draft.clock != draft.opens.clock || draft.clock != draft.closes.clock {
             return Err(ActionWindowError::ClockIdentityMismatch);
@@ -229,6 +241,7 @@ impl ActionWindow {
             restart: draft.restart,
             timeout: draft.timeout,
             max_catch_up: draft.max_catch_up,
+            resolution_secret_version: draft.resolution_secret_version,
         })
     }
 
@@ -280,6 +293,12 @@ impl ActionWindow {
     #[must_use]
     pub const fn max_catch_up(&self) -> u32 {
         self.max_catch_up
+    }
+
+    /// Exact root-secret version reserved for this window's resolution.
+    #[must_use]
+    pub const fn resolution_secret_version(&self) -> Option<u32> {
+        self.resolution_secret_version
     }
 
     /// Half-open eligibility check: `opens <= now < closes` on one exact
@@ -1039,6 +1058,8 @@ pub enum ActionWindowError {
     ImmediateCapacity,
     #[error("action-window catch-up {actual} must be in 1..={max}")]
     InvalidCatchUp { actual: u32, max: u32 },
+    #[error("resolution secret version zero is reserved")]
+    ZeroResolutionSecretVersion,
     #[error("action-window boundary clock identities do not match")]
     ClockIdentityMismatch,
     #[error("action-window close must be strictly after open")]
@@ -1127,6 +1148,7 @@ mod tests {
             restart: WindowRestartPolicy::CloseIfElapsed,
             timeout: WindowTimeoutPolicy::Close,
             max_catch_up: 3,
+            resolution_secret_version: Some(1),
         })
         .unwrap()
     }
@@ -1350,9 +1372,14 @@ mod tests {
         let decoded = codec.decode_value(&encoded).unwrap();
         codec.validate_value(&decoded).unwrap();
         assert_eq!(decoded, record);
+        assert_eq!(decoded.window().resolution_secret_version(), Some(1));
 
-        let mut tampered = encoded;
+        let mut tampered = encoded.clone();
         tampered["revision"] = json!(99);
         assert!(codec.decode_value(&tampered).is_err());
+
+        let mut zero_secret = encoded;
+        zero_secret["window"]["resolution_secret_version"] = json!(0);
+        assert!(codec.decode_value(&zero_secret).is_err());
     }
 }

@@ -598,6 +598,14 @@ impl Engine {
         self.resolution_keys = Some(keys);
     }
 
+    /// Root-secret versions still referenced by open or durably closed
+    /// action windows. Feed this exact set into reference-aware key rotation.
+    #[must_use]
+    pub fn resolution_key_rotation_references(&self) -> std::collections::BTreeSet<u32> {
+        self.action_state
+            .unresolved_window_resolution_secret_versions()
+    }
+
     /// Enumerate the current viewer-safe legal actions through the frozen
     /// provider registry and deployment offer key ring.
     pub fn project_legal_actions(
