@@ -146,8 +146,23 @@ pub fn server_modules_with(
             // and the title-issuer table is empty until a ruleset registers one —
             // `@asset/title` stays the staff path meanwhile.
             .with_facts(vec![Arc::new(mush_jobs::JobsFactProvider)])
-            .with_observers(vec![Arc::new(crate::econ_canon::CanonEvidenceBridge)])
-            .with_title_issuers(Vec::new())
+            // E5b: housing's exact-mode mirror joins the canon bridge. It hears the
+            // obligation and contract transitions a lease is made of; abstract mode
+            // does not need it at all.
+            .with_observers(vec![
+                Arc::new(crate::econ_canon::CanonEvidenceBridge),
+                Arc::new(mush_housing::HousingEconomyObserver),
+            ])
+            // E5b: `system:wod.housing` mints the title record on a property's anchor
+            // room through `mush_economy::issue_title` (D-E3-13, 08d §2). The same
+            // principal is wired into `HousingModule::with_issuer` below, and
+            // `issue_title` refuses any issuer that is not on BOTH lists.
+            //
+            // 08d §2 says the server registers it "only when the WoD ruleset is
+            // configured"; E5c owns that knob (`[wod.economy].housing`), and until it
+            // lands the issuer is wired unconditionally. It is inert without housing:
+            // a registered issuer that nothing calls mints nothing.
+            .with_title_issuers(vec![housing_title_issuer()])
             // E4c verify fold (E1): the canon kinds that count as a
             // **producer-declared outcome**. Deliberately empty — `scene.concluded`
             // is a lifecycle record any participant can produce, so a payee gated on
@@ -158,9 +173,29 @@ pub fn server_modules_with(
         ),
         Box::new(mush_mail::MailModule),
         Box::new(mush_jobs::JobsModule::new()),
+        // E5: housing boots after `{org, sim, tactics, economy, jobs}` (08a decision
+        // 19, 08d §2). `on_world_loaded` runs in list order and housing's boot
+        // reconciliation asks all four of them questions: org for the landlord
+        // compartment, the economy for cadence positions and rent obligations, jobs
+        // for the story queue, and the world itself for the rooms.
+        Box::new(
+            mush_housing::HousingModule::new().with_issuer(housing_title_issuer()),
+        ),
         Box::new(mush_weather::WeatherModule::with_config(weather)),
         Box::new(mush_script::ScriptModule::new()),
     ]
+}
+
+/// The system principal housing mints property titles under (08d §2, D-E3-13).
+///
+/// It is named in exactly two places — `EconomyModule::with_title_issuers` and
+/// `HousingModule::with_issuer` — and `mush_economy::issue_title` refuses an issuer
+/// that is not on the economy's list, so a typo in either one is a loud refusal at
+/// `@property/create` rather than a silent capability.
+#[must_use]
+pub fn housing_title_issuer() -> mush_org::SystemPrincipalId {
+    mush_org::SystemPrincipalId::new("wod.housing")
+        .expect("a built-in system principal id is well-formed")
 }
 
 /// The capability vocabulary this server recognizes (E3b2 §4.8.4 / §4.10): every
@@ -177,6 +212,7 @@ pub fn org_capability_vocabulary() -> std::collections::BTreeSet<mush_org::Capab
     mush_economy::CAPABILITIES
         .iter()
         .copied()
+        .chain(mush_housing::CAPABILITIES.iter().copied())
         .chain(["org.role.manage", "org.grant.delegate"])
         .map(|c| mush_org::CapabilityId::new(c).expect("a built-in capability id is well-formed"))
         .collect()
@@ -1243,19 +1279,20 @@ mod tests {
             names,
             [
                 "comsys", "canon", "org", "faction", "scenes", "sim", "tactics", "economy", "mail",
-                "jobs", "weather", "script"
+                "jobs", "housing", "weather", "script"
             ]
         );
     }
 
     #[test]
     fn the_org_capability_vocabulary_covers_every_economy_capability() {
-        // E3b2 §4.10: the wiring vocabulary is `mush_economy::CAPABILITIES` ∪ the two
-        // org-administrative ids. If the economy starts asking about a capability the
-        // server does not wire, `@org/grant` would refuse the very grant the economy
-        // needs — so this is a real coupling, pinned here.
+        // E3b2 §4.10: the wiring vocabulary is `mush_economy::CAPABILITIES` ∪
+        // `mush_housing::CAPABILITIES` (E5b) ∪ the two org-administrative ids. If a
+        // module starts asking about a capability the server does not wire,
+        // `@org/grant` would refuse the very grant that module needs — so this is a
+        // real coupling, pinned here.
         let vocab = org_capability_vocabulary();
-        for c in mush_economy::CAPABILITIES {
+        for c in mush_economy::CAPABILITIES.iter().chain(mush_housing::CAPABILITIES) {
             let id = mush_org::CapabilityId::new(c).expect("well-formed");
             assert!(vocab.contains(&id), "the wiring vocabulary omits {c}");
         }
@@ -1265,7 +1302,10 @@ mod tests {
                 "{c}"
             );
         }
-        assert_eq!(vocab.len(), mush_economy::CAPABILITIES.len() + 2);
+        assert_eq!(
+            vocab.len(),
+            mush_economy::CAPABILITIES.len() + mush_housing::CAPABILITIES.len() + 2
+        );
         assert!(
             !vocab.contains(
                 &mush_org::CapabilityId::new("economy.acount.post").expect("well-formed")
@@ -1378,7 +1418,7 @@ mod tests {
             names,
             [
                 "comsys", "canon", "org", "faction", "scenes", "sim", "tactics", "economy", "mail",
-                "jobs", "weather", "script", "worldgen", "wod"
+                "jobs", "housing", "weather", "script", "worldgen", "wod"
             ]
         );
         assert!(tw.registry().spec_of("@gen").is_some());
@@ -1491,7 +1531,7 @@ mod tests {
             names,
             [
                 "comsys", "canon", "org", "faction", "scenes", "sim", "tactics", "economy", "mail",
-                "jobs", "weather", "script", "wod"
+                "jobs", "housing", "weather", "script", "wod"
             ]
         );
         // The ruleset's surface is live: +roll / +sheet registered, the

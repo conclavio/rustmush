@@ -56,9 +56,15 @@ pub enum EscalationKind {
     /// The whole-economy freeze is set: the sweep is doing nothing at all until staff
     /// clear it. The level-3 record (§4.6), carrying the diagnosis.
     EconomyFrozen,
-    /// Boot could not reconcile a record against the live world (a destroyed party, a
-    /// closed account) and suspended it rather than guessing.
+    /// Boot — or, since E5b, a later world event — could not reconcile a record
+    /// against the live world (a destroyed party, a closed account, a residence whose
+    /// rooms went away) and stopped that one record rather than guessing.
     BootReconciliation,
+    /// A **story window** has spent its notices and nobody has decided (E5b, 08d
+    /// §4/§3.2). Automatic processing stopped at `EvictionPending` **by design**
+    /// (D-E5-1: a home never ends on its own), so the only thing left that can move
+    /// it is a person — which is precisely what this ladder is for.
+    StoryWindow,
 }
 
 impl EscalationKind {
@@ -71,6 +77,7 @@ impl EscalationKind {
             EscalationKind::KeyConflict => "idempotency key conflict",
             EscalationKind::EconomyFrozen => "economy frozen",
             EscalationKind::BootReconciliation => "boot reconciliation",
+            EscalationKind::StoryWindow => "story window",
         }
     }
 }
@@ -84,6 +91,20 @@ pub enum EscalationSubject {
     Hold(HoldId),
     /// One contract (E4b2).
     Contract(ContractId),
+    /// One **housing property** (E5b).
+    ///
+    /// The economy neither resolves nor interprets these two: they are the id of a
+    /// record belonging to a module layered on top of it
+    /// ([`crate::open_escalation`]). They live here rather than in a ladder of
+    /// housing's own because the ladder is where the *dedupe*, the *reopen*, the
+    /// acknowledgement and `@econ/alerts` are — 08a decision 25's operating rule is
+    /// "one alert per decision a human actually has to make", and a second
+    /// half-implemented ladder in every layered module is exactly how that becomes
+    /// four alerts. The variant is `u64` rather than a housing type because the
+    /// dependency runs housing → economy and must keep running that way.
+    HousingProperty(u64),
+    /// One **housing tenancy** (E5b) — see [`EscalationSubject::HousingProperty`].
+    HousingTenancy(u64),
     /// The whole economy — the level-3 case, and the only one that is not local.
     Economy,
 }
@@ -96,6 +117,8 @@ impl EscalationSubject {
             EscalationSubject::Obligation(id) => format!("obligation #{id}"),
             EscalationSubject::Hold(id) => format!("hold #{id}"),
             EscalationSubject::Contract(id) => format!("contract #{id}"),
+            EscalationSubject::HousingProperty(id) => format!("housing property #{id}"),
+            EscalationSubject::HousingTenancy(id) => format!("housing tenancy #{id}"),
             EscalationSubject::Economy => "the economy".to_string(),
         }
     }

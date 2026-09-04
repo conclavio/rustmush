@@ -34,6 +34,7 @@ mush-canon.workspace = true
 mush-org.workspace = true
 # The E2 accountable-value engine (double-entry journal).
 mush-economy.workspace = true
+mush-housing.workspace = true
 mush-mail.workspace = true
 mush-jobs.workspace = true
 # The M5 scripting + weather modules.

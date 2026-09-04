@@ -3,7 +3,9 @@
 **Status:** Draft 0.2 — reviewed (three passes: adversarial, code-grounding, design-fit against docs
 08/08a/08c/09 and the owner's answers); every confirmed finding is folded below and itemised in §12.
 **E5a is built** — `crates/mush-housing`, the pure library; read §3.5 "As built" for its signatures,
-deviations and the seams E5b consumes.
+deviations and the seams E5b consumes. **E5b is built** — the `HousingModule` that attaches it to a
+world; read §4.1 "As built" for its signatures, doc shapes, the pull-model assessment, the
+lease-backed exact mode, the deviations and the handoffs to E5c.
 Companion to [08-economy-organizations-ownership.md](08-economy-organizations-ownership.md) (§6.3
 abstract wealth, §11.1 the WoD slice, §18-E5), [08a-economy-build-status.md](08a-economy-build-status.md)
 (ledger), [08c-e4-implementation-plan.md](08c-e4-implementation-plan.md) (E4, which E5 is layered on),
@@ -434,7 +436,7 @@ escalation on recovery (S8).
   their own guest standing), `+home/leave` (explicit move-out → `Ended{TenantLeft}`), `+guest
   add|remove <who>`.
 
-Tests (~30): scenario 23's housing half in abstract mode — supported periods are silent; an
+Tests (planned ~30; **43 as built**, `crates/mush-housing/tests/e5b.rs`): scenario 23's housing half in abstract mode — supported periods are silent; an
 `Unsupported` plan walks Grace → Delinquent → EvictionPending with exactly one notice each and no
 movement; the window elapsing re-notifies three times, then is silent until the escalation, and the
 tenant still enters and `home` still works; `@tenancy/resolve end` clears `Obj.home` for every
@@ -448,6 +450,225 @@ escalation, tenancy intact; the offline tenant's reconnect notice; a landlord of
 own properties and nothing of another landlord's; a guest's `+home` shows no tenant list; exact
 mode via a real E4 obligation with the same transitions; reboot at every state; large cadence jumps
 assess once with bounded catch-up.
+
+### 4.1 As built (E5b, `crates/mush-housing` + the `mush-economy` seams it consumes)
+
+Built as the world-attached half of the same crate. `cargo test -p mush-housing` **98 passing**
+(54 E5a + 43 E5b + 1 in-crate); `cargo clippy --workspace --all-targets -- -D warnings` clean;
+`cargo fmt` stays off, unchanged.
+
+**Files.** `src/module.rs` (`HousingModule`, `HousingStore`, the keys, registration) ·
+`src/boot.rs` (load + the four reconciliation passes) · `src/hooks.rs` (the
+`MoveAttempt`/`CarryAttempt` hook, the destroy gate, the `ObjDestroyed` backstop, the reconnect
+notice) · `src/tick.rs` (the pull-model assessment + the story-window decay) · `src/flow.rs` (the
+world-attached halves of E5a's arrows: the `Obj.home` invariant, the story job, the per-transition
+notice, and the ruleset's `submit_support_plan` entry) · `src/econ.rs` (the exact-mode
+`EconomyObserver`) · `src/notice.rs` (the bounded offline queue) · `src/commands.rs` (the whole
+verb surface) · `tests/e5b.rs`.
+
+**Dependencies.** E5a's `{core, org, economy}` plus **`mush-jobs`** (a story window's bare `u64`
+has to become a real ticket) and `mush-proto` (`RichText`, for the hook's refusal). Deliberately
+**no** `mush-sim` and **no** `mush-config` edge — see deviation 3.
+
+**Persistence** (namespace `housing`):
+
+| doc | class | corrupt → |
+|---|---|---|
+| `property:{id}` | container | **fails the boot** |
+| `tenancy:{id}` | container | **fails the boot** |
+| `assess:{id}` | leaf (the pull cursor: `position`, `period`, `unknown_periods`, `seeded`) | skipped loudly, re-seeded |
+| `notice:{obj}` | leaf (the bounded offline queue) | skipped loudly |
+| `meta` | allocators + the tick's rotation cursor | tolerated field by field |
+
+Both containers deserialize through E5a's `TryFrom` wires, so "parses" is the strong sense: every
+§9 cap, the anchor-in-rooms rule, tenant ∉ guests and "a plan is filed under its own resident" are
+re-checked on load. Allocators resume from `meta` **floored past every parsable key** and
+saturating (E4b1's B1), so a hand-written `property:18446744073709551615` parks the allocator at
+the ceiling — where minting refuses — instead of wrapping live ids back into use.
+
+**Boot reconciliation**, exactly §4's list plus one re-derivation:
+
+1. anchor or rooms missing / `GOING` → property `Withdrawn` + a level-2 page; **every tenancy on it
+   untouched**.
+2. a tenant object gone → dropped through `Tenancy::remove_tenant` (roster + plan + history entry,
+   never `homed`, §3.5 A1/S11). The **last** tenant cannot be removed that way, so that case pages
+   instead of ending anything.
+3. an exact tenancy whose obligation is missing or cancelled → paged, status untouched, **never**
+   `EvictionPending`.
+4. the `Let`/`Vacant` latch is a projection, so boot re-derives it from the live tenancies.
+   `Withdrawn` is never re-derived away — it is a decision, and only `@property/rooms` lifts it.
+
+Capped at `MAX_BOOT_PAGES` (16), the economy's own rule.
+
+**The pull-model assessment** (`src/tick.rs`). §4 says housing "subscribes to the E4 cadence
+clock"; there is no subscription seam on a cadence, and adding one would put a housing callback
+inside the economy's money tick. So it is the **pull** form of the same rule, and it needs no
+economy change at all: housing keeps `last_assessed_position` per tenancy and, on its own
+`TickCadence::Coarse(30s)` tick, assesses every tenancy whose cadence `position` has moved past it.
+A missed fire loses nothing (the next one sees the same gap) and a duplicate fire does nothing (the
+position is the idempotency key). One fire:
+
+- takes at most `MAX_ASSESSMENTS_PER_FIRE` (128) tenancies from a **rotation cursor** (E4b2's B4),
+  so a world with more than that still reaches every one of them;
+- assesses **one period per tenancy however far the clock jumped** — forty periods of downtime
+  assess once. That is E4's "a backlog is never charged" in its housing form: the ladder is three
+  assessed periods long, and a restart must not spend all three while the player was asleep;
+- **abstract** tenancies go through `assess_at(tier, plans, tenants, period, PLAN_MAX_AGE_PERIODS)`
+  → `harden(a, unknown_periods)` → `advance`, with the per-tenancy `unknown_periods` run counter
+  in `assess:{id}`;
+- **exact** tenancies do not: *whether* they are behind is the obligation's answer, mirrored onto
+  the ladder's first rung by the observer, while *how many assessed periods* they have been behind
+  is a question only this cadence can answer, so `Grace → Delinquent → EvictionPending` is driven
+  here. Reading one clock's elapsed time off another is the bug `EconomicDeadline` exists to make
+  unwritable, and the split is exactly that rule;
+- then drives the story window: `window_due` decides, the tick executes, and an `Escalate` mints
+  the `EscalationId` **first** and folds it through `window_elapsed` (a bare `Escalate` is
+  `NeedsEscalation`, never a skipped page).
+
+A tenancy whose cadence record has gone away is **frozen, not advanced** — an unresolvable clock
+never makes anything happen, the economy's own rule — and the cursor is seeded at creation, so the
+first period the clock advances after a tenancy is created is the first one it is assessed on.
+
+**Access** (`src/hooks.rs`). One `AccessHook` registered under **both** points, because E5a's
+`may_take` *is* `may_enter`. The decision table, for a move into room `r`:
+
+| question | answer |
+|---|---|
+| is `r` a room of a property this store knows? | no → allow (abstain) |
+| is that property `Let`? | no → allow — a `Vacant` or `Withdrawn` residence is an ordinary room |
+| does it have a live tenancy? | no → allow |
+| `may_enter_with(t, &t.terms, who, inspector, is_staff, now)` | `Refused` → veto with one neutral text; anything else → allow |
+
+`inspector` is the org/world question E5a cannot answer: an object principal is themself, an
+organization is whoever holds `property.manage` on the property's compartment (or the org's root
+scope), and a **system** principal is held by nobody, staff included — the `WorldAuth::acts_for`
+rule. `now` is the tenancy's cadence position, or `i64::MIN` when the clock cannot be read, so a
+clock error never opens a door. A **carry asks the same question twice**, of the room the object
+comes out of and the room it goes into.
+
+**Destroy.** A `DestroyGate` refuses `@destroy` of any room of a `Let` property, detailed for
+somebody who may view it and `"You cannot destroy that right now."` for everyone else; the
+`ObjDestroyed` observer is the backstop for destruction that never passes the gate, and marks the
+property `Withdrawn`, keeps every tenancy as-is, pages level 2 and tells the tenants.
+
+**Exact mode** (`src/econ.rs`), end to end:
+
+1. `@tenancy/create <property>=<tenant…> cadence=<id> mode=exact rent=<n> from=<acct> to=<acct>`
+   calls the new **`mush_economy::offer_lease`**: parties are the landlord and the tenants, the
+   **landlord's acceptance is the offer** (a staff act on their behalf — exactly the
+   `landlord_accepted` half of E5a's `accept`), the premises are pledged as the landlord's
+   `Collateral` and the rent is an `Obligation` deliverable, with one
+   `Attestation { by: Staff }` condition. The tenancy is written `Pending` with
+   `Funding::Exact { contract, obligation: PENDING_OBLIGATION }`.
+2. The **tenant's own `@contract/accept`** is the consent, and it is the last one, so the contract
+   activates: the economy places `Encumbrance::Lease { lessor, contract }` on the premises and
+   creates the rent obligation with `cause: Contract(id)`.
+3. Housing binds that obligation and runs E5a's `accept`, so the tenancy goes `Active`, `Obj.home`
+   points at the anchor and the property latches `Let` — through the same code path abstract mode
+   uses.
+4. Each period the sweep settles it. `ObligationChanged` mirrors Grace/recovery; the tick walks the
+   rest.
+5. A **terminal** contract ends the tenancy with `Resolution::Settled`. That is not an automatic
+   ending: every route into a terminal contract state is somebody's explicit act, which is the
+   resolution E5a reserved for exactly this (D-E5-1).
+
+No housing code debits anyone anywhere: rent is settled by the economy sweep under the economy's
+own authority, and housing stores two ids.
+
+**The seams consumed in `mush-economy`** (§2 anticipated one; four shipped, all additive):
+
+1. **`issue_title`** — as planned (§7 item 4). `@property/create` mints the anchor's title to the
+   landlord under the wired issuer; `Obj.owner` of the rooms stays the builder.
+2. **`open_escalation` / `acknowledge_escalation`** + `EscalationSubject::{HousingProperty,
+   HousingTenancy}` + `EscalationKind::StoryWindow`. Housing pages through the **economy's** ladder
+   rather than growing one of its own, so the dedupe, the reopen-after-ack, `@econ/alerts`, the
+   renotify schedule and the GC are the ones a staffer already knows — 08a decision 25's whole
+   point is one alert per decision, and two half-ladders is how that becomes two.
+3. **`offer_lease` / `LeaseSpec`** — one call, because a lease is one act. The builder verbs are
+   the **issuer's**, so a system landlord (`sys:wod.housing`, which types nothing) could not have
+   built one at all, and every intermediate state (a pledge with no rent, rent with no premises) is
+   something a tenancy must never be bound to.
+4. **`@econ/cadence create|show|list|advance`** — E4b1 deviation 1's leftover, shipped here because
+   E5 is the first cut with a clock a human has to name. `create <name> source=<real:<secs>|
+   ic:<secs>|manual> [catchup=<n>]`, `show <id>`, `list`, and `advance <id> [<n>]` which is
+   **`Manual`-only**: hand-advancing a real- or IC-sourced clock would put its `position` ahead of
+   the source it derives from, and the next sweep would charge the same periods again.
+
+One seam was added to **`mush-jobs`**: `set_job_status(ctx, id, by, status, note)`, the producing
+module's counterpart to `open_job`. A story window that recovers must close the ST's ticket, or an
+ST is left holding a decision about a home that is fine.
+
+**Deviations and clarifications** (all recorded, none silent):
+
+1. **`@tenancy/create` in abstract mode goes straight to `Active`.** §4's command list has no
+   accept verb and §5.4's chargen approval "creates the tenancy (`Pending → Active`) through
+   housing", so the staff act that creates it records both consents at once. Exact mode is the
+   opposite by design: the tenant's `@contract/accept` is the consent, so it stays `Pending`.
+2. **`@tenancy/resolve <id>=extend` resets the window at the module layer.** E5a has no `extend`
+   arrow — its window functions only ever *spend* the budget — and adding a pure function that
+   makes a window younger would contradict the decay rules it exists to enforce. So `extend` builds
+   a fresh `StoryWindow` carrying the existing job, scene and escalation ids. **E5c handoff:** if a
+   second caller ever needs it, it belongs in the library with the ids carried by construction.
+3. **D-E5-12's "not a sim space / presentation room / chargen start room" is enforced without a
+   `mush-sim` or `mush-config` edge.** §2 fixes housing's dependency set at `{core, org, economy,
+   jobs}` and both of those would break it. Three mechanisms cover it instead: the **thoroughfare
+   rule** (a sim space, a presentation room and a common area are all reachable by an exit from
+   outside the property, so all three are refused — the anchor, the declared entrance, is the only
+   exemption), a wiring-frozen **reserved-room list**
+   (`HousingModule::with_reserved_rooms`, which is how the host passes the `[onboarding]` start
+   rooms it parses), and housing's own **`no-property` marker**. Limbo is refused always.
+   **E5c handoff:** wire `start_room` / `start_room_unapproved` into `with_reserved_rooms`.
+4. **`@tenancy/resolve <id>=scene` is how the ST asks for the optional scene.** §4 says the window
+   "optionally starts a scene when the ST asks via the job"; there is no callback from a job
+   comment into a module, and inventing one would be a second dispatch path into housing. The ST
+   asks by typing it, and the `SceneRef` recorded is opaque and boot-local by construction (E5a
+   deviation 8).
+5. **The story job's `opener` is `GOD`, explicitly.** The opener receives the job's status notices,
+   and that must not be the tenant — this is an ST's ticket about their home, and the tenant has
+   their own private notice. The queue's per-queue visibility decides who reads it.
+6. **The tick period is 30 s wall clock**, which is a *latency* bound and nothing else: the pull
+   compares cadence positions, so the tick's own rate never affects what is assessed.
+7. **A `PENDING_OBLIGATION` sentinel (`ObligationId(u64::MAX)`).** `Funding::Exact` names both ids
+   by type and the rent obligation does not exist until activation. `u64::MAX` is the one value
+   that can never collide: the economy's allocators refuse to mint at the ceiling (E4b1's B2).
+8. **The lease binds its obligation from `ObligationChanged`, not `ContractChanged`.**
+   `ContractChanged { Active }` is emitted by the contract's own state write, which happens
+   *before* the economy creates the obligations its deliverables describe — so the rent record does
+   not exist yet at that edge. Creating it is what emits `ObligationChanged`, and that is where the
+   binding happens; the tick re-checks it as the restart-safe catch-up.
+9. **`landlord=housing` resolves to the server's own wired system principal**, never to a literal
+   `wod.housing`. D-E5-5 makes this crate game-neutral, and a hard-coded World-of-Darkness name in
+   it would be the one place that stopped being true; the principal the host registered as the
+   title issuer *is* owner answer 5's "generic `system:wod.housing` principal", so naming it that
+   way keeps the two the same by construction. `landlord=sys:<name>` still names one explicitly.
+10. **New capability vocabulary** `property.view`, `property.manage` (`mush_housing::CAPABILITIES`,
+    chained into the server's `org_capability_vocabulary`). Per §11 answer 3, binding:
+    `property.manage` covers show/list and guest policy, and **never** tenancy creation, which is
+    staff-only in E5.
+11. **No state families, still.** E5a deviation 10 asked E5b to revisit doc 09's `action-state/*`
+    lane for `tenancy:{id}`. It stays conventional: 08c §12's "K3 review" decision has not moved,
+    the container-doc discipline already gives the failure mode the status ladder needs (a corrupt
+    one fails the boot), and adding a typed family now would be a schema commitment made ahead of
+    the review that owns it. **Carried to the K-series review, not to E5c.**
+
+**Handoffs to E5c:**
+
+- **`mush_housing::submit_support_plan(ctx, tenancy, resident, level, sources)`** is the whole
+  interface (D-E5-5). The ruleset's period evaluation calls it in code; no player command does.
+  Housing stamps both `asserted_at` (the cadence position) and `asserted_period` (its own monotonic
+  ordinal) — a ruleset that supplied either could make a stale plan look fresh, which is what
+  `PLAN_MAX_AGE_PERIODS` exists to prevent. A restatement that changes nothing writes nothing.
+- **Restate every period.** A plan older than `PLAN_MAX_AGE_PERIODS` (2) is *absent*, not asserted,
+  so an evaluator that stops running lets `UNKNOWN_GRACE` fire rather than propping the lease up
+  forever (§3.5 S4).
+- **Wire the chargen start rooms** into `HousingModule::with_reserved_rooms` (deviation 3).
+- **The `[wod.economy].housing` knob** decides whether the server registers `system:wod.housing` as
+  a title issuer at all; it is wired unconditionally for now, and is inert without housing.
+- **Chargen's Residence step** creates the tenancy through the same `@tenancy/create` path
+  (abstract → live immediately); `@property/list` already filters by view standing, so the step can
+  offer vacancies without disclosing occupancy.
+- **An org or system landlord has no inbox.** The delinquency notice reaches an *object* landlord
+  only; E4c's observer seam is where an org's staff channel gets one.
 
 ---
 

@@ -1453,6 +1453,65 @@ pub(crate) fn contract_principal() -> PrincipalId {
     )
 }
 
+// ---- the layered-module escalation seam (E5b) ------------------------------
+
+/// **Open (or reuse) one level-2 record on behalf of a module layered on the
+/// economy** — E5b's housing today (08d §4).
+///
+/// It is the same `sweep`-side ladder every economy page goes through, with the
+/// same three dedupe rules: one open record per subject, an acknowledged record
+/// **reopened** rather than replaced once its cause comes back past the cool-off,
+/// and the acknowledgement/`@econ/alerts`/GC lifecycle a staffer already knows. The
+/// alternative — a second ladder inside housing — would have given a staffer two
+/// alert lists with two acknowledgement verbs and two renotify schedules for one job,
+/// which is exactly what 08a decision 25 is written against.
+///
+/// The `subject` is an [`crate::EscalationSubject::HousingProperty`] /
+/// `HousingTenancy` id the economy stores and renders but never interprets: the
+/// dependency runs housing → economy, so the ladder cannot resolve the record it
+/// names, and it does not have to — the point of a level-2 page is the **filled-in
+/// recommended command**, which the caller supplies.
+///
+/// Returns `None` only when the economy is not loaded or the escalation allocator is
+/// exhausted; the caller must still do whatever it was going to do to the subject
+/// (E4b1's B2 rule: the subject stops either way).
+pub fn open_escalation(
+    ctx: &mut Ctx<'_>,
+    kind: crate::escalation::EscalationKind,
+    subject: crate::escalation::EscalationSubject,
+    context: String,
+    recommended: Vec<String>,
+) -> Option<crate::ids::EscalationId> {
+    let now = ctx.w.now();
+    crate::sweep::page(ctx, kind, subject, None, context, recommended, now)
+}
+
+/// Acknowledge an open escalation record on behalf of `by` — the seam a layered
+/// module uses when **the cause resolved itself** (E5a's S8: a tenancy that
+/// recovered out of `EvictionPending` must ack the page it opened, or a staffer is
+/// left holding an alert about a home that is fine).
+///
+/// Idempotent: a record that is already acknowledged, or is not there at all, is
+/// left exactly as it is and answers `false`. It deliberately does **not** resume
+/// anything — resumption is subject-specific and belongs to whoever owns the
+/// subject (`@econ/ack` does the obligation half).
+pub fn acknowledge_escalation(
+    ctx: &mut Ctx<'_>,
+    id: crate::ids::EscalationId,
+    by: ObjId,
+) -> bool {
+    let record = ctx.w.module_state::<EconomyStore>().and_then(|s| s.escalation(id).cloned());
+    let Some(mut record) = record.filter(crate::escalation::Escalation::is_open) else {
+        return false;
+    };
+    let now = ctx.w.now();
+    record.acked_by = Some(by);
+    record.acked_at = Some(now);
+    record.revision = record.revision.saturating_add(1);
+    put_escalation(ctx, record);
+    true
+}
+
 /// Install an escalation record into RAM and queue its leaf doc (E4b1, §4.6).
 pub(crate) fn put_escalation(ctx: &mut Ctx<'_>, e: crate::escalation::Escalation) {
     {

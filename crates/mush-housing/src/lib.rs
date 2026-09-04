@@ -1,12 +1,18 @@
-//! `mush-housing` (E5a) — the pure, game-neutral housing library.
+//! `mush-housing` — the game-neutral housing library (E5a) and the module that
+//! attaches it to a world (E5b).
 //!
-//! This crate is **world-free**: property and tenancy records, the tenancy state
-//! machine, the multi-resident support assessment, the access predicate, and the
-//! `Obj.home` invariant helpers — all unit-tested on hand-built records, exactly the
-//! shipped E2a/E3a/E4a pure-library shape. The `HousingModule` that attaches this to
-//! the world (persistence and boot, the `MoveAttempt`/`CarryAttempt` hooks, the
-//! destroy gate, the cadence-driven assessment tick, the story-window job, the
-//! `@property/*` and `@tenancy/*` surface) is **E5b**.
+//! **E5a** is world-free: property and tenancy records, the tenancy state machine, the
+//! multi-resident support assessment, the access predicate, and the `Obj.home`
+//! invariant helpers — all unit-tested on hand-built records, exactly the shipped
+//! E2a/E3a/E4a pure-library shape.
+//!
+//! **E5b** is [`HousingModule`]: persistence and boot reconciliation
+//! (`src/module.rs`, `src/boot.rs`), the `MoveAttempt`/`CarryAttempt` hook, the
+//! destroy gate and the `ObjDestroyed` backstop (`src/hooks.rs`), the
+//! cadence-driven assessment tick (`src/tick.rs`), the exact-mode bridge to E4
+//! contracts and obligations (`src/econ.rs`), the story window and the `Obj.home`
+//! invariant (`src/flow.rs`), the bounded offline notices (`src/notice.rs`), and
+//! the `@property/*`, `@tenancy/*`, `+home`, `+guest` surface (`src/commands.rs`).
 //!
 //! ## Design spine (08d §3, decisions D-E5-1 … D-E5-14)
 //!
@@ -37,12 +43,19 @@
 //!
 //! ## What is deliberately not here
 //!
-//! No ruleset edge (`SupportLevel` is opaque), no `mush-scenes` edge ([`SceneRef`] is
-//! an opaque handle E5b maps), no `mush-jobs` edge (a story-window job is a bare
-//! `u64`), and no registration with doc 09's `action-state` families or the
+//! No ruleset edge (`SupportLevel` stays opaque — D-E5-5), no `mush-scenes` edge
+//! ([`SceneRef`] is an opaque handle the module maps), no `mush-sim` edge (D-E5-12's
+//! sim-space rule is enforced by the thoroughfare test and a wiring-frozen reserved
+//! list, not by asking the simulation), no `mush-config` edge (the host wires what it
+//! knows), and no registration with doc 09's `action-state` families or the
 //! authoritative store lane — 08c §12's "K3 review" decision keeps the E-series
 //! records conventional for now (08d §3.5).
+//!
+//! E5b adds exactly one dependency E5a did not have: **`mush-jobs`**, because the
+//! bare `u64` a story window carries has to become a real ticket in the `wod-story`
+//! queue for an ST to answer it.
 
+// E5a — the pure library.
 mod access;
 mod assess;
 mod error;
@@ -50,6 +63,16 @@ mod home;
 mod ids;
 mod record;
 mod tenancy;
+
+// E5b — the world-attached module.
+mod boot;
+mod commands;
+mod econ;
+mod flow;
+mod hooks;
+mod module;
+mod notice;
+mod tick;
 
 pub use access::{Access, may_enter, may_enter_with, may_take, may_take_with};
 pub use assess::{
@@ -70,4 +93,18 @@ pub use tenancy::{
     WINDOW_ESCALATED_RENOTIFY, WINDOW_RENOTIFY, WindowAction, accept, advance, attach_window,
     delinquent_elapsed, grace_elapsed, period_missed, period_supported, periods_since, resolve,
     window_due, window_elapsed,
+};
+
+// E5b — the module surface.
+pub use commands::{
+    LIST_CAP, NO_SUCH_PROPERTY, NO_SUCH_TENANCY, may_view_property, may_view_tenancy,
+};
+pub use econ::{HousingEconomyObserver, PENDING_OBLIGATION};
+pub use flow::submit_support_plan;
+pub use hooks::{NO_DESTROY, REFUSED, REFUSED_CARRY, may_reach};
+pub use module::{
+    AssessState, CAPABILITIES, HousingModule, HousingStore, MAX_ASSESSMENTS_PER_FIRE,
+    MAX_NOTICE_BYTES, MAX_PENDING_NOTICES, META_KEY, NO_PROPERTY_MARKER, NS, PendingNotice,
+    STORY_QUEUE, TICK_PERIOD_SECS, TICK_TAG, assess_key, cadence_now, is_staff, notice_key,
+    property_key, tenancy_key,
 };

@@ -27,12 +27,12 @@ use smol_str::SmolStr;
 
 use crate::amount::Amount;
 use crate::api::{self, PostOutcome};
-use crate::clock::{Clocks, EconomicClock, EconomicDeadline, EconomicSchedule};
+use crate::clock::{CadenceSource, Clocks, EconomicClock, EconomicDeadline, EconomicSchedule};
 use crate::engine::AuthEval;
 use crate::escalation::EscalationSubject;
 use crate::ids::{
-    AccountId, ApprovalRequestId, EscalationId, HoldId, InstrumentId, ObligationId, TransactionId,
-    VaultId,
+    AccountId, ApprovalRequestId, CadenceId, EscalationId, HoldId, InstrumentId, ObligationId,
+    TransactionId, VaultId,
 };
 use crate::module::EconomyStore;
 use crate::obligation::{
@@ -91,7 +91,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             shape: ArgShape::EqPair,
             switches: [
                 "pay", "mint", "reverse", "audit", "history", "approve", "deny", "approvals",
-                "unfreeze", "alerts", "ack",
+                "unfreeze", "alerts", "ack", "cadence",
             ]
             .iter()
             .copied()
@@ -113,6 +113,11 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @econ/alerts                            open economy escalations (staff)\n\
                    @econ/ack <id>                          acknowledge one, and resume its subject\n\
                    \x20                                      where that is the recommendation (staff)\n\
+                   @econ/cadence create <name> source=<real:<secs>|ic:<secs>|manual> [catchup=<n>]\n\
+                   \x20                                      name a campaign clock (staff)\n\
+                   @econ/cadence show <id>   @econ/cadence list\n\
+                   @econ/cadence advance <id> [<n>]        step a MANUAL cadence (staff); a real- or\n\
+                   \x20                                      IC-sourced clock is the sweep's to move\n\
                    @econ/unfreeze                          clear the whole-economy freeze (staff)\n\
                    \x20                                      the latch is DURABLE: it survives reboots\n\
                    \x20                                      until it is cleared here. Account, asset and\n\
@@ -1246,11 +1251,216 @@ fn cmd_econ(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     } else if ctx.switches.has("ack") {
         require_admin(ctx)?;
         econ_ack(ctx)
+    } else if ctx.switches.has("cadence") {
+        econ_cadence(ctx)
     } else {
         Err(CmdError::msg(
-            "Usage: @econ/pay|mint|reverse|audit|history|approve|deny|approvals|alerts|ack|unfreeze",
+            "Usage: @econ/pay|mint|reverse|audit|history|approve|deny|approvals|alerts|ack|\
+             cadence|unfreeze",
         ))
     }
+}
+
+// ---- @econ/cadence (E4b1 deviation 1, shipped with E5b) --------------------
+
+/// `@econ/cadence create|show|list|advance` — the campaign clocks (D-E4-2, owner
+/// answer 7).
+///
+/// E4b1 shipped [`crate::CadenceClock`], its advance arithmetic, the sweep step that
+/// moves it and the `cadence:{id}` container doc, and deliberately left the **verbs**
+/// to whichever cut first needed a clock a human could name: E5 housing, whose every
+/// tenancy is assessed on one. Until now a cadence could only be created by a test
+/// rig writing the record directly, which is not a thing a game can do.
+///
+/// The whole subcommand is **staff**: a cadence is campaign structure — a season, a
+/// payroll cycle — and *creating* one is not the interesting risk. Advancing a
+/// `Manual` one is: `position` is what every schedule on that clock reads as "now",
+/// so one advance can make a period of rent due for every tenancy and every
+/// obligation pointing at it. That is a staff act by construction, and only for a
+/// `Manual` cadence — a real- or IC-sourced clock is the sweep's to move
+/// ([`crate::advance_cadence`] returns a `Manual` one unchanged for the same reason).
+fn econ_cadence(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    const USAGE: &str = "Usage: @econ/cadence create <name> source=<real:<secs>|ic:<secs>|manual> \
+                         [catchup=<n>] | show <id> | list | advance <id> [<n>]";
+    let raw = ctx.args.raw().to_string();
+    let (rest, opts) = parse_opts(&raw, &["source", "catchup"]);
+    let mut words = rest.split_whitespace();
+    let verb = words.next().unwrap_or("").to_ascii_lowercase();
+    match verb.as_str() {
+        "list" => cadence_list(ctx),
+        "show" => {
+            let id = words.next().and_then(parse_cadence_id).ok_or_else(|| CmdError::msg(USAGE))?;
+            cadence_show(ctx, id)
+        }
+        "create" => {
+            require_admin(ctx)?;
+            refuse_if_frozen(ctx)?;
+            let name = words.next().unwrap_or("").trim().to_string();
+            let source = opts.get("source").map(String::as_str).unwrap_or("");
+            let catchup = opts.get("catchup").and_then(|s| s.parse::<u8>().ok());
+            cadence_create(ctx, &name, source, catchup).map_err(CmdError::msg)
+        }
+        "advance" => {
+            require_admin(ctx)?;
+            refuse_if_frozen(ctx)?;
+            let id = words.next().and_then(parse_cadence_id).ok_or_else(|| CmdError::msg(USAGE))?;
+            let n = match words.next() {
+                None => 1,
+                Some(s) => s.parse::<u64>().ok().filter(|n| *n > 0 && *n <= 64).ok_or_else(|| {
+                    CmdError::msg("Advance by 1 to 64 periods; a bigger jump is several acts.")
+                })?,
+            };
+            cadence_advance(ctx, id, n)
+        }
+        _ => Err(CmdError::msg(USAGE)),
+    }
+}
+
+fn parse_cadence_id(s: &str) -> Option<CadenceId> {
+    s.trim().trim_start_matches('#').parse::<u64>().ok().map(CadenceId)
+}
+
+/// The most cadence clocks one world may name. A cadence is campaign structure, not
+/// a per-record timer, and every one of them is walked by every sweep fire.
+const MAX_CADENCES: usize = 32;
+/// The largest name a cadence stores (the crate's bounded-string discipline).
+const MAX_CADENCE_NAME_BYTES: usize = 32;
+
+fn cadence_create(
+    ctx: &mut Ctx<'_>,
+    name: &str,
+    source: &str,
+    catchup: Option<u8>,
+) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("A cadence needs a name.".to_string());
+    }
+    if name.len() > MAX_CADENCE_NAME_BYTES {
+        return Err(format!("A cadence name is at most {MAX_CADENCE_NAME_BYTES} bytes."));
+    }
+    // The period is part of the source word, because the two are one fact: "every
+    // 3600 real seconds", "every 86400 IC seconds", "whenever a human says so".
+    let (src, period) = match source.split_once(':') {
+        Some(("real", secs)) => (CadenceSource::RealUtc, secs.parse::<i64>().ok()),
+        Some(("ic", secs)) => (CadenceSource::WorldIc, secs.parse::<i64>().ok()),
+        _ if source.eq_ignore_ascii_case("manual") => (CadenceSource::Manual, Some(1)),
+        _ => return Err("source= is real:<secs>, ic:<secs>, or manual.".to_string()),
+    };
+    let Some(period) = period.filter(|p| *p > 0) else {
+        return Err("A cadence period must be a positive number of seconds.".to_string());
+    };
+    let taken = ctx.w.module_state::<EconomyStore>().map_or(0, |s| s.snapshot().cadences().count());
+    if taken >= MAX_CADENCES {
+        return Err(format!("This world already has {taken} cadence clocks (the cap is {MAX_CADENCES})."));
+    }
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_some_and(|s| s.snapshot().cadences().any(|c| c.name.eq_ignore_ascii_case(name)))
+    {
+        return Err("A cadence with that name already exists.".to_string());
+    }
+    let now = ctx.w.now();
+    let ic_now = ctx.w.game_now_unix();
+    let id = {
+        let store = ctx.w.module_state_mut::<EconomyStore>().ok_or("No economy.")?;
+        store.alloc_cadence().ok_or("The cadence-id allocator is exhausted; nothing was created.")?
+    };
+    let c = crate::clock::CadenceClock {
+        id,
+        name: SmolStr::new(name),
+        source: src,
+        period,
+        // Clamped at both ends by `advance_cadence` anyway; clamped here too so the
+        // stored record never *claims* a cap it cannot honour.
+        catch_up_cap: catchup.unwrap_or(crate::DEFAULT_CATCH_UP).clamp(1, crate::MAX_CATCH_UP_CAP),
+        position: 0,
+        // Anchored at **now**, not at zero: a clock anchored at the epoch would
+        // "elapse" fifty years on its first sweep and forgive all but its cap, which
+        // reads as a catch-up incident on a clock that was created a second ago.
+        advanced_at: match src {
+            CadenceSource::RealUtc => now,
+            CadenceSource::WorldIc => ic_now,
+            CadenceSource::Manual => 0,
+        },
+        revision: 1,
+    };
+    api::put_cadence(ctx, c);
+    let meta = ctx.w.module_state::<EconomyStore>().map(EconomyStore::meta_doc);
+    if let Some(meta) = meta {
+        api::persist_meta(ctx.out, meta);
+    }
+    info(ctx, format!("Cadence #{id} created: {name} ({}).", source_word(src, period)));
+    ctx.gate_on_durable_ack();
+    Ok(())
+}
+
+fn source_word(src: CadenceSource, period: i64) -> String {
+    match src {
+        CadenceSource::RealUtc => format!("every {period}s real"),
+        CadenceSource::WorldIc => format!("every {period}s IC"),
+        CadenceSource::Manual => "manual".to_string(),
+    }
+}
+
+fn cadence_show(ctx: &mut Ctx<'_>, id: CadenceId) -> Result<(), CmdError> {
+    let c = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().cadence(id).cloned())
+        .ok_or_else(|| CmdError::msg("No such cadence."))?;
+    info(ctx, format!("Cadence #{}: {} — {}", c.id, c.name, source_word(c.source, c.period)));
+    info(ctx, format!("  period {} · catch-up {} · revision {}", c.position, c.catch_up_cap, c.revision));
+    Ok(())
+}
+
+fn cadence_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let rows: Vec<String> = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .map(|s| {
+            s.snapshot()
+                .cadences()
+                .map(|c| {
+                    format!(
+                        "#{} {} — {} · period {}",
+                        c.id,
+                        c.name,
+                        source_word(c.source, c.period),
+                        c.position
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    emit_list(ctx, rows, "No cadence clocks.");
+    Ok(())
+}
+
+/// `@econ/cadence advance <id> [<n>]` — **`Manual` only** (E4a verify fold, 12).
+///
+/// Advancing a real- or IC-sourced clock by hand would put its `position` ahead of
+/// the source it is derived from, and the very next sweep would compute `elapsed`
+/// from `advanced_at` and advance it again: the hand-moved periods would be charged
+/// twice, once by the human and once by the clock catching up to itself.
+fn cadence_advance(ctx: &mut Ctx<'_>, id: CadenceId, n: u64) -> Result<(), CmdError> {
+    let c = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().cadence(id).cloned())
+        .ok_or_else(|| CmdError::msg("No such cadence."))?;
+    if c.source != CadenceSource::Manual {
+        return Err(CmdError::msg(format!(
+            "Cadence #{id} advances from its own source ({}); only a manual cadence is stepped by hand.",
+            source_word(c.source, c.period)
+        )));
+    }
+    let next = crate::clock::advance_cadence_manual(&c, n);
+    let position = next.position;
+    api::put_cadence(ctx, next);
+    info(ctx, format!("Cadence #{id} is now at period {position}."));
+    ctx.gate_on_durable_ack();
+    Ok(())
 }
 
 /// `@econ/unfreeze` — staff recovery for the **whole-economy** latch (E3 verify
@@ -3663,6 +3873,23 @@ fn econ_ack(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 format!(
                     "Contract #{cid} is still disputed: acknowledging does not release its \
                      escrow. @contract/resolve #{cid}=settle|refund is the decision."
+                ),
+            ),
+            // E5b: housing's own alerts are acknowledged here like any other, and
+            // acknowledging one changes nothing about the home — D-E5-1 is the whole
+            // point of the page. The record's `recommended` carries the verbs.
+            EscalationSubject::HousingProperty(pid) => info(
+                ctx,
+                format!(
+                    "Housing property #{pid} is still withdrawn: acknowledging does not \
+                     reinstate it or end any tenancy on it (@property/show {pid})."
+                ),
+            ),
+            EscalationSubject::HousingTenancy(tid) => info(
+                ctx,
+                format!(
+                    "Tenancy #{tid} is unchanged: nothing ends a home automatically. \
+                     @tenancy/resolve {tid}=extend|end|waive is the decision."
                 ),
             ),
             EscalationSubject::Obligation(_) | EscalationSubject::Hold(_) => {}

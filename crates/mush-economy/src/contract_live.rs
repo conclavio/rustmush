@@ -3093,3 +3093,159 @@ fn contract_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     emit_list(ctx, rows, "No contracts.");
     Ok(())
 }
+
+// ---- the lease seam a layered module offers (E5b, 08d §4) ------------------
+
+/// Everything [`offer_lease`] needs. A struct rather than nine positional
+/// arguments, and deliberately **not** an [`EconomicContract`]: the id, the consent
+/// hash, the roster lock, the landlord's own acceptance and the state are the
+/// economy's to fill in, not the caller's.
+#[derive(Clone, Debug)]
+pub struct LeaseSpec {
+    /// A short human label for `@contract/show`.
+    pub name: SmolStr,
+    /// The **lessor**: the contract's issuer, its first party, and the principal the
+    /// `Lease` encumbrance names.
+    pub lessor: PrincipalId,
+    /// The org compartment the lease belongs to, when the lessor is an organization.
+    pub scope: Option<OrgScopeId>,
+    /// The tenant(s). Each becomes a party and each must accept.
+    pub tenants: Vec<PrincipalId>,
+    /// The room the lease is *of* — pledged as the lessor's collateral, which is
+    /// what makes the claim placed at activation an [`crate::Encumbrance::Lease`]
+    /// rather than a plain `Collateral` ([`crate::contract_encumbrance`]).
+    pub premises: ObjId,
+    /// The rent: the obligation created at activation.
+    pub rent: ObligationTemplate,
+}
+
+/// **Offer a lease** on behalf of a layered module (E5b's housing).
+///
+/// It is one call because a lease is one act. `@contract/draft` + `/party` + `/deliver
+/// collateral` + `/deliver obligation` + `/remainder` + `/condition` + `/offer` is
+/// seven commands whose intermediate states — a draft with a pledge and no rent, a
+/// lease with rent and no premises — are all things a housing tenancy must never be
+/// bound to; and `@contract/deliver` is the **issuer's** verb, so a system landlord
+/// (`sys:wod.housing`, which types nothing) could not build one at all.
+///
+/// What it builds, and why each piece is there:
+///
+/// - **parties = lessor + tenants**, with the lessor as issuer (`check_structure`
+///   requires the issuer to be a party). The lessor's acceptance is recorded here:
+///   offering the lease *is* the landlord side's consent, which is exactly the shape
+///   `mush_housing::accept(t, landlord_accepted, …)` already has. Every tenant then
+///   accepts for themselves through the ordinary `@contract/accept`, under their own
+///   live rights — that acceptance is the consent, and it is the last one, so it
+///   activates.
+/// - **no consideration**: a lease escrows nothing. The rent is a recurring
+///   obligation the sweep settles period by period, not a lump the contract holds.
+/// - **`Collateral { premises, lessor }` + `Obligation { rent }`**: the pair is what
+///   [`crate::contract_encumbrance`] reads as a lease, so activation places
+///   `Encumbrance::Lease { lessor, contract }` on the premises and the unwind takes
+///   it off again. `check_offerable` proves the lessor really holds that title.
+/// - **one `Attestation { by: Staff }` condition**: without it a contract with no
+///   conditions is `Ready` the moment it activates, and the very next sweep would
+///   settle it — terminal — which cancels the rent obligation it just created. A
+///   lease ends when somebody says it ends (D-E5-1 through and through), and this is
+///   how that is written in the consent surface the tenant signs.
+///
+/// # Errors
+///
+/// Every structural refusal `@contract/offer` would give, plus
+/// [`ContractError::TooLarge`] when the contract allocator is exhausted. Nothing is
+/// written on any error path.
+pub fn offer_lease(ctx: &mut Ctx<'_>, spec: LeaseSpec) -> Result<ContractId, ContractError> {
+    if ctx.w.module_state::<EconomyStore>().is_some_and(EconomyStore::is_frozen) {
+        return Err(ContractError::Infeasible("the economy is frozen"));
+    }
+    if spec.tenants.is_empty() {
+        return Err(ContractError::Infeasible("a lease needs at least one tenant"));
+    }
+    let mut parties = vec![spec.lessor.clone()];
+    for t in &spec.tenants {
+        if parties.iter().any(|p| principal_key(p) == principal_key(t)) {
+            return Err(ContractError::Infeasible("a party is named twice"));
+        }
+        parties.push(t.clone());
+    }
+    let now = ctx.w.now();
+    // Read before `spec.rent` is moved into the deliverable below.
+    let rent_credit = spec.rent.credit_account;
+    let consent = ConsentSurface {
+        parties,
+        terms: ContractTerms {
+            consideration: Vec::new(),
+            deliverables: vec![
+                Deliverable::Collateral { object: spec.premises, from: spec.lessor.clone() },
+                Deliverable::Obligation { template: Box::new(spec.rent) },
+            ],
+            split: Vec::new(),
+            // Nothing is escrowed, so nothing is split and the remainder is zero —
+            // but `check_offerable` still proves the account exists and fixes the
+            // contract's one instrument, so name the rent's creditor rather than an
+            // id that does not resolve.
+            remainder_to: rent_credit,
+            on_expiry: Expiry::Refund,
+            outcomes: Vec::new(),
+        },
+        conditions: vec![TypedCondition::Attestation { by: AttestorSet::Staff }],
+        deadline: None,
+        visibility: EconomicVisibility::Parties,
+        scope: spec.scope,
+        adjudicator: None,
+        evidence: Vec::new(),
+    };
+    let mut c = EconomicContract {
+        id: ContractId(0),
+        issuer: spec.lessor.clone(),
+        name: spec.name,
+        consent_hash: [0u8; 32],
+        consent,
+        acceptances: Vec::new(),
+        satisfied: vec![None],
+        escrow: Vec::new(),
+        state: ContractState::Offered,
+        settle_attempts: 0,
+        created_at: now,
+        amendments: 0,
+        disputed_at: None,
+        canon_published: None,
+        roster_locked: true,
+        deposits: Vec::new(),
+        agreements: Vec::new(),
+        pending: None,
+        roles: ContractRoles { payer: Some(spec.lessor.clone()), ..ContractRoles::default() },
+        revision: 1,
+    };
+    // Validate against a **provisional** id: nothing is allocated and nothing is
+    // written until the whole shape is known good, so a refusal costs no id.
+    {
+        let store = ctx.w.module_state::<EconomyStore>().ok_or(ContractError::Infeasible("no economy"))?;
+        let outcomes = store.canon_outcome_kinds();
+        crate::contract::check_structure(&c, &outcomes)?;
+        check_offerable(&c, store.snapshot())?;
+    }
+    let id = {
+        let store = ctx.w.module_state_mut::<EconomyStore>().ok_or(ContractError::Infeasible("no economy"))?;
+        store.alloc_contract().ok_or(ContractError::TooLarge("the contract-id allocator is exhausted"))?
+    };
+    c.id = id;
+    // The lessor's acceptance, then the frozen hash — in that order, so the
+    // acceptance binds the hash every tenant will also bind.
+    c.consent_hash = consent_hash(&c.issuer, &c.consent);
+    c.acceptances.push(Acceptance {
+        party: spec.lessor.clone(),
+        at: now,
+        consent_hash: c.consent_hash,
+    });
+    api::put_contract(ctx, c.clone());
+    let meta = ctx.w.module_state::<EconomyStore>().map(EconomyStore::meta_doc);
+    if let Some(meta) = meta {
+        api::persist_meta(ctx.out, meta);
+    }
+    for p in &spec.tenants {
+        notify(ctx, p, &format!("Lease #{id} has been offered to you (@contract/show #{id}, @contract/accept #{id})."));
+    }
+    ctx.gate_on_durable_ack();
+    Ok(id)
+}

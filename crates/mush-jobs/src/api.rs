@@ -243,3 +243,63 @@ pub(crate) fn job_doc(job: &Job) -> serde_json::Value {
 pub(crate) fn note_doc(note: &Note) -> serde_json::Value {
     serde_json::to_value(note).expect("Note serializes")
 }
+
+/// Close (or reopen) a job **programmatically**, on behalf of the module that opened
+/// it — RAM + write-through, exactly like [`add_comment`].
+///
+/// The producing-module counterpart to [`open_job`]. `+job/approve` and `+job/deny`
+/// are how a *person* closes a ticket; this is how the module that raised one closes
+/// it when the thing it was raised about resolved itself. E5's housing is the first
+/// caller: a story window opens a `wod-story` job asking an ST to decide an eviction,
+/// and when the tenant's support comes back the question is simply gone — leaving the
+/// job open would put an ST in front of a decision about a home that is fine.
+///
+/// It deliberately does **not** run payload handlers: a payload is applied by
+/// `+job/approve` under a staffer's authority, and a module closing its own ticket is
+/// not that. Pass `JobStatus::Resolved` for "answered", `JobStatus::Denied` for
+/// "withdrawn"; `note` (when non-empty) is recorded as a closing comment attributed
+/// to `by`.
+///
+/// # Errors
+///
+/// Errors if the jobs module is not loaded, no job has that id, or the job is
+/// already in that status (so a retrying tick writes nothing).
+pub fn set_job_status(
+    ctx: &mut Ctx<'_>,
+    id: u64,
+    by: ObjId,
+    status: JobStatus,
+    note: &str,
+) -> Result<(), String> {
+    let now = ctx.w.now();
+    let st = ctx
+        .w
+        .module_state_mut::<JobsState>()
+        .ok_or_else(|| "the jobs module is not loaded".to_string())?;
+    let job = st
+        .jobs
+        .get_mut(&id)
+        .ok_or_else(|| format!("no such job: {id}"))?;
+    if job.status == status {
+        return Err(format!("job {id} is already {status}"));
+    }
+    let note = note.trim();
+    if !note.is_empty() {
+        job.comments.push(JobComment {
+            who: by,
+            ts: now,
+            text: note.to_string(),
+        });
+    }
+    job.status = status;
+    job.updated_at = now;
+    let doc = job_doc(job);
+    ctx.persist(ModuleOp {
+        ns: NS.into(),
+        op: ModuleWrite::JsonSet {
+            key: job_key(id),
+            value: doc,
+        },
+    });
+    Ok(())
+}

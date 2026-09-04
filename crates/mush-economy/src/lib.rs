@@ -189,8 +189,8 @@ pub use escalation::{
 };
 pub use sweep::SWEEP_TAG;
 
-// E4b2 — contracts live.
-pub use contract_live::may_view_contract;
+// E4b2 — contracts live. E5b adds the lease seam a layered module offers under.
+pub use contract_live::{LeaseSpec, may_view_contract, offer_lease};
 
 // E4c — facts, events, evidence.
 pub use facts::{FactProvider, FactState, FactTable, WorldFacts};
@@ -201,9 +201,9 @@ pub use sweep::MAX_REPUBLISH_PER_SWEEP;
 
 // E2b/E3b1 public surface.
 pub use api::{
-    META_KEY, ObligationSpec, PostOutcome, account_key, approval_key, asset_key, cadence_key,
-    contract_key, create_system_obligation, create_vault, hold_key, instrument_key, issue_title,
-    mark_canon_published,
+    META_KEY, ObligationSpec, PostOutcome, account_key, acknowledge_escalation, approval_key,
+    asset_key, cadence_key, contract_key, create_system_obligation, create_vault, hold_key,
+    instrument_key, issue_title, mark_canon_published, open_escalation,
     obligation_key as obligation_doc_key, open_account, post, post_capability, register_instrument,
     reverse, set_account_approval, set_account_status, set_asset_frozen, set_economy_frozen,
     set_vault_status, vault_key,
