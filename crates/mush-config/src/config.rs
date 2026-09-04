@@ -24,7 +24,7 @@
 //! | `[game].ic_epoch` | `"2020-01-01 00:00"` | IC datetime at OOC unix 0 — calendar phase/start; read at boot |
 //! | `[rulesets].enabled` | `["wod"]` | ruleset module(s) to load; unknown ids are a hard boot error |
 //! | `[weather].flavor_variants` | `10` | M10 variants per weather bucket (`0` disables, hard max `64`) |
-//! | `[worldgen].batch_max_rooms` | `40` | M10 `@gen/building` interior-walk cap (rooms per batch) |
+//! | `[worldgen].batch_max_rooms` | `40` | M10 `@gen/building` room cap (valid range `2..=40`) |
 //! | `[llm]` | `enabled = false` | M7 LLM layer (providers, routes, budgets); into [`mush_llm::LlmConfig`] |
 //!
 //! The `[web]` table deserializes straight into
@@ -318,8 +318,9 @@ impl Default for WeatherCfg {
 #[serde(default)]
 pub struct WorldgenCfg {
     /// The `@gen/building` interior-walk cap: the most rooms one batch will
-    /// describe. Defaults to the `mush-worldgen` crate default (40); the typed
-    /// conversion into `mush_worldgen::WorldgenConfig` lives in `mush-server`.
+    /// describe. Defaults to the `mush-worldgen` crate default (40); values
+    /// outside `2..=40` fail module registration. The typed conversion into
+    /// `mush_worldgen::WorldgenConfig` lives in `mush-server`.
     pub batch_max_rooms: usize,
 }
 

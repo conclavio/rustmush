@@ -778,7 +778,8 @@ world. All are CI-tested for the reboot round trip
 auto-committed: `@gen` and `@gen/building` yield drafts the builder reviews and
 `@gen/accept`s through the ordinary attribute path. One M10 knob:
 `[worldgen].batch_max_rooms` (default 40) caps how many rooms one `@gen/building`
-walk will describe.
+walk will describe. The valid range is 2 through 40; values outside it fail
+module registration at boot so a typo cannot create an empty or unbounded batch.
 
 ## NPC agents (M8): tiers, cost, kill switch, injection posture
 

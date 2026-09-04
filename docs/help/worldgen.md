@@ -63,7 +63,7 @@ It runs in two reviewed stages:
 
 1. **Brief** — one cheap call walks the building's interior room graph (BFS from
    the entrance, staying inside the zone; capped by
-   `[worldgen].batch_max_rooms`, default 40) and drafts a shared *concept* +
+   `[worldgen].batch_max_rooms`, valid range 2–40 and default 40) and drafts a shared *concept* +
    *palette* and a one-line concept per room. This is a reviewable draft — cheap
    to steer before any room is written.
 2. **Rooms** — accepting the brief drafts one room at a time, each seeded with
