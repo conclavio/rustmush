@@ -200,14 +200,15 @@ lockstep: on `Active`, `World::set_home(tenant, anchor)` for every tenant (recor
 `Obj.home` resolves inside the property's rooms. An evicted tenant caught in a destroyed room
 therefore disperses to Limbo, never back into the property.
 
-### 3.4 E5a tests (planned ~30; **38 as built** — 37 in `crates/mush-housing/tests/e5a.rs`, 1 in-crate)
+### 3.4 E5a tests (planned ~30; **38 as built**, **55 after the verify fold** — 54 in `crates/mush-housing/tests/e5a.rs`, 1 in-crate)
 
 Every transition above and every forbidden one (no path to `Ended` without a `Resolution`); a
 window elapsing changes nothing but the notify count and stops after `MAX_WINDOW_NOTICES`; recovery
 from each failure state; `assess` across tier/level combinations, best-of with two residents, a
 resident whose plan is missing, `Unknown`; `may_enter` for tenant, guest, inspection-always,
 inspection-while-delinquent (refused when Active), staff, stranger; the `homed` set computed for
-activation and cleared for ending; caps.
+activation and cleared for ending; caps. The fold adds 17 named `vf_<lens><n>_…` regression tests,
+one per confirmed verify finding (§3.5, §3.6).
 
 ### 3.5 As built (E5a, `crates/mush-housing`)
 
@@ -215,7 +216,9 @@ Built as a pure workspace crate depending on `mush-core`, `mush-org`, `mush-econ
 smol_str and thiserror — **no** ruleset crate, **no** `mush-scenes`, **no** `mush-jobs` (a story
 job is a bare `u64`). `cargo test -p mush-housing` 38 passing; `cargo clippy --workspace
 --all-targets -- -D warnings` clean; `cargo test --workspace` **2591 passing, 0 failing**. `cargo
-fmt` stays off, unchanged.
+fmt` stays off, unchanged. **After the verify fold** (below): `cargo test -p mush-housing` **55
+passing** (54 + 1 in-crate); workspace clippy clean; `cargo test --workspace` **2608 passing, 0
+failing**.
 
 **Files.** `src/ids.rs` (`PropertyId`, `TenancyId`, `SceneRef`) · `src/record.rs` (every §3.1
 record + the §9 caps) · `src/error.rs` (`HousingError`) · `src/tenancy.rs` (the state machine + the
@@ -297,15 +300,94 @@ driven 40 periods never ends anything, and the fuzz re-checks it after every ste
   moved backwards, `HousingError::Overflow` at the `i64` extremes, never a saturated "a very long
   time" that fires every elapse arrow at once.
 
+**Verify-fold deltas** (the end-of-build adversarial verify's confirmed findings, folded; one
+regression test each in `tests/e5a.rs`'s `---- E5a verify fold ----` section, named `vf_<lens><n>`):
+
+| # | as built | as folded |
+|---|---|---|
+| A1 | `remove_tenant` dropped the leaver from `homed` | `homed` is **not** the roster — it is the list of `Obj.home` pointers housing set, and only the ending sweep clears them; dropping the id left a live home into a property they no longer rent (with A2's anchor rule this closes D-E5-11 on both sides) |
+| A2 | `Property` derived `Deserialize` | `#[serde(try_from = "PropertyWire")]` through `Property::new` (anchor ∈ `rooms`, caps, no duplicate feature keys, non-empty name) — the `mush-core` `DefinitionRef` / `mush-tactics` `TacticalUnit` precedent; **and** `to_unhome_on_end`/`homed_inside` now take the `anchor` and treat it as inside the property whether or not the caller's `property_rooms` still lists it |
+| A3 | `Tenancy` derived `Deserialize` | `#[serde(try_from = "TenancyWire")]` through `Tenancy::new`, plus the guest cap, tenant ∉ guests, the history cap, and "a plan is filed under its own resident" (the key *is* D-E5-13) |
+| A4 | the `WhileDelinquent` comment described only the rewound-clock half | "A stamp in the future refuses; the period the stamp names itself admits." |
+| A5 | — | doc note on `to_unhome_on_end` + the E5b handoff below (re-home after unhome) |
+| A6 | `InspectionWhen: Default = Always` | no `Default` at all — anything reaching for one minted a standing right of entry nobody wrote down; a term that does not say *when* now fails to load |
+| A7 | `Access: Ord`, ranked `Tenant` … `Refused` | `PartialOrd`/`Ord` dropped (the derive made `min()` return the *most* permissive answer) and replaced by `Access::strictest(a, b)`, `Refused` < `Inspection` < `Guest` < `Tenant` < `Staff` |
+| S1 | `remove_tenant` mutated an `Ended` tenancy | `AlreadyEnded`, as `add_guest` is |
+| S2 | `window_due` answered `Silent` on `Err(Overflow)` — permanently, since nothing else moves `last_notice` | fails **toward paging**: `Escalate` when no escalation is recorded yet, `NotifyEscalated` when one is; never silence, and never a second escalation over the first |
+| S3 | every restated plan bumped a revision and pushed a `PlanSubmitted` — 32 of them are the whole tail | a restatement in the same period is a **pure no-op**; in a new period it refreshes the freshness stamp with a revision and no event; only a changed `level`/`sources` is history |
+| S4 | a plan never expired, so a dead evaluator carried the lease forever and `UNKNOWN_GRACE` could never fire | `SupportPlan::asserted_period` (`#[serde(default)]`) + `assess_at(tier, plans, tenants, current_period, max_age)`: a plan older than `PLAN_MAX_AGE_PERIODS`, or belonging to a non-tenant, is **absent** → `Unknown` → `harden`. `assess` stays as the ageless, roster-blind form, documented as such |
+| S5 | `remove_room` allowed while `Let` | refused: a room dropped from a let property is one somebody lives in that the hook stops answering for |
+| S6 | `attach_window` bumped a revision for a no-op and silently replaced an existing job/scene | unchanged clone when nothing changes; a *different* id is `WindowAlreadyAttached` (same guard on the escalation id in `window_elapsed`) |
+| S7 | every post-escalation re-notice pushed a `Notified` entry whose count never changed | no history entry — with S3 the 32-deep tail keeps `Accepted`, every `StatusChanged`, `Escalated` and `Ended` |
+| S8 | recovery discarded the window and its ids | `Tenancy::last_window: Option<StoryWindow>` (`#[serde(default)]`, stamped `closed`) records the outgoing window on `EvictionPending → Active`, so E5b can resolve the job "recovered" and ack the escalation |
+| S9 | the notice budget re-armed on every relapse, so a flickering tenancy was re-notified forever and never escalated | hysteresis: a window reopening within `RELAPSE_WINDOW_PERIODS` of the last one closing (allowing for the ladder's own `GRACE_PERIODS + DELINQUENT_PERIODS`) inherits its `notified` and `escalation` |
+| S10 | `best_level` returned the stored newtype, which a hand-written document can load with 255 in it | `Some(SupportLevel::new(max))` |
+| S11 | — | E5b's boot reconciliation must drop a destroyed tenant through `remove_tenant` (which takes the plan with them), never by editing the sets; `assess_at`'s roster check is the library-side guard |
+
+Two constants join §9: **`PLAN_MAX_AGE_PERIODS` 2** and **`RELAPSE_WINDOW_PERIODS` 2**.
+
+Three fold deviations, recorded rather than silent:
+
+11. **`assess_at` takes the roster** — the verify wrote it as `assess_at(tier, plans, current_period,
+    max_age)`, but "ignore a non-tenant's plan" cannot be answered from a plan map alone, and passing
+    the `Tenancy` instead would let an *exact* tenancy be assessed on plans it does not have. The
+    signature is `assess_at(tier, plans, tenants, current_period, max_age)`.
+12. **The relapse gap is measured on top of the ladder.** `RELAPSE_WINDOW_PERIODS` 2 read literally
+    against "the new window opens within 2 periods of the last one closing" can never fire — the
+    fastest possible relapse is `GRACE_PERIODS + DELINQUENT_PERIODS` (3) after recovery. So the
+    comparison is `closed → now ≤ GRACE_PERIODS + DELINQUENT_PERIODS + RELAPSE_WINDOW_PERIODS`, i.e.
+    two periods of slack on the soonest a window *could* reopen.
+13. **`SupportPlan::new` takes the period** as a fifth argument (`asserted_at` is the raw cadence
+    position `@tenancy/show` prints; `asserted_period` is the monotonic ordinal freshness is measured
+    in, so staleness survives a re-pointed clock). `StoryWindow` gains `closed: Option<i64>`, set only
+    on the copy parked in `last_window`.
+
+**Handoffs to E5b** (with A8's, which this fold does not implement):
+
+- **One live tenancy per property**, enforced by the module and picked *explicitly* — never "any live
+  tenancy on this room admits".
+- **`add_guest` subjects must be characters.** The library accepts any `ObjId`.
+- **Re-home after unhome** (A5): `to_unhome_on_end` clears per object, and an object can be a tenant
+  of a second live tenancy; after applying the set, re-home anybody still on another live lease.
+- **Use `remove_tenant` at boot** (S11), never a direct edit of `tenants`/`homed`/`funding`.
+- **Resolve `last_window`'s job and ack its escalation on recovery** (S8), and on a resolution read
+  the window off the tenancy passed in.
+- **`assess_at`, not `assess`,** on the cadence tick, with the module's own period counter.
+
+### 3.6 E5a verify outcome (2026-09-03)
+
+Two adversarial lenses over the shipped cut. **Lens A (access, the home invariant):** eight findings,
+all confirmed by probe — two MEDIUM (`remove_tenant` forgetting the home anchor; both record types
+deserializing straight past their own constructors, which made every §9 cap advisory on load), five
+LOW (a comment contradicting the pinned `WhileDelinquent` behaviour; `InspectionWhen` defaulting to
+the *wider* term; `Access`'s derived `Ord` ranking `Refused` last, so the obvious strict combinator
+failed open; the two-live-tenancies gap; the anchor treated as merely one room among many), one
+doc-only handoff. **Lens S (state machine, time, boundedness):** eleven findings — three MEDIUM (an
+`Ended` tenancy still losing tenants; `window_due` turning one arithmetic overflow into permanent
+silence on an open eviction; plans that were both noisy and immortal, which also made `UNKNOWN_GRACE`
+unreachable), seven LOW, one doc/guard. No finding touched D-E5-1: nothing in either lens found a
+path to `Ended` without a `Resolution`, and the fuzz and the 40-period drive still pin it.
+
+The two that mattered most are the ones where a *quiet* failure replaced a loud one: S2 (a corrupt
+stamp silencing an eviction forever) and S9 (a relapsing tenancy notified forever and escalated
+never). Both now fail toward paging. The rest are the same shape as E3/E4's folds — persisted
+records must re-enter through their constructors, and a bounded audit tail must not be spent on
+events that say nothing.
+
+**E5b takes forward:** one live tenancy per property, picked explicitly; `add_guest` subjects must be
+characters; re-home after unhome (A5); `remove_tenant` at boot (S11); resolve `last_window`'s job and
+escalation on recovery (S8).
+
 ---
 
 ## 4. E5b — the housing module
 
 - **Persistence:** `property:{id}`, `tenancy:{id}` container docs (corrupt → fail boot); boot
   reconciles: anchor/rooms missing or `GOING` → property `Withdrawn` + a level-2 escalation (a home
-  whose rooms vanished is a staff question, never an auto-end); a tenant object missing → removed
-  from `tenants` and `homed` with a history event; an exact tenancy whose obligation is missing →
-  flagged and escalated, not `EvictionPending`. Allocators + meta high-water (the E3 fold rule).
+  whose rooms vanished is a staff question, never an auto-end); a tenant object missing → dropped
+  through `Tenancy::remove_tenant` (roster, plan and a history event — **not** `homed`, which the
+  ending sweep owns; §3.5 A1/S11), never by editing the sets; an exact tenancy whose obligation is
+  missing → flagged and escalated, not `EvictionPending`. Allocators + meta high-water (the E3 fold rule).
   Conventional docs, per 08c §12's default for E4's own records (state families at K3).
 - **Title:** creating a property mints the anchor's `EconomicAsset` title to the landlord principal
   through `mush_economy::issue_title` with issuer `system:wod.housing` (§2). `Obj.owner` of the
@@ -551,7 +633,9 @@ the workspace tests; commit per cut; push on the owner's word. E5b starts only a
 `DELINQUENT_PERIODS` 2 · `UNKNOWN_GRACE` 1 · `WINDOW_RENOTIFY` 1 period · `MAX_WINDOW_NOTICES` 3, then
 silent until escalation, then ≤ weekly · `WINDOW_ESCALATE` 2 periods · `MAX_ASSESSMENTS_PER_FIRE` 128 ·
 `STRAIN_MAX` 10 · `COAST_OPPORTUNITY_PERIODS` 6 · `MAX_OFFSCREEN_OPS_PER_FACTION` 8 (open) · prompt
-default expiry 2 periods · history and pending-notice caps 32.
+default expiry 2 periods · history and pending-notice caps 32 · **`PLAN_MAX_AGE_PERIODS` 2** (a
+`SupportPlan` older than this is absent, not asserted — §3.5 S4) · **`RELAPSE_WINDOW_PERIODS` 2** (a
+story window reopening inside this gap inherits the last one's notice budget — §3.5 S9).
 
 ## 10. The owner's answers (2026-09-03, verbatim summary — binding)
 

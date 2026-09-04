@@ -39,6 +39,12 @@ pub enum HousingError {
     /// escalation is how a paged decision becomes a home nobody ever looks at.
     #[error("the story window needs its level-2 escalation record")]
     NeedsEscalation,
+    /// The story window already carries a job, a scene or an escalation, and a
+    /// *different* one was offered. Refused rather than overwritten: the first id is
+    /// the one the ST, the queue and the escalation ladder are all pointed at, and
+    /// replacing it orphans an open job or an open page that nobody is now watching.
+    #[error("the story window already has a different record attached")]
+    WindowAlreadyAttached,
     /// A cap was exceeded (§9).
     #[error("housing record exceeds a cap: {0}")]
     TooLarge(&'static str),

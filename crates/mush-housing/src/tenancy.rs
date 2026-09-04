@@ -75,6 +75,23 @@ pub const WINDOW_ESCALATE: i64 = 2;
 /// meant to run on (a cadence finer than daily would make the whole three-period
 /// ladder finish inside three days). E5b re-checks that when it registers the clock.
 pub const WINDOW_ESCALATED_RENOTIFY: i64 = 7;
+/// Periods of recovery a relapsing tenancy must manage before its story window gets a
+/// **fresh** notice budget (§9).
+///
+/// The window is bounded in notices, so re-arming those notices on every relapse
+/// unbounds it: a tenancy that flickers between `Active` and the ladder — a marginal
+/// character whose support crosses the tier line every other period — opened a brand
+/// new window with three fresh notices each cycle, so the tenant was notified forever
+/// and the escalation, which only fires once the notices are *spent*, never fired.
+/// Nobody was ever paged about the home that had been in trouble for a year.
+///
+/// So a window that reopens too soon inherits the previous one's `notified` count and
+/// its escalation instead: it is the same pressure, not a new one. "Too soon" is
+/// measured from the previous window closing to the new one opening, allowing for the
+/// ladder's own length — the fastest possible relapse is `GRACE_PERIODS +
+/// DELINQUENT_PERIODS` after recovery, and this is how much slack on top of that still
+/// counts as the same run.
+pub const RELAPSE_WINDOW_PERIODS: i64 = 2;
 
 // ---------------------------------------------------------------------------
 // Period arithmetic
@@ -164,17 +181,30 @@ pub fn period_missed(t: &Tenancy, now: i64) -> Result<Tenancy, HousingError> {
 /// `Grace | Delinquent | EvictionPending ── supported again / paid ──▶ Active` —
 /// silently, at **any** stage (§3.2).
 ///
-/// Recovery from `EvictionPending` closes the window: the caller reads the outgoing
-/// window off the tenancy it passed in (its job id is what E5b resolves "recovered").
+/// Recovery from `EvictionPending` closes the window, and the closed window is
+/// **kept**: it moves to [`Tenancy::last_window`] stamped with the period it closed
+/// at. Its `job` is the `wod-story` job E5b resolves "recovered" and its `escalation`
+/// is the level-2 record E5b acknowledges — a recovery that dropped them left an open
+/// job and an open page pointing at a tenancy that is fine, findable only by reading
+/// the history tail. It is also what the relapse hysteresis in [`delinquent_elapsed`]
+/// reads ([`RELAPSE_WINDOW_PERIODS`]).
+///
 /// A tenancy that is already `Active` is unchanged, with no revision bump — routine
 /// supported periods post nothing and say nothing (§14.3).
 pub fn period_supported(t: &Tenancy, now: i64) -> Result<Tenancy, HousingError> {
     if t.status.is_ended() {
         return Err(HousingError::AlreadyEnded(t.id));
     }
-    match t.status {
+    match &t.status {
         TenancyStatus::Pending => Err(HousingError::State(t.id)),
         TenancyStatus::Active => Ok(t.clone()),
+        TenancyStatus::EvictionPending { window } => {
+            let mut closed = *window;
+            closed.closed = Some(now);
+            let mut next = move_to(t, TenancyStatus::Active, now);
+            next.last_window = Some(closed);
+            Ok(next)
+        }
         _ => Ok(move_to(t, TenancyStatus::Active, now)),
     }
 }
@@ -201,6 +231,11 @@ pub fn grace_elapsed(t: &Tenancy, now: i64) -> Result<Tenancy, HousingError> {
 ///
 /// Nothing past this point moves the tenancy without a human: [`window_elapsed`]
 /// only counts notices, and [`resolve`] needs a [`Resolution`] somebody chose.
+///
+/// **Hysteresis** ([`RELAPSE_WINDOW_PERIODS`]): a window that reopens within the
+/// relapse gap of the last one closing inherits its `notified` count and its
+/// escalation rather than starting a fresh budget, so a tenancy flickering in and out
+/// of the ladder still reaches the escalation instead of re-notifying forever.
 pub fn delinquent_elapsed(t: &Tenancy, now: i64) -> Result<Tenancy, HousingError> {
     if t.status.is_ended() {
         return Err(HousingError::AlreadyEnded(t.id));
@@ -211,7 +246,19 @@ pub fn delinquent_elapsed(t: &Tenancy, now: i64) -> Result<Tenancy, HousingError
     if periods_since(since, now)? < DELINQUENT_PERIODS {
         return Err(HousingError::NotDue);
     }
-    Ok(move_to(t, TenancyStatus::EvictionPending { window: StoryWindow::opened_at(now) }, now))
+    let mut window = StoryWindow::opened_at(now);
+    // The soonest a recovered tenancy can be back here is the whole ladder later, so
+    // the relapse gap is measured on top of that; an unreadable gap (the `i64`
+    // extremes) carries the budget over, which is the direction that still pages.
+    let relapse_gap = GRACE_PERIODS + DELINQUENT_PERIODS + RELAPSE_WINDOW_PERIODS;
+    if let Some(prev) = &t.last_window
+        && let Some(closed) = prev.closed
+        && periods_since(closed, now).unwrap_or(0) <= relapse_gap
+    {
+        window.notified = prev.notified.min(MAX_WINDOW_NOTICES);
+        window.escalation = prev.escalation;
+    }
+    Ok(move_to(t, TenancyStatus::EvictionPending { window }, now))
 }
 
 /// Record the `wod-story` job (and the optional scene) E5b opened for the window.
@@ -219,6 +266,14 @@ pub fn delinquent_elapsed(t: &Tenancy, now: i64) -> Result<Tenancy, HousingError
 /// Separate from [`delinquent_elapsed`] because the job id does not exist until the
 /// module has actually opened one, and because a scene is started later, when the ST
 /// asks for it through the job.
+///
+/// Two refusals of its own. A call that changes nothing (both arguments `None`, or the
+/// ids already recorded) returns the tenancy **unchanged**, with no revision bump — an
+/// idempotent module retry must not write a store document per attempt. And a call
+/// offering a *different* job or scene than the one already recorded is
+/// [`HousingError::WindowAlreadyAttached`], not a silent replacement: the first job is
+/// the one the ST is working and the queue is pointed at, and overwriting the id
+/// orphans it where nobody will ever see it again.
 pub fn attach_window(
     t: &Tenancy,
     job: Option<u64>,
@@ -231,11 +286,20 @@ pub fn attach_window(
         return Err(HousingError::NoWindow(t.id));
     };
     let mut w = window;
-    if job.is_some() {
-        w.job = job;
+    if let Some(job) = job {
+        if matches!(w.job, Some(have) if have != job) {
+            return Err(HousingError::WindowAlreadyAttached);
+        }
+        w.job = Some(job);
     }
-    if scene.is_some() {
-        w.scene = scene;
+    if let Some(scene) = scene {
+        if matches!(w.scene, Some(have) if have != scene) {
+            return Err(HousingError::WindowAlreadyAttached);
+        }
+        w.scene = Some(scene);
+    }
+    if w == window {
+        return Ok(t.clone());
     }
     let mut next = t.clone();
     next.status = TenancyStatus::EvictionPending { window: w };
@@ -270,10 +334,26 @@ pub fn window_due(t: &Tenancy, now: i64) -> WindowAction {
     let TenancyStatus::EvictionPending { window } = &t.status else {
         return WindowAction::Silent;
     };
-    // A clock that moved backwards yields zero elapsed periods, so nothing is due —
-    // never a burst of notices catching up on a rewound cadence.
+    // Two different clock faults, two different answers.
+    //
+    // A clock that moved *backwards* yields zero elapsed periods and falls through to
+    // the schedule below, which answers `Silent` — never a burst of notices catching
+    // up on a rewound cadence.
+    //
+    // A gap that does not *fit* (`last_notice` and `now` at opposite `i64` extremes,
+    // which is what a corrupt or half-migrated document holds) is a different thing
+    // entirely, and answering `Silent` to it made the window silent **forever**:
+    // nothing else moves `last_notice`, so every later period asks the same
+    // unanswerable question, and a home sits in `EvictionPending` that neither the
+    // tenant nor staff is ever told about again. So it fails **toward paging**: a
+    // window whose schedule cannot be read has no decay left to spend and asks for the
+    // human directly — the escalation if there is not one yet, and the slow
+    // post-escalation notice if there is (never a second escalation over the first).
     let Ok(since_notice) = periods_since(window.last_notice, now) else {
-        return WindowAction::Silent;
+        return match window.escalation {
+            Some(_) => WindowAction::NotifyEscalated,
+            None => WindowAction::Escalate,
+        };
     };
     if window.escalation.is_some() {
         if since_notice >= WINDOW_ESCALATED_RENOTIFY {
@@ -302,7 +382,16 @@ pub fn window_due(t: &Tenancy, now: i64) -> WindowAction {
 ///
 /// `escalation` must be `Some` exactly when [`window_due`] answers
 /// [`WindowAction::Escalate`]; supplying nothing there is
-/// [`HousingError::NeedsEscalation`] rather than a silently skipped page.
+/// [`HousingError::NeedsEscalation`] rather than a silently skipped page, and
+/// supplying a *different* id than the one already recorded is
+/// [`HousingError::WindowAlreadyAttached`] rather than an orphaned page.
+///
+/// **A post-escalation re-notice writes no history entry.** It changes nothing a
+/// reader of the tail needs — the count it would print is pinned at the cap and the
+/// escalation is already in the tail above it — and the tail is 32 entries deep, so a
+/// long-running window's weekly notices were quietly evicting the `Accepted` entry,
+/// every `StatusChanged` and the `Escalated` entry itself: the audit tail of the
+/// tenancy in the most trouble was the least informative one in the game.
 pub fn window_elapsed(
     t: &Tenancy,
     now: i64,
@@ -330,13 +419,18 @@ pub fn window_elapsed(
             let Some(id) = escalation else {
                 return Err(HousingError::NeedsEscalation);
             };
+            // Defence in depth: `window_due` only answers `Escalate` while
+            // `escalation` is `None`, so this cannot fire today — it is here so that a
+            // later re-escalation path fails closed instead of orphaning the open page.
+            if matches!(w.escalation, Some(have) if have != id) {
+                return Err(HousingError::WindowAlreadyAttached);
+            }
             w.escalation = Some(id);
             w.last_notice = now;
             next.push_event(TenancyEvent::Escalated { id, at: now });
         }
         WindowAction::NotifyEscalated => {
             w.last_notice = now;
-            next.push_event(TenancyEvent::Notified { count: w.notified, at: now });
         }
         WindowAction::Silent => return Ok(t.clone()),
     }

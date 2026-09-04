@@ -30,7 +30,14 @@ use crate::record::{AccessTerms, InspectionWhen, Tenancy};
 use crate::tenancy::periods_since;
 
 /// On what footing somebody reaches a room of a let property.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// Deliberately **not ordered**. It derived `Ord`, and the derive ranks by declaration
+/// order — which put `Tenant` smallest and `Refused` largest, so the natural way to
+/// combine two answers strictly (`answers.min()`, `a.min(b)`) returned the *most*
+/// permissive one and a refusal lost to a tenancy that happened to admit. A predicate
+/// whose whole job is failing closed must not offer a comparison that fails open, so
+/// the composition is spelled out instead: [`Access::strictest`].
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Access {
     /// A tenant, at any live status.
     Tenant,
@@ -51,6 +58,35 @@ impl Access {
     #[must_use]
     pub fn allowed(self) -> bool {
         !matches!(self, Access::Refused)
+    }
+
+    /// The **less permissive** of two answers — a [`Access::Refused`] on either side
+    /// wins, always.
+    ///
+    /// E5b has to compose: a room that two policies answer for, a carry checked
+    /// alongside the move that carries it, a proposed term previewed against the
+    /// written one. This is the only combinator, and it is written out rather than
+    /// derived, because the footings below `Staff` are *reasons* somebody is admitted
+    /// rather than degrees of it, and a derived comparison over them would be an
+    /// accident of declaration order (see the type's own note). The narrowing order is
+    /// the deliberate one: `Refused` < `Inspection` (one written term, sometimes) <
+    /// `Guest` (invited, revocable by a tenant) < `Tenant` (holds the lease) <
+    /// `Staff` (the bypass).
+    #[must_use]
+    pub fn strictest(a: Access, b: Access) -> Access {
+        if a.narrowness() <= b.narrowness() { a } else { b }
+    }
+
+    /// The narrowing rank [`Access::strictest`] minimises over. Private: it is a
+    /// comparison for *this* rule, not an order on the type.
+    fn narrowness(self) -> u8 {
+        match self {
+            Access::Refused => 0,
+            Access::Inspection => 1,
+            Access::Guest => 2,
+            Access::Tenant => 3,
+            Access::Staff => 4,
+        }
     }
 }
 
@@ -110,7 +146,8 @@ pub fn may_enter_with(
                 // that says so is in the past. A cadence that moved backwards (an
                 // epoch change, a re-pointed clock, a corrupt document) leaves a
                 // `since` in the future, and reading that as "delinquent already"
-                // would open a door on a clock error. Zero elapsed periods refuses.
+                // would open a door on a clock error. A stamp in the future refuses;
+                // the period the stamp names itself admits.
                 InspectionWhen::WhileDelinquent => {
                     t.status.is_behind()
                         && match t.status.since() {

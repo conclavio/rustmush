@@ -52,7 +52,9 @@ mod record;
 mod tenancy;
 
 pub use access::{Access, may_enter, may_enter_with, may_take, may_take_with};
-pub use assess::{Assessment, UNKNOWN_GRACE, assess, best_level, harden};
+pub use assess::{
+    Assessment, PLAN_MAX_AGE_PERIODS, UNKNOWN_GRACE, assess, assess_at, best_level, harden,
+};
 pub use error::HousingError;
 pub use home::{homed_inside, homed_on_activate, to_unhome_on_end};
 pub use ids::{PropertyId, SceneRef, TenancyId};
@@ -64,7 +66,7 @@ pub use record::{
     Tenancy, TenancyEvent, TenancyStatus, TenancyStatusKind, submit_plan,
 };
 pub use tenancy::{
-    DELINQUENT_PERIODS, GRACE_PERIODS, MAX_WINDOW_NOTICES, WINDOW_ESCALATE,
+    DELINQUENT_PERIODS, GRACE_PERIODS, MAX_WINDOW_NOTICES, RELAPSE_WINDOW_PERIODS, WINDOW_ESCALATE,
     WINDOW_ESCALATED_RENOTIFY, WINDOW_RENOTIFY, WindowAction, accept, advance, attach_window,
     delinquent_elapsed, grace_elapsed, period_missed, period_supported, periods_since, resolve,
     window_due, window_elapsed,

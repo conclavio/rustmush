@@ -146,7 +146,15 @@ pub enum PropertyStatus {
 ///
 /// `anchor` is the primary room — the `EconomicAsset` title record lives on it, and
 /// it is the `Obj.home` every tenant is pointed at (§3.3).
+///
+/// **Loading re-checks every invariant** [`Property::new`] enforces
+/// (`#[serde(try_from)]` through a private `PropertyWire`, the `mush-core` `DefinitionRef` /
+/// `mush-tactics` `TacticalUnit` pattern): a document is exactly as trustworthy as the
+/// disk it came off, and a plain derive let a hand-written or half-migrated one mint a
+/// 56-room property, or one whose anchor is not among its rooms — a title room outside
+/// the property, and a `Let` room the access hook never sees.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "PropertyWire")]
 pub struct Property {
     /// Identity (never reused).
     pub id: PropertyId,
@@ -235,9 +243,17 @@ impl Property {
     /// Remove a room. The **anchor** may never be removed: the title record and every
     /// tenant's `Obj.home` point at it, so a property without its anchor is a
     /// tenancy homed on nothing.
+    ///
+    /// Refused entirely while the property is [`PropertyStatus::Let`]: a room dropped
+    /// from a let property is a room somebody is living in that the access predicate
+    /// stops answering for — the tenants' own rooms silently leave their tenancy while
+    /// the tenancy is still live. Withdraw the property, or end the tenancy, first.
     pub fn remove_room(&self, room: ObjId) -> Result<Property, HousingError> {
         if room == self.anchor {
             return Err(HousingError::Invalid("the anchor room cannot be removed"));
+        }
+        if self.status == PropertyStatus::Let {
+            return Err(HousingError::Invalid("a let property's rooms cannot be removed"));
         }
         let mut next = self.clone();
         if next.rooms.remove(&room) {
@@ -272,6 +288,70 @@ impl Property {
     }
 }
 
+/// The persisted shape of a [`Property`], deserialized **through**
+/// [`Property::new`]'s checks.
+///
+/// Deriving `Deserialize` straight onto [`Property`] made the constructor advisory: a
+/// document could carry more rooms than [`MAX_ROOMS_PER_PROPERTY`], an empty or
+/// oversized name, duplicate feature keys, or an anchor that is not one of its own
+/// rooms — every one of them a fail-**open** hole, because a room outside `rooms` is a
+/// room of a `Let` property the access predicate is never asked about. A structurally
+/// broken document now fails to load instead.
+#[derive(Deserialize)]
+struct PropertyWire {
+    id: PropertyId,
+    name: SmolStr,
+    anchor: ObjId,
+    rooms: BTreeSet<ObjId>,
+    tier: PropertyTier,
+    landlord: PrincipalId,
+    #[serde(default)]
+    landlord_scope: Option<OrgScopeId>,
+    #[serde(default)]
+    upkeep: Option<Amount>,
+    #[serde(default)]
+    features: Vec<Feature>,
+    #[serde(default)]
+    status: PropertyStatus,
+    revision: u64,
+}
+
+impl TryFrom<PropertyWire> for Property {
+    type Error = HousingError;
+
+    fn try_from(w: PropertyWire) -> Result<Property, HousingError> {
+        // The anchor is **checked** here rather than inserted. `Property::new` adds it
+        // to the set a builder passed, which is a convenience at build time; doing the
+        // same on load would silently repair a document whose title room is outside
+        // its own property — exactly the corruption worth failing on.
+        if !w.rooms.contains(&w.anchor) {
+            return Err(HousingError::Invalid("the anchor must be one of the property's rooms"));
+        }
+        let mut p = Property::new(w.id, w.name.as_str(), w.anchor, w.rooms, w.tier, w.landlord)?;
+        if w.features.len() > MAX_FEATURES {
+            return Err(HousingError::TooLarge("features per property"));
+        }
+        let mut seen: BTreeSet<SmolStr> = BTreeSet::new();
+        for f in &w.features {
+            if f.key.trim().is_empty() {
+                return Err(HousingError::Invalid("a feature needs a key"));
+            }
+            if f.key.len() > MAX_FEATURE_KEY_BYTES {
+                return Err(HousingError::TooLarge("feature key"));
+            }
+            if !seen.insert(f.key.clone()) {
+                return Err(HousingError::Invalid("a feature key appears twice"));
+            }
+        }
+        p.landlord_scope = w.landlord_scope;
+        p.upkeep = w.upkeep;
+        p.features = w.features;
+        p.status = w.status;
+        p.revision = w.revision;
+        Ok(p)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Access terms
 // ---------------------------------------------------------------------------
@@ -280,12 +360,15 @@ impl Property {
 /// no "delinquency unlocks the door" (D-E5-4): legal authority, economic title and
 /// physical access stay separate, and inspection is an **explicit** policy term
 /// (owner answer 9).
-#[derive(
-    Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+///
+/// Deliberately **not** `Default`. It defaulted to [`InspectionWhen::Always`], the
+/// widest term of the two, so anything that reached for a default — a form, a partial
+/// document, a `..Default::default()` struct update in a later cut — minted a standing
+/// right of entry nobody wrote down. A term that does not say *when* is not a term;
+/// every construction names one.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum InspectionWhen {
     /// Whenever the tenancy is live.
-    #[default]
     Always,
     /// Only while the tenancy is `Delinquent` or `EvictionPending`.
     WhileDelinquent,
@@ -393,6 +476,11 @@ pub enum SupportSource {
 ///
 /// Only [`crate::submit_plan`] writes one, called by the ruleset's evaluator and
 /// never by a player command (D-E5-5), and a plan must name a **current tenant**.
+///
+/// A plan **expires**. `asserted_period` is what [`crate::assess_at`] measures its age
+/// against, so an evaluator that stops running (a crashed ruleset, a character nobody
+/// re-evaluates) stops supporting the lease after [`crate::PLAN_MAX_AGE_PERIODS`]
+/// instead of carrying it forever on an answer nobody has restated.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SupportPlan {
     /// Whose means this describes.
@@ -402,8 +490,20 @@ pub struct SupportPlan {
     /// Attribution only; ≤ [`MAX_PLAN_SOURCES`].
     #[serde(default)]
     pub sources: Vec<SupportSource>,
-    /// The cadence position this was asserted at.
+    /// The cadence position this was asserted at — the raw stamp `@tenancy/show`
+    /// prints, on the tenancy's own clock (it may be negative, and it may jump when a
+    /// cadence is re-pointed).
     pub asserted_at: i64,
+    /// The cadence **period ordinal** this was asserted in — the monotonic count E5b
+    /// keeps, and the only thing freshness is measured in.
+    ///
+    /// Separate from `asserted_at` on purpose: staleness must survive a re-pointed
+    /// clock or a restored backup, which is exactly when the raw position lies.
+    /// `#[serde(default)]` (0), so a document written before this field existed reads
+    /// as "asserted at the beginning of time" — which [`crate::assess_at`] ages out,
+    /// the fail-closed direction.
+    #[serde(default)]
+    pub asserted_period: u64,
     /// Staleness stamp.
     pub revision: u64,
 }
@@ -415,11 +515,12 @@ impl SupportPlan {
         level: SupportLevel,
         sources: Vec<SupportSource>,
         asserted_at: i64,
+        asserted_period: u64,
     ) -> Result<SupportPlan, HousingError> {
         if sources.len() > MAX_PLAN_SOURCES {
             return Err(HousingError::TooLarge("plan sources"));
         }
-        Ok(SupportPlan { resident, level, sources, asserted_at, revision: 1 })
+        Ok(SupportPlan { resident, level, sources, asserted_at, asserted_period, revision: 1 })
     }
 }
 
@@ -451,6 +552,12 @@ pub struct StoryWindow {
     /// re-notice lands one [`crate::WINDOW_RENOTIFY`] later and never on the same
     /// period as the transition notice.
     pub last_notice: i64,
+    /// The cadence position the window **closed** at, set only on the copy parked in
+    /// [`Tenancy::last_window`] when the tenancy recovered (`None` while the window is
+    /// the live one). It is what the relapse hysteresis
+    /// ([`crate::RELAPSE_WINDOW_PERIODS`]) measures from.
+    #[serde(default)]
+    pub closed: Option<i64>,
 }
 
 impl StoryWindow {
@@ -464,6 +571,7 @@ impl StoryWindow {
             notified: 0,
             escalation: None,
             last_notice: now,
+            closed: None,
         }
     }
 }
@@ -685,7 +793,14 @@ pub enum TenancyEvent {
 }
 
 /// Who lives where, on which clock, under what terms.
+///
+/// **Loading re-checks [`Tenancy::new`]'s invariants** (`#[serde(try_from)]` through
+/// a private `TenancyWire`): a persisted tenancy with no tenants would be a `Let` property
+/// nobody may enter and nobody may end, and one whose guest list overlaps its roster,
+/// or whose plan map is filed under the wrong resident, is a fail-open answer to
+/// "who lives here".
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "TenancyWire")]
 pub struct Tenancy {
     /// Identity (never reused).
     pub id: TenancyId,
@@ -716,6 +831,16 @@ pub struct Tenancy {
     /// The bounded audit tail.
     #[serde(default)]
     pub history: Vec<TenancyEvent>,
+    /// The story window that closed when the tenancy last recovered, stamped with the
+    /// period it closed at (§3.2, [`crate::period_supported`]).
+    ///
+    /// Recovery used to drop the window and everything in it. Its `job` is the
+    /// `wod-story` job E5b must resolve "recovered" and its `escalation` is the level-2
+    /// record E5b must acknowledge — losing both left an open job and an open
+    /// escalation pointing at a tenancy that is fine. It is also what the relapse
+    /// hysteresis reads ([`crate::RELAPSE_WINDOW_PERIODS`]).
+    #[serde(default)]
+    pub last_window: Option<StoryWindow>,
     /// Staleness stamp.
     pub revision: u64,
 }
@@ -748,6 +873,7 @@ impl Tenancy {
             homed: BTreeSet::new(),
             status: TenancyStatus::Pending,
             history: Vec::new(),
+            last_window: None,
             revision: 1,
         })
     }
@@ -812,7 +938,22 @@ impl Tenancy {
     ///
     /// The **last** tenant may not be removed this way: that would end the tenancy
     /// without a [`Resolution`], which D-E5-1 forbids. Use [`crate::resolve`].
+    ///
+    /// Refused on an ended tenancy ([`HousingError::AlreadyEnded`], as
+    /// [`Tenancy::add_guest`] is): the roster of an ended tenancy is the record of who
+    /// lived there, and editing it after the fact rewrites what happened.
+    ///
+    /// **`homed` is deliberately left alone.** It is not a copy of the roster; it is
+    /// the list of objects whose core `Obj.home` housing pointed at this property, and
+    /// that pointer outlives the roster entry — dropping the id here is how a
+    /// co-tenant keeps a live `Obj.home` into a property they no longer rent, and
+    /// disperses *into* it when a room is destroyed (D-E5-11). It clears when the
+    /// tenancy ends, through [`crate::to_unhome_on_end`], whose carve-out already
+    /// skips anybody since re-homed somewhere else.
     pub fn remove_tenant(&self, who: ObjId, now: i64) -> Result<Tenancy, HousingError> {
+        if self.status.is_ended() {
+            return Err(HousingError::AlreadyEnded(self.id));
+        }
         if !self.tenants.contains(&who) {
             return Ok(self.clone());
         }
@@ -823,13 +964,80 @@ impl Tenancy {
         }
         let mut next = self.clone();
         next.tenants.remove(&who);
-        next.homed.remove(&who);
         if let Funding::Abstract { plans } = &mut next.funding {
             plans.remove(&who);
         }
         next.push_event(TenancyEvent::TenantRemoved { who, at: now });
         next.revision = next.revision.saturating_add(1);
         Ok(next)
+    }
+}
+
+/// The persisted shape of a [`Tenancy`], deserialized **through** [`Tenancy::new`]'s
+/// checks (the [`PropertyWire`] rationale, applied to the record that answers "who
+/// lives here").
+#[derive(Deserialize)]
+struct TenancyWire {
+    id: TenancyId,
+    property: PropertyId,
+    tenants: BTreeSet<ObjId>,
+    #[serde(default)]
+    guests: BTreeSet<ObjId>,
+    #[serde(default)]
+    terms: AccessTerms,
+    #[serde(default)]
+    funding: Funding,
+    cadence: CadenceId,
+    #[serde(default)]
+    homed: BTreeSet<ObjId>,
+    #[serde(default)]
+    status: TenancyStatus,
+    #[serde(default)]
+    history: Vec<TenancyEvent>,
+    #[serde(default)]
+    last_window: Option<StoryWindow>,
+    revision: u64,
+}
+
+impl TryFrom<TenancyWire> for Tenancy {
+    type Error = HousingError;
+
+    fn try_from(w: TenancyWire) -> Result<Tenancy, HousingError> {
+        let mut t = Tenancy::new(w.id, w.property, w.tenants, w.cadence)?;
+        if w.guests.len() > MAX_GUESTS {
+            return Err(HousingError::TooLarge("guests per tenancy"));
+        }
+        if w.guests.iter().any(|g| t.tenants.contains(g)) {
+            return Err(HousingError::Invalid("a tenant is not their own guest"));
+        }
+        if w.history.len() > MAX_TENANCY_HISTORY {
+            return Err(HousingError::TooLarge("tenancy history"));
+        }
+        if let Funding::Abstract { plans } = &w.funding {
+            if plans.len() > MAX_TENANTS {
+                return Err(HousingError::TooLarge("plans per tenancy"));
+            }
+            for (who, p) in plans {
+                // The map key *is* the D-E5-13 guarantee that one resident's plan can
+                // never overwrite another's; a document filed under somebody else is a
+                // plan attributed to a resident who never asserted it.
+                if p.resident != *who {
+                    return Err(HousingError::Invalid("a plan is filed under another resident"));
+                }
+                if p.sources.len() > MAX_PLAN_SOURCES {
+                    return Err(HousingError::TooLarge("plan sources"));
+                }
+            }
+        }
+        t.guests = w.guests;
+        t.terms = w.terms;
+        t.funding = w.funding;
+        t.homed = w.homed;
+        t.status = w.status;
+        t.history = w.history;
+        t.last_window = w.last_window;
+        t.revision = w.revision;
+        Ok(t)
     }
 }
 
@@ -845,6 +1053,19 @@ impl Tenancy {
 /// - an exact tenancy takes no plans at all ([`HousingError::WrongFunding`]): its
 ///   assessment is the E4 obligation's, and a plan there would be a second, silent
 ///   answer to the same question.
+///
+/// **A restatement is not news.** The ruleset's evaluator asserts the same level from
+/// the same sources every period for a character whose circumstances have not changed,
+/// and writing that down each time bumped a revision, wrote a store document and
+/// pushed a `PlanSubmitted` entry — thirty-two of which are the whole bounded tail, so
+/// a stable tenancy's audit history was a wall of identical plans with the acceptance,
+/// the ladder and the escalation evicted out of it. So:
+///
+/// | the submission | the record |
+/// |---|---|
+/// | same `level` and `sources`, same `asserted_period` | a **pure no-op** — the same tenancy back, no revision, no event |
+/// | same `level` and `sources`, a later period | the stored plan's freshness stamp moves (so [`crate::assess_at`] still sees a live answer); a revision, no event |
+/// | a different `level` or `sources` | replaced, a revision, and a `PlanSubmitted` entry — the only submissions the tail keeps |
 pub fn submit_plan(t: &Tenancy, plan: SupportPlan) -> Result<Tenancy, HousingError> {
     if t.status.is_ended() {
         return Err(HousingError::AlreadyEnded(t.id));
@@ -855,18 +1076,44 @@ pub fn submit_plan(t: &Tenancy, plan: SupportPlan) -> Result<Tenancy, HousingErr
     if !t.is_tenant(plan.resident) {
         return Err(HousingError::NotATenant(plan.resident));
     }
-    let mut next = t.clone();
+    let Some(plans) = t.funding.plans() else {
+        return Err(HousingError::WrongFunding);
+    };
+    let previous = plans.get(&plan.resident);
+    let restated =
+        matches!(previous, Some(p) if p.level == plan.level && p.sources == plan.sources);
+    if let Some(p) = previous
+        && restated
+        && p.asserted_period == plan.asserted_period
+    {
+        return Ok(t.clone());
+    }
+    if previous.is_none() && plans.len() >= MAX_TENANTS {
+        return Err(HousingError::TooLarge("plans per tenancy"));
+    }
     let (resident, level, at) = (plan.resident, plan.level, plan.asserted_at);
+    let entry = match previous {
+        Some(p) if restated => {
+            let mut fresh = p.clone();
+            fresh.asserted_at = plan.asserted_at;
+            fresh.asserted_period = plan.asserted_period;
+            fresh.revision = fresh.revision.saturating_add(1);
+            fresh
+        }
+        _ => plan,
+    };
+    let mut next = t.clone();
     match &mut next.funding {
         Funding::Abstract { plans } => {
-            if !plans.contains_key(&resident) && plans.len() >= MAX_TENANTS {
-                return Err(HousingError::TooLarge("plans per tenancy"));
-            }
-            plans.insert(resident, plan);
+            plans.insert(resident, entry);
         }
+        // Unreachable — `funding.plans()` above already refused an exact tenancy — and
+        // kept anyway so the match cannot silently acquire a fall-through later.
         Funding::Exact { .. } => return Err(HousingError::WrongFunding),
     }
-    next.push_event(TenancyEvent::PlanSubmitted { resident, level, at });
+    if !restated {
+        next.push_event(TenancyEvent::PlanSubmitted { resident, level, at });
+    }
     next.revision = next.revision.saturating_add(1);
     Ok(next)
 }
