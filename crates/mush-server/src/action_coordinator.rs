@@ -7,11 +7,12 @@
 //! provider.
 
 use mush_core::{
-    ActionInvocation, ActionProviderPrepareError, AuthoritativeBundle, AuthoritativeBundleDraft,
-    CanonicalHash, CanonicalHashError, CanonicalId, CommitToken, DefinitionRef, Engine, GuardSet,
-    IdempotencyKey, IdempotencyScope, IngressEnvelope, IngressPayload, IngressSurfaceVersion,
-    MAX_AUTHORITATIVE_BUNDLE_BYTES, OfferRouteTable, PreparedCausalRef, PrincipalId, ResolvedOffer,
-    ScopedIdempotencyKey, StagePreparedActionError,
+    ActionInvocation, ActionMetadataError, ActionProviderPrepareError, AuthoritativeBundle,
+    AuthoritativeBundleDraft, CanonicalHash, CanonicalHashError, CanonicalId, CanonicalIdError,
+    CommitToken, DefinitionRef, Engine, GuardSet, IdempotencyKey, IdempotencyKeyText,
+    IdempotencyKeyTextError, IdempotencyScope, IngressEnvelope, IngressPayload,
+    IngressSurfaceVersion, MAX_AUTHORITATIVE_BUNDLE_BYTES, OfferRouteTable, PreparedCausalRef,
+    PrincipalId, ResolvedOffer, ScheduleAdvance, ScopedIdempotencyKey, StagePreparedActionError,
 };
 use mush_ipc::{GatewayInput, GatewayRequest};
 use mush_store::{
@@ -134,6 +135,71 @@ impl ActionCoordinator {
             idempotency,
         )
         .map_err(|error| error.to_string())
+    }
+
+    /// Construct deterministic internal ingress for one complete durable
+    /// schedule advance.
+    ///
+    /// Scheduled work does not bypass K3: it receives a stable request UID,
+    /// scoped deterministic idempotency, and canonical ingress before the
+    /// same mandatory store preflight and provider preparation as public
+    /// input. Ingress binds the durable pre-state cursor identity, not the
+    /// mutable observation time: after a crash, re-evaluating that same cursor
+    /// must rediscover its pending/finalized intent instead of conflicting
+    /// merely because the clock advanced. The exact selected plan is bound by
+    /// the resulting authoritative bundle. Cross-owner execution stays closed
+    /// until an explicit bridge contract can prepare both owners atomically.
+    pub fn scheduled_ingress(
+        action: &DefinitionRef,
+        advance: &ScheduleAdvance,
+    ) -> Result<IngressEnvelope, ActionCoordinatorError> {
+        if advance.owner() != &action.key().owner {
+            return Err(ActionCoordinatorError::ScheduledOwnerMismatch);
+        }
+        let request_hash = CanonicalHash::for_canonical_value(
+            "scheduled_action_request.v1",
+            1,
+            &json!({
+                "action": action,
+                "schedule": advance.schedule(),
+                "generation": advance.generation(),
+                "advance_key": advance.deterministic_key(),
+            }),
+            32 * 1024,
+        )?;
+        let mut request_bytes = [0_u8; 16];
+        request_bytes.copy_from_slice(&request_hash.as_bytes()[..16]);
+        let request = mush_core::RequestUid::from_bytes(request_bytes);
+        let principal = PrincipalId::Scoped {
+            owner: advance.owner().clone(),
+            class: CanonicalId::new("scheduler").expect("static principal class"),
+            id: IdempotencyKeyText::parse_canonical(advance.schedule().canonical_hash().to_hex())?,
+        };
+        let idempotency = ScopedIdempotencyKey::new(
+            IdempotencyScope {
+                principal: principal.clone(),
+                owner: advance.owner().clone(),
+                namespace: CanonicalId::new(action.key().id.as_str())?,
+            },
+            advance.generation(),
+            IdempotencyKey::Deterministic(advance.deterministic_key()),
+        );
+        IngressEnvelope::new(
+            request,
+            principal,
+            IngressSurfaceVersion::new(
+                CanonicalId::new("kernel.schedule").expect("static surface id"),
+                1,
+            )?,
+            IngressPayload::structured(json!({
+                "action": action,
+                "schedule": advance.schedule(),
+                "generation": advance.generation(),
+                "advance_key": advance.deterministic_key(),
+            }))?,
+            idempotency,
+        )
+        .map_err(ActionCoordinatorError::Metadata)
     }
 
     /// Authorized semantic `action/status` lookup. Finalized outcomes are
@@ -357,6 +423,8 @@ fn deterministic_commit_token(
 
 #[derive(Debug, thiserror::Error)]
 pub enum ActionCoordinatorError {
+    #[error("scheduled advance and action have different owners")]
+    ScheduledOwnerMismatch,
     #[error("semantic invocation identity does not match its preflight ingress")]
     IngressInvocationMismatch,
     #[error("action provider preparation failed: {0}")]
@@ -365,6 +433,12 @@ pub enum ActionCoordinatorError {
     Causality(#[source] mush_core::CausalMetadataError),
     #[error("authoritative action hashing failed: {0}")]
     Hash(#[from] CanonicalHashError),
+    #[error("scheduled action metadata is invalid: {0}")]
+    Metadata(#[from] ActionMetadataError),
+    #[error("scheduled action canonical identity is invalid: {0}")]
+    CanonicalId(#[from] CanonicalIdError),
+    #[error("scheduled action idempotency text is invalid: {0}")]
+    IdempotencyText(#[from] IdempotencyKeyTextError),
     #[error("authoritative bundle assembly failed: {0}")]
     Bundle(#[from] mush_core::AuthoritativeBundleError),
     #[error("authoritative action staging failed: {0}")]

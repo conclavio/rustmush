@@ -56,6 +56,7 @@ pub mod clock;
 pub mod clock_provider;
 pub mod cmd;
 pub mod commands;
+pub mod durable_schedule;
 pub mod engine;
 pub mod flags;
 pub mod ledger;
@@ -113,9 +114,9 @@ pub use action_window::{
     ActionWindow, ActionWindowDraft, ActionWindowError, ActionWindowId, ActionWindowPhase,
     ActionWindowRecord, ActionWindowStateCodec, MAX_WINDOW_CAPACITY, MAX_WINDOW_CATCH_UP,
     MAX_WINDOW_INPUT_OPERATIONS, MAX_WINDOW_OPERATION_RECEIPTS, MAX_WINDOW_ORDER_KEY_PARTS,
-    WindowIntent, WindowIntentSlot, WindowMode, WindowMutationReceipt, WindowMutationResult,
-    WindowOrderKey, WindowRestartPolicy, WindowTimeoutPolicy, WindowTransition,
-    action_window_state_family_descriptor,
+    WindowDriveCause, WindowDriveDecision, WindowIntent, WindowIntentSlot, WindowMode,
+    WindowMutationReceipt, WindowMutationResult, WindowOrderKey, WindowRestartPolicy,
+    WindowTimeoutPolicy, WindowTransition, action_window_state_family_descriptor,
 };
 pub use attr::{Attr, AttrFlags, AttrMap, AttrValue, UncasedName};
 pub use authoritative::{
@@ -150,6 +151,12 @@ pub use cmd::{
 };
 pub use commands::{
     event_subject, ignore_list, is_ignoring, narrative_actor, register_core_commands,
+};
+pub use durable_schedule::{
+    DurableSchedule, DurableScheduleDraft, DurableScheduleError, DurableScheduleStateCodec,
+    MAX_SCHEDULE_CATCH_UP, ScheduleAdvance, ScheduleCatchUpOrder, ScheduleDriveCause,
+    ScheduleEvaluation, ScheduleGap, ScheduleId, ScheduleOccurrence, ScheduleRestartPolicy,
+    ScheduleState, durable_schedule_state_family_descriptor,
 };
 pub use engine::{
     ControlMsg, Deferred, DisconnectKind, Effect, Effects, Engine, Inbound, ModuleComposition,

@@ -36,6 +36,9 @@ particular campaign economy.
   seeds generation one only; persisted truth wins thereafter. Exact module-owned registered/domain
   clocks now use the composition-frozen provider registry: the provider validates the requested
   generation and returns only its scalar value, while the kernel owns stamp identity and readiness.
+  The durable schedule cursor now supplies bounded oldest/latest catch-up, explicit skipped ranges,
+  resume/skip/suspend restart transitions, and deterministic same-owner coordinator ingress. E7
+  still needs to register its schedule sources with the production wake driver.
 - **K5a station channel grants:** one
   `ChannelGrant { actor, subject, owner, station, channels, priority, epoch }` per occupied station.
   Channel and priority are selected from the same grant; no cross-seat union/max promotion. Exact

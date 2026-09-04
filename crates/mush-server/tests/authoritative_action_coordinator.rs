@@ -1,14 +1,15 @@
 use mush_contract_tests::{
     TOY_OWNER, install_toy_focus, toy_action_window, toy_brace_invocation, toy_brace_offers,
-    toy_definitions, toy_guarded_expiry_invocation, toy_scene_turn, toy_window_invocation,
-    toy_world_with_state,
+    toy_definitions, toy_scene_turn, toy_window_invocation, toy_world_with_state,
 };
 use mush_core::{
     ActionInvocation, ActionInvocationDraft, ActionOfferId, ActionWindowPhase, AuthoritativeBundle,
-    CanonicalHash, CanonicalId, DefinitionId, DefinitionKey, DefinitionKind, DefinitionRef, Engine,
-    GOD, IdempotencyKey, IdempotencyScope, IngressEnvelope, IngressPayload, IngressSurfaceVersion,
-    OfferExecutionContext, OfferKeyRing, OfferSecret, OfferSubmission, OwnerId, PerceivedRef,
-    PrincipalId, ProjectionScopeId, RequestUid, ResolutionKeyRing, ResolutionSecret, RevisionSet,
+    CanonicalHash, CanonicalId, DefinitionId, DefinitionKey, DefinitionKind, DefinitionRef,
+    DurableSchedule, DurableScheduleDraft, Engine, GOD, IdempotencyKey, IdempotencyScope,
+    IngressEnvelope, IngressPayload, IngressSurfaceVersion, OfferExecutionContext, OfferKeyRing,
+    OfferSecret, OfferSubmission, OwnerId, PerceivedRef, PrincipalId, ProjectionScopeId,
+    RequestUid, ResolutionKeyRing, ResolutionSecret, RevisionSet, ScheduleCatchUpOrder,
+    ScheduleDriveCause, ScheduleEvaluation, ScheduleId, ScheduleRestartPolicy,
     ScopedIdempotencyKey, StagedActionPersistence,
 };
 use mush_server::action_coordinator::{ActionCoordinator, ActionPreflight, SemanticActionStatus};
@@ -90,6 +91,107 @@ fn guards(engine: &Engine, action: &DefinitionRef) -> mush_core::GuardSet {
         .unwrap();
     builder.add_definition(action.clone(), definitions).unwrap();
     builder.finish().unwrap()
+}
+
+#[test]
+fn scheduled_ingress_is_stable_and_owner_scoped() {
+    let engine = fresh_engine();
+    let action = brace_action(&engine);
+    let owner = OwnerId::new("tactics").unwrap();
+    let schedule = DurableSchedule::new(DurableScheduleDraft {
+        id: ScheduleId::derive(&owner, &CanonicalId::new("brace_once").unwrap()).unwrap(),
+        owner,
+        clock: mush_core::ClockRef::Utc,
+        next_due: mush_core::ClockStamp {
+            clock: mush_core::ClockRef::Utc,
+            at: 5,
+        },
+        cadence: Some(5),
+        generation: 8,
+        next_ordinal: 12,
+        restart: ScheduleRestartPolicy::Resume,
+        catch_up_order: ScheduleCatchUpOrder::OldestFirst,
+        max_catch_up: 1,
+    })
+    .unwrap();
+    let ScheduleEvaluation::Advance(advance) = schedule
+        .plan_due(
+            1,
+            &mush_core::ClockStamp {
+                clock: mush_core::ClockRef::Utc,
+                at: 5,
+            },
+            ScheduleDriveCause::Live,
+        )
+        .unwrap()
+    else {
+        panic!("one-shot schedule was not due")
+    };
+    let first = ActionCoordinator::scheduled_ingress(&action, &advance).unwrap();
+    let retry = ActionCoordinator::scheduled_ingress(&action, &advance).unwrap();
+    assert_eq!(first.request(), retry.request());
+    assert_eq!(first.idempotency(), retry.idempotency());
+    assert_eq!(first.ingress_hash(), retry.ingress_hash());
+    assert_eq!(first.idempotency().epoch(), 8);
+    assert!(matches!(
+        first.idempotency().key(),
+        IdempotencyKey::Deterministic(_)
+    ));
+    let ScheduleEvaluation::Advance(later_advance) = schedule
+        .plan_due(
+            1,
+            &mush_core::ClockStamp {
+                clock: mush_core::ClockRef::Utc,
+                at: 15,
+            },
+            ScheduleDriveCause::Live,
+        )
+        .unwrap()
+    else {
+        panic!("later schedule observation was not due")
+    };
+    assert_ne!(advance.post_image(), later_advance.post_image());
+    let later = ActionCoordinator::scheduled_ingress(&action, &later_advance).unwrap();
+    assert_eq!(first.request(), later.request());
+    assert_eq!(first.idempotency(), later.idempotency());
+    assert_eq!(first.ingress_hash(), later.ingress_hash());
+
+    let foreign_owner = OwnerId::new("other").unwrap();
+    let foreign = DurableSchedule::new(DurableScheduleDraft {
+        id: ScheduleId::derive(&foreign_owner, &CanonicalId::new("brace_once").unwrap()).unwrap(),
+        owner: foreign_owner,
+        clock: mush_core::ClockRef::Utc,
+        next_due: mush_core::ClockStamp {
+            clock: mush_core::ClockRef::Utc,
+            at: 5,
+        },
+        cadence: None,
+        generation: 1,
+        next_ordinal: 0,
+        restart: ScheduleRestartPolicy::Resume,
+        catch_up_order: ScheduleCatchUpOrder::OldestFirst,
+        max_catch_up: 1,
+    })
+    .unwrap();
+    let ScheduleEvaluation::Advance(foreign) = foreign
+        .plan_due(
+            1,
+            &mush_core::ClockStamp {
+                clock: mush_core::ClockRef::Utc,
+                at: 5,
+            },
+            ScheduleDriveCause::Live,
+        )
+        .unwrap()
+    else {
+        panic!("foreign schedule was not due")
+    };
+    assert!(
+        ActionCoordinator::scheduled_ingress(&action, &foreign)
+            .unwrap_err()
+            .to_string()
+            .contains("different owners")
+    );
 }
 
 async fn commit_toy_window_operation(
@@ -746,20 +848,47 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
         .unwrap()
         .effect
         .id();
-    let expiry_request = RequestUid::from_bytes([0xB2; 16]);
-    let expiry = toy_guarded_expiry_invocation(GOD, effect, 13, expiry_request);
-    let expiry_envelope = IngressEnvelope::new(
-        expiry_request,
-        expiry.principal().clone(),
-        IngressSurfaceVersion::new(CanonicalId::new("test.scheduler").unwrap(), 1).unwrap(),
-        IngressPayload::structured(json!({
-            "action": "guarded_expire",
+    let expiry_action = toy_definitions().guarded_expire;
+    let schedule_owner = OwnerId::new(TOY_OWNER).unwrap();
+    let schedule = DurableSchedule::new(DurableScheduleDraft {
+        id: ScheduleId::derive(
+            &schedule_owner,
+            &CanonicalId::new("guarded_expiry_god").unwrap(),
+        )
+        .unwrap(),
+        owner: schedule_owner,
+        clock: toy_scene_turn(0).clock,
+        next_due: toy_scene_turn(13),
+        cadence: None,
+        generation: 1,
+        next_ordinal: 0,
+        restart: ScheduleRestartPolicy::Resume,
+        catch_up_order: ScheduleCatchUpOrder::OldestFirst,
+        max_catch_up: 1,
+    })
+    .unwrap();
+    let ScheduleEvaluation::Advance(schedule_advance) = schedule
+        .plan_due(1, &toy_scene_turn(13), ScheduleDriveCause::Restart)
+        .unwrap()
+    else {
+        panic!("expired effect schedule was not due")
+    };
+    assert_eq!(schedule_advance.occurrences().len(), 1);
+    let expiry_envelope =
+        ActionCoordinator::scheduled_ingress(&expiry_action, &schedule_advance).unwrap();
+    let expiry = ActionInvocation::new(ActionInvocationDraft {
+        request: expiry_envelope.request(),
+        principal: expiry_envelope.principal().clone(),
+        actor: GOD,
+        offered_action: ActionOfferId(CanonicalHash::from_bytes([0xB2; 32])),
+        subject: PerceivedRef::SelfActor,
+        targets: Vec::new(),
+        parameters: json!({
             "effect": effect,
             "now": toy_scene_turn(13),
-        }))
-        .unwrap(),
-        expiry.idempotency().clone(),
-    )
+        }),
+        idempotency: expiry_envelope.idempotency().clone(),
+    })
     .unwrap();
     let expiry_permit = match ActionCoordinator::preflight(&store, expiry_envelope.clone())
         .await
@@ -768,7 +897,6 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
         ActionPreflight::Vacant(permit) => permit,
         other => panic!("expiry request was not vacant: {other:?}"),
     };
-    let expiry_action = toy_definitions().guarded_expire;
     let expiry_guards = guards(restarted.engine(), &expiry_action);
     ActionCoordinator::prepare_and_stage(
         expiry_permit,

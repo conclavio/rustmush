@@ -124,6 +124,28 @@ pub enum WindowTimeoutPolicy {
     Cancel,
 }
 
+/// Whether a window is being checked during normal running or boot recovery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WindowDriveCause {
+    Live,
+    Restart,
+}
+
+/// Pure instruction for a coordinator that drives one durable window.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WindowDriveDecision {
+    /// The open window has not reached its exact closing stamp.
+    Waiting { closes: ClockStamp },
+    /// Submit the provider-owned idempotent close action.
+    Close,
+    /// Submit the provider-owned idempotent cancellation action.
+    Cancel,
+    /// Submit resolution for the already durably frozen intent set.
+    Resolve,
+    /// No work remains for this terminal record.
+    Terminal(ActionWindowPhase),
+}
+
 /// Immutable definition of one exact action-window generation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -690,6 +712,43 @@ impl ActionWindowRecord {
         &self.receipts
     }
 
+    /// Decide the next coordinator action without mutating the window.
+    ///
+    /// `Resume` means "apply ordinary timeout policy after restart", not
+    /// "reopen an elapsed collection interval".  The two explicit elapsed
+    /// policies override that normal close/cancel choice. A durably closed
+    /// window always resolves without consulting a newer clock generation;
+    /// its close receipt already proves that the old deadline was crossed.
+    pub fn drive_decision(
+        &self,
+        now: &ClockStamp,
+        cause: WindowDriveCause,
+    ) -> Result<WindowDriveDecision, ClockMismatch> {
+        match self.phase {
+            ActionWindowPhase::Closed => return Ok(WindowDriveDecision::Resolve),
+            ActionWindowPhase::Consumed { .. } | ActionWindowPhase::Cancelled => {
+                return Ok(WindowDriveDecision::Terminal(self.phase));
+            }
+            ActionWindowPhase::Open => {}
+        }
+        if now.checked_cmp(&self.window.closes)? == Ordering::Less {
+            return Ok(WindowDriveDecision::Waiting {
+                closes: self.window.closes.clone(),
+            });
+        }
+        if cause == WindowDriveCause::Restart {
+            match self.window.restart {
+                WindowRestartPolicy::CloseIfElapsed => return Ok(WindowDriveDecision::Close),
+                WindowRestartPolicy::CancelIfElapsed => return Ok(WindowDriveDecision::Cancel),
+                WindowRestartPolicy::Resume => {}
+            }
+        }
+        Ok(match self.window.timeout {
+            WindowTimeoutPolicy::Close => WindowDriveDecision::Close,
+            WindowTimeoutPolicy::Cancel => WindowDriveDecision::Cancel,
+        })
+    }
+
     /// Resolve the exact frozen set in ruleset order followed by stable
     /// engine tie breakers. Only a durably closed record exposes this set.
     pub fn resolution_order(&self) -> Result<Vec<&WindowIntent>, ActionWindowError> {
@@ -1135,6 +1194,18 @@ mod tests {
     }
 
     fn window(capacity: u32) -> ActionWindow {
+        window_with_policy(
+            capacity,
+            WindowRestartPolicy::CloseIfElapsed,
+            WindowTimeoutPolicy::Close,
+        )
+    }
+
+    fn window_with_policy(
+        capacity: u32,
+        restart: WindowRestartPolicy,
+        timeout: WindowTimeoutPolicy,
+    ) -> ActionWindow {
         let owner = OwnerId::new("toy").unwrap();
         let local = CanonicalId::new("round_7").unwrap();
         ActionWindow::new(ActionWindowDraft {
@@ -1145,8 +1216,8 @@ mod tests {
             generation: 7,
             mode: WindowMode::CollectSimultaneous,
             capacity,
-            restart: WindowRestartPolicy::CloseIfElapsed,
-            timeout: WindowTimeoutPolicy::Close,
+            restart,
+            timeout,
             max_catch_up: 3,
             resolution_secret_version: Some(1),
         })
@@ -1211,6 +1282,79 @@ mod tests {
                 .is_err()
         );
         assert_eq!(window.bounded_catch_up(99), 3);
+    }
+
+    #[test]
+    fn drive_policy_is_explicit_at_live_and_restart_boundaries() {
+        let resume_cancel = ActionWindowRecord::open(window_with_policy(
+            2,
+            WindowRestartPolicy::Resume,
+            WindowTimeoutPolicy::Cancel,
+        ));
+        assert_eq!(
+            resume_cancel
+                .drive_decision(&turn(19), WindowDriveCause::Restart)
+                .unwrap(),
+            WindowDriveDecision::Waiting { closes: turn(20) }
+        );
+        assert_eq!(
+            resume_cancel
+                .drive_decision(&turn(20), WindowDriveCause::Live)
+                .unwrap(),
+            WindowDriveDecision::Cancel
+        );
+        assert_eq!(
+            resume_cancel
+                .drive_decision(&turn(20), WindowDriveCause::Restart)
+                .unwrap(),
+            WindowDriveDecision::Cancel
+        );
+
+        let force_close = ActionWindowRecord::open(window_with_policy(
+            2,
+            WindowRestartPolicy::CloseIfElapsed,
+            WindowTimeoutPolicy::Cancel,
+        ));
+        assert_eq!(
+            force_close
+                .drive_decision(&turn(20), WindowDriveCause::Restart)
+                .unwrap(),
+            WindowDriveDecision::Close
+        );
+
+        let force_cancel = ActionWindowRecord::open(window_with_policy(
+            2,
+            WindowRestartPolicy::CancelIfElapsed,
+            WindowTimeoutPolicy::Close,
+        ));
+        assert_eq!(
+            force_cancel
+                .drive_decision(&turn(20), WindowDriveCause::Restart)
+                .unwrap(),
+            WindowDriveDecision::Cancel
+        );
+    }
+
+    #[test]
+    fn durably_closed_window_resolves_without_re_reading_an_old_clock() {
+        let record = ActionWindowRecord::open(window(2));
+        let closed = record
+            .checked_close_due(1, RequestUid::from_bytes([9; 16]), &turn(20))
+            .unwrap()
+            .into_record();
+
+        assert_eq!(
+            closed
+                .drive_decision(
+                    &ClockStamp {
+                        clock: ClockRef::Utc,
+                        at: 999,
+                    },
+                    WindowDriveCause::Restart,
+                )
+                .unwrap(),
+            WindowDriveDecision::Resolve
+        );
     }
 
     #[test]
