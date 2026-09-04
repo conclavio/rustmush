@@ -75,6 +75,11 @@ async fn module_batch_atomicity() {
 }
 
 #[tokio::test]
+async fn authoritative_module_prefix_is_store_owned() {
+    suite::authoritative_module_prefix_is_store_owned(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
 async fn module_kv_round_trip() {
     suite::module_kv_round_trip(&InMemoryStore::new()).await;
 }

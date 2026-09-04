@@ -18,6 +18,7 @@ help_dir = "./docs/help"           # (M3) markdown help topics served by "help <
 [store]
 store = "redis"                    # (M2) "redis" (authoritative) or "memory" (nothing survives restart)
 redis_url = "redis://127.0.0.1:6379"   # (M2)
+receipt_policy = "applied"         # "applied" or strict AOF-fsync "host_power_loss"
 
 [ssh]
 listen = "0.0.0.0:2222"            # (M2)

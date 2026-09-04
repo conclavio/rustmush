@@ -280,11 +280,15 @@ impl GameModule for ToyRulesModule {
                 CanonicalId::new("obj_id.decimal.v1").expect("static codec id"),
                 CanonicalId::new("toy.focus.v1").expect("static schema id"),
                 1,
+                CanonicalId::new("toy.focus.decode_json.v1").expect("static decoder id"),
                 CanonicalId::new("toy.focus.range.v1").expect("static validator id"),
                 CanonicalId::new("toy.focus.json.v1").expect("static serializer id"),
             )
             .map_err(|error| ModError::msg(error.to_string()))?,
             |key: &ObjId| Ok(key.0.to_string()),
+            |value: &Value| {
+                serde_json::from_value(value.clone()).map_err(|error| error.to_string())
+            },
             |value: &ToyFocusState| {
                 if value.amount <= 3 {
                     Ok(())
@@ -300,11 +304,15 @@ impl GameModule for ToyRulesModule {
                 CanonicalId::new("obj_id.decimal.v1").expect("static codec id"),
                 CanonicalId::new("toy.guarded.v1").expect("static schema id"),
                 1,
+                CanonicalId::new("toy.guarded.decode_json.v1").expect("static decoder id"),
                 CanonicalId::new("toy.guarded.range.v1").expect("static validator id"),
                 CanonicalId::new("toy.guarded.json.v1").expect("static serializer id"),
             )
             .map_err(|error| ModError::msg(error.to_string()))?,
             |key: &ObjId| Ok(key.0.to_string()),
+            |value: &Value| {
+                serde_json::from_value(value.clone()).map_err(|error| error.to_string())
+            },
             |_value: &ToyGuardedState| Ok(()),
             |value: &ToyGuardedState| {
                 serde_json::to_value(value).map_err(|error| error.to_string())
@@ -392,7 +400,7 @@ pub fn toy_rules_value(definition: DefinitionRef, data: Value) -> RulesValue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mush_core::ActionProviderPrepareError;
+    use mush_core::{ActionProviderPrepareError, RevisionSet};
 
     fn bootstrap_focus(
         world: &mut TestWorld,
@@ -516,9 +524,16 @@ mod tests {
             "prepared effect must not become visible before acknowledgement"
         );
 
+        let guards = world
+            .engine()
+            .registry
+            .server_guard_set_builder(RevisionSet::default())
+            .unwrap()
+            .finish()
+            .unwrap();
         world
             .engine_mut()
-            .stage_prepared_action(prepared)
+            .stage_prepared_action(prepared, guards)
             .expect("clean action step stages");
         assert!(
             world.take_module_ops().is_empty(),
@@ -527,8 +542,12 @@ mod tests {
         let staged = world
             .engine_mut()
             .take_staged_action()
+            .expect("final guard validation succeeds")
             .expect("driver receives prepared action");
-        let (ops, installation) = staged.into_parts();
+        let (persistence, installation) = staged.into_parts();
+        let mush_core::StagedActionPersistence::Legacy(ops) = persistence else {
+            panic!("K2 compatibility staging must use the legacy persistence lane");
+        };
         assert_eq!(ops.len(), 2);
         assert!(
             ops.iter()

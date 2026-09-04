@@ -11,11 +11,13 @@
 //!    persisted documents up to its module's current schema (BGSAVE first —
 //!    the mandatory pre-migrate snapshot), **before** any module parses
 //!    them.
-//! 3. [`load_module_boot`] reads each module's namespace through the store
-//!    read API — every kv doc (minus the reserved [`SCHEMA_KEY`]) plus the
-//!    streams the module names via
+//! 3. The boot loader partitions the coordinator-reserved `action-state/*`
+//!    documents away from ordinary module data and atomically hydrates them
+//!    through their registered typed decoders.
+//! 4. The loader supplies every remaining kv doc (minus the
+//!    reserved [`SCHEMA_KEY`]) plus the streams the module names via
 //!    [`GameModule::boot_stream_requests`].
-//! 4. [`Engine::modules_loaded`] hands each module its
+//! 5. [`Engine::modules_loaded`] hands each module its
 //!    [`ModuleBootData`]; whatever the modules persist during boot
 //!    (first-boot seeding, orphan-doc cleanup) is drained and written
 //!    through **durably, acked** before the server starts serving.
@@ -50,7 +52,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use mush_core::{Effects, Engine, GameModule, Migration, ModuleBootData, Outbox};
+use mush_core::{
+    ActionStateBootRecord, Effects, Engine, GameModule, Migration, ModuleBootData, Outbox,
+    is_action_state_persistence_key,
+};
 use mush_llm::LlmService;
 use mush_ruleset::Ruleset;
 use mush_store::{ModuleOp, ModuleWrite, ObjectStore, WriteBatch};
@@ -255,7 +260,7 @@ pub fn ruleset_modules(
 /// "disabled" outcome (a keyless clone boots and its worldgen commands answer
 /// cleanly rather than 404). Its persistence namespace (`worldgen`) is disjoint
 /// from every other module's, and it loads its drafts through the same
-/// boot-data path as the rest ([`load_module_boot`]).
+/// boot-data path as the rest ([`boot_modules`]).
 #[must_use]
 pub fn worldgen_module(llm: Arc<LlmService>) -> Box<dyn GameModule> {
     Box::new(WorldgenModule::new(llm))
@@ -378,47 +383,90 @@ impl<R: Ruleset + Send + Sync + 'static> mush_npc::AgentGrounding for RulesetAge
     }
 }
 
-/// Read one module's persisted boot data: every kv doc in its namespace
-/// (minus the reserved [`SCHEMA_KEY`]) plus the streams the module asks
-/// for given those docs.
-async fn load_one(
+/// Read and partition one namespace without invoking module-supplied boot
+/// callbacks. Typed state must be validated globally before callbacks run.
+async fn load_one_namespace(
     store: &dyn ObjectStore,
-    module: &dyn GameModule,
-) -> Result<ModuleBootData, String> {
-    let ns = module.name();
-    let kv: Vec<(SmolStr, serde_json::Value)> = store
+    ns: &str,
+) -> Result<(ModuleBootData, Vec<ActionStateBootRecord>), String> {
+    let documents = store
         .module_json_list(ns)
         .await
-        .map_err(|e| format!("listing module namespace {ns:?}: {e}"))?
-        .into_iter()
-        .filter(|(k, _)| k != SCHEMA_KEY)
-        .map(|(k, v)| (SmolStr::new(k), v))
-        .collect();
-    let mut streams = HashMap::new();
-    let stream_requests = module
-        .boot_stream_requests(&kv)
-        .map_err(|e| format!("validating module stream requests for {ns:?}: {e}"))?;
-    for (key, count) in stream_requests {
-        let entries = store
-            .stream_range(ns, &key, count)
-            .await
-            .map_err(|e| format!("loading module stream {ns}:{key}: {e}"))?;
-        streams.insert(key, entries);
+        .map_err(|e| format!("listing module namespace {ns:?}: {e}"))?;
+    let mut kv = Vec::new();
+    let mut action_state = Vec::new();
+    for (key, value) in documents {
+        if key == SCHEMA_KEY {
+            continue;
+        }
+        if is_action_state_persistence_key(&key) {
+            action_state.push(ActionStateBootRecord::new(ns, key, value));
+        } else {
+            kv.push((SmolStr::new(key), value));
+        }
     }
-    Ok(ModuleBootData { kv, streams })
+    Ok((
+        ModuleBootData {
+            kv,
+            streams: HashMap::new(),
+        },
+        action_state,
+    ))
 }
 
-/// Load every registered module's persisted boot data, keyed by module
-/// name, ready for [`Engine::modules_loaded`].
-pub async fn load_module_boot(
+/// Only after typed state has hydrated, let modules select their bounded
+/// stream tails from already-partitioned ordinary JSON data.
+async fn load_requested_streams(
+    store: &dyn ObjectStore,
+    modules: &[Box<dyn GameModule>],
+    boot: &mut HashMap<SmolStr, ModuleBootData>,
+) -> Result<(), String> {
+    for module in modules {
+        let ns = module.name();
+        let data = boot
+            .get_mut(ns)
+            .expect("every composed module namespace was loaded in the first pass");
+        let mut streams = HashMap::new();
+        let stream_requests = module
+            .boot_stream_requests(&data.kv)
+            .map_err(|e| format!("validating module stream requests for {ns:?}: {e}"))?;
+        for (key, count) in stream_requests {
+            let entries = store
+                .stream_range(ns, &key, count)
+                .await
+                .map_err(|e| format!("loading module stream {ns}:{key}: {e}"))?;
+            streams.insert(key, entries);
+        }
+        data.streams = streams;
+    }
+    Ok(())
+}
+
+/// Load only ordinary module boot data. The full public boot path is
+/// [`boot_modules`], which also hydrates the reserved typed-state partition.
+#[cfg(test)]
+async fn load_module_boot(
     store: &dyn ObjectStore,
     modules: &[Box<dyn GameModule>],
 ) -> Result<HashMap<SmolStr, ModuleBootData>, String> {
-    let mut boot = HashMap::new();
-    for m in modules {
-        boot.insert(SmolStr::new(m.name()), load_one(store, m.as_ref()).await?);
-    }
+    let (mut boot, _) = load_module_boot_with_action_state(store, modules).await?;
+    load_requested_streams(store, modules, &mut boot).await?;
     Ok(boot)
+}
+
+async fn load_module_boot_with_action_state(
+    store: &dyn ObjectStore,
+    modules: &[Box<dyn GameModule>],
+) -> Result<(HashMap<SmolStr, ModuleBootData>, Vec<ActionStateBootRecord>), String> {
+    let mut boot = HashMap::new();
+    let mut action_state = Vec::new();
+    for module in modules {
+        let (module_boot, mut module_action_state) =
+            load_one_namespace(store, module.name()).await?;
+        boot.insert(SmolStr::new(module.name()), module_boot);
+        action_state.append(&mut module_action_state);
+    }
+    Ok((boot, action_state))
 }
 
 /// The schema version a namespace's [`SCHEMA_KEY`] doc claims, if any.
@@ -511,7 +559,10 @@ pub async fn run_module_migrations(
                     .module_json_list(ns)
                     .await
                     .map_err(|e| format!("listing module namespace {ns:?}: {e}"))?;
-                if docs.is_empty() {
+                if docs
+                    .iter()
+                    .all(|(key, _)| key == SCHEMA_KEY || is_action_state_persistence_key(key))
+                {
                     // Fresh namespace: stamp to latest, run nothing.
                     write_ops(store, vec![stamp(ns, latest)]).await?;
                     tracing::info!(ns = %ns, version = latest, "fresh module namespace stamped");
@@ -545,7 +596,7 @@ pub async fn run_module_migrations(
                 .map_err(|e| format!("listing module namespace {ns:?}: {e}"))?;
             let mut ops = Vec::new();
             for (key, value) in docs {
-                if key == SCHEMA_KEY {
+                if key == SCHEMA_KEY || is_action_state_persistence_key(&key) {
                     continue;
                 }
                 let migrated = (m.apply)(&key, value).map_err(|e| {
@@ -575,7 +626,12 @@ pub async fn run_module_migrations(
 /// [`Engine::with_modules`] wrapper) and spawning the world task.
 pub async fn boot_modules(engine: &mut Engine, store: &dyn ObjectStore) -> Result<(), String> {
     run_module_migrations(store, engine.registry.migrations()).await?;
-    let boot = load_module_boot(store, engine.modules()).await?;
+    let (mut boot, action_state) =
+        load_module_boot_with_action_state(store, engine.modules()).await?;
+    engine
+        .hydrate_action_state(action_state)
+        .map_err(|error| format!("action-state boot failed: {error}"))?;
+    load_requested_streams(store, engine.modules(), &mut boot).await?;
     let mut out = Outbox::new();
     let mut fx = Effects::new();
     engine
@@ -592,6 +648,18 @@ pub async fn boot_modules(engine: &mut Engine, store: &dyn ObjectStore) -> Resul
     debug_assert!(fx.is_empty(), "modules must not defer effects at boot");
     // First-boot seeding / orphan cleanup must be durable before serving.
     let ops = engine.take_module_ops();
+    if let Some((namespace, key)) = ops.iter().find_map(|op| {
+        let key = match &op.op {
+            ModuleWrite::JsonSet { key, .. }
+            | ModuleWrite::Del { key }
+            | ModuleWrite::StreamAppend { key, .. } => key,
+        };
+        is_action_state_persistence_key(key).then_some((op.ns.as_str(), key.as_str()))
+    }) {
+        return Err(format!(
+            "module boot attempted coordinator-reserved persistence key {namespace}:{key}"
+        ));
+    }
     if !ops.is_empty() {
         write_ops(store, ops).await?;
     }
@@ -601,10 +669,17 @@ pub async fn boot_modules(engine: &mut Engine, store: &dyn ObjectStore) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
 
-    use mush_core::{ModError, Registrar, World};
-    use mush_store::InMemoryStore;
+    use mush_core::{
+        AuthoritativeBundle, AuthoritativeBundleDraft, AuthoritativeKey, CanonicalHash,
+        CanonicalId, CommitToken, DefinitionDescriptor, DefinitionId, DefinitionKind,
+        DefinitionRegistryBuilder, GOD, IdempotencyKey, IdempotencyScope, ModError, OwnerId,
+        PreparedCausalRef, PrincipalId, Registrar, ReplayWrite, RequestUid, RulesValue,
+        ScopedIdempotencyKey, StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, World,
+    };
+    use mush_store::{AuthoritativeStore, InMemoryStore};
 
     /// A module that persists one doc under ns "toy" and registers a v1→v2
     /// migration renaming field `a` to `b`.
@@ -665,6 +740,295 @@ mod tests {
         .unwrap()
     }
 
+    #[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq)]
+    #[serde(deny_unknown_fields)]
+    struct BootState {
+        amount: u8,
+    }
+
+    struct StateBootMod {
+        handle: Arc<Mutex<Option<StateFamilyHandle<u64, BootState>>>>,
+        streams_requested: Arc<AtomicBool>,
+        loaded: Arc<AtomicBool>,
+    }
+
+    impl GameModule for StateBootMod {
+        fn name(&self) -> &'static str {
+            "state_boot_test"
+        }
+
+        fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            let descriptor = StateFamilyDescriptor::new(
+                StateFamilyId::new("boot").expect("static family id"),
+                CanonicalId::new("u64.decimal.v1").expect("static codec id"),
+                CanonicalId::new("boot_state.v1").expect("static schema id"),
+                1,
+                CanonicalId::new("boot_state.decode_json.v1").expect("static decoder id"),
+                CanonicalId::new("boot_state.range.v1").expect("static validator id"),
+                CanonicalId::new("boot_state.json.v1").expect("static serializer id"),
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?;
+            let handle = reg.state_family(
+                descriptor,
+                |key: &u64| Ok(key.to_string()),
+                |value: &serde_json::Value| {
+                    serde_json::from_value(value.clone()).map_err(|error| error.to_string())
+                },
+                |_value: &BootState| Ok(()),
+                |value: &BootState| Ok(serde_json::json!({ "amount": value.amount })),
+            )?;
+            *self.handle.lock().expect("handle mutex poisoned") = Some(handle);
+            Ok(())
+        }
+
+        fn boot_stream_requests(
+            &self,
+            _kv: &[(SmolStr, serde_json::Value)],
+        ) -> Result<Vec<(SmolStr, u32)>, ModError> {
+            self.streams_requested.store(true, Ordering::SeqCst);
+            Ok(Vec::new())
+        }
+
+        fn on_world_loaded(
+            &mut self,
+            _ctx: &mut mush_core::ModuleCtx<'_>,
+            data: ModuleBootData,
+        ) -> Result<(), ModError> {
+            if data
+                .kv
+                .iter()
+                .any(|(key, _)| is_action_state_persistence_key(key))
+            {
+                return Err(ModError::msg("reserved state leaked into module boot"));
+            }
+            self.loaded.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn state_boot_engine() -> (
+        Engine,
+        StateFamilyHandle<u64, BootState>,
+        Arc<AtomicBool>,
+        Arc<AtomicBool>,
+    ) {
+        let captured = Arc::new(Mutex::new(None));
+        let streams_requested = Arc::new(AtomicBool::new(false));
+        let loaded = Arc::new(AtomicBool::new(false));
+        let engine = Engine::with_modules(
+            World::new_minimal(),
+            mush_core::Registry::new(),
+            vec![Box::new(StateBootMod {
+                handle: Arc::clone(&captured),
+                streams_requested: Arc::clone(&streams_requested),
+                loaded: Arc::clone(&loaded),
+            })],
+        )
+        .unwrap();
+        let handle = captured
+            .lock()
+            .expect("handle mutex poisoned")
+            .clone()
+            .expect("registration captured state handle");
+        (engine, handle, streams_requested, loaded)
+    }
+
+    fn boot_state_op(key: &str, amount: u8) -> ModuleOp {
+        ModuleOp {
+            ns: "state_boot_test".into(),
+            op: ModuleWrite::JsonSet {
+                key: format!("action-state/v1/boot/{key}").into(),
+                value: serde_json::json!({
+                    "family": { "owner": "state_boot_test", "id": "boot" },
+                    "key": key,
+                    "schema": { "id": "boot_state.v1", "version": 1 },
+                    "value": { "amount": amount },
+                }),
+            },
+        }
+    }
+
+    /// Seed a module document through the same authoritative prefix owner that
+    /// production uses. Reserved `action-state/*` fixtures must never bypass
+    /// the store guard through the legacy module-write API.
+    async fn seed_authoritative_json(
+        store: &InMemoryStore,
+        namespace: &str,
+        key: &str,
+        value: serde_json::Value,
+    ) {
+        let owner = OwnerId::new(namespace).unwrap();
+        let mut definitions = DefinitionRegistryBuilder::new();
+        let action = definitions
+            .register(
+                owner.clone(),
+                DefinitionDescriptor::new(
+                    DefinitionKind::new("action").unwrap(),
+                    DefinitionId::new("boot_fixture").unwrap(),
+                    1,
+                    serde_json::json!({}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let outcome = definitions
+            .register(
+                owner.clone(),
+                DefinitionDescriptor::new(
+                    DefinitionKind::new("outcome").unwrap(),
+                    DefinitionId::new("boot_fixture_written").unwrap(),
+                    1,
+                    serde_json::json!({}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let request = RequestUid::from_bytes([0xA1; 16]);
+        let bundle = AuthoritativeBundle::new(AuthoritativeBundleDraft {
+            token: CommitToken::from_bytes([0xA2; 16]),
+            request,
+            idempotency: ScopedIdempotencyKey::new(
+                IdempotencyScope {
+                    principal: PrincipalId::Object { id: GOD },
+                    owner: owner.clone(),
+                    namespace: CanonicalId::new("boot_fixture").unwrap(),
+                },
+                0,
+                IdempotencyKey::Request(request),
+            ),
+            ingress_hash: CanonicalHash::from_bytes([0xA3; 32]),
+            request_hash: CanonicalHash::from_bytes([0xA4; 32]),
+            plan_hash: CanonicalHash::from_bytes([0xA5; 32]),
+            action: action.clone(),
+            provider: owner.clone(),
+            cause: PreparedCausalRef::new(request, None, 0).unwrap(),
+            definitions: vec![action, outcome.clone()],
+            writes: vec![ReplayWrite::ModuleJsonSet {
+                namespace: owner,
+                key: AuthoritativeKey::parse_canonical(key).unwrap(),
+                value,
+            }],
+            outcome: RulesValue::new(outcome, serde_json::json!({"seeded": true})).unwrap(),
+            eligible_witnesses: vec![PrincipalId::Object { id: GOD }],
+            durable_outbox: vec![],
+        })
+        .unwrap();
+        let token = bundle.token();
+        let hash = bundle.bundle_hash();
+        store.reserve_authoritative_intent(bundle).await.unwrap();
+        store.reconcile_authoritative(token, hash).await.unwrap();
+        store.checkpoint_authoritative(token, hash).await.unwrap();
+    }
+
+    async fn seed_authoritative_op(store: &InMemoryStore, op: ModuleOp) {
+        let ModuleWrite::JsonSet { key, value } = op.op else {
+            panic!("authoritative boot fixture must be a JSON set");
+        };
+        seed_authoritative_json(store, &op.ns, &key, value).await;
+    }
+
+    struct ReservedBootWrite;
+
+    impl GameModule for ReservedBootWrite {
+        fn name(&self) -> &'static str {
+            "reserved_boot_write"
+        }
+
+        fn register(&mut self, _reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            Ok(())
+        }
+
+        fn on_world_loaded(
+            &mut self,
+            ctx: &mut mush_core::ModuleCtx<'_>,
+            _data: ModuleBootData,
+        ) -> Result<(), ModError> {
+            ctx.persist(ModuleOp {
+                ns: self.name().into(),
+                op: ModuleWrite::JsonSet {
+                    key: "action-state/v1/forged/1".into(),
+                    value: serde_json::json!(true),
+                },
+            });
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn module_boot_cannot_write_the_reserved_action_state_keyspace() {
+        let store = InMemoryStore::new();
+        let mut engine = Engine::with_modules(
+            World::new_minimal(),
+            mush_core::Registry::new(),
+            vec![Box::new(ReservedBootWrite)],
+        )
+        .unwrap();
+
+        let error = boot_modules(&mut engine, &store).await.unwrap_err();
+
+        assert!(error.contains("coordinator-reserved"), "{error}");
+        assert!(
+            store
+                .module_json_get("reserved_boot_write", "action-state/v1/forged/1")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn boot_hydrates_typed_state_before_module_callbacks() {
+        let store = InMemoryStore::new();
+        seed_authoritative_op(&store, boot_state_op("7", 3)).await;
+        let (mut engine, handle, streams_requested, loaded) = state_boot_engine();
+
+        boot_modules(&mut engine, &store).await.unwrap();
+
+        assert!(streams_requested.load(Ordering::SeqCst));
+        assert!(loaded.load(Ordering::SeqCst));
+        assert_eq!(
+            engine.action_state().get(&handle, &7).unwrap(),
+            Some(&BootState { amount: 3 })
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_typed_state_aborts_before_any_module_callback() {
+        let store = InMemoryStore::new();
+        let mut op = boot_state_op("7", 3);
+        let ModuleWrite::JsonSet { value, .. } = &mut op.op else {
+            unreachable!()
+        };
+        value["schema"]["version"] = serde_json::json!(2);
+        seed_authoritative_op(&store, op).await;
+        let (mut engine, handle, streams_requested, loaded) = state_boot_engine();
+
+        let error = boot_modules(&mut engine, &store).await.unwrap_err();
+
+        assert!(error.contains("schema.version"), "{error}");
+        assert!(!streams_requested.load(Ordering::SeqCst));
+        assert!(!loaded.load(Ordering::SeqCst));
+        assert!(engine.action_state().get(&handle, &7).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn future_action_state_encoding_is_reserved_and_fails_closed() {
+        let store = InMemoryStore::new();
+        let mut op = boot_state_op("7", 3);
+        let ModuleWrite::JsonSet { key, .. } = &mut op.op else {
+            unreachable!()
+        };
+        *key = "action-state/v2/boot/7".into();
+        seed_authoritative_op(&store, op).await;
+        let (mut engine, _, streams_requested, loaded) = state_boot_engine();
+
+        let error = boot_modules(&mut engine, &store).await.unwrap_err();
+
+        assert!(error.contains("unsupported action-state"), "{error}");
+        assert!(!streams_requested.load(Ordering::SeqCst));
+        assert!(!loaded.load(Ordering::SeqCst));
+    }
+
     #[tokio::test]
     async fn fresh_namespace_is_stamped_without_running() {
         let store = InMemoryStore::new();
@@ -704,6 +1068,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn module_migrations_never_transform_reserved_action_state() {
+        let store = InMemoryStore::new();
+        let reserved = serde_json::json!({ "a": "must remain byte-equivalent" });
+        seed_authoritative_json(&store, "toy", "action-state/v1/example/1", reserved.clone()).await;
+        write_ops(
+            &store,
+            vec![ModuleOp {
+                ns: "toy".into(),
+                op: ModuleWrite::JsonSet {
+                    key: "doc:1".into(),
+                    value: serde_json::json!({ "a": 42 }),
+                },
+            }],
+        )
+        .await
+        .unwrap();
+        let engine = toy_engine();
+
+        run_module_migrations(&store, engine.registry.migrations())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store
+                .module_json_get("toy", "action-state/v1/example/1")
+                .await
+                .unwrap(),
+            Some(reserved)
+        );
+        assert_eq!(
+            store.module_json_get("toy", "doc:1").await.unwrap(),
+            Some(serde_json::json!({ "b": 42 }))
+        );
+    }
+
+    #[tokio::test]
     async fn newer_store_refuses_to_boot() {
         let store = InMemoryStore::new();
         write_ops(&store, vec![stamp("toy", 9)]).await.unwrap();
@@ -735,6 +1135,39 @@ mod tests {
         let kv = &boot[&SmolStr::new("toy")].kv;
         assert_eq!(kv.len(), 1);
         assert_eq!(kv[0].0, "doc:1");
+    }
+
+    #[tokio::test]
+    async fn action_state_keys_never_reach_module_boot_data() {
+        let store = InMemoryStore::new();
+        seed_authoritative_json(
+            &store,
+            "toy",
+            "action-state/v99/future/1",
+            serde_json::json!({ "opaque": true }),
+        )
+        .await;
+        write_ops(
+            &store,
+            vec![
+                stamp("toy", 2),
+                ModuleOp {
+                    ns: "toy".into(),
+                    op: ModuleWrite::JsonSet {
+                        key: "doc:1".into(),
+                        value: serde_json::json!({ "b": 1 }),
+                    },
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        let modules: Vec<Box<dyn GameModule>> = vec![Box::new(ToyMod { loaded: Vec::new() })];
+
+        let boot = load_module_boot(&store, &modules).await.unwrap();
+
+        assert_eq!(boot[&SmolStr::new("toy")].kv.len(), 1);
+        assert_eq!(boot[&SmolStr::new("toy")].kv[0].0, "doc:1");
     }
 
     #[tokio::test]

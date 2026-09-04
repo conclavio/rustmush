@@ -1,7 +1,13 @@
 //! Domain types shared by every [`crate::ObjectStore`] implementation.
 
-use mush_core::{MAX_MODULE_KEY_BYTES, MAX_MODULE_NAMESPACE_BYTES, Obj, ObjId};
-use serde::{Deserialize, Serialize};
+use mush_core::{
+    AuthoritativeBundle, CanonicalHash, CommitToken, DefinitionRef, DurableOutboxIntent,
+    IdempotencyScope, MAX_MODULE_KEY_BYTES, MAX_MODULE_NAMESPACE_BYTES, Obj, ObjId, OwnerId,
+    PreparedCausalRef, PrincipalId, RequestUid, RulesValue, ScopedIdempotencyKey,
+    is_action_state_persistence_key,
+};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::json;
 
 // The module-op vocabulary is owned by mush-core (modules queue these
 // through `Ctx::persist`); re-exported here because [`WriteBatch`] carries
@@ -140,7 +146,13 @@ pub(crate) fn validate_module_op(op: &ModuleOp) -> Result<(), StoreError> {
         | ModuleWrite::Del { key }
         | ModuleWrite::StreamAppend { key, .. } => key,
     };
-    validate_module_key(key)
+    validate_module_key(key)?;
+    if is_action_state_persistence_key(key) {
+        return Err(StoreError::Invalid(format!(
+            "module key {key:?} is owned by authoritative action persistence"
+        )));
+    }
+    Ok(())
 }
 
 /// Acknowledgement of a durably applied [`WriteBatch`].
@@ -148,6 +160,531 @@ pub(crate) fn validate_module_op(op: &ModuleOp) -> Result<(), StoreError> {
 pub struct WriteReceipt {
     /// The `serial` of the acknowledged batch.
     pub serial: u64,
+}
+
+/// Exact acknowledgement that a complete authoritative intent is durable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IntentReceipt {
+    pub token: CommitToken,
+    pub bundle_hash: CanonicalHash,
+    /// True when the same exact intent or finalized result already existed.
+    pub resumed: bool,
+}
+
+/// Hard maximum full intents retained for recovery by one store.
+pub const MAX_RETAINED_AUTHORITATIVE_INTENTS: usize = 256;
+/// Hard maximum encoded bytes across full intents retained for recovery.
+pub const MAX_RETAINED_AUTHORITATIVE_BYTES: usize = 64 * 1024 * 1024;
+/// Maximum independently discoverable durable-outbox items. This is the
+/// product of the retained-action and per-action hard limits.
+pub const MAX_PENDING_AUTHORITATIVE_OUTBOX: usize =
+    MAX_RETAINED_AUTHORITATIVE_INTENTS * mush_core::MAX_DURABLE_OUTBOX_INTENTS;
+/// Maximum diagnostic bytes retained on one outbox retry/dead-letter state.
+pub const MAX_AUTHORITATIVE_OUTBOX_ERROR_BYTES: usize = 4 * 1024;
+/// Hard maximum intent records returned by one recovery scan page.
+pub const MAX_AUTHORITATIVE_DISCOVERY_PAGE: usize = 256;
+/// Hard maximum opaque bytes in one backend recovery cursor.
+pub const MAX_AUTHORITATIVE_SCAN_CURSOR_BYTES: usize = 256;
+
+/// Exact derived capacity charge for all immutable full intents currently
+/// retained by one store.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AuthoritativeRetentionUsage {
+    pub count: usize,
+    pub bytes: usize,
+}
+
+/// One exact entry recovered from the independently maintained pending index.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PendingAuthoritativeIntent {
+    pub token: CommitToken,
+    pub bundle_hash: CanonicalHash,
+}
+
+/// Opaque backend cursor for exhaustive authoritative-intent discovery.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthoritativeScanCursor(Box<str>);
+
+impl AuthoritativeScanCursor {
+    pub fn new(value: impl Into<Box<str>>) -> Result<Self, StoreError> {
+        let value = value.into();
+        if value.is_empty() || value.len() > MAX_AUTHORITATIVE_SCAN_CURSOR_BYTES {
+            return Err(StoreError::Invalid(format!(
+                "authoritative scan cursor must contain 1..={MAX_AUTHORITATIVE_SCAN_CURSOR_BYTES} bytes"
+            )));
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// One bounded page from the complete retained intent keyspace.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AuthoritativeIntentPage {
+    pub intents: Vec<AuthoritativeBundle>,
+    pub next_cursor: Option<AuthoritativeScanCursor>,
+}
+
+/// Durable delivery state for one post-finalization outbox item.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AuthoritativeOutboxState {
+    Pending { last_error: Option<String> },
+    Delivered,
+    DeadLetter { error: String },
+}
+
+impl AuthoritativeOutboxState {
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        matches!(self, Self::Delivered | Self::DeadLetter { .. })
+    }
+}
+
+/// Independently discoverable, stable-ID delivery record materialized by the
+/// same finalization barrier as its parent action witness.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthoritativeOutboxRecord {
+    schema_version: u16,
+    item_id: CanonicalHash,
+    parent_token: CommitToken,
+    parent_bundle_hash: CanonicalHash,
+    intent: DurableOutboxIntent,
+    attempts: u32,
+    state: AuthoritativeOutboxState,
+}
+
+impl AuthoritativeOutboxRecord {
+    pub const SCHEMA_VERSION: u16 = 1;
+
+    pub fn new(
+        parent_token: CommitToken,
+        parent_bundle_hash: CanonicalHash,
+        intent: DurableOutboxIntent,
+    ) -> Result<Self, StoreError> {
+        let item_id = intent
+            .stable_id(parent_token)
+            .map_err(|error| StoreError::Invalid(format!("invalid outbox identity: {error}")))?;
+        Ok(Self {
+            schema_version: Self::SCHEMA_VERSION,
+            item_id,
+            parent_token,
+            parent_bundle_hash,
+            intent,
+            attempts: 0,
+            state: AuthoritativeOutboxState::Pending { last_error: None },
+        })
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), StoreError> {
+        if self.schema_version != Self::SCHEMA_VERSION {
+            return Err(StoreError::AuthoritativeCorrupt(format!(
+                "unsupported authoritative outbox schema {}",
+                self.schema_version
+            )));
+        }
+        let expected = self.intent.stable_id(self.parent_token).map_err(|error| {
+            StoreError::AuthoritativeCorrupt(format!("invalid outbox identity: {error}"))
+        })?;
+        if self.item_id != expected {
+            return Err(StoreError::AuthoritativeCorrupt(
+                "authoritative outbox stable item id mismatch".to_owned(),
+            ));
+        }
+        let error = match &self.state {
+            AuthoritativeOutboxState::Pending { last_error } => last_error.as_deref(),
+            AuthoritativeOutboxState::Delivered => None,
+            AuthoritativeOutboxState::DeadLetter { error } => Some(error.as_str()),
+        };
+        if error.is_some_and(|error| error.len() > MAX_AUTHORITATIVE_OUTBOX_ERROR_BYTES) {
+            return Err(StoreError::AuthoritativeCorrupt(format!(
+                "authoritative outbox diagnostic exceeds {MAX_AUTHORITATIVE_OUTBOX_ERROR_BYTES} bytes"
+            )));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn start_attempt(&self, expected_attempts: u32) -> Result<Self, StoreError> {
+        self.validate()?;
+        if self.state.is_terminal() || self.attempts != expected_attempts {
+            return Err(StoreError::AuthoritativeOutboxConflict);
+        }
+        let mut next = self.clone();
+        next.attempts = next
+            .attempts
+            .checked_add(1)
+            .ok_or(StoreError::AuthoritativeOutboxAttemptsExhausted)?;
+        next.state = AuthoritativeOutboxState::Pending { last_error: None };
+        Ok(next)
+    }
+
+    pub(crate) fn complete_attempt(
+        &self,
+        expected_attempt: u32,
+        result: AuthoritativeOutboxAttemptResult,
+    ) -> Result<Self, StoreError> {
+        self.validate()?;
+        if self.state.is_terminal() || self.attempts != expected_attempt {
+            return Err(StoreError::AuthoritativeOutboxConflict);
+        }
+        let mut next = self.clone();
+        next.state = match result {
+            AuthoritativeOutboxAttemptResult::Retry { error } => {
+                validate_outbox_error(&error)?;
+                AuthoritativeOutboxState::Pending {
+                    last_error: Some(error),
+                }
+            }
+            AuthoritativeOutboxAttemptResult::Delivered => AuthoritativeOutboxState::Delivered,
+            AuthoritativeOutboxAttemptResult::DeadLetter { error } => {
+                validate_outbox_error(&error)?;
+                AuthoritativeOutboxState::DeadLetter { error }
+            }
+        };
+        Ok(next)
+    }
+
+    #[must_use]
+    pub const fn item_id(&self) -> CanonicalHash {
+        self.item_id
+    }
+
+    #[must_use]
+    pub const fn parent_token(&self) -> CommitToken {
+        self.parent_token
+    }
+
+    #[must_use]
+    pub const fn parent_bundle_hash(&self) -> CanonicalHash {
+        self.parent_bundle_hash
+    }
+
+    #[must_use]
+    pub const fn intent(&self) -> &DurableOutboxIntent {
+        &self.intent
+    }
+
+    #[must_use]
+    pub const fn attempts(&self) -> u32 {
+        self.attempts
+    }
+
+    #[must_use]
+    pub const fn state(&self) -> &AuthoritativeOutboxState {
+        &self.state
+    }
+}
+
+fn validate_outbox_error(error: &str) -> Result<(), StoreError> {
+    if error.is_empty() || error.len() > MAX_AUTHORITATIVE_OUTBOX_ERROR_BYTES {
+        return Err(StoreError::Invalid(format!(
+            "authoritative outbox diagnostic must contain 1..={MAX_AUTHORITATIVE_OUTBOX_ERROR_BYTES} bytes"
+        )));
+    }
+    Ok(())
+}
+
+/// Result reported by a durable delivery adapter after one persisted attempt.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AuthoritativeOutboxAttemptResult {
+    Retry { error: String },
+    Delivered,
+    DeadLetter { error: String },
+}
+
+/// Compact immutable semantic result witness produced only after exact
+/// readback of every authoritative post-image.
+///
+/// Full replay material remains in the separately retained intent until
+/// [`crate::AuthoritativeStore::checkpoint_authoritative`] atomically replaces
+/// any legacy full receipt with this canonical witness and releases the full
+/// intent. The witness deliberately retains the authenticated result and
+/// event-time visibility facts needed by exact retry/status, but never the
+/// potentially multi-megabyte replay write set.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthoritativeReceipt {
+    schema_version: u16,
+    token: CommitToken,
+    request: RequestUid,
+    idempotency: ScopedIdempotencyKey,
+    ingress_hash: CanonicalHash,
+    request_hash: CanonicalHash,
+    plan_hash: CanonicalHash,
+    action: DefinitionRef,
+    provider: OwnerId,
+    cause: PreparedCausalRef,
+    outcome: RulesValue,
+    eligible_witnesses: Vec<PrincipalId>,
+    bundle_hash: CanonicalHash,
+    receipt_hash: CanonicalHash,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthoritativeReceiptV2Wire {
+    schema_version: u16,
+    token: CommitToken,
+    request: RequestUid,
+    idempotency: ScopedIdempotencyKey,
+    ingress_hash: CanonicalHash,
+    request_hash: CanonicalHash,
+    plan_hash: CanonicalHash,
+    action: DefinitionRef,
+    provider: OwnerId,
+    cause: PreparedCausalRef,
+    outcome: RulesValue,
+    eligible_witnesses: Vec<PrincipalId>,
+    bundle_hash: CanonicalHash,
+    receipt_hash: CanonicalHash,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyAuthoritativeReceiptWire {
+    bundle: AuthoritativeBundle,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum AuthoritativeReceiptWire {
+    V2(AuthoritativeReceiptV2Wire),
+    Legacy(LegacyAuthoritativeReceiptWire),
+}
+
+impl AuthoritativeReceipt {
+    pub const SCHEMA_VERSION: u16 = 2;
+
+    #[must_use]
+    pub fn new(bundle: &AuthoritativeBundle) -> Self {
+        let mut receipt = Self {
+            schema_version: Self::SCHEMA_VERSION,
+            token: bundle.token(),
+            request: bundle.request(),
+            idempotency: bundle.idempotency().clone(),
+            ingress_hash: bundle.ingress_hash(),
+            request_hash: bundle.request_hash(),
+            plan_hash: bundle.plan_hash(),
+            action: bundle.action().clone(),
+            provider: bundle.provider().clone(),
+            cause: bundle.cause(),
+            outcome: bundle.outcome().clone(),
+            eligible_witnesses: bundle.eligible_witnesses().to_vec(),
+            bundle_hash: bundle.bundle_hash(),
+            receipt_hash: CanonicalHash::from_bytes([0; 32]),
+        };
+        receipt.receipt_hash = receipt
+            .compute_hash()
+            .expect("an authoritative bundle already bounds all receipt fields");
+        receipt
+    }
+
+    #[must_use]
+    pub const fn token(&self) -> CommitToken {
+        self.token
+    }
+
+    #[must_use]
+    pub const fn request(&self) -> RequestUid {
+        self.request
+    }
+
+    #[must_use]
+    pub const fn bundle_hash(&self) -> CanonicalHash {
+        self.bundle_hash
+    }
+
+    #[must_use]
+    pub const fn idempotency(&self) -> &ScopedIdempotencyKey {
+        &self.idempotency
+    }
+
+    #[must_use]
+    pub const fn ingress_hash(&self) -> CanonicalHash {
+        self.ingress_hash
+    }
+
+    #[must_use]
+    pub const fn request_hash(&self) -> CanonicalHash {
+        self.request_hash
+    }
+
+    #[must_use]
+    pub const fn plan_hash(&self) -> CanonicalHash {
+        self.plan_hash
+    }
+
+    #[must_use]
+    pub const fn action(&self) -> &DefinitionRef {
+        &self.action
+    }
+
+    #[must_use]
+    pub const fn provider(&self) -> &OwnerId {
+        &self.provider
+    }
+
+    #[must_use]
+    pub const fn cause(&self) -> PreparedCausalRef {
+        self.cause
+    }
+
+    #[must_use]
+    pub const fn outcome(&self) -> &RulesValue {
+        &self.outcome
+    }
+
+    #[must_use]
+    pub fn eligible_witnesses(&self) -> &[PrincipalId] {
+        &self.eligible_witnesses
+    }
+
+    #[must_use]
+    pub const fn receipt_hash(&self) -> CanonicalHash {
+        self.receipt_hash
+    }
+
+    #[must_use]
+    pub fn matches_bundle(&self, bundle: &AuthoritativeBundle) -> bool {
+        self.token == bundle.token()
+            && self.request == bundle.request()
+            && self.idempotency == *bundle.idempotency()
+            && self.ingress_hash == bundle.ingress_hash()
+            && self.request_hash == bundle.request_hash()
+            && self.plan_hash == bundle.plan_hash()
+            && self.action == *bundle.action()
+            && self.provider == *bundle.provider()
+            && self.cause == bundle.cause()
+            && self.outcome == *bundle.outcome()
+            && self.eligible_witnesses == bundle.eligible_witnesses()
+            && self.bundle_hash == bundle.bundle_hash()
+    }
+
+    fn compute_hash(&self) -> Result<CanonicalHash, mush_core::CanonicalHashError> {
+        CanonicalHash::for_canonical_value(
+            "authoritative_receipt.v2",
+            Self::SCHEMA_VERSION,
+            &json!({
+                "schema_version": self.schema_version,
+                "token": self.token,
+                "request": self.request,
+                "idempotency": self.idempotency,
+                "ingress_hash": self.ingress_hash,
+                "request_hash": self.request_hash,
+                "plan_hash": self.plan_hash,
+                "action": self.action,
+                "provider": self.provider,
+                "cause": self.cause,
+                "outcome": self.outcome,
+                "eligible_witnesses": self.eligible_witnesses,
+                "bundle_hash": self.bundle_hash,
+                "terminal_status": "finalized",
+            }),
+            mush_core::MAX_AUTHORITATIVE_BUNDLE_BYTES,
+        )
+    }
+}
+
+impl<'de> Deserialize<'de> for AuthoritativeReceipt {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = AuthoritativeReceiptWire::deserialize(deserializer)?;
+        match wire {
+            AuthoritativeReceiptWire::Legacy(legacy) => Ok(Self::new(&legacy.bundle)),
+            AuthoritativeReceiptWire::V2(wire) => {
+                if wire.schema_version != Self::SCHEMA_VERSION {
+                    return Err(serde::de::Error::custom(format!(
+                        "unsupported authoritative receipt schema {}; expected {}",
+                        wire.schema_version,
+                        Self::SCHEMA_VERSION
+                    )));
+                }
+                let receipt = Self {
+                    schema_version: wire.schema_version,
+                    token: wire.token,
+                    request: wire.request,
+                    idempotency: wire.idempotency,
+                    ingress_hash: wire.ingress_hash,
+                    request_hash: wire.request_hash,
+                    plan_hash: wire.plan_hash,
+                    action: wire.action,
+                    provider: wire.provider,
+                    cause: wire.cause,
+                    outcome: wire.outcome,
+                    eligible_witnesses: wire.eligible_witnesses,
+                    bundle_hash: wire.bundle_hash,
+                    receipt_hash: wire.receipt_hash,
+                };
+                let computed = receipt.compute_hash().map_err(serde::de::Error::custom)?;
+                if receipt.receipt_hash != computed {
+                    return Err(serde::de::Error::custom(
+                        "authoritative receipt hash mismatch",
+                    ));
+                }
+                Ok(receipt)
+            }
+        }
+    }
+}
+
+/// Result of atomically checkpointing one finalized action and releasing its
+/// full replay intent.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AuthoritativeCheckpointReceipt {
+    pub receipt: AuthoritativeReceipt,
+    pub released_intent_bytes: usize,
+    /// True when the compact checkpoint witness already existed.
+    pub resumed: bool,
+}
+
+/// Durable watermark-first retirement of complete idempotency epochs.
+///
+/// Once this succeeds, keys in `scope` below `minimum_accepted_epoch` can
+/// never be reserved or observed as vacant again. `retired_tombstones` counts
+/// compact receipt/binding pairs removed during this call; a retry may report
+/// zero after the watermark and cleanup already completed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthoritativeEpochRetirement {
+    pub scope: IdempotencyScope,
+    pub previous_minimum_epoch: u64,
+    pub minimum_accepted_epoch: u64,
+    pub retired_tombstones: usize,
+    pub resumed: bool,
+}
+
+/// Exact status for one token and expected bundle hash.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BundleStatus {
+    Absent,
+    PendingExact,
+    FinalizedExact(Box<AuthoritativeReceipt>),
+    Conflict { stored_bundle_hash: CanonicalHash },
+}
+
+/// Result of the pre-parse `(scoped key, ingress hash)` lookup.
+#[derive(Clone, Debug, PartialEq)]
+pub enum IdempotencyStatus {
+    /// The caller's complete epoch is outside the durable retry horizon. It
+    /// must obtain a new epoch/key; treating this as vacant would permit a
+    /// duplicate action after tombstone deletion.
+    Retired {
+        minimum_accepted_epoch: u64,
+    },
+    Vacant,
+    PendingExact {
+        token: CommitToken,
+        bundle_hash: CanonicalHash,
+    },
+    FinalizedExact(Box<AuthoritativeReceipt>),
+    /// The scoped key exists but was bound to different ingress bytes.
+    Conflict,
 }
 
 /// One character linked to an account (dbref + name denormalized at link
@@ -288,6 +825,77 @@ pub enum StoreError {
     /// The store has been [`crate::ObjectStore::close`]d.
     #[error("store is closed")]
     Closed,
+    /// One commit token was already bound to different immutable bytes.
+    #[error("authoritative commit token is already bound to a different bundle")]
+    AuthoritativeTokenConflict,
+    /// One scoped idempotency key was already bound to a different request.
+    #[error("authoritative idempotency key is already bound to a different request")]
+    AuthoritativeIdempotencyConflict,
+    /// Reconciliation was requested for a token with no durable intent.
+    #[error("authoritative commit token has no durable intent")]
+    AuthoritativeIntentMissing,
+    /// Checkpoint compaction was requested before exact finalization.
+    #[error("authoritative commit token is not finalized")]
+    AuthoritativeNotFinalized,
+    /// Full replay material remains necessary until all durable outbox work
+    /// for the action reaches a terminal state.
+    #[error("authoritative commit has unresolved durable outbox work")]
+    AuthoritativeOutboxPending,
+    /// A stable outbox item does not exist.
+    #[error("authoritative durable-outbox item does not exist")]
+    AuthoritativeOutboxMissing,
+    /// The requested outbox transition did not match the exact current item.
+    #[error("authoritative durable-outbox item or attempt conflicts with durable state")]
+    AuthoritativeOutboxConflict,
+    /// The durable attempt counter cannot advance further.
+    #[error("authoritative durable-outbox attempt counter is exhausted")]
+    AuthoritativeOutboxAttemptsExhausted,
+    /// Finalizing another action would exceed the global pending-delivery cap.
+    #[error(
+        "authoritative durable-outbox capacity exhausted: {pending}/{max_pending} pending items"
+    )]
+    AuthoritativeOutboxCapacity { pending: usize, max_pending: usize },
+    /// Reservation raced with or followed durable retirement of this epoch.
+    #[error(
+        "authoritative idempotency epoch {requested_epoch} is retired; minimum accepted epoch is {minimum_accepted_epoch}"
+    )]
+    AuthoritativeEpochRetired {
+        requested_epoch: u64,
+        minimum_accepted_epoch: u64,
+    },
+    /// A minimum epoch may only move forward.
+    #[error(
+        "authoritative minimum epoch cannot regress from {current_minimum_epoch} to {requested_minimum_epoch}"
+    )]
+    AuthoritativeEpochRegression {
+        current_minimum_epoch: u64,
+        requested_minimum_epoch: u64,
+    },
+    /// Full replay custody still exists below the proposed watermark.
+    #[error(
+        "authoritative epoch retirement is blocked by {retained_intents} retained intents below epoch {requested_minimum_epoch}"
+    )]
+    AuthoritativeEpochPending {
+        requested_minimum_epoch: u64,
+        retained_intents: usize,
+    },
+    /// Concurrent reservations/checkpoints repeatedly changed the retained
+    /// set while retirement was proving it empty. Retrying is safe.
+    #[error("authoritative epoch retirement raced with active commits")]
+    AuthoritativeEpochContention,
+    /// A stored authoritative intent or finalized witness failed strict decode.
+    #[error("authoritative persistence record is corrupt: {0}")]
+    AuthoritativeCorrupt(String),
+    /// Retaining another exact intent would exceed a hard bound.
+    #[error(
+        "authoritative retained-intent capacity exhausted: {retained_count}/{max_count} records, {retained_bytes}/{max_bytes} bytes"
+    )]
+    AuthoritativeCapacity {
+        retained_count: usize,
+        retained_bytes: usize,
+        max_count: usize,
+        max_bytes: usize,
+    },
 }
 
 impl StoreError {
@@ -340,7 +948,22 @@ impl StoreError {
             | StoreError::Corrupt(_)
             | StoreError::Serde(_)
             | StoreError::Migration(_)
-            | StoreError::Closed => false,
+            | StoreError::Closed
+            | StoreError::AuthoritativeTokenConflict
+            | StoreError::AuthoritativeIdempotencyConflict
+            | StoreError::AuthoritativeIntentMissing
+            | StoreError::AuthoritativeNotFinalized
+            | StoreError::AuthoritativeOutboxPending
+            | StoreError::AuthoritativeOutboxMissing
+            | StoreError::AuthoritativeOutboxConflict
+            | StoreError::AuthoritativeOutboxAttemptsExhausted
+            | StoreError::AuthoritativeOutboxCapacity { .. }
+            | StoreError::AuthoritativeEpochRetired { .. }
+            | StoreError::AuthoritativeEpochRegression { .. }
+            | StoreError::AuthoritativeEpochPending { .. }
+            | StoreError::AuthoritativeCorrupt(_)
+            | StoreError::AuthoritativeCapacity { .. } => false,
+            StoreError::AuthoritativeEpochContention => true,
         }
     }
 }

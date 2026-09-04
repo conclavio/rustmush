@@ -17,11 +17,12 @@ use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
 use crate::action_state::{ActionStateError, ActionStateStore, ActionTxn, PreparedTxn};
+use crate::authoritative::DurableOutboxIntent;
 use crate::behavior::ChannelId;
 use crate::mechanics::{
     CanonicalEncodingError, CanonicalId, CanonicalIdError, DefinitionDigest, DefinitionLookupError,
     DefinitionRef, DefinitionRegistry, MechanicalOwnerReadiness, MechanicalOwnerReadinessError,
-    OwnerId, canonical_json_bytes_with_limit,
+    OwnerId, RulesValue, canonical_json_bytes_with_limit,
 };
 use crate::obj::ObjId;
 use crate::world::World;
@@ -136,6 +137,11 @@ fixed_hex_id!(
     RequestUid,
     16,
     "A gateway-assigned, replay-stable 128-bit request identity."
+);
+fixed_hex_id!(
+    CommitToken,
+    16,
+    "A server-assigned, replay-stable 128-bit authoritative commit identity."
 );
 fixed_hex_id!(
     ContactId,
@@ -2350,6 +2356,21 @@ impl PreparedCausalRef {
             ordinal: self.ordinal,
         }
     }
+
+    #[must_use]
+    pub const fn root_request(self) -> RequestUid {
+        self.root_request
+    }
+
+    #[must_use]
+    pub const fn parent(self) -> Option<PreparedEventId> {
+        self.parent
+    }
+
+    #[must_use]
+    pub const fn ordinal(self) -> u32 {
+        self.ordinal
+    }
 }
 
 impl TryFrom<PreparedCausalRefWire> for PreparedCausalRef {
@@ -3074,6 +3095,101 @@ pub trait ActionProvider: Send + Sync {
     ) -> Result<(), ActionError> {
         self.validate_invocation(invocation)
     }
+
+    /// Prepare the semantic result material that surrounds the exact typed
+    /// post-images in an authoritative bundle. Providers opt into the K3 lane
+    /// explicitly; the default preserves the validation/K2 compatibility
+    /// surface while refusing to invent an outcome for it.
+    fn prepare_authoritative(
+        &self,
+        invocation: &ActionInvocation,
+        _txn: &mut ActionTxn<'_>,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        self.validate_invocation(invocation)?;
+        Err(ActionError::new(
+            ActionErrorCode::Unavailable,
+            false,
+            "this action provider has not migrated to authoritative execution",
+        )
+        .expect("static provider migration error is bounded"))
+    }
+}
+
+/// Provider-owned semantic material for one K3 action. The central
+/// coordinator supplies request identity, causality, token, plan hash and the
+/// exact replay writes; providers cannot override those fields.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AuthoritativeActionOutput {
+    outcome: RulesValue,
+    definitions: Vec<DefinitionRef>,
+    eligible_witnesses: Vec<PrincipalId>,
+    durable_outbox: Vec<DurableOutboxIntent>,
+}
+
+impl AuthoritativeActionOutput {
+    #[must_use]
+    pub fn new(outcome: RulesValue) -> Self {
+        Self {
+            outcome,
+            definitions: Vec::new(),
+            eligible_witnesses: Vec::new(),
+            durable_outbox: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_definitions(mut self, definitions: Vec<DefinitionRef>) -> Self {
+        self.definitions = definitions;
+        self
+    }
+
+    #[must_use]
+    pub fn with_eligible_witnesses(mut self, witnesses: Vec<PrincipalId>) -> Self {
+        self.eligible_witnesses = witnesses;
+        self
+    }
+
+    #[must_use]
+    pub fn with_durable_outbox(mut self, outbox: Vec<DurableOutboxIntent>) -> Self {
+        self.durable_outbox = outbox;
+        self
+    }
+
+    #[must_use]
+    pub const fn outcome(&self) -> &RulesValue {
+        &self.outcome
+    }
+
+    #[must_use]
+    pub fn definitions(&self) -> &[DefinitionRef] {
+        &self.definitions
+    }
+
+    #[must_use]
+    pub fn eligible_witnesses(&self) -> &[PrincipalId] {
+        &self.eligible_witnesses
+    }
+
+    #[must_use]
+    pub fn durable_outbox(&self) -> &[DurableOutboxIntent] {
+        &self.durable_outbox
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        RulesValue,
+        Vec<DefinitionRef>,
+        Vec<PrincipalId>,
+        Vec<DurableOutboxIntent>,
+    ) {
+        (
+            self.outcome,
+            self.definitions,
+            self.eligible_witnesses,
+            self.durable_outbox,
+        )
+    }
 }
 
 /// Frozen deterministic provider ordering assigned from canonical registry order.
@@ -3382,6 +3498,36 @@ impl ActionProviderRegistry {
                 })
             })?;
         txn.prepare().map_err(ActionProviderPrepareError::State)
+    }
+
+    /// Run one exact provider through its K3 semantic preparation surface and
+    /// return the semantic material beside the still-one-shot typed state
+    /// transaction.
+    pub fn prepare_authoritative_invocation(
+        &self,
+        action: &DefinitionRef,
+        invocation: &ActionInvocation,
+        state: &mut ActionStateStore,
+    ) -> Result<(PreparedTxn, AuthoritativeActionOutput), ActionProviderPrepareError> {
+        let entry = self.get_exact(action)?;
+        let mut txn = state.transaction_for_provider(entry.registration_ordinal())?;
+        let output = entry
+            .provider()
+            .prepare_authoritative(invocation, &mut txn)
+            .map_err(|source| ActionProviderPrepareError::Provider {
+                action: Box::new(action.clone()),
+                source: Box::new(source),
+            })?;
+        self.owner_readiness
+            .require_ready(&entry.owner)
+            .map_err(|source| {
+                ActionProviderPrepareError::Lookup(ActionProviderLookupError::OwnerNotReady {
+                    requested: Box::new(action.clone()),
+                    source: Box::new(source),
+                })
+            })?;
+        let prepared = txn.prepare().map_err(ActionProviderPrepareError::State)?;
+        Ok((prepared, output))
     }
 
     #[must_use]

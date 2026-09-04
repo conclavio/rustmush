@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use mush_config::config::Config;
 use mush_core::{LedgerChunk, LedgerEntry, ModuleOp, ModuleWrite, chunk_key};
-use mush_server::quarantine::{QUARANTINE_RECORD_VERSION, seal_identity_hash};
+use mush_server::quarantine::{LEGACY_QUARANTINE_RECORD_VERSION, seal_identity_hash};
 use mush_store::{InMemoryStore, ObjectStore, WriteBatch};
 
 fn scratch(tag: &str) -> std::path::PathBuf {
@@ -72,7 +72,7 @@ async fn valid_unresolved_record_prevents_every_store_mutation() {
     .unwrap();
     let identity = seal_identity_hash("economy", &key, &payload);
     let record = serde_json::json!({
-        "record_version": QUARANTINE_RECORD_VERSION,
+        "record_version": LEGACY_QUARANTINE_RECORD_VERSION,
         "ns": "economy",
         "key": key.clone(),
         "serial": 9,
@@ -114,7 +114,7 @@ async fn exact_target_is_archived_before_any_boot_mutation() {
     .unwrap();
     let identity = seal_identity_hash("economy", &key, &payload);
     let record = serde_json::json!({
-        "record_version": QUARANTINE_RECORD_VERSION,
+        "record_version": LEGACY_QUARANTINE_RECORD_VERSION,
         "ns": "economy",
         "key": key.clone(),
         "serial": 10,

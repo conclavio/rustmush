@@ -1,8 +1,13 @@
 # Cross-ruleset mechanical contracts and proving gates
 
-**Status:** Implementing 0.5 — K0/K1 exit criteria landed; the K2 typed-state and bounded logical-
-transaction foundation is implemented, including a process-local applied-ack installation lane;
-K3 exact-token durability and all five end-to-end proving gates remain open
+**Status:** Implementing 0.11 — K0/K1 formal exit criteria landed. K2 has strict atomic boot
+hydration, bounded typed transactions, final guard revalidation, and provider registration, but its
+same-bundle trigger executor, independently bounded must-retain lanes, and split-gateway request
+custody protocol remain open. The self-contained K3 persistence kernel is implemented: exact bundle
+reservation/reconciliation, pre-hydration recovery, store-owned authoritative prefixes, compact
+checkpoints, watermark-first epoch retirement, a production coordinator plus first tactics provider,
+and recovery-driven durable-outbox dispatch. Transport/legal-offer integration and the IPC portions
+of Gate 5 remain cross-cut work with K2/K5; all five end-to-end proving gates remain open.
 
 **Scope:** the shared contracts that must be stable before RustMUSH substantially expands character,
 tactical, economic, and AI-driven rules
@@ -570,8 +575,9 @@ dirty write. Before reading its pre-state, the coordinator drains and exactly ac
 predecessor write that could contribute to that state, or absorbs the complete dirty dependency
 set into `PreparedTxn`. Once a state key/prefix is registered as authoritative-bundle-owned, the
 store rejects legacy fire-and-forget writes to it. That final prefix-registration/rejection rule is
-a K3 requirement; the current `action-state/v1` keys are not yet protected from ordinary legacy
-module writes at the store boundary.
+a K3 requirement. The current server reserves every `action-state/*` module key from ordinary
+module boot, eager module migration, boot-time writes, and runtime legacy writes, but the store
+does not yet independently register/enforce that ownership if a caller bypasses the server.
 
 #### K2 state-ownership decision (accepted: Option 1)
 
@@ -579,9 +585,10 @@ Option 1 is the accepted architecture and its initial typed-state foundation is 
 alternatives remain here as decision rationale:
 
 1. **Engine-owned typed state families (accepted).** A registrar declares each bounded
-   `StateFamilyId`, key codec, value schema/version, owner, validator, and canonical serializer,
-   then receives an opaque owner-stamped `StateFamilyHandle<K, V>`. The engine stores authoritative
-   family records in an `ActionStateStore`. `ActionTxn` exposes only read/insert/replace/remove
+   `StateFamilyId`, key codec, value schema/version, owner, persisted-value decoder, validator, and
+   canonical serializer, then receives an opaque owner-stamped `StateFamilyHandle<K, V>`. The
+   engine stores authoritative family records in an `ActionStateStore`. `ActionTxn` exposes only
+   read/insert/replace/remove
    operations through those handles; action providers receive no unrestricted `&mut World`, raw
    `ModuleStateMap`, or arbitrary persistence operations. Finalization consumes the transaction
    into one non-cloneable `PreparedTxn`, serializes every post-image once, and creates infallible
@@ -605,6 +612,16 @@ ordered by canonical `StateKey`, each key may be mutated only once in the initia
 and `prepare` produces one non-cloneable materialization plus private typed install images without
 running a provider or serializer after that point.
 
+At boot, the server partitions every `action-state/*` document found in a composed module's
+namespace away from legacy `ModuleBootData` and module migrations. It resolves the exact registered
+family, cross-checks namespace/path/envelope/schema identity, decodes to the typed value, validates
+it, reserializes it, and requires canonical equality with the persisted document. Hydration builds
+a scratch map and installs nothing unless every record succeeds. It is bounded to 1,000,000 records,
+256 KiB per canonical record, and 512 MiB across hydrated canonical records. Future persistence
+versions fail closed rather than reaching legacy module code. This scan is presently limited by
+the store API to namespaces of composed modules; K3's exhaustive cursor scan must also detect
+orphaned/uncomposed-owner records.
+
 The state-record portion has hard ceilings of 1,024 mutation operations, 256 KiB canonical bytes
 per record, and 16 MiB across those canonical state records; callers may only tighten the
 per-transaction limits. The 16 MiB limit must not yet be described as a bound on the complete
@@ -613,20 +630,27 @@ and outbox work are not part of this `PreparedTxn`, and legacy output/effect con
 the separate K0 bounds gap described below.
 
 `Engine::stage_prepared_action` refuses to mix a prepared action with dirty `World` state, legacy
-module operations, or another staged action. The server sends its `ModuleJsonSet`/delete records on
-a separate prepared lane, retains the install images in `PendingCommit`, and on an exact matching
-applied serial installs them before releasing held output/effects. A mismatch, writer error, or
-dropped receipt aborts the typed images and freezes persistence integrity. This is a useful K2
-compatibility bridge, not K3 durability: the serial is process-local, there is no durable
-intent/token/idempotency witness or restart reconciliation, and a crash after store application but
-before RAM install cannot hydrate the committed typed state on boot.
+module operations, or another staged action, and requires an explicit server-created `GuardSet`.
+At the last synchronous boundary before writer custody, the single-owner world task revalidates
+that guard set against immutable world truth and the exact frozen module composition. Stale or
+unevaluable work aborts the complete typed image before consuming a serial or sending any write;
+an ordinary stale result is a retryable action refusal, not a persistence-integrity incident. The
+server sends current `ModuleJsonSet`/delete records on a separate prepared lane, retains the install
+images in `PendingCommit`, and on an exact matching applied serial installs them before releasing
+held output/effects. A mismatch, writer error, or dropped receipt aborts the typed images and
+freezes persistence integrity. This is a useful K2
+compatibility bridge, not K3 durability: the serial, store revision, and reservation sequence are
+process-local, and there is no durable intent/token/idempotency witness or whole-bundle
+reconciliation. A crash after store application but before RAM install now reloads a canonical
+typed state record, but cannot yet prove or reconstruct the action's exact outcome, idempotency
+result, causal events, allocator changes, or outbox work.
 
 The toy `focus -> brace -> guarded` slice exercises two-record preparation, refusal, abort, stable
-ordering, and install-after-ack-boundary behavior in core/contract tests. It is not Gate 1: typed
-clock expiry, causal effects, early idempotency, authoritative receipt/outcome, restart hydration,
-projected offers, and real end-to-end bundle recovery remain open. State-family registration also
-has no value decoder or generic boot hydration path yet. Existing module maps remain a legacy
-compatibility surface and migrate one action family at a time. Authenticated ingress remains a
+ordering, and install-after-ack-boundary behavior in core/contract tests. Separate restart tests
+exercise strict all-or-nothing typed-record hydration. This is not Gate 1: typed clock expiry,
+causal effects, early idempotency, authoritative receipt/outcome, projected offers, and real
+end-to-end bundle recovery remain open. Existing module maps remain a legacy compatibility surface
+and migrate one action family at a time. Authenticated ingress remains a
 separate opaque server-minted type: transport JSON never gets to assert a principal, actor, or
 internal deterministic idempotency key merely because it can encode the same shape.
 
@@ -1425,6 +1449,7 @@ Initial bounds are configurable with conservative hard defaults:
 - 256 KiB per prepared record;
 - 16 MiB total encoded bundle;
 - 256 retained/recovery records;
+- 64 MiB aggregate encoded full-intent retention until checkpoint compaction;
 - 1,024 replay writes;
 - all arithmetic and encoded sizes checked before RAM installation or store submission.
 
@@ -1751,21 +1776,22 @@ The repository already contains useful local proofs. They should be adapted, not
 | Contract | Current foundation | Missing shared contract |
 |---|---|---|
 | C1 definitions | shared canonical owner/kind/id/digest identities; bounded `RulesValue`; immutable global definition registry; exact-reference closure; one provider semantic validator per owner/kind; bounded monotonic owner-readiness latch; tactics exact-digest owner fan-out; dry-run migration registry; tactics/sim adapters | owner-freeze discovery in remaining rules-bearing adapters, executing one migration through K3 durability, broader production provider coverage |
-| C2 plan/commit | `mush-sim::Transition`, `UnitMutationPlan`, world single writer, `WriteBatch`, K0 exact receipt gate, typed output/effect custody and one `CommitPending` batch; K2 action invocation/provider metadata; engine-owned typed state families; owner-scoped bounded multi-record `ActionTxn`; one-shot `PreparedTxn`; separate staged writer lane retaining typed images until an exact process-local applied serial | K3 authoritative bundle token/intent/status and restart reconciliation; exact early idempotency; outcomes/events/replay writes/allocator/outbox in the same bounded bundle; full coordinator and legacy migration |
+| C2 plan/commit | `mush-sim::Transition`, `UnitMutationPlan`, world single writer, `WriteBatch`, K0 exact receipt gate, typed output/effect custody and one `CommitPending` batch; K2 action invocation/provider metadata; engine-owned typed state families; owner-scoped bounded multi-record `ActionTxn`; one-shot `PreparedTxn`; exact staged pairing between typed post-images and an immutable K3 bundle; FIFO reserve/reconcile custody; exact 128-bit token/hash receipt validation before RAM install; canonical bounded K3 bundle/token/replay/outbox models; in-memory exact intent protocol and cut-point matrix; Redis checked-Lua intent/idempotency reservation plus replay/readback/finalization; object-plus-allocator admission; hash-aware status; live Redis 8.10 fault execution; exhaustive pre-hydration server recovery; bounded runtime deterministic retries and whole-bundle dead-letter; compact finalized checkpoints; watermark-first epoch retirement; typestate early-idempotency coordinator and first real tactics provider; recovery-driven bounded durable-outbox worker with stable-ID at-least-once delivery | transport/parser/legal-offer coordinator wiring; same-bundle trigger execution; independent must-retain lanes; gateway UID/custody/dispositions and remaining process/IPC fault matrix; broader provider and legacy migration |
 | C3 legal actions | contextual behavior commands, required channels, command-subject links, LLM tool manifests, exact owner-stamped action-provider registry | separate internal/projected legal actions, bounded offer store, one submission path for human/UI/AI/LLM |
 | C4 time/windows | scheduler, `GameClock`, Timestop turns, passive domain clock, Journey timing, mobility switching | typed clock identity/provider, generic window generations, simultaneous intent collection/order, restart/catch-up policy |
 | C5 RNG | injectable `mush-dice::RollCtx`; test-seeded ChaCha in rulesets | idempotency-derived resolution streams, draw transcript, algorithm/version and durable outcome record |
 | C6 causality | `WorldEvent`, scene/canon ledgers, module observers; stable pre-commit request/event IDs and causal references; bounded deterministic trigger queue with duplicate suppression and non-droppable active-work custody | commit-token-bound semantic events, intent-resolution-commit-observation integration, trigger execution inside `ActionTxn` and the durable bundle |
 | C7 tracks/effects | sheet tracks, tactical `ScalarCell`, ruleset-specific damage/effect state | common checked operations, resource/effect addressing, provenance/duration/revision contract and adapters |
-| C8 guards | F3 control channels, unit `control_gen`, expected unit revision, economy plan draft; canonical `RevisionSet`, owner-stamped validator registries, server-created `GuardSet`, and final fail-closed revalidation | actual per-channel leases, reservations, wiring every delayed result through guards, shared idempotency |
+| C8 guards | F3 control channels, unit `control_gen`, expected unit revision, economy plan draft; canonical `RevisionSet`, owner-stamped validator registries, explicit server-created `GuardSet` on every staged typed action, final fail-closed revalidation at the synchronous writer-custody transition, durable exact-bundle reservation, and coordinator-owned early idempotency preflight | actual per-channel leases and wiring every delayed result through guards |
 | C9 projection | per-observer perception and delivery, witness-aware power events | opaque contact references, dedicated view DTOs, shared legal-action/error/LLM projection |
 | C10 ownership | registrar-stamped definition/action/state-family owners; composition-bound opaque typed state handles; provider-stamped transactions that reject cross-owner handles; fail-closed cross-owner tactical references; immutable directional exact-definition bridge registry; shared owner-readiness gates on executable definitions/providers/validators/bridge routes | ownership migration for state outside `ActionStateStore`, executable bridge preparation across typed transactions, freeze aggregation from remaining owner adapters |
-| C11 lifecycle | pre-boot validated poison spool, exact seal retention/isolation, structural world modes, bounded recovery incidents/reports, tactical Active/Frozen/Migrating/Quarantined records, tactics owner-scoped digest-conflict freeze; prepared typed images install or abort on the matching process-local writer receipt | state-family decoder and boot hydration; exact-target recovery receipts; owner freezes in remaining lifecycle adapters; authoritative account ingress; K3 whole-bundle reconciliation and automated runbook coordinator |
+| C11 lifecycle | pre-boot validated unified poison spool; v1 Ledger read compatibility plus tagged v2 Ledger/bundle records sharing one lock, capacity gate, and evidence archive; exact seal retention/isolation; structural world modes; bounded recovery incidents/reports; tactical Active/Frozen/Migrating/Quarantined records; tactics owner-scoped digest-conflict freeze; prepared typed images install or abort on the matching legacy serial or K3 token/hash receipt; strict atomic state-family decode/validate/canonical boot hydration; legacy isolation of `action-state/*`; store-enforced ownership of authoritative module prefixes; bounded in-memory and Redis pending indexes plus independent paged full-intent discovery; exhaustive bounded boot reconciliation before world hydration or writable bootstrap; exact retry repair of stale pending-index membership; canonical retained-intent storage validation; atomic reconstruction of derived Redis count/byte counters from exhaustive boot discovery; exact bundle quarantine recovery with live Redis WRONGTYPE proof; coordinator abort of typed reservations on pre-stage assembly failure; exact checkpoint/epoch/outbox cleanup and retry | exhaustive orphan-owner discovery; full C11 resolution receipts; owner freezes in remaining lifecycle adapters; authoritative account ingress; automated runbook |
 | C12 presentation | `OutputEvent::Panel`, registered panel feeds, keyframe/delta kind, line fallback renderers | schema/projection/state revisions, delta base/sequence, commit receipt, resync/deduplication |
 
-None of the five gates currently traverses all of these through one action pipeline. The toy
-`focus -> brace -> guarded` tests cover the local multi-record prepare/abort/install invariant, not
-durable-token recovery, restart hydration, clock expiry, idempotency, projection, or presentation.
+None of the five gates currently traverses all of these through one action pipeline. The first real
+`tactics:brace` slice now crosses early idempotency, provider preparation, whole-bundle durability,
+compact retry and fresh-engine typed-state hydration directly through the coordinator/store APIs.
+It does not yet cross transport custody, legal offers, clock expiry, projection, or presentation.
 That is the reason for using toy vertical slices rather than declaring the contracts finished from
 their local precursors.
 
@@ -1881,14 +1907,22 @@ Work:
    boundary.
 
 Implementation status: item 1's shared identities/provider registry and item 3's state-record
-transaction are implemented; item 4 has a bounded deterministic trigger queue, while its execution
-inside the same transaction/bundle remains open. The revision/authority registries and central
-`CommitPending` admission foundation cover parts of items 2 and 6. A provider can now prepare the
-toy two-record action without mutable-world access, and the server can persist those records on a
-separate lane and install/abort their typed images on the matching process-local applied receipt.
-That is not the complete coordinator: early exact idempotency, atomic final guard revalidation plus
-bundle reservation, causal/outcome/outbox inclusion, whole-action bounds, independent bounded
-operational lanes, gateway ownership replay, and K3 restart reconciliation remain open.
+transaction plus atomic typed boot hydration are implemented; item 4 has a bounded deterministic
+trigger queue, while its execution inside the same transaction/bundle remains open. The
+revision/authority registries, mandatory staged-action `GuardSet`, final synchronous guard
+revalidation, and central `CommitPending` admission foundation cover parts of items 2 and 6. A
+provider can now prepare the toy two-record action without mutable-world access, and the server can
+persist those records on a compatibility lane and install/abort their typed images on the matching
+process-local applied receipt. A provider that supplies a complete K3 bundle can instead stage it
+only when its owner and replay writes exactly match those typed post-images; the server then retains
+the images across FIFO reserve/reconcile and installs them only after an exact token/hash receipt.
+The `action-state/*` keyspace is isolated from legacy module boot, migration, and server write paths.
+The production coordinator now performs early exact-idempotency preflight and assembles the bounded
+semantic causal/outcome/outbox portion of a complete bundle; the first `mush-tactics` provider uses
+it directly. What remains at K2 is execution of the bounded trigger queue inside the same
+transaction/bundle, independent bounded operational lanes, gateway ownership replay/dispositions,
+and transport-authenticated entry into the coordinator. Recovery-driven durable-outbox delivery is
+implemented; viewer projection and keyframe recovery remain C9/C12 work.
 
 Exit criteria:
 
@@ -1904,6 +1938,53 @@ Exit criteria:
 ### K3. Exact-token authoritative bundle durability
 
 **Contracts:** C2, C6, C8, C11; foundational portion of Gate 5.
+
+**Implementation note (0.11):** the core canonical bundle/token/replay/outbox types and the separate
+`AuthoritativeStore` contract now implement exact intent reservation, early idempotency lookup,
+exact replay/readback/finalization, hash-aware status, bounded retained-intent capacity, object
+allocator admission, a pending accelerator, and an independent bounded full-intent scan in memory.
+The memory harness covers loss before/after intent, every materialization prefix (including object
+before allocator), token conflict, and acknowledgement loss after finalization. Redis now has
+checked Lua reservation and finalization barriers, immutable intent/idempotency/receipt records,
+retention counters, pending-index and cursor discovery, and live-gated tests for exact retry,
+missing accelerator membership, conflicts, and wrong-type partial execution. Retained intent reads
+now require the exact canonical storage form, and exclusive boot atomically rebuilds the derivative
+count/byte pair from exhaustive validated discovery, including over wrong-typed keys. The full
+30-test Redis
+suite and server recovery integration test pass against disposable Redis 8.10.1. Server startup now
+connects without ordinary bootstrap writes, exhaustively reconciles every retained exact intent,
+repairs stale pending membership, refuses conflicting or incomplete recovery, and only then creates
+indexes, migrates, imports, or hydrates the world. The opt-in action lane now rejects a bundle whose
+provider/scope/replay writes do not exactly match its prepared typed transaction, transfers the
+complete bundle through FIFO writer custody, classifies pre-intent refusal separately from ambiguous
+integrity failure, and validates the exact token/hash receipt before RAM installation. The unified
+quarantine spool now keeps v1 Ledger records read-compatible while writing tagged v2 Ledger/bundle
+records under one lock and capacity budget. Runtime authoritative poison is retried three times,
+then the whole immutable bundle is durably dead-lettered and the writer integrity-freezes. Pre-boot
+recovery performs exact token/hash status and pending reconciliation and archives a bundle only
+after an exact finalized receipt. Finalized receipts are now compact, self-hashed semantic
+witnesses (legacy full-bundle receipts remain read-compatible). The single writer and boot recovery
+atomically checkpoint finalized actions without unresolved durable-outbox work, release their full
+replay intents and capacity charges, and preserve exact token/idempotency retry through the compact
+witness; the transition is idempotent after acknowledgement loss and is covered in memory and live
+Redis. A production coordinator now makes early durable idempotency preflight a typestate boundary,
+centrally derives tokens, normalized plan hashes, causality and complete bundles, and aborts typed
+reservations on every pre-stage assembly failure. `mush-tactics` owns the first migrated provider:
+`brace` writes a typed `stance` family only through that authoritative lane; exact retries return
+the compact outcome without provider execution, and restart hydration is proven before a later
+action reads revision 1 and prepares revision 2. Linux CI already supplies Redis 8 for the
+live-gated suite. Compact witnesses now retire by durable per-scope epoch watermark: pending or
+uncheckpointed work blocks advancement, deletion follows the watermark, and an interrupted purge
+resumes without reopening an expired key. Finalization materializes an exact per-parent outbox
+manifest; terminal records survive checkpointing and are removed with their retired parent. A
+bounded production worker rediscovers finalized outbox items, persists the attempt before delivery,
+reuses stable item IDs for ambiguous send/ack loss, records retry or terminal state, and checkpoints
+the parent only after all items are terminal. Missing adapters retain work and cannot starve
+installed adapters. The remaining K3 exit work is cross-cut: transport/parser/legal-offer entry into
+the coordinator, gateway UID ownership transfer and its process/IPC fault cases, recoverable
+projection/keyframes, and broader provider/legacy migration. Those depend respectively on unfinished
+K2 custody/trigger work and K5/C9/C12 projection; the self-contained K3 store, coordinator, and
+durable-delivery kernel is complete.
 
 Work:
 

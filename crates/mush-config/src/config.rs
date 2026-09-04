@@ -14,6 +14,7 @@
 //! | `[web].metrics_enabled` | `false` | serve `GET /metrics` (Prometheus text; opt-in) |
 //! | `[store].store` | `"redis"` | store backend: `"redis"` or `"memory"` |
 //! | `[store].redis_url` | `"redis://127.0.0.1:6379"` | Redis connection URL |
+//! | `[store].receipt_policy` | `"applied"` | `"applied"` or strict `"host_power_loss"` receipts |
 //! | `[ssh].listen` | `"0.0.0.0:2222"` | SSH listen address |
 //! | `[web].listen` | `"127.0.0.1:8080"` | web (HTTP/WS) listen address |
 //! | `[web].trusted_proxies` | `[]` | proxies whose `X-Forwarded-For` is honored |
@@ -84,6 +85,9 @@ pub enum ConfigError {
         /// The offending value.
         value: String,
     },
+    /// `[store].receipt_policy` is not recognized.
+    #[error("unknown store receipt policy {value:?} (expected applied or host_power_loss)")]
+    BadStoreReceiptPolicy { value: String },
     /// `[game].ic_epoch` is not a parseable IC datetime.
     #[error(
         "invalid [game].ic_epoch {value:?}: expected \"YYYY-MM-DD\" or \
@@ -111,6 +115,16 @@ pub enum StoreBackend {
     /// The in-memory store — tests and offline runs only; nothing survives
     /// a restart.
     Memory,
+}
+
+/// What an acknowledged authoritative receipt promises survives.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum StoreReceiptPolicy {
+    /// Redis applied the write; host power loss may lose the configured AOF
+    /// window.
+    Applied,
+    /// Redis must use AOF with fsync on every write acknowledgement.
+    HostPowerLoss,
 }
 
 /// `[server]` section.
@@ -145,6 +159,9 @@ pub struct StoreCfg {
     pub store: String,
     /// Redis connection URL (`redis://[user:pass@]host:port[/db]`).
     pub redis_url: String,
+    /// `"applied"` (default) or `"host_power_loss"`. The stronger policy
+    /// refuses boot unless Redis reports AOF + `appendfsync always`.
+    pub receipt_policy: String,
 }
 
 impl Default for StoreCfg {
@@ -152,6 +169,7 @@ impl Default for StoreCfg {
         StoreCfg {
             store: "redis".to_string(),
             redis_url: "redis://127.0.0.1:6379".to_string(),
+            receipt_policy: "applied".to_string(),
         }
     }
 }
@@ -646,6 +664,17 @@ impl Config {
             }),
         }
     }
+
+    /// Validated durability meaning of a successful store receipt.
+    pub fn store_receipt_policy(&self) -> Result<StoreReceiptPolicy, ConfigError> {
+        match self.store.receipt_policy.to_lowercase().as_str() {
+            "applied" => Ok(StoreReceiptPolicy::Applied),
+            "host_power_loss" => Ok(StoreReceiptPolicy::HostPowerLoss),
+            other => Err(ConfigError::BadStoreReceiptPolicy {
+                value: other.to_owned(),
+            }),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -663,7 +692,12 @@ mod tests {
         assert_eq!(cfg.game.max_characters, 3);
         assert_eq!(cfg.store.store, "redis");
         assert_eq!(cfg.store.redis_url, "redis://127.0.0.1:6379");
+        assert_eq!(cfg.store.receipt_policy, "applied");
         assert_eq!(cfg.store_backend().unwrap(), StoreBackend::Redis);
+        assert_eq!(
+            cfg.store_receipt_policy().unwrap(),
+            StoreReceiptPolicy::Applied
+        );
         assert_eq!(cfg.ssh_listen().unwrap().port(), 2222);
         // Game-clock defaults: 1:1 with OOC time, calendar phased to 2020.
         assert_eq!(cfg.game.ic_ratio, 1);
@@ -877,6 +911,20 @@ mod tests {
         assert!(matches!(
             cfg.store_backend(),
             Err(ConfigError::BadStoreBackend { .. })
+        ));
+    }
+
+    #[test]
+    fn store_receipt_policy_is_explicit_and_validated() {
+        let cfg: Config = toml::from_str("[store]\nreceipt_policy = \"host_power_loss\"").unwrap();
+        assert_eq!(
+            cfg.store_receipt_policy().unwrap(),
+            StoreReceiptPolicy::HostPowerLoss
+        );
+        let cfg: Config = toml::from_str("[store]\nreceipt_policy = \"hope\"").unwrap();
+        assert!(matches!(
+            cfg.store_receipt_policy(),
+            Err(ConfigError::BadStoreReceiptPolicy { .. })
         ));
     }
 

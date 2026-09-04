@@ -49,6 +49,7 @@
 pub mod action;
 pub mod action_state;
 pub mod attr;
+pub mod authoritative;
 pub mod behavior;
 pub mod clock;
 pub mod cmd;
@@ -72,13 +73,13 @@ pub use action::{
     ActionOfferId, ActionProvider, ActionProviderDispatchError, ActionProviderEntry,
     ActionProviderLookupError, ActionProviderPrepareError, ActionProviderRegistry,
     ActionProviderRegistryBuilder, ActionProviderRegistryError, ActionReceiptMetadata,
-    ActionReceiptMetadataError, AuthorityGuard, AuthorityGuardKind, AuthorityGuardValidator,
-    AuthorityGuardValidatorEntry, AuthorityGuardValidatorLookupError,
+    ActionReceiptMetadataError, AuthoritativeActionOutput, AuthorityGuard, AuthorityGuardKind,
+    AuthorityGuardValidator, AuthorityGuardValidatorEntry, AuthorityGuardValidatorLookupError,
     AuthorityGuardValidatorRegistry, AuthorityGuardValidatorRegistryBuilder,
     AuthorityGuardValidatorRegistryError, CanonicalHash, CanonicalHashError, CascadeError,
-    CausalMetadataError, CausalTriggerQueue, ContactId, FixedHexIdError, GuardRevalidation,
-    GuardRevalidationError, GuardSet, GuardSetBuildError, IdempotencyKey, IdempotencyKeyText,
-    IdempotencyKeyTextError, IdempotencyScope, IngressEnvelope, IngressPayload,
+    CausalMetadataError, CausalTriggerQueue, CommitToken, ContactId, FixedHexIdError,
+    GuardRevalidation, GuardRevalidationError, GuardSet, GuardSetBuildError, IdempotencyKey,
+    IdempotencyKeyText, IdempotencyKeyTextError, IdempotencyScope, IngressEnvelope, IngressPayload,
     IngressSurfaceVersion, MAX_ACTION_ERROR_BYTES, MAX_ACTION_PARAMETER_BYTES,
     MAX_ACTION_PROVIDERS, MAX_ACTION_PROVIDERS_PER_OWNER, MAX_ACTION_REVISIONS, MAX_ACTION_TARGETS,
     MAX_AUTHORITY_GUARDS, MAX_AUTHORITY_VALIDATORS, MAX_AUTHORITY_VALIDATORS_PER_OWNER,
@@ -94,14 +95,22 @@ pub use action::{
     TriggerIdentity, TriggerWork,
 };
 pub use action_state::{
-    ActionStateError, ActionStateStore, ActionTxn, ActionTxnLimits, CanonicalStateBytes,
-    MAX_ACTION_BUNDLE_BYTES, MAX_ACTION_MUTATION_OPERATIONS, MAX_ACTION_STATE_RECORD_BYTES,
-    MAX_STATE_FAMILIES, MAX_STATE_FAMILIES_PER_OWNER, MAX_STATE_KEY_BYTES, PreparedInstallation,
-    PreparedRecord, PreparedTxn, StateFamilyDescriptor, StateFamilyDescriptorError,
-    StateFamilyHandle, StateFamilyId, StateFamilyRegistry, StateFamilyRegistryBuilder,
-    StateFamilyRegistryError, StateKey, StateKeyCodec, StateValueSerializer, StateValueValidator,
+    ACTION_STATE_PERSISTENCE_ROOT, ActionStateBootRecord, ActionStateError, ActionStateStore,
+    ActionTxn, ActionTxnLimits, CanonicalStateBytes, MAX_ACTION_BUNDLE_BYTES,
+    MAX_ACTION_MUTATION_OPERATIONS, MAX_ACTION_STATE_BOOT_BYTES, MAX_ACTION_STATE_BOOT_RECORDS,
+    MAX_ACTION_STATE_RECORD_BYTES, MAX_STATE_FAMILIES, MAX_STATE_FAMILIES_PER_OWNER,
+    MAX_STATE_KEY_BYTES, PreparedInstallation, PreparedRecord, PreparedTxn, StateFamilyDescriptor,
+    StateFamilyDescriptorError, StateFamilyHandle, StateFamilyId, StateFamilyRegistry,
+    StateFamilyRegistryBuilder, StateFamilyRegistryError, StateKey, StateKeyCodec,
+    StateValueDecoder, StateValueSerializer, StateValueValidator, is_action_state_persistence_key,
 };
 pub use attr::{Attr, AttrFlags, AttrMap, AttrValue, UncasedName};
+pub use authoritative::{
+    AuthoritativeBundle, AuthoritativeBundleDraft, AuthoritativeBundleError, AuthoritativeKey,
+    AuthoritativeKeyError, DurableOutboxIntent, MAX_AUTHORITATIVE_BUNDLE_BYTES,
+    MAX_AUTHORITATIVE_DEFINITIONS, MAX_AUTHORITATIVE_REPLAY_WRITES, MAX_AUTHORITATIVE_WITNESSES,
+    MAX_DURABLE_OUTBOX_INTENTS, MAX_DURABLE_OUTBOX_PAYLOAD_BYTES, ReplayWrite,
+};
 pub use behavior::{
     BINDING_SCHEMA_VERSION, BehaviorBinding, BehaviorCommand, BehaviorCommandHandler, BehaviorId,
     BehaviorIdError, BehaviorRegError, BehaviorResolution, BehaviorSpec, BehaviorTarget, ChannelId,
@@ -119,7 +128,8 @@ pub use commands::{
 };
 pub use engine::{
     ControlMsg, Deferred, DisconnectKind, Effect, Effects, Engine, Inbound, ModuleComposition,
-    StagePreparedActionError, StagedAction, StepOutcome, WorldCommand, register_engine_commands,
+    StagePreparedActionError, StagedAction, StagedActionAdmissionError, StagedActionPersistence,
+    StepOutcome, WorldCommand, register_engine_commands,
 };
 pub use flags::{Flags, Powers, Role};
 pub use ledger::{

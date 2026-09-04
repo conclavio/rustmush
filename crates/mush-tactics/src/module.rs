@@ -32,14 +32,16 @@ use mush_core::module::{
 };
 use mush_core::output::display_name;
 use mush_core::{
-    ArgShape, Audience, BehaviorBinding, BehaviorId, BehaviorSpec, CmdError, CommandSpec, Ctx,
-    Deferred, DefinitionDescriptor, DefinitionDigest, DefinitionId, DefinitionKind,
-    DefinitionLookupError, DefinitionMigrationDescriptor, DefinitionRef,
-    DefinitionValidationContext, DestroyGate, DetachGate, Flags, IncidentId, IncidentState,
-    MAX_BOOT_REPORT_DETAILS, MechanicalState, MigrationPlanSummary, ModuleBootReport, ModuleOp,
-    ModuleWrite, ObjId, ObjKind, Outbox, OwnerId, PanelFeedHandle, Powers, RecoveryIncident,
-    RecoveryReason, RecoveryReporter, RecoveryScope, RecoverySeverity, RecoverySubject, Registry,
-    Role, RulesValue, World, canonical_json_bytes_with_limit, match_object, perm,
+    ActionError, ActionErrorCode, ActionInvocation, ActionProvider, ActionStateError, ActionTxn,
+    ArgShape, Audience, AuthoritativeActionOutput, BehaviorBinding, BehaviorId, BehaviorSpec,
+    CanonicalId, CmdError, CommandSpec, Ctx, Deferred, DefinitionDescriptor, DefinitionDigest,
+    DefinitionId, DefinitionKind, DefinitionLookupError, DefinitionMigrationDescriptor,
+    DefinitionRef, DefinitionValidationContext, DestroyGate, DetachGate, Flags, IncidentId,
+    IncidentState, MAX_BOOT_REPORT_DETAILS, MechanicalState, MigrationPlanSummary,
+    ModuleBootReport, ModuleOp, ModuleWrite, ObjId, ObjKind, Outbox, OwnerId, PanelFeedHandle,
+    PerceivedRef, Powers, RecoveryIncident, RecoveryReason, RecoveryReporter, RecoveryScope,
+    RecoverySeverity, RecoverySubject, Registry, Role, RulesValue, StateFamilyDescriptor,
+    StateFamilyHandle, StateFamilyId, World, canonical_json_bytes_with_limit, match_object, perm,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -66,6 +68,23 @@ pub const MAX_UNIT_RECORD_BYTES: usize = mush_core::MAX_RULES_VALUE_BYTES;
 /// Maximum repair previews retained/rendered in diagnostics. The aggregate
 /// count remains exact even when details are truncated.
 pub const MAX_UNIT_BINDING_REPAIRS: usize = MAX_BOOT_REPORT_DETAILS;
+/// Production action definition id for the first K3-migrated tactics action.
+pub const BRACE_ACTION_ID: &str = "brace";
+/// Semantic outcome definition id returned by [`BRACE_ACTION_ID`].
+pub const BRACED_OUTCOME_ID: &str = "braced";
+/// Engine-owned typed family mutated by the brace provider.
+pub const STANCE_STATE_FAMILY: &str = "stance";
+
+/// Minimal rules-neutral posture state used by the first production K3
+/// provider. It intentionally lives beside, rather than inside,
+/// [`TacticalUnit`]: concrete rulesets decide what mechanical modifiers a
+/// braced posture grants.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TacticalStance {
+    pub braced: bool,
+    pub revision: u64,
+}
 
 /// A boot-discovered binding disagreement. K1 reports these without mutating
 /// either the object or the authoritative module record.
@@ -416,6 +435,152 @@ fn exact_definition_validator(
     }
 }
 
+fn braced_outcome_descriptor() -> Result<DefinitionDescriptor, ModError> {
+    Ok(mechanics_descriptor(
+        "outcome",
+        BRACED_OUTCOME_ID,
+        1,
+        json!({
+            "fields": {
+                "actor": "obj_id",
+                "braced": "bool",
+                "revision": "u64"
+            }
+        }),
+    )?
+    .as_current())
+}
+
+fn brace_action_descriptor(outcome: DefinitionRef) -> Result<DefinitionDescriptor, ModError> {
+    Ok(mechanics_descriptor(
+        "action",
+        BRACE_ACTION_ID,
+        1,
+        json!({
+            "subject": "self_actor",
+            "targets": 0,
+            "parameters": {},
+            "state_family": STANCE_STATE_FAMILY
+        }),
+    )?
+    .with_references(vec![outcome])
+    .as_current())
+}
+
+#[derive(Debug)]
+struct BraceProvider {
+    stance: StateFamilyHandle<ObjId, TacticalStance>,
+    outcome: DefinitionRef,
+}
+
+impl BraceProvider {
+    fn validate(invocation: &ActionInvocation) -> Result<(), ActionError> {
+        if invocation.subject() != &PerceivedRef::SelfActor
+            || !invocation.targets().is_empty()
+            || invocation
+                .parameters()
+                .as_object()
+                .is_none_or(|parameters| !parameters.is_empty())
+        {
+            return Err(ActionError::new(
+                ActionErrorCode::InvalidRequest,
+                false,
+                "tactics brace requires self, no targets, and no parameters",
+            )
+            .expect("static tactics action error is bounded"));
+        }
+        Ok(())
+    }
+
+    fn state_error(_error: &ActionStateError) -> ActionError {
+        ActionError::new(
+            ActionErrorCode::Integrity,
+            false,
+            "tactics brace state preparation was refused",
+        )
+        .expect("static tactics state error is bounded")
+    }
+
+    fn prepare_stance(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+    ) -> Result<TacticalStance, ActionError> {
+        Self::validate(invocation)?;
+        let actor = invocation.actor();
+        let prior = txn
+            .get(&self.stance, &actor)
+            .map_err(|error| Self::state_error(&error))?
+            .cloned();
+        let next = TacticalStance {
+            braced: true,
+            revision: prior
+                .as_ref()
+                .map_or(Ok(1), |state| state.revision.checked_add(1).ok_or(()))
+                .map_err(|()| {
+                    ActionError::new(
+                        ActionErrorCode::BoundsExceeded,
+                        false,
+                        "tactics brace revision is exhausted",
+                    )
+                    .expect("static tactics bounds error is bounded")
+                })?,
+        };
+        if prior.is_some() {
+            txn.replace(&self.stance, &actor, next.clone())
+        } else {
+            txn.insert(&self.stance, &actor, next.clone())
+        }
+        .map_err(|error| Self::state_error(&error))?;
+        Ok(next)
+    }
+}
+
+impl ActionProvider for BraceProvider {
+    fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
+        Self::validate(invocation)
+    }
+
+    fn prepare_invocation(
+        &self,
+        _invocation: &ActionInvocation,
+        _txn: &mut ActionTxn<'_>,
+    ) -> Result<(), ActionError> {
+        Err(ActionError::new(
+            ActionErrorCode::Unavailable,
+            false,
+            "tactics brace requires the authoritative action coordinator",
+        )
+        .expect("static tactics migration error is bounded"))
+    }
+
+    fn prepare_authoritative(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        let next = self.prepare_stance(invocation, txn)?;
+        let outcome = RulesValue::new(
+            self.outcome.clone(),
+            json!({
+                "actor": invocation.actor().0,
+                "braced": next.braced,
+                "revision": next.revision,
+            }),
+        )
+        .map_err(|_| {
+            ActionError::new(
+                ActionErrorCode::BoundsExceeded,
+                false,
+                "tactics brace outcome exceeded canonical bounds",
+            )
+            .expect("static tactics outcome error is bounded")
+        })?;
+        Ok(AuthoritativeActionOutput::new(outcome)
+            .with_eligible_witnesses(vec![invocation.principal().clone()]))
+    }
+}
+
 impl GameModule for TacticsModule {
     fn name(&self) -> &'static str {
         NS
@@ -423,6 +588,51 @@ impl GameModule for TacticsModule {
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.state(UnitStore::default());
+
+        let stance = reg.state_family(
+            StateFamilyDescriptor::new(
+                StateFamilyId::new(STANCE_STATE_FAMILY)
+                    .map_err(|error| ModError::msg(error.to_string()))?,
+                CanonicalId::new("obj_id.decimal.v1")
+                    .map_err(|error| ModError::msg(error.to_string()))?,
+                CanonicalId::new("tactics.stance.v1")
+                    .map_err(|error| ModError::msg(error.to_string()))?,
+                1,
+                CanonicalId::new("tactics.stance.decode_json.v1")
+                    .map_err(|error| ModError::msg(error.to_string()))?,
+                CanonicalId::new("tactics.stance.validate.v1")
+                    .map_err(|error| ModError::msg(error.to_string()))?,
+                CanonicalId::new("tactics.stance.json.v1")
+                    .map_err(|error| ModError::msg(error.to_string()))?,
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            |key: &ObjId| Ok(key.0.to_string()),
+            |value: &serde_json::Value| {
+                serde_json::from_value(value.clone()).map_err(|error| error.to_string())
+            },
+            |value: &TacticalStance| {
+                if value.revision == 0 {
+                    Err("tactics stance revision must be non-zero".to_owned())
+                } else {
+                    Ok(())
+                }
+            },
+            |value: &TacticalStance| serde_json::to_value(value).map_err(|error| error.to_string()),
+        )?;
+
+        let outcome_descriptor = braced_outcome_descriptor()?;
+        reg.definition_validator(
+            DefinitionKind::new("outcome").map_err(|error| ModError::msg(error.to_string()))?,
+            exact_definition_validator(std::slice::from_ref(&outcome_descriptor)),
+        )?;
+        let outcome = reg.definition(outcome_descriptor)?;
+        let action_descriptor = brace_action_descriptor(outcome.clone())?;
+        reg.definition_validator(
+            DefinitionKind::new("action").map_err(|error| ModError::msg(error.to_string()))?,
+            exact_definition_validator(std::slice::from_ref(&action_descriptor)),
+        )?;
+        let action = reg.definition(action_descriptor)?;
+        reg.action_provider(action, BraceProvider { stance, outcome })?;
 
         // The record format itself is versioned so an old untagged unit can be
         // dry-run through the shared migration registry. The callback captures

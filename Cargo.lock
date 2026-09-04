@@ -2264,6 +2264,7 @@ dependencies = [
 name = "mush-server"
 version = "0.1.0"
 dependencies = [
+ "fred",
  "futures",
  "mush-canon",
  "mush-comsys",

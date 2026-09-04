@@ -54,8 +54,9 @@ pub use mobility::{
     MobilityRegistry, MobilityTag, MobilityVocabulary, ModeRules, ModeState,
 };
 pub use module::{
-    MAX_UNIT_BINDING_REPAIRS, MAX_UNIT_RECORD_BYTES, TacticsModule, UNIT_BINDING_VERSION,
-    UNIT_RECORD_VERSION, UnitBindingRepair, UnitRecordStatus, UnitStore,
+    BRACE_ACTION_ID, BRACED_OUTCOME_ID, MAX_UNIT_BINDING_REPAIRS, MAX_UNIT_RECORD_BYTES,
+    STANCE_STATE_FAMILY, TacticalStance, TacticsModule, UNIT_BINDING_VERSION, UNIT_RECORD_VERSION,
+    UnitBindingRepair, UnitRecordStatus, UnitStore,
 };
 pub use unit::{
     CapabilityId, CapabilityInit, CapabilityKey, CellAddr, CellId, CellSpec, ComponentId,

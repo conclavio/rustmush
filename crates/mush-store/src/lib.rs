@@ -36,8 +36,15 @@ pub use migrate::{
     CURRENT_SCHEMA_VERSION, Migration, MigrationFn, core_migrations, run_migrations,
 };
 pub use redis::RedisStore;
-pub use store::ObjectStore;
+pub use store::{AuthoritativeStore, ObjectStore};
 pub use types::{
-    AccountRec, BanRec, CharacterRef, ModuleOp, ModuleWrite, SshKeyRec, StoreError, TokenRecord,
-    WorldSnapshot, WriteBatch, WriteReceipt,
+    AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeEpochRetirement,
+    AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult, AuthoritativeOutboxRecord,
+    AuthoritativeOutboxState, AuthoritativeReceipt, AuthoritativeRetentionUsage,
+    AuthoritativeScanCursor, BanRec, BundleStatus, CharacterRef, IdempotencyStatus, IntentReceipt,
+    MAX_AUTHORITATIVE_DISCOVERY_PAGE, MAX_AUTHORITATIVE_OUTBOX_ERROR_BYTES,
+    MAX_AUTHORITATIVE_SCAN_CURSOR_BYTES, MAX_PENDING_AUTHORITATIVE_OUTBOX,
+    MAX_RETAINED_AUTHORITATIVE_BYTES, MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleOp, ModuleWrite,
+    PendingAuthoritativeIntent, SshKeyRec, StoreError, TokenRecord, WorldSnapshot, WriteBatch,
+    WriteReceipt,
 };

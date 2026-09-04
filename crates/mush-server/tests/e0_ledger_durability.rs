@@ -18,7 +18,7 @@ use futures::future::BoxFuture;
 use mush_config::metrics::Metrics;
 use mush_core::{LedgerChunk, LedgerEntry, ModuleOp, ModuleWrite, chunk_key};
 use mush_server::persist::{PersistenceIntegrityLatch, StoreJob, spawn_store_writer};
-use mush_server::quarantine::QuarantineSpool;
+use mush_server::quarantine::{QUARANTINE_RECORD_VERSION, QuarantineSpool};
 use mush_server::retained::RetainedSeals;
 use mush_server::world_task::{WriterSignal, WriterSignalReceiver, writer_signal_channel};
 use mush_store::{
@@ -498,13 +498,15 @@ async fn poison_seal_is_quarantined_to_spool_and_frozen() {
     assert_eq!(files.len(), 1, "exactly one quarantine record was spooled");
     let record: serde_json::Value =
         serde_json::from_slice(&std::fs::read(files[0].path()).unwrap()).unwrap();
-    assert_eq!(record["ns"], "econ");
-    assert_eq!(record["key"], poison_key.as_str());
+    assert_eq!(record["record_version"], QUARANTINE_RECORD_VERSION);
+    assert_eq!(record["content"]["kind"], "ledger_seal");
+    assert_eq!(record["content"]["namespace"], "econ");
+    assert_eq!(record["content"]["key"], poison_key.as_str());
     assert!(
-        record["payload"]["sealed"].as_bool().unwrap(),
+        record["content"]["payload"]["sealed"].as_bool().unwrap(),
         "the full seal payload is preserved"
     );
-    assert!(record["payload_hash"].as_str().is_some());
+    assert!(record["identity_hash"].as_str().is_some());
     assert_eq!(record["isolation_attempts"].as_u64().unwrap(), 5);
 
     drop(writer);

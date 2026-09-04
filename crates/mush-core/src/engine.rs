@@ -27,10 +27,12 @@ use mush_proto::{OutputEvent, RichText};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
+use crate::action::{GuardRevalidation, GuardRevalidationError, GuardSet};
 use crate::action_state::{
-    ActionStateError, ActionStateStore, ActionTxn, PreparedInstallation, PreparedTxn,
-    StateFamilyHandle,
+    ActionStateBootRecord, ActionStateError, ActionStateStore, ActionTxn, PreparedInstallation,
+    PreparedTxn, StateFamilyHandle,
 };
+use crate::authoritative::AuthoritativeBundle;
 use crate::cmd::{
     ArgShape, CmdError, CommandSpec, Ctx, ParsedArgs, Registry, RegistryError, SwitchSet, dispatch,
 };
@@ -422,23 +424,42 @@ pub struct ModuleComposition {
 /// One prepared action submission crossing the synchronous engine/driver
 /// boundary. It is deliberately separate from legacy [`ModuleOp`] custody.
 pub struct StagedAction {
-    module_ops: Vec<ModuleOp>,
+    persistence: StagedActionPersistence,
     installation: PreparedInstallation,
+    guards: GuardSet,
+}
+
+/// Persistence identity paired with one non-cloneable prepared RAM image.
+pub enum StagedActionPersistence {
+    /// K2 compatibility lane using the process-local writer serial.
+    Legacy(Vec<ModuleOp>),
+    /// K3 lane carrying the complete immutable exact-token intent.
+    Authoritative(Box<AuthoritativeBundle>),
+}
+
+impl fmt::Debug for StagedActionPersistence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Legacy(module_ops) => f.debug_tuple("Legacy").field(module_ops).finish(),
+            Self::Authoritative(bundle) => f.debug_tuple("Authoritative").field(bundle).finish(),
+        }
+    }
 }
 
 impl fmt::Debug for StagedAction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StagedAction")
-            .field("module_ops", &self.module_ops)
+            .field("persistence", &self.persistence)
             .field("installation", &self.installation)
+            .field("guards", &self.guards)
             .finish()
     }
 }
 
 impl StagedAction {
     /// Split the already-built persistence writes from the post-ack images.
-    pub fn into_parts(self) -> (Vec<ModuleOp>, PreparedInstallation) {
-        (self.module_ops, self.installation)
+    pub fn into_parts(self) -> (StagedActionPersistence, PreparedInstallation) {
+        (self.persistence, self.installation)
     }
 }
 
@@ -451,6 +472,25 @@ pub enum StagePreparedActionError {
     DirtyWorld,
     #[error("prepared action cannot share a step with legacy module persistence")]
     LegacyModuleOps,
+    #[error("authoritative bundle provider does not own the prepared transaction")]
+    AuthoritativeProviderMismatch,
+    #[error("authoritative bundle idempotency scope does not belong to its provider")]
+    AuthoritativeScopeMismatch,
+    #[error("authoritative bundle writes do not exactly match the prepared transaction")]
+    AuthoritativeWriteSetMismatch,
+}
+
+/// Final process-local refusal while moving a staged action into writer
+/// custody. The staged typed images are always aborted before this is
+/// returned.
+#[derive(Clone, Debug, Eq, thiserror::Error, PartialEq)]
+pub enum StagedActionAdmissionError {
+    #[error("{component} registry is unavailable at final action admission")]
+    RegistryUnavailable { component: &'static str },
+    #[error("final action guard evaluation failed: {0}")]
+    Revalidation(#[from] GuardRevalidationError),
+    #[error("prepared action guards became stale before commit admission")]
+    Stale(GuardRevalidation),
 }
 
 impl ModuleComposition {
@@ -736,6 +776,15 @@ impl Engine {
         &self.action_state
     }
 
+    /// Atomically install persisted typed state after module composition but
+    /// before any module receives its ordinary boot callback.
+    pub fn hydrate_action_state(
+        &mut self,
+        records: impl IntoIterator<Item = ActionStateBootRecord>,
+    ) -> Result<(), ActionStateError> {
+        self.action_state.hydrate(records)
+    }
+
     /// Begin a handle-scoped transaction, primarily for bootstrapping and
     /// contract tests. Registered action providers use the stricter
     /// provider-owner dispatch path.
@@ -765,6 +814,33 @@ impl Engine {
         providers.prepare_invocation(action, invocation, &mut self.action_state)
     }
 
+    /// Prepare one registered provider's typed post-images and semantic K3
+    /// result material. Persistence identity remains coordinator-owned.
+    pub fn prepare_registered_authoritative_action(
+        &mut self,
+        action: &crate::mechanics::DefinitionRef,
+        invocation: &crate::action::ActionInvocation,
+    ) -> Result<
+        (PreparedTxn, crate::action::AuthoritativeActionOutput),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        providers.prepare_authoritative_invocation(action, invocation, &mut self.action_state)
+    }
+
+    /// Release a prepared transaction that could not be assembled into a
+    /// complete authoritative bundle. This is distinct from aborting a
+    /// [`PreparedInstallation`]: coordinators need this form when canonical
+    /// hashing or bundle validation fails before staging consumes the
+    /// transaction.
+    pub fn abort_prepared_transaction(&mut self, prepared: PreparedTxn) {
+        let (_, installation) = prepared.into_parts();
+        self.action_state.abort(installation);
+    }
+
     /// Move a logical action's persistence and install images into the one
     /// driver-facing prepared lane.
     ///
@@ -774,6 +850,7 @@ impl Engine {
     pub fn stage_prepared_action(
         &mut self,
         prepared: PreparedTxn,
+        guards: GuardSet,
     ) -> Result<(), StagePreparedActionError> {
         if self.staged_action.is_some() {
             let (_, installation) = prepared.into_parts();
@@ -790,8 +867,50 @@ impl Engine {
             return Err(StagePreparedActionError::LegacyModuleOps);
         }
         self.staged_action = Some(StagedAction {
-            module_ops,
+            persistence: StagedActionPersistence::Legacy(module_ops),
             installation,
+            guards,
+        });
+        Ok(())
+    }
+
+    /// Stage one K3 action only when its immutable replay writes exactly match
+    /// the typed post-images retained for post-ack RAM installation.
+    ///
+    /// This deliberately accepts an already-complete bundle: outcome,
+    /// causality, witnesses, definitions, and outbox intent must all be fixed
+    /// before the synchronous final guard check transfers store custody.
+    pub fn stage_authoritative_action(
+        &mut self,
+        prepared: PreparedTxn,
+        guards: GuardSet,
+        bundle: AuthoritativeBundle,
+    ) -> Result<(), StagePreparedActionError> {
+        let refusal = if self.staged_action.is_some() {
+            Some(StagePreparedActionError::AlreadyStaged)
+        } else if prepared.owner() != bundle.provider() {
+            Some(StagePreparedActionError::AuthoritativeProviderMismatch)
+        } else if bundle.idempotency().scope().owner != *bundle.provider() {
+            Some(StagePreparedActionError::AuthoritativeScopeMismatch)
+        } else if prepared.authoritative_replay_writes() != bundle.writes() {
+            Some(StagePreparedActionError::AuthoritativeWriteSetMismatch)
+        } else if self.world.has_dirty() {
+            Some(StagePreparedActionError::DirtyWorld)
+        } else if !self.module_ops.is_empty() {
+            Some(StagePreparedActionError::LegacyModuleOps)
+        } else {
+            None
+        };
+        if let Some(error) = refusal {
+            let (_, installation) = prepared.into_parts();
+            self.action_state.abort(installation);
+            return Err(error);
+        }
+        let (_, installation) = prepared.into_parts();
+        self.staged_action = Some(StagedAction {
+            persistence: StagedActionPersistence::Authoritative(Box::new(bundle)),
+            installation,
+            guards,
         });
         Ok(())
     }
@@ -811,9 +930,54 @@ impl Engine {
         self.world.has_dirty() || !self.module_ops.is_empty()
     }
 
-    /// Transfer the one prepared action to the driver.
-    pub fn take_staged_action(&mut self) -> Option<StagedAction> {
-        self.staged_action.take()
+    /// Revalidate every server-created guard against current immutable truth
+    /// and transfer the action to the driver in the same synchronous turn.
+    /// Stale or unevaluable work is aborted before an error is returned.
+    pub fn take_staged_action(
+        &mut self,
+    ) -> Result<Option<StagedAction>, StagedActionAdmissionError> {
+        let Some(staged) = self.staged_action.as_ref() else {
+            return Ok(None);
+        };
+        let revalidation = (|| {
+            let revisions = self.registry.revision_validators().ok_or(
+                StagedActionAdmissionError::RegistryUnavailable {
+                    component: "revision-validator",
+                },
+            )?;
+            let authority = self.registry.authority_guard_validators().ok_or(
+                StagedActionAdmissionError::RegistryUnavailable {
+                    component: "authority-validator",
+                },
+            )?;
+            let definitions = self.registry.definitions().ok_or(
+                StagedActionAdmissionError::RegistryUnavailable {
+                    component: "definition",
+                },
+            )?;
+            staged
+                .guards
+                .revalidate(&self.world, revisions, authority, definitions)
+                .map_err(StagedActionAdmissionError::Revalidation)
+        })();
+        match revalidation {
+            Ok(result) if result.is_current() => Ok(self.staged_action.take()),
+            Ok(result) => {
+                self.abort_staged_action();
+                Err(StagedActionAdmissionError::Stale(result))
+            }
+            Err(error) => {
+                self.abort_staged_action();
+                Err(error)
+            }
+        }
+    }
+
+    fn abort_staged_action(&mut self) {
+        if let Some(staged) = self.staged_action.take() {
+            let (_, installation) = staged.into_parts();
+            self.action_state.abort(installation);
+        }
     }
 
     /// Install typed post-images after the exact applied receipt.

@@ -33,7 +33,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use mush_config::accounts::import_accounts_json;
-use mush_config::config::{Config, StoreBackend};
+use mush_config::config::{Config, StoreBackend, StoreReceiptPolicy};
 use mush_config::ipguard::IpGuard;
 use mush_config::metrics::Metrics;
 use mush_core::{ControlMsg, Engine, Inbound};
@@ -48,9 +48,11 @@ use tokio::sync::oneshot;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 pub mod accounts;
+pub mod action_coordinator;
 pub mod config_ext;
 // E4c: the economy -> canon evidence bridge (08c §6.1 item 3).
 pub mod econ_canon;
+pub mod durable_outbox;
 pub mod gateway_sink;
 pub mod help;
 pub mod modules;
@@ -61,7 +63,7 @@ pub mod staff;
 pub mod world_task;
 
 use crate::gateway_sink::SocketSink;
-use crate::persist::load_or_seed_world;
+use crate::persist::{load_or_seed_world, reconcile_authoritative_for_writable_boot};
 use crate::quarantine::QuarantineSpool;
 use crate::staff::{StaffQueue, register_server_commands_with_cap};
 use crate::world_task::{CreatePlayerErr, ServerDeps, WorldHandle, WorldReadError};
@@ -75,28 +77,43 @@ fn server_id() -> String {
 
 /// Open the configured store backend (fail fast when Redis is unreachable).
 async fn open_store(config: &Config) -> Result<Arc<dyn ObjectStore>, String> {
+    let receipt_policy = config.store_receipt_policy().map_err(|e| e.to_string())?;
     match config.store_backend().map_err(|e| e.to_string())? {
         StoreBackend::Redis => {
             let url = &config.store.redis_url;
             tracing::info!(%url, "connecting to Redis");
-            let store = RedisStore::connect(url)
+            let store = RedisStore::connect_read_only(url)
                 .await
                 .map_err(|e| format!("cannot reach Redis at {url}: {e}"))?;
+            if receipt_policy == StoreReceiptPolicy::HostPowerLoss {
+                store
+                    .require_host_power_loss_receipts()
+                    .await
+                    .map_err(|e| format!("Redis does not satisfy [store].receipt_policy: {e}"))?;
+            }
             Ok(Arc::new(store))
         }
         StoreBackend::Memory => {
+            if receipt_policy == StoreReceiptPolicy::HostPowerLoss {
+                return Err(
+                    "[store].receipt_policy=\"host_power_loss\" requires the Redis backend"
+                        .to_owned(),
+                );
+            }
             tracing::warn!("[store].store = \"memory\": nothing will survive a restart");
             Ok(Arc::new(InMemoryStore::new()))
         }
     }
 }
 
-/// Open only the read side of the configured store for quarantine recovery.
+/// Open the narrow pre-boot side of the configured store for quarantine
+/// recovery.
 ///
 /// Redis connection setup deliberately skips search-index bootstrap; schema
 /// migrations, world seeds, imports, and module boot remain downstream of the
 /// exact-match decision. The returned store is kept private and is handed to
-/// [`QuarantineSpool`] only through its one-method read interface.
+/// [`QuarantineSpool`] only through its target-read plus exact-bundle recovery
+/// interface.
 async fn open_quarantine_recovery_store(config: &Config) -> Result<Arc<dyn ObjectStore>, String> {
     match config.store_backend().map_err(|error| error.to_string())? {
         StoreBackend::Redis => {
@@ -113,10 +130,11 @@ async fn open_quarantine_recovery_store(config: &Config) -> Result<Arc<dyn Objec
 /// Resolve exact authoritative matches, then enforce the quarantine gate.
 ///
 /// This is the complete pre-write recovery plane shared by the split server
-/// and all-in-one `mushd`. It performs only `module_json_get` calls against the
-/// authoritative store. Any missing/different/unreadable target, invalid or
-/// full evidence archive, or unresolved active record prevents migrations and
-/// every other ordinary boot mutation.
+/// and all-in-one `mushd`. Legacy seals use `module_json_get`; K3 bundle
+/// records may invoke only exact token/hash status and idempotent reconcile.
+/// Any missing/different/unreadable target, invalid or full evidence archive,
+/// or unresolved active record prevents migrations and every other ordinary
+/// boot mutation.
 ///
 /// # Errors
 ///
@@ -163,6 +181,27 @@ async fn build_engine(
     store: &Arc<dyn ObjectStore>,
     _validated_spool: &QuarantineSpool,
 ) -> Result<(Engine, Arc<StaffQueue>), String> {
+    let authoritative = store.authoritative_store().ok_or_else(|| {
+        "configured store does not implement K3 exact-token durability; refusing writable boot"
+            .to_owned()
+    })?;
+    let recovery = reconcile_authoritative_for_writable_boot(authoritative).await?;
+    tracing::info!(
+        indexed = recovery.indexed,
+        retained = recovery.retained,
+        retained_bytes = recovery.retained_bytes,
+        retention_counters_repaired = recovery.retention_counters_repaired,
+        reconciled = recovery.reconciled,
+        already_finalized = recovery.already_finalized,
+        checkpointed = recovery.checkpointed,
+        checkpoint_deferred_outbox = recovery.checkpoint_deferred_outbox,
+        scan_pages = recovery.scan_pages,
+        "authoritative intent recovery barrier complete"
+    );
+    store
+        .bootstrap_writable()
+        .await
+        .map_err(|error| format!("store writable bootstrap failed: {error}"))?;
     let version = run_migrations(&**store, &core_migrations())
         .await
         .map_err(|e| format!("store migrations failed: {e}"))?;
@@ -312,9 +351,9 @@ pub async fn serve_with_quarantine_spool(
     // into (matching `mushd::main`), or `@boot`/`@siteban`/... would be enqueued
     // to an orphan queue and never execute.
     deps.staff = staff;
-    // E0 quarantine spool: a separate failure domain from the store, under the
-    // configured data dir. A confirmed poison seal is fsynced here before being
-    // dropped from re-emit, so it is preserved for staff repair.
+    // Unified quarantine spool: a separate failure domain from the store,
+    // under the configured data dir. Confirmed poison seals and complete K3
+    // bundles are fsynced here before the writer enters its integrity halt.
     deps.quarantine_spool = quarantine_spool;
 
     // Cloned out BEFORE `deps` is moved into the world spawn: the writer task and
@@ -342,6 +381,7 @@ pub async fn serve_with_quarantine_spool(
     let world = handles.handle;
     let world_join = handles.world_join;
     let store_writer_join = handles.writer_join;
+    let outbox_join = handles.outbox_join;
 
     let listener = mush_ipc::listen(&endpoint)
         .await
@@ -390,6 +430,7 @@ pub async fn serve_with_quarantine_spool(
     let _ = world_join.await;
     drop(to_gw_tx);
     drop(world);
+    let _ = outbox_join.await;
     // Keep custody of the actual persistence writer (distinct from the IPC
     // writer above) and wait for it to drain before this runtime can return.
     // Detaching it here would let process teardown discard a batch after the

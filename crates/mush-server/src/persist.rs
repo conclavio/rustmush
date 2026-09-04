@@ -34,14 +34,18 @@
 //! the same queue as [`StoreJob::Bgsave`] so the snapshot is ordered behind
 //! every batch queued before it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use mush_config::metrics::Metrics;
-use mush_core::{ObjId, World};
-use mush_store::{ModuleOp, ModuleWrite, ObjectStore, StoreError, WorldSnapshot, WriteBatch};
+use mush_core::{AuthoritativeBundle, CommitToken, ObjId, World};
+use mush_store::{
+    AuthoritativeReceipt, AuthoritativeRetentionUsage, AuthoritativeStore, BundleStatus,
+    MAX_AUTHORITATIVE_DISCOVERY_PAGE, MAX_RETAINED_AUTHORITATIVE_BYTES, ModuleOp, ModuleWrite,
+    ObjectStore, StoreError, WorldSnapshot, WriteBatch,
+};
 use smol_str::SmolStr;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -75,6 +79,320 @@ const RETRY_INITIAL: Duration = Duration::from_millis(100);
 
 /// Retry backoff ceiling.
 const RETRY_MAX: Duration = Duration::from_secs(5);
+
+/// Maximum cursor pages accepted from one exhaustive authoritative-intent
+/// boot scan. At the hard 256-record retained-intent cap a healthy backend
+/// normally needs very few pages; this much larger bound permits SCAN to walk
+/// a large shared keyspace without allowing a corrupt/cycling backend to keep
+/// writable boot pending forever.
+const MAX_AUTHORITATIVE_BOOT_SCAN_PAGES: usize = 65_536;
+
+/// A transient store error gets a small bounded recovery attempt budget during
+/// boot. Exhausting it fails boot without erasing the retained intent; the
+/// service manager can retry later after the store recovers.
+const AUTHORITATIVE_BOOT_RECONCILE_ATTEMPTS: u32 = 3;
+
+/// Exact replay attempts used to distinguish a deterministic K3 poison from
+/// a stale/transient observation before the whole bundle is dead-lettered.
+const AUTHORITATIVE_POISON_ATTEMPTS: u32 = 3;
+
+/// Summary of the exact-intent recovery barrier that precedes ordinary world
+/// loading and every writable startup mutation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AuthoritativeBootRecoveryReport {
+    /// Entries observed in the pending accelerator before reconciliation.
+    pub indexed: usize,
+    /// Unique immutable intents found by exhaustive cursor discovery.
+    pub retained: usize,
+    /// Exact canonical bytes charged by all retained full intents.
+    pub retained_bytes: usize,
+    /// Whether boot rebuilt either non-authoritative capacity counter.
+    pub retention_counters_repaired: bool,
+    /// Pending intents replayed and finalized in this boot.
+    pub reconciled: usize,
+    /// Retained intents already carrying an exact finalized witness.
+    pub already_finalized: usize,
+    /// Finalized full intents replaced by compact checkpoint witnesses.
+    pub checkpointed: usize,
+    /// Finalized intents deliberately retained because durable outbox work is
+    /// not yet terminal.
+    pub checkpoint_deferred_outbox: usize,
+    /// Cursor pages consumed, including an empty terminal page when Redis
+    /// returns one.
+    pub scan_pages: usize,
+}
+
+/// Exhaustively reconcile authoritative intents before an object/module
+/// snapshot can be loaded or any ordinary boot write can occur.
+///
+/// The pending set is only an accelerator. This barrier independently walks
+/// the complete retained-intent keyspace, requires every indexed token to be
+/// present in that scan, rejects conflicting token/hash observations, and
+/// reconciles every pending record by its exact hash. A stale finalized index
+/// member is also passed through reconciliation so the backend can repair it.
+/// The final pending-index read must be empty.
+pub async fn reconcile_authoritative_for_writable_boot(
+    store: &dyn AuthoritativeStore,
+) -> Result<AuthoritativeBootRecoveryReport, String> {
+    let indexed = store
+        .pending_authoritative_intents()
+        .await
+        .map_err(|error| format!("reading authoritative pending index: {error}"))?;
+    let mut report = AuthoritativeBootRecoveryReport {
+        indexed: indexed.len(),
+        ..AuthoritativeBootRecoveryReport::default()
+    };
+    let mut indexed_by_token = BTreeMap::new();
+    for entry in indexed {
+        if let Some(existing) = indexed_by_token.insert(entry.token, entry.bundle_hash)
+            && existing != entry.bundle_hash
+        {
+            return Err(format!(
+                "authoritative pending index contains conflicting hashes for {}",
+                entry.token
+            ));
+        }
+    }
+
+    let mut retained = BTreeMap::new();
+    let mut retained_bytes = 0usize;
+    let mut cursor = None;
+    loop {
+        report.scan_pages = report
+            .scan_pages
+            .checked_add(1)
+            .ok_or_else(|| "authoritative boot scan page counter overflow".to_owned())?;
+        if report.scan_pages > MAX_AUTHORITATIVE_BOOT_SCAN_PAGES {
+            return Err(format!(
+                "authoritative intent scan exceeded {MAX_AUTHORITATIVE_BOOT_SCAN_PAGES} pages; \
+                 refusing writable boot"
+            ));
+        }
+        let prior_cursor = cursor.clone();
+        let page = store
+            .scan_authoritative_intents(cursor, MAX_AUTHORITATIVE_DISCOVERY_PAGE)
+            .await
+            .map_err(|error| format!("scanning authoritative intents: {error}"))?;
+        for bundle in page.intents {
+            let token = bundle.token();
+            let hash = bundle.bundle_hash();
+            let encoded_bytes = serde_json::to_string(&bundle)
+                .map_err(|error| {
+                    format!("encoding retained authoritative intent {token}: {error}")
+                })?
+                .len();
+            match retained.entry(token) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    retained_bytes =
+                        retained_bytes.checked_add(encoded_bytes).ok_or_else(|| {
+                            "authoritative retained-intent byte counter overflow".to_owned()
+                        })?;
+                    entry.insert(hash);
+                }
+                std::collections::btree_map::Entry::Occupied(entry) if *entry.get() == hash => {}
+                std::collections::btree_map::Entry::Occupied(_) => {
+                    return Err(format!(
+                        "authoritative token {token} appeared with conflicting bundle hashes during boot"
+                    ));
+                }
+            }
+        }
+        if retained.len() > mush_store::MAX_RETAINED_AUTHORITATIVE_INTENTS {
+            return Err(format!(
+                "authoritative boot scan found {} retained intents; maximum is {}",
+                retained.len(),
+                mush_store::MAX_RETAINED_AUTHORITATIVE_INTENTS
+            ));
+        }
+        if retained_bytes > MAX_RETAINED_AUTHORITATIVE_BYTES {
+            return Err(format!(
+                "authoritative boot scan found {retained_bytes} retained bytes; maximum is {MAX_RETAINED_AUTHORITATIVE_BYTES}"
+            ));
+        }
+        let Some(next_cursor) = page.next_cursor else {
+            break;
+        };
+        if prior_cursor.as_ref() == Some(&next_cursor) {
+            return Err(format!(
+                "authoritative intent scan repeated cursor {:?}; refusing writable boot",
+                next_cursor.as_str()
+            ));
+        }
+        cursor = Some(next_cursor);
+    }
+    report.retained = retained.len();
+    report.retained_bytes = retained_bytes;
+
+    for (token, indexed_hash) in &indexed_by_token {
+        match retained.get(token) {
+            Some(scanned_hash) if scanned_hash == indexed_hash => {}
+            Some(_) => {
+                return Err(format!(
+                    "authoritative pending index disagrees with retained intent {token}"
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "authoritative pending index names {token}, absent from exhaustive intent scan"
+                ));
+            }
+        }
+    }
+
+    report.retention_counters_repaired = store
+        .repair_authoritative_retention(AuthoritativeRetentionUsage {
+            count: report.retained,
+            bytes: report.retained_bytes,
+        })
+        .await
+        .map_err(|error| format!("repairing authoritative retention counters: {error}"))?;
+
+    for (token, hash) in retained {
+        let was_indexed = indexed_by_token.contains_key(&token);
+        match store
+            .authoritative_status(token, hash)
+            .await
+            .map_err(|error| format!("reading authoritative status for {token}: {error}"))?
+        {
+            BundleStatus::PendingExact => {
+                reconcile_one_authoritative_boot_intent(store, token, hash).await?;
+                report.reconciled += 1;
+            }
+            BundleStatus::FinalizedExact(receipt) => {
+                if receipt.token() != token || receipt.bundle_hash() != hash {
+                    return Err(format!(
+                        "authoritative finalized witness for {token} is not exact"
+                    ));
+                }
+                report.already_finalized += 1;
+                if was_indexed {
+                    // Reconciliation of an exact finalized record is the
+                    // backend's idempotent stale-index repair path.
+                    reconcile_one_authoritative_boot_intent(store, token, hash).await?;
+                }
+            }
+            BundleStatus::Absent => {
+                return Err(format!(
+                    "authoritative intent {token} disappeared during boot recovery"
+                ));
+            }
+            BundleStatus::Conflict { stored_bundle_hash } => {
+                return Err(format!(
+                    "authoritative intent {token} changed during boot recovery \
+                     (expected {hash}, stored {stored_bundle_hash})"
+                ));
+            }
+        }
+        match checkpoint_one_authoritative_boot_intent(store, token, hash).await? {
+            BootCheckpoint::Released => report.checkpointed += 1,
+            BootCheckpoint::AlreadyCheckpointed => {}
+            BootCheckpoint::DeferredOutbox => report.checkpoint_deferred_outbox += 1,
+        }
+    }
+
+    let remaining = store
+        .pending_authoritative_intents()
+        .await
+        .map_err(|error| format!("verifying authoritative pending index: {error}"))?;
+    if !remaining.is_empty() {
+        return Err(format!(
+            "authoritative recovery left {} pending intent(s); refusing writable boot",
+            remaining.len()
+        ));
+    }
+    Ok(report)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BootCheckpoint {
+    Released,
+    AlreadyCheckpointed,
+    DeferredOutbox,
+}
+
+async fn checkpoint_one_authoritative_boot_intent(
+    store: &dyn AuthoritativeStore,
+    token: mush_core::CommitToken,
+    hash: mush_core::CanonicalHash,
+) -> Result<BootCheckpoint, String> {
+    for attempt in 1..=AUTHORITATIVE_BOOT_RECONCILE_ATTEMPTS {
+        match store.checkpoint_authoritative(token, hash).await {
+            Ok(checkpoint)
+                if checkpoint.receipt.token() == token
+                    && checkpoint.receipt.bundle_hash() == hash =>
+            {
+                return Ok(if checkpoint.resumed {
+                    BootCheckpoint::AlreadyCheckpointed
+                } else {
+                    BootCheckpoint::Released
+                });
+            }
+            Ok(_) => {
+                return Err(format!(
+                    "authoritative checkpoint returned a non-exact witness for {token}"
+                ));
+            }
+            Err(StoreError::AuthoritativeOutboxPending) => {
+                return Ok(BootCheckpoint::DeferredOutbox);
+            }
+            Err(error)
+                if error.is_transient() && attempt < AUTHORITATIVE_BOOT_RECONCILE_ATTEMPTS =>
+            {
+                tracing::warn!(
+                    %token,
+                    attempt,
+                    max_attempts = AUTHORITATIVE_BOOT_RECONCILE_ATTEMPTS,
+                    error = %error,
+                    "transient authoritative boot checkpoint failure; retrying exact intent"
+                );
+                tokio::time::sleep(Duration::from_millis(100 * u64::from(attempt))).await;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "checkpointing authoritative intent {token} on attempt {attempt}: {error}"
+                ));
+            }
+        }
+    }
+    unreachable!("bounded authoritative checkpoint loop always returns")
+}
+
+async fn reconcile_one_authoritative_boot_intent(
+    store: &dyn AuthoritativeStore,
+    token: mush_core::CommitToken,
+    hash: mush_core::CanonicalHash,
+) -> Result<(), String> {
+    for attempt in 1..=AUTHORITATIVE_BOOT_RECONCILE_ATTEMPTS {
+        match store.reconcile_authoritative(token, hash).await {
+            Ok(receipt) if receipt.token() == token && receipt.bundle_hash() == hash => {
+                return Ok(());
+            }
+            Ok(_) => {
+                return Err(format!(
+                    "authoritative reconciliation returned a non-exact witness for {token}"
+                ));
+            }
+            Err(error)
+                if error.is_transient() && attempt < AUTHORITATIVE_BOOT_RECONCILE_ATTEMPTS =>
+            {
+                tracing::warn!(
+                    %token,
+                    attempt,
+                    max_attempts = AUTHORITATIVE_BOOT_RECONCILE_ATTEMPTS,
+                    error = %error,
+                    "transient authoritative boot reconciliation failure; retrying exact intent"
+                );
+                tokio::time::sleep(Duration::from_millis(100 * u64::from(attempt))).await;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "reconciling authoritative intent {token} on attempt {attempt}: {error}"
+                ));
+            }
+        }
+    }
+    unreachable!("bounded authoritative reconciliation loop always returns")
+}
 
 /// A confirmed poison seal is allowed to leave RAM only after the independent
 /// quarantine sink has durably verified it. Runtime I/O failures therefore
@@ -125,6 +443,13 @@ pub enum StoreJob {
         /// fire-and-forget ordinary command batches.
         notify: Option<oneshot::Sender<Result<u64, String>>>,
     },
+    /// Reserve and reconcile one complete K3 exact-token bundle. The writer
+    /// keeps FIFO custody across both operations and returns only the exact
+    /// immutable receipt or a typed refusal/integrity failure.
+    Authoritative {
+        bundle: Box<AuthoritativeBundle>,
+        notify: oneshot::Sender<Result<AuthoritativeReceipt, AuthoritativeCommitFailure>>,
+    },
     /// Trigger an ordinary background snapshot (`@dump`), ordered behind
     /// everything queued before it and refused after an integrity breach.
     ///
@@ -135,6 +460,26 @@ pub enum StoreJob {
         /// Resolved when the store acknowledged the BGSAVE request.
         done: oneshot::Sender<Result<(), String>>,
     },
+}
+
+/// Terminal result from an authoritative writer job.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AuthoritativeCommitFailure {
+    /// Reservation definitively created no intent; the typed RAM image may be
+    /// aborted without freezing unrelated persistence.
+    Refused(String),
+    /// An intent may exist, exact identity is contradictory, or store
+    /// integrity is damaged. Later writes must not pass this predecessor.
+    Integrity(String),
+}
+
+impl AuthoritativeCommitFailure {
+    #[must_use]
+    pub fn detail(&self) -> &str {
+        match self {
+            Self::Refused(detail) | Self::Integrity(detail) => detail,
+        }
+    }
 }
 
 /// Spawn the store-writer task. `signals` is the dedicated bounded/coalescing
@@ -255,6 +600,42 @@ async fn writer_loop(
                     let _ = notify.send(result);
                 }
             }
+            StoreJob::Authoritative { bundle, notify } => {
+                let token = bundle.token();
+                let result = if let Some(reason) = &integrity_halt {
+                    integrity.latch();
+                    Err(AuthoritativeCommitFailure::Integrity(format!(
+                        "persistence integrity halted after an unresolved predecessor: {reason}"
+                    )))
+                } else {
+                    let result = commit_authoritative_with_retry(
+                        &*store,
+                        *bundle,
+                        &mut healthy,
+                        &signals,
+                        &quarantine_spool,
+                    )
+                    .await;
+                    if let Err(AuthoritativeCommitFailure::Integrity(detail)) = &result {
+                        integrity.latch();
+                        let reason = bounded_detail(format!(
+                            "authoritative bundle {token} was not exactly committed: {detail}"
+                        ));
+                        tracing::error!(
+                            %token,
+                            %reason,
+                            "store writer latched integrity halt after authoritative bundle"
+                        );
+                        integrity_halt = Some(reason);
+                    }
+                    result
+                };
+                metrics.add_store_write_queue_depth(-1);
+                if result.is_ok() {
+                    metrics.set_store_last_ack_unix(unix_now_s());
+                }
+                let _ = notify.send(result);
+            }
             StoreJob::Bgsave { done } => {
                 let result = if integrity.is_latched() {
                     Err("persistence integrity is latched; ordinary BGSAVE refused".to_owned())
@@ -269,6 +650,290 @@ async fn writer_loop(
         }
     }
     tracing::info!("store writer drained and exiting");
+}
+
+async fn commit_authoritative_with_retry(
+    store: &dyn ObjectStore,
+    bundle: AuthoritativeBundle,
+    healthy: &mut bool,
+    signals: &WriterSignalSender,
+    quarantine_spool: &QuarantineSpool,
+) -> Result<AuthoritativeReceipt, AuthoritativeCommitFailure> {
+    let token = bundle.token();
+    let hash = bundle.bundle_hash();
+    let mut delay = RETRY_INITIAL;
+    let authoritative = store.authoritative_store().ok_or_else(|| {
+        AuthoritativeCommitFailure::Integrity(
+            "configured store has no K3 authoritative capability".to_owned(),
+        )
+    })?;
+    let mut deterministic_reconcile_attempts = 0u32;
+
+    loop {
+        match authoritative
+            .reserve_authoritative_intent(bundle.clone())
+            .await
+        {
+            Ok(receipt) if receipt.token == token && receipt.bundle_hash == hash => break,
+            Ok(_) => {
+                return Err(AuthoritativeCommitFailure::Integrity(format!(
+                    "authoritative reservation returned a non-exact witness for {token}"
+                )));
+            }
+            Err(error) if error.is_transient() => {
+                mark_authoritative_transient(healthy, signals, token, &error);
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(RETRY_MAX);
+            }
+            Err(error) => {
+                let status = authoritative.authoritative_status(token, hash).await;
+                match status {
+                    Ok(BundleStatus::PendingExact) => break,
+                    Ok(BundleStatus::FinalizedExact(receipt))
+                        if receipt.token() == token && receipt.bundle_hash() == hash =>
+                    {
+                        return checkpoint_finalized_with_retry(
+                            authoritative,
+                            &bundle,
+                            *receipt,
+                            healthy,
+                            signals,
+                            quarantine_spool,
+                            &mut delay,
+                        )
+                        .await;
+                    }
+                    Ok(BundleStatus::FinalizedExact(_)) => {
+                        return Err(AuthoritativeCommitFailure::Integrity(format!(
+                            "authoritative status returned a non-exact finalized witness for {token}"
+                        )));
+                    }
+                    Ok(BundleStatus::Absent)
+                        if matches!(
+                            error,
+                            StoreError::AuthoritativeCapacity { .. }
+                                | StoreError::AuthoritativeIdempotencyConflict
+                                | StoreError::Invalid(_)
+                        ) =>
+                    {
+                        mark_authoritative_recovered(healthy, signals, token);
+                        return Err(AuthoritativeCommitFailure::Refused(format!(
+                            "authoritative reservation refused before intent: {error}"
+                        )));
+                    }
+                    Ok(BundleStatus::Absent) => {
+                        return Err(AuthoritativeCommitFailure::Integrity(format!(
+                            "authoritative reservation failed without an intent: {error}"
+                        )));
+                    }
+                    Ok(BundleStatus::Conflict { stored_bundle_hash }) => {
+                        return Err(AuthoritativeCommitFailure::Integrity(format!(
+                            "authoritative token {token} conflicts with stored bundle {stored_bundle_hash}"
+                        )));
+                    }
+                    Err(status_error) if status_error.is_transient() => {
+                        mark_authoritative_transient(healthy, signals, token, &status_error);
+                        tokio::time::sleep(delay).await;
+                        delay = (delay * 2).min(RETRY_MAX);
+                    }
+                    Err(status_error) => {
+                        return Err(AuthoritativeCommitFailure::Integrity(format!(
+                            "cannot determine authoritative reservation state for {token}: {status_error}"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
+    loop {
+        match authoritative.reconcile_authoritative(token, hash).await {
+            Ok(receipt) if receipt.token() == token && receipt.bundle_hash() == hash => {
+                return checkpoint_finalized_with_retry(
+                    authoritative,
+                    &bundle,
+                    receipt,
+                    healthy,
+                    signals,
+                    quarantine_spool,
+                    &mut delay,
+                )
+                .await;
+            }
+            Ok(_) => {
+                return Err(AuthoritativeCommitFailure::Integrity(format!(
+                    "authoritative reconciliation returned a non-exact witness for {token}"
+                )));
+            }
+            Err(error) if error.is_transient() => {
+                mark_authoritative_transient(healthy, signals, token, &error);
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(RETRY_MAX);
+            }
+            Err(error) => match authoritative.authoritative_status(token, hash).await {
+                Ok(BundleStatus::FinalizedExact(receipt))
+                    if receipt.token() == token && receipt.bundle_hash() == hash =>
+                {
+                    return checkpoint_finalized_with_retry(
+                        authoritative,
+                        &bundle,
+                        *receipt,
+                        healthy,
+                        signals,
+                        quarantine_spool,
+                        &mut delay,
+                    )
+                    .await;
+                }
+                Ok(BundleStatus::PendingExact) => {
+                    deterministic_reconcile_attempts = deterministic_reconcile_attempts
+                        .checked_add(1)
+                        .expect("bounded authoritative poison attempt counter");
+                    if deterministic_reconcile_attempts < AUTHORITATIVE_POISON_ATTEMPTS {
+                        tracing::warn!(
+                            %token,
+                            attempt = deterministic_reconcile_attempts,
+                            max_attempts = AUTHORITATIVE_POISON_ATTEMPTS,
+                            error = %error,
+                            "deterministic authoritative reconciliation failure; retrying exact bundle before quarantine"
+                        );
+                        continue;
+                    }
+                    quarantine_spool
+                        .quarantine_authoritative_bundle(
+                            &bundle,
+                            &error,
+                            deterministic_reconcile_attempts,
+                        )
+                        .map_err(|quarantine_error| {
+                            AuthoritativeCommitFailure::Integrity(format!(
+                                "authoritative bundle {token} remained pending after {deterministic_reconcile_attempts} deterministic attempts and its dead-letter could not be preserved: {quarantine_error}"
+                            ))
+                        })?;
+                    return Err(AuthoritativeCommitFailure::Integrity(format!(
+                        "authoritative bundle {token} remains durably pending and was quarantined after {deterministic_reconcile_attempts} deterministic reconciliation failures: {error}"
+                    )));
+                }
+                Ok(BundleStatus::Absent) => {
+                    return Err(AuthoritativeCommitFailure::Integrity(format!(
+                        "authoritative intent {token} disappeared after reservation: {error}"
+                    )));
+                }
+                Ok(BundleStatus::Conflict { stored_bundle_hash }) => {
+                    return Err(AuthoritativeCommitFailure::Integrity(format!(
+                        "authoritative intent {token} changed to bundle {stored_bundle_hash}: {error}"
+                    )));
+                }
+                Ok(BundleStatus::FinalizedExact(_)) => {
+                    return Err(AuthoritativeCommitFailure::Integrity(format!(
+                        "authoritative status returned a non-exact finalized witness for {token}"
+                    )));
+                }
+                Err(status_error) if status_error.is_transient() => {
+                    mark_authoritative_transient(healthy, signals, token, &status_error);
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(RETRY_MAX);
+                }
+                Err(status_error) => {
+                    return Err(AuthoritativeCommitFailure::Integrity(format!(
+                        "cannot determine authoritative reconciliation state for {token}: {status_error}"
+                    )));
+                }
+            },
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn checkpoint_finalized_with_retry(
+    store: &dyn AuthoritativeStore,
+    bundle: &AuthoritativeBundle,
+    receipt: AuthoritativeReceipt,
+    healthy: &mut bool,
+    signals: &WriterSignalSender,
+    quarantine_spool: &QuarantineSpool,
+    delay: &mut Duration,
+) -> Result<AuthoritativeReceipt, AuthoritativeCommitFailure> {
+    let token = bundle.token();
+    let hash = bundle.bundle_hash();
+    let mut deterministic_attempts = 0u32;
+    loop {
+        match store.checkpoint_authoritative(token, hash).await {
+            Ok(checkpoint)
+                if checkpoint.receipt.token() == token
+                    && checkpoint.receipt.bundle_hash() == hash =>
+            {
+                mark_authoritative_recovered(healthy, signals, token);
+                return Ok(checkpoint.receipt);
+            }
+            Ok(_) => {
+                return Err(AuthoritativeCommitFailure::Integrity(format!(
+                    "authoritative checkpoint returned a non-exact witness for {token}"
+                )));
+            }
+            Err(StoreError::AuthoritativeOutboxPending) => {
+                // Durable outbox dispatch owns the full replay record until
+                // every item is terminal. Finalization is nevertheless exact.
+                mark_authoritative_recovered(healthy, signals, token);
+                return Ok(receipt);
+            }
+            Err(error) if error.is_transient() => {
+                mark_authoritative_transient(healthy, signals, token, &error);
+                tokio::time::sleep(*delay).await;
+                *delay = (*delay * 2).min(RETRY_MAX);
+            }
+            Err(error) => {
+                deterministic_attempts = deterministic_attempts
+                    .checked_add(1)
+                    .expect("bounded checkpoint poison attempt counter");
+                if deterministic_attempts < AUTHORITATIVE_POISON_ATTEMPTS {
+                    tracing::warn!(
+                        %token,
+                        attempt = deterministic_attempts,
+                        max_attempts = AUTHORITATIVE_POISON_ATTEMPTS,
+                        error = %error,
+                        "deterministic authoritative checkpoint failure; retrying before quarantine"
+                    );
+                    continue;
+                }
+                quarantine_spool
+                    .quarantine_authoritative_bundle(bundle, &error, deterministic_attempts)
+                    .map_err(|quarantine_error| {
+                        AuthoritativeCommitFailure::Integrity(format!(
+                            "finalized authoritative bundle {token} could not be checkpointed and its dead-letter could not be preserved: {quarantine_error}"
+                        ))
+                    })?;
+                return Err(AuthoritativeCommitFailure::Integrity(format!(
+                    "finalized authoritative bundle {token} could not be checkpointed and was quarantined after {deterministic_attempts} deterministic attempts: {error}"
+                )));
+            }
+        }
+    }
+}
+
+fn mark_authoritative_transient(
+    healthy: &mut bool,
+    signals: &WriterSignalSender,
+    token: CommitToken,
+    error: &StoreError,
+) {
+    tracing::error!(%token, error = %error, "authoritative store operation failed; retrying exact bundle");
+    if *healthy {
+        *healthy = false;
+        notify_status(signals, false, error.to_string());
+    }
+}
+
+fn mark_authoritative_recovered(
+    healthy: &mut bool,
+    signals: &WriterSignalSender,
+    token: CommitToken,
+) {
+    if !*healthy {
+        *healthy = true;
+        tracing::info!(%token, "authoritative store writes recovered");
+        notify_status(signals, true, String::new());
+    }
 }
 
 /// Apply one batch, retrying transient failures with backoff until the
@@ -1059,8 +1724,74 @@ fn hydrate_world_snapshot(snapshot: WorldSnapshot) -> Result<World, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mush_core::{GOD, LIMBO, ObjKind};
-    use mush_store::InMemoryStore;
+    use mush_core::{
+        AuthoritativeBundle, AuthoritativeBundleDraft, CanonicalHash, CanonicalId, CommitToken,
+        DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, GOD,
+        IdempotencyKey, IdempotencyScope, LIMBO, Obj, ObjKind, OwnerId, PreparedCausalRef,
+        PrincipalId, ReplayWrite, RequestUid, RulesValue, ScopedIdempotencyKey,
+    };
+    use mush_store::{AuthoritativeStore, BundleStatus, InMemoryStore, RedisStore};
+
+    fn boot_recovery_bundle() -> AuthoritativeBundle {
+        let owner = OwnerId::new("boot_recovery_test").unwrap();
+        let mut definitions = DefinitionRegistryBuilder::new();
+        let action = definitions
+            .register(
+                owner.clone(),
+                DefinitionDescriptor::new(
+                    DefinitionKind::new("action").unwrap(),
+                    DefinitionId::new("create_marker").unwrap(),
+                    1,
+                    serde_json::json!({}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let outcome = definitions
+            .register(
+                owner.clone(),
+                DefinitionDescriptor::new(
+                    DefinitionKind::new("outcome").unwrap(),
+                    DefinitionId::new("marker_created").unwrap(),
+                    1,
+                    serde_json::json!({}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let request = RequestUid::from_bytes([71; 16]);
+        let principal = PrincipalId::Object { id: GOD };
+        AuthoritativeBundle::new(AuthoritativeBundleDraft {
+            token: CommitToken::from_bytes([72; 16]),
+            request,
+            idempotency: ScopedIdempotencyKey::new(
+                IdempotencyScope {
+                    principal: principal.clone(),
+                    owner: owner.clone(),
+                    namespace: CanonicalId::new("create_marker").unwrap(),
+                },
+                0,
+                IdempotencyKey::Request(request),
+            ),
+            ingress_hash: CanonicalHash::from_bytes([73; 32]),
+            request_hash: CanonicalHash::from_bytes([74; 32]),
+            plan_hash: CanonicalHash::from_bytes([75; 32]),
+            action: action.clone(),
+            provider: owner,
+            cause: PreparedCausalRef::new(request, None, 0).unwrap(),
+            definitions: vec![action, outcome.clone()],
+            writes: vec![
+                ReplayWrite::ObjectSet {
+                    object: Obj::new(ObjId(2), ObjKind::Thing, "recovered marker", GOD, 0),
+                },
+                ReplayWrite::ObjectAllocatorSet { next_id: 3 },
+            ],
+            outcome: RulesValue::new(outcome, serde_json::json!({ "created": 2 })).unwrap(),
+            eligible_witnesses: vec![principal],
+            durable_outbox: vec![],
+        })
+        .unwrap()
+    }
 
     #[test]
     fn seal_identity_hash_is_stable_and_distinguishes_seals() {
@@ -1197,5 +1928,253 @@ mod tests {
         assert_eq!(reloaded.next_id(), seeded.next_id());
         assert_eq!(reloaded.get(GOD).unwrap().name, "God");
         assert_eq!(reloaded.get(LIMBO).unwrap().name, "Limbo");
+    }
+
+    #[tokio::test]
+    async fn authoritative_recovery_barrier_finishes_before_world_reload() {
+        let store = InMemoryStore::new();
+        load_or_seed_world(&store).await.unwrap();
+        let bundle = boot_recovery_bundle();
+        store
+            .reserve_authoritative_intent(bundle.clone())
+            .await
+            .unwrap();
+
+        let before = store.load_world().await.unwrap().unwrap();
+        assert!(before.objects.iter().all(|object| object.id != ObjId(2)));
+        assert_eq!(
+            store
+                .authoritative_status(bundle.token(), bundle.bundle_hash())
+                .await
+                .unwrap(),
+            BundleStatus::PendingExact
+        );
+
+        let report = reconcile_authoritative_for_writable_boot(&store)
+            .await
+            .unwrap();
+        assert_eq!(
+            report,
+            AuthoritativeBootRecoveryReport {
+                indexed: 1,
+                retained: 1,
+                retained_bytes: serde_json::to_string(&bundle).unwrap().len(),
+                retention_counters_repaired: false,
+                reconciled: 1,
+                already_finalized: 0,
+                checkpointed: 1,
+                checkpoint_deferred_outbox: 0,
+                scan_pages: 1,
+            }
+        );
+        let world = load_or_seed_world(&store).await.unwrap();
+        assert_eq!(world.next_id(), 3);
+        assert_eq!(world.get(ObjId(2)).unwrap().name, "recovered marker");
+
+        // Rebooting is an exact no-op: the compact checkpoint is not part of
+        // the full-intent recovery scan.
+        let second = reconcile_authoritative_for_writable_boot(&store)
+            .await
+            .unwrap();
+        assert_eq!(second.indexed, 0);
+        assert_eq!(second.retained, 0);
+        assert_eq!(second.reconciled, 0);
+        assert_eq!(second.already_finalized, 0);
+        assert_eq!(second.checkpointed, 0);
+    }
+
+    #[tokio::test]
+    async fn authoritative_writer_reserves_reconciles_and_returns_exact_receipt() {
+        let store = InMemoryStore::new();
+        load_or_seed_world(&store).await.unwrap();
+        let bundle = boot_recovery_bundle();
+        let (signals, _signal_rx) = crate::world_task::writer_signal_channel();
+        let mut healthy = true;
+
+        let spool = QuarantineSpool::in_memory();
+        let receipt =
+            commit_authoritative_with_retry(&store, bundle.clone(), &mut healthy, &signals, &spool)
+                .await
+                .unwrap();
+
+        assert!(receipt.matches_bundle(&bundle));
+        assert!(healthy);
+        assert_eq!(
+            store
+                .authoritative_status(bundle.token(), bundle.bundle_hash())
+                .await
+                .unwrap(),
+            BundleStatus::FinalizedExact(Box::new(receipt))
+        );
+        assert!(
+            store
+                .pending_authoritative_intents()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .scan_authoritative_intents(None, 1)
+                .await
+                .unwrap()
+                .intents
+                .is_empty(),
+            "the writer checkpoints and releases finalized replay material"
+        );
+    }
+
+    #[tokio::test]
+    async fn authoritative_writer_quarantines_whole_bundle_after_bounded_poison() {
+        let store = InMemoryStore::new();
+        load_or_seed_world(&store).await.unwrap();
+        let bundle = boot_recovery_bundle();
+
+        // Model a crash/interleaving that left this exact immutable intent
+        // pending while durable allocator state advanced beyond its post-image.
+        // Exact replay can never be valid, so each reconciliation fails
+        // deterministically while status remains PendingExact.
+        store
+            .reserve_authoritative_intent(bundle.clone())
+            .await
+            .unwrap();
+        store
+            .write(mush_store::WriteBatch {
+                serial: 2,
+                next_id: Some(4),
+                durable: true,
+                ..mush_store::WriteBatch::default()
+            })
+            .await
+            .unwrap();
+
+        let (signals, _signal_rx) = crate::world_task::writer_signal_channel();
+        let mut healthy = true;
+        let mut spool = QuarantineSpool::in_memory();
+        let error =
+            commit_authoritative_with_retry(&store, bundle.clone(), &mut healthy, &signals, &spool)
+                .await
+                .unwrap_err();
+
+        assert!(matches!(
+            error,
+            AuthoritativeCommitFailure::Integrity(ref detail)
+                if detail.contains("quarantined after 3 deterministic reconciliation failures")
+        ));
+        assert_eq!(
+            store
+                .authoritative_status(bundle.token(), bundle.bundle_hash())
+                .await
+                .unwrap(),
+            BundleStatus::PendingExact,
+            "the authoritative intent remains the primary durable truth"
+        );
+
+        // The independently retained whole-bundle record participates in the
+        // same boot gate. Its exact reconcile is still poison, so it remains
+        // active rather than being archived on mere token/hash presence.
+        let report = spool.reconcile_exact_matches(&store).await.unwrap();
+        assert_eq!(report.examined, 1);
+        assert_eq!(report.resolved, 0);
+        assert_eq!(report.remaining.unresolved_records, 1);
+        assert!(spool.require_resolved_for_boot().is_err());
+    }
+
+    #[tokio::test]
+    async fn live_redis_wrong_type_bundle_quarantines_repairs_and_recovers() {
+        use fred::interfaces::KeysInterface as _;
+
+        let Some(url) = std::env::var("REDIS_URL")
+            .ok()
+            .filter(|value| !value.is_empty())
+        else {
+            eprintln!(
+                "skipping live_redis_wrong_type_bundle_quarantines_repairs_and_recovers: \
+                 REDIS_URL not set"
+            );
+            return;
+        };
+        let store = RedisStore::connect(&url)
+            .await
+            .expect("connect to disposable live Redis");
+        store
+            .wipe_namespaces()
+            .await
+            .expect("wipe disposable Redis namespaces");
+        load_or_seed_world(&store).await.unwrap();
+        let bundle = boot_recovery_bundle();
+        store
+            .reserve_authoritative_intent(bundle.clone())
+            .await
+            .expect("reserve exact intent before fault injection");
+
+        // Generic SET gives obj:2 the Redis string type. The authoritative
+        // JSON.SET replay is then deterministic WRONGTYPE poison while the
+        // complete exact intent remains independently retained in Redis.
+        let _: () = store
+            .client()
+            .set("obj:2", "wrong type", None, None, false)
+            .await
+            .expect("install deterministic wrong-type target");
+
+        let root = std::env::temp_dir().join(format!(
+            "rustmush-k3-quarantine-live-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let spool_path = root.join("quarantine");
+        let mut spool = QuarantineSpool::open(&spool_path).unwrap();
+        let (signals, _signal_rx) = crate::world_task::writer_signal_channel();
+        let mut healthy = true;
+        let error =
+            commit_authoritative_with_retry(&store, bundle.clone(), &mut healthy, &signals, &spool)
+                .await
+                .unwrap_err();
+        assert!(matches!(error, AuthoritativeCommitFailure::Integrity(_)));
+        assert_eq!(
+            store
+                .authoritative_status(bundle.token(), bundle.bundle_hash())
+                .await
+                .unwrap(),
+            BundleStatus::PendingExact
+        );
+
+        let files: Vec<_> = std::fs::read_dir(&spool_path)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+            .collect();
+        assert_eq!(files.len(), 1);
+        let record: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(files[0].path()).unwrap()).unwrap();
+        assert_eq!(
+            record["record_version"],
+            crate::quarantine::QUARANTINE_RECORD_VERSION
+        );
+        assert_eq!(record["content"]["kind"], "authoritative_bundle");
+        assert_eq!(
+            record["content"]["bundle"],
+            serde_json::to_value(&bundle).unwrap(),
+            "the dead-letter retains the whole immutable bundle"
+        );
+
+        let deleted: i64 = store.client().del("obj:2").await.unwrap();
+        assert_eq!(deleted, 1);
+        let report = spool.reconcile_exact_matches(&store).await.unwrap();
+        assert_eq!(report.resolved, 1);
+        assert_eq!(report.remaining.unresolved_records, 0);
+        assert!(matches!(
+            store
+                .authoritative_status(bundle.token(), bundle.bundle_hash())
+                .await
+                .unwrap(),
+            BundleStatus::FinalizedExact(receipt)
+                if receipt.token() == bundle.token()
+                    && receipt.bundle_hash() == bundle.bundle_hash()
+        ));
+
+        drop(spool);
+        store.wipe_namespaces().await.unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

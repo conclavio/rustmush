@@ -34,11 +34,124 @@
 //! [`load_world`]: ObjectStore::load_world
 
 use futures::future::BoxFuture;
-use mush_core::ObjId;
+use mush_core::{
+    AuthoritativeBundle, CanonicalHash, CommitToken, IdempotencyScope, ObjId, ScopedIdempotencyKey,
+};
 
 use crate::types::{
-    AccountRec, BanRec, SshKeyRec, StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt,
+    AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeEpochRetirement,
+    AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult, AuthoritativeOutboxRecord,
+    AuthoritativeReceipt, AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec,
+    BundleStatus, IdempotencyStatus, IntentReceipt, PendingAuthoritativeIntent, SshKeyRec,
+    StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt,
 };
+
+/// Exact-intent persistence used by the K3 action coordinator.
+///
+/// This is separate from [`ObjectStore`] while the in-memory contract and
+/// fault matrix are being proven. A backend must not claim this trait by
+/// routing bundles through legacy [`ObjectStore::write`].
+pub trait AuthoritativeStore: ObjectStore {
+    /// Reserve a complete immutable intent and its idempotency binding before
+    /// any replay write can materialize.
+    fn reserve_authoritative_intent(
+        &self,
+        bundle: AuthoritativeBundle,
+    ) -> BoxFuture<'_, Result<IntentReceipt, StoreError>>;
+
+    /// Return/join a prior request before parsing, resolution, planning, or
+    /// RNG. A conflicting ingress hash never exposes the stored result.
+    fn authoritative_idempotency_status<'a>(
+        &'a self,
+        key: &'a ScopedIdempotencyKey,
+        ingress_hash: CanonicalHash,
+    ) -> BoxFuture<'a, Result<IdempotencyStatus, StoreError>>;
+
+    /// Reapply exact post-images, verify them, and atomically publish the
+    /// finalized witness for one expected token/hash pair.
+    fn reconcile_authoritative(
+        &self,
+        token: CommitToken,
+        expected_bundle_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<AuthoritativeReceipt, StoreError>>;
+
+    /// Atomically replace a finalized action's full replay intent with its
+    /// compact, hash-verified checkpoint witness. The idempotency binding and
+    /// semantic result remain available for exact retries. Pending actions or
+    /// actions with unresolved durable-outbox work are never compacted.
+    fn checkpoint_authoritative(
+        &self,
+        token: CommitToken,
+        expected_bundle_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<AuthoritativeCheckpointReceipt, StoreError>>;
+
+    /// Discover every finalized, non-terminal durable delivery item. Stable
+    /// item ids are suitable for adapter-side deduplication.
+    fn pending_authoritative_outbox(
+        &self,
+    ) -> BoxFuture<'_, Result<Vec<AuthoritativeOutboxRecord>, StoreError>>;
+
+    /// Persist an attempt number before calling the external adapter. Exact
+    /// retries use `expected_attempts` to join an acknowledgement-lost start.
+    fn begin_authoritative_outbox_attempt(
+        &self,
+        item_id: CanonicalHash,
+        expected_payload_hash: CanonicalHash,
+        expected_attempts: u32,
+    ) -> BoxFuture<'_, Result<AuthoritativeOutboxRecord, StoreError>>;
+
+    /// Persist the result of one already-started delivery attempt. `Retry`
+    /// remains independently discoverable; terminal states leave the index.
+    fn complete_authoritative_outbox_attempt(
+        &self,
+        item_id: CanonicalHash,
+        expected_payload_hash: CanonicalHash,
+        expected_attempt: u32,
+        result: AuthoritativeOutboxAttemptResult,
+    ) -> BoxFuture<'_, Result<AuthoritativeOutboxRecord, StoreError>>;
+
+    /// Advance one idempotency scope's durable retry horizon and remove every
+    /// compact receipt/binding below it. Implementations must refuse while a
+    /// full intent remains below the proposed watermark. Redis may commit the
+    /// watermark before finishing bounded tombstone cleanup; after an error,
+    /// retrying the same minimum is required and safe.
+    fn retire_authoritative_epochs<'a>(
+        &'a self,
+        scope: &'a IdempotencyScope,
+        minimum_accepted_epoch: u64,
+    ) -> BoxFuture<'a, Result<AuthoritativeEpochRetirement, StoreError>>;
+
+    /// Inspect only an exact expected token/hash pair.
+    fn authoritative_status(
+        &self,
+        token: CommitToken,
+        expected_bundle_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<BundleStatus, StoreError>>;
+
+    /// Read the bounded recovery accelerator. This index is never the only
+    /// discovery source because its last update may have been interrupted.
+    fn pending_authoritative_intents(
+        &self,
+    ) -> BoxFuture<'_, Result<Vec<PendingAuthoritativeIntent>, StoreError>>;
+
+    /// Scan the complete retained intent keyspace in bounded pages. Boot must
+    /// continue until `next_cursor` is `None`, even after the pending index is
+    /// empty, and reconcile every pending record found by either source.
+    fn scan_authoritative_intents(
+        &self,
+        cursor: Option<AuthoritativeScanCursor>,
+        limit: usize,
+    ) -> BoxFuture<'_, Result<AuthoritativeIntentPage, StoreError>>;
+
+    /// Repair the non-authoritative count/byte capacity indexes from a
+    /// complete validated intent scan. This may only run during exclusive
+    /// boot, before a live writer can reserve another intent. Backends must
+    /// replace the pair atomically and return `true` only when it changed.
+    fn repair_authoritative_retention(
+        &self,
+        usage: AuthoritativeRetentionUsage,
+    ) -> BoxFuture<'_, Result<bool, StoreError>>;
+}
 
 /// Persistent storage for the world, accounts, sitebans, and store metadata.
 ///
@@ -46,6 +159,28 @@ use crate::types::{
 /// [`crate::InMemoryStore`] (tests and `mushd --repl`). Both honor the exact
 /// same semantics; the shared behavior suite in [`crate::suite`] proves it.
 pub trait ObjectStore: Send + Sync {
+    /// Expose the exact-token durability capability when this backend
+    /// implements it.
+    ///
+    /// Server boot refuses writable service when this returns `None`. The
+    /// optional shape keeps narrow legacy test doubles usable while K3 is
+    /// migrating callers away from the old write-only surface; production
+    /// backends must return `Some(self)`.
+    fn authoritative_store(&self) -> Option<&dyn AuthoritativeStore> {
+        None
+    }
+
+    /// Perform backend-owned writable bootstrap after authoritative-intent
+    /// recovery has completed.
+    ///
+    /// Redis uses this for search-index creation. Keeping it separate from
+    /// connection establishment lets server boot open a read-capable handle,
+    /// reconcile partial authoritative materializations, and only then permit
+    /// ordinary initialization writes.
+    fn bootstrap_writable(&self) -> BoxFuture<'_, Result<(), StoreError>> {
+        Box::pin(async { Ok(()) })
+    }
+
     /// Load every persisted object plus `next_id` and `schema_version`.
     ///
     /// Returns `Ok(None)` for a **completely empty store** (no objects *and*
