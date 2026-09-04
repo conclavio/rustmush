@@ -56,9 +56,38 @@ pub fn front_resolves(ctx: &Ctx<'_>, front: &crate::economy::record::FrontRef) -
     faction_ok && front_ok
 }
 
-/// Render a front for a player-facing line, tolerating an orphan (§5.3).
+/// Render a front for a player-facing line, tolerating an orphan (§5.3) **and
+/// hiding what `viewer` may not be told about** (E5c fold D1).
+///
+/// The module header's rule is that every render goes through the owning module's own
+/// public predicate; fronts were the one place it did not. `front_resolves` is an
+/// *existence* test, and existence was all this asked before printing
+/// `FactionState::factions[..].name` and `SimState::fronts[..].title` verbatim — so
+/// `+career` and `+prompt` would name a hidden faction and a staff-only front title
+/// to a player whose `+factions` says "No factions are known." and whose `@front` is
+/// refused outright.
+///
+/// So: names are resolved only when `FactionState::faction_listed` admits the viewer
+/// (that predicate's own rule — a hidden faction exists for members and staff). Every
+/// other case falls back to [`FrontRef::raw`](crate::economy::record::FrontRef::raw)'s
+/// bare id form, so "you may not see it" and "there is no such faction" read
+/// identically and neither is an oracle. Attribution itself is unchanged: the record
+/// still carries the front (owner answer 20); only the rendering narrows.
 #[must_use]
-pub fn render_front(ctx: &Ctx<'_>, front: &crate::economy::record::FrontRef) -> String {
+pub fn render_front(
+    ctx: &Ctx<'_>,
+    viewer: ObjId,
+    front: &crate::economy::record::FrontRef,
+) -> String {
+    let staff = mush_housing::is_staff(ctx.w, viewer);
+    let listed = ctx
+        .w
+        .module_state::<mush_faction::FactionState>()
+        .and_then(|s| s.factions.get(&front.faction).map(|f| s.faction_listed(viewer, staff, f)))
+        .unwrap_or(false);
+    if !listed {
+        return front.raw();
+    }
     if !front_resolves(ctx, front) {
         return format!("{} (orphaned front)", front.raw());
     }

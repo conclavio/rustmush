@@ -58,8 +58,10 @@ pub use store::{WodEconomyStore, load as load_store};
 
 /// The sheet attribute every WoD sheet lives at. Named here so the "the economy never
 /// writes a sheet" claim is checkable by grep: the whole `economy` module mentions it
-/// **once**, in [`sheet_resources`], on the read path, and `World::set_attr` appears
-/// in it nowhere at all.
+/// in **this file only**, in the two read helpers [`sheet_resources`] and
+/// [`sheet_haven`], and `World::set_attr` appears in it nowhere at all. Everything
+/// else that needs a sheet reads it through the ruleset's own `Dispatch` — which is
+/// how `migrate` and `chargen_approval` agree about what "approved" means.
 pub const SHEET_ATTR: &str = "sheet:wod";
 
 /// `backgrounds:Resources`, clamped into the `0..=5` band.

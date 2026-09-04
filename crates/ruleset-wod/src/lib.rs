@@ -332,7 +332,7 @@ impl GameModule for WodRuleset {
             )),
             Arc::new(economy::evaluate::tick),
         )?;
-        economy::commands::register(reg)?;
+        economy::commands::register(reg, Arc::clone(&self.dispatch))?;
         Ok(())
     }
 

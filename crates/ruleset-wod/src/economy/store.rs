@@ -2,7 +2,7 @@
 //!
 //! | doc | class | corrupt → |
 //! |---|---|---|
-//! | `profile:{obj}` | leaf | **skipped loudly and re-derived** at the next evaluation |
+//! | `profile:{obj}` | leaf | **skipped loudly and re-derived in the same boot** ([`crate::economy::boot::run`]) |
 //! | `eval:{obj}` | leaf | skipped loudly, re-seeded from the clock |
 //! | `residence:{obj}` | leaf | skipped loudly (a chargen pick, not a home) |
 //! | `econ:meta` | allocators | tolerated field by field |
@@ -15,6 +15,12 @@
 //! whole world down for a record the next tick rebuilds. The direction of the loss is
 //! deliberate: strain resets to zero and a prompt disappears, both of which are the
 //! *lenient* half of every rule they take part in.
+//!
+//! "Costs their home nothing" is only true **because** [`crate::economy::boot::run`]
+//! re-derives the record in the same boot (E5c fold T1). The tick's working set is
+//! [`WodEconomyStore::profiled`], so a dropped profile is a character the evaluation
+//! never visits again: no plan is submitted, `UNKNOWN_GRACE` fires, and the tenancy
+//! walks to `EvictionPending`. The loader skips; the boot rebuilds.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -287,6 +293,24 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: WodEconomyConfig) -> WodEc
             };
             match serde_json::from_value::<SpendingProfile>(value.clone()) {
                 Ok(p) => {
+                    // The doc's own `obj` must agree with its key. `put_profile`
+                    // re-keys on `p.obj`, so a doc under `profile:5` claiming
+                    // `obj: 7` would make `step(#5)` read #5's sheet and write #7's
+                    // record, overwriting #7's real profile at every boot forever.
+                    // `mush-housing` refuses exactly this shape at boot; this
+                    // namespace is documented lenient, so it is a **loud skip** and
+                    // the boot re-derives (E5c fold T2). Only a hand-edited or torn
+                    // document can produce it — the class this loader exists to
+                    // police.
+                    if p.obj != obj {
+                        tracing::error!(
+                            %key, claims = p.obj.0,
+                            "wod.economy: a spending profile doc claims another character's id; \
+                             skipped (installing it would overwrite that character's record at \
+                             every boot). It is re-derived in this boot."
+                        );
+                        continue;
+                    }
                     if let Some(pr) = &p.prompt {
                         seen_prompts.insert(pr.id);
                     }
@@ -296,8 +320,8 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: WodEconomyConfig) -> WodEc
                     tracing::error!(
                         %key, %error,
                         "wod.economy: a spending profile did not parse; skipped and re-derived \
-                         at the next evaluation (strain and any open prompt are lost, which is \
-                         the lenient direction; the lease is unaffected)"
+                         in this boot (strain and any open prompt are lost, which is the lenient \
+                         direction; the lease is unaffected)"
                     );
                 }
             }

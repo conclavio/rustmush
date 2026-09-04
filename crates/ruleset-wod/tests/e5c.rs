@@ -8,17 +8,23 @@
 //! artifacts per mode, the Residence step's disclosure, and `@wod/economy migrate` in
 //! both directions minting nothing.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use mush_core::{Audience, GOD, LIMBO, ObjId, ObjKind};
+use mush_core::{
+    Audience, Effects, Engine, GOD, GameModule, Inbound, LIMBO, ModuleBootData, ModuleWrite, ObjId,
+    ObjKind, Outbox,
+};
 use mush_economy::EconomyStore;
 use mush_housing::{HousingStore, PropertyId, TenancyId, TenancyStatusKind};
 use mush_org::SystemPrincipalId;
 use mush_proto::OutputEvent;
-use mush_testkit::{TestWorld, text_of};
+use mush_testkit::{TestWorld, boot_world, text_of};
+use smol_str::SmolStr;
 use ruleset_wod::economy::config::{FAUCET_CHARGEN, WOD_USD};
-use ruleset_wod::economy::record::{MAX_OFFSCREEN_OPS_PER_FACTION, PromptKind, STRAIN_MAX};
+use ruleset_wod::economy::record::{
+    MAX_OFFSCREEN_OPS_PER_FACTION, Prompt, PromptDefault, PromptKind, STRAIN_MAX,
+};
 use ruleset_wod::economy::store::WodEconomyStore;
 use ruleset_wod::{Engagement, PersonalMode, SpendingProfile, WodEconomyConfig, WodRuleset};
 
@@ -40,9 +46,9 @@ fn vocab() -> std::collections::BTreeSet<mush_org::CapabilityId> {
 
 /// The E5c module list, in the server's own order: org → faction → economy → jobs →
 /// housing → the ruleset (08a decision 19, 08d §2).
-fn boot(cfg: WodEconomyConfig) -> TestWorld {
+fn modules(cfg: WodEconomyConfig) -> Vec<Box<dyn GameModule>> {
     let issuer = SystemPrincipalId::new("wod.housing").expect("valid system principal");
-    TestWorld::with_modules(vec![
+    vec![
         Box::new(mush_canon::CanonModule::new()),
         Box::new(mush_org::OrgModule::new().with_capabilities(vocab())),
         Box::new(mush_faction::FactionModule::new()),
@@ -54,7 +60,11 @@ fn boot(cfg: WodEconomyConfig) -> TestWorld {
         Box::new(mush_jobs::JobsModule::new()),
         Box::new(mush_housing::HousingModule::new().with_issuer(issuer)),
         Box::new(WodRuleset::with_seed(S).economy(cfg)),
-    ])
+    ]
+}
+
+fn boot(cfg: WodEconomyConfig) -> TestWorld {
+    TestWorld::with_modules(modules(cfg))
 }
 
 fn cfg(mode: PersonalMode) -> WodEconomyConfig {
@@ -132,10 +142,29 @@ fn period(tw: &mut TestWorld, n: u64) -> Vec<(Audience, OutputEvent)> {
     fire(tw)
 }
 
-/// A player with a sheet at `resources` dots, and a profile.
+/// Stamp `who`'s sheet `Approved`, exactly as the chargen approval handler does.
+///
+/// `@sheet/set` leaves a sheet `Unapproved`, and `@wod/economy migrate`'s population
+/// is the **approved** one (E5c verify fold M2) — so a fixture that skips the whole
+/// `+chargen` run has to stamp the flip itself.
+fn approve_sheet(tw: &mut TestWorld, who: ObjId) {
+    let mut doc = tw
+        .world()
+        .attr(who, "sheet:wod")
+        .and_then(mush_core::Attr::as_json)
+        .cloned()
+        .expect("a sheet to approve");
+    doc["approved"] = serde_json::json!({ "approved": { "by": GOD.0, "at": 0 } });
+    tw.world_mut()
+        .set_attr(who, "sheet:wod", mush_core::Attr::json(doc, GOD))
+        .expect("the sheet attribute is writable");
+}
+
+/// A player with an **approved** sheet at `resources` dots, and a profile.
 fn character(tw: &mut TestWorld, name: &str, resources: u8) -> ObjId {
     let who = tw.spawn_player(name);
     ok(tw, GOD, &format!("@sheet/set {name}/backgrounds:Resources={resources}"));
+    approve_sheet(tw, who);
     ok(tw, GOD, "@wod/economy migrate");
     who
 }
@@ -1035,6 +1064,7 @@ fn migrate_abstract_to_exact_opens_zero_balance_accounts_and_mints_nothing() {
     let mut tw = boot(cfg(PersonalMode::Exact));
     let nick = tw.spawn_player("Nick");
     ok(&mut tw, GOD, "@sheet/set Nick/backgrounds:Resources=3");
+    approve_sheet(&mut tw, nick);
     let out = ok(&mut tw, GOD, "@wod/economy migrate");
     assert!(out.contains("profile(s) created"), "{out}");
     assert!(out.contains("zero-balance wod.usd account(s) opened"), "{out}");
@@ -1083,6 +1113,7 @@ fn migrate_exact_to_abstract_stops_income_hides_the_wallet_and_keeps_the_balance
     let mut tw2 = boot(cfg(PersonalMode::Abstract));
     let nick2 = tw2.spawn_player("Nick");
     ok(&mut tw2, GOD, "@sheet/set Nick/backgrounds:Resources=3");
+    approve_sheet(&mut tw2, nick2);
     let out = ok(&mut tw2, GOD, "@wod/economy migrate");
     assert!(out.contains("profile(s) created"), "{out}");
     assert!(!out.contains("minted"), "abstract migrate minted: {out}");
@@ -1106,7 +1137,7 @@ fn migrate_exact_to_abstract_stops_income_hides_the_wallet_and_keeps_the_balance
 }
 
 #[test]
-fn resources_shows_the_number_to_its_owner_and_the_word_to_everybody_else() {
+fn resources_shows_the_number_to_its_owner_and_to_staff_and_refuses_everybody_else() {
     let mut tw = boot(cfg(PersonalMode::Abstract));
     let nick = character(&mut tw, "Nick", 3);
     let quinn = character(&mut tw, "Quinn", 1);
@@ -1263,4 +1294,875 @@ fn the_prompt_id_allocator_and_profile_history_stay_bounded() {
         p.history.len()
     );
     assert!(p.strain <= STRAIN_MAX);
+}
+
+// ---------------------------------------------------------------------------
+// ---- E5c verify fold ----
+//
+// One test per confirmed finding of the three-lens adversarial verify (08d §5.7):
+// lens M (money, the standing mint, the housing seam), lens T (the tick, durability,
+// the prompt), lens D (disclosure, authority, the verb surface).
+// ---------------------------------------------------------------------------
+
+/// Every namespace's persisted documents, folded the way the server's write batch
+/// folds them. A reboot has to replay **all** of them: `Engine::modules_loaded` hands
+/// every module its boot data, so naming only `wod` would boot the economy with no
+/// cadence, no accounts and no obligations at all (E5b's rig, same reason).
+type Kv = HashMap<SmolStr, Vec<(SmolStr, serde_json::Value)>>;
+
+fn fold_kv(tw: &mut TestWorld) -> Kv {
+    let mut kv = Kv::new();
+    for op in tw.take_module_ops() {
+        let entry = kv.entry(op.ns.clone()).or_default();
+        match op.op {
+            ModuleWrite::JsonSet { key, value } => {
+                entry.retain(|(k, _)| *k != key);
+                entry.push((key, value));
+            }
+            ModuleWrite::Del { key } => entry.retain(|(k, _)| *k != key),
+            ModuleWrite::StreamAppend { .. } => {}
+        }
+    }
+    kv
+}
+
+fn drop_key(kv: &mut Kv, ns: &str, key: &str) {
+    let entry = kv.get_mut(&SmolStr::new(ns)).unwrap_or_else(|| panic!("no {ns} namespace"));
+    let before = entry.len();
+    entry.retain(|(k, _)| k.as_str() != key);
+    assert!(entry.len() < before, "no such persisted key to drop: {ns}/{key}");
+}
+
+/// Compose a **fresh** engine over a clone of `tw`'s world and hand every module its
+/// persisted documents.
+///
+/// `TestWorld::modules_loaded` cannot be re-entered on a booted world:
+/// `WodRuleset::on_world_loaded` re-registers the `wod.chargen` payload handler and a
+/// second registration is refused. `crates/ruleset-wod/tests/persistence.rs` documents
+/// the working pattern — compose a new `Engine` rather than re-enter the live one —
+/// and this is it, with the config as the second half of the reboot (a deployment may
+/// have edited `mushd.toml` while it was down).
+fn reboot_fresh(tw: &TestWorld, kv: Kv, cfg: WodEconomyConfig) -> Engine {
+    let (_, registry) = boot_world();
+    let mut engine = Engine::with_modules(tw.world().clone(), registry, modules(cfg))
+        .expect("the module roster composes");
+    let boot: HashMap<SmolStr, ModuleBootData> = kv
+        .into_iter()
+        .map(|(ns, kv)| (ns, ModuleBootData { kv, streams: HashMap::new() }))
+        .collect();
+    let mut out = Outbox::new();
+    let mut fx = Effects::new();
+    engine.modules_loaded(boot, &mut out, &mut fx).expect("the boot data loads");
+    engine
+}
+
+fn engine_conn(engine: &mut Engine, actor: ObjId) {
+    let mut out = Outbox::new();
+    let mut fx = Effects::new();
+    engine.step(
+        Inbound::ConnUp {
+            conn: u64::from(actor.0),
+            actor,
+            caps_structured: false,
+            from_linkdead: false,
+        },
+        &mut out,
+        &mut fx,
+    );
+}
+
+fn engine_cmd(engine: &mut Engine, actor: ObjId, line: &str) -> Vec<(Audience, OutputEvent)> {
+    let mut out = Outbox::new();
+    let mut fx = Effects::new();
+    engine.step(Inbound::Cmd { conn: 0, actor, line: line.to_string() }, &mut out, &mut fx);
+    out.take()
+}
+
+fn engine_period(engine: &mut Engine, cadence: u64, n: u64) {
+    let ev = engine_cmd(engine, GOD, &format!("@econ/cadence advance {cadence} {n}"));
+    assert!(!has_error(&ev), "the reboot could not advance the clock: {}", texts(&ev));
+    let t = engine.world.now().saturating_add(40);
+    engine.set_now(t);
+    let mut out = Outbox::new();
+    let mut fx = Effects::new();
+    engine.fire_due(t.saturating_mul(1000), &mut out, &mut fx);
+}
+
+fn engine_store(engine: &Engine) -> &WodEconomyStore {
+    engine.world.module_state::<WodEconomyStore>().expect("wod economy store")
+}
+
+fn engine_profile(engine: &Engine, who: ObjId) -> SpendingProfile {
+    engine_store(engine).profile(who).cloned().expect("a profile")
+}
+
+/// The minor-unit amount of one obligation.
+fn obligation_minor(tw: &TestWorld, id: mush_economy::ObligationId) -> i64 {
+    tw.world()
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().obligation(id).map(|o| o.amount.minor()))
+        .expect("the obligation record")
+}
+
+/// Every `wod.income` obligation in the world, live or not, as `(id, status)`.
+fn income_lines(
+    w: &mush_core::World,
+) -> Vec<(mush_economy::ObligationId, mush_economy::ObligationStatusKind)> {
+    w.module_state::<EconomyStore>()
+        .map(|s| {
+            s.snapshot()
+                .obligations()
+                .filter(|o| {
+                    matches!(&o.cause, mush_economy::ObligationCause::Ruleset { namespace }
+                        if namespace.as_str() == "wod.income")
+                })
+                .map(|o| (o.id, o.status.kind()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn live_income_count(w: &mush_core::World) -> usize {
+    income_lines(w)
+        .into_iter()
+        .filter(|(_, k)| {
+            !matches!(
+                k,
+                mush_economy::ObligationStatusKind::Cancelled
+                    | mush_economy::ObligationStatusKind::Satisfied
+            )
+        })
+        .count()
+}
+
+fn personal_accounts(tw: &TestWorld, who: ObjId) -> usize {
+    tw.world()
+        .module_state::<EconomyStore>()
+        .map(|s| {
+            s.snapshot()
+                .accounts()
+                .filter(|a| a.owner == mush_org::PrincipalId::Object(who))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+// ---- Lens M -------------------------------------------------------------
+
+#[test]
+fn vf_m1_income_is_keyed_on_the_sheet_dot_not_the_stance() {
+    // M1: `maintain_income` rated the mint off `profile.level`, which is
+    // `resources ± stance` — so `+career/stance exploit`, an ungated player verb,
+    // moved the standing mint one whole income row up on the same ObligationId, and
+    // `conceal` moved it down or cancelled it. The row is keyed on the **sheet
+    // reading** (D-E5-6: a stance alters pressure and opportunity, never income).
+    let mut c = cfg(PersonalMode::Exact);
+    c.income.insert(2, 200);
+    c.income.insert(3, 500);
+    c.income.insert(4, 5_000);
+    let mut tw = boot(c);
+    let nick = character(&mut tw, "Nick", 3);
+    ok(&mut tw, GOD, "@wod/economy migrate");
+    ok(&mut tw, nick, "+career/source add career=fixer");
+    period(&mut tw, 1);
+    period(&mut tw, 1);
+    let id = profile(&tw, nick).income.expect("an income line at Resources 3");
+    assert_eq!(obligation_minor(&tw, id), 50_000, "Resources 3 → 500 major at scale 2");
+
+    for (stance, level) in [("exploit", 4_u8), ("conceal", 2_u8)] {
+        ok(&mut tw, nick, &format!("+career/stance {stance}"));
+        period(&mut tw, 1);
+        period(&mut tw, 1);
+        let p = profile(&tw, nick);
+        // The stance still moves the housing-support number — that is what §5.2's
+        // table promises it, and `submit_plans` passes it in both modes.
+        assert_eq!(p.level, level, "{stance} did not move the support level");
+        assert_eq!(p.resources, 3, "{stance} moved the cached sheet reading");
+        // …and nothing at all about the money.
+        assert_eq!(p.income, Some(id), "{stance} opened a different income line");
+        assert_eq!(obligation_minor(&tw, id), 50_000, "{stance} re-rated the standing mint");
+        assert_eq!(live_income_count(tw.world()), 1, "{stance} left a second line running");
+    }
+}
+
+#[test]
+fn vf_m2_migrate_skips_an_unapproved_sheet_and_reports_it() {
+    // M2: `sheeted()` tested for the presence of `sheet:wod`, and `+chargen` writes
+    // that attribute at `Unapproved` the moment a player starts — so a character who
+    // typed their own `backgrounds:Resources=5` and never submitted got a profile, a
+    // wallet, and two periods later a live income line.
+    let mut c = cfg(PersonalMode::Exact);
+    c.income.insert(5, 1_000);
+    let mut tw = boot(c);
+    let nick = tw.spawn_player("Nick");
+    ok(&mut tw, GOD, "@sheet/set Nick/backgrounds:Resources=5");
+
+    let out = ok(&mut tw, GOD, "@wod/economy migrate");
+    assert!(out.contains("skipped"), "the skip was silent: {out}");
+    assert!(out.contains("unapproved"), "the reason was not given: {out}");
+    assert!(out.contains(&format!("#{}", nick.0)), "the character was not named: {out}");
+    assert!(store(&tw).profile(nick).is_none(), "migrate profiled an unapproved sheet");
+    assert_eq!(personal_accounts(&tw, nick), 0, "migrate banked an unapproved sheet");
+    for _ in 0..3 {
+        period(&mut tw, 1);
+    }
+    assert_eq!(live_income_count(tw.world()), 0, "an unapproved sheet drew an income line");
+
+    // Approval is the flip that admits them, and it is the same flip
+    // `chargen_approval` stamps — which is why `sheeted` reads through the same
+    // dispatch.
+    approve_sheet(&mut tw, nick);
+    let out = ok(&mut tw, GOD, "@wod/economy migrate");
+    assert!(out.contains("profile(s) created"), "{out}");
+    assert!(store(&tw).profile(nick).is_some(), "an approved sheet was still skipped");
+}
+
+#[test]
+fn vf_m3_an_orphaned_income_line_is_adopted_at_boot_and_never_doubled() {
+    // M3: `SpendingProfile::income` was the layer's ONLY name for the obligation, so
+    // a dropped profile or a cleared pointer stranded a faucet-funded mint nothing
+    // could reach — and `open_income` then scanned nothing and opened a second live
+    // line crediting the same wallet. The record is self-identifying (`cause` +
+    // `minted_by` + `credit_account`), so the pointer is a cache and the boot
+    // reconciles it: adopt one whose wallet a profile owns, cancel one nobody claims.
+    let mut c = cfg(PersonalMode::Exact);
+    c.income.insert(3, 500);
+    let mut tw = boot(c.clone());
+    let nick = character(&mut tw, "Nick", 3);
+    let quinn = character(&mut tw, "Quinn", 3);
+    ok(&mut tw, GOD, "@wod/economy migrate");
+    let flat = property(&mut tw, "Flat", 2);
+    let _t = tenancy_for(&mut tw, flat, nick);
+    period(&mut tw, 1);
+    period(&mut tw, 1);
+    let nick_line = profile(&tw, nick).income.expect("Nick's income line");
+    let quinn_line = profile(&tw, quinn).income.expect("Quinn's income line");
+    assert_eq!(live_income_count(tw.world()), 2);
+
+    // The two ways a pointer is lost: Nick's whole profile document goes (he has a
+    // live tenancy, so the boot re-derives him), and Quinn's profile and cursor both
+    // go with no tenancy behind them (so nobody claims his wallet).
+    let mut kv = fold_kv(&mut tw);
+    drop_key(&mut kv, "wod", &format!("profile:{}", nick.0));
+    drop_key(&mut kv, "wod", &format!("profile:{}", quinn.0));
+    drop_key(&mut kv, "wod", &format!("eval:{}", quinn.0));
+    let mut engine = reboot_fresh(&tw, kv, c);
+
+    let p = engine_profile(&engine, nick);
+    assert_eq!(p.resources, 3, "the re-derivation lost the sheet reading");
+    assert_eq!(
+        p.income,
+        Some(nick_line),
+        "the boot did not adopt the orphaned income line (it named itself)"
+    );
+    assert_eq!(live_income_count(&engine.world), 1, "the boot left a second line running");
+    let quinn_status = income_lines(&engine.world)
+        .into_iter()
+        .find(|(id, _)| *id == quinn_line)
+        .map(|(_, k)| k);
+    assert_eq!(
+        quinn_status,
+        Some(mush_economy::ObligationStatusKind::Cancelled),
+        "a line no profile claims kept minting"
+    );
+
+    // …and running on does not double it.
+    engine_conn(&mut engine, GOD);
+    let cadence = engine_store(&engine).cadence().expect("the cadence").0;
+    for _ in 0..3 {
+        engine_period(&mut engine, cadence, 1);
+    }
+    assert_eq!(live_income_count(&engine.world), 1, "the tick opened a second income line");
+    assert_eq!(engine_profile(&engine, nick).income, Some(nick_line));
+}
+
+#[test]
+fn vf_m4_a_cancelled_income_line_is_not_resurrected() {
+    // M4: the `(Cancelled, Some(amount))` arm cleared and re-opened, so a staffer's
+    // deliberate `@obligation/cancel` came back as a new obligation id with nothing
+    // said — and staff had no supported way to stop one character's stipend short of
+    // editing dots. E5b's own rule for the same record class: a decision is never
+    // re-derived away.
+    let mut c = cfg(PersonalMode::Exact);
+    c.income.insert(3, 500);
+    let mut tw = boot(c);
+    let nick = character(&mut tw, "Nick", 3);
+    ok(&mut tw, GOD, "@wod/economy migrate");
+    period(&mut tw, 1);
+    period(&mut tw, 1);
+    let id = profile(&tw, nick).income.expect("an income line");
+
+    ok(&mut tw, GOD, &format!("@obligation/cancel {}", id.0));
+    for _ in 0..4 {
+        period(&mut tw, 1);
+    }
+    let p = profile(&tw, nick);
+    assert!(p.income.is_none(), "the profile still names a cancelled line");
+    assert_eq!(p.income_cancelled_at, Some(3), "the decision was not recorded");
+    assert_eq!(live_income_count(tw.world()), 0, "the cancel was undone by the tick");
+    assert!(
+        p.history
+            .iter()
+            .any(|h| h.what.contains(&format!("income line #{}", id.0))
+                && h.what.contains("cancelled")),
+        "no note said what happened: {:?}",
+        p.history
+    );
+    // The exact-mode screen says so, so staff can find the rule without reading code.
+    let screen = ok(&mut tw, GOD, "@wod/economy");
+    assert!(screen.contains("cancels by hand stays cancelled"), "{screen}");
+
+    // A Resources change is a deliberate act, and it opens the next one.
+    ok(&mut tw, GOD, "@sheet/set Nick/backgrounds:Resources=4");
+    for _ in 0..3 {
+        period(&mut tw, 1);
+    }
+    ok(&mut tw, GOD, "@sheet/set Nick/backgrounds:Resources=3");
+    for _ in 0..3 {
+        period(&mut tw, 1);
+    }
+    assert!(
+        profile(&tw, nick).income.is_some(),
+        "a dot change did not lift the hand-cancel mark"
+    );
+}
+
+#[test]
+fn vf_m5_an_over_cap_starting_stake_is_reported_not_silent() {
+    // M5: `starting_funds_major` is bounded by nothing but itself — which is
+    // deliberate (§5.6 deviation 10 puts the stake in `@econ/mint`'s uncapped,
+    // attributed class, and deviation 11 says approval never fails). What was wrong
+    // was that the screen implied `mint_obligation_cap_major` covered it.
+    let mut c = cfg(PersonalMode::Exact);
+    c.starting_funds_major = 1_000_000; // twenty times the default 50,000 ceiling
+    let mut tw = boot(c);
+    let screen = ok(&mut tw, GOD, "@wod/economy");
+    assert!(screen.contains("ABOVE THE MINT CAP 50000"), "the stake was silent: {screen}");
+    assert!(
+        screen.contains("bounded by starting_funds_major alone"),
+        "the screen did not say what actually bounds it: {screen}"
+    );
+    assert!(
+        screen.contains("income LINE is bounded by [economy].mint_obligation_cap_major"),
+        "the cap sentence no longer says it covers lines: {screen}"
+    );
+    // And it still never refuses: an approved character gets the whole stake.
+    let who = chargen(&mut tw, "Nick", 3);
+    approve(&mut tw, who);
+    let account = store(&tw).profile(who).and_then(|p| p.account).expect("a wallet");
+    let bal = tw
+        .world()
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().account(account).map(|a| a.posted_balance.minor()))
+        .expect("the account");
+    assert_eq!(bal, 100_000_000, "the over-cap stake was refused or clamped");
+}
+
+#[test]
+fn vf_m6_wod_economy_marks_an_income_row_above_the_mint_cap() {
+    // M6: `wod_economy_config` validates the map's KEYS and never its values, so an
+    // over-cap row booted clean, printed indistinguishably from a working one, and
+    // every `create_system_obligation` for it failed `MintCapExceeded` into a warn
+    // nobody reads. §5.6 does not make it a hard boot error, so the screen marks it —
+    // the way the cadence line already marks DOES NOT RESOLVE.
+    let mut c = cfg(PersonalMode::Exact);
+    c.income.insert(3, 1_000);
+    c.income.insert(5, 60_000);
+    let mut tw = boot(c);
+    let screen = ok(&mut tw, GOD, "@wod/economy");
+    assert!(
+        screen.contains("5=60000 (ABOVE THE MINT CAP 50000; no line is opened)"),
+        "the over-cap row printed as live: {screen}"
+    );
+    assert!(
+        !screen.contains("3=1000 (ABOVE"),
+        "a working row was marked as over-cap: {screen}"
+    );
+    // The mark is the truth: a character on that row really gets no line at all.
+    let nick = character(&mut tw, "Nick", 5);
+    ok(&mut tw, GOD, "@wod/economy migrate");
+    for _ in 0..3 {
+        period(&mut tw, 1);
+    }
+    assert!(profile(&tw, nick).income.is_none());
+}
+
+#[test]
+fn vf_m7_approval_drops_a_residence_the_approved_sheet_cannot_carry() {
+    // M7: `vacancies` filters `tier <= level` from the LIVE sheet, so a player could
+    // pick a tier-5 home at Resources 5, move the dots to Contacts before
+    // `+chargen/submit`, and have approval create the tenancy anyway —
+    // Active → Grace → Delinquent → EvictionPending in their first week, which
+    // `chargen.rs` says the step never does.
+    let mut tw = boot(cfg(PersonalMode::Abstract));
+    let penthouse = property(&mut tw, "Penthouse", 5);
+    let who = chargen(&mut tw, "Nick", 5);
+    ok(&mut tw, who, &format!("+chargen/residence #{penthouse}"));
+    assert_eq!(store(&tw).residence(who), Some(penthouse));
+
+    // The dots move before submit. The sheet still balances; the home no longer fits.
+    ok(&mut tw, who, "+stat backgrounds:Resources=2");
+    ok(&mut tw, who, "+stat backgrounds:Contacts=3");
+    let out = approve(&mut tw, who);
+
+    assert!(out.contains("tier 5"), "the approver was not told the tier: {out}");
+    assert!(out.contains("support level 2"), "the approver was not told the level: {out}");
+    assert!(out.contains("dropped"), "the pick was not reported as dropped: {out}");
+    assert_eq!(store(&tw).residence(who), None, "the pick was not consumed");
+    assert_eq!(
+        housing(&tw).live_tenancies_of_tenant(who).count(),
+        0,
+        "approval let a home the approved sheet cannot carry"
+    );
+    // …and the approval itself still stands (deviation 11: report, never un-sign).
+    let p = store(&tw).profile(who).cloned().expect("a profile");
+    assert_eq!(p.level, 2);
+}
+
+// ---- Lens T -------------------------------------------------------------
+
+#[test]
+fn vf_t1_a_lost_profile_is_re_derived_at_boot_and_the_home_stays_active() {
+    // T1: `load` skipped an unparsable profile and logged "re-derived at the next
+    // evaluation" — but the tick's working set IS the profile map, so nothing ever
+    // re-derived it: the character left the economy silently, submitted no plan, and
+    // with UNKNOWN_GRACE at 1 their tenancy walked to the story window. Precisely the
+    // loss §5.6 promised costs the home nothing.
+    let mut tw = boot(cfg(PersonalMode::Abstract));
+    let nick = character(&mut tw, "Nick", 3);
+    let flat = property(&mut tw, "Flat", 2);
+    let t = tenancy_for(&mut tw, flat, nick);
+    period(&mut tw, 1);
+    period(&mut tw, 1);
+    assert_eq!(status(&tw, t), TenancyStatusKind::Active);
+
+    // The document is lost (a torn write; the loader's own "skipped loudly" row).
+    let mut kv = fold_kv(&mut tw);
+    drop_key(&mut kv, "wod", &format!("profile:{}", nick.0));
+    let mut engine = reboot_fresh(&tw, kv, cfg(PersonalMode::Abstract));
+
+    let p = engine_profile(&engine, nick);
+    assert_eq!(p.resources, 3, "the profile was not re-derived from the sheet");
+    assert_eq!(p.level, 3);
+    assert!(
+        p.history.iter().any(|h| h.what.contains("re-derived at boot")),
+        "the re-derivation left no note: {:?}",
+        p.history
+    );
+    // The cursor is re-seeded at the clock's CURRENT position, so the character is
+    // not charged for the periods they were missing.
+    assert!(engine_store(&engine).eval_state(nick).seeded);
+
+    // And the home: ten periods on, still Active — which is the claim §5.6 makes.
+    engine_conn(&mut engine, GOD);
+    let cadence = engine_store(&engine).cadence().expect("the cadence").0;
+    for _ in 0..10 {
+        engine_period(&mut engine, cadence, 1);
+        let st = engine
+            .world
+            .module_state::<HousingStore>()
+            .and_then(|s| s.tenancy(t).map(|x| x.status.kind()))
+            .expect("the tenancy");
+        assert_eq!(st, TenancyStatusKind::Active, "a lost profile cost the home its lease");
+    }
+}
+
+#[test]
+fn vf_t2_a_profile_doc_that_claims_another_id_is_skipped() {
+    // T2: `store.profiles.insert(obj, p)` keyed on the KEY while `put_profile` later
+    // re-keys on `p.obj`, so a doc under `profile:5` claiming `obj: 7` made `step(#5)`
+    // read #5's sheet and write #7's record — overwriting #7's real profile at every
+    // boot, forever. `mush-housing` refuses exactly this shape.
+    let claimant = SpendingProfile::new(ObjId(7), 3, Engagement::Ambient);
+    let honest = SpendingProfile::new(ObjId(9), 4, Engagement::Ambient);
+    let kv = vec![
+        (SmolStr::new("profile:5"), serde_json::to_value(&claimant).expect("serializes")),
+        (SmolStr::new("profile:9"), serde_json::to_value(&honest).expect("serializes")),
+    ];
+    let store = ruleset_wod::economy::load_store(&kv, cfg(PersonalMode::Abstract));
+    assert!(store.profile(ObjId(5)).is_none(), "the mismatched doc was installed under its key");
+    assert!(store.profile(ObjId(7)).is_none(), "the mismatched doc was installed under its claim");
+    assert_eq!(
+        store.profile(ObjId(9)).map(|p| p.resources),
+        Some(4),
+        "one bad doc took an honest neighbour with it"
+    );
+}
+
+#[test]
+fn vf_t3_a_prompt_stamped_in_a_future_ordinal_lapses_at_once() {
+    // T3: `expired` was `period.saturating_sub(opened_period) >= expires_after`, so a
+    // prompt stamped at ordinal 5 against a cursor re-seeded to 0 read as not-expired
+    // for ordinals 0..=6 — seven periods of life instead of two, holding the
+    // character's one attention slot (a stuck `StrainRelief` is not
+    // `displaceable_by_housing`, so it blocks the home prompt D-E5-8 outranks
+    // everything with).
+    let stamped = |opened: u64| Prompt {
+        id: 42,
+        kind: PromptKind::StrainRelief,
+        options: ruleset_wod::economy::prompt::relief_options(),
+        default: PromptDefault::StatusQuo,
+        opened_at: 0,
+        opened_period: opened,
+        opened_ic: None,
+        expires_after_periods: 2,
+    };
+    let future = stamped(5);
+    for now in [0_u64, 1, 4] {
+        assert!(future.expired(now), "a future stamp read as fresh at ordinal {now}");
+    }
+    // The ordinary arithmetic is untouched.
+    assert!(!future.expired(5), "a prompt expired in the period it opened");
+    assert!(!future.expired(6));
+    assert!(future.expired(7));
+
+    // …and `expire` really releases the slot, under the prompt's own default.
+    let mut p = SpendingProfile::new(ObjId(3), 3, Engagement::Ambient);
+    p.prompt = Some(stamped(5));
+    let lapsed = ruleset_wod::economy::prompt::expire(&mut p, 1, 0);
+    assert_eq!(lapsed, Some(PromptDefault::StatusQuo));
+    assert!(p.prompt.is_none(), "the stranded prompt kept the attention slot");
+    assert_eq!(p.strain, 0, "a lapse cost strain");
+}
+
+#[test]
+fn vf_t4_a_going_character_is_not_evaluated() {
+    // T4: `step`'s only liveness test was `ctx.w.get(who).is_none()`, and core keeps a
+    // destroyed object resolvable until `World::sweep` tombstones it — so a destroyed
+    // character could gain strain and leave a `wod.career.exposure` record naming
+    // them. Every neighbour defines liveness as existence PLUS not-`GOING`.
+    let mut tw = boot(cfg(PersonalMode::Abstract));
+    let nick = character(&mut tw, "Nick", 3);
+    let (f, fr) = front(&mut tw, "Giovanni", "The docks");
+    careered(&mut tw, nick, "Nick", "exploit", Some((f, fr)));
+    period(&mut tw, 1);
+    let strain = profile(&tw, nick).strain;
+    let canon = canon_kinds(&tw, "wod.career.exposure");
+    assert!(canon >= 1, "the control never emitted anything");
+
+    // Marked `GOING`, not swept: the husk is still resolvable.
+    tw.world_mut().destroy(nick).expect("destroy");
+    assert!(tw.world().get(nick).is_some(), "the husk was swept; the window under test is gone");
+    for _ in 0..3 {
+        period(&mut tw, 1);
+    }
+    assert_eq!(profile(&tw, nick).strain, strain, "a GOING character was still evaluated");
+    assert_eq!(
+        canon_kinds(&tw, "wod.career.exposure"),
+        canon,
+        "a GOING character committed front-attributed canon"
+    );
+    // The profile itself is untouched — D-E5-9's "nothing deletes a profile".
+    assert!(store(&tw).profile(nick).is_some());
+}
+
+#[test]
+fn vf_t5_housing_pressure_opens_at_delinquent_and_grace_is_a_notice() {
+    // T5: doc-only, pinned so it cannot drift. `behind_tenancy` filters on
+    // `is_behind()` — `Delinquent | EvictionPending` — so the player's first ASKED
+    // moment is one rung after housing's first told moment. That is the accepted
+    // split (08d §5.3: housing's own notices are notices, not prompts; §11 default 1
+    // fixes GRACE_PERIODS at 1 as a cushion meant to resolve silently).
+    let mut tw = boot(cfg(PersonalMode::Abstract));
+    let nick = character(&mut tw, "Nick", 0);
+    let flat = property(&mut tw, "Flat", 3);
+    let t = tenancy_for(&mut tw, flat, nick);
+
+    let mut saw_grace = false;
+    let mut pressure_at = None;
+    for _ in 0..12 {
+        period(&mut tw, 1);
+        let st = status(&tw, t);
+        let pressure = matches!(
+            profile(&tw, nick).prompt.as_ref().map(|p| &p.kind),
+            Some(PromptKind::HousingPressure { .. })
+        );
+        match st {
+            TenancyStatusKind::Active | TenancyStatusKind::Pending => {
+                assert!(!pressure, "pressure opened before the tenancy was behind at all");
+            }
+            TenancyStatusKind::Grace => {
+                assert!(!pressure, "the Grace rung opened a prompt; it is housing's notice");
+                saw_grace = true;
+            }
+            _ => {}
+        }
+        if pressure {
+            pressure_at = Some(st);
+            break;
+        }
+    }
+    assert!(saw_grace, "the ladder never passed through Grace, so nothing was pinned");
+    assert!(
+        matches!(
+            pressure_at,
+            Some(TenancyStatusKind::Delinquent | TenancyStatusKind::EvictionPending)
+        ),
+        "the prompt did not open at Delinquent: {pressure_at:?}"
+    );
+}
+
+#[test]
+fn vf_t6_the_lapse_line_counts_down() {
+    // T6: the line interpolated `expires_after_periods`, a write-once constant, so
+    // every read of every prompt said "in 2 period(s)" — including the last period it
+    // was readable at all. Non-response is a first-class answer (owner answer 19), so
+    // the time left is the one number a player needs to choose it deliberately.
+    let mut tw = boot(cfg(PersonalMode::Abstract));
+    let nick = character(&mut tw, "Nick", 3);
+    let (f, fr) = front(&mut tw, "Giovanni", "The docks");
+    // `careered` spends the period that lands the stance, and Exploit offers in that
+    // same pass — so the prompt is read in the very ordinal it opened in.
+    careered(&mut tw, nick, "Nick", "exploit", Some((f, fr)));
+    assert!(profile(&tw, nick).prompt.is_some(), "no prompt to read");
+
+    let fresh = ok(&mut tw, nick, "+prompt");
+    assert!(fresh.contains("in 2 period(s)"), "the fresh prompt did not say two: {fresh}");
+    period(&mut tw, 1);
+    let last = ok(&mut tw, nick, "+prompt");
+    assert!(
+        !last.contains("in 2 period(s)"),
+        "the countdown did not move off the constant: {last}"
+    );
+    assert!(last.contains("last one"), "the last period was not called out: {last}");
+    period(&mut tw, 1);
+    assert!(profile(&tw, nick).prompt.is_none(), "the prompt outlived its own countdown");
+}
+
+#[test]
+fn vf_t7_the_loader_pins_every_corrupt_doc_row() {
+    // T7: §5.6 asserts four load-time behaviours that no test exercised, which is why
+    // T1, T2 and T3 shipped unpinned while `mush-housing`'s twins are pinned at every
+    // rung. `load_store` is `pub` and takes the kv slice, so all four rows plus the
+    // allocator flooring go through the real loader with no second `modules_loaded`.
+    let mut good = SpendingProfile::new(ObjId(4), 2, Engagement::Ambient);
+    good.prompt = Some(Prompt {
+        id: 40,
+        kind: PromptKind::StrainRelief,
+        options: ruleset_wod::economy::prompt::relief_options(),
+        default: PromptDefault::StatusQuo,
+        opened_at: 0,
+        opened_period: 0,
+        opened_ic: None,
+        expires_after_periods: 2,
+    });
+    let kv = vec![
+        // row 1 — a profile that does not parse is skipped and its neighbours live.
+        (SmolStr::new("profile:3"), serde_json::json!("not a profile at all")),
+        (SmolStr::new("profile:4"), serde_json::to_value(&good).expect("serializes")),
+        (SmolStr::new("profile:nope"), serde_json::json!({})),
+        // row 2 — an unparsable cursor is skipped and re-seeded (it reads as default).
+        (
+            SmolStr::new("eval:4"),
+            serde_json::json!({ "position": 12, "period": 7, "seeded": true }),
+        ),
+        (SmolStr::new("eval:3"), serde_json::json!("torn")),
+        // row 3 — a residence pick with no property is skipped; a good one survives.
+        (SmolStr::new("residence:4"), serde_json::json!({ "property": 9 })),
+        (SmolStr::new("residence:3"), serde_json::json!({})),
+        // row 4 — the allocator doc is tolerated field by field.
+        (SmolStr::new("econ:meta"), serde_json::json!({ "next_prompt_id": 3, "junk": true })),
+        // …and a key that is not ours at all (M17's) is simply not ours.
+        (SmolStr::new("conceal"), serde_json::json!({ "anything": 1 })),
+    ];
+    let mut store = ruleset_wod::economy::load_store(&kv, cfg(PersonalMode::Abstract));
+
+    assert!(store.profile(ObjId(3)).is_none(), "an unparsable profile was installed");
+    assert_eq!(store.profile(ObjId(4)).map(|p| p.resources), Some(2), "a good profile was lost");
+    assert_eq!(store.profiles().count(), 1, "an unparsable key produced a profile");
+
+    assert_eq!(store.eval_state(ObjId(4)).period, 7, "a good cursor was lost");
+    let torn = store.eval_state(ObjId(3));
+    assert!(!torn.seeded && torn.period == 0, "a torn cursor was not re-seeded from default");
+
+    assert_eq!(store.residence(ObjId(4)), Some(mush_housing::PropertyId(9)));
+    assert_eq!(store.residence(ObjId(3)), None, "a residence pick with no property was kept");
+
+    // The allocator floors past every id a SURVIVING profile actually holds, never
+    // only past `meta` — a hand-written 40 must not be re-minted over.
+    assert_eq!(store.alloc_prompt(), Some(41), "the prompt allocator did not floor past the docs");
+}
+
+// ---- Lens D -------------------------------------------------------------
+
+#[test]
+fn vf_d1_a_hidden_faction_never_reaches_a_non_member_render() {
+    // D1: `render_front` gated on `front_resolves` (existence) alone and then read
+    // `FactionState.factions[..].name` and `SimState.fronts[..].title` verbatim — so
+    // `+career` and `+prompt` printed "Sabbat: Burn the waterfront" to a player whose
+    // `+factions` says "No factions are known." and whose `@front` is refused.
+    let mut tw = boot(cfg(PersonalMode::Abstract));
+    let nick = character(&mut tw, "Nick", 3);
+    let (f, fr) = front(&mut tw, "Sabbat", "Burn the waterfront");
+    ok(&mut tw, GOD, "@faction/set Sabbat=hidden:true");
+    ok(&mut tw, GOD, &format!("@career/set Nick=front={f}:{fr}"));
+
+    let out = ok(&mut tw, nick, "+career");
+    assert!(!out.contains("Sabbat"), "a hidden faction's name reached a non-member: {out}");
+    assert!(
+        !out.contains("Burn the waterfront"),
+        "a staff-only front title reached a non-member: {out}"
+    );
+    assert!(out.contains(&format!("front #{f}/#{fr}")), "the raw id form was not used: {out}");
+    // "You may not see it" and "it is gone" must read identically — an orphan marker
+    // here would be the oracle the fallback exists to close.
+    assert!(!out.contains("(orphaned front)"), "the refusal was distinguishable: {out}");
+
+    // Unhide it and the same render names it: the narrowing is the predicate, not a
+    // blanket redaction, and attribution on the record never changed.
+    ok(&mut tw, GOD, "@faction/set Sabbat=hidden:false");
+    let out = ok(&mut tw, nick, "+career");
+    assert!(out.contains("Sabbat"), "a listed faction stopped rendering: {out}");
+    assert!(out.contains("Burn the waterfront"), "{out}");
+}
+
+#[test]
+fn vf_d2_careers_off_neither_moves_the_level_nor_accepts_a_stance() {
+    // D2: `step` gated only prompts and exposure on `cfg.careers`; steps 1–3 landed
+    // `pending_stance`, derived `level` from `stance.level_delta()` and applied
+    // `strain_delta()` unconditionally, and `career_cmd` gated only on the mode — so
+    // on a careers-off server a player still typed `+career/stance exploit` and bought
+    // a whole support tier. The config field's own doc comment says careers is
+    // "whether careers, stances, opportunities and exposure are evaluated".
+    let mut tw = boot(cfg(PersonalMode::Abstract));
+    let nick = character(&mut tw, "Nick", 3);
+    ok(&mut tw, nick, "+career/source add career=fixer");
+    ok(&mut tw, nick, "+career/stance exploit");
+    period(&mut tw, 1);
+    period(&mut tw, 1);
+    assert_eq!(profile(&tw, nick).level, 4, "the control never bought the tier");
+
+    // The deployment edits `[wod.economy].careers = false` and restarts.
+    let kv = fold_kv(&mut tw);
+    let mut off = cfg(PersonalMode::Abstract);
+    off.careers = false;
+    let mut engine = reboot_fresh(&tw, kv, off);
+    engine_conn(&mut engine, GOD);
+    engine_conn(&mut engine, nick);
+    let cadence = engine_store(&engine).cadence().expect("the cadence").0;
+    engine_period(&mut engine, cadence, 1);
+    engine_period(&mut engine, cadence, 1);
+
+    let p = engine_profile(&engine, nick);
+    assert_eq!(p.resources, 3);
+    assert_eq!(p.level, 3, "a stance still moved the support level on a careers-off server");
+    // …and the three verbs that drive it refuse, in the off-mode gate's own words.
+    for line in ["+career/stance conceal", "+career/engage on", "+career/source add career=fixer"] {
+        let ev = engine_cmd(&mut engine, nick, line);
+        assert!(has_error(&ev), "`{line}` was accepted with careers off: {}", texts(&ev));
+        assert!(
+            texts(&ev).contains("does not run the WoD career layer"),
+            "`{line}` refused with the wrong words: {}",
+            texts(&ev)
+        );
+    }
+    // A non-career source is housing attribution, which `careers = false` does not
+    // switch off.
+    let ev = engine_cmd(&mut engine, nick, "+career/source add inheritance");
+    assert!(!has_error(&ev), "careers=false refused a housing attribution: {}", texts(&ev));
+}
+
+#[test]
+fn vf_d3_a_non_staff_third_party_is_refused_and_the_word_branch_is_gone() {
+    // D3: `require_staff(ctx)?` runs before `match_object`, so `target != me` implied
+    // staff and the third-party "They look …" arm could never execute — while
+    // `housing_word` calls `live_tenancies_of_tenant` with NO view predicate, so
+    // reviving the arm would have handed any character a tenant's assessment word,
+    // bypassing the rule `@tenancy/show` enforces. Dead code that leaks on revival.
+    let mut tw = boot(cfg(PersonalMode::Abstract));
+    let nick = character(&mut tw, "Nick", 3);
+    let quinn = character(&mut tw, "Quinn", 1);
+    let flat = property(&mut tw, "Flat", 2);
+    let _t = tenancy_for(&mut tw, flat, nick);
+    period(&mut tw, 1);
+    period(&mut tw, 1);
+
+    let refusal = err(&mut tw, quinn, "+resources Nick");
+    assert!(refusal.contains("permission"), "the refusal changed shape: {refusal}");
+    assert!(!refusal.to_lowercase().contains("they look"), "the word branch survived: {refusal}");
+
+    // Self and staff still get the number and the home word — the branch that is
+    // actually reachable.
+    let own = ok(&mut tw, nick, "+resources");
+    assert!(own.contains("support level 3"), "{own}");
+    assert!(own.contains("your home assesses"), "{own}");
+    let staff = ok(&mut tw, GOD, "+resources Nick");
+    assert!(staff.contains("support level 3"), "{staff}");
+    assert!(!staff.to_lowercase().contains("they look"), "{staff}");
+}
+
+#[test]
+fn vf_d4_career_set_says_when_a_front_does_not_resolve() {
+    // D4: `parse_front` validates syntax only, so `front=999:888` answered
+    // "Set front=999:888 on #2." while the comment right below claimed the
+    // unresolvable case "is said out loud". The staffer who can fix the typo was
+    // never told; the player, whose `+career` shows "(orphaned front)", cannot.
+    // Deviation 5 permits the set-ahead case, so this is an advisory, not a refusal.
+    let mut tw = boot(cfg(PersonalMode::Abstract));
+    let nick = character(&mut tw, "Nick", 3);
+    let out = ok(&mut tw, GOD, "@career/set Nick=front=999:888");
+    assert!(out.contains("Set front=999:888"), "the set-ahead case was refused: {out}");
+    assert!(out.contains("does not resolve yet"), "the advisory was not said: {out}");
+    assert!(out.contains("generates nothing until it does"), "{out}");
+    // It really is recorded — set-ahead is the point.
+    assert_eq!(
+        profile(&tw, nick).career().and_then(|c| c.front).map(|f| (f.faction.0, f.front.0)),
+        Some((999, 888))
+    );
+
+    // A front that resolves says nothing extra.
+    let (f, fr) = front(&mut tw, "Giovanni", "The docks");
+    let out = ok(&mut tw, GOD, &format!("@career/set Nick=front={f}:{fr}"));
+    assert!(!out.contains("does not resolve"), "a live front was called broken: {out}");
+}
+
+#[test]
+fn vf_d5_domain_help_matches_the_parser_and_is_no_org_oracle() {
+    // D5: the help said `domain=<org>`, the parser demanded an id, `domain=Camarilla`
+    // was refused with the bare fragment "domain=<org id>.", and `domain=987654` —
+    // naming no org — was accepted and crossed into housing's `SupportPlan`. The two
+    // unambiguous halves are fixed; the org-existence check is deliberately NOT added
+    // to the player verb (E5b fold A3's org oracle).
+    let mut tw = boot(cfg(PersonalMode::Abstract));
+    let nick = character(&mut tw, "Nick", 3);
+    let help = tw
+        .registry()
+        .spec_of("+career")
+        .map(|s| s.help.to_string())
+        .expect("+career is registered");
+    assert!(help.contains("domain=<org id>"), "the help still advertises a name: {help}");
+
+    let refusal = err(&mut tw, nick, "+career/source add domain=Camarilla");
+    assert!(refusal.contains("A domain needs an org id"), "still a bare fragment: {refusal}");
+
+    // A phantom id is ACCEPTED: `SupportSource::Domain` is a lossy attribution label
+    // housing renders as the constant "domain support" and never interprets, so it
+    // authorizes nothing — and refusing it would answer "no such org" to an
+    // unprivileged verb.
+    let out = ok(&mut tw, nick, "+career/source add domain=987654");
+    assert!(!out.to_lowercase().contains("no such org"), "the player verb became an oracle: {out}");
+    assert!(profile(&tw, nick).sources.iter().any(|s| s.key() == "domain"));
+
+    // On the STAFF side there is no oracle to protect, so it is said out loud.
+    let staff = ok(&mut tw, GOD, "@career/set Nick=employer=org:987654");
+    assert!(staff.contains("org:987654 does not resolve"), "staff were not told: {staff}");
+}
+
+#[test]
+fn vf_d6_wod_economy_refuses_an_unknown_argument() {
+    // D6: the handler tested `raw().trim().eq_ignore_ascii_case("migrate")` and
+    // treated everything else — a typo of the one documented subcommand, trailing
+    // junk — as the bare show, so the one operation that matters was the one a slip
+    // turned into a silent no-op. `[rulesets].enabled`'s own rule, one layer up.
+    let mut tw = boot(cfg(PersonalMode::Abstract));
+    let _nick = character(&mut tw, "Nick", 3);
+    for bad in ["@wod/economy migrat", "@wod/economy migrate now", "@wod/economy show"] {
+        let refusal = err(&mut tw, GOD, bad);
+        assert!(refusal.contains("Usage: @wod/economy [migrate]"), "`{bad}`: {refusal}");
+    }
+    // The two real forms still work.
+    let show = ok(&mut tw, GOD, "@wod/economy");
+    assert!(show.contains("[wod.economy] as this server is running it:"), "{show}");
+    let migrate = ok(&mut tw, GOD, "@wod/economy migrate");
+    assert!(migrate.contains("@wod/economy migrate:"), "{migrate}");
 }

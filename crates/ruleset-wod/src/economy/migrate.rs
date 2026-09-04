@@ -8,7 +8,7 @@
 //! | flip | what migrate does | what it never does |
 //! |---|---|---|
 //! | abstract → exact | opens a **zero-balance** `wod.usd` account per profiled character | mints anything (staff seed with an attributed `@econ/mint`) |
-//! | exact → abstract | creates a `SpendingProfile` per character from Resources, stops every income line, and **hides** `wod.usd` from `+resources` | touch an account or a balance — they are economy infrastructure and persist untouched |
+//! | exact → abstract | creates a `SpendingProfile` per **approved** character from Resources, stops every income line, and **hides** `wod.usd` from `+resources` | touch an account or a balance — they are economy infrastructure and persist untouched |
 //! | `housing = false` | stops **new** tenancies | end, alter or hide an existing one |
 //! | `off` | stops evaluating | delete a profile |
 //!
@@ -17,11 +17,13 @@
 //! is a staff `@econ/mint` somebody signed their name to.
 
 use mush_core::{Ctx, ObjId};
+use mush_ruleset::ApprovalState;
 
 use crate::economy::boot;
 use crate::economy::config::{PersonalMode, WodEconomyConfig};
 use crate::economy::record::SpendingProfile;
 use crate::economy::store::{WodEconomyStore, put_profile, seed_eval};
+use crate::splats::Dispatch;
 
 /// What one reconciliation did, in the order the report prints it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -100,7 +102,11 @@ impl Report {
 
 /// Reconcile the world to the configured mode. Idempotent: running it twice does
 /// nothing the second time.
-pub fn run(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig) -> Report {
+///
+/// `dispatch` is the ruleset's own sheet dispatch — the one `chargen_approval` reads
+/// through — so [`sheeted`]'s approval test and the approval flip are one reader
+/// (E5c fold M2).
+pub(crate) fn run(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig, dispatch: &Dispatch) -> Report {
     let mut report = Report::default();
     match cfg.personal_mode {
         // `off` stops evaluating and **deletes nothing** (D-E5-9). It still stops the
@@ -109,36 +115,69 @@ pub fn run(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig) -> Report {
         // pay.
         PersonalMode::Off => stop_income(ctx, &mut report),
         PersonalMode::Abstract => {
-            create_profiles(ctx, cfg, &mut report);
+            create_profiles(ctx, cfg, dispatch, &mut report);
             stop_income(ctx, &mut report);
             hide_accounts(ctx, &mut report);
         }
         PersonalMode::Exact => {
-            create_profiles(ctx, cfg, &mut report);
+            create_profiles(ctx, cfg, dispatch, &mut report);
             open_accounts(ctx, &mut report);
         }
     }
+    // A staff reconciliation is a deliberate act, so it also lifts the "somebody
+    // cancelled this line by hand" mark the evaluation honours (E5c fold M4).
+    clear_cancel_marks(ctx);
     report
 }
 
-/// Every character who has a WoD sheet — the population a migration reconciles.
+/// Every character whose WoD sheet is **approved** — the population a migration
+/// reconciles.
 ///
-/// A sheet is the membership test rather than "every Player": a staff bot, an NPC
-/// shell or an unfinished account has no Resources to derive anything from, and a
-/// profile for one would be a record about nobody.
-fn sheeted(ctx: &Ctx<'_>) -> Vec<ObjId> {
-    ctx.w
+/// Approval, not merely "has a `sheet:wod` attribute" (E5c fold M2). `+chargen`
+/// writes that attribute at [`ApprovalState::Unapproved`] the moment a player starts,
+/// so the attribute test banked a character who typed their own
+/// `backgrounds:Resources=5` and never submitted: a profile, a wallet and, two
+/// periods later, a live income line. §5.4 and owner answer 15 draw the line the
+/// other way — a character in chargen gets their artifacts **at approval**, and
+/// `migrate` is for the population that predates the flip. Each skipped one is named
+/// in the report, because a staffer who ran the migration should be able to see who
+/// it passed over and why.
+///
+/// The read goes through `dispatch`, the same table `chargen_approval` reads and
+/// stamps, so the two can never disagree about what "approved" means.
+fn sheeted(ctx: &Ctx<'_>, dispatch: &Dispatch, report: &mut Report) -> Vec<ObjId> {
+    let players: Vec<ObjId> = ctx
+        .w
         .iter()
         .filter(|o| o.kind == mush_core::ObjKind::Player)
         .map(|o| o.id)
-        .filter(|id| ctx.w.attr(*id, crate::economy::SHEET_ATTR).is_some())
-        .collect()
+        .collect();
+    let mut out = Vec::new();
+    for who in players {
+        // No sheet at all is not a skip: a staff bot or an NPC shell was never part
+        // of this population and saying so every run would be noise.
+        let Some(doc) = dispatch.read(ctx.w, who) else { continue };
+        match doc.approved {
+            ApprovalState::Approved { .. } => out.push(who),
+            ref other => report.skipped.push(format!(
+                "#{}: the sheet is {} — chargen approval creates the artifacts, not migrate",
+                who.0,
+                other.label()
+            )),
+        }
+    }
+    out
 }
 
-/// Give every sheeted character a profile if they have none (§5.1's "creates a
-/// `SpendingProfile` per character from Resources").
-fn create_profiles(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig, report: &mut Report) {
-    for who in sheeted(ctx) {
+/// Give every approved sheeted character a profile if they have none (§5.1's "creates
+/// a `SpendingProfile` per character from Resources").
+fn create_profiles(
+    ctx: &mut Ctx<'_>,
+    cfg: &WodEconomyConfig,
+    dispatch: &Dispatch,
+    report: &mut Report,
+) {
+    for who in sheeted(ctx, dispatch, report) {
         let has = ctx.w.module_state::<WodEconomyStore>().is_some_and(|s| s.profile(who).is_some());
         if has {
             continue;
@@ -198,6 +237,12 @@ fn open_accounts(ctx: &mut Ctx<'_>, report: &mut Report) {
 /// (§5.1). What stops is the standing mint, because a faucet-funded obligation the
 /// scheduler executes forever in a deployment that no longer shows wallets is money
 /// nobody decided to pay.
+///
+/// **The pointer survives a failed cancel** (E5c fold M3). It is the profile's only
+/// cheap name for the mint, so dropping it while the obligation is still live would
+/// leave a faucet running with nothing pointing at it; the report says what refused,
+/// and a second `@wod/economy migrate` retries. (The boot reconciliation would adopt
+/// or cancel it eventually — this keeps the cheap path cheap.)
 fn stop_income(ctx: &mut Ctx<'_>, report: &mut Report) {
     let Some(faucet) = boot::principal(crate::economy::config::FAUCET_INCOME) else { return };
     for who in ctx.w.module_state::<WodEconomyStore>().map(WodEconomyStore::profiled).unwrap_or_default()
@@ -210,13 +255,43 @@ fn stop_income(ctx: &mut Ctx<'_>, report: &mut Report) {
             continue;
         };
         match mush_economy::set_system_obligation(ctx, &faucet, id, None) {
-            Ok(()) => report.income_stopped.push(who),
-            Err(error) => report.skipped.push(format!("#{}: {error}", who.0)),
+            Ok(()) => {
+                report.income_stopped.push(who);
+                if let Some(mut p) =
+                    ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.profile(who).cloned())
+                {
+                    p.income = None;
+                    p.revision = p.revision.saturating_add(1);
+                    put_profile(ctx, p);
+                }
+            }
+            Err(error) => report.skipped.push(format!(
+                "#{}: income line #{} could not be stopped ({error}); the profile still names it",
+                who.0, id.0
+            )),
+        }
+    }
+}
+
+/// Lift every "a person cancelled this income line" mark (E5c fold M4).
+///
+/// A mode flip reconciled by a staffer is exactly the deliberate act that mark is
+/// waiting for: after this, the next evaluation opens whatever the configured table
+/// says the character's dot earns.
+fn clear_cancel_marks(ctx: &mut Ctx<'_>) {
+    for who in ctx.w.module_state::<WodEconomyStore>().map(WodEconomyStore::profiled).unwrap_or_default()
+    {
+        let marked = ctx
+            .w
+            .module_state::<WodEconomyStore>()
+            .is_some_and(|s| s.profile(who).is_some_and(|p| p.income_cancelled_at.is_some()));
+        if !marked {
+            continue;
         }
         if let Some(mut p) =
             ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.profile(who).cloned())
         {
-            p.income = None;
+            p.income_cancelled_at = None;
             p.revision = p.revision.saturating_add(1);
             put_profile(ctx, p);
         }

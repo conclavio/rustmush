@@ -135,7 +135,14 @@ fn step(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig, who: ObjId, now: i64) -> bool
     // A character who has left the world is not evaluated and is not deleted: their
     // profile is the record of what they had, and D-E5-9's "off never deletes a
     // profile" is the same rule one object down.
-    if ctx.w.get(who).is_none() {
+    //
+    // Liveness is existence **plus** not-`GOING` (E5c fold T4): core keeps a
+    // destroyed object resolvable until `World::sweep` tombstones it, so an existence
+    // test alone lets a destroyed character gain strain and leave a
+    // `wod.career.exposure` record naming them. Every neighbour defines it this way
+    // (`mush_housing::alive`, `mush-economy`'s custody checks); this is that
+    // predicate, inline, on the one path that needs it.
+    if !ctx.w.get(who).is_some_and(|o| !o.flags.contains(mush_core::Flags::GOING)) {
         return false;
     }
     let period = state.period.saturating_add(1);
@@ -147,7 +154,13 @@ fn step(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig, who: ObjId, now: i64) -> bool
         career.stance = next;
         profile.note(now, format!("stance now {}", next.label()));
     }
-    let stance = profile.stance();
+    // `careers = false` means careers, stances, opportunities and exposure are **not
+    // evaluated** — the config field's own doc comment, and the switch has to mean it
+    // (E5c fold D2). Taking the stance as `Coast` is what makes the whole row inert:
+    // no `level_delta` buying a support tier, no `strain_delta`, no offer, no
+    // exposure. `+career/stance` refuses on such a server, so `pending_stance` can
+    // never be set there either.
+    let stance = if cfg.careers { profile.stance() } else { Stance::Coast };
 
     // 2 — re-read the sheet. Read only: the economy never writes a dot (D-E5-3).
     profile.resources = read_resources(ctx, who);
@@ -197,6 +210,15 @@ fn read_resources(ctx: &Ctx<'_>, who: ObjId) -> u8 {
 }
 
 /// The first tenancy of `who`'s that is behind, if any.
+///
+/// **The prompt opens at `Delinquent`, and the `Grace` rung is housing's own notice**
+/// (E5c fold T5, documented rather than changed). `TenancyStatus::is_behind()` is
+/// `Delinquent | EvictionPending` and deliberately excludes `Grace`, so the player's
+/// first *asked* moment is one rung after housing's first told moment. That is the
+/// accepted split: 08d §5.3's "housing's own notices are notices, not prompts", and
+/// §11 default 1 fixes `GRACE_PERIODS` at 1 as a cushion meant to resolve silently.
+/// The tenant is not left in the dark in the meantime — they receive housing's
+/// private Grace notice.
 fn behind_tenancy(ctx: &Ctx<'_>, who: ObjId) -> Option<mush_housing::TenancyId> {
     ctx.w
         .module_state::<HousingStore>()?
@@ -299,7 +321,14 @@ fn offer_prompts(
     }
     let Some(shape) = stance.offers() else { return };
     // `Coast` offers rarely (§5.2's table + §9's `COAST_OPPORTUNITY_PERIODS`).
+    //
+    // A stamp from a **future** ordinal is stale, not fresh — the same guard
+    // `Prompt::expired` takes (E5c fold T3). Without it a re-seeded `eval:{obj}`
+    // cursor would silence `Coast` for six periods it never spent, because the
+    // saturating subtraction reads 0 for every ordinal below the stamp.
+    let stale_stamp = profile.last_opportunity_period > period;
     if stance == Stance::Coast
+        && !stale_stamp
         && period.saturating_sub(profile.last_opportunity_period) < COAST_OPPORTUNITY_PERIODS
     {
         return;
@@ -386,7 +415,18 @@ fn emit_exposure(ctx: &mut Ctx<'_>, who: ObjId, period: u64, now: i64) {
     });
 }
 
-/// Keep the exact-mode income obligation matching the character's level (§5.2).
+/// Keep the exact-mode income obligation matching the character's **Resources dot**
+/// (§5.2, D-E5-6).
+///
+/// **The row is keyed on the sheet reading, never on the derived level** (E5c fold
+/// M1). `profile.level` is `resources ± stance`, and a stance is an ungated player
+/// verb: keying the mint off it would let `+career/stance exploit` move a character
+/// one whole income row up on the same `ObligationId`, and `conceal` move it down or
+/// cancel it outright. D-E5-6 is explicit that a stance alters *pressure and
+/// opportunity* and never income, and §5.1's table is "one amount per **dot**". The
+/// stance loses nothing the design promises: `profile.level` is still the number
+/// `submit_plans` hands housing, which is where §5.2's table delivers Exploit's
+/// "temporary capacity".
 ///
 /// Every line is a **faucet-funded obligation** created through
 /// `create_system_obligation` under `system:wod.income` — never `@obligation/create`,
@@ -405,8 +445,21 @@ fn maintain_income(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig, who: ObjId) {
     };
     let Some(credit) = profile.account else { return };
     let want = cfg
-        .income_major(profile.level)
+        .income_major(profile.resources)
         .and_then(|major| crate::economy::boot::major_to_amount(ctx, &instrument, major));
+
+    // A hand cancel is a **decision**, and a decision is not re-derived away — E5b's
+    // own rule for `Withdrawn`, one record class over (E5c fold M4). The mark is
+    // dropped the moment the dot it was taken at stops being the dot on the sheet.
+    if let Some(dot) = profile.income_cancelled_at
+        && dot != profile.resources
+    {
+        let mut p = profile.clone();
+        p.income_cancelled_at = None;
+        p.revision = p.revision.saturating_add(1);
+        put_profile(ctx, p);
+    }
+    let stopped_by_hand = profile.income_cancelled_at == Some(profile.resources);
 
     // A live obligation this profile already owns.
     let live = profile.income.and_then(|id| {
@@ -414,21 +467,39 @@ fn maintain_income(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig, who: ObjId) {
             s.snapshot().obligation(id).map(|o| (id, o.amount, o.status.kind()))
         })
     });
+    // A pointer at a record that is not there any more: the pointer is a cache, and a
+    // cache with nothing behind it is cleared (E5c fold M3).
+    if profile.income.is_some() && live.is_none() {
+        clear_income(ctx, who);
+    }
     let Some(faucet) = crate::economy::boot::principal(FAUCET_INCOME) else { return };
     match (live, want) {
         // Nothing owed and nothing running: the common case.
         (None, None) => {}
         // The level now earns nothing: stop the standing mint.
+        //
+        // **The pointer is cleared only when the mint is actually stopped** (E5c fold
+        // M3). Clearing it after a failed cancel — `EconomyFrozen` from the boot
+        // integrity latch is reachable on a period the clock already advanced — would
+        // strand a live faucet-funded line nothing names, and the next period's
+        // `open_income` would credit the same wallet a second time.
         (Some((id, _, kind)), None) => {
-            if !matches!(
+            if matches!(
                 kind,
                 mush_economy::ObligationStatusKind::Cancelled
                     | mush_economy::ObligationStatusKind::Satisfied
-            ) && let Err(error) = mush_economy::set_system_obligation(ctx, &faucet, id, None)
-            {
-                tracing::warn!(obligation = id.0, %error, "wod.economy: could not stop an income line");
+            ) {
+                clear_income(ctx, who);
+            } else {
+                match mush_economy::set_system_obligation(ctx, &faucet, id, None) {
+                    Ok(()) => clear_income(ctx, who),
+                    Err(error) => tracing::warn!(
+                        obligation = id.0, who = who.0, %error,
+                        "wod.economy: could not stop an income line; the profile keeps the \
+                         pointer and the next evaluation retries"
+                    ),
+                }
             }
-            clear_income(ctx, who);
         }
         // Running at the wrong rate: re-rate it in place. The schedule, the grace
         // policy and the counters are untouched, so this is not a re-anchor.
@@ -438,8 +509,11 @@ fn maintain_income(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig, who: ObjId) {
                 mush_economy::ObligationStatusKind::Cancelled
                     | mush_economy::ObligationStatusKind::Satisfied
             ) {
-                clear_income(ctx, who);
-                open_income(ctx, &faucet, who, &instrument, credit, amount);
+                // Somebody cancelled it. Record the decision and leave it alone: a
+                // staffer — or the creditor themself — stopping one character's
+                // stipend must not come back as a new obligation id with nothing
+                // said (E5c fold M4).
+                mark_income_cancelled(ctx, who, id);
             } else if have != amount
                 && let Err(error) =
                     mush_economy::set_system_obligation(ctx, &faucet, id, Some(amount))
@@ -447,8 +521,12 @@ fn maintain_income(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig, who: ObjId) {
                 tracing::warn!(obligation = id.0, %error, "wod.economy: could not re-rate an income line");
             }
         }
-        // Owed and not running: open it.
-        (None, Some(amount)) => open_income(ctx, &faucet, who, &instrument, credit, amount),
+        // Owed and not running: open it — unless a person stopped this one.
+        (None, Some(amount)) => {
+            if !stopped_by_hand {
+                open_income(ctx, &faucet, who, &instrument, credit, amount);
+            }
+        }
     }
 }
 
@@ -466,7 +544,34 @@ fn clear_income(ctx: &mut Ctx<'_>, who: ObjId) {
     put_profile(ctx, p);
 }
 
+/// Record that a person cancelled this character's income line, and stop naming it
+/// (E5c fold M4).
+///
+/// The note is the whole point: the layer says what it saw once, and then does
+/// nothing about it ever again until the dot moves, `@wod/economy migrate` runs, or
+/// staff open the next one deliberately.
+fn mark_income_cancelled(ctx: &mut Ctx<'_>, who: ObjId, id: mush_economy::ObligationId) {
+    let Some(mut p) = ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.profile(who).cloned())
+    else {
+        return;
+    };
+    if p.income.is_none() && p.income_cancelled_at == Some(p.resources) {
+        return;
+    }
+    p.income = None;
+    p.income_cancelled_at = Some(p.resources);
+    p.note(0, format!("income line #{} was cancelled; none is opened in its place", id.0));
+    p.revision = p.revision.saturating_add(1);
+    put_profile(ctx, p);
+}
+
 /// Open this character's income line under the faucet (§5.1).
+///
+/// **Never a second one.** A live `wod.income` obligation already crediting `credit`
+/// is adopted rather than duplicated (E5c fold M3): the record carries its own
+/// `cause`, `minted_by` and `credit_account`, so a profile whose pointer was lost —
+/// or cleared by a failed cancel — finds its own mint again instead of opening a
+/// parallel faucet line into the same wallet.
 fn open_income(
     ctx: &mut Ctx<'_>,
     faucet: &mush_org::SystemPrincipalId,
@@ -475,6 +580,25 @@ fn open_income(
     credit: mush_economy::AccountId,
     amount: mush_economy::Amount,
 ) {
+    if let Some((existing, _)) = crate::economy::boot::live_income_lines(ctx)
+        .into_iter()
+        .find(|(_, account)| *account == credit)
+    {
+        if let Some(mut p) =
+            ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.profile(who).cloned())
+        {
+            p.income = Some(existing);
+            p.revision = p.revision.saturating_add(1);
+            p.note(0, format!("income line #{} adopted (it was already running)", existing.0));
+            put_profile(ctx, p);
+        }
+        tracing::warn!(
+            obligation = existing.0, who = who.0,
+            "wod.economy: a live income line already credits this wallet; adopted it rather than \
+             opening a second"
+        );
+        return;
+    }
     let Some(debit) = crate::economy::boot::system_account(ctx, FAUCET_INCOME, instrument) else {
         return;
     };

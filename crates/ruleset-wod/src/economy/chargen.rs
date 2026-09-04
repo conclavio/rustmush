@@ -131,7 +131,9 @@ pub fn on_approved(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig, who: ObjId) -> Vec
         }
     }
     if cfg.housing {
-        match settle_residence(ctx, who) {
+        // The level the **approved** sheet carries, which is what M7 re-checks the
+        // Residence pick against.
+        match settle_residence(ctx, who, profile.level) {
             Ok(Some(line)) => out.push(line),
             Ok(None) => {}
             Err(e) => out.push(format!("WoD housing: {e}")),
@@ -220,11 +222,35 @@ fn open_wallet(
 
 /// Turn a recorded Residence pick into a live tenancy (§5.4's "approval creates the
 /// tenancy through housing").
-fn settle_residence(ctx: &mut Ctx<'_>, who: ObjId) -> Result<Option<String>, String> {
+///
+/// **The pick is re-checked against the approved sheet** (E5c fold M7).
+/// [`vacancies`] filters `tier <= level` from the sheet *as it stood at pick time*,
+/// so a player could pick a tier-5 home at Resources 5, move the dots to Contacts
+/// before `+chargen/submit`, and be handed a home their approved sheet cannot carry —
+/// Active → Grace → Delinquent → EvictionPending inside their first week, which is
+/// exactly what this step is documented never to do. When the pick no longer fits it
+/// is **dropped and reported to the approver** with the property's tier and the
+/// character's level: deviation 11's shape, report and never un-sign.
+fn settle_residence(ctx: &mut Ctx<'_>, who: ObjId, level: u8) -> Result<Option<String>, String> {
     let Some(property) = ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.residence(who))
     else {
         return Ok(None);
     };
+    let tier = ctx
+        .w
+        .module_state::<HousingStore>()
+        .and_then(|s| s.property(property))
+        .map_or_else(|| "?".to_string(), |p| p.tier.get().to_string());
+    if !vacancies(ctx, level).iter().any(|v| v.property == property) {
+        // Consumed either way — a pick that cannot be honoured is a staff question
+        // now, not a surprise home three approvals later.
+        put_residence(ctx, who, None);
+        return Err(format!(
+            "the Residence pick (property #{property}, tier {tier}) is not one this approved \
+             sheet can carry (support level {level}), or it is no longer vacant; it was dropped \
+             and no tenancy was created."
+        ));
+    }
     let Some(cadence) = ctx.w.module_state::<WodEconomyStore>().and_then(WodEconomyStore::cadence)
     else {
         return Err("no campaign clock resolves; no tenancy was created.".to_string());
@@ -241,7 +267,10 @@ fn settle_residence(ctx: &mut Ctx<'_>, who: ObjId) -> Result<Option<String>, Str
     // staff question now, not a surprise home three approvals later.
     put_residence(ctx, who, None);
     match result {
-        Ok(id) => Ok(Some(format!("WoD housing: tenancy #{id} is active on property #{property}."))),
+        Ok(id) => Ok(Some(format!(
+            "WoD housing: tenancy #{id} is active on property #{property} (tier {tier}, support \
+             level {level})."
+        ))),
         Err(e) => Err(format!("the chosen residence could not be let: {e}")),
     }
 }

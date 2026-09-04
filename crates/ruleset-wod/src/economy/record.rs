@@ -467,8 +467,19 @@ pub struct Prompt {
 
 impl Prompt {
     /// Whether `period` is past this prompt's life.
+    ///
+    /// A stamp from a **future** ordinal is stale, not fresh (E5c fold T3). The
+    /// subtraction saturates, so a prompt opened at ordinal 5 against a cursor that
+    /// was re-seeded to 0 — a boot re-derivation, a restored backup — would otherwise
+    /// read as not-expired for ordinals `0..=6`: seven periods of life instead of
+    /// two, holding the character's one attention slot the whole time. The clock
+    /// moving backwards under a stamp is the same class of event
+    /// `mush_housing::assess` decides explicitly, and this is the decision here.
     #[must_use]
     pub fn expired(&self, period: u64) -> bool {
+        if self.opened_period > period {
+            return true;
+        }
         period.saturating_sub(self.opened_period) >= u64::from(self.expires_after_periods)
     }
 
@@ -519,8 +530,22 @@ pub struct SpendingProfile {
     #[serde(default)]
     pub account: Option<mush_economy::AccountId>,
     /// Exact mode: the faucet-funded income obligation this profile maintains.
+    ///
+    /// A **cache, not the name**: the obligation identifies itself by `cause`
+    /// (`wod.income`), `minted_by` (`system:wod.income`) and `credit_account`, which
+    /// is what lets a boot adopt a line whose pointer was lost (E5c fold M3).
     #[serde(default)]
     pub income: Option<mush_economy::ObligationId>,
+    /// Exact mode: the Resources dot in force when a **person** cancelled this
+    /// character's income line (E5c fold M4).
+    ///
+    /// `@obligation/cancel` on an income line is a decision, and the evaluation does
+    /// not undo a decision — the same rule E5b states for `Withdrawn`. While this
+    /// equals the dot the sheet currently reads, no replacement line is opened; a
+    /// Resources change or `@wod/economy migrate` clears the mark and the next
+    /// evaluation opens the next line.
+    #[serde(default)]
+    pub income_cancelled_at: Option<u8>,
     /// The last period an opportunity was generated (the `Coast` rate limit).
     #[serde(default)]
     pub last_opportunity_period: u64,
@@ -546,6 +571,7 @@ impl SpendingProfile {
             prompt: None,
             account: None,
             income: None,
+            income_cancelled_at: None,
             last_opportunity_period: 0,
             history: Vec::new(),
             revision: 1,

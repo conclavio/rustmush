@@ -902,7 +902,7 @@ who lives elsewhere — and lets the player choose one (or none); approval creat
 strain, sources; exact: balance via the economy's `@account/show` rules). Staff: `@wod/economy`
 (show effective config; `migrate`), `@career/set <who>=…` (employer, front).
 
-Tests (planned ~32; **40 as built**, `crates/ruleset-wod/tests/e5c.rs`): scenario 23 end to end in abstract mode (Resources 3 quietly supports a tier-2
+Tests (planned ~32; **40 as built**, **60 after the §5.7 verify fold**, `crates/ruleset-wod/tests/e5c.rs`): scenario 23 end to end in abstract mode (Resources 3 quietly supports a tier-2
 residence for N periods with no output; drop Resources via a staff `@sheet/set` → the next period's
 plan is `Unsupported` → Grace → Delinquent → EvictionPending with one notice each, a job opened,
 no movement, `home` still works; `@tenancy/resolve end` after a staff scene ends it); the same in
@@ -922,6 +922,7 @@ Built as a submodule of the ruleset (`crates/ruleset-wod/src/economy/`), plus fo
 seams in crates below it. `cargo test -p ruleset-wod -p mush-housing -p mush-economy -p mush-server`
 **923 passing**; `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo test
 --workspace` **2735 passing across 184 suites, 0 failing**. `cargo fmt` stays off, unchanged.
+(After the §5.7 verify fold: **943** and **2755 across 184 suites**, clippy still clean.)
 
 **Files.** `src/economy/config.rs` (`WodEconomyConfig`, `PersonalMode`, `Engagement`, the three
 faucet names and `wod.usd`) · `record.rs` (§5.2/§5.3's records + the §9 constants) · `store.rs`
@@ -960,7 +961,7 @@ worse than not starting.
 
 | doc | class | corrupt → |
 |---|---|---|
-| `profile:{obj}` | leaf | **skipped loudly and re-derived** at the next evaluation |
+| `profile:{obj}` | leaf | **skipped loudly and re-derived in the same boot** (`economy::boot::run`) |
 | `eval:{obj}` | leaf (the pull cursor: `position`, `period`, `seeded`) | skipped loudly, re-seeded |
 | `residence:{obj}` | leaf (a chargen pick, consumed at approval) | skipped loudly |
 | `econ:meta` | allocators (`next_prompt_id`, `eval_cursor`) | tolerated field by field |
@@ -971,6 +972,16 @@ the level comes off Resources, and the plan it submits is restated every period 
 costs the character their strain counter and their open prompt and costs their **home** nothing.
 Both losses are the lenient half of every rule they take part in. The prompt allocator floors past
 every id a surviving profile holds, not only past `meta` (E4b1's B1), and saturates.
+
+"Costs their home nothing" is true **because the boot re-derives it**, not because the tick would
+(verify fold T1): the evaluation's working set *is* the profile map, so a skipped document used to
+be a character who silently left the economy, submitted no plan, and walked to `EvictionPending` on
+`UNKNOWN_GRACE`. `economy::boot::run` rebuilds one for every character carrying an `eval:{obj}`
+cursor or a live tenancy without a profile beside it, from the sheet exactly as
+`migrate::create_profiles` does, re-seeds the cursor at the clock's current position, and re-points
+the wallet. A `profile:{obj}` whose own `obj` disagrees with its key is a **loud skip** as well
+(fold T2) — installing it would have made `step(#5)` read #5's sheet and write #7's record at every
+boot forever, which is the shape `mush-housing` refuses outright.
 
 **The evaluation's bounds** (`evaluate.rs`, `TickCadence::Coarse(30 s)`, tag `wod.economy`):
 
@@ -1009,7 +1020,7 @@ idempotent, and it lists what it did):
 
 | flip | what it does | what it never does |
 |---|---|---|
-| → `abstract` (from exact) | creates a `SpendingProfile` per sheeted character from Resources; **stops** every income line it opened; reports which wallets `+resources` now hides | touch an account or a balance — they are economy infrastructure and persist untouched |
+| → `abstract` (from exact) | creates a `SpendingProfile` per **approved** sheeted character from Resources (fold M2; the skipped are named in the report); **stops** every income line it opened; reports which wallets `+resources` now hides | touch an account or a balance — they are economy infrastructure and persist untouched |
 | → `exact` (from abstract) | opens a **zero-balance** `wod.usd` account per profiled character and points the profile at it | mint anything — the report says so and names `@econ/mint` as the attributed way to seed one |
 | `housing = false` | stops **new** tenancies (chargen creates none; the title issuer is not registered) | end, alter or hide an existing tenancy |
 | `off` | stops evaluating; stops the standing mints | delete a profile, a wallet, a balance or a tenancy |
@@ -1060,17 +1071,86 @@ idempotent, and it lists what it did):
 11. **The approval artifacts never fail the approval.** A sheet a storyteller has signed off is not
     un-signed because an account could not be opened; whatever went wrong is reported to the
     approver instead.
-12. **`+resources` shows the number to the character themself and to staff**, and the assessment
-    word to everybody else — E5b fold A2's rule, extended by the brief. A non-staff third party
-    cannot ask about somebody else at all. The exact-mode balance is rendered only when
-    `mush_economy::may_view_account` says yes, and is omitted entirely otherwise (never a
-    placeholder).
+12. **`+resources` shows the number to the character themself and to staff, and refuses everybody
+    else outright** — E5b fold A2's rule, extended by the brief. A non-staff third party cannot ask
+    about somebody else at all, so there is no assessment-word branch for one (the first clause used
+    to promise a word branch its own third sentence made unreachable; verify fold D3 deleted the dead
+    arm rather than keeping a render whose only helper, `housing_word`, carries no view predicate).
+    The exact-mode balance is rendered only when `mush_economy::may_view_account` says yes, and is
+    omitted entirely otherwise (never a placeholder).
 13. **Two new documented commands are `@wod/economy` and `@career/set`** — `@wod` with an `economy`
     switch and `@career` with a `set` switch, matching `@econ/cadence`'s shape. `+chargen/residence`
     is the classic-surface twin of the wizard's Residence step so the stage is drivable without an
     input context.
 14. **No state families, still.** E5a deviation 10 and E5b deviation 11 carried the `action-state/*`
     question to the K-series review; E5c adds nothing to it.
+
+**Verify-fold deltas (2026-09-04).** What §5.7's fold changed about statements §5.6 already makes.
+Everything else above stands as written.
+
+- **The income row is keyed on the Resources dot, never the stance-derived level** (M1).
+  `maintain_income` rated the standing mint off `profile.level` — `resources ± stance` — so
+  `+career/stance exploit`, an ungated player verb, moved the mint one whole income row up on the
+  same `ObligationId`. D-E5-6 stands exactly as written; it was the code that was out of line with
+  it, with §5.1's "one amount per dot" and with `+career`'s own wording. `profile.level` is still
+  what `submit_plans` hands housing, which is where §5.2's table delivers Exploit's temporary
+  capacity.
+- **`migrate`'s population is the *approved* sheeted characters, and the skipped are reported**
+  (M2). `+chargen` writes `sheet:wod` at `ApprovalState::Unapproved` the moment a player starts, so
+  the old presence test banked a character who typed their own `backgrounds:Resources=5` and never
+  submitted. The approval is read through the ruleset's own `Dispatch` — the table
+  `chargen_approval` stamps — so the two readers cannot disagree. This restores §5.4 and answer 15's
+  asymmetry: chargen gives a character their artifacts **at approval**; migrate is for the
+  population that predates the flip.
+- **A `profile:{obj}` the loader skips is re-derived in the same boot** (T1), which is the only
+  reason the corrupt-profile rationale's "costs their home nothing" is true; and **a profile doc
+  whose `obj` disagrees with its key is skipped loudly** (T2). Both are recorded in the doc-shapes
+  table above.
+- **A prompt or `Coast` stamp from a *future* ordinal is stale, not fresh** (T3). `expired` and the
+  `COAST_OPPORTUNITY_PERIODS` check both guard the subtraction, so a re-seeded cursor cannot give a
+  prompt seven periods of life in a two-period slot, or silence `Coast` for six periods it never
+  spent. This is `mush_housing::assess`'s clock-moved-backwards decision, made explicitly here.
+- **A live `wod.income` line that no profile names is adopted or cancelled at boot, and a hand
+  cancel is a decision the tick does not undo** (M3, M4). `SpendingProfile::income` was the layer's
+  only name for the obligation; it is now a **cache**, because the record is self-identifying by
+  `cause` + `minted_by` + `credit_account`. The pointer is no longer cleared after a *failed*
+  cancel (which had stranded a live mint and let the next period open a second), `open_income`
+  adopts rather than duplicates, and `economy::boot::run` sweeps the rest. A staffer's or the
+  creditor's `@obligation/cancel` sets `SpendingProfile::income_cancelled_at` (the Resources dot it
+  was taken at) and opens nothing in its place until that dot changes or `@wod/economy migrate`
+  runs — E5b's `Withdrawn` rule, one record class over. `income_cancelled_at` is the one new field
+  the fold added, in deviation 2's shape: a rule about a decision needs somewhere to hold it.
+- **`careers = false` really does stop stances** (D2). Steps 1–3 of the evaluation applied
+  `level_delta` and `strain_delta` unconditionally, and `career_cmd` gated only on the mode, so a
+  careers-off server still sold a support tier for a typed stance. The evaluation now takes the
+  stance as `Coast`, and `/stance`, `/engage` and `/source add career=` refuse in the off-mode
+  gate's own words.
+- **The chargen stake is bounded by `starting_funds_major` alone; the cap sentence covers income
+  *lines*** (M5), and **an over-cap income row is marked on the `@wod/economy` screen** (M6). Neither
+  is a new refusal: deviation 10 puts the stake in `@econ/mint`'s uncapped attributed class and
+  deviation 11 forbids failing an approval, and §5.6 does not list an over-cap row among the hard
+  boot errors. Both are now *said* — a boot `warn!` for the stake, and the `DOES NOT RESOLVE`
+  treatment for the row.
+- **The chargen Residence pick is re-checked at approval** (M7). `vacancies` filtered from the live
+  sheet at pick time, so dots moved before `+chargen/submit` could hand a character a home their
+  approved sheet cannot carry. `settle_residence` recomputes the level from the approved sheet,
+  drops a pick that no longer fits, and reports the property's tier and the character's level to the
+  approver — deviation 11's shape, report and never un-sign. Both outcomes print the tier and level.
+- **A front renders only to a viewer `faction_listed` admits** (D1). `render_front` gated on
+  existence alone and then printed a faction's name and a front's title verbatim, which is the
+  module header's own existence-hiding rule honoured for property, tenancy and account and skipped
+  for fronts. Names resolve only through `FactionState::faction_listed`; everything else falls back
+  to `FrontRef::raw()`'s bare ids, so "you may not see it" and "there is no such faction" read
+  identically. Attribution on the record is unchanged (answer 20) — only the rendering narrows.
+- **Deviation 12's first clause is corrected to match its third** (D3), and the dead third-party
+  word branch is gone.
+- **`@career/set` says when a front or an org employer does not resolve** (D4), `+career`'s help
+  and its `domain=` refusal agree with the parser without becoming an org oracle (D5), and
+  `@wod/economy` matches its argument exhaustively (D6).
+- **Documented, not changed:** the `HousingPressure` prompt opens at `Delinquent`, because the
+  `Grace` rung is served by housing's own private notice (T5). §5.3's "housing's own notices are
+  notices, not prompts" and §11 default 1's one-period cushion are the reason; `behind_tenancy` now
+  says so, and a test pins the rung so it cannot drift.
 
 **The four additive seams below the ruleset** (all `pub`, all with the same locks their neighbours
 carry, all consumed by exactly one new caller plus the staff verb that already existed):
@@ -1139,6 +1219,93 @@ change by accident. E5c **registers nothing** with the timeline and owns no cloc
   enum and housing's, and nothing constructs or interprets either.
 - **`@wod/economy migrate` is the pattern for every later mode flip.** It is a staff act, one-shot,
   idempotent, it lists what it did, and it mints nothing in either direction.
+
+
+### 5.7 E5c verify outcome (2026-09-04)
+
+Three adversarial lenses over the shipped layer, twenty-two findings: **twenty confirmed and folded
+with a regression test each** (`tests/e5c.rs`, the `// ---- E5c verify fold ----` section — seven
+under lens M, seven under lens T, six under lens D), two refuted by the refutation panel and
+recorded rather than fixed.
+
+**Lens M (money, the standing mint, the housing seam):** two HIGH — a player-typed stance re-rating
+the standing mint (`maintain_income` keyed on the stance-derived level, so `+career/stance exploit`
+moved a character 500 → 5,000 major per period on the same `ObligationId`, and `conceal` cancelled
+it outright), and `@wod/economy migrate` profiling, banking and paying an **unapproved** sheet (the
+population test was the presence of `sheet:wod`, which `+chargen` writes at `Unapproved`); one
+MEDIUM — an orphaned mint nothing names, where the profile pointer was the layer's only name for
+the obligation, both cleanup paths dropped it *after a failed cancel*, and the recovery path then
+opened a second live line into the same wallet; four LOW — a hand `@obligation/cancel` silently
+replaced at the next period, a chargen stake bounded by nothing but its own config key, an income
+row above the mint cap printing as live while paying nobody, and a Residence pick validated at pick
+time only.
+
+**Lens T (the tick, durability, the prompt):** one HIGH — a dropped `profile:{obj}` that nothing
+ever re-derived, because the evaluation's working set *is* the profile map, so the character left
+the economy silently and their home walked to `EvictionPending` on `UNKNOWN_GRACE`; three MEDIUM —
+a profile doc whose `obj` disagreed with its key (which would have overwritten another character's
+record at every boot forever), a prompt stranded in an old ordinal by a re-seeded cursor (seven
+periods of life in a two-period slot, holding the one attention slot D-E5-8 reserves for housing),
+and a `GOING` character still evaluated and still committing front-attributed canon; two LOW plus
+one INFO — a lapse line that never counted down, the `Delinquent` rung (documented, not changed),
+and no loader or reboot coverage at all.
+
+**Lens D (disclosure, authority, the verb surface):** one HIGH — `render_front` naming a hidden
+faction and a staff-only front title to a non-member, on `+career` and `+prompt`, because it gated
+on existence rather than on `faction_listed`; one MEDIUM — `[wod.economy].careers = false` switching
+nothing off on the evaluation's first three steps or on the player verbs, so a stance still bought a
+support tier; three LOW and one INFO — a dead third-party disclosure branch that would have leaked
+the moment it was revived, `@career/set` recording an unresolvable front in silence, a `domain=`
+help string that disagreed with its parser, and `@wod/economy` swallowing an unknown argument.
+
+The two folds now share their headline: **the findings that mattered most are again the ones where a
+quiet failure had replaced a loud one** — the orphaned mint, the un-re-derived profile, and the
+silently-resurrected cancel. The E5c-specific one is narrower and sharper: **every money defect in
+the layer traced back to a number keyed on the wrong field** — the stance-derived level instead of
+the sheet's dot, an unapproved sheet's dots instead of an approved sheet's, and a pointer that was
+the only name for a mint instead of one cache among several.
+
+Gates as run: `cargo test -p ruleset-wod -p mush-housing -p mush-economy -p mush-server`
+**943 passing** (923 before the fold, plus the twenty regression tests); `cargo clippy --workspace
+--all-targets -- -D warnings` clean; `cargo test --workspace` **2755 passing across 184 suites, 0
+failing**. `cargo fmt` stays off, unchanged.
+
+**Refuted, not folded.** Two findings the refutation panel rejected, recorded here so the reasoning
+is not re-litigated:
+
+- **`+prompt <option>` answering a prompt whose life is already over** — refuted 3–0 on arithmetic.
+  Prompt expiry is measured in the character's own monotonic `EvalState::period`, never in cadence
+  positions, so `@econ/cadence advance <c> 10` consumes no prompt life at all; `expire` runs
+  unconditionally in the same pass that increments `period`, so `choose` cannot be handed an expired
+  prompt. The strain observed was `opportunity_options()`'s documented `Strain(1)` for an
+  affirmative answer to a **live** prompt, beside a free `pass`.
+- **`min_role: Role::Royalty` locking `SIM_ADMIN` staff out of `@wod/economy` and `@career/set`** —
+  refuted 2–1. The Royalty floor is the ruleset crate's uniform convention (all seven `min_role`
+  sites in `crates/ruleset-wod/src/`, and `ruleset-shadowrun` identically); the `SIM_ADMIN ∨
+  Royalty` handler gate is the *module* layer's convention, and E5c sits on the ruleset side of that
+  boundary. Reachability seals it: `Powers::SIM_ADMIN` is held implicitly by Wizard+ (already ≥
+  Royalty) or explicitly through `Obj.powers`, which no production code path writes. Worth tidying
+  if a power-grant verb ever lands; today it grants nobody access they should not have.
+
+**Handoffs to E6/E7** (extending §5.6's four):
+
+- **A boot reconciliation pass is now the third of its kind**, after 08c §4.8's B2 orphan-escrow
+  sweep and E5b's tenancy reconciliation. A later layer that mints an E4 record or points at one
+  owes itself the same pass, and the pattern is the load-bearing part: **the record is
+  self-identifying by `cause` + `minted_by`, so the pointer is a cache, not the name.** A pointer
+  that is the only name for a record strands the record the moment the pointer is lost — and the
+  cheapest way to lose one is to clear it after a write that failed.
+- **`render_front` is now viewer-aware, and that is the seam the faction simulation must keep** when
+  it starts rendering its own operations. One predicate (`FactionState::faction_listed`), not two:
+  a second, kinder rule somewhere else is how a hidden faction becomes visible by accident.
+- **`careers = false` is the precedent for every later partial switch.** A config field's doc
+  comment is a contract — "whether careers, stances, opportunities and exposure are evaluated" has
+  to mean all four — and a switch that only half-applies must be recorded in the mode table the way
+  `housing = false` spells its own limit out.
+- **`+prompt`'s countdown is the first player-facing read of `EvalState::period` outside the tick.**
+  Any later view that quotes a deadline reads the character's own ordinal, never the constant the
+  deadline was configured from; a write-once constant interpolated into a countdown is a number that
+  is right exactly once.
 
 ---
 
