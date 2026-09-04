@@ -17,6 +17,14 @@ critique pass. They are the *reference* design; where they conflict with each ot
 | [08a-economy-build-status.md](08a-economy-build-status.md) | **Build ledger for doc 08**: what of E0–E8 is shipped (commits), the decisions made while building, the live seams, and the E3 pickup point — read first when resuming economy work |
 | [proposals/e7-production-slice.md](proposals/e7-production-slice.md) | **Proposal (input to 10b, not authoritative):** the K side's E7 requisition/production vertical slice, its pulled-forward K4a/K5a dependencies, migration gates, models, milestones |
 | [09-rules-engine-contracts.md](09-rules-engine-contracts.md) | Twelve shared mechanical contracts, authoritative action transactions, and five minimum cross-ruleset proving gates |
+| [08b-e3-implementation-plan.md](08b-e3-implementation-plan.md) | E3 implementation plan (Draft 0.3, as built + verify outcome): holds-free custody, approvals, existence hiding, faction linkage |
+| [08c-e4-implementation-plan.md](08c-e4-implementation-plan.md) | E4 implementation plan (Draft 0.5, as built through E4c + verify folds; §12 doc 09 conformance and the K3 review) |
+| [08d-e5-implementation-plan.md](08d-e5-implementation-plan.md) | E5 implementation plan (Draft 0.2, as built through E5b): WoD housing, careers, stances, prompts; owner answers binding |
+| [08e-e6-owner-questions.md](08e-e6-owner-questions.md) | E6 owner survey (answered): the Shadowrun run-and-pay economy, 24 binding decisions |
+| [08f-e6-implementation-plan.md](08f-e6-implementation-plan.md) | E6 implementation plan (Draft 0.2, defaults accepted): run and pay, outcomes/fences/custody, the neutral market crate |
+| [10-tacsim-foundations.md](10-tacsim-foundations.md) | TacSim foundations (Draft 0.4): scope, decisions 1A–7A and C1A–C30A, addenda T1–T16, sharpenings R1–R7, the E7 backlog |
+| [10a-tacsim-e7-owner-questions.md](10a-tacsim-e7-owner-questions.md) | E7 owner survey (Draft 0.2, answered): 22 decisions, the eleven-cut structure, handbacks to E5/E6 |
+| [10b-e7-implementation-plan.md](10b-e7-implementation-plan.md) | E7 implementation plan (Draft 0.2, defaults accepted): the authoritative eleven-cut plan over the landed K4a/K5a primitives |
 
 `06-object-behaviors-spatial-domains.md` and its later companion proposals are
 implementation-informed drafts produced by dedicated design conversations deferred in `PLAN.md`.
@@ -35,9 +43,3 @@ substitutions in mind:
 2. **Scripting is Rhai, not mlua/Luau.** 01-server-core §8's mlua recommendation is superseded;
    the sandbox/budget/hook design carries over onto Rhai's built-in limits
    (`set_max_operations`, call-depth and size caps). Script API namespace is the `mush` Rhai module.
-| [08d-e5-implementation-plan.md](08d-e5-implementation-plan.md) | E5 implementation plan (Draft 0.2, as built through E5b): WoD housing, careers, stances, prompts; owner answers binding |
-| [08e-e6-owner-questions.md](08e-e6-owner-questions.md) | E6 owner survey (answered): the Shadowrun run-and-pay economy, 24 binding decisions |
-| [08f-e6-implementation-plan.md](08f-e6-implementation-plan.md) | E6 implementation plan (Draft 0.2, defaults accepted): run and pay, outcomes/fences/custody, the neutral market crate |
-| [10-tacsim-foundations.md](10-tacsim-foundations.md) | TacSim foundations (Draft 0.4): scope, decisions 1A–7A and C1A–C30A, addenda T1–T16, sharpenings R1–R7, the E7 backlog |
-| [10a-tacsim-e7-owner-questions.md](10a-tacsim-e7-owner-questions.md) | E7 owner survey (Draft 0.2, answered): 22 decisions, the eleven-cut structure, handbacks to E5/E6 |
-| [10b-e7-implementation-plan.md](10b-e7-implementation-plan.md) | E7 implementation plan (Draft 0.2, defaults accepted): the authoritative eleven-cut plan over the landed K4a/K5a primitives |
