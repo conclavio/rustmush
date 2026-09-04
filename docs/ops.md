@@ -579,7 +579,11 @@ off-loop Ambience call per bucket; the lines land **pending** and enter play onl
 after `@weather/lines/approve`, persisted alongside the cells in the `weather`
 namespace (`flavor:{climate}:{state}:{transition|ambient}`). One knob:
 `[weather].flavor_variants` (default 10) — how many variants each call requests
-per bucket. Every call is metered/budgeted/audited like the rest of the LLM layer.
+per bucket; `0` disables generation and values above 64 are clamped. Each
+generated pool is hard-capped at 256 lines of at most 512 UTF-8 bytes each.
+Approved lines are never silently evicted: when a pool is full, staff must reject
+obsolete lines before top-ups resume. Invalid oversized persisted pools fail boot
+loudly. Every call is metered/budgeted/audited like the rest of the LLM layer.
 
 **Scripting.** Builders attach sandboxed Rhai scripts to objects as `script:*`
 attributes (no separate store). Every run is bounded by operation, call-depth,

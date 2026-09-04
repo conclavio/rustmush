@@ -23,7 +23,7 @@
 //! | `[game].ic_ratio` | `1` | IC seconds per OOC second (game-clock speed); read at boot |
 //! | `[game].ic_epoch` | `"2020-01-01 00:00"` | IC datetime at OOC unix 0 — calendar phase/start; read at boot |
 //! | `[rulesets].enabled` | `["wod"]` | ruleset module(s) to load; unknown ids are a hard boot error |
-//! | `[weather].flavor_variants` | `10` | M10 `@weather/generate` variants requested per (climate,state) bucket |
+//! | `[weather].flavor_variants` | `10` | M10 variants per weather bucket (`0` disables, hard max `64`) |
 //! | `[worldgen].batch_max_rooms` | `40` | M10 `@gen/building` interior-walk cap (rooms per batch) |
 //! | `[llm]` | `enabled = false` | M7 LLM layer (providers, routes, budgets); into [`mush_llm::LlmConfig`] |
 //!
@@ -297,8 +297,9 @@ impl Default for RulesetsCfg {
 pub struct WeatherCfg {
     /// How many flavor variants `@weather/generate` requests per
     /// `(climate, state)` bucket (transition + ambient). Defaults to the
-    /// `mush-weather` crate default (10); the typed conversion into
-    /// `mush_weather::WeatherConfig` lives in `mush-server`.
+    /// `mush-weather` crate default (10); zero disables generation and values
+    /// above the crate's hard maximum (64) are clamped. The typed conversion
+    /// into `mush_weather::WeatherConfig` lives in `mush-server`.
     pub flavor_variants: usize,
 }
 

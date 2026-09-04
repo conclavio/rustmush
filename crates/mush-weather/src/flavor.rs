@@ -70,6 +70,17 @@ use smol_str::SmolStr;
 
 use crate::cell::NS;
 
+/// Hard storage bound for one generated `(climate, state, bucket)` pool.
+/// Approved lines count toward the bound and are never evicted implicitly;
+/// staff must reject obsolete lines before more pending lines can be admitted.
+pub const MAX_FLAVOR_LINES_PER_POOL: usize = 256;
+
+/// Hard UTF-8 wire/storage bound for one generated flavor line.
+pub const MAX_FLAVOR_LINE_BYTES: usize = 512;
+
+/// Hard upper bound on variants requested from a provider for either bucket.
+pub const MAX_FLAVOR_VARIANTS_PER_BUCKET: usize = 64;
+
 /// Which kind of line a generated variant is, and which live selection tier it
 /// joins once approved. The `bucket` component of the `flavor:{climate}:{state}:{bucket}`
 /// persistence key.
@@ -223,15 +234,21 @@ impl FlavorStore {
         let pool = self.pools.entry(key).or_default();
         let mut added = 0;
         for text in texts {
-            let text = text.trim().to_string();
-            if text.is_empty() || pool.iter().any(|l| l.text.eq_ignore_ascii_case(&text)) {
+            if pool.len() >= MAX_FLAVOR_LINES_PER_POOL || self.next_id == u64::MAX {
+                break;
+            }
+            let text = text.trim();
+            if text.is_empty()
+                || text.len() > MAX_FLAVOR_LINE_BYTES
+                || pool.iter().any(|l| l.text.eq_ignore_ascii_case(text))
+            {
                 continue;
             }
             let id = self.next_id;
             self.next_id += 1;
             pool.push(FlavorLine {
                 id,
-                text,
+                text: text.to_string(),
                 approved: false,
             });
             added += 1;
@@ -306,21 +323,58 @@ impl FlavorStore {
     }
 
     /// Install a pool loaded from persistence (boot). Overwrites any existing
-    /// pool for the key.
-    pub fn load_pool(&mut self, key: FlavorKey, lines: Vec<FlavorLine>) {
+    /// pool for the key after validating the same hard bounds enforced for new
+    /// lines. Invalid persisted content is an authoritative-state violation,
+    /// so callers fail boot rather than silently truncate approved material.
+    pub fn load_pool(&mut self, key: FlavorKey, lines: Vec<FlavorLine>) -> Result<(), String> {
+        if lines.len() > MAX_FLAVOR_LINES_PER_POOL {
+            return Err(format!(
+                "pool contains {} lines; maximum is {MAX_FLAVOR_LINES_PER_POOL}",
+                lines.len()
+            ));
+        }
+        for (index, line) in lines.iter().enumerate() {
+            if line.text.trim().is_empty() {
+                return Err(format!("line {index} has empty text"));
+            }
+            if line.text.len() > MAX_FLAVOR_LINE_BYTES {
+                return Err(format!(
+                    "line {} is {} bytes; maximum is {MAX_FLAVOR_LINE_BYTES}",
+                    line.id,
+                    line.text.len()
+                ));
+            }
+            if lines[..index].iter().any(|prior| prior.id == line.id)
+                || self
+                    .pools
+                    .iter()
+                    .filter(|(existing_key, _)| *existing_key != &key)
+                    .flat_map(|(_, existing_lines)| existing_lines)
+                    .any(|prior| prior.id == line.id)
+            {
+                return Err(format!("duplicate review id {}", line.id));
+            }
+        }
         self.pools.insert(key, lines);
+        Ok(())
     }
 
     /// Recompute `next_id` as one past the highest id present. Called after a
     /// boot load so freshly-generated lines never collide with survivors.
-    pub fn recompute_next_id(&mut self) {
+    pub fn recompute_next_id(&mut self) -> Result<(), String> {
         let max = self
             .pools
             .values()
             .flat_map(|v| v.iter())
             .map(|l| l.id)
             .max();
-        self.next_id = max.map_or(0, |m| m + 1);
+        self.next_id = match max {
+            Some(m) => m
+                .checked_add(1)
+                .ok_or_else(|| "review id space is exhausted".to_string())?,
+            None => 0,
+        };
+        Ok(())
     }
 
     /// The module op that mirrors one pool's current contents: a `JsonSet` of
@@ -551,14 +605,21 @@ async fn generate_flavor(llm: &LlmService, snap: &FlavorGenSnapshot) -> FlavorGe
 
 /// Trim, drop blanks, de-duplicate (case-insensitive), and cap to `n`.
 fn clean(lines: Vec<String>, n: usize) -> Vec<String> {
+    let limit = n.min(MAX_FLAVOR_VARIANTS_PER_BUCKET);
+    if limit == 0 {
+        return Vec::new();
+    }
     let mut out: Vec<String> = Vec::new();
     for l in lines {
-        let l = l.trim().to_string();
-        if l.is_empty() || out.iter().any(|e| e.eq_ignore_ascii_case(&l)) {
+        let l = l.trim();
+        if l.is_empty()
+            || l.len() > MAX_FLAVOR_LINE_BYTES
+            || out.iter().any(|e| e.eq_ignore_ascii_case(l))
+        {
             continue;
         }
-        out.push(l);
-        if out.len() >= n {
+        out.push(l.to_string());
+        if out.len() >= limit {
             break;
         }
     }
@@ -687,8 +748,16 @@ pub fn submit_flavor_tool() -> ToolDef {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-                "transition": { "type": "array", "items": { "type": "string" } },
-                "ambient": { "type": "array", "items": { "type": "string" } }
+                "transition": {
+                    "type": "array",
+                    "maxItems": MAX_FLAVOR_VARIANTS_PER_BUCKET,
+                    "items": { "type": "string", "maxLength": MAX_FLAVOR_LINE_BYTES }
+                },
+                "ambient": {
+                    "type": "array",
+                    "maxItems": MAX_FLAVOR_VARIANTS_PER_BUCKET,
+                    "items": { "type": "string", "maxLength": MAX_FLAVOR_LINE_BYTES }
+                }
             }
         }),
         strict: true,
@@ -759,6 +828,91 @@ mod tests {
     }
 
     #[test]
+    fn pending_pool_is_hard_bounded_without_evicting_approved_lines() {
+        let mut store = FlavorStore::default();
+        let added = store.add_pending(
+            "c",
+            "clear",
+            FlavorBucket::Ambient,
+            (0..=MAX_FLAVOR_LINES_PER_POOL).map(|n| format!("line {n}")),
+        );
+        assert_eq!(added, MAX_FLAVOR_LINES_PER_POOL);
+        let key = FlavorKey::new("c", "clear", FlavorBucket::Ambient);
+        assert_eq!(store.pool(&key).len(), MAX_FLAVOR_LINES_PER_POOL);
+
+        let first_id = store.pool(&key)[0].id;
+        store.approve(first_id).unwrap();
+        assert_eq!(
+            store.add_pending("c", "clear", FlavorBucket::Ambient, ["new line".into()]),
+            0
+        );
+        assert!(store.find(first_id).is_some_and(|(_, line)| line.approved));
+    }
+
+    #[test]
+    fn generated_line_and_variant_bounds_are_enforced() {
+        let overlong = "x".repeat(MAX_FLAVOR_LINE_BYTES + 1);
+        assert!(clean(vec!["one".into()], 0).is_empty());
+        assert!(clean(vec![overlong.clone()], 1).is_empty());
+        assert_eq!(
+            clean(
+                (0..=MAX_FLAVOR_VARIANTS_PER_BUCKET)
+                    .map(|n| format!("line {n}"))
+                    .collect(),
+                usize::MAX,
+            )
+            .len(),
+            MAX_FLAVOR_VARIANTS_PER_BUCKET
+        );
+
+        let mut store = FlavorStore::default();
+        assert_eq!(
+            store.add_pending("c", "rain", FlavorBucket::Ambient, [overlong]),
+            0
+        );
+    }
+
+    #[test]
+    fn persisted_pool_validation_fails_closed() {
+        let key = FlavorKey::new("c", "fog", FlavorBucket::Ambient);
+        let mut store = FlavorStore::default();
+        let too_many = (0..=MAX_FLAVOR_LINES_PER_POOL)
+            .map(|id| FlavorLine {
+                id: id as u64,
+                text: format!("line {id}"),
+                approved: true,
+            })
+            .collect();
+        assert!(store.load_pool(key.clone(), too_many).is_err());
+
+        let duplicate_ids = vec![
+            FlavorLine {
+                id: 7,
+                text: "one".into(),
+                approved: false,
+            },
+            FlavorLine {
+                id: 7,
+                text: "two".into(),
+                approved: true,
+            },
+        ];
+        assert!(store.load_pool(key.clone(), duplicate_ids).is_err());
+
+        store
+            .load_pool(
+                key,
+                vec![FlavorLine {
+                    id: u64::MAX,
+                    text: "last id".into(),
+                    approved: true,
+                }],
+            )
+            .unwrap();
+        assert!(store.recompute_next_id().is_err());
+    }
+
+    #[test]
     fn reject_removes_and_recompute_next_id_survives_reboot() {
         let mut store = FlavorStore::default();
         store.add_pending("c", "fog", FlavorBucket::Ambient, ["a".into(), "b".into()]);
@@ -770,15 +924,17 @@ mod tests {
         assert!(store.find(id_b).is_none());
         // Simulate a reboot: a fresh store loaded with the surviving line.
         let mut booted = FlavorStore::default();
-        booted.load_pool(
-            FlavorKey::new("c", "fog", FlavorBucket::Ambient),
-            vec![FlavorLine {
-                id: 0,
-                text: "a".into(),
-                approved: true,
-            }],
-        );
-        booted.recompute_next_id();
+        booted
+            .load_pool(
+                FlavorKey::new("c", "fog", FlavorBucket::Ambient),
+                vec![FlavorLine {
+                    id: 0,
+                    text: "a".into(),
+                    approved: true,
+                }],
+            )
+            .unwrap();
+        booted.recompute_next_id().unwrap();
         // The next generated id is past the survivor's, never colliding.
         booted.add_pending("c", "fog", FlavorBucket::Ambient, ["c".into()]);
         let new_id = booted.find_by_text("c").unwrap();

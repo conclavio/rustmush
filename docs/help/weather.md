@@ -59,7 +59,10 @@ nothing the model writes ever reaches players unreviewed.
 `@weather/generate` never blocks: it fires one cheap off-loop call per
 `(climate, state)` bucket (metered and audited like all LLM calls — see
 `help llm`) and the pending lines arrive a moment later. How many variants it
-asks for per bucket is `[weather].flavor_variants` (default 10). Start to finish:
+asks for per bucket is `[weather].flavor_variants` (default 10, 64 maximum;
+zero disables generation). A generated pool holds at most 256 lines; approved
+lines are never evicted automatically, so reject obsolete lines before topping
+up a full pool. Start to finish:
 
   @weather/climate here=temperate-coastal
   @weather/generate temperate-coastal rain     (pending lines arrive shortly)
