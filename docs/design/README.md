@@ -15,7 +15,7 @@ critique pass. They are the *reference* design; where they conflict with each ot
 | [07-npc-control-and-tactical-ai.md](07-npc-control-and-tactical-ai.md) | Link-loss automation, allegiance, typed orders, hybrid tactical AI, belief state, and NPC mobility |
 | [08-economy-organizations-ownership.md](08-economy-organizations-ownership.md) | Cross-ruleset economy, first-class organizations, scoped authorization, asset ownership/custody, contracts, housing, and production |
 | [08a-economy-build-status.md](08a-economy-build-status.md) | **Build ledger for doc 08**: what of E0–E8 is shipped (commits), the decisions made while building, the live seams, and the E3 pickup point — read first when resuming economy work |
-| [08f-e7-implementation-plan.md](08f-e7-implementation-plan.md) | E7 requisition/production vertical slice, its pulled-forward K4/K5 dependencies, migration gates, models, milestones, and fault/restart review checklist |
+| [proposals/e7-production-slice.md](proposals/e7-production-slice.md) | E7 requisition/production vertical slice, its pulled-forward K4/K5 dependencies, migration gates, models, milestones, and fault/restart review checklist |
 | [09-rules-engine-contracts.md](09-rules-engine-contracts.md) | Twelve shared mechanical contracts, authoritative action transactions, and five minimum cross-ruleset proving gates |
 
 `06-object-behaviors-spatial-domains.md` and its later companion proposals are

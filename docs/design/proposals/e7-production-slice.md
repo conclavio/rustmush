@@ -1,3 +1,5 @@
+> **Status: PROPOSAL (input to `../10b-e7-implementation-plan.md`, the authoritative E7 plan).** Filed 2026-09-03 from the K branch; its production slice informs 10b cuts 2–4, with six points overridden by binding decisions (10b §6, marked **Ov**).
+
 # E7 implementation plan — requisition and production vertical slice
 
 **Status:** Draft 0.3, 2026-09-04. The two early kernel dependencies are pulled forward as K4a/K5a
