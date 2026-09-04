@@ -2103,6 +2103,11 @@ async fn run(
     // writer is gone and its final latched facts have been drained, so the
     // closed wake channel does not busy-loop the select).
     let mut signals_open = true;
+    // Store health and exact commit receipts travel on separate bounded lanes.
+    // A recovered health hint may therefore arrive first; retain it until the
+    // corresponding pending commit is finalized so the public "writable
+    // again" announcement is also a true admission guarantee.
+    let mut recovery_waits_for_commit = false;
     let mut inbound_open = true;
     // Rate-limit the retained-depth alarm so a genuinely wedged store logs once
     // per crossing, not every re-emit tick.
@@ -2465,7 +2470,21 @@ async fn run(
                 );
                 match signal {
                     WriterSignal::StoreStatus { healthy, detail } => {
-                        apply_store_status(&engine.world, &gateway, &mut health, healthy, &detail);
+                        if healthy && pending_commit.is_some() {
+                            recovery_waits_for_commit = true;
+                            tracing::debug!(
+                                "deferring store recovery transition until exact commit finalization"
+                            );
+                        } else {
+                            recovery_waits_for_commit = false;
+                            apply_store_status(
+                                &engine.world,
+                                &gateway,
+                                &mut health,
+                                healthy,
+                                &detail,
+                            );
+                        }
                     }
                     WriterSignal::LedgerBreach { detail, seal } => {
                         // Resolve a specific seal the writer isolated: a confirmed poison
@@ -2547,6 +2566,9 @@ async fn run(
                     llm.as_ref(),
                 );
                 finish_pending_operational(&mut engine, &gateway, completed);
+                if std::mem::take(&mut recovery_waits_for_commit) {
+                    apply_store_status(&engine.world, &gateway, &mut health, true, "");
+                }
                 if exit_after_ack {
                     StepOutcome::Shutdown
                 } else {
