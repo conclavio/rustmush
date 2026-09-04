@@ -674,6 +674,22 @@ impl Engine {
             .scan(self, cause, cursor, limit)
     }
 
+    /// Ask the source's trusted read-only adapter to build domain addressing,
+    /// parameters, and guards after exact store preflight.
+    pub fn plan_scheduled_action(
+        &self,
+        candidate: &crate::schedule_source::ScheduledActionCandidate,
+        ingress: &crate::action::IngressEnvelope,
+    ) -> Result<
+        crate::schedule_source::ScheduledActionPlan,
+        crate::schedule_source::ScheduleActionPlanError,
+    > {
+        self.registry
+            .schedule_sources()
+            .ok_or(crate::schedule_source::ScheduleActionPlanError::RegistryUnavailable)?
+            .plan_candidate(self, candidate, ingress)
+    }
+
     /// Enumerate the current viewer-safe legal actions through the frozen
     /// provider registry and deployment offer key ring.
     pub fn project_legal_actions(
@@ -976,6 +992,42 @@ impl Engine {
             commit_token,
             &mut self.action_state,
             self.resolution_keys.as_ref(),
+        )
+    }
+
+    /// Prepare a scheduled action while the kernel seeds its exact durable
+    /// cursor post-image into the same owner-scoped transaction before the
+    /// provider runs. Re-evaluation against current state makes a stale
+    /// discovery non-mutating and prevents providers from forgetting to
+    /// advance (or independently advancing) the authoritative cursor.
+    pub fn prepare_registered_scheduled_authoritative_action(
+        &mut self,
+        candidate: &crate::schedule_source::ScheduledActionCandidate,
+        invocation: &crate::action::ActionInvocation,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (PreparedTxn, crate::action::PreparedAuthoritativeAction),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let schedules = self
+            .registry
+            .schedule_sources()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        providers.prepare_authoritative_invocation_seeded(
+            candidate.action(),
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            |txn| {
+                schedules.seed_advance(candidate, txn).map_err(|source| {
+                    crate::action::ActionProviderPrepareError::Schedule(Box::new(source))
+                })
+            },
         )
     }
 

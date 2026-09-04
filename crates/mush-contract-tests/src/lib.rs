@@ -17,10 +17,10 @@ use mush_core::{
     OwnerId, PerceivedRef, PrepareCtx, PreparedCausalRef, PreparedTrigger, PrincipalId,
     ProjectedLegalActionSink, ProjectedParameterSchema, ProjectedTargetSchema, ProviderOfferDraft,
     Registrar, RequestUid, ResolutionKeyRing, ResolutionSecret, ResourceOperation, RulesValue,
-    SameCommitTrigger, ScheduleId, ScopedIdempotencyKey, StateFamilyDescriptor, StateFamilyHandle,
-    StateFamilyId, SubjectKey, WindowIntent, WindowMode, WindowOrderKey, WindowRestartPolicy,
-    WindowTimeoutPolicy, action_window_state_family_descriptor,
-    durable_schedule_state_family_descriptor,
+    SameCommitTrigger, ScheduleActionAdapter, ScheduleActionDraft, ScheduleAdvance, ScheduleId,
+    ScopedIdempotencyKey, StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey,
+    WindowIntent, WindowMode, WindowOrderKey, WindowRestartPolicy, WindowTimeoutPolicy,
+    action_window_state_family_descriptor, durable_schedule_state_family_descriptor,
 };
 use mush_testkit::TestWorld;
 use serde::{Deserialize, Serialize};
@@ -300,6 +300,14 @@ pub struct ToyGuardedState {
     pub effect: EffectInstance,
 }
 
+/// Provider-specific durable addressing for the toy expiry schedule.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToyScheduledExpiry {
+    pub actor: ObjId,
+    pub effect: EffectInstanceId,
+}
+
 impl ToyGuardedState {
     #[must_use]
     pub fn expires_at(&self) -> &ClockStamp {
@@ -317,6 +325,7 @@ pub struct ToyStateFamilies {
     pub guarded: StateFamilyHandle<ObjId, ToyGuardedState>,
     pub windows: StateFamilyHandle<ActionWindowId, ActionWindowRecord>,
     pub schedules: StateFamilyHandle<ScheduleId, DurableSchedule>,
+    pub scheduled_expiries: StateFamilyHandle<ScheduleId, ToyScheduledExpiry>,
 }
 
 #[derive(Debug)]
@@ -873,6 +882,93 @@ struct GuardedExpiryProvider {
     guarded: StateFamilyHandle<ObjId, ToyGuardedState>,
     expire_definition: DefinitionRef,
     guarded_definition: DefinitionRef,
+}
+
+#[derive(Debug)]
+struct GuardedExpiryScheduleAdapter {
+    jobs: StateFamilyHandle<ScheduleId, ToyScheduledExpiry>,
+    guarded: StateFamilyHandle<ObjId, ToyGuardedState>,
+}
+
+impl ScheduleActionAdapter for GuardedExpiryScheduleAdapter {
+    fn plan(
+        &self,
+        action: &DefinitionRef,
+        advance: &ScheduleAdvance,
+        engine: &Engine,
+    ) -> Result<ScheduleActionDraft, ActionError> {
+        let job = engine
+            .action_state()
+            .get(&self.jobs, &advance.schedule())
+            .map_err(|error| BraceProvider::state_error(&error))?
+            .ok_or_else(|| {
+                ActionError::new(
+                    ActionErrorCode::Stale,
+                    false,
+                    "scheduled expiry addressing is unavailable",
+                )
+                .expect("static schedule error is bounded")
+            })?;
+        let guarded = engine
+            .action_state()
+            .get(&self.guarded, &job.actor)
+            .map_err(|error| BraceProvider::state_error(&error))?
+            .filter(|guarded| guarded.effect.id() == job.effect)
+            .ok_or_else(|| {
+                ActionError::new(
+                    ActionErrorCode::Stale,
+                    false,
+                    "scheduled guarded effect is no longer current",
+                )
+                .expect("static schedule error is bounded")
+            })?;
+        let definitions = engine.registry.definitions().ok_or_else(|| {
+            ActionError::new(
+                ActionErrorCode::Integrity,
+                false,
+                "toy definition registry is unavailable",
+            )
+            .expect("static schedule error is bounded")
+        })?;
+        let mut guard_builder = engine
+            .registry
+            .server_guard_set_builder(mush_core::RevisionSet::default())
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "toy guard registry is unavailable",
+                )
+                .expect("static schedule error is bounded")
+            })?;
+        guard_builder
+            .add_definition(action.clone(), definitions)
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "expiry definition guard is unavailable",
+                )
+                .expect("static schedule error is bounded")
+            })?;
+        Ok(ScheduleActionDraft {
+            actor: job.actor,
+            subject: PerceivedRef::SelfActor,
+            targets: Vec::new(),
+            parameters: json!({
+                "effect": job.effect,
+                "now": guarded.expires_at(),
+            }),
+            guards: guard_builder.finish().map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "expiry schedule guards are invalid",
+                )
+                .expect("static schedule error is bounded")
+            })?,
+        })
+    }
 }
 
 impl GuardedExpiryProvider {
@@ -1483,11 +1579,32 @@ impl GameModule for ToyRulesModule {
             DurableScheduleStateCodec,
             DurableScheduleStateCodec,
         )?;
+        let scheduled_expiries = registrar.state_family(
+            StateFamilyDescriptor::new(
+                StateFamilyId::new("scheduled_expiries").expect("static family id"),
+                CanonicalId::new("durable_schedule_id.v1").expect("static codec id"),
+                CanonicalId::new("toy.scheduled_expiry.v1").expect("static schema id"),
+                1,
+                CanonicalId::new("toy.scheduled_expiry.decode_json.v1").expect("static decoder id"),
+                CanonicalId::new("toy.scheduled_expiry.shape.v1").expect("static validator id"),
+                CanonicalId::new("toy.scheduled_expiry.json.v1").expect("static serializer id"),
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            |key: &ScheduleId| Ok(key.canonical_hash().to_hex()),
+            |value: &Value| {
+                serde_json::from_value(value.clone()).map_err(|error| error.to_string())
+            },
+            |_: &ToyScheduledExpiry| Ok::<(), String>(()),
+            |value: &ToyScheduledExpiry| {
+                serde_json::to_value(value).map_err(|error| error.to_string())
+            },
+        )?;
         let families = ToyStateFamilies {
             focus,
             guarded,
             windows,
             schedules,
+            scheduled_expiries,
         };
         registrar.action_provider(
             actual.brace.clone(),
@@ -1510,6 +1627,10 @@ impl GameModule for ToyRulesModule {
             CanonicalId::new("guarded_expiry").expect("static schedule source id"),
             actual.guarded_expire.clone(),
             families.schedules.clone(),
+            GuardedExpiryScheduleAdapter {
+                jobs: families.scheduled_expiries.clone(),
+                guarded: families.guarded.clone(),
+            },
         )?;
         registrar.action_provider(
             actual.window_action.clone(),
@@ -1592,6 +1713,33 @@ pub fn install_toy_schedule(
         txn.insert(&families.schedules, &id, schedule)
             .expect("valid schedule bootstrap");
         txn.prepare().expect("schedule bootstrap prepares")
+    };
+    let (_, installation) = prepared.into_parts();
+    engine.install_prepared_action(installation);
+}
+
+/// Atomically install a toy schedule and its provider-specific addressing.
+pub fn install_toy_scheduled_expiry(
+    engine: &mut Engine,
+    families: &ToyStateFamilies,
+    schedule: DurableSchedule,
+    actor: ObjId,
+    effect: EffectInstanceId,
+) {
+    let id = schedule.id();
+    let prepared = {
+        let mut txn = engine
+            .action_transaction(&families.schedules)
+            .expect("toy schedule transaction");
+        txn.insert(&families.schedules, &id, schedule)
+            .expect("valid schedule bootstrap");
+        txn.insert(
+            &families.scheduled_expiries,
+            &id,
+            ToyScheduledExpiry { actor, effect },
+        )
+        .expect("valid scheduled expiry addressing");
+        txn.prepare().expect("scheduled expiry bootstrap prepares")
     };
     let (_, installation) = prepared.into_parts();
     engine.install_prepared_action(installation);

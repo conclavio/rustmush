@@ -3753,11 +3753,34 @@ impl ActionProviderRegistry {
         state: &mut ActionStateStore,
         resolution_keys: Option<&crate::resolution::ResolutionKeyRing>,
     ) -> Result<(PreparedTxn, PreparedAuthoritativeAction), ActionProviderPrepareError> {
+        self.prepare_authoritative_invocation_seeded(
+            action,
+            invocation,
+            commit_token,
+            state,
+            resolution_keys,
+            |_| Ok(()),
+        )
+    }
+
+    pub(crate) fn prepare_authoritative_invocation_seeded<F>(
+        &self,
+        action: &DefinitionRef,
+        invocation: &ActionInvocation,
+        commit_token: CommitToken,
+        state: &mut ActionStateStore,
+        resolution_keys: Option<&crate::resolution::ResolutionKeyRing>,
+        seed: F,
+    ) -> Result<(PreparedTxn, PreparedAuthoritativeAction), ActionProviderPrepareError>
+    where
+        F: FnOnce(&mut ActionTxn<'_>) -> Result<(), ActionProviderPrepareError>,
+    {
         let entry = self.get_exact(action)?;
         let mut txn = state.transaction_for_provider(entry.registration_ordinal())?;
         let mut queue = CausalTriggerQueue::new(invocation.request(), self.owner_readiness.clone());
         let root_cause = queue.allocate_root_event()?;
         let root_before_operations = txn.operation_count();
+        seed(&mut txn)?;
         let mut prepare_context = crate::resolution::PrepareCtx::new(
             invocation.idempotency(),
             commit_token,
@@ -3941,6 +3964,8 @@ pub enum ActionProviderPrepareError {
     TriggerResolutionUnsupported,
     #[error("action state preparation failed: {0}")]
     State(#[from] ActionStateError),
+    #[error("durable schedule advance was not admissible: {0}")]
+    Schedule(#[source] Box<crate::schedule_source::ScheduleAdvanceAdmissionError>),
 }
 
 /// Exact action-provider dispatch failure.

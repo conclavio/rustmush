@@ -39,8 +39,13 @@ particular campaign economy.
   The durable schedule cursor now supplies bounded oldest/latest catch-up, explicit skipped ranges,
   resume/skip/suspend restart transitions, and deterministic same-owner coordinator ingress.
   Composition-frozen sources now bind exact owner-local schedule families to exact actions and
-  support bounded canonical restart/live discovery directly from hydrated typed state. E7 still
-  needs its provider-specific candidate-to-invocation adapter and the production wake loop.
+  support bounded canonical restart/live discovery directly from hydrated typed state. A
+  provider-specific read-only adapter builds domain addressing and guards only after vacant store
+  preflight; the kernel re-evaluates and advances the exact cursor in the provider transaction.
+  The production world loop drives one candidate at a time through the K3 coordinator, preserving
+  legacy/retained predecessors, retrying transient failures, and rebasing retired server
+  idempotency epochs without confusing them with gameplay schedule generations. E7 can register a
+  production schedule source directly; the scene-clock adapter is still outstanding.
 - **K5a station channel grants:** one
   `ChannelGrant { actor, subject, owner, station, channels, priority, epoch }` per occupied station.
   Channel and priority are selected from the same grant; no cross-seat union/max promotion. Exact

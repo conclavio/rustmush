@@ -144,6 +144,12 @@ impl TestWorld {
         &mut self.engine
     }
 
+    /// Consume the harness and return its real engine for driver-level tests.
+    #[must_use]
+    pub fn into_engine(self) -> Engine {
+        self.engine
+    }
+
     /// Create a player named `name` in Limbo and mark them connected
     /// (through the engine, so module `ObjCreated` observers and
     /// `Connected` hooks fire — connect-time output is discarded; use

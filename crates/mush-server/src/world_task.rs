@@ -86,8 +86,8 @@ use mush_ipc::{
 use mush_llm::LlmService;
 use mush_proto::{OutputEvent, RichText};
 use mush_store::{
-    AccountRec, AuthoritativeReceipt, InMemoryStore, IntentReceipt, ObjectStore, SshKeyRec,
-    WriteBatch,
+    AccountRec, AuthoritativeReceipt, AuthoritativeStore, InMemoryStore, IntentReceipt,
+    ObjectStore, SshKeyRec, WriteBatch,
 };
 use sha2::{Digest, Sha256};
 use smol_str::SmolStr;
@@ -95,7 +95,9 @@ use tokio::sync::mpsc::error::{TryRecvError, TrySendError};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
-use crate::action_coordinator::{ActionCoordinator, ActionPermit, StagedAuthoritativeAction};
+use crate::action_coordinator::{
+    ActionCoordinator, ActionPermit, ActionPreflight, StagedAuthoritativeAction,
+};
 use crate::durable_outbox::{
     DurableOutboxPolicy, DurableOutboxRegistry, run_authoritative_outbox_worker,
 };
@@ -154,6 +156,10 @@ const LOOP_LAG_WARN: Duration = Duration::from_millis(500);
 /// enough that the re-flush is negligible load. Acks normally arrive within one
 /// world step, so in the steady state this fires at most once per seal.
 const REEMIT_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Bounded polling cadence for authoritative durable schedule discovery.
+/// The typed cursor is truth; this interval is only a wake hint.
+const DURABLE_SCHEDULE_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Global alarm threshold on the retained-seal depth. In healthy
 /// operation the table holds at most a handful of seals (one per log that just
@@ -1401,10 +1407,11 @@ fn spawn_persist_with_gateway_mode(
         .map_or_else(OfferRouteTable::default, |providers| {
             providers.offer_route_table()
         });
+    let action_epoch = rand::random();
     let direct_actions = Arc::new(DirectActionIngress {
         store: Arc::clone(&deps.store),
         routes,
-        epoch: rand::random(),
+        epoch: action_epoch,
         next_sequence: AtomicU64::new(1),
     });
     let handle = WorldHandle {
@@ -1484,6 +1491,7 @@ fn spawn_persist_with_gateway_mode(
         high_water,
         signal_rx,
         shutdown_rx,
+        action_epoch,
         persistence_integrity.clone(),
         initial_mode,
         outbox_lifetime,
@@ -1504,9 +1512,154 @@ enum Wake {
     Signal(WriterSignal),
     CommitReceipt(PendingReceiptEvent),
     Timer,
+    DurableSchedules,
     Shutdown,
     ShutdownDeadline,
     Closed,
+}
+
+struct DurableScheduleDriver {
+    cursor: Option<mush_core::ScheduleSourceCursor>,
+    retry: Option<mush_core::ScheduledActionCandidate>,
+    cause: mush_core::ScheduleDriveCause,
+    idempotency_epoch: u64,
+}
+
+impl DurableScheduleDriver {
+    const fn new(idempotency_epoch: u64) -> Self {
+        Self {
+            cursor: None,
+            retry: None,
+            cause: mush_core::ScheduleDriveCause::Restart,
+            idempotency_epoch,
+        }
+    }
+
+    async fn drive_one(
+        &mut self,
+        engine: &mut Engine,
+        store: &dyn AuthoritativeStore,
+    ) -> Result<DurableScheduleDrive, String> {
+        // The world loop deliberately gives legacy work the next FIFO commit
+        // rather than allowing an internal schedule to collide with it.  The
+        // current wake will fall through to the ordinary flush; the retained
+        // candidate/cursor is untouched and will be retried on the next poll.
+        if engine.has_legacy_persistence_work() {
+            return Ok(DurableScheduleDrive::DeferredByLegacyPredecessor);
+        }
+        if self.retry.is_none() {
+            let page = match engine.discover_scheduled_actions(self.cause, self.cursor.as_ref(), 1)
+            {
+                Ok(page) => page,
+                Err(error) if schedule_discovery_retryable(&error) => {
+                    return Ok(DurableScheduleDrive::Transient(error.to_string()));
+                }
+                Err(error) => return Err(error.to_string()),
+            };
+            self.cursor = page.next_cursor().cloned();
+            if page.records_scanned() == 0 && self.cursor.is_none() {
+                self.cause = mush_core::ScheduleDriveCause::Live;
+            }
+            self.retry = page.candidates().first().cloned();
+        }
+        let Some(candidate) = self.retry.as_ref() else {
+            return Ok(DurableScheduleDrive::Idle);
+        };
+
+        // Epoch retirement is recoverable for internal deterministic work:
+        // no binding can exist below the durable watermark, so rebuild the
+        // same semantic key at the returned minimum and preflight again.
+        for _ in 0..3 {
+            let ingress = ActionCoordinator::scheduled_ingress(
+                candidate.action(),
+                candidate.advance(),
+                self.idempotency_epoch,
+            )
+            .map_err(|error| error.to_string())?;
+            let preflight = match ActionCoordinator::preflight(store, ingress).await {
+                Ok(preflight) => preflight,
+                Err(error) if error.is_transient() => {
+                    return Ok(DurableScheduleDrive::Transient(error.to_string()));
+                }
+                Err(error) => return Err(error.to_string()),
+            };
+            match preflight {
+                ActionPreflight::Retired {
+                    minimum_accepted_epoch,
+                } => {
+                    self.idempotency_epoch = self.idempotency_epoch.max(minimum_accepted_epoch);
+                }
+                ActionPreflight::Vacant(permit) => {
+                    let staged = match ActionCoordinator::prepare_and_stage_scheduled(
+                        permit, engine, candidate,
+                    ) {
+                        Ok(staged) => staged,
+                        Err(error) if scheduled_prepare_retryable(&error) => {
+                            return Ok(DurableScheduleDrive::Transient(error.to_string()));
+                        }
+                        Err(error) => return Err(error.to_string()),
+                    };
+                    self.retry = None;
+                    return Ok(DurableScheduleDrive::Staged(staged));
+                }
+                ActionPreflight::Pending { .. } => {
+                    return Err(
+                        "durable schedule rediscovered an unresolved intent after writable boot"
+                            .to_owned(),
+                    );
+                }
+                ActionPreflight::Finalized(_) => {
+                    return Err(
+                        "durable schedule pre-state remained live after its finalized action"
+                            .to_owned(),
+                    );
+                }
+                ActionPreflight::Quarantined(_) => {
+                    return Err("durable schedule action is quarantined".to_owned());
+                }
+                ActionPreflight::Conflict => {
+                    return Err("durable schedule idempotency identity conflicts".to_owned());
+                }
+            }
+        }
+        Ok(DurableScheduleDrive::Transient(
+            "durable schedule retirement watermark changed repeatedly".to_owned(),
+        ))
+    }
+}
+
+enum DurableScheduleDrive {
+    Idle,
+    DeferredByLegacyPredecessor,
+    Transient(String),
+    Staged(StagedAuthoritativeAction),
+}
+
+fn schedule_discovery_retryable(error: &mush_core::ScheduleSourceScanError) -> bool {
+    matches!(
+        error,
+        mush_core::ScheduleSourceScanError::Clock { source, .. }
+            if matches!(
+                source.as_ref(),
+                mush_core::ClockReadError::Provider {
+                    source: mush_core::ClockProviderFailure::Unavailable,
+                    ..
+                }
+            )
+    )
+}
+
+fn scheduled_prepare_retryable(error: &crate::action_coordinator::ActionCoordinatorError) -> bool {
+    match error {
+        crate::action_coordinator::ActionCoordinatorError::SchedulePlan(source) => matches!(
+            source.as_ref(),
+            mush_core::ScheduleActionPlanError::Adapter { source, .. } if source.retryable()
+        ),
+        crate::action_coordinator::ActionCoordinatorError::Provider(
+            mush_core::ActionProviderPrepareError::Provider { source, .. },
+        ) => source.retryable(),
+        _ => false,
+    }
 }
 
 enum PendingReceiptEvent {
@@ -1747,6 +1900,7 @@ async fn run(
     high_water: Arc<AtomicU64>,
     mut signals: WriterSignalReceiver,
     mut shutdown: watch::Receiver<bool>,
+    action_epoch: u64,
     persistence_integrity: PersistenceIntegrityLatch,
     initial_mode: Option<WorldMode>,
     _outbox_lifetime: watch::Sender<bool>,
@@ -1758,6 +1912,10 @@ async fn run(
     // borrowing `deps` (staff queue) freely each iteration.
     let llm = deps.llm.clone();
     let metrics = Arc::clone(&deps.metrics);
+    let mut durable_schedules = DurableScheduleDriver::new(action_epoch);
+    let mut durable_schedule_tick = tokio::time::interval(DURABLE_SCHEDULE_POLL_INTERVAL);
+    durable_schedule_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut durable_schedule_transient_alarmed = false;
     // The server -> gateway delivery seam (M16a/M16b): every resolved
     // `(SendTarget, OutputEvent)` pair is handed to this transport. In the
     // all-in-one binary it maps onto the shared `SessionManager`; in the forked
@@ -1857,6 +2015,14 @@ async fn run(
         // Persistence/re-emit stays live (the re-emit nudge + inbound still run).
         let sched_armed = next_due.is_some()
             && admission_for(admission_mode, IngressClass::Timer) == Admission::Allow;
+        let durable_schedule_armed = engine
+            .registry
+            .schedule_sources()
+            .is_some_and(|sources| !sources.is_empty())
+            // A retained seal is an older durability predecessor. Let its
+            // re-emit wake drain before admitting an exact-token action.
+            && retained.is_empty()
+            && admission_for(admission_mode, IngressClass::Timer) == Admission::Allow;
         let ready_deferred = if pending_commit.is_none() {
             deferred_world_msg.take()
         } else {
@@ -1885,6 +2051,7 @@ async fn run(
                 }
             } => Wake::CommitReceipt(receipt),
             () = sleep_until_unix_ms(next_due), if sched_armed => Wake::Timer,
+            _ = durable_schedule_tick.tick(), if durable_schedule_armed => Wake::DurableSchedules,
             () = tokio::time::sleep(REEMIT_INTERVAL), if reemit_pending => Wake::Timer,
             changed = shutdown.changed(), if !shutdown_requested => {
                 if changed.is_ok() && *shutdown.borrow_and_update() {
@@ -2266,6 +2433,54 @@ async fn run(
                 // foot-of-loop persistence flush (re-emit stays live while frozen).
                 if admission_for(admission_mode, IngressClass::Timer) == Admission::Allow {
                     engine.fire_due(unix_now_ms(), &mut out, &mut fx);
+                }
+                StepOutcome::Continue
+            }
+            Wake::DurableSchedules => {
+                let Some(store) = deps.store.authoritative_store() else {
+                    apply_integrity_freeze(
+                        &engine.world,
+                        &gateway,
+                        &mut health,
+                        &persistence_integrity,
+                        "durable schedule driver has no authoritative store capability",
+                    );
+                    continue;
+                };
+                match durable_schedules.drive_one(&mut engine, store).await {
+                    Ok(
+                        DurableScheduleDrive::Idle
+                        | DurableScheduleDrive::DeferredByLegacyPredecessor,
+                    ) => {
+                        durable_schedule_transient_alarmed = false;
+                    }
+                    Ok(DurableScheduleDrive::Transient(detail)) => {
+                        if !durable_schedule_transient_alarmed {
+                            tracing::warn!(
+                                error = %detail,
+                                "durable schedule drive is temporarily unavailable"
+                            );
+                            durable_schedule_transient_alarmed = true;
+                        }
+                    }
+                    Ok(DurableScheduleDrive::Staged(staged)) => {
+                        durable_schedule_transient_alarmed = false;
+                        action_completion = Some(ActionCompletion {
+                            staged,
+                            owned: None,
+                            finished: None,
+                            ownership_valid: false,
+                        });
+                    }
+                    Err(detail) => {
+                        apply_integrity_freeze(
+                            &engine.world,
+                            &gateway,
+                            &mut health,
+                            &persistence_integrity,
+                            &format!("durable schedule drive failed: {detail}"),
+                        );
+                    }
                 }
                 StepOutcome::Continue
             }
@@ -5469,6 +5684,195 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn durable_schedule_poll_executes_one_atomic_cursor_and_domain_bundle() {
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_test_writer()
+            .try_init();
+        use mush_contract_tests::{
+            TOY_OWNER, install_toy_focus, install_toy_scheduled_expiry, toy_brace_invocation,
+            toy_definitions, toy_world_with_state,
+        };
+        use mush_core::{
+            DurableSchedule, DurableScheduleDraft, ScheduleCatchUpOrder, ScheduleId,
+            ScheduleRestartPolicy,
+        };
+
+        let (mut world, families) = toy_world_with_state();
+        install_toy_focus(world.engine_mut(), &families, GOD, 1);
+        let invocation = toy_brace_invocation(GOD, 11, RequestUid::from_bytes([0x31; 16]));
+        let (prepared, _) = world
+            .engine_mut()
+            .prepare_registered_authoritative_action(
+                &toy_definitions().brace,
+                &invocation,
+                DurableCommitToken::from_bytes([0x32; 16]),
+            )
+            .expect("prepare guarded fixture");
+        let (_, installation) = prepared.into_parts();
+        world.engine_mut().install_prepared_action(installation);
+        let effect = world
+            .engine()
+            .action_state()
+            .get(&families.guarded, &GOD)
+            .unwrap()
+            .unwrap()
+            .effect
+            .id();
+        let owner = OwnerId::new(TOY_OWNER).unwrap();
+        let schedule = DurableSchedule::new(DurableScheduleDraft {
+            id: ScheduleId::derive(&owner, &CanonicalId::new("world_poll_expiry").unwrap())
+                .unwrap(),
+            owner,
+            clock: mush_core::ClockRef::Utc,
+            next_due: mush_core::ClockStamp {
+                clock: mush_core::ClockRef::Utc,
+                at: 0,
+            },
+            cadence: None,
+            generation: 1,
+            next_ordinal: 0,
+            restart: ScheduleRestartPolicy::Resume,
+            catch_up_order: ScheduleCatchUpOrder::OldestFirst,
+            max_catch_up: 1,
+        })
+        .unwrap();
+        let schedule_key = format!(
+            "action-state/v1/schedules/{}",
+            schedule.id().canonical_hash().to_hex()
+        );
+        install_toy_scheduled_expiry(world.engine_mut(), &families, schedule, GOD, effect);
+
+        let deps = ServerDeps::in_memory();
+        let store = Arc::clone(&deps.store);
+        let handles =
+            spawn_persist_with_gateway(world.into_engine(), deps, |_| Arc::new(BlackholeGateway));
+        let mut completed = false;
+        for _ in 0..40 {
+            if store
+                .module_json_get(TOY_OWNER, &schedule_key)
+                .await
+                .unwrap()
+                .is_some_and(|document| document["value"]["state"] == "completed")
+            {
+                completed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let persisted = store.module_json_list(TOY_OWNER).await.unwrap();
+        assert!(
+            completed,
+            "durable schedule was not committed by the wake driver: {persisted:?}"
+        );
+        assert!(
+            store
+                .module_json_get(TOY_OWNER, "action-state/v1/guarded/1")
+                .await
+                .unwrap()
+                .is_none(),
+            "the cursor and effect removal must share one authoritative commit"
+        );
+
+        assert!(
+            handles
+                .handle
+                .inbound(Inbound::Control(ControlMsg::Shutdown))
+                .await
+        );
+        handles.world_join.await.unwrap();
+        handles.writer_join.await.unwrap();
+        handles.outbox_join.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn durable_schedule_driver_rebases_retired_server_epoch() {
+        use mush_contract_tests::{
+            TOY_OWNER, install_toy_focus, install_toy_scheduled_expiry, toy_brace_invocation,
+            toy_definitions, toy_world_with_state,
+        };
+        use mush_core::{
+            DurableSchedule, DurableScheduleDraft, ScheduleCatchUpOrder, ScheduleId,
+            ScheduleRestartPolicy,
+        };
+
+        let (mut world, families) = toy_world_with_state();
+        install_toy_focus(world.engine_mut(), &families, GOD, 1);
+        let invocation = toy_brace_invocation(GOD, 11, RequestUid::from_bytes([0x41; 16]));
+        let (prepared, _) = world
+            .engine_mut()
+            .prepare_registered_authoritative_action(
+                &toy_definitions().brace,
+                &invocation,
+                DurableCommitToken::from_bytes([0x42; 16]),
+            )
+            .expect("prepare guarded fixture");
+        let (_, installation) = prepared.into_parts();
+        world.engine_mut().install_prepared_action(installation);
+        let effect = world
+            .engine()
+            .action_state()
+            .get(&families.guarded, &GOD)
+            .unwrap()
+            .unwrap()
+            .effect
+            .id();
+        let owner = OwnerId::new(TOY_OWNER).unwrap();
+        let schedule = DurableSchedule::new(DurableScheduleDraft {
+            id: ScheduleId::derive(&owner, &CanonicalId::new("retired_epoch_expiry").unwrap())
+                .unwrap(),
+            owner,
+            clock: mush_core::ClockRef::Utc,
+            next_due: mush_core::ClockStamp {
+                clock: mush_core::ClockRef::Utc,
+                at: 90,
+            },
+            cadence: None,
+            generation: 1,
+            next_ordinal: 0,
+            restart: ScheduleRestartPolicy::Resume,
+            catch_up_order: ScheduleCatchUpOrder::OldestFirst,
+            max_catch_up: 1,
+        })
+        .unwrap();
+        install_toy_scheduled_expiry(world.engine_mut(), &families, schedule, GOD, effect);
+        world.world_mut().set_now(100);
+        let candidate = world
+            .engine()
+            .discover_scheduled_actions(mush_core::ScheduleDriveCause::Live, None, 1)
+            .unwrap()
+            .candidates()[0]
+            .clone();
+        let old_ingress =
+            ActionCoordinator::scheduled_ingress(candidate.action(), candidate.advance(), 1)
+                .unwrap();
+        let store = mush_store::InMemoryStore::new();
+        store
+            .retire_authoritative_epochs(old_ingress.idempotency().scope(), 9)
+            .await
+            .expect("seed retired scheduler epoch");
+        let _ = world.drain_write_batch();
+        let mut engine = world.into_engine();
+        let mut driver = DurableScheduleDriver::new(1);
+
+        assert!(matches!(
+            driver.drive_one(&mut engine, &store).await.unwrap(),
+            DurableScheduleDrive::Staged(_)
+        ));
+        let staged = engine
+            .take_staged_action()
+            .unwrap()
+            .expect("rebased schedule action staged");
+        let (persistence, installation) = staged.into_parts();
+        let StagedActionPersistence::Authoritative(bundle) = persistence else {
+            panic!("schedule driver used legacy persistence")
+        };
+        assert_eq!(bundle.idempotency().epoch(), 9);
+        assert_eq!(driver.idempotency_epoch, 9);
+        engine.abort_prepared_action(installation);
+    }
+
     #[derive(Default)]
     struct RecordingGateway {
         sends: Mutex<Vec<(SendTarget, Arc<OutputEvent>)>>,
@@ -7455,6 +7859,7 @@ mod tests {
             Arc::new(AtomicU64::new(0)),
             signal_rx,
             shutdown_rx,
+            1,
             PersistenceIntegrityLatch::new(),
             None,
             watch::channel(false).0,

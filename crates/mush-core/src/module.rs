@@ -1815,9 +1815,10 @@ impl<'a> Registrar<'a> {
     ///
     /// Discovery enumerates the engine-owned typed family directly, so a
     /// provider cannot hide an unbounded process-local queue or index. The
-    /// action remains responsible for advancing the schedule in the same
-    /// authoritative bundle as its domain effects.
-    pub fn schedule_source(
+    /// adapter supplies read-only domain addressing and guards after store
+    /// preflight; the kernel re-evaluates and advances the cursor in the same
+    /// authoritative bundle as the registered action's domain effects.
+    pub fn schedule_source<A>(
         &mut self,
         id: crate::mechanics::CanonicalId,
         action: crate::mechanics::DefinitionRef,
@@ -1825,7 +1826,11 @@ impl<'a> Registrar<'a> {
             crate::durable_schedule::ScheduleId,
             crate::durable_schedule::DurableSchedule,
         >,
-    ) -> Result<(), ModError> {
+        adapter: A,
+    ) -> Result<(), ModError>
+    where
+        A: crate::schedule_source::ScheduleActionAdapter + 'static,
+    {
         self.require_mechanics_registration_authority()?;
         if self.reg.schedule_sources.is_some() {
             return Err(ModError::msg(format!(
@@ -1841,7 +1846,7 @@ impl<'a> Registrar<'a> {
         })?;
         self.reg
             .schedule_source_builder
-            .register(owner, id, action, schedules)
+            .register(owner, id, action, schedules, Arc::new(adapter))
             .map_err(|e| {
                 ModError::msg(format!(
                     "module {}: schedule source registration: {e}",

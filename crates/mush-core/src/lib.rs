@@ -232,9 +232,11 @@ pub use sched::{
 };
 pub use schedule_source::{
     MAX_SCHEDULE_SOURCE_SCAN_RECORDS, MAX_SCHEDULE_SOURCES, MAX_SCHEDULE_SOURCES_PER_OWNER,
+    ScheduleActionAdapter, ScheduleActionDraft, ScheduleActionIngressError,
+    ScheduleActionPlanError, ScheduleAdvanceAdmissionError, ScheduleCandidateError,
     ScheduleSourceCursor, ScheduleSourceKey, ScheduleSourcePage, ScheduleSourceRegistry,
     ScheduleSourceRegistryBuilder, ScheduleSourceRegistryError, ScheduleSourceScanError,
-    ScheduledActionCandidate,
+    ScheduledActionCandidate, ScheduledActionPlan, scheduled_action_ingress,
 };
 pub use world::{
     ChannelGrant, CommandSubjectLink, MAX_CONTAINMENT_DEPTH, SessionStat, World, WorldError,

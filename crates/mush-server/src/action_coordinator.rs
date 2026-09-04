@@ -9,10 +9,10 @@
 use mush_core::{
     ActionInvocation, ActionMetadataError, ActionProviderPrepareError, AuthoritativeBundle,
     AuthoritativeBundleDraft, CanonicalHash, CanonicalHashError, CanonicalId, CanonicalIdError,
-    CommitToken, DefinitionRef, Engine, GuardSet, IdempotencyKey, IdempotencyKeyText,
-    IdempotencyKeyTextError, IdempotencyScope, IngressEnvelope, IngressPayload,
-    IngressSurfaceVersion, MAX_AUTHORITATIVE_BUNDLE_BYTES, OfferRouteTable, PreparedCausalRef,
-    PrincipalId, ResolvedOffer, ScheduleAdvance, ScopedIdempotencyKey, StagePreparedActionError,
+    CommitToken, DefinitionRef, Engine, GuardSet, IdempotencyKey, IdempotencyKeyTextError,
+    IdempotencyScope, IngressEnvelope, IngressPayload, IngressSurfaceVersion,
+    MAX_AUTHORITATIVE_BUNDLE_BYTES, OfferRouteTable, PreparedCausalRef, PrincipalId, ResolvedOffer,
+    ScheduleAdvance, ScopedIdempotencyKey, StagePreparedActionError,
 };
 use mush_ipc::{GatewayInput, GatewayRequest};
 use mush_store::{
@@ -152,54 +152,15 @@ impl ActionCoordinator {
     pub fn scheduled_ingress(
         action: &DefinitionRef,
         advance: &ScheduleAdvance,
+        idempotency_epoch: u64,
     ) -> Result<IngressEnvelope, ActionCoordinatorError> {
-        if advance.owner() != &action.key().owner {
-            return Err(ActionCoordinatorError::ScheduledOwnerMismatch);
-        }
-        let request_hash = CanonicalHash::for_canonical_value(
-            "scheduled_action_request.v1",
-            1,
-            &json!({
-                "action": action,
-                "schedule": advance.schedule(),
-                "generation": advance.generation(),
-                "advance_key": advance.deterministic_key(),
-            }),
-            32 * 1024,
-        )?;
-        let mut request_bytes = [0_u8; 16];
-        request_bytes.copy_from_slice(&request_hash.as_bytes()[..16]);
-        let request = mush_core::RequestUid::from_bytes(request_bytes);
-        let principal = PrincipalId::Scoped {
-            owner: advance.owner().clone(),
-            class: CanonicalId::new("scheduler").expect("static principal class"),
-            id: IdempotencyKeyText::parse_canonical(advance.schedule().canonical_hash().to_hex())?,
-        };
-        let idempotency = ScopedIdempotencyKey::new(
-            IdempotencyScope {
-                principal: principal.clone(),
-                owner: advance.owner().clone(),
-                namespace: CanonicalId::new(action.key().id.as_str())?,
-            },
-            advance.generation(),
-            IdempotencyKey::Deterministic(advance.deterministic_key()),
-        );
-        IngressEnvelope::new(
-            request,
-            principal,
-            IngressSurfaceVersion::new(
-                CanonicalId::new("kernel.schedule").expect("static surface id"),
-                1,
-            )?,
-            IngressPayload::structured(json!({
-                "action": action,
-                "schedule": advance.schedule(),
-                "generation": advance.generation(),
-                "advance_key": advance.deterministic_key(),
-            }))?,
-            idempotency,
-        )
-        .map_err(ActionCoordinatorError::Metadata)
+        mush_core::scheduled_action_ingress(action, advance, idempotency_epoch).map_err(|source| {
+            if source == mush_core::ScheduleActionIngressError::OwnerMismatch {
+                ActionCoordinatorError::ScheduledOwnerMismatch
+            } else {
+                ActionCoordinatorError::ScheduleIngress(Box::new(source))
+            }
+        })
     }
 
     /// Authorized semantic `action/status` lookup. Finalized outcomes are
@@ -318,6 +279,48 @@ impl ActionCoordinator {
         let (action, invocation, guards) = resolved.into_parts();
         Self::prepare_and_stage(permit, engine, &action, &invocation, guards)
     }
+
+    /// Plan and prepare one discovered durable schedule after its canonical
+    /// ingress has returned vacant from the authoritative store.
+    ///
+    /// The engine re-evaluates and seeds the exact cursor post-image into the
+    /// provider transaction, so domain effects and schedule advancement share
+    /// one bundle and a stale discovery cannot mutate either.
+    pub fn prepare_and_stage_scheduled(
+        permit: Box<ActionPermit>,
+        engine: &mut Engine,
+        candidate: &mush_core::ScheduledActionCandidate,
+    ) -> Result<StagedAuthoritativeAction, ActionCoordinatorError> {
+        let plan = engine
+            .plan_scheduled_action(candidate, permit.ingress())
+            .map_err(|source| ActionCoordinatorError::SchedulePlan(Box::new(source)))?;
+        let (action, invocation, guards) = plan.into_parts();
+        validate_invocation_identity(permit.ingress(), &invocation)?;
+        let token = deterministic_commit_token(permit.ingress())?;
+        let (prepared, output) = engine
+            .prepare_registered_scheduled_authoritative_action(candidate, &invocation, token)
+            .map_err(ActionCoordinatorError::Provider)?;
+        let bundle = match assemble_bundle(
+            permit.ingress(),
+            &action,
+            &invocation,
+            token,
+            &prepared,
+            output,
+        ) {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                engine.abort_prepared_transaction(prepared);
+                return Err(error);
+            }
+        };
+        let token = bundle.token();
+        let bundle_hash = bundle.bundle_hash();
+        engine
+            .stage_authoritative_action(prepared, guards, bundle)
+            .map_err(ActionCoordinatorError::Stage)?;
+        Ok(StagedAuthoritativeAction { token, bundle_hash })
+    }
 }
 
 fn assemble_bundle(
@@ -425,6 +428,10 @@ fn deterministic_commit_token(
 pub enum ActionCoordinatorError {
     #[error("scheduled advance and action have different owners")]
     ScheduledOwnerMismatch,
+    #[error("scheduled action ingress is invalid: {0}")]
+    ScheduleIngress(#[source] Box<mush_core::ScheduleActionIngressError>),
+    #[error("scheduled action planning failed: {0}")]
+    SchedulePlan(#[source] Box<mush_core::ScheduleActionPlanError>),
     #[error("semantic invocation identity does not match its preflight ingress")]
     IngressInvocationMismatch,
     #[error("action provider preparation failed: {0}")]

@@ -1,8 +1,12 @@
-use mush_contract_tests::{TOY_OWNER, install_toy_schedule, toy_definitions, toy_world_with_state};
+use mush_contract_tests::{
+    TOY_OWNER, install_toy_focus, install_toy_schedule, install_toy_scheduled_expiry,
+    toy_brace_invocation, toy_definitions, toy_world_with_state,
+};
 use mush_core::{
-    CanonicalId, ClockRef, ClockStamp, DurableSchedule, DurableScheduleDraft, IncidentId, OwnerId,
-    RecoveryReason, ScheduleCatchUpOrder, ScheduleDriveCause, ScheduleId, ScheduleRestartPolicy,
-    ScheduleSourceScanError,
+    ActionProviderPrepareError, CanonicalId, ClockRef, ClockStamp, CommitToken, DurableSchedule,
+    DurableScheduleDraft, GOD, IncidentId, OwnerId, RecoveryReason, RequestUid,
+    ScheduleCatchUpOrder, ScheduleDriveCause, ScheduleId, ScheduleRestartPolicy,
+    ScheduleSourceScanError, scheduled_action_ingress,
 };
 
 fn schedule(local_id: &str, due: i64, restart: ScheduleRestartPolicy) -> DurableSchedule {
@@ -110,4 +114,94 @@ fn restart_skip_is_still_actionable_and_owner_freeze_fails_closed() {
             .discover_scheduled_actions(ScheduleDriveCause::Restart, None, 1),
         Err(ScheduleSourceScanError::OwnerNotReady(_))
     ));
+}
+
+#[test]
+fn stale_discovery_cannot_mutate_cursor_or_domain_state() {
+    let (mut world, families) = toy_world_with_state();
+    install_toy_focus(world.engine_mut(), &families, GOD, 1);
+    let brace = toy_brace_invocation(GOD, 11, RequestUid::from_bytes([0x61; 16]));
+    let (prepared, _) = world
+        .engine_mut()
+        .prepare_registered_authoritative_action(
+            &toy_definitions().brace,
+            &brace,
+            CommitToken::from_bytes([0x62; 16]),
+        )
+        .expect("prepare guarded fixture");
+    let (_, installation) = prepared.into_parts();
+    world.engine_mut().install_prepared_action(installation);
+    let effect = world
+        .engine()
+        .action_state()
+        .get(&families.guarded, &GOD)
+        .unwrap()
+        .unwrap()
+        .effect
+        .id();
+    let schedule = schedule("stale_candidate", 90, ScheduleRestartPolicy::Resume);
+    let schedule_id = schedule.id();
+    install_toy_scheduled_expiry(world.engine_mut(), &families, schedule, GOD, effect);
+    world.world_mut().set_now(100);
+
+    let page = world
+        .engine()
+        .discover_scheduled_actions(ScheduleDriveCause::Live, None, 1)
+        .expect("discover due schedule");
+    let candidate = page.candidates()[0].clone();
+    let ingress = scheduled_action_ingress(candidate.action(), candidate.advance(), 7)
+        .expect("canonical scheduled ingress");
+    let invocation = world
+        .engine()
+        .plan_scheduled_action(&candidate, &ingress)
+        .expect("provider-specific addressing")
+        .invocation()
+        .clone();
+
+    // Advance the schedule after discovery. The kernel must re-evaluate the
+    // old candidate inside the same transaction before the action provider
+    // gets any opportunity to remove its domain state.
+    let mut transaction = world
+        .engine_mut()
+        .action_transaction(&families.schedules)
+        .expect("schedule update transaction");
+    transaction
+        .replace(
+            &families.schedules,
+            &schedule_id,
+            candidate.advance().post_image().clone(),
+        )
+        .expect("install competing cursor advance");
+    let prepared = transaction.prepare().expect("prepare cursor update");
+    let (_, installation) = prepared.into_parts();
+    world.engine_mut().install_prepared_action(installation);
+
+    let error = world
+        .engine_mut()
+        .prepare_registered_scheduled_authoritative_action(
+            &candidate,
+            &invocation,
+            CommitToken::from_bytes([0x63; 16]),
+        )
+        .expect_err("stale discovery must fail before provider mutation");
+    assert!(matches!(error, ActionProviderPrepareError::Schedule(_)));
+    assert!(!world.engine().action_state().has_prepared());
+    assert!(
+        world
+            .engine()
+            .action_state()
+            .get(&families.guarded, &GOD)
+            .unwrap()
+            .is_some(),
+        "the provider's domain state must remain untouched"
+    );
+    assert_eq!(
+        world
+            .engine()
+            .action_state()
+            .get(&families.schedules, &schedule_id)
+            .unwrap()
+            .unwrap(),
+        candidate.advance().post_image()
+    );
 }

@@ -1,6 +1,7 @@
 use mush_contract_tests::{
-    TOY_OWNER, install_toy_focus, toy_action_window, toy_brace_invocation, toy_brace_offers,
-    toy_definitions, toy_scene_turn, toy_window_invocation, toy_world_with_state,
+    TOY_OWNER, install_toy_focus, install_toy_scheduled_expiry, toy_action_window,
+    toy_brace_invocation, toy_brace_offers, toy_definitions, toy_scene_turn, toy_window_invocation,
+    toy_world_with_state,
 };
 use mush_core::{
     ActionInvocation, ActionInvocationDraft, ActionOfferId, ActionWindowPhase, AuthoritativeBundle,
@@ -127,12 +128,12 @@ fn scheduled_ingress_is_stable_and_owner_scoped() {
     else {
         panic!("one-shot schedule was not due")
     };
-    let first = ActionCoordinator::scheduled_ingress(&action, &advance).unwrap();
-    let retry = ActionCoordinator::scheduled_ingress(&action, &advance).unwrap();
+    let first = ActionCoordinator::scheduled_ingress(&action, &advance, 42).unwrap();
+    let retry = ActionCoordinator::scheduled_ingress(&action, &advance, 42).unwrap();
     assert_eq!(first.request(), retry.request());
     assert_eq!(first.idempotency(), retry.idempotency());
     assert_eq!(first.ingress_hash(), retry.ingress_hash());
-    assert_eq!(first.idempotency().epoch(), 8);
+    assert_eq!(first.idempotency().epoch(), 42);
     assert!(matches!(
         first.idempotency().key(),
         IdempotencyKey::Deterministic(_)
@@ -151,7 +152,7 @@ fn scheduled_ingress_is_stable_and_owner_scoped() {
         panic!("later schedule observation was not due")
     };
     assert_ne!(advance.post_image(), later_advance.post_image());
-    let later = ActionCoordinator::scheduled_ingress(&action, &later_advance).unwrap();
+    let later = ActionCoordinator::scheduled_ingress(&action, &later_advance, 42).unwrap();
     assert_eq!(first.request(), later.request());
     assert_eq!(first.idempotency(), later.idempotency());
     assert_eq!(first.ingress_hash(), later.ingress_hash());
@@ -187,7 +188,7 @@ fn scheduled_ingress_is_stable_and_owner_scoped() {
         panic!("foreign schedule was not due")
     };
     assert!(
-        ActionCoordinator::scheduled_ingress(&action, &foreign)
+        ActionCoordinator::scheduled_ingress(&action, &foreign, 42)
             .unwrap_err()
             .to_string()
             .contains("different owners")
@@ -857,8 +858,11 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
         )
         .unwrap(),
         owner: schedule_owner,
-        clock: toy_scene_turn(0).clock,
-        next_due: toy_scene_turn(13),
+        clock: mush_core::ClockRef::Utc,
+        next_due: mush_core::ClockStamp {
+            clock: mush_core::ClockRef::Utc,
+            at: 0,
+        },
         cadence: None,
         generation: 1,
         next_ordinal: 0,
@@ -867,29 +871,22 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
         max_catch_up: 1,
     })
     .unwrap();
-    let ScheduleEvaluation::Advance(schedule_advance) = schedule
-        .plan_due(1, &toy_scene_turn(13), ScheduleDriveCause::Restart)
-        .unwrap()
-    else {
-        panic!("expired effect schedule was not due")
-    };
-    assert_eq!(schedule_advance.occurrences().len(), 1);
+    let schedule_id = schedule.id();
+    install_toy_scheduled_expiry(
+        restarted.engine_mut(),
+        &restarted_families,
+        schedule,
+        GOD,
+        effect,
+    );
+    let page = restarted
+        .engine()
+        .discover_scheduled_actions(ScheduleDriveCause::Restart, None, 1)
+        .unwrap();
+    let candidate = page.candidates()[0].clone();
+    assert_eq!(candidate.advance().occurrences().len(), 1);
     let expiry_envelope =
-        ActionCoordinator::scheduled_ingress(&expiry_action, &schedule_advance).unwrap();
-    let expiry = ActionInvocation::new(ActionInvocationDraft {
-        request: expiry_envelope.request(),
-        principal: expiry_envelope.principal().clone(),
-        actor: GOD,
-        offered_action: ActionOfferId(CanonicalHash::from_bytes([0xB2; 32])),
-        subject: PerceivedRef::SelfActor,
-        targets: Vec::new(),
-        parameters: json!({
-            "effect": effect,
-            "now": toy_scene_turn(13),
-        }),
-        idempotency: expiry_envelope.idempotency().clone(),
-    })
-    .unwrap();
+        ActionCoordinator::scheduled_ingress(&expiry_action, candidate.advance(), 1).unwrap();
     let expiry_permit = match ActionCoordinator::preflight(&store, expiry_envelope.clone())
         .await
         .unwrap()
@@ -897,13 +894,10 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
         ActionPreflight::Vacant(permit) => permit,
         other => panic!("expiry request was not vacant: {other:?}"),
     };
-    let expiry_guards = guards(restarted.engine(), &expiry_action);
-    ActionCoordinator::prepare_and_stage(
+    ActionCoordinator::prepare_and_stage_scheduled(
         expiry_permit,
         restarted.engine_mut(),
-        &expiry_action,
-        &expiry,
-        expiry_guards,
+        &candidate,
     )
     .unwrap();
     let (persistence, installation) = restarted
@@ -916,7 +910,7 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
         StagedActionPersistence::Authoritative(bundle) => *bundle,
         StagedActionPersistence::Legacy(_) => panic!("expiry used legacy persistence"),
     };
-    assert_eq!(expiry_bundle.writes().len(), 1);
+    assert_eq!(expiry_bundle.writes().len(), 2);
     assert_eq!(
         expiry_bundle.semantic_events()[0].kind().as_str(),
         "guarded_expire"
@@ -941,6 +935,16 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
             .get(&restarted_families.guarded, &GOD)
             .unwrap()
             .is_none()
+    );
+    assert_eq!(
+        restarted
+            .engine()
+            .action_state()
+            .get(&restarted_families.schedules, &schedule_id)
+            .unwrap()
+            .unwrap()
+            .state(),
+        mush_core::ScheduleState::Completed
     );
     assert!(matches!(
         ActionCoordinator::preflight(&store, expiry_envelope)
