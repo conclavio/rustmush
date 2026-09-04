@@ -21,7 +21,9 @@ use std::time::Duration;
 
 use mush_config::config::Config;
 use mush_core::GOD;
-use mush_ipc::{FrameReader, ToGateway, ToServer, WireInbound, write_frame};
+use mush_ipc::{
+    FrameReader, GatewayInput, GatewayRequest, ToGateway, ToServer, WireInbound, write_frame,
+};
 
 fn scratch_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("mush-ipcteardown-{tag}-{}", std::process::id()));
@@ -102,17 +104,27 @@ async fn wedged_gateway_is_torn_down_by_write_timeout() {
     )
     .await
     .expect("send ConnUp");
-    for _ in 0..4000u32 {
-        write_frame(
-            &mut writer,
-            &ToServer::Inbound(WireInbound::Cmd {
+    for sequence in 0..4000u64 {
+        let request = GatewayRequest::new(
+            7,
+            sequence,
+            GatewayInput::Cmd {
                 conn: 1,
                 actor: GOD,
                 line: "look".to_string(),
-            }),
+            },
+        );
+        write_frame(&mut writer, &ToServer::Input(request.clone()))
+            .await
+            .expect("send Cmd");
+        write_frame(
+            &mut writer,
+            &ToServer::GatewayReleased {
+                request: request.uid,
+            },
         )
         .await
-        .expect("send Cmd");
+        .expect("release Cmd");
     }
 
     // Give the writer's timeout (1s) time to elapse on the blocked write while we

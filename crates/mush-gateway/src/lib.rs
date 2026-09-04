@@ -25,7 +25,7 @@
 //! [`ToGateway`]: mush_ipc::ToGateway
 //! [`ServiceReq`]: mush_ipc::ServiceReq
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -39,9 +39,12 @@ use mush_config::ipguard::IpGuard;
 use mush_config::metrics::Metrics;
 use mush_core::DisconnectKind;
 use mush_ipc::{
-    AttachRec, BoxRead, BoxWrite, ConnectionAdmission, DetachCause, FrameReader, GatewayLink,
-    IPC_VERSION, InputSend, IpcEndpoint, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
-    MAX_IN_FLIGHT_SERVICE_REQUESTS, ServiceReq, ServiceResp, ToGateway, ToServer, WireInbound,
+    AttachRec, BoxRead, BoxWrite, ConnectionAdmission, DetachCause, FrameReader, GatewayInput,
+    GatewayLink, GatewayRequest, GatewayRequestDisposition, IPC_VERSION, InputSend, IpcEndpoint,
+    MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES_PER_CONNECTION,
+    MAX_IN_FLIGHT_GATEWAY_INPUTS, MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION,
+    MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, MAX_IN_FLIGHT_SERVICE_REQUESTS, RequestUid, ServiceReq,
+    ServiceResp, ToGateway, ToServer, WireInbound,
 };
 use mush_net_web::{WebConfig, WebHooks};
 use mush_proto::{OutputEvent, RichText};
@@ -303,6 +306,98 @@ impl LifecycleCustody {
             self.admission_warned = false;
         }
         cancelled
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ConnectionInputCustody {
+    count: usize,
+    bytes: usize,
+}
+
+#[derive(Clone, Debug)]
+struct CustodiedInput {
+    request: GatewayRequest,
+    bytes: usize,
+}
+
+/// Gateway-process-owned replay pool for player input.
+///
+/// Entries survive a server restart and remain until an explicit server
+/// disposition transfers/releases ownership. The `BTreeMap` follows the
+/// epoch/sequence UID ordering, so a reconnect replays the exact accepted FIFO
+/// after the attachment barrier. Both global and per-connection count/byte
+/// ceilings are enforced before a frame enters the writer queue.
+#[derive(Default)]
+struct InputCustody {
+    entries: BTreeMap<RequestUid, CustodiedInput>,
+    per_connection: HashMap<u64, ConnectionInputCustody>,
+    bytes: usize,
+    capacity_warned: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InputCustodyAdmission {
+    Admitted,
+    Full { warn: bool },
+    Invalid,
+}
+
+impl InputCustody {
+    fn admit(&mut self, request: GatewayRequest) -> InputCustodyAdmission {
+        if !request.has_valid_uid() || self.entries.contains_key(&request.uid) {
+            return InputCustodyAdmission::Invalid;
+        }
+        let Ok(bytes) = request.input.logical_bytes() else {
+            return InputCustodyAdmission::Invalid;
+        };
+        let conn = request.input.conn();
+        let account = self.per_connection.get(&conn).copied().unwrap_or_default();
+        let full = self.entries.len() >= MAX_IN_FLIGHT_GATEWAY_INPUTS
+            || self.bytes.saturating_add(bytes) > MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES
+            || account.count >= MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION
+            || account.bytes.saturating_add(bytes)
+                > MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES_PER_CONNECTION;
+        if full {
+            let warn = !self.capacity_warned;
+            self.capacity_warned = true;
+            return InputCustodyAdmission::Full { warn };
+        }
+
+        self.entries
+            .insert(request.uid, CustodiedInput { request, bytes });
+        self.bytes += bytes;
+        let account = self.per_connection.entry(conn).or_default();
+        account.count += 1;
+        account.bytes += bytes;
+        self.capacity_warned = false;
+        InputCustodyAdmission::Admitted
+    }
+
+    fn remove(&mut self, uid: RequestUid) -> Option<GatewayRequest> {
+        let held = self.entries.remove(&uid)?;
+        let conn = held.request.input.conn();
+        self.bytes = self.bytes.saturating_sub(held.bytes);
+        if let Some(account) = self.per_connection.get_mut(&conn) {
+            account.count = account.count.saturating_sub(1);
+            account.bytes = account.bytes.saturating_sub(held.bytes);
+            if account.count == 0 {
+                self.per_connection.remove(&conn);
+            }
+        }
+        if self.entries.len() < MAX_IN_FLIGHT_GATEWAY_INPUTS
+            && self.bytes < MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES
+        {
+            self.capacity_warned = false;
+        }
+        Some(held.request)
+    }
+
+    fn snapshot(&self) -> Vec<GatewayRequest> {
+        self.entries
+            .values()
+            .map(|held| held.request.clone())
+            .collect()
     }
 }
 
@@ -659,6 +754,14 @@ type ManifestCache = Arc<Mutex<HelloManifest>>;
 pub struct SocketGatewayLink {
     boundary: BoundaryHandle,
     next_id: AtomicU64,
+    /// Random identity for this gateway process. Combined with
+    /// `next_input_sequence` to make restart-replay UIDs unique across gateway
+    /// process lifetimes without persistence.
+    input_epoch: u64,
+    next_input_sequence: AtomicU64,
+    /// Stable across server restarts; released only by an explicit server
+    /// disposition (or rolled back when the initial enqueue fails).
+    input_custody: Arc<Mutex<InputCustody>>,
     /// Stable across server restarts so held sessions and delayed link-dead
     /// cleanup retain the same bounded custody ledger as each fresh writer.
     lifecycle: Arc<Mutex<LifecycleCustody>>,
@@ -698,13 +801,20 @@ impl SocketGatewayLink {
     /// paste — mail/chargen). Such input receives a bounded extra burst window;
     /// it never bypasses IPC custody limits entirely. Only `Cmd`/`Query` carry
     /// an actor to check; everything else returns `false`.
-    fn is_input_exempt(&self, msg: &ToServer) -> bool {
-        let actor = match msg {
-            ToServer::Inbound(WireInbound::Cmd { actor, .. })
-            | ToServer::Inbound(WireInbound::Query { actor, .. }) => *actor,
-            _ => return false,
+    fn is_input_exempt(&self, input: &GatewayInput) -> bool {
+        let actor = match input {
+            GatewayInput::Cmd { actor, .. } | GatewayInput::Query { actor, .. } => *actor,
         };
         self.sessions.is_char_flood_exempt(char_key(actor))
+    }
+
+    fn allocate_input_request(&self, input: GatewayInput) -> Option<GatewayRequest> {
+        self.next_input_sequence
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current.checked_add(1)
+            })
+            .ok()
+            .map(|sequence| GatewayRequest::new(self.input_epoch, sequence, input))
     }
 
     /// The shared send + input-shed decision behind both
@@ -745,40 +855,81 @@ impl SocketGatewayLink {
             }
             return InputSend::Gone;
         };
-        let sheddable = matches!(
-            &msg,
-            ToServer::Inbound(WireInbound::Cmd { .. })
-                | ToServer::Inbound(WireInbound::Query { .. })
-        );
-        if sheddable {
-            let depth = conn.tx.depth();
-            let exempt = self.is_input_exempt(&msg);
-            let input_cap = if exempt {
-                self.to_server_cap
-                    .saturating_mul(INPUT_CONTEXT_QUEUE_MULTIPLIER)
-            } else {
-                self.to_server_cap
-            };
-            if depth >= input_cap as u64 {
-                let is_cmd = matches!(&msg, ToServer::Inbound(WireInbound::Cmd { .. }));
-                self.metrics.ipc_frame_shed();
-                // Record the true occupancy that triggered the shed.
-                self.metrics.observe_ipc_to_server_depth(depth);
-                tracing::warn!(
-                    dir = "to_server",
-                    queue_len = depth,
-                    cap = input_cap,
-                    input_context = exempt,
-                    dropped_total = self.metrics.ipc_frames_shed_total(),
-                    kind = if is_cmd { "cmd" } else { "query" },
-                    "ipc queue full; shedding input frame"
-                );
-                return InputSend::Shed;
+        let input = match msg {
+            ToServer::Inbound(wire) => match GatewayInput::try_from(wire) {
+                Ok(input) => input,
+                Err(lifecycle) => {
+                    return if conn.tx.send(ToServer::Inbound(lifecycle)) {
+                        InputSend::Sent
+                    } else {
+                        InputSend::Gone
+                    };
+                }
+            },
+            other => {
+                return if conn.tx.send(other) {
+                    InputSend::Sent
+                } else {
+                    InputSend::Gone
+                };
             }
+        };
+
+        let depth = conn.tx.depth();
+        let exempt = self.is_input_exempt(&input);
+        let input_cap = if exempt {
+            self.to_server_cap
+                .saturating_mul(INPUT_CONTEXT_QUEUE_MULTIPLIER)
+        } else {
+            self.to_server_cap
+        };
+        let is_cmd = matches!(&input, GatewayInput::Cmd { .. });
+        if depth >= input_cap as u64 {
+            self.metrics.ipc_frame_shed();
+            self.metrics.observe_ipc_to_server_depth(depth);
+            tracing::warn!(
+                dir = "to_server",
+                queue_len = depth,
+                cap = input_cap,
+                input_context = exempt,
+                dropped_total = self.metrics.ipc_frames_shed_total(),
+                kind = if is_cmd { "cmd" } else { "query" },
+                "ipc queue full; shedding input frame"
+            );
+            return InputSend::Shed;
         }
-        if conn.tx.send(msg) {
+
+        let Some(request) = self.allocate_input_request(input) else {
+            tracing::error!("gateway request sequence exhausted; refusing player input");
+            return InputSend::Shed;
+        };
+        let uid = request.uid;
+        let admission = self
+            .input_custody
+            .lock()
+            .expect("input custody poisoned")
+            .admit(request.clone());
+        if admission != InputCustodyAdmission::Admitted {
+            self.metrics.ipc_frame_shed();
+            if !matches!(admission, InputCustodyAdmission::Full { warn: false }) {
+                tracing::warn!(
+                    request = %uid,
+                    ?admission,
+                    conn = request.input.conn(),
+                    kind = if is_cmd { "cmd" } else { "query" },
+                    "gateway input custody refused request"
+                );
+            }
+            return InputSend::Shed;
+        }
+
+        if conn.tx.send(ToServer::Input(request)) {
             InputSend::Sent
         } else {
+            self.input_custody
+                .lock()
+                .expect("input custody poisoned")
+                .remove(uid);
             InputSend::Gone
         }
     }
@@ -897,6 +1048,7 @@ async fn gateway_reader(
     to_server_tx: ToServerTx,
     sessions: Arc<SessionManager>,
     manifest: ManifestCache,
+    input_custody: Arc<Mutex<InputCustody>>,
 ) {
     loop {
         let msg = match reader.read::<ToGateway>().await {
@@ -937,6 +1089,61 @@ async fn gateway_reader(
                     let _ = otx.send(resp);
                 } else {
                     tracing::warn!(id, "reply for unknown request id");
+                }
+            }
+            ToGateway::RequestDisposition {
+                request,
+                disposition,
+            } => {
+                let held = input_custody
+                    .lock()
+                    .expect("input custody poisoned")
+                    .remove(request);
+                match (held, disposition) {
+                    (Some(_held), GatewayRequestDisposition::LegacyClaimed) => {
+                        // Release our exact replay copy BEFORE authorizing
+                        // legacy execution. A crash at any point from here may
+                        // lose this legacy command, but can never duplicate it.
+                        if !to_server_tx.send(ToServer::GatewayReleased { request }) {
+                            tracing::warn!(
+                                request = %request,
+                                "boundary closed after legacy custody release; command may be lost"
+                            );
+                        }
+                    }
+                    (Some(held), GatewayRequestDisposition::Rejected { retryable }) => {
+                        let text = if retryable {
+                            "GAME: The server is busy; please retry that input."
+                        } else {
+                            "GAME: That input was rejected by the server."
+                        };
+                        let _ = sessions.send_to_conn(
+                            mush_session::ConnId(held.input.conn()),
+                            Arc::new(OutputEvent::Sys(RichText::tag("error", text))),
+                        );
+                    }
+                    (Some(held), GatewayRequestDisposition::Busy) => {
+                        let _ = sessions.send_to_conn(
+                            mush_session::ConnId(held.input.conn()),
+                            Arc::new(OutputEvent::Sys(RichText::tag(
+                                "error",
+                                "GAME: The server is busy; please retry that input.",
+                            ))),
+                        );
+                    }
+                    (Some(_), GatewayRequestDisposition::EphemeralFinished)
+                    | (Some(_), GatewayRequestDisposition::Owned { .. })
+                    | (Some(_), GatewayRequestDisposition::Finished { .. }) => {}
+                    (None, disposition) => {
+                        // A terminal update may legitimately follow `Owned`,
+                        // and a resent disposition may cross a reconnect. Both
+                        // are idempotent once gateway custody is already gone.
+                        tracing::debug!(
+                            request = %request,
+                            ?disposition,
+                            "request disposition arrived after gateway custody was released"
+                        );
+                    }
                 }
             }
             ToGateway::CloseSession { char, cause } => {
@@ -1232,6 +1439,9 @@ struct BoundaryEnv {
     /// One custody ledger for the gateway process, reused by each respawned
     /// server boundary.
     lifecycle: Arc<Mutex<LifecycleCustody>>,
+    /// Replay custody is gateway-process state and therefore crosses every
+    /// server boundary replacement unchanged.
+    input_custody: Arc<Mutex<InputCustody>>,
 }
 
 /// Connect to a (freshly launched) server endpoint, run the [`ToGateway::Hello`]
@@ -1314,6 +1524,7 @@ async fn connect_and_wire(
         to_server_tx,
         Arc::clone(sessions),
         Arc::clone(manifest),
+        Arc::clone(&env.input_custody),
     ));
     Ok(WiredBoundary {
         conn,
@@ -1483,6 +1694,7 @@ fn announce_uncertain_exit(sessions: &SessionManager) {
 async fn resync_boundary(
     conn: &Arc<BoundaryConn>,
     sessions: &SessionManager,
+    input_custody: &Arc<Mutex<InputCustody>>,
 ) -> Result<usize, String> {
     let recs = build_attach_recs(sessions);
     let count = recs.len();
@@ -1503,7 +1715,25 @@ async fn resync_boundary(
     )
     .await
     {
-        Ok(Some(ServiceResp::Barrier)) => Ok(count),
+        Ok(Some(ServiceResp::Barrier)) => {
+            // The public boundary remains in Gap while this snapshot is
+            // enqueued. Existing requests therefore replay after the complete
+            // attachment roster, and newly accepted input cannot overtake it.
+            let replay = input_custody
+                .lock()
+                .expect("input custody poisoned")
+                .snapshot();
+            for request in &replay {
+                if !conn.tx.send(ToServer::Input(request.clone())) {
+                    return Err(format!(
+                        "fresh boundary closed while replaying request {}",
+                        request.uid
+                    ));
+                }
+            }
+            tracing::info!(requests = replay.len(), "replayed gateway input custody");
+            Ok(count)
+        }
         Ok(Some(other)) => Err(format!(
             "fresh server refused the post-ReAnnounce barrier with {other:?}"
         )),
@@ -1663,34 +1893,36 @@ async fn supervise(
             };
             match connect_and_wire(&new_instance.endpoint, &sessions, RECONNECT_TIMEOUT, &env).await
             {
-                Ok(mut w) => match resync_boundary(&w.conn, &sessions).await {
-                    Ok(count) => {
-                        tracing::info!(
-                            count,
-                            "re-announced held sessions; fresh world crossed the readiness barrier"
-                        );
-                        guard.record_success();
-                        break Some((new_instance, w));
-                    }
-                    Err(e) => {
-                        // Hello without this exact barrier is not a successful
-                        // reconnect: keep the public boundary in its gap, close
-                        // this private attempt, and let the crash guard retry.
-                        guard.record_failure();
-                        tracing::error!(error = %e, "post-reconnect resync failed; retrying");
-                        let _ = w.close.send(());
-                        if !wait_for_exit("failed-resync boundary reader", &mut w.down).await {
-                            announce_uncertain_exit(&sessions);
-                            return;
+                Ok(mut w) => {
+                    match resync_boundary(&w.conn, &sessions, &env.input_custody).await {
+                        Ok(count) => {
+                            tracing::info!(
+                                count,
+                                "re-announced held sessions; fresh world crossed the readiness barrier"
+                            );
+                            guard.record_success();
+                            break Some((new_instance, w));
                         }
-                        if !wait_for_exit("failed-resync server instance", new_instance.exited)
-                            .await
-                        {
-                            announce_uncertain_exit(&sessions);
-                            return;
+                        Err(e) => {
+                            // Hello without this exact barrier is not a successful
+                            // reconnect: keep the public boundary in its gap, close
+                            // this private attempt, and let the crash guard retry.
+                            guard.record_failure();
+                            tracing::error!(error = %e, "post-reconnect resync failed; retrying");
+                            let _ = w.close.send(());
+                            if !wait_for_exit("failed-resync boundary reader", &mut w.down).await {
+                                announce_uncertain_exit(&sessions);
+                                return;
+                            }
+                            if !wait_for_exit("failed-resync server instance", new_instance.exited)
+                                .await
+                            {
+                                announce_uncertain_exit(&sessions);
+                                return;
+                            }
                         }
                     }
-                },
+                }
                 Err(e) => {
                     guard.record_failure();
                     tracing::error!(error = %e, "reconnect after restart failed; retrying");
@@ -1760,9 +1992,14 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
     let lifecycle = Arc::new(Mutex::new(LifecycleCustody::new(
         config.ipc_to_server_cap(),
     )));
+    let input_custody = Arc::new(Mutex::new(InputCustody::default()));
+    let input_epoch = rand::random::<u64>();
     let link = Arc::new(SocketGatewayLink {
         boundary: boundary.clone(),
         next_id: AtomicU64::new(1),
+        input_epoch,
+        next_input_sequence: AtomicU64::new(1),
+        input_custody: Arc::clone(&input_custody),
         lifecycle: Arc::clone(&lifecycle),
         sessions: Arc::clone(&sessions),
         metrics: Arc::clone(&metrics),
@@ -1775,6 +2012,7 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
     let env = BoundaryEnv {
         manifest: Arc::clone(&manifest),
         lifecycle,
+        input_custody,
         tuning: BoundaryTuning {
             metrics: Arc::clone(&metrics),
             to_server_cap: config.ipc_to_server_cap(),
@@ -2085,6 +2323,9 @@ mod tests {
         SocketGatewayLink {
             boundary,
             next_id: AtomicU64::new(1),
+            input_epoch: 7,
+            next_input_sequence: AtomicU64::new(1),
+            input_custody: Arc::new(Mutex::new(InputCustody::default())),
             lifecycle,
             sessions: Arc::new(SessionManager::new()),
             metrics,
@@ -2126,6 +2367,9 @@ mod tests {
         let link = SocketGatewayLink {
             boundary,
             next_id: AtomicU64::new(1),
+            input_epoch: 7,
+            next_input_sequence: AtomicU64::new(1),
+            input_custody: Arc::new(Mutex::new(InputCustody::default())),
             lifecycle,
             sessions,
             metrics: Arc::clone(&metrics),
@@ -2334,10 +2578,42 @@ mod tests {
             pending: Arc::clone(&pending),
         });
 
+        let input_custody = Arc::new(Mutex::new(InputCustody::default()));
+        let later = GatewayRequest::new(
+            91,
+            2,
+            GatewayInput::Cmd {
+                conn: 77,
+                actor: ObjId(42),
+                line: "second".to_string(),
+            },
+        );
+        let earlier = GatewayRequest::new(
+            91,
+            1,
+            GatewayInput::Cmd {
+                conn: 77,
+                actor: ObjId(42),
+                line: "first".to_string(),
+            },
+        );
+        {
+            let mut custody = input_custody.lock().unwrap();
+            assert_eq!(
+                custody.admit(later.clone()),
+                InputCustodyAdmission::Admitted
+            );
+            assert_eq!(
+                custody.admit(earlier.clone()),
+                InputCustodyAdmission::Admitted
+            );
+        }
+
         let resync = tokio::spawn({
             let conn = Arc::clone(&conn);
             let sessions = Arc::clone(&sessions);
-            async move { resync_boundary(&conn, &sessions).await }
+            let input_custody = Arc::clone(&input_custody);
+            async move { resync_boundary(&conn, &sessions, &input_custody).await }
         });
 
         match raw_rx.recv().await.expect("resync emitted its roster") {
@@ -2368,6 +2644,16 @@ mod tests {
             .remove(&barrier_id)
             .expect("resync barrier parked one exact waiter");
         waiter.send(ServiceResp::Barrier).unwrap();
+        assert_eq!(
+            raw_rx.recv().await,
+            Some(ToServer::Input(earlier)),
+            "oldest accepted request replays immediately after readiness"
+        );
+        assert_eq!(
+            raw_rx.recv().await,
+            Some(ToServer::Input(later)),
+            "restart replay preserves the gateway FIFO"
+        );
         assert_eq!(resync.await.unwrap(), Ok(1));
     }
 
@@ -2389,7 +2675,8 @@ mod tests {
         let resync = tokio::spawn({
             let conn = Arc::clone(&conn);
             let sessions = Arc::clone(&sessions);
-            async move { resync_boundary(&conn, &sessions).await }
+            let input_custody = Arc::new(Mutex::new(InputCustody::default()));
+            async move { resync_boundary(&conn, &sessions, &input_custody).await }
         });
         assert!(matches!(
             raw_rx.recv().await,
@@ -2484,6 +2771,7 @@ mod tests {
                 write_timeout: Duration::from_secs(1),
             },
             lifecycle,
+            input_custody: Arc::new(Mutex::new(InputCustody::default())),
         };
 
         let supervisor = tokio::spawn(supervise(
@@ -3000,7 +3288,10 @@ mod tests {
         assert_eq!(metrics.ipc_frames_shed_total(), 0);
         assert!(matches!(
             rx.try_recv(),
-            Ok(ToServer::Inbound(WireInbound::Cmd { .. }))
+            Ok(ToServer::Input(GatewayRequest {
+                input: GatewayInput::Cmd { .. },
+                ..
+            }))
         ));
 
         let (bounded, mut bounded_rx, metrics) = shedding_link_at_depth(
@@ -3014,6 +3305,126 @@ mod tests {
         );
         assert_eq!(metrics.ipc_frames_shed_total(), 1);
         assert!(bounded_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn replay_custody_is_per_connection_bounded_and_exactly_released() {
+        let mut custody = InputCustody::default();
+        let actor = ObjId(7);
+        for sequence in 0..MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION as u64 {
+            let request = GatewayRequest::new(
+                88,
+                sequence,
+                GatewayInput::Cmd {
+                    conn: 4,
+                    actor,
+                    line: format!("say {sequence}"),
+                },
+            );
+            assert_eq!(custody.admit(request), InputCustodyAdmission::Admitted);
+        }
+        assert_eq!(
+            custody.admit(GatewayRequest::new(
+                88,
+                10_000,
+                GatewayInput::Cmd {
+                    conn: 4,
+                    actor,
+                    line: "over cap".to_string(),
+                },
+            )),
+            InputCustodyAdmission::Full { warn: true }
+        );
+        assert_eq!(
+            custody.admit(GatewayRequest::new(
+                88,
+                10_001,
+                GatewayInput::Cmd {
+                    conn: 4,
+                    actor,
+                    line: "still over cap".to_string(),
+                },
+            )),
+            InputCustodyAdmission::Full { warn: false }
+        );
+
+        let first_uid = GatewayRequest::new(
+            88,
+            0,
+            GatewayInput::Cmd {
+                conn: 4,
+                actor,
+                line: String::new(),
+            },
+        )
+        .uid;
+        assert!(custody.remove(first_uid).is_some());
+        assert_eq!(
+            custody.entries.len(),
+            MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION - 1
+        );
+        assert_eq!(custody.per_connection[&4].count, custody.entries.len());
+    }
+
+    #[tokio::test]
+    async fn legacy_claim_drops_replay_copy_before_sending_release() {
+        let sessions = Arc::new(SessionManager::new());
+        let (raw_tx, mut raw_rx) = mpsc::unbounded_channel::<ToServer>();
+        let (to_server, _metrics, _lifecycle) = test_tx(raw_tx, 64, 0);
+        let transport = SessionDelivery::new(Arc::clone(&sessions), to_server.clone());
+        let custody = Arc::new(Mutex::new(InputCustody::default()));
+        let request = GatewayRequest::new(
+            44,
+            1,
+            GatewayInput::Cmd {
+                conn: 5,
+                actor: ObjId(7),
+                line: "look".to_string(),
+            },
+        );
+        assert_eq!(
+            custody.lock().unwrap().admit(request.clone()),
+            InputCustodyAdmission::Admitted
+        );
+
+        let (gateway_io, mut server_io) = tokio::io::duplex(64 * 1024);
+        let (read_half, _write_half) = tokio::io::split(gateway_io);
+        let read_half: BoxRead = Box::new(read_half);
+        let reader = FrameReader::new(read_half);
+        let reader_task = tokio::spawn(gateway_reader(
+            reader,
+            transport,
+            SocketGatewayLink::pending_table(),
+            to_server,
+            sessions,
+            Arc::new(Mutex::new(HelloManifest::default())),
+            Arc::clone(&custody),
+        ));
+
+        mush_ipc::write_frame(
+            &mut server_io,
+            &ToGateway::RequestDisposition {
+                request: request.uid,
+                disposition: GatewayRequestDisposition::LegacyClaimed,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            raw_rx.recv().await,
+            Some(ToServer::GatewayReleased {
+                request: request.uid
+            })
+        );
+        assert!(
+            custody.lock().unwrap().entries.is_empty(),
+            "the replay copy must be gone before legacy execution is authorized"
+        );
+
+        mush_ipc::write_frame(&mut server_io, &ToGateway::Bye)
+            .await
+            .unwrap();
+        reader_task.await.unwrap();
     }
 
     /// A minimal [`AuthBackend`] for the bridge-level notice test.
@@ -3138,10 +3549,13 @@ mod tests {
         answer_request(&pending, context_id, ServiceResp::InInputContext(false));
         assert!(matches!(
             wire_rx.recv().await,
-            Some(ToServer::Inbound(WireInbound::Cmd {
-                conn: 77,
-                actor: ObjId(7),
-                ref line,
+            Some(ToServer::Input(GatewayRequest {
+                input: GatewayInput::Cmd {
+                    conn: 77,
+                    actor: ObjId(7),
+                    ref line,
+                },
+                ..
             })) if line == "look"
         ));
         assert!(entered.await.expect("enter task panicked").is_ok());

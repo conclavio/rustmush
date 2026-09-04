@@ -250,6 +250,20 @@ connect hooks from racing the initial `look`, and prevents a `ConnUp` refused by
 `Booting`, `Recovering`, or `IntegrityFrozen` from becoming a half-established
 gateway session.
 
+Split-mode command/query ingress uses IPC protocol version 2. The gateway assigns each accepted
+input a 128-bit UID made from a random gateway-process epoch and monotonic sequence, and keeps the
+exact frame until the server returns an explicit disposition. Custody is capped at 32 inputs and
+512 KiB per connection, and 1,024 inputs and 8 MiB for the gateway process. A full pool refuses the
+new input with the ordinary player-facing busy response; retained entries are never evicted by age.
+
+On a server restart, the gateway first reannounces the held connection roster and crosses its exact
+readiness barrier, then replays retained request UIDs in original FIFO order before reopening input.
+Pure structured queries return `EphemeralFinished`. Current text commands are on the legacy
+at-most-once bridge: the server sends `LegacyClaimed` without executing, the gateway removes its
+replay copy, and only `GatewayReleased` permits execution. A crash after that release can lose a
+legacy command, but cannot duplicate it. A command becomes eligible for durable `Owned`/`Finished`
+dispositions only after its complete mutation uses the K3 authoritative bundle path.
+
 The initiating legacy action's held output/effects are observable but not yet
 hard-capped: individual panel/rich-text payloads and module async payloads can
 also be arbitrarily large. Capping them after the handler returns is too late to

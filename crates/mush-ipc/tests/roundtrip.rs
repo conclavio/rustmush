@@ -10,9 +10,11 @@
 use mush_core::{ControlMsg as CoreControl, DisconnectKind, Inbound, ObjId, WorldCommand};
 use mush_ipc::codec::{decode_frame, encode_frame_into};
 use mush_ipc::{
-    AttachRec, CreatePlayerError, DetachCause, FrameDecoder, IPC_VERSION, MAX_FRAME_LEN,
-    MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, MAX_IN_FLIGHT_SERVICE_REQUESTS, ServiceReq, ServiceResp,
-    ToGateway, ToServer, WireInbound, WireInboundError, encode_frame,
+    AttachRec, CanonicalHash, CommitToken, CreatePlayerError, DetachCause, FrameDecoder,
+    GatewayInput, GatewayRequest, GatewayRequestDisposition, IPC_VERSION, MAX_FRAME_LEN,
+    MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES, MAX_IN_FLIGHT_GATEWAY_INPUTS,
+    MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, MAX_IN_FLIGHT_SERVICE_REQUESTS, RequestUid, ServiceReq,
+    ServiceResp, ToGateway, ToServer, WireInbound, WireInboundError, encode_frame,
 };
 use mush_proto::{OutputEvent, PanelFrameKind, RichText};
 
@@ -37,6 +39,15 @@ fn round_trip_to_gateway(msg: &ToGateway) {
 
 /// One of every `ToServer` variant, including the `serde_json::Value` arm.
 fn every_to_server() -> Vec<ToServer> {
+    let command = GatewayRequest::new(
+        0x1234,
+        7,
+        GatewayInput::Cmd {
+            conn: 7,
+            actor: ObjId(42),
+            line: "say replay me".to_string(),
+        },
+    );
     vec![
         ToServer::Inbound(WireInbound::Cmd {
             conn: 7,
@@ -63,6 +74,21 @@ fn every_to_server() -> Vec<ToServer> {
             reason: DisconnectKind::Lost,
         }),
         ToServer::Inbound(WireInbound::SessionGone { actor: ObjId(2) }),
+        ToServer::Input(command.clone()),
+        ToServer::Input(GatewayRequest::new(
+            0x1234,
+            8,
+            GatewayInput::Query {
+                conn: 7,
+                actor: ObjId(42),
+                id: 55,
+                name: "who".into(),
+                args: serde_json::json!({"page": 2}),
+            },
+        )),
+        ToServer::GatewayReleased {
+            request: command.uid,
+        },
         ToServer::Attach {
             conn: 5,
             actor: ObjId(11),
@@ -135,6 +161,7 @@ fn every_to_server() -> Vec<ToServer> {
 /// One of every `ToGateway` variant, including the `serde_json::Value` arm.
 fn every_to_gateway() -> Vec<ToGateway> {
     use mush_ipc::SendTarget;
+    let request = RequestUid::from_bytes([1; 16]);
     vec![
         ToGateway::Deliver {
             target: SendTarget::Char(42),
@@ -207,6 +234,35 @@ fn every_to_gateway() -> Vec<ToGateway> {
             id: 105,
             resp: ServiceResp::Unavailable,
         },
+        ToGateway::RequestDisposition {
+            request,
+            disposition: GatewayRequestDisposition::Rejected { retryable: true },
+        },
+        ToGateway::RequestDisposition {
+            request,
+            disposition: GatewayRequestDisposition::Busy,
+        },
+        ToGateway::RequestDisposition {
+            request,
+            disposition: GatewayRequestDisposition::EphemeralFinished,
+        },
+        ToGateway::RequestDisposition {
+            request,
+            disposition: GatewayRequestDisposition::LegacyClaimed,
+        },
+        ToGateway::RequestDisposition {
+            request,
+            disposition: GatewayRequestDisposition::Owned {
+                token: CommitToken::from_bytes([2; 16]),
+                bundle_hash: CanonicalHash::from_bytes([3; 32]),
+            },
+        },
+        ToGateway::RequestDisposition {
+            request,
+            disposition: GatewayRequestDisposition::Finished {
+                token: CommitToken::from_bytes([2; 16]),
+            },
+        },
         // Server → gateway session control.
         ToGateway::SetFloodExempt {
             char: 42,
@@ -266,7 +322,7 @@ fn every_to_gateway_variant_round_trips() {
 
 #[test]
 fn version_is_present_and_travels_in_hello() {
-    assert_eq!(IPC_VERSION, 1, "the boundary protocol version is pinned");
+    assert_eq!(IPC_VERSION, 2, "the boundary protocol version is pinned");
     assert_eq!(
         MAX_IN_FLIGHT_SERVICE_REQUESTS, 256,
         "service-request custody is a fixed cross-boundary contract"
@@ -275,6 +331,8 @@ fn version_is_present_and_travels_in_hello() {
         MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, 256,
         "connection-lifecycle custody is a fixed cross-boundary contract"
     );
+    assert_eq!(MAX_IN_FLIGHT_GATEWAY_INPUTS, 1_024);
+    assert_eq!(MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES, 8 * 1024 * 1024);
     let hello = ToGateway::Hello {
         proto: IPC_VERSION,
         server: "mushd".to_string(),

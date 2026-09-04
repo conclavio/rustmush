@@ -60,7 +60,10 @@ pub use io::{
 };
 pub use link::{ConnectionAdmission, GatewayLink, InputSend};
 pub use protocol::{
-    AttachRec, ControlMsg, CreatePlayerError, DetachCause, IPC_VERSION,
+    AttachRec, ControlMsg, CreatePlayerError, DetachCause, GatewayInput, GatewayInputSizeError,
+    GatewayRequest, GatewayRequestDisposition, IPC_VERSION, MAX_GATEWAY_INPUT_BYTES,
+    MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES_PER_CONNECTION,
+    MAX_IN_FLIGHT_GATEWAY_INPUTS, MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION,
     MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, MAX_IN_FLIGHT_SERVICE_REQUESTS, ServiceReq, ServiceResp,
     ToGateway, ToServer, WireInbound, WireInboundError,
 };
@@ -69,5 +72,5 @@ pub use target::SendTarget;
 // Re-export the borrowed vocabulary so downstream (the future gateway) can name
 // the boundary types through `mush_ipc` without also depending on `mush-core`
 // or `mush-proto` directly.
-pub use mush_core::{DisconnectKind, Inbound, ObjId};
+pub use mush_core::{CanonicalHash, CommitToken, DisconnectKind, Inbound, ObjId, RequestUid};
 pub use mush_proto::OutputEvent;

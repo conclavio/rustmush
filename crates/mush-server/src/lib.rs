@@ -27,6 +27,7 @@
 //! [`WireInbound`]: mush_ipc::WireInbound
 //! [`ServiceReq`]: mush_ipc::ServiceReq
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -38,8 +39,11 @@ use mush_config::ipguard::IpGuard;
 use mush_config::metrics::Metrics;
 use mush_core::{ControlMsg, Engine, Inbound};
 use mush_ipc::{
-    BoxWrite, FrameReader, IPC_VERSION, IpcEndpoint, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
-    MAX_IN_FLIGHT_SERVICE_REQUESTS, ServiceReq, ServiceResp, ToGateway, ToServer,
+    BoxWrite, FrameReader, GatewayInput, GatewayRequest, GatewayRequestDisposition, IPC_VERSION,
+    IpcEndpoint, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES,
+    MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES_PER_CONNECTION, MAX_IN_FLIGHT_GATEWAY_INPUTS,
+    MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
+    MAX_IN_FLIGHT_SERVICE_REQUESTS, RequestUid, ServiceReq, ServiceResp, ToGateway, ToServer,
 };
 use mush_llm::LlmService;
 use mush_store::{InMemoryStore, ObjectStore, RedisStore, core_migrations, run_migrations};
@@ -607,6 +611,110 @@ impl ServiceRequestLimiter {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct ServerConnectionClaims {
+    count: usize,
+    bytes: usize,
+}
+
+#[derive(Clone, Debug)]
+struct ServerLegacyClaim {
+    request: GatewayRequest,
+    bytes: usize,
+}
+
+/// Server-side half of the legacy claim/release handshake.
+///
+/// A command is retained here without execution until the gateway proves it
+/// has discarded its replay copy. Independent limits defend against a raw IPC
+/// peer that ignores the gateway's own custody caps.
+#[derive(Default)]
+struct ServerInputClaims {
+    entries: HashMap<RequestUid, ServerLegacyClaim>,
+    per_connection: HashMap<u64, ServerConnectionClaims>,
+    bytes: usize,
+    capacity_warned: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ServerClaimAdmission {
+    New,
+    Duplicate,
+    Full { warn: bool },
+    Invalid,
+    Conflict,
+}
+
+impl ServerInputClaims {
+    fn admit(&mut self, request: GatewayRequest) -> ServerClaimAdmission {
+        if !request.has_valid_uid() {
+            return ServerClaimAdmission::Invalid;
+        }
+        let Ok(bytes) = request.input.logical_bytes() else {
+            return ServerClaimAdmission::Invalid;
+        };
+        if let Some(existing) = self.entries.get(&request.uid) {
+            return if existing.request == request {
+                ServerClaimAdmission::Duplicate
+            } else {
+                ServerClaimAdmission::Conflict
+            };
+        }
+
+        let conn = request.input.conn();
+        let account = self.per_connection.get(&conn).copied().unwrap_or_default();
+        let full = self.entries.len() >= MAX_IN_FLIGHT_GATEWAY_INPUTS
+            || self.bytes.saturating_add(bytes) > MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES
+            || account.count >= MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION
+            || account.bytes.saturating_add(bytes)
+                > MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES_PER_CONNECTION;
+        if full {
+            let warn = !self.capacity_warned;
+            self.capacity_warned = true;
+            return ServerClaimAdmission::Full { warn };
+        }
+
+        self.entries
+            .insert(request.uid, ServerLegacyClaim { request, bytes });
+        self.bytes += bytes;
+        let account = self.per_connection.entry(conn).or_default();
+        account.count += 1;
+        account.bytes += bytes;
+        self.capacity_warned = false;
+        ServerClaimAdmission::New
+    }
+
+    fn release(&mut self, uid: RequestUid) -> Option<GatewayRequest> {
+        let held = self.entries.remove(&uid)?;
+        let conn = held.request.input.conn();
+        self.bytes = self.bytes.saturating_sub(held.bytes);
+        if let Some(account) = self.per_connection.get_mut(&conn) {
+            account.count = account.count.saturating_sub(1);
+            account.bytes = account.bytes.saturating_sub(held.bytes);
+            if account.count == 0 {
+                self.per_connection.remove(&conn);
+            }
+        }
+        if self.entries.len() < MAX_IN_FLIGHT_GATEWAY_INPUTS
+            && self.bytes < MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES
+        {
+            self.capacity_warned = false;
+        }
+        Some(held.request)
+    }
+}
+
+fn request_disposition(
+    sink: &SocketSink,
+    request: RequestUid,
+    disposition: GatewayRequestDisposition,
+) {
+    sink.send(ToGateway::RequestDisposition {
+        request,
+        disposition,
+    });
+}
+
 async fn reader_loop(
     r: mush_ipc::BoxRead,
     world: WorldHandle,
@@ -615,10 +723,93 @@ async fn reader_loop(
 ) -> std::io::Result<()> {
     let mut reader = FrameReader::new(r);
     let service_requests = ServiceRequestLimiter::new();
+    let mut input_claims = ServerInputClaims::default();
     while let Some(msg) = reader.read::<ToServer>().await? {
         match msg {
             ToServer::Inbound(wire) => {
+                if matches!(
+                    wire,
+                    mush_ipc::WireInbound::Cmd { .. } | mush_ipc::WireInbound::Query { .. }
+                ) {
+                    tracing::error!("raw player input bypassed the version-2 custody envelope");
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "player input requires GatewayRequest custody",
+                    ));
+                }
                 world.inbound(Inbound::from(wire)).await;
+            }
+            ToServer::Input(request) => {
+                let uid = request.uid;
+                if !request.has_valid_uid() || request.input.logical_bytes().is_err() {
+                    tracing::error!(request = %uid, "invalid gateway request envelope");
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "invalid gateway request envelope",
+                    ));
+                }
+                match &request.input {
+                    GatewayInput::Query { .. } => {
+                        let accepted = world.inbound(request.input.into()).await;
+                        request_disposition(
+                            &reply_sink,
+                            uid,
+                            if accepted {
+                                GatewayRequestDisposition::EphemeralFinished
+                            } else {
+                                GatewayRequestDisposition::Rejected { retryable: true }
+                            },
+                        );
+                    }
+                    GatewayInput::Cmd { .. } => match input_claims.admit(request) {
+                        ServerClaimAdmission::New | ServerClaimAdmission::Duplicate => {
+                            request_disposition(
+                                &reply_sink,
+                                uid,
+                                GatewayRequestDisposition::LegacyClaimed,
+                            );
+                        }
+                        ServerClaimAdmission::Full { warn } => {
+                            if warn {
+                                tracing::warn!(
+                                    request = %uid,
+                                    held = input_claims.entries.len(),
+                                    bytes = input_claims.bytes,
+                                    "server legacy-claim custody full; refusing request"
+                                );
+                            }
+                            request_disposition(&reply_sink, uid, GatewayRequestDisposition::Busy);
+                        }
+                        ServerClaimAdmission::Invalid | ServerClaimAdmission::Conflict => {
+                            tracing::error!(
+                                request = %uid,
+                                "conflicting or invalid gateway request identity"
+                            );
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "conflicting or invalid gateway request identity",
+                            ));
+                        }
+                    },
+                }
+            }
+            ToServer::GatewayReleased { request } => {
+                let Some(claim) = input_claims.release(request) else {
+                    tracing::debug!(
+                        request = %request,
+                        "duplicate or stale legacy release ignored"
+                    );
+                    continue;
+                };
+                // Remove the server claim before enqueueing. From this point a
+                // crash can lose the command, but neither this boundary nor a
+                // gateway replay can execute it twice.
+                if !world.inbound(claim.input.into()).await {
+                    tracing::warn!(
+                        request = %request,
+                        "world closed after legacy release; command was not executed"
+                    );
+                }
             }
             ToServer::Control(ctrl) => {
                 world.inbound(Inbound::Control(ctrl)).await;
@@ -763,9 +954,12 @@ fn create_player_response(result: Result<mush_core::ObjId, CreatePlayerErr>) -> 
 #[cfg(test)]
 mod service_request_tests {
     use super::{
-        CreatePlayerErr, MAX_IN_FLIGHT_SERVICE_REQUESTS, ServiceRequestLimiter, ServiceResp,
-        WorldReadError, barrier_response, create_player_response,
+        CreatePlayerErr, GatewayInput, GatewayRequest, MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION,
+        MAX_IN_FLIGHT_SERVICE_REQUESTS, ServerClaimAdmission, ServerInputClaims,
+        ServiceRequestLimiter, ServiceResp, WorldReadError, barrier_response,
+        create_player_response,
     };
+    use mush_core::ObjId;
 
     #[test]
     fn failed_world_barrier_is_never_promoted_to_an_ack() {
@@ -806,6 +1000,75 @@ mod service_request_tests {
         assert!(
             limiter.try_admit().is_ok(),
             "a completed request must release one handler slot"
+        );
+    }
+
+    fn legacy_request(sequence: u64, conn: u64) -> GatewayRequest {
+        GatewayRequest::new(
+            19,
+            sequence,
+            GatewayInput::Cmd {
+                conn,
+                actor: ObjId(7),
+                line: format!("say {sequence}"),
+            },
+        )
+    }
+
+    #[test]
+    fn legacy_claim_is_exact_bounded_and_released_before_reuse() {
+        let mut claims = ServerInputClaims::default();
+        let first = legacy_request(1, 9);
+        assert_eq!(claims.admit(first.clone()), ServerClaimAdmission::New);
+        assert_eq!(
+            claims.admit(first.clone()),
+            ServerClaimAdmission::Duplicate,
+            "an exact replay must re-emit the claim without taking more custody"
+        );
+
+        let mut conflicting = first.clone();
+        conflicting.input = GatewayInput::Cmd {
+            conn: 9,
+            actor: ObjId(7),
+            line: "different payload".to_string(),
+        };
+        assert_eq!(
+            claims.admit(conflicting),
+            ServerClaimAdmission::Conflict,
+            "one UID may never identify two payloads"
+        );
+
+        assert_eq!(claims.release(first.uid), Some(first));
+        assert!(claims.entries.is_empty());
+        assert!(claims.per_connection.is_empty());
+        assert_eq!(claims.bytes, 0);
+    }
+
+    #[test]
+    fn raw_peer_cannot_exceed_per_connection_legacy_claim_cap() {
+        let mut claims = ServerInputClaims::default();
+        for sequence in 0..MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION as u64 {
+            assert_eq!(
+                claims.admit(legacy_request(sequence, 9)),
+                ServerClaimAdmission::New
+            );
+        }
+        assert_eq!(
+            claims.admit(legacy_request(10_000, 9)),
+            ServerClaimAdmission::Full { warn: true }
+        );
+        assert_eq!(
+            claims.admit(legacy_request(10_001, 9)),
+            ServerClaimAdmission::Full { warn: false },
+            "continued overload is edge-logged rather than log-amplified"
+        );
+
+        let released = claims.release(legacy_request(0, 9).uid).unwrap();
+        assert_eq!(released.input.conn(), 9);
+        assert_eq!(
+            claims.admit(legacy_request(10_002, 9)),
+            ServerClaimAdmission::New,
+            "release must restore exactly one slot"
         );
     }
 }

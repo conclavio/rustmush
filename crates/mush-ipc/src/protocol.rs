@@ -6,7 +6,7 @@
 //! `ConnectionReady`/`Barrier`) become correlated [`ServiceReq`]/[`ServiceResp`]
 //! pairs matched by a `u64` request id.
 
-use mush_core::{DisconnectKind, Inbound, ObjId};
+use mush_core::{CanonicalHash, CommitToken, DisconnectKind, Inbound, ObjId, RequestUid};
 use mush_proto::OutputEvent;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -23,7 +23,25 @@ pub use mush_core::ControlMsg;
 /// breaking change; additive changes (new enum arms, new struct fields under a
 /// self-describing encoding) keep the same version and stay wire-compatible
 /// with older peers.
-pub const IPC_VERSION: u32 = 1;
+pub const IPC_VERSION: u32 = 2;
+
+/// Maximum replayable player inputs held by either half of one split-process
+/// boundary. The gateway enforces the limit before accepting custody and the
+/// server independently enforces it before retaining a legacy claim.
+pub const MAX_IN_FLIGHT_GATEWAY_INPUTS: usize = 1_024;
+
+/// Maximum replayable player inputs held for one physical connection.
+pub const MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION: usize = 32;
+
+/// Maximum logical bytes held by the replayable player-input pool.
+pub const MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES: usize = 8 * 1024 * 1024;
+
+/// Maximum logical bytes held for one physical connection.
+pub const MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES_PER_CONNECTION: usize = 512 * 1024;
+
+/// Maximum logical size of one replayable input. This rejects a pathological
+/// structured query before its allocation can consume the whole custody pool.
+pub const MAX_GATEWAY_INPUT_BYTES: usize = 128 * 1024;
 
 /// Maximum number of correlated service requests one split-process boundary
 /// may hold in flight at once.
@@ -108,6 +126,196 @@ pub enum WireInbound {
     SessionGone {
         /// The actor whose session ended.
         actor: ObjId,
+    },
+}
+
+/// Player-originated input that participates in the restart custody protocol.
+///
+/// Lifecycle messages deliberately cannot inhabit this enum: they retain their
+/// existing ordered, must-deliver path, while only floodable player input is
+/// admitted to the bounded replay pool.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum GatewayInput {
+    /// One command line from a live connection.
+    Cmd {
+        /// The connection it arrived on.
+        conn: u64,
+        /// The actor it runs as.
+        actor: ObjId,
+        /// The raw line.
+        line: String,
+    },
+    /// A structured, replay-safe panel hydration request.
+    Query {
+        /// The connection the reply goes to.
+        conn: u64,
+        /// The requesting actor.
+        actor: ObjId,
+        /// Client-chosen correlation id, echoed in the reply.
+        id: u64,
+        /// The registered query-handler name.
+        name: SmolStr,
+        /// Handler-defined parameters.
+        args: serde_json::Value,
+    },
+}
+
+impl GatewayInput {
+    /// The physical connection whose bounded custody account owns this input.
+    #[must_use]
+    pub const fn conn(&self) -> u64 {
+        match self {
+            Self::Cmd { conn, .. } | Self::Query { conn, .. } => *conn,
+        }
+    }
+
+    /// A deterministic accounting size for custody limits.
+    ///
+    /// This is not the MessagePack frame size. It counts caller-controlled
+    /// variable data plus fixed scalar widths, so both peers apply the same
+    /// bound without depending on a serializer implementation detail.
+    pub fn logical_bytes(&self) -> Result<usize, GatewayInputSizeError> {
+        let bytes = match self {
+            Self::Cmd { line, .. } => 16_usize.saturating_add(line.len()),
+            Self::Query { name, args, .. } => {
+                let args = serde_json::to_vec(args)
+                    .map_err(|error| GatewayInputSizeError::InvalidJson(error.to_string()))?;
+                24_usize
+                    .saturating_add(name.len())
+                    .saturating_add(args.len())
+            }
+        };
+        if bytes > MAX_GATEWAY_INPUT_BYTES {
+            return Err(GatewayInputSizeError::TooLarge {
+                actual: bytes,
+                maximum: MAX_GATEWAY_INPUT_BYTES,
+            });
+        }
+        Ok(bytes)
+    }
+}
+
+impl From<GatewayInput> for Inbound {
+    fn from(input: GatewayInput) -> Self {
+        match input {
+            GatewayInput::Cmd { conn, actor, line } => Self::Cmd { conn, actor, line },
+            GatewayInput::Query {
+                conn,
+                actor,
+                id,
+                name,
+                args,
+            } => Self::Query {
+                conn,
+                actor,
+                id,
+                name,
+                args,
+            },
+        }
+    }
+}
+
+impl TryFrom<WireInbound> for GatewayInput {
+    type Error = WireInbound;
+
+    fn try_from(input: WireInbound) -> Result<Self, Self::Error> {
+        match input {
+            WireInbound::Cmd { conn, actor, line } => Ok(Self::Cmd { conn, actor, line }),
+            WireInbound::Query {
+                conn,
+                actor,
+                id,
+                name,
+                args,
+            } => Ok(Self::Query {
+                conn,
+                actor,
+                id,
+                name,
+                args,
+            }),
+            lifecycle => Err(lifecycle),
+        }
+    }
+}
+
+/// Failure to account a gateway input under the custody bounds.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum GatewayInputSizeError {
+    /// A JSON value unexpectedly failed to serialize.
+    #[error("structured input is not serializable: {0}")]
+    InvalidJson(String),
+    /// The input exceeds the per-request custody limit.
+    #[error("gateway input is {actual} logical bytes; maximum is {maximum}")]
+    TooLarge {
+        /// The measured logical size.
+        actual: usize,
+        /// The configured hard maximum.
+        maximum: usize,
+    },
+}
+
+/// One replay-stable request held in gateway custody until the server returns
+/// an explicit ownership disposition.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GatewayRequest {
+    /// Stable identity reused verbatim across reconnect/restart replay.
+    pub uid: RequestUid,
+    /// Random gateway-process epoch embedded in the first half of `uid`.
+    pub epoch: u64,
+    /// The player input payload.
+    pub input: GatewayInput,
+}
+
+impl GatewayRequest {
+    /// Construct an identity from one process epoch and monotonic sequence.
+    #[must_use]
+    pub fn new(epoch: u64, sequence: u64, input: GatewayInput) -> Self {
+        let mut bytes = [0_u8; 16];
+        bytes[..8].copy_from_slice(&epoch.to_be_bytes());
+        bytes[8..].copy_from_slice(&sequence.to_be_bytes());
+        Self {
+            uid: RequestUid::from_bytes(bytes),
+            epoch,
+            input,
+        }
+    }
+
+    /// Validate that the separately visible epoch agrees with the stable UID.
+    #[must_use]
+    pub fn has_valid_uid(&self) -> bool {
+        self.uid.as_bytes()[..8] == self.epoch.to_be_bytes()
+    }
+}
+
+/// Server ownership result for a replayable gateway request.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum GatewayRequestDisposition {
+    /// Refused before execution or durable ownership was taken.
+    Rejected {
+        /// Whether a fresh player submission may reasonably succeed later.
+        retryable: bool,
+    },
+    /// Refused before ownership because a bounded admission pool is full.
+    /// The same request may be submitted again by the player later.
+    Busy,
+    /// A replay-safe query has been accepted; no durable ownership is needed.
+    EphemeralFinished,
+    /// The server has classified a legacy command but will not execute until
+    /// the gateway proves it released its replay copy.
+    LegacyClaimed,
+    /// The complete authoritative mutation is durably owned by K3.
+    Owned {
+        /// Stable token for exact-token retry and status lookup.
+        token: CommitToken,
+        /// Canonical hash of the durably owned authoritative bundle.
+        bundle_hash: CanonicalHash,
+    },
+    /// The authoritative request reached terminal durable completion.
+    Finished {
+        /// The stable commit token associated with the request.
+        token: CommitToken,
     },
 }
 
@@ -340,6 +548,14 @@ pub enum DetachCause {
 pub enum ToServer {
     /// Live engine input — the cross-boundary subset of [`Inbound`].
     Inbound(WireInbound),
+    /// A player command/query under bounded, replay-stable gateway custody.
+    Input(GatewayRequest),
+    /// The gateway has discarded its replay copy of a legacy request. The
+    /// server may execute it at most once after receiving this release.
+    GatewayReleased {
+        /// The request whose gateway custody was released.
+        request: RequestUid,
+    },
     /// A connection attached to an actor (session bookkeeping for re-attach).
     Attach {
         /// The physical connection id.
@@ -395,6 +611,13 @@ pub enum ToGateway {
         id: u64,
         /// The reply payload.
         resp: ServiceResp,
+    },
+    /// Ownership/completion classification for a replayable player input.
+    RequestDisposition {
+        /// Stable request identity from [`GatewayRequest::uid`].
+        request: RequestUid,
+        /// The server's current terminal or handoff state.
+        disposition: GatewayRequestDisposition,
     },
     /// Set (or clear) a character's flood-exempt flag. The world loop re-syncs
     /// this after every `Cmd` — a paste into an input context (mail body,

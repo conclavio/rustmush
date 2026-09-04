@@ -1,9 +1,9 @@
 # Cross-ruleset mechanical contracts and proving gates
 
 **Status:** Implementing 0.11 — K0/K1 formal exit criteria landed. K2 has strict atomic boot
-hydration, bounded typed transactions, final guard revalidation, and provider registration, but its
-same-bundle trigger executor, independently bounded must-retain lanes, and split-gateway request
-custody protocol remain open. The self-contained K3 persistence kernel is implemented: exact bundle
+hydration, bounded typed transactions, final guard revalidation, provider registration, and a
+versioned split-gateway request custody protocol. Its same-bundle trigger executor, independently
+bounded must-retain lanes, and authenticated coordinator entry remain open. The self-contained K3 persistence kernel is implemented: exact bundle
 reservation/reconciliation, pre-hydration recovery, store-owned authoritative prefixes, compact
 checkpoints, watermark-first epoch retirement, a production coordinator plus first tactics provider,
 and recovery-driven durable-outbox dispatch. Transport/legal-offer integration and the IPC portions
@@ -442,7 +442,6 @@ Rejected(uid, projected_refusal)   no intent; gateway drops only after receiving
 Busy(uid, retry_hint)              no intent; bounded refusal/backpressure
 EphemeralFinished(uid, output)     pure/replay-safe query completed; no server ownership
 LegacyClaimed(uid)                 classified; server waits for GatewayReleased(uid)
-LegacyFinished(uid, output)        legacy execution finished; never causes gateway replay
 Owned(uid, commit_token)           exact intent exists; server/recovery now owns completion
 Finished(uid, projected_receipt)   terminal committed result
 ```
@@ -463,9 +462,10 @@ Because the gateway cannot classify a raw line, the server must return one dispo
 causes a replay that is safe but may observe newer state. A legacy mutating command must either use
 an exact legacy request journal or use a two-step at-most-once handoff: the server classifies and
 sends `LegacyClaimed` without executing; the gateway removes the raw request from custody and sends
-`GatewayReleased`; only then may the server execute. Loss before release causes replay of
-classification only; a server crash after release may lose the command, but cannot make the gateway
-duplicate it. Both sides bound their short-lived classification tables. This weaker bridge avoids
+`GatewayReleased`; only then may the server execute. The gateway intentionally receives no false
+completion promise for this compatibility lane: loss before release causes replay of classification
+only; a server crash after release may lose the command, but cannot make the gateway duplicate it.
+Both sides bound their short-lived classification tables. This weaker bridge avoids
 duplicate legacy mutation without pretending to provide Gate-5 durability. Commands become
 eligible for `Owned/Finished` only when their entire mutation has moved to the authoritative
 protocol.
@@ -1776,7 +1776,7 @@ The repository already contains useful local proofs. They should be adapted, not
 | Contract | Current foundation | Missing shared contract |
 |---|---|---|
 | C1 definitions | shared canonical owner/kind/id/digest identities; bounded `RulesValue`; immutable global definition registry; exact-reference closure; one provider semantic validator per owner/kind; bounded monotonic owner-readiness latch; tactics exact-digest owner fan-out; dry-run migration registry; tactics/sim adapters | owner-freeze discovery in remaining rules-bearing adapters, executing one migration through K3 durability, broader production provider coverage |
-| C2 plan/commit | `mush-sim::Transition`, `UnitMutationPlan`, world single writer, `WriteBatch`, K0 exact receipt gate, typed output/effect custody and one `CommitPending` batch; K2 action invocation/provider metadata; engine-owned typed state families; owner-scoped bounded multi-record `ActionTxn`; one-shot `PreparedTxn`; exact staged pairing between typed post-images and an immutable K3 bundle; FIFO reserve/reconcile custody; exact 128-bit token/hash receipt validation before RAM install; canonical bounded K3 bundle/token/replay/outbox models; in-memory exact intent protocol and cut-point matrix; Redis checked-Lua intent/idempotency reservation plus replay/readback/finalization; object-plus-allocator admission; hash-aware status; live Redis 8.10 fault execution; exhaustive pre-hydration server recovery; bounded runtime deterministic retries and whole-bundle dead-letter; compact finalized checkpoints; watermark-first epoch retirement; typestate early-idempotency coordinator and first real tactics provider; recovery-driven bounded durable-outbox worker with stable-ID at-least-once delivery | transport/parser/legal-offer coordinator wiring; same-bundle trigger execution; independent must-retain lanes; gateway UID/custody/dispositions and remaining process/IPC fault matrix; broader provider and legacy migration |
+| C2 plan/commit | `mush-sim::Transition`, `UnitMutationPlan`, world single writer, `WriteBatch`, K0 exact receipt gate, typed output/effect custody and one `CommitPending` batch; K2 action invocation/provider metadata; engine-owned typed state families; owner-scoped bounded multi-record `ActionTxn`; one-shot `PreparedTxn`; exact staged pairing between typed post-images and an immutable K3 bundle; FIFO reserve/reconcile custody; exact 128-bit token/hash receipt validation before RAM install; canonical bounded K3 bundle/token/replay/outbox models; in-memory exact intent protocol and cut-point matrix; Redis checked-Lua intent/idempotency reservation plus replay/readback/finalization; object-plus-allocator admission; hash-aware status; live Redis 8.10 fault execution; exhaustive pre-hydration server recovery; bounded runtime deterministic retries and whole-bundle dead-letter; compact finalized checkpoints; watermark-first epoch retirement; typestate early-idempotency coordinator and first real tactics provider; recovery-driven durable-outbox worker with stable-ID at-least-once delivery; versioned epoch-scoped gateway request UIDs, bounded per-connection/global count+byte custody, explicit dispositions, legacy claim/release, and post-reattach FIFO replay | transport/parser/legal-offer coordinator wiring; same-bundle trigger execution; independent must-retain lanes; remaining ownership-ack process/IPC fault matrix; broader provider and legacy migration |
 | C3 legal actions | contextual behavior commands, required channels, command-subject links, LLM tool manifests, exact owner-stamped action-provider registry | separate internal/projected legal actions, bounded offer store, one submission path for human/UI/AI/LLM |
 | C4 time/windows | scheduler, `GameClock`, Timestop turns, passive domain clock, Journey timing, mobility switching | typed clock identity/provider, generic window generations, simultaneous intent collection/order, restart/catch-up policy |
 | C5 RNG | injectable `mush-dice::RollCtx`; test-seeded ChaCha in rulesets | idempotency-derived resolution streams, draw transcript, algorithm/version and durable outcome record |
@@ -1919,9 +1919,14 @@ the images across FIFO reserve/reconcile and installs them only after an exact t
 The `action-state/*` keyspace is isolated from legacy module boot, migration, and server write paths.
 The production coordinator now performs early exact-idempotency preflight and assembles the bounded
 semantic causal/outcome/outbox portion of a complete bundle; the first `mush-tactics` provider uses
-it directly. What remains at K2 is execution of the bounded trigger queue inside the same
-transaction/bundle, independent bounded operational lanes, gateway ownership replay/dispositions,
-and transport-authenticated entry into the coordinator. Recovery-driven durable-outbox delivery is
+it directly. IPC version 2 wraps every split-mode command/query in an epoch-scoped stable UID;
+gateway custody is independently bounded per connection and globally by count and logical bytes,
+survives server restart, and replays in FIFO order only after the reattachment barrier. Queries end
+with `EphemeralFinished`; legacy commands use the at-most-once `LegacyClaimed`/`GatewayReleased`
+handoff, and both peers independently bound retained classifications. What remains at K2 is
+execution of the bounded trigger queue inside the same transaction/bundle, independent bounded
+operational lanes, transport-authenticated entry into the coordinator, and the remaining deliberate
+frame-loss/process-kill matrix. Recovery-driven durable-outbox delivery is
 implemented; viewer projection and keyframe recovery remain C9/C12 work.
 
 Exit criteria:
@@ -1981,9 +1986,9 @@ bounded production worker rediscovers finalized outbox items, persists the attem
 reuses stable item IDs for ambiguous send/ack loss, records retry or terminal state, and checkpoints
 the parent only after all items are terminal. Missing adapters retain work and cannot starve
 installed adapters. The remaining K3 exit work is cross-cut: transport/parser/legal-offer entry into
-the coordinator, gateway UID ownership transfer and its process/IPC fault cases, recoverable
+the coordinator, the remaining gateway ownership process/IPC fault cases, recoverable
 projection/keyframes, and broader provider/legacy migration. Those depend respectively on unfinished
-K2 custody/trigger work and K5/C9/C12 projection; the self-contained K3 store, coordinator, and
+K2 trigger/transport work and K5/C9/C12 projection; the self-contained K3 store, coordinator, and
 durable-delivery kernel is complete.
 
 Work:

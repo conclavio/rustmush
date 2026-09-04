@@ -21,6 +21,12 @@ impl GatewayLink for WorldHandle {
                 // The cross-boundary input subset: convert back to the shared
                 // `Inbound` and queue it exactly as the direct call did.
                 ToServer::Inbound(wire) => self.inbound(Inbound::from(wire)).await,
+                // Split-mode custody frames are produced only by
+                // `SocketGatewayLink`; the all-in-one bridge sends raw inbound
+                // directly. Accept a manually supplied request as a direct
+                // in-process delivery, while a release has no retained claim.
+                ToServer::Input(request) => self.inbound(request.input.into()).await,
+                ToServer::GatewayReleased { .. } => true,
                 // Operator control (`@shutdown`, `@dump`) crosses as the
                 // top-level `ToServer::Control`; in-process it re-enters the
                 // world loop as `Inbound::Control`, the same message the console
