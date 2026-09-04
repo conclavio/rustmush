@@ -940,6 +940,47 @@ impl Engine {
                 .ok_or(crate::offer::LegalActionResolutionError::Resolve(
                     crate::offer::OfferResolveError::Unavailable,
                 ))?;
+        let revision_keys = self
+            .registry
+            .action_providers()
+            .ok_or(crate::offer::LegalActionResolutionError::Resolve(
+                crate::offer::OfferResolveError::Unavailable,
+            ))?
+            .resolved_revision_keys(&action, &resolved)
+            .map_err(|_| {
+                crate::offer::LegalActionResolutionError::Resolve(
+                    crate::offer::OfferResolveError::Unavailable,
+                )
+            })?;
+        let mut revision_stamps = Vec::with_capacity(revision_keys.len());
+        if !revision_keys.is_empty() {
+            let validators = self.registry.revision_validators().ok_or(
+                crate::offer::LegalActionResolutionError::Resolve(
+                    crate::offer::OfferResolveError::Unavailable,
+                ),
+            )?;
+            let context =
+                crate::action::RevisionValidatorContext::new(&self.world, &self.action_state);
+            for key in revision_keys {
+                let Some(generation) =
+                    validators.current_generation(&context, &key).map_err(|_| {
+                        crate::offer::LegalActionResolutionError::Resolve(
+                            crate::offer::OfferResolveError::Unavailable,
+                        )
+                    })?
+                else {
+                    return Err(crate::offer::LegalActionResolutionError::Resolve(
+                        crate::offer::OfferResolveError::Unavailable,
+                    ));
+                };
+                revision_stamps.push(crate::action::RevisionStamp { key, generation });
+            }
+        }
+        let guards = guards.with_revision_stamps(revision_stamps).map_err(|_| {
+            crate::offer::LegalActionResolutionError::Resolve(
+                crate::offer::OfferResolveError::Unavailable,
+            )
+        })?;
         Ok(crate::offer::ResolvedAuthoritativeOffer::new(
             action, resolved, guards,
         ))

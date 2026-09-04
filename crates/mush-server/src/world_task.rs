@@ -6384,10 +6384,10 @@ mod tests {
     impl RevisionValidator for PreparedLaneRevision {
         fn current_generation(
             &self,
-            world: &World,
+            context: &mush_core::RevisionValidatorContext<'_>,
             _key: &RevisionKey,
         ) -> Result<Option<u64>, ActionError> {
-            Ok(world
+            Ok(context
                 .module_state::<PreparedLaneGeneration>()
                 .map(|generation| generation.0))
         }

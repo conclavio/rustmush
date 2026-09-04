@@ -2464,8 +2464,8 @@ to-hit/location/damage transcript and a private durable outcome; its receipt pro
 unit IDs, revisions, section, exact damage, or draw. Tests prove the two live records remain
 byte-identical before installation, a stale/disabled source or un-damageable target leaves both
 unchanged, and identical inputs reproduce replay writes, outcome, and RNG evidence. This is a
-transaction-shape proof, not a second production unit authority. Placement guards, durable
-simultaneous resolution, and the cross-owner bridge remain before Gates 2-3 can be claimed
+transaction-shape proof, not a second production unit authority. Production placement migration,
+durable simultaneous resolution, and the cross-owner bridge remain before Gates 2-3 can be claimed
 complete. The fixture now also registers its own composition-branded control-lease family and
 requires the `weapons` channel. Neither a station grant nor a lease alone projects `fire`; the
 complete exact pair does, and the internal offer carries both final witnesses. An operated-fire
@@ -2493,6 +2493,17 @@ provider receives the private target and the final contact guard, and proves con
 projection and submission performs no tactical mutation. It also proves two viewers receive
 different contact IDs for the same truth target without either projection exposing that target.
 Viewer-specific panels/outcomes across all surfaces remain before Gate 3 is complete.
+Revision validators now receive a read-only context containing ordinary world state plus typed
+action-state access that still requires the composition-branded family handle. After opaque target
+resolution, an action provider may name a bounded, duplicate-free set of exact same-owner revision
+coordinates; the kernel reads their generations through the frozen validator registry and adds the
+stamps to the final guard set. Providers cannot provide or forge the observed generation. Missing,
+foreign-owner, duplicate, over-limit, or unevaluable coordinates fail as generic unavailable.
+The tactical fixture uses this seam for source and selected-target placement records: legal fire
+requires both placements in the same arena, a resolved action guards exactly those two placements,
+moving an unselected contact does not invalidate it, and moving the selected target does. This is
+still fixture authority; using production `mush-sim` placement requires the explicit cross-owner
+bridge rather than weakening family ownership.
 
 Exit criteria:
 

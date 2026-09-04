@@ -22,11 +22,11 @@ use mush_core::{
     DefinitionValidator, Engine, GameModule, IdempotencyKey, IdempotencyScope, LegalActionQuery,
     ModError, ObjId, OfferKeyRing, OfferSecret, OwnerId, PerceivedRef, PrepareCtx, PrincipalId,
     ProjectedParameterSchema, ProjectedTargetSchema, ProviderOfferDraft, Registrar, RequestUid,
-    ResolutionKeyRing, ResolutionSecret, ResolvedActionInvocation, RevisionSet, RulesValue,
-    ScopedIdempotencyKey, StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey,
-    WindowMode, WindowRestartPolicy, WindowTimeoutPolicy, World,
-    action_window_state_family_descriptor, contact_state_family_descriptor,
-    control_lease_state_family_descriptor,
+    ResolutionKeyRing, ResolutionSecret, ResolvedActionInvocation, RevisionKey, RevisionKind,
+    RevisionSet, RevisionValidator, RevisionValidatorContext, RulesValue, ScopedIdempotencyKey,
+    StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey, WindowMode,
+    WindowRestartPolicy, WindowTimeoutPolicy, World, action_window_state_family_descriptor,
+    contact_state_family_descriptor, control_lease_state_family_descriptor,
 };
 use mush_tactics::{
     CellAddr, CellId, CellSpec, ComponentId, ComponentSpec, ConditionId, InstallPoint, SectionId,
@@ -47,6 +47,8 @@ pub const TACTICAL_UNIT_FAMILY: &str = "units";
 pub const CONTROL_LEASE_FAMILY: &str = "control_leases";
 /// Engine-owned family holding the fixture's action window.
 pub const ACTION_WINDOW_FAMILY: &str = "action_windows";
+/// Engine-owned family holding the fixture's map placement records.
+pub const PLACEMENT_FAMILY: &str = "placements";
 
 const UNIT_RULES_ID: &str = "unit_state";
 const WEAPON_DEFINITION_ID: &str = "weapon";
@@ -74,6 +76,7 @@ pub struct TacticalGateState {
     pub contacts: StateFamilyHandle<ContactId, ContactState>,
     pub control_leases: StateFamilyHandle<ControlLeaseKey, ControlLeaseState>,
     pub windows: StateFamilyHandle<ActionWindowId, ActionWindowRecord>,
+    pub placements: StateFamilyHandle<ObjId, TacticalPlacement>,
 }
 
 #[derive(Clone)]
@@ -276,11 +279,77 @@ impl DefinitionValidator for FixtureDefinitionValidator {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TacticalPlacement {
+    object: ObjId,
+    arena: CanonicalId,
+    x: i32,
+    y: i32,
+    revision: u64,
+}
+
+impl TacticalPlacement {
+    fn new(object: ObjId, x: i32, y: i32) -> Self {
+        Self {
+            object,
+            arena: CanonicalId::new("arena").expect("static arena id"),
+            x,
+            y,
+            revision: 1,
+        }
+    }
+
+    fn moved(&self, x: i32, y: i32) -> Self {
+        Self {
+            x,
+            y,
+            revision: self.revision.checked_add(1).expect("fixture revision"),
+            ..self.clone()
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PlacementRevisionValidator {
+    placements: StateFamilyHandle<ObjId, TacticalPlacement>,
+}
+
+impl RevisionValidator for PlacementRevisionValidator {
+    fn current_generation(
+        &self,
+        context: &RevisionValidatorContext<'_>,
+        key: &RevisionKey,
+    ) -> Result<Option<u64>, ActionError> {
+        if key.owner != *self.placements.owner()
+            || key.kind.as_id().as_str() != "placement"
+            || key.facet.is_some()
+        {
+            return Ok(None);
+        }
+        let SubjectKey::Object { id } = key.subject else {
+            return Ok(None);
+        };
+        let placement = context.action_state(&self.placements, &id).map_err(|_| {
+            ActionError::new(
+                ActionErrorCode::Integrity,
+                false,
+                "tactical placement state is unavailable",
+            )
+            .expect("static placement error is bounded")
+        })?;
+        Ok(placement
+            .filter(|placement| placement.object == id)
+            .map(|placement| placement.revision))
+    }
+}
+
 #[derive(Debug)]
 struct FireProvider {
     units: StateFamilyHandle<ObjId, TacticalUnit>,
     contacts: StateFamilyHandle<ContactId, ContactState>,
     windows: StateFamilyHandle<ActionWindowId, ActionWindowRecord>,
+    placements: StateFamilyHandle<ObjId, TacticalPlacement>,
     window: ActionWindowId,
     action: DefinitionRef,
     outcome: DefinitionRef,
@@ -666,6 +735,18 @@ impl ActionProvider for FireProvider {
         else {
             return Ok(None);
         };
+        let Some(source_placement) = engine
+            .action_state()
+            .get(&self.placements, source_id)
+            .map_err(|error| Self::state_error(&error))?
+        else {
+            return Ok(None);
+        };
+        if source_placement.object != *source_id {
+            return Err(Self::integrity(
+                "the source placement disagrees with its family key",
+            ));
+        }
         let weapon_id = ComponentId::new(WEAPON_COMPONENT_ID).expect("static component id");
         let ready = ConditionId::new(READY_CONDITION_ID).expect("static condition id");
         let ammo = CellAddr::Component {
@@ -701,11 +782,21 @@ impl ActionProvider for FireProvider {
         for entry in page.entries() {
             let contact = entry.value();
             let actionable_target = match contact.truth_subject() {
-                SubjectKey::Object { id } => engine
-                    .action_state()
-                    .get(&self.units, id)
-                    .map_err(|error| Self::state_error(&error))?
-                    .is_some(),
+                SubjectKey::Object { id } => {
+                    let unit_exists = engine
+                        .action_state()
+                        .get(&self.units, id)
+                        .map_err(|error| Self::state_error(&error))?
+                        .is_some();
+                    let target_placement = engine
+                        .action_state()
+                        .get(&self.placements, id)
+                        .map_err(|error| Self::state_error(&error))?;
+                    unit_exists
+                        && target_placement.is_some_and(|placement| {
+                            placement.object == *id && placement.arena == source_placement.arena
+                        })
+                }
                 SubjectKey::Scoped { .. } => false,
             };
             if actionable_target
@@ -801,6 +892,31 @@ impl ActionProvider for FireProvider {
         let source = Self::resolved_source(resolved)?;
         let target = Self::resolved_target(resolved)?;
         self.prepare_fire(resolved.invocation(), source, target, txn, context)
+    }
+
+    fn resolved_revision_keys(
+        &self,
+        resolved: &ResolvedActionInvocation,
+    ) -> Result<Vec<RevisionKey>, ActionError> {
+        let kind = RevisionKind::new(CanonicalId::new("placement").expect("static revision kind"));
+        Ok(vec![
+            RevisionKey {
+                owner: self.placements.owner().clone(),
+                kind: kind.clone(),
+                subject: SubjectKey::Object {
+                    id: Self::resolved_source(resolved)?,
+                },
+                facet: None,
+            },
+            RevisionKey {
+                owner: self.placements.owner().clone(),
+                kind,
+                subject: SubjectKey::Object {
+                    id: Self::resolved_target(resolved)?,
+                },
+                facet: None,
+            },
+        ])
     }
 
     fn project_receipt(
@@ -902,6 +1018,44 @@ impl GameModule for TacticalGateModule {
             },
             |value: &TacticalUnit| serde_json::to_value(value).map_err(|error| error.to_string()),
         )?;
+        let placements = registrar.state_family(
+            StateFamilyDescriptor::new(
+                StateFamilyId::new(PLACEMENT_FAMILY)
+                    .map_err(|error| ModError::msg(error.to_string()))?,
+                CanonicalId::new("obj_id.decimal.v1")
+                    .map_err(|error| ModError::msg(error.to_string()))?,
+                CanonicalId::new("toytactics.placement.v1")
+                    .map_err(|error| ModError::msg(error.to_string()))?,
+                1,
+                CanonicalId::new("toytactics.placement.decode_json.v1")
+                    .map_err(|error| ModError::msg(error.to_string()))?,
+                CanonicalId::new("toytactics.placement.validate.v1")
+                    .map_err(|error| ModError::msg(error.to_string()))?,
+                CanonicalId::new("toytactics.placement.json.v1")
+                    .map_err(|error| ModError::msg(error.to_string()))?,
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            |key: &ObjId| Ok(key.0.to_string()),
+            |value: &Value| {
+                serde_json::from_value(value.clone()).map_err(|error| error.to_string())
+            },
+            |value: &TacticalPlacement| {
+                if value.revision == 0 {
+                    Err("a tactical placement revision must be nonzero".to_owned())
+                } else {
+                    Ok(())
+                }
+            },
+            |value: &TacticalPlacement| {
+                serde_json::to_value(value).map_err(|error| error.to_string())
+            },
+        )?;
+        registrar.revision_validator(
+            RevisionKind::new(CanonicalId::new("placement").expect("static revision kind")),
+            PlacementRevisionValidator {
+                placements: placements.clone(),
+            },
+        )?;
         let contact_codec = ContactStateCodec;
         let contacts = registrar.state_family(
             contact_state_family_descriptor(
@@ -969,6 +1123,7 @@ impl GameModule for TacticalGateModule {
                 units: units.clone(),
                 contacts: contacts.clone(),
                 windows: windows.clone(),
+                placements: placements.clone(),
                 window: tactical_gate_window_id(),
                 action: fixture.definitions.fire.clone(),
                 outcome: fixture.definitions.fired.clone(),
@@ -980,6 +1135,7 @@ impl GameModule for TacticalGateModule {
                 contacts,
                 control_leases,
                 windows,
+                placements,
             },
             fixture.definitions,
             unit_spec,
@@ -1038,6 +1194,55 @@ pub fn install_tactical_gate_unit(
     };
     let (_, installation) = prepared.into_parts();
     engine.install_prepared_action(installation);
+}
+
+/// Fixture-only placement bootstrap for a unit deployed into the tactical arena.
+pub fn install_tactical_gate_placement(
+    engine: &mut Engine,
+    state: &TacticalGateState,
+    object: ObjId,
+    x: i32,
+    y: i32,
+) -> TacticalPlacement {
+    let placement = TacticalPlacement::new(object, x, y);
+    let prepared = {
+        let mut txn = engine
+            .action_transaction(&state.placements)
+            .expect("Gate-4 placement bootstrap transaction");
+        txn.insert(&state.placements, &object, placement.clone())
+            .expect("valid Gate-4 placement bootstrap");
+        txn.prepare().expect("Gate-4 placement bootstrap prepares")
+    };
+    let (_, installation) = prepared.into_parts();
+    engine.install_prepared_action(installation);
+    placement
+}
+
+/// Fixture-only movement used to prove retained placement guards become stale.
+pub fn move_tactical_gate_placement(
+    engine: &mut Engine,
+    state: &TacticalGateState,
+    object: ObjId,
+    x: i32,
+    y: i32,
+) -> TacticalPlacement {
+    let current = engine
+        .action_state()
+        .get(&state.placements, &object)
+        .expect("Gate-4 placement read")
+        .expect("Gate-4 placement exists");
+    let placement = current.moved(x, y);
+    let prepared = {
+        let mut txn = engine
+            .action_transaction(&state.placements)
+            .expect("Gate-4 placement movement transaction");
+        txn.replace(&state.placements, &object, placement.clone())
+            .expect("valid Gate-4 placement movement");
+        txn.prepare().expect("Gate-4 placement movement prepares")
+    };
+    let (_, installation) = prepared.into_parts();
+    engine.install_prepared_action(installation);
+    placement
 }
 
 /// Fixture-only private contact bootstrap.
@@ -1274,6 +1479,7 @@ mod tests {
             )
             .expect("Gate-3 fixture actor");
         install_tactical_gate_unit(engine, state, unit(spec, id.0));
+        install_tactical_gate_placement(engine, state, id, 0, 0);
         id
     }
 
@@ -1628,6 +1834,8 @@ mod tests {
         let target = ObjId(876_543_210);
         install_tactical_gate_unit(&mut engine, &state, unit(&spec, source.0));
         install_tactical_gate_unit(&mut engine, &state, unit(&spec, target.0));
+        install_tactical_gate_placement(&mut engine, &state, source, 0, 0);
+        install_tactical_gate_placement(&mut engine, &state, target, 1, 0);
         let principal = PrincipalId::Object { id: actor };
         let contact_id = ContactId::from_bytes([0x83; 16]);
         install_tactical_gate_contact(&mut engine, &state, contact_id, target, principal.clone());
@@ -1788,6 +1996,7 @@ mod tests {
         let source = spawn_unit_player(&mut engine, &state, &spec, "Window Shooter");
         let target = ObjId(765_432_109);
         install_tactical_gate_unit(&mut engine, &state, unit(&spec, target.0));
+        install_tactical_gate_placement(&mut engine, &state, target, 1, 0);
         grant_weapons(&mut engine, &state, source, source);
         let open = install_tactical_gate_fire_window(&mut engine, &state);
         let principal = PrincipalId::Object { id: source };
@@ -1885,6 +2094,7 @@ mod tests {
         let source_id = spawn_unit_player(&mut engine, &state, &spec, "Contact Shooter");
         let hidden_target_id = ObjId(987_654_321);
         install_tactical_gate_unit(&mut engine, &state, unit(&spec, hidden_target_id.0));
+        install_tactical_gate_placement(&mut engine, &state, hidden_target_id, 1, 0);
         grant_weapons(&mut engine, &state, source_id, source_id);
         let principal = PrincipalId::Object { id: source_id };
         let contact_id = ContactId::from_bytes([0x71; 16]);
@@ -1987,11 +2197,145 @@ mod tests {
     }
 
     #[test]
+    fn resolved_fire_guards_only_the_source_and_selected_target_placements() {
+        let (mut engine, state, _definitions, spec) = tactical_gate_world();
+        let source = spawn_unit_player(&mut engine, &state, &spec, "Selective Shooter");
+        let selected_target = ObjId(941);
+        let unselected_target = ObjId(942);
+        for (target, x) in [(selected_target, 1), (unselected_target, 2)] {
+            install_tactical_gate_unit(&mut engine, &state, unit(&spec, target.0));
+            install_tactical_gate_placement(&mut engine, &state, target, x, 0);
+        }
+        grant_weapons(&mut engine, &state, source, source);
+        let principal = PrincipalId::Object { id: source };
+        let selected_contact = ContactId::from_bytes([0x91; 16]);
+        install_tactical_gate_contact(
+            &mut engine,
+            &state,
+            selected_contact,
+            selected_target,
+            principal.clone(),
+        );
+        install_tactical_gate_contact(
+            &mut engine,
+            &state,
+            ContactId::from_bytes([0x92; 16]),
+            unselected_target,
+            principal.clone(),
+        );
+        install_tactical_gate_fire_window(&mut engine, &state);
+        let query = LegalActionQuery::new(
+            principal.clone(),
+            source,
+            SubjectKey::Object { id: source },
+            PerceivedRef::SelfActor,
+            1,
+            Some(tactical_gate_tick(7)),
+        )
+        .unwrap();
+        let offers = engine.project_legal_actions(&query).unwrap();
+        let projected = offers.projected().pop().expect("both contacts are legal");
+        let ProjectedTargetSchema::Choices { choices, .. } = projected.targets() else {
+            panic!("fire must project opaque contacts");
+        };
+        let selected = choices
+            .iter()
+            .find(|choice| {
+                matches!(choice, PerceivedRef::Contact { id, .. } if id == &selected_contact)
+            })
+            .expect("selected contact is projected")
+            .clone();
+        let request = RequestUid::from_bytes([0x93; 16]);
+        let resolved = engine
+            .resolve_legal_action(
+                &offers,
+                OfferExecutionContext {
+                    request,
+                    principal: principal.clone(),
+                    actor: source,
+                    idempotency: ScopedIdempotencyKey::new(
+                        IdempotencyScope {
+                            principal,
+                            owner: OwnerId::new(TACTICAL_GATE_OWNER).unwrap(),
+                            namespace: CanonicalId::new(FIRE_ACTION_ID).unwrap(),
+                        },
+                        1,
+                        IdempotencyKey::Request(request),
+                    ),
+                    viewer_scope: query.viewer_scope(),
+                    now: None,
+                },
+                OfferSubmission {
+                    offer: projected.offer(),
+                    subject: PerceivedRef::SelfActor,
+                    targets: vec![selected],
+                    parameters: json!({}),
+                },
+            )
+            .expect("selected contact resolves");
+
+        let guarded_subjects: Vec<_> = resolved
+            .guards()
+            .revisions()
+            .iter()
+            .map(|(key, generation)| (key.subject.clone(), *generation))
+            .collect();
+        assert_eq!(
+            guarded_subjects,
+            vec![
+                (SubjectKey::Object { id: source }, 1),
+                (
+                    SubjectKey::Object {
+                        id: selected_target,
+                    },
+                    1,
+                ),
+            ]
+        );
+
+        move_tactical_gate_placement(&mut engine, &state, unselected_target, 3, 0);
+        let check = resolved
+            .guards()
+            .revalidate_with_action_state(
+                &engine.world,
+                engine.action_state(),
+                engine.registry.revision_validators().unwrap(),
+                engine.registry.authority_guard_validators().unwrap(),
+                engine.registry.definitions().unwrap(),
+            )
+            .unwrap();
+        assert!(check.is_current());
+
+        move_tactical_gate_placement(&mut engine, &state, selected_target, 4, 0);
+        let check = resolved
+            .guards()
+            .revalidate_with_action_state(
+                &engine.world,
+                engine.action_state(),
+                engine.registry.revision_validators().unwrap(),
+                engine.registry.authority_guard_validators().unwrap(),
+                engine.registry.definitions().unwrap(),
+            )
+            .unwrap();
+        assert_eq!(check.stale_revisions().len(), 1);
+        assert_eq!(
+            check.stale_revisions()[0].key.subject,
+            SubjectKey::Object {
+                id: selected_target,
+            }
+        );
+        assert_eq!(check.stale_revisions()[0].expected, 1);
+        assert_eq!(check.stale_revisions()[0].actual, Some(2));
+        assert!(!engine.action_state().has_prepared());
+    }
+
+    #[test]
     fn contact_loss_after_projection_collapses_to_generic_unavailable() {
         let (mut engine, state, _definitions, spec) = tactical_gate_world();
         let source_id = spawn_unit_player(&mut engine, &state, &spec, "Contact Loser");
         let target_id = ObjId(952);
         install_tactical_gate_unit(&mut engine, &state, unit(&spec, target_id.0));
+        install_tactical_gate_placement(&mut engine, &state, target_id, 1, 0);
         grant_weapons(&mut engine, &state, source_id, source_id);
         let principal = PrincipalId::Object { id: source_id };
         let contact_id = ContactId::from_bytes([0x73; 16]);
@@ -2074,6 +2418,7 @@ mod tests {
         let second = spawn_unit_player(&mut engine, &state, &spec, "Second Viewer");
         let hidden_target = ObjId(963);
         install_tactical_gate_unit(&mut engine, &state, unit(&spec, hidden_target.0));
+        install_tactical_gate_placement(&mut engine, &state, hidden_target, 1, 0);
         grant_weapons(&mut engine, &state, first, first);
         grant_weapons(&mut engine, &state, second, second);
         let first_contact = ContactId::from_bytes([0x81; 16]);

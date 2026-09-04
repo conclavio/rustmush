@@ -876,7 +876,7 @@ struct ModuleRevisionValidator;
 impl RevisionValidator for ModuleRevisionValidator {
     fn current_generation(
         &self,
-        _world: &World,
+        _context: &mush_core::RevisionValidatorContext<'_>,
         _key: &RevisionKey,
     ) -> Result<Option<u64>, ActionError> {
         Ok(Some(1))

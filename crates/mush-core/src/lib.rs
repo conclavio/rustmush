@@ -101,10 +101,11 @@ pub use action::{
     PreparedEventId, PreparedTrigger, PreparedTriggerDraft, PrincipalId,
     ProviderRegistrationOrdinal, ReceiptProjectionError, ReceiptProjectionTable, RequestUid,
     ResolvedActionInvocation, RevisionKey, RevisionKind, RevisionMismatch, RevisionSet,
-    RevisionSetError, RevisionStamp, RevisionValidator, RevisionValidatorEntry,
-    RevisionValidatorLookupError, RevisionValidatorRegistry, RevisionValidatorRegistryBuilder,
-    RevisionValidatorRegistryError, SameCommitTrigger, ScopedIdempotencyKey, ServerGuardSetBuilder,
-    SubjectKey, TriggerEnqueue, TriggerHandlerId, TriggerIdentity, TriggerWork,
+    RevisionSetError, RevisionStamp, RevisionValidator, RevisionValidatorContext,
+    RevisionValidatorEntry, RevisionValidatorLookupError, RevisionValidatorRegistry,
+    RevisionValidatorRegistryBuilder, RevisionValidatorRegistryError, SameCommitTrigger,
+    ScopedIdempotencyKey, ServerGuardSetBuilder, SubjectKey, TriggerEnqueue, TriggerHandlerId,
+    TriggerIdentity, TriggerWork,
 };
 pub use action_state::{
     ACTION_STATE_PERSISTENCE_ROOT, ActionStateBootRecord, ActionStateError, ActionStateStore,

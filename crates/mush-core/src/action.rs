@@ -1288,15 +1288,62 @@ impl AuthorityGuard {
     }
 }
 
+/// Immutable state visible to a revision validator. Typed-family access still
+/// requires the validator's composition-branded handle, so this does not
+/// permit cross-owner state reads.
+pub struct RevisionValidatorContext<'a> {
+    world: &'a World,
+    action_state: &'a ActionStateStore,
+}
+
+impl fmt::Debug for RevisionValidatorContext<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RevisionValidatorContext")
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> RevisionValidatorContext<'a> {
+    pub(crate) const fn new(world: &'a World, action_state: &'a ActionStateStore) -> Self {
+        Self {
+            world,
+            action_state,
+        }
+    }
+
+    #[must_use]
+    pub const fn world(&self) -> &'a World {
+        self.world
+    }
+
+    #[must_use]
+    pub fn module_state<T: Any + Send>(&self) -> Option<&'a T> {
+        self.world.module_state::<T>()
+    }
+
+    pub fn action_state<K, V>(
+        &self,
+        handle: &StateFamilyHandle<K, V>,
+        key: &K,
+    ) -> Result<Option<&'a V>, ActionStateError>
+    where
+        K: Send + Sync + 'static,
+        V: Clone + Send + Sync + 'static,
+    {
+        self.action_state.get(handle, key)
+    }
+}
+
 /// Pure, object-safe lookup of a revision's current generation.
 ///
 /// `None` means the subject/facet no longer exists and therefore makes an
 /// observed stamp stale. An error is an evaluator/configuration failure, not
-/// a stale result. Implementations receive immutable world state only.
+/// a stale result. Implementations receive immutable world and typed state.
 pub trait RevisionValidator: Send + Sync {
     fn current_generation(
         &self,
-        world: &World,
+        context: &RevisionValidatorContext<'_>,
         key: &RevisionKey,
     ) -> Result<Option<u64>, ActionError>;
 }
@@ -1468,6 +1515,32 @@ impl RevisionValidatorRegistry {
         Ok(entry)
     }
 
+    /// Read one exact current generation with owner readiness checked before
+    /// and after the immutable provider callback.
+    pub(crate) fn current_generation(
+        &self,
+        context: &RevisionValidatorContext<'_>,
+        key: &RevisionKey,
+    ) -> Result<Option<u64>, RevisionObservationError> {
+        let entry = self.get_for_key(key)?;
+        let generation = entry
+            .validator()
+            .current_generation(context, key)
+            .map_err(|source| RevisionObservationError::Provider {
+                key: Box::new(key.clone()),
+                source: Box::new(source),
+            })?;
+        self.owner_readiness
+            .require_ready(&entry.owner)
+            .map_err(|source| {
+                RevisionObservationError::Lookup(RevisionValidatorLookupError::OwnerNotReady {
+                    key: Box::new(key.clone()),
+                    source: Box::new(source),
+                })
+            })?;
+        Ok(generation)
+    }
+
     #[must_use]
     pub const fn fingerprint(&self) -> DefinitionDigest {
         self.fingerprint
@@ -1498,6 +1571,18 @@ pub enum RevisionValidatorLookupError {
     OwnerNotReady {
         key: Box<RevisionKey>,
         source: Box<MechanicalOwnerReadinessError>,
+    },
+}
+
+/// Failure while the kernel observes a provider-owned revision coordinate.
+#[derive(Debug, Error)]
+pub enum RevisionObservationError {
+    #[error("revision provider cannot be selected: {0}")]
+    Lookup(#[from] RevisionValidatorLookupError),
+    #[error("revision provider failed for {key:?}: {source}")]
+    Provider {
+        key: Box<RevisionKey>,
+        source: Box<ActionError>,
     },
 }
 
@@ -2064,6 +2149,38 @@ impl GuardSet {
         &self.authority
     }
 
+    /// Add kernel-observed revisions selected only after private target
+    /// resolution. Providers name coordinates; the kernel supplies values.
+    pub(crate) fn with_revision_stamps(
+        self,
+        stamps: Vec<RevisionStamp>,
+    ) -> Result<Self, GuardSetBuildError> {
+        if stamps.is_empty() {
+            return Ok(self);
+        }
+        let revisions = RevisionSet::from_stamps(
+            self.revisions
+                .iter()
+                .map(|(key, generation)| RevisionStamp {
+                    key: key.clone(),
+                    generation: *generation,
+                })
+                .chain(stamps),
+        )
+        .map_err(GuardSetBuildError::Revision)?;
+        let guards = Self {
+            revisions,
+            authority: self.authority,
+            owner_readiness: self.owner_readiness,
+        };
+        canonical_json_bytes_with_limit(&guards.canonical_value(), MAX_GUARD_SET_BYTES).map_err(
+            |_| GuardSetBuildError::EncodedTooLarge {
+                max: MAX_GUARD_SET_BYTES,
+            },
+        )?;
+        Ok(guards)
+    }
+
     /// Add the kernel-selected exact station witnesses for one legal offer.
     ///
     /// Kept crate-private so providers cannot claim that arbitrary projected
@@ -2152,6 +2269,7 @@ impl GuardSet {
         definitions: &DefinitionRegistry,
     ) -> Result<GuardRevalidation, GuardRevalidationError> {
         self.require_same_composition(revisions, authority, definitions)?;
+        let revision_context = RevisionValidatorContext::new(world, action_state);
         let authority_context = AuthorityGuardContext::new(world, action_state);
         let mut stale_revisions = Vec::new();
         for (key, expected) in self.revisions.iter() {
@@ -2160,7 +2278,7 @@ impl GuardSet {
                 .map_err(GuardRevalidationError::RevisionLookup)?;
             let actual = entry
                 .validator()
-                .current_generation(world, key)
+                .current_generation(&revision_context, key)
                 .map_err(|source| GuardRevalidationError::RevisionEvaluator {
                     key: Box::new(key.clone()),
                     source: Box::new(source),
@@ -2463,6 +2581,8 @@ pub enum GuardSetBuildError {
     TooMany { max: usize },
     #[error("authority guard was supplied more than once: {guard:?}")]
     Duplicate { guard: Box<AuthorityGuard> },
+    #[error("revision guard set is invalid: {0}")]
+    Revision(#[source] RevisionSetError),
     #[error("definition guard does not name an exact registered definition: {0}")]
     Definition(#[source] Box<DefinitionLookupError>),
     #[error("definition guards must be added through exact registry validation")]
@@ -3705,6 +3825,16 @@ pub trait ActionProvider: Send + Sync {
         self.prepare_authoritative_with_context(resolved.invocation(), txn, context)
     }
 
+    /// Name exact provider-owned revision coordinates that become known only
+    /// after opaque subject/target resolution. The kernel reads and stamps
+    /// their generations; providers never supply the observed values.
+    fn resolved_revision_keys(
+        &self,
+        _resolved: &ResolvedActionInvocation,
+    ) -> Result<Vec<RevisionKey>, ActionError> {
+        Ok(Vec::new())
+    }
+
     /// Expand one provider-owned same-commit trigger against the root
     /// action's still-unprepared scratch transaction. Trigger callbacks have
     /// the same mutation authority as the root provider, but no persistence,
@@ -4401,6 +4531,46 @@ impl ActionProviderRegistry {
         })
     }
 
+    /// Ask one exact provider which same-owner revision coordinates are
+    /// selected by the privately resolved invocation. Readiness is checked on
+    /// both sides of the callback and duplicate/foreign keys fail closed.
+    pub(crate) fn resolved_revision_keys(
+        &self,
+        action: &DefinitionRef,
+        resolved: &ResolvedActionInvocation,
+    ) -> Result<Vec<RevisionKey>, ActionProviderDispatchError> {
+        let entry = self.get_exact(action)?;
+        let mut keys = entry
+            .provider()
+            .resolved_revision_keys(resolved)
+            .map_err(|source| ActionProviderDispatchError::Provider {
+                action: Box::new(action.clone()),
+                source: Box::new(source),
+            })?;
+        self.owner_readiness
+            .require_ready(&entry.owner)
+            .map_err(|source| ActionProviderLookupError::OwnerNotReady {
+                requested: Box::new(action.clone()),
+                source: Box::new(source),
+            })?;
+        if keys.len() > MAX_ACTION_REVISIONS {
+            return Err(ActionProviderDispatchError::RevisionLimit {
+                max: MAX_ACTION_REVISIONS,
+            });
+        }
+        if let Some(key) = keys.iter().find(|key| key.owner != entry.owner) {
+            return Err(ActionProviderDispatchError::ForeignRevisionOwner {
+                provider: entry.owner.clone(),
+                revision_owner: key.owner.clone(),
+            });
+        }
+        keys.sort();
+        if keys.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(ActionProviderDispatchError::DuplicateRevisionKey);
+        }
+        Ok(keys)
+    }
+
     /// Run one exact provider inside an owner-scoped logical transaction.
     /// Provider and serializer work finish before the returned one-shot
     /// materialization can cross the persistence boundary.
@@ -4829,6 +4999,17 @@ pub enum ActionProviderDispatchError {
         action: Box<DefinitionRef>,
         source: Box<ActionError>,
     },
+    #[error("resolved revision-key count exceeds its hard limit of {max}")]
+    RevisionLimit { max: usize },
+    #[error(
+        "action provider {provider} cannot directly observe revision state owned by {revision_owner}"
+    )]
+    ForeignRevisionOwner {
+        provider: OwnerId,
+        revision_owner: OwnerId,
+    },
+    #[error("resolved revision coordinates contain a duplicate")]
+    DuplicateRevisionKey,
 }
 
 /// Action-provider composition failure.
@@ -5534,7 +5715,7 @@ mod tests {
     impl RevisionValidator for ConstantRevision {
         fn current_generation(
             &self,
-            _world: &World,
+            _context: &RevisionValidatorContext<'_>,
             _key: &RevisionKey,
         ) -> Result<Option<u64>, ActionError> {
             Ok(self.0)
@@ -5570,7 +5751,7 @@ mod tests {
     impl RevisionValidator for FreezeDuringRevision {
         fn current_generation(
             &self,
-            _world: &World,
+            _context: &RevisionValidatorContext<'_>,
             _key: &RevisionKey,
         ) -> Result<Option<u64>, ActionError> {
             freeze_test_owner(&self.0, "revision_race");
@@ -6167,6 +6348,21 @@ mod tests {
         }
     }
 
+    struct RevisionKeysProvider(Vec<RevisionKey>);
+
+    impl ActionProvider for RevisionKeysProvider {
+        fn validate_invocation(&self, _invocation: &ActionInvocation) -> Result<(), ActionError> {
+            Ok(())
+        }
+
+        fn resolved_revision_keys(
+            &self,
+            _resolved: &ResolvedActionInvocation,
+        ) -> Result<Vec<RevisionKey>, ActionError> {
+            Ok(self.0.clone())
+        }
+    }
+
     #[test]
     fn provider_registry_requires_owner_exact_action_and_unique_locator() {
         let (definitions, action) = action_definition();
@@ -6269,6 +6465,63 @@ mod tests {
                 ActionProviderLookupError::OwnerNotReady { .. }
             ))
         ));
+    }
+
+    #[test]
+    fn resolved_revision_coordinates_are_bounded_unique_and_same_owner() {
+        fn dispatch(
+            keys: Vec<RevisionKey>,
+        ) -> Result<Vec<RevisionKey>, ActionProviderDispatchError> {
+            let (definitions, action) = action_definition();
+            let roster = owner_roster();
+            let readiness = MechanicalOwnerReadiness::for_owners(&roster);
+            let definitions = bind_definitions(definitions, &readiness);
+            let mut builder = ActionProviderRegistryBuilder::new();
+            builder
+                .register(
+                    owner(),
+                    action.clone(),
+                    Arc::new(RevisionKeysProvider(keys)),
+                )
+                .unwrap();
+            let registry = builder
+                .freeze_for_owners_with_readiness(&definitions, &roster, readiness)
+                .unwrap();
+            let invocation = invocation(request(1));
+            let resolved = ResolvedActionInvocation::new(
+                invocation,
+                SubjectKey::Object { id: ObjId(7) },
+                vec![SubjectKey::Object { id: ObjId(8) }],
+            )
+            .unwrap();
+            registry.resolved_revision_keys(&action, &resolved)
+        }
+
+        let duplicate = revision_key("unit", 7);
+        assert_eq!(
+            dispatch(vec![duplicate.clone(), duplicate]).unwrap_err(),
+            ActionProviderDispatchError::DuplicateRevisionKey
+        );
+
+        let mut foreign = revision_key("unit", 7);
+        foreign.owner = OwnerId::new("foreign").unwrap();
+        assert_eq!(
+            dispatch(vec![foreign]).unwrap_err(),
+            ActionProviderDispatchError::ForeignRevisionOwner {
+                provider: owner(),
+                revision_owner: OwnerId::new("foreign").unwrap(),
+            }
+        );
+
+        let excessive = (0..=MAX_ACTION_REVISIONS)
+            .map(|object| revision_key("unit", u32::try_from(object).unwrap()))
+            .collect();
+        assert_eq!(
+            dispatch(excessive).unwrap_err(),
+            ActionProviderDispatchError::RevisionLimit {
+                max: MAX_ACTION_REVISIONS,
+            }
+        );
     }
 
     #[test]
