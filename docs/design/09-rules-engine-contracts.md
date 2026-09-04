@@ -2,9 +2,9 @@
 
 **Status:** Implementing 0.11 — K0/K1 formal exit criteria landed. K2 has strict atomic boot
 hydration, bounded typed transactions, final guard revalidation, provider registration, and a
-versioned split-gateway request custody protocol. Its same-bundle trigger executor, independently
-bounded must-retain lanes, and authenticated coordinator entry remain open. K3's persistence kernel
-is implemented but reopened by the durability audit below: exact bundle
+versioned split-gateway request custody protocol. Its same-bundle trigger executor,
+transport-authenticated coordinator entry, and remaining ownership fault matrix remain open. K3's
+persistence kernel and durability-audit closeout are implemented: exact bundle
 reservation/reconciliation, pre-hydration recovery, store-owned authoritative prefixes, compact
 checkpoints, watermark-first epoch retirement, a production coordinator plus first tactics provider,
 and recovery-driven durable-outbox dispatch. Transport/legal-offer integration and the IPC portions
@@ -2023,13 +2023,14 @@ manifest; terminal records survive checkpointing and are removed with their reti
 bounded production worker rediscovers finalized outbox items, persists the attempt before delivery,
 reuses stable item IDs for ambiguous send/ack loss, records retry or terminal state, and checkpoints
 the parent only after all items are terminal. Missing adapters retain work and cannot starve
-installed adapters. The remaining K3 exit work includes the audit closure below plus cross-cut
-transport/parser/legal-offer entry into the coordinator, the remaining gateway ownership process/IPC
-fault cases, recoverable projection/keyframes, and broader provider/legacy migration. Those depend
-respectively on unfinished K2 trigger/transport work and K5/C9/C12 projection. The store identity
-protocol is sound, but the kernel is not considered complete until K3.1 closes.
+installed adapters. The remaining cross-cut work includes transport/parser/legal-offer entry into
+the coordinator, the remaining gateway ownership process/IPC fault cases, recoverable
+projection/keyframes, and broader provider/legacy migration. Those depend
+respectively on unfinished K2 trigger/transport work and K5/C9/C12 projection. K3.1 is closed for
+bounded accepted work; K0's explicitly documented legacy pre-mutation construction gap is retired
+incrementally by migrating handlers onto the bounded authoritative path.
 
-#### K3.1. Durability-audit closure (reopened)
+#### K3.1. Durability-audit closure (closed for bounded accepted work)
 
 Post-implementation memory-store probes found two correctness violations and several liveness,
 parity, and observability gaps. They are tracked here rather than hidden inside later economy or
@@ -2057,14 +2058,19 @@ Gate-5 work:
    quarantine restore, durable outbox, epoch retirement, conflict handling, and retention-generation
    CAS semantics unchanged against memory and Redis; backend-specific corruption probes remain in
    their native harnesses.
-6. **K3.1f — K0/K3 integration (batch custody closed; lane isolation open):** deterministic E0
+6. **K3.1f — K0/K3 integration (closed for bounded accepted work):** deterministic E0
    drops now preserve the complete canonical legacy batch in the unified quarantine spool before
    seal isolation, including object post-images, deletes, module operations, allocator state, and
    original FIFO serial. Boot recovery replays only provably idempotent absolute batches in serial
    order; ambiguous stream appends remain active and fail closed. Retained poison-seal re-emission
-   reuses exact existing custody rather than creating serial-dependent duplicate records. The
-   remaining closeout is independently bounded authoritative, legacy, and recovery/control lanes
-   with guaranteed service, so ordinary seal traffic cannot starve authoritative work.
+   reuses exact existing custody rather than creating serial-dependent duplicate records.
+   Authoritative, legacy, and recovery/control work now have separate admission capacities and
+   gauges; accepted jobs carry their lane permit through merge buffering and completion. A global
+   acceptance sequence preserves cross-lane FIFO, while the finite legacy capacity bounds how much
+   older seal traffic can precede newly accepted authoritative/control work. Boot recovery runs
+   before these runtime lanes exist. This closure inherits K0's explicitly documented pre-mutation
+   construction gap: an outcome too large for any finite quarantine budget must be refused before
+   live installation as legacy handlers are migrated, never "fixed" by an unbounded spool.
 
 Economy obligations/contracts remain on their legacy durable path until mixed authoritative write
 sets can include the Ledger append, modules can read their own typed families outside an action, and

@@ -17,7 +17,7 @@ use std::time::Duration;
 use futures::future::BoxFuture;
 use mush_config::metrics::Metrics;
 use mush_core::{LedgerChunk, LedgerEntry, ModuleOp, ModuleWrite, chunk_key};
-use mush_server::persist::{PersistenceIntegrityLatch, StoreJob, spawn_store_writer};
+use mush_server::persist::{PersistenceIntegrityLatch, StoreJob, StoreWriter, spawn_store_writer};
 use mush_server::quarantine::{QUARANTINE_RECORD_VERSION, QuarantineSpool};
 use mush_server::retained::RetainedSeals;
 use mush_server::world_task::{WriterSignal, WriterSignalReceiver, writer_signal_channel};
@@ -26,7 +26,7 @@ use mush_store::{
     WorldSnapshot, WriteBatch, WriteReceipt,
 };
 use smol_str::SmolStr;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
 /// An [`ObjectStore`] that deterministically DROPS any batch whose module ops
 /// contain a poison key, delegating everything else to an inner in-memory store.
@@ -253,7 +253,7 @@ fn poison_op(ns: &str, key: &str) -> ModuleOp {
 /// Returns `None` when the flush would be empty (nothing to do).
 async fn flush(
     retained: &mut RetainedSeals,
-    writer: &mpsc::Sender<StoreJob>,
+    writer: &StoreWriter,
     serial: &mut u64,
     fresh: Vec<ModuleOp>,
     high_water: &AtomicU64,
@@ -288,7 +288,7 @@ async fn flush(
 /// The wiring one spawned writer exposes to a test.
 type Rig = (
     Arc<FaultStore>,
-    mpsc::Sender<StoreJob>,
+    StoreWriter,
     tokio::task::JoinHandle<()>,
     Arc<AtomicU64>,
     WriterSignalReceiver,
@@ -311,11 +311,7 @@ fn spawn(poison: Option<&str>, quarantine_spool: QuarantineSpool) -> Rig {
 }
 
 /// Send one durable batch and await the writer's result.
-async fn send(
-    writer: &mpsc::Sender<StoreJob>,
-    serial: u64,
-    ops: Vec<ModuleOp>,
-) -> Result<u64, String> {
+async fn send(writer: &StoreWriter, serial: u64, ops: Vec<ModuleOp>) -> Result<u64, String> {
     let batch = WriteBatch {
         serial,
         module_ops: ops,

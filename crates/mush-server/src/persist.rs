@@ -12,9 +12,10 @@
 //!   (full-object upserts, tombstones as deletes, `next_id` last).
 //!   `mush-core` never learns the store exists: the seam is exactly
 //!   `World::take_dirty()` + `Obj: Clone`.
-//! - [`spawn_store_writer`] — the dedicated writer task. One bounded queue
-//!   of [`StoreJob`]s, applied **in order**, each awaited to its ack before
-//!   the next (write-through per command; no timer batching). On a
+//! - [`spawn_store_writer`] — the dedicated writer task. Independently bounded
+//!   legacy, authoritative, and control admission lanes are merged by one
+//!   monotonic acceptance sequence, then applied **in order**, each awaited to
+//!   its ack before the next (write-through per command; no timer batching). On a
 //!   *transient* write failure (connection, timeout — see
 //!   [`StoreError::is_transient`]) it retries the same batch with
 //!   exponential backoff forever — order is preserved, nothing is dropped —
@@ -47,7 +48,7 @@ use mush_store::{
     ObjectStore, StoreError, WorldSnapshot, WriteBatch,
 };
 use smol_str::SmolStr;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::quarantine::{QuarantineSpool, authoritative_bundle_evidence_hash};
@@ -62,17 +63,25 @@ use mush_config::unix_now_s;
 /// identically, so a handful of attempts is diagnosis, not hope.
 const POISON_ISOLATION_ATTEMPTS: u32 = 5;
 
-/// Capacity of the writer's job queue. The world task `await`s its sends,
-/// so a full queue back-pressures the single producer instead of dropping
-/// batches (and read-only mode keeps it from filling during a detected
-/// outage).
+/// Capacity of the legacy writer lane. The world task `await`s its sends, so a
+/// full lane back-pressures legacy production instead of dropping batches.
 ///
 /// Deliberately small: every queued batch is a command whose output the
 /// player has already seen but whose write has not yet been acked, so this
 /// bounds the worst-case `kill -9` loss window while the store is merely
 /// *slow* (a stalled BGSAVE, a saturated disk). In the steady state the
 /// queue is empty and the loss window is exactly the in-flight command.
-const WRITER_QUEUE: usize = 64;
+const WRITER_LEGACY_QUEUE: usize = 64;
+
+/// Reserved admission for exact-token actions. A legacy seal/retry flood can
+/// fill its own lane but cannot consume these slots. Cross-lane execution still
+/// follows the global accepted order, so this is isolation without overtaking.
+const WRITER_AUTHORITATIVE_QUEUE: usize = 16;
+
+/// Reserved admission for snapshot/recovery control. Boot recovery runs before
+/// the runtime writer exists; runtime maintenance uses this lane and cannot be
+/// crowded out by gameplay writes.
+const WRITER_CONTROL_QUEUE: usize = 8;
 
 /// First retry delay after a failed write; doubles up to [`RETRY_MAX`].
 const RETRY_INITIAL: Duration = Duration::from_millis(100);
@@ -481,6 +490,226 @@ pub enum StoreJob {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WriterLane {
+    Legacy,
+    Authoritative,
+    Control,
+}
+
+impl WriterLane {
+    const fn for_job(job: &StoreJob) -> Self {
+        match job {
+            StoreJob::Write { .. } => Self::Legacy,
+            StoreJob::Authoritative { .. } => Self::Authoritative,
+            StoreJob::Bgsave { .. } => Self::Control,
+        }
+    }
+}
+
+struct SequencedStoreJob {
+    order: u64,
+    lane: WriterLane,
+    job: StoreJob,
+    /// Lane capacity is held through merge buffering and store completion,
+    /// rather than released merely because the channel receiver copied this
+    /// job into its ordering map.
+    _capacity: OwnedSemaphorePermit,
+}
+
+/// Cloneable admission handle for the single persistence writer.
+///
+/// Each work class owns a separate bounded channel. A sender reserves capacity
+/// in its class before taking the next global order, so a blocked/full legacy
+/// lane neither consumes an order nor prevents authoritative/control custody.
+/// Once accepted, all classes execute in exact global order.
+#[derive(Clone)]
+pub struct StoreWriter {
+    legacy: mpsc::Sender<SequencedStoreJob>,
+    authoritative: mpsc::Sender<SequencedStoreJob>,
+    control: mpsc::Sender<SequencedStoreJob>,
+    legacy_capacity: Arc<Semaphore>,
+    authoritative_capacity: Arc<Semaphore>,
+    control_capacity: Arc<Semaphore>,
+    next_order: Arc<AtomicU64>,
+    metrics: Arc<Metrics>,
+}
+
+impl StoreWriter {
+    /// Transfer one job into its independently bounded lane.
+    pub async fn send(&self, job: StoreJob) -> Result<(), mpsc::error::SendError<StoreJob>> {
+        let lane = WriterLane::for_job(&job);
+        let sender = match lane {
+            WriterLane::Legacy => &self.legacy,
+            WriterLane::Authoritative => &self.authoritative,
+            WriterLane::Control => &self.control,
+        };
+        let capacity = match lane {
+            WriterLane::Legacy => Arc::clone(&self.legacy_capacity),
+            WriterLane::Authoritative => Arc::clone(&self.authoritative_capacity),
+            WriterLane::Control => Arc::clone(&self.control_capacity),
+        };
+        let capacity = match capacity.acquire_owned().await {
+            Ok(capacity) => capacity,
+            Err(_) => return Err(mpsc::error::SendError(job)),
+        };
+        let permit = match sender.reserve().await {
+            Ok(permit) => permit,
+            Err(_) => return Err(mpsc::error::SendError(job)),
+        };
+        let order =
+            match self
+                .next_order
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    current.checked_add(1)
+                }) {
+                Ok(order) => order,
+                Err(_) => {
+                    tracing::error!("store writer acceptance sequence exhausted");
+                    return Err(mpsc::error::SendError(job));
+                }
+            };
+        self.metrics.add_store_write_queue_depth(1);
+        match lane {
+            WriterLane::Legacy => self.metrics.add_store_legacy_queue_depth(1),
+            WriterLane::Authoritative => {
+                self.metrics.add_store_authoritative_queue_depth(1);
+            }
+            WriterLane::Control => self.metrics.add_store_control_queue_depth(1),
+        }
+        permit.send(SequencedStoreJob {
+            order,
+            lane,
+            job,
+            _capacity: capacity,
+        });
+        Ok(())
+    }
+}
+
+struct StoreWriterReceivers {
+    legacy: mpsc::Receiver<SequencedStoreJob>,
+    authoritative: mpsc::Receiver<SequencedStoreJob>,
+    control: mpsc::Receiver<SequencedStoreJob>,
+    buffered: BTreeMap<u64, SequencedStoreJob>,
+    next_order: u64,
+}
+
+impl StoreWriterReceivers {
+    fn buffer(&mut self, job: SequencedStoreJob) {
+        let prior = self.buffered.insert(job.order, job);
+        assert!(prior.is_none(), "duplicate store-writer acceptance order");
+    }
+
+    fn drain_ready(&mut self) {
+        while let Ok(job) = self.legacy.try_recv() {
+            self.buffer(job);
+        }
+        while let Ok(job) = self.authoritative.try_recv() {
+            self.buffer(job);
+        }
+        while let Ok(job) = self.control.try_recv() {
+            self.buffer(job);
+        }
+    }
+
+    async fn recv(&mut self) -> Option<SequencedStoreJob> {
+        loop {
+            self.drain_ready();
+            if let Some(job) = self.buffered.remove(&self.next_order) {
+                self.next_order = self
+                    .next_order
+                    .checked_add(1)
+                    .expect("accepted writer order cannot overflow");
+                return Some(job);
+            }
+            if self.legacy.is_closed() && self.authoritative.is_closed() && self.control.is_closed()
+            {
+                assert!(
+                    self.buffered.is_empty(),
+                    "store-writer acceptance sequence closed with a gap"
+                );
+                return None;
+            }
+            tokio::select! {
+                job = self.legacy.recv(), if !self.legacy.is_closed() => {
+                    if let Some(job) = job { self.buffer(job); }
+                }
+                job = self.authoritative.recv(), if !self.authoritative.is_closed() => {
+                    if let Some(job) = job { self.buffer(job); }
+                }
+                job = self.control.recv(), if !self.control.is_closed() => {
+                    if let Some(job) = job { self.buffer(job); }
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn try_recv(&mut self) -> Result<SequencedStoreJob, mpsc::error::TryRecvError> {
+        self.drain_ready();
+        if let Some(job) = self.buffered.remove(&self.next_order) {
+            self.next_order = self
+                .next_order
+                .checked_add(1)
+                .expect("accepted writer order cannot overflow");
+            return Ok(job);
+        }
+        if self.legacy.is_closed() && self.authoritative.is_closed() && self.control.is_closed() {
+            Err(mpsc::error::TryRecvError::Disconnected)
+        } else {
+            Err(mpsc::error::TryRecvError::Empty)
+        }
+    }
+}
+
+fn store_writer_channels(metrics: Arc<Metrics>) -> (StoreWriter, StoreWriterReceivers) {
+    let (legacy, legacy_rx) = mpsc::channel(WRITER_LEGACY_QUEUE);
+    let (authoritative, authoritative_rx) = mpsc::channel(WRITER_AUTHORITATIVE_QUEUE);
+    let (control, control_rx) = mpsc::channel(WRITER_CONTROL_QUEUE);
+    (
+        StoreWriter {
+            legacy,
+            authoritative,
+            control,
+            legacy_capacity: Arc::new(Semaphore::new(WRITER_LEGACY_QUEUE)),
+            authoritative_capacity: Arc::new(Semaphore::new(WRITER_AUTHORITATIVE_QUEUE)),
+            control_capacity: Arc::new(Semaphore::new(WRITER_CONTROL_QUEUE)),
+            next_order: Arc::new(AtomicU64::new(0)),
+            metrics,
+        },
+        StoreWriterReceivers {
+            legacy: legacy_rx,
+            authoritative: authoritative_rx,
+            control: control_rx,
+            buffered: BTreeMap::new(),
+            next_order: 0,
+        },
+    )
+}
+
+#[cfg(test)]
+pub(crate) struct StoreWriterTestReceiver(StoreWriterReceivers);
+
+#[cfg(test)]
+impl StoreWriterTestReceiver {
+    pub(crate) async fn recv(&mut self) -> Option<StoreJob> {
+        self.0.recv().await.map(|queued| queued.job)
+    }
+
+    pub(crate) fn try_recv(&mut self) -> Result<StoreJob, mpsc::error::TryRecvError> {
+        self.0.try_recv().map(|queued| queued.job)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_store_writer_channel(
+    metrics: Arc<Metrics>,
+) -> (StoreWriter, StoreWriterTestReceiver) {
+    let (writer, receiver) = store_writer_channels(metrics);
+    (writer, StoreWriterTestReceiver(receiver))
+}
+
 /// Terminal result from an authoritative writer job.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AuthoritativeCommitFailure {
@@ -514,8 +743,8 @@ pub fn spawn_store_writer(
     high_water: Arc<AtomicU64>,
     quarantine_spool: QuarantineSpool,
     integrity: PersistenceIntegrityLatch,
-) -> (mpsc::Sender<StoreJob>, JoinHandle<()>) {
-    let (tx, rx) = mpsc::channel(WRITER_QUEUE);
+) -> (StoreWriter, JoinHandle<()>) {
+    let (tx, rx) = store_writer_channels(Arc::clone(&metrics));
     let join = tokio::spawn(writer_loop(
         store,
         rx,
@@ -530,7 +759,7 @@ pub fn spawn_store_writer(
 
 async fn writer_loop(
     store: Arc<dyn ObjectStore>,
-    mut rx: mpsc::Receiver<StoreJob>,
+    mut rx: StoreWriterReceivers,
     signals: WriterSignalSender,
     metrics: Arc<Metrics>,
     high_water: Arc<AtomicU64>,
@@ -548,7 +777,13 @@ async fn writer_loop(
     // writer. Ordinary BGSAVE is refused too: snapshotting known-ambiguous
     // durable state would turn the breach into a misleading recovery point.
     let mut integrity_halt: Option<String> = None;
-    while let Some(job) = rx.recv().await {
+    while let Some(SequencedStoreJob {
+        lane,
+        job,
+        _capacity: capacity,
+        ..
+    }) = rx.recv().await
+    {
         match job {
             StoreJob::Write { batch, notify } => {
                 let batch_serial = batch.serial;
@@ -618,7 +853,6 @@ async fn writer_loop(
                 // The batch has left the queue (acked or dropped): drop the
                 // depth the world task incremented on enqueue, and stamp the
                 // last-ack time on success (the metrics surface's store health).
-                metrics.add_store_write_queue_depth(-1);
                 if let Ok(&serial) = result.as_ref() {
                     metrics.set_store_last_ack_unix(unix_now_s());
                     // Publish the durable-commit high-water (E0): the world loop
@@ -664,7 +898,6 @@ async fn writer_loop(
                     }
                     result
                 };
-                metrics.add_store_write_queue_depth(-1);
                 if result.is_ok() {
                     metrics.set_store_last_ack_unix(unix_now_s());
                 }
@@ -682,6 +915,13 @@ async fn writer_loop(
                 let _ = done.send(result);
             }
         }
+        metrics.add_store_write_queue_depth(-1);
+        match lane {
+            WriterLane::Legacy => metrics.add_store_legacy_queue_depth(-1),
+            WriterLane::Authoritative => metrics.add_store_authoritative_queue_depth(-1),
+            WriterLane::Control => metrics.add_store_control_queue_depth(-1),
+        }
+        drop(capacity);
     }
     tracing::info!("store writer drained and exiting");
 }
@@ -2056,6 +2296,98 @@ mod tests {
         let empty = batch_from_dirty(&w, dirty, 8, false);
         assert!(empty.is_empty());
         assert_eq!(empty.next_id, None);
+    }
+
+    #[tokio::test]
+    async fn writer_lanes_reserve_capacity_and_merge_by_acceptance_order() {
+        let metrics = Arc::new(Metrics::new());
+        let (writer, mut receivers) = store_writer_channels(Arc::clone(&metrics));
+        for serial in 0..WRITER_LEGACY_QUEUE {
+            writer
+                .send(StoreJob::Write {
+                    batch: WriteBatch {
+                        serial: u64::try_from(serial).unwrap(),
+                        ..WriteBatch::default()
+                    },
+                    notify: None,
+                })
+                .await
+                .unwrap();
+        }
+
+        // This producer is blocked on legacy capacity and therefore owns no
+        // global acceptance order yet.
+        let blocked_writer = writer.clone();
+        let blocked_legacy = tokio::spawn(async move {
+            blocked_writer
+                .send(StoreJob::Write {
+                    batch: WriteBatch {
+                        serial: 10_000,
+                        ..WriteBatch::default()
+                    },
+                    notify: None,
+                })
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(!blocked_legacy.is_finished());
+        receivers.drain_ready();
+        tokio::task::yield_now().await;
+        assert!(
+            !blocked_legacy.is_finished(),
+            "moving jobs into the order buffer must not release lane capacity"
+        );
+
+        let (authoritative_notify, _authoritative_receipt) = oneshot::channel();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            writer.send(StoreJob::Authoritative {
+                bundle: Box::new(boot_recovery_bundle()),
+                notify: authoritative_notify,
+            }),
+        )
+        .await
+        .expect("authoritative lane must admit while legacy is full")
+        .unwrap();
+        let (control_done, _control_receipt) = oneshot::channel();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            writer.send(StoreJob::Bgsave { done: control_done }),
+        )
+        .await
+        .expect("control lane must admit while legacy is full")
+        .unwrap();
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(
+            snapshot.store_legacy_queue_depth,
+            i64::try_from(WRITER_LEGACY_QUEUE).unwrap()
+        );
+        assert_eq!(snapshot.store_authoritative_queue_depth, 1);
+        assert_eq!(snapshot.store_control_queue_depth, 1);
+
+        // Independent admission does not weaken persistence ordering: the two
+        // reserved-lane jobs follow all previously accepted legacy work, and
+        // precede the legacy sender that was waiting for capacity.
+        for expected in 0..WRITER_LEGACY_QUEUE {
+            let StoreJob::Write { batch, .. } = receivers.recv().await.unwrap().job else {
+                panic!("previously accepted legacy work must remain first");
+            };
+            assert_eq!(batch.serial, u64::try_from(expected).unwrap());
+        }
+        assert!(matches!(
+            receivers.recv().await.unwrap().job,
+            StoreJob::Authoritative { .. }
+        ));
+        assert!(matches!(
+            receivers.recv().await.unwrap().job,
+            StoreJob::Bgsave { .. }
+        ));
+        blocked_legacy.await.unwrap().unwrap();
+        let StoreJob::Write { batch, .. } = receivers.recv().await.unwrap().job else {
+            panic!("capacity-blocked legacy sender must follow accepted reserved-lane work");
+        };
+        assert_eq!(batch.serial, 10_000);
     }
 
     #[tokio::test]

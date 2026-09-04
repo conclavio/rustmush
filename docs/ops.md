@@ -514,7 +514,7 @@ the console, SIGTERM (what `systemctl stop` sends):
 6. exit 0.
 
 `kill -9` / power loss skips all of that and is still safe (write-through);
-you lose at most the in-flight command (or the small writer queue if Redis
+you lose at most the in-flight command (or the independently bounded writer lanes if Redis
 was stalled at that instant — see "The durability model" above), plus up to
 the AOF window on a host crash. The kill-9 path is CI-tested against a live
 Redis (`crates/mushd/tests/durability_e2e.rs`).

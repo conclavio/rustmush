@@ -94,7 +94,9 @@ use crate::durable_outbox::{
     DurableOutboxPolicy, DurableOutboxRegistry, run_authoritative_outbox_worker,
 };
 use crate::gateway_sink::GatewaySink;
-use crate::persist::{self, AuthoritativeCommitFailure, PersistenceIntegrityLatch, StoreJob};
+use crate::persist::{
+    self, AuthoritativeCommitFailure, PersistenceIntegrityLatch, StoreJob, StoreWriter,
+};
 use crate::retained::RetainedSeals;
 use crate::staff::{StaffOp, StaffOpKind, StaffQueue};
 
@@ -1430,7 +1432,7 @@ async fn run(
     mut engine: Engine,
     mut rx: mpsc::Receiver<WorldMsg>,
     tx: mpsc::WeakSender<WorldMsg>,
-    writer: mpsc::Sender<StoreJob>,
+    writer: StoreWriter,
     deps: ServerDeps,
     staff_ops: mpsc::Sender<StaffOp>,
     gateway: Gateway,
@@ -2715,7 +2717,7 @@ enum FlushOutcome {
 #[allow(clippy::too_many_arguments)]
 async fn flush_engine_step(
     engine: &mut Engine,
-    writer: &mpsc::Sender<StoreJob>,
+    writer: &StoreWriter,
     serial: &mut u64,
     health: &mut StoreHealth,
     metrics: &Metrics,
@@ -2752,10 +2754,10 @@ async fn flush_engine_step(
 /// writer and install only after its matching durable receipt.
 async fn flush_prepared_action(
     engine: &mut Engine,
-    writer: &mpsc::Sender<StoreJob>,
+    writer: &StoreWriter,
     serial: &mut u64,
     health: &mut StoreHealth,
-    metrics: &Metrics,
+    _metrics: &Metrics,
     retained: &mut RetainedSeals,
     high_water: &AtomicU64,
 ) -> FlushOutcome {
@@ -2848,7 +2850,6 @@ async fn flush_prepared_action(
             }
         }
     };
-    metrics.add_store_write_queue_depth(1);
     health.last_write_unix = Some(unix_now_s());
     FlushOutcome::Queued {
         receipt: Some(receipt),
@@ -2882,11 +2883,11 @@ fn legacy_reserved_action_state_violation(ops: &[mush_core::ModuleOp]) -> Option
 #[allow(clippy::too_many_arguments)] // threads the loop's persistence context
 async fn flush_dirty(
     engine: &mut Engine,
-    writer: &mpsc::Sender<StoreJob>,
+    writer: &StoreWriter,
     serial: &mut u64,
     durable: bool,
     health: &mut StoreHealth,
-    metrics: &Metrics,
+    _metrics: &Metrics,
     retained: &mut RetainedSeals,
     high_water: &AtomicU64,
     quarantine_spool: &crate::quarantine::QuarantineSpool,
@@ -2990,9 +2991,8 @@ async fn flush_dirty(
         .await;
         return FlushOutcome::WriterGone;
     }
-    // The writer decrements this as it drains each batch; together they track
-    // the store write-queue depth for `/metrics` and `@stats`.
-    metrics.add_store_write_queue_depth(1);
+    // StoreWriter acquired the matching lane permit and published queue depth
+    // before returning; it holds both until the writer finishes this job.
     health.last_write_unix = Some(unix_now_s());
     FlushOutcome::Queued {
         receipt,
@@ -3589,7 +3589,7 @@ fn human_duration(mut s: i64) -> String {
 async fn run_staff_ops(
     _deps: &ServerDeps,
     gateway: &Gateway,
-    writer: &mpsc::Sender<StoreJob>,
+    writer: &StoreWriter,
     staff_ops: &mpsc::Sender<StaffOp>,
     ops: Vec<StaffOp>,
 ) -> bool {
@@ -6067,7 +6067,7 @@ mod tests {
             .stage_prepared_action(prepared, guards)
             .expect("clean engine accepts prepared action");
 
-        let (writer, mut writer_rx) = mpsc::channel(1);
+        let (writer, mut writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
         let mut serial = 0;
         let mut health = StoreHealth::new();
         let metrics = Metrics::new();
@@ -6161,7 +6161,7 @@ mod tests {
             .stage_authoritative_action(prepared, guards, bundle.clone())
             .expect("matching bundle stages");
 
-        let (writer, mut writer_rx) = mpsc::channel(1);
+        let (writer, mut writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
         let mut serial = 0;
         let mut health = StoreHealth::new();
         let metrics = Metrics::new();
@@ -6315,7 +6315,7 @@ mod tests {
             "revision changes used by pure validation are not legacy writes"
         );
 
-        let (writer, mut writer_rx) = mpsc::channel(1);
+        let (writer, mut writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
         let mut serial = 0;
         let mut health = StoreHealth::new();
         let metrics = Metrics::new();
@@ -6432,7 +6432,7 @@ mod tests {
             .stage_prepared_action(prepared, guards)
             .expect("clean engine accepts prepared action");
 
-        let (writer, writer_rx) = mpsc::channel(1);
+        let (writer, writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
         drop(writer_rx);
         let mut serial = 0;
         let mut health = StoreHealth::new();
@@ -6501,7 +6501,8 @@ mod tests {
             }
             assert!(engine.has_legacy_persistence_work());
 
-            let (writer, mut writer_rx) = mpsc::channel(1);
+            let (writer, mut writer_rx) =
+                persist::test_store_writer_channel(Arc::new(Metrics::new()));
             let mut serial = 0;
             let mut health = StoreHealth::new();
             let metrics = Metrics::new();
@@ -6724,10 +6725,10 @@ mod tests {
             tx: tx.clone(),
             shutdown: Some(shutdown_tx),
         };
-        let (writer, mut writer_rx) = mpsc::channel(2);
         let (staff_tx, _staff_rx) = mpsc::channel(STAFF_OPS_CAPACITY);
         let (_signal_tx, signal_rx) = writer_signal_channel();
         let metrics = Arc::new(Metrics::new());
+        let (writer, mut writer_rx) = persist::test_store_writer_channel(Arc::clone(&metrics));
         let mut deps = ServerDeps::in_memory();
         deps.metrics = Arc::clone(&metrics);
         let recorder = Arc::new(RecordingGateway::default());

@@ -118,6 +118,9 @@ pub struct Metrics {
     store_read_only: AtomicBool,
     integrity_frozen: AtomicBool,
     store_write_queue_depth: AtomicI64,
+    store_legacy_queue_depth: AtomicI64,
+    store_authoritative_queue_depth: AtomicI64,
+    store_control_queue_depth: AtomicI64,
     store_last_ack_unix: AtomicI64,
 
     // -- NPC agents (published each sample) --
@@ -308,6 +311,24 @@ impl Metrics {
             .fetch_add(delta, Ordering::Relaxed);
     }
 
+    /// Bump accepted/in-flight legacy writer work by `delta`.
+    pub fn add_store_legacy_queue_depth(&self, delta: i64) {
+        self.store_legacy_queue_depth
+            .fetch_add(delta, Ordering::Relaxed);
+    }
+
+    /// Bump accepted/in-flight exact-token writer work by `delta`.
+    pub fn add_store_authoritative_queue_depth(&self, delta: i64) {
+        self.store_authoritative_queue_depth
+            .fetch_add(delta, Ordering::Relaxed);
+    }
+
+    /// Bump accepted/in-flight persistence-control work by `delta`.
+    pub fn add_store_control_queue_depth(&self, delta: i64) {
+        self.store_control_queue_depth
+            .fetch_add(delta, Ordering::Relaxed);
+    }
+
     /// Record that the store acknowledged a write at `unix_s`.
     pub fn set_store_last_ack_unix(&self, unix_s: i64) {
         self.store_last_ack_unix.store(unix_s, Ordering::Relaxed);
@@ -478,6 +499,11 @@ impl Metrics {
             store_read_only: self.store_read_only.load(Ordering::Relaxed),
             integrity_frozen: self.integrity_frozen.load(Ordering::Relaxed),
             store_write_queue_depth: self.store_write_queue_depth.load(Ordering::Relaxed),
+            store_legacy_queue_depth: self.store_legacy_queue_depth.load(Ordering::Relaxed),
+            store_authoritative_queue_depth: self
+                .store_authoritative_queue_depth
+                .load(Ordering::Relaxed),
+            store_control_queue_depth: self.store_control_queue_depth.load(Ordering::Relaxed),
             store_last_ack_unix: self.store_last_ack_unix.load(Ordering::Relaxed),
             npc_active: self.npc_active.load(Ordering::Relaxed),
             npc_thinking: self.npc_thinking.load(Ordering::Relaxed),
@@ -595,6 +621,12 @@ pub struct MetricsSnapshot {
     pub integrity_frozen: bool,
     /// Store write-queue depth.
     pub store_write_queue_depth: i64,
+    /// Accepted/in-flight legacy write batches.
+    pub store_legacy_queue_depth: i64,
+    /// Accepted/in-flight exact-token authoritative bundles.
+    pub store_authoritative_queue_depth: i64,
+    /// Accepted/in-flight persistence-control jobs.
+    pub store_control_queue_depth: i64,
     /// Unix seconds of the last acked store write (0 = none yet).
     pub store_last_ack_unix: i64,
     /// NPCs with a live runtime.
@@ -780,6 +812,23 @@ impl MetricsSnapshot {
             "gauge",
             "Store write batches queued and not yet acknowledged.",
             &[(&[], self.store_write_queue_depth as f64)],
+        );
+        metric(
+            &mut o,
+            "mush_store_write_lane_depth",
+            "gauge",
+            "Accepted store work not yet completed, by independently bounded lane.",
+            &[
+                (&[("lane", "legacy")], self.store_legacy_queue_depth as f64),
+                (
+                    &[("lane", "authoritative")],
+                    self.store_authoritative_queue_depth as f64,
+                ),
+                (
+                    &[("lane", "control")],
+                    self.store_control_queue_depth as f64,
+                ),
+            ],
         );
         metric(
             &mut o,
@@ -1294,6 +1343,10 @@ mod tests {
         m.web_connection_opened();
         m.command_processed();
         m.observe_loop_lag(4);
+        m.add_store_write_queue_depth(6);
+        m.add_store_legacy_queue_depth(3);
+        m.add_store_authoritative_queue_depth(2);
+        m.add_store_control_queue_depth(1);
         m.publish_world(WorldSample {
             sessions_current: 2,
             connections_current: 3,
@@ -1342,6 +1395,10 @@ mod tests {
         assert!(text.contains("mush_objects{kind=\"room\"} 5"));
         assert!(text.contains("mush_store_read_only 0"));
         assert!(text.contains("mush_integrity_frozen 0"));
+        assert!(text.contains("mush_store_write_queue_depth 6"));
+        assert!(text.contains("mush_store_write_lane_depth{lane=\"legacy\"} 3"));
+        assert!(text.contains("mush_store_write_lane_depth{lane=\"authoritative\"} 2"));
+        assert!(text.contains("mush_store_write_lane_depth{lane=\"control\"} 1"));
         assert!(text.contains("mush_npc_active 1"));
         assert!(text.contains(
             "mush_llm_calls_total{feature=\"worldgen_room\",provider=\"openrouter\",outcome=\"ok\"} 2"
