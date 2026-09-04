@@ -15,6 +15,12 @@ use crate::types::{CompletionRequest, CompletionResponse, LlmStream};
 /// read; responses without a trustworthy length are counted as chunks arrive.
 pub const MAX_PROVIDER_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
+/// Maximum parsed provider events buffered between the HTTP reader and a
+/// streaming caller. The wire-byte ceiling bounds payload volume; this bound
+/// independently prevents a stream of tiny SSE frames from accumulating
+/// unbounded per-event allocation when the caller is slower than the network.
+pub(crate) const PROVIDER_STREAM_BUFFER_EVENTS: usize = 64;
+
 /// A registered provider's stable id (`"anthropic"`, `"openrouter"`,
 /// `"local-ollama"`). Derived from a route's model-id prefix by
 /// [`crate::service`].
