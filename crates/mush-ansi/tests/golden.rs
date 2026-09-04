@@ -4,8 +4,9 @@
 
 use mush_ansi::{AnsiTheme, ansi_len, render};
 use mush_proto::{
-    ClientCaps, ClientKind, Color, ColorDepth, ExitRef, InputMode, NarrativeKind, ObjRef,
-    OutputEvent, PanelFrameKind, PromptSpec, RichText, RoomView, Span, Style, WhoEntry,
+    ActionStatusId, ClientCaps, ClientKind, Color, ColorDepth, ExitRef, InputMode, NarrativeKind,
+    ObjRef, OutputEvent, PanelFrameKind, ProjectedActionReceipt, ProjectedActionResult, PromptSpec,
+    RichText, RoomView, Span, Style, WhoEntry,
 };
 
 fn caps(color: ColorDepth, width: u16) -> ClientCaps {
@@ -39,6 +40,40 @@ fn say(text: &str) -> OutputEvent {
         actor: Some(nick()),
         text: RichText::plain(text),
     }
+}
+
+fn action_receipt_event() -> OutputEvent {
+    let status =
+        ActionStatusId::new("k5:toy:brace:0000000000000007:01010101010101010101010101010101")
+            .unwrap();
+    let result = ProjectedActionResult::new(
+        "brace",
+        "Brace committed.",
+        serde_json::json!({"event": "braced", "focus": 2}),
+    )
+    .unwrap();
+    OutputEvent::View(
+        ProjectedActionReceipt::new(status, "02020202020202020202020202020202", Some(result))
+            .unwrap()
+            .view()
+            .unwrap(),
+    )
+}
+
+#[test]
+fn action_receipt_has_a_line_fallback_with_recovery_reference() {
+    assert_eq!(
+        rendered_str(&action_receipt_event(), ColorDepth::None, 0),
+        "Brace committed. Transaction: k5:toy:brace:0000000000000007:01010101010101010101010101010101\r\n"
+    );
+    let OutputEvent::View(view) = action_receipt_event() else {
+        unreachable!()
+    };
+    let forged = OutputEvent::View(
+        view.with_commit("03030303030303030303030303030303")
+            .unwrap(),
+    );
+    assert!(rendered(&forged, ColorDepth::None, 0).is_empty());
 }
 
 // -- narrative goldens -------------------------------------------------------

@@ -103,8 +103,8 @@ use crate::types::{
     AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeDiscardReceipt,
     AuthoritativeEpochRetirement, AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult,
     AuthoritativeOutboxRecord, AuthoritativeQuarantineReceipt, AuthoritativeReceipt,
-    AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec, BundleStatus, CharacterRef,
-    IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
+    AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec, BoundIdempotencyStatus,
+    BundleStatus, CharacterRef, IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
     MAX_PENDING_AUTHORITATIVE_OUTBOX, MAX_RETAINED_AUTHORITATIVE_BYTES,
     MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleWrite, PendingAuthoritativeIntent, SshKeyRec,
     StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt, validate_module_key,
@@ -1235,6 +1235,82 @@ impl AuthoritativeStore for RedisStore {
                         ));
                     }
                     Ok(IdempotencyStatus::FinalizedExact(Box::new(receipt)))
+                }
+            }
+        })
+    }
+
+    fn bound_authoritative_idempotency_status<'a>(
+        &'a self,
+        key: &'a ScopedIdempotencyKey,
+    ) -> BoxFuture<'a, Result<BoundIdempotencyStatus, StoreError>> {
+        Box::pin(async move {
+            let minimum_accepted_epoch = parse_redis_u64(
+                "minimum epoch",
+                self.client
+                    .get(authoritative_minimum_epoch_key(key.scope())?)
+                    .await?,
+            )?;
+            if key.epoch() < minimum_accepted_epoch {
+                return Ok(BoundIdempotencyStatus::Retired {
+                    minimum_accepted_epoch,
+                });
+            }
+            let binding_doc: Option<String> =
+                self.client.get(authoritative_idempotency_key(key)?).await?;
+            let Some(binding_doc) = binding_doc else {
+                return Ok(BoundIdempotencyStatus::Vacant);
+            };
+            let binding: RedisIdempotencyBinding = serde_json::from_str(&binding_doc)
+                .map_err(|error| StoreError::AuthoritativeCorrupt(error.to_string()))?;
+            if &binding.key != key {
+                return Err(StoreError::AuthoritativeCorrupt(
+                    "Redis idempotency address contains a different scoped key".to_owned(),
+                ));
+            }
+            let Some(loaded) = self.load_validated_authoritative(binding.token).await? else {
+                let quarantine = self
+                    .load_quarantine_receipt(binding.token)
+                    .await?
+                    .ok_or_else(|| {
+                        StoreError::AuthoritativeCorrupt(
+                            "Redis idempotency binding names no intent, receipt, or quarantine"
+                                .to_owned(),
+                        )
+                    })?;
+                if binding != RedisIdempotencyBinding::for_quarantine(&quarantine) {
+                    return Err(StoreError::AuthoritativeCorrupt(
+                        "Redis idempotency binding disagrees with quarantine receipt".to_owned(),
+                    ));
+                }
+                return Ok(BoundIdempotencyStatus::QuarantinedExact(Box::new(
+                    quarantine,
+                )));
+            };
+            match loaded {
+                LoadedAuthoritative::Retained { bundle, receipt } => {
+                    if binding != RedisIdempotencyBinding::for_bundle(&bundle) {
+                        return Err(StoreError::AuthoritativeCorrupt(
+                            "Redis idempotency binding disagrees with its retained intent"
+                                .to_owned(),
+                        ));
+                    }
+                    Ok(receipt.map_or(
+                        BoundIdempotencyStatus::PendingExact {
+                            token: binding.token,
+                            bundle_hash: binding.bundle_hash,
+                        },
+                        |receipt| BoundIdempotencyStatus::FinalizedExact(Box::new(receipt)),
+                    ))
+                }
+                LoadedAuthoritative::Checkpointed(receipt) => {
+                    if binding != RedisIdempotencyBinding::for_receipt(&receipt) {
+                        return Err(StoreError::AuthoritativeCorrupt(
+                            "Redis idempotency binding disagrees with its checkpoint receipt"
+                                .to_owned(),
+                        ));
+                    }
+                    Ok(BoundIdempotencyStatus::FinalizedExact(Box::new(receipt)))
                 }
             }
         })

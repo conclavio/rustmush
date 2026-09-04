@@ -36,6 +36,7 @@ import {
 } from "./theme";
 import { genAcceptLine, genDiscardLine, genRetryLine } from "./worldgen";
 import { WsClient, type EnvelopeOf } from "./ws";
+import { parseResolutionOutcome } from "./view";
 
 const TOKEN_KEY = "rustmush.token";
 const ACCOUNT_KEY = "rustmush.account";
@@ -97,6 +98,8 @@ export class GameApp {
   #pending = new Map<number, PendingReq>();
   #nextToast = 1;
   #sheetRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  #seenActionCommits = new Set<string>();
+  #actionCommitOrder: string[] = [];
 
   constructor() {
     this.client = new WsClient({
@@ -453,6 +456,20 @@ export class GameApp {
   }
 
   #routeView(view: ViewEnvelope, pending: PendingReq | null): void {
+    if (view.view === "resolution.outcome") {
+      const receipt = parseResolutionOutcome(view);
+      if (receipt === null || this.#seenActionCommits.has(receipt.commit)) return;
+      this.#seenActionCommits.add(receipt.commit);
+      this.#actionCommitOrder.push(receipt.commit);
+      if (this.#actionCommitOrder.length > 1024) {
+        const retired = this.#actionCommitOrder.shift();
+        if (retired !== undefined) this.#seenActionCommits.delete(retired);
+      }
+      const summary = receipt.result?.summary ?? "Action committed.";
+      this.scrollback.pushText("ev-sys", `${summary} Transaction: ${receipt.status}`);
+      this.toast(summary);
+      return;
+    }
     if (view.view !== "legal.actions") {
       return;
     }

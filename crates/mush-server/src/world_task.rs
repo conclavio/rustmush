@@ -75,19 +75,20 @@ use mush_core::{
     Audience, ControlMsg, DeliveryClass, DeliveryOutcome, DisconnectKind, Effect, Effects, Engine,
     Flags, Inbound, IncidentId, LegalActionQuery, ObjId, ObjKind, OfferExecutionContext,
     OfferRouteTable, OfferSubmission, Outbox, PerceivedRef, PreparedInstallation, PrincipalId,
-    ProjectedLegalAction, Registry, Role, ScheduledKind, StagedAction, StagedActionPersistence,
-    StepOutcome, SubjectKey, TickCadence, World, WorldCommand, WorldEvent, can_perceive,
-    event_subject, is_ignoring, narrative_actor, register_core_commands, register_engine_commands,
+    ProjectedLegalAction, ReceiptProjectionTable, Registry, Role, ScheduledKind, StagedAction,
+    StagedActionPersistence, StepOutcome, SubjectKey, TickCadence, World, WorldCommand, WorldEvent,
+    can_perceive, event_subject, is_ignoring, narrative_actor, register_core_commands,
+    register_engine_commands,
 };
 use mush_ipc::{
     ActionSend, GatewayAction, GatewayInput, GatewayRequest, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
     SendTarget,
 };
 use mush_llm::LlmService;
-use mush_proto::{OutputEvent, RichText};
+use mush_proto::{ActionStatusId, OutputEvent, ProjectedActionStatus, RichText};
 use mush_store::{
-    AccountRec, AuthoritativeReceipt, AuthoritativeStore, InMemoryStore, IntentReceipt,
-    ObjectStore, SshKeyRec, WriteBatch,
+    AccountRec, AuthoritativeReceipt, AuthoritativeStore, BundleStatus, InMemoryStore,
+    IntentReceipt, ObjectStore, SshKeyRec, WriteBatch,
 };
 use sha2::{Digest, Sha256};
 use smol_str::SmolStr;
@@ -963,6 +964,7 @@ pub struct WorldHandle {
 struct DirectActionIngress {
     store: Arc<dyn ObjectStore>,
     routes: OfferRouteTable,
+    projections: ReceiptProjectionTable,
     epoch: u64,
     next_sequence: AtomicU64,
 }
@@ -1102,6 +1104,68 @@ impl WorldHandle {
         rx.await.unwrap_or(Err(LegalActionReadError::Unavailable))
     }
 
+    /// Recover an authoritative action result for an authenticated live
+    /// connection. The public reference never supplies the principal.
+    pub async fn action_status(
+        &self,
+        conn: u64,
+        actor: ObjId,
+        status: &ActionStatusId,
+    ) -> Result<ProjectedActionStatus, WorldReadError> {
+        if !self.connection_ready(conn, actor).await? {
+            return Ok(ProjectedActionStatus::Unknown);
+        }
+        let Some(direct) = &self.direct_actions else {
+            return Err(WorldReadError::Unavailable);
+        };
+        let Some(store) = direct.store.authoritative_store() else {
+            return Err(WorldReadError::Unavailable);
+        };
+        match ActionCoordinator::projected_status(
+            store,
+            &direct.projections,
+            &PrincipalId::Object { id: actor },
+            status,
+        )
+        .await
+        {
+            Ok(projected) => Ok(projected),
+            Err(crate::action_coordinator::ActionStatusError::InvalidReference)
+            | Err(crate::action_coordinator::ActionStatusError::Forbidden) => {
+                Ok(ProjectedActionStatus::Unknown)
+            }
+            Err(error) => {
+                tracing::error!(%actor, %status, error = %error, "action status projection failed");
+                Ok(ProjectedActionStatus::Unavailable {
+                    reference: status.clone(),
+                })
+            }
+        }
+    }
+
+    /// Project a receipt whose durable binding has already authenticated the
+    /// actor (for example, a split-boundary replay after its original
+    /// connection disappeared).
+    pub fn project_known_action_receipt(
+        &self,
+        actor: ObjId,
+        status: ActionStatusId,
+        receipt: &AuthoritativeReceipt,
+    ) -> Result<mush_proto::ProjectedActionReceipt, crate::action_coordinator::ActionStatusError>
+    {
+        let direct = self.direct_actions.as_ref().ok_or(
+            crate::action_coordinator::ActionStatusError::Integrity(
+                "action projection table is unavailable".to_owned(),
+            ),
+        )?;
+        ActionCoordinator::project_finalized_receipt(
+            &direct.projections,
+            &PrincipalId::Object { id: actor },
+            status,
+            receipt,
+        )
+    }
+
     /// All-in-one counterpart of the split gateway's replay-custody path.
     /// It performs the same mandatory preflight and does not report accepted
     /// until the exact intent is durably owned. Split mode never calls this;
@@ -1132,6 +1196,14 @@ impl WorldHandle {
                 return ActionSend::Rejected;
             }
         };
+        let status = match ActionCoordinator::status_id(envelope.idempotency()) {
+            Ok(status) => status,
+            Err(error) => {
+                tracing::error!(error = %error, "in-process action status identity failed");
+                return ActionSend::Gone;
+            }
+        };
+        let viewer = envelope.principal().clone();
         let Some(store) = direct.store.authoritative_store() else {
             tracing::error!("in-process store lacks authoritative request capability");
             return ActionSend::Gone;
@@ -1152,9 +1224,22 @@ impl WorldHandle {
         };
         let permit = match preflight {
             crate::action_coordinator::ActionPreflight::Vacant(permit) => permit,
-            crate::action_coordinator::ActionPreflight::Pending { .. }
-            | crate::action_coordinator::ActionPreflight::Finalized(_) => {
-                return ActionSend::Accepted;
+            crate::action_coordinator::ActionPreflight::Pending { .. } => {
+                return ActionSend::Owned(status);
+            }
+            crate::action_coordinator::ActionPreflight::Finalized(receipt) => {
+                return match ActionCoordinator::project_finalized_receipt(
+                    &direct.projections,
+                    &viewer,
+                    status,
+                    &receipt,
+                ) {
+                    Ok(receipt) => ActionSend::Finished(receipt),
+                    Err(error) => {
+                        tracing::error!(error = %error, "in-process finalized retry projection failed");
+                        ActionSend::Gone
+                    }
+                };
             }
             crate::action_coordinator::ActionPreflight::Retired { .. }
             | crate::action_coordinator::ActionPreflight::Conflict => {
@@ -1190,10 +1275,55 @@ impl WorldHandle {
             Err(AuthoritativeActionStartError::Unavailable) => return ActionSend::Gone,
             Err(AuthoritativeActionStartError::Rejected(_)) => return ActionSend::Rejected,
         };
-        match watch.owned.await {
-            Ok(Ok(_)) => ActionSend::Accepted,
-            Ok(Err(AuthoritativeCommitFailure::Refused(_))) => ActionSend::Busy,
-            Ok(Err(AuthoritativeCommitFailure::Integrity(_))) | Err(_) => ActionSend::Gone,
+        let owned = match watch.owned.await {
+            Ok(Ok(owned)) => owned,
+            Ok(Err(AuthoritativeCommitFailure::Refused(_))) => return ActionSend::Busy,
+            Ok(Err(AuthoritativeCommitFailure::Integrity(_))) | Err(_) => {
+                return ActionSend::Gone;
+            }
+        };
+        match tokio::time::timeout(Duration::from_secs(2), watch.finished).await {
+            Ok(Ok(Ok(finished))) if finished == owned => {
+                match store
+                    .authoritative_status(finished.token, finished.bundle_hash)
+                    .await
+                {
+                    Ok(BundleStatus::FinalizedExact(receipt)) => {
+                        match ActionCoordinator::project_finalized_receipt(
+                            &direct.projections,
+                            &PrincipalId::Object { id: input.actor },
+                            status.clone(),
+                            &receipt,
+                        ) {
+                            Ok(receipt) => ActionSend::Finished(receipt),
+                            Err(error) => {
+                                tracing::error!(error = %error, "in-process receipt projection failed");
+                                ActionSend::Owned(status)
+                            }
+                        }
+                    }
+                    Ok(other) => {
+                        tracing::error!(
+                            ?other,
+                            "finalized action did not have a finalized store receipt"
+                        );
+                        ActionSend::Owned(status)
+                    }
+                    Err(error) => {
+                        tracing::error!(error = %error, "finalized action receipt read failed");
+                        ActionSend::Owned(status)
+                    }
+                }
+            }
+            Ok(Ok(Ok(finished))) => {
+                tracing::error!(owned_token = %owned.token, finished_token = %finished.token, "in-process terminal identity mismatch");
+                ActionSend::Gone
+            }
+            Ok(Ok(Err(error))) => {
+                tracing::error!(error = %error.detail(), "owned in-process action ended in an integrity incident");
+                ActionSend::Owned(status)
+            }
+            Ok(Err(_)) | Err(_) => ActionSend::Owned(status),
         }
     }
 
@@ -1407,10 +1537,17 @@ fn spawn_persist_with_gateway_mode(
         .map_or_else(OfferRouteTable::default, |providers| {
             providers.offer_route_table()
         });
+    let projections = engine
+        .registry
+        .action_providers()
+        .map_or_else(ReceiptProjectionTable::empty, |providers| {
+            providers.receipt_projection_table()
+        });
     let action_epoch = rand::random();
     let direct_actions = Arc::new(DirectActionIngress {
         store: Arc::clone(&deps.store),
         routes,
+        projections,
         epoch: action_epoch,
         next_sequence: AtomicU64::new(1),
     });
@@ -5998,20 +6135,20 @@ mod tests {
             .find(|offer| offer.presentation().verb == "brace")
             .expect("tactics brace offer");
 
-        assert_eq!(
-            handle
-                .submit_legal_action(GatewayAction {
-                    conn: CONN,
-                    actor: GOD,
-                    offered_action: offer.offer(),
-                    subject: offer.subject().clone(),
-                    targets: Vec::new(),
-                    parameters: serde_json::json!({}),
-                })
-                .await,
-            ActionSend::Accepted,
-            "all-in-one acceptance must mean exact durable intent ownership"
-        );
+        let ActionSend::Finished(receipt) = handle
+            .submit_legal_action(GatewayAction {
+                conn: CONN,
+                actor: GOD,
+                offered_action: offer.offer(),
+                subject: offer.subject().clone(),
+                targets: Vec::new(),
+                parameters: serde_json::json!({}),
+            })
+            .await
+        else {
+            panic!("all-in-one action did not return its exact projected receipt");
+        };
+        assert_eq!(receipt.result().unwrap().summary(), "Brace committed.");
         assert!(handle.barrier().await, "authoritative receipt must settle");
         let stance = store
             .module_json_get("tactics", "action-state/v1/stance/1")

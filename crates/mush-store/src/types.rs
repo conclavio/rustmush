@@ -1052,6 +1052,27 @@ pub enum IdempotencyStatus {
     Conflict,
 }
 
+/// Status of an already-bound idempotency key when the authenticated caller
+/// is recovering presentation and therefore has no private ingress hash.
+///
+/// This lookup must only be exposed through a caller-authenticating service.
+/// The store returns the same validated receipt/tombstone material as the
+/// early coordinator lookup, but cannot report a caller-supplied conflict
+/// because no alternate ingress is accepted on this path.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BoundIdempotencyStatus {
+    Retired {
+        minimum_accepted_epoch: u64,
+    },
+    Vacant,
+    PendingExact {
+        token: CommitToken,
+        bundle_hash: CanonicalHash,
+    },
+    FinalizedExact(Box<AuthoritativeReceipt>),
+    QuarantinedExact(Box<AuthoritativeQuarantineReceipt>),
+}
+
 /// One character linked to an account (dbref + name denormalized at link
 /// time, mirroring `mushd::accounts::CharSummary`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

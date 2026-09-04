@@ -48,7 +48,9 @@ use mush_ipc::{
     MAX_IN_FLIGHT_SERVICE_REQUESTS, RequestUid, ServiceReq, ServiceResp, ToGateway, ToServer,
 };
 use mush_llm::LlmService;
-use mush_store::{InMemoryStore, ObjectStore, RedisStore, core_migrations, run_migrations};
+use mush_store::{
+    BundleStatus, InMemoryStore, ObjectStore, RedisStore, core_migrations, run_migrations,
+};
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
@@ -794,6 +796,19 @@ async fn handle_authoritative_input(
             return;
         }
     };
+    let status = match ActionCoordinator::status_id(envelope.idempotency()) {
+        Ok(status) => status,
+        Err(error) => {
+            release_input_claim(&claims, uid);
+            request_disposition(
+                &sink,
+                uid,
+                GatewayRequestDisposition::Rejected { retryable: false },
+            );
+            tracing::error!(%uid, error = %error, "coordinator status identity failed");
+            return;
+        }
+    };
     let Some(authoritative_store) = store.authoritative_store() else {
         tracing::error!(%uid, "configured store lacks authoritative request capability; preserving custody");
         return;
@@ -822,24 +837,41 @@ async fn handle_authoritative_input(
 
     let permit = match preflight {
         ActionPreflight::Vacant(permit) => permit,
-        ActionPreflight::Pending { token, bundle_hash } => {
+        ActionPreflight::Pending { token, .. } => {
             release_input_claim(&claims, uid);
             request_disposition(
                 &sink,
                 uid,
-                GatewayRequestDisposition::Owned { token, bundle_hash },
+                GatewayRequestDisposition::Owned {
+                    token,
+                    status: status.clone(),
+                },
             );
             return;
         }
         ActionPreflight::Finalized(receipt) => {
             release_input_claim(&claims, uid);
-            request_disposition(
-                &sink,
-                uid,
-                GatewayRequestDisposition::Finished {
-                    token: receipt.token(),
-                },
-            );
+            match world.project_known_action_receipt(actor, status.clone(), &receipt) {
+                Ok(projected) => request_disposition(
+                    &sink,
+                    uid,
+                    GatewayRequestDisposition::Finished {
+                        recipient: actor,
+                        receipt: projected,
+                    },
+                ),
+                Err(error) => {
+                    tracing::error!(%uid, error = %error, "finalized retry projection failed");
+                    request_disposition(
+                        &sink,
+                        uid,
+                        GatewayRequestDisposition::Owned {
+                            token: receipt.token(),
+                            status: status.clone(),
+                        },
+                    );
+                }
+            }
             return;
         }
         ActionPreflight::Retired { .. } | ActionPreflight::Conflict => {
@@ -958,18 +990,39 @@ async fn handle_authoritative_input(
         uid,
         GatewayRequestDisposition::Owned {
             token: owned.token,
-            bundle_hash: owned.bundle_hash,
+            status: status.clone(),
         },
     );
 
     match watch.finished.await {
-        Ok(Ok(finished)) if finished == owned => request_disposition(
-            &sink,
-            uid,
-            GatewayRequestDisposition::Finished {
-                token: finished.token,
-            },
-        ),
+        Ok(Ok(finished)) if finished == owned => {
+            match authoritative_store
+                .authoritative_status(finished.token, finished.bundle_hash)
+                .await
+            {
+                Ok(BundleStatus::FinalizedExact(receipt)) => {
+                    match world.project_known_action_receipt(actor, status.clone(), &receipt) {
+                        Ok(receipt) => request_disposition(
+                            &sink,
+                            uid,
+                            GatewayRequestDisposition::Finished {
+                                recipient: actor,
+                                receipt,
+                            },
+                        ),
+                        Err(error) => {
+                            tracing::error!(%uid, error = %error, "terminal receipt projection failed");
+                        }
+                    }
+                }
+                Ok(other) => {
+                    tracing::error!(%uid, ?other, "terminal action lacks a finalized receipt")
+                }
+                Err(error) => {
+                    tracing::error!(%uid, error = %error, "terminal action receipt read failed")
+                }
+            }
+        }
         Ok(Ok(finished)) => tracing::error!(
             %uid,
             owned_token = %owned.token,
@@ -1268,6 +1321,15 @@ async fn handle_request(world: &WorldHandle, req: ServiceReq) -> ServiceResp {
             Err(LegalActionReadError::InvalidSubject) => {
                 ServiceResp::LegalActions(Err(LegalActionsError::InvalidSubject))
             }
+        },
+        ServiceReq::ActionStatus {
+            conn,
+            actor,
+            status,
+        } => match world.action_status(conn, actor, &status).await {
+            Ok(status) => ServiceResp::ActionStatus(status),
+            Err(WorldReadError::Busy) => ServiceResp::Busy,
+            Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
         },
         ServiceReq::Barrier => barrier_response(world.barrier_result().await),
     }

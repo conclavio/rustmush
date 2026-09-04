@@ -7,10 +7,10 @@
 //! pairs matched by a `u64` request id.
 
 use mush_core::{
-    ActionOfferId, CanonicalHash, CommitToken, DisconnectKind, Inbound, ObjId, PerceivedRef,
-    ProjectedLegalAction, RequestUid,
+    ActionOfferId, CommitToken, DisconnectKind, Inbound, ObjId, PerceivedRef, ProjectedLegalAction,
+    RequestUid,
 };
-use mush_proto::OutputEvent;
+use mush_proto::{ActionStatusId, OutputEvent, ProjectedActionReceipt, ProjectedActionStatus};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
@@ -26,7 +26,7 @@ pub use mush_core::ControlMsg;
 /// breaking change; additive changes (new enum arms, new struct fields under a
 /// self-describing encoding) keep the same version and stay wire-compatible
 /// with older peers.
-pub const IPC_VERSION: u32 = 3;
+pub const IPC_VERSION: u32 = 4;
 
 /// Maximum replayable player inputs held by either half of one split-process
 /// boundary. The gateway enforces the limit before accepting custody and the
@@ -354,13 +354,18 @@ pub enum GatewayRequestDisposition {
     Owned {
         /// Stable token for exact-token retry and status lookup.
         token: CommitToken,
-        /// Canonical hash of the durably owned authoritative bundle.
-        bundle_hash: CanonicalHash,
+        /// Public recovery reference. No private bundle hash crosses the
+        /// presentation boundary.
+        status: ActionStatusId,
     },
     /// The authoritative request reached terminal durable completion.
     Finished {
-        /// The stable commit token associated with the request.
-        token: CommitToken,
+        /// Authenticated character receiving this result even when the
+        /// original physical connection has disappeared.
+        recipient: ObjId,
+        /// Bounded redacted semantic result; the compact store receipt stays
+        /// server-private.
+        receipt: ProjectedActionReceipt,
     },
 }
 
@@ -528,6 +533,14 @@ pub enum ServiceReq {
         /// only `SelfActor`; K6 adds revision-checked object/contact scopes.
         subject: PerceivedRef,
     },
+    /// Recover one previously accepted authoritative action by its public
+    /// transaction reference. The connection/actor pair is authenticated
+    /// before the server reconstructs the principal-scoped store key.
+    ActionStatus {
+        conn: u64,
+        actor: ObjId,
+        status: ActionStatusId,
+    },
     /// Ordering barrier: answered once every message queued before it has been
     /// processed and its output delivered.
     Barrier,
@@ -552,6 +565,8 @@ pub enum ServiceResp {
     /// disappearance retain the request-level [`Self::Busy`] and
     /// [`Self::Unavailable`] arms; this result carries semantic refusals.
     LegalActions(Result<Vec<ProjectedLegalAction>, LegalActionsError>),
+    /// Authorized, persistence-internal-free action status/result.
+    ActionStatus(ProjectedActionStatus),
     /// Acknowledgement of a [`ServiceReq::Barrier`].
     Barrier,
     /// The boundary has reached its fixed correlated-request custody limit.

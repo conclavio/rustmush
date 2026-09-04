@@ -16,6 +16,7 @@
 use futures::future::BoxFuture;
 
 use crate::{GatewayAction, ObjId, ServiceReq, ServiceResp, ToServer};
+use mush_proto::{ActionStatusId, ProjectedActionReceipt};
 
 /// The outcome of an input-path (`Cmd`/`Query`) send through [`GatewayLink`]
 /// ([`to_server_input`](GatewayLink::to_server_input)). Distinguishes the M18
@@ -38,13 +39,19 @@ pub enum InputSend {
 }
 
 /// Admission result for one semantic legal-action submission.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ActionSend {
     /// The deployment accepted custody. Split mode reports this when gateway
-    /// replay custody is installed; all-in-one reports it after exact intent
-    /// ownership. Any later split-mode semantic refusal is delivered through
-    /// the ordinary request-disposition error path.
+    /// replay custody is installed. Any later split-mode semantic refusal is
+    /// delivered through the ordinary request-disposition error path;
+    /// all-in-one authoritative execution normally returns [`Self::Owned`] or
+    /// [`Self::Finished`] directly.
     Accepted,
+    /// Exact durable ownership was established and this public reference can
+    /// recover the result if live completion delivery is lost.
+    Owned(ActionStatusId),
+    /// The exact committed result was projected for the caller.
+    Finished(ProjectedActionReceipt),
     /// Bounded input/coordinator custody is full before durable ownership.
     Busy,
     /// The boundary/world or authoritative store is unavailable.

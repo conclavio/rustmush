@@ -11,8 +11,12 @@ finalization/RAM install. The world regenerates and verifies the offer before pl
 provider definitions never cross the gateway boundary. The shared public adapter now serves line
 `+actions`/`+act`, the `legal.actions` web/TUI panel, deterministic NPC selection, and a mock LLM
 tool snapshot from that same projected DTO and opaque submission path; the all-in-one world handle
-also waits for exact durable ownership before reporting acceptance. Grant witnesses and the
-remaining process-kill matrix remain open. K3's
+also waits for exact durable ownership before reporting acceptance. The version-4 IPC boundary now
+returns a public transaction reference at ownership and a provider-projected, bounded
+`resolution.outcome` receipt only after finalization. Authenticated `action/status` reconstructs
+the caller's scoped key without receiving a private ingress hash, and checkpointed receipts project
+identically after composition restart. Grant witnesses and the remaining process-kill matrix remain
+open. K3's
 persistence kernel and durability-audit closeout are implemented: exact bundle
 reservation/reconciliation, pre-hydration recovery, store-owned authoritative prefixes, compact
 checkpoints, watermark-first epoch retirement, a production coordinator plus first tactics provider,
@@ -32,16 +36,19 @@ provisioning runs before writable boot, and a source-policy tripwire rejects amb
 provider implementation files. K5 now has bounded separate internal/projected
 offers, restart-stable rotating HMAC verification, durable private key provisioning, hidden fixed
 inputs and guards, canonical registered-provider enumeration, opaque submission resolution, and a
-coordinator route into the same Gate-1 provider. The version-3 IPC boundary now exposes bounded
+coordinator route into the same Gate-1 provider. The version-4 IPC boundary now exposes bounded
 legal-action discovery and opaque offer-only submission, including transport revalidation,
 tamper rejection before intent, and exact finalized replay after disconnect. Line, TUI-shaped,
 web-shaped, deterministic-NPC, and mock-LLM callers now share the offer/provider contract without
 receiving its exact action identity. K5 semantic views now add a bounded `OutputEvent::View` with
 schema version, restart generation, sequence, exact delta base, optional projected commit token,
 and shared Rust/TypeScript cursor classification; the first `legal.actions` view and TUI/web clients
-discard unsafe controls and coalesce a keyframe resync on gaps. Active grant witnesses, real NPC/LLM
-runtime scheduling, projected receipts, and the remaining Gate 5 matrix remain cross-cut work; all
-five complete end-to-end proving gates remain open.
+discard unsafe controls and coalesce a keyframe resync on gaps. Provider-owned result projection,
+bounded public receipt/status DTOs, line/TUI/web rendering, bounded web commit deduplication, and
+authorized status recovery now cover the first production tactics action without exporting
+request/plan/bundle/outcome hashes. Active grant witnesses, real NPC/LLM runtime scheduling,
+structured acknowledgement, and the remaining Gate 5 matrix remain cross-cut work; all five
+complete end-to-end proving gates remain open.
 
 **Scope:** the shared contracts that must be stable before RustMUSH substantially expands character,
 tactical, economic, and AI-driven rules
@@ -1454,13 +1461,14 @@ the semantic data directly.
 Success presentation is emitted only after durable acknowledgement. It carries a commit token so
 structured clients can deduplicate and acknowledge it. Raw line SSH has no client acknowledgement,
 so exactly-once text cannot be guaranteed across a crash: it receives best-effort/at-least-once
-rendering with the stable transaction ID, while `action/status <idempotency-key>` and current
+rendering with the stable transaction ID, while `action/status <transaction-reference>` and current
 keyframes recover the semantic result.
 
 `action/status` authenticates and authorizes the requesting principal before lookup, then projects
 the stored authoritative outcome through C9 into `ProjectedActionReceipt`. A guessed commit or
-idempotency token reveals neither existence nor truth to an unauthorized viewer. Internal request,
-plan, bundle, and outcome hashes never appear in ordinary receipts, panels, errors, or LLM context.
+public transaction reference reveals neither existence nor truth to an unauthorized viewer.
+Internal request, plan, bundle, and outcome hashes never appear in ordinary receipts, panels,
+errors, or LLM context.
 
 ---
 
@@ -1852,17 +1860,17 @@ The repository already contains useful local proofs. They should be adapted, not
 | Contract | Current foundation | Missing shared contract |
 |---|---|---|
 | C1 definitions | shared canonical owner/kind/id/digest identities; bounded `RulesValue`; immutable global definition registry; exact-reference closure; one provider semantic validator per owner/kind; bounded monotonic owner-readiness latch; tactics exact-digest owner fan-out; dry-run migration registry; tactics/sim adapters | owner-freeze discovery in remaining rules-bearing adapters, executing one migration through K3 durability, broader production provider coverage |
-| C2 plan/commit | `mush-sim::Transition`, `UnitMutationPlan`, world single writer, `WriteBatch`, K0 exact receipt gate, typed output/effect custody and one `CommitPending` batch; K2 action invocation/provider metadata; engine-owned typed state families; owner-scoped bounded multi-record `ActionTxn`; one-shot `PreparedTxn`; same-owner trigger execution in the root scratch transaction; exact staged pairing between typed post-images and an immutable K3 bundle; FIFO reserve/reconcile custody; separate exact-intent ownership and terminal receipts; exact 128-bit token/hash receipt validation before RAM install; canonical bounded K3 bundle/token/replay/event/outbox models; in-memory exact intent protocol and cut-point matrix; Redis checked-Lua intent/idempotency reservation plus replay/readback/finalization; object-plus-allocator admission; hash-aware status; live Redis 8.10 fault execution; exhaustive pre-hydration server recovery; bounded runtime deterministic retries and whole-bundle dead-letter; event-preserving compact finalized checkpoints; resolution-bearing bundle v3 and compact receipt v4 with exact transcript survival after full-intent release; watermark-first epoch retirement; typestate early-idempotency coordinator and first real tactics provider; recovery-driven durable-outbox worker with stable-ID at-least-once delivery; independent bounded authoritative/legacy/control writer lanes; versioned epoch-scoped gateway request UIDs, bounded per-connection/global count+byte custody, explicit dispositions, legacy claim/release, post-reattach FIFO replay, and a version-3 structured transport-authenticated opaque-offer ingress whose exact finalized replay works after the original connection disappears | line/parser production of coordinator requests; remaining ownership-ack process-kill matrix; cross-owner transaction/bridge execution; broader provider and legacy migration |
+| C2 plan/commit | `mush-sim::Transition`, `UnitMutationPlan`, world single writer, `WriteBatch`, K0 exact receipt gate, typed output/effect custody and one `CommitPending` batch; K2 action invocation/provider metadata; engine-owned typed state families; owner-scoped bounded multi-record `ActionTxn`; one-shot `PreparedTxn`; same-owner trigger execution in the root scratch transaction; exact staged pairing between typed post-images and an immutable K3 bundle; FIFO reserve/reconcile custody; separate exact-intent ownership and terminal receipts; exact 128-bit token/hash receipt validation before RAM install; canonical bounded K3 bundle/token/replay/event/outbox models; in-memory exact intent protocol and cut-point matrix; Redis checked-Lua intent/idempotency reservation plus replay/readback/finalization; object-plus-allocator admission; hash-aware status; live Redis 8.10 fault execution; exhaustive pre-hydration server recovery; bounded runtime deterministic retries and whole-bundle dead-letter; event-preserving compact finalized checkpoints; resolution-bearing bundle v3 and compact receipt v4 with exact transcript survival after full-intent release; watermark-first epoch retirement; typestate early-idempotency coordinator and first real tactics provider; recovery-driven durable-outbox worker with stable-ID at-least-once delivery; independent bounded authoritative/legacy/control writer lanes; versioned epoch-scoped gateway request UIDs, bounded per-connection/global count+byte custody, explicit dispositions, legacy claim/release, post-reattach FIFO replay, and a version-4 structured transport-authenticated opaque-offer ingress whose exact finalized replay works after the original connection disappears; authenticated bound-key status lookup without caller-supplied ingress hashes | line/parser production of coordinator requests; remaining ownership-ack process-kill matrix; cross-owner transaction/bridge execution; broader provider and legacy migration |
 | C3 legal actions | contextual behavior commands, required channels, exact per-actor/per-station `ChannelGrant` projection with paired channel/priority and epoch revalidation, LLM tool manifests, exact owner-stamped action-provider registry; bounded separate internal/projected offers; canonical HMAC binding to server-held action, subject, fixed inputs, guards, projection scope, and presentation; append-only crash-safe private key provisioning and bounded retained-key rotation; projected parameter/target schemas; canonical registered-provider enumeration; uniform stale resolution; resolved-offer coordinator entry; authenticated split/in-process legal-action discovery; stable opaque route plus HMAC tag; public submission with no exact action identity and world-side regeneration; line `+actions`/`+act`, web/TUI `legal.actions`, deterministic NPC and mock-LLM consumers proven against one public DTO/provider contract | active grant/lease witnesses and real NPC/LLM runtime scheduling over the shared public path |
 | C4 time/windows | scheduler; strict `ClockRef`/`ClockStamp`; bounded append-only world-IC epoch history `{ real_anchor, ic_anchor, rate, generation }`; continuous rate changes; atomic epoch/head persistence; boot hydration before modules; synchronous `(ic_now, generation)` module-context read; composition-frozen exact owner/kind/id clock-provider registry with generation validation, owner-readiness gating, immutable module/typed-state read context, and deployment fingerprinting; one composition-owned first-class scene-clock adapter; durable scene turn generation/cursor and exact versioned world-IC floor; strict durable recurring schedule cursor plus reusable typed-family codec, pure bounded oldest/latest catch-up, explicit skipped ranges, restart resume/skip/suspend transitions, deterministic occurrence subkeys and whole-advance identity, and same-owner scheduled ingress into the K3 coordinator; bounded typed-family schedule discovery; provider-specific read-only invocation adapters after preflight; kernel-enforced atomic cursor advancement plus domain writes; production world-loop polling with predecessor deferral, transient retry, and server-epoch retirement rebase; validated `ActionWindow` definitions and serializable records with half-open eligibility, bounded idempotent submit/replace/cancel, reserved terminal receipt capacity, deterministic freeze order, exact acceptance stamps, close/cancel/consume phases, strict restart decode, and pure live/restart driving decisions; reusable authoritative window-family codec/descriptor; exact open/submit/close/resolve bundle post-images; restart between durable close and resolution; consumed post-image bound to the coordinator token in the same bundle as outcome/RNG; Timestop turns, passive domain clock, Journey timing, mobility switching | production ruleset schedule sources and remaining timing integrations |
 | C5 RNG | non-cloneable `ResolutionRng` derived from a versioned bounded key ring plus scoped idempotency/action domain/input hash; independent labeled HMAC-SHA256 counter streams; logical draw/stream/rejection caps; validated immutable `PreparedResolution`/`ResolutionRecord` carrying exact definitions, modifiers, draws, and outcome; central commit-token binding; retained-secret replay; checked `mush-dice` adapter that discards provisional output on kernel exhaustion; exact bundle-v3/receipt-v4 persistence and shared checkpoint/retry store witness; independent append-only/fsynced/private root-key provisioning before writable boot; one-action `PrepareCtx` that rejects missing/unpaired transcripts; provider-source ambient-RNG tripwire; RNG-bearing Gate-1 toy provider; durable window pinning of the exact secret version; unresolved-reference discovery; pre-publication fail-closed rotation that cannot prune a live version; post-rotation resolution/restart witness | migrate production ruleset rolls from legacy command paths onto authoritative providers |
 | C6 causality | `WorldEvent`, scene/canon ledgers, module observers; stable pre-commit request/event IDs and causal references; bounded deterministic trigger queue with duplicate suppression and non-droppable active-work custody; queue execution inside one root `ActionTxn`; v2 bundles and v3 compact receipts retaining ordered root/derived semantic events and event-time witnesses | public commit-token-bound event IDs, intent-resolution-commit-observation integration, cross-owner trigger execution through validated bridges |
 | C7 tracks/effects | sheet tracks and tactical `ScalarCell`; common `BoundedScalar` operations; exact `ResourceRef`; revision/clock-checked `ReservationRecord`; exact-identity/provenance/typed-duration inert `EffectInstance`; composition-frozen, owner-readiness-gated resource/effect read adapters over immutable ordinary-world and typed-family truth; kernel-labelled resource snapshots and exact definition/target/instance validation for returned effects; bounded per-resource `ReservationBook` typed state with full-set contention, scalar/book revision coupling, checked consume/release/expiry/direct-spend transitions, explicit terminal pruning, restart hydration, and same-bundle Gate-1 spend proof | broader production owner adapters and cross-owner/economy migration after the mixed-write gate |
 | C8 guards | per-station channel grants (no cross-seat union/max promotion), persisted unit `control_gen` carried as each grant's epoch, exact station/channel/epoch stale-intent revalidation, expected unit revision, economy plan draft; canonical `RevisionSet`, owner-stamped validator registries, explicit server-created `GuardSet` on every staged typed action, final fail-closed revalidation at the synchronous writer-custody transition, durable exact-bundle reservation, and coordinator-owned early idempotency preflight | active per-channel leases, safe-boundary handoff, and wiring every delayed result/offer through the exact grant plus lease guards |
-| C9 projection | per-observer perception and delivery, witness-aware power events; separate internal/projected legal-action types; recursive nested-field/exact-value leak inspectors applied to structured DTO, semantic view, line/TUI renderings, and mock-LLM snapshot | tactical contact lifecycle and projected tactical/economy DTOs; reuse leak inspectors for every new player/AI/error surface |
+| C9 projection | per-observer perception and delivery, witness-aware power events; separate internal/projected legal-action types; provider-owned pure durable-outcome projection after event-time witness checks; recursive nested-field/exact-value leak inspectors applied to legal-action and receipt DTOs, semantic views, line/TUI renderings, split IPC, and mock-LLM snapshots | tactical contact lifecycle and projected tactical/economy DTOs; reuse leak inspectors for every new player/AI/error surface |
 | C10 ownership | registrar-stamped definition/action/state-family owners; composition-bound opaque typed state handles; provider-stamped transactions that reject cross-owner handles; fail-closed cross-owner tactical references; immutable directional exact-definition bridge registry; shared owner-readiness gates on executable definitions/providers/validators/bridge routes | ownership migration for state outside `ActionStateStore`, executable bridge preparation across typed transactions, freeze aggregation from remaining owner adapters |
 | C11 lifecycle | pre-boot validated unified poison spool; v1 Ledger read compatibility plus tagged v2 Ledger/bundle records sharing one lock, capacity gate, and evidence archive; exact seal retention/isolation; structural world modes; bounded recovery incidents/reports; tactical Active/Frozen/Migrating/Quarantined records; tactics owner-scoped digest-conflict freeze; prepared typed images install or abort on the matching legacy serial or K3 token/hash receipt; strict atomic state-family decode/validate/canonical boot hydration; legacy isolation of `action-state/*`; store-enforced ownership of authoritative module prefixes; bounded in-memory and Redis pending indexes plus independent paged full-intent discovery; exhaustive bounded boot reconciliation before world hydration or writable bootstrap; exact retry repair of stale pending-index membership; canonical retained-intent storage validation; atomic reconstruction of derived Redis count/byte counters from exhaustive boot discovery; exact bundle quarantine recovery with live Redis WRONGTYPE proof; coordinator abort of typed reservations on pre-stage assembly failure; exact checkpoint/epoch/outbox cleanup and retry | exhaustive orphan-owner discovery; full C11 resolution receipts; owner freezes in remaining lifecycle adapters; authoritative account ingress; automated runbook |
-| C12 presentation | `OutputEvent::Panel`, registered panel feeds, keyframe/delta kind, line fallback renderers; bounded `OutputEvent::View` with stable view id/schema, restart generation, sequence/exact delta base, optional projected commit token, strict decode validation, Rust/TypeScript gap classification, and `legal.actions` TUI/web keyframe resync | view-specific projection/state revisions, projected receipt/status frames, migration of remaining panel feeds, structured acknowledgement/deduplication |
+| C12 presentation | `OutputEvent::Panel`, registered panel feeds, keyframe/delta kind, line fallback renderers; bounded `OutputEvent::View` with stable view id/schema, restart generation, sequence/exact delta base, optional projected commit token, strict decode validation, Rust/TypeScript gap classification, and `legal.actions` TUI/web keyframe resync; bounded `ProjectedActionReceipt`/status vocabulary; post-finalize `resolution.outcome` keyframes over IPC/in-process paths; authenticated `action/status`; line/TUI renderers and bounded web commit deduplication | view-specific projection/state revisions, migration of remaining panel feeds, structured receipt acknowledgement and complete crash journeys |
 
 None of the five gates currently traverses all of these through one action pipeline. The first real
 `tactics:brace` slice now crosses early idempotency, provider preparation, whole-bundle durability,
@@ -1871,9 +1879,11 @@ Its toy variant now also checkpoints, rehydrates, and expires a typed two-turn e
 and a regenerated opaque offer reaches that same provider without serializing its exact action,
 truth subject, fixed clock input, or guards. The first real tactics provider is now discoverable and
 submittable through line and structured panel adapters, while a four-consumer contract proves the
-same DTO/provider seam for line, structured, deterministic NPC, and mock LLM callers. Active grant
-witnesses, real AI scheduling, projected receipts, and registered clock/window policy remain K4/K5
-work.
+same DTO/provider seam for line, structured, deterministic NPC, and mock LLM callers. Its compact
+checkpoint receipt now projects through a frozen provider table to the same bounded semantic
+result before and after restart, crosses IPC without private persistence hashes, and is recoverable
+through an authenticated transaction reference. Active grant witnesses, real AI scheduling,
+state-view projections, and registered clock/window policy remain K4/K5 work.
 That is the reason for using toy vertical slices rather than declaring the contracts finished from
 their local precursors.
 
@@ -2186,6 +2196,10 @@ Work:
    recover it at boot, and dispatch with stable item IDs and at-least-once semantics.
 6. Add authorized semantic `action/status`; separate bounded presentation retention from compact
    idempotency tombstones with an explicit retry horizon/checkpoint rule.
+   **Implemented:** the authenticated transport reconstructs a principal-scoped key from a bounded
+   public transaction reference, while the store's bound-key lookup returns validated pending,
+   compact-finalized, quarantine, or retired state without accepting or exposing the original
+   ingress hash. Scope watermarks remain the explicit retry horizon.
 7. Register persistence classes/prefixes, enforce the predecessor durability barrier, and reject
    legacy writes once a prefix migrates to authoritative ownership.
 8. Execute one K1 migration through the bundle protocol and prove restart on v2; never mutate raw v1
@@ -2348,10 +2362,19 @@ Work:
    the same offer and prepare callback.
 3. Add `ViewEnvelope`, versioned keyframes/deltas, base sequence, schema/generation/gap detection,
    projected receipt frames, authorized status, and resync query.
+   **Implemented for the Gate-1 action:** `Owned` carries a public self-contained transaction
+   reference and IPC v4 `Finished` carries a bounded provider-projected receipt only after exact
+   finalization. `action/status` authenticates the live connection/actor, projects compact
+   checkpoint witnesses through a composition-frozen pure callback, and returns indistinguishable
+   `Unknown` for inaccessible/absent references. The receipt becomes a deterministic
+   `resolution.outcome` keyframe with the projected commit token; the web client retains a hard
+   1,024-token dedupe horizon. Explicit structured-client receipt acknowledgement remains K8.
 4. Register line renderers over projected DTOs; structured transports use the same DTOs.
+   **Implemented for `resolution.outcome`:** ANSI and SSH TUI render the provider summary plus the
+   recovery reference, while HTTPS consumes the same view payload.
 5. Add leak-test helpers that recursively inspect all player/AI-facing serializations and text.
-   **Implemented for the Gate-1 legal-action DTO, semantic view, line/TUI renderings, and mock-LLM
-   snapshot; reuse the helper as each later projected DTO is introduced.**
+   **Implemented for the Gate-1 legal-action and receipt DTOs, semantic views, line/TUI renderings,
+   split IPC, and mock-LLM snapshot; reuse the helper as each later projected DTO is introduced.**
 6. Migrate the Gate-1 action from any temporary direct handler to action offers only.
 
 Exit criteria:

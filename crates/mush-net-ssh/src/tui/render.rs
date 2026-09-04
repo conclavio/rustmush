@@ -17,8 +17,8 @@
 
 use mush_ansi::{AnsiTheme, fmt_duration, merge_styles};
 use mush_proto::{
-    ClientCaps, Color as MushColor, ColorDepth, NarrativeKind, ObjRef, OutputEvent, RichText,
-    RoomView, Span as MushSpan, Style as MushStyle, WhoEntry,
+    ClientCaps, Color as MushColor, ColorDepth, NarrativeKind, ObjRef, OutputEvent,
+    ProjectedActionReceipt, RichText, RoomView, Span as MushSpan, Style as MushStyle, WhoEntry,
 };
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -197,13 +197,29 @@ pub fn render_event(
             w.rich(reason);
             w.end_line();
         }
+        OutputEvent::View(view) if view.view() == "resolution.outcome" => {
+            if let Ok(receipt) =
+                serde_json::from_value::<ProjectedActionReceipt>(view.data().clone())
+                && receipt.view().is_ok_and(|expected| &expected == view)
+            {
+                w.tagged(
+                    "system",
+                    receipt
+                        .result()
+                        .map_or("Action committed.", |result| result.summary()),
+                );
+                w.end_line();
+                w.tagged("system", &format!("Transaction: {}", receipt.status()));
+                w.end_line();
+            }
+        }
         // Routed elsewhere or intentionally silent (mirrors mush_ansi).
         OutputEvent::Who(_)
         | OutputEvent::Panel { .. }
-        | OutputEvent::View(_)
         | OutputEvent::Prompt(_)
         | OutputEvent::Ping { .. }
         | OutputEvent::Resumed { .. } => {}
+        OutputEvent::View(_) => {}
     }
     w.finish()
 }
@@ -628,6 +644,44 @@ mod tests {
             text: Some(RichText::plain("pw>")),
         });
         assert!(render_event(&prompt, &caps(ColorDepth::Ansi16), &theme).is_empty());
+    }
+
+    #[test]
+    fn action_receipt_renders_summary_and_recovery_reference() {
+        let status = mush_proto::ActionStatusId::new(
+            "k5:toy:brace:0000000000000007:01010101010101010101010101010101",
+        )
+        .unwrap();
+        let result = mush_proto::ProjectedActionResult::new(
+            "brace",
+            "Brace committed.",
+            serde_json::json!({"event": "braced", "focus": 2}),
+        )
+        .unwrap();
+        let event = OutputEvent::View(
+            mush_proto::ProjectedActionReceipt::new(
+                status,
+                "02020202020202020202020202020202",
+                Some(result),
+            )
+            .unwrap()
+            .view()
+            .unwrap(),
+        );
+        let lines = render_event(&event, &caps(ColorDepth::None), &AnsiTheme::classic());
+        assert_eq!(text_of(&lines[0]), "Brace committed.");
+        assert_eq!(
+            text_of(&lines[1]),
+            "Transaction: k5:toy:brace:0000000000000007:01010101010101010101010101010101"
+        );
+        let OutputEvent::View(view) = event else {
+            unreachable!()
+        };
+        let forged = OutputEvent::View(
+            view.with_commit("03030303030303030303030303030303")
+                .unwrap(),
+        );
+        assert!(render_event(&forged, &caps(ColorDepth::None), &AnsiTheme::classic()).is_empty());
     }
 
     #[test]

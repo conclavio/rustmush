@@ -166,10 +166,9 @@ impl TuiApp {
                 .unwrap_or_default();
             return None;
         }
-        if let OutputEvent::View(view) = unwrap_reply(event) {
-            if view.view() != "legal.actions" {
-                return None;
-            }
+        if let OutputEvent::View(view) = unwrap_reply(event)
+            && view.view() == "legal.actions"
+        {
             match view.disposition("legal.actions", 1, self.actions_cursor.as_ref()) {
                 ViewFrameDisposition::Replace => {
                     self.actions = Some(view.data().clone());

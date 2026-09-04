@@ -34,8 +34,8 @@ use crate::types::{
     AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeDiscardReceipt,
     AuthoritativeEpochRetirement, AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult,
     AuthoritativeOutboxRecord, AuthoritativeQuarantineReceipt, AuthoritativeReceipt,
-    AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec, BundleStatus, CharacterRef,
-    IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
+    AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec, BoundIdempotencyStatus,
+    BundleStatus, CharacterRef, IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
     MAX_PENDING_AUTHORITATIVE_OUTBOX, MAX_RETAINED_AUTHORITATIVE_BYTES,
     MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleWrite, PendingAuthoritativeIntent, SshKeyRec,
     StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt, validate_module_key,
@@ -801,6 +801,73 @@ impl AuthoritativeStore for InMemoryStore {
                 return Ok(IdempotencyStatus::FinalizedExact(Box::new(receipt)));
             }
             Ok(IdempotencyStatus::PendingExact {
+                token: binding.token,
+                bundle_hash: binding.bundle_hash,
+            })
+        })
+    }
+
+    fn bound_authoritative_idempotency_status<'a>(
+        &'a self,
+        key: &'a ScopedIdempotencyKey,
+    ) -> BoxFuture<'a, Result<BoundIdempotencyStatus, StoreError>> {
+        Box::pin(async move {
+            let inner = self.lock()?;
+            let minimum_accepted_epoch = inner
+                .authoritative_minimum_epochs
+                .get(key.scope())
+                .copied()
+                .unwrap_or(0);
+            if key.epoch() < minimum_accepted_epoch {
+                return Ok(BoundIdempotencyStatus::Retired {
+                    minimum_accepted_epoch,
+                });
+            }
+            let Some(binding) = inner.authoritative_idempotency.get(key) else {
+                return Ok(BoundIdempotencyStatus::Vacant);
+            };
+            let Some(intent_doc) = inner.authoritative_intents.get(&binding.token) else {
+                if let Some(receipt_doc) = inner.authoritative_receipts.get(&binding.token) {
+                    let receipt = decode_checkpoint_receipt(receipt_doc)?;
+                    validate_receipt_binding(&inner, binding.token, &receipt)?;
+                    if receipt.idempotency() != key {
+                        return Err(StoreError::AuthoritativeCorrupt(
+                            "checkpoint receipt disagrees with its idempotency address".to_owned(),
+                        ));
+                    }
+                    return Ok(BoundIdempotencyStatus::FinalizedExact(Box::new(receipt)));
+                }
+                let quarantine_doc = inner
+                    .authoritative_quarantines
+                    .get(&binding.token)
+                    .ok_or_else(|| {
+                        StoreError::AuthoritativeCorrupt(
+                            "idempotency binding names no intent, receipt, or quarantine"
+                                .to_owned(),
+                        )
+                    })?;
+                let quarantine = decode_quarantine_receipt(quarantine_doc)?;
+                validate_quarantine_binding(&inner, binding.token, &quarantine)?;
+                if quarantine.idempotency() != key {
+                    return Err(StoreError::AuthoritativeCorrupt(
+                        "quarantine receipt disagrees with its idempotency address".to_owned(),
+                    ));
+                }
+                return Ok(BoundIdempotencyStatus::QuarantinedExact(Box::new(
+                    quarantine,
+                )));
+            };
+            let intent = decode_intent(intent_doc)?;
+            if intent.idempotency() != key {
+                return Err(StoreError::AuthoritativeCorrupt(
+                    "pending intent disagrees with its idempotency binding".to_owned(),
+                ));
+            }
+            let receipt = validate_retained_intent(&inner, binding.token, &intent)?;
+            if let Some(receipt) = receipt {
+                return Ok(BoundIdempotencyStatus::FinalizedExact(Box::new(receipt)));
+            }
+            Ok(BoundIdempotencyStatus::PendingExact {
                 token: binding.token,
                 bundle_hash: binding.bundle_hash,
             })

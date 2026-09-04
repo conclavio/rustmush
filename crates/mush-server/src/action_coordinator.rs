@@ -11,13 +11,17 @@ use mush_core::{
     AuthoritativeBundleDraft, CanonicalHash, CanonicalHashError, CanonicalId, CanonicalIdError,
     CommitToken, DefinitionRef, Engine, GuardSet, IdempotencyKey, IdempotencyKeyTextError,
     IdempotencyScope, IngressEnvelope, IngressPayload, IngressSurfaceVersion,
-    MAX_AUTHORITATIVE_BUNDLE_BYTES, OfferRouteTable, PreparedCausalRef, PrincipalId, ResolvedOffer,
-    ScheduleAdvance, ScopedIdempotencyKey, StagePreparedActionError,
+    MAX_AUTHORITATIVE_BUNDLE_BYTES, OfferRouteTable, PreparedCausalRef, PrincipalId,
+    ReceiptProjectionTable, ResolvedOffer, ScheduleAdvance, ScopedIdempotencyKey,
+    StagePreparedActionError,
 };
 use mush_ipc::{GatewayInput, GatewayRequest};
+use mush_proto::{
+    ActionStatusId, ProjectedActionReceipt, ProjectedActionReceiptError, ProjectedActionStatus,
+};
 use mush_store::{
-    AuthoritativeQuarantineReceipt, AuthoritativeReceipt, AuthoritativeStore, IdempotencyStatus,
-    StoreError,
+    AuthoritativeQuarantineReceipt, AuthoritativeReceipt, AuthoritativeStore,
+    BoundIdempotencyStatus, IdempotencyStatus, StoreError,
 };
 use serde_json::json;
 
@@ -89,6 +93,134 @@ pub struct StagedAuthoritativeAction {
 pub struct ActionCoordinator;
 
 impl ActionCoordinator {
+    /// Construct the bounded public status reference for one request-key
+    /// idempotency identity. No private ingress/plan/bundle hash is included.
+    pub fn status_id(key: &ScopedIdempotencyKey) -> Result<ActionStatusId, ActionStatusError> {
+        let IdempotencyKey::Request(request) = key.key() else {
+            return Err(ActionStatusError::UnsupportedKey);
+        };
+        ActionStatusId::new(format!(
+            "k5:{}:{}:{:016x}:{}",
+            key.scope().owner,
+            key.scope().namespace,
+            key.epoch(),
+            request
+        ))
+        .map_err(|_| ActionStatusError::InvalidReference)
+    }
+
+    /// Recover an exact scoped key by combining a public status reference with
+    /// the transport-authenticated principal. The reference never supplies or
+    /// overrides the principal.
+    pub fn status_key(
+        viewer: &PrincipalId,
+        status: &ActionStatusId,
+    ) -> Result<ScopedIdempotencyKey, ActionStatusError> {
+        let mut parts = status.as_str().split(':');
+        if parts.next() != Some("k5") {
+            return Err(ActionStatusError::InvalidReference);
+        }
+        let owner = parts
+            .next()
+            .ok_or(ActionStatusError::InvalidReference)
+            .and_then(|value| {
+                mush_core::OwnerId::parse_canonical(value)
+                    .map_err(|_| ActionStatusError::InvalidReference)
+            })?;
+        let namespace = parts
+            .next()
+            .ok_or(ActionStatusError::InvalidReference)
+            .and_then(|value| {
+                CanonicalId::parse_canonical(value).map_err(|_| ActionStatusError::InvalidReference)
+            })?;
+        let epoch = parts
+            .next()
+            .and_then(|value| u64::from_str_radix(value, 16).ok())
+            .ok_or(ActionStatusError::InvalidReference)?;
+        let request = parts
+            .next()
+            .ok_or(ActionStatusError::InvalidReference)
+            .and_then(|value| {
+                mush_core::RequestUid::from_hex(value)
+                    .map_err(|_| ActionStatusError::InvalidReference)
+            })?;
+        if parts.next().is_some() {
+            return Err(ActionStatusError::InvalidReference);
+        }
+        Ok(ScopedIdempotencyKey::new(
+            IdempotencyScope {
+                principal: viewer.clone(),
+                owner,
+                namespace,
+            },
+            epoch,
+            IdempotencyKey::Request(request),
+        ))
+    }
+
+    /// Project a compact durable receipt for one event-time eligible viewer.
+    /// A provider that intentionally has no result projector still yields a
+    /// generic committed receipt containing the stable transaction identity.
+    pub fn project_finalized_receipt(
+        projections: &ReceiptProjectionTable,
+        viewer: &PrincipalId,
+        status: ActionStatusId,
+        receipt: &AuthoritativeReceipt,
+    ) -> Result<ProjectedActionReceipt, ActionStatusError> {
+        if !receipt.eligible_witnesses().contains(viewer) {
+            return Err(ActionStatusError::Forbidden);
+        }
+        let projected = projections
+            .project(receipt.action(), receipt.outcome(), viewer)
+            .map_err(|source| ActionStatusError::Projection(source.to_string()))?;
+        ProjectedActionReceipt::new(status, receipt.token().to_string(), projected)
+            .map_err(ActionStatusError::Receipt)
+    }
+
+    /// Authorized public status lookup. A guessed reference for an absent or
+    /// inaccessible request returns the same `Unknown` projection.
+    pub async fn projected_status(
+        store: &dyn AuthoritativeStore,
+        projections: &ReceiptProjectionTable,
+        viewer: &PrincipalId,
+        status: &ActionStatusId,
+    ) -> Result<ProjectedActionStatus, ActionStatusError> {
+        let key = Self::status_key(viewer, status)?;
+        let stored = store
+            .bound_authoritative_idempotency_status(&key)
+            .await
+            .map_err(ActionStatusError::Store)?;
+        Ok(match stored {
+            BoundIdempotencyStatus::Retired { .. } => ProjectedActionStatus::Expired,
+            BoundIdempotencyStatus::Vacant => ProjectedActionStatus::Unknown,
+            BoundIdempotencyStatus::PendingExact { .. } => ProjectedActionStatus::Pending {
+                reference: status.clone(),
+            },
+            BoundIdempotencyStatus::FinalizedExact(receipt) => {
+                if !receipt.eligible_witnesses().contains(viewer) {
+                    ProjectedActionStatus::Unknown
+                } else {
+                    ProjectedActionStatus::Committed(Self::project_finalized_receipt(
+                        projections,
+                        viewer,
+                        status.clone(),
+                        &receipt,
+                    )?)
+                }
+            }
+            BoundIdempotencyStatus::QuarantinedExact(receipt) => {
+                if receipt.idempotency() != &key {
+                    return Err(ActionStatusError::Integrity(
+                        "quarantine status disagrees with its public reference".to_owned(),
+                    ));
+                }
+                ProjectedActionStatus::Unavailable {
+                    reference: status.clone(),
+                }
+            }
+        })
+    }
+
     /// Construct canonical coordinator ingress from an opaque public offer.
     /// The unauthenticated route prefix selects only the frozen provider and
     /// idempotency namespace required for the mandatory early lookup. It never
@@ -321,6 +453,25 @@ impl ActionCoordinator {
             .map_err(ActionCoordinatorError::Stage)?;
         Ok(StagedAuthoritativeAction { token, bundle_hash })
     }
+}
+
+/// Failure at the authenticated durable-result projection boundary.
+#[derive(Debug, thiserror::Error)]
+pub enum ActionStatusError {
+    #[error("action status supports request-key idempotency only")]
+    UnsupportedKey,
+    #[error("invalid action status reference")]
+    InvalidReference,
+    #[error("the caller is not eligible to observe this action")]
+    Forbidden,
+    #[error("authoritative status store lookup failed: {0}")]
+    Store(StoreError),
+    #[error("durable result projection failed: {0}")]
+    Projection(String),
+    #[error("projected receipt is invalid: {0}")]
+    Receipt(ProjectedActionReceiptError),
+    #[error("authoritative action status is internally inconsistent: {0}")]
+    Integrity(String),
 }
 
 fn assemble_bundle(

@@ -90,6 +90,15 @@ impl GatewayLink for WorldHandle {
                         ServiceResp::LegalActions(Err(LegalActionsError::InvalidSubject))
                     }
                 },
+                ServiceReq::ActionStatus {
+                    conn,
+                    actor,
+                    status,
+                } => match self.action_status(conn, actor, &status).await {
+                    Ok(status) => ServiceResp::ActionStatus(status),
+                    Err(WorldReadError::Busy) => ServiceResp::Busy,
+                    Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
+                },
                 ServiceReq::Barrier => barrier_response(self.barrier_result().await),
             })
         })

@@ -755,6 +755,77 @@ impl ActionProvider for BraceProvider {
         }))
     }
 
+    fn project_receipt(
+        &self,
+        action: &DefinitionRef,
+        outcome: &RulesValue,
+        _viewer: &PrincipalId,
+    ) -> Result<Option<mush_proto::ProjectedActionResult>, ActionError> {
+        if action != &self.brace_definition || outcome.schema() != &self.brace_definition {
+            return Err(ActionError::new(
+                ActionErrorCode::Integrity,
+                false,
+                "brace receipt carries the wrong durable schema",
+            )
+            .expect("static projection error is bounded"));
+        }
+        let data = outcome.data().as_object().ok_or_else(|| {
+            ActionError::new(
+                ActionErrorCode::Integrity,
+                false,
+                "brace receipt outcome is malformed",
+            )
+            .expect("static projection error is bounded")
+        })?;
+        let event = data
+            .get("event")
+            .and_then(Value::as_str)
+            .filter(|event| *event == "braced")
+            .ok_or_else(|| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "brace receipt event is malformed",
+                )
+                .expect("static projection error is bounded")
+            })?;
+        let focus = data.get("focus").and_then(Value::as_u64).ok_or_else(|| {
+            ActionError::new(
+                ActionErrorCode::Integrity,
+                false,
+                "brace receipt focus is malformed",
+            )
+            .expect("static projection error is bounded")
+        })?;
+        let initiative_tiebreak = data
+            .get("initiative_tiebreak")
+            .and_then(Value::as_u64)
+            .filter(|value| *value < 100)
+            .ok_or_else(|| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "brace receipt initiative is malformed",
+                )
+                .expect("static projection error is bounded")
+            })?;
+        let projected = serde_json::json!({
+            "event": event,
+            "focus": focus,
+            "initiative_tiebreak": initiative_tiebreak,
+        });
+        mush_proto::ProjectedActionResult::new("brace", "Brace committed.", projected)
+            .map(Some)
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::BoundsExceeded,
+                    false,
+                    "brace receipt projection exceeds public bounds",
+                )
+                .expect("static projection error is bounded")
+            })
+    }
+
     fn prepare_invocation(
         &self,
         invocation: &ActionInvocation,
@@ -2981,11 +3052,64 @@ mod tests {
             toy_scene_turn(11)
         );
         let (action, invocation, _guards) = resolved.into_parts();
-        let (prepared, _) = world
+        let (prepared, output) = world
             .engine_mut()
             .prepare_registered_authoritative_action(&action, &invocation, toy_prepare_token())
             .expect("resolved offer reaches the canonical provider");
+        let outcome = output.into_parts().0;
         world.engine_mut().abort_prepared_transaction(prepared);
+
+        let receipt_result = world
+            .engine()
+            .registry
+            .action_providers()
+            .expect("frozen action providers")
+            .receipt_projection_table()
+            .project(
+                &action,
+                &outcome,
+                &PrincipalId::Object { id: mush_core::GOD },
+            )
+            .expect("durable outcome projects")
+            .expect("brace has a semantic receipt");
+        let status = mush_proto::ActionStatusId::new(format!(
+            "k5:toy:brace:0000000000000000:{}",
+            request.to_hex()
+        ))
+        .unwrap();
+        let receipt = mush_proto::ProjectedActionReceipt::new(
+            status,
+            toy_prepare_token().to_string(),
+            Some(receipt_result),
+        )
+        .unwrap();
+        let receipt_view = receipt.view().unwrap();
+        let receipt_json = serde_json::to_value(&receipt_view).unwrap();
+        assert_projection_json_clean(
+            "semantic action receipt",
+            &receipt_json,
+            &[
+                "action",
+                "actor",
+                "bundle_hash",
+                "definition",
+                "definitions",
+                "eligible_witnesses",
+                "guard_hash",
+                "guards",
+                "ingress_hash",
+                "outcome",
+                "outcome_hash",
+                "plan_hash",
+                "provider",
+                "request_hash",
+                "resolution",
+                "truth_subject",
+            ],
+            &[definition_digest.as_str()],
+        );
+        assert_eq!(receipt.result().unwrap().data()["event"], "braced");
+        assert_eq!(receipt.result().unwrap().data()["focus"], 2);
 
         let changed = toy_brace_offers(world.engine(), mush_core::GOD, 11, 5)
             .unwrap()

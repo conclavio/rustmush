@@ -5,11 +5,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mush_config::config::Config;
-use mush_core::{ActionOfferId, CanonicalHash, GOD, LIMBO, PerceivedRef};
+use mush_core::{ActionOfferId, CanonicalHash, GOD, LIMBO, PerceivedRef, PrincipalId};
 use mush_ipc::{
     FrameReader, GatewayAction, GatewayInput, GatewayRequest, GatewayRequestDisposition,
     ServiceReq, ServiceResp, ToGateway, ToServer, WireInbound, write_frame,
 };
+use mush_proto::ProjectedActionStatus;
+use mush_server::action_coordinator::ActionCoordinator;
+use mush_store::BoundIdempotencyStatus;
 use mush_store::{AuthoritativeStore, BundleStatus, InMemoryStore, ObjectStore};
 
 fn scratch_dir(tag: &str) -> PathBuf {
@@ -145,21 +148,23 @@ async fn authenticated_action_transfers_ownership_only_after_exact_intent() {
         .await
         .unwrap();
 
-    let (token, bundle_hash) = tokio::time::timeout(Duration::from_secs(15), async {
+    let (token, status, projected_receipt) = tokio::time::timeout(Duration::from_secs(15), async {
         let mut owned = None;
         loop {
             match frames.read::<ToGateway>().await.unwrap().unwrap() {
                 ToGateway::RequestDisposition {
                     request: seen,
-                    disposition: GatewayRequestDisposition::Owned { token, bundle_hash },
-                } if seen == request.uid => owned = Some((token, bundle_hash)),
+                    disposition: GatewayRequestDisposition::Owned { token, status },
+                } if seen == request.uid => owned = Some((token, status)),
                 ToGateway::RequestDisposition {
                     request: seen,
-                    disposition: GatewayRequestDisposition::Finished { token },
+                    disposition: GatewayRequestDisposition::Finished { recipient, receipt },
                 } if seen == request.uid => {
-                    let (owned_token, hash) = owned.expect("Finished arrived before Owned");
-                    assert_eq!(token, owned_token);
-                    break (token, hash);
+                    let (owned_token, status) = owned.expect("Finished arrived before Owned");
+                    assert_eq!(recipient, GOD);
+                    assert_eq!(receipt.status(), &status);
+                    assert_eq!(receipt.commit(), owned_token.to_string());
+                    break (owned_token, status, receipt);
                 }
                 _ => {}
             }
@@ -167,15 +172,103 @@ async fn authenticated_action_transfers_ownership_only_after_exact_intent() {
     })
     .await
     .expect("authoritative dispositions timed out");
+    let projected = projected_receipt
+        .result()
+        .expect("production tactics owns the brace receipt projection");
+    assert_eq!(projected.summary(), "Brace committed.");
+    assert_eq!(projected.data()["braced"], true);
+    assert_eq!(projected.data()["revision"], 1);
+    let serialized = serde_json::to_value(&projected_receipt).unwrap();
+    mush_contract_tests::assert_projection_json_clean(
+        "split IPC action receipt",
+        &serialized,
+        &[
+            "action",
+            "actor",
+            "bundle_hash",
+            "definition",
+            "eligible_witnesses",
+            "guards",
+            "ingress_hash",
+            "outcome",
+            "outcome_hash",
+            "plan_hash",
+            "provider",
+            "request_hash",
+            "resolution",
+        ],
+        &[],
+    );
 
+    let key = ActionCoordinator::status_key(&PrincipalId::Object { id: GOD }, &status)
+        .expect("public status reconstructs under its authenticated principal");
+    let BoundIdempotencyStatus::FinalizedExact(internal_receipt) = store
+        .bound_authoritative_idempotency_status(&key)
+        .await
+        .unwrap()
+    else {
+        panic!("owned action did not finalize under its public status identity");
+    };
+    let bundle_hash = internal_receipt.bundle_hash();
+    assert_eq!(internal_receipt.token(), token);
     assert!(matches!(
-        store
-            .authoritative_status(token, bundle_hash)
-            .await
-            .unwrap(),
+        store.authoritative_status(token, bundle_hash).await.unwrap(),
         BundleStatus::FinalizedExact(receipt)
             if receipt.token() == token && receipt.bundle_hash() == bundle_hash
     ));
+
+    // The authenticated status service reproduces the same redacted result;
+    // changing only the actor field cannot disclose it.
+    write_frame(
+        &mut writer,
+        &ToServer::Request {
+            id: 901,
+            req: ServiceReq::ActionStatus {
+                conn: 41,
+                actor: GOD,
+                status: status.clone(),
+            },
+        },
+    )
+    .await
+    .unwrap();
+    write_frame(
+        &mut writer,
+        &ToServer::Request {
+            id: 902,
+            req: ServiceReq::ActionStatus {
+                conn: 41,
+                actor: LIMBO,
+                status: status.clone(),
+            },
+        },
+    )
+    .await
+    .unwrap();
+    let mut authorized = None;
+    let mut spoofed = None;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while authorized.is_none() || spoofed.is_none() {
+            match frames.read::<ToGateway>().await.unwrap().unwrap() {
+                ToGateway::Reply {
+                    id: 901,
+                    resp: ServiceResp::ActionStatus(result),
+                } => authorized = Some(result),
+                ToGateway::Reply {
+                    id: 902,
+                    resp: ServiceResp::ActionStatus(result),
+                } => spoofed = Some(result),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("action status replies timed out");
+    assert_eq!(
+        authorized,
+        Some(ProjectedActionStatus::Committed(projected_receipt.clone()))
+    );
+    assert_eq!(spoofed, Some(ProjectedActionStatus::Unknown));
 
     // Model loss of the first ownership/terminal frames: replay the byte-exact
     // gateway request after the original connection has disappeared. The
@@ -212,7 +305,10 @@ async fn authenticated_action_transfers_ownership_only_after_exact_intent() {
     .expect("exact replay disposition timed out");
     assert_eq!(
         replay,
-        GatewayRequestDisposition::Finished { token },
+        GatewayRequestDisposition::Finished {
+            recipient: GOD,
+            receipt: projected_receipt,
+        },
         "an exact finalized replay must return the existing result"
     );
     let BundleStatus::FinalizedExact(receipt) = store

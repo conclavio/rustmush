@@ -13,6 +13,7 @@ use mush_core::{
     ScheduleDriveCause, ScheduleEvaluation, ScheduleId, ScheduleRestartPolicy,
     ScopedIdempotencyKey, StagedActionPersistence,
 };
+use mush_proto::ProjectedActionStatus;
 use mush_server::action_coordinator::{ActionCoordinator, ActionPreflight, SemanticActionStatus};
 use mush_server::modules::boot_modules;
 use mush_store::{AuthoritativeStore, InMemoryStore};
@@ -546,6 +547,27 @@ async fn real_provider_is_exactly_once_and_hydrates_before_the_next_action() {
         .await
         .unwrap();
 
+    let public_status = ActionCoordinator::status_id(envelope.idempotency()).unwrap();
+    let projections = engine
+        .registry
+        .action_providers()
+        .unwrap()
+        .receipt_projection_table();
+    let ProjectedActionStatus::Committed(before_restart) = ActionCoordinator::projected_status(
+        &store,
+        &projections,
+        &PrincipalId::Object { id: GOD },
+        &public_status,
+    )
+    .await
+    .unwrap() else {
+        panic!("checkpointed action did not return a public committed receipt");
+    };
+    assert_eq!(
+        before_restart.result().unwrap().summary(),
+        "Brace committed."
+    );
+
     match ActionCoordinator::semantic_status(
         &store,
         &PrincipalId::Object { id: GOD },
@@ -600,6 +622,23 @@ async fn real_provider_is_exactly_once_and_hydrates_before_the_next_action() {
     boot_modules(&mut restarted, &store).await.unwrap();
     let _ = restarted.world.take_dirty();
     assert!(restarted.take_module_ops().is_empty());
+    let restarted_projections = restarted
+        .registry
+        .action_providers()
+        .unwrap()
+        .receipt_projection_table();
+    assert_eq!(
+        ActionCoordinator::projected_status(
+            &store,
+            &restarted_projections,
+            &PrincipalId::Object { id: GOD },
+            &public_status,
+        )
+        .await
+        .unwrap(),
+        ProjectedActionStatus::Committed(before_restart),
+        "checkpointed receipt projection must be stable across composition restart"
+    );
     let action = brace_action(&restarted);
     let permit = match ActionCoordinator::preflight(&store, ingress(2, json!({"action": "brace"})))
         .await

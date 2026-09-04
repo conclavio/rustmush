@@ -27,8 +27,8 @@ use crate::migrate::{Migration, run_migrations};
 use crate::store::{AuthoritativeStore, ObjectStore};
 use crate::types::{
     AccountRec, AuthoritativeOutboxAttemptResult, AuthoritativeRetentionUsage,
-    AuthoritativeScanCursor, BundleStatus, IdempotencyStatus, ModuleOp, ModuleWrite, SshKeyRec,
-    StoreError, TokenRecord, WriteBatch,
+    AuthoritativeScanCursor, BoundIdempotencyStatus, BundleStatus, IdempotencyStatus, ModuleOp,
+    ModuleWrite, SshKeyRec, StoreError, TokenRecord, WriteBatch,
 };
 
 fn now_unix() -> i64 {
@@ -1245,6 +1245,13 @@ pub async fn authoritative_exact_lifecycle(store: &dyn AuthoritativeStore) {
             .expect("empty idempotency lookup"),
         IdempotencyStatus::Vacant
     );
+    assert_eq!(
+        store
+            .bound_authoritative_idempotency_status(bundle.idempotency())
+            .await
+            .expect("empty bound idempotency lookup"),
+        BoundIdempotencyStatus::Vacant
+    );
     let reservation = store
         .reserve_authoritative_intent(bundle.clone())
         .await
@@ -1252,6 +1259,16 @@ pub async fn authoritative_exact_lifecycle(store: &dyn AuthoritativeStore) {
     assert!(!reservation.resumed);
     assert_eq!(reservation.token, token);
     assert_eq!(reservation.bundle_hash, hash);
+    assert_eq!(
+        store
+            .bound_authoritative_idempotency_status(bundle.idempotency())
+            .await
+            .expect("pending bound idempotency lookup"),
+        BoundIdempotencyStatus::PendingExact {
+            token,
+            bundle_hash: hash,
+        }
+    );
     assert_eq!(
         store
             .pending_authoritative_intents()
@@ -1286,6 +1303,13 @@ pub async fn authoritative_exact_lifecycle(store: &dyn AuthoritativeStore) {
         store.authoritative_status(token, hash).await.unwrap(),
         BundleStatus::FinalizedExact(Box::new(receipt.clone()))
     );
+    assert_eq!(
+        store
+            .bound_authoritative_idempotency_status(bundle.idempotency())
+            .await
+            .expect("finalized bound idempotency lookup"),
+        BoundIdempotencyStatus::FinalizedExact(Box::new(receipt.clone()))
+    );
     assert!(
         store
             .pending_authoritative_intents()
@@ -1304,6 +1328,13 @@ pub async fn authoritative_exact_lifecycle(store: &dyn AuthoritativeStore) {
         bundle.semantic_events()
     );
     assert!(!checkpoint.resumed);
+    assert_eq!(
+        store
+            .bound_authoritative_idempotency_status(bundle.idempotency())
+            .await
+            .expect("checkpointed bound idempotency lookup"),
+        BoundIdempotencyStatus::FinalizedExact(Box::new(receipt.clone()))
+    );
     assert!(
         store
             .scan_authoritative_intents(None, 1)
@@ -1420,6 +1451,13 @@ pub async fn authoritative_quarantine_lifecycle(store: &dyn AuthoritativeStore) 
     assert_eq!(
         store.authoritative_status(token, hash).await.unwrap(),
         BundleStatus::QuarantinedExact(Box::new(discarded.quarantine.clone()))
+    );
+    assert_eq!(
+        store
+            .bound_authoritative_idempotency_status(bundle.idempotency())
+            .await
+            .expect("quarantined bound idempotency lookup"),
+        BoundIdempotencyStatus::QuarantinedExact(Box::new(discarded.quarantine.clone()))
     );
     assert!(matches!(
         store.reserve_authoritative_intent(bundle.clone()).await,
@@ -1595,6 +1633,15 @@ pub async fn authoritative_epoch_lifecycle(store: &dyn AuthoritativeStore) {
     assert_eq!(
         store.authoritative_bundle_status(&old).await.unwrap(),
         BundleStatus::Retired {
+            minimum_accepted_epoch: 1
+        }
+    );
+    assert_eq!(
+        store
+            .bound_authoritative_idempotency_status(old.idempotency())
+            .await
+            .expect("retired bound idempotency lookup"),
+        BoundIdempotencyStatus::Retired {
             minimum_accepted_epoch: 1
         }
     );

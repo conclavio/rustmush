@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ViewEnvelope } from "./proto";
-import { classifyViewFrame, cursorAfter } from "./view";
+import { classifyViewFrame, cursorAfter, parseResolutionOutcome } from "./view";
 
 const keyframe: ViewEnvelope = {
   view: "legal.actions",
@@ -54,5 +54,58 @@ describe("semantic view continuity", () => {
         null,
       ),
     ).toBe("resync");
+  });
+});
+
+describe("resolution outcome decoding", () => {
+  const commit = "0123456789abcdef0123456789abcdef";
+  const outcome: ViewEnvelope = {
+    view: "resolution.outcome",
+    schema_version: 1,
+    generation: Number.parseInt(commit.slice(0, 13), 16),
+    sequence: 1,
+    commit,
+    data: {
+      schema_version: 1,
+      status: "k5:toy:brace:0000000000000007:01010101010101010101010101010101",
+      commit,
+      result: {
+        kind: "brace",
+        summary: "Brace committed.",
+        data: { braced: true, revision: 1 },
+      },
+    },
+  };
+
+  it("accepts the exact bounded v1 receipt", () => {
+    expect(parseResolutionOutcome(outcome)).toEqual({
+      status: "k5:toy:brace:0000000000000007:01010101010101010101010101010101",
+      commit,
+      result: {
+        kind: "brace",
+        summary: "Brace committed.",
+        data: { braced: true, revision: 1 },
+      },
+    });
+  });
+
+  it("rejects mismatched commits, forged cursors, and control text", () => {
+    expect(parseResolutionOutcome({ ...outcome, sequence: 2 })).toBeNull();
+    expect(parseResolutionOutcome({ ...outcome, generation: outcome.generation + 1 })).toBeNull();
+    expect(
+      parseResolutionOutcome({
+        ...outcome,
+        data: { ...(outcome.data as object), commit: "f".repeat(32) },
+      }),
+    ).toBeNull();
+    expect(
+      parseResolutionOutcome({
+        ...outcome,
+        data: {
+          ...(outcome.data as object),
+          result: { kind: "brace", summary: "ok\nforged", data: {} },
+        },
+      }),
+    ).toBeNull();
   });
 });

@@ -40,10 +40,11 @@ use mush_core::{
     DetachGate, Engine, Flags, IncidentId, IncidentState, LegalActionQuery,
     MAX_BOOT_REPORT_DETAILS, MechanicalState, MigrationPlanSummary, ModuleBootReport, ModuleOp,
     ModuleWrite, ObjId, ObjKind, Outbox, OwnerId, PanelFeedHandle, PerceivedRef, Powers,
-    ProjectedParameterSchema, ProjectedTargetSchema, ProviderOfferDraft, RecoveryIncident,
-    RecoveryReason, RecoveryReporter, RecoveryScope, RecoverySeverity, RecoverySubject, Registry,
-    RevisionSet, Role, RulesValue, StateFamilyDescriptor, StateFamilyHandle, StateFamilyId,
-    SubjectKey, World, canonical_json_bytes_with_limit, match_object, perm,
+    PrincipalId, ProjectedParameterSchema, ProjectedTargetSchema, ProviderOfferDraft,
+    RecoveryIncident, RecoveryReason, RecoveryReporter, RecoveryScope, RecoverySeverity,
+    RecoverySubject, Registry, RevisionSet, Role, RulesValue, StateFamilyDescriptor,
+    StateFamilyHandle, StateFamilyId, SubjectKey, World, canonical_json_bytes_with_limit,
+    match_object, perm,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -471,8 +472,17 @@ fn brace_action_descriptor(outcome: DefinitionRef) -> Result<DefinitionDescripto
 
 #[derive(Debug)]
 struct BraceProvider {
+    action: DefinitionRef,
     stance: StateFamilyHandle<ObjId, TacticalStance>,
     outcome: DefinitionRef,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BracedOutcome {
+    actor: u32,
+    braced: bool,
+    revision: u64,
 }
 
 impl BraceProvider {
@@ -614,6 +624,62 @@ impl ActionProvider for BraceProvider {
         }))
     }
 
+    fn project_receipt(
+        &self,
+        action: &DefinitionRef,
+        outcome: &RulesValue,
+        viewer: &PrincipalId,
+    ) -> Result<Option<mush_proto::ProjectedActionResult>, ActionError> {
+        if action != &self.action || outcome.schema() != &self.outcome {
+            return Err(ActionError::new(
+                ActionErrorCode::Integrity,
+                false,
+                "tactics brace receipt carries the wrong durable schema",
+            )
+            .expect("static tactics projection error is bounded"));
+        }
+        let decoded: BracedOutcome =
+            serde_json::from_value(outcome.data().clone()).map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "tactics brace receipt outcome is malformed",
+                )
+                .expect("static tactics projection error is bounded")
+            })?;
+        if !decoded.braced
+            || decoded.revision == 0
+            || viewer
+                != &(PrincipalId::Object {
+                    id: ObjId(decoded.actor),
+                })
+        {
+            return Err(ActionError::new(
+                ActionErrorCode::Integrity,
+                false,
+                "tactics brace receipt outcome disagrees with its eligible viewer",
+            )
+            .expect("static tactics projection error is bounded"));
+        }
+        mush_proto::ProjectedActionResult::new(
+            "brace",
+            "Brace committed.",
+            json!({
+                "braced": decoded.braced,
+                "revision": decoded.revision,
+            }),
+        )
+        .map(Some)
+        .map_err(|_| {
+            ActionError::new(
+                ActionErrorCode::BoundsExceeded,
+                false,
+                "tactics brace receipt projection exceeds public bounds",
+            )
+            .expect("static tactics projection error is bounded")
+        })
+    }
+
     fn prepare_invocation(
         &self,
         _invocation: &ActionInvocation,
@@ -705,7 +771,14 @@ impl GameModule for TacticsModule {
             exact_definition_validator(std::slice::from_ref(&action_descriptor)),
         )?;
         let action = reg.definition(action_descriptor)?;
-        reg.action_provider(action, BraceProvider { stance, outcome })?;
+        reg.action_provider(
+            action.clone(),
+            BraceProvider {
+                action,
+                stance,
+                outcome,
+            },
+        )?;
 
         // The record format itself is versioned so an old untagged unit can be
         // dry-run through the shared migration registry. The callback captures

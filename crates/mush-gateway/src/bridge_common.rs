@@ -34,7 +34,10 @@ use mush_ipc::{
 // Shared with the SSH transport's own line cap (`mush-net-ssh::editor`) so
 // both agree on one bound (MEDIUM finding).
 use mush_net_ssh::MAX_LINE_CHARS;
-use mush_proto::{MAX_VIEW_WIRE_INTEGER, ObjRef, OutputEvent, RichText, ViewEnvelope};
+use mush_proto::{
+    ActionStatusId, MAX_VIEW_WIRE_INTEGER, ObjRef, OutputEvent, ProjectedActionReceipt,
+    ProjectedActionStatus, RichText, ViewEnvelope,
+};
 use mush_session::{
     ConnId, ConnectionHandle, DetachOutcome, DetachReason, FloodVerdict, SessId, SessionManager,
     sanitize_line,
@@ -320,9 +323,41 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         }
     }
 
+    fn action_receipt(&self, conn: ConnId, receipt: &ProjectedActionReceipt) {
+        match receipt.view() {
+            Ok(view) => send_event_to_conn(&self.sessions, conn, OutputEvent::View(view)),
+            Err(error) => {
+                tracing::error!(conn = conn.0, error = %error, "projected action receipt frame failed");
+                send_event_to_conn(
+                    &self.sessions,
+                    conn,
+                    OutputEvent::Sys(RichText::tag(
+                        "error",
+                        "The action committed, but its result could not be displayed.",
+                    )),
+                );
+            }
+        }
+    }
+
     fn action_error(&self, conn: ConnId, outcome: ActionSend) {
         let message = match outcome {
             ActionSend::Accepted => return,
+            ActionSend::Owned(status) => {
+                send_event_to_conn(
+                    &self.sessions,
+                    conn,
+                    OutputEvent::Sys(RichText::tag(
+                        "system",
+                        format!("Action accepted. Transaction: {status}"),
+                    )),
+                );
+                return;
+            }
+            ActionSend::Finished(receipt) => {
+                self.action_receipt(conn, &receipt);
+                return;
+            }
             ActionSend::Busy => "The game is busy; try that action again.",
             ActionSend::Gone if self.link.is_restarting() => {
                 "The server is restarting; your action was not submitted."
@@ -339,6 +374,92 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
 
     async fn handle_legal_action_line(&self, conn: ConnId, actor: ObjId, line: &str) -> bool {
         let (command, argument) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+        if command.eq_ignore_ascii_case("action/status")
+            || command.eq_ignore_ascii_case("+action/status")
+        {
+            let status = match ActionStatusId::new(argument.trim()) {
+                Ok(status) => status,
+                Err(_) => {
+                    send_event_to_conn(
+                        &self.sessions,
+                        conn,
+                        OutputEvent::Sys(RichText::tag(
+                            "system",
+                            "Usage: action/status <transaction>",
+                        )),
+                    );
+                    return true;
+                }
+            };
+            match self
+                .link
+                .request(ServiceReq::ActionStatus {
+                    conn: conn.0,
+                    actor,
+                    status,
+                })
+                .await
+            {
+                Some(ServiceResp::ActionStatus(ProjectedActionStatus::Committed(receipt))) => {
+                    self.action_receipt(conn, &receipt);
+                }
+                Some(ServiceResp::ActionStatus(ProjectedActionStatus::Pending { reference })) => {
+                    send_event_to_conn(
+                        &self.sessions,
+                        conn,
+                        OutputEvent::Sys(RichText::tag(
+                            "system",
+                            format!("Action is still pending. Transaction: {reference}"),
+                        )),
+                    );
+                }
+                Some(ServiceResp::ActionStatus(ProjectedActionStatus::Expired)) => {
+                    send_event_to_conn(
+                        &self.sessions,
+                        conn,
+                        OutputEvent::Sys(RichText::tag(
+                            "system",
+                            "That transaction is outside the retained status horizon.",
+                        )),
+                    );
+                }
+                Some(ServiceResp::ActionStatus(ProjectedActionStatus::Unavailable {
+                    reference,
+                })) => {
+                    send_event_to_conn(
+                        &self.sessions,
+                        conn,
+                        OutputEvent::Sys(RichText::tag(
+                            "error",
+                            format!("That transaction needs recovery. Transaction: {reference}"),
+                        )),
+                    );
+                }
+                Some(ServiceResp::ActionStatus(ProjectedActionStatus::Unknown)) => {
+                    send_event_to_conn(
+                        &self.sessions,
+                        conn,
+                        OutputEvent::Sys(RichText::tag(
+                            "error",
+                            "No accessible transaction has that reference.",
+                        )),
+                    );
+                }
+                Some(ServiceResp::Busy) => self.action_error(conn, ActionSend::Busy),
+                Some(ServiceResp::Unavailable) | None => {
+                    self.action_error(conn, ActionSend::Gone);
+                }
+                Some(other) => {
+                    tracing::error!(
+                        conn = conn.0,
+                        ?other,
+                        "action status returned wrong response type"
+                    );
+                    self.action_error(conn, ActionSend::Gone);
+                }
+            }
+            return true;
+        }
         if command.eq_ignore_ascii_case("+actions") && argument.trim().is_empty() {
             match self.self_legal_actions(conn, actor).await {
                 Ok(offers) if offers.is_empty() => send_event_to_conn(
@@ -445,7 +566,9 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             Err(ActionSend::Rejected) => {
                 OutputEvent::Sys(RichText::tag("error", "Legal actions are unavailable."))
             }
-            Err(ActionSend::Accepted) => unreachable!("accepted is not a legal-action query error"),
+            Err(ActionSend::Accepted | ActionSend::Owned(_) | ActionSend::Finished(_)) => {
+                unreachable!("successful disposition is not a legal-action query error")
+            }
         };
         send_event_to_conn(
             &self.sessions,

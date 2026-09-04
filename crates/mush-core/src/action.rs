@@ -3100,6 +3100,21 @@ pub trait ActionProvider: Send + Sync {
         Ok(None)
     }
 
+    /// Project a durable root outcome for one event-time eligible viewer.
+    ///
+    /// This callback is deliberately pure: it receives only the exact frozen
+    /// action, immutable durable outcome, and authenticated viewer. It cannot
+    /// consult current world state, so replay/status projection remains stable
+    /// after restart. Returning `None` yields a generic committed receipt.
+    fn project_receipt(
+        &self,
+        _action: &DefinitionRef,
+        _outcome: &RulesValue,
+        _viewer: &PrincipalId,
+    ) -> Result<Option<mush_proto::ProjectedActionResult>, ActionError> {
+        Ok(None)
+    }
+
     /// Prepare bounded owner-scoped post-images without access to live mutable
     /// world or module state. Existing validation-only providers inherit a
     /// fail-closed empty transaction; only providers that add state mutations
@@ -3622,6 +3637,30 @@ impl ActionProviderRegistry {
         ))
     }
 
+    /// Clone only the pure receipt-projection capabilities needed outside the
+    /// single-writer. Provider callbacks receive no engine or mutable state;
+    /// the shared readiness latch still freezes them with their owner.
+    #[must_use]
+    pub fn receipt_projection_table(&self) -> ReceiptProjectionTable {
+        ReceiptProjectionTable {
+            entries: self
+                .entries
+                .iter()
+                .map(|(locator, entry)| {
+                    (
+                        locator.clone(),
+                        ReceiptProjectionEntry {
+                            owner: entry.owner.clone(),
+                            action: entry.action.clone(),
+                            provider: Arc::clone(&entry.provider),
+                        },
+                    )
+                })
+                .collect(),
+            owner_readiness: self.owner_readiness.clone(),
+        }
+    }
+
     /// Enumerate providers in canonical action order and stamp every returned
     /// draft with the exact frozen action identity. The callback runs against
     /// immutable engine truth and owner readiness is checked again after it
@@ -3904,6 +3943,111 @@ impl ActionProviderRegistry {
     pub const fn fingerprint(&self) -> DefinitionDigest {
         self.fingerprint
     }
+}
+
+struct ReceiptProjectionEntry {
+    owner: OwnerId,
+    action: DefinitionRef,
+    provider: Arc<dyn ActionProvider>,
+}
+
+/// Frozen, thread-safe table of pure durable-receipt projectors.
+pub struct ReceiptProjectionTable {
+    entries: BTreeMap<crate::mechanics::DefinitionLocator, ReceiptProjectionEntry>,
+    owner_readiness: MechanicalOwnerReadiness,
+}
+
+impl fmt::Debug for ReceiptProjectionTable {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ReceiptProjectionTable")
+            .field("actions", &self.entries.keys().collect::<Vec<_>>())
+            .finish_non_exhaustive()
+    }
+}
+
+impl ReceiptProjectionTable {
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            owner_readiness: MechanicalOwnerReadiness::for_owners(&BTreeSet::new()),
+        }
+    }
+
+    /// Project one exact durable root outcome without exposing provider
+    /// callbacks or allowing a current-state read.
+    pub fn project(
+        &self,
+        action: &DefinitionRef,
+        outcome: &RulesValue,
+        viewer: &PrincipalId,
+    ) -> Result<Option<mush_proto::ProjectedActionResult>, ReceiptProjectionError> {
+        let Some(entry) = self.entries.get(&action.locator()) else {
+            return Err(ReceiptProjectionError::Missing {
+                action: Box::new(action.clone()),
+            });
+        };
+        if entry.action.digest() != action.digest() {
+            return Err(ReceiptProjectionError::DigestMismatch {
+                requested: Box::new(action.clone()),
+                registered: Box::new(entry.action.clone()),
+            });
+        }
+        if outcome.schema().key().owner != entry.owner {
+            return Err(ReceiptProjectionError::OutcomeOwnerMismatch {
+                action: Box::new(action.clone()),
+                outcome: Box::new(outcome.schema().clone()),
+            });
+        }
+        self.owner_readiness
+            .require_ready(&entry.owner)
+            .map_err(|source| ReceiptProjectionError::OwnerNotReady {
+                action: Box::new(action.clone()),
+                source: Box::new(source),
+            })?;
+        let projected = entry
+            .provider
+            .project_receipt(&entry.action, outcome, viewer)
+            .map_err(|source| ReceiptProjectionError::Provider {
+                action: Box::new(action.clone()),
+                source: Box::new(source),
+            })?;
+        self.owner_readiness
+            .require_ready(&entry.owner)
+            .map_err(|source| ReceiptProjectionError::OwnerNotReady {
+                action: Box::new(action.clone()),
+                source: Box::new(source),
+            })?;
+        Ok(projected)
+    }
+}
+
+/// Failure to project a private durable result into its public receipt shape.
+#[derive(Debug, Error)]
+pub enum ReceiptProjectionError {
+    #[error("no receipt projector is registered for {action}")]
+    Missing { action: Box<DefinitionRef> },
+    #[error("receipt action {requested} differs from registered {registered}")]
+    DigestMismatch {
+        requested: Box<DefinitionRef>,
+        registered: Box<DefinitionRef>,
+    },
+    #[error("receipt outcome {outcome} is not owned by action provider {action}")]
+    OutcomeOwnerMismatch {
+        action: Box<DefinitionRef>,
+        outcome: Box<DefinitionRef>,
+    },
+    #[error("receipt projector owner is unavailable for {action}: {source}")]
+    OwnerNotReady {
+        action: Box<DefinitionRef>,
+        source: Box<MechanicalOwnerReadinessError>,
+    },
+    #[error("receipt projector refused {action}: {source}")]
+    Provider {
+        action: Box<DefinitionRef>,
+        source: Box<ActionError>,
+    },
 }
 
 fn charge_new_operations(

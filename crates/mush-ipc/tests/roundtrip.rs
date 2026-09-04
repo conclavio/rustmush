@@ -20,7 +20,31 @@ use mush_ipc::{
     MAX_IN_FLIGHT_SERVICE_REQUESTS, RequestUid, ServiceReq, ServiceResp, ToGateway, ToServer,
     WireInbound, WireInboundError, encode_frame,
 };
-use mush_proto::{OutputEvent, PanelFrameKind, RichText};
+use mush_proto::{
+    ActionStatusId, OutputEvent, PanelFrameKind, ProjectedActionReceipt, ProjectedActionResult,
+    ProjectedActionStatus, RichText,
+};
+
+fn sample_status() -> ActionStatusId {
+    ActionStatusId::new("k5:toy:brace:0000000000001234:01010101010101010101010101010101")
+        .expect("sample action status")
+}
+
+fn sample_receipt() -> ProjectedActionReceipt {
+    ProjectedActionReceipt::new(
+        sample_status(),
+        CommitToken::from_bytes([2; 16]).to_string(),
+        Some(
+            ProjectedActionResult::new(
+                "brace",
+                "Brace committed.",
+                serde_json::json!({"braced": true}),
+            )
+            .expect("sample projected result"),
+        ),
+    )
+    .expect("sample projected receipt")
+}
 
 /// Encode one message and decode it back, asserting equality.
 fn round_trip_to_server(msg: &ToServer) {
@@ -175,6 +199,14 @@ fn every_to_server() -> Vec<ToServer> {
         },
         ToServer::Request {
             id: 105,
+            req: ServiceReq::ActionStatus {
+                conn: 5,
+                actor: ObjId(11),
+                status: sample_status(),
+            },
+        },
+        ToServer::Request {
+            id: 106,
             req: ServiceReq::Barrier,
         },
         ToServer::Control(CoreControl::Shutdown),
@@ -270,6 +302,12 @@ fn every_to_gateway() -> Vec<ToGateway> {
         },
         ToGateway::Reply {
             id: 105,
+            resp: ServiceResp::ActionStatus(ProjectedActionStatus::Pending {
+                reference: sample_status(),
+            }),
+        },
+        ToGateway::Reply {
+            id: 106,
             resp: ServiceResp::Barrier,
         },
         ToGateway::Reply {
@@ -300,13 +338,14 @@ fn every_to_gateway() -> Vec<ToGateway> {
             request,
             disposition: GatewayRequestDisposition::Owned {
                 token: CommitToken::from_bytes([2; 16]),
-                bundle_hash: CanonicalHash::from_bytes([3; 32]),
+                status: sample_status(),
             },
         },
         ToGateway::RequestDisposition {
             request,
             disposition: GatewayRequestDisposition::Finished {
-                token: CommitToken::from_bytes([2; 16]),
+                recipient: ObjId(42),
+                receipt: sample_receipt(),
             },
         },
         // Server → gateway session control.
@@ -368,7 +407,7 @@ fn every_to_gateway_variant_round_trips() {
 
 #[test]
 fn version_is_present_and_travels_in_hello() {
-    assert_eq!(IPC_VERSION, 3, "the boundary protocol version is pinned");
+    assert_eq!(IPC_VERSION, 4, "the boundary protocol version is pinned");
     assert_eq!(
         MAX_IN_FLIGHT_SERVICE_REQUESTS, 256,
         "service-request custody is a fixed cross-boundary contract"

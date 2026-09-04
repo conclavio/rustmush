@@ -1157,9 +1157,29 @@ async fn gateway_reader(
                             ))),
                         );
                     }
-                    (Some(_), GatewayRequestDisposition::EphemeralFinished)
-                    | (Some(_), GatewayRequestDisposition::Owned { .. })
-                    | (Some(_), GatewayRequestDisposition::Finished { .. }) => {}
+                    (Some(_), GatewayRequestDisposition::EphemeralFinished) => {}
+                    (Some(held), GatewayRequestDisposition::Owned { status, .. }) => {
+                        let _ = sessions.send_to_conn(
+                            mush_session::ConnId(held.input.conn()),
+                            Arc::new(OutputEvent::Sys(RichText::tag(
+                                "system",
+                                format!("Action accepted. Transaction: {status}"),
+                            ))),
+                        );
+                    }
+                    (_, GatewayRequestDisposition::Finished { recipient, receipt }) => {
+                        match receipt.view() {
+                            Ok(view) => transport.transmit(vec![(
+                                mush_ipc::SendTarget::Char(u64::from(recipient.0)),
+                                Arc::new(OutputEvent::View(view)),
+                            )]),
+                            Err(error) => tracing::error!(
+                                %recipient,
+                                error = %error,
+                                "projected action receipt frame is invalid"
+                            ),
+                        }
+                    }
                     (None, disposition) => {
                         // A terminal update may legitimately follow `Owned`,
                         // and a resent disposition may cross a reconnect. Both
