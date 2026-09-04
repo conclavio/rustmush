@@ -2495,15 +2495,20 @@ different contact IDs for the same truth target without either projection exposi
 Viewer-specific panels/outcomes across all surfaces remain before Gate 3 is complete.
 Revision validators now receive a read-only context containing ordinary world state plus typed
 action-state access that still requires the composition-branded family handle. After opaque target
-resolution, an action provider may name a bounded, duplicate-free set of exact same-owner revision
+resolution, an action provider may name a bounded, duplicate-free set of exact revision
 coordinates; the kernel reads their generations through the frozen validator registry and adds the
-stamps to the final guard set. Providers cannot provide or forge the observed generation. Missing,
-foreign-owner, duplicate, over-limit, or unevaluable coordinates fail as generic unavailable.
-The tactical fixture uses this seam for source and selected-target placement records: legal fire
-requires both placements in the same arena, a resolved action guards exactly those two placements,
-moving an unselected contact does not invalidate it, and moving the selected target does. This is
-still fixture authority; using production `mush-sim` placement requires the explicit cross-owner
-bridge rather than weakening family ownership.
+stamps to the final guard set. A foreign-owner coordinate is admitted only through the unique exact
+directional bridge whose interaction is this action definition, and the selected bridge definition
+becomes a final definition guard. Thus the source provider selects the coordinate, the target owner
+reads and validates its generation, and the bridge owner remains ready and definition-exact.
+Providers cannot provide or forge the observed generation. Missing bridge, missing coordinate,
+duplicate, over-limit, or unevaluable observations fail as generic unavailable.
+The tactical fixture now splits unit/action and placement truth between `toytactics` and
+`toyspace`. Legal fire requires both placements in the same arena; a resolved action guards exactly
+the source and chosen target placements plus the exact bridge definition. Moving an unselected
+contact does not invalidate it, while moving the selected target does. These remain fixture
+authorities; production `mush-sim` placement migration must reuse this bridge-gated path rather
+than pass its typed family handle to an unregistered owner.
 
 Exit criteria:
 

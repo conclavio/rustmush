@@ -940,13 +940,24 @@ impl Engine {
                 .ok_or(crate::offer::LegalActionResolutionError::Resolve(
                     crate::offer::OfferResolveError::Unavailable,
                 ))?;
-        let revision_keys = self
+        let definitions = self.registry.definitions().ok_or(
+            crate::offer::LegalActionResolutionError::Resolve(
+                crate::offer::OfferResolveError::Unavailable,
+            ),
+        )?;
+        let bridges =
+            self.registry
+                .bridges()
+                .ok_or(crate::offer::LegalActionResolutionError::Resolve(
+                    crate::offer::OfferResolveError::Unavailable,
+                ))?;
+        let (revision_keys, bridge_definitions) = self
             .registry
             .action_providers()
             .ok_or(crate::offer::LegalActionResolutionError::Resolve(
                 crate::offer::OfferResolveError::Unavailable,
             ))?
-            .resolved_revision_keys(&action, &resolved)
+            .resolved_revision_keys(&action, &resolved, definitions, bridges)
             .map_err(|_| {
                 crate::offer::LegalActionResolutionError::Resolve(
                     crate::offer::OfferResolveError::Unavailable,
@@ -976,11 +987,14 @@ impl Engine {
                 revision_stamps.push(crate::action::RevisionStamp { key, generation });
             }
         }
-        let guards = guards.with_revision_stamps(revision_stamps).map_err(|_| {
-            crate::offer::LegalActionResolutionError::Resolve(
-                crate::offer::OfferResolveError::Unavailable,
-            )
-        })?;
+        let guards = guards
+            .with_definition_guards(bridge_definitions, definitions)
+            .and_then(|guards| guards.with_revision_stamps(revision_stamps))
+            .map_err(|_| {
+                crate::offer::LegalActionResolutionError::Resolve(
+                    crate::offer::OfferResolveError::Unavailable,
+                )
+            })?;
         Ok(crate::offer::ResolvedAuthoritativeOffer::new(
             action, resolved, guards,
         ))

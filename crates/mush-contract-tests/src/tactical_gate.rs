@@ -14,18 +14,19 @@ use mush_core::{
     ActionPresentation, ActionProvider, ActionStateError, ActionTxn, ActionWindow,
     ActionWindowDraft, ActionWindowGuardValidator, ActionWindowId, ActionWindowPhase,
     ActionWindowRecord, ActionWindowStateCodec, AuthoritativeActionOutput, AuthorityGuardKind,
-    CanonicalHash, CanonicalId, ChannelGrant, ChannelId, ClockProviderFailure, ClockProviderKind,
-    ClockRef, ClockStamp, CommitToken, ContactGuardValidator, ContactId, ContactState,
-    ContactStateCodec, ContactStateDraft, ControlHandoffDraft, ControlLeaseGuardValidator,
-    ControlLeaseKey, ControlLeaseState, ControlLeaseStateCodec, DefinitionDescriptor, DefinitionId,
-    DefinitionKind, DefinitionRef, DefinitionRegistryBuilder, DefinitionValidationContext,
-    DefinitionValidator, Engine, GameModule, IdempotencyKey, IdempotencyScope, LegalActionQuery,
-    ModError, ObjId, OfferKeyRing, OfferSecret, OwnerId, PerceivedRef, PrepareCtx, PrincipalId,
-    ProjectedParameterSchema, ProjectedTargetSchema, ProviderOfferDraft, Registrar, RequestUid,
-    ResolutionKeyRing, ResolutionSecret, ResolvedActionInvocation, RevisionKey, RevisionKind,
-    RevisionSet, RevisionValidator, RevisionValidatorContext, RulesValue, ScopedIdempotencyKey,
-    StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey, WindowMode,
-    WindowRestartPolicy, WindowTimeoutPolicy, World, action_window_state_family_descriptor,
+    BridgeDescriptor, CanonicalHash, CanonicalId, ChannelGrant, ChannelId, ClockProviderFailure,
+    ClockProviderKind, ClockRef, ClockStamp, CommitToken, ContactGuardValidator, ContactId,
+    ContactState, ContactStateCodec, ContactStateDraft, ControlHandoffDraft,
+    ControlLeaseGuardValidator, ControlLeaseKey, ControlLeaseState, ControlLeaseStateCodec,
+    DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef, DefinitionRegistryBuilder,
+    DefinitionValidationContext, DefinitionValidator, Engine, GameModule, IdempotencyKey,
+    IdempotencyScope, LegalActionQuery, ModError, ObjId, OfferKeyRing, OfferSecret, OwnerId,
+    PerceivedRef, PrepareCtx, PrincipalId, ProjectedParameterSchema, ProjectedTargetSchema,
+    ProviderOfferDraft, Registrar, RequestUid, ResolutionKeyRing, ResolutionSecret,
+    ResolvedActionInvocation, RevisionKey, RevisionKind, RevisionSet, RevisionValidator,
+    RevisionValidatorContext, RulesValue, ScopedIdempotencyKey, StateFamilyDescriptor,
+    StateFamilyHandle, StateFamilyId, SubjectKey, WindowMode, WindowRestartPolicy,
+    WindowTimeoutPolicy, World, action_window_state_family_descriptor,
     contact_state_family_descriptor, control_lease_state_family_descriptor,
 };
 use mush_tactics::{
@@ -37,6 +38,8 @@ use serde_json::{Value, json};
 
 /// Owner used by the isolated Gate-2 module.
 pub const TACTICAL_GATE_OWNER: &str = "toytactics";
+/// Independent owner of the fixture's tactical placement truth.
+pub const TACTICAL_PLACEMENT_OWNER: &str = "toyspace";
 /// Component-provided action exercised by Gate 2.
 pub const FIRE_ACTION_ID: &str = "fire";
 /// Private durable outcome for the fire action.
@@ -68,6 +71,7 @@ pub struct TacticalGateDefinitions {
     pub weapon: DefinitionRef,
     pub fire: DefinitionRef,
     pub fired: DefinitionRef,
+    pub placement_bridge: DefinitionRef,
 }
 
 #[derive(Clone, Debug)]
@@ -206,9 +210,26 @@ fn definition_fixture() -> Result<DefinitionFixture, String> {
     .with_references(vec![unit.clone(), weapon.clone(), fired.clone()])
     .as_current();
     let fire = registry
-        .register(owner, fire_descriptor.clone())
+        .register(owner.clone(), fire_descriptor.clone())
         .map_err(|error| error.to_string())?;
     descriptors.push(fire_descriptor);
+
+    let placement_bridge_descriptor = descriptor(
+        "bridge",
+        "tactical_placement",
+        json!({
+            "source_owner": TACTICAL_GATE_OWNER,
+            "target_owner": TACTICAL_PLACEMENT_OWNER,
+            "interaction": FIRE_ACTION_ID,
+            "purpose": "read_exact_selected_placement_revision"
+        }),
+    )?
+    .with_references(vec![fire.clone()])
+    .as_current();
+    let placement_bridge = registry
+        .register(owner, placement_bridge_descriptor.clone())
+        .map_err(|error| error.to_string())?;
+    descriptors.push(placement_bridge_descriptor);
 
     Ok(DefinitionFixture {
         descriptors,
@@ -217,6 +238,7 @@ fn definition_fixture() -> Result<DefinitionFixture, String> {
             weapon,
             fire,
             fired,
+            placement_bridge,
         },
         unit_spec,
     })
@@ -341,6 +363,60 @@ impl RevisionValidator for PlacementRevisionValidator {
         Ok(placement
             .filter(|placement| placement.object == id)
             .map(|placement| placement.revision))
+    }
+}
+
+#[derive(Debug)]
+struct TacticalPlacementModule {
+    captured: Arc<Mutex<Option<StateFamilyHandle<ObjId, TacticalPlacement>>>>,
+}
+
+impl GameModule for TacticalPlacementModule {
+    fn name(&self) -> &'static str {
+        TACTICAL_PLACEMENT_OWNER
+    }
+
+    fn register(&mut self, registrar: &mut Registrar<'_>) -> Result<(), ModError> {
+        let placements = registrar.state_family(
+            StateFamilyDescriptor::new(
+                StateFamilyId::new(PLACEMENT_FAMILY)
+                    .map_err(|error| ModError::msg(error.to_string()))?,
+                CanonicalId::new("obj_id.decimal.v1")
+                    .map_err(|error| ModError::msg(error.to_string()))?,
+                CanonicalId::new("toyspace.placement.v1")
+                    .map_err(|error| ModError::msg(error.to_string()))?,
+                1,
+                CanonicalId::new("toyspace.placement.decode_json.v1")
+                    .map_err(|error| ModError::msg(error.to_string()))?,
+                CanonicalId::new("toyspace.placement.validate.v1")
+                    .map_err(|error| ModError::msg(error.to_string()))?,
+                CanonicalId::new("toyspace.placement.json.v1")
+                    .map_err(|error| ModError::msg(error.to_string()))?,
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            |key: &ObjId| Ok(key.0.to_string()),
+            |value: &Value| {
+                serde_json::from_value(value.clone()).map_err(|error| error.to_string())
+            },
+            |value: &TacticalPlacement| {
+                if value.revision == 0 {
+                    Err("a tactical placement revision must be nonzero".to_owned())
+                } else {
+                    Ok(())
+                }
+            },
+            |value: &TacticalPlacement| {
+                serde_json::to_value(value).map_err(|error| error.to_string())
+            },
+        )?;
+        registrar.revision_validator(
+            RevisionKind::new(CanonicalId::new("placement").expect("static revision kind")),
+            PlacementRevisionValidator {
+                placements: placements.clone(),
+            },
+        )?;
+        *self.captured.lock().expect("placement capture poisoned") = Some(placements);
+        Ok(())
     }
 }
 
@@ -950,13 +1026,18 @@ impl ActionProvider for FireProvider {
 #[derive(Debug, Default)]
 pub struct TacticalGateModule {
     captured: Arc<Mutex<Option<(TacticalGateState, TacticalGateDefinitions, UnitSpec)>>>,
+    placements: Arc<Mutex<Option<StateFamilyHandle<ObjId, TacticalPlacement>>>>,
 }
 
 impl TacticalGateModule {
     fn with_capture(
         captured: Arc<Mutex<Option<(TacticalGateState, TacticalGateDefinitions, UnitSpec)>>>,
+        placements: Arc<Mutex<Option<StateFamilyHandle<ObjId, TacticalPlacement>>>>,
     ) -> Self {
-        Self { captured }
+        Self {
+            captured,
+            placements,
+        }
     }
 }
 
@@ -982,6 +1063,7 @@ impl GameModule for TacticalGateModule {
             &fixture.definitions.weapon,
             &fixture.definitions.fire,
             &fixture.definitions.fired,
+            &fixture.definitions.placement_bridge,
         ] {
             if !registered.values().any(|actual| actual == expected) {
                 return Err(ModError::msg("Gate-2 definition identity drift"));
@@ -1018,44 +1100,18 @@ impl GameModule for TacticalGateModule {
             },
             |value: &TacticalUnit| serde_json::to_value(value).map_err(|error| error.to_string()),
         )?;
-        let placements = registrar.state_family(
-            StateFamilyDescriptor::new(
-                StateFamilyId::new(PLACEMENT_FAMILY)
-                    .map_err(|error| ModError::msg(error.to_string()))?,
-                CanonicalId::new("obj_id.decimal.v1")
-                    .map_err(|error| ModError::msg(error.to_string()))?,
-                CanonicalId::new("toytactics.placement.v1")
-                    .map_err(|error| ModError::msg(error.to_string()))?,
-                1,
-                CanonicalId::new("toytactics.placement.decode_json.v1")
-                    .map_err(|error| ModError::msg(error.to_string()))?,
-                CanonicalId::new("toytactics.placement.validate.v1")
-                    .map_err(|error| ModError::msg(error.to_string()))?,
-                CanonicalId::new("toytactics.placement.json.v1")
-                    .map_err(|error| ModError::msg(error.to_string()))?,
-            )
-            .map_err(|error| ModError::msg(error.to_string()))?,
-            |key: &ObjId| Ok(key.0.to_string()),
-            |value: &Value| {
-                serde_json::from_value(value.clone()).map_err(|error| error.to_string())
-            },
-            |value: &TacticalPlacement| {
-                if value.revision == 0 {
-                    Err("a tactical placement revision must be nonzero".to_owned())
-                } else {
-                    Ok(())
-                }
-            },
-            |value: &TacticalPlacement| {
-                serde_json::to_value(value).map_err(|error| error.to_string())
-            },
-        )?;
-        registrar.revision_validator(
-            RevisionKind::new(CanonicalId::new("placement").expect("static revision kind")),
-            PlacementRevisionValidator {
-                placements: placements.clone(),
-            },
-        )?;
+        let placements = self
+            .placements
+            .lock()
+            .expect("placement capture poisoned")
+            .clone()
+            .ok_or_else(|| ModError::msg("placement owner must register before tactics"))?;
+        registrar.interaction_bridge(BridgeDescriptor::new(
+            fixture.definitions.placement_bridge.clone(),
+            OwnerId::new(TACTICAL_GATE_OWNER).expect("static tactics owner"),
+            OwnerId::new(TACTICAL_PLACEMENT_OWNER).expect("static placement owner"),
+            fixture.definitions.fire.clone(),
+        ))?;
         let contact_codec = ContactStateCodec;
         let contacts = registrar.state_family(
             contact_state_family_descriptor(
@@ -1148,11 +1204,15 @@ impl GameModule for TacticalGateModule {
 #[must_use]
 pub fn tactical_gate_world() -> (Engine, TacticalGateState, TacticalGateDefinitions, UnitSpec) {
     let captured = Arc::new(Mutex::new(None));
-    let module = TacticalGateModule::with_capture(Arc::clone(&captured));
+    let placements = Arc::new(Mutex::new(None));
+    let placement_module = TacticalPlacementModule {
+        captured: Arc::clone(&placements),
+    };
+    let module = TacticalGateModule::with_capture(Arc::clone(&captured), placements);
     let mut engine = Engine::with_modules(
         World::new_minimal(),
         mush_core::Registry::new(),
-        vec![Box::new(module)],
+        vec![Box::new(placement_module), Box::new(module)],
     )
     .expect("Gate-2 module composes");
     engine.set_resolution_keys(
@@ -2198,7 +2258,7 @@ mod tests {
 
     #[test]
     fn resolved_fire_guards_only_the_source_and_selected_target_placements() {
-        let (mut engine, state, _definitions, spec) = tactical_gate_world();
+        let (mut engine, state, definitions, spec) = tactical_gate_world();
         let source = spawn_unit_player(&mut engine, &state, &spec, "Selective Shooter");
         let selected_target = ObjId(941);
         let unselected_target = ObjId(942);
@@ -2291,6 +2351,14 @@ mod tests {
                     1,
                 ),
             ]
+        );
+        assert!(
+            resolved
+                .guards()
+                .authority()
+                .contains(&AuthorityGuard::Definition(
+                    definitions.placement_bridge.clone()
+                ))
         );
 
         move_tactical_gate_placement(&mut engine, &state, unselected_target, 3, 0);

@@ -26,9 +26,10 @@ use crate::authoritative::{
 };
 use crate::behavior::ChannelId;
 use crate::mechanics::{
-    CanonicalEncodingError, CanonicalId, CanonicalIdError, DefinitionDigest, DefinitionLookupError,
-    DefinitionRef, DefinitionRegistry, MechanicalOwnerReadiness, MechanicalOwnerReadinessError,
-    OwnerId, RulesValue, canonical_json_bytes_with_limit,
+    BridgeLookupError, BridgeRegistry, CanonicalEncodingError, CanonicalId, CanonicalIdError,
+    DefinitionDigest, DefinitionLookupError, DefinitionRef, DefinitionRegistry, InteractionRoute,
+    MechanicalOwnerReadiness, MechanicalOwnerReadinessError, OwnerId, RulesValue,
+    canonical_json_bytes_with_limit,
 };
 use crate::obj::ObjId;
 use crate::resolution::PreparedResolution;
@@ -2179,6 +2180,32 @@ impl GuardSet {
             },
         )?;
         Ok(guards)
+    }
+
+    /// Bind exact bridge definitions selected by the frozen cross-owner route.
+    /// Existing provider-supplied definition guards are retained without
+    /// duplication, while every newly selected definition is revalidated
+    /// against this composition before it becomes a final guard.
+    pub(crate) fn with_definition_guards(
+        self,
+        references: Vec<DefinitionRef>,
+        definitions: &DefinitionRegistry,
+    ) -> Result<Self, GuardSetBuildError> {
+        if references.is_empty() {
+            return Ok(self);
+        }
+        let mut builder = ServerGuardSetBuilder {
+            revisions: self.revisions,
+            authority: self.authority.into_iter().collect(),
+            owner_readiness: self.owner_readiness,
+        };
+        for reference in references {
+            let guard = AuthorityGuard::Definition(reference.clone());
+            if !builder.authority.contains(&guard) {
+                builder.add_definition(reference, definitions)?;
+            }
+        }
+        builder.finish()
     }
 
     /// Add the kernel-selected exact station witnesses for one legal offer.
@@ -4531,14 +4558,17 @@ impl ActionProviderRegistry {
         })
     }
 
-    /// Ask one exact provider which same-owner revision coordinates are
-    /// selected by the privately resolved invocation. Readiness is checked on
-    /// both sides of the callback and duplicate/foreign keys fail closed.
+    /// Ask one exact provider which revision coordinates are selected by the
+    /// privately resolved invocation. Readiness is checked on both sides of
+    /// the callback. Cross-owner coordinates require the unique exact bridge
+    /// for this action; its definition is returned for final guarding.
     pub(crate) fn resolved_revision_keys(
         &self,
         action: &DefinitionRef,
         resolved: &ResolvedActionInvocation,
-    ) -> Result<Vec<RevisionKey>, ActionProviderDispatchError> {
+        definitions: &DefinitionRegistry,
+        bridges: &BridgeRegistry,
+    ) -> Result<(Vec<RevisionKey>, Vec<DefinitionRef>), ActionProviderDispatchError> {
         let entry = self.get_exact(action)?;
         let mut keys = entry
             .provider()
@@ -4558,17 +4588,26 @@ impl ActionProviderRegistry {
                 max: MAX_ACTION_REVISIONS,
             });
         }
-        if let Some(key) = keys.iter().find(|key| key.owner != entry.owner) {
-            return Err(ActionProviderDispatchError::ForeignRevisionOwner {
-                provider: entry.owner.clone(),
-                revision_owner: key.owner.clone(),
-            });
+        let mut bridge_definitions = BTreeSet::new();
+        for key in keys.iter().filter(|key| key.owner != entry.owner) {
+            let route = bridges
+                .require_interaction(definitions, &entry.owner, &key.owner, action)
+                .map_err(|source| ActionProviderDispatchError::RevisionBridge {
+                    key: Box::new(key.clone()),
+                    source: Box::new(source),
+                })?;
+            let InteractionRoute::Bridge(definition) = route else {
+                return Err(ActionProviderDispatchError::RevisionBridgeRoute {
+                    key: Box::new(key.clone()),
+                });
+            };
+            bridge_definitions.insert(definition);
         }
         keys.sort();
         if keys.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(ActionProviderDispatchError::DuplicateRevisionKey);
         }
-        Ok(keys)
+        Ok((keys, bridge_definitions.into_iter().collect()))
     }
 
     /// Run one exact provider inside an owner-scoped logical transaction.
@@ -5001,13 +5040,13 @@ pub enum ActionProviderDispatchError {
     },
     #[error("resolved revision-key count exceeds its hard limit of {max}")]
     RevisionLimit { max: usize },
-    #[error(
-        "action provider {provider} cannot directly observe revision state owned by {revision_owner}"
-    )]
-    ForeignRevisionOwner {
-        provider: OwnerId,
-        revision_owner: OwnerId,
+    #[error("resolved revision coordinate {key:?} has no executable bridge: {source}")]
+    RevisionBridge {
+        key: Box<RevisionKey>,
+        source: Box<BridgeLookupError>,
     },
+    #[error("resolved revision coordinate {key:?} selected an invalid same-owner bridge route")]
+    RevisionBridgeRoute { key: Box<RevisionKey> },
     #[error("resolved revision coordinates contain a duplicate")]
     DuplicateRevisionKey,
 }
@@ -5095,8 +5134,8 @@ fn provider_fingerprint<'a>(
 mod tests {
     use super::*;
     use crate::mechanics::{
-        DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, IncidentId,
-        RecoveryReason,
+        BridgeDescriptor, BridgeRegistryBuilder, DefinitionDescriptor, DefinitionId,
+        DefinitionKind, DefinitionRegistryBuilder, IncidentId, RecoveryReason,
     };
 
     fn owner() -> OwnerId {
@@ -6468,14 +6507,18 @@ mod tests {
     }
 
     #[test]
-    fn resolved_revision_coordinates_are_bounded_unique_and_same_owner() {
+    fn resolved_revision_coordinates_are_bounded_unique_and_bridge_gated() {
         fn dispatch(
             keys: Vec<RevisionKey>,
         ) -> Result<Vec<RevisionKey>, ActionProviderDispatchError> {
             let (definitions, action) = action_definition();
-            let roster = owner_roster();
+            let mut roster = owner_roster();
+            roster.extend(keys.iter().map(|key| key.owner.clone()));
             let readiness = MechanicalOwnerReadiness::for_owners(&roster);
             let definitions = bind_definitions(definitions, &readiness);
+            let bridges = crate::mechanics::BridgeRegistryBuilder::new()
+                .freeze_for_owners_with_readiness(&definitions, &roster, readiness.clone())
+                .unwrap();
             let mut builder = ActionProviderRegistryBuilder::new();
             builder
                 .register(
@@ -6494,7 +6537,9 @@ mod tests {
                 vec![SubjectKey::Object { id: ObjId(8) }],
             )
             .unwrap();
-            registry.resolved_revision_keys(&action, &resolved)
+            registry
+                .resolved_revision_keys(&action, &resolved, &definitions, &bridges)
+                .map(|(keys, _)| keys)
         }
 
         let duplicate = revision_key("unit", 7);
@@ -6505,13 +6550,84 @@ mod tests {
 
         let mut foreign = revision_key("unit", 7);
         foreign.owner = OwnerId::new("foreign").unwrap();
-        assert_eq!(
-            dispatch(vec![foreign]).unwrap_err(),
-            ActionProviderDispatchError::ForeignRevisionOwner {
-                provider: owner(),
-                revision_owner: OwnerId::new("foreign").unwrap(),
-            }
-        );
+        assert!(matches!(
+            dispatch(vec![foreign]),
+            Err(ActionProviderDispatchError::RevisionBridge { source, .. })
+                if matches!(*source, BridgeLookupError::Missing { .. })
+        ));
+
+        let foreign_owner = OwnerId::new("foreign").unwrap();
+        let mut definition_builder = DefinitionRegistryBuilder::new();
+        let action = definition_builder
+            .register(
+                owner(),
+                DefinitionDescriptor::new(
+                    DefinitionKind::new("action").unwrap(),
+                    DefinitionId::new("cross_owner_fire").unwrap(),
+                    1,
+                    json!({}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let bridge_definition = definition_builder
+            .register(
+                owner(),
+                DefinitionDescriptor::new(
+                    DefinitionKind::new("bridge").unwrap(),
+                    DefinitionId::new("toy_to_foreign_fire").unwrap(),
+                    1,
+                    json!({}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let roster = BTreeSet::from([owner(), foreign_owner.clone()]);
+        let readiness = MechanicalOwnerReadiness::for_owners(&roster);
+        let definitions = bind_definitions(definition_builder.freeze().unwrap(), &readiness);
+        let mut bridge_builder = BridgeRegistryBuilder::new();
+        bridge_builder
+            .register(
+                owner(),
+                BridgeDescriptor::new(
+                    bridge_definition.clone(),
+                    owner(),
+                    foreign_owner.clone(),
+                    action.clone(),
+                ),
+            )
+            .unwrap();
+        let bridges = bridge_builder
+            .freeze_for_owners_with_readiness(&definitions, &roster, readiness.clone())
+            .unwrap();
+        let foreign_key = RevisionKey {
+            owner: foreign_owner,
+            kind: RevisionKind::new(CanonicalId::new("position").unwrap()),
+            subject: SubjectKey::Object { id: ObjId(8) },
+            facet: None,
+        };
+        let mut provider_builder = ActionProviderRegistryBuilder::new();
+        provider_builder
+            .register(
+                owner(),
+                action.clone(),
+                Arc::new(RevisionKeysProvider(vec![foreign_key.clone()])),
+            )
+            .unwrap();
+        let providers = provider_builder
+            .freeze_for_owners_with_readiness(&definitions, &roster, readiness)
+            .unwrap();
+        let resolved = ResolvedActionInvocation::new(
+            invocation(request(2)),
+            SubjectKey::Object { id: ObjId(7) },
+            vec![SubjectKey::Object { id: ObjId(8) }],
+        )
+        .unwrap();
+        let (keys, bridge_definitions) = providers
+            .resolved_revision_keys(&action, &resolved, &definitions, &bridges)
+            .unwrap();
+        assert_eq!(keys, vec![foreign_key]);
+        assert_eq!(bridge_definitions, vec![bridge_definition]);
 
         let excessive = (0..=MAX_ACTION_REVISIONS)
             .map(|object| revision_key("unit", u32::try_from(object).unwrap()))
