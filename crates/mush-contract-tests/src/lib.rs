@@ -1491,6 +1491,7 @@ impl ActionProvider for ActionWindowProvider {
                     SubjectKey::Object {
                         id: invocation.actor(),
                     },
+                    Vec::new(),
                     invocation.clone(),
                     WindowOrderKey::new(vec![order]).map_err(Self::rejected)?,
                 )

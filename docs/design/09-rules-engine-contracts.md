@@ -2474,6 +2474,12 @@ vehicle rather than the pilot, and proves safe-boundary lease revocation makes t
 set stale even while the transient station grant remains published.
 The reusable action-window family now has a typed `ActionWindowGuardValidator`; the guard names an
 exact `ActionWindowId` and remains current only while that exact generation is durably open.
+Before the first production simultaneous window, its record schema was advanced to v2 so each
+accepted `WindowIntent` retains ordered server-private truth targets alongside the projected
+invocation. Construction and strict decode require exactly one truth target per projected target.
+Without this field, a durably closed intent containing an opaque contact could not identify the
+accepted target after contact loss or restart. The truth list remains inside authoritative window
+state and never enters the projected invocation or client/LLM payload.
 Tactical `fire` reads its owner-stamped domain clock synchronously, projects only inside the
 half-open window, binds the window guard, and carries the close stamp as its offer expiry. Engine
 resolution obtains that expiry clock itself rather than trusting `OfferExecutionContext.now`.

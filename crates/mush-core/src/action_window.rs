@@ -450,6 +450,7 @@ pub struct WindowIntent {
     window: ActionWindowId,
     window_generation: u64,
     truth_subject: SubjectKey,
+    truth_targets: Vec<SubjectKey>,
     invocation: ActionInvocation,
     order: WindowOrderKey,
 }
@@ -460,6 +461,7 @@ struct WindowIntentWire {
     window: ActionWindowId,
     window_generation: u64,
     truth_subject: SubjectKey,
+    truth_targets: Vec<SubjectKey>,
     invocation: ActionInvocation,
     order: WindowOrderKey,
 }
@@ -474,6 +476,7 @@ impl<'de> Deserialize<'de> for WindowIntent {
             wire.window,
             wire.window_generation,
             wire.truth_subject,
+            wire.truth_targets,
             wire.invocation,
             wire.order,
         )
@@ -486,16 +489,24 @@ impl WindowIntent {
         window: ActionWindowId,
         window_generation: u64,
         truth_subject: SubjectKey,
+        truth_targets: Vec<SubjectKey>,
         invocation: ActionInvocation,
         order: WindowOrderKey,
     ) -> Result<Self, ActionWindowError> {
         if window_generation == 0 {
             return Err(ActionWindowError::ZeroGeneration);
         }
+        if truth_targets.len() != invocation.targets().len() {
+            return Err(ActionWindowError::TruthTargetCountMismatch {
+                projected: invocation.targets().len(),
+                truth: truth_targets.len(),
+            });
+        }
         Ok(Self {
             window,
             window_generation,
             truth_subject,
+            truth_targets,
             invocation,
             order,
         })
@@ -514,6 +525,14 @@ impl WindowIntent {
     #[must_use]
     pub const fn truth_subject(&self) -> &SubjectKey {
         &self.truth_subject
+    }
+
+    /// Ordered authoritative targets captured when the intent was admitted.
+    /// These remain server-private even though the durable invocation retains
+    /// only the caller-visible [`crate::action::PerceivedRef`] values.
+    #[must_use]
+    pub fn truth_targets(&self) -> &[SubjectKey] {
+        &self.truth_targets
     }
 
     #[must_use]
@@ -640,7 +659,7 @@ impl<'de> Deserialize<'de> for ActionWindowRecord {
 }
 
 impl ActionWindowRecord {
-    pub const SCHEMA_VERSION: u16 = 1;
+    pub const SCHEMA_VERSION: u16 = 2;
 
     /// Start an empty open record at revision one.
     #[must_use]
@@ -1194,6 +1213,10 @@ pub enum ActionWindowError {
     CapacityReached { capacity: u32 },
     #[error("action-window intent names another window or generation")]
     IntentWindowMismatch,
+    #[error(
+        "action-window intent has {projected} projected targets but {truth} authoritative targets"
+    )]
+    TruthTargetCountMismatch { projected: usize, truth: usize },
     #[error("action-window record contains a duplicate actor/subject slot")]
     DuplicateSlot,
     #[error("action-window intents are not in canonical slot order")]
@@ -1240,8 +1263,8 @@ pub enum ActionWindowError {
 mod tests {
     use super::*;
     use crate::action::{
-        ActionInvocationDraft, ActionOfferId, IdempotencyKey, IdempotencyScope, PerceivedRef,
-        PrincipalId, ScopedIdempotencyKey,
+        ActionInvocationDraft, ActionOfferId, ContactId, IdempotencyKey, IdempotencyScope,
+        PerceivedRef, PrincipalId, ScopedIdempotencyKey,
     };
 
     fn turn(at: i64) -> ClockStamp {
@@ -1318,6 +1341,7 @@ mod tests {
             SubjectKey::Object {
                 id: crate::obj::ObjId(actor),
             },
+            Vec::new(),
             invocation(actor, request_byte, order),
             WindowOrderKey::new(vec![order]).unwrap(),
         )
@@ -1343,6 +1367,74 @@ mod tests {
                 .is_err()
         );
         assert_eq!(window.bounded_catch_up(99), 3);
+    }
+
+    #[test]
+    fn intent_retains_private_truth_targets_and_rejects_cardinality_drift() {
+        let definition = window(2);
+        let request = RequestUid::from_bytes([0x31; 16]);
+        let principal = PrincipalId::Object {
+            id: crate::obj::ObjId(7),
+        };
+        let invocation = ActionInvocation::new(ActionInvocationDraft {
+            request,
+            principal: principal.clone(),
+            actor: crate::obj::ObjId(7),
+            offered_action: ActionOfferId(CanonicalHash::from_bytes([0x32; 32])),
+            subject: PerceivedRef::SelfActor,
+            targets: vec![PerceivedRef::Contact {
+                provider: OwnerId::new("sensors").unwrap(),
+                id: ContactId::from_bytes([0x33; 16]),
+                generation: 4,
+            }],
+            parameters: json!({}),
+            idempotency: ScopedIdempotencyKey::new(
+                IdempotencyScope {
+                    principal,
+                    owner: OwnerId::new("toy").unwrap(),
+                    namespace: CanonicalId::new("window_submit").unwrap(),
+                },
+                0,
+                IdempotencyKey::Request(request),
+            ),
+        })
+        .unwrap();
+        let truth_target = SubjectKey::Object {
+            id: crate::obj::ObjId(99),
+        };
+        let intent = WindowIntent::new(
+            definition.id(),
+            definition.generation(),
+            SubjectKey::Object {
+                id: crate::obj::ObjId(7),
+            },
+            vec![truth_target.clone()],
+            invocation.clone(),
+            WindowOrderKey::new(vec![1]).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(intent.truth_targets(), &[truth_target]);
+        assert_eq!(
+            serde_json::from_value::<WindowIntent>(serde_json::to_value(&intent).unwrap()).unwrap(),
+            intent
+        );
+        assert_eq!(
+            WindowIntent::new(
+                definition.id(),
+                definition.generation(),
+                SubjectKey::Object {
+                    id: crate::obj::ObjId(7),
+                },
+                Vec::new(),
+                invocation,
+                WindowOrderKey::new(vec![1]).unwrap(),
+            )
+            .unwrap_err(),
+            ActionWindowError::TruthTargetCountMismatch {
+                projected: 1,
+                truth: 0,
+            }
+        );
     }
 
     #[test]
