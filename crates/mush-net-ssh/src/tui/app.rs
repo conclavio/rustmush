@@ -22,7 +22,10 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-use super::render::{render_event, render_intel_panel, render_mail_panel, render_who_rail};
+use super::render::{
+    render_event, render_intel_panel, render_legal_actions_panel, render_mail_panel,
+    render_who_rail,
+};
 
 /// Scrollback ring depth (logical lines, pre-wrap).
 const SCROLLBACK_CAP: usize = 1000;
@@ -65,6 +68,8 @@ pub enum SecondaryPane {
     Mail,
     /// The `+intel` widget (fed by the `intel.list` query keyframe).
     Intel,
+    /// Viewer-safe actions (fed by the `legal.actions` query keyframe).
+    Actions,
 }
 
 /// Parser state for CSI escape sequences (`ESC [ ... final`).
@@ -100,6 +105,8 @@ pub struct TuiApp {
     mail: Option<serde_json::Value>,
     /// Latest `intel.list` keyframe data (`None` until the query replies).
     intel: Option<serde_json::Value>,
+    /// Latest `legal.actions` keyframe data (`None` until the query replies).
+    actions: Option<serde_json::Value>,
 }
 
 impl TuiApp {
@@ -121,6 +128,7 @@ impl TuiApp {
             secondary: SecondaryPane::Hidden,
             mail: None,
             intel: None,
+            actions: None,
         }
     }
 
@@ -152,12 +160,13 @@ impl TuiApp {
                 .unwrap_or_default();
             return;
         }
-        // Widget keyframes: route the `mail.list` / `intel.list` panel data to
+        // Widget keyframes: route the mail/intel/legal-action panel data to
         // the secondary pane (they never touch scrollback).
         if let OutputEvent::Panel { feed, data, .. } = unwrap_reply(event) {
             match feed.as_str() {
                 "mail" => self.mail = Some(data.clone()),
                 "intel" => self.intel = Some(data.clone()),
+                "legal.actions" => self.actions = Some(data.clone()),
                 _ => {}
             }
             return;
@@ -272,11 +281,13 @@ impl TuiApp {
         self.secondary = match self.secondary {
             SecondaryPane::Hidden => SecondaryPane::Mail,
             SecondaryPane::Mail => SecondaryPane::Intel,
-            SecondaryPane::Intel => SecondaryPane::Hidden,
+            SecondaryPane::Intel => SecondaryPane::Actions,
+            SecondaryPane::Actions => SecondaryPane::Hidden,
         };
         result.query = match self.secondary {
             SecondaryPane::Mail => Some("mail.list"),
             SecondaryPane::Intel => Some("intel.list"),
+            SecondaryPane::Actions => Some("legal.actions"),
             SecondaryPane::Hidden => None,
         };
         result.redraw = true;
@@ -363,6 +374,12 @@ impl TuiApp {
                 self.intel
                     .as_ref()
                     .map(|d| render_intel_panel(d, &self.theme, self.caps.color)),
+            ),
+            SecondaryPane::Actions => (
+                "+actions",
+                self.actions
+                    .as_ref()
+                    .map(|d| render_legal_actions_panel(d, &self.theme, self.caps.color)),
             ),
             // Not drawn when hidden (the caller gates on sec_w > 0).
             SecondaryPane::Hidden => ("", None),
@@ -657,7 +674,11 @@ mod tests {
         let r = app.feed_input(&[0x09]);
         assert_eq!(app.secondary, SecondaryPane::Intel);
         assert_eq!(r.query, Some("intel.list"));
-        // Intel -> Hidden: nothing to submit.
+        // Intel -> Actions: submits the legal.actions refresh.
+        let r = app.feed_input(&[0x09]);
+        assert_eq!(app.secondary, SecondaryPane::Actions);
+        assert_eq!(r.query, Some("legal.actions"));
+        // Actions -> Hidden: nothing to submit.
         let r = app.feed_input(&[0x09]);
         assert_eq!(app.secondary, SecondaryPane::Hidden);
         assert_eq!(r.query, None);

@@ -25,14 +25,15 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use mush_core::{DisconnectKind, ObjId};
+use mush_core::{DisconnectKind, ObjId, PerceivedRef, ProjectedLegalAction, ProjectedTargetSchema};
 use mush_ipc::{
-    ConnectionAdmission, GatewayLink, InputSend, ServiceReq, ServiceResp, ToServer, WireInbound,
+    ActionSend, ConnectionAdmission, GatewayAction, GatewayLink, InputSend, ServiceReq,
+    ServiceResp, ToServer, WireInbound,
 };
 // Shared with the SSH transport's own line cap (`mush-net-ssh::editor`) so
 // both agree on one bound (MEDIUM finding).
 use mush_net_ssh::MAX_LINE_CHARS;
-use mush_proto::{ObjRef, OutputEvent, RichText};
+use mush_proto::{ObjRef, OutputEvent, PanelFrameKind, RichText};
 use mush_session::{
     ConnId, ConnectionHandle, DetachOutcome, DetachReason, FloodVerdict, SessId, SessionManager,
     sanitize_line,
@@ -235,6 +236,177 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             .session_of_conn(conn)
             .and_then(|s| self.sessions.character_of(s))
             .map(char_key_obj)
+    }
+
+    async fn self_legal_actions(
+        &self,
+        conn: ConnId,
+        actor: ObjId,
+    ) -> Result<Vec<ProjectedLegalAction>, ActionSend> {
+        match self
+            .link
+            .request(ServiceReq::LegalActions {
+                conn: conn.0,
+                actor,
+                subject: PerceivedRef::SelfActor,
+            })
+            .await
+        {
+            Some(ServiceResp::LegalActions(Ok(offers))) => Ok(offers),
+            Some(ServiceResp::LegalActions(Err(_))) => Err(ActionSend::Rejected),
+            Some(ServiceResp::Busy) => Err(ActionSend::Busy),
+            Some(ServiceResp::Unavailable) | None => Err(ActionSend::Gone),
+            Some(other) => {
+                tracing::error!(
+                    conn = conn.0,
+                    ?other,
+                    "legal-action query returned wrong response type"
+                );
+                Err(ActionSend::Gone)
+            }
+        }
+    }
+
+    fn action_error(&self, conn: ConnId, outcome: ActionSend) {
+        let message = match outcome {
+            ActionSend::Accepted => return,
+            ActionSend::Busy => "The game is busy; try that action again.",
+            ActionSend::Gone if self.link.is_restarting() => {
+                "The server is restarting; your action was not submitted."
+            }
+            ActionSend::Gone => "The game is unavailable; your action was not submitted.",
+            ActionSend::Rejected => "That action is no longer available.",
+        };
+        send_event_to_conn(
+            &self.sessions,
+            conn,
+            OutputEvent::Sys(RichText::tag("error", message)),
+        );
+    }
+
+    async fn handle_legal_action_line(&self, conn: ConnId, actor: ObjId, line: &str) -> bool {
+        let (command, argument) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+        if command.eq_ignore_ascii_case("+actions") && argument.trim().is_empty() {
+            match self.self_legal_actions(conn, actor).await {
+                Ok(offers) if offers.is_empty() => send_event_to_conn(
+                    &self.sessions,
+                    conn,
+                    OutputEvent::Sys(RichText::tag("system", "No actions are available.")),
+                ),
+                Ok(offers) => {
+                    let mut text = String::from("Available actions:");
+                    for offer in offers {
+                        let presentation = offer.presentation();
+                        text.push_str("\n  +act ");
+                        text.push_str(&presentation.verb);
+                        text.push_str(" — ");
+                        text.push_str(&presentation.label);
+                        if !presentation.help.is_empty() {
+                            text.push_str(": ");
+                            text.push_str(&presentation.help);
+                        }
+                    }
+                    send_event_to_conn(
+                        &self.sessions,
+                        conn,
+                        OutputEvent::Sys(RichText::tag("system", text)),
+                    );
+                }
+                Err(error) => self.action_error(conn, error),
+            }
+            return true;
+        }
+        if !command.eq_ignore_ascii_case("+act") {
+            return false;
+        }
+        let verb = argument.trim();
+        if verb.is_empty() {
+            send_event_to_conn(
+                &self.sessions,
+                conn,
+                OutputEvent::Sys(RichText::tag("system", "Usage: +act <offered verb>")),
+            );
+            return true;
+        }
+        let offers = match self.self_legal_actions(conn, actor).await {
+            Ok(offers) => offers,
+            Err(error) => {
+                self.action_error(conn, error);
+                return true;
+            }
+        };
+        let mut matching = offers
+            .into_iter()
+            .filter(|offer| offer.presentation().verb.eq_ignore_ascii_case(verb));
+        let Some(offer) = matching.next() else {
+            self.action_error(conn, ActionSend::Rejected);
+            return true;
+        };
+        if matching.next().is_some() {
+            tracing::error!(%actor, verb, "projected legal-action verb is ambiguous");
+            self.action_error(conn, ActionSend::Rejected);
+            return true;
+        }
+        if !offer.parameters().parameters().is_empty()
+            || !matches!(offer.targets(), ProjectedTargetSchema::None)
+        {
+            send_event_to_conn(
+                &self.sessions,
+                conn,
+                OutputEvent::Sys(RichText::tag(
+                    "system",
+                    "That action needs structured parameters or targets.",
+                )),
+            );
+            return true;
+        }
+        let outcome = self
+            .link
+            .submit_action(GatewayAction {
+                conn: conn.0,
+                actor,
+                offered_action: offer.offer(),
+                subject: offer.subject().clone(),
+                targets: Vec::new(),
+                parameters: serde_json::json!({}),
+            })
+            .await;
+        self.action_error(conn, outcome);
+        true
+    }
+
+    pub(crate) async fn legal_actions_panel(&self, conn: ConnId, id: u64, actor: ObjId) {
+        let event = match self.self_legal_actions(conn, actor).await {
+            Ok(offers) => match serde_json::to_value(offers) {
+                Ok(data) => OutputEvent::Panel {
+                    feed: "legal.actions".into(),
+                    kind: PanelFrameKind::Keyframe,
+                    data,
+                },
+                Err(error) => {
+                    tracing::error!(conn = conn.0, error = %error, "legal-action panel serialization failed");
+                    OutputEvent::Sys(RichText::tag("error", "Legal actions are unavailable."))
+                }
+            },
+            Err(ActionSend::Busy) => {
+                OutputEvent::Sys(RichText::tag("error", "The game is busy; try again."))
+            }
+            Err(ActionSend::Gone) => {
+                OutputEvent::Sys(RichText::tag("error", "The game is unavailable."))
+            }
+            Err(ActionSend::Rejected) => {
+                OutputEvent::Sys(RichText::tag("error", "Legal actions are unavailable."))
+            }
+            Err(ActionSend::Accepted) => unreachable!("accepted is not a legal-action query error"),
+        };
+        send_event_to_conn(
+            &self.sessions,
+            conn,
+            OutputEvent::Reply {
+                id,
+                event: Box::new(event),
+            },
+        );
     }
 
     /// Check account credentials. A blocked address is denied outright.
@@ -471,6 +643,9 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             tracing::warn!(conn = conn.0, "line from unattached connection dropped");
             return LineOutcome::Continue;
         };
+        if self.handle_legal_action_line(conn, actor, trimmed).await {
+            return LineOutcome::Continue;
+        }
         match self
             .link
             .to_server_input(ToServer::Inbound(WireInbound::Cmd {
@@ -537,6 +712,10 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             tracing::warn!(conn, "query from unattached connection dropped");
             return;
         };
+        if name == "legal.actions" {
+            self.legal_actions_panel(conn_id, id, actor).await;
+            return;
+        }
         self.link
             .to_server(ToServer::Inbound(WireInbound::Query {
                 conn,

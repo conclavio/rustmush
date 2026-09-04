@@ -298,6 +298,7 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
         .map(|(feed, _)| feed.to_string())
         .collect();
     panels.push("who".to_string());
+    panels.push("legal.actions".to_string());
     let features: Vec<String> = engine
         .modules()
         .iter()

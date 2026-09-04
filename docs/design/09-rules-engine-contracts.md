@@ -8,8 +8,11 @@ receipt. A structured split-gateway action now carries only an opaque projected 
 connection/actor authentication, enters the coordinator after early idempotency preflight, and
 receives `Owned` only from the separate exact-intent receipt, followed by `Finished` after
 finalization/RAM install. The world regenerates and verifies the offer before planning; exact
-provider definitions never cross the gateway boundary. Public line/panel/AI producers and the
-remaining process-kill matrix remain open. K3's
+provider definitions never cross the gateway boundary. The shared public adapter now serves line
+`+actions`/`+act`, the `legal.actions` web/TUI panel, deterministic NPC selection, and a mock LLM
+tool snapshot from that same projected DTO and opaque submission path; the all-in-one world handle
+also waits for exact durable ownership before reporting acceptance. Grant witnesses, semantic view
+envelopes, and the remaining process-kill matrix remain open. K3's
 persistence kernel and durability-audit closeout are implemented: exact bundle
 reservation/reconciliation, pre-hydration recovery, store-owned authoritative prefixes, compact
 checkpoints, watermark-first epoch retirement, a production coordinator plus first tactics provider,
@@ -20,9 +23,11 @@ offers, restart-stable rotating HMAC verification, durable private key provision
 inputs and guards, canonical registered-provider enumeration, opaque submission resolution, and a
 coordinator route into the same Gate-1 provider. The version-3 IPC boundary now exposes bounded
 legal-action discovery and opaque offer-only submission, including transport revalidation,
-tamper rejection before intent, and exact finalized replay after disconnect. Public line/panel/AI
-adapters, semantic view envelopes, and the remaining Gate 5 matrix remain cross-cut work; all five
-complete end-to-end proving gates remain open.
+tamper rejection before intent, and exact finalized replay after disconnect. Line, TUI-shaped,
+web-shaped, deterministic-NPC, and mock-LLM callers now share the offer/provider contract without
+receiving its exact action identity. Semantic view envelopes, active grant witnesses, real NPC/LLM
+runtime scheduling, and the remaining Gate 5 matrix remain cross-cut work; all five complete
+end-to-end proving gates remain open.
 
 **Scope:** the shared contracts that must be stable before RustMUSH substantially expands character,
 tactical, economic, and AI-driven rules
@@ -1812,7 +1817,7 @@ The repository already contains useful local proofs. They should be adapted, not
 |---|---|---|
 | C1 definitions | shared canonical owner/kind/id/digest identities; bounded `RulesValue`; immutable global definition registry; exact-reference closure; one provider semantic validator per owner/kind; bounded monotonic owner-readiness latch; tactics exact-digest owner fan-out; dry-run migration registry; tactics/sim adapters | owner-freeze discovery in remaining rules-bearing adapters, executing one migration through K3 durability, broader production provider coverage |
 | C2 plan/commit | `mush-sim::Transition`, `UnitMutationPlan`, world single writer, `WriteBatch`, K0 exact receipt gate, typed output/effect custody and one `CommitPending` batch; K2 action invocation/provider metadata; engine-owned typed state families; owner-scoped bounded multi-record `ActionTxn`; one-shot `PreparedTxn`; same-owner trigger execution in the root scratch transaction; exact staged pairing between typed post-images and an immutable K3 bundle; FIFO reserve/reconcile custody; separate exact-intent ownership and terminal receipts; exact 128-bit token/hash receipt validation before RAM install; canonical bounded K3 bundle/token/replay/event/outbox models; in-memory exact intent protocol and cut-point matrix; Redis checked-Lua intent/idempotency reservation plus replay/readback/finalization; object-plus-allocator admission; hash-aware status; live Redis 8.10 fault execution; exhaustive pre-hydration server recovery; bounded runtime deterministic retries and whole-bundle dead-letter; event-preserving compact finalized checkpoints; watermark-first epoch retirement; typestate early-idempotency coordinator and first real tactics provider; recovery-driven durable-outbox worker with stable-ID at-least-once delivery; independent bounded authoritative/legacy/control writer lanes; versioned epoch-scoped gateway request UIDs, bounded per-connection/global count+byte custody, explicit dispositions, legacy claim/release, post-reattach FIFO replay, and a version-3 structured transport-authenticated opaque-offer ingress whose exact finalized replay works after the original connection disappears | line/parser production of coordinator requests; remaining ownership-ack process-kill matrix; cross-owner transaction/bridge execution; broader provider and legacy migration |
-| C3 legal actions | contextual behavior commands, required channels, exact per-actor/per-station `ChannelGrant` projection with paired channel/priority and epoch revalidation, LLM tool manifests, exact owner-stamped action-provider registry; bounded separate internal/projected offers; canonical HMAC binding to server-held action, subject, fixed inputs, guards, projection scope, and presentation; append-only crash-safe private key provisioning and bounded retained-key rotation; projected parameter/target schemas; canonical registered-provider enumeration; uniform stale resolution; resolved-offer coordinator entry; authenticated split/in-process legal-action discovery; stable opaque route plus HMAC tag; public submission with no exact action identity and world-side regeneration | grant-bound offer witnesses and line/panel/NPC/LLM adapters over the shared public path |
+| C3 legal actions | contextual behavior commands, required channels, exact per-actor/per-station `ChannelGrant` projection with paired channel/priority and epoch revalidation, LLM tool manifests, exact owner-stamped action-provider registry; bounded separate internal/projected offers; canonical HMAC binding to server-held action, subject, fixed inputs, guards, projection scope, and presentation; append-only crash-safe private key provisioning and bounded retained-key rotation; projected parameter/target schemas; canonical registered-provider enumeration; uniform stale resolution; resolved-offer coordinator entry; authenticated split/in-process legal-action discovery; stable opaque route plus HMAC tag; public submission with no exact action identity and world-side regeneration; line `+actions`/`+act`, web/TUI `legal.actions`, deterministic NPC and mock-LLM consumers proven against one public DTO/provider contract | active grant/lease witnesses and real NPC/LLM runtime scheduling over the shared public path |
 | C4 time/windows | scheduler; strict `ClockRef`/`ClockStamp`; bounded append-only world-IC epoch history `{ real_anchor, ic_anchor, rate, generation }`; continuous rate changes; atomic epoch/head persistence; boot hydration before modules; synchronous `(ic_now, generation)` module-context read; Timestop turns, passive domain clock, Journey timing, mobility switching | registered provider lookup, typed deadline validation, generic window generations, simultaneous intent collection/order, restart/catch-up policy |
 | C5 RNG | injectable `mush-dice::RollCtx`; test-seeded ChaCha in rulesets | idempotency-derived resolution streams, draw transcript, algorithm/version and durable outcome record |
 | C6 causality | `WorldEvent`, scene/canon ledgers, module observers; stable pre-commit request/event IDs and causal references; bounded deterministic trigger queue with duplicate suppression and non-droppable active-work custody; queue execution inside one root `ActionTxn`; v2 bundles and v3 compact receipts retaining ordered root/derived semantic events and event-time witnesses | public commit-token-bound event IDs, intent-resolution-commit-observation integration, cross-owner trigger execution through validated bridges |
@@ -1828,9 +1833,11 @@ None of the five gates currently traverses all of these through one action pipel
 compact retry, fresh-engine typed-state hydration, and the structured split-process custody path.
 Its toy variant now also checkpoints, rehydrates, and expires a typed two-turn effect exactly once,
 and a regenerated opaque offer reaches that same provider without serializing its exact action,
-truth subject, fixed clock input, or guards. It does not yet have a public line/panel producer;
-public interface routing, grant witnesses, semantic views, and registered clock/window policy remain
-K4/K5 work.
+truth subject, fixed clock input, or guards. The first real tactics provider is now discoverable and
+submittable through line and structured panel adapters, while a four-consumer contract proves the
+same DTO/provider seam for line, structured, deterministic NPC, and mock LLM callers. Active grant
+witnesses, semantic views, real AI scheduling, and registered clock/window policy remain K4/K5
+work.
 That is the reason for using toy vertical slices rather than declaring the contracts finished from
 their local precursors.
 
@@ -2201,7 +2208,11 @@ two kernel primitives forward before finishing the rest of K4/K5:
    legal actions by authenticated actor/self scope and submits no exact action identity; an opaque
    route prefix supports early idempotency while world-side regeneration/HMAC verification remains
    mandatory. Known-object/contact subjects stay closed until K6 supplies their authoritative
-   perception generations. Grant witnesses and line/panel/NPC/LLM adapters remain the next K5 cut.
+   perception generations. The public `GatewayLink::submit_action` path now serves line
+   `+actions`/`+act`, the `legal.actions` web/TUI panel, deterministic NPC selection, and mock LLM
+   selection without exposing a token to presentation; split mode transfers bounded replay custody
+   while all-in-one mode runs the same preflight and waits for exact intent ownership. Active grant
+   witnesses and real delayed NPC/LLM scheduling remain later K5/K7 cuts.
 
 The K3.1 checkpoint-readback and pending-allocator findings are already closed in both memory and
 Redis and therefore are not prerequisites. Mixed authoritative write sets, synchronous typed-family

@@ -8,10 +8,12 @@
 
 use mush_core::{
     ActionInvocation, ActionProviderPrepareError, AuthoritativeBundle, AuthoritativeBundleDraft,
-    CanonicalHash, CanonicalHashError, CommitToken, DefinitionRef, Engine, GuardSet,
-    IngressEnvelope, MAX_AUTHORITATIVE_BUNDLE_BYTES, PreparedCausalRef, PrincipalId, ResolvedOffer,
+    CanonicalHash, CanonicalHashError, CanonicalId, CommitToken, DefinitionRef, Engine, GuardSet,
+    IdempotencyKey, IdempotencyScope, IngressEnvelope, IngressPayload, IngressSurfaceVersion,
+    MAX_AUTHORITATIVE_BUNDLE_BYTES, OfferRouteTable, PreparedCausalRef, PrincipalId, ResolvedOffer,
     ScopedIdempotencyKey, StagePreparedActionError,
 };
+use mush_ipc::{GatewayInput, GatewayRequest};
 use mush_store::{
     AuthoritativeQuarantineReceipt, AuthoritativeReceipt, AuthoritativeStore, IdempotencyStatus,
     StoreError,
@@ -86,6 +88,54 @@ pub struct StagedAuthoritativeAction {
 pub struct ActionCoordinator;
 
 impl ActionCoordinator {
+    /// Construct canonical coordinator ingress from an opaque public offer.
+    /// The unauthenticated route prefix selects only the frozen provider and
+    /// idempotency namespace required for the mandatory early lookup. It never
+    /// authorizes execution; a vacant request must still regenerate and verify
+    /// the complete offer inside the world task.
+    pub fn gateway_ingress(
+        request: &GatewayRequest,
+        routes: &OfferRouteTable,
+    ) -> Result<IngressEnvelope, String> {
+        let GatewayInput::Action(input) = &request.input else {
+            return Err("coordinator ingress received a non-action request".to_owned());
+        };
+        let action = routes
+            .get(input.offered_action.route_id())
+            .ok_or_else(|| "opaque offer route is not registered".to_owned())?;
+        let principal = PrincipalId::Object { id: input.actor };
+        let namespace =
+            CanonicalId::new(action.key().id.as_str()).map_err(|error| error.to_string())?;
+        let idempotency = ScopedIdempotencyKey::new(
+            IdempotencyScope {
+                principal: principal.clone(),
+                owner: action.key().owner.clone(),
+                namespace,
+            },
+            request.epoch,
+            IdempotencyKey::Request(request.uid),
+        );
+        let canonical_payload = IngressPayload::structured(serde_json::json!({
+            "offered_action": input.offered_action,
+            "subject": input.subject,
+            "targets": input.targets,
+            "parameters": input.parameters,
+        }))
+        .map_err(|error| error.to_string())?;
+        IngressEnvelope::new(
+            request.uid,
+            principal,
+            IngressSurfaceVersion::new(
+                CanonicalId::new("ipc.legal_action").expect("static surface id is valid"),
+                1,
+            )
+            .expect("non-zero static surface version"),
+            canonical_payload,
+            idempotency,
+        )
+        .map_err(|error| error.to_string())
+    }
+
     /// Authorized semantic `action/status` lookup. Finalized outcomes are
     /// returned only to an event-time eligible witness.
     pub async fn semantic_status(

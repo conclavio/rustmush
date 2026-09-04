@@ -1121,7 +1121,7 @@ mod tests {
     use super::*;
     use mush_core::{
         ActionProviderPrepareError, OfferExecutionContext, OfferKeyRing, OfferSubmission,
-        ProjectionScopeId, RevisionSet,
+        ProjectedLegalAction, ProjectionScopeId, RevisionSet,
     };
 
     fn bootstrap_focus(
@@ -1666,6 +1666,133 @@ mod tests {
             toy_brace_offers(empty_world.engine(), mush_core::GOD, 11, 4,)
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn line_structured_npc_and_mock_llm_use_one_offer_and_provider_contract() {
+        #[derive(Clone, Copy, Debug)]
+        enum Caller {
+            Line,
+            Structured,
+            DeterministicNpc,
+            MockLlm,
+        }
+
+        fn choose(caller: Caller, offers: &[ProjectedLegalAction]) -> OfferSubmission {
+            let projected = match caller {
+                Caller::Line => offers
+                    .iter()
+                    .find(|offer| offer.presentation().verb.eq_ignore_ascii_case("brace"))
+                    .cloned()
+                    .expect("line verb is offered"),
+                Caller::Structured => offers.first().cloned().expect("panel has one action"),
+                Caller::DeterministicNpc => offers
+                    .iter()
+                    .min_by_key(|offer| offer.presentation().verb.as_str())
+                    .cloned()
+                    .expect("deterministic policy has an action"),
+                Caller::MockLlm => {
+                    let prompt = serde_json::to_string(offers).expect("LLM projection serializes");
+                    let visible: Vec<ProjectedLegalAction> =
+                        serde_json::from_str(&prompt).expect("mock LLM sees only projected DTOs");
+                    visible
+                        .into_iter()
+                        .find(|offer| offer.presentation().verb == "brace")
+                        .expect("mock LLM chooses one offered tool")
+                }
+            };
+            OfferSubmission {
+                offer: projected.offer(),
+                subject: projected.subject().clone(),
+                targets: Vec::new(),
+                parameters: json!({}),
+            }
+        }
+
+        let (mut world, families) = toy_world_with_state();
+        bootstrap_focus(&mut world, &families, mush_core::GOD, 3);
+        let keys =
+            OfferKeyRing::new(mush_core::OfferSecret::new(1, [0x42; 32]).unwrap(), []).unwrap();
+        world.engine_mut().set_offer_keys(keys);
+        let offers = toy_brace_offers(world.engine(), mush_core::GOD, 11, 4).unwrap();
+        let projected = offers.projected();
+        let principal = PrincipalId::Object { id: mush_core::GOD };
+        let viewer_scope = ProjectionScopeId::derive(&principal, 4).unwrap();
+
+        for (ordinal, caller) in [
+            Caller::Line,
+            Caller::Structured,
+            Caller::DeterministicNpc,
+            Caller::MockLlm,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let request = RequestUid::from_bytes([u8::try_from(ordinal + 1).unwrap(); 16]);
+            let resolved = world
+                .engine()
+                .resolve_legal_action(
+                    &offers,
+                    OfferExecutionContext {
+                        request,
+                        principal: principal.clone(),
+                        actor: mush_core::GOD,
+                        idempotency: ScopedIdempotencyKey::new(
+                            IdempotencyScope {
+                                principal: principal.clone(),
+                                owner: OwnerId::new(TOY_OWNER).unwrap(),
+                                namespace: CanonicalId::new("brace").unwrap(),
+                            },
+                            0,
+                            IdempotencyKey::Request(request),
+                        ),
+                        viewer_scope,
+                        now: None,
+                    },
+                    choose(caller, &projected),
+                )
+                .unwrap_or_else(|error| panic!("{caller:?} failed shared resolution: {error}"));
+            assert_eq!(resolved.action(), &toy_definitions().brace);
+            let (action, invocation, _) = resolved.into_parts();
+            let (prepared, _) = world
+                .engine_mut()
+                .prepare_registered_authoritative_action(&action, &invocation)
+                .unwrap_or_else(|error| panic!("{caller:?} missed shared provider: {error}"));
+            world.engine_mut().abort_prepared_transaction(prepared);
+        }
+
+        let request = RequestUid::from_bytes([0x7F; 16]);
+        assert!(
+            world
+                .engine()
+                .resolve_legal_action(
+                    &offers,
+                    OfferExecutionContext {
+                        request,
+                        principal: principal.clone(),
+                        actor: mush_core::GOD,
+                        idempotency: ScopedIdempotencyKey::new(
+                            IdempotencyScope {
+                                principal,
+                                owner: OwnerId::new(TOY_OWNER).unwrap(),
+                                namespace: CanonicalId::new("brace").unwrap(),
+                            },
+                            0,
+                            IdempotencyKey::Request(request),
+                        ),
+                        viewer_scope,
+                        now: None,
+                    },
+                    OfferSubmission {
+                        offer: ActionOfferId(CanonicalHash::from_bytes([0xFF; 32])),
+                        subject: PerceivedRef::SelfActor,
+                        targets: Vec::new(),
+                        parameters: json!({}),
+                    },
+                )
+                .is_err(),
+            "a mock LLM cannot invent an unoffered action token"
         );
     }
 

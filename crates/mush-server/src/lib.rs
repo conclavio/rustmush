@@ -38,11 +38,7 @@ use mush_config::config::{Config, StoreBackend, StoreReceiptPolicy};
 use mush_config::ipguard::IpGuard;
 use mush_config::metrics::Metrics;
 use mush_config::offer_keys::DurableOfferKeyStore;
-use mush_core::{
-    CanonicalId, ControlMsg, Engine, IdempotencyKey, IdempotencyScope, Inbound, IngressEnvelope,
-    IngressPayload, IngressSurfaceVersion, OfferRouteTable, OfferSubmission, PrincipalId,
-    ScopedIdempotencyKey,
-};
+use mush_core::{ControlMsg, Engine, Inbound, OfferRouteTable, OfferSubmission};
 use mush_ipc::{
     BoxWrite, FrameReader, GatewayInput, GatewayRequest, GatewayRequestDisposition, IPC_VERSION,
     IpcEndpoint, LegalActionsError, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES,
@@ -487,6 +483,7 @@ fn build_hello_manifest(engine: &Engine) -> (Vec<String>, Vec<String>) {
         .map(|(feed, _)| feed.to_string())
         .collect();
     panels.push("who".to_string());
+    panels.push("legal.actions".to_string());
     let features: Vec<String> = engine
         .modules()
         .iter()
@@ -761,53 +758,6 @@ fn release_input_claim(
         .release(request)
 }
 
-fn authoritative_ingress(
-    request: &GatewayRequest,
-    routes: &OfferRouteTable,
-) -> Result<IngressEnvelope, String> {
-    let GatewayInput::Action(input) = &request.input else {
-        return Err("coordinator ingress received a non-action request".to_owned());
-    };
-    // The route prefix is deliberately insufficient to authorize execution.
-    // It selects only the frozen provider/idempotency namespace needed for
-    // preflight; the world later regenerates the complete offer and verifies
-    // its HMAC before provider planning or intent reservation.
-    let action = routes
-        .get(input.offered_action.route_id())
-        .ok_or_else(|| "opaque offer route is not registered".to_owned())?;
-    let principal = PrincipalId::Object { id: input.actor };
-    let namespace =
-        CanonicalId::new(action.key().id.as_str()).map_err(|error| error.to_string())?;
-    let idempotency = ScopedIdempotencyKey::new(
-        IdempotencyScope {
-            principal: principal.clone(),
-            owner: action.key().owner.clone(),
-            namespace,
-        },
-        request.epoch,
-        IdempotencyKey::Request(request.uid),
-    );
-    let canonical_payload = IngressPayload::structured(serde_json::json!({
-        "offered_action": input.offered_action,
-        "subject": input.subject,
-        "targets": input.targets,
-        "parameters": input.parameters,
-    }))
-    .map_err(|error| error.to_string())?;
-    IngressEnvelope::new(
-        request.uid,
-        principal.clone(),
-        IngressSurfaceVersion::new(
-            CanonicalId::new("ipc.legal_action").expect("static surface id is valid"),
-            1,
-        )
-        .expect("non-zero static surface version"),
-        canonical_payload,
-        idempotency.clone(),
-    )
-    .map_err(|error| error.to_string())
-}
-
 async fn handle_authoritative_input(
     request: GatewayRequest,
     routes: Arc<OfferRouteTable>,
@@ -821,7 +771,7 @@ async fn handle_authoritative_input(
         GatewayInput::Action(input) => (input.conn, input.actor),
         _ => unreachable!("only action requests enter the coordinator handler"),
     };
-    let envelope = match authoritative_ingress(&request, &routes) {
+    let envelope = match ActionCoordinator::gateway_ingress(&request, &routes) {
         Ok(envelope) => envelope,
         Err(detail) => {
             release_input_claim(&claims, uid);

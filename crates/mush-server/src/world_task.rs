@@ -74,12 +74,15 @@ use mush_core::commands::movement::find_exit;
 use mush_core::{
     Audience, ControlMsg, DeliveryClass, DeliveryOutcome, DisconnectKind, Effect, Effects, Engine,
     Flags, Inbound, IncidentId, LegalActionQuery, ObjId, ObjKind, OfferExecutionContext,
-    OfferSubmission, Outbox, PerceivedRef, PreparedInstallation, PrincipalId, ProjectedLegalAction,
-    Registry, Role, ScheduledKind, StagedAction, StagedActionPersistence, StepOutcome, SubjectKey,
-    TickCadence, World, WorldCommand, WorldEvent, can_perceive, event_subject, is_ignoring,
-    narrative_actor, register_core_commands, register_engine_commands,
+    OfferRouteTable, OfferSubmission, Outbox, PerceivedRef, PreparedInstallation, PrincipalId,
+    ProjectedLegalAction, Registry, Role, ScheduledKind, StagedAction, StagedActionPersistence,
+    StepOutcome, SubjectKey, TickCadence, World, WorldCommand, WorldEvent, can_perceive,
+    event_subject, is_ignoring, narrative_actor, register_core_commands, register_engine_commands,
 };
-use mush_ipc::{MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, SendTarget};
+use mush_ipc::{
+    ActionSend, GatewayAction, GatewayInput, GatewayRequest, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
+    SendTarget,
+};
 use mush_llm::LlmService;
 use mush_proto::{OutputEvent, RichText};
 use mush_store::{
@@ -948,6 +951,14 @@ fn admit_world_msg(mode: WorldMode, world: &World, msg: &WorldMsg) -> Admission 
 pub struct WorldHandle {
     tx: mpsc::Sender<WorldMsg>,
     shutdown: Option<watch::Sender<bool>>,
+    direct_actions: Option<Arc<DirectActionIngress>>,
+}
+
+struct DirectActionIngress {
+    store: Arc<dyn ObjectStore>,
+    routes: OfferRouteTable,
+    epoch: u64,
+    next_sequence: AtomicU64,
 }
 
 impl WorldHandle {
@@ -1083,6 +1094,101 @@ impl WorldHandle {
             return Err(LegalActionReadError::Unavailable);
         }
         rx.await.unwrap_or(Err(LegalActionReadError::Unavailable))
+    }
+
+    /// All-in-one counterpart of the split gateway's replay-custody path.
+    /// It performs the same mandatory preflight and does not report accepted
+    /// until the exact intent is durably owned. Split mode never calls this;
+    /// its socket link retains/replays the request and observes dispositions.
+    pub async fn submit_legal_action(&self, action: GatewayAction) -> ActionSend {
+        let Some(direct) = &self.direct_actions else {
+            return ActionSend::Gone;
+        };
+        let Some(sequence) = direct
+            .next_sequence
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current.checked_add(1)
+            })
+            .ok()
+        else {
+            tracing::error!("in-process legal-action request sequence exhausted");
+            return ActionSend::Gone;
+        };
+        let request = GatewayRequest::new(
+            direct.epoch,
+            sequence,
+            GatewayInput::Action(Box::new(action)),
+        );
+        let envelope = match ActionCoordinator::gateway_ingress(&request, &direct.routes) {
+            Ok(envelope) => envelope,
+            Err(detail) => {
+                tracing::warn!(%detail, "invalid in-process legal-action ingress");
+                return ActionSend::Rejected;
+            }
+        };
+        let Some(store) = direct.store.authoritative_store() else {
+            tracing::error!("in-process store lacks authoritative request capability");
+            return ActionSend::Gone;
+        };
+        let mut delay = Duration::from_millis(100);
+        let preflight = loop {
+            match ActionCoordinator::preflight(store, envelope.clone()).await {
+                Ok(preflight) => break preflight,
+                Err(error) if error.is_transient() => {
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(Duration::from_secs(5));
+                }
+                Err(error) => {
+                    tracing::error!(error = %error, "in-process coordinator preflight failed");
+                    return ActionSend::Gone;
+                }
+            }
+        };
+        let permit = match preflight {
+            crate::action_coordinator::ActionPreflight::Vacant(permit) => permit,
+            crate::action_coordinator::ActionPreflight::Pending { .. }
+            | crate::action_coordinator::ActionPreflight::Finalized(_) => {
+                return ActionSend::Accepted;
+            }
+            crate::action_coordinator::ActionPreflight::Retired { .. }
+            | crate::action_coordinator::ActionPreflight::Conflict => {
+                return ActionSend::Rejected;
+            }
+            crate::action_coordinator::ActionPreflight::Quarantined(receipt) => {
+                tracing::error!(
+                    token = %receipt.token(),
+                    evidence = %receipt.evidence_hash(),
+                    "in-process coordinator request is quarantined"
+                );
+                return ActionSend::Gone;
+            }
+        };
+        let GatewayInput::Action(input) = request.input else {
+            unreachable!("constructed legal-action request changed variants")
+        };
+        match self.connection_ready(input.conn, input.actor).await {
+            Ok(true) => {}
+            Ok(false) => return ActionSend::Rejected,
+            Err(WorldReadError::Busy) => return ActionSend::Busy,
+            Err(WorldReadError::Unavailable) => return ActionSend::Gone,
+        }
+        let submission = OfferSubmission {
+            offer: input.offered_action,
+            subject: input.subject,
+            targets: input.targets,
+            parameters: input.parameters,
+        };
+        let watch = match self.authoritative_action(permit, submission).await {
+            Ok(watch) => watch,
+            Err(AuthoritativeActionStartError::Busy) => return ActionSend::Busy,
+            Err(AuthoritativeActionStartError::Unavailable) => return ActionSend::Gone,
+            Err(AuthoritativeActionStartError::Rejected(_)) => return ActionSend::Rejected,
+        };
+        match watch.owned.await {
+            Ok(Ok(_)) => ActionSend::Accepted,
+            Ok(Err(AuthoritativeCommitFailure::Refused(_))) => ActionSend::Busy,
+            Ok(Err(AuthoritativeCommitFailure::Integrity(_))) | Err(_) => ActionSend::Gone,
+        }
     }
 
     /// Hand one preflighted semantic action to the world single-writer.
@@ -1289,9 +1395,22 @@ fn spawn_persist_with_gateway_mode(
 ) -> PersistHandles {
     let (tx, rx) = mpsc::channel(INBOUND_CAPACITY);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let routes = engine
+        .registry
+        .action_providers()
+        .map_or_else(OfferRouteTable::default, |providers| {
+            providers.offer_route_table()
+        });
+    let direct_actions = Arc::new(DirectActionIngress {
+        store: Arc::clone(&deps.store),
+        routes,
+        epoch: rand::random(),
+        next_sequence: AtomicU64::new(1),
+    });
     let handle = WorldHandle {
         tx: tx.clone(),
         shutdown: Some(shutdown_tx),
+        direct_actions: Some(direct_actions),
     };
     // Build the delivery sink now that the inbound queue exists: the all-in-one
     // in-process sink wires its policing feedback onto this loop's own inbound
@@ -4165,7 +4284,11 @@ async fn run_newpassword(
     // All-in-one: walk the shared manager (through the in-process sink) directly
     // — announce + bookkeeping through the world when the connection is still
     // up, then close each structured (web) connection.
-    let world = world.upgrade().map(|tx| WorldHandle { tx, shutdown: None });
+    let world = world.upgrade().map(|tx| WorldHandle {
+        tx,
+        shutdown: None,
+        direct_actions: None,
+    });
     let chars: Vec<u64> = account
         .characters
         .iter()
@@ -4382,7 +4505,11 @@ async fn run_newchar(
     }
     // The world handle for the durable, ack-gated create path. A dropped world
     // (teardown) means we cannot create; fail closed rather than orphan.
-    let Some(world) = world.upgrade().map(|tx| WorldHandle { tx, shutdown: None }) else {
+    let Some(world) = world.upgrade().map(|tx| WorldHandle {
+        tx,
+        shutdown: None,
+        direct_actions: None,
+    }) else {
         return "@newchar failed: the world is shutting down.".to_string();
     };
     // Advisory name pre-check BEFORE create (N2); the create re-checks atomically.
@@ -5403,6 +5530,106 @@ mod tests {
         fn session_counts(&self) -> (i64, i64) {
             (0, 0)
         }
+    }
+
+    #[tokio::test]
+    async fn all_in_one_offer_submission_reaches_durable_ownership() {
+        let mut engine = Engine::with_modules(
+            World::new_minimal(),
+            base_registry(),
+            vec![Box::new(mush_tactics::TacticsModule::new())],
+        )
+        .expect("tactics module composition");
+        engine.set_offer_keys(
+            mush_core::OfferKeyRing::new(
+                mush_core::OfferSecret::new(1, [0x51; 32]).expect("test offer secret"),
+                [],
+            )
+            .expect("test offer key ring"),
+        );
+
+        let store = Arc::new(InMemoryStore::new());
+        let recorder = Arc::new(RecordingGateway::default());
+        let sink = Arc::clone(&recorder);
+        let handles = spawn_persist_with_gateway(
+            engine,
+            ServerDeps {
+                store: store.clone(),
+                guard: Arc::new(IpGuard::new()),
+                staff: Arc::new(StaffQueue::new()),
+                llm: None,
+                metrics: Arc::new(Metrics::new()),
+                quarantine_spool: crate::quarantine::QuarantineSpool::in_memory(),
+            },
+            move |_| -> Gateway { sink },
+        );
+        let PersistHandles {
+            handle,
+            world_join,
+            writer_join,
+            outbox_join,
+            ..
+        } = handles;
+
+        const CONN: u64 = 0x5151;
+        assert!(
+            handle
+                .inbound(Inbound::ConnUp {
+                    conn: CONN,
+                    actor: GOD,
+                    caps_structured: true,
+                    from_linkdead: false,
+                })
+                .await
+        );
+        assert!(
+            handle.barrier().await,
+            "connection must become authoritative"
+        );
+        let offer = handle
+            .legal_actions(CONN, GOD, PerceivedRef::SelfActor)
+            .await
+            .expect("legal-action projection")
+            .into_iter()
+            .find(|offer| offer.presentation().verb == "brace")
+            .expect("tactics brace offer");
+
+        assert_eq!(
+            handle
+                .submit_legal_action(GatewayAction {
+                    conn: CONN,
+                    actor: GOD,
+                    offered_action: offer.offer(),
+                    subject: offer.subject().clone(),
+                    targets: Vec::new(),
+                    parameters: serde_json::json!({}),
+                })
+                .await,
+            ActionSend::Accepted,
+            "all-in-one acceptance must mean exact durable intent ownership"
+        );
+        assert!(handle.barrier().await, "authoritative receipt must settle");
+        let stance = store
+            .module_json_get("tactics", "action-state/v1/stance/1")
+            .await
+            .expect("read persisted tactics stance")
+            .expect("brace post-image must be durable");
+        assert_eq!(stance["value"]["braced"], true);
+        assert_eq!(stance["value"]["revision"], 1);
+
+        assert!(handle.inbound(Inbound::Control(ControlMsg::Shutdown)).await);
+        tokio::time::timeout(Duration::from_secs(2), world_join)
+            .await
+            .expect("world shutdown timed out")
+            .expect("world task panicked");
+        tokio::time::timeout(Duration::from_secs(2), writer_join)
+            .await
+            .expect("writer shutdown timed out")
+            .expect("writer task panicked");
+        tokio::time::timeout(Duration::from_secs(2), outbox_join)
+            .await
+            .expect("outbox shutdown timed out")
+            .expect("outbox task panicked");
     }
 
     #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
@@ -7159,7 +7386,11 @@ mod tests {
     #[tokio::test]
     async fn world_handle_refuses_oversized_reattach_before_enqueue() {
         let (tx, mut rx) = mpsc::channel(2);
-        let handle = WorldHandle { tx, shutdown: None };
+        let handle = WorldHandle {
+            tx,
+            shutdown: None,
+            direct_actions: None,
+        };
         let mut sparse = Vec::with_capacity(100_000);
         sparse.push(ReAttachRec {
             conn: 41,
@@ -7202,6 +7433,7 @@ mod tests {
         let handle = WorldHandle {
             tx: tx.clone(),
             shutdown: Some(shutdown_tx),
+            direct_actions: None,
         };
         let (staff_tx, _staff_rx) = mpsc::channel(STAFF_OPS_CAPACITY);
         let (_signal_tx, signal_rx) = writer_signal_channel();

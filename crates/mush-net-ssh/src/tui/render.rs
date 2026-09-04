@@ -491,6 +491,51 @@ pub fn render_intel_panel(
     lines
 }
 
+/// Render the shared viewer-safe legal-action DTO array. Opaque offer tokens
+/// and every unrecognized field remain hidden; the TUI needs only the public
+/// verb, label, and help text used by the line adapter.
+#[must_use]
+pub fn render_legal_actions_panel(
+    data: &serde_json::Value,
+    theme: &AnsiTheme,
+    depth: ColorDepth,
+) -> Vec<Line<'static>> {
+    let system = to_ratatui_style(theme.style_for(Some("system")), depth);
+    let player = to_ratatui_style(theme.style_for(Some("player")), depth);
+    let Some(offers) = data.as_array() else {
+        return vec![Line::from(dim_span_owned("(unavailable)"))];
+    };
+    if offers.is_empty() {
+        return vec![Line::from(dim_span_owned("(none available)"))];
+    }
+    let mut lines = Vec::new();
+    for presentation in offers.iter().filter_map(|offer| offer.get("presentation")) {
+        let verb = presentation
+            .get("verb")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("action");
+        let label = presentation
+            .get("label")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(verb);
+        let help = presentation
+            .get("help")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        lines.push(Line::from(vec![
+            Span::styled(format!("+act {}", truncate_chars(verb, 18)), player),
+            Span::styled(format!(" — {}", truncate_chars(label, 18)), system),
+        ]));
+        if !help.is_empty() {
+            lines.push(Line::from(dim_span_owned(&format!(
+                "  {}",
+                truncate_chars(help, 30)
+            ))));
+        }
+    }
+    lines
+}
+
 /// A dim span with owned text (control chars stripped), for widget placeholders
 /// and detail lines.
 fn dim_span_owned(text: &str) -> Span<'static> {
@@ -660,6 +705,28 @@ mod tests {
         let lines = render_intel_panel(&data, &theme, ColorDepth::Ansi16);
         assert_eq!(lines.len(), 2);
         assert!(text_of(&lines[1]).contains("nothing"));
+    }
+
+    #[test]
+    fn legal_action_panel_renders_only_public_presentation() {
+        let theme = AnsiTheme::classic();
+        let data = serde_json::json!([{
+            "offer": "secret-opaque-token",
+            "presentation": {
+                "verb": "brace",
+                "label": "Brace",
+                "help": "Adopt a braced tactical stance."
+            }
+        }]);
+        let lines = render_legal_actions_panel(&data, &theme, ColorDepth::Ansi16);
+        assert_eq!(lines.len(), 2);
+        assert!(text_of(&lines[0]).contains("+act brace"));
+        assert!(text_of(&lines[0]).contains("Brace"));
+        assert!(text_of(&lines[1]).contains("braced tactical stance"));
+        assert!(
+            lines.iter().all(|line| !text_of(line).contains("secret")),
+            "the TUI must not display opaque execution tokens"
+        );
     }
 
     #[test]

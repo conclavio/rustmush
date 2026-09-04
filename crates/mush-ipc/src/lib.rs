@@ -58,7 +58,7 @@ pub use codec::{CodecError, FrameDecoder, MAX_FRAME_LEN, decode_frame, encode_fr
 pub use io::{
     BoxRead, BoxWrite, FrameReader, IpcEndpoint, IpcListener, connect, listen, write_frame,
 };
-pub use link::{ConnectionAdmission, GatewayLink, InputSend};
+pub use link::{ActionSend, ConnectionAdmission, GatewayLink, InputSend};
 pub use protocol::{
     AttachRec, ControlMsg, CreatePlayerError, DetachCause, GatewayAction, GatewayInput,
     GatewayInputSizeError, GatewayRequest, GatewayRequestDisposition, IPC_VERSION,
