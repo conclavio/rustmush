@@ -2770,6 +2770,14 @@ transition. A crash after lease commit but before spawn is retried only after bo
 The worker returns a response tagged with the exact decision revision, attempt, and lease; stale
 worker results cannot release or advance a newer lease.
 
+Implementation status: the strict private/prompt codecs, HMAC token ring, prompt digest/linkage,
+provider witness/rank defaults, bridge-gated witness canonicalization, all per-record hard bounds,
+pre-staging global/controller/actor/byte admission, explicit-cause coalescing, atomic capture plan,
+one-shot deadline cursor, bounded no-I/O wake adapter, exact lease transition, and permit-before-
+commit async worker boundary are implemented and tested on the K7 convergence branch. Remaining
+K7.1 work is production decision-source registration, world-task commit/ack wiring, and bounded
+boot/periodic rediscovery; those are deliberately not claimed complete by the type-level slices.
+
 **K7.2 — untrusted response ingress.** The async worker owns only the projected prompt and returns
 the bounded parsed `DecisionResponse`; raw model prose or reasoning never enters authoritative
 decision state. On re-entry, authenticate the token, load the exact pending/prompt revision pair,

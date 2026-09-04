@@ -59,6 +59,7 @@ pub mod accounts;
 pub mod action_coordinator;
 pub mod config_ext;
 // E4c: the economy -> canon evidence bridge (08c §6.1 item 3).
+pub mod decision_dispatch;
 pub mod durable_outbox;
 pub mod econ_alerts;
 pub mod econ_canon;
