@@ -586,7 +586,7 @@ like every other block: `mush-config` `ShadowrunCfg` (the `EconomyCfg` pattern,
 23. LLMs draft; authorities commit. An LLM ST may generate seeds, dialogue, complications and proposed outcomes; a registered campaign policy may authorize bounded recurring offers from a capped system budget; the LLM cannot invent funds, alter frozen terms, or settle on narration.
 24. Bound the player-created run board: escrow required at publication, active-offer caps per principal, expiry of abandoned listings, and public / faction-visible / invitation-only runs.
 
-## 11. Open questions (defaults chosen)
+## 11. Open questions (defaults chosen — **accepted by the owner 2026-09-03**; q2 resolved to E5b; all binding as written)
 
 Only what the twenty-four answers and doc 10 leave open. Each default is what the build takes unless
 the owner says otherwise.
