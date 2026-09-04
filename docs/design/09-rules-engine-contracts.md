@@ -2057,9 +2057,14 @@ Gate-5 work:
    quarantine restore, durable outbox, epoch retirement, conflict handling, and retention-generation
    CAS semantics unchanged against memory and Redis; backend-specific corruption probes remain in
    their native harnesses.
-6. **K3.1f — K0/K3 integration:** deterministic E0 drops carrying unsealed Ledger chunks or other
-   module writes enter the unified quarantine evidence path, and authoritative work gets a bounded
-   lane that ordinary seal traffic cannot starve.
+6. **K3.1f — K0/K3 integration (batch custody closed; lane isolation open):** deterministic E0
+   drops now preserve the complete canonical legacy batch in the unified quarantine spool before
+   seal isolation, including object post-images, deletes, module operations, allocator state, and
+   original FIFO serial. Boot recovery replays only provably idempotent absolute batches in serial
+   order; ambiguous stream appends remain active and fail closed. Retained poison-seal re-emission
+   reuses exact existing custody rather than creating serial-dependent duplicate records. The
+   remaining closeout is independently bounded authoritative, legacy, and recovery/control lanes
+   with guaranteed service, so ordinary seal traffic cannot starve authoritative work.
 
 Economy obligations/contracts remain on their legacy durable path until mixed authoritative write
 sets can include the Ledger append, modules can read their own typed families outside an action, and

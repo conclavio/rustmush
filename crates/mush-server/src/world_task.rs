@@ -2959,8 +2959,7 @@ async fn flush_dirty(
             "authoritative batch rejected before enqueue: retained-seal custody invariant"
         );
         let detail = retention_error.to_string();
-        persist::preserve_unqueued_seals(quarantine_spool, &batch.module_ops, *serial, &detail)
-            .await;
+        persist::preserve_unqueued_batch(quarantine_spool, &batch, &detail).await;
         return FlushOutcome::Rejected(detail);
     }
     let (notify, receipt) = if durable {
@@ -2983,10 +2982,9 @@ async fn flush_dirty(
             serial = *serial,
             "store writer gone; batch dropped (teardown)"
         );
-        persist::preserve_unqueued_seals(
+        persist::preserve_unqueued_batch(
             quarantine_spool,
-            &batch.module_ops,
-            *serial,
+            &batch,
             "store writer queue closed before accepting authoritative batch",
         )
         .await;

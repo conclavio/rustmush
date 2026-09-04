@@ -562,6 +562,21 @@ async fn writer_loop(
                     let detail = format!(
                         "persistence integrity halted after an unresolved predecessor: {reason}"
                     );
+                    // A retained seal that was already healed or quarantined
+                    // is merely the world's delivery retry. Its exact bytes
+                    // already have terminal custody, so do not manufacture a
+                    // new serial-dependent legacy-batch record on every flush.
+                    // Any collateral operation still requires its own complete
+                    // batch record before this rejected job leaves RAM.
+                    if !batch_fully_covered_by_handled_seals(&batch, &poison) {
+                        spool_legacy_batch_until_preserved(
+                            &quarantine_spool,
+                            &batch,
+                            &StoreError::Invalid(detail.clone()),
+                            0,
+                        )
+                        .await;
+                    }
                     preserve_terminal_seals(
                         &signals,
                         &quarantine_spool,
@@ -1058,6 +1073,8 @@ async fn write_with_retry(
                     );
                     notify_deterministic_failure(signals, detail.clone());
                     let terminal = StoreError::Invalid(detail.clone());
+                    spool_legacy_batch_until_preserved(quarantine_spool, &batch, &terminal, 0)
+                        .await;
                     preserve_terminal_seals(
                         signals,
                         quarantine_spool,
@@ -1089,6 +1106,13 @@ async fn write_with_retry(
                     signals,
                     format!("store closed while dropping batch {}", batch.serial),
                 );
+                spool_legacy_batch_until_preserved(
+                    quarantine_spool,
+                    &batch,
+                    &StoreError::Closed,
+                    0,
+                )
+                .await;
                 preserve_terminal_seals(
                     signals,
                     quarantine_spool,
@@ -1115,6 +1139,11 @@ async fn write_with_retry(
                     signals,
                     format!("deterministic drop of batch {}: {e}", batch.serial),
                 );
+                // Preserve the complete causal write set before isolating any
+                // seal. Object post-images, deletes, open Ledger chunks, and
+                // collateral module operations must not disappear merely
+                // because only sealed chunks have an older recovery format.
+                spool_legacy_batch_until_preserved(quarantine_spool, &batch, &e, 1).await;
                 if !batch.module_ops.is_empty() {
                     let mut keys: Vec<String> = Vec::new();
                     let mut ledger_keys: Vec<String> = Vec::new();
@@ -1321,6 +1350,31 @@ fn sealed_chunks_in(batch: &WriteBatch) -> Vec<(SmolStr, SmolStr, serde_json::Va
             _ => None,
         })
         .collect()
+}
+
+/// Whether every operation in a rejected batch is an exact seal generation
+/// whose terminal outcome is already held by [`PoisonState`]. This is narrowly
+/// a retained-delivery de-duplication rule: object writes, deletes, allocator
+/// changes, non-seal module ops, and mixed batches always need complete batch
+/// custody even if one member seal was seen before.
+fn batch_fully_covered_by_handled_seals(batch: &WriteBatch, poison: &PoisonState) -> bool {
+    if !batch.upserts.is_empty()
+        || !batch.deletes.is_empty()
+        || batch.next_id.is_some()
+        || batch.module_ops.is_empty()
+    {
+        return false;
+    }
+    let seals = sealed_chunks_in(batch);
+    seals.len() == batch.module_ops.len()
+        && seals.iter().all(|(namespace, key, value)| {
+            let id = (
+                namespace.clone(),
+                key.clone(),
+                crate::quarantine::seal_identity_hash(namespace, key, value),
+            );
+            poison.handled.contains_key(&id)
+        })
 }
 
 /// Preserve every authoritative seal in a batch whose acknowledgement can no
@@ -1654,6 +1708,79 @@ async fn spool_quarantine_until_preserved(
         tokio::time::sleep(delay).await;
         delay = (delay * 2).min(QUARANTINE_RETRY_MAX);
     }
+}
+
+fn spool_legacy_batch(
+    spool: &QuarantineSpool,
+    batch: &WriteBatch,
+    err: &StoreError,
+    attempts: u32,
+) -> bool {
+    match spool.quarantine_legacy_batch(batch, err, attempts) {
+        Ok(true) => {
+            tracing::error!(
+                serial = batch.serial,
+                operations = batch.upserts.len()
+                    + batch.deletes.len()
+                    + batch.module_ops.len()
+                    + usize::from(batch.next_id.is_some()),
+                "complete failed legacy batch preserved in quarantine"
+            );
+            true
+        }
+        Ok(false) => false,
+        Err(error) => {
+            tracing::error!(
+                serial = batch.serial,
+                %error,
+                "FAILED to preserve complete legacy batch in quarantine"
+            );
+            false
+        }
+    }
+}
+
+/// Keep custody in the fail-stopped writer until the independent spool has a
+/// verified complete batch record. This is deliberately the same unbounded
+/// operational retry posture as authoritative bundle/seal preservation: disk
+/// or capacity repair is safer than allowing the only complete recovery bytes
+/// to leave RAM.
+async fn spool_legacy_batch_until_preserved(
+    spool: &QuarantineSpool,
+    batch: &WriteBatch,
+    err: &StoreError,
+    attempts: u32,
+) {
+    if batch.is_empty() {
+        return;
+    }
+    let mut delay = QUARANTINE_RETRY_INITIAL;
+    loop {
+        if spool_legacy_batch(spool, batch, err, attempts) {
+            return;
+        }
+        tracing::error!(
+            serial = batch.serial,
+            retry_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+            "CRITICAL: complete failed legacy batch is still RAM-only; keeping writer fail-stopped and retrying"
+        );
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(QUARANTINE_RETRY_MAX);
+    }
+}
+
+/// Spill a complete legacy batch that could not enter writer custody, then
+/// preserve its sealed members under the older per-seal recovery protocol as
+/// supplemental evidence. The complete record is what protects unrelated
+/// object/module/delete/allocator state.
+pub(crate) async fn preserve_unqueued_batch(
+    spool: &QuarantineSpool,
+    batch: &WriteBatch,
+    detail: &str,
+) {
+    let error = StoreError::Invalid(bounded_detail(detail.to_owned()));
+    spool_legacy_batch_until_preserved(spool, batch, &error, 0).await;
+    preserve_unqueued_seals(spool, &batch.module_ops, batch.serial, detail).await;
 }
 
 /// Durably spill every valid sealed-ledger operation from a batch that never
