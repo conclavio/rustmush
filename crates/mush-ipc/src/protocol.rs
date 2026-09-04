@@ -529,8 +529,10 @@ pub enum ServiceReq {
         conn: u64,
         /// The actor currently attached to `conn`.
         actor: ObjId,
-        /// A previously projected subject reference. K5 initially accepts
-        /// only `SelfActor`; K6 adds revision-checked object/contact scopes.
+        /// A previously projected subject reference. `KnownObject` is
+        /// accepted only when its revision matches the actor's one
+        /// unambiguous current station-grant epoch; contact scopes require
+        /// their K6 private lifecycle provider.
         subject: PerceivedRef,
     },
     /// Recover one previously accepted authoritative action by its public

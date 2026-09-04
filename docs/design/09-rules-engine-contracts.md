@@ -2271,8 +2271,10 @@ two kernel primitives forward before finishing the rest of K4/K5:
    and rotation retains/prunes a hard-bounded verification history. Version-3 IPC now discovers
    legal actions by authenticated actor/self scope and submits no exact action identity; an opaque
    route prefix supports early idempotency while world-side regeneration/HMAC verification remains
-   mandatory. Known-object/contact subjects stay closed until K6 supplies their authoritative
-   perception generations. The public `GatewayLink::submit_action` path now serves line
+   mandatory. Operated `KnownObject` subjects are now admitted only when the dbref remains
+   perceivable and the supplied revision equals the one unambiguous current station-grant epoch;
+   contact subjects stay closed until K6 supplies their private authoritative lifecycle. The public
+   `GatewayLink::submit_action` path now serves line
    `+actions`/`+act`, the `legal.actions` web/TUI panel, deterministic NPC selection, and mock LLM
    selection without exposing a token to presentation; split mode transfers bounded replay custody
    while all-in-one mode runs the same preflight and waits for exact intent ownership. Active grant
@@ -2424,6 +2426,10 @@ registers the first authoritative lease family and validator. Production request
 providers, the schedule/domain driver that chooses when a boundary is safe, and automatic lease
 witness attachment to offers remain in this cut; policy for controller selection, handoff reasons,
 and boundary choice remains outside the kernel.
+The world-task subject resolver now also admits an operated `KnownObject` only through an exact,
+unambiguous current station-grant epoch and the ordinary perception gate, and repeats that check
+during offer regeneration. No guessed dbref/revision pair becomes an authority token. Contact
+references remain fail-closed pending item 4's private state and resolver.
 
 Exit criteria:
 

@@ -327,26 +327,52 @@ pub enum LegalActionReadError {
     InvalidSubject,
 }
 
-// K5's first public provider is actor-self scoped. K6 will replace this
-// bootstrap generation with the persisted perception/view generation and add
-// revision-checked KnownObject/Contact resolution. Keeping unsupported
-// references closed here prevents a placeholder from becoming authority.
+// K5's first public provider is actor-self scoped. K6 admits an operated
+// KnownObject only when its projected revision is the one unambiguous current
+// station-grant epoch for this actor/subject and ordinary perception policy
+// permits the dbref disclosure. Contact references remain closed until their
+// private authoritative lifecycle store exists.
 const BOOTSTRAP_SELF_PROJECTION_GENERATION: u64 = 1;
 
-fn self_legal_action_query(
+fn legal_action_query(
+    engine: &Engine,
     principal: PrincipalId,
     actor: ObjId,
     subject: PerceivedRef,
 ) -> Result<LegalActionQuery, LegalActionReadError> {
-    if subject != PerceivedRef::SelfActor {
-        return Err(LegalActionReadError::InvalidSubject);
-    }
+    let (truth_subject, projection_generation) = match &subject {
+        PerceivedRef::SelfActor => (
+            SubjectKey::Object { id: actor },
+            BOOTSTRAP_SELF_PROJECTION_GENERATION,
+        ),
+        PerceivedRef::KnownObject { id, revision } => {
+            if engine.world.get(*id).is_none()
+                || !can_perceive(&engine.registry, &engine.world, actor, *id)
+            {
+                return Err(LegalActionReadError::InvalidSubject);
+            }
+            let mut epochs = engine
+                .world
+                .command_subjects_of(actor)
+                .iter()
+                .filter(|grant| grant.subject == *id)
+                .map(|grant| grant.epoch);
+            let Some(epoch) = epochs.next() else {
+                return Err(LegalActionReadError::InvalidSubject);
+            };
+            if epoch != *revision || epochs.any(|candidate| candidate != epoch) {
+                return Err(LegalActionReadError::InvalidSubject);
+            }
+            (SubjectKey::Object { id: *id }, epoch)
+        }
+        PerceivedRef::Contact { .. } => return Err(LegalActionReadError::InvalidSubject),
+    };
     LegalActionQuery::new(
         principal,
         actor,
-        SubjectKey::Object { id: actor },
+        truth_subject,
         subject,
-        BOOTSTRAP_SELF_PROJECTION_GENERATION,
+        projection_generation,
         None,
     )
     .map_err(|_| LegalActionReadError::Unavailable)
@@ -2359,7 +2385,8 @@ async fn run(
                             let result = if engine.actor_of(conn) != Some(actor) {
                                 Err(LegalActionReadError::InvalidSubject)
                             } else {
-                                self_legal_action_query(
+                                legal_action_query(
+                                    &engine,
                                     PrincipalId::Object { id: actor },
                                     actor,
                                     subject,
@@ -2394,7 +2421,8 @@ async fn run(
                                         "coordinator principal is not an object actor".to_owned()
                                     );
                                 };
-                                let query = self_legal_action_query(
+                                let query = legal_action_query(
+                                    &engine,
                                     PrincipalId::Object { id: actor },
                                     actor,
                                     submission.subject.clone(),
@@ -5768,6 +5796,7 @@ fn spawn_effect_list(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
@@ -5786,6 +5815,63 @@ mod tests {
     use mush_store::AuthoritativeStore;
 
     struct BlackholeGateway;
+
+    #[test]
+    fn operated_known_subject_requires_exact_unambiguous_grant_epoch() {
+        let mut engine = Engine::new(World::new_minimal(), Registry::new());
+        let movement = mush_core::ChannelId::new("movement").unwrap();
+        engine
+            .world
+            .publish_command_subject(mush_core::ChannelGrant {
+                actor: GOD,
+                subject: LIMBO,
+                station: SmolStr::new_static("pilot"),
+                relation: SmolStr::new_static("pilot"),
+                owner: SmolStr::new_static("sim"),
+                priority: 10,
+                channels: BTreeSet::from([movement.clone()]),
+                epoch: 7,
+            });
+        let principal = PrincipalId::Object { id: GOD };
+        let projected = PerceivedRef::KnownObject {
+            id: LIMBO,
+            revision: 7,
+        };
+        let query = legal_action_query(&engine, principal.clone(), GOD, projected.clone()).unwrap();
+        assert_eq!(query.truth_subject(), &SubjectKey::Object { id: LIMBO });
+        assert_eq!(query.projected_subject(), &projected);
+
+        assert_eq!(
+            legal_action_query(
+                &engine,
+                principal.clone(),
+                GOD,
+                PerceivedRef::KnownObject {
+                    id: LIMBO,
+                    revision: 6,
+                },
+            )
+            .unwrap_err(),
+            LegalActionReadError::InvalidSubject
+        );
+
+        engine
+            .world
+            .publish_command_subject(mush_core::ChannelGrant {
+                actor: GOD,
+                subject: LIMBO,
+                station: SmolStr::new_static("remote"),
+                relation: SmolStr::new_static("remote"),
+                owner: SmolStr::new_static("sim"),
+                priority: 5,
+                channels: BTreeSet::from([movement]),
+                epoch: 8,
+            });
+        assert_eq!(
+            legal_action_query(&engine, principal, GOD, projected).unwrap_err(),
+            LegalActionReadError::InvalidSubject
+        );
+    }
 
     impl GatewaySink for BlackholeGateway {
         fn transmit(&self, _sends: Vec<(SendTarget, Arc<OutputEvent>)>) {}
