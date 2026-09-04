@@ -405,6 +405,12 @@ and deterministically retains only the lexically first bounded pool set. `Secret
 before prompt count/byte admission, so they neither leak nor crowd later public facts out of the
 bounded projection.
 
+The agent profile is also a validated prompt envelope, not arbitrary attribute JSON: persona,
+background, and speech style have independent byte ceilings; goals, knowledge fences, fallback
+lines, and watch subjects have count and per-entry ceilings; and the complete encoded profile caps
+at 256 KiB. Staff edits validate before changing the attribute. An invalid persisted profile is not
+used to wake or prompt the NPC; a later staff edit starts from a bounded default and repairs it.
+
 ### 6.4 Tools → safe actions
 
 ```rust

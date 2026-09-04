@@ -2415,6 +2415,9 @@ fn persist_intel(ctx: &mut Ctx<'_>, principal: Principal, records: &[IntelRecord
 }
 
 fn store_profile(ctx: &mut Ctx<'_>, npc: ObjId, profile: &AgentProfile) -> Result<(), CmdError> {
+    profile
+        .validate()
+        .map_err(|error| CmdError::msg(error.to_string()))?;
     let value = serde_json::to_value(profile)
         .map_err(|e| CmdError::msg(format!("Could not serialize the profile: {e}")))?;
     ctx.w
@@ -2510,7 +2513,9 @@ fn read_profile(w: &World, npc: ObjId) -> Option<AgentProfile> {
 
 fn read_profile_raw(w: &World, npc: ObjId) -> Option<AgentProfile> {
     let v = w.attr(npc, PROFILE_ATTR)?.as_json()?;
-    serde_json::from_value(v.clone()).ok()
+    serde_json::from_value(v.clone())
+        .ok()
+        .filter(|profile: &AgentProfile| profile.validate().is_ok())
 }
 
 fn read_summary(w: &World, npc: ObjId) -> String {

@@ -129,7 +129,11 @@ pub use memory::{
 };
 pub use module::NpcModule;
 pub use profile::{
-    AgentProfile, KnowledgeBounds, NS, NpcTier, PROFILE_ATTR, SUMMARY_ATTR, THINKING_FEED,
+    AgentProfile, AgentProfileValidationError, KnowledgeBounds, MAX_AGENT_PROFILE_BYTES,
+    MAX_PROFILE_BACKGROUND_BYTES, MAX_PROFILE_FALLBACK_BYTES, MAX_PROFILE_FALLBACK_LINES,
+    MAX_PROFILE_GOALS, MAX_PROFILE_KNOWLEDGE_FENCES, MAX_PROFILE_LIST_ENTRY_BYTES,
+    MAX_PROFILE_PERSONA_BYTES, MAX_PROFILE_SPEECH_BYTES, MAX_PROFILE_WATCH_BYTES,
+    MAX_PROFILE_WATCH_ENTRIES, NS, NpcTier, PROFILE_ATTR, SUMMARY_ATTR, THINKING_FEED,
 };
 pub use prompt::{ENGINE_FRAME, system_prompt, user_prompt};
 pub use query::IntelListQuery;
