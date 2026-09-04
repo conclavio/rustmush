@@ -3,7 +3,8 @@
 **Status:** Implementing 0.11 — K0/K1 formal exit criteria landed. K2 has strict atomic boot
 hydration, bounded typed transactions, final guard revalidation, provider registration, and a
 versioned split-gateway request custody protocol. Its same-bundle trigger executor, independently
-bounded must-retain lanes, and authenticated coordinator entry remain open. The self-contained K3 persistence kernel is implemented: exact bundle
+bounded must-retain lanes, and authenticated coordinator entry remain open. K3's persistence kernel
+is implemented but reopened by the durability audit below: exact bundle
 reservation/reconciliation, pre-hydration recovery, store-owned authoritative prefixes, compact
 checkpoints, watermark-first epoch retirement, a production coordinator plus first tactics provider,
 and recovery-driven durable-outbox dispatch. Transport/legal-offer integration and the IPC portions
@@ -1985,11 +1986,46 @@ manifest; terminal records survive checkpointing and are removed with their reti
 bounded production worker rediscovers finalized outbox items, persists the attempt before delivery,
 reuses stable item IDs for ambiguous send/ack loss, records retry or terminal state, and checkpoints
 the parent only after all items are terminal. Missing adapters retain work and cannot starve
-installed adapters. The remaining K3 exit work is cross-cut: transport/parser/legal-offer entry into
-the coordinator, the remaining gateway ownership process/IPC fault cases, recoverable
-projection/keyframes, and broader provider/legacy migration. Those depend respectively on unfinished
-K2 trigger/transport work and K5/C9/C12 projection; the self-contained K3 store, coordinator, and
-durable-delivery kernel is complete.
+installed adapters. The remaining K3 exit work includes the audit closure below plus cross-cut
+transport/parser/legal-offer entry into the coordinator, the remaining gateway ownership process/IPC
+fault cases, recoverable projection/keyframes, and broader provider/legacy migration. Those depend
+respectively on unfinished K2 trigger/transport work and K5/C9/C12 projection. The store identity
+protocol is sound, but the kernel is not considered complete until K3.1 closes.
+
+#### K3.1. Durability-audit closure (reopened)
+
+Post-implementation memory-store probes found two correctness violations and several liveness,
+parity, and observability gaps. They are tracked here rather than hidden inside later economy or
+Gate-5 work:
+
+1. **K3.1a — checkpoint proof (closed):** memory and Redis atomically verify every exact replay
+   post-image before deleting the full intent. A mismatch retains the intent and fails closed.
+2. **K3.1b — store-owned admission (closed):** the store enforces the initial single unresolved
+   authoritative reservation bound (or a future equivalent per-target claim protocol), so two
+   pending bundles cannot claim the same fresh object ID.
+3. **K3.1c — poison release valve (closed):** an audited exact token/hash/evidence transition is
+   legal only after the unified quarantine spool durably proves custody. It releases only a
+   never-finalized full intent, keeps a non-replayable idempotency tombstone, and remains recoverable:
+   a later boot can atomically restore the exact spooled bundle, retry it, and rediscard it if the
+   deterministic fault remains. Finalized intents can never use this discard path.
+4. **K3.1d — unroutable outbox policy (closed):** missing adapters advance a separate durable,
+   bounded discovery-pass counter without consuming real delivery attempts, persist a terminal
+   dead-letter outcome with diagnostics, and then permit parent checkpoint/epoch progress. Installed
+   adapters must remain independently dispatchable.
+5. **K3.1e — Redis concurrency/parity (in progress):** Redis-gated tests are now explicit ignored
+   tests locally and an explicit Linux CI job, so skipped Lua coverage cannot count as passing.
+   Retention-counter repair now uses the generation captured before exhaustive scanning, and the
+   complete-bundle recovery lookup reports `Retired` from the scope watermark after compact records
+   are purged. Consolidating the duplicated authoritative cases into one backend conformance suite
+   remains.
+6. **K3.1f — K0/K3 integration:** deterministic E0 drops carrying unsealed Ledger chunks or other
+   module writes enter the unified quarantine evidence path, and authoritative work gets a bounded
+   lane that ordinary seal traffic cannot starve.
+
+Economy obligations/contracts remain on their legacy durable path until mixed authoritative write
+sets can include the Ledger append, modules can read their own typed families outside an action, and
+the Ledger seal participates in the same bundle instead of blocking it. That migration is a later
+provider milestone, not part of K3.1's kernel repair.
 
 Work:
 

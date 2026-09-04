@@ -2,8 +2,10 @@
 //! search, native TTL bans) against a **live Redis 8**, gated on the
 //! `REDIS_URL` env var.
 //!
-//! Without `REDIS_URL` every test skips cleanly with a note — the dev box
-//! has no Redis; Linux CI runs a `redis:8` service container.
+//! Every test is explicitly ignored during an ordinary local run so the test
+//! harness reports the missing live dependency as `ignored`, never as a
+//! passing Lua proof. Linux CI runs this target with `--ignored` and a
+//! `REDIS_URL`; explicitly running it without that variable is an error.
 //!
 //! **WARNING:** these tests delete every `obj:*`, `account:*`, `ban:*`,
 //! `token:*`, `meta:*`, `mod:*`, and `auth:*` key in the configured database
@@ -30,18 +32,18 @@ use tokio::sync::Mutex;
 
 static REDIS_LOCK: Mutex<()> = Mutex::const_new(());
 
-/// Connect and wipe, or `None` (with a note) when `REDIS_URL` is unset
-/// (or set but empty — `REDIS_URL= cargo test` must skip, not panic).
-async fn fresh_store(test: &str) -> Option<RedisStore> {
-    let Some(url) = std::env::var("REDIS_URL").ok().filter(|s| !s.is_empty()) else {
-        eprintln!("skipping {test}: REDIS_URL not set (no live Redis on this machine)");
-        return None;
-    };
+/// Connect and wipe. These tests only run when explicitly included, at which
+/// point a missing URL is a configuration failure rather than a silent skip.
+async fn fresh_store(test: &str) -> RedisStore {
+    let url = std::env::var("REDIS_URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| panic!("cannot run {test}: REDIS_URL is not set"));
     let store = RedisStore::connect(&url)
         .await
         .unwrap_or_else(|e| panic!("REDIS_URL set but connect failed: {e}"));
     store.wipe_namespaces().await.expect("wipe test namespaces");
-    Some(store)
+    store
 }
 
 async fn seed_minimal_world(store: &RedisStore) {
@@ -144,11 +146,10 @@ fn authoritative_bundle_for_epoch_and_outbox(
 macro_rules! redis_gated {
     ($name:ident, $store:ident, $body:block) => {
         #[tokio::test]
+        #[ignore = "requires live Redis; CI runs this suite explicitly"]
         async fn $name() {
             let _serialize = REDIS_LOCK.lock().await;
-            let Some($store) = fresh_store(stringify!($name)).await else {
-                return;
-            };
+            let $store = fresh_store(stringify!($name)).await;
             $body
         }
     };
@@ -491,6 +492,128 @@ redis_gated!(authoritative_checkpoint_is_atomic_and_retryable, store, {
     assert_eq!(resumed.released_intent_bytes, 0);
 });
 
+redis_gated!(
+    authoritative_checkpoint_retains_clobbered_post_image,
+    store,
+    {
+        use fred::interfaces::KeysInterface;
+
+        seed_minimal_world(&store).await;
+        let bundle = authoritative_bundle(13, 23);
+        let token = bundle.token();
+        let hash = bundle.bundle_hash();
+        let intent_key = format!("auth:intent:{token}");
+        store
+            .reserve_authoritative_intent(bundle)
+            .await
+            .expect("reserve checkpoint candidate");
+        store
+            .reconcile_authoritative(token, hash)
+            .await
+            .expect("finalize checkpoint candidate");
+        store
+            .client()
+            .set::<(), _, _>("meta:next_id", "4", None, None, false)
+            .await
+            .expect("clobber one materialized post-image");
+
+        assert!(matches!(
+            store.checkpoint_authoritative(token, hash).await,
+            Err(StoreError::AuthoritativeCorrupt(message))
+                if message.contains("READBACK_MISMATCH")
+        ));
+        assert_eq!(
+            store.client().exists::<i64, _>(intent_key).await.unwrap(),
+            1,
+            "failed checkpoint must retain the exact repair witness"
+        );
+    }
+);
+
+redis_gated!(
+    authoritative_store_refuses_second_unresolved_intent,
+    store,
+    {
+        seed_minimal_world(&store).await;
+        let first = authoritative_bundle(14, 24);
+        let second = authoritative_bundle(16, 26);
+        store
+            .reserve_authoritative_intent(first.clone())
+            .await
+            .expect("reserve first intent");
+        assert!(matches!(
+            store.reserve_authoritative_intent(second.clone()).await,
+            Err(StoreError::AuthoritativeIntentInFlight { pending: 1 })
+        ));
+        store
+            .reconcile_authoritative(first.token(), first.bundle_hash())
+            .await
+            .expect("resolve first intent");
+        store
+            .reserve_authoritative_intent(second)
+            .await
+            .expect("reservation proceeds after the first intent resolves");
+    }
+);
+
+redis_gated!(
+    authoritative_quarantine_discard_is_exact_and_non_replayable,
+    store,
+    {
+        seed_minimal_world(&store).await;
+        let bundle = authoritative_bundle(17, 27);
+        let token = bundle.token();
+        let hash = bundle.bundle_hash();
+        let evidence_hash = CanonicalHash::from_bytes([0x1c; 32]);
+        let intent_bytes = serde_json::to_string(&bundle).unwrap().len();
+        store
+            .reserve_authoritative_intent(bundle.clone())
+            .await
+            .expect("reserve poison candidate");
+        let discarded = store
+            .discard_quarantined_authoritative_intent(token, hash, evidence_hash)
+            .await
+            .expect("replace pending intent with quarantine tombstone");
+        assert!(!discarded.resumed);
+        assert_eq!(discarded.released_intent_bytes, intent_bytes);
+        assert_eq!(
+            store.authoritative_status(token, hash).await.unwrap(),
+            BundleStatus::QuarantinedExact(Box::new(discarded.quarantine.clone()))
+        );
+        assert_eq!(
+            store
+                .authoritative_idempotency_status(bundle.idempotency(), bundle.ingress_hash())
+                .await
+                .unwrap(),
+            IdempotencyStatus::QuarantinedExact(Box::new(discarded.quarantine.clone()))
+        );
+        assert!(matches!(
+            store.reserve_authoritative_intent(bundle.clone()).await,
+            Err(StoreError::AuthoritativeIntentQuarantined {
+                evidence_hash: observed
+            }) if observed == evidence_hash
+        ));
+        assert!(
+            store
+                .discard_quarantined_authoritative_intent(token, hash, evidence_hash)
+                .await
+                .unwrap()
+                .resumed
+        );
+        assert!(
+            !store
+                .restore_quarantined_authoritative_intent(bundle, evidence_hash)
+                .await
+                .unwrap()
+                .resumed
+        );
+        assert_eq!(
+            store.authoritative_status(token, hash).await.unwrap(),
+            BundleStatus::PendingExact
+        );
+    }
+);
+
 redis_gated!(authoritative_durable_outbox_round_trip, store, {
     seed_minimal_world(&store).await;
     let intent = DurableOutboxIntent::new(
@@ -524,6 +647,29 @@ redis_gated!(authoritative_durable_outbox_round_trip, store, {
     let pending = store.pending_authoritative_outbox().await.unwrap();
     assert_eq!(pending.len(), 1);
     let item_id = pending[0].item_id();
+    let unroutable = store
+        .note_authoritative_outbox_unroutable(
+            item_id,
+            payload_hash,
+            0,
+            "adapter unavailable".to_owned(),
+        )
+        .await
+        .expect("persist unroutable discovery pass");
+    assert_eq!(unroutable.unroutable_passes(), 1);
+    assert_eq!(unroutable.attempts(), 0);
+    assert_eq!(
+        store
+            .note_authoritative_outbox_unroutable(
+                item_id,
+                payload_hash,
+                0,
+                "adapter unavailable".to_owned(),
+            )
+            .await
+            .expect("join lost unroutable-pass acknowledgement"),
+        unroutable
+    );
     assert!(matches!(
         store.checkpoint_authoritative(token, hash).await,
         Err(StoreError::AuthoritativeOutboxPending)
@@ -660,7 +806,7 @@ redis_gated!(authoritative_epoch_retirement_is_watermark_first, store, {
         }
     );
     assert!(matches!(
-        store.reserve_authoritative_intent(old).await,
+        store.reserve_authoritative_intent(old.clone()).await,
         Err(StoreError::AuthoritativeEpochRetired {
             requested_epoch: 0,
             minimum_accepted_epoch: 1,
@@ -672,6 +818,12 @@ redis_gated!(authoritative_epoch_retirement_is_watermark_first, store, {
             .await
             .unwrap(),
         BundleStatus::Absent
+    );
+    assert_eq!(
+        store.authoritative_bundle_status(&old).await.unwrap(),
+        BundleStatus::Retired {
+            minimum_accepted_epoch: 1
+        }
     );
 
     let current = authoritative_bundle_for_epoch(14, 24, 1);
@@ -726,6 +878,10 @@ redis_gated!(
             count: 1,
             bytes: serde_json::to_string(&bundle).unwrap().len(),
         };
+        let generation = store
+            .authoritative_retention_generation()
+            .await
+            .expect("capture pre-scan generation");
 
         let _: i64 = store
             .client()
@@ -745,7 +901,7 @@ redis_gated!(
 
         assert!(
             store
-                .repair_authoritative_retention(usage)
+                .repair_authoritative_retention(generation, usage)
                 .await
                 .expect("repair derivative counters")
         );
@@ -767,10 +923,24 @@ redis_gated!(
         );
         assert!(
             !store
-                .repair_authoritative_retention(usage)
+                .repair_authoritative_retention(generation, usage)
                 .await
                 .expect("exact counters are an idempotent no-op")
         );
+        store
+            .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .expect("finalize retained intent");
+        store
+            .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
+            .await
+            .expect("change retained generation");
+        assert!(matches!(
+            store
+                .repair_authoritative_retention(generation, usage)
+                .await,
+            Err(StoreError::AuthoritativeRetentionContention)
+        ));
     }
 );
 

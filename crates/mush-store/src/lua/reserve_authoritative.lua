@@ -1,6 +1,6 @@
 -- KEYS: intent, receipt, idempotency binding, pending set, retained count,
 -- retained bytes, object allocator, minimum epoch, retained generation,
--- then every ObjectSet target.
+-- then every ObjectSet target and the token's quarantine receipt.
 -- ARGV: intent doc, binding doc, token, candidate bytes, max count, max bytes,
 -- proposed allocator (empty when absent), object count, request epoch, then
 -- ObjectSet ids.
@@ -52,6 +52,10 @@ if not canonical_decimal(generation) or
   return 'CORRUPT_GENERATION'
 end
 
+if redis.call('EXISTS', KEYS[#KEYS]) ~= 0 then
+  return 'QUARANTINED'
+end
+
 local existing_intent = redis.call('GET', KEYS[1])
 if existing_intent then
   if existing_intent ~= ARGV[1] then
@@ -88,6 +92,17 @@ if existing_binding then
   return 'IDEMPOTENCY_CONFLICT'
 end
 
+-- Coordinator serialization is not a storage invariant. Enforce the
+-- documented initial one-unresolved-intent bound here so independent callers
+-- cannot both reserve the same not-yet-materialized object id.
+local pending_count = redis.call('SCARD', KEYS[4])
+if pending_count > 1 then
+  return 'CORRUPT_PENDING'
+end
+if pending_count ~= 0 then
+  return 'INTENT_IN_FLIGHT:' .. tostring(pending_count)
+end
+
 local count_doc = redis.call('GET', KEYS[5])
 local bytes_doc = redis.call('GET', KEYS[6])
 if (count_doc and not bytes_doc) or (bytes_doc and not count_doc) then
@@ -122,7 +137,7 @@ if ARGV[7] ~= '' then
 end
 
 local object_count = tonumber(ARGV[8])
-if not object_count or object_count < 0 or object_count ~= (#KEYS - 9) then
+if not object_count or object_count < 0 or object_count ~= (#KEYS - 10) then
   return 'CORRUPT_ARGUMENTS'
 end
 for index = 1, object_count do

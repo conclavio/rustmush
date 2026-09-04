@@ -50,7 +50,7 @@ use smol_str::SmolStr;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-use crate::quarantine::QuarantineSpool;
+use crate::quarantine::{QuarantineSpool, authoritative_bundle_evidence_hash};
 use crate::world_task::WriterSignalSender;
 use mush_config::unix_now_s;
 
@@ -134,6 +134,10 @@ pub struct AuthoritativeBootRecoveryReport {
 pub async fn reconcile_authoritative_for_writable_boot(
     store: &dyn AuthoritativeStore,
 ) -> Result<AuthoritativeBootRecoveryReport, String> {
+    let retention_generation = store
+        .authoritative_retention_generation()
+        .await
+        .map_err(|error| format!("reading authoritative retention generation: {error}"))?;
     let indexed = store
         .pending_authoritative_intents()
         .await
@@ -240,10 +244,13 @@ pub async fn reconcile_authoritative_for_writable_boot(
     }
 
     report.retention_counters_repaired = store
-        .repair_authoritative_retention(AuthoritativeRetentionUsage {
-            count: report.retained,
-            bytes: report.retained_bytes,
-        })
+        .repair_authoritative_retention(
+            retention_generation,
+            AuthoritativeRetentionUsage {
+                count: report.retained,
+                bytes: report.retained_bytes,
+            },
+        )
         .await
         .map_err(|error| format!("repairing authoritative retention counters: {error}"))?;
 
@@ -254,6 +261,13 @@ pub async fn reconcile_authoritative_for_writable_boot(
             .await
             .map_err(|error| format!("reading authoritative status for {token}: {error}"))?
         {
+            BundleStatus::Retired {
+                minimum_accepted_epoch,
+            } => {
+                return Err(format!(
+                    "retained authoritative intent {token} is below minimum epoch {minimum_accepted_epoch}"
+                ));
+            }
             BundleStatus::PendingExact => {
                 reconcile_one_authoritative_boot_intent(store, token, hash).await?;
                 report.reconciled += 1;
@@ -270,6 +284,11 @@ pub async fn reconcile_authoritative_for_writable_boot(
                     // backend's idempotent stale-index repair path.
                     reconcile_one_authoritative_boot_intent(store, token, hash).await?;
                 }
+            }
+            BundleStatus::QuarantinedExact(_) => {
+                return Err(format!(
+                    "retained authoritative intent {token} simultaneously has a quarantine tombstone"
+                ));
             }
             BundleStatus::Absent => {
                 return Err(format!(
@@ -688,7 +707,20 @@ async fn commit_authoritative_with_retry(
             Err(error) => {
                 let status = authoritative.authoritative_status(token, hash).await;
                 match status {
+                    Ok(BundleStatus::Retired {
+                        minimum_accepted_epoch,
+                    }) => {
+                        return Err(AuthoritativeCommitFailure::Integrity(format!(
+                            "authoritative reservation for {token} is below minimum epoch {minimum_accepted_epoch}"
+                        )));
+                    }
                     Ok(BundleStatus::PendingExact) => break,
+                    Ok(BundleStatus::QuarantinedExact(quarantine)) => {
+                        return Err(AuthoritativeCommitFailure::Integrity(format!(
+                            "authoritative reservation for {token} reached quarantine evidence {}",
+                            quarantine.evidence_hash()
+                        )));
+                    }
                     Ok(BundleStatus::FinalizedExact(receipt))
                         if receipt.token() == token && receipt.bundle_hash() == hash =>
                     {
@@ -712,6 +744,7 @@ async fn commit_authoritative_with_retry(
                         if matches!(
                             error,
                             StoreError::AuthoritativeCapacity { .. }
+                                | StoreError::AuthoritativeIntentInFlight { .. }
                                 | StoreError::AuthoritativeIdempotencyConflict
                                 | StoreError::Invalid(_)
                         ) =>
@@ -771,6 +804,13 @@ async fn commit_authoritative_with_retry(
                 delay = (delay * 2).min(RETRY_MAX);
             }
             Err(error) => match authoritative.authoritative_status(token, hash).await {
+                Ok(BundleStatus::Retired {
+                    minimum_accepted_epoch,
+                }) => {
+                    return Err(AuthoritativeCommitFailure::Integrity(format!(
+                        "authoritative intent {token} is below minimum epoch {minimum_accepted_epoch}: {error}"
+                    )));
+                }
                 Ok(BundleStatus::FinalizedExact(receipt))
                     if receipt.token() == token && receipt.bundle_hash() == hash =>
                 {
@@ -810,8 +850,49 @@ async fn commit_authoritative_with_retry(
                                 "authoritative bundle {token} remained pending after {deterministic_reconcile_attempts} deterministic attempts and its dead-letter could not be preserved: {quarantine_error}"
                             ))
                         })?;
+                    let evidence_hash = authoritative_bundle_evidence_hash(&bundle);
+                    loop {
+                        match authoritative
+                            .discard_quarantined_authoritative_intent(token, hash, evidence_hash)
+                            .await
+                        {
+                            Ok(discard)
+                                if discard.quarantine.token() == token
+                                    && discard.quarantine.bundle_hash() == hash
+                                    && discard.quarantine.evidence_hash() == evidence_hash =>
+                            {
+                                break;
+                            }
+                            Ok(_) => {
+                                return Err(AuthoritativeCommitFailure::Integrity(format!(
+                                    "authoritative discard returned a non-exact quarantine witness for {token}"
+                                )));
+                            }
+                            Err(discard_error) if discard_error.is_transient() => {
+                                mark_authoritative_transient(
+                                    healthy,
+                                    signals,
+                                    token,
+                                    &discard_error,
+                                );
+                                tokio::time::sleep(delay).await;
+                                delay = (delay * 2).min(RETRY_MAX);
+                            }
+                            Err(discard_error) => {
+                                return Err(AuthoritativeCommitFailure::Integrity(format!(
+                                    "authoritative bundle {token} was spooled but its pending intent could not be replaced by an exact quarantine tombstone: {discard_error}"
+                                )));
+                            }
+                        }
+                    }
                     return Err(AuthoritativeCommitFailure::Integrity(format!(
-                        "authoritative bundle {token} remains durably pending and was quarantined after {deterministic_reconcile_attempts} deterministic reconciliation failures: {error}"
+                        "authoritative bundle {token} was quarantined and its pending intent released to an exact non-replayable tombstone after {deterministic_reconcile_attempts} deterministic reconciliation failures: {error}"
+                    )));
+                }
+                Ok(BundleStatus::QuarantinedExact(quarantine)) => {
+                    return Err(AuthoritativeCommitFailure::Integrity(format!(
+                        "authoritative intent {token} is quarantined under evidence {}",
+                        quarantine.evidence_hash()
                     )));
                 }
                 Ok(BundleStatus::Absent) => {
@@ -1942,13 +2023,13 @@ mod tests {
 
         let before = store.load_world().await.unwrap().unwrap();
         assert!(before.objects.iter().all(|object| object.id != ObjId(2)));
-        assert_eq!(
+        assert!(matches!(
             store
                 .authoritative_status(bundle.token(), bundle.bundle_hash())
                 .await
                 .unwrap(),
             BundleStatus::PendingExact
-        );
+        ));
 
         let report = reconcile_authoritative_for_writable_boot(&store)
             .await
@@ -2059,15 +2140,26 @@ mod tests {
         assert!(matches!(
             error,
             AuthoritativeCommitFailure::Integrity(ref detail)
-                if detail.contains("quarantined after 3 deterministic reconciliation failures")
+                if detail.contains("quarantined")
+                    && detail.contains("after 3 deterministic reconciliation failures")
         ));
-        assert_eq!(
+        assert!(matches!(
             store
                 .authoritative_status(bundle.token(), bundle.bundle_hash())
                 .await
                 .unwrap(),
-            BundleStatus::PendingExact,
-            "the authoritative intent remains the primary durable truth"
+            BundleStatus::QuarantinedExact(receipt)
+                if receipt.matches_bundle(&bundle)
+                    && receipt.evidence_hash() == authoritative_bundle_evidence_hash(&bundle)
+        ));
+        assert!(
+            store
+                .scan_authoritative_intents(None, 1)
+                .await
+                .unwrap()
+                .intents
+                .is_empty(),
+            "the independent spool now permits bounded full-intent release"
         );
 
         // The independently retained whole-bundle record participates in the
@@ -2081,19 +2173,14 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires live Redis; CI runs this proof explicitly"]
     async fn live_redis_wrong_type_bundle_quarantines_repairs_and_recovers() {
         use fred::interfaces::KeysInterface as _;
 
-        let Some(url) = std::env::var("REDIS_URL")
+        let url = std::env::var("REDIS_URL")
             .ok()
             .filter(|value| !value.is_empty())
-        else {
-            eprintln!(
-                "skipping live_redis_wrong_type_bundle_quarantines_repairs_and_recovers: \
-                 REDIS_URL not set"
-            );
-            return;
-        };
+            .expect("REDIS_URL must be set when explicitly running the live Redis proof");
         let store = RedisStore::connect(&url)
             .await
             .expect("connect to disposable live Redis");
@@ -2131,13 +2218,15 @@ mod tests {
                 .await
                 .unwrap_err();
         assert!(matches!(error, AuthoritativeCommitFailure::Integrity(_)));
-        assert_eq!(
+        assert!(matches!(
             store
                 .authoritative_status(bundle.token(), bundle.bundle_hash())
                 .await
                 .unwrap(),
-            BundleStatus::PendingExact
-        );
+            BundleStatus::QuarantinedExact(receipt)
+                if receipt.matches_bundle(&bundle)
+                    && receipt.evidence_hash() == authoritative_bundle_evidence_hash(&bundle)
+        ));
 
         let files: Vec<_> = std::fs::read_dir(&spool_path)
             .unwrap()

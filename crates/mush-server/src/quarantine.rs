@@ -80,13 +80,12 @@ pub trait QuarantineTargetReader: Send + Sync {
 
     /// Inspect an exact authoritative bundle identity without exposing any
     /// non-recovery write surface.
-    fn quarantine_bundle_status(
-        &self,
-        token: CommitToken,
-        bundle_hash: CanonicalHash,
-    ) -> BoxFuture<'_, Result<BundleStatus, StoreError>> {
+    fn quarantine_bundle_status<'a>(
+        &'a self,
+        bundle: &'a AuthoritativeBundle,
+    ) -> BoxFuture<'a, Result<BundleStatus, StoreError>> {
         Box::pin(async move {
-            let _ = (token, bundle_hash);
+            let _ = bundle;
             Err(StoreError::AuthoritativeCorrupt(
                 "quarantine reader has no authoritative bundle capability".to_owned(),
             ))
@@ -106,6 +105,37 @@ pub trait QuarantineTargetReader: Send + Sync {
             ))
         })
     }
+
+    /// Restore one exact bundle from its quarantine tombstone before a
+    /// recovery retry. The evidence hash is the verified spool record
+    /// identity.
+    fn restore_quarantine_bundle<'a>(
+        &'a self,
+        bundle: &'a AuthoritativeBundle,
+        evidence_hash: CanonicalHash,
+    ) -> BoxFuture<'a, Result<(), StoreError>> {
+        Box::pin(async move {
+            let _ = (bundle, evidence_hash);
+            Err(StoreError::AuthoritativeCorrupt(
+                "quarantine reader cannot restore an authoritative bundle".to_owned(),
+            ))
+        })
+    }
+
+    /// Return a failed recovery retry to its compact non-replayable tombstone.
+    fn rediscard_quarantine_bundle(
+        &self,
+        token: CommitToken,
+        bundle_hash: CanonicalHash,
+        evidence_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<(), StoreError>> {
+        Box::pin(async move {
+            let _ = (token, bundle_hash, evidence_hash);
+            Err(StoreError::AuthoritativeCorrupt(
+                "quarantine reader cannot rediscard an authoritative bundle".to_owned(),
+            ))
+        })
+    }
 }
 
 impl<T: ObjectStore + ?Sized> QuarantineTargetReader for T {
@@ -117,11 +147,10 @@ impl<T: ObjectStore + ?Sized> QuarantineTargetReader for T {
         ObjectStore::module_json_get(self, namespace, key)
     }
 
-    fn quarantine_bundle_status(
-        &self,
-        token: CommitToken,
-        bundle_hash: CanonicalHash,
-    ) -> BoxFuture<'_, Result<BundleStatus, StoreError>> {
+    fn quarantine_bundle_status<'a>(
+        &'a self,
+        bundle: &'a AuthoritativeBundle,
+    ) -> BoxFuture<'a, Result<BundleStatus, StoreError>> {
         Box::pin(async move {
             self.authoritative_store()
                 .ok_or_else(|| {
@@ -129,7 +158,7 @@ impl<T: ObjectStore + ?Sized> QuarantineTargetReader for T {
                         "quarantine store has no authoritative bundle capability".to_owned(),
                     )
                 })?
-                .authoritative_status(token, bundle_hash)
+                .authoritative_bundle_status(bundle)
                 .await
         })
     }
@@ -148,6 +177,43 @@ impl<T: ObjectStore + ?Sized> QuarantineTargetReader for T {
                 })?
                 .reconcile_authoritative(token, bundle_hash)
                 .await
+        })
+    }
+
+    fn restore_quarantine_bundle<'a>(
+        &'a self,
+        bundle: &'a AuthoritativeBundle,
+        evidence_hash: CanonicalHash,
+    ) -> BoxFuture<'a, Result<(), StoreError>> {
+        Box::pin(async move {
+            self.authoritative_store()
+                .ok_or_else(|| {
+                    StoreError::AuthoritativeCorrupt(
+                        "quarantine store has no authoritative bundle capability".to_owned(),
+                    )
+                })?
+                .restore_quarantined_authoritative_intent(bundle.clone(), evidence_hash)
+                .await
+                .map(|_| ())
+        })
+    }
+
+    fn rediscard_quarantine_bundle(
+        &self,
+        token: CommitToken,
+        bundle_hash: CanonicalHash,
+        evidence_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<(), StoreError>> {
+        Box::pin(async move {
+            self.authoritative_store()
+                .ok_or_else(|| {
+                    StoreError::AuthoritativeCorrupt(
+                        "quarantine store has no authoritative bundle capability".to_owned(),
+                    )
+                })?
+                .discard_quarantined_authoritative_intent(token, bundle_hash, evidence_hash)
+                .await
+                .map(|_| ())
         })
     }
 }
@@ -419,6 +485,7 @@ enum RecoveryTargetKind {
     AuthoritativeBundle {
         token: CommitToken,
         bundle_hash: CanonicalHash,
+        bundle: Box<AuthoritativeBundle>,
     },
 }
 
@@ -681,14 +748,19 @@ impl QuarantineSpool {
                         resolved = resolved.saturating_add(1);
                     }
                 }
-                RecoveryTargetKind::AuthoritativeBundle { token, bundle_hash } => {
-                    let status = reader
-                        .quarantine_bundle_status(token, bundle_hash)
-                        .await
-                        .map_err(|source| QuarantineRecoveryError::BundleRecovery {
-                            token,
-                            source,
-                        })?;
+                RecoveryTargetKind::AuthoritativeBundle {
+                    token,
+                    bundle_hash,
+                    bundle,
+                } => {
+                    let status =
+                        reader
+                            .quarantine_bundle_status(&bundle)
+                            .await
+                            .map_err(|source| QuarantineRecoveryError::BundleRecovery {
+                                token,
+                                source,
+                            })?;
                     let exact = match status {
                         BundleStatus::FinalizedExact(receipt) => {
                             if receipt.token() != token || receipt.bundle_hash() != bundle_hash {
@@ -720,7 +792,76 @@ impl QuarantineSpool {
                                 }
                             }
                         }
-                        BundleStatus::Absent | BundleStatus::Conflict { .. } => false,
+                        BundleStatus::QuarantinedExact(receipt) => {
+                            let evidence_hash = CanonicalHash::from_hex(&target.identity)
+                                .expect("validated bundle quarantine identity is SHA-256");
+                            if receipt.token() != token
+                                || receipt.bundle_hash() != bundle_hash
+                                || receipt.evidence_hash() != evidence_hash
+                                || !receipt.matches_bundle(&bundle)
+                            {
+                                return Err(QuarantineRecoveryError::BundleWitnessMismatch {
+                                    token,
+                                });
+                            }
+                            let restored = match reader
+                                .restore_quarantine_bundle(&bundle, evidence_hash)
+                                .await
+                            {
+                                Ok(()) => true,
+                                Err(error) if !error.is_transient() => false,
+                                Err(source) => {
+                                    return Err(QuarantineRecoveryError::BundleRecovery {
+                                        token,
+                                        source,
+                                    });
+                                }
+                            };
+                            if !restored {
+                                false
+                            } else {
+                                match reader.reconcile_quarantine_bundle(token, bundle_hash).await {
+                                    Ok(finalized)
+                                        if finalized.token() == token
+                                            && finalized.bundle_hash() == bundle_hash =>
+                                    {
+                                        true
+                                    }
+                                    Ok(_) => {
+                                        return Err(
+                                            QuarantineRecoveryError::BundleWitnessMismatch {
+                                                token,
+                                            },
+                                        );
+                                    }
+                                    Err(error) if !error.is_transient() => {
+                                        reader
+                                            .rediscard_quarantine_bundle(
+                                                token,
+                                                bundle_hash,
+                                                evidence_hash,
+                                            )
+                                            .await
+                                            .map_err(|source| {
+                                                QuarantineRecoveryError::BundleRecovery {
+                                                    token,
+                                                    source,
+                                                }
+                                            })?;
+                                        false
+                                    }
+                                    Err(source) => {
+                                        return Err(QuarantineRecoveryError::BundleRecovery {
+                                            token,
+                                            source,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        BundleStatus::Retired { .. }
+                        | BundleStatus::Absent
+                        | BundleStatus::Conflict { .. } => false,
                     };
                     if exact
                         && self.resolve_with_proof(
@@ -1125,10 +1266,13 @@ fn recovery_target(identity: String, record: &StoredQuarantineRecord) -> Recover
                 }
             }
             QuarantineContentV2::AuthoritativeBundle {
-                token, bundle_hash, ..
+                token,
+                bundle_hash,
+                bundle,
             } => RecoveryTargetKind::AuthoritativeBundle {
                 token: *token,
                 bundle_hash: *bundle_hash,
+                bundle: bundle.clone(),
             },
         },
     };
@@ -2339,6 +2483,14 @@ pub fn authoritative_bundle_identity_hash(bundle: &AuthoritativeBundle) -> Strin
         let _ = write!(hex, "{byte:02x}");
     }
     hex
+}
+
+/// Typed form of the exact filename/content identity returned only after the
+/// caller has successfully preserved the corresponding bundle record.
+#[must_use]
+pub(crate) fn authoritative_bundle_evidence_hash(bundle: &AuthoritativeBundle) -> CanonicalHash {
+    CanonicalHash::from_hex(&authoritative_bundle_identity_hash(bundle))
+        .expect("quarantine SHA-256 identity is a canonical 32-byte hash")
 }
 
 fn truncate(mut value: String, max_bytes: usize) -> String {

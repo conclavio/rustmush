@@ -12,7 +12,10 @@ use mush_core::{
     IngressEnvelope, MAX_AUTHORITATIVE_BUNDLE_BYTES, PreparedCausalRef, PrincipalId,
     ScopedIdempotencyKey, StagePreparedActionError,
 };
-use mush_store::{AuthoritativeReceipt, AuthoritativeStore, IdempotencyStatus, StoreError};
+use mush_store::{
+    AuthoritativeQuarantineReceipt, AuthoritativeReceipt, AuthoritativeStore, IdempotencyStatus,
+    StoreError,
+};
 use serde_json::json;
 
 /// Result of the mandatory durable lookup that precedes parsing and planning.
@@ -32,6 +35,9 @@ pub enum ActionPreflight {
     /// The same request already completed. Callers project this receipt
     /// without invoking the provider or RNG again.
     Finalized(Box<AuthoritativeReceipt>),
+    /// The request was consumed by a never-finalized intent whose complete
+    /// recovery material is in quarantine. It must not be planned again.
+    Quarantined(Box<AuthoritativeQuarantineReceipt>),
     /// The scoped key is already bound to different canonical ingress.
     Conflict,
 }
@@ -50,6 +56,7 @@ pub enum SemanticActionStatus {
         bundle_hash: CanonicalHash,
     },
     Finalized(Box<AuthoritativeReceipt>),
+    Quarantined(Box<AuthoritativeQuarantineReceipt>),
     Conflict,
 }
 
@@ -111,6 +118,9 @@ impl ActionCoordinator {
                         SemanticActionStatus::Forbidden
                     }
                 }
+                IdempotencyStatus::QuarantinedExact(receipt) => {
+                    SemanticActionStatus::Quarantined(receipt)
+                }
                 IdempotencyStatus::Conflict => SemanticActionStatus::Conflict,
             },
         )
@@ -138,6 +148,9 @@ impl ActionCoordinator {
                 Ok(ActionPreflight::Pending { token, bundle_hash })
             }
             IdempotencyStatus::FinalizedExact(receipt) => Ok(ActionPreflight::Finalized(receipt)),
+            IdempotencyStatus::QuarantinedExact(receipt) => {
+                Ok(ActionPreflight::Quarantined(receipt))
+            }
             IdempotencyStatus::Conflict => Ok(ActionPreflight::Conflict),
         }
     }

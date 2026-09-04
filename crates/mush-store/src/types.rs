@@ -256,7 +256,16 @@ pub struct AuthoritativeOutboxRecord {
     parent_bundle_hash: CanonicalHash,
     intent: DurableOutboxIntent,
     attempts: u32,
+    /// Discovery passes during which no registered adapter could route this
+    /// item. Kept separate from delivery attempts so a temporarily missing
+    /// adapter does not consume the adapter's retry budget.
+    #[serde(default, skip_serializing_if = "u32_is_zero")]
+    unroutable_passes: u32,
     state: AuthoritativeOutboxState,
+}
+
+const fn u32_is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 impl AuthoritativeOutboxRecord {
@@ -277,6 +286,7 @@ impl AuthoritativeOutboxRecord {
             parent_bundle_hash,
             intent,
             attempts: 0,
+            unroutable_passes: 0,
             state: AuthoritativeOutboxState::Pending { last_error: None },
         })
     }
@@ -349,6 +359,27 @@ impl AuthoritativeOutboxRecord {
         Ok(next)
     }
 
+    pub(crate) fn note_unroutable(
+        &self,
+        expected_passes: u32,
+        error: String,
+    ) -> Result<Self, StoreError> {
+        self.validate()?;
+        validate_outbox_error(&error)?;
+        if self.state.is_terminal() || self.unroutable_passes != expected_passes {
+            return Err(StoreError::AuthoritativeOutboxConflict);
+        }
+        let mut next = self.clone();
+        next.unroutable_passes = next
+            .unroutable_passes
+            .checked_add(1)
+            .ok_or(StoreError::AuthoritativeOutboxAttemptsExhausted)?;
+        next.state = AuthoritativeOutboxState::Pending {
+            last_error: Some(error),
+        };
+        Ok(next)
+    }
+
     #[must_use]
     pub const fn item_id(&self) -> CanonicalHash {
         self.item_id
@@ -372,6 +403,11 @@ impl AuthoritativeOutboxRecord {
     #[must_use]
     pub const fn attempts(&self) -> u32 {
         self.attempts
+    }
+
+    #[must_use]
+    pub const fn unroutable_passes(&self) -> u32 {
+        self.unroutable_passes
     }
 
     #[must_use]
@@ -644,6 +680,89 @@ pub struct AuthoritativeCheckpointReceipt {
     pub resumed: bool,
 }
 
+/// Compact immutable witness that a never-finalized authoritative intent was
+/// released only after its complete bundle entered the independent
+/// quarantine spool. It consumes the original idempotency identity without
+/// claiming that the action committed.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthoritativeQuarantineReceipt {
+    schema_version: u16,
+    token: CommitToken,
+    idempotency: ScopedIdempotencyKey,
+    ingress_hash: CanonicalHash,
+    bundle_hash: CanonicalHash,
+    evidence_hash: CanonicalHash,
+}
+
+impl AuthoritativeQuarantineReceipt {
+    pub const SCHEMA_VERSION: u16 = 1;
+
+    #[must_use]
+    pub fn new(bundle: &AuthoritativeBundle, evidence_hash: CanonicalHash) -> Self {
+        Self {
+            schema_version: Self::SCHEMA_VERSION,
+            token: bundle.token(),
+            idempotency: bundle.idempotency().clone(),
+            ingress_hash: bundle.ingress_hash(),
+            bundle_hash: bundle.bundle_hash(),
+            evidence_hash,
+        }
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), StoreError> {
+        if self.schema_version != Self::SCHEMA_VERSION {
+            return Err(StoreError::AuthoritativeCorrupt(format!(
+                "unsupported authoritative quarantine receipt schema {}",
+                self.schema_version
+            )));
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub const fn token(&self) -> CommitToken {
+        self.token
+    }
+
+    #[must_use]
+    pub const fn idempotency(&self) -> &ScopedIdempotencyKey {
+        &self.idempotency
+    }
+
+    #[must_use]
+    pub const fn ingress_hash(&self) -> CanonicalHash {
+        self.ingress_hash
+    }
+
+    #[must_use]
+    pub const fn bundle_hash(&self) -> CanonicalHash {
+        self.bundle_hash
+    }
+
+    #[must_use]
+    pub const fn evidence_hash(&self) -> CanonicalHash {
+        self.evidence_hash
+    }
+
+    #[must_use]
+    pub fn matches_bundle(&self, bundle: &AuthoritativeBundle) -> bool {
+        self.token == bundle.token()
+            && self.idempotency == *bundle.idempotency()
+            && self.ingress_hash == bundle.ingress_hash()
+            && self.bundle_hash == bundle.bundle_hash()
+    }
+}
+
+/// Result of atomically replacing a poisoned, never-finalized full intent
+/// with its compact quarantine tombstone.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthoritativeDiscardReceipt {
+    pub quarantine: AuthoritativeQuarantineReceipt,
+    pub released_intent_bytes: usize,
+    pub resumed: bool,
+}
+
 /// Durable watermark-first retirement of complete idempotency epochs.
 ///
 /// Once this succeeds, keys in `scope` below `minimum_accepted_epoch` can
@@ -662,10 +781,18 @@ pub struct AuthoritativeEpochRetirement {
 /// Exact status for one token and expected bundle hash.
 #[derive(Clone, Debug, PartialEq)]
 pub enum BundleStatus {
+    /// The complete scoped identity is below its durable retry watermark.
+    /// It must never be interpreted as an absent/new action.
+    Retired {
+        minimum_accepted_epoch: u64,
+    },
     Absent,
     PendingExact,
     FinalizedExact(Box<AuthoritativeReceipt>),
-    Conflict { stored_bundle_hash: CanonicalHash },
+    QuarantinedExact(Box<AuthoritativeQuarantineReceipt>),
+    Conflict {
+        stored_bundle_hash: CanonicalHash,
+    },
 }
 
 /// Result of the pre-parse `(scoped key, ingress hash)` lookup.
@@ -683,6 +810,9 @@ pub enum IdempotencyStatus {
         bundle_hash: CanonicalHash,
     },
     FinalizedExact(Box<AuthoritativeReceipt>),
+    /// The key was consumed by an intent that never finalized and whose full
+    /// recovery material is held by the independent quarantine spool.
+    QuarantinedExact(Box<AuthoritativeQuarantineReceipt>),
     /// The scoped key exists but was bound to different ingress bytes.
     Conflict,
 }
@@ -896,6 +1026,23 @@ pub enum StoreError {
         max_count: usize,
         max_bytes: usize,
     },
+    /// The initial K3 contract permits only one unresolved reservation. The
+    /// store enforces this independently of coordinator serialization so two
+    /// callers cannot reserve the same fresh object id concurrently.
+    #[error("another authoritative intent is unresolved ({pending} pending)")]
+    AuthoritativeIntentInFlight { pending: usize },
+    /// A retry addressed an intent that was explicitly quarantined and may
+    /// not be executed again under the same identity.
+    #[error("authoritative intent was quarantined under evidence {evidence_hash}")]
+    AuthoritativeIntentQuarantined { evidence_hash: CanonicalHash },
+    /// Discard is only valid for an intent that never published a finalized
+    /// witness; a committed action must retain repair custody instead.
+    #[error("a finalized authoritative intent cannot be discarded")]
+    AuthoritativeIntentAlreadyFinalized,
+    /// Full-intent membership changed while recovery was exhaustively
+    /// scanning it. The stale count/byte observation must not be installed.
+    #[error("authoritative retention changed during its repair scan")]
+    AuthoritativeRetentionContention,
 }
 
 impl StoreError {
@@ -962,8 +1109,12 @@ impl StoreError {
             | StoreError::AuthoritativeEpochRegression { .. }
             | StoreError::AuthoritativeEpochPending { .. }
             | StoreError::AuthoritativeCorrupt(_)
-            | StoreError::AuthoritativeCapacity { .. } => false,
-            StoreError::AuthoritativeEpochContention => true,
+            | StoreError::AuthoritativeCapacity { .. }
+            | StoreError::AuthoritativeIntentInFlight { .. }
+            | StoreError::AuthoritativeIntentQuarantined { .. }
+            | StoreError::AuthoritativeIntentAlreadyFinalized => false,
+            StoreError::AuthoritativeEpochContention
+            | StoreError::AuthoritativeRetentionContention => true,
         }
     }
 }

@@ -175,6 +175,10 @@ async fn finalized_outbox_is_rediscovered_retried_and_then_checkpoints_parent() 
         store.pending_authoritative_outbox().await.unwrap()[0].attempts(),
         0
     );
+    assert_eq!(
+        store.pending_authoritative_outbox().await.unwrap()[0].unroutable_passes(),
+        1
+    );
 
     let adapter = Arc::new(RetryOnceAdapter {
         owner: OwnerId::new("delivery_test").unwrap(),
@@ -215,6 +219,60 @@ async fn finalized_outbox_is_rediscovered_retried_and_then_checkpoints_parent() 
             .intents
             .is_empty(),
         "terminal delivery releases the parent's full replay intent"
+    );
+}
+
+#[tokio::test]
+async fn persistently_missing_adapter_dead_letters_and_releases_parent() {
+    let store = InMemoryStore::new();
+    let world = World::new_minimal();
+    store
+        .write(WriteBatch {
+            serial: 1,
+            upserts: world.iter().cloned().collect(),
+            next_id: Some(world.next_id()),
+            ..WriteBatch::default()
+        })
+        .await
+        .unwrap();
+    let bundle = bundle();
+    let token = bundle.token();
+    let hash = bundle.bundle_hash();
+    store.reserve_authoritative_intent(bundle).await.unwrap();
+    store.reconcile_authoritative(token, hash).await.unwrap();
+
+    let registry = DurableOutboxRegistry::new();
+    let policy = DurableOutboxPolicy::new(3, Duration::from_secs(1))
+        .unwrap()
+        .with_max_unroutable_passes(2);
+    let first = dispatch_authoritative_outbox(&store, &registry, policy)
+        .await
+        .unwrap();
+    assert_eq!(first.missing_adapters, 1);
+    assert_eq!(first.retry_pending, 1);
+    assert_eq!(first.dead_lettered, 0);
+
+    let second = dispatch_authoritative_outbox(&store, &registry, policy)
+        .await
+        .unwrap();
+    assert_eq!(second.missing_adapters, 1);
+    assert_eq!(second.dead_lettered, 1);
+    assert_eq!(second.checkpointed_parents, 1);
+    assert!(
+        store
+            .pending_authoritative_outbox()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store
+            .scan_authoritative_intents(None, 1)
+            .await
+            .unwrap()
+            .intents
+            .is_empty(),
+        "terminal unroutable work must no longer pin its parent's full intent"
     );
 }
 
