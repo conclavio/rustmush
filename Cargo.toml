@@ -134,6 +134,8 @@ mush-tactics = { path = "crates/mush-tactics" }
 mush-org = { path = "crates/mush-org" }
 # E2: the accountable-value engine — instruments, accounts, the double-entry journal.
 mush-economy = { path = "crates/mush-economy" }
+# E5: game-neutral housing — properties, tenancies, support assessment, access.
+mush-housing = { path = "crates/mush-housing" }
 ruleset-shadowrun = { path = "crates/ruleset-shadowrun" }
 mush-testkit = { path = "crates/mush-testkit" }
 mush-contract-tests = { path = "crates/mush-contract-tests" }

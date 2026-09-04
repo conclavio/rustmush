@@ -1,0 +1,21 @@
+[package]
+name = "mush-housing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "mush-housing (E5a): the pure, game-neutral housing library — properties, tenancies, the tenancy state machine that never ends a home on its own, the multi-resident support assessment, the fail-closed access predicate, and the Obj.home invariant helpers. World-free; the HousingModule is E5b."
+
+[dependencies]
+mush-core.workspace = true
+mush-org.workspace = true
+mush-economy.workspace = true
+serde.workspace = true
+smol_str.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

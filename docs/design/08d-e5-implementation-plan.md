@@ -2,6 +2,8 @@
 
 **Status:** Draft 0.2 — reviewed (three passes: adversarial, code-grounding, design-fit against docs
 08/08a/08c/09 and the owner's answers); every confirmed finding is folded below and itemised in §12.
+**E5a is built** — `crates/mush-housing`, the pure library; read §3.5 "As built" for its signatures,
+deviations and the seams E5b consumes.
 Companion to [08-economy-organizations-ownership.md](08-economy-organizations-ownership.md) (§6.3
 abstract wealth, §11.1 the WoD slice, §18-E5), [08a-economy-build-status.md](08a-economy-build-status.md)
 (ledger), [08c-e4-implementation-plan.md](08c-e4-implementation-plan.md) (E4, which E5 is layered on),
@@ -198,7 +200,7 @@ lockstep: on `Active`, `World::set_home(tenant, anchor)` for every tenant (recor
 `Obj.home` resolves inside the property's rooms. An evicted tenant caught in a destroyed room
 therefore disperses to Limbo, never back into the property.
 
-### 3.4 E5a tests (~30)
+### 3.4 E5a tests (planned ~30; **38 as built** — 37 in `crates/mush-housing/tests/e5a.rs`, 1 in-crate)
 
 Every transition above and every forbidden one (no path to `Ended` without a `Resolution`); a
 window elapsing changes nothing but the notify count and stops after `MAX_WINDOW_NOTICES`; recovery
@@ -206,6 +208,94 @@ from each failure state; `assess` across tier/level combinations, best-of with t
 resident whose plan is missing, `Unknown`; `may_enter` for tenant, guest, inspection-always,
 inspection-while-delinquent (refused when Active), staff, stranger; the `homed` set computed for
 activation and cleared for ending; caps.
+
+### 3.5 As built (E5a, `crates/mush-housing`)
+
+Built as a pure workspace crate depending on `mush-core`, `mush-org`, `mush-economy`, serde,
+smol_str and thiserror — **no** ruleset crate, **no** `mush-scenes`, **no** `mush-jobs` (a story
+job is a bare `u64`). `cargo test -p mush-housing` 38 passing; `cargo clippy --workspace
+--all-targets -- -D warnings` clean; `cargo test --workspace` **2591 passing, 0 failing**. `cargo
+fmt` stays off, unchanged.
+
+**Files.** `src/ids.rs` (`PropertyId`, `TenancyId`, `SceneRef`) · `src/record.rs` (every §3.1
+record + the §9 caps) · `src/error.rs` (`HousingError`) · `src/tenancy.rs` (the state machine + the
+window) · `src/assess.rs` (`assess`/`harden`) · `src/access.rs` (`may_enter`/`may_take`) ·
+`src/home.rs` (the D-E5-11 helpers) · `tests/e5a.rs`.
+
+**The state machine as built** (`src/tenancy.rs`), one pure `fn` per arrow, each returning
+`Result<Tenancy, HousingError>`:
+
+| from | fn | to | guard / refusal |
+|---|---|---|---|
+| `Pending` | `accept(t, landlord_accepted, tenant_accepted, now)` | `Active` (+ `homed`) | landlord **and** every tenant in `tenant_accepted`, else `NotAccepted`; off-`Pending` → `State`; ended → `AlreadyEnded` |
+| `Active` | `period_missed(t, now)` | `Grace{since: now}` | `Pending` → `State`; already in the ladder → unchanged (the run is never restamped) |
+| `Grace`/`Delinquent`/`EvictionPending` | `period_supported(t, now)` | `Active` | `Pending` → `State`; already `Active` → unchanged, no revision bump |
+| `Grace{since}` | `grace_elapsed(t, now)` | `Delinquent{since: now}` | `now - since ≥ GRACE_PERIODS`, else `NotDue`; off-`Grace` → `State` |
+| `Delinquent{since}` | `delinquent_elapsed(t, now)` | `EvictionPending{window opened at now}` | `now - since ≥ DELINQUENT_PERIODS`, else `NotDue`; off-`Delinquent` → `State` |
+| `EvictionPending` | `attach_window(t, job, scene)` | `EvictionPending` | records the job/scene E5b opened; no window → `NoWindow` |
+| `EvictionPending` | `window_elapsed(t, now, escalation)` | `EvictionPending` (**never** a state change) | `window_due` decides: `Notify` while `notified < MAX_WINDOW_NOTICES` at `WINDOW_RENOTIFY`; then `Silent`; then `Escalate` at `WINDOW_ESCALATE` past the last notice (a `None` escalation id is `NeedsEscalation`, never a skipped page); then `NotifyEscalated` every `WINDOW_ESCALATED_RENOTIFY` |
+| any non-`Ended` | `resolve(t, how, now)` | `Ended{how}` | the **only** producer of `Ended`; ended → `AlreadyEnded` |
+| `Active`…`EvictionPending` | `advance(t, assessment, now)` | composed of the above | `Unknown` moves nothing; `Pending` → `State` |
+
+`Ended` is unreachable without a `Resolution` **by type** (the variant carries one) and by
+construction (`resolve` is its only producer); `tests/e5a.rs` pins it two ways — the automatic half
+driven 40 periods never ends anything, and the fuzz re-checks it after every step.
+
+**Deviations and clarifications** (all recorded, none silent):
+
+1. **`WINDOW_ESCALATE` is measured from the last notice, not from window open.** Read literally
+   against `MAX_WINDOW_NOTICES` 3 at `WINDOW_RENOTIFY` 1, §9's "2 periods" would fire the escalation
+   at period 2 while the third re-notice is still due at period 3, making §3.2's "then **nothing
+   further** until the level-2 escalation opens" describe a gap that cannot exist. As built, a
+   window opened at `p` re-notifies at `p+1, p+2, p+3` and escalates at `p+5`.
+2. **"then ≤ weekly" is `WINDOW_ESCALATED_RENOTIFY = 7` periods**, because the library reads no
+   wall clock. Seven periods is ≥ a week on any cadence of a day or longer, which is every cadence
+   the three-period ladder is meaningful on; E5b re-checks it when it registers the clock.
+3. **`Unknown`'s grace needs a counter the record does not carry.** `assess(tier, plans)` keeps its
+   §3.3 signature and answers `Unknown` when no resident has a plan; `harden(a, unknown_periods)`
+   turns it into `Unsupported` once `unknown_periods > UNKNOWN_GRACE`. E5b keeps the per-tenancy
+   consecutive-`Unknown` count — it is per-period module state, so the pure library did not invent a
+   record field for it.
+4. **`Assessment::Strained` counts as covered.** The band rule is `level ≥ tier` → `Supported`,
+   `level + 1 == tier` → `Strained`, `level + 2 ≤ tier` → `Unsupported`, no plans → `Unknown`. A
+   strained tenancy does not slip: the rent is being paid, and §5.2's strain is the ruleset's cost.
+5. **`Pending` and `Ended` tenancies admit nobody but staff.** §3.3's "tenants and guests always
+   regardless of status" is about the *failure ladder* (`Delinquent` still walks in); a tenancy
+   nobody has agreed to, and one whose ending "revokes access", grant nothing. Fail closed.
+6. **`WhileDelinquent` also requires `now ≥ since`.** A `since` stamp in the future (a rewound or
+   re-pointed cadence, a restored backup) refuses rather than reading as "delinquent already": a
+   clock error must not open a door.
+7. **`to_unhome_on_end` narrows §3.3's "every object in `homed`"** by one safety carve-out: an id
+   whose `Obj.home` now resolves *outside* the property's rooms is left alone, because another
+   tenancy owns that pointer and clearing it would break *that* home's invariant. Everything else in
+   `homed` (including a home that resolves to nothing) is cleared, plus every tenant or guest homed
+   inside.
+8. **`SceneRef` is an opaque `u64`, not `mush_core::SceneId`.** Core scene ids restart at 0 every
+   boot, so a persisted `SceneId` would name a *different* scene after a restart.
+9. **String caps beyond §9**, in the `mush-economy` "every stored string is bounded" discipline:
+   `MAX_PROPERTY_NAME_BYTES` 64, `MAX_FEATURE_KEY_BYTES` 32, `MAX_REASON_BYTES` 256,
+   `MAX_PLAN_SOURCES` 8. `SupportSource` is **not** `Ord` (`mush_org::PrincipalId` is deliberately
+   unordered).
+10. **No state families, no authoritative store lane.** E5a registers nothing with K3's
+    `action-state/*` families (`mush-core/src/{action_state.rs,authoritative.rs}`, doc 09 Status
+    0.11) — 08c §12's "K3 review" keeps E-series records conventional. **Handoff:** E5b should
+    revisit this for `tenancy:{id}`, whose status ladder is exactly the shape a typed state family
+    models, before it writes its persistence.
+
+**Seams E5b consumes** (beyond the §3.1/§3.3 surface):
+
+- `may_enter_with(t, terms, who, inspector, is_staff, now)` / `may_take_with(..)` — `may_enter`
+  resolves only a `PrincipalId::Object` inspection term and **refuses** an org or system one; E5b
+  answers "does `who` hold that principal's authority" through `mush_org::authorize_in_world` and
+  calls the `_with` form. `may_take` *is* `may_enter`, so the two predicates cannot drift.
+- `window_due(t, now) -> WindowAction { Silent | Notify | Escalate | NotifyEscalated }` — ask before
+  acting; mint an `EscalationId` only for `Escalate`, then fold it through `window_elapsed`.
+- `homed_inside(candidates, resolve_home, property_rooms)` — the content sweep at ending time
+  (`to_unhome_on_end` covers the tenancy's own roster; items need a world walk only E5b can do).
+- `Tenancy::remove_tenant` refuses the **last** tenant: that would end a tenancy nobody resolved.
+- `periods_since(since, now)` is the crate's one period-arithmetic helper: `0` for a clock that
+  moved backwards, `HousingError::Overflow` at the `i64` extremes, never a saturated "a very long
+  time" that fires every elapse arrow at once.
 
 ---
 
