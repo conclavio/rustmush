@@ -23,7 +23,10 @@ use smol_str::SmolStr;
 use mush_faction::{FactionId, FactionState, Principal};
 
 use crate::action::NpcAction;
-use crate::intel::{IntelKind, IntelRecord, IntelStore, intel_key, parse_intel_key_id};
+use crate::intel::{
+    IntelKind, IntelRecord, IntelStore, MAX_INTEL_READABLE_POOLS, finalize_projection, intel_key,
+    parse_intel_key_id, push_newest_projection,
+};
 use crate::knowledge::{
     Familiarity, KNOWLEDGE_ATTR, LoreEntry, LorePool, MAX_LORE_POOLS, MAX_LORE_TAG_BYTES,
     MAX_RESOLVED_LORE_BYTES, MAX_RESOLVED_LORE_ENTRIES, NpcKnowledge, Secrecy, familiarity_of,
@@ -276,7 +279,17 @@ impl GameModule for NpcModule {
                     parse_intel_key_id(id),
                     serde_json::from_value::<Vec<IntelRecord>>(value),
                 ) {
-                    (Some(principal), Ok(records)) => intel.load(principal, records),
+                    (Some(principal), Ok(records)) => match intel.load(principal, records) {
+                        Ok(dropped) if dropped != 0 => tracing::warn!(
+                            %key,
+                            dropped,
+                            "npc: bounded oversized intel bucket during boot"
+                        ),
+                        Ok(_) => {}
+                        Err(error) => {
+                            tracing::error!(%key, %error, "npc: invalid intel bucket skipped")
+                        }
+                    },
                     (None, _) => {
                         tracing::error!(%key, "npc: bad intel principal key skipped")
                     }
@@ -609,8 +622,12 @@ fn file_intel(ctx: &mut Ctx<'_>, npc: ObjId, subject: ObjId, kind: IntelKind, de
         ts: ctx.w.now(),
     };
     let records = ctx.state_mut::<NpcHostState>().map(|h| h.intel.file(rec));
-    if let Some(records) = records {
-        persist_intel(ctx, principal, &records);
+    match records {
+        Some(Ok(records)) => persist_intel(ctx, principal, &records),
+        Some(Err(error)) => {
+            tracing::warn!(npc = npc.0, %error, "npc: invalid intel record refused");
+        }
+        None => {}
     }
 }
 
@@ -700,55 +717,47 @@ fn cmd_intel(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Ok(());
     }
 
+    let arg = ctx.args.raw().trim().to_string();
+    let by_id = if arg.is_empty() {
+        None
+    } else {
+        mush_core::match_object(ctx.w, actor, &arg).ok()
+    };
+    let needle = arg.to_lowercase();
+    let matches_filter = |record: &IntelRecord| {
+        arg.is_empty()
+            || by_id == Some(record.subject)
+            || record.subject_name.to_lowercase().contains(&needle)
+    };
+
     // The faction pools this actor is cleared to read (M21: a member whose
     // level passes the faction's intel_level). Snapshot before touching the
     // NPC state so the borrows never overlap.
     let readable_pools: Vec<(FactionId, SmolStr)> = readable_intel_pools(ctx.w, actor);
 
-    // Snapshot the actor's own records plus every readable pool's, tagging
-    // pool records with the faction name. Merged, oldest-first by timestamp.
-    let mut records: Vec<(IntelRecord, Option<SmolStr>)> = ctx
+    // Snapshot only the newest bounded matching records across the actor's own
+    // bucket and every readable faction pool. The working set is count-bounded
+    // while scanning, then byte-bounded before any output is constructed.
+    let records: Vec<(IntelRecord, Option<SmolStr>)> = ctx
         .state::<NpcHostState>()
         .map(|h| {
-            let mut v: Vec<(IntelRecord, Option<SmolStr>)> = h
-                .intel
-                .for_principal(Principal::Character(actor))
-                .iter()
-                .cloned()
-                .map(|r| (r, None))
-                .collect();
-            for (fid, fname) in &readable_pools {
-                v.extend(
-                    h.intel
-                        .for_principal(Principal::faction(*fid))
-                        .iter()
-                        .cloned()
-                        .map(|r| (r, Some(fname.clone()))),
-                );
+            let mut v = Vec::new();
+            for record in h.intel.for_principal(Principal::Character(actor)) {
+                if matches_filter(record) {
+                    push_newest_projection(&mut v, record.clone(), None);
+                }
             }
-            v
+            for (fid, fname) in &readable_pools {
+                for record in h.intel.for_principal(Principal::faction(*fid)) {
+                    if matches_filter(record) {
+                        push_newest_projection(&mut v, record.clone(), Some(fname.clone()));
+                    }
+                }
+            }
+            finalize_projection(v, |pool| pool.as_ref().map_or(0, SmolStr::len))
         })
         .unwrap_or_default();
-    records.sort_by_key(|(r, _)| r.ts);
-
-    let arg = ctx.args.raw().trim().to_string();
-    let (records, filter): (Vec<(IntelRecord, Option<SmolStr>)>, Option<String>) = if arg.is_empty()
-    {
-        (records, None)
-    } else {
-        // Resolve the subject to an id when we can (so `#42` or a present name
-        // filters exactly); always also accept a case-insensitive match on the
-        // stored subject name, so a subject who has since left is still findable.
-        let by_id = mush_core::match_object(ctx.w, actor, &arg).ok();
-        let needle = arg.to_lowercase();
-        let filtered = records
-            .into_iter()
-            .filter(|(r, _)| {
-                by_id == Some(r.subject) || r.subject_name.to_lowercase().contains(&needle)
-            })
-            .collect();
-        (filtered, Some(arg))
-    };
+    let filter = (!arg.is_empty()).then_some(arg);
 
     if records.is_empty() {
         let msg = match &filter {
@@ -769,7 +778,7 @@ fn cmd_intel(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     ctx.out.sys_to_actor(actor, "intel", header);
 
     let now = ctx.w.now();
-    for (r, pool) in records.iter().rev() {
+    for (r, pool) in &records {
         let room = if r.room_name.trim().is_empty() {
             String::new()
         } else {
@@ -805,6 +814,7 @@ fn readable_intel_pools(w: &World, actor: ObjId) -> Vec<(FactionId, SmolStr)> {
             fs.memberships_of(actor)
                 .filter(|m| fs.can_read_intel(actor, m.faction))
                 .filter_map(|m| fs.factions.get(&m.faction).map(|f| (f.id, f.name.clone())))
+                .take(MAX_INTEL_READABLE_POOLS)
                 .collect()
         })
         .unwrap_or_default()

@@ -19,7 +19,10 @@ use mush_faction::{FactionState, Principal};
 use mush_proto::{OutputEvent, PanelFrameKind, RichText};
 use smol_str::SmolStr;
 
-use crate::intel::IntelRecord;
+use crate::intel::{
+    MAX_INTEL_PROJECTION_BYTES, MAX_INTEL_READABLE_POOLS, finalize_projection,
+    push_newest_projection,
+};
 use crate::module::intel_kind_label;
 use crate::runtime::NpcHostState;
 
@@ -55,32 +58,27 @@ impl QueryHandler for IntelListQuery {
         // Principal scope: the actor's own bucket plus pools their faction
         // rank clears them to read. No parameter can widen this to another
         // principal (no cross-actor leak).
-        let mut merged: Vec<(&IntelRecord, Option<SmolStr>)> = st
-            .intel
-            .for_principal(Principal::Character(actor))
-            .iter()
-            .map(|r| (r, None))
-            .collect();
+        let mut merged = Vec::new();
+        for record in st.intel.for_principal(Principal::Character(actor)) {
+            push_newest_projection(&mut merged, record.clone(), None);
+        }
         if let Some(fs) = w.module_state::<FactionState>() {
-            for m in fs.memberships_of(actor) {
-                if !fs.can_read_intel(actor, m.faction) {
-                    continue;
-                }
+            for m in fs
+                .memberships_of(actor)
+                .filter(|membership| fs.can_read_intel(actor, membership.faction))
+                .take(MAX_INTEL_READABLE_POOLS)
+            {
                 let Some(f) = fs.factions.get(&m.faction) else {
                     continue;
                 };
-                merged.extend(
-                    st.intel
-                        .for_principal(Principal::faction(f.id))
-                        .iter()
-                        .map(|r| (r, Some(f.name.clone()))),
-                );
+                for record in st.intel.for_principal(Principal::faction(f.id)) {
+                    push_newest_projection(&mut merged, record.clone(), Some(f.name.clone()));
+                }
             }
         }
-        merged.sort_by_key(|(r, _)| r.ts);
-        let items: Vec<serde_json::Value> = merged
+        let merged = finalize_projection(merged, |pool| pool.as_ref().map_or(0, SmolStr::len));
+        let mut items: Vec<serde_json::Value> = merged
             .iter()
-            .rev() // newest first, matching `+intel`
             .map(|(r, pool)| {
                 serde_json::json!({
                     "subject": r.subject_name,
@@ -93,6 +91,11 @@ impl QueryHandler for IntelListQuery {
                 })
             })
             .collect();
+        while serde_json::to_vec(&items)
+            .map_or(true, |encoded| encoded.len() > MAX_INTEL_PROJECTION_BYTES)
+        {
+            items.pop();
+        }
 
         Ok(OutputEvent::Panel {
             feed: SmolStr::new_static("intel"),
@@ -118,7 +121,7 @@ mod tests {
         let mut w = World::new_minimal();
         let mut host = NpcHostState::headless();
         for r in records {
-            host.intel.file(r);
+            host.intel.file(r).unwrap();
         }
         w.module_state_insert(host);
         w

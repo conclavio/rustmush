@@ -411,6 +411,12 @@ lines, and watch subjects have count and per-entry ceilings; and the complete en
 at 256 KiB. Staff edits validate before changing the attribute. An invalid persisted profile is not
 used to wake or prompt the NPC; a later staff edit starts from a bounded default and repairs it.
 
+Informant intel is bounded by both persistence and presentation. Each principal retains at most 50
+validated records and 256 KiB; each record has independent name/detail/room/provenance and encoded
+byte ceilings, and boot requires every embedded principal to match its document key. A personal
+plus faction pull considers at most the newest 128 records, 128 readable faction pools, and 256 KiB
+of encoded records. The line and panel paths use the same newest-first bounded selection.
+
 ### 6.4 Tools → safe actions
 
 ```rust

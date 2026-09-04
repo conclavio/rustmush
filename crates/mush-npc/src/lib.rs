@@ -113,7 +113,12 @@ mod turn;
 pub use action::{
     MAX_ACTIONS, MAX_ROUND_TRIPS, NpcAction, SAY_CAP, action_tools, parse_actions, sanitize_line,
 };
-pub use intel::{INTEL_CAP, IntelKind, IntelRecord, IntelStore, intel_key};
+pub use intel::{
+    INTEL_CAP, IntelKind, IntelRecord, IntelStore, IntelValidationError, MAX_INTEL_DETAIL_BYTES,
+    MAX_INTEL_DOCUMENT_BYTES, MAX_INTEL_PROJECTION_BYTES, MAX_INTEL_PROJECTION_RECORDS,
+    MAX_INTEL_PROVENANCE_BYTES, MAX_INTEL_READABLE_POOLS, MAX_INTEL_RECORD_BYTES,
+    MAX_INTEL_ROOM_NAME_BYTES, MAX_INTEL_SUBJECT_NAME_BYTES, intel_key,
+};
 pub use knowledge::{
     Familiarity, KNOWLEDGE_ATTR, LoreEntry, LorePool, LorePools, LoreValidationError,
     MAX_LORE_DOCUMENT_BYTES, MAX_LORE_FACT_BYTES, MAX_LORE_POOL_ENTRIES, MAX_LORE_POOLS,
