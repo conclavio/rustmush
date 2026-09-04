@@ -174,7 +174,8 @@ pub use control::{
     control_lease_state_family_descriptor,
 };
 pub use decision::{
-    DecisionActionBinding, DecisionCause, DecisionControllerId, DecisionError, DecisionId,
+    DecisionActionBinding, DecisionAdmission, DecisionAdmissionIndex, DecisionCaptureFamilies,
+    DecisionCapturePlan, DecisionCause, DecisionControllerId, DecisionError, DecisionId,
     DecisionKeyRing, DecisionPrompt, DecisionPromptRecord, DecisionPromptStateCodec,
     DecisionResponse, DecisionSecret, DecisionSecretError, DecisionTargetWitnessKeys,
     DecisionTerminalOutcome, DecisionToken, DecisionWake, DecisionWitnessKeys, FallbackPolicyRef,
@@ -182,10 +183,11 @@ pub use decision::{
     MAX_DECISION_MAILBOX_IDS, MAX_DECISION_OFFERS, MAX_DECISION_PENDING_BYTES,
     MAX_DECISION_PROMPT_BYTES, MAX_DECISION_PROVIDER_WORKERS, MAX_DECISION_RECOVERY_PAGE,
     MAX_DECISION_RESPONSE_BYTES, MAX_DECISION_SECRET_VERSIONS, MAX_DECISION_TARGET_WITNESSES,
-    MAX_DECISION_TARGETS, MAX_DECISION_TOTAL_BYTES, MAX_DECISION_WAKE_BYTES, PendingDecision,
-    PendingDecisionStateCodec, PendingDecisionStatus, PendingOfferWitness, PendingTargetWitness,
-    ProjectedDecisionContext, decision_prompt_state_family_descriptor,
-    pending_decision_state_family_descriptor,
+    MAX_DECISION_TARGETS, MAX_DECISION_TOTAL_BYTES, MAX_DECISION_WAKE_BYTES,
+    MAX_NONTERMINAL_DECISIONS, MAX_NONTERMINAL_DECISIONS_PER_ACTOR,
+    MAX_NONTERMINAL_DECISIONS_PER_CONTROLLER, PendingDecision, PendingDecisionStateCodec,
+    PendingDecisionStatus, PendingOfferWitness, PendingTargetWitness, ProjectedDecisionContext,
+    decision_prompt_state_family_descriptor, pending_decision_state_family_descriptor,
 };
 pub use durable_schedule::{
     DurableSchedule, DurableScheduleDraft, DurableScheduleError, DurableScheduleStateCodec,

@@ -18,20 +18,27 @@ use crate::action::{
     PerceivedRef, PrincipalId, RequestUid, RevisionStamp, ScopedIdempotencyKey, SubjectKey,
 };
 use crate::clock::ClockStamp;
+use crate::durable_schedule::{
+    DurableSchedule, DurableScheduleDraft, ScheduleCatchUpOrder, ScheduleId, ScheduleRestartPolicy,
+};
 use crate::mechanics::{CanonicalId, DefinitionRef, OwnerId, canonical_json_bytes_with_limit};
 use crate::obj::ObjId;
 use crate::offer::{
     MAX_PROJECTED_ACTION_CHOICES, ProjectedLegalAction, ProjectedTargetSchema, ProjectionScopeId,
 };
 use crate::{
-    StateFamilyDescriptor, StateFamilyDescriptorError, StateFamilyId, StateKeyCodec,
-    StateValueDecoder, StateValueSerializer, StateValueValidator,
+    ActionTxn, DurableOutboxIntent, StateFamilyDescriptor, StateFamilyDescriptorError,
+    StateFamilyHandle, StateFamilyId, StateKeyCodec, StateValueDecoder, StateValueSerializer,
+    StateValueValidator,
 };
 
 const DECISION_TOKEN_HMAC_DOMAIN: &[u8] = b"rustmush.decision-token.v1\0";
 const DECISION_PROMPT_HASH_DOMAIN: &str = "decision_prompt_body.v1";
 
 pub const MAX_DECISION_OFFERS: usize = 32;
+pub const MAX_NONTERMINAL_DECISIONS: usize = 512;
+pub const MAX_NONTERMINAL_DECISIONS_PER_CONTROLLER: usize = 8;
+pub const MAX_NONTERMINAL_DECISIONS_PER_ACTOR: usize = 2;
 pub const MAX_DECISION_TARGETS: usize = MAX_ACTION_TARGETS;
 pub const MAX_DECISION_TARGET_WITNESSES: usize = MAX_PROJECTED_ACTION_CHOICES;
 pub const MAX_DECISION_PROMPT_BYTES: usize = 192 * 1024;
@@ -302,6 +309,401 @@ pub struct DecisionWitnessKeys {
 pub struct DecisionTargetWitnessKeys {
     pub perceived: PerceivedRef,
     pub revisions: Vec<crate::action::RevisionKey>,
+}
+
+/// Pre-staging admission result. A replacement is legal only when both
+/// records share the exact controller and explicit replaceable cause key.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DecisionAdmission {
+    admitted: DecisionId,
+    replaced: Option<DecisionId>,
+    resulting_nonterminal: usize,
+    resulting_bytes: usize,
+}
+
+impl DecisionAdmission {
+    #[must_use]
+    pub const fn admitted(&self) -> DecisionId {
+        self.admitted
+    }
+
+    #[must_use]
+    pub const fn replaced(&self) -> Option<DecisionId> {
+        self.replaced
+    }
+
+    #[must_use]
+    pub const fn resulting_nonterminal(&self) -> usize {
+        self.resulting_nonterminal
+    }
+
+    #[must_use]
+    pub const fn resulting_bytes(&self) -> usize {
+        self.resulting_bytes
+    }
+}
+
+/// Bounded index assembled from canonical family-scan pages. It retains only
+/// identities and accounting data, never prompt or private witness bodies.
+#[derive(Clone, Debug, Default)]
+pub struct DecisionAdmissionIndex {
+    entries: BTreeMap<DecisionId, DecisionAdmissionEntry>,
+    controller_counts: BTreeMap<DecisionControllerId, usize>,
+    actor_counts: BTreeMap<ObjId, usize>,
+    total_bytes: usize,
+}
+
+#[derive(Clone, Debug)]
+struct DecisionAdmissionEntry {
+    controller: DecisionControllerId,
+    actor: ObjId,
+    replaceable_key: Option<IdempotencyKeyText>,
+    bytes: usize,
+}
+
+impl DecisionAdmissionIndex {
+    /// Construct the bounded non-terminal view used by capture admission.
+    /// Passing more than the hard process ceilings is an integrity failure,
+    /// not an invitation to truncate the scan.
+    pub fn from_pairs<'a>(
+        pairs: impl IntoIterator<Item = (&'a PendingDecision, &'a DecisionPromptRecord)>,
+        keys: &DecisionKeyRing,
+    ) -> Result<Self, DecisionError> {
+        let mut index = Self::default();
+        for (pending, prompt) in pairs {
+            pending.validate_prompt_pair(prompt, keys)?;
+            if pending.status.is_terminal() {
+                continue;
+            }
+            let bytes = decision_pair_bytes(pending, prompt)?;
+            if index
+                .entries
+                .insert(
+                    pending.id,
+                    DecisionAdmissionEntry {
+                        controller: pending.controller.clone(),
+                        actor: pending.actor,
+                        replaceable_key: pending.cause.replaceable_key.clone(),
+                        bytes,
+                    },
+                )
+                .is_some()
+            {
+                return Err(DecisionError::DuplicateDecisionId);
+            }
+            *index
+                .controller_counts
+                .entry(pending.controller.clone())
+                .or_default() += 1;
+            *index.actor_counts.entry(pending.actor).or_default() += 1;
+            index.total_bytes = index
+                .total_bytes
+                .checked_add(bytes)
+                .ok_or(DecisionError::Overflow)?;
+            index.validate_hard_totals()?;
+        }
+        Ok(index)
+    }
+
+    /// Decide admission before opening an authoritative transaction.
+    pub fn admit(
+        &self,
+        pending: &PendingDecision,
+        prompt: &DecisionPromptRecord,
+        keys: &DecisionKeyRing,
+    ) -> Result<DecisionAdmission, DecisionError> {
+        pending.validate_prompt_pair(prompt, keys)?;
+        if pending.status.is_terminal() {
+            return Err(DecisionError::TerminalCapture);
+        }
+        if self.entries.contains_key(&pending.id) {
+            return Err(DecisionError::DuplicateDecisionId);
+        }
+        let replacement = pending
+            .cause
+            .replaceable_key
+            .as_ref()
+            .map(|replaceable| {
+                self.entries
+                    .iter()
+                    .filter(|(_, entry)| {
+                        entry.controller == pending.controller
+                            && entry.replaceable_key.as_ref() == Some(replaceable)
+                    })
+                    .map(|(id, entry)| (*id, entry))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if replacement.len() > 1 {
+            return Err(DecisionError::AmbiguousCoalescingCause);
+        }
+        let replaced = replacement.first().map(|(id, _)| *id);
+        let replaced_entry = replacement.first().map(|(_, entry)| *entry);
+        let candidate_bytes = decision_pair_bytes(pending, prompt)?;
+        let resulting_nonterminal = self
+            .entries
+            .len()
+            .checked_add(1)
+            .and_then(|count| count.checked_sub(usize::from(replaced.is_some())))
+            .ok_or(DecisionError::Overflow)?;
+        let resulting_bytes = self
+            .total_bytes
+            .checked_add(candidate_bytes)
+            .and_then(|bytes| bytes.checked_sub(replaced_entry.map_or(0, |entry| entry.bytes)))
+            .ok_or(DecisionError::Overflow)?;
+        if resulting_nonterminal > MAX_NONTERMINAL_DECISIONS {
+            return Err(DecisionError::GlobalAdmissionLimit);
+        }
+        if resulting_bytes > MAX_DECISION_TOTAL_BYTES {
+            return Err(DecisionError::StorageAdmissionLimit);
+        }
+        let replaced_same_controller =
+            replaced_entry.is_some_and(|entry| entry.controller == pending.controller);
+        let controller_count = self
+            .controller_counts
+            .get(&pending.controller)
+            .copied()
+            .unwrap_or(0)
+            + 1
+            - usize::from(replaced_same_controller);
+        if controller_count > MAX_NONTERMINAL_DECISIONS_PER_CONTROLLER {
+            return Err(DecisionError::ControllerAdmissionLimit);
+        }
+        let replaced_same_actor = replaced_entry.is_some_and(|entry| entry.actor == pending.actor);
+        let actor_count = self.actor_counts.get(&pending.actor).copied().unwrap_or(0) + 1
+            - usize::from(replaced_same_actor);
+        if actor_count > MAX_NONTERMINAL_DECISIONS_PER_ACTOR {
+            return Err(DecisionError::ActorAdmissionLimit);
+        }
+        Ok(DecisionAdmission {
+            admitted: pending.id,
+            replaced,
+            resulting_nonterminal,
+            resulting_bytes,
+        })
+    }
+
+    fn validate_hard_totals(&self) -> Result<(), DecisionError> {
+        if self.entries.len() > MAX_NONTERMINAL_DECISIONS {
+            return Err(DecisionError::GlobalAdmissionLimit);
+        }
+        if self.total_bytes > MAX_DECISION_TOTAL_BYTES {
+            return Err(DecisionError::StorageAdmissionLimit);
+        }
+        if self
+            .controller_counts
+            .values()
+            .any(|count| *count > MAX_NONTERMINAL_DECISIONS_PER_CONTROLLER)
+        {
+            return Err(DecisionError::ControllerAdmissionLimit);
+        }
+        if self
+            .actor_counts
+            .values()
+            .any(|count| *count > MAX_NONTERMINAL_DECISIONS_PER_ACTOR)
+        {
+            return Err(DecisionError::ActorAdmissionLimit);
+        }
+        Ok(())
+    }
+}
+
+fn decision_pair_bytes(
+    pending: &PendingDecision,
+    prompt: &DecisionPromptRecord,
+) -> Result<usize, DecisionError> {
+    let pending = serde_json::to_value(pending)
+        .map_err(|error| DecisionError::Serialization(error.to_string()))?;
+    let prompt = serde_json::to_value(prompt)
+        .map_err(|error| DecisionError::Serialization(error.to_string()))?;
+    let pending = canonical_json_bytes_with_limit(&pending, MAX_DECISION_PENDING_BYTES)
+        .map_err(|_| DecisionError::PendingBytes)?;
+    let prompt = canonical_json_bytes_with_limit(&prompt, MAX_DECISION_PROMPT_BYTES)
+        .map_err(|_| DecisionError::PromptBytes)?;
+    pending
+        .len()
+        .checked_add(prompt.len())
+        .ok_or(DecisionError::Overflow)
+}
+
+/// Composition-branded owner-local families required for one atomic capture.
+#[derive(Clone)]
+pub struct DecisionCaptureFamilies {
+    pending: StateFamilyHandle<DecisionId, PendingDecision>,
+    prompts: StateFamilyHandle<DecisionId, DecisionPromptRecord>,
+    deadlines: StateFamilyHandle<ScheduleId, DurableSchedule>,
+}
+
+impl fmt::Debug for DecisionCaptureFamilies {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DecisionCaptureFamilies")
+            .field("owner", self.pending.owner())
+            .field("pending", self.pending.descriptor().id())
+            .field("prompts", self.prompts.descriptor().id())
+            .field("deadlines", self.deadlines.descriptor().id())
+            .finish()
+    }
+}
+
+impl DecisionCaptureFamilies {
+    pub fn new(
+        pending: StateFamilyHandle<DecisionId, PendingDecision>,
+        prompts: StateFamilyHandle<DecisionId, DecisionPromptRecord>,
+        deadlines: StateFamilyHandle<ScheduleId, DurableSchedule>,
+    ) -> Result<Self, DecisionError> {
+        if pending.owner() != prompts.owner() || pending.owner() != deadlines.owner() {
+            return Err(DecisionError::CaptureOwnerMismatch);
+        }
+        Ok(Self {
+            pending,
+            prompts,
+            deadlines,
+        })
+    }
+
+    #[must_use]
+    pub fn owner(&self) -> &OwnerId {
+        self.pending.owner()
+    }
+}
+
+/// Fully validated material staged by a controller-owned authoritative action.
+/// Provider I/O is structurally absent from this type.
+#[derive(Clone, Debug)]
+pub struct DecisionCapturePlan {
+    pending: PendingDecision,
+    prompt: DecisionPromptRecord,
+    deadline: DurableSchedule,
+    wake: DecisionWake,
+    admission: DecisionAdmission,
+    wake_adapter: CanonicalId,
+    outbox_ordinal: u16,
+}
+
+impl DecisionCapturePlan {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        owner: &OwnerId,
+        pending: PendingDecision,
+        prompt: DecisionPromptRecord,
+        admission: DecisionAdmission,
+        keys: &DecisionKeyRing,
+        wake_adapter: CanonicalId,
+        outbox_ordinal: u16,
+    ) -> Result<Self, DecisionError> {
+        if &pending.controller.owner != owner {
+            return Err(DecisionError::CaptureOwnerMismatch);
+        }
+        if admission.admitted != pending.id {
+            return Err(DecisionError::AdmissionIdentityMismatch);
+        }
+        pending.validate_prompt_pair(&prompt, keys)?;
+        let wake = DecisionWake {
+            id: pending.id,
+            revision: pending.revision,
+            prompt_digest: pending.prompt_digest,
+        };
+        pending.validate_wake(&wake)?;
+        let local_id = CanonicalId::parse_canonical(pending.id.0.to_hex())
+            .map_err(|error| DecisionError::Canonical(error.to_string()))?;
+        let schedule_id = ScheduleId::derive(owner, &local_id)
+            .map_err(|error| DecisionError::Canonical(error.to_string()))?;
+        let deadline = DurableSchedule::new(DurableScheduleDraft {
+            id: schedule_id,
+            owner: owner.clone(),
+            clock: pending.deadline.clock.clone(),
+            next_due: pending.deadline.clone(),
+            cadence: None,
+            generation: pending.revision,
+            next_ordinal: 0,
+            restart: ScheduleRestartPolicy::Resume,
+            catch_up_order: ScheduleCatchUpOrder::OldestFirst,
+            max_catch_up: 1,
+        })
+        .map_err(|error| DecisionError::Schedule(error.to_string()))?;
+        Ok(Self {
+            pending,
+            prompt,
+            deadline,
+            wake,
+            admission,
+            wake_adapter,
+            outbox_ordinal,
+        })
+    }
+
+    #[must_use]
+    pub const fn pending(&self) -> &PendingDecision {
+        &self.pending
+    }
+
+    #[must_use]
+    pub const fn prompt(&self) -> &DecisionPromptRecord {
+        &self.prompt
+    }
+
+    #[must_use]
+    pub const fn deadline(&self) -> &DurableSchedule {
+        &self.deadline
+    }
+
+    #[must_use]
+    pub const fn wake(&self) -> DecisionWake {
+        self.wake
+    }
+
+    /// Add every authoritative capture post-image to one owner transaction.
+    /// If admission selected a predecessor, its terminal transition is staged
+    /// before the replacement inserts but commits in the same final bundle.
+    pub fn stage(
+        self,
+        txn: &mut ActionTxn<'_>,
+        families: &DecisionCaptureFamilies,
+    ) -> Result<DurableOutboxIntent, DecisionError> {
+        if txn.owner() != families.owner() || txn.owner() != &self.pending.controller.owner {
+            return Err(DecisionError::CaptureOwnerMismatch);
+        }
+        if let Some(replaced) = self.admission.replaced {
+            let mut old = txn
+                .get(&families.pending, &replaced)
+                .map_err(|error| DecisionError::State(error.to_string()))?
+                .cloned()
+                .ok_or(DecisionError::CoalescingTargetMissing)?;
+            let replacement_key = self
+                .pending
+                .cause
+                .replaceable_key
+                .as_ref()
+                .ok_or(DecisionError::CoalescingTargetChanged)?;
+            if old.controller != self.pending.controller
+                || old.cause.replaceable_key.as_ref() != Some(replacement_key)
+                || old.status.is_terminal()
+            {
+                return Err(DecisionError::CoalescingTargetChanged);
+            }
+            old.finish(old.revision, DecisionTerminalOutcome::Stale, None)?;
+            txn.replace(&families.pending, &replaced, old)
+                .map_err(|error| DecisionError::State(error.to_string()))?;
+        }
+        let pending_id = self.pending.id;
+        let prompt_id = self.prompt.id;
+        txn.insert(&families.pending, &pending_id, self.pending)
+            .map_err(|error| DecisionError::State(error.to_string()))?;
+        txn.insert(&families.prompts, &prompt_id, self.prompt)
+            .map_err(|error| DecisionError::State(error.to_string()))?;
+        txn.insert(&families.deadlines, &self.deadline.id(), self.deadline)
+            .map_err(|error| DecisionError::State(error.to_string()))?;
+        let payload = serde_json::to_value(self.wake)
+            .map_err(|error| DecisionError::Serialization(error.to_string()))?;
+        DurableOutboxIntent::new(
+            self.outbox_ordinal,
+            families.owner().clone(),
+            self.wake_adapter,
+            payload,
+        )
+        .map_err(|error| DecisionError::Outbox(error.to_string()))
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -988,6 +1390,30 @@ pub enum DecisionError {
     OfferCount { actual: usize },
     #[error("decision contains a duplicate offer")]
     DuplicateOffer,
+    #[error("decision identity already exists")]
+    DuplicateDecisionId,
+    #[error("more than one pending decision has the replaceable cause")]
+    AmbiguousCoalescingCause,
+    #[error("a terminal decision cannot be admitted as new work")]
+    TerminalCapture,
+    #[error("capture plan does not match its pre-staging admission identity")]
+    AdmissionIdentityMismatch,
+    #[error("global non-terminal decision limit reached")]
+    GlobalAdmissionLimit,
+    #[error("per-controller non-terminal decision limit reached")]
+    ControllerAdmissionLimit,
+    #[error("per-actor non-terminal decision limit reached")]
+    ActorAdmissionLimit,
+    #[error("total non-terminal decision storage limit reached")]
+    StorageAdmissionLimit,
+    #[error(
+        "decision capture families, transaction, controller, or schedule have different owners"
+    )]
+    CaptureOwnerMismatch,
+    #[error("coalescing predecessor no longer exists")]
+    CoalescingTargetMissing,
+    #[error("coalescing predecessor is no longer the admitted replaceable decision")]
+    CoalescingTargetChanged,
     #[error("decision contains {actual} targets; maximum is {MAX_DECISION_TARGETS}")]
     TargetCount { actual: usize },
     #[error("decision target witnesses must be strictly perceived-ref sorted")]
@@ -1042,6 +1468,12 @@ pub enum DecisionError {
     Canonical(String),
     #[error("decision serialization failed: {0}")]
     Serialization(String),
+    #[error("decision typed-state staging failed: {0}")]
+    State(String),
+    #[error("decision deadline schedule is invalid: {0}")]
+    Schedule(String),
+    #[error("decision wake outbox intent is invalid: {0}")]
+    Outbox(String),
 }
 
 #[cfg(test)]
@@ -1051,7 +1483,9 @@ mod tests {
     use crate::clock::ClockRef;
     use crate::mechanics::{
         DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder,
+        MechanicalOwnerReadiness,
     };
+    use crate::{ActionStateStore, DurableScheduleStateCodec, StateFamilyRegistryBuilder};
 
     fn principal() -> PrincipalId {
         PrincipalId::Object { id: ObjId(7) }
@@ -1186,6 +1620,92 @@ mod tests {
         (key_ring, pending, prompt)
     }
 
+    fn derived_pair(
+        keys: &DecisionKeyRing,
+        template: &PendingDecision,
+        prompt_template: &DecisionPromptRecord,
+        salt: u8,
+        actor: ObjId,
+        replaceable_key: Option<&str>,
+    ) -> (PendingDecision, DecisionPromptRecord) {
+        let mut pending = template.clone();
+        pending.actor = actor;
+        pending.cause.instance =
+            IdempotencyKeyText::parse_canonical(format!("turn-{salt}")).unwrap();
+        pending.cause.replaceable_key = replaceable_key
+            .map(IdempotencyKeyText::parse_canonical)
+            .transpose()
+            .unwrap();
+        pending.action_idempotency = ScopedIdempotencyKey::new(
+            pending.action_idempotency.scope().clone(),
+            pending.action_idempotency.epoch(),
+            IdempotencyKey::Deterministic(CanonicalHash::from_bytes([salt; 32])),
+        );
+        pending.id = DecisionId::derive(
+            &pending.controller,
+            &pending.cause,
+            &pending.action_idempotency,
+        )
+        .unwrap();
+        let mut prompt = prompt_template.prompt.clone();
+        prompt.token = keys.sign(pending.id, pending.revision, pending.prompt_digest);
+        let prompt = DecisionPromptRecord::new(prompt).unwrap();
+        (pending, prompt)
+    }
+
+    fn capture_store() -> (ActionStateStore, DecisionCaptureFamilies) {
+        let owner = controller().owner;
+        let mut builder = StateFamilyRegistryBuilder::new();
+        let pending = builder
+            .register(
+                owner.clone(),
+                pending_decision_state_family_descriptor(
+                    StateFamilyId::new("pending_decisions").unwrap(),
+                )
+                .unwrap(),
+                PendingDecisionStateCodec,
+                PendingDecisionStateCodec,
+                PendingDecisionStateCodec,
+                PendingDecisionStateCodec,
+            )
+            .unwrap();
+        let prompts = builder
+            .register(
+                owner.clone(),
+                decision_prompt_state_family_descriptor(
+                    StateFamilyId::new("decision_prompts").unwrap(),
+                )
+                .unwrap(),
+                DecisionPromptStateCodec,
+                DecisionPromptStateCodec,
+                DecisionPromptStateCodec,
+                DecisionPromptStateCodec,
+            )
+            .unwrap();
+        let deadlines = builder
+            .register(
+                owner.clone(),
+                crate::durable_schedule_state_family_descriptor(
+                    StateFamilyId::new("decision_deadlines").unwrap(),
+                )
+                .unwrap(),
+                DurableScheduleStateCodec,
+                DurableScheduleStateCodec,
+                DurableScheduleStateCodec,
+                DurableScheduleStateCodec,
+            )
+            .unwrap();
+        let owners = BTreeSet::from([owner]);
+        let readiness = MechanicalOwnerReadiness::for_owners(&owners);
+        let registry = builder
+            .freeze_for_owners_with_readiness(&owners, readiness)
+            .unwrap();
+        (
+            ActionStateStore::new(registry),
+            DecisionCaptureFamilies::new(pending, prompts, deadlines).unwrap(),
+        )
+    }
+
     #[test]
     fn token_authenticates_exact_decision_revision_and_prompt_digest() {
         let (keys, _, prompt) = pair();
@@ -1306,5 +1826,90 @@ mod tests {
             too_many.validate(),
             Err(DecisionError::OfferCount { .. })
         ));
+    }
+
+    #[test]
+    fn admission_refuses_actor_overflow_and_coalesces_only_explicit_causes() {
+        let (keys, template, prompt_template) = pair();
+        let (first, first_prompt) = derived_pair(
+            &keys,
+            &template,
+            &prompt_template,
+            10,
+            ObjId(9),
+            Some("patrol"),
+        );
+        let (second, second_prompt) =
+            derived_pair(&keys, &template, &prompt_template, 11, ObjId(9), None);
+        let index = DecisionAdmissionIndex::from_pairs(
+            [(&first, &first_prompt), (&second, &second_prompt)],
+            &keys,
+        )
+        .unwrap();
+
+        let (overflow, overflow_prompt) =
+            derived_pair(&keys, &template, &prompt_template, 12, ObjId(9), None);
+        assert_eq!(
+            index.admit(&overflow, &overflow_prompt, &keys).unwrap_err(),
+            DecisionError::ActorAdmissionLimit
+        );
+
+        let (replacement, replacement_prompt) = derived_pair(
+            &keys,
+            &template,
+            &prompt_template,
+            13,
+            ObjId(9),
+            Some("patrol"),
+        );
+        let admission = index
+            .admit(&replacement, &replacement_prompt, &keys)
+            .unwrap();
+        assert_eq!(admission.replaced(), Some(first.id));
+        assert_eq!(admission.resulting_nonterminal(), 2);
+    }
+
+    #[test]
+    fn capture_stages_pending_prompt_deadline_and_wake_together() {
+        let (keys, pending, prompt) = pair();
+        let admission = DecisionAdmissionIndex::default()
+            .admit(&pending, &prompt, &keys)
+            .unwrap();
+        let plan = DecisionCapturePlan::new(
+            &pending.controller.owner,
+            pending.clone(),
+            prompt.clone(),
+            admission,
+            &keys,
+            CanonicalId::new("decision_wake").unwrap(),
+            4,
+        )
+        .unwrap();
+        assert_eq!(plan.deadline().next_due(), &pending.deadline);
+        assert_eq!(plan.deadline().cadence(), None);
+        let (mut store, families) = capture_store();
+        let mut txn = store.transaction(&families.pending).unwrap();
+        let outbox = plan.stage(&mut txn, &families).unwrap();
+        assert_eq!(outbox.ordinal(), 4);
+        assert_eq!(
+            serde_json::from_value::<DecisionWake>(outbox.payload().clone()).unwrap(),
+            DecisionWake {
+                id: pending.id,
+                revision: pending.revision,
+                prompt_digest: pending.prompt_digest,
+            }
+        );
+        let prepared = txn.prepare().unwrap();
+        let (writes, installation) = prepared.into_parts();
+        assert_eq!(writes.len(), 3);
+        store.install(installation);
+        assert_eq!(
+            store.get(&families.pending, &pending.id).unwrap(),
+            Some(&pending)
+        );
+        assert_eq!(
+            store.get(&families.prompts, &prompt.id).unwrap(),
+            Some(&prompt)
+        );
     }
 }
