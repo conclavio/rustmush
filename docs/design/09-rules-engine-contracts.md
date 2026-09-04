@@ -2532,8 +2532,9 @@ Redis-gated suites. Do not begin K7 on an unreviewed or format-divergent E5/K6 b
 
 Work:
 
-1. Define durable server-side `PendingDecision` with internal offer/guards/deadline/cause/key and a
-   separate LLM-facing `DecisionPrompt` containing projected legal actions and an opaque token.
+1. Define durable server-side `PendingDecision` with internal prompt-time witnesses,
+   deadline/cause/idempotency, and a separate LLM-facing `DecisionPrompt` containing only projected
+   legal actions plus an opaque token.
 2. Make NPC/LLM tasks hold no world references or guards and return only an offered action ID,
    perceived targets, bounded parameters, and the decision token.
 3. Re-enter through the ordinary action invocation service; remove bespoke mechanical LLM ability
@@ -2541,6 +2542,118 @@ Work:
 4. Add per-controller cancellation/coalescing, deadlines, malformed-output limits, and deterministic
    fallback independent of provider availability.
 5. Run Gate 4 for every guard dimension and duplicate/out-of-order completion.
+
+#### K7 implementation plan (ready after the E5/K6 integration gate)
+
+**K7.0 — freeze the delayed-decision contract.** Use the authoritative action idempotency record as
+the winner of the LLM/fallback race; do not require a cross-owner delete of the pending-decision
+record in the action's commit. Both paths submit the same scoped idempotency key. Whichever exact
+request reaches durable intent first wins; a different later semantic request conflicts, while an
+identical retry joins. The decision record is then finalized from the terminal action receipt. A
+crash between those steps is repaired by comparing the exact action status during pending-decision
+recovery. This keeps correctness independent of cleanup timing.
+
+Add these bounded wire/storage types (names may move, semantics may not):
+
+```rust
+pub struct PendingDecision {
+    pub id: DecisionId,
+    pub revision: u64,
+    pub controller: OwnerId,
+    pub principal: PrincipalId,
+    pub actor: ObjId,
+    pub subject: PerceivedRef,
+    pub viewer_scope: ProjectionScopeId,
+    pub cause: DecisionCause,
+    pub offered: Vec<PendingOfferWitness>,
+    pub prompt_digest: CanonicalHash,
+    pub token_key_version: u32,
+    pub deadline: ClockStamp,
+    pub fallback: FallbackPolicyRef,
+    pub action_idempotency: ScopedIdempotencyKey,
+    pub malformed_attempts: u8,
+    pub status: PendingDecisionStatus,
+}
+
+pub struct PendingOfferWitness {
+    pub offer: ActionOfferId,
+    pub common_revisions: Vec<RevisionStamp>,
+    pub target_revisions: Vec<PendingTargetWitness>,
+    pub bridge_definitions: Vec<DefinitionRef>,
+}
+
+pub struct PendingTargetWitness {
+    pub perceived: PerceivedRef,
+    pub revisions: Vec<RevisionStamp>,
+}
+
+pub struct DecisionPrompt {
+    pub token: DecisionToken,
+    pub actions: Vec<ProjectedLegalAction>,
+    pub context: ProjectedDecisionContext,
+}
+
+pub struct DecisionResponse {
+    pub token: DecisionToken,
+    pub offer: ActionOfferId,
+    pub targets: Vec<PerceivedRef>,
+    pub parameters: Value,
+}
+```
+
+`PendingDecision` is trusted server persistence, but it does **not** serialize `GuardSet` or make
+`AuthorityGuard` client-decodable. The kernel reconstructs a final guard set through frozen
+registries. The pending record may retain private revision coordinates needed for revalidation;
+`DecisionPrompt`, adapter logs, metrics, errors, and `DecisionResponse` may not. The opaque token is
+an HMAC over decision id/revision, prompt digest, and key version; it is not a bearer form of any
+guard. Persist the public prompt payload as a stable-ID durable-outbox effect so ambiguous dispatch
+is safely redelivered after restart.
+
+The prompt-time witness snapshot is required in addition to ordinary offer regeneration. Today an
+immediate action adds exact source/selected-target placement stamps only after the caller chooses an
+opaque contact. If delayed completion merely observed those coordinates anew, a target could move
+after the prompt and the LLM would unknowingly act on refreshed truth. K7 capture therefore records
+bounded common revisions and a bounded `PerceivedRef -> revisions` table for each offered target.
+Completion selects only the chosen target's witnesses, reconstructs them through the exact
+same-owner or bridge route, and requires the recorded generation. Unselected-target movement does
+not stale the decision. Contact loss/generation, source/component revisions, lease/window/definition
+guards, and offer shape are still checked by exact offer regeneration and normal final validation.
+
+**K7.1 — durable capture and dispatch.** Register one typed pending-decision family and strict
+codec. Add a provider callback that names prompt-time common and per-choice revision coordinates;
+the kernel supplies all generations, bridge definitions, and bounds. Capture the projected prompt,
+private witnesses, one-shot deadline schedule, and stable-ID LLM durable-outbox request in one
+authoritative bundle. Enforce global/per-controller/per-actor count and canonical-byte ceilings
+before staging. Coalesce only an explicitly replaceable cause key; otherwise refuse admission.
+
+**K7.2 — untrusted response ingress.** The async worker owns only the projected prompt and returns
+`DecisionResponse`. On re-entry, authenticate the token, load the exact pending revision, enforce
+payload limits, locate the exact offered action and opaque targets, regenerate legal actions, and
+require the same offer identity. Rebuild prompt-time guards from the private witness table, then use
+the ordinary resolved authoritative coordinator. Returned truth IDs, revisions, definitions,
+guards, clocks, actor substitutions, or idempotency data are structurally impossible or rejected
+before intent/RNG/mutation.
+
+**K7.3 — cancellation, deadlines, and fallback.** Cancellation is an exact revision transition and
+invalidates the token before acknowledging success. A durable one-shot schedule owns the deadline.
+At expiry, malformed-output exhaustion, or provider-unavailable policy, choose a deterministic
+fallback using no LLM/provider call and submit it with the same action idempotency key. LLM and
+fallback races therefore have one durable winner. Late, duplicate, and out-of-order responses join
+the identical winner or receive a projected terminal/stale result; they never run a second action.
+
+**K7.4 — recovery and bounds.** On boot, discover pending records by bounded canonical family scan,
+validate the prompt/outbox/schedule/idempotency linkage, reconcile any action already pending or
+finalized, and recreate only missing reconstructible work. Invalid linkage freezes the decision
+owner with a bounded recovery incident. Terminal records compact only after the action receipt and
+external dispatch status are durably attributable.
+
+**K7.5 — Gate-4 matrix.** For capability/station/lease, source/component/resource, selected target
+placement, contact, window/clock generation, definition/bridge, cancellation, and deadline changes,
+prove zero mutation, RNG draw, semantic event, and external effect. Separately prove unselected
+target movement remains admissible; duplicate response, fallback race, worker crash, server crash,
+and out-of-order completion select exactly one durable action result. Run the same projected prompt
+through deterministic fake, decision-tree, and mock-LLM adapters so provider latency cannot affect
+initiative ordering or authority.
 
 Exit criteria:
 
