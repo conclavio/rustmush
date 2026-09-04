@@ -49,6 +49,8 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 pub mod accounts;
 pub mod config_ext;
+// E4c: the economy -> canon evidence bridge (08c §6.1 item 3).
+pub mod econ_canon;
 pub mod gateway_sink;
 pub mod help;
 pub mod modules;

@@ -980,6 +980,20 @@ pub enum EconomicEvent {
         id: ContractId,
         /// Its new state, kind only.
         state: ContractStateKind,
+        /// The transaction the transition **landed on**, when it had one (E4b2's
+        /// terminal-transition rule: a terminal transition is a post under the
+        /// contract's deterministic key followed by the state write).
+        ///
+        /// This is the event's **de-duplication key**, and it is here for one
+        /// reason: a settlement whose state write is lost is finished later — by
+        /// the sweep's retry, whose post resolves to `AlreadyPosted`, or by boot's
+        /// `finished_transition`, which reads the same key out of the idempotency
+        /// index. Both produce the transition a second time. Keyed on the landed
+        /// transaction id, an observer that publishes (the canon bridge) can tell
+        /// "this settlement" from "this settlement again"; keyed on the contract
+        /// id and state alone it could not.
+        #[serde(default)]
+        transaction: Option<TransactionId>,
     },
     /// An obligation changed status.
     ObligationChanged {

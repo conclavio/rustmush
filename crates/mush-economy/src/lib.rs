@@ -96,6 +96,12 @@ mod sweep;
 // machinery the sweep shares with it.
 mod contract_live;
 
+// E4c — the seams that connect the economy to the rest of the world: external
+// facts, the canon attestation observer, and the post-commit event seam.
+mod attest;
+mod facts;
+mod observer;
+
 // E2b — the world-attached module (the journal on the E0 Ledger, the atomic
 // full-bundle post, the strict durable money ack-gate, and directional boot
 // self-heal). E3b1 adds the custody seam, asset/vault persistence + boot, the
@@ -156,7 +162,8 @@ pub use contract::{
     PERMILLE, PartyAgreement, PayoutShare, PendingKind, PendingTerminal, QualifyingEscrow,
     Readiness, Resolution, Share,
     TypedCondition,
-    activate_key, activation_asset_ops, apply_outcome, apply_split, canonical_visibility,
+    activate_key, activation_asset_ops, apply_outcome, apply_split, canon_set_accepts,
+    canonical_visibility,
     contract_op_key,
     check_offerable, check_structure, condition_holds, conditions_met, consent_hash,
     contract_encumbrance,
@@ -184,10 +191,14 @@ pub use sweep::SWEEP_TAG;
 // E4b2 — contracts live.
 pub use contract_live::may_view_contract;
 
+// E4c — facts, events, evidence.
+pub use facts::{FactProvider, FactState, FactTable, WorldFacts};
+pub use observer::{EconomyObserver, MAX_OBSERVER_DEPTH, ObserverTable};
+
 // E2b/E3b1 public surface.
 pub use api::{
     META_KEY, ObligationSpec, PostOutcome, account_key, approval_key, asset_key, cadence_key,
-    contract_key, create_system_obligation, create_vault, hold_key, instrument_key,
+    contract_key, create_system_obligation, create_vault, hold_key, instrument_key, issue_title,
     obligation_key as obligation_doc_key, open_account, post, post_capability, register_instrument,
     reverse, set_account_approval, set_account_status, set_asset_frozen, set_economy_frozen,
     set_vault_status, vault_key,

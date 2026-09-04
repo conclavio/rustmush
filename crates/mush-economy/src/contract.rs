@@ -1567,10 +1567,31 @@ fn attestation_matches(att: &Attestation, set: &AttestorSet, env: &ValidateEnv<'
         AttestorSet::Capability { .. } | AttestorSet::Staff => {
             matches!(&att.by, AttestorRef::Principal(a) if env.auth.authorize_attestor(a, set))
         }
-        AttestorSet::Canon { kind, source } => {
-            matches!(&att.by, AttestorRef::Canon { kind: k, source: s, .. }
-                if k == kind && source.as_ref().is_none_or(|want| want == s))
+        AttestorSet::Canon { .. } => match &att.by {
+            AttestorRef::Canon { kind, source, .. } => canon_set_accepts(set, kind, source),
+            _ => false,
+        },
+    }
+}
+
+/// Whether `set` is a [`AttestorSet::Canon`] that a canon record of this `kind` and
+/// `source` satisfies — **kind and source both** (E4a verify fold, finding 5; E5's
+/// owner answer 20: progress must cite a specific front, opportunity or operation,
+/// so a `scene.concluded` involving any faction member is deliberately not a match).
+/// A set naming no source accepts any source of that kind.
+///
+/// It is public because E4c's canon observer asks exactly this question *before*
+/// there is an attestation to compare, and the observer and [`reverify`] must never
+/// be able to disagree about what "the right canon record" means: an observer that
+/// recorded a looser match would write attestations that never re-verify, freezing
+/// the escrow of a contract whose evidence had arrived.
+#[must_use]
+pub fn canon_set_accepts(set: &AttestorSet, kind: &str, source: &str) -> bool {
+    match set {
+        AttestorSet::Canon { kind: want_kind, source: want_source } => {
+            want_kind == kind && want_source.as_ref().is_none_or(|s| s == source)
         }
+        _ => false,
     }
 }
 

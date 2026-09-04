@@ -66,7 +66,7 @@ pub use state::{OrgState, ScrubReport};
 
 // E1b public surface.
 pub use api::{
-    AUDIT_LOG, META_KEY, NS, OrgAction, OrgAuditEntry, authorize_in_world, delegation_key,
+    AUDIT_LOG, META_KEY, NS, OrgAction, OrgAuditEntry, audit, authorize_in_world, delegation_key,
     grant_key, member_key, org_key, policy_key, role_key, scope_key, submit,
 };
 pub use module::{OrgModule, OrgStore};

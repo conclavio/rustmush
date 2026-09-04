@@ -142,6 +142,56 @@ pub struct OrgAuditEntry {
     pub detail: serde_json::Value,
 }
 
+/// Append one audit entry **without** an org mutation (E3 leftover, closed in E4c;
+/// 08c §6.1 item 4, review finding G1).
+///
+/// [`submit`] is the only way an action reached the ledger, and it needs an
+/// [`OrgMutationPlan`] — so an act that is *authorized by* org state but changes
+/// none of it had nowhere to be recorded. The economy's `@econ/approve` and
+/// `@econ/deny` are exactly that shape: the decision that releases (or refuses) a
+/// scoped payment is an org-authority act whose record lived only in the economy's
+/// own approval document, invisible to `@org/audit`.
+///
+/// It is the tail of [`submit`] and nothing else: prepare the append, apply it,
+/// queue the op on the caller's batch. There is no state install, so the
+/// "terminal on the success path" rule is weaker here than for `submit` — a later
+/// `Err` truncates the deferred write and the RAM tail is the only thing left ahead,
+/// which the next boot re-derives. Call it after the act it records has committed.
+///
+/// # Errors
+///
+/// [`OrgError::Invalid`] if the org module is not loaded or the audit ledger refuses
+/// the append.
+pub fn audit(ctx: &mut Ctx<'_>, action: OrgAction) -> Result<(), OrgError> {
+    let entry = OrgAuditEntry {
+        at: ctx.w.now(),
+        actor: ctx.actor,
+        action: action.action,
+        org: action.org,
+        detail: action.detail,
+    };
+    let prepared = ctx
+        .w
+        .module_state::<OrgStore>()
+        .ok_or_else(|| OrgError::Invalid("org module not loaded".into()))?
+        .audit
+        .prepare_append(AUDIT_LOG, serde_json::to_value(&entry).expect("audit entry serializes"))
+        .map_err(|error| OrgError::Invalid(format!("audit append refused: {error}")))?;
+    let op = {
+        let store = ctx
+            .w
+            .module_state_mut::<OrgStore>()
+            .ok_or_else(|| OrgError::Invalid("org module not loaded".into()))?;
+        store
+            .audit
+            .apply_prepared(prepared)
+            .map_err(|error| OrgError::Invalid(format!("audit append became stale: {error}")))?
+            .1
+    };
+    push_op(ctx.out, op);
+    Ok(())
+}
+
 // ---- the world authorization seam -----------------------------------------
 
 /// Authorize (or refuse) a request against the live world's org state. The public

@@ -36,6 +36,9 @@
 mod api;
 mod commands;
 mod data;
+// E4c: the economy fact provider (08c §6.1 item 1) — jobs answers `resolved` for
+// payload-bearing jobs only.
+mod facts;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -51,6 +54,7 @@ pub use api::{
     register_payload_handler,
 };
 pub use commands::NOTES_STAFF;
+pub use facts::JobsFactProvider;
 pub use data::{
     Approval, Job, JobComment, JobPayload, JobStatus, META_KEY, NS, Note, REQ_QUEUE, fmt_ago,
     job_key, meta_value, note_key,

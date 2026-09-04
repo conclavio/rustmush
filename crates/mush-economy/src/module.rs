@@ -170,6 +170,23 @@ pub struct EconomyStore {
     /// Absent configuration is [`EconomyConfig::default`], so a server with no
     /// `[economy]` section behaves exactly as it did before the setting existed.
     pub(crate) config: EconomyConfig,
+    /// The wiring-frozen external-fact provider table (E4c, §6.1 item 1). Empty is
+    /// the E4b2 behaviour exactly: every `Fact` condition resolves unknown, and
+    /// unknown is unsatisfied.
+    pub(crate) facts: crate::facts::FactTable,
+    /// The wiring-frozen observer table (E4c, §6.1 item 3). Empty means the
+    /// compact events are computed and dropped, which is what every test rig that
+    /// wires no observer wants.
+    pub(crate) observers: crate::observer::ObserverTable,
+    /// The system principals allowed to mint a title record through
+    /// [`crate::issue_title`] (E4c, §6.1 item 6; D-E3-13). A **frozen table**, not a
+    /// capability: a title issuer is a piece of server composition (E5's
+    /// `sys:wod.housing`, E7's production output), and nothing a command or a
+    /// document can add to. `@asset/title` remains the staff path and is unchanged.
+    pub(crate) title_issuers: Arc<std::collections::BTreeSet<mush_org::SystemPrincipalId>>,
+    /// How deep the current observer-emission chain is (RAM-only, §6.1's
+    /// re-entrancy note). See [`crate::observer::MAX_OBSERVER_DEPTH`].
+    pub(crate) event_depth: u32,
 }
 
 /// One object's last journaled custody movement (E4b2): which vault, which way, and
@@ -243,6 +260,10 @@ impl EconomyStore {
             frozen: p.frozen,
             providers: CustodyTable::default(),
             config: EconomyConfig::default(),
+            facts: crate::facts::FactTable::default(),
+            observers: crate::observer::ObserverTable::default(),
+            title_issuers: Arc::default(),
+            event_depth: 0,
         }
     }
 
@@ -308,6 +329,23 @@ impl EconomyStore {
     #[must_use]
     pub(crate) fn providers(&self) -> CustodyTable {
         self.providers.clone()
+    }
+    /// The wiring-frozen fact provider table (an `Arc` clone — cheap), so a
+    /// `ValidateEnv` can be built while the world is borrowed (E4c).
+    #[must_use]
+    pub(crate) fn facts(&self) -> crate::facts::FactTable {
+        self.facts.clone()
+    }
+    /// The wiring-frozen observer table (an `Arc` clone — cheap), so observers can
+    /// be driven with `&mut Ctx` after the store borrow ends.
+    #[must_use]
+    pub(crate) fn observers(&self) -> crate::observer::ObserverTable {
+        self.observers.clone()
+    }
+    /// Whether `issuer` was registered as a title issuer at wiring (E4c).
+    #[must_use]
+    pub(crate) fn is_title_issuer(&self, issuer: &mush_org::SystemPrincipalId) -> bool {
+        self.title_issuers.contains(issuer)
     }
     /// The next transaction id WITHOUT allocating it (a unique idempotency-key seed
     /// for interactive commands).
@@ -488,6 +526,9 @@ impl EconomyStore {
 pub struct EconomyModule {
     providers: CustodyTable,
     config: EconomyConfig,
+    facts: crate::facts::FactTable,
+    observers: crate::observer::ObserverTable,
+    title_issuers: Arc<std::collections::BTreeSet<mush_org::SystemPrincipalId>>,
 }
 
 impl EconomyModule {
@@ -504,7 +545,7 @@ impl EconomyModule {
     #[must_use]
     pub fn with_custody(mut providers: Vec<Arc<dyn CustodyProvider>>) -> EconomyModule {
         providers.push(Arc::new(ContainerProvider));
-        EconomyModule { providers: Arc::new(providers), config: EconomyConfig::default() }
+        EconomyModule { providers: Arc::new(providers), ..EconomyModule::default() }
     }
 
     /// Wire the ruleset's configurable limits (M1). Omitting this is
@@ -512,6 +553,39 @@ impl EconomyModule {
     #[must_use]
     pub fn with_config(mut self, config: EconomyConfig) -> EconomyModule {
         self.config = config;
+        self
+    }
+
+    /// Wire the external-fact providers (E4c, §6.1 item 1) — `mush-jobs` today,
+    /// `mush-sim`/`mush-tactics` for doc 10 §15's boundary facts. Omitting this
+    /// leaves every [`crate::TypedCondition::Fact`] resolving *unknown*, which is
+    /// unsatisfied: a `Fact`-gated contract simply never matures.
+    #[must_use]
+    pub fn with_facts(mut self, providers: Vec<Arc<dyn crate::facts::FactProvider>>) -> EconomyModule {
+        self.facts = Arc::new(providers);
+        self
+    }
+
+    /// Wire the post-commit observers (E4c, §6.1 item 3) — `mush-server`'s canon
+    /// evidence bridge today. Omitting this computes no events at all.
+    #[must_use]
+    pub fn with_observers(
+        mut self,
+        observers: Vec<Arc<dyn crate::observer::EconomyObserver>>,
+    ) -> EconomyModule {
+        self.observers = Arc::new(observers);
+        self
+    }
+
+    /// Wire the system principals allowed to mint title through
+    /// [`crate::issue_title`] (E4c, §6.1 item 6). Omitting this refuses every
+    /// issuer, which is the fail-closed default D-E3-13 asked for.
+    #[must_use]
+    pub fn with_title_issuers(
+        mut self,
+        issuers: Vec<mush_org::SystemPrincipalId>,
+    ) -> EconomyModule {
+        self.title_issuers = Arc::new(issuers.into_iter().collect());
         self
     }
 }
@@ -524,6 +598,14 @@ impl GameModule for EconomyModule {
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.state(EconomyStore::default());
         reg.subscribe(WorldEventKind::ObjDestroyed, Arc::new(on_obj_destroyed));
+        // E4c §6.1 item 2: the canon attestation observer. The economy subscribes
+        // to **core's** event, never to `mush-canon` — the dependency runs the other
+        // way, and canon's own RAM-tail-only queryability does not matter because
+        // the attestation this records is durable on the contract document.
+        reg.subscribe(
+            WorldEventKind::CanonRecorded,
+            Arc::new(crate::attest::on_canon_recorded),
+        );
         reg.destroy_gate(Arc::new(EconomicDestroyGate));
         // The ONE economy tick (D-E4-3): holds, obligations and GC on a single
         // bounded `Coarse` sweep. The core scheduler is in-RAM and re-armed from
@@ -542,9 +624,12 @@ impl GameModule for EconomyModule {
 
     fn on_world_loaded(&mut self, ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModError> {
         let mut store = boot::load_boot(ctx, data, &self.providers)?;
-        // Inject the wiring-frozen table and config into the freshly booted slot.
+        // Inject the wiring-frozen tables and config into the freshly booted slot.
         store.providers = self.providers.clone();
         store.config = self.config.clone();
+        store.facts = self.facts.clone();
+        store.observers = self.observers.clone();
+        store.title_issuers = self.title_issuers.clone();
         *ctx.w.module_state_mut::<EconomyStore>().expect("economy store slot") = store;
         Ok(())
     }

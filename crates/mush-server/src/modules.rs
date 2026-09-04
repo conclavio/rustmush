@@ -133,7 +133,16 @@ pub fn server_modules_with(
             mush_economy::EconomyModule::with_custody(vec![Arc::new(
                 mush_sim::InteriorCustodyProvider,
             )])
-            .with_config(economy),
+            .with_config(economy)
+            // E4c (08c §6.1): three more wiring-frozen tables, none of which
+            // changes the module ORDER above. The fact table answers a contract's
+            // `Fact` conditions (jobs today; doc 10 §15's sim/tactics boundary
+            // facts next), the observer table carries the canon evidence bridge,
+            // and the title-issuer table is empty until a ruleset registers one —
+            // `@asset/title` stays the staff path meanwhile.
+            .with_facts(vec![Arc::new(mush_jobs::JobsFactProvider)])
+            .with_observers(vec![Arc::new(crate::econ_canon::CanonEvidenceBridge)])
+            .with_title_issuers(Vec::new()),
         ),
         Box::new(mush_mail::MailModule),
         Box::new(mush_jobs::JobsModule::new()),

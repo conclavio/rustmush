@@ -527,6 +527,18 @@ pub enum WorldEvent {
         kind: String,
         /// The entities it concerns.
         entities: Vec<ObjId>,
+        /// Its free-form provenance (`"scene:5"`, `"faction:3"`, …) — the canon
+        /// draft's own `source`, carried through so an observer can tell *which*
+        /// front, operation or scene a recorded consequence came from.
+        ///
+        /// **The one `mush-core` change of E4** (08c §2, §6.2). The economy's
+        /// attestation observer matches a contract condition on kind **and**
+        /// source: 08e answer 20 requires progress to cite a specific front, so
+        /// `scene.concluded` involving any faction member is deliberately not a
+        /// match key, and `mush-canon` exposes no id→event query for an observer
+        /// to look the source up with afterwards. It is a lifecycle-notification
+        /// field, which doc 09 C6 keeps `WorldEvent` for.
+        source: String,
     },
 }
 

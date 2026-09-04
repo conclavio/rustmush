@@ -87,6 +87,7 @@ fn emit_canon(engine: &mut Engine, kind: &str, entities: &[ObjId]) {
             canon_id: 0,
             kind: kind.into(),
             entities: entities.to_vec(),
+            source: String::new(),
         },
     );
 }

@@ -26,7 +26,7 @@ use smol_str::SmolStr;
 use crate::amount::Amount;
 use crate::custody::{CustodyError, WorldCustody};
 use crate::engine::{
-    APPROVAL_TTL_SECS, AuthEval, NoFacts, ValidateEnv, apply, plan_reversal, validate,
+    APPROVAL_TTL_SECS, AuthEval, ValidateEnv, apply, plan_reversal, validate,
 };
 use crate::ids::{
     AccountId, ApprovalRequestId, CadenceId, HoldId, InstrumentId, ObligationId, TransactionId,
@@ -879,12 +879,14 @@ pub(crate) fn post_with_companions(
             PostAuth::Injected(a) => a,
         };
         let custody = WorldCustody { w: ctx.w, providers: providers.clone() };
+        // E4c: the wiring-frozen fact table, read live. An empty table answers
+        // `None` for everything, which is unknown, which is unsatisfied — exactly
+        // the `NoFacts` behaviour this replaced.
+        let facts = crate::facts::WorldFacts { w: ctx.w, providers: store.facts() };
         let env = ValidateEnv {
             auth,
             custody: &custody,
-            // E4c wires the real provider; until then every `Fact` condition is
-            // unknown, which is unsatisfied.
-            facts: &NoFacts,
+            facts: &facts,
             now: ctx.w.now(),
             ic_now: ctx.w.game_now_unix(),
             next_hold_id: store.peek_next_hold(),
@@ -1208,11 +1210,23 @@ pub fn create_system_obligation(
 /// schedule and history are doc authority end to end (D-E4-5), so a status write can
 /// never make a doc disagree with the journal at a sequence it claims.
 pub(crate) fn put_obligation(ctx: &mut Ctx<'_>, o: crate::obligation::Obligation) {
-    {
+    let changed = {
         let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return };
+        // E4c: an event marks a **transition**, not a write. An obligation is
+        // re-persisted on every settled period, and an observer that published one
+        // canon line per rent payment would be a chronicle nobody could read.
+        let before = store.snapshot.obligation(o.id).map(|p| p.status.kind());
+        let after = o.status.kind();
         store.snapshot.put_obligation(o.clone());
-    }
+        before != Some(after)
+    };
     persist_obligation(ctx.out, &o);
+    if changed {
+        crate::observer::emit(ctx, &crate::record::EconomicEvent::ObligationChanged {
+            id: o.id,
+            status_kind: o.status.kind(),
+        });
+    }
 }
 
 /// Install a cadence clock into RAM and queue its container doc (E4b1, D-E4-2).
@@ -1237,11 +1251,128 @@ pub(crate) fn put_cadence(ctx: &mut Ctx<'_>, c: crate::clock::CadenceClock) {
 /// `DepositInto` conditions as it installs it, so the lock lifts on exactly the
 /// state change that is being written and never a moment earlier.
 pub(crate) fn put_contract(ctx: &mut Ctx<'_>, c: crate::contract::EconomicContract) {
-    {
+    let changed = {
         let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return };
+        // Only a real **state transition** is an event (E4c). A contract doc is
+        // rewritten by every builder verb, every acceptance and every failed settle
+        // attempt; publishing all of those would make the canon bridge a firehose.
+        let before = store.snapshot.contract(c.id).map(|p| p.state.kind());
+        let after = c.state.kind();
         store.snapshot.put_contract(c.clone());
-    }
+        before != Some(after)
+    };
     persist_contract(ctx.out, &c);
+    if changed {
+        // The **landed transaction id** is the event's dedupe key (§6.1): a
+        // settlement finished a second time — by the sweep's `AlreadyPosted` retry,
+        // or by boot reading the same deterministic key out of the idempotency
+        // index — carries the same id, so a publishing observer can tell a repeat
+        // from a new settlement. A non-money transition carries `None`.
+        let transaction = match &c.state {
+            crate::contract::ContractState::Settled { transaction } => Some(*transaction),
+            _ => None,
+        };
+        crate::observer::emit(ctx, &crate::record::EconomicEvent::ContractChanged {
+            id: c.id,
+            state: c.state.kind(),
+            transaction,
+        });
+    }
+}
+
+// ---- title issuance for registered system principals (E4c, §6.1 item 6) ----
+
+/// The one [`AuthEval`] a [`issue_title`] post runs under: it authorizes **exactly
+/// one** `AssetOp::Title`, for exactly the object, owner and compartment the caller
+/// named, on behalf of exactly the registered issuer — and nothing else at all.
+///
+/// Every other method keeps the trait's `false` default, so this authority cannot
+/// move money, transfer a title, encumber, assign, touch a vault, qualify an
+/// approver, or reach a reservation. It is not a staff impersonation: `WorldAuth`
+/// would refuse the same plan outright, because a `System` principal is not an
+/// object and nobody acts for one.
+struct TitleIssuerAuth {
+    issuer: PrincipalId,
+    object: ObjId,
+    owner: PrincipalId,
+    scope: Option<OrgScopeId>,
+}
+
+impl AuthEval for TitleIssuerAuth {
+    /// No money authority whatsoever — a title issuer mints records, never value.
+    fn authorize(&self, _actor: &PrincipalId, _account: &Account, _delta: Amount) -> bool {
+        false
+    }
+    fn authorize_asset(&self, actor: &PrincipalId, asset: Option<&EconomicAsset>, op: &AssetOp) -> bool {
+        asset.is_none()
+            && *actor == self.issuer
+            && matches!(op, AssetOp::Title { object, owner, scope, .. }
+                if *object == self.object && *owner == self.owner && *scope == self.scope)
+    }
+}
+
+/// Mint a title record for `object` on behalf of a **registered** system principal
+/// (D-E3-13, fed back by E5's 08d §7 item 4).
+///
+/// E3 made creating a title staff-only (invariant 20) because the alternative was a
+/// capability any org officer could be granted, and title is the thing money buys.
+/// But a ruleset that *produces* things — E5's `sys:wod.housing` handing a character
+/// the flat they just bought, E7's production output — cannot ask a staffer to type
+/// `@asset/title` for every one of them. The resolution is the **frozen-table**
+/// pattern this crate already uses for custody providers and the capability
+/// vocabulary: an issuer is part of server composition
+/// ([`crate::EconomyModule::with_title_issuers`]), not something a command, a
+/// document or a grant can add to. An unregistered issuer is refused here, before
+/// anything is built, and would be refused again at the engine seam.
+///
+/// The effect is an ordinary journaled `Created` [`crate::AssetEffect`] with cause
+/// `Internal { kind: "title.issue", id: object }` and the deterministic idempotency
+/// key `title.issue/{object}`, so two calls for one object resolve to the same
+/// transaction rather than racing the `AssetExists` check. The **transaction's actor
+/// is the issuer**, so the journal says who minted it forever.
+///
+/// # Errors
+///
+/// [`EconomyError::Unauthorized`] for an unregistered issuer or an owner/scope pair
+/// the compartment rules refuse; every other refusal is the ordinary posting error.
+pub fn issue_title(
+    ctx: &mut Ctx<'_>,
+    object: ObjId,
+    owner: PrincipalId,
+    scope: Option<OrgScopeId>,
+    issuer: mush_org::SystemPrincipalId,
+) -> Result<PostOutcome, EconomyError> {
+    let registered = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_some_and(|s| s.is_title_issuer(&issuer));
+    if !registered {
+        tracing::warn!(
+            issuer = issuer.as_str(),
+            object = object.0,
+            "economy: an unregistered system principal tried to issue title; refused"
+        );
+        return Err(EconomyError::Unauthorized);
+    }
+    // Invariant 18's world half, which the injected authority cannot ask (it holds
+    // no `&World`): a scoped title must name the compartment's own organization.
+    if !scope_coherent(ctx.w, scope, &owner) {
+        return Err(EconomyError::ScopeOwnerMismatch);
+    }
+    let actor = PrincipalId::System(issuer);
+    let mut plan = EconomyPlan::new(
+        crate::record::IdempotencyKey::new(
+            SmolStr::new_static("title.issue"),
+            SmolStr::new(object.0.to_string()),
+        ),
+        actor.clone(),
+        EconomicCause::Internal { kind: SmolStr::new_static("title.issue"), id: u64::from(object.0) },
+        Vec::new(),
+    );
+    plan.asset_ops = vec![AssetOp::Title { object, owner: owner.clone(), scope, catalog: None }];
+    plan.description = format!("title issued for #{} by {actor:?}", object.0);
+    let auth = TitleIssuerAuth { issuer: actor, object, owner, scope };
+    post_with(ctx, &plan, PostAuth::Injected(&auth))
 }
 
 /// The system principal every contract's escrow is made out to (§5).
@@ -1317,8 +1448,42 @@ fn finish(
             // Invariant 9 / R-R1: the "posted" confirmation must never outrun the
             // durable ack — strict so a dropped write suppresses it entirely.
             ctx.gate_on_durable_ack_strict();
+            // E4c §6.1 item 3: the compact events, **post-commit**. Nothing fallible
+            // remains, so an observer can never see a state that still rolls back.
+            emit_post_events(ctx, txid);
             Ok(PostOutcome::Posted(txid))
         }
+    }
+}
+
+/// Announce what one committed transaction did (E4c, §6.1 item 3) — **ids and kinds
+/// only** (D-E4-13).
+///
+/// Read back out of the indexed transaction rather than the plan, so an event can
+/// only ever describe something the journal has: the reservation ids come from the
+/// hold effects, the title ids from the asset effects, and no amount, party, memo or
+/// `cause` string is carried anywhere.
+fn emit_post_events(ctx: &mut Ctx<'_>, txid: TransactionId) {
+    let events: Vec<crate::record::EconomicEvent> = {
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
+        if store.observers.is_empty() {
+            return;
+        }
+        let Some(tx) = store.transaction(txid) else { return };
+        let mut v = vec![crate::record::EconomicEvent::TransactionPosted { id: txid }];
+        for e in &tx.hold_effects {
+            v.push(crate::record::EconomicEvent::HoldChanged { id: e.hold.id, kind: e.kind });
+        }
+        for e in &tx.asset_effects {
+            v.push(crate::record::EconomicEvent::AssetTitleChanged {
+                object: e.object,
+                revision: e.post.revision,
+            });
+        }
+        v
+    };
+    for ev in &events {
+        crate::observer::emit(ctx, ev);
     }
 }
 

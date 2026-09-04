@@ -1,17 +1,19 @@
-# Economy / org / ownership — build status & E4 handoff
+# Economy / org / ownership — build status & E5 handoff
 
 **Companion to [08-economy-organizations-ownership.md](08-economy-organizations-ownership.md)** (the
-design; prefer it for *why*) and [08b-e3-implementation-plan.md](08b-e3-implementation-plan.md) (the
-E3 plan as reviewed and as built — prefer it for *how* E3 fits together). This doc is the **build
-ledger**: what of the E0–E8 plan is actually shipped, the decisions made while building it, the
-live seams a later milestone consumes, and the concrete pickup point for **E4**. Read this first
-when resuming economy work.
+design; prefer it for *why*), [08b-e3-implementation-plan.md](08b-e3-implementation-plan.md) (the
+E3 plan as reviewed and as built) and [08c-e4-implementation-plan.md](08c-e4-implementation-plan.md)
+(the same for E4 — prefer its §3.5a/§4.7/§5.1/§6.1 "as built" blocks for *how* E4 fits together).
+This doc is the **build ledger**: what of the E0–E8 plan is actually shipped, the decisions made
+while building it, the live seams a later milestone consumes, and the concrete pickup point for
+**E5**. Read this first when resuming economy work.
 
 E0–E3 are on `origin/main` (the E3 commits, `99f5b9c` through the post-E3 module-order commit, were
 pushed 2026-09-03). Each cut ran the standing rhythm — design-review-before-build, adversarial-verify — with
 one variation for E3: by owner instruction the adversarial verify ran **once, over the whole E3
-diff, after E3d**, and its confirmed findings were folded in a separate commit (see the last
-Shipped row) rather than per cut.
+diff, after E3d**, and its confirmed findings were folded in a separate commit (see the last E3
+Shipped row) rather than per cut. **E4 went back to per-cut verifies** — E4a, E4b1 and E4b2 each
+have their own adversarial pass and fold commit, and 08c §3.7 / §4.8 / §5.2 record the outcomes.
 
 ## Shipped
 
@@ -32,12 +34,48 @@ Shipped row) rather than per cut.
 | **E3c (tactics)** | `mush-tactics` | `fe4faea` | `SetComponentAsset` + the M33-deferred `asset` scrub on destroy and at boot |
 | **E3d** | `mush-faction` | `d8d17c3` | `Faction.org` + `migrated`, `@faction/org|migrate`, view-gated balance read-through, destroy refused while bound |
 | **E3 verify fold** | economy + faction | `fa97479` | the end-of-build adversarial verify's confirmed findings, each with a regression test (§"E3 verify outcome") |
+| **E4 plan** | docs | `1555b69` → `3a061f6` | 08c — three-pass reviewed, then owner answers, cadence clocks, and doc 09 conformance after the K merge |
+| **E4a** | `mush-economy` (pure) | `29282fe`, fold `13f11d0` | `Hold`/`HoldOp`/`HoldEffect` + available-balance enforcement; clock/schedule/catch-up math; `Obligation` and `Contract` records with their pure state machines; the deterministic split; `ContractAuth`; `plan_hash` v3; `FactEval`, `ExternalRef` (the `CausalRef` rename), `reverify` |
+| **E4b1** | `mush-economy` module | `0805f5e`, fold `389c521` | holds + obligations live: persistence and boot, journal-derived `held_amount` on its own seq anchor, the **one economy sweep** tick, the graded escalation ladder, `post_with`/`PostAuth`, infallible `install_commit`, `@hold/*`, `@obligation/*`, `@econ/alerts\|ack`, faucet-funded obligations under a mint cap |
+| **E4b2** | `mush-economy` module | `e56c2a9`, fold `4972455` | contracts end to end: draft/offer/accept (escrow at accept)/attest/settle/dispute/cancel/expire, live re-verification, custody locks, `Lease`/`Collateral`, the sweep's contract step, `@contract/*`, the outcome table + roster lock + adjudicator, `EconomicVisibility::Audience`, and the plan-first terminal-transition rule |
+| **E4c** | `mush-economy` + `mush-org` + `mush-jobs` + `mush-server` | *(pending)* | the `FactProvider` seam (jobs implements it), the `CanonRecorded` attestation observer, `EconomyObserver` + compact events + the canon evidence bridge, `mush_org::audit`, `@econ/history` under the disclosure filter, `issue_title` for registered system principals; **one `mush-core` change** — `WorldEvent::CanonRecorded` gains `source` |
 
 Test tally after E3 (post-fold): **mush-org 46**, **mush-economy 157**, **mush-sim 72**,
 **mush-tactics 52**, **mush-faction 56**, **mush-server 62**; `cargo test --workspace --no-fail-fast` runs 2012 passing. The one
 failing workspace test, `mushd::web_e2e::spa_and_healthz_are_served`, predates E3 (it needs a
 `web/dist` build). `cargo fmt` is **not** applied anywhere in E3: the tree had 1334 rustfmt hunks at
 `d7f6707`, so CI's fmt step was already red before E3.
+
+Test tally after E4 (each cut post-fold): **mush-economy 386** — `e4a.rs` 83, `e4b1.rs` 61,
+`e4b2.rs` 59, `e4c.rs` 18, plus the E2/E3 files and the in-crate unit tests — **mush-jobs 26**
+(`e4c_facts.rs` 2), **mush-server 111** (`e4c_bridge.rs` 4), **mush-org 46**.
+`cargo test --workspace --no-fail-fast` runs **2472 passing, 0 failing** — the E3-era
+`mushd::web_e2e` failure is gone (it is `spa_if_built_and_healthz_are_served` now and tolerates an
+unbuilt `web/dist`). Both digest pins (E2 `9c917eee…`, E3-shaped `b780e3a0…`) are green in every
+cut. `cargo fmt` stays off, unchanged.
+
+### The E4 seams a later milestone consumes
+
+Wiring-frozen tables on `EconomyModule`, in the composition root's construction order
+(`mush-server/src/modules.rs`; **module order itself is unchanged since E3c**):
+
+- `.with_custody(vec![..])` (E3b1) — `CustodyProvider`s.
+- `.with_config(EconomyConfig)` (E4b1) — the `[economy]` mint cap.
+- `.with_facts(vec![Arc::new(JobsFactProvider)])` (E4c) — `FactProvider`s answering a contract's
+  `TypedCondition::Fact`. `kind` is a namespaced string (`jobs.resolved`; doc 10 §15's
+  `sim.*`/`tactics.*` next), `id` is the provider's own stable id, `revision` is passed through, and
+  **`None` (unknown) is unsatisfied** everywhere.
+- `.with_observers(vec![Arc::new(CanonEvidenceBridge)])` (E4c) — post-commit `EconomicEvent`s with
+  **ids and kinds only**. An observer must not re-enter the economy; a settlement's
+  `ContractChanged` carries the landed transaction id, which is the publication key.
+- `.with_title_issuers(vec![..])` (E4c) — the system principals `mush_economy::issue_title` will
+  mint title for. **Empty today**; E5's `sys:wod.housing` is the first entry, and `@asset/title`
+  stays the staff path meanwhile.
+
+Plus: `mush_org::audit(ctx, OrgAction)` records an org-authority act that mutates no org state
+(`@econ/approve|deny` is the first caller), and `mush_economy::may_view_account` +
+`commands::mask_account` are the one masking rule `@econ/history`, `@contract/show` and
+`@hold/show` all render through.
 
 ## The live seams a later milestone consumes
 
@@ -231,31 +269,59 @@ every command, the both-sides title rules, custody standing, approval consumptio
 binding, reversal unforgeability, E2-era journals under the E3 binary (hash pin + live retry), latch
 polarity across reboot, entry boundedness, key routing, module order.
 
-## Pick up here: E4 — holds, escrow, obligations, and contracts
+## What E4 closed (the E3 pickup list, resolved)
 
-Design: doc 08 §8 (holds/clocks/obligations/contracts), §12 (visibility filter), §18 "E4".
-**Plan:** [08c-e4-implementation-plan.md](08c-e4-implementation-plan.md) (Draft 0.2, three-pass reviewed) — build from it.
-Concretely, and what E3 left as the hooks:
+Every hook the previous edition of this section named is now built, and the entries are kept here
+so a reader can see which cut answered what:
 
-- **Holds + `held_amount`.** `Account.held_amount` is a zero projection; `available()` exists.
-  A hold is the E4 analogue of an approval that *reserves* (decision 16 says approvals reserve
-  nothing). Two approved plans over one account both post today — holds close that.
-- **Two-party consent.** E3 plans are single-authority (D-E3-4); a sale needs the buyer's debit
-  and the seller's title in one plan — contracts/escrow carry the counterparty's authority. The
-  record shape does not change: `asset_ops`/`custody_ops` already ride the journal.
-- **`Encumbrance::Lease { lessor, contract }` / `Collateral { contract }`** — the enum is
-  serde-tagged and open; `ContractId` is E4's. `Encumber` becomes non-staff when a lien has a
-  contract behind it.
-- **Clocks + bounded catch-up** (§8.2/D7) — no scheduler work exists in the economy yet.
-- **The disclosure filter** (§12.2) — E3's existence-hiding renderer and `may_view_account` are the
-  hooks; `EconomicVisibility` is recorded, not enforced; the journal is staff-only.
-- **Approval → org audit.** Approve/deny decisions live on the request doc; nothing lands in org's
-  audit ledger (§12.3 wants it).
-- Follow-ups outside E4's core: an `Organization.revision` bump op + `SetOrgStatus`/`PutRole`
-  (decision 3); per-asset isolation of the whole-economy freeze; the durability checkpoint (12);
-  wiring `TacticsModule` into the server (the component-asset scrub is proved in-crate only);
-  `CustodyRef::Registered` has no provider; the lingering non-quarantined `Unplaced` placement doc
-  after an interior withdrawal (inert); an operator-eviction verb for a new title owner (E7).
+- **Holds + `held_amount`** — E4a's pure `Hold`/`HoldOp` and available-balance enforcement, live in
+  E4b1 with a journal-derived projection on its own seq anchor. Two approved plans over one account
+  no longer both post.
+- **Two-party consent** — E4b2's contracts: the acceptance *is* the settlement authority, bound to
+  the consent hash and re-checked live (`ContractAuth`).
+- **`Encumbrance::Lease` / `Collateral`** — E4b2 places them at activation and releases them at
+  settlement or refund; a lease's obligation is created and cancelled with the contract.
+- **Clocks + bounded catch-up** — E4a's schedule math and E4b1's one economy sweep; cadence clocks
+  exist through persistence, boot and the sweep (no `@econ/cadence` verb yet — E5's).
+- **The disclosure filter** — E4c. `EconomicVisibility` is now **enforced for reads**:
+  `@econ/history` renders the viewer's own side in full, masks a counterparty they may not view,
+  omits `Staff` entries entirely, and shows a description only to a party; `@contract/show` and
+  `@hold/show` render through the same rule.
+- **Approval → org audit** — E4c's `mush_org::audit`; `@econ/approve|deny` append an entry naming
+  the request id and the account scope.
+- Still open from that list, unchanged by E4: an `Organization.revision` bump op +
+  `SetOrgStatus`/`PutRole` (decision 3); per-asset isolation of the whole-economy freeze; the
+  durability checkpoint (12); wiring `TacticsModule` into the server; `CustodyRef::Registered` has
+  no provider; the inert non-quarantined `Unplaced` placement doc after an interior withdrawal; an
+  operator-eviction verb for a new title owner (E7).
+
+## Pick up here: E5 — the WoD slice (housing, upkeep, income, consequences)
+
+Design: doc 08 §11.1, §18 "E5". **Plan:** [08d](08d-e5-implementation-plan.md) — build from it.
+What E4 leaves as the hooks, concretely:
+
+- **Cadence clocks have no verb.** E4b1 persists, boots and sweeps `cadence:{id}` records, and
+  `advance_cadence_manual` exists; nothing creates one. `@econ/cadence` is E5's, and E5 must test
+  E4b1's findings B6 (a schedule pointing at a deleted clock) and S2 (cadence starvation) against
+  **real** clocks — E4b1 could only pin them through injected documents.
+- **The income table is `create_system_obligation`'s first caller** (E4b1's M1): the faucet must own
+  the debit account, both sides must be `Active` and share an instrument, and the per-period amount
+  must sit inside `EconomyConfig::mint_cap`, re-read at every settlement.
+- **`Delinquent` has no automatic recovery.** `@obligation/reinstate` is the manual path; E5's
+  consequence hook is what should own the transition.
+- **The title issuer is registered, not granted** (E4c): `EconomyModule::with_title_issuers(vec![
+  SystemPrincipalId::new("wod.housing")])` in `mush-server/src/modules.rs`, then
+  `mush_economy::issue_title(ctx, object, owner, scope, issuer)` mints the housing title as a
+  journaled `Created` effect. The server passes an empty list today.
+- **A fact provider is how a domain answers a contract.** `mush-jobs` is the worked example
+  (`JobsFactProvider`, `jobs.resolved`, payload-bearing jobs only); anything E5 wants a contract to
+  settle on registers the same way rather than teaching the economy about it.
+- **Sub-threshold drip, documented not fixed** (E4b1): an `ApprovalRule` is a per-transaction
+  escalation, so a per-period amount under the threshold never escalates however long it runs, and
+  one over it cannot settle at all. A budget primitive is E5's.
+- **Notifications still reach only `PrincipalId::Object`.** `contract_live::notify`,
+  `sweep::notify_principal` and the escalation re-notification fan-out all stop there; the
+  `EconomyObserver` seam (E4c) is where an org or system party's notice belongs.
 
 ## Build discipline (keep it)
 

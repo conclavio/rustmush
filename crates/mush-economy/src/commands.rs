@@ -90,8 +90,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             name: "@econ".into(),
             shape: ArgShape::EqPair,
             switches: [
-                "pay", "mint", "reverse", "audit", "approve", "deny", "approvals", "unfreeze",
-                "alerts", "ack",
+                "pay", "mint", "reverse", "audit", "history", "approve", "deny", "approvals",
+                "unfreeze", "alerts", "ack",
             ]
             .iter()
             .copied()
@@ -103,6 +103,9 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @econ/mint <sysacct>=<to> <amount>      mint from a system source (staff)\n\
                    @econ/reverse <txid>                    reverse a transaction (staff)\n\
                    @econ/audit                             recent journal entries (staff)\n\
+                   @econ/history <account> [n]             what touched an account you may see\n\
+                   \x20                                      your own side in full; a counterparty you\n\
+                   \x20                                      may not see is \"another account\"\n\
                    @econ/approve <id>   @econ/deny <id>    decide an approval request\n\
                    @econ/approvals                         requests awaiting your decision\n\
                    @econ/alerts                            open economy escalations (staff)\n\
@@ -415,6 +418,23 @@ pub fn may_view_account(w: &World, actor: ObjId, id: AccountId) -> bool {
     let now = w.now();
     snap.approvals()
         .any(|r| r.status == ApprovalStatus::Pending && now < r.expires_at && r.accounts.contains(&id))
+}
+
+/// Render an account id **through the view gate** — the one masking rule the whole
+/// disclosure filter uses (E4c, §6.1 item 5).
+///
+/// It is deliberately a renderer over [`may_view_account`] and not a second
+/// predicate: `@econ/history`, `@contract/show` and `@hold/show` all show account
+/// ids belonging to somebody else, and three hand-rolled "if I can see it" branches
+/// would be three chances for one of them to drift open. `hidden` is the caller's
+/// noun for the same fact — "an account" in a contract's terms, "another account"
+/// for the counterparty of an entry the viewer is reading their own side of.
+pub(crate) fn mask_account(ctx: &Ctx<'_>, id: AccountId, hidden: &str) -> String {
+    if may_view_account(ctx.w, ctx.actor, id) {
+        format!("account #{id}")
+    } else {
+        hidden.to_string()
+    }
 }
 
 /// The account half of the existence-hiding rule (§4.5): a refusal touching an
@@ -1201,6 +1221,8 @@ fn cmd_econ(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     } else if ctx.switches.has("audit") {
         require_admin(ctx)?;
         econ_audit(ctx)
+    } else if ctx.switches.has("history") {
+        econ_history(ctx)
     } else if ctx.switches.has("approve") {
         econ_decide(ctx, Verdict::Approved)
     } else if ctx.switches.has("deny") {
@@ -1218,7 +1240,7 @@ fn cmd_econ(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         econ_ack(ctx)
     } else {
         Err(CmdError::msg(
-            "Usage: @econ/pay|mint|reverse|audit|approve|deny|approvals|alerts|ack|unfreeze",
+            "Usage: @econ/pay|mint|reverse|audit|history|approve|deny|approvals|alerts|ack|unfreeze",
         ))
     }
 }
@@ -1361,7 +1383,9 @@ fn econ_decide(ctx: &mut Ctx<'_>, verdict: Verdict) -> Result<(), CmdError> {
     }
     request.revision += 1;
     let requester_is_me = request.requested_by == PrincipalId::Object(me);
+    let accounts = request.accounts.clone();
     api::put_approval(ctx, request);
+    audit_decision(ctx, verdict, id, &accounts);
     match verdict {
         Verdict::Approved => {
             info(ctx, format!("Approved request #{id}."));
@@ -1372,6 +1396,47 @@ fn econ_decide(ctx: &mut Ctx<'_>, verdict: Verdict) -> Result<(), CmdError> {
         Verdict::Denied => info(ctx, format!("Denied request #{id}; it is cancelled.")),
     }
     Ok(())
+}
+
+/// Record an approval decision in the **org** audit ledger (E4c, §6.1 item 4).
+///
+/// An approval decision is an org-authority act — `may_act_on_request` asks
+/// `economy.account.approve` on the account's compartment — whose only record used
+/// to be the economy's own `approval:{id}` document, which `@org/audit` cannot see
+/// and which GC eventually deletes. The entry names the **request id and the account
+/// scope**: not the amount, not the plan, not the payer's balance, because the org
+/// ledger is read by org officers rather than by the accounts' owners and the thing
+/// they are accountable for is *that they released it*.
+///
+/// A refused append is logged and swallowed: the decision itself has already been
+/// recorded on the request, and losing the audit line must never lose the approval
+/// (or return an `Err` that would truncate the whole batch, the approval included).
+fn audit_decision(ctx: &mut Ctx<'_>, verdict: Verdict, request: ApprovalRequestId, accounts: &[AccountId]) {
+    let scopes: Vec<Option<OrgScopeId>> = {
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
+        accounts.iter().map(|id| store.snapshot().account(*id).and_then(|a| a.scope)).collect()
+    };
+    let org = scopes.iter().flatten().find_map(|s| {
+        ctx.w
+            .module_state::<mush_org::OrgStore>()
+            .and_then(|o| o.state().scope(*s))
+            .map(|sc| sc.org)
+    });
+    let action = mush_org::OrgAction {
+        action: SmolStr::new_static(match verdict {
+            Verdict::Approved => "economy.approval.approve",
+            Verdict::Denied => "economy.approval.deny",
+        }),
+        org,
+        detail: serde_json::json!({
+            "request": request.0,
+            "accounts": accounts.iter().map(|a| a.0).collect::<Vec<u64>>(),
+            "scopes": scopes.iter().map(|s| s.map(|x| x.0)).collect::<Vec<Option<u64>>>(),
+        }),
+    };
+    if let Err(error) = mush_org::audit(ctx, action) {
+        tracing::warn!(%error, request = request.0, "economy: an approval decision could not be audited");
+    }
 }
 
 fn status_word(s: ApprovalStatus) -> &'static str {
@@ -1626,6 +1691,188 @@ fn econ_audit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     for l in lines {
         info(ctx, l);
+    }
+    Ok(())
+}
+
+// ---- @econ/history — the disclosure filter (E4c, §6.1 item 5) --------------
+
+/// The most entries `@econ/history` will ever render, whatever `n` says.
+const HISTORY_CAP: usize = 20;
+
+/// Whether this viewer is a **party** to one journal entry — the class that sees its
+/// free-text description.
+///
+/// A party is someone the entry's money is *about*: whoever posted it, or whoever
+/// acts for the owner of an account it moved. `acts_for` is the predicate (not
+/// identity), for the reason the E4b1 fold gave for holds: an organization's
+/// spender is a party to its org's payment, and a Thing's controller to the
+/// counter's. It is deliberately **narrower than viewability**: an auditor holding
+/// `economy.account.view` may read what moved on the account they audit without
+/// being told, in free text, what a staffer wrote about why.
+fn entry_party(ctx: &Ctx<'_>, tx: &crate::record::EconomicTransaction) -> bool {
+    if is_admin(ctx.w, ctx.actor) {
+        return true;
+    }
+    let me = PrincipalId::Object(ctx.actor);
+    let auth = api::WorldAuth { w: ctx.w };
+    if auth.acts_for(&me, &tx.actor) {
+        return true;
+    }
+    let Some(store) = ctx.w.module_state::<EconomyStore>() else { return false };
+    let snap = store.snapshot();
+    tx.lines
+        .iter()
+        .filter_map(|l| snap.account(l.account))
+        .any(|a| auth.acts_for(&me, &a.owner))
+}
+
+/// Whether this viewer may read the entry's **description**, per its recorded
+/// [`crate::EconomicVisibility`] (E4c: visibility becomes enforced for reads).
+///
+/// `Public` tells anyone; `Parties` tells the parties; an `Audience` tells the
+/// parties **and** the named audience, and is treated exactly like `Parties` for
+/// everyone outside it — doc 10 T6's audience is a class that gets *notice*, and a
+/// description is the nearest thing an entry has to terms. `Staff` never reaches a
+/// non-staff reader at all, so it does not appear here.
+fn entry_descriptive(ctx: &Ctx<'_>, tx: &crate::record::EconomicTransaction) -> bool {
+    match &tx.visibility {
+        crate::record::EconomicVisibility::Public => true,
+        crate::record::EconomicVisibility::Audience { members, .. } => {
+            let me = PrincipalId::Object(ctx.actor);
+            let auth = api::WorldAuth { w: ctx.w };
+            members.iter().any(|p| auth.acts_for(&me, p)) || entry_party(ctx, tx)
+        }
+        _ => entry_party(ctx, tx),
+    }
+}
+
+/// What a hold effect did, as one word.
+fn hold_word(kind: HoldEffectKind) -> &'static str {
+    match kind {
+        HoldEffectKind::Placed => "reserved",
+        HoldEffectKind::Captured => "captured",
+        HoldEffectKind::Released => "released",
+        HoldEffectKind::Expired => "expired",
+    }
+}
+
+/// `@econ/history <account> [n]` — the read side of [`crate::EconomicVisibility`].
+///
+/// The rules, all of them, because this is the command the "evidence leaks" verify
+/// axis is aimed at:
+///
+/// 1. **Standing first.** An account the actor may not view and an account that does
+///    not exist render the identical `No such account.`, exactly as `@hold/list` and
+///    `@account/show` already do. Nothing below can run for an id that failed here,
+///    so no message length, count or timing distinguishes the two.
+/// 2. **The viewer's own side in full**, because it is theirs: every line on an
+///    account they may view carries its real id and its real signed amount.
+/// 3. **A counterparty is named only if they may view it too.** Otherwise it renders
+///    as `another account` **with no amount** — a five-way split would otherwise tell
+///    a runner what every other runner was paid, which is exactly the disclosure a
+///    `Parties` contract did not consent to. (In a two-line transfer the mirror
+///    amount is arithmetic, not disclosure; the id is what is withheld.)
+/// 4. **`Staff` entries are omitted entirely**, not shown as hidden. A "3 entries you
+///    may not see" line is an oracle for how much staff activity an account attracts.
+/// 5. **Descriptions only to parties** ([`entry_descriptive`]).
+/// 6. **Newest first, capped at [`HISTORY_CAP`]**, whatever `n` asks for.
+///
+/// Staff read it as the audit view: every entry, every id, every description.
+fn econ_history(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    const NO_SUCH: &str = "No such account.";
+    let raw = ctx.args.raw().to_string();
+    let mut words = raw.split_whitespace();
+    let id = words.next().and_then(parse_account).ok_or_else(|| CmdError::msg(NO_SUCH))?;
+    let n = words
+        .next()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(HISTORY_CAP)
+        .clamp(1, HISTORY_CAP);
+    // Rule 1: standing, then existence — one message for both.
+    if !may_view_account(ctx.w, ctx.actor, id) {
+        return Err(CmdError::msg(NO_SUCH));
+    }
+    let staff = is_admin(ctx.w, ctx.actor);
+    let entries: Vec<crate::record::EconomicTransaction> = {
+        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg(NO_SUCH))?;
+        if store.snapshot().account(id).is_none() {
+            return Err(CmdError::msg(NO_SUCH));
+        }
+        let mut touching: Vec<crate::record::EconomicTransaction> = store
+            .transactions()
+            // "Touching" includes an **effect-only** entry: an escrow placement moves
+            // `held_amount` and no line at all, and it is emphatically something that
+            // happened to this account.
+            .filter(|t| {
+                t.lines.iter().any(|l| l.account == id)
+                    || t.hold_effects.iter().any(|e| e.hold.account == id)
+            })
+            // Rule 4.
+            .filter(|t| staff || !matches!(t.visibility, crate::record::EconomicVisibility::Staff))
+            .cloned()
+            .collect();
+        // Rule 6: newest first, then capped. (`transactions()` is id order, and ids
+        // are monotonic, so reversing is chronological.)
+        touching.reverse();
+        touching.truncate(n);
+        touching
+    };
+    let mut rows: Vec<String> = Vec::new();
+    for t in &entries {
+        let mut parts: Vec<String> = Vec::new();
+        for l in &t.lines {
+            // Rules 2 and 3.
+            if may_view_account(ctx.w, ctx.actor, l.account) {
+                let scale = ctx
+                    .w
+                    .module_state::<EconomyStore>()
+                    .and_then(|s| s.snapshot().instrument(&l.instrument).map(|i| i.scale))
+                    .unwrap_or(0);
+                parts.push(format!("account #{} {}", l.account, l.delta.to_decimal_string(scale)));
+            } else {
+                parts.push("another account".to_string());
+            }
+        }
+        for e in &t.hold_effects {
+            // A reservation is read through its own view standing (`may_view_hold`)
+            // AND the account's: the id of somebody else's escrow is exactly the sort
+            // of handle a prober wants.
+            if may_view_hold(ctx.w, ctx.actor, e.hold.id)
+                && may_view_account(ctx.w, ctx.actor, e.hold.account)
+            {
+                let scale = ctx
+                    .w
+                    .module_state::<EconomyStore>()
+                    .and_then(|s| {
+                        let snap = s.snapshot();
+                        snap.account(e.hold.account).and_then(|a| snap.instrument(&a.instrument))
+                    })
+                    .map_or(0, |i| i.scale);
+                parts.push(format!(
+                    "hold #{} {} {} on account #{}",
+                    e.hold.id,
+                    hold_word(e.kind),
+                    e.hold.amount.to_decimal_string(scale),
+                    e.hold.account
+                ));
+            } else {
+                parts.push(format!("a reservation {} on another account", hold_word(e.kind)));
+            }
+        }
+        rows.push(format!("tx #{} at {}: {}", t.id, t.posted_at, parts.join(", ")));
+        // Rule 5.
+        if !t.description.is_empty() && entry_descriptive(ctx, t) {
+            rows.push(format!("  \u{201c}{}\u{201d}", t.description));
+        }
+    }
+    // Rule 6: newest first is the order they were collected in; `emit_list` sorts,
+    // so the lines are emitted directly.
+    if rows.is_empty() {
+        info(ctx, format!("Nothing recorded against account #{id}."));
+    }
+    for r in rows {
+        info(ctx, r);
     }
     Ok(())
 }
@@ -2448,6 +2695,14 @@ fn refuse_escrow(ctx: &Ctx<'_>, id: HoldId, verb: &str) -> Result<(), CmdError> 
     }
 }
 
+/// Render one reservation **through the disclosure filter** (E4c, §6.1 item 5).
+///
+/// [`may_view_hold`] admits three routes — the account, the placer, and anyone who
+/// acts for the **beneficiary** — and only the first of them implies any standing
+/// over the account the money is reserved *on*. A payee reading the escrow made out
+/// to them was therefore being shown the payer's account id, and a contract id they
+/// may have no standing over. Both now go through the same masks the rest of the
+/// filter uses ([`mask_account`], [`crate::may_view_contract`]).
 fn render_hold(ctx: &Ctx<'_>, h: &crate::record::Hold, staff: bool, scale: u8) -> Vec<String> {
     let status = match &h.status {
         HoldStatus::Held => "held".to_string(),
@@ -2458,15 +2713,21 @@ fn render_hold(ctx: &Ctx<'_>, h: &crate::record::Hold, staff: bool, scale: u8) -
         HoldStatus::Expired => "expired".to_string(),
     };
     let purpose = match &h.purpose {
-        HoldPurpose::Escrow { contract } => format!("contract #{contract}"),
+        HoldPurpose::Escrow { contract } => {
+            if crate::contract_live::may_view_contract(ctx.w, ctx.actor, *contract) {
+                format!("contract #{contract}")
+            } else {
+                "a contract".to_string()
+            }
+        }
         HoldPurpose::Reservation { kind, id } => format!("{kind} #{id}"),
         HoldPurpose::Manual { reason } => reason.to_string(),
     };
     let mut lines = vec![
         format!(
-            "hold #{} on account #{} — {} [{status}]",
+            "hold #{} on {} — {} [{status}]",
             h.id,
-            h.account,
+            mask_account(ctx, h.account, "an account"),
             h.amount.to_decimal_string(scale)
         ),
         format!("  for {purpose}"),
@@ -2554,9 +2815,9 @@ fn hold_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 HoldStatus::Expired => "expired",
             };
             Some(format!(
-                "#{} account #{} {} [{state}]",
+                "#{} {} {} [{state}]",
                 h.id,
-                h.account,
+                mask_account(ctx, h.account, "an account"),
                 h.amount.to_decimal_string(scale)
             ))
         })

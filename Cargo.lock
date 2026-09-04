@@ -2097,6 +2097,7 @@ name = "mush-jobs"
 version = "0.1.0"
 dependencies = [
  "mush-core",
+ "mush-economy",
  "mush-proto",
  "serde",
  "serde_json",

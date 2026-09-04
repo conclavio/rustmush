@@ -1077,11 +1077,12 @@ fn step_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
         let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
         let providers = store.providers();
         let custody = crate::custody::WorldCustody { w: ctx.w, providers };
+        let facts = crate::facts::WorldFacts { w: ctx.w, providers: store.facts() };
         let world = api::WorldAuth { w: ctx.w };
         let env = crate::engine::ValidateEnv {
             auth: &world,
             custody: &custody,
-            facts: &crate::engine::NoFacts,
+            facts: &facts,
             now,
             ic_now,
             next_hold_id: store.peek_next_hold(),

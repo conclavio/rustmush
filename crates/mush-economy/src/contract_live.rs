@@ -36,7 +36,7 @@ use crate::clock::{EconomicClock, EconomicDeadline, EconomicSchedule};
 use crate::commands::{
     asset_target, cmd_key, emit_list, info, is_admin, is_hidden, may_view_account, may_view_vault,
     parse_account, parse_amount, parse_deadline, parse_opts, parse_principal, parse_scope,
-    parse_vault_id, refuse, refuse_if_frozen, refuse_named, render_principal,
+    mask_account, parse_vault_id, refuse, refuse_if_frozen, refuse_named, render_principal,
 };
 use crate::contract::{
     Acceptance, Attestation, AttestorRef, AttestorSet, ConsentSurface, Consideration, ContractAuth,
@@ -50,7 +50,8 @@ use crate::contract::{
     readiness, refund_plan, resolve_outcome, settlement_plan,
 };
 use crate::custody::WorldCustody;
-use crate::engine::{NoFacts, ValidateEnv};
+use crate::engine::ValidateEnv;
+use crate::facts::WorldFacts;
 use crate::escalation::{EscalationKind, EscalationSubject};
 use crate::ids::{AccountId, ContractId, HoldId};
 use crate::module::EconomyStore;
@@ -1727,6 +1728,23 @@ fn refusal_text(ctx: &Ctx<'_>, detail: &str, named: &[NamedResource]) -> String 
 /// Move a live contract to `ReadyToSettle` if its conditions now hold, and settle it
 /// if `settle_now`.
 pub(crate) fn promote_and_settle(ctx: &mut Ctx<'_>, id: ContractId, settle_now: bool) -> Settled {
+    promote_and_settle_with(ctx, id, settle_now, Vec::new())
+}
+
+/// [`promote_and_settle`] with **companion container docs that ride the settlement
+/// post's own batch** (E4b2 verify fold, B2's mechanism; E4c's canon observer is the
+/// caller).
+///
+/// The observer records an attestation and settles on it in one step. Handing the
+/// attested record to the post means the journal append that paid the split and the
+/// evidence that justified it are one durable write: a batch that carries the money
+/// can never fail to carry the reason.
+pub(crate) fn promote_and_settle_with(
+    ctx: &mut Ctx<'_>,
+    id: ContractId,
+    settle_now: bool,
+    companions: Vec<EconomicContract>,
+) -> Settled {
     let Some(c) = live_contract(ctx, id) else { return Settled::NotReady };
     if !matches!(c.state, ContractState::Active | ContractState::ReadyToSettle) {
         return Settled::NotReady;
@@ -1741,11 +1759,12 @@ pub(crate) fn promote_and_settle(ctx: &mut Ctx<'_>, id: ContractId, settle_now: 
         let Some(store) = ctx.w.module_state::<EconomyStore>() else { return Settled::NotReady };
         let providers = store.providers();
         let custody = WorldCustody { w: ctx.w, providers };
+        let facts = WorldFacts { w: ctx.w, providers: store.facts() };
         let world = api::WorldAuth { w: ctx.w };
         let env = ValidateEnv {
             auth: &world,
             custody: &custody,
-            facts: &NoFacts,
+            facts: &facts,
             now: ctx.w.now(),
             ic_now: ctx.w.game_now_unix(),
             next_hold_id: store.peek_next_hold(),
@@ -1771,7 +1790,7 @@ pub(crate) fn promote_and_settle(ctx: &mut Ctx<'_>, id: ContractId, settle_now: 
     if !settle_now {
         return Settled::NotReady;
     }
-    settle(ctx, id)
+    settle_with(ctx, id, companions)
 }
 
 /// Attempt one settlement of a `ReadyToSettle` (or `Active`) contract.
@@ -1782,6 +1801,15 @@ pub(crate) fn promote_and_settle(ctx: &mut Ctx<'_>, id: ContractId, settle_now: 
 /// failure leaves the contract `ReadyToSettle` with a loud log and one more
 /// `settle_attempts`; at [`MAX_SETTLE_ATTEMPTS`] it is `Disputed` and paged.
 pub(crate) fn settle(ctx: &mut Ctx<'_>, id: ContractId) -> Settled {
+    settle_with(ctx, id, Vec::new())
+}
+
+/// [`settle`], with companion container docs riding the post's batch (E4c).
+fn settle_with(
+    ctx: &mut Ctx<'_>,
+    id: ContractId,
+    companions: Vec<EconomicContract>,
+) -> Settled {
     let Some(c) = live_contract(ctx, id) else { return Settled::NotReady };
     if !matches!(c.state, ContractState::Active | ContractState::ReadyToSettle) {
         return Settled::NotReady;
@@ -1790,11 +1818,12 @@ pub(crate) fn settle(ctx: &mut Ctx<'_>, id: ContractId) -> Settled {
         let Some(store) = ctx.w.module_state::<EconomyStore>() else { return Settled::NotReady };
         let providers = store.providers();
         let custody = WorldCustody { w: ctx.w, providers };
+        let facts = WorldFacts { w: ctx.w, providers: store.facts() };
         let world = api::WorldAuth { w: ctx.w };
         let env = ValidateEnv {
             auth: &world,
             custody: &custody,
-            facts: &NoFacts,
+            facts: &facts,
             now: ctx.w.now(),
             ic_now: ctx.w.game_now_unix(),
             next_hold_id: store.peek_next_hold(),
@@ -1824,7 +1853,7 @@ pub(crate) fn settle(ctx: &mut Ctx<'_>, id: ContractId) -> Settled {
             let Some(store) = ctx.w.module_state::<EconomyStore>() else { return Settled::NotReady };
             ContractAuth::settling(&owned, store.snapshot(), outcome)
         };
-        api::post_with(ctx, &plan, PostAuth::Injected(&auth))
+        api::post_with_companions(ctx, &plan, PostAuth::Injected(&auth), companions)
     };
     match posted {
         Ok(PostOutcome::Posted(tx) | PostOutcome::AlreadyPosted(tx)) => {
@@ -2562,14 +2591,9 @@ fn contract_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     });
     // Every account id on this page goes through the same per-class rule: an id the
     // viewer may see, or the word "an account". E4c's disclosure filter renders
-    // through this and nothing else.
-    let acct = |ctx: &Ctx<'_>, id: AccountId| -> String {
-        if may_view_account(ctx.w, ctx.actor, id) {
-            format!("account #{id}")
-        } else {
-            "an account".to_string()
-        }
-    };
+    // through `commands::mask_account` and nothing else — this closure is now that
+    // one function, so `@econ/history`, `@hold/show` and this page cannot drift.
+    let acct = |ctx: &Ctx<'_>, id: AccountId| -> String { mask_account(ctx, id, "an account") };
     let mut lines = vec![
         format!("contract #{} \"{}\" — {}", c.id, c.name, render_state(&c.state)),
         format!("  issued by {}", render_principal(ctx, &c.issuer)),

@@ -129,6 +129,11 @@ pub fn commit(ctx: &mut Ctx<'_>, draft: CanonDraft) -> Option<CanonId> {
     // Captured for the observable `CanonRecorded` event emitted below.
     let kind = draft.kind.to_string();
     let entities = draft.entities.clone();
+    // E4c: the event carries the draft's provenance too, so a source-specific
+    // observer (the economy's contract attestation) can tell one front's
+    // `scene.concluded` from another's without an id→event query this module
+    // does not offer.
+    let source = draft.source.clone();
     let (id, next, op) = {
         let st = ctx.w.module_state_mut::<CanonState>()?;
         let id = CanonId(st.next_canon_id);
@@ -177,6 +182,7 @@ pub fn commit(ctx: &mut Ctx<'_>, draft: CanonDraft) -> Option<CanonId> {
         canon_id: id.0,
         kind,
         entities,
+        source,
     });
     Some(id)
 }

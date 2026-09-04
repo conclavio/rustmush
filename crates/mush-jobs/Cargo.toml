@@ -8,6 +8,10 @@ description = "Ticket queues and character notes (staff infrastructure)"
 
 [dependencies]
 mush-core.workspace = true
+# E4c: `JobsFactProvider` implements the economy's external-fact seam (the E1c
+# direction — the answer lives with the data). Nothing runs back: neither
+# mush-economy nor mush-org depends on mush-jobs, directly or in dev.
+mush-economy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smol_str.workspace = true

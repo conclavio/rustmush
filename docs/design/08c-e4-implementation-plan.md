@@ -1334,12 +1334,174 @@ existence-only. B6 boot trusted a stored surface.
    a ruleset (E5's `system:wod.housing`, E7's production output) registers its issuer. `@asset/title`
    stays the staff path. Tests: an unregistered issuer refused; the effect carries the issuer.
 
-Tests (`tests/e4c.rs` + one in `mush-jobs`, ~15): a payload job's approval satisfies a `Fact`
-condition and a payload-less job's does not; a canon commit attests and settles in one batch
-(`drain_write_batch`) and an internal refusal inside the observer leaves canon's write intact;
-events carry no amounts; the canon bridge emits only for `Public` and only existence-level detail;
-`@econ/history` hides counterparties the viewer may not view and omits staff-visibility entries;
-approve/deny land in the org audit ledger.
+Tests (`tests/e4c.rs` + one in `mush-jobs`, ~15 — built: **24**, in three files, see §6.1): a payload
+job's approval satisfies a `Fact` condition and a payload-less job's does not; a canon commit
+attests and settles in one batch (`drain_write_batch`) and an internal refusal inside the observer
+leaves canon's write intact; events carry no amounts; the canon bridge emits only for `Public` and
+only existence-level detail; `@econ/history` hides counterparties the viewer may not view and omits
+staff-visibility entries; approve/deny land in the org audit ledger.
+
+### 6.1 As built (E4c)
+
+The cut connects the economy to the rest of the world. Six seams, one core change, and
+the read side of `EconomicVisibility` — which had been *recorded* since E2 and is
+enforced from here on. **24** tests across three files (`mush-economy/tests/e4c.rs`
+**18**, `mush-server/tests/e4c_bridge.rs` **4**, `mush-jobs/tests/e4c_facts.rs` **2**);
+`mush-economy` is **386**, and both digest pins (E2 `9c917eee…`, E3-shaped
+`b780e3a0…`) are green.
+
+**The one `mush-core` change, in full.** `WorldEvent::CanonRecorded` gains
+`source: String` (`mush-core/src/module.rs`), `mush-canon`'s emitter passes
+`draft.source` through (`mush-canon/src/lib.rs`), and the one constructing test site
+(`mush-faction/tests/simulation.rs`) names the new field. Three files, four lines of
+code. `WorldEvent` derives no serde at all — it is a synchronous in-process
+notification, never persisted — so there is no back-compat surface to keep; the two
+consumers that destructure it (`mush_faction::on_canon_recorded`, and the economy's
+new one) both use `..`. Nothing else in `mush-core` was touched, and one thing that
+wanted to be is recorded instead rather than built (below).
+
+**New files and signatures.**
+
+- `src/facts.rs` — `FactState { satisfied, actor, at }`, the `FactProvider` trait
+  (`provider() -> &str`, `resolve(&self, w, kind, id, revision) -> Option<FactState>`),
+  the `FactTable`, and `WorldFacts`, which implements E4a's `FactEval` over it.
+  Shaped for doc 10 §15 rather than for jobs: `kind` is a **namespaced string** so
+  `sim.journey.arrived` and `tactics.unit.destroyed` need no economy change,
+  `id` is the provider's own stable id (the economy's reference points *at* the
+  mechanical journal and never duplicates it), and `revision` is passed through so a
+  provider may refuse a stale reference. Wired at every `ValidateEnv` site
+  (`api::post_with_companions`, `contract_live`'s two, `sweep::step_contracts`); the
+  reversal path keeps `NoFacts`, which is correct — a reversal re-validates an
+  existing transaction and has no conditions. An empty table answers `None` for
+  everything, which is exactly the `NoFacts` behaviour it replaced.
+- `src/observer.rs` — the `EconomyObserver` trait, the `ObserverTable`, `emit`, and
+  `MAX_OBSERVER_DEPTH` (4).
+- `src/attest.rs` — the `CanonRecorded` observer.
+- `contract.rs` gains **`canon_set_accepts(set, kind, source)`**, the single predicate
+  the observer and `attestation_matches` share, so what "the right canon record" means
+  cannot drift between recording an attestation and re-verifying it.
+- `api.rs` gains `issue_title(ctx, object, owner, scope, issuer)` and the private
+  `TitleIssuerAuth`; `contract_live.rs` gains `promote_and_settle_with` / `settle_with`
+  (companion docs riding the settlement post's batch).
+- `mush_org::audit(ctx, OrgAction)` — the tail of `submit` without a plan.
+- `mush_jobs::JobsFactProvider`; `mush_server::econ_canon::CanonEvidenceBridge`.
+- `EconomyStore` gains `facts`, `observers`, `title_issuers` and the RAM-only
+  `event_depth`; `EconomyModule` gains `with_facts`, `with_observers` and
+  `with_title_issuers`. **Module order in `modules.rs` is unchanged** — the three new
+  tables hang off the existing `EconomyModule` construction.
+
+**The compact events.** `EconomicEvent::ContractChanged` gains
+`transaction: Option<TransactionId>` (`#[serde(default)]`); no other variant changed.
+Emission points are deliberately few: `api::finish` announces
+`TransactionPosted` + one `HoldChanged` per hold effect + one `AssetTitleChanged` per
+asset effect **after `install_commit` and after the strict durable gate**, and
+`put_contract` / `put_obligation` announce a **state transition** — a *change of
+kind*, not a write. That distinction is load-bearing: a contract document is rewritten
+by every builder verb, every acceptance and every failed settle attempt, and an
+obligation by every settled period, so publishing on write would make the canon bridge
+a firehose. Events carry ids and kinds only (D-E4-13) and are read back out of the
+**indexed transaction**, never the plan, so an event can only describe something the
+journal has.
+
+**The bridge's re-entry rule** (`mush-server/src/econ_canon.rs`). The bridge commits
+canon and does **nothing else** — it never posts, never settles, never writes an
+economy document. `mush_canon::commit` is documented as terminal: it appends, then
+emits `CanonRecorded` synchronously, and the economy's own attestation observer is
+subscribed to that. A bridge that also called back into the economy would be
+re-entering, from inside an economy event callback, the machinery that produced the
+event. The chain that *does* exist — settlement → event → canon → `CanonRecorded` → a
+**different** contract's attestation → its settlement — is finite because each step
+consumes a distinct contract and carries a new transaction id, and it is bounded
+anyway by `MAX_OBSERVER_DEPTH`. Work the bridge might want from the economy belongs in
+the **next step** (a command, or the sweep), because by the time an observer runs the
+post is installed and its batch is closing: nothing added there can be part of the
+decision it records. Publication is keyed on the **landed transaction id**
+(`source: economy.tx:{id}`) and refuses to commit a draft whose source is already in
+canon's tail, so the sweep's `AlreadyPosted` retry and boot's `finished_transition`
+publish nothing new.
+
+**Deviations from §6, and why.**
+
+1. **The tests are three files, not one.** `mush-economy` must not depend on
+   `mush-canon` — the dependency direction is the whole reason the observer subscribes
+   to *core's* event — so a test that commits real canon cannot live in the economy
+   crate, not even as a dev-dependency (the same rule the grounding review applied to
+   `mush-jobs`). `tests/e4c.rs` drives `CanonRecorded` exactly as core delivers it,
+   with a canon-namespace write queued on the same step to stand in for canon's append;
+   `mush-server/tests/e4c_bridge.rs` runs the real three-crate loop.
+2. **The observer accepts `Disputed` as well as `Active`/`ReadyToSettle`**, matching
+   `@contract/attest` (§5.1 deviation 8) rather than §6.2's "every `Active`". Evidence
+   usually arrives *because* somebody disputed, and recording it is what lets a
+   resolution settle; it settles nothing, because `promote_and_settle` only ever moves
+   an `Active`/`ReadyToSettle` contract.
+3. **A named adjudicator replaces the condition's own canon set here too.** §5.1's
+   deviation 4 applied the rule to people; applying it asymmetrically would let a canon
+   record discharge a condition the parties had consented to put in one adjudicator's
+   hands.
+4. **`@econ/history` counts an effect-only entry as "touching" the account.** An escrow
+   placement moves `held_amount` and no journal *line* at all, so a line-only filter
+   made the one entry a payer most wants to see invisible — and made the
+   staff-visibility rule untestable, since the escrow post is the only entry a
+   `Staff`-visibility contract produces.
+5. **A masked counterparty carries no amount.** §6.5 says the counterparty is named
+   only to a viewer who may view it; the render also drops the *amount* of a line it
+   masks, because a five-way split would otherwise tell each runner what every other
+   runner was paid. In a two-line transfer the mirror amount is arithmetic rather than
+   disclosure; the id is what is withheld either way.
+6. **"Party" is narrower than "may view".** A description is shown to someone the
+   entry's money is *about* — the poster, or anyone who `acts_for` an owner of an
+   account it moved — not to everyone who may read the account. An auditor holding
+   `economy.account.view` reads what moved and not the free text somebody wrote about
+   why. An `Audience` widens that set to the named audience and is treated exactly like
+   `Parties` for anyone outside it.
+7. **`issue_title` refuses at the API, and again at the engine seam.** The registered
+   table is checked before anything is built, and `TitleIssuerAuth` — which authorizes
+   exactly one `AssetOp::Title`, for exactly the object/owner/scope named, on behalf of
+   exactly that issuer, and keeps the trait's `false` default for every other method —
+   is what `validate` asks. It grants no money authority at all. The world half of
+   invariant 18 (scope coherence) is checked in `issue_title` itself, because the
+   injected authority holds no `&World`.
+8. **The bridge's replay guard reads canon's RAM tail.** Canon has no id→event query
+   and its deep history pages through a store-read seam that does not exist yet; canon
+   events are sparse enough that a settlement's own line stays in the tail for a very
+   long time. A tail that has rolled past it is the documented limit — the same limit
+   canon's own id-allocator safety net carries.
+
+**Recorded, not built (the "one core change" rule).** The `@econ/history` renderer
+would read better with a shared "how long ago" helper; `mush_jobs::fmt_ago` is exactly
+it and lives in the wrong crate for the economy to use. Moving it to `mush-core` is a
+second core change for a cosmetic gain, so the render prints the raw `posted_at`
+stamp and the move is E5's if anything else wants it.
+
+**Handoffs.**
+
+- **E5** takes the fact seam's first real registration beyond jobs and the title
+  issuer's first real entry: `EconomyModule::with_title_issuers(vec![
+  SystemPrincipalId::new("wod.housing")])` is the shape, and the server currently
+  passes an empty list on purpose (`@asset/title` stays the staff path until a ruleset
+  owns one). `@econ/cadence` and the `Delinquent` consequence hook are unchanged from
+  §4.7's handoff.
+- **E6b** gates on the attestation seam and now has it: all four of 08e answer 6's
+  routes go through the one `TypedCondition` alphabet — a **sealed scene outcome** is a
+  typed canon record with `source: scene:{uid}` matched by an
+  `Attestation { by: Canon { kind, source } }` condition (`mush-scenes` already commits
+  `scene.concluded` that way, so E6b needs no new producer); an **authorized
+  attestation** is `@contract/attest` under a `Party`/`Capability`/`Staff` set; a
+  **deterministic condition** is `Fact`/`TitleHeld`/`DepositInto`/`Before`/`After`; a
+  **composite** is several of them on one contract. Prose settles nothing: a canon
+  record with no matching typed condition attests nothing at all, whatever it says.
+- **E7 / `mush-sim` / `mush-tactics`** register the doc 10 §15 boundary facts as
+  `FactProvider`s. The kinds the plan names, so they are a registration rather than a
+  rediscovery: `sim.journey.arrived`, `sim.sortie.flown`, `sim.station.served`
+  (R6/T13's participation fact, which outcome-indexed terms already index on),
+  `sim.delivery.completed`, `sim.docking.completed`, `tactics.unit.destroyed`,
+  `tactics.salvage.claimed`. Each needs a stable id space in its own domain journal
+  and should answer `None` — never `Some(false)` — for a record it cannot vouch for.
+- **The notification seam is still open.** `contract_live::notify` and
+  `sweep::notify_principal` still reach only `PrincipalId::Object`; the
+  `EconomyObserver` seam is now the place an org or system party's notification, and
+  the staff-channel escalation fan-out (§4.7 deviation 5), can be built without the
+  economy learning about channels.
 
 ---
 
