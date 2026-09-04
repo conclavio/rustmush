@@ -960,16 +960,24 @@ struct NpcCompletion {
 
 impl AsyncCompletion for NpcCompletion {
     fn on_complete(&self, ctx: &mut Ctx<'_>, correlation: u64, payload: &str) {
-        // Clear in-flight on the framework-supplied NPC id (`ctx.actor` is the
-        // effect's actor — the real NPC) BEFORE decoding, so a malformed or
-        // wrong-NPC payload can never wedge the agent in-flight forever. We do
-        // not trust `outcome.npc()` for this: the undecodable-snapshot branch
-        // returns `Nothing { npc: ObjId(0) }`, which would clear the wrong
-        // runtime and leave the real NPC stuck.
+        // Match and clear in-flight on the framework-supplied NPC id
+        // (`ctx.actor` is the effect's actor) BEFORE decoding, so a malformed
+        // payload for the active turn cannot wedge it forever. The correlation
+        // check is load-bearing: a delayed duplicate from an older turn must
+        // neither clear a newer turn nor replay its stale actions. We do not
+        // trust `outcome.npc()` for either identity.
         let npc = ctx.actor;
         let now = now_ms(ctx.w);
-        if let Some(h) = ctx.state_mut::<NpcHostState>() {
-            h.finish_turn(npc, now);
+        let active = ctx
+            .state_mut::<NpcHostState>()
+            .is_some_and(|h| h.finish_turn_if_correlation(npc, correlation, now));
+        if !active {
+            tracing::debug!(
+                npc = npc.0,
+                correlation,
+                "npc: stale async completion dropped"
+            );
+            return;
         }
         let outcome: TurnOutcome = match serde_json::from_str(payload) {
             Ok(o) => o,

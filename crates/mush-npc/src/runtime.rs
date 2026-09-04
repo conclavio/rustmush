@@ -22,6 +22,13 @@ use crate::knowledge::LorePools;
 use crate::memory::{LongTermStore, MemoryBuffer};
 use crate::stimulus::Stimulus;
 
+/// Hard ceiling on queued stimuli for one NPC. The mailbox is fed by player
+/// activity, so this is a security bound rather than merely a tuning default.
+pub const MAX_PENDING_STIMULI: usize = 64;
+
+/// Hard ceiling on the serialized payload retained in one NPC mailbox.
+pub const MAX_PENDING_STIMULUS_BYTES: usize = 32 * 1024;
+
 /// Host tuning knobs.
 #[derive(Clone, Debug)]
 pub struct NpcConfig {
@@ -53,6 +60,8 @@ impl Default for NpcConfig {
 pub struct NpcRuntime {
     /// Pending stimuli awaiting the next turn.
     pub mailbox: Vec<Stimulus>,
+    /// Serialized bytes currently retained by `mailbox`.
+    pub mailbox_bytes: usize,
     /// When the current batch's first stimulus arrived (ms), for the window.
     pub pending_since: Option<i64>,
     /// One LLM call at a time: `true` between fire and completion.
@@ -67,6 +76,8 @@ pub struct NpcRuntime {
     pub degraded_notified: bool,
     /// Whether a memory-fold (summarize) turn is pending.
     pub summarize_pending: bool,
+    /// Stimuli refused or evicted to maintain the hard mailbox bounds.
+    pub dropped_stimuli: u64,
 }
 
 impl NpcRuntime {
@@ -161,17 +172,46 @@ impl NpcHostState {
 
     /// Enqueue a stimulus for `npc` at `now_ms`. While a turn is in flight,
     /// **low-value** stimuli (arrivals/departures/ambience) are dropped as
-    /// stale (design 03 §6.2); speech always queues for the next turn.
-    /// Returns whether it was actually enqueued.
+    /// stale (design 03 §6.2). At the hard count/byte ceilings, newer stimuli
+    /// replace the oldest stimulus of no greater priority; direct speech has
+    /// the highest priority, ordinary speech/game events are next, and stale
+    /// presence/ambient events are lowest. Nothing can grow this mailbox
+    /// beyond its explicit bounds.
+    ///
+    /// Returns whether the new stimulus was retained. An accepted stimulus may
+    /// have evicted one or more older entries.
     pub fn enqueue(&mut self, npc: ObjId, stim: Stimulus, now_ms: i64) -> bool {
         let rt = self.runtime_mut(npc);
         if rt.in_flight && stim.is_low_value() {
+            rt.dropped_stimuli = rt.dropped_stimuli.saturating_add(1);
             return false;
+        }
+        let incoming_bytes = stimulus_bytes(&stim);
+        if incoming_bytes > MAX_PENDING_STIMULUS_BYTES {
+            rt.dropped_stimuli = rt.dropped_stimuli.saturating_add(1);
+            return false;
+        }
+        let incoming_priority = stimulus_priority(&stim);
+        while rt.mailbox.len() >= MAX_PENDING_STIMULI
+            || rt.mailbox_bytes.saturating_add(incoming_bytes) > MAX_PENDING_STIMULUS_BYTES
+        {
+            let Some(index) = rt
+                .mailbox
+                .iter()
+                .position(|queued| stimulus_priority(queued) <= incoming_priority)
+            else {
+                rt.dropped_stimuli = rt.dropped_stimuli.saturating_add(1);
+                return false;
+            };
+            let removed = rt.mailbox.remove(index);
+            rt.mailbox_bytes = rt.mailbox_bytes.saturating_sub(stimulus_bytes(&removed));
+            rt.dropped_stimuli = rt.dropped_stimuli.saturating_add(1);
         }
         if rt.pending_since.is_none() {
             rt.pending_since = Some(now_ms);
         }
         rt.mailbox.push(stim);
+        rt.mailbox_bytes = rt.mailbox_bytes.saturating_add(incoming_bytes);
         true
     }
 
@@ -197,6 +237,7 @@ impl NpcHostState {
         rt.correlation = Some(correlation);
         rt.last_turn_at = Some(now_ms);
         rt.pending_since = None;
+        rt.mailbox_bytes = 0;
         std::mem::take(&mut rt.mailbox)
     }
 
@@ -228,11 +269,32 @@ impl NpcHostState {
         }
     }
 
+    /// Finish only the exact currently in-flight turn. A duplicate or delayed
+    /// completion from an older turn must neither clear a newer turn nor make
+    /// its stale actions eligible for application.
+    pub fn finish_turn_if_correlation(
+        &mut self,
+        npc: ObjId,
+        correlation: u64,
+        now_ms: i64,
+    ) -> bool {
+        if self
+            .runtimes
+            .get(&npc)
+            .is_none_or(|rt| !rt.in_flight || rt.correlation != Some(correlation))
+        {
+            return false;
+        }
+        self.finish_turn(npc, now_ms);
+        true
+    }
+
     /// Drop an NPC's pending mailbox and reset its window (no players, or the
     /// NPC is disabled — no wakes, no tokens).
     pub fn drop_mailbox(&mut self, npc: ObjId) {
         if let Some(rt) = self.runtimes.get_mut(&npc) {
             rt.mailbox.clear();
+            rt.mailbox_bytes = 0;
             rt.pending_since = None;
         }
     }
@@ -241,6 +303,20 @@ impl NpcHostState {
 /// A `Duration` as milliseconds (clamped).
 fn dur_ms(d: Duration) -> i64 {
     i64::try_from(d.as_millis()).unwrap_or(i64::MAX)
+}
+
+fn stimulus_priority(stim: &Stimulus) -> u8 {
+    if stim.is_direct() {
+        2
+    } else if stim.is_low_value() {
+        0
+    } else {
+        1
+    }
+}
+
+fn stimulus_bytes(stim: &Stimulus) -> usize {
+    serde_json::to_vec(stim).map_or(usize::MAX, |encoded| encoded.len())
 }
 
 #[cfg(test)]
@@ -333,5 +409,64 @@ mod tests {
     fn no_stimuli_means_not_pending() {
         let h = host();
         assert!(h.pending().is_empty());
+    }
+
+    #[test]
+    fn mailbox_is_bounded_and_prefers_new_direct_speech() {
+        let mut h = host();
+        let npc = ObjId(9);
+        for n in 0..=MAX_PENDING_STIMULI {
+            assert!(h.enqueue(npc, spoken(n as u32, &format!("line-{n}")), n as i64));
+        }
+        let rt = h.runtime(npc).unwrap();
+        assert_eq!(rt.mailbox.len(), MAX_PENDING_STIMULI);
+        assert_eq!(rt.dropped_stimuli, 1);
+        assert!(!rt.mailbox.contains(&spoken(0, "line-0")));
+        assert!(
+            rt.mailbox
+                .contains(&spoken(MAX_PENDING_STIMULI as u32, "line-64"))
+        );
+        assert!(rt.mailbox_bytes <= MAX_PENDING_STIMULUS_BYTES);
+    }
+
+    #[test]
+    fn lower_priority_stimulus_cannot_evict_direct_speech() {
+        let mut h = host();
+        let npc = ObjId(9);
+        for n in 0..MAX_PENDING_STIMULI {
+            assert!(h.enqueue(npc, spoken(n as u32, "direct"), n as i64));
+        }
+        assert!(!h.enqueue(npc, Stimulus::PlayerArrived { who: ObjId(99) }, 100));
+        let rt = h.runtime(npc).unwrap();
+        assert_eq!(rt.mailbox.len(), MAX_PENDING_STIMULI);
+        assert!(rt.mailbox.iter().all(Stimulus::is_direct));
+        assert_eq!(rt.dropped_stimuli, 1);
+    }
+
+    #[test]
+    fn single_oversized_stimulus_is_refused() {
+        let mut h = host();
+        let npc = ObjId(9);
+        let huge = "x".repeat(MAX_PENDING_STIMULUS_BYTES);
+        assert!(!h.enqueue(npc, spoken(2, &huge), 1000));
+        let rt = h.runtime(npc).unwrap();
+        assert!(rt.mailbox.is_empty());
+        assert_eq!(rt.dropped_stimuli, 1);
+    }
+
+    #[test]
+    fn completion_must_match_current_correlation() {
+        let mut h = host();
+        let npc = ObjId(9);
+        h.enqueue(npc, spoken(2, "first"), 0);
+        h.begin_turn(npc, 0, 10);
+
+        assert!(!h.finish_turn_if_correlation(npc, 9, 1));
+        assert!(h.runtime(npc).unwrap().in_flight);
+        assert_eq!(h.runtime(npc).unwrap().correlation, Some(10));
+
+        assert!(h.finish_turn_if_correlation(npc, 10, 1));
+        assert!(!h.runtime(npc).unwrap().in_flight);
+        assert!(!h.finish_turn_if_correlation(npc, 10, 2));
     }
 }

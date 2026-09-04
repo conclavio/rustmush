@@ -127,7 +127,9 @@ pub use profile::{
 };
 pub use prompt::{ENGINE_FRAME, system_prompt, user_prompt};
 pub use query::IntelListQuery;
-pub use runtime::{NpcConfig, NpcHostState, NpcRuntime};
+pub use runtime::{
+    MAX_PENDING_STIMULI, MAX_PENDING_STIMULUS_BYTES, NpcConfig, NpcHostState, NpcRuntime,
+};
 pub use snapshot::{
     AgentGrounding, AppliedAction, NoGrounding, PresentPlayer, RecalledMemory, SceneView,
     StimulusLine, TurnKind, TurnOutcome, TurnSnapshot,
