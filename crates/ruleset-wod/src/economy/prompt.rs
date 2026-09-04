@@ -52,7 +52,11 @@ pub fn front_resolves(ctx: &Ctx<'_>, front: &crate::economy::record::FrontRef) -
     let front_ok = ctx
         .w
         .module_state::<mush_faction::SimState>()
-        .is_some_and(|s| s.fronts.get(&front.front).is_some_and(|f| f.faction == front.faction));
+        .is_some_and(|s| {
+            s.fronts
+                .get(&front.front)
+                .is_some_and(|f| f.faction == front.faction)
+        });
     faction_ok && front_ok
 }
 
@@ -83,7 +87,11 @@ pub fn render_front(
     let listed = ctx
         .w
         .module_state::<mush_faction::FactionState>()
-        .and_then(|s| s.factions.get(&front.faction).map(|f| s.faction_listed(viewer, staff, f)))
+        .and_then(|s| {
+            s.factions
+                .get(&front.faction)
+                .map(|f| s.faction_listed(viewer, staff, f))
+        })
         .unwrap_or(false);
     if !listed {
         return front.raw();
@@ -135,7 +143,10 @@ pub fn offer(
             return Err(Declined::Pool);
         }
     }
-    let Some(mut profile) = ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.profile(who).cloned())
+    let Some(mut profile) = ctx
+        .w
+        .module_state::<WodEconomyStore>()
+        .and_then(|s| s.profile(who).cloned())
     else {
         return Err(Declined::Budget);
     };
@@ -143,20 +154,24 @@ pub fn offer(
     let displaced = match (&profile.prompt, &kind) {
         (None, _) => None,
         // Housing pressure displaces the two front-attributed kinds…
-        (Some(open), PromptKind::HousingPressure { .. })
-            if open.kind.displaceable_by_housing() =>
-        {
+        (Some(open), PromptKind::HousingPressure { .. }) if open.kind.displaceable_by_housing() => {
             Some(open.clone())
         }
         // …and nothing displaces anything else. A second prompt is dropped.
         (Some(_), _) => return Err(Declined::Budget),
     };
-    let Some(id) = ctx.w.module_state_mut::<WodEconomyStore>().and_then(WodEconomyStore::alloc_prompt)
+    let Some(id) = ctx
+        .w
+        .module_state_mut::<WodEconomyStore>()
+        .and_then(WodEconomyStore::alloc_prompt)
     else {
         return Err(Declined::Exhausted);
     };
     if let Some(old) = displaced {
-        profile.note(now, format!("prompt #{} dropped for housing pressure", old.id));
+        profile.note(
+            now,
+            format!("prompt #{} dropped for housing pressure", old.id),
+        );
     }
     profile.prompt = Some(Prompt {
         id,
@@ -178,13 +193,19 @@ pub fn offer(
 /// Tell a character they have something waiting. One line — the prompt itself is a
 /// pull (`+prompt`), per 08d §1.1's "routine visibility is pull-only".
 fn announce(ctx: &mut Ctx<'_>, who: ObjId) {
-    let Some(p) = ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.profile(who).cloned())
+    let Some(p) = ctx
+        .w
+        .module_state::<WodEconomyStore>()
+        .and_then(|s| s.profile(who).cloned())
     else {
         return;
     };
     let Some(prompt) = &p.prompt else { return };
     let what = prompt.kind.label();
-    ctx.out.info(who, format!("Something has come up ({what}). Type +prompt to look at it."));
+    ctx.out.info(
+        who,
+        format!("Something has come up ({what}). Type +prompt to look at it."),
+    );
 }
 
 /// Apply a chosen option (`+prompt <option>`).
@@ -193,7 +214,10 @@ fn announce(ctx: &mut Ctx<'_>, who: ObjId) {
 ///
 /// A message for the player when there is no prompt or no such option.
 pub fn choose(ctx: &mut Ctx<'_>, who: ObjId, key: &str, now: i64) -> Result<String, String> {
-    let Some(mut profile) = ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.profile(who).cloned())
+    let Some(mut profile) = ctx
+        .w
+        .module_state::<WodEconomyStore>()
+        .and_then(|s| s.profile(who).cloned())
     else {
         return Err("You have nothing waiting.".to_string());
     };
@@ -209,7 +233,10 @@ pub fn choose(ctx: &mut Ctx<'_>, who: ObjId, key: &str, now: i64) -> Result<Stri
         PromptOutcome::Strain(n) => profile.apply_strain(i16::from(n)),
         PromptOutcome::Relief(n) => profile.apply_strain(-i16::from(n)),
     }
-    profile.note(now, format!("prompt #{} answered: {}", prompt.id, option.key));
+    profile.note(
+        now,
+        format!("prompt #{} answered: {}", prompt.id, option.key),
+    );
     profile.prompt = None;
     profile.revision = profile.revision.saturating_add(1);
     put_profile(ctx, profile);
@@ -229,10 +256,13 @@ pub fn expire(profile: &mut SpendingProfile, period: u64, now: i64) -> Option<Pr
     let (id, default) = (prompt.id, prompt.default);
     // **Nothing but a note.** No strain, no support change, no money, and the wording
     // is not a failure (owner answer 19).
-    profile.note(now, match default {
-        PromptDefault::StatusQuo => format!("prompt #{id} lapsed; nothing changed"),
-        PromptDefault::PendingWindow => format!("prompt #{id} lapsed; staff still have it"),
-    });
+    profile.note(
+        now,
+        match default {
+            PromptDefault::StatusQuo => format!("prompt #{id} lapsed; nothing changed"),
+            PromptDefault::PendingWindow => format!("prompt #{id} lapsed; staff still have it"),
+        },
+    );
     profile.prompt = None;
     // No revision bump here (look-back fold, E5c-C90): the one caller is the
     // evaluation, which bumps the revision once for the whole period's changes

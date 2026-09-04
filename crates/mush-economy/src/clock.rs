@@ -58,7 +58,9 @@ pub const SWEEP_GAP_DOWNTIME_SECS: i64 = 2 * SWEEP_PERIOD_SECS;
 /// id, generation }`, and `Manual` is a cadence whose source is an explicit act.
 /// `Registered { provider }` stays deferred — no clock-provider seam exists and no
 /// consumer needs one before E7 (§1.1).
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 pub enum EconomicClock {
     /// Wall-clock unix seconds.
     #[default]
@@ -85,7 +87,10 @@ impl EconomicDeadline {
     /// A deadline on the real clock.
     #[must_use]
     pub const fn real(at: i64) -> EconomicDeadline {
-        EconomicDeadline { clock: EconomicClock::RealUtc, at }
+        EconomicDeadline {
+            clock: EconomicClock::RealUtc,
+            at,
+        }
     }
 }
 
@@ -127,7 +132,12 @@ impl EconomicSchedule {
     /// A recurring schedule on the real clock at the default catch-up.
     #[must_use]
     pub fn every(next_due: i64, cadence: i64) -> EconomicSchedule {
-        EconomicSchedule::new(EconomicClock::RealUtc, next_due, Some(cadence), DEFAULT_CATCH_UP)
+        EconomicSchedule::new(
+            EconomicClock::RealUtc,
+            next_due,
+            Some(cadence),
+            DEFAULT_CATCH_UP,
+        )
     }
 }
 
@@ -400,8 +410,14 @@ mod tests {
 
     #[test]
     fn maximum_catch_up_is_clamped_at_construction() {
-        assert_eq!(EconomicSchedule::new(EconomicClock::RealUtc, 0, Some(10), 200).maximum_catch_up, MAX_CATCH_UP_CAP);
-        assert_eq!(EconomicSchedule::new(EconomicClock::RealUtc, 0, Some(10), 0).maximum_catch_up, 1);
+        assert_eq!(
+            EconomicSchedule::new(EconomicClock::RealUtc, 0, Some(10), 200).maximum_catch_up,
+            MAX_CATCH_UP_CAP
+        );
+        assert_eq!(
+            EconomicSchedule::new(EconomicClock::RealUtc, 0, Some(10), 0).maximum_catch_up,
+            1
+        );
     }
 
     #[test]

@@ -121,7 +121,11 @@ fn move_to(t: &Tenancy, to: TenancyStatus, now: i64) -> Tenancy {
     let from = t.status.kind();
     let to_kind = to.kind();
     next.status = to;
-    next.push_event(TenancyEvent::StatusChanged { from, to: to_kind, at: now });
+    next.push_event(TenancyEvent::StatusChanged {
+        from,
+        to: to_kind,
+        at: now,
+    });
     next.revision = next.revision.saturating_add(1);
     next
 }
@@ -427,7 +431,10 @@ pub fn window_elapsed(
         WindowAction::Notify => {
             w.notified = w.notified.saturating_add(1).min(MAX_WINDOW_NOTICES);
             w.last_notice = now;
-            next.push_event(TenancyEvent::Notified { count: w.notified, at: now });
+            next.push_event(TenancyEvent::Notified {
+                count: w.notified,
+                at: now,
+            });
         }
         WindowAction::Escalate => {
             let Some(id) = escalation else {

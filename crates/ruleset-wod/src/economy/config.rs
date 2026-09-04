@@ -80,7 +80,18 @@ impl PersonalMode {
 /// strain, still shows up in `+career` — it simply never opens an opportunity prompt.
 /// `Engaged` is opting in to being asked. Housing pressure reaches both (it is not an
 /// opportunity, it is somebody's home).
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum Engagement {
     /// Quiet: no opportunity or advancement prompts.
     #[default]

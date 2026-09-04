@@ -126,14 +126,19 @@ impl EconomySnapshot {
     /// The single vault bound to a backing, if any (one vault per backing).
     #[must_use]
     pub fn vault_by_backing(&self, backing: &CustodyRef) -> Option<&Vault> {
-        self.vaults_by_backing.get(backing).and_then(|id| self.vaults.get(id))
+        self.vaults_by_backing
+            .get(backing)
+            .and_then(|id| self.vaults.get(id))
     }
     /// Whether `object` is the backing of some vault (entering one is a `Deposit`,
     /// never a plain withdrawal destination — invariant 15 / A2).
     #[must_use]
     pub fn is_vault_backing(&self, object: ObjId) -> bool {
-        self.vaults_by_backing.contains_key(&CustodyRef::Container(object))
-            || self.vaults_by_backing.contains_key(&CustodyRef::SpatialInterior(object))
+        self.vaults_by_backing
+            .contains_key(&CustodyRef::Container(object))
+            || self
+                .vaults_by_backing
+                .contains_key(&CustodyRef::SpatialInterior(object))
     }
     /// Look up an approval request.
     #[must_use]
@@ -177,12 +182,17 @@ impl EconomySnapshot {
     /// hold docs and a stale `Contract.escrow` id must never be re-minted.
     #[must_use]
     pub fn next_hold_floor(&self) -> u64 {
-        self.holds.keys().next_back().map_or(1, |h| h.0.saturating_add(1))
+        self.holds
+            .keys()
+            .next_back()
+            .map_or(1, |h| h.0.saturating_add(1))
     }
     /// How many `Held` holds an account currently carries (invariant 26's cap).
     #[must_use]
     pub fn active_holds_on(&self, account: AccountId) -> usize {
-        self.holds_of(account).filter(|h| h.status.is_held()).count()
+        self.holds_of(account)
+            .filter(|h| h.status.is_held())
+            .count()
     }
     /// Look up a cadence clock.
     #[must_use]
@@ -253,7 +263,10 @@ impl EconomySnapshot {
                 self.assets_by_owner.remove(&prev.title_owner);
             }
         }
-        self.assets_by_owner.entry(asset.title_owner.clone()).or_default().insert(object);
+        self.assets_by_owner
+            .entry(asset.title_owner.clone())
+            .or_default()
+            .insert(object);
         self.assets.insert(object, asset);
     }
     /// Insert/replace a vault, keeping the backing index coherent (one vault per
@@ -264,7 +277,8 @@ impl EconomySnapshot {
         {
             self.vaults_by_backing.remove(&prev.backing);
         }
-        self.vaults_by_backing.insert(vault.backing.clone(), vault.id);
+        self.vaults_by_backing
+            .insert(vault.backing.clone(), vault.id);
         self.vaults.insert(vault.id, vault);
     }
     /// Insert/replace an approval request, keeping the by-hash index coherent.
@@ -285,8 +299,10 @@ impl EconomySnapshot {
             }
             Some(cur) => {
                 // Keep the incumbent unless it is no longer live.
-                let incumbent_live =
-                    self.approvals.get(&cur).is_some_and(|r| r.status == ApprovalStatus::Pending);
+                let incumbent_live = self
+                    .approvals
+                    .get(&cur)
+                    .is_some_and(|r| r.status == ApprovalStatus::Pending);
                 if !incumbent_live && pending {
                     self.approvals_by_hash.insert(hash, id);
                 }
@@ -310,7 +326,10 @@ impl EconomySnapshot {
                 self.holds_by_account.remove(&prev.account);
             }
         }
-        self.holds_by_account.entry(hold.account).or_default().insert(hold.id);
+        self.holds_by_account
+            .entry(hold.account)
+            .or_default()
+            .insert(hold.id);
         self.holds.insert(hold.id, hold);
     }
     /// Drop a **terminal** hold from the projection (the sweep's GC, §4.3 step 4).
@@ -360,7 +379,10 @@ impl EconomySnapshot {
     /// the lock, so a terminal contract can never trap someone's property.
     pub fn put_contract(&mut self, contract: EconomicContract) {
         self.contract_locks.retain(|_, c| *c != contract.id);
-        if matches!(contract.state, ContractState::Active | ContractState::ReadyToSettle) {
+        if matches!(
+            contract.state,
+            ContractState::Active | ContractState::ReadyToSettle
+        ) {
             for condition in &contract.consent.conditions {
                 if let TypedCondition::DepositInto { object, vault } = condition {
                     self.contract_locks.insert((*object, *vault), contract.id);

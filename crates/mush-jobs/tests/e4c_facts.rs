@@ -16,7 +16,9 @@ use mush_core::{
     register_engine_commands,
 };
 use mush_economy::FactProvider;
-use mush_jobs::{Job, JobPayload, JobsFactProvider, JobsModule, OpenJob, open_job, register_payload_handler};
+use mush_jobs::{
+    Job, JobPayload, JobsFactProvider, JobsModule, OpenJob, open_job, register_payload_handler,
+};
 use serde_json::json;
 
 /// A producing module: an `xp` queue, a `+xspend` command that files a
@@ -42,14 +44,20 @@ impl GameModule for TestProducer {
             },
             Arc::new(|ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
                 let title = ctx.args.lhs().to_string();
-                open_job(ctx, OpenJob {
-                    queue: "xp".into(),
-                    title,
-                    opener: ctx.actor,
-                    text: None,
-                    payload: Some(JobPayload { handler: "xp.apply".into(), data: json!({}) }),
-                    tags: Vec::new(),
-                })
+                open_job(
+                    ctx,
+                    OpenJob {
+                        queue: "xp".into(),
+                        title,
+                        opener: ctx.actor,
+                        text: None,
+                        payload: Some(JobPayload {
+                            handler: "xp.apply".into(),
+                            data: json!({}),
+                        }),
+                        tags: Vec::new(),
+                    },
+                )
                 .map(|_| ())
                 .map_err(CmdError::msg)
             }),
@@ -80,25 +88,44 @@ struct Env {
 fn setup() -> Env {
     let mut world = World::new_minimal();
     world.set_now(1_000);
-    let nick = world.create(ObjKind::Player, "Nick", GOD, Some(LIMBO)).unwrap();
-    let wanda = world.create(ObjKind::Player, "Wanda", GOD, Some(LIMBO)).unwrap();
+    let nick = world
+        .create(ObjKind::Player, "Nick", GOD, Some(LIMBO))
+        .unwrap();
+    let wanda = world
+        .create(ObjKind::Player, "Wanda", GOD, Some(LIMBO))
+        .unwrap();
     world.set_flag(wanda, Flags::WIZARD, true).unwrap();
     let mut registry = Registry::new();
     register_core_commands(&mut registry).unwrap();
     register_engine_commands(&mut registry).unwrap();
-    let mut engine = Engine::with_modules(world, registry, vec![
-        Box::new(JobsModule::new()),
-        Box::new(TestProducer),
-    ])
+    let mut engine = Engine::with_modules(
+        world,
+        registry,
+        vec![Box::new(JobsModule::new()), Box::new(TestProducer)],
+    )
     .unwrap();
     let (mut out, mut fx) = (Outbox::new(), Effects::new());
-    engine.modules_loaded(HashMap::new(), &mut out, &mut fx).unwrap();
-    Env { engine, nick, wanda }
+    engine
+        .modules_loaded(HashMap::new(), &mut out, &mut fx)
+        .unwrap();
+    Env {
+        engine,
+        nick,
+        wanda,
+    }
 }
 
 fn run(actor: ObjId, env: &mut Env, line: &str) {
     let (mut out, mut fx) = (Outbox::new(), Effects::new());
-    env.engine.step(Inbound::Cmd { conn: 1, actor, line: line.into() }, &mut out, &mut fx);
+    env.engine.step(
+        Inbound::Cmd {
+            conn: 1,
+            actor,
+            line: line.into(),
+        },
+        &mut out,
+        &mut fx,
+    );
 }
 
 #[test]
@@ -106,7 +133,11 @@ fn only_a_payload_bearing_resolved_job_is_a_fact() {
     let mut env = setup();
     // 1: a payload job. 2: a plain request, which staff may reopen at any time.
     run(env.nick, &mut env, "+xspend Raise Strength=");
-    run(env.nick, &mut env, "+request A door is stuck=It will not open.");
+    run(
+        env.nick,
+        &mut env,
+        "+request A door is stuck=It will not open.",
+    );
     run(env.wanda, &mut env, "+job/assign 1=Wanda");
     run(env.wanda, &mut env, "+job/approve 1=done");
     run(env.wanda, &mut env, "+job/approve 2=done");
@@ -115,9 +146,18 @@ fn only_a_payload_bearing_resolved_job_is_a_fact() {
     let w = &env.engine.world;
 
     // The payload job: a terminal fact, and the provider says who closed it.
-    let fact = p.resolve(w, "resolved", "1", None).expect("a payload job answers");
-    assert!(fact.satisfied, "an approved payload job did not answer satisfied");
-    assert_eq!(fact.actor, Some(env.wanda), "the provider lost the approver");
+    let fact = p
+        .resolve(w, "resolved", "1", None)
+        .expect("a payload job answers");
+    assert!(
+        fact.satisfied,
+        "an approved payload job did not answer satisfied"
+    );
+    assert_eq!(
+        fact.actor,
+        Some(env.wanda),
+        "the provider lost the approver"
+    );
 
     // The payload-less job: **unknown**, not `Some(false)` — the distinction is
     // "not a fact I can vouch for", because `+job/status` can reopen it.
@@ -129,7 +169,9 @@ fn only_a_payload_bearing_resolved_job_is_a_fact() {
     // contract still works.
     run(env.wanda, &mut env, "+job/status 2=open");
     assert_eq!(
-        mush_jobs::get_job(&env.engine.world, 2).expect("job 2").status,
+        mush_jobs::get_job(&env.engine.world, 2)
+            .expect("job 2")
+            .status,
         mush_jobs::JobStatus::Open,
         "the payload-less job could not be reopened, which was the whole premise"
     );
@@ -144,12 +186,23 @@ fn an_unopened_job_an_unknown_kind_and_a_versioned_reference_are_all_unknown() {
 
     assert_eq!(p.provider(), "jobs");
     // Open, not resolved: a fact the provider CAN vouch for, and it is false.
-    let fact = p.resolve(w, "resolved", "1", None).expect("an open payload job answers");
+    let fact = p
+        .resolve(w, "resolved", "1", None)
+        .expect("an open payload job answers");
     assert!(!fact.satisfied, "an unapproved job answered satisfied");
     // Everything the provider cannot speak to is `None`, which is unsatisfied.
-    assert!(p.resolve(w, "resolved", "99", None).is_none(), "a nonexistent job answered");
-    assert!(p.resolve(w, "resolved", "not-a-number", None).is_none(), "a junk id answered");
-    assert!(p.resolve(w, "denied", "1", None).is_none(), "an unknown kind answered");
+    assert!(
+        p.resolve(w, "resolved", "99", None).is_none(),
+        "a nonexistent job answered"
+    );
+    assert!(
+        p.resolve(w, "resolved", "not-a-number", None).is_none(),
+        "a junk id answered"
+    );
+    assert!(
+        p.resolve(w, "denied", "1", None).is_none(),
+        "an unknown kind answered"
+    );
     assert!(
         p.resolve(w, "resolved", "1", Some(3)).is_none(),
         "a reference claiming a revision was answered by a provider that has none"
@@ -177,24 +230,39 @@ fn vf_e3_the_fact_is_the_applied_marker_and_a_status_flip_is_not_one() {
         mush_jobs::JobStatus::Resolved,
         "a payload job was resolved without running its payload"
     );
-    assert_eq!(job.payload_applied, None, "a status flip wrote the applied marker");
+    assert_eq!(
+        job.payload_applied, None,
+        "a status flip wrote the applied marker"
+    );
     assert!(
-        p.resolve(&env.engine.world, "resolved", "1", None).is_some_and(|f| !f.satisfied),
+        p.resolve(&env.engine.world, "resolved", "1", None)
+            .is_some_and(|f| !f.satisfied),
         "a status flip answered the fact"
     );
 
     // The approval is what makes it a fact — the marker and the status together.
     run(env.wanda, &mut env, "+job/approve 1=done");
     let job = mush_jobs::get_job(&env.engine.world, 1).expect("job 1");
-    assert!(job.payload_applied.is_some(), "approve did not stamp the applied marker");
-    let fact = p.resolve(&env.engine.world, "resolved", "1", None).expect("answers");
+    assert!(
+        job.payload_applied.is_some(),
+        "approve did not stamp the applied marker"
+    );
+    let fact = p
+        .resolve(&env.engine.world, "resolved", "1", None)
+        .expect("answers");
     assert!(fact.satisfied, "an applied payload is not a fact");
-    assert_eq!(fact.at, job.payload_applied.expect("marker"), "the fact is stamped at the flip");
+    assert_eq!(
+        fact.at,
+        job.payload_applied.expect("marker"),
+        "the fact is stamped at the flip"
+    );
 
     // …and it cannot be taken back afterwards, which is what makes it terminal.
     run(env.wanda, &mut env, "+job/status 1=denied");
     assert_eq!(
-        mush_jobs::get_job(&env.engine.world, 1).expect("job 1").status,
+        mush_jobs::get_job(&env.engine.world, 1)
+            .expect("job 1")
+            .status,
         mush_jobs::JobStatus::Resolved,
         "a resolved payload job was moved off Resolved after money could have settled on it"
     );

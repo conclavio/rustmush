@@ -75,7 +75,12 @@ use crate::tenancy::{DELINQUENT_PERIODS, WindowAction, periods_since, window_due
 /// every fire costs nothing worth counting.
 fn cadence_fingerprint(w: &World) -> Vec<(u64, u64)> {
     w.module_state::<mush_economy::EconomyStore>()
-        .map(|s| s.snapshot().cadences().map(|c| (c.id.0, c.position)).collect())
+        .map(|s| {
+            s.snapshot()
+                .cadences()
+                .map(|c| (c.id.0, c.position))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -84,12 +89,18 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     let fingerprint = cadence_fingerprint(ctx.w);
     let mut stats = TickStats::default();
     let (ids, cursor, version) = {
-        let Some(store) = ctx.w.module_state_mut::<HousingStore>() else { return };
+        let Some(store) = ctx.w.module_state_mut::<HousingStore>() else {
+            return;
+        };
         let version = store.population_version;
         // The short-circuit: nothing was due at the end of the last complete sweep,
         // nothing has been created, ended, resolved or quarantined since, and no
         // clock has moved. Then nothing is due now, and the scan is skipped.
-        if store.idle.as_ref().is_some_and(|m| m.version == version && m.cadences == fingerprint) {
+        if store
+            .idle
+            .as_ref()
+            .is_some_and(|m| m.version == version && m.cadences == fingerprint)
+        {
             stats.short_circuited = true;
             store.last_fire = stats;
             return;
@@ -108,9 +119,17 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     // visited the whole population under one version and one set of clock
     // positions, so either changing restarts it.
     let mut scan = {
-        let Some(store) = ctx.w.module_state_mut::<HousingStore>() else { return };
+        let Some(store) = ctx.w.module_state_mut::<HousingStore>() else {
+            return;
+        };
         match store.scan.take() {
-            Some(s) if s.version == version && s.cadences == fingerprint && s.population == ids.len() => s,
+            Some(s)
+                if s.version == version
+                    && s.cadences == fingerprint
+                    && s.population == ids.len() =>
+            {
+                s
+            }
             _ => IdleScan {
                 version,
                 cadences: fingerprint.clone(),
@@ -123,7 +142,11 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
 
     // The rotation: start at the first id at or past the cursor, wrap once.
     let start = ids.iter().position(|id| id.0 >= cursor).unwrap_or(0);
-    let order: Vec<TenancyId> = ids[start..].iter().chain(ids[..start].iter()).copied().collect();
+    let order: Vec<TenancyId> = ids[start..]
+        .iter()
+        .chain(ids[..start].iter())
+        .copied()
+        .collect();
 
     let mut last = None;
     for id in order {
@@ -142,7 +165,9 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
         }
     }
     scan.visited = scan.visited.saturating_add(stats.visited);
-    let Some(store) = ctx.w.module_state_mut::<HousingStore>() else { return };
+    let Some(store) = ctx.w.module_state_mut::<HousingStore>() else {
+        return;
+    };
     // Resume **past** the last tenancy this fire visited — skipped ones included — so
     // the next fire starts with whoever was cut off rather than at the top again.
     if let Some(last) = last {
@@ -150,7 +175,10 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     }
     if scan.visited >= scan.population {
         if scan.clean && store.population_version == version {
-            store.idle = Some(IdleMark { version, cadences: fingerprint });
+            store.idle = Some(IdleMark {
+                version,
+                cadences: fingerprint,
+            });
         }
         store.scan = None;
     } else {
@@ -186,8 +214,12 @@ fn step(ctx: &mut Ctx<'_>, id: TenancyId, stats: &mut TickStats) -> Step {
     // Status, clock, quarantine and the assessment cursor are all read through the
     // borrow; the record itself is cloned only once it is known to be due.
     let (live, pending_lease, cadence, quarantined) = {
-        let Some(store) = ctx.w.module_state::<HousingStore>() else { return Step::Skipped };
-        let Some(t) = store.tenancy(id) else { return Step::Skipped };
+        let Some(store) = ctx.w.module_state::<HousingStore>() else {
+            return Step::Skipped;
+        };
+        let Some(t) = store.tenancy(id) else {
+            return Step::Skipped;
+        };
         (
             t.status.is_live(),
             matches!(t.status, TenancyStatus::Pending) && crate::econ::is_pending_lease(&t.funding),
@@ -223,20 +255,33 @@ fn step(ctx: &mut Ctx<'_>, id: TenancyId, stats: &mut TickStats) -> Step {
         return Step::Skipped;
     };
     let state = {
-        let Some(store) = ctx.w.module_state::<HousingStore>() else { return Step::Skipped };
+        let Some(store) = ctx.w.module_state::<HousingStore>() else {
+            return Step::Skipped;
+        };
         store.assess_state(id)
     };
     // A tenancy created between two fires has never been assessed, and a zeroed
     // cursor on a clock at period 900 would read as "900 periods are owed". Seeding
     // is the first thing that happens to it and costs nothing else.
     if !state.seeded {
-        put_assess(ctx, id, AssessState { position: now, period: 0, unknown_periods: 0, seeded: true });
+        put_assess(
+            ctx,
+            id,
+            AssessState {
+                position: now,
+                period: 0,
+                unknown_periods: 0,
+                seeded: true,
+            },
+        );
         return Step::Skipped;
     }
     if now <= state.position {
         return Step::Skipped;
     }
-    let Some(t) = clone_tenancy(ctx, id, stats) else { return Step::Skipped };
+    let Some(t) = clone_tenancy(ctx, id, stats) else {
+        return Step::Skipped;
+    };
 
     // **One period, however far the clock moved.**
     let period = state.period.saturating_add(1);
@@ -263,7 +308,16 @@ fn step(ctx: &mut Ctx<'_>, id: TenancyId, stats: &mut TickStats) -> Step {
         // only arrow left is the one it has no opinion about.
         Funding::Exact { obligation, .. } => (exact_step(ctx, &t, *obligation, now), 0),
     };
-    put_assess(ctx, id, AssessState { position: now, period, unknown_periods, seeded: true });
+    put_assess(
+        ctx,
+        id,
+        AssessState {
+            position: now,
+            period,
+            unknown_periods,
+            seeded: true,
+        },
+    );
     if next.status.kind() != before || next.revision != t.revision {
         crate::flow::commit(ctx, before, next);
     }
@@ -350,7 +404,9 @@ fn property_tier(ctx: &Ctx<'_>, t: &Tenancy) -> crate::record::PropertyTier {
 /// silently skipping the page — a dropped escalation is how a home nobody looked at
 /// becomes a home nobody ever looks at.
 pub(crate) fn drive_window(ctx: &mut Ctx<'_>, id: TenancyId, now: i64) {
-    let Some(t) = crate::flow::tenancy_of(ctx, id) else { return };
+    let Some(t) = crate::flow::tenancy_of(ctx, id) else {
+        return;
+    };
     if !matches!(t.status, TenancyStatus::EvictionPending { .. }) {
         return;
     }
@@ -423,7 +479,9 @@ pub(crate) fn drive_window(ctx: &mut Ctx<'_>, id: TenancyId, now: i64) {
 /// The decaying re-notice (§3.2): at most `MAX_WINDOW_NOTICES`, then silence until
 /// the escalation, then the slow post-escalation rate.
 fn renotify(ctx: &mut Ctx<'_>, t: &Tenancy) {
-    let TenancyStatus::EvictionPending { window } = &t.status else { return };
+    let TenancyStatus::EvictionPending { window } = &t.status else {
+        return;
+    };
     let n = window.notified;
     crate::flow::notify_tenants(
         ctx,

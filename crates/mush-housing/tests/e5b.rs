@@ -113,7 +113,13 @@ impl GameModule for TestSeams {
 }
 
 fn cmd_plan(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let tenancy = TenancyId(ctx.args.lhs().trim().parse::<u64>().map_err(|_| CmdError::msg("id"))?);
+    let tenancy = TenancyId(
+        ctx.args
+            .lhs()
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| CmdError::msg("id"))?,
+    );
     let rhs = ctx.args.rhs().unwrap_or("").to_string();
     let mut w = rhs.split_whitespace();
     let who = ObjId(
@@ -122,12 +128,15 @@ fn cmd_plan(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .ok_or_else(|| CmdError::msg("who"))?,
     );
     let level = SupportLevel::new(
-        w.next().and_then(|s| s.parse::<u8>().ok()).ok_or_else(|| CmdError::msg("level"))?,
+        w.next()
+            .and_then(|s| s.parse::<u8>().ok())
+            .ok_or_else(|| CmdError::msg("level"))?,
     );
     mush_housing::submit_support_plan(ctx, tenancy, who, level, vec![SupportSource::Inheritance])
         .map_err(|e| CmdError::msg(e.to_string()))?;
     let actor = ctx.actor;
-    ctx.out.sys_to_actor(actor, "test", "plan submitted".to_string());
+    ctx.out
+        .sys_to_actor(actor, "test", "plan submitted".to_string());
     Ok(())
 }
 
@@ -140,7 +149,9 @@ fn cmd_boom(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .parse::<u32>()
             .map_err(|_| CmdError::msg("room"))?,
     );
-    ctx.w.destroy(room).map_err(|e| CmdError::msg(e.to_string()))?;
+    ctx.w
+        .destroy(room)
+        .map_err(|e| CmdError::msg(e.to_string()))?;
     ctx.emit_world_event(&WorldEvent::ObjDestroyed { obj: room });
     Ok(())
 }
@@ -148,7 +159,11 @@ fn cmd_boom(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 // ---- output helpers -------------------------------------------------------
 
 fn texts(events: &[(Audience, OutputEvent)]) -> String {
-    events.iter().map(|(_, e)| text_of(e)).collect::<Vec<_>>().join("\n")
+    events
+        .iter()
+        .map(|(_, e)| text_of(e))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 fn has_error(events: &[(Audience, OutputEvent)]) -> bool {
     events.iter().any(|(_, e)| {
@@ -165,7 +180,11 @@ fn ok(tw: &mut TestWorld, actor: ObjId, line: &str) -> String {
 }
 fn err(tw: &mut TestWorld, actor: ObjId, line: &str) -> String {
     let ev = tw.run(actor, line);
-    assert!(has_error(&ev), "`{line}` should have been refused, got: {}", texts(&ev));
+    assert!(
+        has_error(&ev),
+        "`{line}` should have been refused, got: {}",
+        texts(&ev)
+    );
     assert_projections_consistent(tw);
     texts(&ev)
 }
@@ -181,7 +200,9 @@ fn assert_projections_consistent(tw: &TestWorld) {
 }
 
 fn store(tw: &TestWorld) -> &HousingStore {
-    tw.world().module_state::<HousingStore>().expect("housing store")
+    tw.world()
+        .module_state::<HousingStore>()
+        .expect("housing store")
 }
 fn tenancy(tw: &TestWorld, id: TenancyId) -> mush_housing::Tenancy {
     store(tw).tenancy(id).expect("tenancy").clone()
@@ -240,9 +261,20 @@ fn rig(tw: &mut TestWorld) -> Rig {
     ok(
         tw,
         GOD,
-        &format!("@property/create The Flat=#{},#{} tier=2 landlord=housing", anchor.0, spare.0),
+        &format!(
+            "@property/create The Flat=#{},#{} tier=2 landlord=housing",
+            anchor.0, spare.0
+        ),
     );
-    Rig { pat, quinn, rex, anchor, spare, cadence, property: PropertyId(0) }
+    Rig {
+        pat,
+        quinn,
+        rex,
+        anchor,
+        spare,
+        cadence,
+        property: PropertyId(0),
+    }
 }
 
 /// One live abstract tenancy for `who`, at the given plan level.
@@ -250,7 +282,10 @@ fn tenant(tw: &mut TestWorld, r: &Rig, who: ObjId, level: u8) -> TenancyId {
     ok(
         tw,
         GOD,
-        &format!("@tenancy/create {}=#{} cadence={}", r.property, who.0, r.cadence),
+        &format!(
+            "@tenancy/create {}=#{} cadence={}",
+            r.property, who.0, r.cadence
+        ),
     );
     let id = store(tw).tenancies().last().expect("tenancy").id;
     ok(tw, GOD, &format!("+plan {id}=#{} {level}", who.0));
@@ -301,7 +336,15 @@ fn fold_kv(tw: &mut TestWorld) -> Kv {
 fn reboot(tw: &mut TestWorld, kv: Kv) {
     let boot: HashMap<SmolStr, ModuleBootData> = kv
         .into_iter()
-        .map(|(ns, kv)| (ns, ModuleBootData { kv, streams: HashMap::new() }))
+        .map(|(ns, kv)| {
+            (
+                ns,
+                ModuleBootData {
+                    kv,
+                    streams: HashMap::new(),
+                },
+            )
+        })
         .collect();
     tw.modules_loaded(boot);
 }
@@ -337,12 +380,23 @@ fn a_supported_tenancy_says_nothing_for_many_periods() {
         // The ruleset restates the same plan every period, as its evaluator would.
         ok(&mut tw, GOD, &format!("+plan {id}=#{} 3", r.pat.0));
         let seen = texts(&period(&mut tw, &r, 1));
-        assert!(!seen.contains("HOME:"), "a supported period notified: {seen}");
+        assert!(
+            !seen.contains("HOME:"),
+            "a supported period notified: {seen}"
+        );
     }
-    assert_eq!(status(&tw, id), TenancyStatusKind::Active, "a supported tenancy moved");
+    assert_eq!(
+        status(&tw, id),
+        TenancyStatusKind::Active,
+        "a supported tenancy moved"
+    );
     // S3: a restatement is not news, so the audit tail is not thirty plans deep.
     let t = tenancy(&tw, id);
-    assert!(t.history.len() <= 4, "restatements filled the tail: {:?}", t.history);
+    assert!(
+        t.history.len() <= 4,
+        "restatements filled the tail: {:?}",
+        t.history
+    );
 }
 
 #[test]
@@ -379,9 +433,19 @@ fn unsupported_walks_grace_delinquent_eviction_with_one_notice_each() {
     let job = window.job.expect("a story job was opened");
     let job = mush_jobs::get_job(tw.world(), job).expect("job").clone();
     assert_eq!(job.queue, mush_housing::STORY_QUEUE);
-    let body = job.comments.first().map(|c| c.text.clone()).unwrap_or_default();
-    assert!(body.contains(&format!("@tenancy/resolve {id}=end")), "job body: {body}");
-    assert!(body.contains("nothing ends this home on its own"), "job body: {body}");
+    let body = job
+        .comments
+        .first()
+        .map(|c| c.text.clone())
+        .unwrap_or_default();
+    assert!(
+        body.contains(&format!("@tenancy/resolve {id}=end")),
+        "job body: {body}"
+    );
+    assert!(
+        body.contains("nothing ends this home on its own"),
+        "job body: {body}"
+    );
 }
 
 #[test]
@@ -400,7 +464,11 @@ fn the_window_renotifies_three_times_then_goes_quiet_then_pages_once() {
         let seen = texts(&period(&mut tw, &r, 1));
         renotices += usize::from(seen.contains("still waiting on a decision"));
     }
-    assert_eq!(renotices, mush_housing::MAX_WINDOW_NOTICES as usize, "the notice budget is 3");
+    assert_eq!(
+        renotices,
+        mush_housing::MAX_WINDOW_NOTICES as usize,
+        "the notice budget is 3"
+    );
 
     // Then silence until the escalation gap has elapsed (WINDOW_ESCALATE, measured
     // from the last notice — E5a deviation 1).
@@ -412,7 +480,10 @@ fn the_window_renotifies_three_times_then_goes_quiet_then_pages_once() {
 
     // Then exactly one page, and no more notices of the old kind.
     let seen = texts(&period(&mut tw, &r, 1));
-    assert!(seen.contains("staff have now been paged"), "no escalation notice: {seen}");
+    assert!(
+        seen.contains("staff have now been paged"),
+        "no escalation notice: {seen}"
+    );
     let paged: Vec<_> = alerts(&tw)
         .into_iter()
         .filter(|e| e.subject == EscalationSubject::HousingTenancy(id.0))
@@ -421,11 +492,16 @@ fn the_window_renotifies_three_times_then_goes_quiet_then_pages_once() {
     let page = &paged[0];
     assert_eq!(page.level, 2);
     assert!(
-        page.recommended.iter().any(|c| c == &format!("@tenancy/resolve {id}=end")),
+        page.recommended
+            .iter()
+            .any(|c| c == &format!("@tenancy/resolve {id}=end")),
         "the alert does not carry the filled-in commands: {:?}",
         page.recommended
     );
-    assert!(status(&tw, id) == TenancyStatusKind::EvictionPending, "the page changed the state");
+    assert!(
+        status(&tw, id) == TenancyStatusKind::EvictionPending,
+        "the page changed the state"
+    );
 }
 
 #[test]
@@ -441,7 +517,11 @@ fn support_restored_at_every_stage_returns_to_active_and_closes_the_window() {
         // The evaluator answers again, this time with enough.
         ok(&mut tw, GOD, &format!("+plan {id}=#{} 4", r.pat.0));
         period(&mut tw, &r, 1);
-        assert_eq!(status(&tw, id), TenancyStatusKind::Active, "recovery from {before:?} failed");
+        assert_eq!(
+            status(&tw, id),
+            TenancyStatusKind::Active,
+            "recovery from {before:?} failed"
+        );
         if before == TenancyStatusKind::EvictionPending {
             // S8: the ST's ticket is resolved and the page is acknowledged, so nobody
             // is left holding a decision about a home that is fine.
@@ -479,7 +559,11 @@ fn two_co_tenants_assess_best_of() {
         ok(&mut tw, GOD, &format!("+plan {id}=#{} 5", r.quinn.0));
         period(&mut tw, &r, 1);
     }
-    assert_eq!(status(&tw, id), TenancyStatusKind::Active, "a poor co-tenant dragged the lease down");
+    assert_eq!(
+        status(&tw, id),
+        TenancyStatusKind::Active,
+        "a poor co-tenant dragged the lease down"
+    );
 
     // Take the paying one away and it slips, from that period on and not before.
     ok(&mut tw, GOD, &format!("+plan {id}=#{} 0", r.quinn.0));
@@ -495,7 +579,11 @@ fn a_large_cadence_jump_assesses_once_with_bounded_catch_up() {
     // Forty periods of downtime in one advance: the whole ladder is three periods
     // long, and a restart must not spend all of it while the player was asleep.
     period(&mut tw, &r, 40);
-    assert_eq!(status(&tw, id), TenancyStatusKind::Grace, "a jump charged the backlog");
+    assert_eq!(
+        status(&tw, id),
+        TenancyStatusKind::Grace,
+        "a jump charged the backlog"
+    );
     period(&mut tw, &r, 40);
     assert_eq!(status(&tw, id), TenancyStatusKind::Delinquent);
 }
@@ -508,13 +596,24 @@ fn an_unknown_assessment_is_not_a_miss_until_its_grace_is_spent() {
     ok(
         &mut tw,
         GOD,
-        &format!("@tenancy/create {}=#{} cadence={}", r.property, r.pat.0, r.cadence),
+        &format!(
+            "@tenancy/create {}=#{} cadence={}",
+            r.property, r.pat.0, r.cadence
+        ),
     );
     let id = store(&tw).tenancies().last().expect("tenancy").id;
     period(&mut tw, &r, 1);
-    assert_eq!(status(&tw, id), TenancyStatusKind::Active, "a silent evaluator was read as a miss");
+    assert_eq!(
+        status(&tw, id),
+        TenancyStatusKind::Active,
+        "a silent evaluator was read as a miss"
+    );
     period(&mut tw, &r, 1);
-    assert_eq!(status(&tw, id), TenancyStatusKind::Grace, "UNKNOWN_GRACE never hardened");
+    assert_eq!(
+        status(&tw, id),
+        TenancyStatusKind::Grace,
+        "UNKNOWN_GRACE never hardened"
+    );
 }
 
 // ======================================================================
@@ -538,8 +637,14 @@ fn the_tenant_enters_at_every_status_and_a_stranger_never_does() {
         );
         // The stranger does not, and is told nothing about why.
         let seen = texts(&tw.run(r.rex, "in"));
-        assert!(seen.contains(mush_housing::REFUSED), "wrong refusal: {seen}");
-        assert!(!seen.to_lowercase().contains("tenan"), "the refusal leaked a tenancy: {seen}");
+        assert!(
+            seen.contains(mush_housing::REFUSED),
+            "wrong refusal: {seen}"
+        );
+        assert!(
+            !seen.to_lowercase().contains("tenan"),
+            "the refusal leaked a tenancy: {seen}"
+        );
         assert_eq!(tw.world().get(r.rex).and_then(|o| o.location), Some(LIMBO));
         ok(&mut tw, r.pat, "out");
         period(&mut tw, &r, 1);
@@ -556,7 +661,10 @@ fn a_guest_may_enter_and_a_removed_guest_may_not() {
     err(&mut tw, r.rex, "in");
     ok(&mut tw, r.pat, &format!("+guest add #{}", r.rex.0));
     ok(&mut tw, r.rex, "in");
-    assert_eq!(tw.world().get(r.rex).and_then(|o| o.location), Some(r.anchor));
+    assert_eq!(
+        tw.world().get(r.rex).and_then(|o| o.location),
+        Some(r.anchor)
+    );
 
     ok(&mut tw, r.rex, "out");
     ok(&mut tw, r.pat, &format!("+guest remove #{}", r.rex.0));
@@ -569,7 +677,12 @@ fn add_guest_refuses_a_non_character() {
     let r = rig(&mut tw);
     tenant(&mut tw, &r, r.pat, 3);
     ok(&mut tw, GOD, "@create rock");
-    let rock = tw.world().iter().find(|o| o.name == "rock").expect("rock").id;
+    let rock = tw
+        .world()
+        .iter()
+        .find(|o| o.name == "rock")
+        .expect("rock")
+        .id;
     let seen = err(&mut tw, r.pat, &format!("+guest add #{}", rock.0));
     assert!(seen.contains("Only a character"), "{seen}");
 }
@@ -597,7 +710,10 @@ fn an_inspection_term_admits_only_under_its_own_when() {
     }
     assert_eq!(status(&tw, id), TenancyStatusKind::Delinquent);
     ok(&mut tw, r.quinn, "in");
-    assert_eq!(tw.world().get(r.quinn).and_then(|o| o.location), Some(r.anchor));
+    assert_eq!(
+        tw.world().get(r.quinn).and_then(|o| o.location),
+        Some(r.anchor)
+    );
 }
 
 #[test]
@@ -607,17 +723,26 @@ fn a_carry_is_refused_out_of_a_home_and_into_one() {
     tenant(&mut tw, &r, r.pat, 3);
     ok(&mut tw, GOD, &format!("@teleport #{}", r.anchor.0));
     ok(&mut tw, GOD, "@create lamp");
-    let lamp = tw.world().iter().find(|o| o.name == "lamp").expect("lamp").id;
+    let lamp = tw
+        .world()
+        .iter()
+        .find(|o| o.name == "lamp")
+        .expect("lamp")
+        .id;
     ok(&mut tw, GOD, "drop lamp");
     ok(&mut tw, GOD, &format!("@teleport #{}", LIMBO.0));
 
     // Reaching in: refused, with the neutral carry text.
     let seen = texts(&tw.run(r.rex, &format!("get #{}", lamp.0)));
     assert!(
-        seen.contains(mush_housing::REFUSED_CARRY) || has_error(&tw.run(r.rex, &format!("get #{}", lamp.0))),
+        seen.contains(mush_housing::REFUSED_CARRY)
+            || has_error(&tw.run(r.rex, &format!("get #{}", lamp.0))),
         "the stranger reached into a home: {seen}"
     );
-    assert_eq!(tw.world().get(lamp).and_then(|o| o.location), Some(r.anchor));
+    assert_eq!(
+        tw.world().get(lamp).and_then(|o| o.location),
+        Some(r.anchor)
+    );
 }
 
 #[test]
@@ -628,11 +753,22 @@ fn staff_teleporting_a_non_guest_in_is_refused_and_a_guest_is_allowed() {
     // 08d §1.1: `check_move_attempt` sees the MOVED object, so a staffer teleporting a
     // stranger in is refused exactly as the stranger is. That is the fail-closed
     // direction, and the documented way round it is to add them as a guest.
-    err(&mut tw, GOD, &format!("@teleport #{}=#{}", r.rex.0, r.anchor.0));
+    err(
+        &mut tw,
+        GOD,
+        &format!("@teleport #{}=#{}", r.rex.0, r.anchor.0),
+    );
     assert_eq!(tw.world().get(r.rex).and_then(|o| o.location), Some(LIMBO));
     ok(&mut tw, r.pat, &format!("+guest add #{}", r.rex.0));
-    ok(&mut tw, GOD, &format!("@teleport #{}=#{}", r.rex.0, r.anchor.0));
-    assert_eq!(tw.world().get(r.rex).and_then(|o| o.location), Some(r.anchor));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@teleport #{}=#{}", r.rex.0, r.anchor.0),
+    );
+    assert_eq!(
+        tw.world().get(r.rex).and_then(|o| o.location),
+        Some(r.anchor)
+    );
 }
 
 // ======================================================================
@@ -652,10 +788,17 @@ fn property_rooms_refuses_a_thoroughfare() {
     ok(
         &mut tw,
         GOD,
-        &format!("@property/create Other=#{} tier=1 landlord=housing", annex.0),
+        &format!(
+            "@property/create Other=#{} tier=1 landlord=housing",
+            annex.0
+        ),
     );
     let other = store(&tw).properties().last().expect("property").id;
-    let seen = err(&mut tw, GOD, &format!("@property/rooms {other}=#{}", r.spare.0));
+    let seen = err(
+        &mut tw,
+        GOD,
+        &format!("@property/rooms {other}=#{}", r.spare.0),
+    );
     assert!(
         seen.contains("thoroughfare") || seen.contains("already a room"),
         "wrong refusal: {seen}"
@@ -671,28 +814,49 @@ fn property_rooms_refuses_a_room_another_property_already_holds() {
     ok(
         &mut tw,
         GOD,
-        &format!("@property/create Other=#{} tier=1 landlord=housing", annex.0),
+        &format!(
+            "@property/create Other=#{} tier=1 landlord=housing",
+            annex.0
+        ),
     );
     let other = store(&tw).properties().last().expect("property").id;
-    let seen = err(&mut tw, GOD, &format!("@property/rooms {other}=#{}", r.spare.0));
+    let seen = err(
+        &mut tw,
+        GOD,
+        &format!("@property/rooms {other}=#{}", r.spare.0),
+    );
     assert!(seen.contains("already a room"), "wrong refusal: {seen}");
-    assert_eq!(property(&tw, other).rooms.len(), 1, "the refused add still took the room");
+    assert_eq!(
+        property(&tw, other).rooms.len(),
+        1,
+        "the refused add still took the room"
+    );
 }
 
 #[test]
 fn property_create_refuses_limbo_and_a_marked_room() {
     let mut tw = boot();
     let _r = rig(&mut tw);
-    err(&mut tw, GOD, "@property/create Nowhere=#0 tier=1 landlord=housing");
+    err(
+        &mut tw,
+        GOD,
+        "@property/create Nowhere=#0 tier=1 landlord=housing",
+    );
     ok(&mut tw, GOD, "@dig Cellar=down,up");
     let cellar = room_named(&tw, "Cellar");
     ok(&mut tw, GOD, &format!("@set #{}=no-property", cellar.0));
     let seen = err(
         &mut tw,
         GOD,
-        &format!("@property/create Cellar=#{} tier=1 landlord=housing", cellar.0),
+        &format!(
+            "@property/create Cellar=#{} tier=1 landlord=housing",
+            cellar.0
+        ),
     );
-    assert!(seen.contains("never a private residence"), "wrong refusal: {seen}");
+    assert!(
+        seen.contains("never a private residence"),
+        "wrong refusal: {seen}"
+    );
 }
 
 #[test]
@@ -702,8 +866,14 @@ fn destroy_of_a_let_room_is_refused_and_the_room_survives() {
     tenant(&mut tw, &r, r.pat, 3);
     assert_eq!(property(&tw, r.property).status, PropertyStatus::Let);
     let seen = err(&mut tw, GOD, &format!("@destroy #{}", r.spare.0));
-    assert!(seen.contains("Withdraw the property first"), "wrong refusal: {seen}");
-    assert!(tw.world().get(r.spare).is_some(), "the room was destroyed anyway");
+    assert!(
+        seen.contains("Withdraw the property first"),
+        "wrong refusal: {seen}"
+    );
+    assert!(
+        tw.world().get(r.spare).is_some(),
+        "the room was destroyed anyway"
+    );
 
     // Withdrawing clears the way, exactly as the message says.
     ok(&mut tw, GOD, &format!("@property/withdraw {}", r.property));
@@ -726,7 +896,11 @@ fn a_room_destroyed_programmatically_withdraws_the_property_and_pages() {
         .filter(|e| e.subject == EscalationSubject::HousingProperty(r.property.0))
         .collect();
     assert_eq!(paged.len(), 1, "no page for a destroyed property room");
-    assert!(paged[0].context.contains("withdrawn"), "{}", paged[0].context);
+    assert!(
+        paged[0].context.contains("withdrawn"),
+        "{}",
+        paged[0].context
+    );
 }
 
 #[test]
@@ -735,12 +909,24 @@ fn an_evicted_tenant_in_a_destroyed_room_lands_in_limbo() {
     let r = rig(&mut tw);
     let id = tenant(&mut tw, &r, r.pat, 0);
     ok(&mut tw, r.pat, "in");
-    assert_eq!(home_of(&tw, r.pat), Some(r.anchor), "the tenant was never homed");
+    assert_eq!(
+        home_of(&tw, r.pat),
+        Some(r.anchor),
+        "the tenant was never homed"
+    );
 
     // Staff end the tenancy after a scene. D-E5-11: the home anchor is cleared.
-    ok(&mut tw, GOD, &format!("@tenancy/resolve {id}=end they moved on"));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@tenancy/resolve {id}=end they moved on"),
+    );
     assert_eq!(status(&tw, id), TenancyStatusKind::Ended);
-    assert_eq!(home_of(&tw, r.pat), None, "the ended tenancy left a live home pointer");
+    assert_eq!(
+        home_of(&tw, r.pat),
+        None,
+        "the ended tenancy left a live home pointer"
+    );
 
     // …and the hook now refuses them, so they cannot walk back in.
     ok(&mut tw, r.pat, "out");
@@ -748,7 +934,11 @@ fn an_evicted_tenant_in_a_destroyed_room_lands_in_limbo() {
 
     // Put them back inside and destroy the room out from under them: with no home,
     // core's dispersal drops them in Limbo rather than back into the house.
-    ok(&mut tw, GOD, &format!("@teleport #{}=#{}", r.pat.0, r.anchor.0));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@teleport #{}=#{}", r.pat.0, r.anchor.0),
+    );
     ok(&mut tw, GOD, &format!("+boom #{}", r.anchor.0));
     assert_eq!(
         tw.world().get(r.pat).and_then(|o| o.location),
@@ -789,7 +979,10 @@ fn resolve_end_clears_every_homed_tenant_and_the_hook_then_refuses() {
     ok(
         &mut tw,
         GOD,
-        &format!("@tenancy/create {}=#{} cadence={}", r.property, r.rex.0, r.cadence),
+        &format!(
+            "@tenancy/create {}=#{} cadence={}",
+            r.property, r.rex.0, r.cadence
+        ),
     );
     err(&mut tw, r.pat, "in");
     err(&mut tw, r.quinn, "in");
@@ -807,22 +1000,36 @@ fn resolve_waive_ends_it_as_forgiven_and_extend_refreshes_the_budget() {
     let mush_housing::TenancyStatus::EvictionPending { window } = t.status else {
         panic!("not eviction pending")
     };
-    assert_eq!(window.notified, mush_housing::MAX_WINDOW_NOTICES, "the budget was not spent");
+    assert_eq!(
+        window.notified,
+        mush_housing::MAX_WINDOW_NOTICES,
+        "the budget was not spent"
+    );
 
     ok(&mut tw, GOD, &format!("@tenancy/resolve {id}=extend"));
     let t = tenancy(&tw, id);
     let mush_housing::TenancyStatus::EvictionPending { window } = t.status else {
         panic!("extend ended it")
     };
-    assert_eq!(window.notified, 0, "extend did not refresh the notice budget");
-    assert_eq!(status(&tw, id), TenancyStatusKind::EvictionPending, "extend changed the state");
+    assert_eq!(
+        window.notified, 0,
+        "extend did not refresh the notice budget"
+    );
+    assert_eq!(
+        status(&tw, id),
+        TenancyStatusKind::EvictionPending,
+        "extend changed the state"
+    );
 
     ok(&mut tw, GOD, &format!("@tenancy/resolve {id}=waive"));
     assert_eq!(status(&tw, id), TenancyStatusKind::Ended);
     assert!(
-        matches!(tenancy(&tw, id).status, mush_housing::TenancyStatus::Ended {
-            how: mush_housing::Resolution::Waived { .. }
-        }),
+        matches!(
+            tenancy(&tw, id).status,
+            mush_housing::TenancyStatus::Ended {
+                how: mush_housing::Resolution::Waived { .. }
+            }
+        ),
         "waive did not record a Waived resolution"
     );
 }
@@ -862,17 +1069,30 @@ fn a_second_live_tenancy_on_one_property_is_refused() {
     let seen = err(
         &mut tw,
         GOD,
-        &format!("@tenancy/create {}=#{} cadence={}", r.property, r.quinn.0, r.cadence),
+        &format!(
+            "@tenancy/create {}=#{} cadence={}",
+            r.property, r.quinn.0, r.cadence
+        ),
     );
-    assert!(seen.contains("already has a live tenancy"), "wrong refusal: {seen}");
-    assert_eq!(store(&tw).tenancies().count(), 1, "the refused create still allocated");
+    assert!(
+        seen.contains("already has a live tenancy"),
+        "wrong refusal: {seen}"
+    );
+    assert_eq!(
+        store(&tw).tenancies().count(),
+        1,
+        "the refused create still allocated"
+    );
 
     // Ending the first one clears the way.
     ok(&mut tw, GOD, &format!("@tenancy/resolve {id}=end"));
     ok(
         &mut tw,
         GOD,
-        &format!("@tenancy/create {}=#{} cadence={}", r.property, r.quinn.0, r.cadence),
+        &format!(
+            "@tenancy/create {}=#{} cadence={}",
+            r.property, r.quinn.0, r.cadence
+        ),
     );
 }
 
@@ -897,7 +1117,10 @@ fn an_offline_tenant_reads_the_notice_at_reconnect() {
 
     tw.world_mut().set_connected(r.pat, true);
     let seen = texts(&tw.run(r.pat, "+home"));
-    assert!(seen.contains("waiting for you"), "+home did not show the pending notice: {seen}");
+    assert!(
+        seen.contains("waiting for you"),
+        "+home did not show the pending notice: {seen}"
+    );
 }
 
 #[test]
@@ -908,8 +1131,14 @@ fn a_guests_home_shows_the_property_and_nothing_about_who_lives_there() {
     ok(&mut tw, r.pat, &format!("+guest add #{}", r.rex.0));
     let seen = texts(&tw.run(r.rex, "+home"));
     assert!(seen.contains("you are a guest here"), "{seen}");
-    assert!(!seen.contains("Pat"), "a guest was shown the tenant list: {seen}");
-    assert!(!seen.contains("tenants:"), "a guest was shown the tenant list: {seen}");
+    assert!(
+        !seen.contains("Pat"),
+        "a guest was shown the tenant list: {seen}"
+    );
+    assert!(
+        !seen.contains("tenants:"),
+        "a guest was shown the tenant list: {seen}"
+    );
 }
 
 #[test]
@@ -919,8 +1148,14 @@ fn no_such_property_for_the_nonexistent_and_the_unviewable_alike() {
     tenant(&mut tw, &r, r.pat, 3);
     let missing = texts(&tw.run(r.rex, "@property/show 999"));
     let real = texts(&tw.run(r.rex, &format!("@property/show {}", r.property)));
-    assert!(missing.contains(mush_housing::NO_SUCH_PROPERTY), "{missing}");
-    assert_eq!(missing, real, "a probe can tell the unviewable from the nonexistent");
+    assert!(
+        missing.contains(mush_housing::NO_SUCH_PROPERTY),
+        "{missing}"
+    );
+    assert_eq!(
+        missing, real,
+        "a probe can tell the unviewable from the nonexistent"
+    );
 
     let missing = texts(&tw.run(r.rex, "@tenancy/show 999"));
     let real = texts(&tw.run(r.rex, "@tenancy/show 0"));
@@ -935,11 +1170,21 @@ fn a_landlord_officer_sees_their_own_properties_and_nothing_of_another_landlords
     // One org landlord with an officer, and the system-landlord property from the rig.
     ok(&mut tw, GOD, "@org/create Ironhold");
     let (org, scope) = {
-        let st = tw.world().module_state::<mush_org::OrgStore>().expect("org");
+        let st = tw
+            .world()
+            .module_state::<mush_org::OrgStore>()
+            .expect("org");
         let o = st.state().orgs().next().expect("org").clone();
         (o.id, o.root_scope)
     };
-    ok(&mut tw, GOD, &format!("@org/grant #{}=Ironhold property.view scope={scope}", r.quinn.0));
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@org/grant #{}=Ironhold property.view scope={scope}",
+            r.quinn.0
+        ),
+    );
     ok(&mut tw, GOD, "@dig Tower=up,down");
     let tower = room_named(&tw, "Tower");
     ok(
@@ -953,7 +1198,10 @@ fn a_landlord_officer_sees_their_own_properties_and_nothing_of_another_landlords
     let theirs = store(&tw).properties().last().expect("property").id;
 
     let seen = texts(&tw.run(r.quinn, "@property/list"));
-    assert!(seen.contains(&format!("#{theirs}")), "the officer cannot see their own: {seen}");
+    assert!(
+        seen.contains(&format!("#{theirs}")),
+        "the officer cannot see their own: {seen}"
+    );
     assert!(
         !seen.contains(&format!("#{} ", r.property)),
         "the officer saw another landlord's property: {seen}"
@@ -972,7 +1220,10 @@ fn tenancy_creation_is_staff_only_even_for_a_landlord_officer() {
     err(
         &mut tw,
         r.quinn,
-        &format!("@tenancy/create {}=#{} cadence={}", r.property, r.pat.0, r.cadence),
+        &format!(
+            "@tenancy/create {}=#{} cadence={}",
+            r.property, r.pat.0, r.cadence
+        ),
     );
     assert_eq!(store(&tw).tenancies().count(), 0);
 }
@@ -988,7 +1239,11 @@ fn exact_rig(tw: &mut TestWorld, r: &Rig, funds: i64) -> (TenancyId, u64, u64) {
     ok(tw, GOD, &format!("@account/open #{}=gold", r.pat.0));
     ok(tw, GOD, &format!("@account/open #{}=gold", r.quinn.0));
     let (faucet, tenant_acct, landlord_acct) = {
-        let snap = tw.world().module_state::<EconomyStore>().expect("econ").snapshot();
+        let snap = tw
+            .world()
+            .module_state::<EconomyStore>()
+            .expect("econ")
+            .snapshot();
         let faucet = snap
             .accounts()
             .find(|a| matches!(a.owner, mush_org::PrincipalId::System(_)))
@@ -1007,7 +1262,11 @@ fn exact_rig(tw: &mut TestWorld, r: &Rig, funds: i64) -> (TenancyId, u64, u64) {
         (faucet, t, l)
     };
     if funds > 0 {
-        ok(tw, GOD, &format!("@econ/mint {faucet}={tenant_acct} {funds}"));
+        ok(
+            tw,
+            GOD,
+            &format!("@econ/mint {faucet}={tenant_acct} {funds}"),
+        );
     }
     // The premises are already titled: `@property/create` minted the anchor's title
     // to the landlord, which is exactly the asset the lease pledges as collateral.
@@ -1035,7 +1294,10 @@ fn exact_mode_stands_on_a_real_lease_contract_and_a_real_obligation() {
     ok(
         &mut tw,
         GOD,
-        &format!("@property/create Loft=#{} tier=1 landlord=#{}", loft.0, r.quinn.0),
+        &format!(
+            "@property/create Loft=#{} tier=1 landlord=#{}",
+            loft.0, r.quinn.0
+        ),
     );
     r.property = store(&tw).properties().last().expect("property").id;
     r.anchor = loft;
@@ -1046,21 +1308,34 @@ fn exact_mode_stands_on_a_real_lease_contract_and_a_real_obligation() {
     let contract = {
         let t = tenancy(&tw, id);
         match t.funding {
-            mush_housing::Funding::Exact { contract, obligation } => {
+            mush_housing::Funding::Exact {
+                contract,
+                obligation,
+            } => {
                 assert_eq!(obligation, mush_housing::PENDING_OBLIGATION);
                 contract
             }
-            mush_housing::Funding::Abstract { .. } => panic!("exact mode drafted an abstract tenancy"),
+            mush_housing::Funding::Abstract { .. } => {
+                panic!("exact mode drafted an abstract tenancy")
+            }
         }
     };
 
     ok(&mut tw, r.pat, &format!("@contract/accept {contract}"));
-    assert_eq!(status(&tw, id), TenancyStatusKind::Active, "acceptance did not activate the tenancy");
+    assert_eq!(
+        status(&tw, id),
+        TenancyStatusKind::Active,
+        "acceptance did not activate the tenancy"
+    );
     let obligation = match tenancy(&tw, id).funding {
         mush_housing::Funding::Exact { obligation, .. } => obligation,
         mush_housing::Funding::Abstract { .. } => panic!("funding changed"),
     };
-    assert_ne!(obligation, mush_housing::PENDING_OBLIGATION, "no rent obligation was bound");
+    assert_ne!(
+        obligation,
+        mush_housing::PENDING_OBLIGATION,
+        "no rent obligation was bound"
+    );
     // The economy owns the money: the obligation exists, is active, and names the
     // contract as its cause.
     let o = tw
@@ -1097,7 +1372,10 @@ fn an_exact_tenancy_mirrors_its_obligation_and_reaches_the_window() {
     ok(
         &mut tw,
         GOD,
-        &format!("@property/create Loft=#{} tier=1 landlord=#{}", loft.0, r.quinn.0),
+        &format!(
+            "@property/create Loft=#{} tier=1 landlord=#{}",
+            loft.0, r.quinn.0
+        ),
     );
     r.property = store(&tw).properties().last().expect("property").id;
     r.anchor = loft;
@@ -1115,7 +1393,11 @@ fn an_exact_tenancy_mirrors_its_obligation_and_reaches_the_window() {
     // assessed periods that walk the tenancy down the ladder. Reading either off the
     // other is exactly the bug `EconomicDeadline` exists to make unwritable.
     for _ in 0..24 {
-        ok(&mut tw, GOD, &format!("@econ/cadence advance {} 1", r.cadence));
+        ok(
+            &mut tw,
+            GOD,
+            &format!("@econ/cadence advance {} 1", r.cadence),
+        );
         let t = tw.world().now().saturating_add(86_400);
         tw.set_now(t);
         tw.fire_due(t.saturating_mul(1000));
@@ -1134,9 +1416,10 @@ fn an_exact_tenancy_mirrors_its_obligation_and_reaches_the_window() {
     // Whatever happened, no housing code moved money: the landlord was never paid,
     // because the tenant never had anything to pay with.
     assert_eq!(
-        tw.world()
-            .module_state::<EconomyStore>()
-            .and_then(|s| s.snapshot().account(mush_economy::AccountId(landlord)).map(|a| a.posted_balance.minor())),
+        tw.world().module_state::<EconomyStore>().and_then(|s| s
+            .snapshot()
+            .account(mush_economy::AccountId(landlord))
+            .map(|a| a.posted_balance.minor())),
         Some(0),
         "housing posted something"
     );
@@ -1159,7 +1442,11 @@ fn a_reboot_at_every_rung_preserves_the_ladder() {
         let rooms = property(&tw, r.property).rooms.clone();
         let kv = fold_kv(&mut tw);
         reboot(&mut tw, kv);
-        assert_eq!(status(&tw, id), before, "the ladder moved across a reboot (stop {stop})");
+        assert_eq!(
+            status(&tw, id),
+            before,
+            "the ladder moved across a reboot (stop {stop})"
+        );
         assert_eq!(property(&tw, r.property).rooms, rooms);
         // The hook still answers for the same rooms after the reboot.
         ok(&mut tw, r.pat, "in");
@@ -1181,7 +1468,10 @@ fn a_corrupt_tenancy_document_fails_the_boot() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         reboot(&mut tw, kv.clone());
     }));
-    assert!(result.is_err(), "a corrupt container document booted anyway");
+    assert!(
+        result.is_err(),
+        "a corrupt container document booted anyway"
+    );
 }
 
 #[test]
@@ -1197,7 +1487,11 @@ fn boot_withdraws_a_property_whose_rooms_went_missing_and_pages() {
     tw.world_mut().sweep();
     reboot(&mut tw, kv);
     assert_eq!(property(&tw, r.property).status, PropertyStatus::Withdrawn);
-    assert_eq!(status(&tw, id), TenancyStatusKind::Active, "boot ended a tenancy");
+    assert_eq!(
+        status(&tw, id),
+        TenancyStatusKind::Active,
+        "boot ended a tenancy"
+    );
     assert!(
         alerts(&tw)
             .iter()
@@ -1224,9 +1518,16 @@ fn boot_drops_a_destroyed_tenant_through_remove_tenant() {
     tw.world_mut().sweep();
     reboot(&mut tw, kv);
     let t = tenancy(&tw, id);
-    assert!(!t.is_tenant(r.quinn), "a destroyed tenant kept their place on the roster");
+    assert!(
+        !t.is_tenant(r.quinn),
+        "a destroyed tenant kept their place on the roster"
+    );
     assert!(t.is_tenant(r.pat));
-    assert_eq!(t.status.kind(), TenancyStatusKind::Active, "boot ended the tenancy");
+    assert_eq!(
+        t.status.kind(),
+        TenancyStatusKind::Active,
+        "boot ended the tenancy"
+    );
     // S11/A1: the roster went through `remove_tenant`, which writes the history entry
     // and leaves `homed` to the ending sweep.
     assert!(
@@ -1237,7 +1538,10 @@ fn boot_drops_a_destroyed_tenant_through_remove_tenant() {
         "the removal was not recorded: {:?}",
         t.history
     );
-    assert!(t.homed.contains(&r.quinn), "boot edited `homed`, which the ending sweep owns");
+    assert!(
+        t.homed.contains(&r.quinn),
+        "boot edited `homed`, which the ending sweep owns"
+    );
 }
 
 #[test]
@@ -1249,7 +1553,10 @@ fn boot_pages_about_an_exact_tenancy_whose_obligation_is_gone() {
     ok(
         &mut tw,
         GOD,
-        &format!("@property/create Loft=#{} tier=1 landlord=#{}", loft.0, r.quinn.0),
+        &format!(
+            "@property/create Loft=#{} tier=1 landlord=#{}",
+            loft.0, r.quinn.0
+        ),
     );
     r.property = store(&tw).properties().last().expect("property").id;
     r.anchor = loft;
@@ -1267,9 +1574,15 @@ fn boot_pages_about_an_exact_tenancy_whose_obligation_is_gone() {
         v["funding"]["Exact"]["obligation"] = serde_json::json!(9_999);
     });
     reboot(&mut tw, kv);
-    assert_eq!(status(&tw, id), TenancyStatusKind::Active, "boot moved a tenancy on a missing record");
+    assert_eq!(
+        status(&tw, id),
+        TenancyStatusKind::Active,
+        "boot moved a tenancy on a missing record"
+    );
     assert!(
-        alerts(&tw).iter().any(|e| e.subject == EscalationSubject::HousingTenancy(id.0)),
+        alerts(&tw)
+            .iter()
+            .any(|e| e.subject == EscalationSubject::HousingTenancy(id.0)),
         "boot did not page about the missing obligation"
     );
 }
@@ -1295,7 +1608,10 @@ fn allocators_are_floored_past_every_key_and_never_reused() {
     ok(
         &mut tw,
         GOD,
-        &format!("@tenancy/create {}=#{} cadence={}", r.property, r.quinn.0, r.cadence),
+        &format!(
+            "@tenancy/create {}=#{} cadence={}",
+            r.property, r.quinn.0, r.cadence
+        ),
     );
     let fresh = store(&tw).tenancies().last().expect("tenancy").id;
     assert!(fresh.0 > 500, "the allocator re-minted a live id: {fresh}");
@@ -1314,11 +1630,20 @@ fn the_cadence_verbs_create_show_list_and_advance_only_a_manual_clock() {
     let seen = ok(&mut tw, GOD, &format!("@econ/cadence show {}", r.cadence));
     assert!(seen.contains("manual"), "{seen}");
 
-    ok(&mut tw, GOD, "@econ/cadence create season source=real:3600 catchup=2");
+    ok(
+        &mut tw,
+        GOD,
+        "@econ/cadence create season source=real:3600 catchup=2",
+    );
     let season = tw
         .world()
         .module_state::<EconomyStore>()
-        .and_then(|s| s.snapshot().cadences().find(|c| c.name == "season").map(|c| c.id.0))
+        .and_then(|s| {
+            s.snapshot()
+                .cadences()
+                .find(|c| c.name == "season")
+                .map(|c| c.id.0)
+        })
         .expect("season");
     let seen = err(&mut tw, GOD, &format!("@econ/cadence advance {season}"));
     assert!(seen.contains("only a manual cadence"), "{seen}");
@@ -1326,11 +1651,19 @@ fn the_cadence_verbs_create_show_list_and_advance_only_a_manual_clock() {
     // Creating one is staff-only, and a duplicate name is refused.
     err(&mut tw, r.pat, "@econ/cadence create mine source=manual");
     err(&mut tw, GOD, "@econ/cadence create season source=real:3600");
-    ok(&mut tw, GOD, &format!("@econ/cadence advance {} 3", r.cadence));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@econ/cadence advance {} 3", r.cadence),
+    );
     let position = tw
         .world()
         .module_state::<EconomyStore>()
-        .and_then(|s| s.snapshot().cadence(mush_economy::CadenceId(r.cadence)).map(|c| c.position))
+        .and_then(|s| {
+            s.snapshot()
+                .cadence(mush_economy::CadenceId(r.cadence))
+                .map(|c| c.position)
+        })
         .expect("cadence");
     assert_eq!(position, 3);
 }
@@ -1395,7 +1728,10 @@ fn a_property_with_no_wired_issuer_refuses_to_be_created() {
     let seen = err(
         &mut tw,
         GOD,
-        &format!("@property/create Hut=#{} tier=1 landlord=sys:somebody", hut.0),
+        &format!(
+            "@property/create Hut=#{} tier=1 landlord=sys:somebody",
+            hut.0
+        ),
     );
     assert!(seen.contains("no housing title issuer"), "{seen}");
     // …and the generic `housing` landlord does not resolve at all without one.
@@ -1405,7 +1741,9 @@ fn a_property_with_no_wired_issuer_refuses_to_be_created() {
         &format!("@property/create Hut=#{} tier=1 landlord=housing", hut.0),
     );
     assert_eq!(
-        tw.world().module_state::<HousingStore>().map(|s| s.properties().count()),
+        tw.world()
+            .module_state::<HousingStore>()
+            .map(|s| s.properties().count()),
         Some(0)
     );
 }
@@ -1415,11 +1753,23 @@ fn a_let_propertys_rooms_cannot_be_removed_and_the_anchor_never_can() {
     let mut tw = boot();
     let r = rig(&mut tw);
     tenant(&mut tw, &r, r.pat, 3);
-    err(&mut tw, GOD, &format!("@property/rooms {}=-#{}", r.property, r.spare.0));
+    err(
+        &mut tw,
+        GOD,
+        &format!("@property/rooms {}=-#{}", r.property, r.spare.0),
+    );
     assert_eq!(property(&tw, r.property).rooms.len(), 2);
     ok(&mut tw, GOD, &format!("@property/withdraw {}", r.property));
-    err(&mut tw, GOD, &format!("@property/rooms {}=-#{}", r.property, r.anchor.0));
-    ok(&mut tw, GOD, &format!("@property/rooms {}=-#{}", r.property, r.spare.0));
+    err(
+        &mut tw,
+        GOD,
+        &format!("@property/rooms {}=-#{}", r.property, r.anchor.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@property/rooms {}=-#{}", r.property, r.spare.0),
+    );
     assert_eq!(property(&tw, r.property).rooms.len(), 1);
 }
 
@@ -1427,16 +1777,27 @@ fn a_let_propertys_rooms_cannot_be_removed_and_the_anchor_never_can() {
 fn every_verb_has_help_and_the_module_wires_through_registration_alone() {
     let tw = boot();
     for verb in ["@property", "@tenancy", "+home", "+guest"] {
-        let spec = tw.registry().spec_of(verb).unwrap_or_else(|| panic!("{verb} is not registered"));
+        let spec = tw
+            .registry()
+            .spec_of(verb)
+            .unwrap_or_else(|| panic!("{verb} is not registered"));
         assert!(spec.help.len() > 200, "{verb} has no real help text");
     }
-    assert!(tw.registry().tick_reg(NS, mush_housing::TICK_TAG).is_some(), "no assessment tick");
     assert!(
-        tw.registry().job_queues().iter().any(|q| q.name == mush_housing::STORY_QUEUE),
+        tw.registry().tick_reg(NS, mush_housing::TICK_TAG).is_some(),
+        "no assessment tick"
+    );
+    assert!(
+        tw.registry()
+            .job_queues()
+            .iter()
+            .any(|q| q.name == mush_housing::STORY_QUEUE),
         "the wod-story queue is not registered"
     );
     assert!(
-        tw.registry().marker_owner(mush_housing::NO_PROPERTY_MARKER).is_some(),
+        tw.registry()
+            .marker_owner(mush_housing::NO_PROPERTY_MARKER)
+            .is_some(),
         "the no-property marker is not registered"
     );
 }
@@ -1484,7 +1845,10 @@ fn window_of(tw: &TestWorld, id: TenancyId) -> mush_housing::StoryWindow {
 }
 
 fn tenancy_alerts(tw: &TestWorld, id: TenancyId) -> Vec<mush_economy::Escalation> {
-    alerts(tw).into_iter().filter(|e| e.subject == EscalationSubject::HousingTenancy(id.0)).collect()
+    alerts(tw)
+        .into_iter()
+        .filter(|e| e.subject == EscalationSubject::HousingTenancy(id.0))
+        .collect()
 }
 
 fn property_alerts(tw: &TestWorld, id: PropertyId) -> Vec<mush_economy::Escalation> {
@@ -1514,15 +1878,41 @@ fn org_property(
 ) -> PropertyId {
     ok(tw, GOD, "@org/create Ironhold");
     let (org, scope) = {
-        let st = tw.world().module_state::<mush_org::OrgStore>().expect("org");
-        let o = st.state().orgs().find(|o| o.name == "Ironhold").expect("org").clone();
+        let st = tw
+            .world()
+            .module_state::<mush_org::OrgStore>()
+            .expect("org");
+        let o = st
+            .state()
+            .orgs()
+            .find(|o| o.name == "Ironhold")
+            .expect("org")
+            .clone();
         (o.id, o.root_scope)
     };
-    ok(tw, GOD, &format!("@org/grant #{}=Ironhold {capability} scope={scope}", officer.0));
+    ok(
+        tw,
+        GOD,
+        &format!(
+            "@org/grant #{}=Ironhold {capability} scope={scope}",
+            officer.0
+        ),
+    );
     ok(tw, GOD, &format!("@dig {room}=in{room},out{room}"));
     let id = room_named(tw, room);
-    let scope_arg = if scoped { format!(" scope={scope}") } else { String::new() };
-    ok(tw, GOD, &format!("@property/create {room}=#{} tier=3 landlord=org:{org}{scope_arg}", id.0));
+    let scope_arg = if scoped {
+        format!(" scope={scope}")
+    } else {
+        String::new()
+    };
+    ok(
+        tw,
+        GOD,
+        &format!(
+            "@property/create {room}=#{} tier=3 landlord=org:{org}{scope_arg}",
+            id.0
+        ),
+    );
     store(tw).properties().last().expect("property").id
 }
 
@@ -1532,7 +1922,14 @@ fn org_property(
 fn loft(tw: &mut TestWorld, r: &mut Rig) {
     ok(tw, GOD, "@dig Loft=uploft,downloft");
     let loft = room_named(tw, "Loft");
-    ok(tw, GOD, &format!("@property/create Loft=#{} tier=1 landlord=#{}", loft.0, r.quinn.0));
+    ok(
+        tw,
+        GOD,
+        &format!(
+            "@property/create Loft=#{} tier=1 landlord=#{}",
+            loft.0, r.quinn.0
+        ),
+    );
     r.property = store(tw).properties().last().expect("property").id;
     r.anchor = loft;
 }
@@ -1546,7 +1943,11 @@ fn money(tw: &mut TestWorld, r: &Rig, funds: i64) -> (u64, u64, u64, u64) {
         ok(tw, GOD, &format!("@account/open #{}=gold", who.0));
     }
     let (faucet, pat, quinn, rex) = {
-        let snap = tw.world().module_state::<EconomyStore>().expect("econ").snapshot();
+        let snap = tw
+            .world()
+            .module_state::<EconomyStore>()
+            .expect("econ")
+            .snapshot();
         let find = |who: ObjId| {
             snap.accounts()
                 .find(|a| a.owner == mush_org::PrincipalId::Object(who))
@@ -1611,16 +2012,31 @@ fn vf_a1_a_guests_four_read_verbs_all_reduce() {
         "@tenancy/list".to_string(),
     ] {
         let out = texts(&tw.run(r.rex, &line));
-        assert!(out.contains("you are a guest here"), "`{line}` did not reduce: {out}");
+        assert!(
+            out.contains("you are a guest here"),
+            "`{line}` did not reduce: {out}"
+        );
         all.push_str(&out);
         all.push('\n');
     }
-    for leak in ["tier", "landlord", "rooms:", "tenants:", "Pat", "anchor", "tenant(s)", "active"] {
+    for leak in [
+        "tier",
+        "landlord",
+        "rooms:",
+        "tenants:",
+        "Pat",
+        "anchor",
+        "tenant(s)",
+        "active",
+    ] {
         assert!(!all.contains(leak), "a guest was shown {leak:?}:\n{all}");
     }
     // The tenant still reads everything a tenant reads.
     let mine = ok(&mut tw, r.pat, &format!("@property/show {}", r.property));
-    assert!(mine.contains("tier 2"), "the tenant lost their own record: {mine}");
+    assert!(
+        mine.contains("tier 2"),
+        "the tenant lost their own record: {mine}"
+    );
 }
 
 /// A2. The numeric `SupportLevel` is the reading `ruleset-wod` derives from a sheet,
@@ -1631,20 +2047,45 @@ fn vf_a2_the_support_level_is_staff_only_and_the_assessment_word_is_not() {
     let mut tw = boot();
     let r = rig(&mut tw);
     let p = org_property(&mut tw, r.quinn, "property.view", true, "Tower");
-    ok(&mut tw, GOD, &format!("@tenancy/create {p}=#{},#{} cadence={}", r.pat.0, r.rex.0, r.cadence));
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@tenancy/create {p}=#{},#{} cadence={}",
+            r.pat.0, r.rex.0, r.cadence
+        ),
+    );
     let id = store(&tw).tenancies().last().expect("tenancy").id;
     // Rex carries it and Pat does not, so Pat's line would describe Rex's sheet.
     ok(&mut tw, GOD, &format!("+plan {id}=#{} 4", r.rex.0));
 
     let staff = ok(&mut tw, GOD, &format!("@tenancy/show {id}"));
-    assert!(staff.contains("best level 4"), "staff lost the number: {staff}");
-    assert!(staff.contains("plan(s)"), "staff lost the plan count: {staff}");
+    assert!(
+        staff.contains("best level 4"),
+        "staff lost the number: {staff}"
+    );
+    assert!(
+        staff.contains("plan(s)"),
+        "staff lost the plan count: {staff}"
+    );
 
-    for (who, label) in [(r.pat, "the co-tenant"), (r.quinn, "the landlord's officer")] {
+    for (who, label) in [
+        (r.pat, "the co-tenant"),
+        (r.quinn, "the landlord's officer"),
+    ] {
         let seen = ok(&mut tw, who, &format!("@tenancy/show {id}"));
-        assert!(seen.contains("supported"), "{label} got no assessment at all: {seen}");
-        assert!(!seen.contains("best level"), "{label} read the support level: {seen}");
-        assert!(!seen.contains("plan(s)"), "{label} read the plan count: {seen}");
+        assert!(
+            seen.contains("supported"),
+            "{label} got no assessment at all: {seen}"
+        );
+        assert!(
+            !seen.contains("best level"),
+            "{label} read the support level: {seen}"
+        );
+        assert!(
+            !seen.contains("plan(s)"),
+            "{label} read the plan count: {seen}"
+        );
     }
 }
 
@@ -1660,11 +2101,23 @@ fn vf_a3_the_landlord_filter_is_not_an_org_existence_oracle() {
     let nowhere = texts(&tw.run(r.pat, "@property/list landlord=org:Nowhere"));
     let typo = texts(&tw.run(r.pat, "@property/list landlord=org:Ironhld"));
     let real = texts(&tw.run(r.pat, "@property/list landlord=org:Ironhold"));
-    assert!(nowhere.contains(mush_housing::NO_SUCH_PROPERTY), "{nowhere}");
-    assert_eq!(nowhere, typo, "a typo is distinguishable from a nonexistent org");
-    assert_eq!(nowhere, real, "a real org is distinguishable from a nonexistent one");
+    assert!(
+        nowhere.contains(mush_housing::NO_SUCH_PROPERTY),
+        "{nowhere}"
+    );
+    assert_eq!(
+        nowhere, typo,
+        "a typo is distinguishable from a nonexistent org"
+    );
+    assert_eq!(
+        nowhere, real,
+        "a real org is distinguishable from a nonexistent one"
+    );
     // And it never widens: Pat's own home is in none of those answers.
-    assert!(!real.contains("The Flat"), "the filter widened to everything: {real}");
+    assert!(
+        !real.contains("The Flat"),
+        "the filter widened to everything: {real}"
+    );
     assert!(ok(&mut tw, r.pat, "@property/list").contains("The Flat"));
 }
 
@@ -1676,12 +2129,24 @@ fn vf_a4_an_officer_of_a_scope_less_property_reads_and_inspects_it() {
     let mut tw = boot();
     let r = rig(&mut tw);
     let p = org_property(&mut tw, r.quinn, "property.manage", false, "Tower");
-    assert!(store(&tw).property(p).expect("property").landlord_scope.is_none());
+    assert!(
+        store(&tw)
+            .property(p)
+            .expect("property")
+            .landlord_scope
+            .is_none()
+    );
 
     let seen = ok(&mut tw, r.quinn, &format!("@property/show {p}"));
-    assert!(seen.contains("tier 3"), "the officer cannot read their own property: {seen}");
+    assert!(
+        seen.contains("tier 3"),
+        "the officer cannot read their own property: {seen}"
+    );
     let listed = ok(&mut tw, r.quinn, "@property/list landlord=org:Ironhold");
-    assert!(listed.contains(&format!("#{p} ")), "the officer's own list is empty: {listed}");
+    assert!(
+        listed.contains(&format!("#{p} ")),
+        "the officer's own list is empty: {listed}"
+    );
 
     // One authority path: the same compartment answers the inspection term.
     ok(
@@ -1694,7 +2159,10 @@ fn vf_a4_an_officer_of_a_scope_less_property_reads_and_inspects_it() {
     );
     let tower = room_named(&tw, "Tower");
     ok(&mut tw, r.quinn, "inTower");
-    assert_eq!(tw.world().get(r.quinn).and_then(|o| o.location), Some(tower));
+    assert_eq!(
+        tw.world().get(r.quinn).and_then(|o| o.location),
+        Some(tower)
+    );
     err(&mut tw, r.rex, "inTower");
 }
 
@@ -1705,15 +2173,25 @@ fn vf_a5_an_invitation_does_not_demote_a_manage_only_officer() {
     let mut tw = boot();
     let r = rig(&mut tw);
     let p = org_property(&mut tw, r.quinn, "property.manage", true, "Tower");
-    ok(&mut tw, GOD, &format!("@tenancy/create {p}=#{} cadence={}", r.pat.0, r.cadence));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@tenancy/create {p}=#{} cadence={}", r.pat.0, r.cadence),
+    );
     let id = store(&tw).tenancies().last().expect("tenancy").id;
 
     let before = ok(&mut tw, r.quinn, &format!("@tenancy/show {id}"));
-    assert!(before.contains("tenants:"), "the officer could not read it at all: {before}");
+    assert!(
+        before.contains("tenants:"),
+        "the officer could not read it at all: {before}"
+    );
     // A courtesy, not a demotion.
     ok(&mut tw, r.pat, &format!("+guest add #{}", r.quinn.0));
     let after = ok(&mut tw, r.quinn, &format!("@tenancy/show {id}"));
-    assert!(after.contains("tenants:"), "an invitation demoted the officer: {after}");
+    assert!(
+        after.contains("tenants:"),
+        "an invitation demoted the officer: {after}"
+    );
     assert!(!after.contains("you are a guest here"), "{after}");
 }
 
@@ -1726,21 +2204,36 @@ fn vf_a6_home_leave_and_guest_never_guess_which_home() {
     let first = tenant(&mut tw, &r, r.pat, 3);
     ok(&mut tw, GOD, "@dig Loft=uploft,downloft");
     let loft = room_named(&tw, "Loft");
-    ok(&mut tw, GOD, &format!("@property/create Loft=#{} tier=1 landlord=housing", loft.0));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@property/create Loft=#{} tier=1 landlord=housing", loft.0),
+    );
     let other = store(&tw).properties().last().expect("property").id;
-    ok(&mut tw, GOD, &format!("@tenancy/create {other}=#{} cadence={}", r.pat.0, r.cadence));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@tenancy/create {other}=#{} cadence={}", r.pat.0, r.cadence),
+    );
     let second = store(&tw).tenancies().last().expect("tenancy").id;
 
     // `+guest` refuses, and `home=` disambiguates.
     let seen = err(&mut tw, r.pat, &format!("+guest add #{}", r.rex.0));
     assert!(seen.contains("more than one place"), "{seen}");
-    ok(&mut tw, r.pat, &format!("+guest add #{} home={first}", r.rex.0));
+    ok(
+        &mut tw,
+        r.pat,
+        &format!("+guest add #{} home={first}", r.rex.0),
+    );
     assert!(tenancy(&tw, first).is_guest(r.rex));
     assert!(!tenancy(&tw, second).is_guest(r.rex));
 
     // `+home/leave` refuses, lists both, and ends nothing.
     let seen = err(&mut tw, r.pat, "+home/leave");
-    assert!(seen.contains(&format!("#{first}")) && seen.contains(&format!("#{second}")), "{seen}");
+    assert!(
+        seen.contains(&format!("#{first}")) && seen.contains(&format!("#{second}")),
+        "{seen}"
+    );
     assert_eq!(status(&tw, first), TenancyStatusKind::Active);
     assert_eq!(status(&tw, second), TenancyStatusKind::Active);
 
@@ -1783,9 +2276,21 @@ fn vf_a7_every_reaches_the_lease_as_the_rent_period() {
         .module_state::<EconomyStore>()
         .and_then(|s| s.snapshot().obligation(obligation_of(&tw, id)).cloned())
         .expect("the rent obligation");
-    assert_eq!(o.schedule.cadence, Some(600), "every= never reached the lease");
-    let help = tw.registry().spec_of("@tenancy").expect("registered").help.to_string();
-    assert!(help.contains("every= is the rent period"), "the key is undocumented");
+    assert_eq!(
+        o.schedule.cadence,
+        Some(600),
+        "every= never reached the lease"
+    );
+    let help = tw
+        .registry()
+        .spec_of("@tenancy")
+        .expect("registered")
+        .help
+        .to_string();
+    assert!(
+        help.contains("every= is the rent period"),
+        "the key is undocumented"
+    );
 }
 
 /// A8. The help said nothing about who may read the show/list verbs, and
@@ -1793,17 +2298,44 @@ fn vf_a7_every_reaches_the_lease_as_the_rent_period() {
 #[test]
 fn vf_a8_the_help_states_the_read_audience() {
     let tw = boot();
-    let help = |verb: &str| tw.registry().spec_of(verb).expect("registered").help.to_string();
+    let help = |verb: &str| {
+        tw.registry()
+            .spec_of(verb)
+            .expect("registered")
+            .help
+            .to_string()
+    };
 
     let property = help("@property");
-    assert!(property.contains("GUEST"), "@property/show|list does not state the guest audience");
-    assert!(property.contains("root scope"), "@property help omits the officer fallback");
+    assert!(
+        property.contains("GUEST"),
+        "@property/show|list does not state the guest audience"
+    );
+    assert!(
+        property.contains("root scope"),
+        "@property help omits the officer fallback"
+    );
     let tenancy = help("@tenancy");
-    assert!(tenancy.contains("§11 answer 3"), "@tenancy help omits the staff-only default");
-    assert!(tenancy.contains("assessment word"), "@tenancy help omits the staff/other split");
-    assert!(tenancy.contains("GUEST"), "@tenancy/show|list does not state the guest audience");
-    assert!(help("+home").contains("REFUSES and lists"), "+home/leave help hides the rule");
-    assert!(help("+guest").contains("home=<tenancy>"), "+guest help hides its disambiguator");
+    assert!(
+        tenancy.contains("§11 answer 3"),
+        "@tenancy help omits the staff-only default"
+    );
+    assert!(
+        tenancy.contains("assessment word"),
+        "@tenancy help omits the staff/other split"
+    );
+    assert!(
+        tenancy.contains("GUEST"),
+        "@tenancy/show|list does not state the guest audience"
+    );
+    assert!(
+        help("+home").contains("REFUSES and lists"),
+        "+home/leave help hides the rule"
+    );
+    assert!(
+        help("+guest").contains("home=<tenancy>"),
+        "+guest help hides its disambiguator"
+    );
 }
 
 // ---- Lens H: hooks and home safety -----------------------------------------
@@ -1819,7 +2351,12 @@ fn vf_h1_withdrawal_never_unlocks_a_home_somebody_lives_in() {
         // A lamp inside, placed while the property was still vacant.
         ok(&mut tw, GOD, &format!("@teleport #{}", r.anchor.0));
         ok(&mut tw, GOD, "@create lamp");
-        let lamp = tw.world().iter().find(|o| o.name == "lamp").expect("lamp").id;
+        let lamp = tw
+            .world()
+            .iter()
+            .find(|o| o.name == "lamp")
+            .expect("lamp")
+            .id;
         ok(&mut tw, GOD, "drop lamp");
         ok(&mut tw, GOD, &format!("@teleport #{}", LIMBO.0));
         let id = tenant(&mut tw, &r, r.pat, 3);
@@ -1829,8 +2366,16 @@ fn vf_h1_withdrawal_never_unlocks_a_home_somebody_lives_in() {
         } else {
             ok(&mut tw, GOD, &format!("@property/withdraw {}", r.property));
         }
-        assert_eq!(property(&tw, r.property).status, PropertyStatus::Withdrawn, "{how}");
-        assert_eq!(status(&tw, id), TenancyStatusKind::Active, "{how} ended a home");
+        assert_eq!(
+            property(&tw, r.property).status,
+            PropertyStatus::Withdrawn,
+            "{how}"
+        );
+        assert_eq!(
+            status(&tw, id),
+            TenancyStatusKind::Active,
+            "{how} ended a home"
+        );
 
         // Twice: live, and after a reboot — the latch is what boot re-derives.
         let mut kv = fold_kv(&mut tw);
@@ -1871,20 +2416,40 @@ fn vf_h2_teleport_cannot_walk_a_thing_out_of_an_occupied_home() {
     let yard = room_named(&tw, "Yard");
     ok(&mut tw, GOD, &format!("@chown #{}=Rex", yard.0));
     ok(&mut tw, GOD, "@create lamp");
-    let lamp = tw.world().iter().find(|o| o.name == "lamp").expect("lamp").id;
+    let lamp = tw
+        .world()
+        .iter()
+        .find(|o| o.name == "lamp")
+        .expect("lamp")
+        .id;
     ok(&mut tw, GOD, "drop lamp");
     ok(&mut tw, GOD, &format!("@chown #{}=Rex", lamp.0));
 
     // The control: the same actor, lamp and destination, allowed while the lamp is
     // standing nowhere in particular.
-    ok(&mut tw, r.rex, &format!("@teleport #{}=#{}", lamp.0, yard.0));
+    ok(
+        &mut tw,
+        r.rex,
+        &format!("@teleport #{}=#{}", lamp.0, yard.0),
+    );
     assert_eq!(tw.world().get(lamp).and_then(|o| o.location), Some(yard));
     // Into the still-vacant property, and then somebody moves in.
-    ok(&mut tw, GOD, &format!("@teleport #{}=#{}", lamp.0, r.anchor.0));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@teleport #{}=#{}", lamp.0, r.anchor.0),
+    );
     tenant(&mut tw, &r, r.pat, 3);
 
-    let seen = err(&mut tw, r.rex, &format!("@teleport #{}=#{}", lamp.0, yard.0));
-    assert!(seen.contains(mush_housing::REFUSED_CARRY), "wrong refusal: {seen}");
+    let seen = err(
+        &mut tw,
+        r.rex,
+        &format!("@teleport #{}=#{}", lamp.0, yard.0),
+    );
+    assert!(
+        seen.contains(mush_housing::REFUSED_CARRY),
+        "wrong refusal: {seen}"
+    );
     assert_eq!(
         tw.world().get(lamp).and_then(|o| o.location),
         Some(r.anchor),
@@ -1904,31 +2469,57 @@ fn vf_h3_leaving_one_of_two_leases_keeps_the_other_home() {
     ok(
         &mut tw,
         GOD,
-        &format!("@tenancy/create {}=#{},#{} cadence={}", r.property, r.pat.0, r.quinn.0, r.cadence),
+        &format!(
+            "@tenancy/create {}=#{},#{} cadence={}",
+            r.property, r.pat.0, r.quinn.0, r.cadence
+        ),
     );
     let first = store(&tw).tenancies().last().expect("tenancy").id;
     ok(&mut tw, GOD, "@dig Loft=uploft,downloft");
     let loft = room_named(&tw, "Loft");
-    ok(&mut tw, GOD, &format!("@property/create Loft=#{} tier=1 landlord=housing", loft.0));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@property/create Loft=#{} tier=1 landlord=housing", loft.0),
+    );
     let other = store(&tw).properties().last().expect("property").id;
     ok(
         &mut tw,
         GOD,
-        &format!("@tenancy/create {other}=#{},#{} cadence={}", r.pat.0, r.quinn.0, r.cadence),
+        &format!(
+            "@tenancy/create {other}=#{},#{} cadence={}",
+            r.pat.0, r.quinn.0, r.cadence
+        ),
     );
     let second = store(&tw).tenancies().last().expect("tenancy").id;
-    assert_eq!(home_of(&tw, r.pat), Some(loft), "the later activation owns the pointer");
+    assert_eq!(
+        home_of(&tw, r.pat),
+        Some(loft),
+        "the later activation owns the pointer"
+    );
 
     // Pat leaves the FLAT — the lease their home does not point at.
     ok(&mut tw, r.pat, &format!("+home/leave {first}"));
     assert!(!tenancy(&tw, first).is_tenant(r.pat));
-    assert_eq!(status(&tw, first), TenancyStatusKind::Active, "a co-tenant leaving ended a lease");
-    assert_eq!(home_of(&tw, r.pat), Some(loft), "leaving one lease cleared the other one's home");
+    assert_eq!(
+        status(&tw, first),
+        TenancyStatusKind::Active,
+        "a co-tenant leaving ended a lease"
+    );
+    assert_eq!(
+        home_of(&tw, r.pat),
+        Some(loft),
+        "leaving one lease cleared the other one's home"
+    );
 
     // …and leaving the one it does point at clears it, because there is no other.
     ok(&mut tw, r.pat, &format!("+home/leave {second}"));
     assert_eq!(home_of(&tw, r.pat), None);
-    assert_eq!(home_of(&tw, r.quinn), Some(loft), "a co-tenant's own home was collateral damage");
+    assert_eq!(
+        home_of(&tw, r.quinn),
+        Some(loft),
+        "a co-tenant's own home was collateral damage"
+    );
 }
 
 /// H4. The anchor is exempt from the **thoroughfare** rule and nothing else — so a
@@ -1954,10 +2545,20 @@ fn vf_h4_the_anchor_is_exempt_from_the_thoroughfare_rule_and_nothing_else() {
         )
         .expect("attached");
     let before = store(&tw).properties().count();
-    let seen =
-        err(&mut tw, GOD, &format!("@property/create Domain=#{} tier=1 landlord=housing", domain.0));
+    let seen = err(
+        &mut tw,
+        GOD,
+        &format!(
+            "@property/create Domain=#{} tier=1 landlord=housing",
+            domain.0
+        ),
+    );
     assert!(seen.contains("behavior binding"), "wrong refusal: {seen}");
-    assert_eq!(store(&tw).properties().count(), before, "a refused create allocated a property");
+    assert_eq!(
+        store(&tw).properties().count(),
+        before,
+        "a refused create allocated a property"
+    );
 
     // (b) a wiring-frozen reserved room — what `mush-server` now passes out of
     // `[onboarding]`. Learn the id the rig mints, then boot a world reserving it.
@@ -1970,9 +2571,19 @@ fn vf_h4_the_anchor_is_exempt_from_the_thoroughfare_rule_and_nothing_else() {
     let mut tw = boot_with(vec![start]);
     let _r = rig(&mut tw);
     ok(&mut tw, GOD, "@dig Start=instart,outstart");
-    assert_eq!(room_named(&tw, "Start"), start, "the rig does not allocate ids deterministically");
-    let seen =
-        err(&mut tw, GOD, &format!("@property/create Start=#{} tier=1 landlord=housing", start.0));
+    assert_eq!(
+        room_named(&tw, "Start"),
+        start,
+        "the rig does not allocate ids deterministically"
+    );
+    let seen = err(
+        &mut tw,
+        GOD,
+        &format!(
+            "@property/create Start=#{} tier=1 landlord=housing",
+            start.0
+        ),
+    );
     assert!(seen.contains("reserved"), "wrong refusal: {seen}");
 }
 
@@ -1988,21 +2599,45 @@ fn vf_h5_the_end_sweep_finds_what_is_carried_and_what_is_homed_from_outside() {
 
     // A lamp homed at the anchor, in Pat's pocket: one level below the room.
     ok(&mut tw, GOD, "@create lamp");
-    let lamp = tw.world().iter().find(|o| o.name == "lamp").expect("lamp").id;
+    let lamp = tw
+        .world()
+        .iter()
+        .find(|o| o.name == "lamp")
+        .expect("lamp")
+        .id;
     ok(&mut tw, GOD, &format!("@link #{}=#{}", lamp.0, r.anchor.0));
-    tw.world_mut().move_to(lamp, r.pat).expect("into the pocket");
+    tw.world_mut()
+        .move_to(lamp, r.pat)
+        .expect("into the pocket");
     // …and a crate homed in the spare room, standing nowhere near it.
     ok(&mut tw, GOD, "@create crate");
-    let boxed = tw.world().iter().find(|o| o.name == "crate").expect("crate").id;
+    let boxed = tw
+        .world()
+        .iter()
+        .find(|o| o.name == "crate")
+        .expect("crate")
+        .id;
     ok(&mut tw, GOD, &format!("@link #{}=#{}", boxed.0, r.spare.0));
     ok(&mut tw, GOD, "drop crate");
     assert_eq!(tw.world().get(boxed).and_then(|o| o.location), Some(LIMBO));
 
-    ok(&mut tw, GOD, &format!("@tenancy/resolve {id}=end they moved out"));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@tenancy/resolve {id}=end they moved out"),
+    );
     assert_eq!(status(&tw, id), TenancyStatusKind::Ended);
     assert_eq!(home_of(&tw, r.pat), None);
-    assert_eq!(home_of(&tw, lamp), None, "a carried, homed item still points into the house");
-    assert_eq!(home_of(&tw, boxed), None, "an item homed inside but standing out still points in");
+    assert_eq!(
+        home_of(&tw, lamp),
+        None,
+        "a carried, homed item still points into the house"
+    );
+    assert_eq!(
+        home_of(&tw, boxed),
+        None,
+        "an item homed inside but standing out still points in"
+    );
 }
 
 /// H6. The `ObjDestroyed` backstop and boot's first pass both skipped a property
@@ -2027,16 +2662,26 @@ fn vf_h6_a_second_destruction_on_a_withdrawn_home_still_pages() {
     assert_eq!(again.len(), 1, "one property, one decision, one record");
     assert!(again[0].reopened > 0, "the second destruction was silent");
     assert!(again[0].is_open());
-    assert_eq!(status(&tw, id), TenancyStatusKind::Active, "a destroyed room ended a home");
+    assert_eq!(
+        status(&tw, id),
+        TenancyStatusKind::Active,
+        "a destroyed room ended a home"
+    );
 
     // …and a reboot re-pages a live tenancy on a property with nothing left of it.
     ok(&mut tw, GOD, &format!("@econ/ack {alert}"));
     skip_wall(&mut tw, 7_200);
     let kv = fold_kv(&mut tw);
     reboot(&mut tw, kv);
-    assert_eq!(status(&tw, id), TenancyStatusKind::Active, "boot ended a home");
+    assert_eq!(
+        status(&tw, id),
+        TenancyStatusKind::Active,
+        "boot ended a home"
+    );
     assert!(
-        property_alerts(&tw, r.property).iter().any(mush_economy::Escalation::is_open),
+        property_alerts(&tw, r.property)
+            .iter()
+            .any(mush_economy::Escalation::is_open),
         "boot did not re-page a live tenancy on a fully destroyed property"
     );
 }
@@ -2063,7 +2708,11 @@ fn vf_t1_a_relapsed_window_can_still_reach_a_person() {
     period(&mut tw, &r, 1);
     assert_eq!(status(&tw, id), TenancyStatusKind::Active);
     assert!(
-        !alerts(&tw).into_iter().find(|e| e.id == alert).expect("record").is_open(),
+        !alerts(&tw)
+            .into_iter()
+            .find(|e| e.id == alert)
+            .expect("record")
+            .is_open(),
         "recovery did not acknowledge the page"
     );
     skip_wall(&mut tw, 7_200);
@@ -2075,8 +2724,15 @@ fn vf_t1_a_relapsed_window_can_still_reach_a_person() {
     }
     assert_eq!(status(&tw, id), TenancyStatusKind::EvictionPending);
     let window = window_of(&tw, id);
-    assert_eq!(window.notified, mush_housing::MAX_WINDOW_NOTICES, "the notice budget was re-armed");
-    assert!(window.escalation.is_none(), "the relapsed window inherited a dead escalation id");
+    assert_eq!(
+        window.notified,
+        mush_housing::MAX_WINDOW_NOTICES,
+        "the notice budget was re-armed"
+    );
+    assert!(
+        window.escalation.is_none(),
+        "the relapsed window inherited a dead escalation id"
+    );
 
     // Two more periods spend WINDOW_ESCALATE and it pages again — the SAME record,
     // reopened, never a second alert about one home.
@@ -2085,8 +2741,14 @@ fn vf_t1_a_relapsed_window_can_still_reach_a_person() {
     }
     let again = tenancy_alerts(&tw, id);
     assert_eq!(again.len(), 1, "re-paging minted a second alert");
-    assert_eq!(again[0].id, alert, "re-paging replaced the record instead of reopening it");
-    assert!(again[0].reopened > 0, "the relapsed window never paged again");
+    assert_eq!(
+        again[0].id, alert,
+        "re-paging replaced the record instead of reopening it"
+    );
+    assert!(
+        again[0].reopened > 0,
+        "the relapsed window never paged again"
+    );
     assert!(again[0].is_open());
 }
 
@@ -2108,12 +2770,24 @@ fn vf_t2_the_rent_obligation_debits_a_tenant_and_nobody_else() {
     };
 
     let seen = err(&mut tw, GOD, &make(rex_acct));
-    assert!(seen.contains("TENANTS"), "wrong refusal for a bystander: {seen}");
+    assert!(
+        seen.contains("TENANTS"),
+        "wrong refusal for a bystander: {seen}"
+    );
     let seen = err(&mut tw, GOD, &make(faucet));
-    assert!(seen.contains("standing mint"), "wrong refusal for a faucet: {seen}");
-    assert_eq!(store(&tw).tenancies().count(), before, "a refused exact tenancy was written");
+    assert!(
+        seen.contains("standing mint"),
+        "wrong refusal for a faucet: {seen}"
+    );
     assert_eq!(
-        tw.world().module_state::<EconomyStore>().map(|s| s.snapshot().contracts().count()),
+        store(&tw).tenancies().count(),
+        before,
+        "a refused exact tenancy was written"
+    );
+    assert_eq!(
+        tw.world()
+            .module_state::<EconomyStore>()
+            .map(|s| s.snapshot().contracts().count()),
         Some(0),
         "a refused exact tenancy left a lease behind"
     );
@@ -2133,7 +2807,10 @@ fn vf_t3_extend_after_the_escalation_still_reaches_a_person() {
     for _ in 0..9 {
         period(&mut tw, &r, 1);
     }
-    let alert = tenancy_alerts(&tw, id).first().expect("the window paged").id;
+    let alert = tenancy_alerts(&tw, id)
+        .first()
+        .expect("the window paged")
+        .id;
     // A staffer takes the alert and buys the tenant more time. It stays staff-only.
     ok(&mut tw, GOD, &format!("@econ/ack {alert}"));
     skip_wall(&mut tw, 7_200);
@@ -2141,9 +2818,15 @@ fn vf_t3_extend_after_the_escalation_still_reaches_a_person() {
     ok(&mut tw, GOD, &format!("@tenancy/resolve {id}=extend"));
 
     let window = window_of(&tw, id);
-    assert_eq!(window.notified, 0, "extend did not re-arm the notice budget");
+    assert_eq!(
+        window.notified, 0,
+        "extend did not re-arm the notice budget"
+    );
     assert!(window.job.is_some(), "extend lost the ST's ticket");
-    assert!(window.escalation.is_none(), "extend carried a dead escalation into the fresh window");
+    assert!(
+        window.escalation.is_none(),
+        "extend carried a dead escalation into the fresh window"
+    );
 
     // The three advertised notices actually arrive …
     let mut renotices = 0usize;
@@ -2151,7 +2834,11 @@ fn vf_t3_extend_after_the_escalation_still_reaches_a_person() {
         let seen = texts(&period(&mut tw, &r, 1));
         renotices += usize::from(seen.contains("still waiting on a decision"));
     }
-    assert_eq!(renotices, mush_housing::MAX_WINDOW_NOTICES as usize, "extend silenced the window");
+    assert_eq!(
+        renotices,
+        mush_housing::MAX_WINDOW_NOTICES as usize,
+        "extend silenced the window"
+    );
     // … and then it asks for a person again, on the same record.
     for _ in 0..2 {
         period(&mut tw, &r, 1);
@@ -2159,7 +2846,10 @@ fn vf_t3_extend_after_the_escalation_still_reaches_a_person() {
     let again = tenancy_alerts(&tw, id);
     assert_eq!(again.len(), 1, "extend minted a second alert");
     assert_eq!(again[0].id, alert);
-    assert!(again[0].reopened > 0, "an extended window never paged again");
+    assert!(
+        again[0].reopened > 0,
+        "an extended window never paged again"
+    );
 }
 
 /// T4. A recovery caused by a person — the rent obligation's creditor reinstating
@@ -2188,7 +2878,11 @@ fn vf_t4_a_landlords_reinstate_credits_the_ack_to_the_landlord() {
     // No money at all: the rent misses on its own clock while the tenancy walks the
     // ladder on the campaign clock.
     for _ in 0..30 {
-        ok(&mut tw, GOD, &format!("@econ/cadence advance {} 1", r.cadence));
+        ok(
+            &mut tw,
+            GOD,
+            &format!("@econ/cadence advance {} 1", r.cadence),
+        );
         let t = tw.world().now().saturating_add(3_600);
         tw.set_now(t);
         tw.fire_due(t.saturating_mul(1000));
@@ -2196,7 +2890,11 @@ fn vf_t4_a_landlords_reinstate_credits_the_ack_to_the_landlord() {
             break;
         }
     }
-    assert_eq!(status(&tw, id), TenancyStatusKind::EvictionPending, "the exact ladder stalled");
+    assert_eq!(
+        status(&tw, id),
+        TenancyStatusKind::EvictionPending,
+        "the exact ladder stalled"
+    );
     // Then the window's own decay, on cadence periods alone.
     for _ in 0..8 {
         if !tenancy_alerts(&tw, id).is_empty() {
@@ -2211,10 +2909,25 @@ fn vf_t4_a_landlords_reinstate_credits_the_ack_to_the_landlord() {
     // The landlord — the rent's creditor — puts it back on its feet themselves. That
     // is a recovery, not an ending, so it stays allowed; it is the *credit* that was
     // wrong.
-    ok(&mut tw, r.quinn, &format!("@obligation/reinstate {obligation}"));
-    assert_eq!(status(&tw, id), TenancyStatusKind::Active, "the landlord's recovery was refused");
-    let acked = alerts(&tw).into_iter().find(|e| e.id == page[0].id).expect("record");
-    assert_eq!(acked.acked_by, Some(r.quinn), "the ack was credited to somebody else");
+    ok(
+        &mut tw,
+        r.quinn,
+        &format!("@obligation/reinstate {obligation}"),
+    );
+    assert_eq!(
+        status(&tw, id),
+        TenancyStatusKind::Active,
+        "the landlord's recovery was refused"
+    );
+    let acked = alerts(&tw)
+        .into_iter()
+        .find(|e| e.id == page[0].id)
+        .expect("record");
+    assert_eq!(
+        acked.acked_by,
+        Some(r.quinn),
+        "the ack was credited to somebody else"
+    );
 }
 
 /// T5. Boot's exact pass inspects only *live* tenancies, so a `Pending` draft whose
@@ -2241,11 +2954,22 @@ fn vf_t5_boot_pages_about_a_pending_tenancy_whose_lease_is_gone() {
     forget(&mut kv, "economy", "contract:");
     reboot(&mut tw, kv);
 
-    assert_eq!(status(&tw, id), TenancyStatusKind::Pending, "boot ended a pending tenancy");
+    assert_eq!(
+        status(&tw, id),
+        TenancyStatusKind::Pending,
+        "boot ended a pending tenancy"
+    );
     let paged = tenancy_alerts(&tw, id);
-    assert_eq!(paged.len(), 1, "boot did not page about a draft that can never activate");
+    assert_eq!(
+        paged.len(),
+        1,
+        "boot did not page about a draft that can never activate"
+    );
     assert!(
-        paged[0].recommended.iter().any(|c| c == &format!("@tenancy/resolve {id}=end")),
+        paged[0]
+            .recommended
+            .iter()
+            .any(|c| c == &format!("@tenancy/resolve {id}=end")),
         "the page does not carry the verb that answers it: {:?}",
         paged[0].recommended
     );
@@ -2263,11 +2987,22 @@ fn vf_t6_a_tenancy_whose_clock_vanished_freezes_and_says_so() {
     forget(&mut kv, "economy", "cadence:");
     reboot(&mut tw, kv);
 
-    assert_eq!(status(&tw, id), TenancyStatusKind::Active, "a missing clock moved a home");
+    assert_eq!(
+        status(&tw, id),
+        TenancyStatusKind::Active,
+        "a missing clock moved a home"
+    );
     let paged = tenancy_alerts(&tw, id);
-    assert_eq!(paged.len(), 1, "the frozen tenancy paged {} times", paged.len());
+    assert_eq!(
+        paged.len(),
+        1,
+        "the frozen tenancy paged {} times",
+        paged.len()
+    );
     assert!(
-        paged[0].context.contains(&format!("cadence #{}", r.cadence)),
+        paged[0]
+            .context
+            .contains(&format!("cadence #{}", r.cadence)),
         "the page does not name the clock: {}",
         paged[0].context
     );
@@ -2275,7 +3010,11 @@ fn vf_t6_a_tenancy_whose_clock_vanished_freezes_and_says_so() {
     for _ in 0..5 {
         fire(&mut tw);
     }
-    assert_eq!(tenancy_alerts(&tw, id).len(), 1, "the frozen tenancy paged once a fire");
+    assert_eq!(
+        tenancy_alerts(&tw, id).len(),
+        1,
+        "the frozen tenancy paged once a fire"
+    );
     assert_eq!(status(&tw, id), TenancyStatusKind::Active);
 }
 
@@ -2291,15 +3030,30 @@ fn vf_t7_the_tick_walks_only_the_tenancies_that_have_not_ended() {
         ok(
             &mut tw,
             GOD,
-            &format!("@tenancy/create {}=#{} cadence={}", r.property, r.pat.0, r.cadence),
+            &format!(
+                "@tenancy/create {}=#{} cadence={}",
+                r.property, r.pat.0, r.cadence
+            ),
         );
         let id = store(&tw).tenancies().last().expect("tenancy").id;
-        ok(&mut tw, GOD, &format!("@tenancy/resolve {id}=end they moved on"));
+        ok(
+            &mut tw,
+            GOD,
+            &format!("@tenancy/resolve {id}=end they moved on"),
+        );
     }
     let live = tenant(&mut tw, &r, r.pat, 3);
-    assert_eq!(store(&tw).tenancies().count(), 501, "the ended records were not kept");
+    assert_eq!(
+        store(&tw).tenancies().count(),
+        501,
+        "the ended records were not kept"
+    );
     let walked: Vec<TenancyId> = store(&tw).open_tenancy_ids().collect();
-    assert_eq!(walked, vec![live], "the tick's working set is not just the live tenancy");
+    assert_eq!(
+        walked,
+        vec![live],
+        "the tick's working set is not just the live tenancy"
+    );
 
     // …and it still assesses the one that matters, across a reboot: the index is
     // re-derived from the loaded statuses, never persisted.
@@ -2308,7 +3062,10 @@ fn vf_t7_the_tick_walks_only_the_tenancies_that_have_not_ended() {
     let kv = fold_kv(&mut tw);
     reboot(&mut tw, kv);
     assert_eq!(store(&tw).tenancies().count(), 501);
-    assert_eq!(store(&tw).open_tenancy_ids().collect::<Vec<_>>(), vec![live]);
+    assert_eq!(
+        store(&tw).open_tenancy_ids().collect::<Vec<_>>(),
+        vec![live]
+    );
     period(&mut tw, &r, 1);
     assert_eq!(status(&tw, live), TenancyStatusKind::Active);
 }
@@ -2330,16 +3087,34 @@ fn vf_t8_a_second_scene_is_refused_and_a_reboot_lets_one_attach_again() {
     let scenes = tw.world().scenes().count();
 
     let seen = err(&mut tw, GOD, &format!("@tenancy/resolve {id}=scene"));
-    assert!(seen.contains("already has a scene"), "wrong refusal: {seen}");
-    assert_eq!(window_of(&tw, id).scene, Some(first), "the window's scene changed");
-    assert_eq!(tw.world().scenes().count(), scenes, "a second scene was started and abandoned");
+    assert!(
+        seen.contains("already has a scene"),
+        "wrong refusal: {seen}"
+    );
+    assert_eq!(
+        window_of(&tw, id).scene,
+        Some(first),
+        "the window's scene changed"
+    );
+    assert_eq!(
+        tw.world().scenes().count(),
+        scenes,
+        "a second scene was started and abandoned"
+    );
 
     // A reboot clears the boot-local handle, so the ST can start one again.
     let kv = fold_kv(&mut tw);
     reboot(&mut tw, kv);
-    assert_eq!(window_of(&tw, id).scene, None, "a boot-local scene ref survived the reboot");
+    assert_eq!(
+        window_of(&tw, id).scene,
+        None,
+        "a boot-local scene ref survived the reboot"
+    );
     ok(&mut tw, GOD, &format!("@tenancy/resolve {id}=scene"));
-    assert!(window_of(&tw, id).scene.is_some(), "the window could not attach a scene again");
+    assert!(
+        window_of(&tw, id).scene.is_some(),
+        "the window could not attach a scene again"
+    );
     assert_eq!(status(&tw, id), TenancyStatusKind::EvictionPending);
 }
 
@@ -2380,7 +3155,11 @@ fn vf_t9_the_contract_active_edge_is_the_happy_path_not_a_fault() {
     let id = store(&tw).tenancies().last().expect("tenancy").id;
     let contract = contract_of(&tw, id);
     ok(&mut tw, r.pat, &format!("@contract/accept {contract}"));
-    assert_eq!(status(&tw, id), TenancyStatusKind::Active, "the happy path did not activate");
+    assert_eq!(
+        status(&tw, id),
+        TenancyStatusKind::Active,
+        "the happy path did not activate"
+    );
     assert_ne!(
         obligation_of(&tw, id),
         mush_housing::PENDING_OBLIGATION,
@@ -2404,7 +3183,10 @@ fn quarantine_keys(tw: &TestWorld) -> Vec<String> {
     store(tw).quarantine().map(|c| c.key.to_string()).collect()
 }
 
-fn obligation_status(tw: &TestWorld, id: mush_economy::ObligationId) -> mush_economy::ObligationStatus {
+fn obligation_status(
+    tw: &TestWorld,
+    id: mush_economy::ObligationId,
+) -> mush_economy::ObligationStatus {
     tw.world()
         .module_state::<EconomyStore>()
         .and_then(|s| s.snapshot().obligation(id).map(|o| o.status.clone()))
@@ -2414,7 +3196,11 @@ fn obligation_status(tw: &TestWorld, id: mush_economy::ObligationId) -> mush_eco
 fn balance(tw: &TestWorld, acct: u64) -> i64 {
     tw.world()
         .module_state::<EconomyStore>()
-        .and_then(|s| s.snapshot().account(mush_economy::AccountId(acct)).map(|a| a.posted_balance.minor()))
+        .and_then(|s| {
+            s.snapshot()
+                .account(mush_economy::AccountId(acct))
+                .map(|a| a.posted_balance.minor())
+        })
         .expect("the account")
 }
 
@@ -2422,7 +3208,14 @@ fn balance(tw: &TestWorld, acct: u64) -> i64 {
 fn second_property(tw: &mut TestWorld, name: &str) -> (PropertyId, ObjId) {
     ok(tw, GOD, &format!("@dig {name}=in{name},out{name}"));
     let room = room_named(tw, name);
-    ok(tw, GOD, &format!("@property/create {name}=#{} tier=1 landlord=housing", room.0));
+    ok(
+        tw,
+        GOD,
+        &format!(
+            "@property/create {name}=#{} tier=1 landlord=housing",
+            room.0
+        ),
+    );
     (store(tw).properties().last().expect("property").id, room)
 }
 
@@ -2446,31 +3239,60 @@ fn lb_dlbk1_two_properties_sharing_a_room_are_quarantined_fail_closed() {
     assert_projections_consistent(&tw);
 
     let key = format!("housing.corrupt:room:{}", r.spare.0);
-    assert_eq!(quarantine_keys(&tw), vec![key.clone()], "the overlap was not quarantined");
+    assert_eq!(
+        quarantine_keys(&tw),
+        vec![key.clone()],
+        "the overlap was not quarantined"
+    );
     assert_eq!(
         store(&tw).room_entry(r.spare),
-        Some(&RoomEntry::Conflict([r.property, other].into_iter().collect()))
+        Some(&RoomEntry::Conflict(
+            [r.property, other].into_iter().collect()
+        ))
     );
-    assert!(store(&tw).is_quarantined_property(r.property) && store(&tw).is_quarantined_property(other));
+    assert!(
+        store(&tw).is_quarantined_property(r.property) && store(&tw).is_quarantined_property(other)
+    );
     assert!(store(&tw).is_quarantined_tenancy(id));
-    assert_eq!(status(&tw, id), TenancyStatusKind::Active, "a quarantine moved the ladder");
+    assert_eq!(
+        status(&tw, id),
+        TenancyStatusKind::Active,
+        "a quarantine moved the ladder"
+    );
 
     // Fail closed at every room of every property involved: the stranger and the
     // TENANT alike, with the neutral text; staff walk in.
     for (who, label) in [(r.rex, "the stranger"), (r.pat, "the tenant")] {
         for (exit, room) in [("in", r.anchor), ("inLoft", loft)] {
             let seen = texts(&tw.run(who, exit));
-            assert!(seen.contains(mush_housing::REFUSED), "{label} at {exit}: {seen}");
-            assert_ne!(tw.world().get(who).and_then(|o| o.location), Some(room), "{label} entered {exit}");
+            assert!(
+                seen.contains(mush_housing::REFUSED),
+                "{label} at {exit}: {seen}"
+            );
+            assert_ne!(
+                tw.world().get(who).and_then(|o| o.location),
+                Some(room),
+                "{label} entered {exit}"
+            );
         }
     }
     ok(&mut tw, GOD, "in");
-    assert_eq!(tw.world().get(GOD).and_then(|o| o.location), Some(r.anchor), "staff were refused");
+    assert_eq!(
+        tw.world().get(GOD).and_then(|o| o.location),
+        Some(r.anchor),
+        "staff were refused"
+    );
     ok(&mut tw, GOD, "out");
     // The destroy gate refuses the room under review, and says why to a viewer.
     let seen = err(&mut tw, GOD, &format!("@destroy #{}", r.spare.0));
-    assert!(seen.contains("under housing review"), "wrong refusal: {seen}");
-    assert!(tw.world().get(r.spare).is_some(), "the room was destroyed anyway");
+    assert!(
+        seen.contains("under housing review"),
+        "wrong refusal: {seen}"
+    );
+    assert!(
+        tw.world().get(r.spare).is_some(),
+        "the room was destroyed anyway"
+    );
     // One page per conflict, the repair filled in with the shipped syntax.
     let pages: Vec<_> = alerts(&tw)
         .into_iter()
@@ -2478,9 +3300,16 @@ fn lb_dlbk1_two_properties_sharing_a_room_are_quarantined_fail_closed() {
         .collect();
     assert_eq!(pages.len(), 1, "one conflict, one page: {pages:?}");
     assert!(pages[0].is_open());
-    assert!(pages[0].context.contains(&key), "the page does not name the key: {}", pages[0].context);
     assert!(
-        pages[0].recommended.iter().any(|c| c == &format!("@property/rooms {other}=-#{}", r.spare.0)),
+        pages[0].context.contains(&key),
+        "the page does not name the key: {}",
+        pages[0].context
+    );
+    assert!(
+        pages[0]
+            .recommended
+            .iter()
+            .any(|c| c == &format!("@property/rooms {other}=-#{}", r.spare.0)),
         "the repair is not in the shipped syntax: {:?}",
         pages[0].recommended
     );
@@ -2490,13 +3319,27 @@ fn lb_dlbk1_two_properties_sharing_a_room_are_quarantined_fail_closed() {
     assert!(seen.contains(&key) && seen.contains("repair:"), "{seen}");
     let seen = err(&mut tw, GOD, &format!("@housing/quarantine recheck {key}"));
     assert!(seen.contains("still exists"), "{seen}");
-    assert_eq!(quarantine_keys(&tw), vec![key.clone()], "recheck released an unrepaired conflict");
+    assert_eq!(
+        quarantine_keys(&tw),
+        vec![key.clone()],
+        "recheck released an unrepaired conflict"
+    );
 
     // Release only by re-validation: the Loft gives the room up, and the quarantine
     // lifts on that write with nothing else typed.
-    ok(&mut tw, GOD, &format!("@property/rooms {other}=-#{}", r.spare.0));
-    assert!(quarantine_keys(&tw).is_empty(), "the repair did not lift the quarantine");
-    assert_eq!(store(&tw).room_entry(r.spare), Some(&RoomEntry::Unique(r.property)));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@property/rooms {other}=-#{}", r.spare.0),
+    );
+    assert!(
+        quarantine_keys(&tw).is_empty(),
+        "the repair did not lift the quarantine"
+    );
+    assert_eq!(
+        store(&tw).room_entry(r.spare),
+        Some(&RoomEntry::Unique(r.property))
+    );
     ok(&mut tw, r.pat, "in");
     ok(&mut tw, r.pat, "out");
     err(&mut tw, r.rex, "in");
@@ -2511,7 +3354,14 @@ fn lb_dlbk1_two_live_tenancies_on_one_property_are_skipped_by_the_tick() {
     let r = rig(&mut tw);
     let first = tenant(&mut tw, &r, r.pat, 0);
     let (other, _loft) = second_property(&mut tw, "Loft");
-    ok(&mut tw, GOD, &format!("@tenancy/create {other}=#{} cadence={}", r.quinn.0, r.cadence));
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@tenancy/create {other}=#{} cadence={}",
+            r.quinn.0, r.cadence
+        ),
+    );
     let second = store(&tw).tenancies().last().expect("tenancy").id;
     let mut kv = fold_kv(&mut tw);
     patch(&mut kv, mush_housing::tenancy_key(second).as_str(), |v| {
@@ -2526,38 +3376,77 @@ fn lb_dlbk1_two_live_tenancies_on_one_property_are_skipped_by_the_tick() {
         store(&tw).live_entry(r.property),
         Some(&LiveEntry::Conflict([first, second].into_iter().collect()))
     );
-    assert!(store(&tw).live_tenancy_of(r.property).is_none(), "a conflict answered for a door");
-    let before = (store(&tw).assess_state(first), store(&tw).assess_state(second));
+    assert!(
+        store(&tw).live_tenancy_of(r.property).is_none(),
+        "a conflict answered for a door"
+    );
+    let before = (
+        store(&tw).assess_state(first),
+        store(&tw).assess_state(second),
+    );
 
     // A cadence advance assesses neither: no position moves, no status moves, and
     // nobody is told anything.
     let seen = texts(&period(&mut tw, &r, 1));
-    assert!(!seen.contains("HOME:"), "a quarantined tenancy was notified: {seen}");
-    assert_eq!((store(&tw).assess_state(first), store(&tw).assess_state(second)), before, "the tick assessed a quarantined tenancy");
-    assert_eq!(status(&tw, first), TenancyStatusKind::Active, "a level-0 plan walked a quarantined tenancy");
+    assert!(
+        !seen.contains("HOME:"),
+        "a quarantined tenancy was notified: {seen}"
+    );
+    assert_eq!(
+        (
+            store(&tw).assess_state(first),
+            store(&tw).assess_state(second)
+        ),
+        before,
+        "the tick assessed a quarantined tenancy"
+    );
+    assert_eq!(
+        status(&tw, first),
+        TenancyStatusKind::Active,
+        "a level-0 plan walked a quarantined tenancy"
+    );
     assert_eq!(status(&tw, second), TenancyStatusKind::Active);
 
     // The renders: a member reads "(under review)"; a stranger the hidden text;
     // staff the record and the review.
     let mine = ok(&mut tw, r.pat, &format!("@tenancy/show {first}"));
-    assert!(mine.contains("(under review)") && !mine.contains("tenants:"), "{mine}");
+    assert!(
+        mine.contains("(under review)") && !mine.contains("tenants:"),
+        "{mine}"
+    );
     let home = ok(&mut tw, r.pat, "+home");
-    assert!(home.contains("(under review)") && !home.contains("cadence #"), "{home}");
+    assert!(
+        home.contains("(under review)") && !home.contains("cadence #"),
+        "{home}"
+    );
     let prop = ok(&mut tw, r.pat, &format!("@property/show {}", r.property));
-    assert!(prop.contains("(under review)") && !prop.contains("rooms:"), "{prop}");
+    assert!(
+        prop.contains("(under review)") && !prop.contains("rooms:"),
+        "{prop}"
+    );
     let hidden = texts(&tw.run(r.rex, &format!("@tenancy/show {first}")));
     assert!(hidden.contains(mush_housing::NO_SUCH_TENANCY), "{hidden}");
     // A guest is "everyone else" while the record is under review: the hidden text,
     // not the guest line, and no `+home` line at all.
-    ok(&mut tw, r.pat, &format!("+guest add #{} home={first}", r.rex.0));
+    ok(
+        &mut tw,
+        r.pat,
+        &format!("+guest add #{} home={first}", r.rex.0),
+    );
     let guest = texts(&tw.run(r.rex, &format!("@tenancy/show {first}")));
-    assert!(guest.contains(mush_housing::NO_SUCH_TENANCY), "a guest read a record under review: {guest}");
+    assert!(
+        guest.contains(mush_housing::NO_SUCH_TENANCY),
+        "a guest read a record under review: {guest}"
+    );
     let guest = texts(&tw.run(r.rex, &format!("@property/show {}", r.property)));
     assert!(guest.contains(mush_housing::NO_SUCH_PROPERTY), "{guest}");
     let guest = texts(&tw.run(r.rex, "+home"));
     assert!(!guest.contains("guest here"), "{guest}");
     let staff = ok(&mut tw, GOD, &format!("@tenancy/show {first}"));
-    assert!(staff.contains("tenants:") && staff.contains("UNDER REVIEW"), "{staff}");
+    assert!(
+        staff.contains("tenants:") && staff.contains("UNDER REVIEW"),
+        "{staff}"
+    );
     // One page, on the property, naming both endings.
     let pages: Vec<_> = alerts(&tw)
         .into_iter()
@@ -2566,18 +3455,35 @@ fn lb_dlbk1_two_live_tenancies_on_one_property_are_skipped_by_the_tick() {
     assert_eq!(pages.len(), 1);
     for t in [first, second] {
         assert!(
-            pages[0].recommended.iter().any(|c| c == &format!("@tenancy/resolve {t}=end")),
+            pages[0]
+                .recommended
+                .iter()
+                .any(|c| c == &format!("@tenancy/resolve {t}=end")),
             "{:?}",
             pages[0].recommended
         );
     }
 
     // The repair: end the second; the first is assessed on the next period.
-    ok(&mut tw, GOD, &format!("@tenancy/resolve {second}=end restored from a bad snapshot"));
-    assert!(quarantine_keys(&tw).is_empty(), "ending the duplicate did not lift the quarantine");
-    assert_eq!(store(&tw).live_entry(r.property), Some(&LiveEntry::Live(first)));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@tenancy/resolve {second}=end restored from a bad snapshot"),
+    );
+    assert!(
+        quarantine_keys(&tw).is_empty(),
+        "ending the duplicate did not lift the quarantine"
+    );
+    assert_eq!(
+        store(&tw).live_entry(r.property),
+        Some(&LiveEntry::Live(first))
+    );
     period(&mut tw, &r, 1);
-    assert_ne!(store(&tw).assess_state(first).position, before.0.position, "the lifted tenancy was not assessed");
+    assert_ne!(
+        store(&tw).assess_state(first).position,
+        before.0.position,
+        "the lifted tenancy was not assessed"
+    );
 }
 
 /// (c) A live tenancy on a missing property: quarantined, never assessed at tier 0,
@@ -2598,14 +3504,25 @@ fn lb_dlbk1_a_live_tenancy_on_a_missing_property_is_quarantined_and_paged() {
     assert_eq!(quarantine_keys(&tw), vec![key.clone()]);
     let before = store(&tw).assess_state(id);
     period(&mut tw, &r, 1);
-    assert_eq!(store(&tw).assess_state(id), before, "a tier-0 assessment ran on a missing property");
+    assert_eq!(
+        store(&tw).assess_state(id),
+        before,
+        "a tier-0 assessment ran on a missing property"
+    );
     assert_eq!(status(&tw, id), TenancyStatusKind::Active);
     let pages: Vec<_> = alerts(&tw)
         .into_iter()
         .filter(|e| e.subject == EscalationSubject::HousingTenancy(id.0))
         .collect();
     assert_eq!(pages.len(), 1);
-    assert!(pages[0].recommended.iter().any(|c| c == &format!("@tenancy/resolve {id}=end")), "{:?}", pages[0].recommended);
+    assert!(
+        pages[0]
+            .recommended
+            .iter()
+            .any(|c| c == &format!("@tenancy/resolve {id}=end")),
+        "{:?}",
+        pages[0].recommended
+    );
 
     // Nothing is persisted: a second reboot recomputes exactly the same set.
     drain_into(&mut tw, &mut kv);
@@ -2657,7 +3574,9 @@ fn lb_dlbk1_a_quarantined_exact_tenancys_rent_is_suspended_and_resumes_on_repair
     assert_eq!(quarantine_keys(&tw), vec![key.clone()]);
     let hold = mush_economy::SuspensionKey::new(&key).expect("a valid key");
     match obligation_status(&tw, obligation) {
-        mush_economy::ObligationStatus::Suspended { reason: mush_economy::SuspendReason::Held { key: k } } => {
+        mush_economy::ObligationStatus::Suspended {
+            reason: mush_economy::SuspendReason::Held { key: k },
+        } => {
             assert_eq!(k, hold, "held under the wrong key");
         }
         other => panic!("the rent was not suspended at boot: {other:?}"),
@@ -2667,7 +3586,11 @@ fn lb_dlbk1_a_quarantined_exact_tenancys_rent_is_suspended_and_resumes_on_repair
     // why.
     skip_wall(&mut tw, 86_400);
     period(&mut tw, &r, 1);
-    assert_eq!(balance(&tw, pat_acct), 1_000, "a quarantined tenancy was charged rent");
+    assert_eq!(
+        balance(&tw, pat_acct),
+        1_000,
+        "a quarantined tenancy was charged rent"
+    );
     let o = tw
         .world()
         .module_state::<EconomyStore>()
@@ -2676,7 +3599,10 @@ fn lb_dlbk1_a_quarantined_exact_tenancys_rent_is_suspended_and_resumes_on_repair
     assert!(
         o.history.iter().any(|e| matches!(
             e,
-            mush_economy::ObligationEvent::Forgiven { cause: mush_economy::ForgiveCause::Suspension, .. }
+            mush_economy::ObligationEvent::Forgiven {
+                cause: mush_economy::ForgiveCause::Suspension,
+                ..
+            }
         )),
         "the suspended period was not forgiven with its cause: {:?}",
         o.history
@@ -2684,12 +3610,24 @@ fn lb_dlbk1_a_quarantined_exact_tenancys_rent_is_suspended_and_resumes_on_repair
     assert!(o.held_by(&hold));
 
     // The repair lifts the quarantine and releases the hold; the next period debits.
-    ok(&mut tw, GOD, &format!("@property/rooms {other}=-#{}", r.anchor.0));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@property/rooms {other}=-#{}", r.anchor.0),
+    );
     assert!(quarantine_keys(&tw).is_empty());
-    assert_eq!(obligation_status(&tw, obligation), mush_economy::ObligationStatus::Active, "the rent did not resume");
+    assert_eq!(
+        obligation_status(&tw, obligation),
+        mush_economy::ObligationStatus::Active,
+        "the rent did not resume"
+    );
     skip_wall(&mut tw, 86_400);
     period(&mut tw, &r, 1);
-    assert_eq!(balance(&tw, pat_acct), 990, "the resumed rent did not debit the next period");
+    assert_eq!(
+        balance(&tw, pat_acct),
+        990,
+        "the resumed rent did not debit the next period"
+    );
     assert_eq!(status(&tw, id), TenancyStatusKind::Active);
 }
 
@@ -2699,10 +3637,16 @@ fn lb_dlbk1_a_quarantined_exact_tenancys_rent_is_suspended_and_resumes_on_repair
 fn lb_dlbk4a_projections_match_a_rebuild_after_every_mutation() {
     let mut tw = boot();
     let r = rig(&mut tw);
-    assert_eq!(store(&tw).room_entry(r.anchor), Some(&RoomEntry::Unique(r.property)));
+    assert_eq!(
+        store(&tw).room_entry(r.anchor),
+        Some(&RoomEntry::Unique(r.property))
+    );
     assert_eq!(store(&tw).live_entry(r.property), Some(&LiveEntry::Vacant));
     let id = tenant(&mut tw, &r, r.pat, 3);
-    assert_eq!(store(&tw).live_entry(r.property), Some(&LiveEntry::Live(id)));
+    assert_eq!(
+        store(&tw).live_entry(r.property),
+        Some(&LiveEntry::Live(id))
+    );
     ok(&mut tw, r.pat, &format!("+guest add #{}", r.rex.0));
     ok(&mut tw, r.pat, &format!("+guest remove #{}", r.rex.0));
     // Dug from inside the property, so it is a private room and not a thoroughfare.
@@ -2713,28 +3657,56 @@ fn lb_dlbk4a_projections_match_a_rebuild_after_every_mutation() {
     // Adding a room, removing it again (after a withdrawal), withdrawing, and
     // putting the property back in service.
     ok(&mut tw, GOD, &format!("@property/withdraw {}", r.property));
-    ok(&mut tw, GOD, &format!("@property/rooms {}=#{}", r.property, annex.0));
-    assert_eq!(store(&tw).room_entry(annex), Some(&RoomEntry::Unique(r.property)));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@property/rooms {}=#{}", r.property, annex.0),
+    );
+    assert_eq!(
+        store(&tw).room_entry(annex),
+        Some(&RoomEntry::Unique(r.property))
+    );
     ok(&mut tw, GOD, &format!("@property/withdraw {}", r.property));
-    ok(&mut tw, GOD, &format!("@property/rooms {}=-#{}", r.property, annex.0));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@property/rooms {}=-#{}", r.property, annex.0),
+    );
     assert_eq!(store(&tw).room_entry(annex), None);
     // Re-adding a room the property already holds is the no-op that puts a
     // withdrawn property whose rooms are all live back in service.
-    ok(&mut tw, GOD, &format!("@property/rooms {}=#{}", r.property, r.spare.0));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@property/rooms {}=#{}", r.property, r.spare.0),
+    );
     assert_eq!(property(&tw, r.property).status, PropertyStatus::Let);
     // The tenant leaving, a second tenancy, and a resolution.
     ok(&mut tw, r.pat, "+home/leave");
     assert_eq!(store(&tw).live_entry(r.property), Some(&LiveEntry::Vacant));
-    ok(&mut tw, GOD, &format!("@tenancy/create {}=#{} cadence={}", r.property, r.quinn.0, r.cadence));
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@tenancy/create {}=#{} cadence={}",
+            r.property, r.quinn.0, r.cadence
+        ),
+    );
     let second = store(&tw).tenancies().last().expect("tenancy").id;
-    assert_eq!(store(&tw).live_entry(r.property), Some(&LiveEntry::Live(second)));
+    assert_eq!(
+        store(&tw).live_entry(r.property),
+        Some(&LiveEntry::Live(second))
+    );
     ok(&mut tw, GOD, &format!("@tenancy/resolve {second}=end"));
     assert_eq!(store(&tw).live_entry(r.property), Some(&LiveEntry::Vacant));
     // A programmatic destruction, last: the dead room stays a room of the record
     // (D-E5-1), so the projection keeps it too.
     ok(&mut tw, GOD, &format!("+boom #{}", r.spare.0));
     assert_projections_consistent(&tw);
-    assert_eq!(store(&tw).room_entry(r.spare), Some(&RoomEntry::Unique(r.property)));
+    assert_eq!(
+        store(&tw).room_entry(r.spare),
+        Some(&RoomEntry::Unique(r.property))
+    );
     // Every property has a row; every room of every property has one; nothing else.
     assert_eq!(store(&tw).room_entry(LIMBO), None);
     let kv = fold_kv(&mut tw);
@@ -2754,11 +3726,16 @@ fn population(tw: &mut TestWorld, r: &Rig, n: u64) -> Vec<TenancyId> {
     let now = i64::try_from(
         tw.world()
             .module_state::<EconomyStore>()
-            .and_then(|s| s.snapshot().cadence(mush_economy::CadenceId(r.cadence)).map(|c| c.position))
+            .and_then(|s| {
+                s.snapshot()
+                    .cadence(mush_economy::CadenceId(r.cadence))
+                    .map(|c| c.position)
+            })
             .expect("cadence"),
     )
     .unwrap_or(0);
-    let landlord = mush_org::PrincipalId::System(SystemPrincipalId::new("wod.housing").expect("valid"));
+    let landlord =
+        mush_org::PrincipalId::System(SystemPrincipalId::new("wod.housing").expect("valid"));
     let mut kv = fold_kv(tw);
     let base_p = store(tw).properties().last().map_or(0, |p| p.id.0 + 1);
     let base_t = store(tw).tenancies().last().map_or(0, |t| t.id.0 + 1);
@@ -2770,14 +3747,33 @@ fn population(tw: &mut TestWorld, r: &Rig, n: u64) -> Vec<TenancyId> {
             .expect("a room");
         let pid = PropertyId(base_p + i);
         let tid = TenancyId(base_t + i);
-        let p = mush_housing::Property::new(pid, format!("Cell {i}"), room, [room].into_iter().collect(), mush_housing::PropertyTier::new(2), landlord.clone())
-            .expect("a property");
-        let t = mush_housing::Tenancy::new(tid, pid, [r.pat].into_iter().collect(), mush_economy::CadenceId(r.cadence))
-            .expect("a tenancy");
-        let t = mush_housing::accept(&t, true, &[r.pat].into_iter().collect(), now).expect("accepted");
+        let p = mush_housing::Property::new(
+            pid,
+            format!("Cell {i}"),
+            room,
+            [room].into_iter().collect(),
+            mush_housing::PropertyTier::new(2),
+            landlord.clone(),
+        )
+        .expect("a property");
+        let t = mush_housing::Tenancy::new(
+            tid,
+            pid,
+            [r.pat].into_iter().collect(),
+            mush_economy::CadenceId(r.cadence),
+        )
+        .expect("a tenancy");
+        let t =
+            mush_housing::accept(&t, true, &[r.pat].into_iter().collect(), now).expect("accepted");
         let entry = kv.entry(SmolStr::new(NS)).or_default();
-        entry.push((mush_housing::property_key(pid), serde_json::to_value(&p).expect("serializes")));
-        entry.push((mush_housing::tenancy_key(tid), serde_json::to_value(&t).expect("serializes")));
+        entry.push((
+            mush_housing::property_key(pid),
+            serde_json::to_value(&p).expect("serializes"),
+        ));
+        entry.push((
+            mush_housing::tenancy_key(tid),
+            serde_json::to_value(&t).expect("serializes"),
+        ));
         entry.push((
             mush_housing::assess_key(tid),
             serde_json::json!({ "position": now, "period": 0, "unknown_periods": 0, "seeded": true }),
@@ -2806,14 +3802,26 @@ fn lb_dlbk2_a_fire_visits_at_most_256_works_at_most_128_and_idles_between_period
     for _ in 0..4 {
         fire(&mut tw);
         let f = store(&tw).last_fire();
-        assert!(f.visited <= mush_housing::MAX_VISITED_PER_FIRE, "visited {}", f.visited);
+        assert!(
+            f.visited <= mush_housing::MAX_VISITED_PER_FIRE,
+            "visited {}",
+            f.visited
+        );
         assert!(f.visited > 0, "an idle fire before the sweep was complete");
         assert_eq!(f.worked, 0);
         assert_eq!(f.cloned, 0, "a tenancy was cloned before the due check");
         cursors.push(store(&tw).cursor());
     }
-    assert_eq!(cursors[0], ids[255].0 + 1, "the cursor did not advance past the last visited id");
-    assert_eq!(cursors[1], ids[511].0 + 1, "the second fire did not visit the next block");
+    assert_eq!(
+        cursors[0],
+        ids[255].0 + 1,
+        "the cursor did not advance past the last visited id"
+    );
+    assert_eq!(
+        cursors[1],
+        ids[511].0 + 1,
+        "the second fire did not visit the next block"
+    );
     // The sweep is complete and found nothing due: the next fire skips the scan.
     fire(&mut tw);
     let f = store(&tw).last_fire();
@@ -2822,28 +3830,56 @@ fn lb_dlbk2_a_fire_visits_at_most_256_works_at_most_128_and_idles_between_period
     // …until a tenancy is created, which bumps the population version…
     ok(&mut tw, GOD, "@dig Extra=inExtra,outExtra");
     let extra = room_named(&tw, "Extra");
-    ok(&mut tw, GOD, &format!("@property/create Extra=#{} tier=1 landlord=housing", extra.0));
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@property/create Extra=#{} tier=1 landlord=housing",
+            extra.0
+        ),
+    );
     let p = store(&tw).properties().last().expect("property").id;
-    ok(&mut tw, GOD, &format!("@tenancy/create {p}=#{} cadence={}", r.quinn.0, r.cadence));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@tenancy/create {p}=#{} cadence={}", r.quinn.0, r.cadence),
+    );
     fire(&mut tw);
-    assert!(store(&tw).last_fire().visited > 0, "a new tenancy did not wake the scan");
+    assert!(
+        store(&tw).last_fire().visited > 0,
+        "a new tenancy did not wake the scan"
+    );
     for _ in 0..4 {
         fire(&mut tw);
     }
-    assert!(store(&tw).last_fire().short_circuited, "the scan never went idle again");
+    assert!(
+        store(&tw).last_fire().short_circuited,
+        "the scan never went idle again"
+    );
 
     // …or the cadence advances: now everything is due, and one fire works at most
     // 128 while later fires work the rest.
-    ok(&mut tw, GOD, &format!("@econ/cadence advance {} 1", r.cadence));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@econ/cadence advance {} 1", r.cadence),
+    );
     let mut worked_total = 0usize;
     for _ in 0..12 {
         fire(&mut tw);
         let f = store(&tw).last_fire();
-        assert!(f.worked <= mush_housing::MAX_WORKED_PER_FIRE, "worked {}", f.worked);
+        assert!(
+            f.worked <= mush_housing::MAX_WORKED_PER_FIRE,
+            "worked {}",
+            f.worked
+        );
         assert!(f.visited <= mush_housing::MAX_VISITED_PER_FIRE);
         worked_total += f.worked;
     }
-    assert_eq!(worked_total, 1_001, "the period was not spread over later fires: {worked_total}");
+    assert_eq!(
+        worked_total, 1_001,
+        "the period was not spread over later fires: {worked_total}"
+    );
 }
 
 // ======================================================================
@@ -2870,13 +3906,30 @@ fn lb_dlbk3_an_oversized_pending_notice_is_dropped_on_load_and_a_240_byte_one_ke
     });
     reboot(&mut tw, kv);
     let queued = store(&tw).pending_notices(r.pat);
-    assert_eq!(queued.len(), 2, "the oversized notice was not dropped on its own: {queued:?}");
-    assert!(queued.iter().all(|n| n.text.len() <= mush_housing::MAX_NOTICE_BYTES));
-    assert!(queued.iter().any(|n| n.text == kept), "the 240-byte notice was lost: {queued:?}");
+    assert_eq!(
+        queued.len(),
+        2,
+        "the oversized notice was not dropped on its own: {queued:?}"
+    );
+    assert!(
+        queued
+            .iter()
+            .all(|n| n.text.len() <= mush_housing::MAX_NOTICE_BYTES)
+    );
+    assert!(
+        queued.iter().any(|n| n.text == kept),
+        "the 240-byte notice was lost: {queued:?}"
+    );
     // …and it is the one `+home` shows as waiting.
     let seen = ok(&mut tw, r.pat, "+home");
-    assert!(seen.contains(&kept), "the kept notice is not rendered: {seen}");
-    assert!(!seen.contains(&dropped), "a 241-byte notice reached the render: {seen}");
+    assert!(
+        seen.contains(&kept),
+        "the kept notice is not rendered: {seen}"
+    );
+    assert!(
+        !seen.contains(&dropped),
+        "a 241-byte notice reached the render: {seen}"
+    );
 }
 
 // ======================================================================
@@ -2894,7 +3947,10 @@ fn lb_dlbk6_housing_resolves_its_story_job_through_the_plain_seam() {
         period(&mut tw, &r, 1);
     }
     let job = window_of(&tw, id).job.expect("the story job");
-    assert_eq!(mush_jobs::get_job(tw.world(), job).expect("job").queue, mush_housing::STORY_QUEUE);
+    assert_eq!(
+        mush_jobs::get_job(tw.world(), job).expect("job").queue,
+        mush_housing::STORY_QUEUE
+    );
     ok(&mut tw, GOD, &format!("+plan {id}=#{} 4", r.pat.0));
     period(&mut tw, &r, 1);
     assert_eq!(status(&tw, id), TenancyStatusKind::Active);
@@ -2902,7 +3958,9 @@ fn lb_dlbk6_housing_resolves_its_story_job_through_the_plain_seam() {
     assert_eq!(job.status, mush_jobs::JobStatus::Resolved);
     assert!(job.payload.is_none());
     assert!(
-        job.comments.iter().any(|c| c.text.starts_with("Recovered:")),
+        job.comments
+            .iter()
+            .any(|c| c.text.starts_with("Recovered:")),
         "the closing note is missing: {:?}",
         job.comments
     );
@@ -2920,28 +3978,53 @@ fn lb_e5bd34_an_old_document_carrying_upkeep_loads_and_is_not_rendered() {
     let mut tw = boot();
     let r = rig(&mut tw);
     let mut kv = fold_kv(&mut tw);
-    patch(&mut kv, mush_housing::property_key(r.property).as_str(), |v| {
-        v["upkeep"] = serde_json::json!(500);
-    });
+    patch(
+        &mut kv,
+        mush_housing::property_key(r.property).as_str(),
+        |v| {
+            v["upkeep"] = serde_json::json!(500);
+        },
+    );
     reboot(&mut tw, kv);
     let seen = ok(&mut tw, GOD, &format!("@property/show {}", r.property));
-    assert!(!seen.contains("upkeep"), "the dropped field was rendered: {seen}");
+    assert!(
+        !seen.contains("upkeep"),
+        "the dropped field was rendered: {seen}"
+    );
     assert!(seen.contains("tier 2"), "{seen}");
     // Re-persisted, the field is gone for good.
     ok(&mut tw, GOD, &format!("@property/tier {}=3", r.property));
     let kv = fold_kv(&mut tw);
     let doc = kv
         .get(&SmolStr::new(NS))
-        .and_then(|e| e.iter().find(|(k, _)| k.as_str() == mush_housing::property_key(r.property).as_str()))
+        .and_then(|e| {
+            e.iter()
+                .find(|(k, _)| k.as_str() == mush_housing::property_key(r.property).as_str())
+        })
         .map(|(_, v)| v.clone())
         .expect("the property doc");
-    assert!(doc.get("upkeep").is_none(), "upkeep was written back: {doc}");
+    assert!(
+        doc.get("upkeep").is_none(),
+        "upkeep was written back: {doc}"
+    );
     // Not accepted at creation: the token falls through as a room name and is refused.
     ok(&mut tw, GOD, "@dig Hut=inHut,outHut");
     let hut = room_named(&tw, "Hut");
-    let seen = err(&mut tw, GOD, &format!("@property/create Hut=#{} tier=1 landlord=housing upkeep=5", hut.0));
+    let seen = err(
+        &mut tw,
+        GOD,
+        &format!(
+            "@property/create Hut=#{} tier=1 landlord=housing upkeep=5",
+            hut.0
+        ),
+    );
     assert!(seen.contains("No such room."), "{seen}");
-    let help = tw.registry().spec_of("@property").expect("registered").help.to_string();
+    let help = tw
+        .registry()
+        .spec_of("@property")
+        .expect("registered")
+        .help
+        .to_string();
     assert!(!help.contains("upkeep"), "the help still advertises upkeep");
 }
 
@@ -2957,8 +4040,13 @@ fn lb_e5bd34_an_old_document_carrying_upkeep_loads_and_is_not_rendered() {
 // (`mush_economy::end_lease`), in the same step, on every path into `flow::end`; and
 // boot's pass 8 catches a world that ended one before that was true.
 
-fn contract_state(tw: &TestWorld, id: mush_economy::ContractId) -> Option<mush_economy::ContractState> {
-    tw.world().module_state::<EconomyStore>().and_then(|s| s.snapshot().contract(id).map(|c| c.state))
+fn contract_state(
+    tw: &TestWorld,
+    id: mush_economy::ContractId,
+) -> Option<mush_economy::ContractState> {
+    tw.world()
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().contract(id).map(|c| c.state))
 }
 
 fn encumbrances_of(tw: &TestWorld, obj: ObjId) -> Vec<mush_economy::Encumbrance> {
@@ -2971,7 +4059,11 @@ fn encumbrances_of(tw: &TestWorld, obj: ObjId) -> Vec<mush_economy::Encumbrance>
 fn held_of(tw: &TestWorld, acct: u64) -> i64 {
     tw.world()
         .module_state::<EconomyStore>()
-        .and_then(|s| s.snapshot().account(mush_economy::AccountId(acct)).map(|a| a.held_amount.minor()))
+        .and_then(|s| {
+            s.snapshot()
+                .account(mush_economy::AccountId(acct))
+                .map(|a| a.held_amount.minor())
+        })
         .expect("the account")
 }
 
@@ -3013,10 +4105,18 @@ fn bound_lease(tw: &mut TestWorld, r: &mut Rig, tenants: &[ObjId]) -> (TenancyId
     for who in tenants {
         ok(tw, *who, &format!("@contract/accept {contract}"));
     }
-    assert_eq!(status(tw, id), TenancyStatusKind::Active, "the lease did not bind");
+    assert_eq!(
+        status(tw, id),
+        TenancyStatusKind::Active,
+        "the lease did not bind"
+    );
     skip_wall(tw, 86_400);
     period(tw, r, 1);
-    assert_eq!(balance(tw, pat_acct), 990, "one period of rent while the tenancy is live");
+    assert_eq!(
+        balance(tw, pat_acct),
+        990,
+        "one period of rent while the tenancy is live"
+    );
     (id, pat_acct, quinn_acct)
 }
 
@@ -3033,13 +4133,17 @@ fn lb_rent_after_end_resolve_end_stops_the_rent_and_releases_the_pledge() {
     let contract = contract_of(&tw, id);
     let obligation = obligation_of(&tw, id);
     assert!(
-        encumbrances_of(&tw, r.anchor)
-            .iter()
-            .any(|e| matches!(e, mush_economy::Encumbrance::Lease { contract: c, .. } if *c == contract)),
+        encumbrances_of(&tw, r.anchor).iter().any(
+            |e| matches!(e, mush_economy::Encumbrance::Lease { contract: c, .. } if *c == contract)
+        ),
         "the lease claim was never placed"
     );
 
-    ok(&mut tw, GOD, &format!("@tenancy/resolve {id}=end moved out"));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@tenancy/resolve {id}=end moved out"),
+    );
     assert_eq!(status(&tw, id), TenancyStatusKind::Ended);
     assert_eq!(
         contract_state(&tw, contract),
@@ -3057,15 +4161,30 @@ fn lb_rent_after_end_resolve_end_stops_the_rent_and_releases_the_pledge() {
         encumbrances_of(&tw, r.anchor)
     );
     assert_eq!(held_of(&tw, pat_acct), 0);
-    assert_eq!(refund_posts(&tw, contract), 1, "the unwind did not post under the refund key exactly once");
-    assert!(tenancy_pages(&tw, id).is_empty(), "a clean ending paged: {:?}", tenancy_pages(&tw, id));
+    assert_eq!(
+        refund_posts(&tw, contract),
+        1,
+        "the unwind did not post under the refund key exactly once"
+    );
+    assert!(
+        tenancy_pages(&tw, id).is_empty(),
+        "a clean ending paged: {:?}",
+        tenancy_pages(&tw, id)
+    );
 
     for _ in 0..2 {
         skip_wall(&mut tw, 86_400);
         period(&mut tw, &r, 1);
     }
-    assert_eq!(balance(&tw, pat_acct), 990, "the former tenant was debited after the end");
-    assert_eq!(obligation_status(&tw, obligation), mush_economy::ObligationStatus::Cancelled);
+    assert_eq!(
+        balance(&tw, pat_acct),
+        990,
+        "the former tenant was debited after the end"
+    );
+    assert_eq!(
+        obligation_status(&tw, obligation),
+        mush_economy::ObligationStatus::Cancelled
+    );
     assert_projections_consistent(&tw);
 }
 
@@ -3089,19 +4208,36 @@ fn lb_rent_after_end_the_last_tenant_leaving_ends_the_lease_and_a_co_tenant_leav
         Some(mush_economy::ContractState::Active),
         "a co-tenant leaving ended the lease"
     );
-    assert_eq!(obligation_status(&tw, obligation), mush_economy::ObligationStatus::Active);
+    assert_eq!(
+        obligation_status(&tw, obligation),
+        mush_economy::ObligationStatus::Active
+    );
     skip_wall(&mut tw, 86_400);
     period(&mut tw, &r, 1);
-    assert_eq!(balance(&tw, pat_acct), 980, "the live lease stopped charging when a co-tenant left");
+    assert_eq!(
+        balance(&tw, pat_acct),
+        980,
+        "the live lease stopped charging when a co-tenant left"
+    );
 
     ok(&mut tw, r.pat, "+home/leave");
     assert_eq!(status(&tw, id), TenancyStatusKind::Ended);
-    assert_eq!(contract_state(&tw, contract), Some(mush_economy::ContractState::Cancelled));
-    assert_eq!(obligation_status(&tw, obligation), mush_economy::ObligationStatus::Cancelled);
+    assert_eq!(
+        contract_state(&tw, contract),
+        Some(mush_economy::ContractState::Cancelled)
+    );
+    assert_eq!(
+        obligation_status(&tw, obligation),
+        mush_economy::ObligationStatus::Cancelled
+    );
     assert!(encumbrances_of(&tw, r.anchor).is_empty());
     skip_wall(&mut tw, 86_400);
     period(&mut tw, &r, 1);
-    assert_eq!(balance(&tw, pat_acct), 980, "the last tenant was debited after moving out");
+    assert_eq!(
+        balance(&tw, pat_acct),
+        980,
+        "the last tenant was debited after moving out"
+    );
     assert_eq!(refund_posts(&tw, contract), 1);
 }
 
@@ -3128,7 +4264,11 @@ fn lb_rent_after_end_an_eviction_end_ends_the_lease() {
     ok(&mut tw, r.pat, &format!("@contract/accept {contract}"));
     let obligation = obligation_of(&tw, id);
     for _ in 0..24 {
-        ok(&mut tw, GOD, &format!("@econ/cadence advance {} 1", r.cadence));
+        ok(
+            &mut tw,
+            GOD,
+            &format!("@econ/cadence advance {} 1", r.cadence),
+        );
         let t = tw.world().now().saturating_add(86_400);
         tw.set_now(t);
         tw.fire_due(t.saturating_mul(1000));
@@ -3141,24 +4281,42 @@ fn lb_rent_after_end_an_eviction_end_ends_the_lease() {
         TenancyStatusKind::EvictionPending,
         "the exact ladder did not reach the window"
     );
-    assert_eq!(contract_state(&tw, contract), Some(mush_economy::ContractState::Active));
+    assert_eq!(
+        contract_state(&tw, contract),
+        Some(mush_economy::ContractState::Active)
+    );
 
-    ok(&mut tw, GOD, &format!("@tenancy/resolve {id}=end no support was found"));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@tenancy/resolve {id}=end no support was found"),
+    );
     assert_eq!(status(&tw, id), TenancyStatusKind::Ended);
     assert_eq!(
         contract_state(&tw, contract),
         Some(mush_economy::ContractState::Cancelled),
         "the eviction left the lease live"
     );
-    assert_eq!(obligation_status(&tw, obligation), mush_economy::ObligationStatus::Cancelled);
+    assert_eq!(
+        obligation_status(&tw, obligation),
+        mush_economy::ObligationStatus::Cancelled
+    );
     assert!(encumbrances_of(&tw, r.anchor).is_empty());
     // Money arrives afterwards: none of it is rent for a home that is gone.
-    ok(&mut tw, GOD, &format!("@econ/mint {faucet}={pat_acct} 1000"));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@econ/mint {faucet}={pat_acct} 1000"),
+    );
     for _ in 0..2 {
         skip_wall(&mut tw, 86_400);
         period(&mut tw, &r, 1);
     }
-    assert_eq!(balance(&tw, pat_acct), 1_000, "an evicted tenant was charged rent afterwards");
+    assert_eq!(
+        balance(&tw, pat_acct),
+        1_000,
+        "an evicted tenant was charged rent afterwards"
+    );
     assert_eq!(balance(&tw, quinn_acct), 0);
 }
 
@@ -3198,26 +4356,41 @@ fn lb_rent_after_end_boot_ends_a_live_lease_behind_an_ended_tenancy_and_pages() 
     assert_eq!(property(&tw, r.property).status, PropertyStatus::Vacant);
     let pages = tenancy_pages(&tw, id);
     assert_eq!(pages.len(), 1, "boot did not page exactly once: {pages:?}");
-    assert_eq!(pages[0].kind, mush_economy::EscalationKind::BootReconciliation);
+    assert_eq!(
+        pages[0].kind,
+        mush_economy::EscalationKind::BootReconciliation
+    );
     assert!(pages[0].is_open());
     assert!(
-        pages[0].context.contains("still live at boot") && pages[0].context.contains(&format!("#{contract}")),
+        pages[0].context.contains("still live at boot")
+            && pages[0].context.contains(&format!("#{contract}")),
         "{}",
         pages[0].context
     );
     assert!(
-        pages[0].recommended.iter().any(|c| c == &format!("@obligation/show #{obligation}")),
+        pages[0]
+            .recommended
+            .iter()
+            .any(|c| c == &format!("@obligation/show #{obligation}")),
         "{:?}",
         pages[0].recommended
     );
 
     skip_wall(&mut tw, 86_400);
     period(&mut tw, &r, 1);
-    assert_eq!(balance(&tw, pat_acct), 990, "the former tenant was debited after the boot repair");
+    assert_eq!(
+        balance(&tw, pat_acct),
+        990,
+        "the former tenant was debited after the boot repair"
+    );
     // A second boot finds nothing: the lease is terminal, so pass 8 has no finding.
     drain_into(&mut tw, &mut kv);
     reboot(&mut tw, kv);
-    assert_eq!(tenancy_pages(&tw, id).len(), 1, "a terminal lease was paged again");
+    assert_eq!(
+        tenancy_pages(&tw, id).len(),
+        1,
+        "a terminal lease was paged again"
+    );
     assert_eq!(refund_posts(&tw, contract), 1);
 }
 
@@ -3234,20 +4407,43 @@ fn lb_rent_after_end_a_terminal_lease_is_a_no_op() {
     let obligation = obligation_of(&tw, id);
 
     ok(&mut tw, GOD, &format!("@contract/cancel #{contract}"));
-    assert_eq!(contract_state(&tw, contract), Some(mush_economy::ContractState::Cancelled));
-    assert_eq!(status(&tw, id), TenancyStatusKind::Ended, "the observer did not end the tenancy");
+    assert_eq!(
+        contract_state(&tw, contract),
+        Some(mush_economy::ContractState::Cancelled)
+    );
+    assert_eq!(
+        status(&tw, id),
+        TenancyStatusKind::Ended,
+        "the observer did not end the tenancy"
+    );
     assert!(matches!(
         tenancy(&tw, id).status,
-        mush_housing::TenancyStatus::Ended { how: mush_housing::Resolution::Settled }
+        mush_housing::TenancyStatus::Ended {
+            how: mush_housing::Resolution::Settled
+        }
     ));
-    assert_eq!(obligation_status(&tw, obligation), mush_economy::ObligationStatus::Cancelled);
-    assert_eq!(refund_posts(&tw, contract), 1, "the ending sweep posted a second unwind");
-    assert!(tenancy_pages(&tw, id).is_empty(), "a terminal lease was paged: {:?}", tenancy_pages(&tw, id));
+    assert_eq!(
+        obligation_status(&tw, obligation),
+        mush_economy::ObligationStatus::Cancelled
+    );
+    assert_eq!(
+        refund_posts(&tw, contract),
+        1,
+        "the ending sweep posted a second unwind"
+    );
+    assert!(
+        tenancy_pages(&tw, id).is_empty(),
+        "a terminal lease was paged: {:?}",
+        tenancy_pages(&tw, id)
+    );
     assert_eq!(home_of(&tw, r.pat), None);
 
     let kv = fold_kv(&mut tw);
     reboot(&mut tw, kv);
-    assert!(tenancy_pages(&tw, id).is_empty(), "boot paged about a terminal lease");
+    assert!(
+        tenancy_pages(&tw, id).is_empty(),
+        "boot paged about a terminal lease"
+    );
     assert_eq!(refund_posts(&tw, contract), 1);
     skip_wall(&mut tw, 86_400);
     period(&mut tw, &r, 1);
@@ -3275,9 +4471,16 @@ fn lb_rent_after_end_ending_a_pending_tenancy_ends_the_offered_lease() {
     let id = store(&tw).tenancies().last().expect("tenancy").id;
     let contract = contract_of(&tw, id);
     assert_eq!(status(&tw, id), TenancyStatusKind::Pending);
-    assert_eq!(contract_state(&tw, contract), Some(mush_economy::ContractState::Offered));
+    assert_eq!(
+        contract_state(&tw, contract),
+        Some(mush_economy::ContractState::Offered)
+    );
 
-    ok(&mut tw, GOD, &format!("@tenancy/resolve {id}=end withdrawn"));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@tenancy/resolve {id}=end withdrawn"),
+    );
     assert_eq!(status(&tw, id), TenancyStatusKind::Ended);
     assert_eq!(
         contract_state(&tw, contract),

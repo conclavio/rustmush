@@ -154,13 +154,17 @@ impl CustodyProvider for InteriorCustodyProvider {
     /// registered-but-unbooted module is a real risk: the server's module order
     /// (sim before economy) is what makes it impossible.
     fn backing_valid(&self, w: &World, backing: &CustodyRef) -> Option<bool> {
-        let CustodyRef::SpatialInterior(space) = backing else { return None };
+        let CustodyRef::SpatialInterior(space) = backing else {
+            return None;
+        };
         let st = w.module_state::<SpatialState>()?;
         Some(st.spaces.contains_key(space) && live(w, *space) && !st.is_quarantined(*space))
     }
 
     fn contents(&self, w: &World, backing: &CustodyRef) -> Option<Vec<ObjId>> {
-        let CustodyRef::SpatialInterior(space) = backing else { return None };
+        let CustodyRef::SpatialInterior(space) = backing else {
+            return None;
+        };
         let st = w.module_state::<SpatialState>()?;
         if !live(w, *space) || !st.spaces.contains_key(space) {
             return Some(Vec::new());
@@ -169,7 +173,9 @@ impl CustodyProvider for InteriorCustodyProvider {
     }
 
     fn holds(&self, w: &World, backing: &CustodyRef, obj: ObjId) -> Option<bool> {
-        let CustodyRef::SpatialInterior(space) = backing else { return None };
+        let CustodyRef::SpatialInterior(space) = backing else {
+            return None;
+        };
         let st = w.module_state::<SpatialState>()?;
         Some(interior_holder(st, obj, *space))
     }
@@ -189,7 +195,9 @@ impl CustodyProvider for InteriorCustodyProvider {
         obj: ObjId,
         backing: &CustodyRef,
     ) -> Result<(), CustodyError> {
-        let CustodyRef::SpatialInterior(space) = backing else { return Err(CustodyError::NoProvider) };
+        let CustodyRef::SpatialInterior(space) = backing else {
+            return Err(CustodyError::NoProvider);
+        };
         let participant = mush_core::BehaviorId::new(PARTICIPANT).expect("static behavior id");
         if !ctx.w.has_behavior(obj, &participant) {
             return Err(CustodyError::Refused(format!(
@@ -198,10 +206,16 @@ impl CustodyProvider for InteriorCustodyProvider {
                 display_name(ctx.w, *space)
             )));
         }
-        run(ctx, &Transition::Place {
-            obj,
-            parent: SpatialParent::Interior { space: *space, slot: None },
-        })
+        run(
+            ctx,
+            &Transition::Place {
+                obj,
+                parent: SpatialParent::Interior {
+                    space: *space,
+                    slot: None,
+                },
+            },
+        )
         .map_err(|e| CustodyError::Refused(e.to_string()))
     }
 
@@ -242,13 +256,21 @@ impl CustodyProvider for InteriorCustodyProvider {
         backing: &CustodyRef,
         to: ObjId,
     ) -> Result<(), CustodyError> {
-        let CustodyRef::SpatialInterior(space) = backing else { return Err(CustodyError::NoProvider) };
+        let CustodyRef::SpatialInterior(space) = backing else {
+            return Err(CustodyError::NoProvider);
+        };
         // ---- 1. pre-validate the destination (no mutation past this point fails) ----
         if !live(ctx.w, obj) {
-            return Err(CustodyError::Refused(format!("#{} is not available to move.", obj.0)));
+            return Err(CustodyError::Refused(format!(
+                "#{} is not available to move.",
+                obj.0
+            )));
         }
         if !live(ctx.w, to) {
-            return Err(CustodyError::Refused(format!("#{} cannot hold anything.", to.0)));
+            return Err(CustodyError::Refused(format!(
+                "#{} cannot hold anything.",
+                to.0
+            )));
         }
         ctx.w
             .can_move_to(obj, to)
@@ -263,8 +285,16 @@ impl CustodyProvider for InteriorCustodyProvider {
         }
         // ---- 2. leave the simulation, keeping the projection where it is ----
         let reason = format!("withdrawn from {}", display_name(ctx.w, *space));
-        run(ctx, &Transition::Unplace { obj, reason, by: Some(actor), keep: true })
-            .map_err(|e| CustodyError::Refused(e.to_string()))?;
+        run(
+            ctx,
+            &Transition::Unplace {
+                obj,
+                reason,
+                by: Some(actor),
+                keep: true,
+            },
+        )
+        .map_err(|e| CustodyError::Refused(e.to_string()))?;
         // ---- 3. the ONE world move ----
         ctx.w
             .move_to(obj, to)

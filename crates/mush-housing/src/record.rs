@@ -248,7 +248,9 @@ impl Property {
             return Err(HousingError::Invalid("the anchor room cannot be removed"));
         }
         if self.status == PropertyStatus::Let {
-            return Err(HousingError::Invalid("a let property's rooms cannot be removed"));
+            return Err(HousingError::Invalid(
+                "a let property's rooms cannot be removed",
+            ));
         }
         let mut next = self.clone();
         if next.rooms.remove(&room) {
@@ -277,7 +279,10 @@ impl Property {
             return Err(HousingError::TooLarge("features per property"));
         }
         let mut next = self.clone();
-        next.features.push(Feature { key: SmolStr::new(key), approved_by });
+        next.features.push(Feature {
+            key: SmolStr::new(key),
+            approved_by,
+        });
         next.revision = next.revision.saturating_add(1);
         Ok(next)
     }
@@ -323,7 +328,9 @@ impl TryFrom<PropertyWire> for Property {
         // same on load would silently repair a document whose title room is outside
         // its own property — exactly the corruption worth failing on.
         if !w.rooms.contains(&w.anchor) {
-            return Err(HousingError::Invalid("the anchor must be one of the property's rooms"));
+            return Err(HousingError::Invalid(
+                "the anchor must be one of the property's rooms",
+            ));
         }
         let mut p = Property::new(w.id, w.name.as_str(), w.anchor, w.rooms, w.tier, w.landlord)?;
         if w.features.len() > MAX_FEATURES {
@@ -420,7 +427,9 @@ pub enum Funding {
 
 impl Default for Funding {
     fn default() -> Funding {
-        Funding::Abstract { plans: BTreeMap::new() }
+        Funding::Abstract {
+            plans: BTreeMap::new(),
+        }
     }
 }
 
@@ -517,7 +526,14 @@ impl SupportPlan {
         if sources.len() > MAX_PLAN_SOURCES {
             return Err(HousingError::TooLarge("plan sources"));
         }
-        Ok(SupportPlan { resident, level, sources, asserted_at, asserted_period, revision: 1 })
+        Ok(SupportPlan {
+            resident,
+            level,
+            sources,
+            asserted_at,
+            asserted_period,
+            revision: 1,
+        })
     }
 }
 
@@ -603,7 +619,10 @@ impl Resolution {
         if reason.len() > MAX_REASON_BYTES {
             return Err(HousingError::TooLarge("resolution reason"));
         }
-        Ok(Resolution::StaffEnded { by, reason: SmolStr::new(reason) })
+        Ok(Resolution::StaffEnded {
+            by,
+            reason: SmolStr::new(reason),
+        })
     }
 }
 
@@ -1019,7 +1038,9 @@ impl TryFrom<TenancyWire> for Tenancy {
                 // never overwrite another's; a document filed under somebody else is a
                 // plan attributed to a resident who never asserted it.
                 if p.resident != *who {
-                    return Err(HousingError::Invalid("a plan is filed under another resident"));
+                    return Err(HousingError::Invalid(
+                        "a plan is filed under another resident",
+                    ));
                 }
                 if p.sources.len() > MAX_PLAN_SOURCES {
                     return Err(HousingError::TooLarge("plan sources"));
@@ -1109,7 +1130,11 @@ pub fn submit_plan(t: &Tenancy, plan: SupportPlan) -> Result<Tenancy, HousingErr
         Funding::Exact { .. } => return Err(HousingError::WrongFunding),
     }
     if !restated {
-        next.push_event(TenancyEvent::PlanSubmitted { resident, level, at });
+        next.push_event(TenancyEvent::PlanSubmitted {
+            resident,
+            level,
+            at,
+        });
     }
     next.revision = next.revision.saturating_add(1);
     Ok(next)

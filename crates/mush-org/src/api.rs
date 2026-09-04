@@ -24,7 +24,9 @@ use crate::authorize::{AuthRequest, Decision, DenyReason};
 use crate::ids::{DelegationId, GrantId, OrgId, OrgScopeId, PolicyId, RoleId};
 use crate::module::OrgStore;
 use crate::plan::{OrgError, OrgMutationOp, OrgMutationPlan};
-use crate::record::{AccessPolicy, CapabilityGrant, Delegation, OrgMembership, OrgRole, OrgScope, Organization};
+use crate::record::{
+    AccessPolicy, CapabilityGrant, Delegation, OrgMembership, OrgRole, OrgScope, Organization,
+};
 use crate::wiring::WorldPredicates;
 
 /// The org persistence namespace (`mod:org:*`).
@@ -76,7 +78,10 @@ pub fn member_key(org: OrgId, obj: ObjId) -> SmolStr {
 
 /// Queue one org write on the outbox deferred side-channel.
 pub(crate) fn push_op(out: &mut Outbox, op: ModuleWrite) {
-    out.defer(Deferred::Persist(ModuleOp { ns: SmolStr::new_static(NS), op }));
+    out.defer(Deferred::Persist(ModuleOp {
+        ns: SmolStr::new_static(NS),
+        op,
+    }));
 }
 fn json_set(out: &mut Outbox, key: SmolStr, value: serde_json::Value) {
     push_op(out, ModuleWrite::JsonSet { key, value });
@@ -86,25 +91,53 @@ pub(crate) fn persist_del(out: &mut Outbox, key: SmolStr) {
     push_op(out, ModuleWrite::Del { key });
 }
 pub(crate) fn persist_org(out: &mut Outbox, o: &Organization) {
-    json_set(out, org_key(o.id), serde_json::to_value(o).expect("org serializes"));
+    json_set(
+        out,
+        org_key(o.id),
+        serde_json::to_value(o).expect("org serializes"),
+    );
 }
 pub(crate) fn persist_scope(out: &mut Outbox, s: &OrgScope) {
-    json_set(out, scope_key(s.id), serde_json::to_value(s).expect("scope serializes"));
+    json_set(
+        out,
+        scope_key(s.id),
+        serde_json::to_value(s).expect("scope serializes"),
+    );
 }
 pub(crate) fn persist_role(out: &mut Outbox, r: &OrgRole) {
-    json_set(out, role_key(r.id), serde_json::to_value(r).expect("role serializes"));
+    json_set(
+        out,
+        role_key(r.id),
+        serde_json::to_value(r).expect("role serializes"),
+    );
 }
 pub(crate) fn persist_membership(out: &mut Outbox, m: &OrgMembership) {
-    json_set(out, member_key(m.org, m.member), serde_json::to_value(m).expect("membership serializes"));
+    json_set(
+        out,
+        member_key(m.org, m.member),
+        serde_json::to_value(m).expect("membership serializes"),
+    );
 }
 pub(crate) fn persist_grant(out: &mut Outbox, g: &CapabilityGrant) {
-    json_set(out, grant_key(g.id), serde_json::to_value(g).expect("grant serializes"));
+    json_set(
+        out,
+        grant_key(g.id),
+        serde_json::to_value(g).expect("grant serializes"),
+    );
 }
 pub(crate) fn persist_delegation(out: &mut Outbox, d: &Delegation) {
-    json_set(out, delegation_key(d.id), serde_json::to_value(d).expect("delegation serializes"));
+    json_set(
+        out,
+        delegation_key(d.id),
+        serde_json::to_value(d).expect("delegation serializes"),
+    );
 }
 pub(crate) fn persist_policy(out: &mut Outbox, p: &AccessPolicy) {
-    json_set(out, policy_key(p.id), serde_json::to_value(p).expect("policy serializes"));
+    json_set(
+        out,
+        policy_key(p.id),
+        serde_json::to_value(p).expect("policy serializes"),
+    );
 }
 /// Mirror the meta document (the id-allocator resume points).
 pub(crate) fn persist_meta(out: &mut Outbox, meta: serde_json::Value) {
@@ -175,7 +208,10 @@ pub fn audit(ctx: &mut Ctx<'_>, action: OrgAction) -> Result<(), OrgError> {
         .module_state::<OrgStore>()
         .ok_or_else(|| OrgError::Invalid("org module not loaded".into()))?
         .audit
-        .prepare_append(AUDIT_LOG, serde_json::to_value(&entry).expect("audit entry serializes"))
+        .prepare_append(
+            AUDIT_LOG,
+            serde_json::to_value(&entry).expect("audit entry serializes"),
+        )
         .map_err(|error| OrgError::Invalid(format!("audit append refused: {error}")))?;
     let op = {
         let store = ctx
@@ -219,7 +255,11 @@ pub fn authorize_in_world(w: &World, req: &AuthRequest) -> Decision {
 /// **Terminal on the success path** (the canon/scene discipline): call it as the
 /// last mutating act, because a later `Err` truncates the deferred persists but
 /// does not roll back the in-RAM state install.
-pub fn submit(ctx: &mut Ctx<'_>, plan: &OrgMutationPlan, action: OrgAction) -> Result<(), OrgError> {
+pub fn submit(
+    ctx: &mut Ctx<'_>,
+    plan: &OrgMutationPlan,
+    action: OrgAction,
+) -> Result<(), OrgError> {
     // Validate + compute the post-image against the live state (no mutation yet).
     let post = {
         let store = ctx
@@ -253,7 +293,10 @@ pub fn submit(ctx: &mut Ctx<'_>, plan: &OrgMutationPlan, action: OrgAction) -> R
     // installation becomes stale, the caller's output checkpoint discards them.
     persist_ops(ctx.out, &plan.ops, &post);
     let (audit_op, meta) = {
-        let store = ctx.w.module_state_mut::<OrgStore>().expect("org store slot");
+        let store = ctx
+            .w
+            .module_state_mut::<OrgStore>()
+            .expect("org store slot");
         let (_seq, audit_op) = store
             .audit
             .apply_prepared(prepared_audit)
@@ -286,7 +329,9 @@ fn persist_ops(out: &mut Outbox, ops: &[OrgMutationOp], post: &crate::OrgState) 
             }
             OrgMutationOp::CreateRole { role } => persist_role(out, role),
             OrgMutationOp::PutMembership { membership } => persist_membership(out, membership),
-            OrgMutationOp::RemoveMembership { org, member } => persist_del(out, member_key(*org, *member)),
+            OrgMutationOp::RemoveMembership { org, member } => {
+                persist_del(out, member_key(*org, *member))
+            }
             OrgMutationOp::PutGrant { grant } => persist_grant(out, grant),
             OrgMutationOp::RevokeGrant { grant } => persist_del(out, grant_key(*grant)),
             OrgMutationOp::Delegate { delegation } => persist_delegation(out, delegation),

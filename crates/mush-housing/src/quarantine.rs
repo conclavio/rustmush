@@ -81,9 +81,18 @@ impl QuarantineKey {
         let (kind, id) = rest.split_once(':')?;
         let id = id.trim().trim_start_matches('#');
         match kind {
-            "room" => id.parse::<u32>().ok().map(|n| QuarantineKey::Room(ObjId(n))),
-            "tenancy" => id.parse::<u64>().ok().map(|n| QuarantineKey::Tenancy(PropertyId(n))),
-            "orphan" => id.parse::<u64>().ok().map(|n| QuarantineKey::Orphan(TenancyId(n))),
+            "room" => id
+                .parse::<u32>()
+                .ok()
+                .map(|n| QuarantineKey::Room(ObjId(n))),
+            "tenancy" => id
+                .parse::<u64>()
+                .ok()
+                .map(|n| QuarantineKey::Tenancy(PropertyId(n))),
+            "orphan" => id
+                .parse::<u64>()
+                .ok()
+                .map(|n| QuarantineKey::Orphan(TenancyId(n))),
             _ => None,
         }
     }
@@ -140,7 +149,9 @@ pub(crate) fn compute(store: &HousingStore) -> BTreeMap<QuarantineKey, Conflict>
     let mut out: BTreeMap<QuarantineKey, Conflict> = BTreeMap::new();
     // (a) a room held by more than one property.
     for (room, entry) in &store.room_index {
-        let RoomEntry::Conflict(props) = entry else { continue };
+        let RoomEntry::Conflict(props) = entry else {
+            continue;
+        };
         let mut tenancies = BTreeSet::new();
         let mut repair = Vec::new();
         for p in props {
@@ -151,7 +162,9 @@ pub(crate) fn compute(store: &HousingStore) -> BTreeMap<QuarantineKey, Conflict>
                 Some(LiveEntry::Conflict(ts)) => tenancies.extend(ts.iter().copied()),
                 Some(LiveEntry::Vacant) | None => {}
             }
-            let is_let = store.property(*p).is_some_and(|x| x.status == PropertyStatus::Let);
+            let is_let = store
+                .property(*p)
+                .is_some_and(|x| x.status == PropertyStatus::Let);
             let is_anchor = store.property(*p).is_some_and(|x| x.anchor == *room);
             if is_anchor {
                 // The anchor can never be removed; the property itself has to go.
@@ -180,7 +193,9 @@ pub(crate) fn compute(store: &HousingStore) -> BTreeMap<QuarantineKey, Conflict>
     }
     // (b) a property carrying more than one live tenancy.
     for (property, entry) in &store.live_index {
-        let LiveEntry::Conflict(ts) = entry else { continue };
+        let LiveEntry::Conflict(ts) = entry else {
+            continue;
+        };
         let names: Vec<String> = ts.iter().map(|t| format!("#{t}")).collect();
         let repair: Vec<String> = ts
             .iter()
@@ -202,21 +217,29 @@ pub(crate) fn compute(store: &HousingStore) -> BTreeMap<QuarantineKey, Conflict>
     }
     // (c) a live tenancy on a property that is not loaded.
     for id in &store.open {
-        let Some(t) = store.tenancies.get(id) else { continue };
+        let Some(t) = store.tenancies.get(id) else {
+            continue;
+        };
         if !t.status.is_live() || store.properties.contains_key(&t.property) {
             continue;
         }
-        out.insert(QuarantineKey::Orphan(*id), Conflict {
-            key: QuarantineKey::Orphan(*id),
-            properties: BTreeSet::new(),
-            tenancies: BTreeSet::from([*id]),
-            summary: format!(
-                "tenancy #{id} is live on property #{}, which does not exist; it is neither \
+        out.insert(
+            QuarantineKey::Orphan(*id),
+            Conflict {
+                key: QuarantineKey::Orphan(*id),
+                properties: BTreeSet::new(),
+                tenancies: BTreeSet::from([*id]),
+                summary: format!(
+                    "tenancy #{id} is live on property #{}, which does not exist; it is neither \
                  assessed nor charged until it is ended or the property is restored",
-                t.property
-            ),
-            repair: vec![format!("@tenancy/show {id}"), format!("@tenancy/resolve {id}=end")],
-        });
+                    t.property
+                ),
+                repair: vec![
+                    format!("@tenancy/show {id}"),
+                    format!("@tenancy/resolve {id}=end"),
+                ],
+            },
+        );
     }
     out
 }
@@ -235,7 +258,9 @@ pub(crate) fn compute(store: &HousingStore) -> BTreeMap<QuarantineKey, Conflict>
 /// conflicts on one tenancy safe. Returns whether the set changed.
 pub(crate) fn revalidate(ctx: &mut Ctx<'_>) -> bool {
     let (added, removed) = {
-        let Some(store) = ctx.w.module_state_mut::<HousingStore>() else { return false };
+        let Some(store) = ctx.w.module_state_mut::<HousingStore>() else {
+            return false;
+        };
         let next = compute(store);
         if next == store.quarantine {
             return false;
@@ -249,10 +274,17 @@ pub(crate) fn revalidate(ctx: &mut Ctx<'_>) -> bool {
                     // The same conflict, a different set of tenancies: the delta is
                     // exactly what the rent suspension has to follow.
                     let mut gained = conflict.clone();
-                    gained.tenancies =
-                        conflict.tenancies.difference(&prev.tenancies).copied().collect();
+                    gained.tenancies = conflict
+                        .tenancies
+                        .difference(&prev.tenancies)
+                        .copied()
+                        .collect();
                     let mut lost = prev.clone();
-                    lost.tenancies = prev.tenancies.difference(&conflict.tenancies).copied().collect();
+                    lost.tenancies = prev
+                        .tenancies
+                        .difference(&conflict.tenancies)
+                        .copied()
+                        .collect();
                     if !gained.tenancies.is_empty() {
                         added.push(gained);
                     }
@@ -306,7 +338,9 @@ pub(crate) fn revalidate(ctx: &mut Ctx<'_>) -> bool {
 /// The exact-mode rent obligations of a conflict's tenancies, with the key to hold
 /// them under. A draft (`PENDING_OBLIGATION`) has no rent record yet and is skipped.
 fn rents(ctx: &Ctx<'_>, conflict: &Conflict) -> Vec<(TenancyId, mush_economy::ObligationId)> {
-    let Some(store) = ctx.w.module_state::<HousingStore>() else { return Vec::new() };
+    let Some(store) = ctx.w.module_state::<HousingStore>() else {
+        return Vec::new();
+    };
     conflict
         .tenancies
         .iter()
@@ -323,7 +357,9 @@ fn rents(ctx: &Ctx<'_>, conflict: &Conflict) -> Vec<(TenancyId, mush_economy::Ob
 }
 
 fn suspend_rent(ctx: &mut Ctx<'_>, conflict: &Conflict) {
-    let Some(key) = conflict.key.suspension_key() else { return };
+    let Some(key) = conflict.key.suspension_key() else {
+        return;
+    };
     for (tenancy, obligation) in rents(ctx, conflict) {
         match mush_economy::suspend_obligation(ctx, obligation, key.clone()) {
             Ok(()) => tracing::warn!(
@@ -345,7 +381,9 @@ fn suspend_rent(ctx: &mut Ctx<'_>, conflict: &Conflict) {
 }
 
 fn resume_rent(ctx: &mut Ctx<'_>, conflict: &Conflict) {
-    let Some(key) = conflict.key.suspension_key() else { return };
+    let Some(key) = conflict.key.suspension_key() else {
+        return;
+    };
     for (tenancy, obligation) in rents(ctx, conflict) {
         match mush_economy::resume_obligation(ctx, obligation, &key) {
             Ok(returned) => tracing::info!(

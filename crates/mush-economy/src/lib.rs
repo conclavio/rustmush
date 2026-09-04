@@ -134,13 +134,13 @@ pub use plan::{
     HoldOp, HoldRevision, NamedResource, PlanResult, Prepared, RequestedLine,
 };
 pub use record::{
-    Account, AccountStatus, AcquisitionRecord, Approval, ApprovalRequest, ApprovalRule, MAX_AUDIENCE,
+    Account, AccountStatus, AcquisitionRecord, Approval, ApprovalRequest, ApprovalRule,
     ApprovalStatus, AssetAssignment, AssetEffect, AssetEffectKind, AssetLifecycle, CatalogRef,
     CausalRef, ContractStateKind, CreditPolicy, CustodyDirection, CustodyEffect, CustodyRef,
     Decision, EconomicAsset, EconomicCause, EconomicEvent, EconomicTransaction, EconomicVisibility,
     Encumbrance, ExternalRef, Hold, HoldEffect, HoldEffectKind, HoldPurpose, HoldStatus,
     IdempotencyKey, IdempotencyRecord, InstrumentDef, InstrumentKind, InstrumentStatus,
-    JournalLine, NegativePolicy, ObligationStatusKind, Vault, VaultStatus, Verdict,
+    JournalLine, MAX_AUDIENCE, NegativePolicy, ObligationStatusKind, Vault, VaultStatus, Verdict,
     object_principal,
 };
 pub use snapshot::EconomySnapshot;
@@ -154,24 +154,18 @@ pub use clock::{
 };
 pub use contract::{
     Acceptance, Attestation, AttestorRef, AttestorSet, CanonOutcomeKinds, ConsentSurface,
-    Consideration,
-    ContractAuth, ContractError, ContractPurpose, ContractRoles, ContractState, ContractTerms,
-    DISPUTE_TTL_SECS, DRAFT_TTL_SECS, Deliverable, DepositRecord, EconomicContract, EvidenceKind,
-    ExpenseTreatment, Expiry, MAX_AGREEMENTS, MAX_AMENDMENTS, MAX_CONDITIONS,
-    MAX_CONTRACT_NAME_BYTES,
-    MAX_DELIVERABLES, MAX_DEPOSITS, MAX_LIVE_CONTRACTS_PER_PARTY, MAX_OPEN_CONTRACTS_PER_ISSUER,
-    MAX_OUTCOMES, MAX_PARTIES, MAX_SETTLE_ATTEMPTS, MAX_SHARES, ObligationTemplate, OutcomeTerms,
-    PERMILLE, PartyAgreement, PayoutShare, PendingKind, PendingTerminal, QualifyingEscrow,
-    Readiness, Resolution, STALE_CONTRACT_AGE_SECS, Share,
-    TypedCondition,
-    activate_key, activation_asset_ops, apply_outcome, apply_split, canon_set_accepts,
-    canonical_visibility,
-    contract_op_key,
-    check_offerable, check_structure, condition_holds, conditions_met, consent_hash,
-    contract_encumbrance,
-    forfeit_key, forfeit_plan, outcome_conditions, principal_key, qualifying_escrow, refund_key,
-    readiness, refund_plan, release_asset_ops, resolve_outcome, reverify, settle_key,
-    settlement_plan, stamp_observed,
+    Consideration, ContractAuth, ContractError, ContractPurpose, ContractRoles, ContractState,
+    ContractTerms, DISPUTE_TTL_SECS, DRAFT_TTL_SECS, Deliverable, DepositRecord, EconomicContract,
+    EvidenceKind, ExpenseTreatment, Expiry, MAX_AGREEMENTS, MAX_AMENDMENTS, MAX_CONDITIONS,
+    MAX_CONTRACT_NAME_BYTES, MAX_DELIVERABLES, MAX_DEPOSITS, MAX_LIVE_CONTRACTS_PER_PARTY,
+    MAX_OPEN_CONTRACTS_PER_ISSUER, MAX_OUTCOMES, MAX_PARTIES, MAX_SETTLE_ATTEMPTS, MAX_SHARES,
+    ObligationTemplate, OutcomeTerms, PERMILLE, PartyAgreement, PayoutShare, PendingKind,
+    PendingTerminal, QualifyingEscrow, Readiness, Resolution, STALE_CONTRACT_AGE_SECS, Share,
+    TypedCondition, activate_key, activation_asset_ops, apply_outcome, apply_split,
+    canon_set_accepts, canonical_visibility, check_offerable, check_structure, condition_holds,
+    conditions_met, consent_hash, contract_encumbrance, contract_op_key, forfeit_key, forfeit_plan,
+    outcome_conditions, principal_key, qualifying_escrow, readiness, refund_key, refund_plan,
+    release_asset_ops, resolve_outcome, reverify, settle_key, settlement_plan, stamp_observed,
 };
 pub use obligation::{
     DEFAULT_GRACE_PERIODS, ForgiveCause, GracePolicy, MAX_GRACE_PERIODS, MAX_OBLIGATION_HISTORY,
@@ -186,8 +180,8 @@ pub use config::{DEFAULT_MINT_OBLIGATION_CAP_MAJOR, EconomyConfig, InstrumentCap
 
 // E4b1 — the ladder + the sweep.
 pub use escalation::{
-    ESCALATION_GC_AFTER_SECS, Escalation, EscalationKind, EscalationSubject,
-    MAX_BOOT_ESCALATIONS, MAX_ESCALATION_CONTEXT_BYTES, MAX_RECOMMENDED_COMMANDS, escalation_key,
+    ESCALATION_GC_AFTER_SECS, Escalation, EscalationKind, EscalationSubject, MAX_BOOT_ESCALATIONS,
+    MAX_ESCALATION_CONTEXT_BYTES, MAX_RECOMMENDED_COMMANDS, escalation_key,
 };
 pub use sweep::SWEEP_TAG;
 
@@ -195,8 +189,8 @@ pub use sweep::SWEEP_TAG;
 pub use contract_live::{LeaseEnd, LeaseKey, LeaseSpec, end_lease, may_view_contract, offer_lease};
 
 // E4c — facts, events, evidence.
-pub use facts::{FactProvider, FactState, FactTable, WorldFacts};
 pub use attest::MAX_OBSERVER_SETTLEMENTS_PER_EVENT;
+pub use facts::{FactProvider, FactState, FactTable, WorldFacts};
 pub use module::CANON_TAIL;
 pub use observer::{EconomyObserver, MAX_OBSERVER_DEPTH, ObserverTable, observer_depth};
 pub use sweep::MAX_REPUBLISH_PER_SWEEP;
@@ -206,8 +200,8 @@ pub use api::{
     CadenceError, MAX_CADENCE_NAME_BYTES, MAX_CADENCES, META_KEY, ObligationSpec, PostOutcome,
     account_key, acknowledge_escalation, approval_key, asset_key, cadence_key, contract_key,
     create_cadence, create_system_obligation, create_vault, hold_key, instrument_key, issue_title,
-    mark_canon_published, open_escalation, obligation_key as obligation_doc_key, open_account, post,
-    post_capability, register_instrument, resume_obligation, reverse, set_account_approval,
+    mark_canon_published, obligation_key as obligation_doc_key, open_account, open_escalation,
+    post, post_capability, register_instrument, resume_obligation, reverse, set_account_approval,
     set_account_status, set_asset_frozen, set_economy_frozen, set_system_obligation,
     set_vault_status, suspend_obligation, vault_key,
 };

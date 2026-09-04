@@ -56,7 +56,10 @@ impl Report {
     pub fn lines(&self) -> Vec<String> {
         let mut out = Vec::new();
         let render = |ids: &[ObjId]| -> String {
-            ids.iter().map(|o| format!("#{}", o.0)).collect::<Vec<_>>().join(", ")
+            ids.iter()
+                .map(|o| format!("#{}", o.0))
+                .collect::<Vec<_>>()
+                .join(", ")
         };
         if !self.profiles_created.is_empty() {
             out.push(format!(
@@ -72,8 +75,7 @@ impl Report {
                 render(&self.accounts_opened)
             ));
             out.push(
-                "  Nothing was minted. Seed a character with an attributed @econ/mint."
-                    .to_string(),
+                "  Nothing was minted. Seed a character with an attributed @econ/mint.".to_string(),
             );
         }
         if !self.income_stopped.is_empty() {
@@ -94,7 +96,9 @@ impl Report {
             out.push(format!("  skipped: {s}"));
         }
         if out.is_empty() {
-            out.push("  Nothing to do — the world already matches the configured mode.".to_string());
+            out.push(
+                "  Nothing to do — the world already matches the configured mode.".to_string(),
+            );
         }
         out
     }
@@ -156,7 +160,9 @@ fn sheeted(ctx: &Ctx<'_>, dispatch: &Dispatch, report: &mut Report) -> Vec<ObjId
     for who in players {
         // No sheet at all is not a skip: a staff bot or an NPC shell was never part
         // of this population and saying so every run would be noise.
-        let Some(doc) = dispatch.read(ctx.w, who) else { continue };
+        let Some(doc) = dispatch.read(ctx.w, who) else {
+            continue;
+        };
         match doc.approved {
             ApprovalState::Approved { .. } => out.push(who),
             ref other => report.skipped.push(format!(
@@ -178,7 +184,10 @@ fn create_profiles(
     report: &mut Report,
 ) {
     for who in sheeted(ctx, dispatch, report) {
-        let has = ctx.w.module_state::<WodEconomyStore>().is_some_and(|s| s.profile(who).is_some());
+        let has = ctx
+            .w
+            .module_state::<WodEconomyStore>()
+            .is_some_and(|s| s.profile(who).is_some());
         if has {
             continue;
         }
@@ -195,13 +204,21 @@ fn create_profiles(
 
 /// Open a **zero-balance** account per profiled character (abstract → exact).
 fn open_accounts(ctx: &mut Ctx<'_>, report: &mut Report) {
-    let Some(instrument) =
-        ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.instrument().cloned())
+    let Some(instrument) = ctx
+        .w
+        .module_state::<WodEconomyStore>()
+        .and_then(|s| s.instrument().cloned())
     else {
-        report.skipped.push("wod.usd is not registered; no accounts were opened".to_string());
+        report
+            .skipped
+            .push("wod.usd is not registered; no accounts were opened".to_string());
         return;
     };
-    for who in ctx.w.module_state::<WodEconomyStore>().map(WodEconomyStore::profiled).unwrap_or_default()
+    for who in ctx
+        .w
+        .module_state::<WodEconomyStore>()
+        .map(WodEconomyStore::profiled)
+        .unwrap_or_default()
     {
         let already = ctx
             .w
@@ -214,15 +231,22 @@ fn open_accounts(ctx: &mut Ctx<'_>, report: &mut Report) {
         let existing = boot::personal_account(ctx, who, &instrument);
         let Some(id) = existing.or_else(|| boot::open_personal_account(ctx, who, &instrument))
         else {
-            report.skipped.push(format!("#{}: no account could be opened", who.0));
+            report
+                .skipped
+                .push(format!("#{}: no account could be opened", who.0));
             continue;
         };
-        if let Some(mut p) =
-            ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.profile(who).cloned())
+        if let Some(mut p) = ctx
+            .w
+            .module_state::<WodEconomyStore>()
+            .and_then(|s| s.profile(who).cloned())
         {
             p.account = Some(id);
             p.revision = p.revision.saturating_add(1);
-            p.note(0, "wod.usd account opened by @wod/economy migrate (zero balance)");
+            p.note(
+                0,
+                "wod.usd account opened by @wod/economy migrate (zero balance)",
+            );
             put_profile(ctx, p);
         }
         if existing.is_none() {
@@ -244,8 +268,14 @@ fn open_accounts(ctx: &mut Ctx<'_>, report: &mut Report) {
 /// and a second `@wod/economy migrate` retries. (The boot reconciliation would adopt
 /// or cancel it eventually — this keeps the cheap path cheap.)
 fn stop_income(ctx: &mut Ctx<'_>, report: &mut Report) {
-    let Some(faucet) = boot::principal(crate::economy::config::FAUCET_INCOME) else { return };
-    for who in ctx.w.module_state::<WodEconomyStore>().map(WodEconomyStore::profiled).unwrap_or_default()
+    let Some(faucet) = boot::principal(crate::economy::config::FAUCET_INCOME) else {
+        return;
+    };
+    for who in ctx
+        .w
+        .module_state::<WodEconomyStore>()
+        .map(WodEconomyStore::profiled)
+        .unwrap_or_default()
     {
         let Some(id) = ctx
             .w
@@ -257,8 +287,10 @@ fn stop_income(ctx: &mut Ctx<'_>, report: &mut Report) {
         match mush_economy::set_system_obligation(ctx, &faucet, id, None) {
             Ok(()) => {
                 report.income_stopped.push(who);
-                if let Some(mut p) =
-                    ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.profile(who).cloned())
+                if let Some(mut p) = ctx
+                    .w
+                    .module_state::<WodEconomyStore>()
+                    .and_then(|s| s.profile(who).cloned())
                 {
                     p.income = None;
                     p.revision = p.revision.saturating_add(1);
@@ -279,17 +311,23 @@ fn stop_income(ctx: &mut Ctx<'_>, report: &mut Report) {
 /// waiting for: after this, the next evaluation opens whatever the configured table
 /// says the character's dot earns.
 fn clear_cancel_marks(ctx: &mut Ctx<'_>) {
-    for who in ctx.w.module_state::<WodEconomyStore>().map(WodEconomyStore::profiled).unwrap_or_default()
+    for who in ctx
+        .w
+        .module_state::<WodEconomyStore>()
+        .map(WodEconomyStore::profiled)
+        .unwrap_or_default()
     {
-        let marked = ctx
-            .w
-            .module_state::<WodEconomyStore>()
-            .is_some_and(|s| s.profile(who).is_some_and(|p| p.income_cancelled_at.is_some()));
+        let marked = ctx.w.module_state::<WodEconomyStore>().is_some_and(|s| {
+            s.profile(who)
+                .is_some_and(|p| p.income_cancelled_at.is_some())
+        });
         if !marked {
             continue;
         }
-        if let Some(mut p) =
-            ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.profile(who).cloned())
+        if let Some(mut p) = ctx
+            .w
+            .module_state::<WodEconomyStore>()
+            .and_then(|s| s.profile(who).cloned())
         {
             p.income_cancelled_at = None;
             p.revision = p.revision.saturating_add(1);
@@ -304,7 +342,11 @@ fn clear_cancel_marks(ctx: &mut Ctx<'_>) {
 /// same wallet instead of opening a second one, and `+resources` hides it because the
 /// *mode* says so, not because the record was edited.
 fn hide_accounts(ctx: &mut Ctx<'_>, report: &mut Report) {
-    for who in ctx.w.module_state::<WodEconomyStore>().map(WodEconomyStore::profiled).unwrap_or_default()
+    for who in ctx
+        .w
+        .module_state::<WodEconomyStore>()
+        .map(WodEconomyStore::profiled)
+        .unwrap_or_default()
     {
         let has = ctx
             .w

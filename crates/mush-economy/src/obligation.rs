@@ -29,7 +29,8 @@ use smol_str::SmolStr;
 
 use crate::amount::Amount;
 use crate::clock::{
-    Clocks, EconomicDeadline, EconomicSchedule, SWEEP_GAP_DOWNTIME_SECS, advance as advance_schedule,
+    Clocks, EconomicDeadline, EconomicSchedule, SWEEP_GAP_DOWNTIME_SECS,
+    advance as advance_schedule,
 };
 use crate::ids::{AccountId, ContractId, EscalationId, ObligationId, TransactionId};
 use crate::record::{IdempotencyKey, ObligationStatusKind};
@@ -65,7 +66,9 @@ impl GracePolicy {
     /// allowance the state machine cannot end (S8).
     #[must_use]
     pub fn new(periods: u8) -> GracePolicy {
-        GracePolicy { periods: periods.min(MAX_GRACE_PERIODS) }
+        GracePolicy {
+            periods: periods.min(MAX_GRACE_PERIODS),
+        }
     }
     /// The allowance actually applied, clamped on **read** as well as at
     /// construction: a doc hand-written (or written by an older build) with 255 must
@@ -78,7 +81,9 @@ impl GracePolicy {
 
 impl Default for GracePolicy {
     fn default() -> GracePolicy {
-        GracePolicy { periods: DEFAULT_GRACE_PERIODS }
+        GracePolicy {
+            periods: DEFAULT_GRACE_PERIODS,
+        }
     }
 }
 
@@ -138,7 +143,10 @@ impl SuspensionKey {
     /// The alert this key stands for, when it is the ladder's.
     #[must_use]
     pub fn escalation_id(&self) -> Option<EscalationId> {
-        self.0.strip_prefix("escalation:").and_then(|n| n.parse::<u64>().ok()).map(EscalationId)
+        self.0
+            .strip_prefix("escalation:")
+            .and_then(|n| n.parse::<u64>().ok())
+            .map(EscalationId)
     }
     /// Whether this key is a **layered module's** hold rather than the economy's own
     /// (staff or the ladder) — the ones `@obligation/resume` may not lift.
@@ -208,7 +216,9 @@ impl SuspendReason {
             return SuspendReason::Escalated(id);
         }
         if key.as_str() == "staff" {
-            return SuspendReason::Staff { reason: SmolStr::new_static("staff") };
+            return SuspendReason::Staff {
+                reason: SmolStr::new_static("staff"),
+            };
         }
         SuspendReason::Held { key: key.clone() }
     }
@@ -291,7 +301,10 @@ impl ObligationStatus {
     /// sweep will attempt (D-E4-3).
     #[must_use]
     pub fn in_due_pool(&self) -> bool {
-        matches!(self, ObligationStatus::Active | ObligationStatus::Grace { .. })
+        matches!(
+            self,
+            ObligationStatus::Active | ObligationStatus::Grace { .. }
+        )
     }
 }
 
@@ -458,7 +471,10 @@ impl Obligation {
 /// the re-post resolves to `AlreadyPosted` instead of charging twice.
 #[must_use]
 pub fn obligation_key(id: ObligationId, period: u32) -> IdempotencyKey {
-    IdempotencyKey::new(SmolStr::new_static("obligation"), SmolStr::new(format!("{}/{}", id.0, period)))
+    IdempotencyKey::new(
+        SmolStr::new_static("obligation"),
+        SmolStr::new(format!("{}/{}", id.0, period)),
+    )
 }
 
 /// Why an obligation transition was refused.
@@ -516,7 +532,11 @@ pub fn plan_sweep(o: &Obligation, now: i64) -> SweepIntent {
     if due == 0 {
         return SweepIntent::default();
     }
-    let cap = u32::from(o.schedule.maximum_catch_up.clamp(1, crate::clock::MAX_CATCH_UP_CAP));
+    let cap = u32::from(
+        o.schedule
+            .maximum_catch_up
+            .clamp(1, crate::clock::MAX_CATCH_UP_CAP),
+    );
     let base = o.periods_settled;
     // The period index is the deterministic KEY base, so it may never be saturated
     // into: `base.saturating_add(..)` at the ceiling hands several periods the same
@@ -571,7 +591,10 @@ impl SettleOutcome {
     /// Whether the period is paid.
     #[must_use]
     pub fn is_settled(&self) -> bool {
-        matches!(self, SettleOutcome::Posted(_) | SettleOutcome::AlreadyPosted(_))
+        matches!(
+            self,
+            SettleOutcome::Posted(_) | SettleOutcome::AlreadyPosted(_)
+        )
     }
 }
 
@@ -626,7 +649,14 @@ pub fn advance(
             SettleOutcome::Posted(t) | SettleOutcome::AlreadyPosted(t) => Some(t),
             _ => None,
         };
-        push_event(&mut next, ObligationEvent::Settled { period, at: now, transaction });
+        push_event(
+            &mut next,
+            ObligationEvent::Settled {
+                period,
+                at: now,
+                transaction,
+            },
+        );
         next.settled_total = next.settled_total.saturating_add(1);
         // A settled period clears the grace run and a one-shot is finished — but
         // only for an obligation the sweep was actually attending to.
@@ -658,7 +688,10 @@ pub fn advance(
             missed,
             // The allowance runs to the next due instant, expressed on the
             // SCHEDULE's clock — never wall time compared against an IC schedule.
-            deadline: EconomicDeadline { clock: next.schedule.clock, at: next.schedule.next_due },
+            deadline: EconomicDeadline {
+                clock: next.schedule.clock,
+                at: next.schedule.next_due,
+            },
         }
     };
     Ok(next)
@@ -677,7 +710,16 @@ pub fn forgive(o: &Obligation, from: u32, to: u32, cause: ForgiveCause, now: i64
     next.periods_settled = to;
     next.forgiven_total = next.forgiven_total.saturating_add(periods);
     next.revision += 1;
-    push_event(&mut next, ObligationEvent::Forgiven { periods, from, to, cause, at: now });
+    push_event(
+        &mut next,
+        ObligationEvent::Forgiven {
+            periods,
+            from,
+            to,
+            cause,
+            at: now,
+        },
+    );
     next
 }
 
@@ -697,15 +739,18 @@ pub fn forgive_all(o: &Obligation, periods: u32, cause: ForgiveCause, now: i64) 
     next.forgiven_total = next.forgiven_total.saturating_add(periods);
     next.revision += 1;
     let index = o.periods_settled;
-    push_event(&mut next, ObligationEvent::Forgiven {
-        periods,
-        // Nothing was indexed, so the span is empty — the `periods` count is the
-        // honest record of how much was let go.
-        from: index,
-        to: index,
-        cause,
-        at: now,
-    });
+    push_event(
+        &mut next,
+        ObligationEvent::Forgiven {
+            periods,
+            // Nothing was indexed, so the span is empty — the `periods` count is the
+            // honest record of how much was let go.
+            from: index,
+            to: index,
+            cause,
+            at: now,
+        },
+    );
     next
 }
 
@@ -727,7 +772,9 @@ pub fn hold(o: &Obligation, reason: SuspendReason, now: i64) -> Obligation {
     let mut next = o.clone();
     next.suspensions.insert(key.clone());
     if in_pool {
-        next.status = ObligationStatus::Suspended { reason: reason.clone() };
+        next.status = ObligationStatus::Suspended {
+            reason: reason.clone(),
+        };
     }
     if matches!(reason, SuspendReason::Held { .. }) && fresh {
         push_event(&mut next, ObligationEvent::Held { key, at: now });
@@ -753,7 +800,13 @@ pub fn release(o: &Obligation, key: &SuspensionKey, now: i64) -> (Obligation, bo
     next.suspensions.remove(key);
     next.revision += 1;
     if key.is_module_hold() {
-        push_event(&mut next, ObligationEvent::Released { key: key.clone(), at: now });
+        push_event(
+            &mut next,
+            ObligationEvent::Released {
+                key: key.clone(),
+                at: now,
+            },
+        );
     }
     let ObligationStatus::Suspended { reason } = &o.status else {
         return (next, false);
@@ -766,7 +819,9 @@ pub fn release(o: &Obligation, key: &SuspensionKey, now: i64) -> (Obligation, bo
     if reason.key() == *key
         && let Some(remaining) = holders.iter().next()
     {
-        next.status = ObligationStatus::Suspended { reason: SuspendReason::for_key(remaining) };
+        next.status = ObligationStatus::Suspended {
+            reason: SuspendReason::for_key(remaining),
+        };
     }
     (next, false)
 }
@@ -808,8 +863,12 @@ pub fn classify_forgiveness(
     if last_sweep_real > now_real {
         return ForgiveCause::TimeJump;
     }
-    let real_elapsed = i128::from(now_real).saturating_sub(i128::from(last_sweep_real)).max(0);
-    let ic_elapsed = i128::from(now_ic).saturating_sub(i128::from(last_sweep_ic)).max(0);
+    let real_elapsed = i128::from(now_real)
+        .saturating_sub(i128::from(last_sweep_real))
+        .max(0);
+    let ic_elapsed = i128::from(now_ic)
+        .saturating_sub(i128::from(last_sweep_ic))
+        .max(0);
     let ratio = i128::from(ratio_hint.max(1));
     // One sweep period of slack, so ordinary rounding never reads as a jump.
     let allowed = real_elapsed * ratio + ratio * i128::from(SWEEP_GAP_DOWNTIME_SECS);

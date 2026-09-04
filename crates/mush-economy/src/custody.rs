@@ -123,7 +123,10 @@ pub(crate) fn resolve<'t>(
     if let Some(obj) = obj {
         for (i, p) in providers.iter().enumerate() {
             if i != idx && p.claims(w, obj) {
-                return Err(CustodyError::Claimed { obj, provider: p.provider().to_string() });
+                return Err(CustodyError::Claimed {
+                    obj,
+                    provider: p.provider().to_string(),
+                });
             }
         }
     }
@@ -154,11 +157,15 @@ impl CustodyProvider for ContainerProvider {
         false
     }
     fn backing_valid(&self, w: &World, backing: &CustodyRef) -> Option<bool> {
-        let CustodyRef::Container(o) = backing else { return None };
+        let CustodyRef::Container(o) = backing else {
+            return None;
+        };
         Some(live(w, *o))
     }
     fn contents(&self, w: &World, backing: &CustodyRef) -> Option<Vec<ObjId>> {
-        let CustodyRef::Container(o) = backing else { return None };
+        let CustodyRef::Container(o) = backing else {
+            return None;
+        };
         if !live(w, *o) {
             return Some(Vec::new());
         }
@@ -174,7 +181,9 @@ impl CustodyProvider for ContainerProvider {
         obj: ObjId,
         backing: &CustodyRef,
     ) -> Result<(), CustodyError> {
-        let CustodyRef::Container(dest) = backing else { return Err(CustodyError::NoProvider) };
+        let CustodyRef::Container(dest) = backing else {
+            return Err(CustodyError::NoProvider);
+        };
         container_move(ctx, actor, obj, *dest)
     }
     fn move_out(
@@ -194,9 +203,17 @@ impl CustodyProvider for ContainerProvider {
 
 /// The one mutating primitive: prove every precondition, then exactly one
 /// `move_to`. Every early return leaves the world untouched.
-fn container_move(ctx: &mut Ctx<'_>, actor: ObjId, obj: ObjId, dest: ObjId) -> Result<(), CustodyError> {
+fn container_move(
+    ctx: &mut Ctx<'_>,
+    actor: ObjId,
+    obj: ObjId,
+    dest: ObjId,
+) -> Result<(), CustodyError> {
     if !live(ctx.w, obj) {
-        return Err(CustodyError::Refused(format!("#{} is not available to move.", obj.0)));
+        return Err(CustodyError::Refused(format!(
+            "#{} is not available to move.",
+            obj.0
+        )));
     }
     // Topology is not custody. `World::move_to` files an `Exit` into the
     // destination's `exits` vector, which NO custody query walks (`contents_of` is
@@ -205,16 +222,24 @@ fn container_move(ctx: &mut Ctx<'_>, actor: ObjId, obj: ObjId, dest: ObjId) -> R
     // that still held it, and boot as a custody mismatch. Refuse every kind
     // `move_to` would not file into `contents`.
     if !custody_movable(ctx.w, obj) {
-        return Err(CustodyError::Refused(format!("#{} is not a thing custody can hold.", obj.0)));
+        return Err(CustodyError::Refused(format!(
+            "#{} is not a thing custody can hold.",
+            obj.0
+        )));
     }
     if !live(ctx.w, dest) {
-        return Err(CustodyError::Refused(format!("#{} cannot hold anything.", dest.0)));
+        return Err(CustodyError::Refused(format!(
+            "#{} cannot hold anything.",
+            dest.0
+        )));
     }
     ctx.w
         .can_move_to(obj, dest)
         .map_err(|e| CustodyError::Refused(e.to_string()))?;
     if resulting_depth(ctx.w, obj, dest) > MAX_CONTAINMENT_DEPTH {
-        return Err(CustodyError::Refused("That would nest containers too deeply.".to_string()));
+        return Err(CustodyError::Refused(
+            "That would nest containers too deeply.".to_string(),
+        ));
     }
     // The only thing that makes a registered `CarryAttempt` gate (sim placement,
     // a ruleset's no-take rule) see a vault move at all.
@@ -234,7 +259,8 @@ fn live(w: &World, o: ObjId) -> bool {
 /// [`ObjKind::Exit`] is filed into `exits` instead — it is world topology, not a
 /// thing — and a `Room` has no location to move. Both are refused before any move.
 fn custody_movable(w: &World, o: ObjId) -> bool {
-    w.get(o).is_some_and(|x| !matches!(x.kind, ObjKind::Exit | ObjKind::Room))
+    w.get(o)
+        .is_some_and(|x| !matches!(x.kind, ObjKind::Exit | ObjKind::Room))
 }
 
 /// Everything under `root`, transitively, capped at [`MAX_CONTAINMENT_DEPTH`]
@@ -321,7 +347,9 @@ impl CustodyEval for WorldCustody<'_> {
     /// Some(actor)`, never an ancestor walk), **or** co-located with the actor
     /// and the actor is the title owner / assignee / MUSH controller / staff.
     fn may_deposit(&self, obj: ObjId, actor: &PrincipalId) -> bool {
-        let PrincipalId::Object(a) = actor else { return false };
+        let PrincipalId::Object(a) = actor else {
+            return false;
+        };
         let a = *a;
         if !live(self.w, obj) || !live(self.w, a) {
             return false;
@@ -356,7 +384,10 @@ impl CustodyEval for WorldCustody<'_> {
             .and_then(|s| s.snapshot().asset(obj))
             .is_some_and(|asset| {
                 asset.title_owner == principal
-                    || asset.assignment.as_ref().is_some_and(|x| x.assigned_to == principal)
+                    || asset
+                        .assignment
+                        .as_ref()
+                        .is_some_and(|x| x.assigned_to == principal)
             })
     }
     /// Invariant 15's destination rule: the actor or the actor's current location,
@@ -369,13 +400,17 @@ impl CustodyEval for WorldCustody<'_> {
     /// effect recording it — laundering by geography. Entering a vault is a
     /// `Deposit`, at any depth.
     fn destination_ok(&self, actor: &PrincipalId, to: ObjId) -> bool {
-        let PrincipalId::Object(a) = actor else { return false };
+        let PrincipalId::Object(a) = actor else {
+            return false;
+        };
         let a = *a;
         let reachable = to == a || self.w.get(a).and_then(|o| o.location) == Some(to);
         if !reachable || !live(self.w, to) {
             return false;
         }
-        let Some(store) = self.w.module_state::<EconomyStore>() else { return false };
+        let Some(store) = self.w.module_state::<EconomyStore>() else {
+            return false;
+        };
         let snapshot = store.snapshot();
         let mut cur = Some(to);
         for _ in 0..=MAX_CONTAINMENT_DEPTH {

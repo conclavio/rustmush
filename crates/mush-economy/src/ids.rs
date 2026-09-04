@@ -95,9 +95,9 @@ impl InstrumentId {
     pub fn new(s: impl AsRef<str>) -> Option<InstrumentId> {
         let t = s.as_ref().trim().to_ascii_lowercase();
         if t.is_empty()
-            || !t
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'.' || b == b'-')
+            || !t.bytes().all(|b| {
+                b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'.' || b == b'-'
+            })
         {
             return None;
         }
@@ -148,6 +148,9 @@ mod tests {
     fn int_ids_transparent_and_ordered() {
         assert!(AccountId(1) < AccountId(2));
         assert_eq!(serde_json::to_string(&TransactionId(7)).unwrap(), "7");
-        assert_eq!(serde_json::from_str::<AccountId>("9").unwrap(), AccountId(9));
+        assert_eq!(
+            serde_json::from_str::<AccountId>("9").unwrap(),
+            AccountId(9)
+        );
     }
 }

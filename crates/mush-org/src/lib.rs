@@ -70,6 +70,4 @@ pub use api::{
     grant_key, member_key, org_key, policy_key, role_key, scope_key, submit,
 };
 pub use module::{OrgModule, OrgStore};
-pub use wiring::{
-    CapabilityVocabulary, OrgPredicateProvider, ScopeUseProvider, ScopeUseProviders,
-};
+pub use wiring::{CapabilityVocabulary, OrgPredicateProvider, ScopeUseProvider, ScopeUseProviders};

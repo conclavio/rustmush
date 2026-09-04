@@ -135,11 +135,14 @@ async fn boot(tag: &str, chargen_required: bool) -> Server {
     let grounding = modules::npc_agent_adapter(&["wod".to_string()])
         .map(|a| a as Arc<dyn mush_npc::AgentGrounding>);
     mods.push(modules::npc_module(grounding));
-    mods.extend(modules::ruleset_modules(
-        &["wod".to_string()],
-        &onboarding,
-        &ruleset_wod::WodEconomyConfig::default(),
-    ).expect("wod ruleset"));
+    mods.extend(
+        modules::ruleset_modules(
+            &["wod".to_string()],
+            &onboarding,
+            &ruleset_wod::WodEconomyConfig::default(),
+        )
+        .expect("wod ruleset"),
+    );
 
     let mut engine = Engine::with_modules(world, registry, mods).expect("modules");
     modules::boot_modules(&mut engine, &*store)

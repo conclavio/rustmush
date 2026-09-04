@@ -110,8 +110,11 @@ pub fn server_modules_with(
     // list and `HousingModule::with_issuer`, so the two are computed once, here, and
     // a mismatch is impossible by construction.
     let housing_on = wod.is_some_and(|w| w.housing);
-    let issuers: Vec<mush_org::SystemPrincipalId> =
-        if housing_on { vec![housing_title_issuer()] } else { Vec::new() };
+    let issuers: Vec<mush_org::SystemPrincipalId> = if housing_on {
+        vec![housing_title_issuer()]
+    } else {
+        Vec::new()
+    };
     let issuer = housing_on.then(housing_title_issuer);
     // `[onboarding]`'s two start rooms plus Limbo (E5b fold H4), extended by whatever
     // the ruleset knows is never somebody's living room (E5b's handoff to E5c).
@@ -121,7 +124,10 @@ pub fn server_modules_with(
         mush_core::LIMBO,
     ]
     .into_iter()
-    .chain(wod.into_iter().flat_map(|w| w.reserved_rooms.iter().copied()))
+    .chain(
+        wod.into_iter()
+            .flat_map(|w| w.reserved_rooms.iter().copied()),
+    )
     .collect();
     vec![
         Box::new(mush_comsys::ComsysModule::new()),
@@ -1356,10 +1362,20 @@ mod tests {
             onboarding.start_room_unapproved,
             mush_core::LIMBO,
         ] {
-            assert!(store.is_reserved(room), "#{} did not reach housing's reserved list", room.0);
+            assert!(
+                store.is_reserved(room),
+                "#{} did not reach housing's reserved list",
+                room.0
+            );
         }
-        assert!(!store.is_reserved(mush_core::ObjId(9_999)), "an unnamed room was reserved");
-        assert!(store.issuer().is_some(), "the title issuer is wired with housing on");
+        assert!(
+            !store.is_reserved(mush_core::ObjId(9_999)),
+            "an unnamed room was reserved"
+        );
+        assert!(
+            store.issuer().is_some(),
+            "the title issuer is wired with housing on"
+        );
         // A server without the WoD ruleset reserves the host's rooms alone and wires
         // no issuer.
         let tw = TestWorld::with_modules(server_modules_with(
@@ -1402,7 +1418,10 @@ mod tests {
         // `@org/grant` would refuse the very grant that module needs — so this is a
         // real coupling, pinned here.
         let vocab = org_capability_vocabulary();
-        for c in mush_economy::CAPABILITIES.iter().chain(mush_housing::CAPABILITIES) {
+        for c in mush_economy::CAPABILITIES
+            .iter()
+            .chain(mush_housing::CAPABILITIES)
+        {
             let id = mush_org::CapabilityId::new(c).expect("well-formed");
             assert!(vocab.contains(&id), "the wiring vocabulary omits {c}");
         }
@@ -1449,8 +1468,8 @@ mod tests {
                 &ruleset_wod::OnboardingConfig::default(),
                 &ruleset_wod::WodEconomyConfig::default(),
             )
-                .unwrap()
-                .is_empty()
+            .unwrap()
+            .is_empty()
         );
     }
 

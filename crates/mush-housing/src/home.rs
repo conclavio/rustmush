@@ -107,8 +107,8 @@ pub fn homed_inside(
 ) -> BTreeSet<ObjId> {
     candidates
         .into_iter()
-        .filter(|c| {
-            matches!(resolve_home(*c), Some(h) if h == anchor || property_rooms.contains(&h))
-        })
+        .filter(
+            |c| matches!(resolve_home(*c), Some(h) if h == anchor || property_rooms.contains(&h)),
+        )
         .collect()
 }

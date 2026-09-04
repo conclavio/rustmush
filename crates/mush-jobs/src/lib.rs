@@ -56,12 +56,12 @@ pub use api::{
     get_note, open_job, register_payload_handler, resolve_plain_job,
 };
 pub use commands::NOTES_STAFF;
-pub use facts::JobsFactProvider;
 pub use data::{
     Approval, Job, JobComment, JobPayload, JobStatus, MAX_JOB_COMMENT_BYTES, MAX_JOB_COMMENTS,
     MAX_JOB_TITLE_BYTES, MAX_ORDINARY_JOB_COMMENTS, META_KEY, NS, Note, REQ_QUEUE, fmt_ago,
     job_key, meta_value, note_key,
 };
+pub use facts::JobsFactProvider;
 
 use data::{JobsState, validate_job};
 

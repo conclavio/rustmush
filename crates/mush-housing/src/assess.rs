@@ -174,7 +174,11 @@ fn band(tier: PropertyTier, best: u8) -> Assessment {
 /// rest of the crate cannot express.
 #[must_use]
 pub fn best_level(plans: &BTreeMap<ObjId, SupportPlan>) -> Option<SupportLevel> {
-    plans.values().map(|p| p.level.get()).max().map(SupportLevel::new)
+    plans
+        .values()
+        .map(|p| p.level.get())
+        .max()
+        .map(SupportLevel::new)
 }
 
 /// Harden an [`Assessment::Unknown`] into a miss once it has persisted for

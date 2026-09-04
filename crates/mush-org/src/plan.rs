@@ -11,12 +11,12 @@
 
 use mush_core::ObjId;
 
-use crate::{MAX_SCOPE_DEPTH, MAX_SCOPES_PER_ORG};
 use crate::ids::{DelegationId, GrantId, OrgId, OrgScopeId, PolicyId, RoleId};
 use crate::record::{
     AccessPolicy, CapabilityGrant, Delegation, OrgMembership, OrgRole, OrgScope, Organization,
 };
 use crate::state::OrgState;
+use crate::{MAX_SCOPE_DEPTH, MAX_SCOPES_PER_ORG};
 
 /// A closed, typed org mutation. Creates carry pre-allocated ids.
 #[derive(Clone, Debug, PartialEq, Eq)]

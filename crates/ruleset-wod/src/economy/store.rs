@@ -253,7 +253,10 @@ impl WodEconomyStore {
 // ---------------------------------------------------------------------------
 
 fn push_op(out: &mut Outbox, op: ModuleWrite) {
-    out.defer(mush_core::Deferred::Persist(ModuleOp { ns: SmolStr::new_static(NS), op }));
+    out.defer(mush_core::Deferred::Persist(ModuleOp {
+        ns: SmolStr::new_static(NS),
+        op,
+    }));
 }
 
 /// Install a profile into RAM and queue its doc. Both always happen together.
@@ -267,10 +270,13 @@ pub(crate) fn put_profile(ctx: &mut Ctx<'_>, p: SpendingProfile) {
     {
         store.population_version = store.population_version.saturating_add(1);
     }
-    push_op(ctx.out, ModuleWrite::JsonSet {
-        key: profile_key(p.obj),
-        value: serde_json::to_value(&p).expect("profile serializes"),
-    });
+    push_op(
+        ctx.out,
+        ModuleWrite::JsonSet {
+            key: profile_key(p.obj),
+            value: serde_json::to_value(&p).expect("profile serializes"),
+        },
+    );
 }
 
 /// Stamp a brand-new profile's evaluation cursor at the clock's **current** position
@@ -291,7 +297,15 @@ pub(crate) fn seed_eval(ctx: &mut Ctx<'_>, obj: ObjId) {
         .and_then(WodEconomyStore::cadence)
         .and_then(|c| mush_housing::cadence_now(ctx.w, c))
         .unwrap_or(0);
-    put_eval(ctx, obj, EvalState { position, period: 0, seeded: true });
+    put_eval(
+        ctx,
+        obj,
+        EvalState {
+            position,
+            period: 0,
+            seeded: true,
+        },
+    );
 }
 
 /// Install an evaluation cursor and queue its doc.
@@ -299,10 +313,13 @@ pub(crate) fn put_eval(ctx: &mut Ctx<'_>, obj: ObjId, state: EvalState) {
     if let Some(store) = ctx.w.module_state_mut::<WodEconomyStore>() {
         store.eval.insert(obj, state);
     }
-    push_op(ctx.out, ModuleWrite::JsonSet {
-        key: eval_key(obj),
-        value: serde_json::to_value(state).expect("eval state serializes"),
-    });
+    push_op(
+        ctx.out,
+        ModuleWrite::JsonSet {
+            key: eval_key(obj),
+            value: serde_json::to_value(state).expect("eval state serializes"),
+        },
+    );
 }
 
 /// Record (or clear) a chargen Residence pick.
@@ -322,20 +339,38 @@ pub(crate) fn put_residence(
         }
     }
     match property {
-        Some(p) => push_op(ctx.out, ModuleWrite::JsonSet {
-            key: residence_key(obj),
-            value: serde_json::json!({ "property": p.0 }),
-        }),
-        None => push_op(ctx.out, ModuleWrite::Del { key: residence_key(obj) }),
+        Some(p) => push_op(
+            ctx.out,
+            ModuleWrite::JsonSet {
+                key: residence_key(obj),
+                value: serde_json::json!({ "property": p.0 }),
+            },
+        ),
+        None => push_op(
+            ctx.out,
+            ModuleWrite::Del {
+                key: residence_key(obj),
+            },
+        ),
     }
 }
 
 /// Queue the allocator document.
 pub(crate) fn persist_meta(ctx: &mut Ctx<'_>) {
-    let Some(meta) = ctx.w.module_state::<WodEconomyStore>().map(WodEconomyStore::meta_doc) else {
+    let Some(meta) = ctx
+        .w
+        .module_state::<WodEconomyStore>()
+        .map(WodEconomyStore::meta_doc)
+    else {
         return;
     };
-    push_op(ctx.out, ModuleWrite::JsonSet { key: SmolStr::new_static(META_KEY), value: meta });
+    push_op(
+        ctx.out,
+        ModuleWrite::JsonSet {
+            key: SmolStr::new_static(META_KEY),
+            value: meta,
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -353,7 +388,10 @@ pub(crate) fn persist_meta(ctx: &mut Ctx<'_>) {
 /// refuses instead of wrapping live ids back into use.
 #[must_use]
 pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: WodEconomyConfig) -> WodEconomyStore {
-    let mut store = WodEconomyStore { cfg, ..WodEconomyStore::default() };
+    let mut store = WodEconomyStore {
+        cfg,
+        ..WodEconomyStore::default()
+    };
     let mut seen_prompts: BTreeSet<u64> = BTreeSet::new();
     for (key, value) in kv {
         let key = key.as_str();
@@ -421,7 +459,10 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: WodEconomyConfig) -> WodEc
                 }
             }
         } else if key == META_KEY {
-            if let Some(n) = value.get("next_prompt_id").and_then(serde_json::Value::as_u64) {
+            if let Some(n) = value
+                .get("next_prompt_id")
+                .and_then(serde_json::Value::as_u64)
+            {
                 store.next_prompt = store.next_prompt.max(n);
             }
             if let Some(n) = value.get("eval_cursor").and_then(serde_json::Value::as_u64) {

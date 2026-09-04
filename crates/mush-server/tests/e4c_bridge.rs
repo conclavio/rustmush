@@ -28,10 +28,10 @@ use mush_economy::{
     EconomySnapshot, EconomyStore,
 };
 use mush_org::{CapabilityId, PrincipalId};
-use smol_str::SmolStr;
 use mush_proto::OutputEvent;
 use mush_server::econ_canon::{CanonEvidenceBridge, KIND_DELINQUENT, KIND_SETTLED};
 use mush_testkit::{TestWorld, text_of};
+use smol_str::SmolStr;
 
 /// A stand-in for `mush-scenes`: `@sealoutcome <kind>=<source>` commits one typed
 /// canon record, exactly as a concluded scene does
@@ -66,13 +66,21 @@ impl GameModule for SceneStandIn {
                 let bad = || CmdError::msg("Usage: @bridgereplay <contract>=<tx>");
                 let id = ContractId(ctx.args.lhs().trim().parse().map_err(|_| bad())?);
                 let tx = mush_economy::TransactionId(
-                    ctx.args.rhs().unwrap_or_default().trim().parse().map_err(|_| bad())?,
+                    ctx.args
+                        .rhs()
+                        .unwrap_or_default()
+                        .trim()
+                        .parse()
+                        .map_err(|_| bad())?,
                 );
-                CanonEvidenceBridge.on_economic_event(ctx, &EconomicEvent::ContractChanged {
-                    id,
-                    state: ContractStateKind::Settled,
-                    transaction: Some(tx),
-                });
+                CanonEvidenceBridge.on_economic_event(
+                    ctx,
+                    &EconomicEvent::ContractChanged {
+                        id,
+                        state: ContractStateKind::Settled,
+                        transaction: Some(tx),
+                    },
+                );
                 Ok(())
             }),
         )?;
@@ -107,7 +115,10 @@ impl GameModule for SceneStandIn {
                     .trim()
                     .parse()
                     .map_err(|_| CmdError::msg("Usage: @canonalloc <n>"))?;
-                let st = ctx.w.module_state_mut::<CanonState>().ok_or_else(|| CmdError::msg("no canon"))?;
+                let st = ctx
+                    .w
+                    .module_state_mut::<CanonState>()
+                    .ok_or_else(|| CmdError::msg("no canon"))?;
                 st.next_canon_id = n;
                 Ok(())
             }),
@@ -122,18 +133,23 @@ fn seal(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let rhs = ctx.args.rhs().unwrap_or_default().trim().to_string();
     let mut words = rhs.split_whitespace();
     let source = words.next().unwrap_or_default().to_string();
-    let entities: Vec<ObjId> =
-        words.filter_map(|w| w.trim_start_matches('#').parse().ok()).map(ObjId).collect();
+    let entities: Vec<ObjId> = words
+        .filter_map(|w| w.trim_start_matches('#').parse().ok())
+        .map(ObjId)
+        .collect();
     let ic_time = ctx.w.game_now_unix();
-    mush_canon::commit(ctx, CanonDraft {
-        kind: SmolStr::new(kind),
-        summary: "A scene reached its outcome.".to_string(),
-        entities,
-        scope: CanonScope::Restricted,
-        ic_time,
-        source,
-        detail: serde_json::Value::Null,
-    })
+    mush_canon::commit(
+        ctx,
+        CanonDraft {
+            kind: SmolStr::new(kind),
+            summary: "A scene reached its outcome.".to_string(),
+            entities,
+            scope: CanonScope::Restricted,
+            ic_time,
+            source,
+            detail: serde_json::Value::Null,
+        },
+    )
     .ok_or_else(|| CmdError::msg("canon is not loaded"))
     .map(|_| ())
 }
@@ -161,17 +177,20 @@ impl GameModule for JobProducer {
             },
             Arc::new(|ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
                 let title = ctx.args.lhs().to_string();
-                mush_jobs::open_job(ctx, mush_jobs::OpenJob {
-                    queue: "xp".into(),
-                    title,
-                    opener: ctx.actor,
-                    text: None,
-                    payload: Some(mush_jobs::JobPayload {
-                        handler: "xp.apply".into(),
-                        data: serde_json::Value::Null,
-                    }),
-                    tags: Vec::new(),
-                })
+                mush_jobs::open_job(
+                    ctx,
+                    mush_jobs::OpenJob {
+                        queue: "xp".into(),
+                        title,
+                        opener: ctx.actor,
+                        text: None,
+                        payload: Some(mush_jobs::JobPayload {
+                            handler: "xp.apply".into(),
+                            data: serde_json::Value::Null,
+                        }),
+                        tags: Vec::new(),
+                    },
+                )
                 .map(|_| ())
                 .map_err(CmdError::msg)
             }),
@@ -232,7 +251,11 @@ fn boot() -> TestWorld {
 }
 
 fn texts(events: &[(Audience, OutputEvent)]) -> String {
-    events.iter().map(|(_, e)| text_of(e)).collect::<Vec<_>>().join("\n")
+    events
+        .iter()
+        .map(|(_, e)| text_of(e))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 fn has_error(events: &[(Audience, OutputEvent)]) -> bool {
     events.iter().any(|(_, e)| {
@@ -245,13 +268,19 @@ fn ok(tw: &mut TestWorld, actor: ObjId, line: &str) -> String {
     texts(&ev)
 }
 fn snap(tw: &TestWorld) -> &EconomySnapshot {
-    tw.world().module_state::<EconomyStore>().expect("economy store").snapshot()
+    tw.world()
+        .module_state::<EconomyStore>()
+        .expect("economy store")
+        .snapshot()
 }
 fn state(tw: &TestWorld, id: ContractId) -> ContractState {
     snap(tw).contract(id).expect("contract").state
 }
 fn canon(tw: &TestWorld) -> Vec<CanonEvent> {
-    tw.world().module_state::<CanonState>().expect("canon state").recent()
+    tw.world()
+        .module_state::<CanonState>()
+        .expect("canon state")
+        .recent()
 }
 fn account_of(tw: &TestWorld, owner: ObjId) -> AccountId {
     snap(tw)
@@ -290,23 +319,57 @@ fn run_rig(tw: &mut TestWorld) -> Run {
         .id;
     let j_acct = account_of(tw, johnson);
     ok(tw, GOD, &format!("@econ/mint {faucet}={j_acct} 9999"));
-    Run { johnson, runner, watcher, j_acct, r_acct: account_of(tw, runner) }
+    Run {
+        johnson,
+        runner,
+        watcher,
+        j_acct,
+        r_acct: account_of(tw, runner),
+    }
 }
 
 /// A run gated on a sealed scene outcome, at the given visibility, fully accepted.
 fn accepted_run(tw: &mut TestWorld, r: &Run, visibility: &str) -> ContractId {
     ok(tw, r.johnson, "@contract/draft Extraction");
     let id = only_contract(tw);
-    ok(tw, r.johnson, &format!("@contract/party {id}=#{}", r.runner.0));
-    ok(tw, r.johnson, &format!("@contract/pay {id}={} 1234", r.j_acct));
-    ok(tw, r.johnson, &format!("@contract/split {id}={} 1234", r.r_acct));
-    ok(tw, r.johnson, &format!("@contract/remainder {id}={}", r.j_acct));
-    ok(tw, r.johnson, &format!("@contract/condition {id}=attest canon:scene.outcome:scene:5"));
-    ok(tw, r.johnson, &format!("@contract/visibility {id}={visibility}"));
+    ok(
+        tw,
+        r.johnson,
+        &format!("@contract/party {id}=#{}", r.runner.0),
+    );
+    ok(
+        tw,
+        r.johnson,
+        &format!("@contract/pay {id}={} 1234", r.j_acct),
+    );
+    ok(
+        tw,
+        r.johnson,
+        &format!("@contract/split {id}={} 1234", r.r_acct),
+    );
+    ok(
+        tw,
+        r.johnson,
+        &format!("@contract/remainder {id}={}", r.j_acct),
+    );
+    ok(
+        tw,
+        r.johnson,
+        &format!("@contract/condition {id}=attest canon:scene.outcome:scene:5"),
+    );
+    ok(
+        tw,
+        r.johnson,
+        &format!("@contract/visibility {id}={visibility}"),
+    );
     ok(tw, r.johnson, &format!("@contract/offer {id}"));
     ok(tw, r.johnson, &format!("@contract/accept {id}"));
     ok(tw, r.runner, &format!("@contract/accept {id}"));
-    assert_eq!(state(tw, id), ContractState::Active, "the run did not come into force");
+    assert_eq!(
+        state(tw, id),
+        ContractState::Active,
+        "the run did not come into force"
+    );
     id
 }
 
@@ -320,7 +383,11 @@ fn a_sealed_scene_outcome_settles_a_public_run_and_the_settlement_becomes_canon(
     let before = canon(&tw).len();
 
     let batch = {
-        ok(&mut tw, GOD, &format!("@sealoutcome scene.outcome=scene:5 #{}", r.runner.0));
+        ok(
+            &mut tw,
+            GOD,
+            &format!("@sealoutcome scene.outcome=scene:5 #{}", r.runner.0),
+        );
         tw.drain_write_batch()
     };
     assert!(
@@ -329,7 +396,11 @@ fn a_sealed_scene_outcome_settles_a_public_run_and_the_settlement_becomes_canon(
     );
 
     let events = canon(&tw);
-    assert_eq!(events.len(), before + 2, "expected the outcome and one settlement line: {events:?}");
+    assert_eq!(
+        events.len(),
+        before + 2,
+        "expected the outcome and one settlement line: {events:?}"
+    );
     let settled = events
         .iter()
         .find(|e| e.kind == KIND_SETTLED)
@@ -337,7 +408,10 @@ fn a_sealed_scene_outcome_settles_a_public_run_and_the_settlement_becomes_canon(
     // Existence-level detail only.
     let rendered = format!("{} {} {}", settled.summary, settled.source, settled.detail);
     for leak in ["1234", "escrow", "account", "split", "hold"] {
-        assert!(!rendered.contains(leak), "the chronicle line carries `{leak}`: {rendered}");
+        assert!(
+            !rendered.contains(leak),
+            "the chronicle line carries `{leak}`: {rendered}"
+        );
     }
     // The detail is the contract reference and nothing else — a `Public` contract's
     // id discloses only what `@contract/show` already shows anybody.
@@ -346,11 +420,24 @@ fn a_sealed_scene_outcome_settles_a_public_run_and_the_settlement_becomes_canon(
         serde_json::json!({ "contract": id.0 }),
         "the chronicle line carries more than existence-level detail"
     );
-    assert_eq!(settled.scope, CanonScope::Public, "a public contract's line is not public");
-    assert!(settled.source.starts_with("economy.tx:"), "the line is not keyed on a transaction: {settled:?}");
+    assert_eq!(
+        settled.scope,
+        CanonScope::Public,
+        "a public contract's line is not public"
+    );
+    assert!(
+        settled.source.starts_with("economy.tx:"),
+        "the line is not keyed on a transaction: {settled:?}"
+    );
     // Canon's own append rides the same batch as the economy's journal chunk.
-    assert!(batch.appended_to("canon", "canon"), "canon did not append in this batch");
-    assert!(batch.appended_to("economy", "journal"), "the settlement did not journal in this batch");
+    assert!(
+        batch.appended_to("canon", "canon"),
+        "canon did not append in this batch"
+    );
+    assert!(
+        batch.appended_to("economy", "journal"),
+        "the settlement did not journal in this batch"
+    );
     let _ = r.watcher;
 }
 
@@ -360,10 +447,21 @@ fn a_parties_contract_settles_without_reaching_canon() {
     let r = run_rig(&mut tw);
     let id = accepted_run(&mut tw, &r, "parties");
     let before = canon(&tw).len();
-    ok(&mut tw, GOD, &format!("@sealoutcome scene.outcome=scene:5 #{}", r.runner.0));
-    assert!(matches!(state(&tw, id), ContractState::Settled { .. }), "the run did not settle");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@sealoutcome scene.outcome=scene:5 #{}", r.runner.0),
+    );
+    assert!(
+        matches!(state(&tw, id), ContractState::Settled { .. }),
+        "the run did not settle"
+    );
     let events = canon(&tw);
-    assert_eq!(events.len(), before + 1, "a `Parties` settlement reached canon: {events:?}");
+    assert_eq!(
+        events.len(),
+        before + 1,
+        "a `Parties` settlement reached canon: {events:?}"
+    );
     assert!(!events.iter().any(|e| e.kind == KIND_SETTLED));
 }
 
@@ -375,10 +473,21 @@ fn an_audience_is_not_public_and_never_reaches_canon() {
     // class, and republishing it to the chronicle would invert the whole point.
     let id = accepted_run(&mut tw, &r, &format!("audience #{}", r.watcher.0));
     let before = canon(&tw).len();
-    ok(&mut tw, GOD, &format!("@sealoutcome scene.outcome=scene:5 #{}", r.runner.0));
-    assert!(matches!(state(&tw, id), ContractState::Settled { .. }), "the run did not settle");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@sealoutcome scene.outcome=scene:5 #{}", r.runner.0),
+    );
+    assert!(
+        matches!(state(&tw, id), ContractState::Settled { .. }),
+        "the run did not settle"
+    );
     let events = canon(&tw);
-    assert_eq!(events.len(), before + 1, "an audience contract reached canon: {events:?}");
+    assert_eq!(
+        events.len(),
+        before + 1,
+        "an audience contract reached canon: {events:?}"
+    );
     assert!(!events.iter().any(|e| e.kind == KIND_SETTLED));
 }
 
@@ -387,7 +496,11 @@ fn the_bridge_publishes_one_line_per_landed_transaction() {
     let mut tw = boot();
     let r = run_rig(&mut tw);
     let id = accepted_run(&mut tw, &r, "public");
-    ok(&mut tw, GOD, &format!("@sealoutcome scene.outcome=scene:5 #{}", r.runner.0));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@sealoutcome scene.outcome=scene:5 #{}", r.runner.0),
+    );
     let ContractState::Settled { transaction } = state(&tw, id) else {
         panic!("the run did not settle");
     };
@@ -400,7 +513,11 @@ fn the_bridge_publishes_one_line_per_landed_transaction() {
     // the same transition again, on the same transaction id.
     ok(&mut tw, GOD, &format!("@bridgereplay {id}={transaction}"));
     ok(&mut tw, GOD, &format!("@bridgereplay {id}={transaction}"));
-    assert_eq!(published(&tw), 1, "a replayed settlement was published again");
+    assert_eq!(
+        published(&tw),
+        1,
+        "a replayed settlement was published again"
+    );
 }
 
 // ======================================================================
@@ -456,7 +573,11 @@ fn published(tw: &TestWorld, kind: &str) -> usize {
 }
 
 fn marker(tw: &TestWorld, id: ContractId) -> Option<SmolStr> {
-    snap(tw).contract(id).expect("contract").canon_published.clone()
+    snap(tw)
+        .contract(id)
+        .expect("contract")
+        .canon_published
+        .clone()
 }
 
 /// D7. A delinquency line named every party of the contract the obligation came
@@ -470,19 +591,50 @@ fn vf_d7_a_delinquency_names_the_debtor_and_nobody_else() {
     let w_acct = account_of(&tw, r.watcher);
     ok(&mut tw, r.johnson, "@contract/draft Lease");
     let id = only_contract(&tw);
-    ok(&mut tw, r.johnson, &format!("@contract/party {id}=#{}", r.runner.0));
-    ok(&mut tw, r.johnson, &format!("@contract/party {id}=#{}", r.watcher.0));
-    ok(&mut tw, r.johnson, &format!("@contract/pay {id}={} 100", r.j_acct));
-    ok(&mut tw, r.johnson, &format!("@contract/split {id}={} 100", r.r_acct));
-    ok(&mut tw, r.johnson, &format!("@contract/remainder {id}={}", r.j_acct));
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/party {id}=#{}", r.runner.0),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/party {id}=#{}", r.watcher.0),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/pay {id}={} 100", r.j_acct),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/split {id}={} 100", r.r_acct),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/remainder {id}={}", r.j_acct),
+    );
     // The tenant's wallet is empty, so the first period is missed.
     ok(
         &mut tw,
         r.johnson,
-        &format!("@contract/deliver {id}=obligation {} {} 50 every=600 grace=0", r.r_acct, r.j_acct),
+        &format!(
+            "@contract/deliver {id}=obligation {} {} 50 every=600 grace=0",
+            r.r_acct, r.j_acct
+        ),
     );
-    ok(&mut tw, r.johnson, &format!("@contract/condition {id}=attest party:#{}", r.johnson.0));
-    ok(&mut tw, r.johnson, &format!("@contract/visibility {id}=public"));
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/condition {id}=attest party:#{}", r.johnson.0),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/visibility {id}=public"),
+    );
     ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
     for who in [r.johnson, r.runner, r.watcher] {
         ok(&mut tw, who, &format!("@contract/accept {id}"));
@@ -490,8 +642,15 @@ fn vf_d7_a_delinquency_names_the_debtor_and_nobody_else() {
     let _ = w_acct;
 
     sweep_at(&mut tw, 5_000);
-    let lines: Vec<_> = canon(&tw).into_iter().filter(|e| e.kind == KIND_DELINQUENT).collect();
-    assert_eq!(lines.len(), 1, "the delinquency was not chronicled once: {lines:?}");
+    let lines: Vec<_> = canon(&tw)
+        .into_iter()
+        .filter(|e| e.kind == KIND_DELINQUENT)
+        .collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "the delinquency was not chronicled once: {lines:?}"
+    );
     assert_eq!(
         lines[0].entities,
         vec![r.runner],
@@ -511,15 +670,25 @@ fn vf_v1_a_terminal_commit_survives_a_failing_command() {
 
     // The command seals the outcome — which settles the run through the economy's
     // observer — and *then* fails.
-    let ev = tw.run(GOD, &format!("@sealthenfail scene.outcome=scene:5 #{}", r.runner.0));
-    assert!(has_error(&ev), "the test command was supposed to fail: {}", texts(&ev));
+    let ev = tw.run(
+        GOD,
+        &format!("@sealthenfail scene.outcome=scene:5 #{}", r.runner.0),
+    );
+    assert!(
+        has_error(&ev),
+        "the test command was supposed to fail: {}",
+        texts(&ev)
+    );
     let batch = tw.drain_write_batch();
 
     assert!(
         matches!(state(&tw, id), ContractState::Settled { .. }),
         "the outcome did not settle the run"
     );
-    assert!(batch.appended_to("canon", "canon"), "canon's own append was truncated");
+    assert!(
+        batch.appended_to("canon", "canon"),
+        "canon's own append was truncated"
+    );
     assert!(
         batch.appended_to("economy", "journal"),
         "the settlement's journal chunk was truncated"
@@ -543,22 +712,44 @@ fn vf_v2_a_failed_canon_commit_is_retried_by_the_next_sweep_and_chronicled_once(
     // Leave canon exactly one id: the sealed outcome takes it, and the bridge's own
     // commit finds the allocator at its ceiling.
     ok(&mut tw, GOD, &format!("@canonalloc {}", u64::MAX - 1));
-    ok(&mut tw, GOD, &format!("@sealoutcome scene.outcome=scene:5 #{}", r.runner.0));
-    assert!(matches!(state(&tw, id), ContractState::Settled { .. }), "the run did not settle");
-    assert_eq!(published(&tw, KIND_SETTLED), 0, "the commit was supposed to fail");
-    assert_eq!(marker(&tw, id), None, "a failed commit still marked the contract published");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@sealoutcome scene.outcome=scene:5 #{}", r.runner.0),
+    );
+    assert!(
+        matches!(state(&tw, id), ContractState::Settled { .. }),
+        "the run did not settle"
+    );
+    assert_eq!(
+        published(&tw, KIND_SETTLED),
+        0,
+        "the commit was supposed to fail"
+    );
+    assert_eq!(
+        marker(&tw, id),
+        None,
+        "a failed commit still marked the contract published"
+    );
 
     // A sweep later, with the allocator healthy again, the settlement is announced
     // again and the bridge gets its line.
     ok(&mut tw, GOD, "@canonalloc 500");
     sweep_at(&mut tw, 1_100);
     assert_eq!(published(&tw, KIND_SETTLED), 1, "the retry never happened");
-    assert!(marker(&tw, id).is_some(), "the retry did not mark the contract published");
+    assert!(
+        marker(&tw, id).is_some(),
+        "the retry did not mark the contract published"
+    );
     // …and it stays one line, however many fires follow.
     for t in [1_200, 1_300, 1_400] {
         sweep_at(&mut tw, t);
     }
-    assert_eq!(published(&tw, KIND_SETTLED), 1, "the sweep republished a chronicled settlement");
+    assert_eq!(
+        published(&tw, KIND_SETTLED),
+        1,
+        "the sweep republished a chronicled settlement"
+    );
 }
 
 /// V3. Boot's `finished_transition` moves a contract to `Settled` by writing the
@@ -577,8 +768,15 @@ fn vf_v3_a_boot_healed_public_settlement_is_chronicled_exactly_once() {
     // no line either), and lose exactly the write that records the new state — the
     // shape a crash between the post and the document write leaves behind.
     ok(&mut tw, GOD, &format!("@canonalloc {}", u64::MAX - 1));
-    ok(&mut tw, GOD, &format!("@sealoutcome scene.outcome=scene:5 #{}", r.runner.0));
-    assert!(matches!(state(&tw, id), ContractState::Settled { .. }), "the run did not settle");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@sealoutcome scene.outcome=scene:5 #{}", r.runner.0),
+    );
+    assert!(
+        matches!(state(&tw, id), ContractState::Settled { .. }),
+        "the run did not settle"
+    );
     assert_eq!(published(&tw, KIND_SETTLED), 0);
     fold_kv(&mut tw, &mut kv, &[("economy", format!("contract:{id}"))]);
 
@@ -590,11 +788,23 @@ fn vf_v3_a_boot_healed_public_settlement_is_chronicled_exactly_once() {
         matches!(state(&tw, id), ContractState::Settled { .. }),
         "boot did not heal the lost transition"
     );
-    assert_eq!(marker(&tw, id), None, "a boot-healed settlement claimed a chronicle line");
-    assert_eq!(published(&tw, KIND_SETTLED), 0, "canon rebooted with a line it should not have");
+    assert_eq!(
+        marker(&tw, id),
+        None,
+        "a boot-healed settlement claimed a chronicle line"
+    );
+    assert_eq!(
+        published(&tw, KIND_SETTLED),
+        0,
+        "canon rebooted with a line it should not have"
+    );
 
     sweep_at(&mut tw, 1_200);
-    assert_eq!(published(&tw, KIND_SETTLED), 1, "the boot-healed settlement was never chronicled");
+    assert_eq!(
+        published(&tw, KIND_SETTLED),
+        1,
+        "the boot-healed settlement was never chronicled"
+    );
     sweep_at(&mut tw, 1_400);
     assert_eq!(published(&tw, KIND_SETTLED), 1, "it was chronicled twice");
 }
@@ -608,23 +818,54 @@ fn vf_v4_a_second_delinquency_is_a_second_line() {
     let r = run_rig(&mut tw);
     ok(&mut tw, r.johnson, "@contract/draft Lease");
     let id = only_contract(&tw);
-    ok(&mut tw, r.johnson, &format!("@contract/party {id}=#{}", r.runner.0));
-    ok(&mut tw, r.johnson, &format!("@contract/pay {id}={} 100", r.j_acct));
-    ok(&mut tw, r.johnson, &format!("@contract/split {id}={} 100", r.r_acct));
-    ok(&mut tw, r.johnson, &format!("@contract/remainder {id}={}", r.j_acct));
     ok(
         &mut tw,
         r.johnson,
-        &format!("@contract/deliver {id}=obligation {} {} 50 every=600 grace=0", r.r_acct, r.j_acct),
+        &format!("@contract/party {id}=#{}", r.runner.0),
     );
-    ok(&mut tw, r.johnson, &format!("@contract/condition {id}=attest party:#{}", r.johnson.0));
-    ok(&mut tw, r.johnson, &format!("@contract/visibility {id}=public"));
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/pay {id}={} 100", r.j_acct),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/split {id}={} 100", r.r_acct),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/remainder {id}={}", r.j_acct),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!(
+            "@contract/deliver {id}=obligation {} {} 50 every=600 grace=0",
+            r.r_acct, r.j_acct
+        ),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/condition {id}=attest party:#{}", r.johnson.0),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/visibility {id}=public"),
+    );
     ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
     ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
     ok(&mut tw, r.runner, &format!("@contract/accept {id}"));
 
     sweep_at(&mut tw, 5_000);
-    assert_eq!(published(&tw, KIND_DELINQUENT), 1, "the first delinquency was not chronicled");
+    assert_eq!(
+        published(&tw, KIND_DELINQUENT),
+        1,
+        "the first delinquency was not chronicled"
+    );
     let oid = snap(&tw).obligations().next().expect("obligation").id;
 
     // The tenant catches up, the lease is reinstated, and they fall behind again.
@@ -645,24 +886,45 @@ fn vf_v5_the_durable_marker_and_not_the_tail_refuses_a_replay() {
     let mut tw = boot();
     let r = run_rig(&mut tw);
     let id = accepted_run(&mut tw, &r, "public");
-    ok(&mut tw, GOD, &format!("@sealoutcome scene.outcome=scene:5 #{}", r.runner.0));
-    let ContractState::Settled { transaction } = state(&tw, id) else { panic!("did not settle") };
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@sealoutcome scene.outcome=scene:5 #{}", r.runner.0),
+    );
+    let ContractState::Settled { transaction } = state(&tw, id) else {
+        panic!("did not settle")
+    };
     assert_eq!(published(&tw, KIND_SETTLED), 1);
     let published_ref = marker(&tw, id).expect("the settlement was not marked published");
-    assert!(published_ref.starts_with("canon:"), "the marker is not a canon reference");
+    assert!(
+        published_ref.starts_with("canon:"),
+        "the marker is not a canon reference"
+    );
 
     // The same transition again — the sweep's `AlreadyPosted` retry.
     ok(&mut tw, GOD, &format!("@bridgereplay {id}={transaction}"));
-    assert_eq!(published(&tw, KIND_SETTLED), 1, "a replay was published again");
+    assert_eq!(
+        published(&tw, KIND_SETTLED),
+        1,
+        "a replay was published again"
+    );
     // …and a replay carrying a DIFFERENT transaction id, which the tail-keyed guard
     // would have waved through as a new settlement.
-    ok(&mut tw, GOD, &format!("@bridgereplay {id}={}", transaction.0 + 99));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@bridgereplay {id}={}", transaction.0 + 99),
+    );
     assert_eq!(
         published(&tw, KIND_SETTLED),
         1,
         "the guard was still the source key rather than the contract's own marker"
     );
-    assert_eq!(marker(&tw, id), Some(published_ref), "the marker moved to a second line");
+    assert_eq!(
+        marker(&tw, id),
+        Some(published_ref),
+        "the marker moved to a second line"
+    );
 }
 
 /// E3, through the real loop: a payload job's **status** is not the fact a contract
@@ -673,11 +935,31 @@ fn vf_e3_a_status_flip_settles_nothing_and_an_approval_does() {
     let r = run_rig(&mut tw);
     ok(&mut tw, r.johnson, "@contract/draft Courier");
     let id = only_contract(&tw);
-    ok(&mut tw, r.johnson, &format!("@contract/party {id}=#{}", r.runner.0));
-    ok(&mut tw, r.johnson, &format!("@contract/pay {id}={} 400", r.j_acct));
-    ok(&mut tw, r.johnson, &format!("@contract/split {id}={} 400", r.r_acct));
-    ok(&mut tw, r.johnson, &format!("@contract/remainder {id}={}", r.j_acct));
-    ok(&mut tw, r.johnson, &format!("@contract/condition {id}=fact jobs resolved 1"));
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/party {id}=#{}", r.runner.0),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/pay {id}={} 400", r.j_acct),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/split {id}={} 400", r.r_acct),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/remainder {id}={}", r.j_acct),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/condition {id}=fact jobs resolved 1"),
+    );
     ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
     ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
     ok(&mut tw, r.runner, &format!("@contract/accept {id}"));
@@ -687,7 +969,11 @@ fn vf_e3_a_status_flip_settles_nothing_and_an_approval_does() {
     // fact stays false either way.
     let _ = tw.run(GOD, "+job/status 1=resolved");
     sweep_at(&mut tw, 5_000);
-    assert_eq!(state(&tw, id), ContractState::Active, "a status flip released the escrow");
+    assert_eq!(
+        state(&tw, id),
+        ContractState::Active,
+        "a status flip released the escrow"
+    );
 
     // The approval runs the payload, writes the applied marker, and the fact is a
     // fact.

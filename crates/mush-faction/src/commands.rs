@@ -1073,7 +1073,11 @@ fn faction_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !f.migrated.is_empty() {
         lines.push(format!(
             "  Migrated to money: {}",
-            f.migrated.iter().map(SmolStr::as_str).collect::<Vec<_>>().join(", ")
+            f.migrated
+                .iter()
+                .map(SmolStr::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     lines.extend(crate::econ::balance_lines(ctx, &f, "  "));

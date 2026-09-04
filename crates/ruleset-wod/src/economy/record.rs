@@ -70,11 +70,19 @@ fn over(what: &str, max: usize, n: usize) -> String {
 }
 
 fn text_ok(what: &str, s: &str, max: usize) -> Result<(), String> {
-    if s.len() > max { Err(over(what, max, s.len())) } else { Ok(()) }
+    if s.len() > max {
+        Err(over(what, max, s.len()))
+    } else {
+        Ok(())
+    }
 }
 
 fn band_ok(what: &str, v: u8, max: u8) -> Result<(), String> {
-    if v > max { Err(over(what, usize::from(max), usize::from(v))) } else { Ok(()) }
+    if v > max {
+        Err(over(what, usize::from(max), usize::from(v)))
+    } else {
+        Ok(())
+    }
 }
 
 /// A pointer at the faction fiction a piece of progress came from (owner answer 20).
@@ -370,9 +378,9 @@ impl SupportSource {
     #[must_use]
     pub fn to_housing(&self) -> mush_housing::SupportSource {
         match self {
-            SupportSource::Career(c) => {
-                mush_housing::SupportSource::Career { kind: c.kind.clone() }
-            }
+            SupportSource::Career(c) => mush_housing::SupportSource::Career {
+                kind: c.kind.clone(),
+            },
             SupportSource::Patron { who } => {
                 mush_housing::SupportSource::Patron { who: who.clone() }
             }
@@ -412,12 +420,19 @@ impl TryFrom<HavenQualitiesWire> for HavenQualities {
     fn try_from(w: HavenQualitiesWire) -> Result<HavenQualities, String> {
         band_ok("a Haven rating", w.dots, MAX_LEVEL)?;
         if w.qualities.len() > MAX_HAVEN_QUALITIES {
-            return Err(over("haven qualities", MAX_HAVEN_QUALITIES, w.qualities.len()));
+            return Err(over(
+                "haven qualities",
+                MAX_HAVEN_QUALITIES,
+                w.qualities.len(),
+            ));
         }
         for q in &w.qualities {
             text_ok("a haven quality", q, MAX_TEXT_BYTES)?;
         }
-        Ok(HavenQualities { dots: w.dots, qualities: w.qualities })
+        Ok(HavenQualities {
+            dots: w.dots,
+            qualities: w.qualities,
+        })
     }
 }
 
@@ -431,7 +446,11 @@ impl HavenQualities {
         let n = usize::from(dots.min(MAX_LEVEL));
         HavenQualities {
             dots: dots.min(MAX_LEVEL),
-            qualities: LADDER.iter().take(n).map(|q| SmolStr::new_static(q)).collect(),
+            qualities: LADDER
+                .iter()
+                .take(n)
+                .map(|q| SmolStr::new_static(q))
+                .collect(),
         }
     }
 }
@@ -556,7 +575,11 @@ impl TryFrom<PromptOptionWire> for PromptOption {
         }
         text_ok("a prompt option key", &w.key, MAX_TEXT_BYTES)?;
         text_ok("a prompt option label", &w.label, MAX_LINE_BYTES)?;
-        Ok(PromptOption { key: w.key, label: w.label, outcome: w.outcome })
+        Ok(PromptOption {
+            key: w.key,
+            label: w.label,
+            outcome: w.outcome,
+        })
     }
 }
 
@@ -607,7 +630,9 @@ impl Prompt {
     /// The option `key` names, case-insensitively.
     #[must_use]
     pub fn option(&self, key: &str) -> Option<&PromptOption> {
-        self.options.iter().find(|o| o.key.eq_ignore_ascii_case(key.trim()))
+        self.options
+            .iter()
+            .find(|o| o.key.eq_ignore_ascii_case(key.trim()))
     }
 }
 
@@ -668,7 +693,10 @@ impl TryFrom<ProfileEventWire> for ProfileEvent {
 
     fn try_from(w: ProfileEventWire) -> Result<ProfileEvent, String> {
         text_ok("a history line", &w.what, MAX_LINE_BYTES)?;
-        Ok(ProfileEvent { at: w.at, what: w.what })
+        Ok(ProfileEvent {
+            at: w.at,
+            what: w.what,
+        })
     }
 }
 
@@ -783,12 +811,19 @@ impl SpendingProfile {
     /// The plan sources housing is told about, capped at [`MAX_SOURCES`].
     #[must_use]
     pub fn housing_sources(&self) -> Vec<mush_housing::SupportSource> {
-        self.sources.iter().take(MAX_SOURCES).map(SupportSource::to_housing).collect()
+        self.sources
+            .iter()
+            .take(MAX_SOURCES)
+            .map(SupportSource::to_housing)
+            .collect()
     }
 
     /// Append a bounded history line.
     pub fn note(&mut self, at: i64, what: impl AsRef<str>) {
-        self.history.push(ProfileEvent { at, what: SmolStr::new(clip_line(what.as_ref())) });
+        self.history.push(ProfileEvent {
+            at,
+            what: SmolStr::new(clip_line(what.as_ref())),
+        });
         if self.history.len() > MAX_PROFILE_HISTORY {
             let drop = self.history.len() - MAX_PROFILE_HISTORY;
             self.history.drain(..drop);
@@ -855,7 +890,11 @@ impl TryFrom<SpendingProfileWire> for SpendingProfile {
             }
         }
         if w.history.len() > MAX_PROFILE_HISTORY {
-            return Err(over("profile history", MAX_PROFILE_HISTORY, w.history.len()));
+            return Err(over(
+                "profile history",
+                MAX_PROFILE_HISTORY,
+                w.history.len(),
+            ));
         }
         Ok(SpendingProfile {
             obj: w.obj,

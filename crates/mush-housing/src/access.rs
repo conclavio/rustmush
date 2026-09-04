@@ -74,7 +74,11 @@ impl Access {
     /// `Staff` (the bypass).
     #[must_use]
     pub fn strictest(a: Access, b: Access) -> Access {
-        if a.narrowness() <= b.narrowness() { a } else { b }
+        if a.narrowness() <= b.narrowness() {
+            a
+        } else {
+            b
+        }
     }
 
     /// The narrowing rank [`Access::strictest`] minimises over. Private: it is a
@@ -100,13 +104,7 @@ impl Access {
 /// resolved from an [`ObjId`] alone, so it is **refused** here; E5b resolves org
 /// membership and calls [`may_enter_with`] instead.
 #[must_use]
-pub fn may_enter(
-    t: &Tenancy,
-    terms: &AccessTerms,
-    who: ObjId,
-    is_staff: bool,
-    now: i64,
-) -> Access {
+pub fn may_enter(t: &Tenancy, terms: &AccessTerms, who: ObjId, is_staff: bool, now: i64) -> Access {
     let inspector = matches!(&terms.inspection, Some(term) if term.who == PrincipalId::Object(who));
     may_enter_with(t, terms, who, inspector, is_staff, now)
 }
@@ -137,9 +135,7 @@ pub fn may_enter_with(
         if t.is_guest(who) {
             return Access::Guest;
         }
-        if inspector
-            && let Some(term) = &terms.inspection
-        {
+        if inspector && let Some(term) = &terms.inspection {
             let admitted = match term.when {
                 InspectionWhen::Always => true,
                 // Only while the tenancy is actually behind — and only once the stamp

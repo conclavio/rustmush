@@ -52,7 +52,11 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: "@instrument".into(),
             shape: ArgShape::EqPair,
-            switches: ["register", "list"].iter().copied().map(SmolStr::new).collect(),
+            switches: ["register", "list"]
+                .iter()
+                .copied()
+                .map(SmolStr::new)
+                .collect(),
             help: "@instrument/register <code>=<scale>   register a currency instrument\n\
                    @instrument/list                       list instruments"
                 .into(),
@@ -64,11 +68,13 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: "@account".into(),
             shape: ArgShape::EqPair,
-            switches: ["open", "system", "approval", "close", "unfreeze", "show", "list"]
-                .iter()
-                .copied()
-                .map(SmolStr::new)
-                .collect(),
+            switches: [
+                "open", "system", "approval", "close", "unfreeze", "show", "list",
+            ]
+            .iter()
+            .copied()
+            .map(SmolStr::new)
+            .collect(),
             help: "@account/open <obj>=<instrument>       open a personal account (staff)\n\
                    @account/open org:<org>[/<scope>]=<instrument>\n\
                    \x20                                     open an ORG wallet on a scope (staff)\n\
@@ -165,12 +171,15 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: "@vault".into(),
             shape: ArgShape::EqPair,
-            switches: ["create", "deposit", "withdraw", "show", "list", "freeze", "unfreeze", "close"]
-                .iter()
-                .copied()
-                .map(SmolStr::new)
-                .collect(),
-            help: "@vault/create <name>=container:<obj> [owner=<principal>] [scope=<id>]  (staff)\n\
+            switches: [
+                "create", "deposit", "withdraw", "show", "list", "freeze", "unfreeze", "close",
+            ]
+            .iter()
+            .copied()
+            .map(SmolStr::new)
+            .collect(),
+            help:
+                "@vault/create <name>=container:<obj> [owner=<principal>] [scope=<id>]  (staff)\n\
                    @vault/deposit <obj>=<vault>                  put an object into a vault\n\
                    @vault/withdraw <obj>=<vault> [to=here]       take one out\n\
                    @vault/show <vault>   @vault/list\n\
@@ -178,7 +187,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @vault/close <vault>                          close an empty vault\n\
                    Custody is not title: a deposit moves no ownership, and a deposited container\n\
                    still shows its contents."
-                .into(),
+                    .into(),
             ..CommandSpec::default()
         },
         Arc::new(cmd_vault),
@@ -280,7 +289,11 @@ fn require_admin(ctx: &Ctx<'_>) -> Result<(), CmdError> {
 /// (`freeze`/`unfreeze`/`close`) stay available — they are how the freeze is worked
 /// through — and the read verbs never move anything.
 pub(crate) fn refuse_if_frozen(ctx: &Ctx<'_>) -> Result<(), CmdError> {
-    if ctx.w.module_state::<EconomyStore>().is_some_and(EconomyStore::is_frozen) {
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_some_and(EconomyStore::is_frozen)
+    {
         return Err(CmdError::msg(
             "The economy is frozen; that is not available until staff clear it (@econ/unfreeze).",
         ));
@@ -292,14 +305,21 @@ pub(crate) fn info(ctx: &mut Ctx<'_>, msg: impl Into<String>) {
     ctx.out.sys_to_actor(actor, "economy", msg.into());
 }
 pub(crate) fn parse_account(s: &str) -> Option<AccountId> {
-    s.trim().trim_start_matches('#').parse::<u64>().ok().map(AccountId)
+    s.trim()
+        .trim_start_matches('#')
+        .parse::<u64>()
+        .ok()
+        .map(AccountId)
 }
 /// A unique idempotency key for an interactive command (each invocation is a fresh
 /// intent). Keyed on the next transaction id, which is unique and never reused — so
 /// two identical `@econ/pay`s both post (different keys), while an ambiguously-acked
 /// retry of the SAME post (same key) dedups.
 pub(crate) fn cmd_key(ctx: &Ctx<'_>) -> IdempotencyKey {
-    let serial = ctx.w.module_state::<EconomyStore>().map_or(0, EconomyStore::peek_next_transaction);
+    let serial = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .map_or(0, EconomyStore::peek_next_transaction);
     IdempotencyKey::new(SmolStr::new_static("cmd"), SmolStr::new(serial.to_string()))
 }
 
@@ -336,7 +356,9 @@ pub(crate) fn parse_principal(ctx: &Ctx<'_>, s: &str) -> Option<PrincipalId> {
     if let Some(rest) = s.strip_prefix("sys:") {
         return SystemPrincipalId::new(rest).map(PrincipalId::System);
     }
-    match_object(ctx.w, ctx.actor, s).ok().map(PrincipalId::Object)
+    match_object(ctx.w, ctx.actor, s)
+        .ok()
+        .map(PrincipalId::Object)
 }
 
 fn resolve_org(ctx: &Ctx<'_>, s: &str) -> Option<mush_org::OrgId> {
@@ -358,10 +380,18 @@ fn resolve_org(ctx: &Ctx<'_>, s: &str) -> Option<mush_org::OrgId> {
 }
 
 pub(crate) fn parse_scope(s: &str) -> Option<OrgScopeId> {
-    s.trim().trim_start_matches('#').parse::<u64>().ok().map(OrgScopeId)
+    s.trim()
+        .trim_start_matches('#')
+        .parse::<u64>()
+        .ok()
+        .map(OrgScopeId)
 }
 pub(crate) fn parse_vault_id(s: &str) -> Option<VaultId> {
-    s.trim().trim_start_matches('#').parse::<u64>().ok().map(VaultId)
+    s.trim()
+        .trim_start_matches('#')
+        .parse::<u64>()
+        .ok()
+        .map(VaultId)
 }
 
 pub(crate) fn render_principal(ctx: &Ctx<'_>, p: &PrincipalId) -> String {
@@ -384,8 +414,12 @@ fn may_view_asset(w: &World, actor: ObjId, object: ObjId) -> bool {
     if api::is_staff(w, actor) {
         return true;
     }
-    let Some(store) = w.module_state::<EconomyStore>() else { return false };
-    let Some(a) = store.snapshot().asset(object) else { return false };
+    let Some(store) = w.module_state::<EconomyStore>() else {
+        return false;
+    };
+    let Some(a) = store.snapshot().asset(object) else {
+        return false;
+    };
     let me = PrincipalId::Object(actor);
     if a.title_owner == me || a.assignment.as_ref().is_some_and(|x| x.assigned_to == me) {
         return true;
@@ -410,9 +444,13 @@ pub fn may_view_account(w: &World, actor: ObjId, id: AccountId) -> bool {
     if api::is_staff(w, actor) {
         return true;
     }
-    let Some(store) = w.module_state::<EconomyStore>() else { return false };
+    let Some(store) = w.module_state::<EconomyStore>() else {
+        return false;
+    };
     let snap = store.snapshot();
-    let Some(a) = snap.account(id) else { return false };
+    let Some(a) = snap.account(id) else {
+        return false;
+    };
     if a.owner == PrincipalId::Object(actor) {
         return true;
     }
@@ -430,8 +468,9 @@ pub fn may_view_account(w: &World, actor: ObjId, id: AccountId) -> bool {
         return false;
     }
     let now = w.now();
-    snap.approvals()
-        .any(|r| r.status == ApprovalStatus::Pending && now < r.expires_at && r.accounts.contains(&id))
+    snap.approvals().any(|r| {
+        r.status == ApprovalStatus::Pending && now < r.expires_at && r.accounts.contains(&id)
+    })
 }
 
 /// Render an account id **through the view gate** — the one masking rule the whole
@@ -469,8 +508,12 @@ fn hidden_text(ctx: &Ctx<'_>, resource: NamedResource) -> Option<&'static str> {
         NamedResource::Account(id) => {
             (!may_view_account(ctx.w, ctx.actor, id)).then_some("No such account.")
         }
-        NamedResource::Asset(o) => (!may_view_asset(ctx.w, ctx.actor, o)).then_some("No such asset."),
-        NamedResource::Vault(v) => (!may_view_vault(ctx.w, ctx.actor, v)).then_some("No such vault."),
+        NamedResource::Asset(o) => {
+            (!may_view_asset(ctx.w, ctx.actor, o)).then_some("No such asset.")
+        }
+        NamedResource::Vault(v) => {
+            (!may_view_vault(ctx.w, ctx.actor, v)).then_some("No such vault.")
+        }
         NamedResource::Hold(h) => (!may_view_hold(ctx.w, ctx.actor, h)).then_some("No such hold."),
         NamedResource::Obligation(o) => {
             (!may_view_obligation(ctx.w, ctx.actor, o)).then_some("No such obligation.")
@@ -504,8 +547,12 @@ pub fn may_view_hold(w: &World, actor: ObjId, id: HoldId) -> bool {
         return true;
     }
     let (placed_by, beneficiary, account) = {
-        let Some(store) = w.module_state::<EconomyStore>() else { return false };
-        let Some(h) = store.snapshot().hold(id) else { return false };
+        let Some(store) = w.module_state::<EconomyStore>() else {
+            return false;
+        };
+        let Some(h) = store.snapshot().hold(id) else {
+            return false;
+        };
         (h.placed_by.clone(), h.beneficiary.clone(), h.account)
     };
     let me = PrincipalId::Object(actor);
@@ -530,9 +577,18 @@ pub fn may_view_obligation(w: &World, actor: ObjId, id: ObligationId) -> bool {
         return true;
     }
     let (debtor, creditor, debit, credit) = {
-        let Some(store) = w.module_state::<EconomyStore>() else { return false };
-        let Some(o) = store.snapshot().obligation(id) else { return false };
-        (o.debtor.clone(), o.creditor.clone(), o.debit_account, o.credit_account)
+        let Some(store) = w.module_state::<EconomyStore>() else {
+            return false;
+        };
+        let Some(o) = store.snapshot().obligation(id) else {
+            return false;
+        };
+        (
+            o.debtor.clone(),
+            o.creditor.clone(),
+            o.debit_account,
+            o.credit_account,
+        )
     };
     let me = PrincipalId::Object(actor);
     debtor == me
@@ -558,10 +614,22 @@ pub fn may_view_obligation(w: &World, actor: ObjId, id: ObligationId) -> bool {
 /// A cap or shape complaint keeps its own text (see `concerns_named_subjects`) —
 /// hiding a payer's own operational error behind "No such account." would be a
 /// disclosure rule eating the game.
-pub(crate) fn refuse(ctx: &Ctx<'_>, subject: NamedResource, also: &[NamedResource], e: &crate::plan::EconomyError) -> CmdError {
+pub(crate) fn refuse(
+    ctx: &Ctx<'_>,
+    subject: NamedResource,
+    also: &[NamedResource],
+    e: &crate::plan::EconomyError,
+) -> CmdError {
     let named = e.named_resources();
-    let extra: &[NamedResource] = if e.concerns_named_subjects() { also } else { &[] };
-    for r in std::iter::once(subject).chain(named).chain(extra.iter().copied()) {
+    let extra: &[NamedResource] = if e.concerns_named_subjects() {
+        also
+    } else {
+        &[]
+    };
+    for r in std::iter::once(subject)
+        .chain(named)
+        .chain(extra.iter().copied())
+    {
         if let Some(text) = hidden_text(ctx, r) {
             return CmdError::msg(text);
         }
@@ -598,13 +666,18 @@ pub(crate) fn may_view_vault(w: &World, actor: ObjId, id: VaultId) -> bool {
     if api::is_staff(w, actor) {
         return true;
     }
-    let Some(store) = w.module_state::<EconomyStore>() else { return false };
-    let Some(v) = store.snapshot().vault(id) else { return false };
+    let Some(store) = w.module_state::<EconomyStore>() else {
+        return false;
+    };
+    let Some(v) = store.snapshot().vault(id) else {
+        return false;
+    };
     if v.owner == PrincipalId::Object(actor) {
         return true;
     }
     let Some(scope) = v.scope else { return false };
-    api::scope_coherent(w, Some(scope), &v.owner) && api::holds_capability(w, actor, "vault.view", scope)
+    api::scope_coherent(w, Some(scope), &v.owner)
+        && api::holds_capability(w, actor, "vault.view", scope)
 }
 
 /// **The existence-hiding rule lives here, once** (§4.5, D-E3-6): any refusal that
@@ -723,16 +796,24 @@ fn cmd_instrument(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 fn instrument_register(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let code = ctx.args.lhs().trim();
-    let id = InstrumentId::new(code).ok_or_else(|| CmdError::msg("Bad instrument code (use [a-z0-9_.-])."))?;
+    let id = InstrumentId::new(code)
+        .ok_or_else(|| CmdError::msg("Bad instrument code (use [a-z0-9_.-])."))?;
     let scale: u8 = ctx
         .args
         .rhs()
         .and_then(|s| s.trim().parse().ok())
         .ok_or_else(|| CmdError::msg("Usage: @instrument/register <code>=<scale>"))?;
     if scale > crate::MAX_SCALE {
-        return Err(CmdError::msg(format!("Scale too large (max {}).", crate::MAX_SCALE)));
+        return Err(CmdError::msg(format!(
+            "Scale too large (max {}).",
+            crate::MAX_SCALE
+        )));
     }
-    if ctx.w.module_state::<EconomyStore>().is_some_and(|s| s.snapshot().instrument(&id).is_some()) {
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_some_and(|s| s.snapshot().instrument(&id).is_some())
+    {
         return Err(CmdError::msg("That instrument is already registered."));
     }
     let def = InstrumentDef {
@@ -798,7 +879,9 @@ fn cmd_account(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     } else if ctx.switches.has("list") {
         account_list(ctx)
     } else {
-        Err(CmdError::msg("Usage: @account/open|system|approval|close|unfreeze|show|list"))
+        Err(CmdError::msg(
+            "Usage: @account/open|system|approval|close|unfreeze|show|list",
+        ))
     }
 }
 
@@ -809,14 +892,25 @@ fn account_open(ctx: &mut Ctx<'_>, system: bool) -> Result<(), CmdError> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| CmdError::msg("Usage: @account/open <obj>=<instrument>"))?;
-    let instrument = InstrumentId::new(instrument_code).ok_or_else(|| CmdError::msg("Bad instrument code."))?;
-    if ctx.w.module_state::<EconomyStore>().is_none_or(|s| s.snapshot().instrument(&instrument).is_none()) {
+    let instrument =
+        InstrumentId::new(instrument_code).ok_or_else(|| CmdError::msg("Bad instrument code."))?;
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_none_or(|s| s.snapshot().instrument(&instrument).is_none())
+    {
         return Err(CmdError::msg("No such instrument (register it first)."));
     }
     let lhs = ctx.args.lhs().trim().to_string();
     let (owner, name, credit, scope) = if system {
-        let sys = SystemPrincipalId::new(&lhs).ok_or_else(|| CmdError::msg("Bad system principal name (use [a-z0-9_.-])."))?;
-        (PrincipalId::System(sys), SmolStr::new(&lhs), CreditPolicy::unbounded(), None)
+        let sys = SystemPrincipalId::new(&lhs)
+            .ok_or_else(|| CmdError::msg("Bad system principal name (use [a-z0-9_.-])."))?;
+        (
+            PrincipalId::System(sys),
+            SmolStr::new(&lhs),
+            CreditPolicy::unbounded(),
+            None,
+        )
     } else if let Some(spec) = lhs.strip_prefix("org:") {
         // `org:<org>[/<scope>]` — the divisional wallet (§4.6). The compartment is
         // the policy anchor: everything about who may spend from this account is a
@@ -827,14 +921,19 @@ fn account_open(ctx: &mut Ctx<'_>, system: bool) -> Result<(), CmdError> {
         };
         let org = resolve_org(ctx, org_s).ok_or_else(|| CmdError::msg("No such org."))?;
         let (scope, label) = {
-            let store = ctx.w.module_state::<mush_org::OrgStore>().ok_or_else(|| CmdError::msg("No organizations."))?;
+            let store = ctx
+                .w
+                .module_state::<mush_org::OrgStore>()
+                .ok_or_else(|| CmdError::msg("No organizations."))?;
             let state = store.state();
             let o = state.org(org).expect("resolved org exists");
             let sid = match scope_s {
                 None => o.root_scope,
                 Some(s) => parse_scope(s).ok_or_else(|| CmdError::msg("Bad scope id."))?,
             };
-            let sc = state.scope(sid).ok_or_else(|| CmdError::msg("No such scope."))?;
+            let sc = state
+                .scope(sid)
+                .ok_or_else(|| CmdError::msg("No such scope."))?;
             (sid, format!("{}/{}", o.name, sc.name))
         };
         let owner = PrincipalId::Organization(org);
@@ -845,10 +944,20 @@ fn account_open(ctx: &mut Ctx<'_>, system: bool) -> Result<(), CmdError> {
                 "That scope does not belong to that organization, or the scope/org is not active.",
             ));
         }
-        (owner, SmolStr::new(label), CreditPolicy::forbid(), Some(scope))
+        (
+            owner,
+            SmolStr::new(label),
+            CreditPolicy::forbid(),
+            Some(scope),
+        )
     } else {
         let obj = match_object(ctx.w, ctx.actor, &lhs)?;
-        (PrincipalId::Object(obj), SmolStr::new(display_name(ctx.w, obj)), CreditPolicy::forbid(), None)
+        (
+            PrincipalId::Object(obj),
+            SmolStr::new(display_name(ctx.w, obj)),
+            CreditPolicy::forbid(),
+            None,
+        )
     };
     // B2: the allocator refuses at the ceiling instead of overflowing.
     let id = ctx
@@ -856,7 +965,9 @@ fn account_open(ctx: &mut Ctx<'_>, system: bool) -> Result<(), CmdError> {
         .module_state_mut::<EconomyStore>()
         .expect("economy store")
         .alloc_account()
-        .ok_or_else(|| CmdError::msg("The account-id allocator is exhausted; nothing was opened."))?;
+        .ok_or_else(|| {
+            CmdError::msg("The account-id allocator is exhausted; nothing was opened.")
+        })?;
     let account = Account {
         id,
         owner: owner.clone(),
@@ -875,10 +986,13 @@ fn account_open(ctx: &mut Ctx<'_>, system: bool) -> Result<(), CmdError> {
     };
     api::open_account(ctx, account);
     let where_ = scope.map_or_else(String::new, |s| format!(" on scope #{s}"));
-    info(ctx, format!(
-        "Opened account #{id} ({instrument}){where_}{}.",
-        if system { " [system source/sink]" } else { "" }
-    ));
+    info(
+        ctx,
+        format!(
+            "Opened account #{id} ({instrument}){where_}{}.",
+            if system { " [system source/sink]" } else { "" }
+        ),
+    );
     // A control doc + the allocator meta: no money moved, so the ORDINARY durable
     // gate (never the strict money one). Without it the confirmation — and the
     // account id staff are about to hand out — can outrun its own durable write.
@@ -899,13 +1013,26 @@ fn account_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     let staff = is_admin(ctx.w, ctx.actor);
     let (a, scale) = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No such account."))?;
-        let a = store.snapshot().account(id).ok_or_else(|| CmdError::msg("No such account."))?.clone();
-        let scale = store.snapshot().instrument(&a.instrument).map_or(0, |i| i.scale);
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No such account."))?;
+        let a = store
+            .snapshot()
+            .account(id)
+            .ok_or_else(|| CmdError::msg("No such account."))?
+            .clone();
+        let scale = store
+            .snapshot()
+            .instrument(&a.instrument)
+            .map_or(0, |i| i.scale);
         (a, scale)
     };
     let mut lines = vec![
-        format!("account #{} \"{}\" ({}) [{:?}]", a.id, a.name, a.instrument, a.status),
+        format!(
+            "account #{} \"{}\" ({}) [{:?}]",
+            a.id, a.name, a.instrument, a.status
+        ),
         format!("  balance {}", a.posted_balance.to_decimal_string(scale)),
     ];
     if let Some(rule) = &a.approval {
@@ -921,7 +1048,10 @@ fn account_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             lines.push(format!("  scope #{s}"));
         }
         lines.push(format!("  held {}", a.held_amount.to_decimal_string(scale)));
-        lines.push(format!("  last journal seq {}, revision {}", a.last_journal_seq, a.revision));
+        lines.push(format!(
+            "  last journal seq {}, revision {}",
+            a.last_journal_seq, a.revision
+        ));
     }
     for l in lines {
         info(ctx, l);
@@ -932,19 +1062,29 @@ fn account_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 fn render_policy(ctx: &Ctx<'_>, p: &ApprovalPolicy) -> String {
     match p {
         ApprovalPolicy::OneAuthorizedActor => "one authorized actor (inert)".to_string(),
-        ApprovalPolicy::Threshold { approvals, from_role } => match from_role {
+        ApprovalPolicy::Threshold {
+            approvals,
+            from_role,
+        } => match from_role {
             None => format!("{approvals} approval(s)"),
             Some(r) => {
                 let name = ctx
                     .w
                     .module_state::<mush_org::OrgStore>()
                     .and_then(|s| s.state().role(*r).map(|x| x.name.to_string()));
-                format!("{approvals} approval(s) from role {}", name.unwrap_or_else(|| format!("#{r}")))
+                format!(
+                    "{approvals} approval(s) from role {}",
+                    name.unwrap_or_else(|| format!("#{r}"))
+                )
             }
         },
         ApprovalPolicy::NamedSet { approvals, actors } => format!(
             "{approvals} approval(s) from {}",
-            actors.iter().map(|o| format!("#{}", o.0)).collect::<Vec<_>>().join(", ")
+            actors
+                .iter()
+                .map(|o| format!("#{}", o.0))
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
     }
 }
@@ -954,7 +1094,10 @@ fn render_policy(ctx: &Ctx<'_>, p: &ApprovalPolicy) -> String {
 fn account_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let staff = is_admin(ctx.w, ctx.actor);
     let ids: Vec<AccountId> = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No economy."))?;
         store.snapshot().accounts().map(|a| a.id).collect()
     };
     let rows: Vec<String> = ids
@@ -963,7 +1106,10 @@ fn account_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .map(|id| {
             let store = ctx.w.module_state::<EconomyStore>().expect("economy store");
             let a = store.snapshot().account(id).expect("listed above");
-            let scale = store.snapshot().instrument(&a.instrument).map_or(0, |i| i.scale);
+            let scale = store
+                .snapshot()
+                .instrument(&a.instrument)
+                .map_or(0, |i| i.scale);
             format!(
                 "#{} {} {} = {} [{:?}]{}",
                 a.id,
@@ -971,12 +1117,21 @@ fn account_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 a.instrument,
                 a.posted_balance.to_decimal_string(scale),
                 a.status,
-                if a.approval.is_some() { " (approval rule)" } else { "" }
+                if a.approval.is_some() {
+                    " (approval rule)"
+                } else {
+                    ""
+                }
             )
         })
         .collect();
     emit_list(ctx, rows, "No accounts.");
-    if staff && ctx.w.module_state::<EconomyStore>().is_some_and(EconomyStore::is_frozen) {
+    if staff
+        && ctx
+            .w
+            .module_state::<EconomyStore>()
+            .is_some_and(EconomyStore::is_frozen)
+    {
         info(ctx, "(store [ECONOMY FROZEN])".to_string());
     }
     Ok(())
@@ -996,8 +1151,15 @@ fn account_close(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("No such account."));
     }
     let a = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No such account."))?;
-        store.snapshot().account(id).ok_or_else(|| CmdError::msg("No such account."))?.clone()
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No such account."))?;
+        store
+            .snapshot()
+            .account(id)
+            .ok_or_else(|| CmdError::msg("No such account."))?
+            .clone()
     };
     let staff = is_admin(ctx.w, ctx.actor);
     let permitted = staff
@@ -1015,7 +1177,11 @@ fn account_close(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(account_refusal(ctx, id, "That account is not active."));
     }
     if !a.posted_balance.is_zero() || !a.held_amount.is_zero() {
-        return Err(account_refusal(ctx, id, "That account still holds a balance."));
+        return Err(account_refusal(
+            ctx,
+            id,
+            "That account still holds a balance.",
+        ));
     }
     // Invariant 29 (E4a): the E3 close path was written when `held_amount` was
     // permanently zero. A closed account takes no posting, so closing one that still
@@ -1025,7 +1191,10 @@ fn account_close(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // account drifted to zero, or a live obligation on an empty account, would slip
     // through the amount test above.
     {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No economy."))?;
         let snap = store.snapshot();
         if snap.holds_of(id).any(|h| h.status.is_held()) {
             return Err(account_refusal(
@@ -1067,15 +1236,27 @@ fn account_close(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// `@account/unfreeze <id>` — staff recovery (E2 shipped no unfreeze). A doc write,
 /// never journaled, and deliberately no `revision` bump (see `set_account_status`).
 fn account_unfreeze(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let id = parse_account(ctx.args.lhs()).ok_or_else(|| CmdError::msg("Usage: @account/unfreeze <id>"))?;
+    let id = parse_account(ctx.args.lhs())
+        .ok_or_else(|| CmdError::msg("Usage: @account/unfreeze <id>"))?;
     let status = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No such account."))?;
-        store.snapshot().account(id).ok_or_else(|| CmdError::msg("No such account."))?.status
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No such account."))?;
+        store
+            .snapshot()
+            .account(id)
+            .ok_or_else(|| CmdError::msg("No such account."))?
+            .status
     };
     if status != AccountStatus::Frozen {
         return Err(CmdError::msg("That account is not frozen."));
     }
-    if ctx.w.module_state::<EconomyStore>().is_some_and(EconomyStore::is_frozen) {
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_some_and(EconomyStore::is_frozen)
+    {
         return Err(CmdError::msg(
             "The whole economy is frozen; a per-account unfreeze would not restore posting.",
         ));
@@ -1093,10 +1274,21 @@ fn account_approval(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                          named:<n>:<obj>,<obj>… | @account/approval <id>=none";
     let id = parse_account(ctx.args.lhs()).ok_or_else(|| CmdError::msg(USAGE))?;
     let account = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No such account."))?;
-        store.snapshot().account(id).ok_or_else(|| CmdError::msg("No such account."))?.clone()
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No such account."))?;
+        store
+            .snapshot()
+            .account(id)
+            .ok_or_else(|| CmdError::msg("No such account."))?
+            .clone()
     };
-    let rhs = ctx.args.rhs().map(str::trim).ok_or_else(|| CmdError::msg(USAGE))?;
+    let rhs = ctx
+        .args
+        .rhs()
+        .map(str::trim)
+        .ok_or_else(|| CmdError::msg(USAGE))?;
     if rhs.eq_ignore_ascii_case("none") {
         api::set_account_approval(ctx, id, None);
         info(ctx, format!("Cleared the approval rule on account #{id}."));
@@ -1104,11 +1296,17 @@ fn account_approval(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Ok(());
     }
     let mut words = rhs.split_whitespace();
-    let threshold = words.next().and_then(parse_amount).ok_or_else(|| CmdError::msg(USAGE))?;
+    let threshold = words
+        .next()
+        .and_then(parse_amount)
+        .ok_or_else(|| CmdError::msg(USAGE))?;
     if threshold.is_negative() {
         return Err(CmdError::msg("A threshold must not be negative."));
     }
-    let spec = words.next().ok_or_else(|| CmdError::msg(USAGE))?.to_string();
+    let spec = words
+        .next()
+        .ok_or_else(|| CmdError::msg(USAGE))?
+        .to_string();
     if spec.eq_ignore_ascii_case("none") {
         api::set_account_approval(ctx, id, None);
         info(ctx, format!("Cleared the approval rule on account #{id}."));
@@ -1116,18 +1314,35 @@ fn account_approval(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Ok(());
     }
     let policy = parse_policy(ctx, &account, &spec)?;
-    api::set_account_approval(ctx, id, Some(ApprovalRule { threshold, policy: policy.clone() }));
+    api::set_account_approval(
+        ctx,
+        id,
+        Some(ApprovalRule {
+            threshold,
+            policy: policy.clone(),
+        }),
+    );
     let scale = ctx
         .w
         .module_state::<EconomyStore>()
-        .and_then(|s| s.snapshot().instrument(&account.instrument).map(|i| i.scale))
+        .and_then(|s| {
+            s.snapshot()
+                .instrument(&account.instrument)
+                .map(|i| i.scale)
+        })
         .unwrap_or(0);
     let rendered = render_policy(ctx, &policy);
-    info(ctx, format!(
-        "Account #{id}: a net debit above {} now needs {rendered}.",
-        threshold.to_decimal_string(scale)
-    ));
-    info(ctx, "That is a per-transaction escalation, not a budget.".to_string());
+    info(
+        ctx,
+        format!(
+            "Account #{id}: a net debit above {} now needs {rendered}.",
+            threshold.to_decimal_string(scale)
+        ),
+    );
+    info(
+        ctx,
+        "That is a per-transaction escalation, not a budget.".to_string(),
+    );
     // The rule is read live at every post, so the confirmation must not outrun the
     // doc that carries it (non-strict: policy, not money).
     ctx.gate_on_durable_ack();
@@ -1146,7 +1361,9 @@ fn parse_policy(ctx: &Ctx<'_>, account: &Account, spec: &str) -> Result<Approval
              never approves their own request. Use threshold:1 (one OTHER person) or none.",
         ));
     }
-    let (kind, rest) = lower.split_once(':').ok_or_else(|| CmdError::msg("Bad policy (use threshold:<n>[:<role>] or named:<n>:<obj>,…)."))?;
+    let (kind, rest) = lower.split_once(':').ok_or_else(|| {
+        CmdError::msg("Bad policy (use threshold:<n>[:<role>] or named:<n>:<obj>,…).")
+    })?;
     match kind {
         "threshold" => {
             let (n_s, role_s) = match rest.split_once(':') {
@@ -1158,7 +1375,10 @@ fn parse_policy(ctx: &Ctx<'_>, account: &Account, spec: &str) -> Result<Approval
                 None => None,
                 Some(r) => Some(resolve_role(ctx, account, r)?),
             };
-            Ok(ApprovalPolicy::Threshold { approvals, from_role })
+            Ok(ApprovalPolicy::Threshold {
+                approvals,
+                from_role,
+            })
         }
         "named" => {
             let (n_s, list) = rest
@@ -1181,16 +1401,23 @@ fn parse_policy(ctx: &Ctx<'_>, account: &Account, spec: &str) -> Result<Approval
             }
             Ok(ApprovalPolicy::NamedSet { approvals, actors })
         }
-        _ => Err(CmdError::msg("Bad policy (use threshold:<n>[:<role>] or named:<n>:<obj>,…).")),
+        _ => Err(CmdError::msg(
+            "Bad policy (use threshold:<n>[:<role>] or named:<n>:<obj>,…).",
+        )),
     }
 }
 
 fn parse_approvals(s: &str) -> Result<u8, CmdError> {
-    let n: u8 = s.trim().parse().map_err(|_| CmdError::msg("The approval count must be 1-255."))?;
+    let n: u8 = s
+        .trim()
+        .parse()
+        .map_err(|_| CmdError::msg("The approval count must be 1-255."))?;
     if n == 0 {
         // A zero-approval rule is satisfied by nothing at all — it escalates and
         // then waves the plan through, which reads as protection and is not.
-        return Err(CmdError::msg("An approval count of 0 gates nothing; use `none` to clear the rule."));
+        return Err(CmdError::msg(
+            "An approval count of 0 gates nothing; use `none` to clear the rule.",
+        ));
     }
     Ok(n)
 }
@@ -1203,9 +1430,15 @@ fn resolve_role(ctx: &Ctx<'_>, account: &Account, s: &str) -> Result<mush_org::R
             "That account has no organization compartment, so a role-based policy has no roles to name.",
         ));
     };
-    let store = ctx.w.module_state::<mush_org::OrgStore>().ok_or_else(|| CmdError::msg("No organizations."))?;
+    let store = ctx
+        .w
+        .module_state::<mush_org::OrgStore>()
+        .ok_or_else(|| CmdError::msg("No organizations."))?;
     let state = store.state();
-    let org = state.scope(scope).ok_or_else(|| CmdError::msg("That account's scope no longer exists."))?.org;
+    let org = state
+        .scope(scope)
+        .ok_or_else(|| CmdError::msg("That account's scope no longer exists."))?
+        .org;
     let s = s.trim();
     if let Ok(n) = s.trim_start_matches('#').parse::<u64>() {
         let id = mush_org::RoleId(n);
@@ -1294,7 +1527,10 @@ fn econ_cadence(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     match verb.as_str() {
         "list" => cadence_list(ctx),
         "show" => {
-            let id = words.next().and_then(parse_cadence_id).ok_or_else(|| CmdError::msg(USAGE))?;
+            let id = words
+                .next()
+                .and_then(parse_cadence_id)
+                .ok_or_else(|| CmdError::msg(USAGE))?;
             cadence_show(ctx, id)
         }
         "create" => {
@@ -1308,12 +1544,19 @@ fn econ_cadence(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         "advance" => {
             require_admin(ctx)?;
             refuse_if_frozen(ctx)?;
-            let id = words.next().and_then(parse_cadence_id).ok_or_else(|| CmdError::msg(USAGE))?;
+            let id = words
+                .next()
+                .and_then(parse_cadence_id)
+                .ok_or_else(|| CmdError::msg(USAGE))?;
             let n = match words.next() {
                 None => 1,
-                Some(s) => s.parse::<u64>().ok().filter(|n| *n > 0 && *n <= 64).ok_or_else(|| {
-                    CmdError::msg("Advance by 1 to 64 periods; a bigger jump is several acts.")
-                })?,
+                Some(s) => s
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|n| *n > 0 && *n <= 64)
+                    .ok_or_else(|| {
+                        CmdError::msg("Advance by 1 to 64 periods; a bigger jump is several acts.")
+                    })?,
             };
             cadence_advance(ctx, id, n)
         }
@@ -1322,7 +1565,11 @@ fn econ_cadence(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 fn parse_cadence_id(s: &str) -> Option<CadenceId> {
-    s.trim().trim_start_matches('#').parse::<u64>().ok().map(CadenceId)
+    s.trim()
+        .trim_start_matches('#')
+        .parse::<u64>()
+        .ok()
+        .map(CadenceId)
 }
 
 fn cadence_create(
@@ -1347,7 +1594,13 @@ fn cadence_create(
     // campaign clock named in configuration has to exist before the first period is
     // assessed on it, and there is nobody to type this verb at boot.
     let id = api::create_cadence(ctx, name, src, period, catchup).map_err(|e| e.to_string())?;
-    info(ctx, format!("Cadence #{id} created: {name} ({}).", source_word(src, period)));
+    info(
+        ctx,
+        format!(
+            "Cadence #{id} created: {name} ({}).",
+            source_word(src, period)
+        ),
+    );
     Ok(())
 }
 
@@ -1365,9 +1618,26 @@ fn cadence_show(ctx: &mut Ctx<'_>, id: CadenceId) -> Result<(), CmdError> {
         .module_state::<EconomyStore>()
         .and_then(|s| s.snapshot().cadence(id).cloned())
         .ok_or_else(|| CmdError::msg("No such cadence."))?;
-    info(ctx, format!("Cadence #{}: {} — {}", c.id, c.name, source_word(c.source, c.period)));
-    info(ctx, format!("  period {} · catch-up {} · revision {}", c.position, c.catch_up_cap, c.revision));
-    info(ctx, format!("  generation {} · schema {}", c.generation, c.schema));
+    info(
+        ctx,
+        format!(
+            "Cadence #{}: {} — {}",
+            c.id,
+            c.name,
+            source_word(c.source, c.period)
+        ),
+    );
+    info(
+        ctx,
+        format!(
+            "  period {} · catch-up {} · revision {}",
+            c.position, c.catch_up_cap, c.revision
+        ),
+    );
+    info(
+        ctx,
+        format!("  generation {} · schema {}", c.generation, c.schema),
+    );
     Ok(())
 }
 
@@ -1436,7 +1706,11 @@ fn cadence_advance(ctx: &mut Ctx<'_>, id: CadenceId, n: u64) -> Result<(), CmdEr
 /// Assets and vaults keep their own latches, deliberately: those name which titles
 /// and which containers need looking at, and no list can reconstruct that.
 fn econ_unfreeze(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    if ctx.w.module_state::<EconomyStore>().is_none_or(|s| !s.is_frozen()) {
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_none_or(|s| !s.is_frozen())
+    {
         return Err(CmdError::msg("The economy is not frozen."));
     }
     api::set_economy_frozen(ctx, false);
@@ -1448,7 +1722,9 @@ fn econ_unfreeze(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let mut restored = 0usize;
     for id in restore {
         let frozen = ctx.w.module_state::<EconomyStore>().is_some_and(|s| {
-            s.snapshot().account(id).is_some_and(|a| a.status == AccountStatus::Frozen)
+            s.snapshot()
+                .account(id)
+                .is_some_and(|a| a.status == AccountStatus::Frozen)
         });
         if frozen && api::set_account_status(ctx, id, AccountStatus::Active) {
             restored += 1;
@@ -1457,11 +1733,17 @@ fn econ_unfreeze(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
         store.clear_boot_frozen();
     }
-    let meta = ctx.w.module_state::<EconomyStore>().map(EconomyStore::meta_doc);
+    let meta = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .map(EconomyStore::meta_doc);
     if let Some(meta) = meta {
         api::persist_meta(ctx.out, meta);
     }
-    info(ctx, "The whole-economy freeze is cleared. Posting is live again.".to_string());
+    info(
+        ctx,
+        "The whole-economy freeze is cleared. Posting is live again.".to_string(),
+    );
     info(
         ctx,
         format!(
@@ -1493,7 +1775,11 @@ fn econ_unfreeze(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 const NO_SUCH_REQUEST: &str = "No such approval request.";
 
 fn parse_approval_id(s: &str) -> Option<ApprovalRequestId> {
-    s.trim().trim_start_matches('#').parse::<u64>().ok().map(ApprovalRequestId)
+    s.trim()
+        .trim_start_matches('#')
+        .parse::<u64>()
+        .ok()
+        .map(ApprovalRequestId)
 }
 
 /// Whether `actor` may act on a request: would their approval COUNT for at least
@@ -1503,7 +1789,9 @@ fn parse_approval_id(s: &str) -> Option<ApprovalRequestId> {
 /// The requester is not excluded here — they may look at and even record a decision
 /// on their own request; the engine simply never counts it (four-eyes).
 fn may_act_on_request(w: &World, actor: ObjId, request: &crate::record::ApprovalRequest) -> bool {
-    let Some(store) = w.module_state::<EconomyStore>() else { return false };
+    let Some(store) = w.module_state::<EconomyStore>() else {
+        return false;
+    };
     let snap = store.snapshot();
     let auth = api::WorldAuth { w };
     request.accounts.iter().any(|id| {
@@ -1532,10 +1820,15 @@ fn econ_decide(ctx: &mut Ctx<'_>, verdict: Verdict) -> Result<(), CmdError> {
     }
     let now = ctx.w.now();
     if request.status != ApprovalStatus::Pending {
-        return Err(CmdError::msg(format!("Request #{id} is already {}.", status_word(request.status))));
+        return Err(CmdError::msg(format!(
+            "Request #{id} is already {}.",
+            status_word(request.status)
+        )));
     }
     if now >= request.expires_at {
-        return Err(CmdError::msg(format!("Request #{id} has expired; the payer must submit a fresh one.")));
+        return Err(CmdError::msg(format!(
+            "Request #{id} has expired; the payer must submit a fresh one."
+        )));
     }
     let me = ctx.actor;
     if verdict == Verdict::Approved && request.approvals.iter().any(|a| a.approver == me) {
@@ -1548,7 +1841,11 @@ fn econ_decide(ctx: &mut Ctx<'_>, verdict: Verdict) -> Result<(), CmdError> {
             crate::MAX_APPROVERS_PER_REQUEST
         )));
     }
-    request.decisions.push(Decision { actor: me, at: now, verdict });
+    request.decisions.push(Decision {
+        actor: me,
+        at: now,
+        verdict,
+    });
     match verdict {
         Verdict::Approved => {
             if request.approvals.len() >= crate::MAX_APPROVERS_PER_REQUEST {
@@ -1557,7 +1854,10 @@ fn econ_decide(ctx: &mut Ctx<'_>, verdict: Verdict) -> Result<(), CmdError> {
                     crate::MAX_APPROVERS_PER_REQUEST
                 )));
             }
-            request.approvals.push(Approval { approver: me, at: now });
+            request.approvals.push(Approval {
+                approver: me,
+                at: now,
+            });
         }
         Verdict::Denied => request.status = ApprovalStatus::Cancelled,
     }
@@ -1570,7 +1870,10 @@ fn econ_decide(ctx: &mut Ctx<'_>, verdict: Verdict) -> Result<(), CmdError> {
         Verdict::Approved => {
             info(ctx, format!("Approved request #{id}."));
             if requester_is_me {
-                info(ctx, "(It is your own request, so it does not count toward the policy.)".to_string());
+                info(
+                    ctx,
+                    "(It is your own request, so it does not count toward the policy.)".to_string(),
+                );
             }
         }
         Verdict::Denied => info(ctx, format!("Denied request #{id}; it is cancelled.")),
@@ -1591,10 +1894,20 @@ fn econ_decide(ctx: &mut Ctx<'_>, verdict: Verdict) -> Result<(), CmdError> {
 /// A refused append is logged and swallowed: the decision itself has already been
 /// recorded on the request, and losing the audit line must never lose the approval
 /// (or return an `Err` that would truncate the whole batch, the approval included).
-fn audit_decision(ctx: &mut Ctx<'_>, verdict: Verdict, request: ApprovalRequestId, accounts: &[AccountId]) {
+fn audit_decision(
+    ctx: &mut Ctx<'_>,
+    verdict: Verdict,
+    request: ApprovalRequestId,
+    accounts: &[AccountId],
+) {
     let scopes: Vec<Option<OrgScopeId>> = {
-        let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
-        accounts.iter().map(|id| store.snapshot().account(*id).and_then(|a| a.scope)).collect()
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return;
+        };
+        accounts
+            .iter()
+            .map(|id| store.snapshot().account(*id).and_then(|a| a.scope))
+            .collect()
     };
     let org = scopes.iter().flatten().find_map(|s| {
         ctx.w
@@ -1632,7 +1945,10 @@ fn status_word(s: ApprovalStatus) -> &'static str {
 fn econ_approvals(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let now = ctx.w.now();
     let live: Vec<crate::record::ApprovalRequest> = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No economy."))?;
         store
             .snapshot()
             .approvals()
@@ -1644,14 +1960,26 @@ fn econ_approvals(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .into_iter()
         .filter(|r| may_act_on_request(ctx.w, ctx.actor, r))
         .map(|r| {
-            let mine = if r.requested_by == PrincipalId::Object(ctx.actor) { " (yours)" } else { "" };
-            let already = if r.approvals.iter().any(|a| a.approver == ctx.actor) { " [approved]" } else { "" };
+            let mine = if r.requested_by == PrincipalId::Object(ctx.actor) {
+                " (yours)"
+            } else {
+                ""
+            };
+            let already = if r.approvals.iter().any(|a| a.approver == ctx.actor) {
+                " [approved]"
+            } else {
+                ""
+            };
             format!(
                 "#{} — requested by {}, {} approval(s) so far, account(s) {}{mine}{already}",
                 r.id,
                 render_principal(ctx, &r.requested_by),
                 r.approvals.len(),
-                r.accounts.iter().map(|a| format!("#{a}")).collect::<Vec<_>>().join(", "),
+                r.accounts
+                    .iter()
+                    .map(|a| format!("#{a}"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
             )
         })
         .collect();
@@ -1665,12 +1993,24 @@ pub(crate) fn parse_amount(s: &str) -> Option<Amount> {
     s.trim().parse::<i64>().ok().map(Amount::from_minor)
 }
 
-fn two_accounts_and_amount(ctx: &Ctx<'_>, usage: &str) -> Result<(AccountId, AccountId, Amount), CmdError> {
+fn two_accounts_and_amount(
+    ctx: &Ctx<'_>,
+    usage: &str,
+) -> Result<(AccountId, AccountId, Amount), CmdError> {
     let from = parse_account(ctx.args.lhs()).ok_or_else(|| CmdError::msg(usage.to_string()))?;
-    let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(usage.to_string()))?;
+    let rhs = ctx
+        .args
+        .rhs()
+        .ok_or_else(|| CmdError::msg(usage.to_string()))?;
     let mut it = rhs.split_whitespace();
-    let to = it.next().and_then(parse_account).ok_or_else(|| CmdError::msg(usage.to_string()))?;
-    let amount = it.next().and_then(parse_amount).ok_or_else(|| CmdError::msg(usage.to_string()))?;
+    let to = it
+        .next()
+        .and_then(parse_account)
+        .ok_or_else(|| CmdError::msg(usage.to_string()))?;
+    let amount = it
+        .next()
+        .and_then(parse_amount)
+        .ok_or_else(|| CmdError::msg(usage.to_string()))?;
     if amount.is_zero() || amount.is_negative() {
         return Err(CmdError::msg("Amount must be positive."));
     }
@@ -1684,13 +2024,20 @@ fn two_accounts_and_amount(ctx: &Ctx<'_>, usage: &str) -> Result<(AccountId, Acc
 /// asset's title holder must be the same principal unless the actor is staff — an
 /// actual sale between two principals needs counterparty consent, which is E4.
 fn econ_pay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    const USAGE: &str = "Usage: @econ/pay <from>=<to> <amount> [asset=<obj>] [from_vault=<id>|to_vault=<id>]";
+    const USAGE: &str =
+        "Usage: @econ/pay <from>=<to> <amount> [asset=<obj>] [from_vault=<id>|to_vault=<id>]";
     let from = parse_account(ctx.args.lhs()).ok_or_else(|| CmdError::msg(USAGE))?;
     let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?;
     let (rest, opts) = parse_opts(rhs, &["asset", "from_vault", "to_vault"]);
     let mut it = rest.split_whitespace();
-    let to = it.next().and_then(parse_account).ok_or_else(|| CmdError::msg(USAGE))?;
-    let amount = it.next().and_then(parse_amount).ok_or_else(|| CmdError::msg(USAGE))?;
+    let to = it
+        .next()
+        .and_then(parse_account)
+        .ok_or_else(|| CmdError::msg(USAGE))?;
+    let amount = it
+        .next()
+        .and_then(parse_amount)
+        .ok_or_else(|| CmdError::msg(USAGE))?;
     if amount.is_zero() || amount.is_negative() {
         return Err(CmdError::msg("Amount must be positive."));
     }
@@ -1711,7 +2058,10 @@ fn econ_pay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // does reach it (A6 — two locks, because minting is the one irreversible act).
     let staff = is_admin(ctx.w, ctx.actor);
     if !staff {
-        let source = ctx.w.module_state::<EconomyStore>().and_then(|s| s.snapshot().account(from).cloned());
+        let source = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .and_then(|s| s.snapshot().account(from).cloned());
         let eligible = source
             .as_ref()
             .is_some_and(|a| a.owner == PrincipalId::Object(ctx.actor) || a.scope.is_some());
@@ -1732,10 +2082,15 @@ fn econ_pay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let object = asset_target(ctx, spec)?;
         asset_object = Some(object);
         let (payer, recipient, to_scope, title_owner) = {
-            let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
+            let store = ctx
+                .w
+                .module_state::<EconomyStore>()
+                .ok_or_else(|| CmdError::msg("No economy."))?;
             let snap = store.snapshot();
             let payer = snap.account(from).map(|a| a.owner.clone());
-            let dest = snap.account(to).ok_or_else(|| CmdError::msg("No such account."))?;
+            let dest = snap
+                .account(to)
+                .ok_or_else(|| CmdError::msg("No such account."))?;
             let title_owner = snap.asset(object).map(|a| a.title_owner.clone());
             (payer, dest.owner.clone(), dest.scope, title_owner)
         };
@@ -1750,10 +2105,16 @@ fn econ_pay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                  principals, and an E3 plan carries one authority. Counterparty consent is E4.",
             ));
         }
-        asset_ops.push(AssetOp::TransferTitle { object, to: recipient, to_scope });
+        asset_ops.push(AssetOp::TransferTitle {
+            object,
+            to: recipient,
+            to_scope,
+        });
         match (opts.get("to_vault"), opts.get("from_vault")) {
             (Some(_), Some(_)) => {
-                return Err(CmdError::msg("Use at most one of to_vault= and from_vault=."));
+                return Err(CmdError::msg(
+                    "Use at most one of to_vault= and from_vault=.",
+                ));
             }
             (Some(v), None) => {
                 let vault = parse_vault_id(v).ok_or_else(|| CmdError::msg("No such vault."))?;
@@ -1761,7 +2122,11 @@ fn econ_pay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             }
             (None, Some(v)) => {
                 let vault = parse_vault_id(v).ok_or_else(|| CmdError::msg("No such vault."))?;
-                custody_ops.push(CustodyOp::Withdraw { object, vault, to: ctx.actor });
+                custody_ops.push(CustodyOp::Withdraw {
+                    object,
+                    vault,
+                    to: ctx.actor,
+                });
             }
             (None, None) => {}
         }
@@ -1769,14 +2134,24 @@ fn econ_pay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("A vault leg needs asset=<obj>."));
     }
 
-    let neg = amount.checked_neg().ok_or_else(|| CmdError::msg("Amount out of range."))?;
+    let neg = amount
+        .checked_neg()
+        .ok_or_else(|| CmdError::msg("Amount out of range."))?;
     let mut plan = EconomyPlan::new(
         cmd_key(ctx),
         PrincipalId::Object(ctx.actor),
         EconomicCause::Command { serial: 0 },
         vec![
-            RequestedLine { account: from, delta: neg, memo: SmolStr::default() },
-            RequestedLine { account: to, delta: amount, memo: SmolStr::default() },
+            RequestedLine {
+                account: from,
+                delta: neg,
+                memo: SmolStr::default(),
+            },
+            RequestedLine {
+                account: to,
+                delta: amount,
+                memo: SmolStr::default(),
+            },
         ],
     );
     plan.asset_ops = asset_ops;
@@ -1816,24 +2191,48 @@ fn finish_pay(
             Ok(())
         }
         Ok(PostOutcome::NeedsApproval(id)) => {
-            info(ctx, format!("Approval required: request #{id}. Nothing has moved."));
-            info(ctx, "Once it is approved, run the same command again to post it.".to_string());
+            info(
+                ctx,
+                format!("Approval required: request #{id}. Nothing has moved."),
+            );
+            info(
+                ctx,
+                "Once it is approved, run the same command again to post it.".to_string(),
+            );
             Ok(())
         }
-        Err(e) => Err(refuse(ctx, NamedResource::Account(from), &[NamedResource::Account(to)], &e)),
+        Err(e) => Err(refuse(
+            ctx,
+            NamedResource::Account(from),
+            &[NamedResource::Account(to)],
+            &e,
+        )),
     }
 }
 
 fn econ_mint(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let (source, to, amount) = two_accounts_and_amount(ctx, "Usage: @econ/mint <sysacct>=<to> <amount>")?;
-    let neg = amount.checked_neg().ok_or_else(|| CmdError::msg("Amount out of range."))?;
+    let (source, to, amount) =
+        two_accounts_and_amount(ctx, "Usage: @econ/mint <sysacct>=<to> <amount>")?;
+    let neg = amount
+        .checked_neg()
+        .ok_or_else(|| CmdError::msg("Amount out of range."))?;
     let plan = EconomyPlan::new(
         cmd_key(ctx),
         PrincipalId::Object(ctx.actor),
-        EconomicCause::Staff { reason: "mint".into() },
+        EconomicCause::Staff {
+            reason: "mint".into(),
+        },
         vec![
-            RequestedLine { account: source, delta: neg, memo: SmolStr::new_static("mint") },
-            RequestedLine { account: to, delta: amount, memo: SmolStr::new_static("grant") },
+            RequestedLine {
+                account: source,
+                delta: neg,
+                memo: SmolStr::new_static("mint"),
+            },
+            RequestedLine {
+                account: to,
+                delta: amount,
+                memo: SmolStr::new_static("grant"),
+            },
         ],
     );
     let outcome = api::post(ctx, &plan);
@@ -1849,7 +2248,14 @@ fn econ_reverse(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .parse::<u64>()
         .map(TransactionId)
         .map_err(|_| CmdError::msg("Usage: @econ/reverse <txid>"))?;
-    let outcome = api::reverse(ctx, txid, PrincipalId::Object(ctx.actor), EconomicCause::Staff { reason: "reversal".into() });
+    let outcome = api::reverse(
+        ctx,
+        txid,
+        PrincipalId::Object(ctx.actor),
+        EconomicCause::Staff {
+            reason: "reversal".into(),
+        },
+    );
     finish(ctx, outcome, "Reversed")
 }
 
@@ -1861,7 +2267,16 @@ fn econ_audit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .iter()
             .rev()
             .take(20)
-            .map(|t| format!("  tx #{} seq {} ({} line(s)){}", t.id, t.journal_seq, t.lines.len(), t.reverses.map_or_else(String::new, |r| format!(" reverses #{r}"))))
+            .map(|t| {
+                format!(
+                    "  tx #{} seq {} ({} line(s)){}",
+                    t.id,
+                    t.journal_seq,
+                    t.lines.len(),
+                    t.reverses
+                        .map_or_else(String::new, |r| format!(" reverses #{r}"))
+                )
+            })
             .collect();
         v.reverse();
         if v.is_empty() {
@@ -1899,7 +2314,9 @@ fn entry_party(ctx: &Ctx<'_>, tx: &crate::record::EconomicTransaction) -> bool {
     if auth.acts_for(&me, &tx.actor) {
         return true;
     }
-    let Some(store) = ctx.w.module_state::<EconomyStore>() else { return false };
+    let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+        return false;
+    };
     let snap = store.snapshot();
     tx.lines
         .iter()
@@ -1964,7 +2381,10 @@ fn econ_history(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     const USAGE: &str = "Usage: @econ/history <account> [n]   (n is 1-20)";
     let raw = ctx.args.raw().to_string();
     let mut words = raw.split_whitespace();
-    let id = words.next().and_then(parse_account).ok_or_else(|| CmdError::msg(NO_SUCH))?;
+    let id = words
+        .next()
+        .and_then(parse_account)
+        .ok_or_else(|| CmdError::msg(NO_SUCH))?;
     // D8 (E4c verify fold): `n` is validated, never clamped. Clamping split the bad
     // inputs into two observable classes — `0` silently became 1 and `banana`
     // silently became 20 — so the reply told you which kind of wrong you were.
@@ -1984,7 +2404,10 @@ fn econ_history(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     let staff = is_admin(ctx.w, ctx.actor);
     let entries: Vec<crate::record::EconomicTransaction> = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg(NO_SUCH))?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg(NO_SUCH))?;
         if store.snapshot().account(id).is_none() {
             return Err(CmdError::msg(NO_SUCH));
         }
@@ -2029,7 +2452,11 @@ fn econ_history(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     .module_state::<EconomyStore>()
                     .and_then(|s| s.snapshot().instrument(&l.instrument).map(|i| i.scale))
                     .unwrap_or(0);
-                parts.push(format!("account #{} {}", l.account, l.delta.to_decimal_string(scale)));
+                parts.push(format!(
+                    "account #{} {}",
+                    l.account,
+                    l.delta.to_decimal_string(scale)
+                ));
             } else if !masked {
                 // D4 (E4c verify fold): every masked line on one entry COLLAPSES
                 // into a single token. One `another account` per hidden line
@@ -2056,7 +2483,8 @@ fn econ_history(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     .module_state::<EconomyStore>()
                     .and_then(|s| {
                         let snap = s.snapshot();
-                        snap.account(e.hold.account).and_then(|a| snap.instrument(&a.instrument))
+                        snap.account(e.hold.account)
+                            .and_then(|a| snap.instrument(&a.instrument))
                     })
                     .map_or(0, |i| i.scale);
                 parts.push(format!(
@@ -2067,10 +2495,18 @@ fn econ_history(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     e.hold.account
                 ));
             } else {
-                parts.push(format!("a reservation {} on another account", hold_word(e.kind)));
+                parts.push(format!(
+                    "a reservation {} on another account",
+                    hold_word(e.kind)
+                ));
             }
         }
-        rows.push(format!("tx #{} at {}: {}", t.id, t.posted_at, parts.join(", ")));
+        rows.push(format!(
+            "tx #{} at {}: {}",
+            t.id,
+            t.posted_at,
+            parts.join(", ")
+        ));
         // Rule 5 — and never for a `Staff`-visibility entry a non-staff viewer only
         // sees because it is effect-only (D3): the reservation is the disclosure, the
         // free text about why is not.
@@ -2091,7 +2527,11 @@ fn econ_history(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-fn finish(ctx: &mut Ctx<'_>, outcome: Result<PostOutcome, crate::plan::EconomyError>, verb: &str) -> Result<(), CmdError> {
+fn finish(
+    ctx: &mut Ctx<'_>,
+    outcome: Result<PostOutcome, crate::plan::EconomyError>,
+    verb: &str,
+) -> Result<(), CmdError> {
     match outcome {
         Ok(PostOutcome::Posted(id)) => {
             info(ctx, format!("{verb}: transaction #{id} posted."));
@@ -2144,9 +2584,13 @@ fn cmd_asset(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 /// `<principal> [scope=<id>]` — the owner half shared by `title` and `transfer`.
-fn owner_and_scope(ctx: &Ctx<'_>, rhs: &str) -> Result<(PrincipalId, Option<OrgScopeId>), CmdError> {
+fn owner_and_scope(
+    ctx: &Ctx<'_>,
+    rhs: &str,
+) -> Result<(PrincipalId, Option<OrgScopeId>), CmdError> {
     let (rest, opts) = parse_opts(rhs, &["scope"]);
-    let owner = parse_principal(ctx, rest.trim()).ok_or_else(|| CmdError::msg("No such principal."))?;
+    let owner =
+        parse_principal(ctx, rest.trim()).ok_or_else(|| CmdError::msg("No such principal."))?;
     let scope = match opts.get("scope") {
         Some(s) => Some(parse_scope(s).ok_or_else(|| CmdError::msg("Bad scope id."))?),
         None => None,
@@ -2156,40 +2600,72 @@ fn owner_and_scope(ctx: &Ctx<'_>, rhs: &str) -> Result<(PrincipalId, Option<OrgS
 
 fn asset_title(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let object = asset_target(ctx, ctx.args.lhs())?;
-    let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg("Usage: @asset/title <obj>=<principal> [scope=<id>]"))?;
+    let rhs = ctx
+        .args
+        .rhs()
+        .ok_or_else(|| CmdError::msg("Usage: @asset/title <obj>=<principal> [scope=<id>]"))?;
     let (owner, scope) = owner_and_scope(ctx, rhs)?;
-    let plan = ops_plan(ctx, vec![AssetOp::Title { object, owner, scope, catalog: None }], Vec::new());
+    let plan = ops_plan(
+        ctx,
+        vec![AssetOp::Title {
+            object,
+            owner,
+            scope,
+            catalog: None,
+        }],
+        Vec::new(),
+    );
     let outcome = api::post(ctx, &plan);
     finish_asset(ctx, object, outcome, "Title recorded")
 }
 
 fn asset_transfer(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let object = asset_target(ctx, ctx.args.lhs())?;
-    let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg("Usage: @asset/transfer <obj>=<principal> [scope=<id>]"))?;
+    let rhs = ctx
+        .args
+        .rhs()
+        .ok_or_else(|| CmdError::msg("Usage: @asset/transfer <obj>=<principal> [scope=<id>]"))?;
     let (to, to_scope) = owner_and_scope(ctx, rhs)?;
-    let plan = ops_plan(ctx, vec![AssetOp::TransferTitle { object, to, to_scope }], Vec::new());
+    let plan = ops_plan(
+        ctx,
+        vec![AssetOp::TransferTitle {
+            object,
+            to,
+            to_scope,
+        }],
+        Vec::new(),
+    );
     let outcome = api::post(ctx, &plan);
     finish_asset(ctx, object, outcome, "Title transferred")
 }
 
 fn asset_assign(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let object = asset_target(ctx, ctx.args.lhs())?;
-    let rhs = ctx
-        .args
-        .rhs()
-        .ok_or_else(|| CmdError::msg("Usage: @asset/assign <obj>=<principal> [purpose] [until=<unix>]"))?;
+    let rhs = ctx.args.rhs().ok_or_else(|| {
+        CmdError::msg("Usage: @asset/assign <obj>=<principal> [purpose] [until=<unix>]")
+    })?;
     let (rest, opts) = parse_opts(rhs, &["until"]);
     let mut words = rest.split_whitespace();
-    let who = words.next().ok_or_else(|| CmdError::msg("Assign to whom?"))?;
+    let who = words
+        .next()
+        .ok_or_else(|| CmdError::msg("Assign to whom?"))?;
     let to = parse_principal(ctx, who).ok_or_else(|| CmdError::msg("No such principal."))?;
     let purpose: String = words.collect::<Vec<_>>().join(" ");
     let valid_until = match opts.get("until") {
-        Some(s) => Some(s.parse::<i64>().map_err(|_| CmdError::msg("Bad until= time."))?),
+        Some(s) => Some(
+            s.parse::<i64>()
+                .map_err(|_| CmdError::msg("Bad until= time."))?,
+        ),
         None => None,
     };
     let plan = ops_plan(
         ctx,
-        vec![AssetOp::Assign { object, to, purpose: SmolStr::new(purpose), valid_until }],
+        vec![AssetOp::Assign {
+            object,
+            to,
+            purpose: SmolStr::new(purpose),
+            valid_until,
+        }],
         Vec::new(),
     );
     let outcome = api::post(ctx, &plan);
@@ -2215,13 +2691,23 @@ fn asset_maintenance(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     } else {
         Some(parse_account(rhs).ok_or_else(|| CmdError::msg("No such account."))?)
     };
-    let plan = ops_plan(ctx, vec![AssetOp::SetMaintenance { object, account }], Vec::new());
+    let plan = ops_plan(
+        ctx,
+        vec![AssetOp::SetMaintenance { object, account }],
+        Vec::new(),
+    );
     let outcome = api::post(ctx, &plan);
     // The payer account is a subject too: invariant 14's refusal ("scope and owner
     // do not agree") is an answer ABOUT that account, and naming a wallet the actor
     // may not view is how a probe would find one.
     let also: Vec<NamedResource> = account.map(NamedResource::Account).into_iter().collect();
-    finish_ops(ctx, NamedResource::Asset(object), &also, outcome, "Maintenance payer set")
+    finish_ops(
+        ctx,
+        NamedResource::Asset(object),
+        &also,
+        outcome,
+        "Maintenance payer set",
+    )
 }
 
 fn asset_lien(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -2233,14 +2719,24 @@ fn asset_lien(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .next()
         .and_then(|s| parse_principal(ctx, s))
         .ok_or_else(|| CmdError::msg("No such principal."))?;
-    let amount = words.next().and_then(parse_amount).ok_or_else(|| CmdError::msg(USAGE))?;
+    let amount = words
+        .next()
+        .and_then(parse_amount)
+        .ok_or_else(|| CmdError::msg(USAGE))?;
     let instrument = words
         .next()
         .and_then(InstrumentId::new)
         .ok_or_else(|| CmdError::msg(USAGE))?;
     let plan = ops_plan(
         ctx,
-        vec![AssetOp::Encumber { object, encumbrance: Encumbrance::Lien { creditor, amount, instrument } }],
+        vec![AssetOp::Encumber {
+            object,
+            encumbrance: Encumbrance::Lien {
+                creditor,
+                amount,
+                instrument,
+            },
+        }],
         Vec::new(),
     );
     let outcome = api::post(ctx, &plan);
@@ -2257,7 +2753,10 @@ fn asset_release(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .ok_or_else(|| CmdError::msg("Usage: @asset/release <obj>=<n>   (n from @asset/show)"))?;
     // Resolve the exact recorded claim BEFORE `post` — `Release` is an exact match.
     let encumbrance = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No economy."))?;
         store
             .snapshot()
             .asset(object)
@@ -2266,7 +2765,14 @@ fn asset_release(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let Some(encumbrance) = encumbrance else {
         return Err(asset_refusal(ctx, object, "No such encumbrance."));
     };
-    let plan = ops_plan(ctx, vec![AssetOp::Release { object, encumbrance }], Vec::new());
+    let plan = ops_plan(
+        ctx,
+        vec![AssetOp::Release {
+            object,
+            encumbrance,
+        }],
+        Vec::new(),
+    );
     let outcome = api::post(ctx, &plan);
     finish_asset(ctx, object, outcome, "Claim released")
 }
@@ -2310,8 +2816,15 @@ fn asset_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let staff = is_admin(ctx.w, ctx.actor);
     let lines = {
         let a = {
-            let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No such asset."))?;
-            store.snapshot().asset(object).ok_or_else(|| CmdError::msg("No such asset."))?.clone()
+            let store = ctx
+                .w
+                .module_state::<EconomyStore>()
+                .ok_or_else(|| CmdError::msg("No such asset."))?;
+            store
+                .snapshot()
+                .asset(object)
+                .ok_or_else(|| CmdError::msg("No such asset."))?
+                .clone()
         };
         let mut v = vec![format!(
             "asset #{} — title {} [{:?}]",
@@ -2320,7 +2833,11 @@ fn asset_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             a.lifecycle
         )];
         match &a.assignment {
-            Some(x) => v.push(format!("  assigned to {} ({})", render_principal(ctx, &x.assigned_to), x.purpose)),
+            Some(x) => v.push(format!(
+                "  assigned to {} ({})",
+                render_principal(ctx, &x.assigned_to),
+                x.purpose
+            )),
             None => v.push("  unassigned".to_string()),
         }
         v.push(format!("  encumbrances: {}", a.encumbrances.len()));
@@ -2335,11 +2852,20 @@ fn asset_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 v.push(format!("    {}. {}", i + 1, render_encumbrance(ctx, e)));
             }
             if let Some(acq) = a.acquisition {
-                v.push(format!("  acquired by transaction #{} at {}", acq.transaction, acq.at));
+                v.push(format!(
+                    "  acquired by transaction #{} at {}",
+                    acq.transaction, acq.at
+                ));
             }
-            v.push(format!("  last journal seq {}, revision {}", a.last_journal_seq, a.revision));
+            v.push(format!(
+                "  last journal seq {}, revision {}",
+                a.last_journal_seq, a.revision
+            ));
             if a.frozen {
-                v.push(format!("  FROZEN ({})", a.frozen_reason.as_deref().unwrap_or("no reason")));
+                v.push(format!(
+                    "  FROZEN ({})",
+                    a.frozen_reason.as_deref().unwrap_or("no reason")
+                ));
             }
         }
         v
@@ -2352,14 +2878,26 @@ fn asset_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 fn render_encumbrance(ctx: &Ctx<'_>, e: &Encumbrance) -> String {
     match e {
-        Encumbrance::Lien { creditor, amount, instrument } => {
-            format!("lien {} {} to {}", amount.minor(), instrument, render_principal(ctx, creditor))
+        Encumbrance::Lien {
+            creditor,
+            amount,
+            instrument,
+        } => {
+            format!(
+                "lien {} {} to {}",
+                amount.minor(),
+                instrument,
+                render_principal(ctx, creditor)
+            )
         }
         Encumbrance::Disputed { claimant, reason } => {
             format!("disputed by {} ({reason})", render_principal(ctx, claimant))
         }
         Encumbrance::Lease { lessor, contract } => {
-            format!("leased from {} (contract {contract})", render_principal(ctx, lessor))
+            format!(
+                "leased from {} (contract {contract})",
+                render_principal(ctx, lessor)
+            )
         }
         Encumbrance::Collateral { contract } => format!("collateral (contract {contract})"),
     }
@@ -2387,7 +2925,10 @@ fn asset_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         None => None,
     };
     let candidates: Vec<ObjId> = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No economy."))?;
         store
             .snapshot()
             .assets()
@@ -2443,15 +2984,16 @@ fn cmd_vault(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     } else if ctx.switches.has("close") {
         vault_close(ctx)
     } else {
-        Err(CmdError::msg("Usage: @vault/create|deposit|withdraw|show|list|freeze|unfreeze|close"))
+        Err(CmdError::msg(
+            "Usage: @vault/create|deposit|withdraw|show|list|freeze|unfreeze|close",
+        ))
     }
 }
 
 fn vault_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     require_admin(ctx)?;
     refuse_if_frozen(ctx)?;
-    const USAGE: &str =
-        "Usage: @vault/create <name>=container:<obj>|interior:<obj> [owner=<principal>] [scope=<id>]";
+    const USAGE: &str = "Usage: @vault/create <name>=container:<obj>|interior:<obj> [owner=<principal>] [scope=<id>]";
     let name = ctx.args.lhs().trim().to_string();
     if name.is_empty() {
         return Err(CmdError::msg(USAGE));
@@ -2460,12 +3002,16 @@ fn vault_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (rest, opts) = parse_opts(rhs, &["owner", "scope"]);
     let spec = rest.trim();
     let backing = if let Some(o) = spec.strip_prefix("container:") {
-        CustodyRef::Container(match_object(ctx.w, ctx.actor, o).map_err(|_| CmdError::msg("No such object."))?)
+        CustodyRef::Container(
+            match_object(ctx.w, ctx.actor, o).map_err(|_| CmdError::msg("No such object."))?,
+        )
     } else if let Some(o) = spec.strip_prefix("interior:") {
         // E3c: legal as soon as SOME registered provider handles the backing
         // kind (`mush_sim::InteriorCustodyProvider`). Whether *this* room is a
         // usable interior is `backing_valid`'s question, below.
-        CustodyRef::SpatialInterior(match_object(ctx.w, ctx.actor, o).map_err(|_| CmdError::msg("No such object."))?)
+        CustodyRef::SpatialInterior(
+            match_object(ctx.w, ctx.actor, o).map_err(|_| CmdError::msg("No such object."))?,
+        )
     } else {
         return Err(CmdError::msg(USAGE));
     };
@@ -2480,21 +3026,31 @@ fn vault_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     // Invariant 18 at create (§4.4), both halves.
     if !api::scope_coherent(ctx.w, scope, &owner) {
-        return Err(CmdError::msg("That scope does not belong to that organization, or is not active."));
+        return Err(CmdError::msg(
+            "That scope does not belong to that organization, or is not active.",
+        ));
     }
     // One vault per backing, and never a backing another custody system owns.
     {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No economy."))?;
         if let Some(v) = store.snapshot().vault_by_backing(&backing) {
-            return Err(CmdError::msg(format!("That object already backs vault #{}.", v.id)));
+            return Err(CmdError::msg(format!(
+                "That object already backs vault #{}.",
+                v.id
+            )));
         }
         let providers = store.providers();
         if !providers.iter().any(|p| p.handles(&backing)) {
-            return Err(CmdError::msg(if matches!(backing, CustodyRef::SpatialInterior(_)) {
-                "Interior vaults are not available until the interior custody provider is wired."
-            } else {
-                "Nothing registered can hold a vault of that kind."
-            }));
+            return Err(CmdError::msg(
+                if matches!(backing, CustodyRef::SpatialInterior(_)) {
+                    "Interior vaults are not available until the interior custody provider is wired."
+                } else {
+                    "Nothing registered can hold a vault of that kind."
+                },
+            ));
         }
         // Resolving WITH the object is the claim check: the provider that will
         // run this vault's ops is exempt (an interior vault's backing IS a space
@@ -2517,7 +3073,9 @@ fn vault_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .module_state_mut::<EconomyStore>()
         .expect("economy store")
         .alloc_vault()
-        .ok_or_else(|| CmdError::msg("The vault-id allocator is exhausted; nothing was created."))?;
+        .ok_or_else(|| {
+            CmdError::msg("The vault-id allocator is exhausted; nothing was created.")
+        })?;
     let vault = Vault {
         id,
         owner,
@@ -2528,7 +3086,10 @@ fn vault_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         revision: 1,
     };
     api::create_vault(ctx, vault);
-    info(ctx, format!("Created vault #{id} ({name}) backed by #{}.", backing_obj.0));
+    info(
+        ctx,
+        format!("Created vault #{id} ({name}) backed by #{}.", backing_obj.0),
+    );
     ctx.gate_on_durable_ack();
     Ok(())
 }
@@ -2560,9 +3121,14 @@ fn vault_withdraw(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .get(ctx.actor)
             .and_then(|o| o.location)
             .ok_or_else(|| CmdError::msg("You are nowhere."))?,
-        Some(other) => match_object(ctx.w, ctx.actor, other).map_err(|_| CmdError::msg("No such destination."))?,
+        Some(other) => match_object(ctx.w, ctx.actor, other)
+            .map_err(|_| CmdError::msg("No such destination."))?,
     };
-    let plan = ops_plan(ctx, Vec::new(), vec![CustodyOp::Withdraw { object, vault, to }]);
+    let plan = ops_plan(
+        ctx,
+        Vec::new(),
+        vec![CustodyOp::Withdraw { object, vault, to }],
+    );
     let outcome = api::post(ctx, &plan);
     finish_vault(ctx, vault, outcome, "Withdrawn")
 }
@@ -2574,8 +3140,15 @@ fn vault_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     let (header, backing, providers) = {
         let (v, providers) = {
-            let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No such vault."))?;
-            let v = store.snapshot().vault(id).ok_or_else(|| CmdError::msg("No such vault."))?.clone();
+            let store = ctx
+                .w
+                .module_state::<EconomyStore>()
+                .ok_or_else(|| CmdError::msg("No such vault."))?;
+            let v = store
+                .snapshot()
+                .vault(id)
+                .ok_or_else(|| CmdError::msg("No such vault."))?
+                .clone();
             (v, store.providers())
         };
         (
@@ -2620,7 +3193,10 @@ fn vault_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 fn vault_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let ids: Vec<VaultId> = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No economy."))?;
         store.snapshot().vaults().map(|v| v.id).collect()
     };
     let rows: Vec<String> = ids
@@ -2631,7 +3207,13 @@ fn vault_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 let store = ctx.w.module_state::<EconomyStore>().expect("economy store");
                 store.snapshot().vault(id).expect("listed above").clone()
             };
-            format!("#{} {} — owner {} [{:?}]", v.id, v.name, render_principal(ctx, &v.owner), v.status)
+            format!(
+                "#{} {} — owner {} [{:?}]",
+                v.id,
+                v.name,
+                render_principal(ctx, &v.owner),
+                v.status
+            )
         })
         .collect();
     emit_list(ctx, rows, "No vaults.");
@@ -2642,7 +3224,11 @@ fn vault_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 fn vault_set_status(ctx: &mut Ctx<'_>, status: VaultStatus, verb: &str) -> Result<(), CmdError> {
     require_admin(ctx)?;
     let id = parse_vault_id(ctx.args.lhs()).ok_or_else(|| CmdError::msg("No such vault."))?;
-    if ctx.w.module_state::<EconomyStore>().is_none_or(|s| s.snapshot().vault(id).is_none()) {
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_none_or(|s| s.snapshot().vault(id).is_none())
+    {
         return Err(CmdError::msg("No such vault."));
     }
     api::set_vault_status(ctx, id, status);
@@ -2657,8 +3243,14 @@ fn vault_close(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("No such vault."));
     }
     let (owner, backing, providers) = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No such vault."))?;
-        let v = store.snapshot().vault(id).ok_or_else(|| CmdError::msg("No such vault."))?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No such vault."))?;
+        let v = store
+            .snapshot()
+            .vault(id)
+            .ok_or_else(|| CmdError::msg("No such vault."))?;
         (v.owner.clone(), v.backing.clone(), store.providers())
     };
     if !is_admin(ctx.w, ctx.actor) && owner != PrincipalId::Object(ctx.actor) {
@@ -2680,13 +3272,25 @@ fn vault_close(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 // ---- @hold (E4b1 §4.4) ----------------------------------------------------
 
 fn parse_hold_id(s: &str) -> Option<HoldId> {
-    s.trim().trim_start_matches('#').parse::<u64>().ok().map(HoldId)
+    s.trim()
+        .trim_start_matches('#')
+        .parse::<u64>()
+        .ok()
+        .map(HoldId)
 }
 fn parse_obligation_id(s: &str) -> Option<ObligationId> {
-    s.trim().trim_start_matches('#').parse::<u64>().ok().map(ObligationId)
+    s.trim()
+        .trim_start_matches('#')
+        .parse::<u64>()
+        .ok()
+        .map(ObligationId)
 }
 fn parse_escalation_id(s: &str) -> Option<EscalationId> {
-    s.trim().trim_start_matches('#').parse::<u64>().ok().map(EscalationId)
+    s.trim()
+        .trim_start_matches('#')
+        .parse::<u64>()
+        .ok()
+        .map(EscalationId)
 }
 
 /// `<secs>` or `ic:<secs>` — a duration from **now**, resolved onto the clock it
@@ -2705,7 +3309,10 @@ pub(crate) fn parse_deadline(ctx: &Ctx<'_>, s: &str) -> Option<EconomicDeadline>
         None => (EconomicClock::RealUtc, s.trim(), ctx.w.now()),
     };
     let secs = rest.parse::<i64>().ok().filter(|n| *n > 0)?;
-    Some(EconomicDeadline { clock, at: base.saturating_add(secs) })
+    Some(EconomicDeadline {
+        clock,
+        at: base.saturating_add(secs),
+    })
 }
 
 fn cmd_hold(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -2723,7 +3330,9 @@ fn cmd_hold(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     } else if ctx.switches.has("list") {
         hold_list(ctx)
     } else {
-        Err(CmdError::msg("Usage: @hold/place|release|capture|show|list"))
+        Err(CmdError::msg(
+            "Usage: @hold/place|release|capture|show|list",
+        ))
     }
 }
 
@@ -2734,18 +3343,22 @@ fn cmd_hold(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// like a spend (D-E4-11) — otherwise reserving a fortune and capturing it later
 /// would route around the escalation entirely.
 fn hold_place(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    const USAGE: &str =
-        "Usage: @hold/place <account>=<amount> [for=<principal>] [expires=<secs|ic:<secs>>] [reason]";
+    const USAGE: &str = "Usage: @hold/place <account>=<amount> [for=<principal>] [expires=<secs|ic:<secs>>] [reason]";
     let account = parse_account(ctx.args.lhs()).ok_or_else(|| CmdError::msg("No such account."))?;
     let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?;
     let (rest, opts) = parse_opts(rhs, &["for", "expires"]);
     let mut words = rest.split_whitespace();
-    let amount = words.next().and_then(parse_amount).ok_or_else(|| CmdError::msg(USAGE))?;
+    let amount = words
+        .next()
+        .and_then(parse_amount)
+        .ok_or_else(|| CmdError::msg(USAGE))?;
     if amount.is_zero() || amount.is_negative() {
         return Err(CmdError::msg("A hold amount must be positive."));
     }
     let beneficiary = match opts.get("for") {
-        Some(s) => Some(parse_principal(ctx, s).ok_or_else(|| CmdError::msg("No such principal."))?),
+        Some(s) => {
+            Some(parse_principal(ctx, s).ok_or_else(|| CmdError::msg("No such principal."))?)
+        }
         None => None,
     };
     // A3: `sys:<name>` is a **staff** word, and only for a faucet/sink that really
@@ -2762,7 +3375,9 @@ fn hold_place(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             return Err(unknown());
         }
         let registered = ctx.w.module_state::<EconomyStore>().is_some_and(|s| {
-            s.snapshot().accounts().any(|a| Some(&a.owner) == beneficiary.as_ref())
+            s.snapshot()
+                .accounts()
+                .any(|a| Some(&a.owner) == beneficiary.as_ref())
         });
         if !registered {
             return Err(unknown());
@@ -2775,7 +3390,11 @@ fn hold_place(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         None => None,
     };
     let reason: String = words.collect::<Vec<_>>().join(" ");
-    let reason = if reason.trim().is_empty() { "hold".to_string() } else { reason };
+    let reason = if reason.trim().is_empty() {
+        "hold".to_string()
+    } else {
+        reason
+    };
     if reason.len() > crate::MAX_REASON_BYTES {
         return Err(CmdError::msg("That reason is too long."));
     }
@@ -2789,7 +3408,9 @@ fn hold_place(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         account,
         amount,
         beneficiary,
-        purpose: HoldPurpose::Manual { reason: SmolStr::new(reason) },
+        purpose: HoldPurpose::Manual {
+            reason: SmolStr::new(reason),
+        },
         expires,
     }];
     let outcome = api::post(ctx, &plan);
@@ -2815,7 +3436,13 @@ fn hold_place(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             return Ok(());
         }
     }
-    finish_ops(ctx, NamedResource::Account(account), &[], outcome, "Reserved")
+    finish_ops(
+        ctx,
+        NamedResource::Account(account),
+        &[],
+        outcome,
+        "Reserved",
+    )
 }
 
 /// `@hold/release <id>` — the placer, the beneficiary, anyone with debit authority on
@@ -2853,26 +3480,49 @@ fn hold_capture(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     refuse_escrow(ctx, id, "captured")?;
     let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?;
     let mut words = rhs.split_whitespace();
-    let to = words.next().and_then(parse_account).ok_or_else(|| CmdError::msg(USAGE))?;
-    let amount = words.next().and_then(parse_amount).ok_or_else(|| CmdError::msg(USAGE))?;
+    let to = words
+        .next()
+        .and_then(parse_account)
+        .ok_or_else(|| CmdError::msg(USAGE))?;
+    let amount = words
+        .next()
+        .and_then(parse_amount)
+        .ok_or_else(|| CmdError::msg(USAGE))?;
     if amount.is_zero() || amount.is_negative() {
         return Err(CmdError::msg("A capture amount must be positive."));
     }
     let from = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No such hold."))?;
-        store.snapshot().hold(id).ok_or_else(|| CmdError::msg("No such hold."))?.account
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No such hold."))?;
+        store
+            .snapshot()
+            .hold(id)
+            .ok_or_else(|| CmdError::msg("No such hold."))?
+            .account
     };
     if from == to {
         return Err(CmdError::msg("An account cannot pay itself."));
     }
-    let neg = amount.checked_neg().ok_or_else(|| CmdError::msg("Amount out of range."))?;
+    let neg = amount
+        .checked_neg()
+        .ok_or_else(|| CmdError::msg("Amount out of range."))?;
     let mut plan = EconomyPlan::new(
         cmd_key(ctx),
         PrincipalId::Object(ctx.actor),
         EconomicCause::Command { serial: 0 },
         vec![
-            RequestedLine { account: from, delta: neg, memo: SmolStr::new_static("capture") },
-            RequestedLine { account: to, delta: amount, memo: SmolStr::new_static("capture") },
+            RequestedLine {
+                account: from,
+                delta: neg,
+                memo: SmolStr::new_static("capture"),
+            },
+            RequestedLine {
+                account: to,
+                delta: amount,
+                memo: SmolStr::new_static("capture"),
+            },
         ],
     );
     plan.hold_ops = vec![HoldOp::Capture { hold: id, amount }];
@@ -2927,7 +3577,9 @@ fn refuse_escrow(ctx: &Ctx<'_>, id: HoldId, verb: &str) -> Result<(), CmdError> 
 /// not staff and is not inside that contract's disclosure class, the *reservation* is
 /// rendered and the *contract* is not.
 fn escrow_contract_hidden(ctx: &Ctx<'_>, h: &crate::record::Hold) -> bool {
-    let HoldPurpose::Escrow { contract } = &h.purpose else { return false };
+    let HoldPurpose::Escrow { contract } = &h.purpose else {
+        return false;
+    };
     if is_admin(ctx.w, ctx.actor) {
         return false;
     }
@@ -2936,7 +3588,10 @@ fn escrow_contract_hidden(ctx: &Ctx<'_>, h: &crate::record::Hold) -> bool {
     }
     ctx.w.module_state::<EconomyStore>().is_some_and(|s| {
         s.snapshot().contract(*contract).is_some_and(|c| {
-            matches!(c.consent.visibility, crate::record::EconomicVisibility::Staff)
+            matches!(
+                c.consent.visibility,
+                crate::record::EconomicVisibility::Staff
+            )
         })
     })
 }
@@ -2944,8 +3599,14 @@ fn escrow_contract_hidden(ctx: &Ctx<'_>, h: &crate::record::Hold) -> bool {
 fn render_hold(ctx: &Ctx<'_>, h: &crate::record::Hold, staff: bool, scale: u8) -> Vec<String> {
     let status = match &h.status {
         HoldStatus::Held => "held".to_string(),
-        HoldStatus::Consumed { transaction, amount } => {
-            format!("captured {} by transaction #{transaction}", amount.to_decimal_string(scale))
+        HoldStatus::Consumed {
+            transaction,
+            amount,
+        } => {
+            format!(
+                "captured {} by transaction #{transaction}",
+                amount.to_decimal_string(scale)
+            )
         }
         HoldStatus::Released => "released".to_string(),
         HoldStatus::Expired => "expired".to_string(),
@@ -2982,7 +3643,10 @@ fn render_hold(ctx: &Ctx<'_>, h: &crate::record::Hold, staff: bool, scale: u8) -
         lines.push(format!("  expires at {} on {:?}", d.at, d.clock));
     }
     if staff {
-        lines.push(format!("  placed by {}", render_principal(ctx, &h.placed_by)));
+        lines.push(format!(
+            "  placed by {}",
+            render_principal(ctx, &h.placed_by)
+        ));
         lines.push(format!(
             "  holder {}/{}, journal seq {}, revision {}",
             h.holder.namespace, h.holder.key, h.last_journal_seq, h.revision
@@ -2998,9 +3662,15 @@ fn hold_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     let staff = is_admin(ctx.w, ctx.actor);
     let lines = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No such hold."))?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No such hold."))?;
         let snap = store.snapshot();
-        let h = snap.hold(id).ok_or_else(|| CmdError::msg("No such hold."))?.clone();
+        let h = snap
+            .hold(id)
+            .ok_or_else(|| CmdError::msg("No such hold."))?
+            .clone();
         let scale = snap
             .account(h.account)
             .and_then(|a| snap.instrument(&a.instrument))
@@ -3033,7 +3703,10 @@ fn hold_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
     };
     let ids: Vec<HoldId> = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No economy."))?;
         let snap = store.snapshot();
         match filter {
             Some(a) => snap.holds_of(a).map(|h| h.id).collect(),
@@ -3123,7 +3796,11 @@ fn is_creditor(ctx: &Ctx<'_>, o: &Obligation) -> bool {
         return true;
     }
     // An org creditor: whoever may spend that compartment speaks for it.
-    match ctx.w.module_state::<EconomyStore>().and_then(|s| s.snapshot().account(o.credit_account).cloned()) {
+    match ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().account(o.credit_account).cloned())
+    {
         Some(a) => match a.scope {
             Some(scope) => {
                 api::scope_coherent(ctx.w, Some(scope), &a.owner)
@@ -3152,8 +3829,14 @@ fn obligation_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?;
     let (rest, opts) = parse_opts(rhs, &["every", "start", "grace", "catchup"]);
     let mut words = rest.split_whitespace();
-    let credit = words.next().and_then(parse_account).ok_or_else(|| CmdError::msg(USAGE))?;
-    let amount = words.next().and_then(parse_amount).ok_or_else(|| CmdError::msg(USAGE))?;
+    let credit = words
+        .next()
+        .and_then(parse_account)
+        .ok_or_else(|| CmdError::msg(USAGE))?;
+    let amount = words
+        .next()
+        .and_then(parse_amount)
+        .ok_or_else(|| CmdError::msg(USAGE))?;
     let notify_on_success = words.any(|w| w.eq_ignore_ascii_case("notify"));
     if amount.is_zero() || amount.is_negative() {
         return Err(CmdError::msg("An obligation amount must be positive."));
@@ -3162,10 +3845,17 @@ fn obligation_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("An account cannot owe itself."));
     }
     let (debtor, creditor) = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No economy."))?;
         let snap = store.snapshot();
-        let d = snap.account(debit).ok_or_else(|| CmdError::msg("No such account."))?;
-        let c = snap.account(credit).ok_or_else(|| CmdError::msg("No such account."))?;
+        let d = snap
+            .account(debit)
+            .ok_or_else(|| CmdError::msg("No such account."))?;
+        let c = snap
+            .account(credit)
+            .ok_or_else(|| CmdError::msg("No such account."))?;
         if d.status != AccountStatus::Active || c.status != AccountStatus::Active {
             return Err(CmdError::msg("Both accounts must be active."));
         }
@@ -3208,7 +3898,9 @@ fn obligation_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         EconomicClock::Manual | EconomicClock::Cadence(_) => 0,
     };
     let start = match opts.get("start") {
-        Some(s) => s.parse::<i64>().map_err(|_| CmdError::msg("start= must be a number of seconds."))?,
+        Some(s) => s
+            .parse::<i64>()
+            .map_err(|_| CmdError::msg("start= must be a number of seconds."))?,
         // Default: the first period falls due one whole period from now, so creating
         // an obligation never charges instantly for time nobody had notice of.
         None => cadence.unwrap_or(0),
@@ -3236,13 +3928,17 @@ fn obligation_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         None => crate::DEFAULT_GRACE_PERIODS,
     };
     let catchup = match opts.get("catchup") {
-        Some(s) => s.parse::<u8>().map_err(|_| CmdError::msg("catchup= must be 0-255."))?,
+        Some(s) => s
+            .parse::<u8>()
+            .map_err(|_| CmdError::msg("catchup= must be 0-255."))?,
         None => crate::DEFAULT_CATCH_UP,
     };
-    let schedule =
-        EconomicSchedule::new(clock, base.saturating_add(start), cadence, catchup);
+    let schedule = EconomicSchedule::new(clock, base.saturating_add(start), cadence, catchup);
     let id = {
-        let store = ctx.w.module_state_mut::<EconomyStore>().expect("economy store");
+        let store = ctx
+            .w
+            .module_state_mut::<EconomyStore>()
+            .expect("economy store");
         // B2: the allocator can refuse at the ceiling. Nothing is created, and the
         // refusal says so rather than panicking the world task.
         store.alloc_obligation().ok_or_else(|| {
@@ -3260,7 +3956,9 @@ fn obligation_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         grace: GracePolicy::new(grace),
         notify_on_success,
         status: ObligationStatus::Active,
-        cause: ObligationCause::Staff { reason: SmolStr::new_static("@obligation/create") },
+        cause: ObligationCause::Staff {
+            reason: SmolStr::new_static("@obligation/create"),
+        },
         // M1: a command never mints. A faucet-funded obligation is a standing mint
         // and only `mush_economy::create_system_obligation` — the ruleset's own
         // entry, under the configured cap — can create one.
@@ -3274,11 +3972,17 @@ fn obligation_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         revision: 1,
     };
     api::put_obligation(ctx, o);
-    let meta = ctx.w.module_state::<EconomyStore>().map(EconomyStore::meta_doc);
+    let meta = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .map(EconomyStore::meta_doc);
     if let Some(meta) = meta {
         api::persist_meta(ctx.out, meta);
     }
-    info(ctx, format!("Obligation #{id} created: #{debit} owes #{credit} each period."));
+    info(
+        ctx,
+        format!("Obligation #{id} created: #{debit} owes #{credit} each period."),
+    );
     info(
         ctx,
         "The sweep attempts it on its own clock. A downtime backlog is forgiven, never charged."
@@ -3294,10 +3998,11 @@ fn obligation_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // primitive is E5's, and making the sweep collect approvals would park rent
     // forever waiting for a human. What the staffer can have is the warning, at the
     // moment they create the thing.
-    let ruled = ctx
-        .w
-        .module_state::<EconomyStore>()
-        .is_some_and(|s| s.snapshot().account(debit).is_some_and(|a| a.approval.is_some()));
+    let ruled = ctx.w.module_state::<EconomyStore>().is_some_and(|s| {
+        s.snapshot()
+            .account(debit)
+            .is_some_and(|a| a.approval.is_some())
+    });
     if ruled {
         info(
             ctx,
@@ -3329,7 +4034,10 @@ fn render_status(o: &Obligation) -> String {
     match &o.status {
         ObligationStatus::Active => "active".to_string(),
         ObligationStatus::Grace { missed, deadline } => {
-            format!("in grace ({missed} missed; allowance ends {} on {:?})", deadline.at, deadline.clock)
+            format!(
+                "in grace ({missed} missed; allowance ends {} on {:?})",
+                deadline.at, deadline.clock
+            )
         }
         ObligationStatus::Delinquent => "delinquent".to_string(),
         ObligationStatus::Suspended { reason } => {
@@ -3362,7 +4070,9 @@ fn obligation_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .module_state::<EconomyStore>()
         .and_then(|s| {
             let snap = s.snapshot();
-            snap.account(o.debit_account).and_then(|a| snap.instrument(&a.instrument)).map(|i| i.scale)
+            snap.account(o.debit_account)
+                .and_then(|a| snap.instrument(&a.instrument))
+                .map(|i| i.scale)
         })
         .unwrap_or(0);
     let mut lines = vec![
@@ -3405,12 +4115,22 @@ fn obligation_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 fn render_event(e: &ObligationEvent) -> String {
     match e {
-        ObligationEvent::Settled { period, at, transaction } => match transaction {
+        ObligationEvent::Settled {
+            period,
+            at,
+            transaction,
+        } => match transaction {
             Some(t) => format!("period {period} settled at {at} (transaction #{t})"),
             None => format!("period {period} settled at {at}"),
         },
         ObligationEvent::Missed { period, at } => format!("period {period} missed at {at}"),
-        ObligationEvent::Forgiven { periods, from, to, cause, at } => {
+        ObligationEvent::Forgiven {
+            periods,
+            from,
+            to,
+            cause,
+            at,
+        } => {
             format!("{periods} period(s) forgiven ({cause:?}) at {at} [{from}..{to})")
         }
         ObligationEvent::Escalated { id, at } => format!("escalated as alert #{id} at {at}"),
@@ -3422,7 +4142,10 @@ fn render_event(e: &ObligationEvent) -> String {
 
 fn obligation_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let ids: Vec<ObligationId> = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No economy."))?;
         store.snapshot().obligations().map(|o| o.id).collect()
     };
     let rows: Vec<String> = ids
@@ -3451,7 +4174,11 @@ fn obligation_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 /// Record a status change plus its history entry, keeping the bounded tail bounded.
-fn transition(o: &Obligation, status: ObligationStatus, event: Option<ObligationEvent>) -> Obligation {
+fn transition(
+    o: &Obligation,
+    status: ObligationStatus,
+    event: Option<ObligationEvent>,
+) -> Obligation {
     let mut next = o.clone();
     next.status = status;
     next.revision += 1;
@@ -3466,21 +4193,34 @@ fn transition(o: &Obligation, status: ObligationStatus, event: Option<Obligation
 
 fn obligation_suspend(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let o = obligation_of(ctx, ctx.args.lhs())?;
-    let reason = ctx.args.rhs().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("staff");
+    let reason = ctx
+        .args
+        .rhs()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("staff");
     if reason.len() > crate::MAX_REASON_BYTES {
         return Err(CmdError::msg("That reason is too long."));
     }
     if !o.status.in_due_pool() {
-        return Err(CmdError::msg(format!("Obligation #{} is not running.", o.id)));
+        return Err(CmdError::msg(format!(
+            "Obligation #{} is not running.",
+            o.id
+        )));
     }
     let next = crate::obligation::hold(
         &o,
-        SuspendReason::Staff { reason: SmolStr::new(reason) },
+        SuspendReason::Staff {
+            reason: SmolStr::new(reason),
+        },
         ctx.w.now(),
     );
     let id = next.id;
     api::put_obligation(ctx, next);
-    info(ctx, format!("Obligation #{id} suspended; the sweep will not attempt it."));
+    info(
+        ctx,
+        format!("Obligation #{id} suspended; the sweep will not attempt it."),
+    );
     ctx.gate_on_durable_ack();
     Ok(())
 }
@@ -3506,7 +4246,10 @@ fn obligation_suspend(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 fn obligation_resume(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let o = obligation_of(ctx, ctx.args.lhs())?;
     if !matches!(o.status, ObligationStatus::Suspended { .. }) {
-        return Err(CmdError::msg(format!("Obligation #{} is not suspended.", o.id)));
+        return Err(CmdError::msg(format!(
+            "Obligation #{} is not suspended.",
+            o.id
+        )));
     }
     // Look-back fold, D-LBK-1: the obligation carries every holder, and this verb
     // lifts exactly one of them — staff's own. The ladder's key is `@econ/ack`'s, and
@@ -3536,12 +4279,19 @@ fn obligation_resume(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .w
         .module_state::<EconomyStore>()
         .and_then(|s| s.snapshot().obligation(id).cloned());
-    let (forgiven, due_at) =
-        after.map_or((0, 0), |o| (o.forgiven_total.saturating_sub(before), o.schedule.next_due));
+    let (forgiven, due_at) = after.map_or((0, 0), |o| {
+        (o.forgiven_total.saturating_sub(before), o.schedule.next_due)
+    });
     if returned {
-        info(ctx, format!("Obligation #{id} resumed; the next period falls due at {due_at}."));
+        info(
+            ctx,
+            format!("Obligation #{id} resumed; the next period falls due at {due_at}."),
+        );
     } else {
-        info(ctx, format!("Obligation #{id}: the staff hold is released; it is still held."));
+        info(
+            ctx,
+            format!("Obligation #{id}: the staff hold is released; it is still held."),
+        );
     }
     if forgiven > 0 {
         info(
@@ -3552,7 +4302,10 @@ fn obligation_resume(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             ),
         );
     } else {
-        info(ctx, "No period fell due while it was suspended.".to_string());
+        info(
+            ctx,
+            "No period fell due while it was suspended.".to_string(),
+        );
     }
     ctx.gate_on_durable_ack();
     Ok(())
@@ -3566,7 +4319,10 @@ fn obligation_cancel(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("No such obligation."));
     }
     if matches!(o.status, ObligationStatus::Cancelled) {
-        return Err(CmdError::msg(format!("Obligation #{} is already cancelled.", o.id)));
+        return Err(CmdError::msg(format!(
+            "Obligation #{} is already cancelled.",
+            o.id
+        )));
     }
     let next = transition(&o, ObligationStatus::Cancelled, None);
     let id = next.id;
@@ -3622,12 +4378,18 @@ fn obligation_advance(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     let step = o.schedule.cadence.unwrap_or(1).max(1);
     let mut next = o.clone();
-    next.schedule.manual_now =
-        next.schedule.manual_now.saturating_add(step).min(next.schedule.next_due);
+    next.schedule.manual_now = next
+        .schedule
+        .manual_now
+        .saturating_add(step)
+        .min(next.schedule.next_due);
     next.revision += 1;
     let (id, position) = (next.id, next.schedule.manual_now);
     api::put_obligation(ctx, next);
-    info(ctx, format!("Obligation #{id}'s manual clock is now at {position}; one period is due."));
+    info(
+        ctx,
+        format!("Obligation #{id}'s manual clock is now at {position}; one period is due."),
+    );
     ctx.gate_on_durable_ack();
     Ok(())
 }
@@ -3641,20 +4403,35 @@ fn obligation_repoint(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?;
     let mut words = rhs.split_whitespace();
     let side = words.next().unwrap_or("").to_ascii_lowercase();
-    let account = words.next().and_then(parse_account).ok_or_else(|| CmdError::msg(USAGE))?;
+    let account = words
+        .next()
+        .and_then(parse_account)
+        .ok_or_else(|| CmdError::msg(USAGE))?;
     let (owner, instrument) = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No economy."))?;
         let snap = store.snapshot();
-        let a = snap.account(account).ok_or_else(|| CmdError::msg("No such account."))?;
+        let a = snap
+            .account(account)
+            .ok_or_else(|| CmdError::msg("No such account."))?;
         if a.status != AccountStatus::Active {
             return Err(account_refusal(ctx, account, "That account is not active."));
         }
         (a.owner.clone(), a.instrument.clone())
     };
     let existing = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No economy."))?;
         let snap = store.snapshot();
-        let other = if side == "credit" { o.debit_account } else { o.credit_account };
+        let other = if side == "credit" {
+            o.debit_account
+        } else {
+            o.credit_account
+        };
         snap.account(other).map(|a| a.instrument.clone())
     };
     if existing.is_some_and(|i| i != instrument) {
@@ -3685,8 +4462,14 @@ fn obligation_repoint(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     next.revision += 1;
     let id = next.id;
     api::put_obligation(ctx, next);
-    info(ctx, format!("Obligation #{id} repointed: its {side} side is now account #{account}."));
-    info(ctx, "Nothing was charged, and no closed period was reopened.".to_string());
+    info(
+        ctx,
+        format!("Obligation #{id} repointed: its {side} side is now account #{account}."),
+    );
+    info(
+        ctx,
+        "Nothing was charged, and no closed period was reopened.".to_string(),
+    );
     ctx.gate_on_durable_ack();
     Ok(())
 }
@@ -3704,7 +4487,10 @@ fn obligation_reinstate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("No such obligation."));
     }
     if !matches!(o.status, ObligationStatus::Delinquent) {
-        return Err(CmdError::msg(format!("Obligation #{} is not delinquent.", o.id)));
+        return Err(CmdError::msg(format!(
+            "Obligation #{} is not delinquent.",
+            o.id
+        )));
     }
     // Look-back fold, D-LBK-1: a holder's key on a delinquent obligation keeps it out
     // of the pool through a reinstatement too.
@@ -3722,7 +4508,10 @@ fn obligation_reinstate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // command could have said at once, and with the fix (`@obligation/repoint`)
     // already in hand.
     {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No economy."))?;
         let snap = store.snapshot();
         for (label, id) in [("debit", o.debit_account), ("credit", o.credit_account)] {
             match snap.account(id) {
@@ -3743,20 +4532,35 @@ fn obligation_reinstate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     let now = ctx.w.now();
     let clock_now = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
-        Clocks::new(now, ctx.w.game_now_unix())
-            .now_on(o.schedule.clock, store.snapshot(), o.schedule.manual_now)
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No economy."))?;
+        Clocks::new(now, ctx.w.game_now_unix()).now_on(
+            o.schedule.clock,
+            store.snapshot(),
+            o.schedule.manual_now,
+        )
     };
-    let mut next =
-        transition(&o, ObligationStatus::Active, Some(ObligationEvent::Resumed { at: now }));
+    let mut next = transition(
+        &o,
+        ObligationStatus::Active,
+        Some(ObligationEvent::Resumed { at: now }),
+    );
     if let Some(clock_now) = clock_now {
         next.schedule = crate::clock::reanchor(&next.schedule, clock_now);
     }
     let id = next.id;
     let due = next.schedule.next_due;
     api::put_obligation(ctx, next);
-    info(ctx, format!("Obligation #{id} reinstated; the next period falls due at {due}."));
-    info(ctx, "The periods it spent delinquent are not charged.".to_string());
+    info(
+        ctx,
+        format!("Obligation #{id} reinstated; the next period falls due at {due}."),
+    );
+    info(
+        ctx,
+        "The periods it spent delinquent are not charged.".to_string(),
+    );
     ctx.gate_on_durable_ack();
     Ok(())
 }
@@ -3773,8 +4577,14 @@ fn econ_alerts(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !arg.is_empty() {
         let id = parse_escalation_id(&arg).ok_or_else(|| CmdError::msg("No such alert."))?;
         let record = {
-            let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
-            store.escalation(id).cloned().ok_or_else(|| CmdError::msg("No such alert."))?
+            let store = ctx
+                .w
+                .module_state::<EconomyStore>()
+                .ok_or_else(|| CmdError::msg("No economy."))?;
+            store
+                .escalation(id)
+                .cloned()
+                .ok_or_else(|| CmdError::msg("No such alert."))?
         };
         info(ctx, record.render());
         for r in &record.recommended {
@@ -3786,8 +4596,15 @@ fn econ_alerts(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Ok(());
     }
     let mut rows: Vec<(i64, String)> = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
-        store.escalations().filter(|e| e.is_open()).map(|e| (e.opened_at, e.render())).collect()
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No economy."))?;
+        store
+            .escalations()
+            .filter(|e| e.is_open())
+            .map(|e| (e.opened_at, e.render()))
+            .collect()
     };
     // Newest first (§4.6); the id breaks ties within one second.
     rows.sort_by_key(|r| std::cmp::Reverse(r.0));
@@ -3807,11 +4624,19 @@ fn econ_alerts(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 fn econ_ack(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let id = parse_escalation_id(ctx.args.lhs()).ok_or_else(|| CmdError::msg("No such alert."))?;
     let mut record = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
-        store.escalation(id).cloned().ok_or_else(|| CmdError::msg("No such alert."))?
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No economy."))?;
+        store
+            .escalation(id)
+            .cloned()
+            .ok_or_else(|| CmdError::msg("No such alert."))?
     };
     if !record.is_open() {
-        return Err(CmdError::msg(format!("Alert #{id} is already acknowledged.")));
+        return Err(CmdError::msg(format!(
+            "Alert #{id} is already acknowledged."
+        )));
     }
     let now = ctx.w.now();
     record.acked_by = Some(ctx.actor);
@@ -3834,7 +4659,9 @@ fn econ_ack(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         if held {
             match api::resume_obligation(ctx, oid, &key) {
                 Ok(returned) => resumed = Some((oid, returned)),
-                Err(error) => tracing::warn!(obligation = oid.0, %error, "economy: ack could not release"),
+                Err(error) => {
+                    tracing::warn!(obligation = oid.0, %error, "economy: ack could not release")
+                }
             }
         }
     }
@@ -3853,9 +4680,11 @@ fn econ_ack(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             let holders: Vec<String> = ctx
                 .w
                 .module_state::<EconomyStore>()
-                .and_then(|s| s.snapshot().obligation(oid).map(|o| {
-                    o.holders().iter().map(ToString::to_string).collect()
-                }))
+                .and_then(|s| {
+                    s.snapshot()
+                        .obligation(oid)
+                        .map(|o| o.holders().iter().map(ToString::to_string).collect())
+                })
                 .unwrap_or_default();
             info(
                 ctx,

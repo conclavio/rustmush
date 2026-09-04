@@ -1093,7 +1093,11 @@ impl TacticalUnit {
                     .get_mut(component)
                     .ok_or_else(|| UnitError::UnknownComponent(component.clone()))?;
                 let from = std::mem::replace(&mut c.asset, *asset);
-                Ok(JournalEntry::ComponentAsset { component: component.clone(), from, to: *asset })
+                Ok(JournalEntry::ComponentAsset {
+                    component: component.clone(),
+                    from,
+                    to: *asset,
+                })
             }
             UnitMutationOp::GrantCapability { key, rules } => {
                 // Grant is the one op that introduces a fresh referent, so it

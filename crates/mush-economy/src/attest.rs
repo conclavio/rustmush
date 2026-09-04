@@ -78,7 +78,15 @@ pub const MAX_OBSERVER_SETTLEMENTS_PER_EVENT: usize = 8;
 
 /// The `CanonRecorded` observer.
 pub(crate) fn on_canon_recorded(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
-    let WorldEvent::CanonRecorded { canon_id, kind, entities, source } = ev else { return };
+    let WorldEvent::CanonRecorded {
+        canon_id,
+        kind,
+        entities,
+        source,
+    } = ev
+    else {
+        return;
+    };
     // **Remembered first, and whatever happens next** (E4c verify fold, E4a). Canon
     // evidence is edge-triggered: this callback is the only moment the record passes
     // through the economy, and a contract that was not yet `Active` — or an economy
@@ -90,7 +98,11 @@ pub(crate) fn on_canon_recorded(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     // A frozen economy records nothing: every post refuses anyway, and writing an
     // attestation whose settlement can never be attempted would leave a contract
     // claiming evidence the world had stopped acting on.
-    if ctx.w.module_state::<EconomyStore>().is_none_or(EconomyStore::is_frozen) {
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_none_or(EconomyStore::is_frozen)
+    {
         return;
     }
     record_and_settle(ctx, *canon_id, kind, source, Some(entities));
@@ -133,13 +145,17 @@ fn record_and_settle(
     let now = ctx.w.now();
     let mut settled = 0usize;
     for (id, slots) in matched {
-        let Some(mut c) = live_contract(ctx, id) else { continue };
+        let Some(mut c) = live_contract(ctx, id) else {
+            continue;
+        };
         if c.satisfied.len() < c.consent.conditions.len() {
             c.satisfied.resize(c.consent.conditions.len(), None);
         }
         let mut wrote = false;
         for i in slots {
-            let Some(slot) = c.satisfied.get_mut(i) else { continue };
+            let Some(slot) = c.satisfied.get_mut(i) else {
+                continue;
+            };
             // **Written once** (E4b2 verify fold, M5): re-stamping `at` moves the
             // anchor an `After` condition counts its delay from, so a front that
             // records canon every hour could defer a consented settlement forever.
@@ -201,7 +217,9 @@ fn matching_contracts(
     source: &str,
     entities: Option<&[ObjId]>,
 ) -> Vec<(ContractId, Vec<usize>)> {
-    let Some(store) = ctx.w.module_state::<EconomyStore>() else { return Vec::new() };
+    let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+        return Vec::new();
+    };
     let mut out: Vec<(ContractId, Vec<usize>)> = Vec::new();
     for c in store.snapshot().contracts() {
         // `Disputed` is included for the same reason `@contract/attest` accepts it:
@@ -250,7 +268,10 @@ fn names_a_party(ctx: &Ctx<'_>, entities: &[ObjId], c: &EconomicContract) -> boo
     let auth = crate::api::WorldAuth { w: ctx.w };
     entities.iter().any(|o| {
         let me = PrincipalId::Object(*o);
-        c.consent.parties.iter().any(|p| p == &me || auth.acts_for(&me, p))
+        c.consent
+            .parties
+            .iter()
+            .any(|p| p == &me || auth.acts_for(&me, p))
     })
 }
 
@@ -260,12 +281,18 @@ fn names_a_party(ctx: &Ctx<'_>, entities: &[ObjId], c: &EconomicContract) -> boo
 /// §5.1 deviation 4), so when the surface has one it is the adjudicator that must be
 /// a matching canon set — the same rule `@contract/attest` applies to a person.
 fn answers(c: &EconomicContract, cond: &TypedCondition, kind: &str, source: &str) -> bool {
-    let TypedCondition::Attestation { by } = cond else { return false };
+    let TypedCondition::Attestation { by } = cond else {
+        return false;
+    };
     let effective: &AttestorSet = c.consent.adjudicator.as_ref().unwrap_or(by);
     canon_set_accepts(effective, kind, source)
 }
 
 /// The contract as it stands right now (a clone, so nothing borrows the store).
 fn live_contract(ctx: &Ctx<'_>, id: ContractId) -> Option<EconomicContract> {
-    ctx.w.module_state::<EconomyStore>()?.snapshot().contract(id).cloned()
+    ctx.w
+        .module_state::<EconomyStore>()?
+        .snapshot()
+        .contract(id)
+        .cloned()
 }

@@ -35,11 +35,16 @@ use crate::state::OrgState;
 /// Whether `obj` is a still-live object in the world (not missing, not GOING) —
 /// the liveness predicate the boot reconciliation drops dead-object bindings by.
 fn obj_live(ctx: &ModuleCtx<'_>, obj: mush_core::ObjId) -> bool {
-    ctx.w.get(obj).is_some_and(|o| !o.flags.contains(Flags::GOING))
+    ctx.w
+        .get(obj)
+        .is_some_and(|o| !o.flags.contains(Flags::GOING))
 }
 
 /// Rebuild the [`OrgStore`] (state + audit ledger + allocators) from boot data.
-pub(crate) fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<OrgStore, ModError> {
+pub(crate) fn load_boot(
+    ctx: &mut ModuleCtx<'_>,
+    data: ModuleBootData,
+) -> Result<OrgStore, ModError> {
     // The audit ledger rehydrates its open tail directly from the log chunks.
     let mut audit = Ledger::new();
     audit
@@ -69,7 +74,10 @@ pub(crate) fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result
             let o = serde_json::from_value::<Organization>(value)
                 .map_err(|e| ModError::msg(format!("org: bad org doc {key:?}: {e}")))?;
             if o.id != OrgId(id) {
-                return Err(ModError::msg(format!("org: doc {key:?} claims id {}", o.id)));
+                return Err(ModError::msg(format!(
+                    "org: doc {key:?} claims id {}",
+                    o.id
+                )));
             }
             orgs.insert(o.id, o);
         } else if let Some(ids) = key.strip_prefix("scope:") {
@@ -80,7 +88,10 @@ pub(crate) fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result
             let s = serde_json::from_value::<OrgScope>(value)
                 .map_err(|e| ModError::msg(format!("org: bad scope doc {key:?}: {e}")))?;
             if s.id != OrgScopeId(id) {
-                return Err(ModError::msg(format!("org: scope doc {key:?} claims id {}", s.id)));
+                return Err(ModError::msg(format!(
+                    "org: scope doc {key:?} claims id {}",
+                    s.id
+                )));
             }
             scopes.insert(s.id, s);
         } else if key.strip_prefix("role:").is_some() {
@@ -88,7 +99,14 @@ pub(crate) fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result
         } else if key.strip_prefix("grant:").is_some() {
             parse_leaf(&key, value, "grant", grant_ck, &mut grants, &mut dels);
         } else if key.strip_prefix("delegation:").is_some() {
-            parse_leaf(&key, value, "delegation", del_ck, &mut delegations, &mut dels);
+            parse_leaf(
+                &key,
+                value,
+                "delegation",
+                del_ck,
+                &mut delegations,
+                &mut dels,
+            );
         } else if key.strip_prefix("policy:").is_some() {
             parse_leaf(&key, value, "policy", policy_ck, &mut policies, &mut dels);
         } else if key.starts_with("member:") {
@@ -128,7 +146,11 @@ pub(crate) fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result
         if st.org(r.org).is_some() {
             st.put_role(r);
         } else {
-            tracing::warn!(role = r.id.0, org = r.org.0, "org: role for a missing org dropped");
+            tracing::warn!(
+                role = r.id.0,
+                org = r.org.0,
+                "org: role for a missing org dropped"
+            );
             dels.push(api::role_key(r.id));
         }
     }
@@ -141,7 +163,11 @@ pub(crate) fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result
         if st.org(g.org).is_some() && obj_live(ctx, g.grantee) {
             st.put_grant(g);
         } else {
-            tracing::warn!(grant = g.id.0, org = g.org.0, "org: grant for a missing org or dead grantee dropped");
+            tracing::warn!(
+                grant = g.id.0,
+                org = g.org.0,
+                "org: grant for a missing org or dead grantee dropped"
+            );
             dels.push(api::grant_key(g.id));
         }
     }
@@ -155,7 +181,10 @@ pub(crate) fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result
         if anchored && obj_live(ctx, d.grantor) && obj_live(ctx, d.grantee) {
             st.put_delegation(d);
         } else {
-            tracing::warn!(delegation = d.id.0, "org: delegation with a missing anchor or dead grantor/grantee dropped");
+            tracing::warn!(
+                delegation = d.id.0,
+                "org: delegation with a missing anchor or dead grantor/grantee dropped"
+            );
             dels.push(api::delegation_key(d.id));
         }
     }
@@ -164,19 +193,29 @@ pub(crate) fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result
     // so a boot-without-observer converges to the same state a live destroy would).
     for mut p in policies {
         if st.org(p.org).is_none() {
-            tracing::warn!(policy = p.id.0, org = p.org.0, "org: policy for a missing org dropped");
+            tracing::warn!(
+                policy = p.id.0,
+                org = p.org.0,
+                "org: policy for a missing org dropped"
+            );
             dels.push(api::policy_key(p.id));
             continue;
         }
         if matches!(&p.owner, PrincipalId::Object(o) if !obj_live(ctx, *o)) {
-            tracing::warn!(policy = p.id.0, "org: policy owned by a dead object dropped");
+            tracing::warn!(
+                policy = p.id.0,
+                "org: policy owned by a dead object dropped"
+            );
             dels.push(api::policy_key(p.id));
             continue;
         }
         let before = p.rules.len();
         p.rules.retain(|r| !matches!(&r.subject, PolicySubject::Principal(PrincipalId::Object(o)) if !obj_live(ctx, *o)));
         if p.rules.len() != before {
-            tracing::warn!(policy = p.id.0, "org: policy rules naming a dead object stripped");
+            tracing::warn!(
+                policy = p.id.0,
+                "org: policy rules naming a dead object stripped"
+            );
             api::persist_policy(ctx.out, &p); // re-persist the shrunk rule list
         }
         st.put_policy(p);
@@ -185,7 +224,11 @@ pub(crate) fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result
         if obj_live(ctx, m.member) && st.org(m.org).is_some() {
             st.put_membership(m);
         } else {
-            tracing::warn!(org = m.org.0, member = m.member.0, "org: orphan membership dropped");
+            tracing::warn!(
+                org = m.org.0,
+                member = m.member.0,
+                "org: orphan membership dropped"
+            );
             dels.push(api::member_key(m.org, m.member));
         }
     }
@@ -260,7 +303,10 @@ fn policy_ck(p: &AccessPolicy) -> SmolStr {
 }
 
 fn meta_u64(meta: &Option<serde_json::Value>, field: &str) -> u64 {
-    meta.as_ref().and_then(|m| m.get(field)).and_then(serde_json::Value::as_u64).unwrap_or(0)
+    meta.as_ref()
+        .and_then(|m| m.get(field))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0)
 }
 fn next_after(max: Option<u64>) -> u64 {
     max.map_or(0, |m| m + 1)

@@ -48,9 +48,7 @@ use crate::amount::Amount;
 use crate::api::{self, PostAuth, PostOutcome};
 use crate::clock::{CadenceSource, Clocks, EconomicClock, advance_cadence, cadence_elapsed};
 use crate::engine::AuthEval;
-use crate::escalation::{
-    ESCALATION_GC_AFTER_SECS, Escalation, EscalationKind, EscalationSubject,
-};
+use crate::escalation::{ESCALATION_GC_AFTER_SECS, Escalation, EscalationKind, EscalationSubject};
 use crate::ids::{AccountId, EscalationId, HoldId, ObligationId};
 use crate::module::EconomyStore;
 use crate::obligation::{
@@ -107,8 +105,14 @@ pub(crate) fn sweep(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
         return;
     }
     let (last_real, last_ic) = store.last_sweep();
-    let evidence =
-        Evidence { last_real, last_ic, now, ic_now, ratio, spans_boot: store.gap_spans_boot() };
+    let evidence = Evidence {
+        last_real,
+        last_ic,
+        now,
+        ic_now,
+        ratio,
+        spans_boot: store.gap_spans_boot(),
+    };
     advance_cadences(ctx, now, ic_now);
     expire_holds(ctx, now, ic_now);
     settle_obligations(ctx, evidence);
@@ -123,7 +127,9 @@ pub(crate) fn sweep(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
 /// tell a restart from a starved post budget.
 fn stamp_sweep(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
     let meta = {
-        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return };
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
+            return;
+        };
         store.stamp_sweep(now, ic_now);
         store.meta_doc()
     };
@@ -147,7 +153,9 @@ fn stamp_sweep(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
 /// first makes the cap what it was written to be: a bound on **work**.
 fn advance_cadences(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
     let moved: Vec<crate::clock::CadenceClock> = {
-        let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return;
+        };
         store
             .snapshot()
             .cadences()
@@ -196,7 +204,9 @@ fn advance_cadences(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
 fn expire_holds(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
     let clocks = Clocks::new(now, ic_now);
     let due: Vec<HoldId> = {
-        let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return;
+        };
         let snap = store.snapshot();
         snap.holds()
             .filter(|h| h.status.is_held())
@@ -206,7 +216,8 @@ fn expire_holds(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
             // the sweep from posting a guaranteed refusal every 30 seconds; the hold
             // ages out as soon as the account is unfrozen.
             .filter(|h| {
-                snap.account(h.account).is_some_and(|a| a.status == AccountStatus::Active)
+                snap.account(h.account)
+                    .is_some_and(|a| a.status == AccountStatus::Active)
             })
             .take(crate::MAX_HOLD_EXPIRIES_PER_SWEEP)
             .map(|h| h.id)
@@ -214,9 +225,15 @@ fn expire_holds(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
     };
     for id in due {
         let mut plan = EconomyPlan::new(
-            IdempotencyKey::new(SmolStr::new_static("hold"), SmolStr::new(format!("{}/expire", id.0))),
+            IdempotencyKey::new(
+                SmolStr::new_static("hold"),
+                SmolStr::new(format!("{}/expire", id.0)),
+            ),
             api::sweep_principal(),
-            EconomicCause::Internal { kind: SmolStr::new_static("hold.expire"), id: id.0 },
+            EconomicCause::Internal {
+                kind: SmolStr::new_static("hold.expire"),
+                id: id.0,
+            },
             Vec::new(),
         );
         plan.hold_ops = vec![HoldOp::Expire { hold: id }];
@@ -226,8 +243,14 @@ fn expire_holds(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
             Ok(PostOutcome::NeedsApproval(request)) => {
                 // Unreachable: an effect-only expiry has no net debit, so no
                 // `ApprovalRule` can fire on it. Loud rather than silent.
-                tracing::error!(hold = id.0, request = request.0, "economy: a hold expiry asked for approval");
-                Some(format!("the expiry asked for approval (request #{request})"))
+                tracing::error!(
+                    hold = id.0,
+                    request = request.0,
+                    "economy: a hold expiry asked for approval"
+                );
+                Some(format!(
+                    "the expiry asked for approval (request #{request})"
+                ))
             }
             Err(e) => {
                 // A hold whose deadline passed but whose expiry is refused is not a
@@ -255,8 +278,14 @@ fn note_expiry_outcome(ctx: &mut Ctx<'_>, id: HoldId, refusal: Option<String>, n
         return;
     };
     let (run, exhausted) = {
-        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return };
-        bump_run(&mut store.hold_expiry_failures, id, MAX_HOLD_EXPIRY_REFUSALS)
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
+            return;
+        };
+        bump_run(
+            &mut store.hold_expiry_failures,
+            id,
+            MAX_HOLD_EXPIRY_REFUSALS,
+        )
     };
     if !exhausted {
         return;
@@ -267,7 +296,9 @@ fn note_expiry_outcome(ctx: &mut Ctx<'_>, id: HoldId, refusal: Option<String>, n
         .and_then(|s| s.snapshot().hold(id).map(|h| h.account));
     let mut recommended = vec![format!("@hold/show #{id}"), format!("@hold/release #{id}")];
     if let Some(a) = account {
-        recommended.push(format!("@account/unfreeze {a}   (if that is why it will not age out)"));
+        recommended.push(format!(
+            "@account/unfreeze {a}   (if that is why it will not age out)"
+        ));
     }
     page(
         ctx,
@@ -455,7 +486,9 @@ fn disposition(e: &EconomyError) -> Disposition {
 /// eventually takes is classified `Overload`, which escalates on repeat.
 fn settle_obligations(ctx: &mut Ctx<'_>, ev: Evidence) {
     let due: Vec<ObligationId> = {
-        let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return;
+        };
         let mut pool: Vec<(i64, ObligationId)> = store
             .snapshot()
             .obligations()
@@ -492,7 +525,9 @@ fn settle_obligations(ctx: &mut Ctx<'_>, ev: Evidence) {
 fn forgive_suspended(ctx: &mut Ctx<'_>, ev: Evidence) {
     let clocks = Clocks::new(ev.now, ev.ic_now);
     let gaps: Vec<(ObligationId, u32, i64)> = {
-        let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return;
+        };
         let snap = store.snapshot();
         snap.obligations()
             .filter(|o| matches!(o.status, ObligationStatus::Suspended { .. }))
@@ -505,7 +540,10 @@ fn forgive_suspended(ctx: &mut Ctx<'_>, ev: Evidence) {
             .collect()
     };
     for (id, due, clock_now) in gaps {
-        let Some(o) = ctx.w.module_state::<EconomyStore>().and_then(|s| s.snapshot().obligation(id).cloned())
+        let Some(o) = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .and_then(|s| s.snapshot().obligation(id).cloned())
         else {
             continue;
         };
@@ -542,12 +580,20 @@ fn settle_one(ctx: &mut Ctx<'_>, id: ObligationId, ev: Evidence, posts: &mut usi
     let (now, ic_now) = (ev.now, ev.ic_now);
     let clocks = Clocks::new(now, ic_now);
     let found = {
-        let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return;
+        };
         let snap = store.snapshot();
-        snap.obligation(id)
-            .map(|o| (o.clone(), clocks.now_on(o.schedule.clock, snap, o.schedule.manual_now)))
+        snap.obligation(id).map(|o| {
+            (
+                o.clone(),
+                clocks.now_on(o.schedule.clock, snap, o.schedule.manual_now),
+            )
+        })
     };
-    let Some((mut o, clock_now)) = found else { return };
+    let Some((mut o, clock_now)) = found else {
+        return;
+    };
     // A schedule on a cadence whose record is gone resolves to `None`, and every
     // consumer reads that as **not yet** — which for a clock that will never be
     // readable again means "never", silently, forever (E4b1 verify fold, B6). Boot
@@ -639,19 +685,26 @@ fn settle_one(ctx: &mut Ctx<'_>, id: ObligationId, ev: Evidence, posts: &mut usi
             }
         }
         match disposition {
-            Disposition::Settled(outcome) => match advance_obligation(&o, period, outcome, clock_now) {
-                Ok(next) => o = next,
-                Err(e) => {
-                    // `OutOfOrder` (and a re-delivered duplicate, which `advance`
-                    // absorbs) can only arise from a bug in THIS file's ordering, not
-                    // from anything the world did. Loud, and never a panic: a panic
-                    // here would take the world task down over a bookkeeping slip.
-                    tracing::error!(obligation = id.0, period, error = %e, "economy: sweep folded a settlement outcome out of order (programming error)");
-                    break;
+            Disposition::Settled(outcome) => {
+                match advance_obligation(&o, period, outcome, clock_now) {
+                    Ok(next) => o = next,
+                    Err(e) => {
+                        // `OutOfOrder` (and a re-delivered duplicate, which `advance`
+                        // absorbs) can only arise from a bug in THIS file's ordering, not
+                        // from anything the world did. Loud, and never a panic: a panic
+                        // here would take the world task down over a bookkeeping slip.
+                        tracing::error!(obligation = id.0, period, error = %e, "economy: sweep folded a settlement outcome out of order (programming error)");
+                        break;
+                    }
                 }
-            },
+            }
             Disposition::Short => {
-                match advance_obligation(&o, period, SettleOutcome::InsufficientAvailable, clock_now) {
+                match advance_obligation(
+                    &o,
+                    period,
+                    SettleOutcome::InsufficientAvailable,
+                    clock_now,
+                ) {
                     Ok(next) => o = next,
                     Err(e) => {
                         tracing::error!(obligation = id.0, period, error = %e, "economy: sweep folded a miss out of order (programming error)");
@@ -662,13 +715,20 @@ fn settle_one(ctx: &mut Ctx<'_>, id: ObligationId, ev: Evidence, posts: &mut usi
                 break;
             }
             Disposition::Transient => {
-                tracing::warn!(obligation = id.0, period, detail, "economy: sweep deferred a settlement");
+                tracing::warn!(
+                    obligation = id.0,
+                    period,
+                    detail,
+                    "economy: sweep deferred a settlement"
+                );
                 // S7: "retry next fire" is only an answer while the retries are
                 // bounded. Past the cap this stops being a blip and becomes a
                 // decision, and the obligation leaves the due pool rather than
                 // retrying silently for the rest of the world's life.
                 let (run, exhausted) = {
-                    let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { break };
+                    let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
+                        break;
+                    };
                     bump_run(&mut store.obligation_defers, id, MAX_CONSECUTIVE_DEFERS)
                 };
                 if exhausted {
@@ -737,18 +797,27 @@ fn post_period(
     // an alert a staffer can act on and one they have to investigate.
     let gate = {
         let Some(store) = ctx.w.module_state::<EconomyStore>() else {
-            return (Disposition::Transient, "the economy store is not loaded".to_string(), None);
+            return (
+                Disposition::Transient,
+                "the economy store is not loaded".to_string(),
+                None,
+            );
         };
         let snap = store.snapshot();
         let debit = snap.account(o.debit_account).cloned();
         let credit = snap.account(o.credit_account).cloned();
-        let cap = debit.as_ref().and_then(|a| store.config().mint_cap(snap, &a.instrument));
+        let cap = debit
+            .as_ref()
+            .and_then(|a| store.config().mint_cap(snap, &a.instrument));
         (debit, credit, cap)
     };
     let (debit, credit, mint_cap) = gate;
-    let debit_live =
-        debit.as_ref().is_none_or(|a| api::scope_coherent(ctx.w, a.scope, &a.owner));
-    let credit_live = credit.as_ref().is_none_or(|a| api::credit_allowed(ctx.w, a));
+    let debit_live = debit
+        .as_ref()
+        .is_none_or(|a| api::scope_coherent(ctx.w, a.scope, &a.owner));
+    let credit_live = credit
+        .as_ref()
+        .is_none_or(|a| api::credit_allowed(ctx.w, a));
     if !debit_live {
         return (
             Disposition::Human(EscalationKind::SettlementRefused),
@@ -768,7 +837,9 @@ fn post_period(
     // M1: a faucet debit is allowed only for a ruleset-minted obligation, and only
     // while its per-period amount is inside the LIVE cap — re-read every settlement,
     // so a doc edited above the cap after creation is refused rather than paid.
-    let faucet_debit = debit.as_ref().is_some_and(|a| matches!(a.owner, PrincipalId::System(_)));
+    let faucet_debit = debit
+        .as_ref()
+        .is_some_and(|a| matches!(a.owner, PrincipalId::System(_)));
     let mint_allowed = o.minted_by.is_some() && mint_cap.is_some_and(|cap| o.amount <= cap);
     if faucet_debit && !mint_allowed {
         let detail = if o.minted_by.is_none() {
@@ -792,7 +863,10 @@ fn post_period(
         idempotency: obligation_key(o.id, period),
         actor: api::sweep_principal(),
         description: format!("obligation #{} period {period}", o.id),
-        cause: EconomicCause::Internal { kind: SmolStr::new_static("obligation"), id: o.id.0 },
+        cause: EconomicCause::Internal {
+            kind: SmolStr::new_static("obligation"),
+            id: o.id.0,
+        },
         visibility: crate::record::EconomicVisibility::default(),
         requested_lines: vec![
             RequestedLine {
@@ -821,12 +895,16 @@ fn post_period(
         mint_allowed,
     };
     match api::post_with(ctx, &plan, PostAuth::Injected(&auth)) {
-        Ok(PostOutcome::Posted(t)) => {
-            (Disposition::Settled(SettleOutcome::Posted(t)), String::new(), None)
-        }
-        Ok(PostOutcome::AlreadyPosted(t)) => {
-            (Disposition::Settled(SettleOutcome::AlreadyPosted(t)), String::new(), None)
-        }
+        Ok(PostOutcome::Posted(t)) => (
+            Disposition::Settled(SettleOutcome::Posted(t)),
+            String::new(),
+            None,
+        ),
+        Ok(PostOutcome::AlreadyPosted(t)) => (
+            Disposition::Settled(SettleOutcome::AlreadyPosted(t)),
+            String::new(),
+            None,
+        ),
         Ok(PostOutcome::NeedsApproval(request)) => (
             Disposition::Human(EscalationKind::SettlementRefused),
             format!(
@@ -875,7 +953,9 @@ fn suspend_paged(o: &Obligation, record: Option<EscalationId>, at: i64) -> Oblig
     // neither lifts it nor is lifted by it.
     let reason = match record {
         Some(id) => SuspendReason::Escalated(id),
-        None => SuspendReason::Staff { reason: SmolStr::new_static("alert-allocator-exhausted") },
+        None => SuspendReason::Staff {
+            reason: SmolStr::new_static("alert-allocator-exhausted"),
+        },
     };
     let mut next = crate::obligation::hold(o, reason, at);
     if next.history.len() >= crate::MAX_OBLIGATION_HISTORY {
@@ -917,13 +997,19 @@ pub(crate) enum Blocker {
 
 /// Which [`Blocker`] the blamed account represents right now.
 fn blocker_for(ctx: &Ctx<'_>, blamed: Option<AccountId>) -> Blocker {
-    let Some(id) = blamed else { return Blocker::Unknown };
+    let Some(id) = blamed else {
+        return Blocker::Unknown;
+    };
     let recoverable = ctx.w.module_state::<EconomyStore>().is_some_and(|s| {
         s.snapshot().account(id).is_some_and(|a| {
             a.status == AccountStatus::Frozen && crate::boot::principal_live(ctx.w, &a.owner)
         })
     });
-    if recoverable { Blocker::FrozenAccount } else { Blocker::Unknown }
+    if recoverable {
+        Blocker::FrozenAccount
+    } else {
+        Blocker::Unknown
+    }
 }
 
 /// The recommended commands for an obligation a human must decide about (§4.6),
@@ -1027,13 +1113,15 @@ fn notify_both(ctx: &mut Ctx<'_>, o: &Obligation, msg: String) {
 /// and `@obligation/show` are where the truth is read.
 fn announce(ctx: &mut Ctx<'_>, before: &ObligationStatus, o: &Obligation) {
     if *before == o.status {
-        if o.notify_on_success
-            && matches!(o.history.last(), Some(ObligationEvent::Settled { .. }))
+        if o.notify_on_success && matches!(o.history.last(), Some(ObligationEvent::Settled { .. }))
         {
             notify_both(
                 ctx,
                 o,
-                format!("Obligation #{}: a period was submitted for settlement.", o.id),
+                format!(
+                    "Obligation #{}: a period was submitted for settlement.",
+                    o.id
+                ),
             );
         }
         return;
@@ -1065,7 +1153,10 @@ fn announce(ctx: &mut Ctx<'_>, before: &ObligationStatus, o: &Obligation) {
         ObligationStatus::Active => {
             // Back into the pool from grace: worth one line, because the last thing
             // both parties heard was that it had missed.
-            Some(format!("Obligation #{} settled and is back on schedule.", o.id))
+            Some(format!(
+                "Obligation #{} settled and is back on schedule.",
+                o.id
+            ))
         }
         ObligationStatus::Cancelled => None,
     };
@@ -1129,10 +1220,18 @@ fn step_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
     republish_settlements(ctx, now);
     let clocks = Clocks::new(now, ic_now);
     let due: Vec<(crate::ids::ContractId, ContractStep)> = {
-        let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return;
+        };
         let providers = store.providers();
-        let custody = crate::custody::WorldCustody { w: ctx.w, providers };
-        let facts = crate::facts::WorldFacts { w: ctx.w, providers: store.facts() };
+        let custody = crate::custody::WorldCustody {
+            w: ctx.w,
+            providers,
+        };
+        let facts = crate::facts::WorldFacts {
+            w: ctx.w,
+            providers: store.facts(),
+        };
         let world = api::WorldAuth { w: ctx.w };
         let env = crate::engine::ValidateEnv {
             auth: &world,
@@ -1144,7 +1243,9 @@ fn step_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
         };
         let snap = store.snapshot();
         let lapsed = |c: &crate::contract::EconomicContract| {
-            c.consent.deadline.is_some_and(|d| clocks.passed(&d, snap, i64::MIN))
+            c.consent
+                .deadline
+                .is_some_and(|d| clocks.passed(&d, snap, i64::MIN))
         };
         // Rule 1: a dispute past its TTL is work only when the ladder has something
         // to say about it this fire.
@@ -1165,10 +1266,9 @@ fn step_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
                     return Some((c.id, ContractStep::Retry));
                 }
                 let step = match c.state {
-                    crate::contract::ContractState::Draft => {
-                        (now.saturating_sub(c.created_at) > crate::DRAFT_TTL_SECS)
-                            .then_some(ContractStep::Collect)
-                    }
+                    crate::contract::ContractState::Draft => (now.saturating_sub(c.created_at)
+                        > crate::DRAFT_TTL_SECS)
+                        .then_some(ContractStep::Collect),
                     crate::contract::ContractState::Offered => {
                         lapsed(c).then_some(ContractStep::Expire)
                     }
@@ -1205,9 +1305,15 @@ fn step_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
             .collect()
     };
     // Rule 2: rotate the (id-ordered) due list so the scan resumes where it stopped.
-    let cursor = ctx.w.module_state::<EconomyStore>().map_or(0, |s| s.sweep_contract_cursor);
+    let cursor = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .map_or(0, |s| s.sweep_contract_cursor);
     let mut due = due;
-    let split = due.iter().position(|(id, _)| id.0 >= cursor).unwrap_or(due.len());
+    let split = due
+        .iter()
+        .position(|(id, _)| id.0 >= cursor)
+        .unwrap_or(due.len());
     due.rotate_left(split);
     let work: Vec<(crate::ids::ContractId, ContractStep)> =
         due.into_iter().take(MAX_CONTRACTS_PER_SWEEP).collect();
@@ -1265,10 +1371,18 @@ fn step_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
 /// the same [`MAX_CONTRACTS_PER_SWEEP`] budget as everything else here.
 fn stamp_observed_conditions(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
     let stamped: Vec<crate::contract::EconomicContract> = {
-        let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return;
+        };
         let providers = store.providers();
-        let custody = crate::custody::WorldCustody { w: ctx.w, providers };
-        let facts = crate::facts::WorldFacts { w: ctx.w, providers: store.facts() };
+        let custody = crate::custody::WorldCustody {
+            w: ctx.w,
+            providers,
+        };
+        let facts = crate::facts::WorldFacts {
+            w: ctx.w,
+            providers: store.facts(),
+        };
         let world = api::WorldAuth { w: ctx.w };
         let env = crate::engine::ValidateEnv {
             auth: &world,
@@ -1325,7 +1439,9 @@ pub const MAX_REPUBLISH_PER_SWEEP: usize = 8;
 /// does.
 fn republish_settlements(ctx: &mut Ctx<'_>, now: i64) {
     let due: Vec<(crate::ids::ContractId, crate::ids::TransactionId)> = {
-        let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return;
+        };
         let snap = store.snapshot();
         snap.contracts()
             .filter(|c| c.canon_published.is_none() && c.consent.visibility.is_public())
@@ -1354,11 +1470,14 @@ fn republish_settlements(ctx: &mut Ctx<'_>, now: i64) {
             transaction = transaction.0,
             "economy: a public settlement has no chronicle line; announcing it again"
         );
-        crate::observer::emit(ctx, &crate::record::EconomicEvent::ContractChanged {
-            id,
-            state: crate::record::ContractStateKind::Settled,
-            transaction: Some(transaction),
-        });
+        crate::observer::emit(
+            ctx,
+            &crate::record::EconomicEvent::ContractChanged {
+                id,
+                state: crate::record::ContractStateKind::Settled,
+                transaction: Some(transaction),
+            },
+        );
     }
 }
 
@@ -1375,7 +1494,9 @@ fn republish_settlements(ctx: &mut Ctx<'_>, now: i64) {
 /// ladder's own cadence.
 fn page_stale_contracts(ctx: &mut Ctx<'_>, now: i64) {
     let stale: Vec<(crate::ids::ContractId, i64)> = {
-        let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return;
+        };
         store
             .snapshot()
             .contracts()
@@ -1432,9 +1553,9 @@ fn page_stale_contracts(ctx: &mut Ctx<'_>, now: i64) {
 /// not be collected out from under its parties.
 fn collect_draft(ctx: &mut Ctx<'_>, id: crate::ids::ContractId) {
     let collectable = ctx.w.module_state::<EconomyStore>().is_some_and(|s| {
-        s.snapshot()
-            .contract(id)
-            .is_some_and(|c| c.state == crate::contract::ContractState::Draft && c.escrow.is_empty())
+        s.snapshot().contract(id).is_some_and(|c| {
+            c.state == crate::contract::ContractState::Draft && c.escrow.is_empty()
+        })
     });
     if !collectable {
         return;
@@ -1442,7 +1563,10 @@ fn collect_draft(ctx: &mut Ctx<'_>, id: crate::ids::ContractId) {
     if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
         store.snapshot.remove_contract(id);
     }
-    tracing::info!(contract = id.0, "economy: collected an abandoned draft contract");
+    tracing::info!(
+        contract = id.0,
+        "economy: collected an abandoned draft contract"
+    );
     api::delete_key(ctx.out, api::contract_key(id));
 }
 
@@ -1494,7 +1618,9 @@ pub(crate) fn page(
     now: i64,
 ) -> Option<EscalationId> {
     let reuse = {
-        let Some(store) = ctx.w.module_state::<EconomyStore>() else { return None };
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return None;
+        };
         match store.escalations().find(|e| e.subject == subject) {
             Some(e) if e.is_open() => Some(Reuse::Standing(e.id)),
             Some(e) if e.reopen_due(now) => Some(Reuse::Reopen(e.id)),
@@ -1514,7 +1640,10 @@ pub(crate) fn page(
     match reuse {
         Some(Reuse::Standing(id)) => return Some(id),
         Some(Reuse::Reopen(id)) => {
-            let record = ctx.w.module_state::<EconomyStore>().and_then(|s| s.escalation(id).cloned());
+            let record = ctx
+                .w
+                .module_state::<EconomyStore>()
+                .and_then(|s| s.escalation(id).cloned());
             if let Some(mut record) = record {
                 record.reopen(now);
                 tracing::warn!(escalation = id.0, subject = ?subject, reopened = record.reopened, "economy: an acknowledged escalation reopened — its cause never went away");
@@ -1523,9 +1652,15 @@ pub(crate) fn page(
             return Some(id);
         }
         Some(Reuse::Note(id)) => {
-            let record = ctx.w.module_state::<EconomyStore>().and_then(|s| s.escalation(id).cloned());
+            let record = ctx
+                .w
+                .module_state::<EconomyStore>()
+                .and_then(|s| s.escalation(id).cloned());
             if let Some(mut record) = record {
-                record.note_also(&format!("{} is blocked by the same account", subject.render()));
+                record.note_also(&format!(
+                    "{} is blocked by the same account",
+                    subject.render()
+                ));
                 tracing::warn!(escalation = id.0, subject = ?subject, "economy: another record is blocked by an already-paged account");
                 api::put_escalation(ctx, record);
             }
@@ -1534,7 +1669,9 @@ pub(crate) fn page(
         None => {}
     }
     let id = {
-        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return None };
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
+            return None;
+        };
         let Some(id) = store.alloc_escalation() else {
             // B2: at the ceiling the sweep still runs and the subject still stops —
             // it simply stops with a `Staff` reason instead of an alert id.
@@ -1543,11 +1680,13 @@ pub(crate) fn page(
         };
         id
     };
-    let record =
-        Escalation::page(id, kind, subject, context, recommended, now).blaming(blamed);
+    let record = Escalation::page(id, kind, subject, context, recommended, now).blaming(blamed);
     tracing::warn!(escalation = id.0, subject = ?subject, context = %record.context, "economy: level-2 escalation opened");
     api::put_escalation(ctx, record);
-    let meta = ctx.w.module_state::<EconomyStore>().map(EconomyStore::meta_doc);
+    let meta = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .map(EconomyStore::meta_doc);
     if let Some(meta) = meta {
         api::persist_meta(ctx.out, meta);
     }
@@ -1564,15 +1703,17 @@ pub(crate) fn page(
 /// fresh id would punish them for reading it. The record is collected seven days
 /// after it is acked, and a freeze still standing then is worth saying again.
 fn open_freeze_record(ctx: &mut Ctx<'_>, now: i64) {
-    let already = ctx
-        .w
-        .module_state::<EconomyStore>()
-        .is_some_and(|s| s.escalations().any(|e| e.subject == EscalationSubject::Economy));
+    let already = ctx.w.module_state::<EconomyStore>().is_some_and(|s| {
+        s.escalations()
+            .any(|e| e.subject == EscalationSubject::Economy)
+    });
     if already {
         return;
     }
     let Some(id) = ({
-        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return };
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
+            return;
+        };
         store.alloc_escalation()
     }) else {
         tracing::error!("economy: the escalation allocator is exhausted; the freeze has no record");
@@ -1594,9 +1735,15 @@ fn open_freeze_record(ctx: &mut Ctx<'_>, now: i64) {
         ],
         now,
     );
-    tracing::error!(escalation = id.0, "economy: the sweep is halted by the whole-economy freeze");
+    tracing::error!(
+        escalation = id.0,
+        "economy: the sweep is halted by the whole-economy freeze"
+    );
     api::put_escalation(ctx, record);
-    let meta = ctx.w.module_state::<EconomyStore>().map(EconomyStore::meta_doc);
+    let meta = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .map(EconomyStore::meta_doc);
     if let Some(meta) = meta {
         api::persist_meta(ctx.out, meta);
     }
@@ -1610,7 +1757,9 @@ fn open_freeze_record(ctx: &mut Ctx<'_>, now: i64) {
 /// to reach staff. `@econ/alerts` is the pull side and is live now.
 fn renotify(ctx: &mut Ctx<'_>, now: i64) {
     let due: Vec<Escalation> = {
-        let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return;
+        };
         store
             .escalations()
             .filter(|e| e.renotify_due(now))
@@ -1643,13 +1792,17 @@ fn renotify(ctx: &mut Ctx<'_>, now: i64) {
 /// `meta`'s high-water mark, which boot persists on every boot.
 fn collect_garbage(ctx: &mut Ctx<'_>, now: i64) {
     let (approvals, holds, escalations) = {
-        let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return;
+        };
         let snap = store.snapshot();
         let approvals: Vec<_> = snap
             .approvals()
             .filter(|r| {
-                matches!(r.status, ApprovalStatus::Expired | ApprovalStatus::Cancelled)
-                    && now.saturating_sub(r.expires_at) > crate::APPROVAL_GC_AFTER_SECS
+                matches!(
+                    r.status,
+                    ApprovalStatus::Expired | ApprovalStatus::Cancelled
+                ) && now.saturating_sub(r.expires_at) > crate::APPROVAL_GC_AFTER_SECS
             })
             .take(MAX_GC_PER_SWEEP)
             .map(|r| r.id)
@@ -1670,7 +1823,8 @@ fn collect_garbage(ctx: &mut Ctx<'_>, now: i64) {
         let escalations: Vec<_> = store
             .escalations()
             .filter(|e| {
-                e.acked_at.is_some_and(|at| now.saturating_sub(at) > ESCALATION_GC_AFTER_SECS)
+                e.acked_at
+                    .is_some_and(|at| now.saturating_sub(at) > ESCALATION_GC_AFTER_SECS)
             })
             .take(MAX_GC_PER_SWEEP)
             .map(|e| e.id)
@@ -1681,7 +1835,9 @@ fn collect_garbage(ctx: &mut Ctx<'_>, now: i64) {
         return;
     }
     {
-        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return };
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
+            return;
+        };
         for id in &approvals {
             store.snapshot.remove_approval(*id);
         }
@@ -1728,7 +1884,10 @@ mod tests {
         for expected in 1..=MAX_CONSECUTIVE_DEFERS {
             let (run, exhausted) = bump_run(&mut runs, id, MAX_CONSECUTIVE_DEFERS);
             assert_eq!(run, expected);
-            assert!(!exhausted, "the ladder paged at fire {expected}, inside its own cap");
+            assert!(
+                !exhausted,
+                "the ladder paged at fire {expected}, inside its own cap"
+            );
         }
         // The first fire past it crosses.
         let (run, exhausted) = bump_run(&mut runs, id, MAX_CONSECUTIVE_DEFERS);

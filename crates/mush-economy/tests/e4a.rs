@@ -18,8 +18,8 @@ use mush_economy::{
     ContractTerms, CreditPolicy, CustodyEval, CustodyOp, CustodyRef, Deliverable, EconomicAsset,
     EconomicCause, EconomicClock, EconomicContract, EconomicDeadline, EconomicSchedule,
     EconomicTransaction, EconomicVisibility, EconomyError, EconomyPlan, EconomySnapshot,
-    Encumbrance, Expiry, FactEval, ForgiveCause, GracePolicy, Hold, HoldEffectKind, HoldId,
-    HoldOp, HoldPurpose, HoldRevision, HoldStatus, IdempotencyKey, InstrumentDef, InstrumentId,
+    Encumbrance, Expiry, FactEval, ForgiveCause, GracePolicy, Hold, HoldEffectKind, HoldId, HoldOp,
+    HoldPurpose, HoldRevision, HoldStatus, IdempotencyKey, InstrumentDef, InstrumentId,
     InstrumentKind, InstrumentStatus, MAX_ACTIVE_HOLDS_PER_ACCOUNT, MAX_CATCH_UP_CAP,
     MAX_HOLD_OPS_PER_PLAN, NegativePolicy, Obligation, ObligationCause, ObligationError,
     ObligationEvent, ObligationStatus, PayoutShare, PlanResult, Prepared, RequestedLine,
@@ -84,7 +84,9 @@ fn hold(id: u64, account: u64, amount: i64) -> Hold {
         account: AccountId(account),
         amount: Amount::from_minor(amount),
         beneficiary: None,
-        purpose: HoldPurpose::Manual { reason: "test".into() },
+        purpose: HoldPurpose::Manual {
+            reason: "test".into(),
+        },
         placed_by: who(1),
         holder: key("placed"),
         expires: None,
@@ -135,14 +137,28 @@ fn snap() -> EconomySnapshot {
 fn with_hold(s: &mut EconomySnapshot, h: Hold) {
     let account = s.account(h.account).expect("account exists").clone();
     let held = account.held_amount.checked_add(h.amount).expect("fits");
-    s.put_account(Account { held_amount: held, ..account });
+    s.put_account(Account {
+        held_amount: held,
+        ..account
+    });
     s.put_hold(h);
 }
 fn line(account: u64, delta: i64) -> RequestedLine {
-    RequestedLine { account: AccountId(account), delta: Amount::from_minor(delta), memo: "".into() }
+    RequestedLine {
+        account: AccountId(account),
+        delta: Amount::from_minor(delta),
+        memo: "".into(),
+    }
 }
 fn plan(k: &str, actor: PrincipalId, lines: Vec<RequestedLine>) -> EconomyPlan {
-    EconomyPlan::new(key(k), actor, EconomicCause::Staff { reason: "test".into() }, lines)
+    EconomyPlan::new(
+        key(k),
+        actor,
+        EconomicCause::Staff {
+            reason: "test".into(),
+        },
+        lines,
+    )
 }
 fn hold_plan(k: &str, ops: Vec<HoldOp>) -> EconomyPlan {
     let mut p = plan(k, who(1), Vec::new());
@@ -217,7 +233,9 @@ struct Custody {
 }
 impl Custody {
     fn holding(ids: &[u32]) -> Custody {
-        Custody { held: ids.iter().map(|n| obj(*n)).collect() }
+        Custody {
+            held: ids.iter().map(|n| obj(*n)).collect(),
+        }
     }
 }
 impl CustodyEval for Custody {
@@ -312,15 +330,26 @@ fn refuse(s: &EconomySnapshot, p: &EconomyPlan) -> EconomyError {
 fn placing_a_hold_reserves_available_funds_without_moving_the_posted_balance() {
     let s = snap();
     let (s2, tx) = post(&s, &hold_plan("place", vec![place(1, 250)]), 1);
-    assert_eq!(tx.lines.len(), 0, "a placement is an effect-only entry (invariant 10)");
+    assert_eq!(
+        tx.lines.len(),
+        0,
+        "a placement is an effect-only entry (invariant 10)"
+    );
     assert_eq!(tx.hold_effects.len(), 1);
     assert_eq!(tx.hold_effects[0].kind, HoldEffectKind::Placed);
     assert_eq!(tx.hold_effects[0].hold.status, HoldStatus::Held);
     let a = s2.account(AccountId(1)).unwrap();
-    assert_eq!(a.posted_balance, Amount::from_minor(1000), "posted is untouched");
+    assert_eq!(
+        a.posted_balance,
+        Amount::from_minor(1000),
+        "posted is untouched"
+    );
     assert_eq!(a.held_amount, Amount::from_minor(250));
     assert_eq!(a.available(), Some(Amount::from_minor(750)));
-    assert_eq!(a.last_journal_seq, 0, "an effect-only entry never moves the money anchor");
+    assert_eq!(
+        a.last_journal_seq, 0,
+        "an effect-only entry never moves the money anchor"
+    );
     assert_eq!(a.last_hold_seq, 101, "held_amount has its OWN anchor (D11)");
 }
 
@@ -329,7 +358,11 @@ fn the_placing_plans_key_is_recorded_as_the_holder() {
     let s = snap();
     let (s2, _) = post(&s, &hold_plan("holder", vec![place(1, 10)]), 1);
     let h = s2.holds().next().unwrap();
-    assert_eq!(h.holder, key("holder"), "doc 09 C8's holder is the placing plan's key");
+    assert_eq!(
+        h.holder,
+        key("holder"),
+        "doc 09 C8's holder is the placing plan's key"
+    );
     assert_eq!(h.placed_by, who(1));
 }
 
@@ -338,17 +371,27 @@ fn a_capture_takes_its_explicit_amount_and_releases_the_remainder() {
     let mut s = snap();
     with_hold(&mut s, hold(1, 1, 400));
     let mut p = plan("cap", who(1), vec![line(1, -100), line(2, 100)]);
-    p.hold_ops = vec![HoldOp::Capture { hold: HoldId(1), amount: Amount::from_minor(100) }];
+    p.hold_ops = vec![HoldOp::Capture {
+        hold: HoldId(1),
+        amount: Amount::from_minor(100),
+    }];
     let (s2, tx) = post(&s, &p, 7);
     assert_eq!(tx.hold_effects[0].kind, HoldEffectKind::Captured);
     assert_eq!(
         tx.hold_effects[0].hold.status,
-        HoldStatus::Consumed { transaction: TransactionId(7), amount: Amount::from_minor(100) },
+        HoldStatus::Consumed {
+            transaction: TransactionId(7),
+            amount: Amount::from_minor(100)
+        },
         "apply stamps the consuming transaction, exactly like an acquisition"
     );
     let a = s2.account(AccountId(1)).unwrap();
     assert_eq!(a.posted_balance, Amount::from_minor(900));
-    assert_eq!(a.held_amount, Amount::ZERO, "the uncaptured 300 was released with it");
+    assert_eq!(
+        a.held_amount,
+        Amount::ZERO,
+        "the uncaptured 300 was released with it"
+    );
     assert_eq!(a.available(), Some(Amount::from_minor(900)));
 }
 
@@ -359,8 +402,14 @@ fn two_captures_on_one_account_attribute_per_hold() {
     with_hold(&mut s, hold(2, 1, 300));
     let mut p = plan("two", who(1), vec![line(1, -250), line(2, 250)]);
     p.hold_ops = vec![
-        HoldOp::Capture { hold: HoldId(1), amount: Amount::from_minor(100) },
-        HoldOp::Capture { hold: HoldId(2), amount: Amount::from_minor(150) },
+        HoldOp::Capture {
+            hold: HoldId(1),
+            amount: Amount::from_minor(100),
+        },
+        HoldOp::Capture {
+            hold: HoldId(2),
+            amount: Amount::from_minor(150),
+        },
     ];
     let (s2, tx) = post(&s, &p, 3);
     let mut captured: BTreeMap<u64, i64> = BTreeMap::new();
@@ -369,7 +418,11 @@ fn two_captures_on_one_account_attribute_per_hold() {
             captured.insert(e.hold.id.0, amount.minor());
         }
     }
-    assert_eq!(captured, BTreeMap::from([(1, 100), (2, 150)]), "each effect records its OWN capture");
+    assert_eq!(
+        captured,
+        BTreeMap::from([(1, 100), (2, 150)]),
+        "each effect records its OWN capture"
+    );
     let a = s2.account(AccountId(1)).unwrap();
     assert_eq!(a.held_amount, Amount::ZERO);
     assert_eq!(a.posted_balance, Amount::from_minor(750));
@@ -379,7 +432,11 @@ fn two_captures_on_one_account_attribute_per_hold() {
 fn a_release_frees_the_reservation_and_leaves_the_balance_alone() {
     let mut s = snap();
     with_hold(&mut s, hold(1, 1, 400));
-    let (s2, tx) = post(&s, &hold_plan("rel", vec![HoldOp::Release { hold: HoldId(1) }]), 2);
+    let (s2, tx) = post(
+        &s,
+        &hold_plan("rel", vec![HoldOp::Release { hold: HoldId(1) }]),
+        2,
+    );
     assert_eq!(tx.hold_effects[0].kind, HoldEffectKind::Released);
     assert_eq!(tx.hold_effects[0].hold.status, HoldStatus::Released);
     let a = s2.account(AccountId(1)).unwrap();
@@ -390,10 +447,19 @@ fn a_release_frees_the_reservation_and_leaves_the_balance_alone() {
 #[test]
 fn expiry_needs_the_sweeps_cause_and_a_deadline_that_has_passed() {
     let mut s = snap();
-    with_hold(&mut s, Hold { expires: Some(EconomicDeadline::real(NOW - 1)), ..hold(1, 1, 400) });
+    with_hold(
+        &mut s,
+        Hold {
+            expires: Some(EconomicDeadline::real(NOW - 1)),
+            ..hold(1, 1, 400)
+        },
+    );
     let sweep = |k: &str| {
         let mut p = hold_plan(k, vec![HoldOp::Expire { hold: HoldId(1) }]);
-        p.cause = EconomicCause::Internal { kind: "hold.expire".into(), id: 1 };
+        p.cause = EconomicCause::Internal {
+            kind: "hold.expire".into(),
+            id: 1,
+        };
         p
     };
     let (s2, tx) = post(&s, &sweep("exp"), 4);
@@ -408,11 +474,20 @@ fn expiry_needs_the_sweeps_cause_and_a_deadline_that_has_passed() {
 #[test]
 fn an_unexpired_or_deadlineless_hold_refuses_to_expire() {
     let mut future = snap();
-    with_hold(&mut future, Hold { expires: Some(EconomicDeadline::real(NOW + 1)), ..hold(1, 1, 5) });
+    with_hold(
+        &mut future,
+        Hold {
+            expires: Some(EconomicDeadline::real(NOW + 1)),
+            ..hold(1, 1, 5)
+        },
+    );
     let mut none = snap();
     with_hold(&mut none, hold(1, 1, 5));
     let mut p = hold_plan("e", vec![HoldOp::Expire { hold: HoldId(1) }]);
-    p.cause = EconomicCause::Internal { kind: "hold.expire".into(), id: 1 };
+    p.cause = EconomicCause::Internal {
+        kind: "hold.expire".into(),
+        id: 1,
+    };
     assert_eq!(refuse(&future, &p), EconomyError::HoldNotExpired(HoldId(1)));
     assert_eq!(refuse(&none, &p), EconomyError::HoldNotExpired(HoldId(1)));
 }
@@ -420,20 +495,44 @@ fn an_unexpired_or_deadlineless_hold_refuses_to_expire() {
 #[test]
 fn a_manual_deadline_never_expires_on_someone_elses_clock() {
     let mut s = snap();
-    let deadline = EconomicDeadline { clock: EconomicClock::Manual, at: 0 };
-    with_hold(&mut s, Hold { expires: Some(deadline), ..hold(1, 1, 5) });
+    let deadline = EconomicDeadline {
+        clock: EconomicClock::Manual,
+        at: 0,
+    };
+    with_hold(
+        &mut s,
+        Hold {
+            expires: Some(deadline),
+            ..hold(1, 1, 5)
+        },
+    );
     let mut p = hold_plan("m", vec![HoldOp::Expire { hold: HoldId(1) }]);
-    p.cause = EconomicCause::Internal { kind: "hold.expire".into(), id: 1 };
+    p.cause = EconomicCause::Internal {
+        kind: "hold.expire".into(),
+        id: 1,
+    };
     assert_eq!(refuse(&s, &p), EconomyError::HoldNotExpired(HoldId(1)));
 }
 
 #[test]
 fn a_cadence_deadline_with_no_record_is_never_passed() {
     let mut s = snap();
-    let deadline = EconomicDeadline { clock: EconomicClock::Cadence(mush_economy::CadenceId(4)), at: 0 };
-    with_hold(&mut s, Hold { expires: Some(deadline), ..hold(1, 1, 5) });
+    let deadline = EconomicDeadline {
+        clock: EconomicClock::Cadence(mush_economy::CadenceId(4)),
+        at: 0,
+    };
+    with_hold(
+        &mut s,
+        Hold {
+            expires: Some(deadline),
+            ..hold(1, 1, 5)
+        },
+    );
     let mut p = hold_plan("c", vec![HoldOp::Expire { hold: HoldId(1) }]);
-    p.cause = EconomicCause::Internal { kind: "hold.expire".into(), id: 1 };
+    p.cause = EconomicCause::Internal {
+        kind: "hold.expire".into(),
+        id: 1,
+    };
     assert_eq!(refuse(&s, &p), EconomyError::HoldNotExpired(HoldId(1)));
 
     // With the record present and the position past the deadline, it expires.
@@ -457,12 +556,21 @@ fn every_op_on_a_terminal_hold_is_refused() {
     for status in [
         HoldStatus::Released,
         HoldStatus::Expired,
-        HoldStatus::Consumed { transaction: TransactionId(1), amount: Amount::from_minor(1) },
+        HoldStatus::Consumed {
+            transaction: TransactionId(1),
+            amount: Amount::from_minor(1),
+        },
     ] {
         let mut s = snap();
-        s.put_hold(Hold { status: status.clone(), ..hold(1, 1, 100) });
+        s.put_hold(Hold {
+            status: status.clone(),
+            ..hold(1, 1, 100)
+        });
         let ops = [
-            HoldOp::Capture { hold: HoldId(1), amount: Amount::from_minor(1) },
+            HoldOp::Capture {
+                hold: HoldId(1),
+                amount: Amount::from_minor(1),
+            },
             HoldOp::Release { hold: HoldId(1) },
         ];
         for op in ops {
@@ -479,7 +587,10 @@ fn every_op_on_a_terminal_hold_is_refused() {
 fn an_unknown_hold_is_refused_by_id() {
     let s = snap();
     assert_eq!(
-        refuse(&s, &hold_plan("u", vec![HoldOp::Release { hold: HoldId(77) }])),
+        refuse(
+            &s,
+            &hold_plan("u", vec![HoldOp::Release { hold: HoldId(77) }])
+        ),
         EconomyError::NoSuchHold(HoldId(77))
     );
 }
@@ -488,23 +599,44 @@ fn an_unknown_hold_is_refused_by_id() {
 fn a_capture_over_the_holds_amount_is_refused() {
     let mut s = snap();
     with_hold(&mut s, hold(1, 1, 100));
-    let over = HoldOp::Capture { hold: HoldId(1), amount: Amount::from_minor(101) };
-    assert_eq!(refuse(&s, &hold_plan("o", vec![over])), EconomyError::CaptureExceedsHold(HoldId(1)));
-    let zero = HoldOp::Capture { hold: HoldId(1), amount: Amount::ZERO };
-    assert_eq!(refuse(&s, &hold_plan("z", vec![zero])), EconomyError::CaptureExceedsHold(HoldId(1)));
+    let over = HoldOp::Capture {
+        hold: HoldId(1),
+        amount: Amount::from_minor(101),
+    };
+    assert_eq!(
+        refuse(&s, &hold_plan("o", vec![over])),
+        EconomyError::CaptureExceedsHold(HoldId(1))
+    );
+    let zero = HoldOp::Capture {
+        hold: HoldId(1),
+        amount: Amount::ZERO,
+    };
+    assert_eq!(
+        refuse(&s, &hold_plan("z", vec![zero])),
+        EconomyError::CaptureExceedsHold(HoldId(1))
+    );
 }
 
 #[test]
 fn a_non_positive_placement_is_refused() {
     let s = snap();
-    assert_eq!(refuse(&s, &hold_plan("p0", vec![place(1, 0)])), EconomyError::HoldAmountNotPositive);
-    assert_eq!(refuse(&s, &hold_plan("pn", vec![place(1, -5)])), EconomyError::HoldAmountNotPositive);
+    assert_eq!(
+        refuse(&s, &hold_plan("p0", vec![place(1, 0)])),
+        EconomyError::HoldAmountNotPositive
+    );
+    assert_eq!(
+        refuse(&s, &hold_plan("pn", vec![place(1, -5)])),
+        EconomyError::HoldAmountNotPositive
+    );
 }
 
 #[test]
 fn a_placement_on_an_unbounded_credit_account_is_refused() {
     let mut s = snap();
-    s.put_account(Account { credit: CreditPolicy::unbounded(), ..account(1, 1000) });
+    s.put_account(Account {
+        credit: CreditPolicy::unbounded(),
+        ..account(1, 1000)
+    });
     assert_eq!(
         refuse(&s, &hold_plan("ub", vec![place(1, 10)])),
         EconomyError::HoldOnUnboundedAccount(AccountId(1)),
@@ -515,7 +647,10 @@ fn a_placement_on_an_unbounded_credit_account_is_refused() {
 #[test]
 fn a_placement_on_a_non_active_account_is_refused() {
     let mut s = snap();
-    s.put_account(Account { status: AccountStatus::Frozen, ..account(1, 1000) });
+    s.put_account(Account {
+        status: AccountStatus::Frozen,
+        ..account(1, 1000)
+    });
     assert_eq!(
         refuse(&s, &hold_plan("fr", vec![place(1, 10)])),
         EconomyError::InactiveAccount(AccountId(1))
@@ -527,7 +662,10 @@ fn a_placement_needs_debit_authority_asked_as_a_negative_probe() {
     let s = snap();
     let mut k = Seams::open();
     k.auth.money = false;
-    assert_eq!(refuse_with(&s, &hold_plan("na", vec![place(1, 10)]), &k), EconomyError::Unauthorized);
+    assert_eq!(
+        refuse_with(&s, &hold_plan("na", vec![place(1, 10)]), &k),
+        EconomyError::Unauthorized
+    );
 }
 
 #[test]
@@ -537,7 +675,11 @@ fn a_release_needs_the_hold_seam_and_never_plain_money_authority() {
     let mut k = Seams::open();
     k.auth.hold = false;
     assert_eq!(
-        refuse_with(&s, &hold_plan("nr", vec![HoldOp::Release { hold: HoldId(1) }]), &k),
+        refuse_with(
+            &s,
+            &hold_plan("nr", vec![HoldOp::Release { hold: HoldId(1) }]),
+            &k
+        ),
         EconomyError::Unauthorized,
         "money authority is not a licence to free someone else's claim"
     );
@@ -548,7 +690,10 @@ fn a_capture_needs_the_hold_seam_and_never_plain_money_authority() {
     let mut s = snap();
     with_hold(&mut s, hold(1, 1, 100));
     let mut p = plan("cf", who(1), vec![line(1, -40), line(2, 40)]);
-    p.hold_ops = vec![HoldOp::Capture { hold: HoldId(1), amount: Amount::from_minor(40) }];
+    p.hold_ops = vec![HoldOp::Capture {
+        hold: HoldId(1),
+        amount: Amount::from_minor(40),
+    }];
     // Invariant 25, as the E4a verify fold rewrote it (finding 1): the hold seam is
     // MANDATORY and there is no fallback to debit authority on the account. A hold
     // stands between an account's owner and their own money on someone else's
@@ -564,10 +709,16 @@ fn a_capture_needs_the_hold_seam_and_never_plain_money_authority() {
 fn two_ops_on_one_hold_in_one_plan_are_refused() {
     let mut s = snap();
     with_hold(&mut s, hold(1, 1, 100));
-    let p = hold_plan("dup", vec![
-        HoldOp::Release { hold: HoldId(1) },
-        HoldOp::Capture { hold: HoldId(1), amount: Amount::from_minor(1) },
-    ]);
+    let p = hold_plan(
+        "dup",
+        vec![
+            HoldOp::Release { hold: HoldId(1) },
+            HoldOp::Capture {
+                hold: HoldId(1),
+                amount: Amount::from_minor(1),
+            },
+        ],
+    );
     assert_eq!(refuse(&s, &p), EconomyError::DuplicateHoldOp(HoldId(1)));
 }
 
@@ -579,7 +730,10 @@ fn two_ops_on_one_hold_in_one_plan_are_refused() {
 fn scenario_13_two_holds_that_together_exceed_available_refuse_the_second() {
     let s = snap();
     let (s2, _) = post(&s, &hold_plan("h1", vec![place(1, 600)]), 1);
-    assert_eq!(s2.account(AccountId(1)).unwrap().available(), Some(Amount::from_minor(400)));
+    assert_eq!(
+        s2.account(AccountId(1)).unwrap().available(),
+        Some(Amount::from_minor(400))
+    );
     assert_eq!(
         refuse(&s2, &hold_plan("h2", vec![place(1, 600)])),
         EconomyError::InsufficientAvailable(AccountId(1))
@@ -621,9 +775,15 @@ fn a_capture_frees_its_own_reservation_so_the_settling_debit_fits() {
     let mut s = snap();
     with_hold(&mut s, hold(1, 1, 1000));
     let mut p = plan("settle", who(1), vec![line(1, -1000), line(2, 1000)]);
-    p.hold_ops = vec![HoldOp::Capture { hold: HoldId(1), amount: Amount::from_minor(1000) }];
+    p.hold_ops = vec![HoldOp::Capture {
+        hold: HoldId(1),
+        amount: Amount::from_minor(1000),
+    }];
     let (s2, _) = post(&s, &p, 1);
-    assert_eq!(s2.account(AccountId(1)).unwrap().posted_balance, Amount::ZERO);
+    assert_eq!(
+        s2.account(AccountId(1)).unwrap().posted_balance,
+        Amount::ZERO
+    );
     assert_eq!(s2.account(AccountId(1)).unwrap().held_amount, Amount::ZERO);
 }
 
@@ -631,7 +791,10 @@ fn a_capture_frees_its_own_reservation_so_the_settling_debit_fits() {
 fn a_credit_line_is_not_a_licence_to_reserve_headroom() {
     let mut s = snap();
     s.put_account(Account {
-        credit: CreditPolicy { allow_negative: true, floor: Some(Amount::from_minor(-500)) },
+        credit: CreditPolicy {
+            allow_negative: true,
+            floor: Some(Amount::from_minor(-500)),
+        },
         ..account(1, 0)
     });
     // The account may go to -500, so the DEBIT would be permitted…
@@ -650,7 +813,10 @@ fn the_per_account_hold_cap_is_enforced() {
     for i in 0..MAX_ACTIVE_HOLDS_PER_ACCOUNT {
         with_hold(&mut s, hold(i as u64 + 1, 1, 1));
     }
-    assert_eq!(s.active_holds_on(AccountId(1)), MAX_ACTIVE_HOLDS_PER_ACCOUNT);
+    assert_eq!(
+        s.active_holds_on(AccountId(1)),
+        MAX_ACTIVE_HOLDS_PER_ACCOUNT
+    );
     assert!(matches!(
         refuse(&s, &hold_plan("cap", vec![place(1, 1)])),
         EconomyError::TooLarge(_)
@@ -661,7 +827,10 @@ fn the_per_account_hold_cap_is_enforced() {
 fn the_per_plan_hold_op_cap_is_enforced() {
     let s = snap();
     let ops: Vec<HoldOp> = (0..=MAX_HOLD_OPS_PER_PLAN).map(|_| place(1, 1)).collect();
-    assert!(matches!(refuse(&s, &hold_plan("many", ops)), EconomyError::TooLarge(_)));
+    assert!(matches!(
+        refuse(&s, &hold_plan("many", ops)),
+        EconomyError::TooLarge(_)
+    ));
 }
 
 #[test]
@@ -669,12 +838,22 @@ fn a_stale_expected_hold_revision_is_refused() {
     let mut s = snap();
     with_hold(&mut s, hold(1, 1, 100));
     let mut p = hold_plan("stale", vec![HoldOp::Release { hold: HoldId(1) }]);
-    p.expected_hold_revisions = vec![HoldRevision { hold: HoldId(1), revision: 2 }];
+    p.expected_hold_revisions = vec![HoldRevision {
+        hold: HoldId(1),
+        revision: 2,
+    }];
     assert_eq!(
         refuse(&s, &p),
-        EconomyError::StaleHold { hold: HoldId(1), expected: 2, found: Some(1) }
+        EconomyError::StaleHold {
+            hold: HoldId(1),
+            expected: 2,
+            found: Some(1)
+        }
     );
-    p.expected_hold_revisions = vec![HoldRevision { hold: HoldId(1), revision: 1 }];
+    p.expected_hold_revisions = vec![HoldRevision {
+        hold: HoldId(1),
+        revision: 1,
+    }];
     assert!(validate(&p, &s, &Seams::open().env(&s)).is_post());
 }
 
@@ -684,16 +863,30 @@ fn a_large_placement_trips_the_accounts_approval_rule() {
     s.put_account(Account {
         approval: Some(ApprovalRule {
             threshold: Amount::from_minor(100),
-            policy: ApprovalPolicy::Threshold { approvals: 1, from_role: None },
+            policy: ApprovalPolicy::Threshold {
+                approvals: 1,
+                from_role: None,
+            },
         }),
         ..account(1, 1000)
     });
     // D-E4-11: reserving a fortune is a debit-authority plan and escalates like one.
-    match validate(&hold_plan("big", vec![place(1, 500)]), &s, &Seams::open().env(&s)) {
+    match validate(
+        &hold_plan("big", vec![place(1, 500)]),
+        &s,
+        &Seams::open().env(&s),
+    ) {
         PlanResult::NeedsApproval(need) => assert_eq!(need.accounts, vec![AccountId(1)]),
         other => panic!("expected NeedsApproval, got {other:?}"),
     }
-    assert!(validate(&hold_plan("small", vec![place(1, 50)]), &s, &Seams::open().env(&s)).is_post());
+    assert!(
+        validate(
+            &hold_plan("small", vec![place(1, 50)]),
+            &s,
+            &Seams::open().env(&s)
+        )
+        .is_post()
+    );
 }
 
 #[test]
@@ -701,12 +894,17 @@ fn invariant_28_a_capture_carrying_transaction_cannot_be_reversed() {
     let mut s = snap();
     with_hold(&mut s, hold(1, 1, 400));
     let mut p = plan("cap", who(1), vec![line(1, -100), line(2, 100)]);
-    p.hold_ops = vec![HoldOp::Capture { hold: HoldId(1), amount: Amount::from_minor(100) }];
+    p.hold_ops = vec![HoldOp::Capture {
+        hold: HoldId(1),
+        amount: Amount::from_minor(100),
+    }];
     let (s2, tx) = post(&s, &p, 7);
     let out = plan_reversal(
         &tx,
         who(1),
-        EconomicCause::Staff { reason: "oops".into() },
+        EconomicCause::Staff {
+            reason: "oops".into(),
+        },
         &s2,
         &Auth::yes(),
     );
@@ -723,7 +921,10 @@ fn a_live_contracts_deposit_locks_the_object_against_every_other_withdrawal() {
     s.put_vault(vault(1, 80));
     s.put_asset(asset(60, who(1)));
     let mut c = contract_shell();
-    c.consent.conditions = vec![TypedCondition::DepositInto { object: obj(60), vault: VaultId(1) }];
+    c.consent.conditions = vec![TypedCondition::DepositInto {
+        object: obj(60),
+        vault: VaultId(1),
+    }];
     c.satisfied = vec![None];
     c.consent_hash = consent_hash(&c.issuer, &c.consent);
     c.state = ContractState::Active;
@@ -733,28 +934,53 @@ fn a_live_contracts_deposit_locks_the_object_against_every_other_withdrawal() {
     let mut k = Seams::open();
     k.custody = Custody::holding(&[60]);
     let mut p = plan("w", who(1), Vec::new());
-    p.custody_ops = vec![CustodyOp::Withdraw { object: obj(60), vault: VaultId(1), to: obj(4) }];
-    assert_eq!(refuse_with(&s, &p, &k), EconomyError::CustodyLocked(obj(60)));
+    p.custody_ops = vec![CustodyOp::Withdraw {
+        object: obj(60),
+        vault: VaultId(1),
+        to: obj(4),
+    }];
+    assert_eq!(
+        refuse_with(&s, &p, &k),
+        EconomyError::CustodyLocked(obj(60))
+    );
 
     // The cause ALONE unlocks nothing: `post` is public, so a caller could set it.
-    p.cause = EconomicCause::Internal { kind: "contract".into(), id: c.id.0 };
-    assert_eq!(refuse_with(&s, &p, &k), EconomyError::CustodyLocked(obj(60)));
+    p.cause = EconomicCause::Internal {
+        kind: "contract".into(),
+        id: c.id.0,
+    };
+    assert_eq!(
+        refuse_with(&s, &p, &k),
+        EconomyError::CustodyLocked(obj(60))
+    );
 
     // E4a verify fold, finding 2: NEITHER does the contract's own deterministic
     // key. `contract/{id}/settle` and `contract/{id}/refund` are derived from an id
     // anyone who can see the contract can read, so the pair of them was a lock whose
     // key was printed on the door. There is now no exception at all.
     p.idempotency = settle_key(c.id);
-    assert_eq!(refuse_with(&s, &p, &k), EconomyError::CustodyLocked(obj(60)));
+    assert_eq!(
+        refuse_with(&s, &p, &k),
+        EconomyError::CustodyLocked(obj(60))
+    );
     p.idempotency = mush_economy::refund_key(c.id);
-    assert_eq!(refuse_with(&s, &p, &k), EconomyError::CustodyLocked(obj(60)));
+    assert_eq!(
+        refuse_with(&s, &p, &k),
+        EconomyError::CustodyLocked(obj(60))
+    );
     p.idempotency = settle_key(ContractId(2));
-    assert_eq!(refuse_with(&s, &p, &k), EconomyError::CustodyLocked(obj(60)));
+    assert_eq!(
+        refuse_with(&s, &p, &k),
+        EconomyError::CustodyLocked(obj(60))
+    );
 
     // The lock lifts on the STATE change, and nothing else: a contract that has left
     // `Active`/`ReadyToSettle` holds nothing, and E4b2's refund then returns the
     // object to its depositor in the same step, under `ContractAuth`.
-    s.put_contract(EconomicContract { state: ContractState::Cancelled, ..c });
+    s.put_contract(EconomicContract {
+        state: ContractState::Cancelled,
+        ..c
+    });
     assert!(s.contract_locks().is_empty());
     p.idempotency = key("after-cancel");
     assert!(validate(&p, &s, &k.env(&s)).is_post());
@@ -767,9 +993,17 @@ fn a_live_contracts_deposit_locks_the_object_against_every_other_withdrawal() {
 #[test]
 fn due_periods_counts_a_downtime_gap_and_never_a_backwards_clock() {
     let s = EconomicSchedule::every(1_000, 100);
-    assert_eq!(due_periods(&s, 900), 0, "a rewound clock yields zero, not a garbage count");
+    assert_eq!(
+        due_periods(&s, 900),
+        0,
+        "a rewound clock yields zero, not a garbage count"
+    );
     assert_eq!(due_periods(&s, 1_000), 1);
-    assert_eq!(due_periods(&s, 1_000 + 100 * 9), 10, "a ten-period downtime gap");
+    assert_eq!(
+        due_periods(&s, 1_000 + 100 * 9),
+        10,
+        "a ten-period downtime gap"
+    );
 }
 
 #[test]
@@ -791,9 +1025,18 @@ fn the_catch_up_cap_is_clamped_at_construction_and_survives_a_forged_record() {
     let s = EconomicSchedule::new(EconomicClock::RealUtc, 0, Some(10), 250);
     assert_eq!(s.maximum_catch_up, MAX_CATCH_UP_CAP);
     // A record that somehow stored a larger cap still cannot sweep past it.
-    let forged = EconomicSchedule { maximum_catch_up: 200, ..s };
-    let o = Obligation { schedule: forged, ..obligation() };
-    assert_eq!(plan_sweep(&o, 10_000).attempt.len(), usize::from(MAX_CATCH_UP_CAP));
+    let forged = EconomicSchedule {
+        maximum_catch_up: 200,
+        ..s
+    };
+    let o = Obligation {
+        schedule: forged,
+        ..obligation()
+    };
+    assert_eq!(
+        plan_sweep(&o, 10_000).attempt.len(),
+        usize::from(MAX_CATCH_UP_CAP)
+    );
 }
 
 #[test]
@@ -821,7 +1064,11 @@ fn a_cadence_advances_under_its_own_cap_and_forgives_the_rest() {
     let (next, forgiven) = advance_cadence(&c, 1_000);
     assert_eq!((next.position, forgiven), (3, 7));
     let (again, forgiven2) = advance_cadence(&next, 1_000);
-    assert_eq!((again.position, forgiven2), (3, 0), "the forgiven periods never come back");
+    assert_eq!(
+        (again.position, forgiven2),
+        (3, 0),
+        "the forgiven periods never come back"
+    );
 }
 
 // ===========================================================================
@@ -840,7 +1087,9 @@ fn obligation() -> Obligation {
         grace: GracePolicy { periods: 1 },
         notify_on_success: false,
         status: ObligationStatus::Active,
-        cause: ObligationCause::Staff { reason: "rent".into() },
+        cause: ObligationCause::Staff {
+            reason: "rent".into(),
+        },
         minted_by: None,
         periods_settled: 0,
         history: Vec::new(),
@@ -867,7 +1116,10 @@ fn the_period_key_is_deterministic_so_a_restart_re_derives_it() {
 
 #[test]
 fn plan_sweep_attempts_at_most_the_catch_up_and_forgives_the_older_excess() {
-    let o = Obligation { schedule: EconomicSchedule::new(EconomicClock::RealUtc, 1_000, Some(100), 3), ..obligation() };
+    let o = Obligation {
+        schedule: EconomicSchedule::new(EconomicClock::RealUtc, 1_000, Some(100), 3),
+        ..obligation()
+    };
     // Ten periods due, catch-up 3: settle the three MOST RECENT, forgive seven.
     let intent = plan_sweep(&o, 1_000 + 100 * 9);
     assert_eq!(intent.forgive, 7);
@@ -883,12 +1135,20 @@ fn plan_sweep_attempts_at_most_the_catch_up_and_forgives_the_older_excess() {
 fn a_quarantined_obligation_leaves_the_due_pool_entirely() {
     for status in [
         ObligationStatus::Delinquent,
-        ObligationStatus::Suspended { reason: mush_economy::SuspendReason::Staff { reason: "x".into() } },
+        ObligationStatus::Suspended {
+            reason: mush_economy::SuspendReason::Staff { reason: "x".into() },
+        },
         ObligationStatus::Satisfied,
         ObligationStatus::Cancelled,
     ] {
-        let o = Obligation { status: status.clone(), ..obligation() };
-        assert!(plan_sweep(&o, 1_000_000).is_empty(), "{status:?} must not starve live obligations");
+        let o = Obligation {
+            status: status.clone(),
+            ..obligation()
+        };
+        assert!(
+            plan_sweep(&o, 1_000_000).is_empty(),
+            "{status:?} must not starve live obligations"
+        );
     }
 }
 
@@ -900,10 +1160,21 @@ fn forgiveness_advances_the_schedule_and_records_why() {
     assert_eq!(next.schedule.next_due, 1_700);
     assert!(matches!(
         next.history.last(),
-        Some(ObligationEvent::Forgiven { periods: 7, from: 0, to: 7, cause: ForgiveCause::Downtime, .. })
+        Some(ObligationEvent::Forgiven {
+            periods: 7,
+            from: 0,
+            to: 7,
+            cause: ForgiveCause::Downtime,
+            ..
+        })
     ));
     // Nothing was charged: the whole point of D-E4-14.
-    assert!(!next.history.iter().any(|e| matches!(e, ObligationEvent::Settled { .. })));
+    assert!(
+        !next
+            .history
+            .iter()
+            .any(|e| matches!(e, ObligationEvent::Settled { .. }))
+    );
 }
 
 #[test]
@@ -939,29 +1210,49 @@ fn a_missed_period_enters_grace_with_its_deadline_on_the_schedules_own_clock() {
     };
     let missed = advanced(&o, 0, SettleOutcome::InsufficientAvailable);
     match missed.status {
-        ObligationStatus::Grace { missed: n, deadline } => {
+        ObligationStatus::Grace {
+            missed: n,
+            deadline,
+        } => {
             assert_eq!(n, 1);
-            assert_eq!(deadline.clock, EconomicClock::WorldIc, "never wall time on an IC schedule");
+            assert_eq!(
+                deadline.clock,
+                EconomicClock::WorldIc,
+                "never wall time on an IC schedule"
+            );
             assert_eq!(deadline.at, IC + 100);
         }
         other => panic!("expected Grace, got {other:?}"),
     }
-    assert_eq!(missed.periods_settled, 1, "the period is CLOSED, so the next key differs");
+    assert_eq!(
+        missed.periods_settled, 1,
+        "the period is CLOSED, so the next key differs"
+    );
 }
 
 #[test]
 fn missing_past_the_grace_allowance_goes_delinquent() {
     let mut o = obligation();
     o = advanced(&o, 0, SettleOutcome::Refused);
-    assert!(matches!(o.status, ObligationStatus::Grace { missed: 1, .. }));
+    assert!(matches!(
+        o.status,
+        ObligationStatus::Grace { missed: 1, .. }
+    ));
     o = advanced(&o, 1, SettleOutcome::Refused);
     assert_eq!(o.status, ObligationStatus::Delinquent);
     // …and a delinquent obligation records a late payment without silently
     // returning to the due pool: E4b1's `reinstate` (or E5's hook) owns that move.
     let paid = advanced(&o, 2, SettleOutcome::Posted(TransactionId(1)));
-    assert_eq!(paid.status, ObligationStatus::Delinquent, "the status is a deliberate act");
+    assert_eq!(
+        paid.status,
+        ObligationStatus::Delinquent,
+        "the status is a deliberate act"
+    );
     assert_eq!(paid.periods_settled, 3, "the period still closed");
-    assert_eq!(paid.settled_total, 1, "and the payment is recorded, not dropped");
+    assert_eq!(
+        paid.settled_total, 1,
+        "and the payment is recorded, not dropped"
+    );
     // A MISS on a delinquent obligation changes nothing at all — it was never
     // attempted.
     assert_eq!(advanced(&o, 2, SettleOutcome::Refused), o);
@@ -971,7 +1262,10 @@ fn missing_past_the_grace_allowance_goes_delinquent() {
 fn a_duplicate_outcome_for_a_closed_period_changes_nothing() {
     let o = advanced(&obligation(), 0, SettleOutcome::Posted(TransactionId(1)));
     let again = advanced(&o, 0, SettleOutcome::Posted(TransactionId(1)));
-    assert_eq!(again, o, "a re-delivered sweep result must not move a status twice");
+    assert_eq!(
+        again, o,
+        "a re-delivered sweep result must not move a status twice"
+    );
 }
 
 #[test]
@@ -986,14 +1280,26 @@ fn the_history_tail_is_bounded() {
 #[test]
 fn forgiveness_is_classified_from_the_economys_own_sweep_stamps() {
     // No sweep ran for hours; the IC clock kept pace with the ratio.
-    assert_eq!(classify_forgiveness(0, 0, 10_000, 10_000, 1, false), ForgiveCause::Downtime);
+    assert_eq!(
+        classify_forgiveness(0, 0, 10_000, 10_000, 1, false),
+        ForgiveCause::Downtime
+    );
     // The IC clock outran the ratio: an epoch or ratio change.
-    assert_eq!(classify_forgiveness(0, 0, 10, 100_000, 1, false), ForgiveCause::TimeJump);
+    assert_eq!(
+        classify_forgiveness(0, 0, 10, 100_000, 1, false),
+        ForgiveCause::TimeJump
+    );
     // Sweeps ran; this obligation simply never got budget.
-    assert_eq!(classify_forgiveness(0, 0, 30, 30, 1, false), ForgiveCause::Overload);
+    assert_eq!(
+        classify_forgiveness(0, 0, 30, 30, 1, false),
+        ForgiveCause::Overload
+    );
     // A REWOUND clock is a jump, never an overload: `Overload` escalates on repeat,
     // so reading an NTP step as a starved post budget would page a human for nothing.
-    assert_eq!(classify_forgiveness(500, 500, 400, 400, 1, false), ForgiveCause::TimeJump);
+    assert_eq!(
+        classify_forgiveness(500, 500, 400, 400, 1, false),
+        ForgiveCause::TimeJump
+    );
 }
 
 // ===========================================================================
@@ -1008,7 +1314,10 @@ fn terms() -> ContractTerms {
             amount: Amount::from_minor(100),
         }],
         deliverables: Vec::new(),
-        split: vec![PayoutShare { to: AccountId(2), share: Share::Permille(500) }],
+        split: vec![PayoutShare {
+            to: AccountId(2),
+            share: Share::Permille(500),
+        }],
         remainder_to: AccountId(9),
         on_expiry: Expiry::Refund,
         // E4b2's outcome table; E4a's single split is the degenerate empty case.
@@ -1037,8 +1346,16 @@ fn contract_shell() -> EconomicContract {
         consent,
         consent_hash: hash,
         acceptances: vec![
-            Acceptance { party: who(1), at: NOW, consent_hash: hash },
-            Acceptance { party: who(2), at: NOW, consent_hash: hash },
+            Acceptance {
+                party: who(1),
+                at: NOW,
+                consent_hash: hash,
+            },
+            Acceptance {
+                party: who(2),
+                at: NOW,
+                consent_hash: hash,
+            },
         ],
         satisfied: Vec::new(),
         escrow: vec![HoldId(1)],
@@ -1060,10 +1377,15 @@ fn contract_shell() -> EconomicContract {
 /// A snapshot carrying the escrow hold the shell contract names.
 fn contract_snap() -> (EconomySnapshot, EconomicContract) {
     let mut s = snap();
-    with_hold(&mut s, Hold {
-        purpose: HoldPurpose::Escrow { contract: ContractId(1) },
-        ..hold(1, 1, 100)
-    });
+    with_hold(
+        &mut s,
+        Hold {
+            purpose: HoldPurpose::Escrow {
+                contract: ContractId(1),
+            },
+            ..hold(1, 1, 100)
+        },
+    );
     let c = contract_shell();
     s.put_contract(c.clone());
     (s, c)
@@ -1084,7 +1406,11 @@ fn reoffer(c: &mut EconomicContract) {
         .consent
         .parties
         .iter()
-        .map(|p| Acceptance { party: p.clone(), at: NOW, consent_hash: hash })
+        .map(|p| Acceptance {
+            party: p.clone(),
+            at: NOW,
+            consent_hash: hash,
+        })
         .collect();
     c.consent_hash = hash;
     c.acceptances = acceptances;
@@ -1103,17 +1429,40 @@ fn the_consent_hash_covers_the_whole_surface_and_ignores_party_order() {
 
     type Mutation = (&'static str, Box<dyn Fn(&mut ConsentSurface)>);
     let mutate: Vec<Mutation> = vec![
-        ("party added", Box::new(|c: &mut ConsentSurface| c.parties.push(who(3)))),
-        ("deadline moved", Box::new(|c: &mut ConsentSurface| c.deadline = Some(EconomicDeadline::real(1)))),
-        ("condition added", Box::new(|c: &mut ConsentSurface| {
-            c.conditions.push(TypedCondition::Attestation { by: AttestorSet::Staff });
-        })),
-        ("visibility flipped", Box::new(|c: &mut ConsentSurface| c.visibility = EconomicVisibility::Public)),
-        ("scope set", Box::new(|c: &mut ConsentSurface| c.scope = Some(mush_org::OrgScopeId(4)))),
-        ("remainder repointed", Box::new(|c: &mut ConsentSurface| c.terms.remainder_to = AccountId(2))),
-        ("amount raised", Box::new(|c: &mut ConsentSurface| {
-            c.terms.consideration[0].amount = Amount::from_minor(101);
-        })),
+        (
+            "party added",
+            Box::new(|c: &mut ConsentSurface| c.parties.push(who(3))),
+        ),
+        (
+            "deadline moved",
+            Box::new(|c: &mut ConsentSurface| c.deadline = Some(EconomicDeadline::real(1))),
+        ),
+        (
+            "condition added",
+            Box::new(|c: &mut ConsentSurface| {
+                c.conditions.push(TypedCondition::Attestation {
+                    by: AttestorSet::Staff,
+                });
+            }),
+        ),
+        (
+            "visibility flipped",
+            Box::new(|c: &mut ConsentSurface| c.visibility = EconomicVisibility::Public),
+        ),
+        (
+            "scope set",
+            Box::new(|c: &mut ConsentSurface| c.scope = Some(mush_org::OrgScopeId(4))),
+        ),
+        (
+            "remainder repointed",
+            Box::new(|c: &mut ConsentSurface| c.terms.remainder_to = AccountId(2)),
+        ),
+        (
+            "amount raised",
+            Box::new(|c: &mut ConsentSurface| {
+                c.terms.consideration[0].amount = Amount::from_minor(101);
+            }),
+        ),
     ];
     for (what, f) in mutate {
         let mut changed = base.clone();
@@ -1151,17 +1500,34 @@ fn scenario_17_the_settlement_split_floors_permille_shares_and_pays_the_remainde
     let (mut s, mut c) = contract_snap();
     // 100 escrowed, three equal thirds: 33/33/33 and the leftover 1 where declared.
     c.consent.terms.split = vec![
-        PayoutShare { to: AccountId(2), share: Share::Permille(333) },
-        PayoutShare { to: AccountId(3), share: Share::Permille(333) },
-        PayoutShare { to: AccountId(4), share: Share::Permille(333) },
+        PayoutShare {
+            to: AccountId(2),
+            share: Share::Permille(333),
+        },
+        PayoutShare {
+            to: AccountId(3),
+            share: Share::Permille(333),
+        },
+        PayoutShare {
+            to: AccountId(4),
+            share: Share::Permille(333),
+        },
     ];
     c.consent_hash = consent_hash(&c.issuer, &c.consent);
     for a in [3, 4] {
         s.put_account(account(a, 0));
     }
     c.acceptances = vec![
-        Acceptance { party: who(1), at: NOW, consent_hash: c.consent_hash },
-        Acceptance { party: who(2), at: NOW, consent_hash: c.consent_hash },
+        Acceptance {
+            party: who(1),
+            at: NOW,
+            consent_hash: c.consent_hash,
+        },
+        Acceptance {
+            party: who(2),
+            at: NOW,
+            consent_hash: c.consent_hash,
+        },
     ];
     let p = settle(&c, &s).expect("settlement plan");
     assert_eq!(p.idempotency, settle_key(ContractId(1)));
@@ -1169,7 +1535,10 @@ fn scenario_17_the_settlement_split_floors_permille_shares_and_pays_the_remainde
     for l in &p.requested_lines {
         *paid.entry(l.account.0).or_insert(0) += l.delta.minor();
     }
-    assert_eq!(paid, BTreeMap::from([(1, -100), (2, 33), (3, 33), (4, 33), (9, 1)]));
+    assert_eq!(
+        paid,
+        BTreeMap::from([(1, -100), (2, 33), (3, 33), (4, 33), (9, 1)])
+    );
 
     // …and the plan actually posts under the contract's own authority.
     let auth = ContractAuth::new(&c, &s);
@@ -1186,9 +1555,15 @@ fn scenario_17_the_settlement_split_floors_permille_shares_and_pays_the_remainde
         other => panic!("expected Post, got {other:?}"),
     };
     let (s2, _) = apply(&s, &prepared, TransactionId(1), 1, NOW);
-    assert_eq!(s2.account(AccountId(1)).unwrap().posted_balance, Amount::from_minor(900));
+    assert_eq!(
+        s2.account(AccountId(1)).unwrap().posted_balance,
+        Amount::from_minor(900)
+    );
     assert_eq!(s2.account(AccountId(1)).unwrap().held_amount, Amount::ZERO);
-    assert_eq!(s2.account(AccountId(9)).unwrap().posted_balance, Amount::from_minor(1));
+    assert_eq!(
+        s2.account(AccountId(9)).unwrap().posted_balance,
+        Amount::from_minor(1)
+    );
 }
 
 #[test]
@@ -1204,8 +1579,14 @@ fn contract_auth_authorizes_exactly_the_surface_and_refuses_an_extra_line() {
     // line beyond the escrow.
     assert!(!auth.authorize(&who(1), acct1, Amount::from_minor(-100)));
     assert!(!auth.authorize(&who(1), acct1, Amount::from_minor(-1)));
-    assert!(auth.authorize(&who(1), acct2, Amount::from_minor(50)), "a declared payee");
-    assert!(auth.authorize(&who(1), acct9, Amount::from_minor(50)), "the remainder account");
+    assert!(
+        auth.authorize(&who(1), acct2, Amount::from_minor(50)),
+        "a declared payee"
+    );
+    assert!(
+        auth.authorize(&who(1), acct9, Amount::from_minor(50)),
+        "the remainder account"
+    );
     // An account nobody named cannot be credited by this contract.
     let stranger = account(77, 0);
     assert!(!auth.authorize(&who(1), &stranger, Amount::from_minor(1)));
@@ -1223,7 +1604,10 @@ fn contract_auth_authorizes_exactly_the_surface_and_refuses_an_extra_line() {
         ic_now: IC,
         next_hold_id: s.next_hold_floor(),
     };
-    assert_eq!(validate(&p, &s, &env), PlanResult::Refused(EconomyError::Unauthorized));
+    assert_eq!(
+        validate(&p, &s, &env),
+        PlanResult::Refused(EconomyError::Unauthorized)
+    );
 }
 
 #[test]
@@ -1231,8 +1615,14 @@ fn contract_auth_refuses_an_over_amount_capture_and_a_foreign_hold() {
     let (s, c) = contract_snap();
     let auth = ContractAuth::new(&c, &s);
     let h = s.hold(HoldId(1)).unwrap();
-    let ok = HoldOp::Capture { hold: HoldId(1), amount: Amount::from_minor(100) };
-    let over = HoldOp::Capture { hold: HoldId(1), amount: Amount::from_minor(101) };
+    let ok = HoldOp::Capture {
+        hold: HoldId(1),
+        amount: Amount::from_minor(100),
+    };
+    let over = HoldOp::Capture {
+        hold: HoldId(1),
+        amount: Amount::from_minor(101),
+    };
     assert!(auth.authorize_hold(&who(1), h, &ok));
     assert!(!auth.authorize_hold(&who(1), h, &over));
     assert!(!auth.authorize_hold(&who(1), h, &HoldOp::Expire { hold: HoldId(1) }));
@@ -1253,18 +1643,47 @@ fn contract_auth_moves_title_only_where_the_surface_says_and_only_between_accept
     }];
     c.consent_hash = consent_hash(&c.issuer, &c.consent);
     c.acceptances = vec![
-        Acceptance { party: who(1), at: NOW, consent_hash: c.consent_hash },
-        Acceptance { party: who(2), at: NOW, consent_hash: c.consent_hash },
+        Acceptance {
+            party: who(1),
+            at: NOW,
+            consent_hash: c.consent_hash,
+        },
+        Acceptance {
+            party: who(2),
+            at: NOW,
+            consent_hash: c.consent_hash,
+        },
     ];
     let auth = ContractAuth::new(&c, &s);
-    let listed = AssetOp::TransferTitle { object: obj(60), to: who(2), to_scope: None };
-    let unlisted = AssetOp::TransferTitle { object: obj(61), to: who(2), to_scope: None };
-    let elsewhere = AssetOp::TransferTitle { object: obj(60), to: who(3), to_scope: None };
+    let listed = AssetOp::TransferTitle {
+        object: obj(60),
+        to: who(2),
+        to_scope: None,
+    };
+    let unlisted = AssetOp::TransferTitle {
+        object: obj(61),
+        to: who(2),
+        to_scope: None,
+    };
+    let elsewhere = AssetOp::TransferTitle {
+        object: obj(60),
+        to: who(3),
+        to_scope: None,
+    };
     assert!(auth.authorize_asset(&who(1), s.asset(obj(60)), &listed));
-    assert!(!auth.authorize_asset(&who(1), s.asset(obj(61)), &unlisted), "an unlisted object");
-    assert!(!auth.authorize_asset(&who(1), s.asset(obj(60)), &elsewhere), "an unlisted destination");
+    assert!(
+        !auth.authorize_asset(&who(1), s.asset(obj(61)), &unlisted),
+        "an unlisted object"
+    );
+    assert!(
+        !auth.authorize_asset(&who(1), s.asset(obj(60)), &elsewhere),
+        "an unlisted destination"
+    );
     assert!(auth.authorize_title_receipt(&who(1), &who(2), None));
-    assert!(!auth.authorize_title_receipt(&who(1), &who(3), None), "a non-party receives nothing");
+    assert!(
+        !auth.authorize_title_receipt(&who(1), &who(3), None),
+        "a non-party receives nothing"
+    );
 
     // D-E3-12: drop the RECEIVING party's acceptance and the transfer dies.
     let mut half = c.clone();
@@ -1278,40 +1697,74 @@ fn contract_auth_places_and_releases_only_its_own_collateral() {
     let (mut s, mut c) = contract_snap();
     s.put_asset(asset(60, who(2)));
     s.put_asset(asset(61, who(2)));
-    c.consent.terms.deliverables = vec![Deliverable::Collateral { object: obj(60), from: who(2) }];
+    c.consent.terms.deliverables = vec![Deliverable::Collateral {
+        object: obj(60),
+        from: who(2),
+    }];
     c.consent_hash = consent_hash(&c.issuer, &c.consent);
     c.acceptances = vec![
-        Acceptance { party: who(1), at: NOW, consent_hash: c.consent_hash },
-        Acceptance { party: who(2), at: NOW, consent_hash: c.consent_hash },
+        Acceptance {
+            party: who(1),
+            at: NOW,
+            consent_hash: c.consent_hash,
+        },
+        Acceptance {
+            party: who(2),
+            at: NOW,
+            consent_hash: c.consent_hash,
+        },
     ];
     let auth = ContractAuth::new(&c, &s);
-    let mine = Encumbrance::Collateral { contract: ContractId(1) };
-    let theirs = Encumbrance::Collateral { contract: ContractId(2) };
+    let mine = Encumbrance::Collateral {
+        contract: ContractId(1),
+    };
+    let theirs = Encumbrance::Collateral {
+        contract: ContractId(2),
+    };
     let lien = Encumbrance::Lien {
         creditor: who(1),
         amount: Amount::from_minor(1),
         instrument: iid("gold"),
     };
-    let pledge = AssetOp::Encumber { object: obj(60), encumbrance: mine.clone() };
-    assert!(auth.authorize_asset(&who(1), s.asset(obj(60)), &pledge));
-    assert!(auth.authorize_asset(&who(1), s.asset(obj(60)), &AssetOp::Release {
+    let pledge = AssetOp::Encumber {
         object: obj(60),
         encumbrance: mine.clone(),
-    }));
+    };
+    assert!(auth.authorize_asset(&who(1), s.asset(obj(60)), &pledge));
+    assert!(auth.authorize_asset(
+        &who(1),
+        s.asset(obj(60)),
+        &AssetOp::Release {
+            object: obj(60),
+            encumbrance: mine.clone(),
+        }
+    ));
     // Another contract's claim, an unpledged object, and a bare lien are all refused —
     // a contract is not a licence to encumber whatever it can name (D-E4-8).
-    assert!(!auth.authorize_asset(&who(1), s.asset(obj(60)), &AssetOp::Encumber {
-        object: obj(60),
-        encumbrance: theirs,
-    }));
-    assert!(!auth.authorize_asset(&who(1), s.asset(obj(61)), &AssetOp::Encumber {
-        object: obj(61),
-        encumbrance: mine,
-    }));
-    assert!(!auth.authorize_asset(&who(1), s.asset(obj(60)), &AssetOp::Encumber {
-        object: obj(60),
-        encumbrance: lien,
-    }));
+    assert!(!auth.authorize_asset(
+        &who(1),
+        s.asset(obj(60)),
+        &AssetOp::Encumber {
+            object: obj(60),
+            encumbrance: theirs,
+        }
+    ));
+    assert!(!auth.authorize_asset(
+        &who(1),
+        s.asset(obj(61)),
+        &AssetOp::Encumber {
+            object: obj(61),
+            encumbrance: mine,
+        }
+    ));
+    assert!(!auth.authorize_asset(
+        &who(1),
+        s.asset(obj(60)),
+        &AssetOp::Encumber {
+            object: obj(60),
+            encumbrance: lien,
+        }
+    ));
 }
 
 #[test]
@@ -1319,10 +1772,15 @@ fn the_escrow_ceiling_counts_only_this_contracts_own_holds() {
     let (mut s, c) = contract_snap();
     // A second, unrelated hold on the same account must not raise what THIS contract
     // may take — escrow is per-contract, not per-account.
-    with_hold(&mut s, Hold {
-        purpose: HoldPurpose::Escrow { contract: ContractId(2) },
-        ..hold(2, 1, 500)
-    });
+    with_hold(
+        &mut s,
+        Hold {
+            purpose: HoldPurpose::Escrow {
+                contract: ContractId(2),
+            },
+            ..hold(2, 1, 500)
+        },
+    );
     let auth = ContractAuth::new(&c, &s);
     assert_eq!(
         c.escrowed_by_account(&s),
@@ -1335,7 +1793,9 @@ fn the_escrow_ceiling_counts_only_this_contracts_own_holds() {
     let mut broken = s.clone();
     broken.put_hold(Hold {
         status: HoldStatus::Released,
-        purpose: HoldPurpose::Escrow { contract: ContractId(1) },
+        purpose: HoldPurpose::Escrow {
+            contract: ContractId(1),
+        },
         ..hold(1, 1, 100)
     });
     let after = ContractAuth::new(&c, &broken);
@@ -1349,32 +1809,62 @@ fn check_offerable_refuses_an_infeasible_split_and_an_oversized_contract() {
     let (s, base) = contract_snap();
     assert!(check_offerable(&base, &s).is_ok());
 
-    let over_exact = with_split(&base, vec![PayoutShare {
-        to: AccountId(2),
-        share: Share::Exact(Amount::from_minor(500)),
-    }]);
-    assert_eq!(check_offerable(&over_exact, &s), Err(ContractError::SplitInfeasible));
+    let over_exact = with_split(
+        &base,
+        vec![PayoutShare {
+            to: AccountId(2),
+            share: Share::Exact(Amount::from_minor(500)),
+        }],
+    );
+    assert_eq!(
+        check_offerable(&over_exact, &s),
+        Err(ContractError::SplitInfeasible)
+    );
 
-    let over_permille = with_split(&base, vec![
-        PayoutShare { to: AccountId(2), share: Share::Permille(600) },
-        PayoutShare { to: AccountId(9), share: Share::Permille(600) },
-    ]);
-    assert_eq!(check_offerable(&over_permille, &s), Err(ContractError::SplitInfeasible));
+    let over_permille = with_split(
+        &base,
+        vec![
+            PayoutShare {
+                to: AccountId(2),
+                share: Share::Permille(600),
+            },
+            PayoutShare {
+                to: AccountId(9),
+                share: Share::Permille(600),
+            },
+        ],
+    );
+    assert_eq!(
+        check_offerable(&over_permille, &s),
+        Err(ContractError::SplitInfeasible)
+    );
 
     let mut too_many = base.clone();
     too_many.consent.parties = (0..20).map(|n| who(100 + n)).collect();
-    assert!(matches!(check_offerable(&too_many, &s), Err(ContractError::TooLarge(_))));
+    assert!(matches!(
+        check_offerable(&too_many, &s),
+        Err(ContractError::TooLarge(_))
+    ));
 
     let mut two_deposits = base.clone();
     two_deposits.consent.terms.deliverables = vec![
-        Deliverable::DepositInto { object: obj(60), vault: VaultId(1) },
-        Deliverable::DepositInto { object: obj(61), vault: VaultId(1) },
+        Deliverable::DepositInto {
+            object: obj(60),
+            vault: VaultId(1),
+        },
+        Deliverable::DepositInto {
+            object: obj(61),
+            vault: VaultId(1),
+        },
     ];
     // E3's one-custody-op-per-plan module cap refuses the second deposit at Offer,
     // rather than at a half-applied settlement — and it is a **structural** refusal
     // since the E4b2 verify fold split `check_structure` out of `check_offerable`, so
     // it fires whether or not the vault exists (which is what lets boot re-run it).
-    assert!(matches!(check_offerable(&two_deposits, &s), Err(ContractError::Infeasible(_))));
+    assert!(matches!(
+        check_offerable(&two_deposits, &s),
+        Err(ContractError::Infeasible(_))
+    ));
     let mut with_vault = s.clone();
     with_vault.put_vault(vault(1, 80));
     assert!(matches!(
@@ -1384,12 +1874,18 @@ fn check_offerable_refuses_an_infeasible_split_and_an_oversized_contract() {
     let mut one_deposit = two_deposits.clone();
     one_deposit.consent.terms.deliverables.truncate(1);
     // With one deposit, the world half is what answers: no vault is `NoSuchVault`.
-    assert!(matches!(check_offerable(&one_deposit, &s), Err(ContractError::NoSuchVault(_))));
+    assert!(matches!(
+        check_offerable(&one_deposit, &s),
+        Err(ContractError::NoSuchVault(_))
+    ));
     assert!(check_offerable(&one_deposit, &with_vault).is_ok());
 
     let mut too_many_deliverables = base.clone();
     too_many_deliverables.consent.terms.deliverables = (0..20)
-        .map(|i| Deliverable::Collateral { object: obj(200 + i), from: who(1) })
+        .map(|i| Deliverable::Collateral {
+            object: obj(200 + i),
+            from: who(1),
+        })
         .collect();
     assert!(matches!(
         check_offerable(&too_many_deliverables, &s),
@@ -1398,13 +1894,22 @@ fn check_offerable_refuses_an_infeasible_split_and_an_oversized_contract() {
 
     let mut unknown_account = base.clone();
     unknown_account.consent.terms.remainder_to = AccountId(404);
-    assert_eq!(check_offerable(&unknown_account, &s), Err(ContractError::NoSuchAccount(AccountId(404))));
+    assert_eq!(
+        check_offerable(&unknown_account, &s),
+        Err(ContractError::NoSuchAccount(AccountId(404)))
+    );
 
     let mut self_anchor = base;
-    self_anchor.consent.conditions =
-        vec![TypedCondition::After { condition: 0, delay: 1, clock: EconomicClock::RealUtc }];
+    self_anchor.consent.conditions = vec![TypedCondition::After {
+        condition: 0,
+        delay: 1,
+        clock: EconomicClock::RealUtc,
+    }];
     self_anchor.satisfied = vec![None];
-    assert_eq!(check_offerable(&self_anchor, &s), Err(ContractError::BadConditionRef(0)));
+    assert_eq!(
+        check_offerable(&self_anchor, &s),
+        Err(ContractError::BadConditionRef(0))
+    );
 }
 
 fn with_split(c: &EconomicContract, split: Vec<PayoutShare>) -> EconomicContract {
@@ -1415,7 +1920,11 @@ fn with_split(c: &EconomicContract, split: Vec<PayoutShare>) -> EconomicContract
         .consent
         .parties
         .iter()
-        .map(|p| Acceptance { party: p.clone(), at: NOW, consent_hash: out.consent_hash })
+        .map(|p| Acceptance {
+            party: p.clone(),
+            at: NOW,
+            consent_hash: out.consent_hash,
+        })
         .collect();
     out
 }
@@ -1426,7 +1935,10 @@ fn settlement_refuses_a_broken_escrow_and_a_wrong_state() {
     c.state = ContractState::Offered;
     assert_eq!(settle(&c, &s), Err(ContractError::State(ContractId(1))));
     c.state = ContractState::ReadyToSettle;
-    s.put_hold(Hold { status: HoldStatus::Released, ..hold(1, 1, 100) });
+    s.put_hold(Hold {
+        status: HoldStatus::Released,
+        ..hold(1, 1, 100)
+    });
     assert_eq!(settle(&c, &s), Err(ContractError::HoldNotHeld(HoldId(1))));
     c.escrow = vec![HoldId(42)];
     assert_eq!(settle(&c, &s), Err(ContractError::NoSuchHold(HoldId(42))));
@@ -1453,10 +1965,14 @@ fn the_refund_plan_releases_every_escrow_hold_and_moves_no_money() {
     );
     let auth = ContractAuth::unwinding(&c, &s);
     assert!(
-        !auth.authorize_hold(&who(1), hold, &HoldOp::Capture {
-            hold: HoldId(1),
-            amount: Amount::from_minor(1),
-        }),
+        !auth.authorize_hold(
+            &who(1),
+            hold,
+            &HoldOp::Capture {
+                hold: HoldId(1),
+                amount: Amount::from_minor(1),
+            }
+        ),
         "an unwind authority captured escrow"
     );
     let env = ValidateEnv {
@@ -1472,7 +1988,10 @@ fn the_refund_plan_releases_every_escrow_hold_and_moves_no_money() {
         other => panic!("expected Post, got {other:?}"),
     };
     let (s2, _) = apply(&s, &prepared, TransactionId(1), 1, NOW);
-    assert_eq!(s2.account(AccountId(1)).unwrap().posted_balance, Amount::from_minor(1000));
+    assert_eq!(
+        s2.account(AccountId(1)).unwrap().posted_balance,
+        Amount::from_minor(1000)
+    );
     assert_eq!(s2.account(AccountId(1)).unwrap().held_amount, Amount::ZERO);
 }
 
@@ -1483,10 +2002,19 @@ fn reverify_catches_a_withdrawn_deposit_and_a_de_qualified_attestor() {
     s.put_asset(asset(60, who(2)));
     let cap = CapabilityId::new("asset.assign").unwrap();
     c.consent.conditions = vec![
-        TypedCondition::DepositInto { object: obj(60), vault: VaultId(1) },
-        TypedCondition::TitleHeld { object: obj(60), by: who(2) },
+        TypedCondition::DepositInto {
+            object: obj(60),
+            vault: VaultId(1),
+        },
+        TypedCondition::TitleHeld {
+            object: obj(60),
+            by: who(2),
+        },
         TypedCondition::Attestation {
-            by: AttestorSet::Capability { scope: None, capability: cap },
+            by: AttestorSet::Capability {
+                scope: None,
+                capability: cap,
+            },
         },
     ];
     c.satisfied = vec![
@@ -1502,23 +2030,37 @@ fn reverify_catches_a_withdrawn_deposit_and_a_de_qualified_attestor() {
 
     // The seller withdrew the goods after attesting.
     let mut gone = Seams::open();
-    assert_eq!(reverify(&c, &s, &gone.env(&s)), Err(ContractError::ConditionFailed(0)));
+    assert_eq!(
+        reverify(&c, &s, &gone.env(&s)),
+        Err(ContractError::ConditionFailed(0))
+    );
     gone.custody = Custody::holding(&[60]);
 
     // Title moved away after attestation.
     let mut moved = s.clone();
     moved.put_asset(asset(60, who(3)));
-    assert_eq!(reverify(&c, &moved, &k.env(&moved)), Err(ContractError::ConditionFailed(1)));
+    assert_eq!(
+        reverify(&c, &moved, &k.env(&moved)),
+        Err(ContractError::ConditionFailed(1))
+    );
 
     // The attestor lost the capability between attesting and settlement (A5).
     let mut lost = Seams::open();
     lost.custody = Custody::holding(&[60]);
     lost.auth.attestor = false;
-    assert_eq!(reverify(&c, &s, &lost.env(&s)), Err(ContractError::ConditionFailed(2)));
+    assert_eq!(
+        reverify(&c, &s, &lost.env(&s)),
+        Err(ContractError::ConditionFailed(2))
+    );
 }
 
 fn att(by: AttestorRef) -> Attestation {
-    Attestation { by, at: NOW, clock: EconomicClock::RealUtc, source: "test".into() }
+    Attestation {
+        by,
+        at: NOW,
+        clock: EconomicClock::RealUtc,
+        source: "test".into(),
+    }
 }
 
 #[test]
@@ -1536,10 +2078,16 @@ fn an_unanswerable_fact_is_unsatisfied_and_never_a_pass() {
 
     let mut unknown = Seams::open();
     unknown.facts.answer = None;
-    assert_eq!(reverify(&c, &s, &unknown.env(&s)), Err(ContractError::ConditionFailed(0)));
+    assert_eq!(
+        reverify(&c, &s, &unknown.env(&s)),
+        Err(ContractError::ConditionFailed(0))
+    );
     let mut no = Seams::open();
     no.facts.answer = Some(false);
-    assert_eq!(reverify(&c, &s, &no.env(&s)), Err(ContractError::ConditionFailed(0)));
+    assert_eq!(
+        reverify(&c, &s, &no.env(&s)),
+        Err(ContractError::ConditionFailed(0))
+    );
     let mut yes = Seams::open();
     yes.facts.answer = Some(true);
     assert!(reverify(&c, &s, &yes.env(&s)).is_ok());
@@ -1549,8 +2097,14 @@ fn an_unanswerable_fact_is_unsatisfied_and_never_a_pass() {
 fn an_after_condition_becomes_true_only_delay_after_its_anchor_and_only_on_one_clock() {
     let (s, mut c) = contract_snap();
     c.consent.conditions = vec![
-        TypedCondition::Attestation { by: AttestorSet::Party(who(2)) },
-        TypedCondition::After { condition: 0, delay: 100, clock: EconomicClock::RealUtc },
+        TypedCondition::Attestation {
+            by: AttestorSet::Party(who(2)),
+        },
+        TypedCondition::After {
+            condition: 0,
+            delay: 100,
+            clock: EconomicClock::RealUtc,
+        },
     ];
     c.satisfied = vec![
         Some(Attestation {
@@ -1565,7 +2119,10 @@ fn an_after_condition_becomes_true_only_delay_after_its_anchor_and_only_on_one_c
 
     let mut early = Seams::open();
     early.now = 1_099;
-    assert_eq!(reverify(&c, &s, &early.env(&s)), Err(ContractError::ConditionFailed(1)));
+    assert_eq!(
+        reverify(&c, &s, &early.env(&s)),
+        Err(ContractError::ConditionFailed(1))
+    );
     let mut ripe = Seams::open();
     ripe.now = 1_100;
     assert!(reverify(&c, &s, &ripe.env(&s)).is_ok());
@@ -1579,21 +2136,32 @@ fn an_after_condition_becomes_true_only_delay_after_its_anchor_and_only_on_one_c
         source: "attest".into(),
     });
     mixed.consent_hash = consent_hash(&mixed.issuer, &mixed.consent);
-    assert_eq!(reverify(&mixed, &s, &ripe.env(&s)), Err(ContractError::ConditionFailed(1)));
+    assert_eq!(
+        reverify(&mixed, &s, &ripe.env(&s)),
+        Err(ContractError::ConditionFailed(1))
+    );
 }
 
 #[test]
 fn a_party_attestation_stands_but_only_from_that_party() {
     let (s, mut c) = contract_snap();
-    c.consent.conditions = vec![TypedCondition::Attestation { by: AttestorSet::Party(who(2)) }];
+    c.consent.conditions = vec![TypedCondition::Attestation {
+        by: AttestorSet::Party(who(2)),
+    }];
     c.consent_hash = consent_hash(&c.issuer, &c.consent);
     c.satisfied = vec![Some(att(AttestorRef::Principal(who(2))))];
     let k = Seams::open();
     assert!(reverify(&c, &s, &k.env(&s)).is_ok());
     c.satisfied = vec![Some(att(AttestorRef::Principal(who(3))))];
-    assert_eq!(reverify(&c, &s, &k.env(&s)), Err(ContractError::ConditionFailed(0)));
+    assert_eq!(
+        reverify(&c, &s, &k.env(&s)),
+        Err(ContractError::ConditionFailed(0))
+    );
     c.satisfied = vec![None];
-    assert_eq!(reverify(&c, &s, &k.env(&s)), Err(ContractError::ConditionFailed(0)));
+    assert_eq!(
+        reverify(&c, &s, &k.env(&s)),
+        Err(ContractError::ConditionFailed(0))
+    );
 }
 
 // ===========================================================================
@@ -1616,7 +2184,11 @@ fn v3_leaves_an_e3_shaped_plan_byte_identical() {
     );
     let mut with_hold = base.clone();
     with_hold.hold_ops = vec![place(1, 5)];
-    assert_ne!(plan_hash(&base), plan_hash(&with_hold), "a hold op IS part of the identity");
+    assert_ne!(
+        plan_hash(&base),
+        plan_hash(&with_hold),
+        "a hold op IS part of the identity"
+    );
 }
 
 #[test]
@@ -1636,7 +2208,10 @@ fn hold_op_order_never_changes_the_hash_or_the_applied_effects() {
     assert_eq!(plan_hash(&a), plan_hash(&b));
     let pa = prepare(&s, &a, &Seams::open());
     let pb = prepare(&s, &b, &Seams::open());
-    assert_eq!(pa.hold_effects, pb.hold_effects, "applied order == hashed order");
+    assert_eq!(
+        pa.hold_effects, pb.hold_effects,
+        "applied order == hashed order"
+    );
     // The order is by SUBJECT id first (account 1 for the placement, holds 1 and 2
     // for the releases), so the placement leads here — not because a `Place` sorts
     // first in general, but because the key is total and both plans compute it the
@@ -1650,8 +2225,15 @@ fn the_expectations_stay_outside_the_hash() {
     with_hold(&mut s, hold(1, 1, 100));
     let base = hold_plan("exp", vec![HoldOp::Release { hold: HoldId(1) }]);
     let mut guarded = base.clone();
-    guarded.expected_hold_revisions = vec![HoldRevision { hold: HoldId(1), revision: 1 }];
-    assert_eq!(plan_hash(&base), plan_hash(&guarded), "an approval authorizes an intent, not a state");
+    guarded.expected_hold_revisions = vec![HoldRevision {
+        hold: HoldId(1),
+        revision: 1,
+    }];
+    assert_eq!(
+        plan_hash(&base),
+        plan_hash(&guarded),
+        "an approval authorizes an intent, not a state"
+    );
 }
 
 // ===========================================================================
@@ -1683,9 +2265,14 @@ fn fuzz_random_hold_and_asset_sequences_never_panic_and_never_post_an_empty_tran
         let object = obj(60 + (next() % 3) as u32);
         let mut p = plan(&format!("f{step}"), who(1), Vec::new());
         p.cause = if next() % 5 == 0 {
-            EconomicCause::Internal { kind: "hold.expire".into(), id: step }
+            EconomicCause::Internal {
+                kind: "hold.expire".into(),
+                id: step,
+            }
         } else {
-            EconomicCause::Staff { reason: "fuzz".into() }
+            EconomicCause::Staff {
+                reason: "fuzz".into(),
+            }
         };
         if next() % 2 == 0 {
             let amt = (next() % 200) as i64 + 1;
@@ -1693,8 +2280,11 @@ fn fuzz_random_hold_and_asset_sequences_never_panic_and_never_post_an_empty_tran
             p.requested_lines = vec![line(from, -amt), line(to, amt)];
         }
         // A live hold to aim the non-placing ops at (or a wild id, which must refuse).
-        let live: Vec<HoldId> =
-            s.holds().filter(|h| h.status.is_held()).map(|h| h.id).collect();
+        let live: Vec<HoldId> = s
+            .holds()
+            .filter(|h| h.status.is_held())
+            .map(|h| h.id)
+            .collect();
         let target = live
             .get((next() % (live.len() as u64 + 1).max(1)) as usize % live.len().max(1))
             .copied()
@@ -1709,14 +2299,27 @@ fn fuzz_random_hold_and_asset_sequences_never_panic_and_never_post_an_empty_tran
             }
             2 => p.hold_ops = vec![HoldOp::Release { hold: target }],
             3 => p.hold_ops = vec![HoldOp::Expire { hold: target }],
-            4 => p.asset_ops = vec![AssetOp::TransferTitle { object, to: who(2), to_scope: None }],
+            4 => {
+                p.asset_ops = vec![AssetOp::TransferTitle {
+                    object,
+                    to: who(2),
+                    to_scope: None,
+                }]
+            }
             5 => {
                 p.asset_ops = vec![AssetOp::Encumber {
                     object,
-                    encumbrance: Encumbrance::Collateral { contract: ContractId(1) },
+                    encumbrance: Encumbrance::Collateral {
+                        contract: ContractId(1),
+                    },
                 }];
             }
-            _ => p.custody_ops = vec![CustodyOp::Deposit { object, vault: VaultId(1) }],
+            _ => {
+                p.custody_ops = vec![CustodyOp::Deposit {
+                    object,
+                    vault: VaultId(1),
+                }]
+            }
         }
         match validate(&p, &s, &k.env(&s)) {
             PlanResult::Post(prepared) => {
@@ -1731,23 +2334,38 @@ fn fuzz_random_hold_and_asset_sequences_never_panic_and_never_post_an_empty_tran
                 s = s2;
                 txid += 1;
             }
-            PlanResult::Refused(_) | PlanResult::AlreadyPosted(_) | PlanResult::NeedsApproval(_) => {}
+            PlanResult::Refused(_)
+            | PlanResult::AlreadyPosted(_)
+            | PlanResult::NeedsApproval(_) => {}
         }
         // Conservation, and the projection the whole cut exists to keep honest.
         let sum: i128 = s.accounts().map(|a| a.posted_balance.widen()).sum();
         assert_eq!(sum, 1000, "gold conservation broke at step {step}");
         for a in s.accounts() {
-            let derived: i128 =
-                s.holds_of(a.id).filter(|h| h.status.is_held()).map(|h| h.amount.widen()).sum();
-            assert_eq!(a.held_amount.widen(), derived, "held_amount drifted at step {step}");
-            assert!(!a.available().expect("available fits").is_negative(), "available went negative");
+            let derived: i128 = s
+                .holds_of(a.id)
+                .filter(|h| h.status.is_held())
+                .map(|h| h.amount.widen())
+                .sum();
+            assert_eq!(
+                a.held_amount.widen(),
+                derived,
+                "held_amount drifted at step {step}"
+            );
+            assert!(
+                !a.available().expect("available fits").is_negative(),
+                "available went negative"
+            );
         }
     }
     // The run is only worth anything if it actually reached the hold paths.
     let placed = s.holds().count();
     let terminal = s.holds().filter(|h| !h.status.is_held()).count();
     assert!(placed > 20, "the fuzz never placed a hold ({placed})");
-    assert!(terminal > 5, "the fuzz never captured/released/expired one ({terminal})");
+    assert!(
+        terminal > 5,
+        "the fuzz never captured/released/expired one ({terminal})"
+    );
 }
 
 // ===========================================================================
@@ -1773,14 +2391,18 @@ impl AuthEval for DebitCap {
 fn validate_with(p: &EconomyPlan, s: &EconomySnapshot, auth: &dyn AuthEval) -> PlanResult {
     let custody = Custody::default();
     let facts = Facts::default();
-    validate(p, s, &ValidateEnv {
-        auth,
-        custody: &custody,
-        facts: &facts,
-        now: NOW,
-        ic_now: IC,
-        next_hold_id: s.next_hold_floor(),
-    })
+    validate(
+        p,
+        s,
+        &ValidateEnv {
+            auth,
+            custody: &custody,
+            facts: &facts,
+            now: NOW,
+            ic_now: IC,
+            next_hold_id: s.next_hold_floor(),
+        },
+    )
 }
 
 #[test]
@@ -1788,7 +2410,10 @@ fn vf_1_a_capture_must_be_backed_by_a_debit_on_its_own_account() {
     let mut s = snap();
     s.put_account(account(2, 500));
     with_hold(&mut s, hold(1, 1, 100));
-    let capture = HoldOp::Capture { hold: HoldId(1), amount: Amount::from_minor(100) };
+    let capture = HoldOp::Capture {
+        hold: HoldId(1),
+        amount: Amount::from_minor(100),
+    };
 
     // An EFFECT-ONLY capture destroys a reservation and moves nothing: the payer's
     // funds are freed and the beneficiary gets nothing.
@@ -1801,7 +2426,10 @@ fn vf_1_a_capture_must_be_backed_by_a_debit_on_its_own_account() {
     // account's escrow to authorize the second account's money.
     let mut crossed = plan("xy", who(1), vec![line(2, -100), line(9, 100)]);
     crossed.hold_ops = vec![capture.clone()];
-    assert_eq!(refuse(&s, &crossed), EconomyError::CaptureUnbacked(HoldId(1)));
+    assert_eq!(
+        refuse(&s, &crossed),
+        EconomyError::CaptureUnbacked(HoldId(1))
+    );
 
     // A capture with a covering debit posts under the hold seam ALONE: the
     // placement already proved debit authority, and that is what a hold is for.
@@ -1812,7 +2440,10 @@ fn vf_1_a_capture_must_be_backed_by_a_debit_on_its_own_account() {
     // A LARGER debit needs live authority for the excess — and only for the excess.
     let mut larger = plan("more", who(1), vec![line(1, -150), line(2, 150)]);
     larger.hold_ops = vec![capture];
-    assert!(validate_with(&larger, &s, &DebitCap(50)).is_post(), "50 uncovered, 50 permitted");
+    assert!(
+        validate_with(&larger, &s, &DebitCap(50)).is_post(),
+        "50 uncovered, 50 permitted"
+    );
     assert_eq!(
         validate_with(&larger, &s, &DebitCap(49)),
         PlanResult::Refused(EconomyError::Unauthorized),
@@ -1830,24 +2461,42 @@ fn vf_2_a_custody_lock_has_no_exception_at_all() {
     s.put_vault(vault(1, 80));
     s.put_asset(asset(60, who(1)));
     let mut c = contract_shell();
-    c.consent.conditions = vec![TypedCondition::DepositInto { object: obj(60), vault: VaultId(1) }];
+    c.consent.conditions = vec![TypedCondition::DepositInto {
+        object: obj(60),
+        vault: VaultId(1),
+    }];
     c.satisfied = vec![None];
     c.consent_hash = consent_hash(&c.issuer, &c.consent);
     let mut k = Seams::open();
     k.custody = Custody::holding(&[60]);
-    let withdraw = || CustodyOp::Withdraw { object: obj(60), vault: VaultId(1), to: obj(4) };
+    let withdraw = || CustodyOp::Withdraw {
+        object: obj(60),
+        vault: VaultId(1),
+        to: obj(4),
+    };
 
     // Neither the contract's cause nor either of its two deterministic keys opens
     // the lock: both are derived from an id anyone who can see the contract can
     // read, so the pair of them was a lock with its key printed on the door.
     for state in [ContractState::Active, ContractState::ReadyToSettle] {
         s.put_contract(EconomicContract { state, ..c.clone() });
-        for id in [settle_key(c.id), mush_economy::refund_key(c.id), key("plain")] {
+        for id in [
+            settle_key(c.id),
+            mush_economy::refund_key(c.id),
+            key("plain"),
+        ] {
             let mut p = plan("w", who(1), Vec::new());
             p.idempotency = id;
-            p.cause = EconomicCause::Internal { kind: "contract".into(), id: c.id.0 };
+            p.cause = EconomicCause::Internal {
+                kind: "contract".into(),
+                id: c.id.0,
+            };
             p.custody_ops = vec![withdraw()];
-            assert_eq!(refuse_with(&s, &p, &k), EconomyError::CustodyLocked(obj(60)), "{state:?}");
+            assert_eq!(
+                refuse_with(&s, &p, &k),
+                EconomyError::CustodyLocked(obj(60)),
+                "{state:?}"
+            );
         }
     }
 
@@ -1857,7 +2506,9 @@ fn vf_2_a_custody_lock_has_no_exception_at_all() {
     for state in [
         ContractState::Cancelled,
         ContractState::Expired,
-        ContractState::Settled { transaction: TransactionId(1) },
+        ContractState::Settled {
+            transaction: TransactionId(1),
+        },
     ] {
         s.put_contract(EconomicContract { state, ..c.clone() });
         let mut p = plan("w2", who(1), Vec::new());
@@ -1872,7 +2523,13 @@ fn vf_3_a_hold_merely_listed_in_escrow_is_not_escrow() {
     // An outsider's own `Manual` hold, listed in `escrow` by whoever can edit the
     // record. It is not this contract's escrow and must not become it.
     s.put_account(account(3, 500));
-    with_hold(&mut s, Hold { placed_by: who(3), ..hold(7, 3, 500) });
+    with_hold(
+        &mut s,
+        Hold {
+            placed_by: who(3),
+            ..hold(7, 3, 500)
+        },
+    );
     c.escrow = vec![HoldId(1), HoldId(7)];
     s.put_contract(c.clone());
 
@@ -1885,26 +2542,46 @@ fn vf_3_a_hold_merely_listed_in_escrow_is_not_escrow() {
     let auth = ContractAuth::new(&c, &s);
     let outsider = s.hold(HoldId(7)).unwrap();
     assert!(!auth.authorize_hold(&who(1), outsider, &HoldOp::Release { hold: HoldId(7) }));
-    assert!(!auth.authorize_hold(&who(1), outsider, &HoldOp::Capture {
-        hold: HoldId(7),
-        amount: Amount::from_minor(1),
-    }));
+    assert!(!auth.authorize_hold(
+        &who(1),
+        outsider,
+        &HoldOp::Capture {
+            hold: HoldId(7),
+            amount: Amount::from_minor(1),
+        }
+    ));
     // 3. …so does the settlement, which captures and pays out only the real escrow…
     let p = settle(&c, &s).expect("the real escrow is complete");
-    assert_eq!(p.hold_ops, vec![HoldOp::Capture {
-        hold: HoldId(1),
-        amount: Amount::from_minor(100)
-    }]);
-    let debited: i64 =
-        p.requested_lines.iter().map(|l| l.delta.minor()).filter(|d| *d < 0).sum();
-    assert_eq!(debited, -100, "the outsider's 500 is not in the payout total");
+    assert_eq!(
+        p.hold_ops,
+        vec![HoldOp::Capture {
+            hold: HoldId(1),
+            amount: Amount::from_minor(100)
+        }]
+    );
+    let debited: i64 = p
+        .requested_lines
+        .iter()
+        .map(|l| l.delta.minor())
+        .filter(|d| *d < 0)
+        .sum();
+    assert_eq!(
+        debited, -100,
+        "the outsider's 500 is not in the payout total"
+    );
     // 4. …and so does the refund, which frees only what this contract reserved.
-    let cancelled = EconomicContract { state: ContractState::Cancelled, ..c.clone() };
+    let cancelled = EconomicContract {
+        state: ContractState::Cancelled,
+        ..c.clone()
+    };
     let r = refund_plan(&cancelled, &s).expect("refund plan");
     assert_eq!(r.hold_ops, vec![HoldOp::Release { hold: HoldId(1) }]);
 
     // And a consideration with no qualifying hold behind it cannot settle at all.
-    let unfunded = EconomicContract { escrow: vec![HoldId(7)], ..c };
+    let unfunded = EconomicContract {
+        escrow: vec![HoldId(7)],
+        ..c
+    };
     assert_eq!(settle(&unfunded, &s), Err(ContractError::EscrowIncomplete));
 }
 
@@ -1931,7 +2608,10 @@ fn vf_4_a_stale_allocator_floor_never_re_mints_a_live_hold() {
     let live = s.hold(HoldId(5)).unwrap();
     assert_eq!(live.status, HoldStatus::Held);
     assert_eq!((live.amount, live.revision), (Amount::from_minor(100), 1));
-    assert_eq!(s.account(AccountId(1)).unwrap().held_amount, Amount::from_minor(100));
+    assert_eq!(
+        s.account(AccountId(1)).unwrap().held_amount,
+        Amount::from_minor(100)
+    );
 }
 
 #[test]
@@ -1946,30 +2626,45 @@ fn vf_5_a_canon_attestation_must_cite_the_right_canon_record() {
         })
     };
     c.consent.conditions = vec![TypedCondition::Attestation {
-        by: AttestorSet::Canon { kind: "op.complete".into(), source: Some("op-7".into()) },
+        by: AttestorSet::Canon {
+            kind: "op.complete".into(),
+            source: Some("op-7".into()),
+        },
     }];
     c.consent_hash = consent_hash(&c.issuer, &c.consent);
 
     // E5's owner answer 20: progress cites a SPECIFIC operation. A different
     // operation of the same kind is not this operation.
     c.satisfied = vec![Some(canon("op.complete", "op-8"))];
-    assert_eq!(reverify(&c, &s, &k.env(&s)), Err(ContractError::ConditionFailed(0)));
+    assert_eq!(
+        reverify(&c, &s, &k.env(&s)),
+        Err(ContractError::ConditionFailed(0))
+    );
     // Nor is a different kind naming the right source.
     c.satisfied = vec![Some(canon("op.failed", "op-7"))];
-    assert_eq!(reverify(&c, &s, &k.env(&s)), Err(ContractError::ConditionFailed(0)));
+    assert_eq!(
+        reverify(&c, &s, &k.env(&s)),
+        Err(ContractError::ConditionFailed(0))
+    );
     // The exact citation settles.
     c.satisfied = vec![Some(canon("op.complete", "op-7"))];
     assert!(reverify(&c, &s, &k.env(&s)).is_ok());
 
     // A set that names no source accepts any source OF THAT KIND, and no other.
     c.consent.conditions = vec![TypedCondition::Attestation {
-        by: AttestorSet::Canon { kind: "op.complete".into(), source: None },
+        by: AttestorSet::Canon {
+            kind: "op.complete".into(),
+            source: None,
+        },
     }];
     c.consent_hash = consent_hash(&c.issuer, &c.consent);
     c.satisfied = vec![Some(canon("op.complete", "op-99"))];
     assert!(reverify(&c, &s, &k.env(&s)).is_ok());
     c.satisfied = vec![Some(canon("op.failed", "op-99"))];
-    assert_eq!(reverify(&c, &s, &k.env(&s)), Err(ContractError::ConditionFailed(0)));
+    assert_eq!(
+        reverify(&c, &s, &k.env(&s)),
+        Err(ContractError::ConditionFailed(0))
+    );
 }
 
 #[test]
@@ -1999,7 +2694,9 @@ fn vf_6_settlement_re_verifies_and_a_refund_needs_a_terminal_state() {
         ContractState::Active,
         ContractState::ReadyToSettle,
         ContractState::Offered,
-        ContractState::Settled { transaction: TransactionId(3) },
+        ContractState::Settled {
+            transaction: TransactionId(3),
+        },
     ] {
         let live = EconomicContract { state, ..c.clone() };
         assert_eq!(
@@ -2019,13 +2716,19 @@ fn vf_7_every_hold_op_needs_an_active_account() {
     let mut s = snap();
     with_hold(&mut s, hold(1, 1, 100));
     let held = s.account(AccountId(1)).unwrap().clone();
-    s.put_account(Account { status: AccountStatus::Frozen, ..held });
+    s.put_account(Account {
+        status: AccountStatus::Frozen,
+        ..held
+    });
     // A freeze is what a staffer does to STOP an account's numbers moving, and every
     // money line already refuses there. An effect-only release or expiry would be
     // the one remaining way to keep changing `held_amount` on a frozen account.
     for op in [
         HoldOp::Release { hold: HoldId(1) },
-        HoldOp::Capture { hold: HoldId(1), amount: Amount::from_minor(1) },
+        HoldOp::Capture {
+            hold: HoldId(1),
+            amount: Amount::from_minor(1),
+        },
     ] {
         assert_eq!(
             refuse(&s, &hold_plan("fr", vec![op])),
@@ -2039,20 +2742,35 @@ fn vf_8_the_holder_key_is_a_label_and_never_authority() {
     let mut s = snap();
     // A hold whose `holder` names a contract's settlement key. The key is
     // caller-chosen — `post` is public — so this buys exactly nothing.
-    with_hold(&mut s, Hold { holder: settle_key(ContractId(1)), ..hold(1, 1, 100) });
+    with_hold(
+        &mut s,
+        Hold {
+            holder: settle_key(ContractId(1)),
+            ..hold(1, 1, 100)
+        },
+    );
     let mut plain = snap();
     with_hold(&mut plain, hold(1, 1, 100));
 
     let mut denied = Seams::open();
     denied.auth.hold = false;
     let release = || hold_plan("h", vec![HoldOp::Release { hold: HoldId(1) }]);
-    assert_eq!(refuse_with(&s, &release(), &denied), EconomyError::Unauthorized);
-    assert_eq!(refuse_with(&plain, &release(), &denied), EconomyError::Unauthorized);
+    assert_eq!(
+        refuse_with(&s, &release(), &denied),
+        EconomyError::Unauthorized
+    );
+    assert_eq!(
+        refuse_with(&plain, &release(), &denied),
+        EconomyError::Unauthorized
+    );
     // …and with the seam saying yes, the two behave identically: nothing branches
     // on `holder`, so the effects match down to the status and the projection.
     let forged = prepare(&s, &release(), &Seams::open());
     let ordinary = prepare(&plain, &release(), &Seams::open());
-    assert_eq!(forged.hold_effects[0].hold.status, ordinary.hold_effects[0].hold.status);
+    assert_eq!(
+        forged.hold_effects[0].hold.status,
+        ordinary.hold_effects[0].hold.status
+    );
     assert_eq!(forged.balance_deltas, ordinary.balance_deltas);
 }
 
@@ -2067,7 +2785,10 @@ fn vf_9_advance_is_ordered_and_never_drops_a_settlement() {
     // the settlement is recorded. The STATUS is a deliberate act (E4b1's
     // `reinstate`, or E5's hook), so it does not silently rejoin the due pool.
     let paid = advance_obligation(&o, 2, SettleOutcome::Posted(TransactionId(9)), NOW).unwrap();
-    assert!(matches!(paid.history.last(), Some(ObligationEvent::Settled { period: 2, .. })));
+    assert!(matches!(
+        paid.history.last(),
+        Some(ObligationEvent::Settled { period: 2, .. })
+    ));
     assert_eq!((paid.periods_settled, paid.settled_total), (3, 1));
     assert_eq!(paid.status, ObligationStatus::Delinquent);
 
@@ -2087,11 +2808,21 @@ fn vf_9_advance_is_ordered_and_never_drops_a_settlement() {
     let intent = plan_sweep(&due, 1_000 + 100 * 9);
     assert_eq!(intent.attempt[0], 7);
     assert_eq!(
-        advance_obligation(&due, intent.attempt[0], SettleOutcome::Posted(TransactionId(1)), NOW),
+        advance_obligation(
+            &due,
+            intent.attempt[0],
+            SettleOutcome::Posted(TransactionId(1)),
+            NOW
+        ),
         Err(ObligationError::OutOfOrder)
     );
-    let forgiven =
-        forgive(&due, intent.forgive_from, intent.forgive_to, ForgiveCause::Downtime, NOW);
+    let forgiven = forgive(
+        &due,
+        intent.forgive_from,
+        intent.forgive_to,
+        ForgiveCause::Downtime,
+        NOW,
+    );
     assert!(
         advance_obligation(
             &forgiven,
@@ -2108,27 +2839,45 @@ fn vf_10_a_contract_condition_may_not_ride_a_manual_clock() {
     let (s, mut c) = contract_snap();
     let k = Seams::open();
     c.consent.conditions = vec![TypedCondition::Before {
-        deadline: EconomicDeadline { clock: EconomicClock::Manual, at: NOW + 1_000 },
+        deadline: EconomicDeadline {
+            clock: EconomicClock::Manual,
+            at: NOW + 1_000,
+        },
     }];
     c.satisfied = vec![Some(att(AttestorRef::Clock))];
     reoffer(&mut c);
     // A manual clock's position is carried by the record that names it, and a
     // condition carries none — so the deadline would be read against whatever the
     // caller passed. Refused where a human can still fix the draft…
-    assert_eq!(check_offerable(&c, &s), Err(ContractError::UnsupportedClock(0)));
+    assert_eq!(
+        check_offerable(&c, &s),
+        Err(ContractError::UnsupportedClock(0))
+    );
     // …and, for a hand-built or migrated record that got past Offer, `reverify`
     // fails CLOSED: the unresolvable deadline reads as long passed.
-    assert_eq!(reverify(&c, &s, &k.env(&s)), Err(ContractError::ConditionFailed(0)));
+    assert_eq!(
+        reverify(&c, &s, &k.env(&s)),
+        Err(ContractError::ConditionFailed(0))
+    );
     assert_eq!(settle(&c, &s), Err(ContractError::UnsupportedClock(0)));
 
     let mut after = c;
     after.consent.conditions = vec![
-        TypedCondition::Attestation { by: AttestorSet::Party(who(2)) },
-        TypedCondition::After { condition: 0, delay: 10, clock: EconomicClock::Manual },
+        TypedCondition::Attestation {
+            by: AttestorSet::Party(who(2)),
+        },
+        TypedCondition::After {
+            condition: 0,
+            delay: 10,
+            clock: EconomicClock::Manual,
+        },
     ];
     after.satisfied = vec![None, None];
     after.consent_hash = consent_hash(&after.issuer, &after.consent);
-    assert_eq!(check_offerable(&after, &s), Err(ContractError::UnsupportedClock(1)));
+    assert_eq!(
+        check_offerable(&after, &s),
+        Err(ContractError::UnsupportedClock(1))
+    );
 }
 
 #[test]
@@ -2143,7 +2892,10 @@ fn vf_11_a_one_shot_that_misses_goes_straight_to_delinquent() {
     let missed = advanced(&o, 0, SettleOutcome::InsufficientAvailable);
     assert_eq!(missed.status, ObligationStatus::Delinquent);
     assert_eq!((missed.periods_settled, missed.missed_total), (1, 1));
-    assert!(plan_sweep(&missed, i64::MAX).is_empty(), "and it leaves the due pool");
+    assert!(
+        plan_sweep(&missed, i64::MAX).is_empty(),
+        "and it leaves the due pool"
+    );
 }
 
 #[test]
@@ -2167,7 +2919,11 @@ fn vf_12_a_cadence_clamps_its_cap_and_a_manual_one_never_self_advances() {
 
     // A manual cadence is a human's to move. Reading a wall instant as its source
     // would advance a clock nobody asked to advance — and every schedule on it.
-    let manual = CadenceClock { source: CadenceSource::Manual, catch_up_cap: 3, ..base };
+    let manual = CadenceClock {
+        source: CadenceSource::Manual,
+        catch_up_cap: 3,
+        ..base
+    };
     assert_eq!(advance_cadence(&manual, 1_000_000), (manual.clone(), 0));
     assert_eq!(mush_economy::advance_cadence_manual(&manual, 2).position, 2);
 }
@@ -2176,7 +2932,11 @@ fn vf_12_a_cadence_clamps_its_cap_and_a_manual_one_never_self_advances() {
 fn vf_13_a_period_index_at_the_ceiling_forgives_instead_of_colliding() {
     let schedule = EconomicSchedule::new(EconomicClock::RealUtc, 1_000, Some(100), 3);
     let now = 1_000 + 100 * 1_000;
-    let o = Obligation { schedule, periods_settled: u32::MAX - 2, ..obligation() };
+    let o = Obligation {
+        schedule,
+        periods_settled: u32::MAX - 2,
+        ..obligation()
+    };
 
     // Saturating into the key index would hand several periods the same
     // `obligation/{id}/{period}` key, and the second post would resolve to
@@ -2188,13 +2948,28 @@ fn vf_13_a_period_index_at_the_ceiling_forgives_instead_of_colliding() {
     assert_eq!(intent.forgive_from, intent.forgive_to);
 
     let after = forgive_all(&o, intent.forgive, ForgiveCause::Downtime, now);
-    assert_eq!(after.periods_settled, u32::MAX - 2, "the key base never moved");
+    assert_eq!(
+        after.periods_settled,
+        u32::MAX - 2,
+        "the key base never moved"
+    );
     assert_eq!(after.forgiven_total, intent.forgive);
-    assert!(after.schedule.next_due > now, "re-anchored to the first due instant after now");
-    assert_eq!(plan_sweep(&after, now), SweepIntent::default(), "and nothing is due again");
+    assert!(
+        after.schedule.next_due > now,
+        "re-anchored to the first due instant after now"
+    );
+    assert_eq!(
+        plan_sweep(&after, now),
+        SweepIntent::default(),
+        "and nothing is due again"
+    );
 
     // The case that still FITS is still attempted, and its keys are distinct.
-    let tight = Obligation { schedule, periods_settled: u32::MAX - 4, ..obligation() };
+    let tight = Obligation {
+        schedule,
+        periods_settled: u32::MAX - 4,
+        ..obligation()
+    };
     let ok = plan_sweep(&tight, 1_000 + 100 * 3);
     assert!(!ok.reanchor);
     let keys: BTreeSet<u32> = ok.attempt.iter().copied().collect();
@@ -2210,7 +2985,10 @@ fn vf_14a_the_issuer_is_part_of_what_a_party_agreed_to() {
         consent_hash(&who(2), &c.consent),
         "who offered it decides who answers for it"
     );
-    let swapped = EconomicContract { issuer: who(2), ..c };
+    let swapped = EconomicContract {
+        issuer: who(2),
+        ..c
+    };
     assert!(!swapped.consent_intact());
     assert!(!swapped.accepted_by(&who(1)));
     assert_eq!(settle(&swapped, &s), Err(ContractError::ConsentMismatch));
@@ -2219,18 +2997,29 @@ fn vf_14a_the_issuer_is_part_of_what_a_party_agreed_to() {
 #[test]
 fn vf_14b_a_cycle_among_after_anchors_is_refused_at_offer() {
     let (s, mut c) = contract_snap();
-    let after =
-        |condition: usize| TypedCondition::After { condition, delay: 1, clock: EconomicClock::RealUtc };
+    let after = |condition: usize| TypedCondition::After {
+        condition,
+        delay: 1,
+        clock: EconomicClock::RealUtc,
+    };
     // Neither can ever be satisfied, so the contract is unsettleable and its escrow
     // is stuck until expiry — with nothing anywhere saying why.
     c.consent.conditions = vec![after(1), after(0)];
     c.satisfied = vec![None, None];
     c.consent_hash = consent_hash(&c.issuer, &c.consent);
-    assert_eq!(check_offerable(&c, &s), Err(ContractError::BadConditionRef(0)));
+    assert_eq!(
+        check_offerable(&c, &s),
+        Err(ContractError::BadConditionRef(0))
+    );
 
     // A chain that terminates on a real condition is fine.
-    c.consent.conditions =
-        vec![TypedCondition::Attestation { by: AttestorSet::Party(who(2)) }, after(0), after(1)];
+    c.consent.conditions = vec![
+        TypedCondition::Attestation {
+            by: AttestorSet::Party(who(2)),
+        },
+        after(0),
+        after(1),
+    ];
     c.satisfied = vec![None, None, None];
     c.consent_hash = consent_hash(&c.issuer, &c.consent);
     assert!(check_offerable(&c, &s).is_ok());
@@ -2240,10 +3029,19 @@ fn vf_14b_a_cycle_among_after_anchors_is_refused_at_offer() {
 fn vf_14c_a_rewound_sweep_stamp_is_a_time_jump_not_an_overload() {
     // `Overload` escalates when it repeats, so reading an NTP step or a restored
     // backup as a starved post budget would page a human about nothing.
-    assert_eq!(classify_forgiveness(1_000, 1_000, 999, 999, 1, false), ForgiveCause::TimeJump);
-    assert_eq!(classify_forgiveness(1_000, 1_000, 0, 0, 1, false), ForgiveCause::TimeJump);
+    assert_eq!(
+        classify_forgiveness(1_000, 1_000, 999, 999, 1, false),
+        ForgiveCause::TimeJump
+    );
+    assert_eq!(
+        classify_forgiveness(1_000, 1_000, 0, 0, 1, false),
+        ForgiveCause::TimeJump
+    );
     // …while a genuine "sweeps ran, this one got no budget" is untouched.
-    assert_eq!(classify_forgiveness(0, 0, 30, 30, 1, false), ForgiveCause::Overload);
+    assert_eq!(
+        classify_forgiveness(0, 0, 30, 30, 1, false),
+        ForgiveCause::Overload
+    );
 }
 
 #[test]
@@ -2266,7 +3064,11 @@ fn vf_14d_the_tallies_outlive_the_bounded_history_tail() {
         NOW,
     );
     assert_eq!(
-        (forgiven.settled_total, forgiven.missed_total, forgiven.forgiven_total),
+        (
+            forgiven.settled_total,
+            forgiven.missed_total,
+            forgiven.forgiven_total
+        ),
         (runs, 1, 5)
     );
 }

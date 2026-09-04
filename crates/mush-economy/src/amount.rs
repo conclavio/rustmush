@@ -136,16 +136,31 @@ mod tests {
 
     #[test]
     fn checked_arithmetic_never_wraps() {
-        assert_eq!(Amount::from_minor(2).checked_add(Amount::from_minor(3)), Some(Amount::from_minor(5)));
-        assert_eq!(Amount::from_minor(i64::MAX).checked_add(Amount::from_minor(1)), None);
+        assert_eq!(
+            Amount::from_minor(2).checked_add(Amount::from_minor(3)),
+            Some(Amount::from_minor(5))
+        );
+        assert_eq!(
+            Amount::from_minor(i64::MAX).checked_add(Amount::from_minor(1)),
+            None
+        );
         assert_eq!(Amount::from_minor(i64::MIN).checked_neg(), None);
-        assert_eq!(Amount::from_minor(5).checked_sub(Amount::from_minor(8)), Some(Amount::from_minor(-3)));
+        assert_eq!(
+            Amount::from_minor(5).checked_sub(Amount::from_minor(8)),
+            Some(Amount::from_minor(-3))
+        );
     }
 
     #[test]
     fn serializes_transparently_as_i64() {
-        assert_eq!(serde_json::to_string(&Amount::from_minor(-4200)).unwrap(), "-4200");
-        assert_eq!(serde_json::from_str::<Amount>("999").unwrap(), Amount::from_minor(999));
+        assert_eq!(
+            serde_json::to_string(&Amount::from_minor(-4200)).unwrap(),
+            "-4200"
+        );
+        assert_eq!(
+            serde_json::from_str::<Amount>("999").unwrap(),
+            Amount::from_minor(999)
+        );
     }
 
     #[test]
@@ -154,7 +169,11 @@ mod tests {
         assert_eq!(Amount::from_minor(-5).to_decimal_string(2), "-0.05");
         assert_eq!(Amount::from_minor(1000).to_decimal_string(0), "1000");
         // i64::MIN must not panic through negation.
-        assert!(Amount::from_minor(i64::MIN).to_decimal_string(2).starts_with('-'));
+        assert!(
+            Amount::from_minor(i64::MIN)
+                .to_decimal_string(2)
+                .starts_with('-')
+        );
     }
 
     #[test]

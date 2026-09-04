@@ -46,7 +46,11 @@ fn boot() -> (TestWorld, Probe) {
 }
 
 fn texts(events: &[(Audience, OutputEvent)]) -> String {
-    events.iter().map(|(_, e)| text_of(e)).collect::<Vec<_>>().join("\n")
+    events
+        .iter()
+        .map(|(_, e)| text_of(e))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 fn has_error(events: &[(Audience, OutputEvent)]) -> bool {
     events.iter().any(|(_, e)| {
@@ -60,18 +64,28 @@ fn ok(tw: &mut TestWorld, actor: ObjId, line: &str) -> String {
 }
 fn err(tw: &mut TestWorld, actor: ObjId, line: &str) -> String {
     let ev = tw.run(actor, line);
-    assert!(has_error(&ev), "`{line}` should have been refused, got: {}", texts(&ev));
+    assert!(
+        has_error(&ev),
+        "`{line}` should have been refused, got: {}",
+        texts(&ev)
+    );
     texts(&ev)
 }
 
 fn store(tw: &TestWorld) -> &EconomyStore {
-    tw.world().module_state::<EconomyStore>().expect("economy store")
+    tw.world()
+        .module_state::<EconomyStore>()
+        .expect("economy store")
 }
 fn snap(tw: &TestWorld) -> &EconomySnapshot {
     store(tw).snapshot()
 }
 fn bal(tw: &TestWorld, id: AccountId) -> i64 {
-    snap(tw).account(id).expect("account").posted_balance.minor()
+    snap(tw)
+        .account(id)
+        .expect("account")
+        .posted_balance
+        .minor()
 }
 fn revision(tw: &TestWorld, id: AccountId) -> u64 {
     snap(tw).account(id).expect("account").revision
@@ -80,10 +94,16 @@ fn journal_len(tw: &TestWorld) -> usize {
     store(tw).transactions().count()
 }
 fn thing(tw: &mut TestWorld, name: &str) -> ObjId {
-    tw.world_mut().create(ObjKind::Thing, name, GOD, Some(LIMBO)).expect("create")
+    tw.world_mut()
+        .create(ObjKind::Thing, name, GOD, Some(LIMBO))
+        .expect("create")
 }
 fn account_of(tw: &TestWorld, owner: &PrincipalId) -> AccountId {
-    snap(tw).accounts().find(|a| a.owner == *owner).expect("account of owner").id
+    snap(tw)
+        .accounts()
+        .find(|a| a.owner == *owner)
+        .expect("account of owner")
+        .id
 }
 
 /// Both namespaces, folded — an org reboot and an economy reboot are one event in
@@ -107,12 +127,22 @@ fn fold_kv(tw: &mut TestWorld, acc: &mut Kv) {
 fn reboot(tw: &mut TestWorld, kv: &Kv) {
     let boot: HashMap<SmolStr, ModuleBootData> = kv
         .iter()
-        .map(|(ns, rows)| (ns.clone(), ModuleBootData { kv: rows.clone(), streams: HashMap::new() }))
+        .map(|(ns, rows)| {
+            (
+                ns.clone(),
+                ModuleBootData {
+                    kv: rows.clone(),
+                    streams: HashMap::new(),
+                },
+            )
+        })
         .collect();
     tw.modules_loaded(boot);
 }
 fn patch(kv: &mut Kv, key: &str, f: impl Fn(&mut serde_json::Value)) {
-    let rows = kv.get_mut(&SmolStr::new_static("economy")).expect("economy kv");
+    let rows = kv
+        .get_mut(&SmolStr::new_static("economy"))
+        .expect("economy kv");
     let mut hit = false;
     for (k, v) in rows.iter_mut() {
         if k == key {
@@ -143,7 +173,12 @@ impl Probe {
         self.0.lock().expect("probe lock").econ = Some(p);
     }
     fn outcome(&self) -> Result<PostOutcome, EconomyError> {
-        self.0.lock().expect("probe lock").outcome.clone().expect("an outcome was recorded")
+        self.0
+            .lock()
+            .expect("probe lock")
+            .outcome
+            .clone()
+            .expect("an outcome was recorded")
     }
 }
 
@@ -164,7 +199,12 @@ impl GameModule for ProbeMod {
                 ..CommandSpec::default()
             },
             Arc::new(move |ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
-                let plan = st.0.lock().expect("probe lock").econ.take().expect("stage a plan first");
+                let plan =
+                    st.0.lock()
+                        .expect("probe lock")
+                        .econ
+                        .take()
+                        .expect("stage a plan first");
                 // `post` is the last fallible call, as a real handler must treat it.
                 let outcome = mush_economy::post(ctx, &plan);
                 st.0.lock().expect("probe lock").outcome = Some(outcome);
@@ -209,11 +249,20 @@ fn economy(tw: &mut TestWorld) -> Fx {
     ok(tw, GOD, "@account/system faucet=gold");
     ok(tw, GOD, &format!("@account/open #{}=gold", pat.0));
     ok(tw, GOD, &format!("@account/open #{}=gold", quinn.0));
-    let faucet = account_of(tw, &PrincipalId::System(SystemPrincipalId::new("faucet").expect("id")));
+    let faucet = account_of(
+        tw,
+        &PrincipalId::System(SystemPrincipalId::new("faucet").expect("id")),
+    );
     let pat_acct = account_of(tw, &PrincipalId::Object(pat));
     let quinn_acct = account_of(tw, &PrincipalId::Object(quinn));
     ok(tw, GOD, &format!("@econ/mint {faucet}={pat_acct} 10000"));
-    Fx { pat, quinn, faucet, pat_acct, quinn_acct }
+    Fx {
+        pat,
+        quinn,
+        faucet,
+        pat_acct,
+        quinn_acct,
+    }
 }
 
 /// An org wallet on a fresh org's root scope: **active**, and invisible to anyone
@@ -245,9 +294,21 @@ fn a_net_zero_line_pair_still_needs_authority_to_debit() {
     // old net-only question answered "this is a credit, and receiving is free".
     probe.stage(plan_of(fx.pat, "net-zero", vec![(wallet, -1), (wallet, 1)]));
     ok(&mut tw, fx.pat, "@probe/post");
-    assert_eq!(probe.outcome(), Err(EconomyError::Unauthorized), "a net-zero pair posted without authority");
-    assert_eq!(journal_len(&tw), before_txs, "the refused plan journaled an entry");
-    assert_eq!(revision(&tw, wallet), before_rev, "the refused plan bumped the wallet's revision");
+    assert_eq!(
+        probe.outcome(),
+        Err(EconomyError::Unauthorized),
+        "a net-zero pair posted without authority"
+    );
+    assert_eq!(
+        journal_len(&tw),
+        before_txs,
+        "the refused plan journaled an entry"
+    );
+    assert_eq!(
+        revision(&tw, wallet),
+        before_rev,
+        "the refused plan bumped the wallet's revision"
+    );
     assert_eq!(bal(&tw, wallet), 0);
 }
 
@@ -260,7 +321,11 @@ fn a_larger_credit_does_not_excuse_a_debit_on_the_same_account() {
 
     // The wallet NETS a credit (+10) while a line really debits it (-10); Pat funds
     // the difference from their own account, so every other invariant is satisfied.
-    probe.stage(plan_of(fx.pat, "credit-cover", vec![(wallet, -10), (wallet, 20), (fx.pat_acct, -10)]));
+    probe.stage(plan_of(
+        fx.pat,
+        "credit-cover",
+        vec![(wallet, -10), (wallet, 20), (fx.pat_acct, -10)],
+    ));
     ok(&mut tw, fx.pat, "@probe/post");
     assert_eq!(
         probe.outcome(),
@@ -268,7 +333,11 @@ fn a_larger_credit_does_not_excuse_a_debit_on_the_same_account() {
         "a debit line hid behind a larger credit on the same account"
     );
     assert_eq!(journal_len(&tw), before_txs);
-    assert_eq!(bal(&tw, fx.pat_acct), 10_000, "the refused plan moved money");
+    assert_eq!(
+        bal(&tw, fx.pat_acct),
+        10_000,
+        "the refused plan moved money"
+    );
 }
 
 #[test]
@@ -278,13 +347,20 @@ fn pay_refuses_an_account_paying_itself() {
     let (mut tw, _p) = boot();
     let fx = economy(&mut tw);
     let before_txs = journal_len(&tw);
-    let seen = err(&mut tw, fx.pat, &format!("@econ/pay {}={} 1", fx.pat_acct, fx.pat_acct));
+    let seen = err(
+        &mut tw,
+        fx.pat,
+        &format!("@econ/pay {}={} 1", fx.pat_acct, fx.pat_acct),
+    );
     assert!(seen.contains("cannot pay itself"), "{seen}");
     assert_eq!(journal_len(&tw), before_txs);
     assert_eq!(revision(&tw, fx.pat_acct), revision(&tw, fx.pat_acct));
     // An id that does not exist gets the SAME text, so the belt is not an oracle.
     let missing = err(&mut tw, fx.pat, "@econ/pay 4242=4242 1");
-    assert_eq!(seen, missing, "the self-pay refusal distinguished a real account from a missing one");
+    assert_eq!(
+        seen, missing,
+        "the self-pay refusal distinguished a real account from a missing one"
+    );
 }
 
 // ======================================================================
@@ -302,14 +378,35 @@ fn a_pay_refusal_never_says_which_destination_it_is() {
     ok(&mut tw, GOD, &format!("@account/close {hidden}"));
     let before_txs = journal_len(&tw);
 
-    let missing = err(&mut tw, fx.pat, &format!("@econ/pay {}=4242 1", fx.pat_acct));
-    let closed = err(&mut tw, fx.pat, &format!("@econ/pay {}={} 1", fx.pat_acct, fx.quinn_acct));
-    let wallet = err(&mut tw, fx.pat, &format!("@econ/pay {}={} 1", fx.pat_acct, hidden));
+    let missing = err(
+        &mut tw,
+        fx.pat,
+        &format!("@econ/pay {}=4242 1", fx.pat_acct),
+    );
+    let closed = err(
+        &mut tw,
+        fx.pat,
+        &format!("@econ/pay {}={} 1", fx.pat_acct, fx.quinn_acct),
+    );
+    let wallet = err(
+        &mut tw,
+        fx.pat,
+        &format!("@econ/pay {}={} 1", fx.pat_acct, hidden),
+    );
 
     assert!(missing.contains("No such account."), "{missing}");
-    assert_eq!(missing, closed, "a closed third-party account was distinguishable from a missing one");
-    assert_eq!(missing, wallet, "an org wallet Pat may not view was distinguishable from a missing account");
-    assert!(!closed.contains("not active"), "the raw refusal leaked: {closed}");
+    assert_eq!(
+        missing, closed,
+        "a closed third-party account was distinguishable from a missing one"
+    );
+    assert_eq!(
+        missing, wallet,
+        "an org wallet Pat may not view was distinguishable from a missing account"
+    );
+    assert!(
+        !closed.contains("not active"),
+        "the raw refusal leaked: {closed}"
+    );
     assert_eq!(journal_len(&tw), before_txs);
 }
 
@@ -322,15 +419,37 @@ fn a_maintenance_refusal_hides_the_wallet_it_was_pointed_at() {
     // not allowed to know exists.
     let hidden = org_wallet(&mut tw, "Umbra");
     let widget = thing(&mut tw, "widget");
-    ok(&mut tw, GOD, &format!("@asset/title #{}=#{}", widget.0, fx.pat.0));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/title #{}=#{}", widget.0, fx.pat.0),
+    );
 
-    let missing = err(&mut tw, fx.pat, &format!("@asset/maintenance #{}=4242", widget.0));
-    let wallet = err(&mut tw, fx.pat, &format!("@asset/maintenance #{}={}", widget.0, hidden));
+    let missing = err(
+        &mut tw,
+        fx.pat,
+        &format!("@asset/maintenance #{}=4242", widget.0),
+    );
+    let wallet = err(
+        &mut tw,
+        fx.pat,
+        &format!("@asset/maintenance #{}={}", widget.0, hidden),
+    );
     assert!(missing.contains("No such account."), "{missing}");
-    assert_eq!(missing, wallet, "the hidden wallet leaked through invariant 14's refusal: {wallet}");
-    assert!(!wallet.contains("scope and owner"), "the raw refusal leaked: {wallet}");
+    assert_eq!(
+        missing, wallet,
+        "the hidden wallet leaked through invariant 14's refusal: {wallet}"
+    );
     assert!(
-        snap(&tw).asset(widget).expect("titled").maintenance_account.is_none(),
+        !wallet.contains("scope and owner"),
+        "the raw refusal leaked: {wallet}"
+    );
+    assert!(
+        snap(&tw)
+            .asset(widget)
+            .expect("titled")
+            .maintenance_account
+            .is_none(),
         "the refused maintenance stuck"
     );
 }
@@ -343,11 +462,23 @@ fn a_maintenance_refusal_hides_the_wallet_it_was_pointed_at() {
 fn the_pending_cap_refuses_before_retiring_a_stale_request() {
     let (mut tw, _p) = boot();
     let fx = economy(&mut tw);
-    ok(&mut tw, GOD, &format!("@account/approval {}=100 threshold:1", fx.pat_acct));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@account/approval {}=100 threshold:1", fx.pat_acct),
+    );
 
     // One request, then let it age past its TTL.
-    ok(&mut tw, fx.pat, &format!("@econ/pay {}={} 500", fx.pat_acct, fx.quinn_acct));
-    let stale = snap(&tw).approvals().next().expect("the first request").clone();
+    ok(
+        &mut tw,
+        fx.pat,
+        &format!("@econ/pay {}={} 500", fx.pat_acct, fx.quinn_acct),
+    );
+    let stale = snap(&tw)
+        .approvals()
+        .next()
+        .expect("the first request")
+        .clone();
     let now = tw.world().now();
     tw.set_now(now + APPROVAL_TTL_SECS + 10);
 
@@ -356,16 +487,34 @@ fn the_pending_cap_refuses_before_retiring_a_stale_request() {
     // retire, or RAM says `Expired` while the durable doc still says `Pending`.
     for i in 0..mush_economy::MAX_PENDING_PER_REQUESTER {
         let amount = 501 + i;
-        ok(&mut tw, fx.pat, &format!("@econ/pay {}={} {amount}", fx.pat_acct, fx.quinn_acct));
+        ok(
+            &mut tw,
+            fx.pat,
+            &format!("@econ/pay {}={} {amount}", fx.pat_acct, fx.quinn_acct),
+        );
     }
-    let seen = err(&mut tw, fx.pat, &format!("@econ/pay {}={} 500", fx.pat_acct, fx.quinn_acct));
-    assert!(seen.contains("too many pending approval requests"), "{seen}");
+    let seen = err(
+        &mut tw,
+        fx.pat,
+        &format!("@econ/pay {}={} 500", fx.pat_acct, fx.quinn_acct),
+    );
+    assert!(
+        seen.contains("too many pending approval requests"),
+        "{seen}"
+    );
     assert_eq!(
-        snap(&tw).approval(stale.id).expect("the stale request").status,
+        snap(&tw)
+            .approval(stale.id)
+            .expect("the stale request")
+            .status,
         ApprovalStatus::Pending,
         "the refused submission retired the stale request anyway (a RAM write a discarded persist cannot undo)"
     );
-    assert_eq!(bal(&tw, fx.pat_acct), 10_000, "nothing posted along the way");
+    assert_eq!(
+        bal(&tw, fx.pat_acct),
+        10_000,
+        "nothing posted along the way"
+    );
 }
 
 // ======================================================================
@@ -385,27 +534,43 @@ fn the_whole_economy_freeze_survives_the_boot_that_heals_the_drift() {
         v["posted_balance"] = serde_json::json!(999);
     });
     reboot(&mut tw, &kv);
-    assert!(store(&tw).is_frozen(), "the drift did not freeze the economy");
+    assert!(
+        store(&tw).is_frozen(),
+        "the drift did not freeze the economy"
+    );
 
     // Boot 2 over exactly what boot 1 wrote. Nothing in the docs drifts any more —
     // the ONLY thing that can keep the economy frozen is the durable latch.
     fold_kv(&mut tw, &mut kv);
     reboot(&mut tw, &kv);
-    assert!(store(&tw).is_frozen(), "the freeze evaporated on the boot after the heal");
+    assert!(
+        store(&tw).is_frozen(),
+        "the freeze evaporated on the boot after the heal"
+    );
 
     // While frozen, the non-recovery control writes are refused too (finding L).
     err(&mut tw, GOD, &format!("@account/open #{}=gold", fx.quinn.0));
-    err(&mut tw, GOD, &format!("@account/approval {}=100 threshold:1", fx.pat_acct));
+    err(
+        &mut tw,
+        GOD,
+        &format!("@account/approval {}=100 threshold:1", fx.pat_acct),
+    );
     // Clearing it is a staff decision, and only staff may make it.
     err(&mut tw, fx.pat, "@econ/unfreeze");
     assert!(store(&tw).is_frozen());
     ok(&mut tw, GOD, "@econ/unfreeze");
-    assert!(!store(&tw).is_frozen(), "@econ/unfreeze did not clear the latch");
+    assert!(
+        !store(&tw).is_frozen(),
+        "@econ/unfreeze did not clear the latch"
+    );
 
     // ...and THAT is durable too.
     fold_kv(&mut tw, &mut kv);
     reboot(&mut tw, &kv);
-    assert!(!store(&tw).is_frozen(), "the cleared latch came back at the next boot");
+    assert!(
+        !store(&tw).is_frozen(),
+        "the cleared latch came back at the next boot"
+    );
     ok(&mut tw, GOD, &format!("@account/open #{}=gold", fx.quinn.0));
 }
 
@@ -415,7 +580,11 @@ fn an_asset_drift_leaves_that_asset_frozen_with_a_reason() {
     let (_fx, widget) = {
         let fx = economy(&mut tw);
         let widget = thing(&mut tw, "widget");
-        ok(&mut tw, GOD, &format!("@asset/title #{}=#{}", widget.0, fx.pat.0));
+        ok(
+            &mut tw,
+            GOD,
+            &format!("@asset/title #{}=#{}", widget.0, fx.pat.0),
+        );
         (fx, widget)
     };
     let mut kv = Kv::new();
@@ -426,16 +595,25 @@ fn an_asset_drift_leaves_that_asset_frozen_with_a_reason() {
     });
 
     reboot(&mut tw, &kv);
-    assert!(store(&tw).is_frozen(), "title drift must freeze the economy");
+    assert!(
+        store(&tw).is_frozen(),
+        "title drift must freeze the economy"
+    );
     let a = snap(&tw).asset(widget).expect("titled").clone();
-    assert!(a.frozen, "the drifted title itself was left unfrozen: nothing said which record to look at");
+    assert!(
+        a.frozen,
+        "the drifted title itself was left unfrozen: nothing said which record to look at"
+    );
     assert_eq!(a.frozen_reason.as_deref(), Some("drift"));
 
     // The trace survives the recovery: the per-asset latch is a doc write of its own.
     fold_kv(&mut tw, &mut kv);
     reboot(&mut tw, &kv);
     let a = snap(&tw).asset(widget).expect("titled").clone();
-    assert!(a.frozen && a.frozen_reason.as_deref() == Some("drift"), "the per-asset latch was not persisted");
+    assert!(
+        a.frozen && a.frozen_reason.as_deref() == Some("drift"),
+        "the per-asset latch was not persisted"
+    );
 }
 
 // ======================================================================
@@ -446,18 +624,39 @@ fn an_asset_drift_leaves_that_asset_frozen_with_a_reason() {
 fn the_approval_allocator_floors_past_a_doc_it_cannot_read() {
     let (mut tw, _p) = boot();
     let fx = economy(&mut tw);
-    ok(&mut tw, GOD, &format!("@account/approval {}=100 threshold:1", fx.pat_acct));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@account/approval {}=100 threshold:1", fx.pat_acct),
+    );
     let mut kv = Kv::new();
     fold_kv(&mut tw, &mut kv);
     // A corrupt request doc (skipped as a leaf) plus a stale meta: id 7 was minted,
     // and nothing readable remembers it.
-    put(&mut kv, "approval:7", serde_json::json!({ "not": "an approval request" }));
-    patch(&mut kv, "meta", |v| v["next_approval_id"] = serde_json::json!(0));
+    put(
+        &mut kv,
+        "approval:7",
+        serde_json::json!({ "not": "an approval request" }),
+    );
+    patch(&mut kv, "meta", |v| {
+        v["next_approval_id"] = serde_json::json!(0)
+    });
 
     reboot(&mut tw, &kv);
-    ok(&mut tw, fx.pat, &format!("@econ/pay {}={} 500", fx.pat_acct, fx.quinn_acct));
-    let minted = snap(&tw).approvals().map(|r| r.id.0).max().expect("a request was minted");
-    assert!(minted >= 8, "the allocator re-minted an id an unreadable doc already holds: #{minted}");
+    ok(
+        &mut tw,
+        fx.pat,
+        &format!("@econ/pay {}={} 500", fx.pat_acct, fx.quinn_acct),
+    );
+    let minted = snap(&tw)
+        .approvals()
+        .map(|r| r.id.0)
+        .max()
+        .expect("a request was minted");
+    assert!(
+        minted >= 8,
+        "the allocator re-minted an id an unreadable doc already holds: #{minted}"
+    );
 }
 
 // ======================================================================
@@ -469,11 +668,19 @@ fn control_doc_writes_ride_the_ordinary_durable_gate() {
     let (mut tw, _p) = boot();
     let fx = economy(&mut tw);
     let chest = thing(&mut tw, "chest");
-    ok(&mut tw, GOD, &format!("@vault/create strongbox=container:#{}", chest.0));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@vault/create strongbox=container:#{}", chest.0),
+    );
 
     // A policy write: gated, and NON-strict — it moves no money.
     let _ = tw.engine_mut().take_durable_gate();
-    ok(&mut tw, GOD, &format!("@account/approval {}=100 threshold:1", fx.pat_acct));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@account/approval {}=100 threshold:1", fx.pat_acct),
+    );
     assert_eq!(
         tw.engine_mut().take_durable_gate(),
         Some((GOD, false)),
@@ -497,9 +704,16 @@ fn control_doc_writes_ride_the_ordinary_durable_gate() {
 fn a_lag_heal_never_lowers_an_account_revision() {
     let (mut tw, _p) = boot();
     let fx = economy(&mut tw);
-    ok(&mut tw, GOD, &format!("@econ/mint {}={} 25", fx.faucet, fx.pat_acct));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@econ/mint {}={} 25", fx.faucet, fx.pat_acct),
+    );
     let live = revision(&tw, fx.pat_acct);
-    assert!(live >= 3, "the fixture should have touched Pat's account twice: {live}");
+    assert!(
+        live >= 3,
+        "the fixture should have touched Pat's account twice: {live}"
+    );
     let mut kv = Kv::new();
     fold_kv(&mut tw, &mut kv);
     // A companion write that landed a revision behind (the routine dropped-doc case
@@ -528,14 +742,25 @@ fn named_set_scenario(destroy_approver: bool) -> (i64, String) {
     let (mut tw, _p) = boot();
     let fx = economy(&mut tw);
     let alice = tw.spawn_player("Alice");
-    ok(&mut tw, GOD, &format!("@account/approval {}=100 named:1:#{}", fx.pat_acct, alice.0));
-    ok(&mut tw, fx.pat, &format!("@econ/pay {}={} 500", fx.pat_acct, fx.quinn_acct));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@account/approval {}=100 named:1:#{}", fx.pat_acct, alice.0),
+    );
+    ok(
+        &mut tw,
+        fx.pat,
+        &format!("@econ/pay {}={} 500", fx.pat_acct, fx.quinn_acct),
+    );
     let request = snap(&tw).approvals().next().expect("a request").id;
     ok(&mut tw, alice, &format!("@econ/approve {request}"));
     if destroy_approver {
         tw.world_mut().destroy(alice).expect("destroy the approver");
     }
-    let seen = texts(&tw.run(fx.pat, &format!("@econ/pay {}={} 500", fx.pat_acct, fx.quinn_acct)));
+    let seen = texts(&tw.run(
+        fx.pat,
+        &format!("@econ/pay {}={} 500", fx.pat_acct, fx.quinn_acct),
+    ));
     (bal(&tw, fx.pat_acct), seen)
 }
 
@@ -543,11 +768,17 @@ fn named_set_scenario(destroy_approver: bool) -> (i64, String) {
 fn a_destroyed_named_approver_stops_counting() {
     // The control: alive and named, the approval satisfies the policy and it posts.
     let (balance, seen) = named_set_scenario(false);
-    assert_eq!(balance, 9_500, "a live named approval did not satisfy the policy: {seen}");
+    assert_eq!(
+        balance, 9_500,
+        "a live named approval did not satisfy the policy: {seen}"
+    );
 
     // Destroyed: `NamedSet` asks only about identity, and an id in a stored set
     // outlives the person — so the recorded approval kept counting forever.
     let (balance, seen) = named_set_scenario(true);
-    assert_eq!(balance, 10_000, "a destroyed approver's recorded approval still posted the plan: {seen}");
+    assert_eq!(
+        balance, 10_000,
+        "a destroyed approver's recorded approval still posted the plan: {seen}"
+    );
     assert!(seen.contains("Approval required"), "{seen}");
 }

@@ -22,7 +22,11 @@ fn boot() -> TestWorld {
     TestWorld::with_modules(vec![Box::new(mush_org::OrgModule::new())])
 }
 fn texts(events: &[(Audience, OutputEvent)]) -> String {
-    events.iter().map(|(_, e)| text_of(e)).collect::<Vec<_>>().join("\n")
+    events
+        .iter()
+        .map(|(_, e)| text_of(e))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 fn has_error(events: &[(Audience, OutputEvent)]) -> bool {
     events.iter().any(|(_, e)| {
@@ -41,7 +45,13 @@ fn cap(s: &str) -> CapabilityId {
     CapabilityId::new(s).unwrap()
 }
 fn req(actor: ObjId, capability: &str, scope: OrgScopeId, now: i64) -> AuthRequest {
-    AuthRequest { actor, capability: cap(capability), scope, now, amount: None }
+    AuthRequest {
+        actor,
+        capability: cap(capability),
+        scope,
+        now,
+        amount: None,
+    }
 }
 fn allow(tw: &TestWorld, actor: ObjId, capability: &str, scope: OrgScopeId) -> bool {
     authorize_in_world(tw.world(), &req(actor, capability, scope, tw.world().now())).is_allow()
@@ -74,7 +84,13 @@ fn reboot(kv: Vec<(SmolStr, serde_json::Value)>, players: &[&str]) -> TestWorld 
     for name in players {
         tw.spawn_player(name);
     }
-    tw.modules_loaded(HashMap::from([(SmolStr::new(NS), ModuleBootData { kv, streams: HashMap::new() })]));
+    tw.modules_loaded(HashMap::from([(
+        SmolStr::new(NS),
+        ModuleBootData {
+            kv,
+            streams: HashMap::new(),
+        },
+    )]));
     tw
 }
 fn del_keys(tw: &mut TestWorld) -> Vec<String> {
@@ -93,7 +109,13 @@ fn try_boot(tw: &mut TestWorld, kv: Vec<(SmolStr, serde_json::Value)>) -> Result
     let mut fx = Effects::new();
     tw.engine_mut()
         .modules_loaded(
-            HashMap::from([(SmolStr::new(NS), ModuleBootData { kv, streams: HashMap::new() })]),
+            HashMap::from([(
+                SmolStr::new(NS),
+                ModuleBootData {
+                    kv,
+                    streams: HashMap::new(),
+                },
+            )]),
             &mut out,
             &mut fx,
         )
@@ -111,20 +133,35 @@ fn create_persists_and_authorizes_through_the_world_seam() {
     let (org, root) = only_org(&tw);
     // The org + root scope + meta persisted under ns org.
     let ops = tw.take_module_ops();
-    assert!(ops.iter().any(|o| o.ns == NS && matches!(&o.op, ModuleWrite::JsonSet { key, .. } if *key == mush_org::org_key(org))));
-    assert!(ops.iter().any(|o| o.ns == NS && matches!(&o.op, ModuleWrite::JsonSet { key, .. } if *key == mush_org::scope_key(root))));
-    assert!(ops.iter().any(|o| o.ns == NS && matches!(&o.op, ModuleWrite::JsonSet { key, .. } if key == "meta")));
+    assert!(ops.iter().any(|o| o.ns == NS
+        && matches!(&o.op, ModuleWrite::JsonSet { key, .. } if *key == mush_org::org_key(org))));
+    assert!(ops.iter().any(|o| o.ns == NS
+        && matches!(&o.op, ModuleWrite::JsonSet { key, .. } if *key == mush_org::scope_key(root))));
+    assert!(
+        ops.iter()
+            .any(|o| o.ns == NS
+                && matches!(&o.op, ModuleWrite::JsonSet { key, .. } if key == "meta"))
+    );
 
     // No authority yet.
     assert!(!allow(&tw, joe, "org.view", root));
     // Grant it, then the world seam authorizes Joe on the org's scope tree.
     let ev = tw.run(GOD, &format!("@org/grant #{}={} org.view", joe.0, org));
     assert!(!has_error(&ev), "grant refused: {}", texts(&ev));
-    assert!(allow(&tw, joe, "org.view", root), "granted actor authorized");
+    assert!(
+        allow(&tw, joe, "org.view", root),
+        "granted actor authorized"
+    );
     // ...but not a different actor, nor a different capability.
     let jane = tw.spawn_player("Jane");
-    assert!(!allow(&tw, jane, "org.view", root), "ungranted actor denied");
-    assert!(!allow(&tw, joe, "org.transfer", root), "ungranted capability denied");
+    assert!(
+        !allow(&tw, jane, "org.view", root),
+        "ungranted actor denied"
+    );
+    assert!(
+        !allow(&tw, joe, "org.transfer", root),
+        "ungranted capability denied"
+    );
 }
 
 #[test]
@@ -140,8 +177,15 @@ fn org_and_grant_survive_reboot() {
     let tw2 = reboot(kv, &["Joe"]);
     // Same ids, org present, authority intact after reboot.
     let (org2, root2) = only_org(&tw2);
-    assert_eq!((org, root), (org2, root2), "deterministic ids across reboot");
-    assert!(allow(&tw2, joe, "org.view", root2), "grant authority restored");
+    assert_eq!(
+        (org, root),
+        (org2, root2),
+        "deterministic ids across reboot"
+    );
+    assert!(
+        allow(&tw2, joe, "org.view", root2),
+        "grant authority restored"
+    );
 }
 
 #[test]
@@ -153,27 +197,51 @@ fn destroying_a_grantee_scrubs_authority_and_deletes_its_grant() {
     tw.run(GOD, &format!("@org/grant #{}={} org.view", joe.0, org));
     assert!(allow(&tw, joe, "org.view", root));
     // The one grant's id (for the deletion assert).
-    let grant_id = store(&tw).state().grants_in(org).next().expect("a grant").id;
+    let grant_id = store(&tw)
+        .state()
+        .grants_in(org)
+        .next()
+        .expect("a grant")
+        .id;
     tw.take_module_ops();
 
     tw.world_mut().destroy(joe).unwrap();
     let mut out = Outbox::new();
     let mut fx = Effects::new();
-    tw.engine_mut().emit_world_event(&WorldEvent::ObjDestroyed { obj: joe }, &mut out, &mut fx);
+    tw.engine_mut()
+        .emit_world_event(&WorldEvent::ObjDestroyed { obj: joe }, &mut out, &mut fx);
 
-    assert!(!allow(&tw, joe, "org.view", root), "authority scrubbed on destroy");
-    assert!(store(&tw).state().grants_in(org).next().is_none(), "grant removed from state");
-    assert!(del_keys(&mut tw).contains(&grant_key(grant_id).to_string()), "grant doc deleted");
+    assert!(
+        !allow(&tw, joe, "org.view", root),
+        "authority scrubbed on destroy"
+    );
+    assert!(
+        store(&tw).state().grants_in(org).next().is_none(),
+        "grant removed from state"
+    );
+    assert!(
+        del_keys(&mut tw).contains(&grant_key(grant_id).to_string()),
+        "grant doc deleted"
+    );
 }
 
 #[test]
 fn boot_fails_on_a_corrupt_org_container() {
     let mut tw = boot();
     // A well-keyed org doc that does not parse: the container polarity FAILS boot.
-    let kv = vec![(SmolStr::new("org:0"), serde_json::json!({ "not": "an org" }))];
+    let kv = vec![(
+        SmolStr::new("org:0"),
+        serde_json::json!({ "not": "an org" }),
+    )];
     let res = try_boot(&mut tw, kv);
-    assert!(res.is_err(), "corrupt org container must fail the boot: {res:?}");
-    assert!(res.unwrap_err().contains("bad org doc"), "diagnostic names the bad doc");
+    assert!(
+        res.is_err(),
+        "corrupt org container must fail the boot: {res:?}"
+    );
+    assert!(
+        res.unwrap_err().contains("bad org doc"),
+        "diagnostic names the bad doc"
+    );
 }
 
 #[test]
@@ -185,14 +253,27 @@ fn boot_skips_and_deletes_a_corrupt_leaf() {
     kv.push((SmolStr::new("grant:999"), serde_json::json!("not a grant")));
     let tw2 = {
         let mut t = boot();
-        t.modules_loaded(HashMap::from([(SmolStr::new(NS), ModuleBootData { kv, streams: HashMap::new() })]));
+        t.modules_loaded(HashMap::from([(
+            SmolStr::new(NS),
+            ModuleBootData {
+                kv,
+                streams: HashMap::new(),
+            },
+        )]));
         t
     };
     // The org still loaded (leaf corruption is not fatal)...
-    assert_eq!(store(&tw2).state().orgs().count(), 1, "healthy org survived a corrupt leaf");
+    assert_eq!(
+        store(&tw2).state().orgs().count(),
+        1,
+        "healthy org survived a corrupt leaf"
+    );
     // ...and the corrupt leaf key was deleted at boot.
     let mut tw2 = tw2;
-    assert!(del_keys(&mut tw2).contains(&"grant:999".to_string()), "corrupt leaf deleted by raw key");
+    assert!(
+        del_keys(&mut tw2).contains(&"grant:999".to_string()),
+        "corrupt leaf deleted by raw key"
+    );
 }
 
 #[test]
@@ -207,8 +288,14 @@ fn boot_drops_an_orphan_grant_whose_org_is_missing() {
     let kv = vec![(SmolStr::new("grant:7"), grant)];
     let res = try_boot(&mut tw, kv);
     assert!(res.is_ok(), "an orphan leaf must NOT fail boot: {res:?}");
-    assert!(store(&tw).state().grant(mush_org::GrantId(7)).is_none(), "orphan grant dropped");
-    assert!(del_keys(&mut tw).contains(&"grant:7".to_string()), "orphan grant doc deleted");
+    assert!(
+        store(&tw).state().grant(mush_org::GrantId(7)).is_none(),
+        "orphan grant dropped"
+    );
+    assert!(
+        del_keys(&mut tw).contains(&"grant:7".to_string()),
+        "orphan grant doc deleted"
+    );
 }
 
 #[test]
@@ -223,7 +310,11 @@ fn allocators_resume_and_never_reuse_ids() {
     let mut tw2 = reboot(kv, &["Joe"]);
     tw2.run(GOD, "@org/create Gamma");
     let ids_after: Vec<u64> = store(&tw2).state().orgs().map(|o| o.id.0).collect();
-    assert_eq!(ids_after, vec![0, 1, 2], "third org gets a fresh id after reboot (no reuse)");
+    assert_eq!(
+        ids_after,
+        vec![0, 1, 2],
+        "third org gets a fresh id after reboot (no reuse)"
+    );
 }
 
 #[test]
@@ -232,11 +323,27 @@ fn commands_are_staff_only() {
     tw.run(GOD, "@org/create Camarilla");
     let (org, _root) = only_org(&tw);
     let joe = tw.spawn_player("Joe"); // ordinary player
-    assert!(has_error(&tw.run(joe, "@org/create Sabbat")), "create refused for non-staff");
-    assert!(has_error(&tw.run(joe, "@org/list")), "list refused for non-staff");
-    assert!(has_error(&tw.run(joe, &format!("@org/show #{org}"))), "show refused for non-staff");
-    assert!(has_error(&tw.run(joe, &format!("@org/grant #{}={} org.view", joe.0, org))), "grant refused");
-    assert_eq!(store(&tw).state().orgs().count(), 1, "no org created by a non-staff actor");
+    assert!(
+        has_error(&tw.run(joe, "@org/create Sabbat")),
+        "create refused for non-staff"
+    );
+    assert!(
+        has_error(&tw.run(joe, "@org/list")),
+        "list refused for non-staff"
+    );
+    assert!(
+        has_error(&tw.run(joe, &format!("@org/show #{org}"))),
+        "show refused for non-staff"
+    );
+    assert!(
+        has_error(&tw.run(joe, &format!("@org/grant #{}={} org.view", joe.0, org))),
+        "grant refused"
+    );
+    assert_eq!(
+        store(&tw).state().orgs().count(),
+        1,
+        "no org created by a non-staff actor"
+    );
 }
 
 #[test]
@@ -255,7 +362,10 @@ fn audit_records_actions_and_survives_reboot() {
     let kv = fold_kv(&mut tw);
     let mut tw2 = reboot(kv, &["Joe"]);
     let t2 = texts(&tw2.run(GOD, &format!("@org/audit #{org}")));
-    assert!(t2.contains("org.create") && t2.contains("grant.create"), "audit restored after reboot: {t2}");
+    assert!(
+        t2.contains("org.create") && t2.contains("grant.create"),
+        "audit restored after reboot: {t2}"
+    );
 }
 
 #[test]
@@ -266,7 +376,10 @@ fn show_lists_the_org_structure() {
     let (org, _root) = only_org(&tw);
     tw.run(GOD, &format!("@org/grant #{}={} org.view", joe.0, org));
     let t = texts(&tw.run(GOD, &format!("@org/show #{org}")));
-    assert!(t.contains("Camarilla") && t.contains("scope #") && t.contains("grant #"), "{t}");
+    assert!(
+        t.contains("Camarilla") && t.contains("scope #") && t.contains("grant #"),
+        "{t}"
+    );
 }
 
 #[test]
@@ -286,39 +399,94 @@ fn boot_drops_a_delegation_whose_grantor_was_destroyed() {
     let org = OrgId(0);
     let root = OrgScopeId(0);
     let org_rec = Organization {
-        id: org, name: "Camarilla".into(), aliases: vec![], status: OrgStatus::Active,
-        hidden: false, charter: String::new(), root_scope: root, revision: 1, ruleset_ext: RulesValue::default(),
+        id: org,
+        name: "Camarilla".into(),
+        aliases: vec![],
+        status: OrgStatus::Active,
+        hidden: false,
+        charter: String::new(),
+        root_scope: root,
+        revision: 1,
+        ruleset_ext: RulesValue::default(),
     };
     let root_rec = OrgScope {
-        id: root, org, parent: None, name: "root".into(), status: ScopeStatus::Active,
-        depth: 0, created_rev: 1, revision: 1,
+        id: root,
+        org,
+        parent: None,
+        name: "root".into(),
+        status: ScopeStatus::Active,
+        depth: 0,
+        created_rev: 1,
+        revision: 1,
     };
     let grant = CapabilityGrant {
-        id: GrantId(0), org, grantee: x, capability: cap("org.view"),
-        scope: ScopeSelector::SubtreeLive(root), limit: None, delegable: true,
-        valid_from: None, valid_until: None, revision: 1,
+        id: GrantId(0),
+        org,
+        grantee: x,
+        capability: cap("org.view"),
+        scope: ScopeSelector::SubtreeLive(root),
+        limit: None,
+        delegable: true,
+        valid_from: None,
+        valid_until: None,
+        revision: 1,
     };
     let del = Delegation {
-        id: DelegationId(0), org, grantor: x, grantee: y, source_grant: GrantId(0),
-        capability: cap("org.view"), scope: ScopeSelector::Exact(root), limit: None,
-        expires_at: i64::MAX, source_revision: 1, status: DelegationStatus::Active,
+        id: DelegationId(0),
+        org,
+        grantor: x,
+        grantee: y,
+        source_grant: GrantId(0),
+        capability: cap("org.view"),
+        scope: ScopeSelector::Exact(root),
+        limit: None,
+        expires_at: i64::MAX,
+        source_revision: 1,
+        status: DelegationStatus::Active,
     };
     let kv = vec![
-        (mush_org::org_key(org), serde_json::to_value(&org_rec).unwrap()),
-        (mush_org::scope_key(root), serde_json::to_value(&root_rec).unwrap()),
+        (
+            mush_org::org_key(org),
+            serde_json::to_value(&org_rec).unwrap(),
+        ),
+        (
+            mush_org::scope_key(root),
+            serde_json::to_value(&root_rec).unwrap(),
+        ),
         (grant_key(GrantId(0)), serde_json::to_value(&grant).unwrap()),
-        (mush_org::delegation_key(DelegationId(0)), serde_json::to_value(&del).unwrap()),
+        (
+            mush_org::delegation_key(DelegationId(0)),
+            serde_json::to_value(&del).unwrap(),
+        ),
     ];
     let res = try_boot(&mut tw, kv);
-    assert!(res.is_ok(), "boot succeeds, dropping the stale bindings: {res:?}");
-    assert!(store(&tw).state().grant(GrantId(0)).is_none(), "dead-grantee grant dropped");
-    assert!(store(&tw).state().delegation(DelegationId(0)).is_none(), "dead-grantor delegation dropped");
+    assert!(
+        res.is_ok(),
+        "boot succeeds, dropping the stale bindings: {res:?}"
+    );
+    assert!(
+        store(&tw).state().grant(GrantId(0)).is_none(),
+        "dead-grantee grant dropped"
+    );
+    assert!(
+        store(&tw).state().delegation(DelegationId(0)).is_none(),
+        "dead-grantor delegation dropped"
+    );
     // The org itself survives; the surviving grantee Y holds NOTHING.
     assert_eq!(store(&tw).state().orgs().count(), 1, "the org is intact");
-    assert!(!allow(&tw, y, "org.view", root), "surviving grantee gains no delegated authority");
+    assert!(
+        !allow(&tw, y, "org.view", root),
+        "surviving grantee gains no delegated authority"
+    );
     let dels = del_keys(&mut tw);
-    assert!(dels.contains(&grant_key(GrantId(0)).to_string()), "stale grant doc deleted");
-    assert!(dels.contains(&mush_org::delegation_key(DelegationId(0)).to_string()), "stale delegation doc deleted");
+    assert!(
+        dels.contains(&grant_key(GrantId(0)).to_string()),
+        "stale grant doc deleted"
+    );
+    assert!(
+        dels.contains(&mush_org::delegation_key(DelegationId(0)).to_string()),
+        "stale delegation doc deleted"
+    );
 }
 
 #[test]
@@ -330,14 +498,24 @@ fn a_new_object_reusing_no_id_is_unaffected_by_a_prior_scrub() {
     tw.run(GOD, "@org/create Camarilla");
     let (org, root) = only_org(&tw);
     tw.run(GOD, &format!("@org/grant #{}={} org.view", joe.0, org));
-    let rock = tw.world_mut().create(ObjKind::Thing, "Rock", GOD, None).unwrap();
+    let rock = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Rock", GOD, None)
+        .unwrap();
     tw.take_module_ops();
     tw.world_mut().destroy(rock).unwrap();
     let mut out = Outbox::new();
     let mut fx = Effects::new();
-    tw.engine_mut().emit_world_event(&WorldEvent::ObjDestroyed { obj: rock }, &mut out, &mut fx);
-    assert!(allow(&tw, joe, "org.view", root), "unrelated destroy leaves authority intact");
-    assert!(del_keys(&mut tw).is_empty(), "no org doc deleted for an unrelated object");
+    tw.engine_mut()
+        .emit_world_event(&WorldEvent::ObjDestroyed { obj: rock }, &mut out, &mut fx);
+    assert!(
+        allow(&tw, joe, "org.view", root),
+        "unrelated destroy leaves authority intact"
+    );
+    assert!(
+        del_keys(&mut tw).is_empty(),
+        "no org doc deleted for an unrelated object"
+    );
 }
 
 // ======================================================================
@@ -353,15 +531,21 @@ impl mush_org::ScopeUseProvider for StubBinder {
         "stub"
     }
     fn scope_in_use(&self, _w: &mush_core::World, scope: OrgScopeId) -> Option<String> {
-        self.0.contains(&scope).then(|| format!("account #7 binds scope #{scope}"))
+        self.0
+            .contains(&scope)
+            .then(|| format!("account #7 binds scope #{scope}"))
     }
 }
 
 fn vocab(caps: &[&str]) -> std::collections::BTreeSet<CapabilityId> {
-    caps.iter().map(|c| CapabilityId::new(c).expect("cap")).collect()
+    caps.iter()
+        .map(|c| CapabilityId::new(c).expect("cap"))
+        .collect()
 }
 fn boot_with_vocab(caps: &[&str]) -> TestWorld {
-    TestWorld::with_modules(vec![Box::new(mush_org::OrgModule::new().with_capabilities(vocab(caps)))])
+    TestWorld::with_modules(vec![Box::new(
+        mush_org::OrgModule::new().with_capabilities(vocab(caps)),
+    )])
 }
 
 #[test]
@@ -378,24 +562,46 @@ fn scope_create_and_retire_through_the_command_surface() {
         .find(|s| s.name == "logistics")
         .expect("the new scope")
         .id;
-    assert_eq!(store(&tw).state().scope(child).expect("scope").parent, Some(root));
+    assert_eq!(
+        store(&tw).state().scope(child).expect("scope").parent,
+        Some(root)
+    );
     assert_eq!(store(&tw).state().scope(child).expect("scope").depth, 1);
 
     // A nested one under the child.
-    let ev = tw.run(GOD, &format!("@org/scope create Camarilla=depot parent=#{child}"));
-    assert!(!has_error(&ev), "nested scope create refused: {}", texts(&ev));
-    let depot = store(&tw).state().scopes_in(org).find(|s| s.name == "depot").expect("depot").id;
+    let ev = tw.run(
+        GOD,
+        &format!("@org/scope create Camarilla=depot parent=#{child}"),
+    );
+    assert!(
+        !has_error(&ev),
+        "nested scope create refused: {}",
+        texts(&ev)
+    );
+    let depot = store(&tw)
+        .state()
+        .scopes_in(org)
+        .find(|s| s.name == "depot")
+        .expect("depot")
+        .id;
     assert_eq!(store(&tw).state().scope(depot).expect("scope").depth, 2);
 
     // A grant on the child authorizes; retiring it takes the authority away.
     let joe = tw.spawn_player("Joe");
-    assert!(!has_error(
-        &tw.run(GOD, &format!("@org/grant #{}=Camarilla economy.account.post scope=#{child}", joe.0))
-    ));
+    assert!(!has_error(&tw.run(
+        GOD,
+        &format!(
+            "@org/grant #{}=Camarilla economy.account.post scope=#{child}",
+            joe.0
+        )
+    )));
     assert!(allow(&tw, joe, "economy.account.post", child));
     let ev = tw.run(GOD, &format!("@org/scope retire Camarilla=#{child}"));
     assert!(!has_error(&ev), "retire refused: {}", texts(&ev));
-    assert!(!allow(&tw, joe, "economy.account.post", child), "a retired scope still authorized");
+    assert!(
+        !allow(&tw, joe, "economy.account.post", child),
+        "a retired scope still authorized"
+    );
 
     // Retire is not a delete: the scope and the grant are both still there.
     assert!(store(&tw).state().scope(child).is_some());
@@ -403,7 +609,11 @@ fn scope_create_and_retire_through_the_command_surface() {
 
     // The root can never be retired.
     let ev = tw.run(GOD, &format!("@org/scope retire Camarilla=#{root}"));
-    assert!(has_error(&ev) && texts(&ev).contains("root scope"), "{}", texts(&ev));
+    assert!(
+        has_error(&ev) && texts(&ev).contains("root scope"),
+        "{}",
+        texts(&ev)
+    );
 }
 
 #[test]
@@ -412,12 +622,23 @@ fn retire_survives_reboot_and_stays_retired() {
     tw.run(GOD, "@org/create Camarilla");
     tw.run(GOD, "@org/scope create Camarilla=logistics");
     let (org, _) = only_org(&tw);
-    let child = store(&tw).state().scopes_in(org).find(|s| s.name == "logistics").expect("scope").id;
-    assert!(!has_error(&tw.run(GOD, &format!("@org/scope retire Camarilla=#{child}"))));
+    let child = store(&tw)
+        .state()
+        .scopes_in(org)
+        .find(|s| s.name == "logistics")
+        .expect("scope")
+        .id;
+    assert!(!has_error(
+        &tw.run(GOD, &format!("@org/scope retire Camarilla=#{child}"))
+    ));
     let kv = fold_kv(&mut tw);
     let tw2 = reboot(kv, &[]);
     assert_eq!(
-        store(&tw2).state().scope(child).expect("scope survives").status,
+        store(&tw2)
+            .state()
+            .scope(child)
+            .expect("scope survives")
+            .status,
         mush_org::ScopeStatus::Retired
     );
 }
@@ -431,13 +652,21 @@ fn scope_retire_is_refused_while_a_binder_still_names_it() {
     tw.run(GOD, "@org/create Camarilla");
     tw.run(GOD, "@org/scope create Camarilla=logistics");
     let (org, _) = only_org(&tw);
-    let child = store(&tw).state().scopes_in(org).find(|s| s.name == "logistics").expect("scope").id;
+    let child = store(&tw)
+        .state()
+        .scopes_in(org)
+        .find(|s| s.name == "logistics")
+        .expect("scope")
+        .id;
     assert_eq!(child, OrgScopeId(1), "the stub binder names scope #1");
 
     let ev = tw.run(GOD, &format!("@org/scope retire Camarilla=#{child}"));
     assert!(has_error(&ev), "a bound scope must not retire");
     assert!(texts(&ev).contains("still in use"), "{}", texts(&ev));
-    assert_eq!(store(&tw).state().scope(child).expect("scope").status, mush_org::ScopeStatus::Active);
+    assert_eq!(
+        store(&tw).state().scope(child).expect("scope").status,
+        mush_org::ScopeStatus::Active
+    );
 }
 
 #[test]
@@ -448,32 +677,56 @@ fn grant_takes_an_exact_scope_and_a_per_operation_limit() {
     tw.run(GOD, "@org/scope create Camarilla=logistics");
     tw.run(GOD, "@org/scope create Camarilla=operations");
     let (org, root) = only_org(&tw);
-    let logistics = store(&tw).state().scopes_in(org).find(|s| s.name == "logistics").expect("s").id;
-    let operations = store(&tw).state().scopes_in(org).find(|s| s.name == "operations").expect("s").id;
+    let logistics = store(&tw)
+        .state()
+        .scopes_in(org)
+        .find(|s| s.name == "logistics")
+        .expect("s")
+        .id;
+    let operations = store(&tw)
+        .state()
+        .scopes_in(org)
+        .find(|s| s.name == "operations")
+        .expect("s")
+        .id;
 
     let ev = tw.run(
         GOD,
-        &format!("@org/grant #{}=Camarilla economy.account.post scope=#{logistics} limit=500", joe.0),
+        &format!(
+            "@org/grant #{}=Camarilla economy.account.post scope=#{logistics} limit=500",
+            joe.0
+        ),
     );
     assert!(!has_error(&ev), "grant refused: {}", texts(&ev));
-    let g = store(&tw).state().grants_in(org).next().expect("grant").clone();
+    let g = store(&tw)
+        .state()
+        .grants_in(org)
+        .next()
+        .expect("grant")
+        .clone();
     assert_eq!(g.scope, mush_org::ScopeSelector::Exact(logistics));
     assert_eq!(g.limit.and_then(|l| l.max_amount), Some(500));
 
     // The exact selector does not reach the sibling or the root...
     let within = |scope, amount| {
-        authorize_in_world(tw.world(), &AuthRequest {
-            actor: joe,
-            capability: cap("economy.account.post"),
-            scope,
-            now: tw.world().now(),
-            amount: Some(amount),
-        })
+        authorize_in_world(
+            tw.world(),
+            &AuthRequest {
+                actor: joe,
+                capability: cap("economy.account.post"),
+                scope,
+                now: tw.world().now(),
+                amount: Some(amount),
+            },
+        )
         .is_allow()
     };
     assert!(within(logistics, 500), "at the limit must pass");
     assert!(!within(logistics, 501), "over the limit must fail");
-    assert!(!within(operations, 100), "an Exact selector reached a sibling");
+    assert!(
+        !within(operations, 100),
+        "an Exact selector reached a sibling"
+    );
     assert!(!within(root, 100), "an Exact selector reached the root");
     // ...and a limited grant denies an amount-free request (fail-closed).
     assert!(!allow(&tw, joe, "economy.account.post", logistics));
@@ -486,12 +739,24 @@ fn grant_takes_an_exact_scope_and_a_per_operation_limit() {
 
     // A scope from another org is refused.
     tw.run(GOD, "@org/create Tremere");
-    let other_root = store(&tw).state().orgs().find(|o| o.name == "Tremere").expect("org").root_scope;
+    let other_root = store(&tw)
+        .state()
+        .orgs()
+        .find(|o| o.name == "Tremere")
+        .expect("org")
+        .root_scope;
     let ev = tw.run(
         GOD,
-        &format!("@org/grant #{}=Camarilla economy.account.post scope=#{other_root}", joe.0),
+        &format!(
+            "@org/grant #{}=Camarilla economy.account.post scope=#{other_root}",
+            joe.0
+        ),
     );
-    assert!(has_error(&ev) && texts(&ev).contains("another organization"), "{}", texts(&ev));
+    assert!(
+        has_error(&ev) && texts(&ev).contains("another organization"),
+        "{}",
+        texts(&ev)
+    );
 }
 
 #[test]
@@ -502,10 +767,23 @@ fn a_limit_is_refused_on_a_non_amount_capability() {
     let (org, root) = only_org(&tw);
     // A13: `vault.withdraw` requests carry no amount, so a limit would answer
     // AmountRequired forever — the grant would be inert, not narrow.
-    let ev = tw.run(GOD, &format!("@org/grant #{}=Camarilla vault.withdraw scope=#{root} limit=5", joe.0));
-    assert!(has_error(&ev), "a limit on a non-amount capability must refuse");
+    let ev = tw.run(
+        GOD,
+        &format!(
+            "@org/grant #{}=Camarilla vault.withdraw scope=#{root} limit=5",
+            joe.0
+        ),
+    );
+    assert!(
+        has_error(&ev),
+        "a limit on a non-amount capability must refuse"
+    );
     assert!(texts(&ev).contains("amount-carrying"), "{}", texts(&ev));
-    assert_eq!(store(&tw).state().grants_in(org).count(), 0, "the refused grant was stored anyway");
+    assert_eq!(
+        store(&tw).state().grants_in(org).count(),
+        0,
+        "the refused grant was stored anyway"
+    );
 }
 
 #[test]
@@ -515,13 +793,19 @@ fn an_unknown_capability_is_refused_when_a_vocabulary_is_wired() {
     tw.run(GOD, "@org/create Camarilla");
     let (org, _) = only_org(&tw);
 
-    let ev = tw.run(GOD, &format!("@org/grant #{}=Camarilla economy.acount.post", joe.0));
+    let ev = tw.run(
+        GOD,
+        &format!("@org/grant #{}=Camarilla economy.acount.post", joe.0),
+    );
     assert!(has_error(&ev), "a typo-ed capability must refuse");
     assert!(texts(&ev).contains("Unknown capability"), "{}", texts(&ev));
     assert_eq!(store(&tw).state().grants_in(org).count(), 0);
 
     // A capability inside the vocabulary is granted normally.
-    assert!(!has_error(&tw.run(GOD, &format!("@org/grant #{}=Camarilla org.role.manage", joe.0))));
+    assert!(!has_error(&tw.run(
+        GOD,
+        &format!("@org/grant #{}=Camarilla org.role.manage", joe.0)
+    )));
     assert_eq!(store(&tw).state().grants_in(org).count(), 1);
 }
 
@@ -531,7 +815,10 @@ fn no_vocabulary_accepts_everything_and_show_flags_a_stray_grant() {
     let mut tw = boot();
     let joe = tw.spawn_player("Joe");
     tw.run(GOD, "@org/create Camarilla");
-    assert!(!has_error(&tw.run(GOD, &format!("@org/grant #{}=Camarilla legacy.capability", joe.0))));
+    assert!(!has_error(&tw.run(
+        GOD,
+        &format!("@org/grant #{}=Camarilla legacy.capability", joe.0)
+    )));
     let kv = fold_kv(&mut tw);
 
     // Reboot the SAME data under a vocabulary that no longer lists it: the grant is
@@ -540,10 +827,17 @@ fn no_vocabulary_accepts_everything_and_show_flags_a_stray_grant() {
     tw2.spawn_player("Joe");
     tw2.modules_loaded(HashMap::from([(
         SmolStr::new(NS),
-        ModuleBootData { kv, streams: HashMap::new() },
+        ModuleBootData {
+            kv,
+            streams: HashMap::new(),
+        },
     )]));
     let (org, _) = only_org(&tw2);
-    assert_eq!(store(&tw2).state().grants_in(org).count(), 1, "the stray grant was dropped");
+    assert_eq!(
+        store(&tw2).state().grants_in(org).count(),
+        1,
+        "the stray grant was dropped"
+    );
     let ev = tw2.run(GOD, "@org/show Camarilla");
     assert!(
         texts(&ev).contains("UNKNOWN CAPABILITY"),
@@ -561,13 +855,20 @@ fn a_frozen_subtree_never_widens_to_a_scope_created_later() {
     // A grant frozen at the org's revision AS IT IS NOW — the snapshot a caller
     // reading `Organization.revision` would take.
     let snapshot_revision = store(&tw).state().org(org).expect("org").revision;
-    let grant_id = tw.world_mut().module_state_mut::<OrgStore>().expect("store").alloc_grant();
+    let grant_id = tw
+        .world_mut()
+        .module_state_mut::<OrgStore>()
+        .expect("store")
+        .alloc_grant();
     let frozen = mush_org::CapabilityGrant {
         id: grant_id,
         org,
         grantee: joe,
         capability: cap("economy.account.post"),
-        scope: mush_org::ScopeSelector::SubtreeFrozen { root, snapshot_revision },
+        scope: mush_org::ScopeSelector::SubtreeFrozen {
+            root,
+            snapshot_revision,
+        },
         limit: None,
         delegable: false,
         valid_from: None,
@@ -575,14 +876,27 @@ fn a_frozen_subtree_never_widens_to_a_scope_created_later() {
         revision: 1,
     };
     let mut probe_kv: Vec<(SmolStr, serde_json::Value)> = fold_kv(&mut tw);
-    probe_kv.push((mush_org::grant_key(grant_id), serde_json::to_value(&frozen).expect("grant")));
+    probe_kv.push((
+        mush_org::grant_key(grant_id),
+        serde_json::to_value(&frozen).expect("grant"),
+    ));
     let mut tw = reboot(probe_kv, &["Joe"]);
-    assert!(allow(&tw, joe, "economy.account.post", root), "the frozen subtree covers its own root");
+    assert!(
+        allow(&tw, joe, "economy.account.post", root),
+        "the frozen subtree covers its own root"
+    );
 
     // A scope created AFTER the snapshot must not fall inside it.
-    assert!(!has_error(&tw.run(GOD, "@org/scope create Camarilla=logistics")));
+    assert!(!has_error(
+        &tw.run(GOD, "@org/scope create Camarilla=logistics")
+    ));
     let (org, _) = only_org(&tw);
-    let child = store(&tw).state().scopes_in(org).find(|s| s.name == "logistics").expect("scope").id;
+    let child = store(&tw)
+        .state()
+        .scopes_in(org)
+        .find(|s| s.name == "logistics")
+        .expect("scope")
+        .id;
     assert!(
         !allow(&tw, joe, "economy.account.post", child),
         "a frozen subtree silently widened to a scope created after its snapshot"

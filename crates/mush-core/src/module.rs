@@ -2829,7 +2829,10 @@ impl Ctx<'_> {
     /// stronger, command-specific warning for flows such as mail send and XP
     /// approval.
     pub fn gate_on_durable_ack(&mut self) {
-        self.out.defer(Deferred::DurableGate { actor: self.actor, strict: false });
+        self.out.defer(Deferred::DurableGate {
+            actor: self.actor,
+            strict: false,
+        });
     }
 
     /// Like [`Ctx::gate_on_durable_ack`], but **strict** (for money — E2 R-R1): on a
@@ -2839,7 +2842,10 @@ impl Ctx<'_> {
     /// reconciled at boot; the actor is told the command did NOT confirm). Use it
     /// from any handler that emits a money-movement confirmation.
     pub fn gate_on_durable_ack_strict(&mut self) {
-        self.out.defer(Deferred::DurableGate { actor: self.actor, strict: true });
+        self.out.defer(Deferred::DurableGate {
+            actor: self.actor,
+            strict: true,
+        });
     }
 
     /// Read this world's state slot for `T` (declared via

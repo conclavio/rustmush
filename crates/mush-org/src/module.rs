@@ -199,7 +199,10 @@ impl OrgModule {
     /// it; e.g. E1c's faction-standing provider).
     #[must_use]
     pub fn with_predicates(providers: Vec<Arc<dyn OrgPredicateProvider>>) -> OrgModule {
-        OrgModule { providers: Arc::new(providers), ..OrgModule::default() }
+        OrgModule {
+            providers: Arc::new(providers),
+            ..OrgModule::default()
+        }
     }
     /// Freeze the capability vocabulary this server recognizes (E3b2 §4.8.4). An
     /// **empty** set (the default) accepts every capability — the E1 behavior.
@@ -231,13 +234,19 @@ impl GameModule for OrgModule {
         Ok(())
     }
 
-    fn on_world_loaded(&mut self, ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModError> {
+    fn on_world_loaded(
+        &mut self,
+        ctx: &mut ModuleCtx<'_>,
+        data: ModuleBootData,
+    ) -> Result<(), ModError> {
         let mut store = boot::load_boot(ctx, data)?;
         // Inject the wiring-frozen tables into the freshly booted slot.
         store.providers = self.providers.clone();
         store.capabilities = self.capabilities.clone();
         store.scope_use = self.scope_use.clone();
-        *ctx.w.module_state_mut::<OrgStore>().expect("org store slot installed at registration") = store;
+        *ctx.w
+            .module_state_mut::<OrgStore>()
+            .expect("org store slot installed at registration") = store;
         Ok(())
     }
 }
@@ -246,10 +255,14 @@ impl GameModule for OrgModule {
 /// primary authority guard) and persist exactly the deletions + the policies whose
 /// rule lists shrank. No audit entry — this is a world event, not an actor action.
 fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
-    let WorldEvent::ObjDestroyed { obj } = ev else { return };
+    let WorldEvent::ObjDestroyed { obj } = ev else {
+        return;
+    };
     let obj = *obj;
     let (report, modified) = {
-        let Some(store) = ctx.w.module_state_mut::<OrgStore>() else { return };
+        let Some(store) = ctx.w.module_state_mut::<OrgStore>() else {
+            return;
+        };
         let report = store.state.scrub_object(obj);
         let modified: Vec<AccessPolicy> = report
             .modified_policies

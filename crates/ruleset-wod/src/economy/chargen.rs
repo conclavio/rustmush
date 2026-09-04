@@ -28,9 +28,7 @@
 //! exists to protect. A vacancy on offer is the one fact this step is *for*.
 
 use mush_core::{Ctx, ObjId};
-use mush_economy::{
-    EconomicCause, EconomicVisibility, EconomyPlan, IdempotencyKey, RequestedLine,
-};
+use mush_economy::{EconomicCause, EconomicVisibility, EconomyPlan, IdempotencyKey, RequestedLine};
 use mush_housing::{HousingStore, PropertyId, PropertyStatus};
 use mush_org::PrincipalId;
 
@@ -57,13 +55,19 @@ pub struct Vacancy {
 /// the character would walk into already `Strained`.
 #[must_use]
 pub fn vacancies(ctx: &Ctx<'_>, level: u8) -> Vec<Vacancy> {
-    let Some(store) = ctx.w.module_state::<HousingStore>() else { return Vec::new() };
+    let Some(store) = ctx.w.module_state::<HousingStore>() else {
+        return Vec::new();
+    };
     store
         .properties()
         .filter(|p| p.status == PropertyStatus::Vacant)
         .filter(|p| !store.has_live_tenancy(p.id))
         .filter(|p| p.tier.get() <= level)
-        .map(|p| Vacancy { property: p.id, name: p.name.to_string(), tier: p.tier.get() })
+        .map(|p| Vacancy {
+            property: p.id,
+            name: p.name.to_string(),
+            tier: p.tier.get(),
+        })
         .collect()
 }
 
@@ -84,7 +88,10 @@ pub fn choose(
         put_residence(ctx, who, None);
         return Ok(None);
     };
-    let Some(v) = vacancies(ctx, level).into_iter().find(|v| v.property == want) else {
+    let Some(v) = vacancies(ctx, level)
+        .into_iter()
+        .find(|v| v.property == want)
+    else {
         return Err("That is not one of the places on offer.".to_string());
     };
     put_residence(ctx, who, Some(want));
@@ -121,7 +128,10 @@ pub fn on_approved(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig, who: ObjId) -> Vec
     profile.revision = profile.revision.saturating_add(1);
     put_profile(ctx, profile.clone());
     seed_eval(ctx, who);
-    out.push(format!("WoD economy: support profile created (level {}).", profile.level));
+    out.push(format!(
+        "WoD economy: support profile created (level {}).",
+        profile.level
+    ));
 
     if cfg.personal_mode == PersonalMode::Exact {
         match open_wallet(ctx, cfg, who) {
@@ -151,22 +161,29 @@ fn open_wallet(
     cfg: &WodEconomyConfig,
     who: ObjId,
 ) -> Result<Option<String>, String> {
-    let Some(instrument) =
-        ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.instrument().cloned())
+    let Some(instrument) = ctx
+        .w
+        .module_state::<WodEconomyStore>()
+        .and_then(|s| s.instrument().cloned())
     else {
         return Err("wod.usd is not registered; no account was opened.".to_string());
     };
     let Some(account) = boot::open_personal_account(ctx, who, &instrument) else {
         return Err("no account could be opened (the allocator is exhausted).".to_string());
     };
-    if let Some(mut p) = ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.profile(who).cloned())
+    if let Some(mut p) = ctx
+        .w
+        .module_state::<WodEconomyStore>()
+        .and_then(|s| s.profile(who).cloned())
     {
         p.account = Some(account);
         p.revision = p.revision.saturating_add(1);
         put_profile(ctx, p);
     }
     if cfg.starting_funds_major == 0 {
-        return Ok(Some(format!("WoD economy: account #{account} opened (zero balance).")));
+        return Ok(Some(format!(
+            "WoD economy: account #{account} opened (zero balance)."
+        )));
     }
     let Some(amount) = boot::major_to_amount(ctx, &instrument, cfg.starting_funds_major) else {
         return Err(format!(
@@ -175,10 +192,14 @@ fn open_wallet(
         ));
     };
     let Some(debit) = boot::system_account(ctx, FAUCET_CHARGEN, &instrument) else {
-        return Err(format!("account #{account} opened; system:wod.chargen has no account."));
+        return Err(format!(
+            "account #{account} opened; system:wod.chargen has no account."
+        ));
     };
     let Some(negative) = amount.checked_neg() else {
-        return Err(format!("account #{account} opened; the starting amount does not negate."));
+        return Err(format!(
+            "account #{account} opened; the starting amount does not negate."
+        ));
     };
     let mut plan = EconomyPlan::new(
         // Deterministic, so a re-run of the approval handler cannot mint a second
@@ -216,7 +237,9 @@ fn open_wallet(
             "WoD economy: account #{account} opened and seeded with {} from system:wod.chargen.",
             amount.to_decimal_string(crate::economy::config::WOD_USD_SCALE)
         ))),
-        Err(e) => Err(format!("account #{account} opened, but the starting funds refused: {e}")),
+        Err(e) => Err(format!(
+            "account #{account} opened, but the starting funds refused: {e}"
+        )),
     }
 }
 
@@ -232,7 +255,10 @@ fn open_wallet(
 /// is **dropped and reported to the approver** with the property's tier and the
 /// character's level: deviation 11's shape, report and never un-sign.
 fn settle_residence(ctx: &mut Ctx<'_>, who: ObjId, level: u8) -> Result<Option<String>, String> {
-    let Some(property) = ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.residence(who))
+    let Some(property) = ctx
+        .w
+        .module_state::<WodEconomyStore>()
+        .and_then(|s| s.residence(who))
     else {
         return Ok(None);
     };
@@ -251,7 +277,10 @@ fn settle_residence(ctx: &mut Ctx<'_>, who: ObjId, level: u8) -> Result<Option<S
              and no tenancy was created."
         ));
     }
-    let Some(cadence) = ctx.w.module_state::<WodEconomyStore>().and_then(WodEconomyStore::cadence)
+    let Some(cadence) = ctx
+        .w
+        .module_state::<WodEconomyStore>()
+        .and_then(WodEconomyStore::cadence)
     else {
         return Err("no campaign clock resolves; no tenancy was created.".to_string());
     };

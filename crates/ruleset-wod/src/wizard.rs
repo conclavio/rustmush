@@ -445,8 +445,9 @@ impl ChargenWizard {
         for o in &offered {
             v.push(format!("  #{}  {}  (tier {})", o.property, o.name, o.tier));
         }
-        v.push("Choose with the number, e.g.  #3   — or 'none' for nowhere in particular."
-            .to_string());
+        v.push(
+            "Choose with the number, e.g.  #3   — or 'none' for nowhere in particular.".to_string(),
+        );
         v.push("This step is optional: 'next' leaves it unset.".to_string());
         // What is *not* said here is the point: no occupancy, no tenants, no
         // landlord, and no mention of any property that is already let.
@@ -462,8 +463,7 @@ impl ChargenWizard {
         let level = self.residence_level(ctx);
         let raw = line.trim();
         if raw.eq_ignore_ascii_case("none") || raw.eq_ignore_ascii_case("nowhere") {
-            crate::economy::chargen::choose(ctx, ctx.actor, level, None)
-                .map_err(CmdError::msg)?;
+            crate::economy::chargen::choose(ctx, ctx.actor, level, None).map_err(CmdError::msg)?;
             return Ok("No residence chosen.".to_string());
         }
         let id = raw

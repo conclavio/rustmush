@@ -108,15 +108,22 @@ fn rederive_lost_profiles(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig) {
     let lost: Vec<ObjId> = want
         .into_iter()
         .filter(|who| {
-            ctx.w.module_state::<WodEconomyStore>().is_some_and(|s| s.profile(*who).is_none())
+            ctx.w
+                .module_state::<WodEconomyStore>()
+                .is_some_and(|s| s.profile(*who).is_none())
         })
         // Existence **plus** not-`GOING`: a husk on its way out is not re-profiled
         // (the house liveness predicate, inline — E5c fold T4).
         .filter(|who| {
-            ctx.w.get(*who).is_some_and(|o| !o.flags.contains(mush_core::Flags::GOING))
+            ctx.w
+                .get(*who)
+                .is_some_and(|o| !o.flags.contains(mush_core::Flags::GOING))
         })
         .collect();
-    let instrument = ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.instrument().cloned());
+    let instrument = ctx
+        .w
+        .module_state::<WodEconomyStore>()
+        .and_then(|s| s.instrument().cloned());
     for who in lost {
         let resources = crate::economy::sheet_resources(ctx.w, who).unwrap_or(0);
         let mut p = SpendingProfile::new(who, resources, cfg.default_engagement);
@@ -131,7 +138,8 @@ fn rederive_lost_profiles(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig) {
         put_profile(ctx, p);
         seed_eval(ctx, who);
         tracing::warn!(
-            who = who.0, resources,
+            who = who.0,
+            resources,
             "wod.economy: re-derived a lost spending profile at boot (strain and any open prompt \
              are gone; the support level and the home are not)"
         );
@@ -196,12 +204,16 @@ fn reconcile_income_lines(ctx: &mut Ctx<'_>) {
             continue;
         }
         let owner = ctx.w.module_state::<WodEconomyStore>().and_then(|s| {
-            s.profiles().find(|p| p.account == Some(credit) && p.income.is_none()).map(|p| p.obj)
+            s.profiles()
+                .find(|p| p.account == Some(credit) && p.income.is_none())
+                .map(|p| p.obj)
         });
         match owner {
             Some(who) => {
-                if let Some(mut p) =
-                    ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.profile(who).cloned())
+                if let Some(mut p) = ctx
+                    .w
+                    .module_state::<WodEconomyStore>()
+                    .and_then(|s| s.profile(who).cloned())
                 {
                     p.income = Some(id);
                     p.revision = p.revision.saturating_add(1);
@@ -209,24 +221,24 @@ fn reconcile_income_lines(ctx: &mut Ctx<'_>) {
                     put_profile(ctx, p);
                 }
                 tracing::warn!(
-                    obligation = id.0, who = who.0,
+                    obligation = id.0,
+                    who = who.0,
                     "wod.economy: adopted an orphaned income line at boot (the profile had lost \
                      its pointer; the record named itself)"
                 );
             }
-            None => {
-                match mush_economy::set_system_obligation(ctx, &faucet, id, None) {
-                    Ok(()) => tracing::warn!(
-                        obligation = id.0, credit = credit.0,
-                        "wod.economy: cancelled an income line no profile claims"
-                    ),
-                    Err(error) => tracing::error!(
-                        obligation = id.0, credit = credit.0, %error,
-                        "wod.economy: could not cancel an unclaimed income line; it is still \
-                         minting (staff: @obligation/cancel)"
-                    ),
-                }
-            }
+            None => match mush_economy::set_system_obligation(ctx, &faucet, id, None) {
+                Ok(()) => tracing::warn!(
+                    obligation = id.0,
+                    credit = credit.0,
+                    "wod.economy: cancelled an income line no profile claims"
+                ),
+                Err(error) => tracing::error!(
+                    obligation = id.0, credit = credit.0, %error,
+                    "wod.economy: could not cancel an unclaimed income line; it is still \
+                     minting (staff: @obligation/cancel)"
+                ),
+            },
         }
     }
 }
@@ -239,13 +251,17 @@ fn reconcile_income_lines(ctx: &mut Ctx<'_>) {
 /// not bound it and is not meant to. This never refuses (deviation 11: the approval
 /// never fails); it warns once at boot, and `@wod/economy` marks the line.
 fn warn_over_cap_stake(ctx: &Ctx<'_>, cfg: &WodEconomyConfig, instrument: &InstrumentId) {
-    let Some(cap) = ctx.w.module_state::<EconomyStore>().map(|s| s.config().cap_major(instrument))
+    let Some(cap) = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .map(|s| s.config().cap_major(instrument))
     else {
         return;
     };
     if cfg.starting_funds_major > cap {
         tracing::warn!(
-            starting_funds_major = cfg.starting_funds_major, mint_cap_major = cap,
+            starting_funds_major = cfg.starting_funds_major,
+            mint_cap_major = cap,
             "wod.economy: [wod.economy].starting_funds_major is larger than \
              [economy].mint_obligation_cap_major. That is allowed — the chargen stake is an \
              attributed post, not a standing mint, and the cap bounds income LINES only — but \
@@ -315,20 +331,23 @@ fn ensure_instrument(ctx: &mut Ctx<'_>) -> Option<InstrumentId> {
     if known {
         return Some(id);
     }
-    if let Err(error) = mush_economy::register_instrument(ctx, InstrumentDef {
-        id: id.clone(),
-        ruleset: SmolStr::new_static("wod"),
-        code: SmolStr::new_static(WOD_USD),
-        kind: InstrumentKind::Currency,
-        scale: WOD_USD_SCALE,
-        transferable: true,
-        // A faucet must be able to run negative — that is what a faucet *is* — and
-        // `SystemOnly` is the policy `@instrument/register` gives every currency, so
-        // an ordinary character's account still cannot.
-        negative_policy: NegativePolicy::SystemOnly,
-        status: InstrumentStatus::Active,
-        revision: 1,
-    }) {
+    if let Err(error) = mush_economy::register_instrument(
+        ctx,
+        InstrumentDef {
+            id: id.clone(),
+            ruleset: SmolStr::new_static("wod"),
+            code: SmolStr::new_static(WOD_USD),
+            kind: InstrumentKind::Currency,
+            scale: WOD_USD_SCALE,
+            transferable: true,
+            // A faucet must be able to run negative — that is what a faucet *is* — and
+            // `SystemOnly` is the policy `@instrument/register` gives every currency, so
+            // an ordinary character's account still cannot.
+            negative_policy: NegativePolicy::SystemOnly,
+            status: InstrumentStatus::Active,
+            revision: 1,
+        },
+    ) {
         // Create-only since the look-back fold (E2-C18); the `known` check above
         // makes this unreachable, and a refusal here still leaves the registered
         // instrument exactly as it was.
@@ -348,12 +367,17 @@ fn ensure_system_account(ctx: &mut Ctx<'_>, name: &str, instrument: &InstrumentI
     };
     let owner = PrincipalId::System(sys);
     let known = ctx.w.module_state::<EconomyStore>().is_some_and(|s| {
-        s.snapshot().accounts().any(|a| a.owner == owner && a.instrument == *instrument)
+        s.snapshot()
+            .accounts()
+            .any(|a| a.owner == owner && a.instrument == *instrument)
     });
     if known {
         return;
     }
-    let Some(id) = ctx.w.module_state_mut::<EconomyStore>().and_then(EconomyStore::alloc_account)
+    let Some(id) = ctx
+        .w
+        .module_state_mut::<EconomyStore>()
+        .and_then(EconomyStore::alloc_account)
     else {
         tracing::error!(
             principal = name,
@@ -361,24 +385,31 @@ fn ensure_system_account(ctx: &mut Ctx<'_>, name: &str, instrument: &InstrumentI
         );
         return;
     };
-    mush_economy::open_account(ctx, Account {
-        id,
-        owner,
-        instrument: instrument.clone(),
-        scope: None,
-        name: SmolStr::new(name),
-        status: AccountStatus::Active,
-        posted_balance: Amount::ZERO,
-        held_amount: Amount::ZERO,
-        last_hold_seq: 0,
-        // A faucet is a source: unbounded negative is what makes it one, and the
-        // instrument's `SystemOnly` policy is what keeps that privilege system-side.
-        credit: CreditPolicy::unbounded(),
-        last_journal_seq: 0,
-        revision: 1,
-        approval: None,
-    });
-    tracing::info!(principal = name, account = id.0, "wod.economy: opened a system account");
+    mush_economy::open_account(
+        ctx,
+        Account {
+            id,
+            owner,
+            instrument: instrument.clone(),
+            scope: None,
+            name: SmolStr::new(name),
+            status: AccountStatus::Active,
+            posted_balance: Amount::ZERO,
+            held_amount: Amount::ZERO,
+            last_hold_seq: 0,
+            // A faucet is a source: unbounded negative is what makes it one, and the
+            // instrument's `SystemOnly` policy is what keeps that privilege system-side.
+            credit: CreditPolicy::unbounded(),
+            last_journal_seq: 0,
+            revision: 1,
+            approval: None,
+        },
+    );
+    tracing::info!(
+        principal = name,
+        account = id.0,
+        "wod.economy: opened a system account"
+    );
 }
 
 /// The account owned by system principal `name` in `wod.usd`, if any.
@@ -426,28 +457,32 @@ pub fn open_personal_account(
     if let Some(id) = personal_account(ctx, who, instrument) {
         return Some(id);
     }
-    let id = ctx.w.module_state_mut::<EconomyStore>().and_then(EconomyStore::alloc_account)?;
-    let name = ctx
+    let id = ctx
         .w
-        .get(who)
-        .map_or_else(|| format!("#{}", who.0), |o| {
-            mush_core::output::primary_name(&o.name).to_string()
-        });
-    mush_economy::open_account(ctx, Account {
-        id,
-        owner: PrincipalId::Object(who),
-        instrument: instrument.clone(),
-        scope: None,
-        name: SmolStr::new(crate::economy::record::clip(&name)),
-        status: AccountStatus::Active,
-        posted_balance: Amount::ZERO,
-        held_amount: Amount::ZERO,
-        last_hold_seq: 0,
-        credit: CreditPolicy::forbid(),
-        last_journal_seq: 0,
-        revision: 1,
-        approval: None,
-    });
+        .module_state_mut::<EconomyStore>()
+        .and_then(EconomyStore::alloc_account)?;
+    let name = ctx.w.get(who).map_or_else(
+        || format!("#{}", who.0),
+        |o| mush_core::output::primary_name(&o.name).to_string(),
+    );
+    mush_economy::open_account(
+        ctx,
+        Account {
+            id,
+            owner: PrincipalId::Object(who),
+            instrument: instrument.clone(),
+            scope: None,
+            name: SmolStr::new(crate::economy::record::clip(&name)),
+            status: AccountStatus::Active,
+            posted_balance: Amount::ZERO,
+            held_amount: Amount::ZERO,
+            last_hold_seq: 0,
+            credit: CreditPolicy::forbid(),
+            last_journal_seq: 0,
+            revision: 1,
+            approval: None,
+        },
+    );
     Some(id)
 }
 
@@ -458,7 +493,12 @@ pub fn open_personal_account(
 /// unrepresentable amount refuses, it is never silently clamped into one that mints.
 #[must_use]
 pub fn major_to_amount(ctx: &Ctx<'_>, instrument: &InstrumentId, major: u64) -> Option<Amount> {
-    let scale = ctx.w.module_state::<EconomyStore>()?.snapshot().instrument(instrument)?.scale;
+    let scale = ctx
+        .w
+        .module_state::<EconomyStore>()?
+        .snapshot()
+        .instrument(instrument)?
+        .scale;
     let factor = 10_i128.checked_pow(u32::from(scale))?;
     let minor = i128::from(major).checked_mul(factor)?;
     Amount::from_widened(minor)

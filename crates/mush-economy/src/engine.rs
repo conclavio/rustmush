@@ -142,14 +142,24 @@ pub trait AuthEval {
     /// creates one). The seam owns the policy: owner / `asset.title.transfer` on the
     /// asset's scope / staff, with `Title` and `Encumber` staff-only in E3
     /// (invariants 19–20) and `Release(Lien)` additionally open to its creditor.
-    fn authorize_asset(&self, _actor: &PrincipalId, _asset: Option<&EconomicAsset>, _op: &AssetOp) -> bool {
+    fn authorize_asset(
+        &self,
+        _actor: &PrincipalId,
+        _asset: Option<&EconomicAsset>,
+        _op: &AssetOp,
+    ) -> bool {
         false
     }
     /// `true` if `actor` may put title INTO `to`/`to_scope` — the destination half of
     /// D-E3-12 (title carries liabilities, so receiving is not free the way a money
     /// credit is). The seam also resolves the org identity of `to_scope`, which the
     /// pure engine cannot see.
-    fn authorize_title_receipt(&self, _actor: &PrincipalId, _to: &PrincipalId, _to_scope: Option<OrgScopeId>) -> bool {
+    fn authorize_title_receipt(
+        &self,
+        _actor: &PrincipalId,
+        _to: &PrincipalId,
+        _to_scope: Option<OrgScopeId>,
+    ) -> bool {
         false
     }
     /// `true` if `actor` may perform `op` against `vault` (`vault.deposit` /
@@ -167,7 +177,12 @@ pub trait AuthEval {
     /// LIVE at post (A5: approvers frozen at approve time are a fail-open). Holds
     /// `economy.account.approve` on the account's scope; `Threshold.from_role` also
     /// requires that role via `OrgMembership`; `NamedSet` requires set membership.
-    fn authorize_approver(&self, _approver: ObjId, _account: &Account, _policy: &ApprovalPolicy) -> bool {
+    fn authorize_approver(
+        &self,
+        _approver: ObjId,
+        _account: &Account,
+        _policy: &ApprovalPolicy,
+    ) -> bool {
         false
     }
     /// `true` if `actor` may perform `op` on `hold` (E4a, invariant 25).
@@ -222,7 +237,12 @@ impl AuthEval for AllowAll {
     fn authorize_asset(&self, _: &PrincipalId, _: Option<&EconomicAsset>, _: &AssetOp) -> bool {
         true
     }
-    fn authorize_title_receipt(&self, _: &PrincipalId, _: &PrincipalId, _: Option<OrgScopeId>) -> bool {
+    fn authorize_title_receipt(
+        &self,
+        _: &PrincipalId,
+        _: &PrincipalId,
+        _: Option<OrgScopeId>,
+    ) -> bool {
         true
     }
     fn authorize_vault(&self, _: &PrincipalId, _: &Vault, _: &CustodyOp) -> bool {
@@ -351,7 +371,11 @@ impl From<EconomyError> for Fail {
 
 /// Validate `plan` against `snapshot` for its actor. Pure + total; mutates nothing.
 #[must_use]
-pub fn validate(plan: &EconomyPlan, snapshot: &EconomySnapshot, env: &ValidateEnv<'_>) -> PlanResult {
+pub fn validate(
+    plan: &EconomyPlan,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> PlanResult {
     let hash = plan_hash(plan);
 
     // Idempotency FIRST: an exact repeat short-circuits to the original id; a reuse
@@ -384,21 +408,36 @@ fn validate_inner(
     for e in &plan.expected_revisions {
         let cur = snapshot.account(e.account).map(|a| a.revision);
         if cur != Some(e.revision) {
-            return Err(EconomyError::Stale { account: e.account, expected: e.revision, found: cur }.into());
+            return Err(EconomyError::Stale {
+                account: e.account,
+                expected: e.revision,
+                found: cur,
+            }
+            .into());
         }
     }
     // Invariant 16: the same guard on TITLE data.
     for e in &plan.expected_asset_revisions {
         let cur = snapshot.asset(e.object).map(|a| a.revision);
         if cur != Some(e.revision) {
-            return Err(EconomyError::StaleAsset { object: e.object, expected: e.revision, found: cur }.into());
+            return Err(EconomyError::StaleAsset {
+                object: e.object,
+                expected: e.revision,
+                found: cur,
+            }
+            .into());
         }
     }
     // Invariant 26: and on RESERVATION data — the exit criterion's stale revisions.
     for e in &plan.expected_hold_revisions {
         let cur = snapshot.hold(e.hold).map(|h| h.revision);
         if cur != Some(e.revision) {
-            return Err(EconomyError::StaleHold { hold: e.hold, expected: e.revision, found: cur }.into());
+            return Err(EconomyError::StaleHold {
+                hold: e.hold,
+                expected: e.revision,
+                found: cur,
+            }
+            .into());
         }
     }
 
@@ -418,7 +457,9 @@ fn validate_inner(
             return Err(EconomyError::ZeroLine(i).into());
         }
         non_zero += 1;
-        let account = snapshot.account(rl.account).ok_or(EconomyError::NoSuchAccount(rl.account))?;
+        let account = snapshot
+            .account(rl.account)
+            .ok_or(EconomyError::NoSuchAccount(rl.account))?;
         if account.status != AccountStatus::Active {
             return Err(EconomyError::InactiveAccount(rl.account).into());
         }
@@ -432,7 +473,9 @@ fn validate_inner(
         if rl.delta.is_negative() {
             *gross_debit.entry(rl.account).or_insert(0) += rl.delta.widen();
         }
-        *per_instrument.entry(account.instrument.clone()).or_insert(0) += rl.delta.widen();
+        *per_instrument
+            .entry(account.instrument.clone())
+            .or_insert(0) += rl.delta.widen();
         lines.push(JournalLine {
             account: rl.account,
             instrument: account.instrument.clone(),
@@ -487,7 +530,10 @@ fn validate_inner(
     for (&account_id, &net128) in &per_account {
         let net = Amount::from_widened(net128).ok_or(EconomyError::Overflow)?;
         let account = snapshot.account(account_id).expect("resolved above");
-        let new_balance = account.posted_balance.checked_add(net).ok_or(EconomyError::Overflow)?;
+        let new_balance = account
+            .posted_balance
+            .checked_add(net)
+            .ok_or(EconomyError::Overflow)?;
         if !account.credit.permits(new_balance) {
             return Err(EconomyError::CreditViolation(account_id).into());
         }
@@ -505,17 +551,37 @@ fn validate_inner(
     // lowers `held`, but the arithmetic is proved rather than assumed).
     let mut new_held: BTreeMap<AccountId, Amount> = BTreeMap::new();
     for (&account_id, &delta) in &holds.held_deltas {
-        let account = snapshot.account(account_id).ok_or(EconomyError::NoSuchAccount(account_id))?;
-        let widened = account.held_amount.widen().checked_add(delta).ok_or(EconomyError::Overflow)?;
-        new_held.insert(account_id, Amount::from_widened(widened).ok_or(EconomyError::Overflow)?);
+        let account = snapshot
+            .account(account_id)
+            .ok_or(EconomyError::NoSuchAccount(account_id))?;
+        let widened = account
+            .held_amount
+            .widen()
+            .checked_add(delta)
+            .ok_or(EconomyError::Overflow)?;
+        new_held.insert(
+            account_id,
+            Amount::from_widened(widened).ok_or(EconomyError::Overflow)?,
+        );
     }
     let mut available_checked: BTreeSet<AccountId> = gross_debit.keys().copied().collect();
     available_checked.extend(holds.place_accounts.iter().copied());
     for account_id in available_checked {
-        let account = snapshot.account(account_id).ok_or(EconomyError::NoSuchAccount(account_id))?;
-        let net = balance_deltas.get(&account_id).copied().unwrap_or(Amount::ZERO);
-        let posted = account.posted_balance.checked_add(net).ok_or(EconomyError::Overflow)?;
-        let held = new_held.get(&account_id).copied().unwrap_or(account.held_amount);
+        let account = snapshot
+            .account(account_id)
+            .ok_or(EconomyError::NoSuchAccount(account_id))?;
+        let net = balance_deltas
+            .get(&account_id)
+            .copied()
+            .unwrap_or(Amount::ZERO);
+        let posted = account
+            .posted_balance
+            .checked_add(net)
+            .ok_or(EconomyError::Overflow)?;
+        let held = new_held
+            .get(&account_id)
+            .copied()
+            .unwrap_or(account.held_amount);
         let available = posted.checked_sub(held).ok_or(EconomyError::Overflow)?;
         if !account.credit.permits(available) {
             return Err(EconomyError::InsufficientAvailable(account_id).into());
@@ -552,7 +618,10 @@ fn validate_inner(
     for (&account_id, &net) in &balance_deltas {
         let account = snapshot.account(account_id).expect("resolved above");
         let covered = holds.captured.get(&account_id).copied().unwrap_or(0);
-        let net_probe = net.widen().checked_add(covered).ok_or(EconomyError::Overflow)?;
+        let net_probe = net
+            .widen()
+            .checked_add(covered)
+            .ok_or(EconomyError::Overflow)?;
         // A fully covered net (`net_probe == 0`) asks nothing at all: probing it as
         // a zero delta would ask the CREDIT question ("is this account a payee?") of
         // an account that is only paying.
@@ -562,8 +631,12 @@ fn validate_inner(
                 return Err(EconomyError::Unauthorized.into());
             }
         }
-        let Some(&debit128) = gross_debit.get(&account_id) else { continue };
-        let uncovered = debit128.checked_add(covered).ok_or(EconomyError::Overflow)?;
+        let Some(&debit128) = gross_debit.get(&account_id) else {
+            continue;
+        };
+        let uncovered = debit128
+            .checked_add(covered)
+            .ok_or(EconomyError::Overflow)?;
         if uncovered >= 0 {
             continue;
         }
@@ -612,7 +685,11 @@ fn validate_inner(
     // Canonical line order (matches the hash's total key) so the persisted entry is
     // deterministic regardless of request order.
     lines.sort_by(|a, b| {
-        (a.account.0, a.delta.minor(), a.memo.as_str()).cmp(&(b.account.0, b.delta.minor(), b.memo.as_str()))
+        (a.account.0, a.delta.minor(), a.memo.as_str()).cmp(&(
+            b.account.0,
+            b.delta.minor(),
+            b.memo.as_str(),
+        ))
     });
 
     let prepared = Prepared {
@@ -639,7 +716,9 @@ fn validate_inner(
     // build a poison-sized chunk (R-B5). Measure the real entry shape — effects
     // included (invariant 21); they are by far the largest part of an E3 entry.
     let probe = entry_probe(&prepared);
-    let size = serde_json::to_vec(&probe).map(|v| v.len()).unwrap_or(usize::MAX);
+    let size = serde_json::to_vec(&probe)
+        .map(|v| v.len())
+        .unwrap_or(usize::MAX);
     if size > MAX_ENTRY_BYTES {
         return Err(EconomyError::TooLarge("serialized entry exceeds the per-entry cap").into());
     }
@@ -679,7 +758,10 @@ fn caps(plan: &EconomyPlan) -> Result<(), EconomyError> {
         return Err(EconomyError::TooLarge("too many expected hold revisions"));
     }
     for op in &plan.hold_ops {
-        if let HoldOp::Place { purpose: crate::record::HoldPurpose::Manual { reason }, .. } = op
+        if let HoldOp::Place {
+            purpose: crate::record::HoldPurpose::Manual { reason },
+            ..
+        } = op
             && reason.len() > MAX_REASON_BYTES
         {
             return Err(EconomyError::TooLarge("hold reason too long"));
@@ -728,7 +810,11 @@ fn resolve_asset_ops(
     }
     // Canonical order — the SAME total order the plan hash uses, so the applied order
     // is the hashed order and two plans differing only in op order are one plan.
-    let mut keyed: Vec<(_, &AssetOp)> = plan.asset_ops.iter().map(|op| (asset_op_key(op), op)).collect();
+    let mut keyed: Vec<(_, &AssetOp)> = plan
+        .asset_ops
+        .iter()
+        .map(|op| (asset_op_key(op), op))
+        .collect();
     keyed.sort_by(|a, b| a.0.cmp(&b.0));
     // An exactly-duplicated op is a conflicting plan, not a no-op (adjacent after the
     // sort, since the key includes the op's canonical bytes).
@@ -769,7 +855,12 @@ fn resolve_asset_ops(
     for (_, op) in keyed {
         let object = op.object();
         let effect_kind = match op {
-            AssetOp::Title { owner, scope, catalog, .. } => {
+            AssetOp::Title {
+                owner,
+                scope,
+                catalog,
+                ..
+            } => {
                 if work.contains_key(&object) {
                     return Err(EconomyError::AssetExists(object));
                 }
@@ -799,24 +890,27 @@ fn resolve_asset_ops(
                 if !env.auth.authorize_asset(actor, None, op) {
                     return Err(EconomyError::Unauthorized);
                 }
-                work.insert(object, EconomicAsset {
+                work.insert(
                     object,
-                    title_owner: owner.clone(),
-                    scope: *scope,
-                    assignment: None,
-                    maintenance_account: None,
-                    catalog: catalog.clone(),
-                    encumbrances: Vec::new(),
-                    acquisition: None,
-                    lifecycle: AssetLifecycle::Active,
-                    last_journal_seq: 0,
-                    // A re-issue keeps counting from the record it replaces, so an
-                    // expected-revision guard written against the old title cannot
-                    // match the new one by accident.
-                    revision: previous.map_or(1, |r| r.saturating_add(1)),
-                    frozen: false,
-                    frozen_reason: None,
-                });
+                    EconomicAsset {
+                        object,
+                        title_owner: owner.clone(),
+                        scope: *scope,
+                        assignment: None,
+                        maintenance_account: None,
+                        catalog: catalog.clone(),
+                        encumbrances: Vec::new(),
+                        acquisition: None,
+                        lifecycle: AssetLifecycle::Active,
+                        last_journal_seq: 0,
+                        // A re-issue keeps counting from the record it replaces, so an
+                        // expected-revision guard written against the old title cannot
+                        // match the new one by accident.
+                        revision: previous.map_or(1, |r| r.saturating_add(1)),
+                        frozen: false,
+                        frozen_reason: None,
+                    },
+                );
                 AssetEffectKind::Created
             }
             _ => {
@@ -824,7 +918,9 @@ fn resolve_asset_ops(
                 let mut post = match work.get(&object) {
                     Some(a) => a.clone(),
                     None => {
-                        let a = snapshot.asset(object).ok_or(EconomyError::NoSuchAsset(object))?;
+                        let a = snapshot
+                            .asset(object)
+                            .ok_or(EconomyError::NoSuchAsset(object))?;
                         if a.frozen {
                             return Err(EconomyError::AssetFrozen(object));
                         }
@@ -847,7 +943,11 @@ fn resolve_asset_ops(
         // The doc-authority latch is NEVER carried in an effect (D-E3-1).
         post.frozen = false;
         post.frozen_reason = None;
-        effects.push(AssetEffect { object, kind: effect_kind, post });
+        effects.push(AssetEffect {
+            object,
+            kind: effect_kind,
+            post,
+        });
     }
     Ok(effects)
 }
@@ -864,7 +964,11 @@ fn apply_asset_op(
 ) -> Result<AssetEffectKind, EconomyError> {
     match op {
         AssetOp::Title { .. } => unreachable!("Title is handled by the caller"),
-        AssetOp::TransferTitle { object, to, to_scope } => {
+        AssetOp::TransferTitle {
+            object,
+            to,
+            to_scope,
+        } => {
             // Invariant 12: no claim may ride along. Releases sort first, so this
             // sees the post-release state.
             if !post.encumbrances.is_empty() {
@@ -888,7 +992,12 @@ fn apply_asset_op(
             post.maintenance_account = None;
             Ok(AssetEffectKind::TitleTransferred)
         }
-        AssetOp::Assign { object, to, purpose, valid_until } => {
+        AssetOp::Assign {
+            object,
+            to,
+            purpose,
+            valid_until,
+        } => {
             // Invariant 13: assignment is a relationship with someone else.
             if *to == post.title_owner {
                 return Err(EconomyError::AssignmentToOwner(*object));
@@ -913,7 +1022,10 @@ fn apply_asset_op(
             post.encumbrances.push(encumbrance.clone());
             Ok(AssetEffectKind::Encumbered)
         }
-        AssetOp::Release { object, encumbrance } => {
+        AssetOp::Release {
+            object,
+            encumbrance,
+        } => {
             let at = post
                 .encumbrances
                 .iter()
@@ -924,7 +1036,9 @@ fn apply_asset_op(
         }
         AssetOp::SetMaintenance { account, .. } => {
             if let Some(id) = account {
-                let acct = snapshot.account(*id).ok_or(EconomyError::NoSuchAccount(*id))?;
+                let acct = snapshot
+                    .account(*id)
+                    .ok_or(EconomyError::NoSuchAccount(*id))?;
                 if acct.status != AccountStatus::Active {
                     return Err(EconomyError::InactiveAccount(*id));
                 }
@@ -1002,7 +1116,11 @@ fn resolve_hold_ops(
     }
     // The SAME total order the plan hash uses, so the applied order is the hashed
     // order and two plans differing only in op order are one plan (invariant 27).
-    let mut keyed: Vec<(_, &HoldOp)> = plan.hold_ops.iter().map(|op| (hold_op_key(op), op)).collect();
+    let mut keyed: Vec<(_, &HoldOp)> = plan
+        .hold_ops
+        .iter()
+        .map(|op| (hold_op_key(op), op))
+        .collect();
     keyed.sort_by(|a, b| a.0.cmp(&b.0));
     // At most ONE op per hold: two would race each other inside one bundle, and the
     // second would fold a stale pre-state.
@@ -1022,12 +1140,19 @@ fn resolve_hold_ops(
 
     for (_, op) in keyed {
         let effect = match op {
-            HoldOp::Place { account, amount, beneficiary, purpose, expires } => {
+            HoldOp::Place {
+                account,
+                amount,
+                beneficiary,
+                purpose,
+                expires,
+            } => {
                 if amount.is_negative() || amount.is_zero() {
                     return Err(EconomyError::HoldAmountNotPositive);
                 }
-                let acct =
-                    snapshot.account(*account).ok_or(EconomyError::NoSuchAccount(*account))?;
+                let acct = snapshot
+                    .account(*account)
+                    .ok_or(EconomyError::NoSuchAccount(*account))?;
                 if acct.status != AccountStatus::Active {
                     return Err(EconomyError::InactiveAccount(*account));
                 }
@@ -1040,7 +1165,9 @@ fn resolve_hold_ops(
                 let mine = placed_count.entry(*account).or_insert(0);
                 *mine += 1;
                 if snapshot.active_holds_on(*account) + *mine > MAX_ACTIVE_HOLDS_PER_ACCOUNT {
-                    return Err(EconomyError::TooLarge("too many active holds on one account"));
+                    return Err(EconomyError::TooLarge(
+                        "too many active holds on one account",
+                    ));
                 }
                 // Invariant 25: a reservation is a PROMISE TO PAY, so it needs debit
                 // authority - asked as the negative probe, because crediting is free.
@@ -1048,7 +1175,11 @@ fn resolve_hold_ops(
                 if !env.auth.authorize(actor, acct, probe) {
                     return Err(EconomyError::Unauthorized);
                 }
-                let id = HoldId(env.next_hold_id.checked_add(minted).ok_or(EconomyError::Overflow)?);
+                let id = HoldId(
+                    env.next_hold_id
+                        .checked_add(minted)
+                        .ok_or(EconomyError::Overflow)?,
+                );
                 // The allocator floor is the CALLER's (`ValidateEnv::next_hold_id`),
                 // and a stale one silently aims a placement at a hold that is still
                 // live: `apply` would overwrite it, its reservation would vanish
@@ -1103,10 +1234,15 @@ fn resolve_hold_ops(
                 out.capture_hold.entry(live.account).or_insert(*hold);
                 let mut post = live.clone();
                 // `apply` stamps the real transaction id (the acquisition pattern).
-                post.status =
-                    HoldStatus::Consumed { transaction: TransactionId(0), amount: *amount };
+                post.status = HoldStatus::Consumed {
+                    transaction: TransactionId(0),
+                    amount: *amount,
+                };
                 post.revision += 1;
-                HoldEffect { kind: HoldEffectKind::Captured, hold: post }
+                HoldEffect {
+                    kind: HoldEffectKind::Captured,
+                    hold: post,
+                }
             }
             HoldOp::Release { hold } => {
                 let (live, _) = live_hold(snapshot, *hold)?;
@@ -1117,7 +1253,10 @@ fn resolve_hold_ops(
                 let mut post = live.clone();
                 post.status = HoldStatus::Released;
                 post.revision += 1;
-                HoldEffect { kind: HoldEffectKind::Released, hold: post }
+                HoldEffect {
+                    kind: HoldEffectKind::Released,
+                    hold: post,
+                }
             }
             HoldOp::Expire { hold } => {
                 let (live, _) = live_hold(snapshot, *hold)?;
@@ -1142,7 +1281,10 @@ fn resolve_hold_ops(
                 let mut post = live.clone();
                 post.status = HoldStatus::Expired;
                 post.revision += 1;
-                HoldEffect { kind: HoldEffectKind::Expired, hold: post }
+                HoldEffect {
+                    kind: HoldEffectKind::Expired,
+                    hold: post,
+                }
             }
         };
         out.effects.push(effect);
@@ -1165,8 +1307,9 @@ fn live_hold(snapshot: &EconomySnapshot, id: HoldId) -> Result<(&Hold, &Account)
     if !hold.status.is_held() {
         return Err(EconomyError::HoldNotHeld(id));
     }
-    let account =
-        snapshot.account(hold.account).ok_or(EconomyError::NoSuchAccount(hold.account))?;
+    let account = snapshot
+        .account(hold.account)
+        .ok_or(EconomyError::NoSuchAccount(hold.account))?;
     if account.status != AccountStatus::Active {
         return Err(EconomyError::InactiveAccount(hold.account));
     }
@@ -1183,7 +1326,11 @@ fn resolve_custody_ops(
     if plan.custody_ops.is_empty() {
         return Ok(Vec::new());
     }
-    let mut keyed: Vec<(_, &CustodyOp)> = plan.custody_ops.iter().map(|op| (custody_op_key(op), op)).collect();
+    let mut keyed: Vec<(_, &CustodyOp)> = plan
+        .custody_ops
+        .iter()
+        .map(|op| (custody_op_key(op), op))
+        .collect();
     keyed.sort_by_key(|(k, _)| *k);
     // At most one custody op per object per plan — two would race each other inside
     // one bundle (and make the hash's (object, vault, kind) order non-total).
@@ -1198,7 +1345,9 @@ fn resolve_custody_ops(
     let mut effects = Vec::with_capacity(keyed.len());
     for (_, op) in keyed {
         let vault_id = op.vault();
-        let vault = snapshot.vault(vault_id).ok_or(EconomyError::NoSuchVault(vault_id))?;
+        let vault = snapshot
+            .vault(vault_id)
+            .ok_or(EconomyError::NoSuchVault(vault_id))?;
         if vault.status != VaultStatus::Active {
             return Err(EconomyError::VaultNotActive(vault_id));
         }
@@ -1211,7 +1360,10 @@ fn resolve_custody_ops(
         }
         // A backing with no world object cannot name a from/to for the audit trail;
         // refuse rather than invent one (E3b's providers back vaults with objects).
-        let backing = vault.backing.object().ok_or(EconomyError::BackingInvalid(vault_id))?;
+        let backing = vault
+            .backing
+            .object()
+            .ok_or(EconomyError::BackingInvalid(vault_id))?;
 
         let effect = match op {
             CustodyOp::Deposit { object, .. } => {
@@ -1299,9 +1451,8 @@ fn resolve_custody_ops(
 fn required_approvals(policy: &ApprovalPolicy) -> Option<usize> {
     match policy {
         ApprovalPolicy::OneAuthorizedActor => None,
-        ApprovalPolicy::Threshold { approvals, .. } | ApprovalPolicy::NamedSet { approvals, .. } => {
-            Some(usize::from(*approvals))
-        }
+        ApprovalPolicy::Threshold { approvals, .. }
+        | ApprovalPolicy::NamedSet { approvals, .. } => Some(usize::from(*approvals)),
     }
 }
 
@@ -1317,7 +1468,9 @@ fn evaluate_approvals(
     let mut firing: Vec<(AccountId, &ApprovalRule)> = Vec::new();
     for (&account_id, &net) in balance_deltas {
         let account = snapshot.account(account_id).expect("resolved above");
-        let Some(rule) = account.approval.as_ref() else { continue };
+        let Some(rule) = account.approval.as_ref() else {
+            continue;
+        };
         if !net.is_negative() {
             continue;
         }
@@ -1345,7 +1498,12 @@ fn evaluate_approvals(
     if required.iter().all(|(_, _, n)| *n == 0) {
         return Ok(None);
     }
-    let need = || Fail::NeedsApproval(ApprovalNeed { plan_hash: hash, accounts: accounts.clone() });
+    let need = || {
+        Fail::NeedsApproval(ApprovalNeed {
+            plan_hash: hash,
+            accounts: accounts.clone(),
+        })
+    };
 
     // One LIVE request per hash (A1). An expired or missing one is `NeedsApproval`,
     // not a refusal — the remedy is a fresh request, and the plan is otherwise fine.
@@ -1372,7 +1530,10 @@ fn evaluate_approvals(
             if request.requested_by == PrincipalId::Object(approval.approver) {
                 continue;
             }
-            if env.auth.authorize_approver(approval.approver, account, &rule.policy) {
+            if env
+                .auth
+                .authorize_approver(approval.approver, account, &rule.policy)
+            {
                 qualified.insert(approval.approver);
             }
         }
@@ -1478,10 +1639,16 @@ pub fn apply(
     // One revision bump per touched account, whichever projection moved: an
     // effect-only placement moves `held_amount`/`last_hold_seq` and deliberately
     // leaves `last_journal_seq` alone (D11 - that is why the anchor is separate).
-    let touched: BTreeSet<AccountId> =
-        prepared.balance_deltas.keys().chain(held_deltas.keys()).copied().collect();
+    let touched: BTreeSet<AccountId> = prepared
+        .balance_deltas
+        .keys()
+        .chain(held_deltas.keys())
+        .copied()
+        .collect();
     for account_id in touched {
-        let account = next.account_mut(account_id).expect("validated account exists");
+        let account = next
+            .account_mut(account_id)
+            .expect("validated account exists");
         if let Some(&net) = prepared.balance_deltas.get(&account_id) {
             account.posted_balance = account
                 .posted_balance
@@ -1509,9 +1676,15 @@ pub fn apply(
         effect.post.frozen = false;
         effect.post.frozen_reason = None;
         if prepared.stamp_acquisition
-            && matches!(effect.kind, AssetEffectKind::Created | AssetEffectKind::TitleTransferred)
+            && matches!(
+                effect.kind,
+                AssetEffectKind::Created | AssetEffectKind::TitleTransferred
+            )
         {
-            effect.post.acquisition = Some(AcquisitionRecord { transaction: txid, at: posted_at });
+            effect.post.acquisition = Some(AcquisitionRecord {
+                transaction: txid,
+                at: posted_at,
+            });
         }
         let mut live = effect.post.clone();
         if let Some(prev) = next.asset(effect.object) {
@@ -1604,7 +1777,11 @@ pub fn plan_reversal(
         let Some(neg) = l.delta.checked_neg() else {
             return PlanResult::Refused(EconomyError::Overflow);
         };
-        lines.push(crate::plan::RequestedLine { account: l.account, delta: neg, memo: l.memo.clone() });
+        lines.push(crate::plan::RequestedLine {
+            account: l.account,
+            delta: neg,
+            memo: l.memo.clone(),
+        });
     }
     let plan = EconomyPlan {
         idempotency: crate::record::IdempotencyKey::reversal_of(original.id),

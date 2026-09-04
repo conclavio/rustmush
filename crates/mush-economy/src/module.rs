@@ -387,7 +387,8 @@ impl EconomyStore {
         while self.canon_tail.len() >= CANON_TAIL {
             self.canon_tail.pop_front();
         }
-        self.canon_tail.push_back((id, SmolStr::new(kind), SmolStr::new(source)));
+        self.canon_tail
+            .push_back((id, SmolStr::new(kind), SmolStr::new(source)));
     }
     /// The canon records this world has seen, oldest first (E4c verify fold, E4a).
     #[must_use]
@@ -538,12 +539,15 @@ impl EconomyStore {
     pub(crate) fn index_transaction(&mut self, tx: EconomicTransaction) {
         // E4b2: the last-custody mark, with the depositor the journal names.
         for effect in &tx.custody_effects {
-            self.last_custody.insert(effect.object, CustodyMark {
-                vault: effect.vault,
-                direction: effect.direction,
-                by: tx.actor.clone(),
-                at: tx.posted_at,
-            });
+            self.last_custody.insert(
+                effect.object,
+                CustodyMark {
+                    vault: effect.vault,
+                    direction: effect.direction,
+                    by: tx.actor.clone(),
+                    at: tx.posted_at,
+                },
+            );
         }
         for effect in &tx.hold_effects {
             match effect.kind {
@@ -593,7 +597,10 @@ impl EconomyModule {
     #[must_use]
     pub fn with_custody(mut providers: Vec<Arc<dyn CustodyProvider>>) -> EconomyModule {
         providers.push(Arc::new(ContainerProvider));
-        EconomyModule { providers: Arc::new(providers), ..EconomyModule::default() }
+        EconomyModule {
+            providers: Arc::new(providers),
+            ..EconomyModule::default()
+        }
     }
 
     /// Wire the ruleset's configurable limits (M1). Omitting this is
@@ -618,7 +625,10 @@ impl EconomyModule {
     /// anywhere. This is composition-root data — a wiring mistake a developer makes
     /// once, at startup, with the fix in the panic message — so it is loud.
     #[must_use]
-    pub fn with_facts(mut self, providers: Vec<Arc<dyn crate::facts::FactProvider>>) -> EconomyModule {
+    pub fn with_facts(
+        mut self,
+        providers: Vec<Arc<dyn crate::facts::FactProvider>>,
+    ) -> EconomyModule {
         {
             let mut seen: std::collections::BTreeSet<SmolStr> = std::collections::BTreeSet::new();
             for p in &providers {
@@ -700,7 +710,11 @@ impl GameModule for EconomyModule {
         Ok(())
     }
 
-    fn on_world_loaded(&mut self, ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModError> {
+    fn on_world_loaded(
+        &mut self,
+        ctx: &mut ModuleCtx<'_>,
+        data: ModuleBootData,
+    ) -> Result<(), ModError> {
         let started = std::time::Instant::now();
         let mut store = boot::load_boot(ctx, data, &self.providers, &self.canon_outcome_kinds)?;
         // C17 (08g §12.1 item 5): the cold replay is the whole boot cost until a
@@ -726,7 +740,9 @@ impl GameModule for EconomyModule {
         store.observers = self.observers.clone();
         store.title_issuers = self.title_issuers.clone();
         store.canon_outcome_kinds = self.canon_outcome_kinds.clone();
-        *ctx.w.module_state_mut::<EconomyStore>().expect("economy store slot") = store;
+        *ctx.w
+            .module_state_mut::<EconomyStore>()
+            .expect("economy store slot") = store;
         Ok(())
     }
 }
@@ -752,7 +768,9 @@ impl mush_core::behavior::DestroyGate for EconomicDestroyGate {
         actor: ObjId,
         target: ObjId,
     ) -> Result<(), String> {
-        let Some(store) = w.module_state::<EconomyStore>() else { return Ok(()) };
+        let Some(store) = w.module_state::<EconomyStore>() else {
+            return Ok(());
+        };
         let mut reasons: Vec<String> = Vec::new();
         for id in crate::api::subtree(w, target) {
             reasons.extend(economic_holds(w, store, id));
@@ -761,7 +779,10 @@ impl mush_core::behavior::DestroyGate for EconomicDestroyGate {
             return Ok(());
         }
         if crate::api::is_staff(w, actor) {
-            Err(format!("Economic records block that destruction: {}", reasons.join("; ")))
+            Err(format!(
+                "Economic records block that destruction: {}",
+                reasons.join("; ")
+            ))
         } else {
             Err("You cannot destroy that right now.".to_string())
         }
@@ -775,12 +796,17 @@ fn economic_holds(w: &mush_core::World, store: &EconomyStore, id: ObjId) -> Vec<
     let mut out = Vec::new();
     let snap = store.snapshot();
     // (a) it IS a titled asset.
-    if snap.asset(id).is_some_and(|a| a.lifecycle != AssetLifecycle::WrittenOff) {
+    if snap
+        .asset(id)
+        .is_some_and(|a| a.lifecycle != AssetLifecycle::WrittenOff)
+    {
         out.push(format!("#{} holds a live title record", id.0));
     }
     // (b) it backs a vault.
     for backing in [CustodyRef::Container(id), CustodyRef::SpatialInterior(id)] {
-        let Some(v) = snap.vault_by_backing(&backing) else { continue };
+        let Some(v) = snap.vault_by_backing(&backing) else {
+            continue;
+        };
         match v.status {
             VaultStatus::Active => out.push(format!("#{} backs active vault #{}", id.0, v.id)),
             VaultStatus::Frozen => {
@@ -789,7 +815,10 @@ fn economic_holds(w: &mush_core::World, store: &EconomyStore, id: ObjId) -> Vec<
                     .and_then(|p| p.contents(w, &v.backing))
                     .is_none_or(|c| !c.is_empty());
                 if held {
-                    out.push(format!("#{} backs frozen vault #{}, which still holds things", id.0, v.id));
+                    out.push(format!(
+                        "#{} backs frozen vault #{}, which still holds things",
+                        id.0, v.id
+                    ));
                 }
             }
             VaultStatus::Closed => {}
@@ -798,8 +827,12 @@ fn economic_holds(w: &mush_core::World, store: &EconomyStore, id: ObjId) -> Vec<
     // (c) it is a principal with money or titles.
     let principal = mush_org::PrincipalId::Object(id);
     for a in snap.accounts() {
-        if a.owner == principal && !a.posted_balance.is_zero() && a.status != AccountStatus::Closed {
-            out.push(format!("#{} owns account #{} with a non-zero balance", id.0, a.id));
+        if a.owner == principal && !a.posted_balance.is_zero() && a.status != AccountStatus::Closed
+        {
+            out.push(format!(
+                "#{} owns account #{} with a non-zero balance",
+                id.0, a.id
+            ));
         }
     }
     let titled: Vec<String> = snap
@@ -826,11 +859,15 @@ fn economic_holds(w: &mush_core::World, store: &EconomyStore, id: ObjId) -> Vec<
 /// custody reconciliation instead.
 fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     use crate::record::{AccountStatus, CustodyRef, Encumbrance, VaultStatus};
-    let WorldEvent::ObjDestroyed { obj } = ev else { return };
+    let WorldEvent::ObjDestroyed { obj } = ev else {
+        return;
+    };
     let obj = *obj;
     let principal = mush_org::PrincipalId::Object(obj);
     let (accounts, assets, vaults): (Vec<Account>, Vec<crate::record::EconomicAsset>, Vec<Vault>) = {
-        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return };
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
+            return;
+        };
         let ids: Vec<AccountId> = store
             .snapshot
             .accounts()
@@ -869,7 +906,9 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
             .filter(|a| {
                 a.object == obj
                     || a.title_owner == principal
-                    || a.assignment.as_ref().is_some_and(|x| x.assigned_to == principal)
+                    || a.assignment
+                        .as_ref()
+                        .is_some_and(|x| x.assigned_to == principal)
                     || a.encumbrances.iter().any(names)
             })
             .map(|a| a.object)
@@ -936,17 +975,21 @@ impl mush_org::ScopeUseProvider for EconomyScopeUse {
         use crate::record::{AccountStatus, AssetLifecycle, VaultStatus};
         let store = w.module_state::<EconomyStore>()?;
         let snap = store.snapshot();
-        if let Some(a) =
-            snap.accounts().find(|a| a.scope == Some(scope) && a.status != AccountStatus::Closed)
+        if let Some(a) = snap
+            .accounts()
+            .find(|a| a.scope == Some(scope) && a.status != AccountStatus::Closed)
         {
             return Some(format!("account #{} is still open on it", a.id));
         }
-        if let Some(x) =
-            snap.assets().find(|x| x.scope == Some(scope) && x.lifecycle != AssetLifecycle::WrittenOff)
+        if let Some(x) = snap
+            .assets()
+            .find(|x| x.scope == Some(scope) && x.lifecycle != AssetLifecycle::WrittenOff)
         {
             return Some(format!("asset #{} is still titled to it", x.object.0));
         }
-        if let Some(v) = snap.vaults().find(|v| v.scope == Some(scope) && v.status != VaultStatus::Closed)
+        if let Some(v) = snap
+            .vaults()
+            .find(|v| v.scope == Some(scope) && v.status != VaultStatus::Closed)
         {
             return Some(format!("vault #{} is still bound to it", v.id));
         }

@@ -151,7 +151,9 @@ pub fn authorize(state: &OrgState, req: &AuthRequest, predicates: &dyn Predicate
     // wound-down org still authorized spending; this is the whole-org kill switch
     // the economy's status rules (§4.4) lean on. Checked before any grant/policy
     // work, so it cannot be out-voted by a policy Allow.
-    let org_active = state.org(org).is_some_and(|o| o.status == crate::OrgStatus::Active);
+    let org_active = state
+        .org(org)
+        .is_some_and(|o| o.status == crate::OrgStatus::Active);
     if !org_active || target.status != crate::ScopeStatus::Active {
         return Decision::Deny(DenyReason::Inactive);
     }

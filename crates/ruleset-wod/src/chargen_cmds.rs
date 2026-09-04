@@ -398,7 +398,8 @@ fn residence(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 format!("  #{}  {}  (tier {})", o.property, o.name, o.tier),
             );
         }
-        ctx.out.info(actor, "Pick one with +chargen/residence #<n>, or 'none'.");
+        ctx.out
+            .info(actor, "Pick one with +chargen/residence #<n>, or 'none'.");
         return Ok(());
     }
     if raw.eq_ignore_ascii_case("none") || raw.eq_ignore_ascii_case("nowhere") {
@@ -414,9 +415,10 @@ fn residence(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         crate::economy::chargen::choose(ctx, actor, level, Some(mush_housing::PropertyId(id)))
             .map_err(CmdError::msg)?;
     match picked {
-        Some(v) => ctx
-            .out
-            .info(actor, format!("Residence set to {} (tier {}).", v.name, v.tier)),
+        Some(v) => ctx.out.info(
+            actor,
+            format!("Residence set to {} (tier {}).", v.name, v.tier),
+        ),
         None => ctx.out.info(actor, "No residence chosen."),
     }
     Ok(())

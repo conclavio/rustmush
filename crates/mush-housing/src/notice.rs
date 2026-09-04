@@ -46,7 +46,9 @@ pub(crate) fn queue(ctx: &mut Ctx<'_>, who: ObjId, msg: impl Into<String>) {
     let text = SmolStr::new(clamp(msg.into()));
     let at = ctx.w.now();
     let doc = {
-        let Some(store) = ctx.w.module_state_mut::<HousingStore>() else { return };
+        let Some(store) = ctx.w.module_state_mut::<HousingStore>() else {
+            return;
+        };
         let list = store.notices.entry(who).or_default();
         if list.iter().any(|n| n.text == text) {
             return;
@@ -57,10 +59,13 @@ pub(crate) fn queue(ctx: &mut Ctx<'_>, who: ObjId, msg: impl Into<String>) {
         list.push(PendingNotice { at, text });
         list.clone()
     };
-    push_op(ctx.out, ModuleWrite::JsonSet {
-        key: notice_key(who),
-        value: serde_json::to_value(&doc).expect("pending notices serialize"),
-    });
+    push_op(
+        ctx.out,
+        ModuleWrite::JsonSet {
+            key: notice_key(who),
+            value: serde_json::to_value(&doc).expect("pending notices serialize"),
+        },
+    );
 }
 
 /// Deliver and clear one object's queued notices — the `Connected` hook's whole job.
@@ -70,7 +75,9 @@ pub(crate) fn queue(ctx: &mut Ctx<'_>, who: ObjId, msg: impl Into<String>) {
 /// who was ever behind on rent.
 pub(crate) fn render_pending(ctx: &mut Ctx<'_>, who: ObjId) {
     let list = {
-        let Some(store) = ctx.w.module_state_mut::<HousingStore>() else { return };
+        let Some(store) = ctx.w.module_state_mut::<HousingStore>() else {
+            return;
+        };
         match store.notices.remove(&who) {
             Some(list) if !list.is_empty() => list,
             _ => return,
@@ -80,12 +87,20 @@ pub(crate) fn render_pending(ctx: &mut Ctx<'_>, who: ObjId) {
     ctx.out.sys_to_actor(
         who,
         "housing",
-        format!("HOME: {n} notice{} while you were away.", if n == 1 { "" } else { "s" }),
+        format!(
+            "HOME: {n} notice{} while you were away.",
+            if n == 1 { "" } else { "s" }
+        ),
     );
     for note in &list {
         ctx.out.sys_to_actor(who, "housing", note.text.to_string());
     }
-    push_op(ctx.out, ModuleWrite::Del { key: notice_key(who) });
+    push_op(
+        ctx.out,
+        ModuleWrite::Del {
+            key: notice_key(who),
+        },
+    );
 }
 
 /// What `+home` prints as "the pending notice" — the most recent queued line, if the

@@ -337,7 +337,9 @@ impl Default for EconomyInstrumentCfg {
     fn default() -> Self {
         // Mirrors `mush_economy::DEFAULT_MINT_OBLIGATION_CAP_MAJOR` (kept as a
         // literal so `mush-config` needs no `mush-economy` dep).
-        EconomyInstrumentCfg { mint_obligation_cap_major: 50_000 }
+        EconomyInstrumentCfg {
+            mint_obligation_cap_major: 50_000,
+        }
     }
 }
 
@@ -365,7 +367,10 @@ pub struct EconomyCfg {
 
 impl Default for EconomyCfg {
     fn default() -> Self {
-        EconomyCfg { mint_obligation_cap_major: 50_000, instruments: BTreeMap::new() }
+        EconomyCfg {
+            mint_obligation_cap_major: 50_000,
+            instruments: BTreeMap::new(),
+        }
     }
 }
 
@@ -861,7 +866,10 @@ mod tests {
         .unwrap();
         assert_eq!(cfg.economy.mint_obligation_cap_major, 2_500);
         assert_eq!(
-            cfg.economy.instruments.get("wod.usd").map(|c| c.mint_obligation_cap_major),
+            cfg.economy
+                .instruments
+                .get("wod.usd")
+                .map(|c| c.mint_obligation_cap_major),
             Some(9)
         );
         // An instrument with no override is not in the map at all; the caller falls
@@ -869,10 +877,9 @@ mod tests {
         assert!(!cfg.economy.instruments.contains_key("wod.eur"));
 
         // A section naming only an override keeps the default ceiling for the rest.
-        let cfg: Config = toml::from_str(
-            "[economy.instruments.\"wod.usd\"]\nmint_obligation_cap_major = 1\n",
-        )
-        .unwrap();
+        let cfg: Config =
+            toml::from_str("[economy.instruments.\"wod.usd\"]\nmint_obligation_cap_major = 1\n")
+                .unwrap();
         assert_eq!(cfg.economy.mint_obligation_cap_major, 50_000);
     }
 

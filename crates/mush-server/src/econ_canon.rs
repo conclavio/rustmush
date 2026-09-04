@@ -72,14 +72,20 @@ pub struct CanonEvidenceBridge;
 impl EconomyObserver for CanonEvidenceBridge {
     fn on_economic_event(&self, ctx: &mut Ctx<'_>, ev: &EconomicEvent) {
         match ev {
-            EconomicEvent::ContractChanged { id, state, transaction } => {
+            EconomicEvent::ContractChanged {
+                id,
+                state,
+                transaction,
+            } => {
                 if !matches!(state, mush_economy::ContractStateKind::Settled) {
                     return;
                 }
                 // No landed transaction means no key; without a key a replay would
                 // publish twice, so nothing is published at all.
                 let Some(tx) = transaction else { return };
-                let Some(parties) = public_contract_parties(ctx, *id) else { return };
+                let Some(parties) = public_contract_parties(ctx, *id) else {
+                    return;
+                };
                 // **The durable marker is the replay guard** (E4c verify fold,
                 // V2+V3+V5). Canon's RAM tail rolls, and a settlement republished
                 // after it had rolled would double the line; the contract document
@@ -153,7 +159,11 @@ impl EconomyObserver for CanonEvidenceBridge {
 /// The object parties of a contract whose consented visibility is `Public`, or
 /// `None` for any other visibility (including an audience list) or no such contract.
 fn public_contract_parties(ctx: &Ctx<'_>, id: mush_economy::ContractId) -> Option<Vec<ObjId>> {
-    let c = ctx.w.module_state::<EconomyStore>()?.snapshot().contract(id)?;
+    let c = ctx
+        .w
+        .module_state::<EconomyStore>()?
+        .snapshot()
+        .contract(id)?;
     if !c.consent.visibility.is_public() {
         return None;
     }
@@ -175,7 +185,9 @@ fn public_contract_of_obligation(
 ) -> Option<(mush_economy::ContractId, Vec<ObjId>, u32)> {
     let store = ctx.w.module_state::<EconomyStore>()?;
     let o = store.snapshot().obligation(id)?;
-    let ObligationCause::Contract(contract) = o.cause else { return None };
+    let ObligationCause::Contract(contract) = o.cause else {
+        return None;
+    };
     let c = store.snapshot().contract(contract)?;
     if !c.consent.visibility.is_public() {
         return None;
@@ -210,23 +222,31 @@ fn commit_once(
     entities: Vec<ObjId>,
     detail: serde_json::Value,
 ) -> Option<mush_canon::CanonId> {
-    let already = ctx
-        .w
-        .module_state::<CanonState>()
-        .is_some_and(|st| st.recent().iter().any(|e| e.kind == kind && e.source == source));
+    let already = ctx.w.module_state::<CanonState>().is_some_and(|st| {
+        st.recent()
+            .iter()
+            .any(|e| e.kind == kind && e.source == source)
+    });
     if already {
-        tracing::debug!(kind, source, "economy bridge: that consequence is already canon");
+        tracing::debug!(
+            kind,
+            source,
+            "economy bridge: that consequence is already canon"
+        );
         return None;
     }
     let ic_time = ctx.w.game_now_unix();
-    mush_canon::commit(ctx, CanonDraft {
-        kind: SmolStr::new(kind),
-        summary,
-        entities,
-        // The contract said `Public`; the chronicle line says the same.
-        scope: CanonScope::Public,
-        ic_time,
-        source,
-        detail,
-    })
+    mush_canon::commit(
+        ctx,
+        CanonDraft {
+            kind: SmolStr::new(kind),
+            summary,
+            entities,
+            // The contract said `Public`; the chronicle line says the same.
+            scope: CanonScope::Public,
+            ic_time,
+            source,
+            detail,
+        },
+    )
 }

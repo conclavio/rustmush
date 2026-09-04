@@ -20,13 +20,13 @@ use mush_housing::{HousingStore, PropertyId, TenancyId, TenancyStatusKind};
 use mush_org::SystemPrincipalId;
 use mush_proto::OutputEvent;
 use mush_testkit::{TestWorld, boot_world, text_of};
-use smol_str::SmolStr;
 use ruleset_wod::economy::config::{FAUCET_CHARGEN, WOD_USD};
 use ruleset_wod::economy::record::{
     MAX_OFFSCREEN_OPS_PER_FACTION, Prompt, PromptDefault, PromptKind, STRAIN_MAX,
 };
 use ruleset_wod::economy::store::WodEconomyStore;
 use ruleset_wod::{Engagement, PersonalMode, SpendingProfile, WodEconomyConfig, WodRuleset};
+use smol_str::SmolStr;
 
 const S: u64 = 12_345;
 
@@ -81,7 +81,11 @@ fn cfg(mode: PersonalMode) -> WodEconomyConfig {
 }
 
 fn texts(events: &[(Audience, OutputEvent)]) -> String {
-    events.iter().map(|(_, e)| text_of(e)).collect::<Vec<_>>().join("\n")
+    events
+        .iter()
+        .map(|(_, e)| text_of(e))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn has_error(events: &[(Audience, OutputEvent)]) -> bool {
@@ -99,16 +103,24 @@ fn ok(tw: &mut TestWorld, actor: ObjId, line: &str) -> String {
 
 fn err(tw: &mut TestWorld, actor: ObjId, line: &str) -> String {
     let ev = tw.run(actor, line);
-    assert!(has_error(&ev), "`{line}` should have been refused, got: {}", texts(&ev));
+    assert!(
+        has_error(&ev),
+        "`{line}` should have been refused, got: {}",
+        texts(&ev)
+    );
     texts(&ev)
 }
 
 fn store(tw: &TestWorld) -> &WodEconomyStore {
-    tw.world().module_state::<WodEconomyStore>().expect("wod economy store")
+    tw.world()
+        .module_state::<WodEconomyStore>()
+        .expect("wod economy store")
 }
 
 fn housing(tw: &TestWorld) -> &HousingStore {
-    tw.world().module_state::<HousingStore>().expect("housing store")
+    tw.world()
+        .module_state::<HousingStore>()
+        .expect("housing store")
 }
 
 fn profile(tw: &TestWorld, who: ObjId) -> SpendingProfile {
@@ -124,7 +136,10 @@ fn room_named(tw: &TestWorld, name: &str) -> ObjId {
 }
 
 fn cadence_id(tw: &TestWorld) -> u64 {
-    store(tw).cadence().expect("the configured cadence resolves").0
+    store(tw)
+        .cadence()
+        .expect("the configured cadence resolves")
+        .0
 }
 
 /// Fire the due ticks once, at a strictly increasing instant (past the 30 s coarse
@@ -163,7 +178,11 @@ fn approve_sheet(tw: &mut TestWorld, who: ObjId) {
 /// A player with an **approved** sheet at `resources` dots, and a profile.
 fn character(tw: &mut TestWorld, name: &str, resources: u8) -> ObjId {
     let who = tw.spawn_player(name);
-    ok(tw, GOD, &format!("@sheet/set {name}/backgrounds:Resources={resources}"));
+    ok(
+        tw,
+        GOD,
+        &format!("@sheet/set {name}/backgrounds:Resources={resources}"),
+    );
     approve_sheet(tw, who);
     ok(tw, GOD, "@wod/economy migrate");
     who
@@ -176,14 +195,21 @@ fn property(tw: &mut TestWorld, name: &str, tier: u8) -> PropertyId {
     ok(
         tw,
         GOD,
-        &format!("@property/create {name}=#{} tier={tier} landlord=housing", anchor.0),
+        &format!(
+            "@property/create {name}=#{} tier={tier} landlord=housing",
+            anchor.0
+        ),
     );
     housing(tw).properties().last().expect("a property").id
 }
 
 fn tenancy_for(tw: &mut TestWorld, p: PropertyId, who: ObjId) -> TenancyId {
     let c = cadence_id(tw);
-    ok(tw, GOD, &format!("@tenancy/create {p}=#{} cadence={c}", who.0));
+    ok(
+        tw,
+        GOD,
+        &format!("@tenancy/create {p}=#{} cadence={c}", who.0),
+    );
     housing(tw).tenancies().last().expect("a tenancy").id
 }
 
@@ -206,7 +232,12 @@ fn front(tw: &mut TestWorld, faction: &str, title: &str) -> (u64, u64) {
     let f = tw
         .world()
         .module_state::<mush_faction::FactionState>()
-        .and_then(|s| s.factions.values().find(|f| f.name == faction).map(|f| f.id.0))
+        .and_then(|s| {
+            s.factions
+                .values()
+                .find(|f| f.name == faction)
+                .map(|f| f.id.0)
+        })
         .expect("faction");
     let fr = tw
         .world()
@@ -235,27 +266,40 @@ fn off_creates_nothing_and_shows_nothing() {
     // No instrument, no profile, and the two player verbs decline.
     assert!(store(&tw).instrument().is_none(), "off registered wod.usd");
     assert!(
-        tw.world()
-            .module_state::<EconomyStore>()
-            .is_some_and(|s| s.snapshot().instruments().count() == 0),
+        tw.world().module_state::<EconomyStore>().is_some_and(|s| s
+            .snapshot()
+            .instruments()
+            .count()
+            == 0),
         "off registered an instrument"
     );
     err(&mut tw, nick, "+career");
     err(&mut tw, nick, "+resources");
     // migrate deletes nothing and creates no profile.
     let out = ok(&mut tw, GOD, "@wod/economy migrate");
-    assert!(out.contains("Nothing to do"), "off migrate did something: {out}");
+    assert!(
+        out.contains("Nothing to do"),
+        "off migrate did something: {out}"
+    );
     assert_eq!(store(&tw).profiles().count(), 0);
     // E5c-C2 (look-back fold): `off` with housing on creates exactly one inert
     // Manual clock — the one housing assesses on — and nothing else.
     let cadences: Vec<(String, mush_economy::CadenceSource)> = tw
         .world()
         .module_state::<EconomyStore>()
-        .map(|s| s.snapshot().cadences().map(|c| (c.name.to_string(), c.source)).collect())
+        .map(|s| {
+            s.snapshot()
+                .cadences()
+                .map(|c| (c.name.to_string(), c.source))
+                .collect()
+        })
         .unwrap_or_default();
     assert_eq!(
         cadences,
-        vec![("chronicle.period".to_string(), mush_economy::CadenceSource::Manual)],
+        vec![(
+            "chronicle.period".to_string(),
+            mush_economy::CadenceSource::Manual
+        )],
         "off created something other than the one inert clock"
     );
 }
@@ -263,11 +307,15 @@ fn off_creates_nothing_and_shows_nothing() {
 #[test]
 fn abstract_mode_registers_no_wod_usd() {
     let tw = boot(cfg(PersonalMode::Abstract));
-    assert!(store(&tw).instrument().is_none(), "abstract registered wod.usd");
-    let has = tw
-        .world()
-        .module_state::<EconomyStore>()
-        .is_some_and(|s| s.snapshot().instrument(&mush_economy::InstrumentId::new(WOD_USD).unwrap()).is_some());
+    assert!(
+        store(&tw).instrument().is_none(),
+        "abstract registered wod.usd"
+    );
+    let has = tw.world().module_state::<EconomyStore>().is_some_and(|s| {
+        s.snapshot()
+            .instrument(&mush_economy::InstrumentId::new(WOD_USD).unwrap())
+            .is_some()
+    });
     assert!(!has, "abstract opened a wod.usd instrument");
     // …and no faucet account either.
     let accounts = tw
@@ -298,7 +346,10 @@ fn exact_mode_registers_the_instrument_and_three_faucets() {
                 .count()
         })
         .unwrap_or(0);
-    assert_eq!(systems, 3, "wod.income, wod.housing and wod.chargen each own an account");
+    assert_eq!(
+        systems, 3,
+        "wod.income, wod.housing and wod.chargen each own an account"
+    );
     let _ = ok(&mut tw, GOD, "@wod/economy");
 }
 
@@ -314,7 +365,10 @@ fn the_ruleset_boot_creates_the_named_cadence_and_says_so() {
     assert_eq!(name, "chronicle.period");
     assert!(store(&tw).cadence_created(), "boot should have created it");
     let out = ok(&mut tw, GOD, "@wod/economy");
-    assert!(out.contains("created by this ruleset's boot"), "@wod/economy hid it: {out}");
+    assert!(
+        out.contains("created by this ruleset's boot"),
+        "@wod/economy hid it: {out}"
+    );
     assert!(out.contains("personal_mode      abstract"), "{out}");
 }
 
@@ -344,12 +398,22 @@ fn housing_refuses_a_room_wired_into_with_reserved_rooms() {
     ok(&mut tw, GOD, "@dig Parade=inp,outp");
     let anchor = room_named(&tw, "Parade");
     // A reserved room is refused; an ordinary one is not.
-    let refusal = err(&mut tw, GOD, &format!("@property/create Limbo Flat=#{} tier=1 landlord=housing", LIMBO.0));
+    let refusal = err(
+        &mut tw,
+        GOD,
+        &format!(
+            "@property/create Limbo Flat=#{} tier=1 landlord=housing",
+            LIMBO.0
+        ),
+    );
     assert!(!refusal.is_empty());
     ok(
         &mut tw,
         GOD,
-        &format!("@property/create Parade Ground=#{} tier=1 landlord=housing", anchor.0),
+        &format!(
+            "@property/create Parade Ground=#{} tier=1 landlord=housing",
+            anchor.0
+        ),
     );
 }
 
@@ -477,7 +541,11 @@ fn stance_coast_holds_the_level_and_decays_strain() {
     period(&mut tw, 1);
     period(&mut tw, 1);
     let p = profile(&tw, nick);
-    assert!(p.strain < high, "coast did not decay strain ({high} → {})", p.strain);
+    assert!(
+        p.strain < high,
+        "coast did not decay strain ({high} → {})",
+        p.strain
+    );
     assert_eq!(p.level, 3, "coast changed the level");
 }
 
@@ -514,7 +582,11 @@ fn stance_exploit_lifts_the_level_one_and_costs_strain() {
     ok(&mut tw, nick, "+career/stance conceal");
     period(&mut tw, 1);
     period(&mut tw, 1);
-    assert_eq!(profile(&tw, nick).level, 2, "conceal did not lower the level");
+    assert_eq!(
+        profile(&tw, nick).level,
+        2,
+        "conceal did not lower the level"
+    );
 }
 
 #[test]
@@ -542,8 +614,15 @@ fn a_stance_flip_applies_at_the_next_period_and_not_this_one() {
     // Flip to Exploit and read the profile: the stance is *pending*, not in force.
     ok(&mut tw, nick, "+career/stance exploit");
     let p = profile(&tw, nick);
-    assert_eq!(p.stance(), ruleset_wod::Stance::Coast, "the flip landed immediately");
-    assert_eq!(p.career().and_then(|c| c.pending_stance), Some(ruleset_wod::Stance::Exploit));
+    assert_eq!(
+        p.stance(),
+        ruleset_wod::Stance::Coast,
+        "the flip landed immediately"
+    );
+    assert_eq!(
+        p.career().and_then(|c| c.pending_stance),
+        Some(ruleset_wod::Stance::Exploit)
+    );
     assert_eq!(p.level, 3, "the level moved before the boundary");
     let out = ok(&mut tw, nick, "+career");
     assert!(out.contains("takes effect next period"), "{out}");
@@ -580,11 +659,22 @@ fn exploit_emits_one_front_attributed_evidence_event_per_period() {
         .into_iter()
         .find(|e| e.kind == "wod.career.exposure")
         .expect("an exposure record");
-    assert_eq!(ev.source, format!("front:{f}:{fr}"), "evidence must cite the front");
+    assert_eq!(
+        ev.source,
+        format!("front:{f}:{fr}"),
+        "evidence must cite the front"
+    );
     assert!(ev.entities.contains(&nick));
-    assert_eq!(ev.detail.get("faction").and_then(serde_json::Value::as_u64), Some(f));
+    assert_eq!(
+        ev.detail.get("faction").and_then(serde_json::Value::as_u64),
+        Some(f)
+    );
     // The whole K4a world-IC stamp travels with it, generation and all.
-    assert!(ev.detail.get("world_ic").is_some(), "no world-IC stamp: {:?}", ev.detail);
+    assert!(
+        ev.detail.get("world_ic").is_some(),
+        "no world-IC stamp: {:?}",
+        ev.detail
+    );
 }
 
 #[test]
@@ -597,7 +687,11 @@ fn conceal_emits_no_evidence_at_all() {
     for _ in 0..4 {
         period(&mut tw, 1);
     }
-    assert_eq!(canon_kinds(&tw, "wod.career.exposure"), base, "conceal left a trace");
+    assert_eq!(
+        canon_kinds(&tw, "wod.career.exposure"),
+        base,
+        "conceal left a trace"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -616,7 +710,10 @@ fn housing_pressure_preempts_an_open_opportunity() {
     careered(&mut tw, nick, "Nick", "exploit", Some((f, fr)));
     period(&mut tw, 1);
     assert!(
-        matches!(profile(&tw, nick).prompt.map(|x| x.kind), Some(PromptKind::Opportunity { .. })),
+        matches!(
+            profile(&tw, nick).prompt.map(|x| x.kind),
+            Some(PromptKind::Opportunity { .. })
+        ),
         "no opportunity was opened"
     );
     // Now let the home fall behind. Housing pressure displaces it.
@@ -640,7 +737,8 @@ fn housing_pressure_preempts_an_open_opportunity() {
     );
     let hist = profile(&tw, nick).history;
     assert!(
-        hist.iter().any(|h| h.what.contains("dropped for housing pressure")),
+        hist.iter()
+            .any(|h| h.what.contains("dropped for housing pressure")),
         "the displaced prompt left no note: {hist:?}"
     );
 }
@@ -714,16 +812,22 @@ fn a_lapsed_prompt_applies_status_quo_and_costs_nothing() {
         p.strain
     );
     assert!(
-        p.history.iter().any(|h| h.what.contains(&format!("prompt #{} lapsed", opened.id))),
+        p.history
+            .iter()
+            .any(|h| h.what.contains(&format!("prompt #{} lapsed", opened.id))),
         "no lapse note: {:?}",
         p.history
     );
     assert!(
-        !p.history.iter().any(|h| h.what.to_lowercase().contains("fail")),
+        !p.history
+            .iter()
+            .any(|h| h.what.to_lowercase().contains("fail")),
         "expiry read as a failure"
     );
     assert_eq!(
-        tw.world().module_state::<EconomyStore>().map(|s| s.snapshot().accounts().count()),
+        tw.world()
+            .module_state::<EconomyStore>()
+            .map(|s| s.snapshot().accounts().count()),
         Some(accounts_before),
         "expiry moved money"
     );
@@ -739,7 +843,10 @@ fn answering_a_prompt_applies_its_option() {
     assert!(profile(&tw, nick).prompt.is_some());
     let view = ok(&mut tw, nick, "+prompt");
     assert!(view.contains("+prompt take"), "{view}");
-    assert!(view.contains("lapses"), "the non-response default was not stated: {view}");
+    assert!(
+        view.contains("lapses"),
+        "the non-response default was not stated: {view}"
+    );
     let before = profile(&tw, nick).strain;
     ok(&mut tw, nick, "+prompt take");
     let p = profile(&tw, nick);
@@ -767,11 +874,20 @@ fn the_per_faction_pool_caps_at_eight_open_operations() {
     period(&mut tw, 1);
     period(&mut tw, 1);
     let open = store(&tw).open_ops_for(mush_faction::FactionId(f));
-    assert_eq!(open, MAX_OFFSCREEN_OPS_PER_FACTION, "the pool did not cap at 8: {open}");
-    let with = who.iter().filter(|o| profile(&tw, **o).prompt.is_some()).count();
+    assert_eq!(
+        open, MAX_OFFSCREEN_OPS_PER_FACTION,
+        "the pool did not cap at 8: {open}"
+    );
+    let with = who
+        .iter()
+        .filter(|o| profile(&tw, **o).prompt.is_some())
+        .count();
     assert_eq!(with, 8, "{with} of {n} characters hold a prompt");
     // Resolving one frees a slot: the pool is derived, so the decrement is automatic.
-    let holder = *who.iter().find(|o| profile(&tw, **o).prompt.is_some()).expect("a holder");
+    let holder = *who
+        .iter()
+        .find(|o| profile(&tw, **o).prompt.is_some())
+        .expect("a holder");
     ok(&mut tw, holder, "+prompt pass");
     assert_eq!(
         store(&tw).open_ops_for(mush_faction::FactionId(f)),
@@ -787,7 +903,10 @@ fn an_orphaned_front_renders_raw_and_stops_generating() {
     let (f, fr) = front(&mut tw, "Giovanni", "The docks");
     careered(&mut tw, nick, "Nick", "exploit", Some((f, fr)));
     period(&mut tw, 1);
-    assert!(profile(&tw, nick).prompt.is_some(), "no opportunity before the front vanished");
+    assert!(
+        profile(&tw, nick).prompt.is_some(),
+        "no opportunity before the front vanished"
+    );
     ok(&mut tw, nick, "+prompt pass");
     let base = canon_kinds(&tw, "wod.career.exposure");
 
@@ -798,13 +917,23 @@ fn an_orphaned_front_renders_raw_and_stops_generating() {
     // The read never fails, and says so in the raw-id form.
     let out = ok(&mut tw, nick, "+career");
     assert!(out.contains("(orphaned front)"), "orphan not marked: {out}");
-    assert!(out.contains(&format!("front #{f}/#{fr}")), "raw id not shown: {out}");
+    assert!(
+        out.contains(&format!("front #{f}/#{fr}")),
+        "raw id not shown: {out}"
+    );
     // …and nothing more is generated.
     for _ in 0..4 {
         period(&mut tw, 1);
     }
-    assert!(profile(&tw, nick).prompt.is_none(), "an orphaned front kept generating");
-    assert_eq!(canon_kinds(&tw, "wod.career.exposure"), base, "an orphaned front kept emitting");
+    assert!(
+        profile(&tw, nick).prompt.is_none(),
+        "an orphaned front kept generating"
+    );
+    assert_eq!(
+        canon_kinds(&tw, "wod.career.exposure"),
+        base,
+        "an orphaned front kept emitting"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -822,7 +951,12 @@ fn a_cadence_jump_evaluates_exactly_one_period() {
     // Forty periods of downtime in one fire.
     period(&mut tw, 40);
     let after = profile(&tw, nick).strain;
-    assert_eq!(after, before + 1, "a 40-period jump spent {} periods", after - before);
+    assert_eq!(
+        after,
+        before + 1,
+        "a 40-period jump spent {} periods",
+        after - before
+    );
 }
 
 #[test]
@@ -869,7 +1003,11 @@ fn the_sheet_is_byte_unchanged_across_a_long_run() {
             let _ = tw.run(nick, "+prompt take");
         }
     }
-    assert_eq!(sheet_bytes(&tw, nick), before, "the economy wrote the sheet");
+    assert_eq!(
+        sheet_bytes(&tw, nick),
+        before,
+        "the economy wrote the sheet"
+    );
 }
 
 #[test]
@@ -956,7 +1094,9 @@ fn chargen_approval_creates_nothing_when_the_mode_is_off() {
     approve(&mut tw, who);
     assert!(store(&tw).profile(who).is_none(), "off created a profile");
     assert_eq!(
-        tw.world().module_state::<EconomyStore>().map(|s| s.snapshot().accounts().count()),
+        tw.world()
+            .module_state::<EconomyStore>()
+            .map(|s| s.snapshot().accounts().count()),
         Some(0)
     );
 }
@@ -984,7 +1124,11 @@ fn chargen_approval_opens_a_seeded_wallet_in_exact_mode() {
     let bal = tw
         .world()
         .module_state::<EconomyStore>()
-        .and_then(|s| s.snapshot().account(account).map(|a| a.posted_balance.minor()))
+        .and_then(|s| {
+            s.snapshot()
+                .account(account)
+                .map(|a| a.posted_balance.minor())
+        })
         .expect("the account");
     assert_eq!(bal, 25_000, "250 major at scale 2: {out}");
     // The stake came out of the chargen faucet, not out of thin air.
@@ -995,7 +1139,10 @@ fn chargen_approval_opens_a_seeded_wallet_in_exact_mode() {
             let sys = mush_org::PrincipalId::System(
                 SystemPrincipalId::new(FAUCET_CHARGEN).expect("principal"),
             );
-            s.snapshot().accounts().find(|a| a.owner == sys).map(|a| a.posted_balance.minor())
+            s.snapshot()
+                .accounts()
+                .find(|a| a.owner == sys)
+                .map(|a| a.posted_balance.minor())
         })
         .expect("the faucet");
     assert_eq!(faucet, -25_000, "the faucet did not fund the stake");
@@ -1028,9 +1175,18 @@ fn the_residence_step_offers_vacancies_by_name_and_tier_only() {
 
     let who = chargen(&mut tw, "Nick", 2);
     let out = ok(&mut tw, who, "+chargen/residence");
-    assert!(out.contains("Bedsit"), "the affordable vacancy was not offered: {out}");
-    assert!(!out.contains("Penthouse"), "a tier-5 place was offered to Resources 2: {out}");
-    assert!(!out.contains("Rowhouse"), "an occupied property was listed: {out}");
+    assert!(
+        out.contains("Bedsit"),
+        "the affordable vacancy was not offered: {out}"
+    );
+    assert!(
+        !out.contains("Penthouse"),
+        "a tier-5 place was offered to Resources 2: {out}"
+    );
+    assert!(
+        !out.contains("Rowhouse"),
+        "an occupied property was listed: {out}"
+    );
     assert!(!out.contains("Quinn"), "occupancy leaked: {out}");
     assert!(out.contains("tier 1"), "{out}");
     // A property that is not on offer is refused with the same words either way.
@@ -1081,18 +1237,28 @@ fn migrate_abstract_to_exact_opens_zero_balance_accounts_and_mints_nothing() {
     approve_sheet(&mut tw, nick);
     let out = ok(&mut tw, GOD, "@wod/economy migrate");
     assert!(out.contains("profile(s) created"), "{out}");
-    assert!(out.contains("zero-balance wod.usd account(s) opened"), "{out}");
+    assert!(
+        out.contains("zero-balance wod.usd account(s) opened"),
+        "{out}"
+    );
     assert!(out.contains("Nothing was minted"), "{out}");
     let account = profile(&tw, nick).account.expect("a wallet");
     let bal = tw
         .world()
         .module_state::<EconomyStore>()
-        .and_then(|s| s.snapshot().account(account).map(|a| a.posted_balance.minor()))
+        .and_then(|s| {
+            s.snapshot()
+                .account(account)
+                .map(|a| a.posted_balance.minor())
+        })
         .expect("the account");
     assert_eq!(bal, 0, "migrate minted");
     // Idempotent.
     let again = ok(&mut tw, GOD, "@wod/economy migrate");
-    assert!(again.contains("Nothing to do"), "migrate was not idempotent: {again}");
+    assert!(
+        again.contains("Nothing to do"),
+        "migrate was not idempotent: {again}"
+    );
 }
 
 #[test]
@@ -1111,7 +1277,11 @@ fn migrate_exact_to_abstract_stops_income_hides_the_wallet_and_keeps_the_balance
     let balance = tw
         .world()
         .module_state::<EconomyStore>()
-        .and_then(|s| s.snapshot().account(account).map(|a| a.posted_balance.minor()))
+        .and_then(|s| {
+            s.snapshot()
+                .account(account)
+                .map(|a| a.posted_balance.minor())
+        })
         .expect("the account");
     assert!(balance >= 10_000, "the stake never landed: {balance}");
 
@@ -1134,13 +1304,20 @@ fn migrate_exact_to_abstract_stops_income_hides_the_wallet_and_keeps_the_balance
     // No wallet exists at all in abstract mode, so there is nothing to show.
     assert!(profile(&tw2, nick2).account.is_none());
     let shown = ok(&mut tw2, nick2, "+resources");
-    assert!(!shown.contains("account #"), "abstract showed a wallet: {shown}");
+    assert!(
+        !shown.contains("account #"),
+        "abstract showed a wallet: {shown}"
+    );
 
     // …and in the exact world the balance is exactly where it was.
     let after = tw
         .world()
         .module_state::<EconomyStore>()
-        .and_then(|s| s.snapshot().account(account).map(|a| a.posted_balance.minor()))
+        .and_then(|s| {
+            s.snapshot()
+                .account(account)
+                .map(|a| a.posted_balance.minor())
+        })
         .expect("the account");
     assert_eq!(after, balance, "migrate touched a balance");
     let kind = tw
@@ -1161,10 +1338,16 @@ fn resources_shows_the_number_to_its_owner_and_to_staff_and_refuses_everybody_el
     period(&mut tw, 1);
 
     let own = ok(&mut tw, nick, "+resources");
-    assert!(own.contains("support level 3"), "the owner did not see the number: {own}");
+    assert!(
+        own.contains("support level 3"),
+        "the owner did not see the number: {own}"
+    );
     // Staff see it too.
     let staff = ok(&mut tw, GOD, "+resources Nick");
-    assert!(staff.contains("support level 3"), "staff did not see the number: {staff}");
+    assert!(
+        staff.contains("support level 3"),
+        "staff did not see the number: {staff}"
+    );
     // A non-staff third party may not ask about somebody else at all.
     err(&mut tw, quinn, "+resources Nick");
     // And the word is the vocabulary the layer renders, matching @tenancy/show.
@@ -1183,7 +1366,14 @@ fn career_set_records_the_employer_and_the_front() {
     let boss = character(&mut tw, "Quinn", 2);
     let (f, fr) = front(&mut tw, "Giovanni", "The docks");
     err(&mut tw, nick, &format!("@career/set Nick=front={f}:{fr}"));
-    ok(&mut tw, GOD, &format!("@career/set Nick=kind=courier employer=#{} front={f}:{fr} risk=3", boss.0));
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@career/set Nick=kind=courier employer=#{} front={f}:{fr} risk=3",
+            boss.0
+        ),
+    );
     let p = profile(&tw, nick);
     let c = p.career().expect("a career was created on demand");
     assert_eq!(c.kind, "courier");
@@ -1205,8 +1395,15 @@ fn a_career_with_no_front_generates_nothing_at_all() {
     for _ in 0..5 {
         period(&mut tw, 1);
     }
-    assert!(profile(&tw, nick).prompt.is_none(), "an unattributed opportunity was opened");
-    assert_eq!(canon_kinds(&tw, "wod.career.exposure"), 0, "unattributed evidence was committed");
+    assert!(
+        profile(&tw, nick).prompt.is_none(),
+        "an unattributed opportunity was opened"
+    );
+    assert_eq!(
+        canon_kinds(&tw, "wod.career.exposure"),
+        0,
+        "unattributed evidence was committed"
+    );
 }
 
 #[test]
@@ -1223,7 +1420,10 @@ fn ambient_is_quiet_and_still_supports_the_home() {
         period(&mut tw, 1);
     }
     // Ambient (the default) never asks…
-    assert!(profile(&tw, nick).prompt.is_none(), "ambient opened a prompt");
+    assert!(
+        profile(&tw, nick).prompt.is_none(),
+        "ambient opened a prompt"
+    );
     // …but the career still supports the lease and still costs strain.
     assert_eq!(status(&tw, t), TenancyStatusKind::Active);
     assert!(profile(&tw, nick).strain >= 1, "ambient skipped the strain");
@@ -1243,14 +1443,21 @@ fn sources_are_recorded_and_cross_to_housing_as_labels_only() {
     period(&mut tw, 1);
     period(&mut tw, 1);
     let ten = housing(&tw).tenancy(t).cloned().expect("tenancy");
-    let plan = ten.funding.plans().and_then(|m| m.get(&nick).cloned()).expect("a plan");
+    let plan = ten
+        .funding
+        .plans()
+        .and_then(|m| m.get(&nick).cloned())
+        .expect("a plan");
     // Housing sees the career's opaque kind and nothing else — no stance, no front,
     // no employer, no risk numbers (D-E5-5).
     assert!(plan.sources.iter().any(|s| matches!(
         s,
         mush_housing::SupportSource::Career { kind } if kind == "fixer"
     )));
-    assert!(plan.sources.contains(&mush_housing::SupportSource::Inheritance));
+    assert!(
+        plan.sources
+            .contains(&mush_housing::SupportSource::Inheritance)
+    );
     ok(&mut tw, nick, "+career/source remove inheritance");
     assert_eq!(profile(&tw, nick).sources.len(), 1);
 }
@@ -1269,7 +1476,11 @@ fn the_evaluation_freezes_when_the_campaign_clock_does_not_move() {
     for _ in 0..5 {
         fire(&mut tw);
     }
-    assert_eq!(profile(&tw, nick).strain, before, "the tick spent periods the clock never moved");
+    assert_eq!(
+        profile(&tw, nick).strain,
+        before,
+        "the tick spent periods the clock never moved"
+    );
 }
 
 #[test]
@@ -1341,10 +1552,15 @@ fn fold_kv(tw: &mut TestWorld) -> Kv {
 }
 
 fn drop_key(kv: &mut Kv, ns: &str, key: &str) {
-    let entry = kv.get_mut(&SmolStr::new(ns)).unwrap_or_else(|| panic!("no {ns} namespace"));
+    let entry = kv
+        .get_mut(&SmolStr::new(ns))
+        .unwrap_or_else(|| panic!("no {ns} namespace"));
     let before = entry.len();
     entry.retain(|(k, _)| k.as_str() != key);
-    assert!(entry.len() < before, "no such persisted key to drop: {ns}/{key}");
+    assert!(
+        entry.len() < before,
+        "no such persisted key to drop: {ns}/{key}"
+    );
 }
 
 /// Compose a **fresh** engine over a clone of `tw`'s world and hand every module its
@@ -1362,11 +1578,21 @@ fn reboot_fresh(tw: &TestWorld, kv: Kv, cfg: WodEconomyConfig) -> Engine {
         .expect("the module roster composes");
     let boot: HashMap<SmolStr, ModuleBootData> = kv
         .into_iter()
-        .map(|(ns, kv)| (ns, ModuleBootData { kv, streams: HashMap::new() }))
+        .map(|(ns, kv)| {
+            (
+                ns,
+                ModuleBootData {
+                    kv,
+                    streams: HashMap::new(),
+                },
+            )
+        })
         .collect();
     let mut out = Outbox::new();
     let mut fx = Effects::new();
-    engine.modules_loaded(boot, &mut out, &mut fx).expect("the boot data loads");
+    engine
+        .modules_loaded(boot, &mut out, &mut fx)
+        .expect("the boot data loads");
     engine
 }
 
@@ -1388,13 +1614,25 @@ fn engine_conn(engine: &mut Engine, actor: ObjId) {
 fn engine_cmd(engine: &mut Engine, actor: ObjId, line: &str) -> Vec<(Audience, OutputEvent)> {
     let mut out = Outbox::new();
     let mut fx = Effects::new();
-    engine.step(Inbound::Cmd { conn: 0, actor, line: line.to_string() }, &mut out, &mut fx);
+    engine.step(
+        Inbound::Cmd {
+            conn: 0,
+            actor,
+            line: line.to_string(),
+        },
+        &mut out,
+        &mut fx,
+    );
     out.take()
 }
 
 fn engine_period(engine: &mut Engine, cadence: u64, n: u64) {
     let ev = engine_cmd(engine, GOD, &format!("@econ/cadence advance {cadence} {n}"));
-    assert!(!has_error(&ev), "the reboot could not advance the clock: {}", texts(&ev));
+    assert!(
+        !has_error(&ev),
+        "the reboot could not advance the clock: {}",
+        texts(&ev)
+    );
     let t = engine.world.now().saturating_add(40);
     engine.set_now(t);
     let mut out = Outbox::new();
@@ -1403,11 +1641,17 @@ fn engine_period(engine: &mut Engine, cadence: u64, n: u64) {
 }
 
 fn engine_store(engine: &Engine) -> &WodEconomyStore {
-    engine.world.module_state::<WodEconomyStore>().expect("wod economy store")
+    engine
+        .world
+        .module_state::<WodEconomyStore>()
+        .expect("wod economy store")
 }
 
 fn engine_profile(engine: &Engine, who: ObjId) -> SpendingProfile {
-    engine_store(engine).profile(who).cloned().expect("a profile")
+    engine_store(engine)
+        .profile(who)
+        .cloned()
+        .expect("a profile")
 }
 
 /// The minor-unit amount of one obligation.
@@ -1421,7 +1665,10 @@ fn obligation_minor(tw: &TestWorld, id: mush_economy::ObligationId) -> i64 {
 /// Every `wod.income` obligation in the world, live or not, as `(id, status)`.
 fn income_lines(
     w: &mush_core::World,
-) -> Vec<(mush_economy::ObligationId, mush_economy::ObligationStatusKind)> {
+) -> Vec<(
+    mush_economy::ObligationId,
+    mush_economy::ObligationStatusKind,
+)> {
     w.module_state::<EconomyStore>()
         .map(|s| {
             s.snapshot()
@@ -1480,8 +1727,14 @@ fn vf_m1_income_is_keyed_on_the_sheet_dot_not_the_stance() {
     ok(&mut tw, nick, "+career/source add career=fixer");
     period(&mut tw, 1);
     period(&mut tw, 1);
-    let id = profile(&tw, nick).income.expect("an income line at Resources 3");
-    assert_eq!(obligation_minor(&tw, id), 50_000, "Resources 3 → 500 major at scale 2");
+    let id = profile(&tw, nick)
+        .income
+        .expect("an income line at Resources 3");
+    assert_eq!(
+        obligation_minor(&tw, id),
+        50_000,
+        "Resources 3 → 500 major at scale 2"
+    );
 
     for (stance, level) in [("exploit", 4_u8), ("conceal", 2_u8)] {
         ok(&mut tw, nick, &format!("+career/stance {stance}"));
@@ -1493,9 +1746,21 @@ fn vf_m1_income_is_keyed_on_the_sheet_dot_not_the_stance() {
         assert_eq!(p.level, level, "{stance} did not move the support level");
         assert_eq!(p.resources, 3, "{stance} moved the cached sheet reading");
         // …and nothing at all about the money.
-        assert_eq!(p.income, Some(id), "{stance} opened a different income line");
-        assert_eq!(obligation_minor(&tw, id), 50_000, "{stance} re-rated the standing mint");
-        assert_eq!(live_income_count(tw.world()), 1, "{stance} left a second line running");
+        assert_eq!(
+            p.income,
+            Some(id),
+            "{stance} opened a different income line"
+        );
+        assert_eq!(
+            obligation_minor(&tw, id),
+            50_000,
+            "{stance} re-rated the standing mint"
+        );
+        assert_eq!(
+            live_income_count(tw.world()),
+            1,
+            "{stance} left a second line running"
+        );
     }
 }
 
@@ -1513,14 +1778,31 @@ fn vf_m2_migrate_skips_an_unapproved_sheet_and_reports_it() {
 
     let out = ok(&mut tw, GOD, "@wod/economy migrate");
     assert!(out.contains("skipped"), "the skip was silent: {out}");
-    assert!(out.contains("unapproved"), "the reason was not given: {out}");
-    assert!(out.contains(&format!("#{}", nick.0)), "the character was not named: {out}");
-    assert!(store(&tw).profile(nick).is_none(), "migrate profiled an unapproved sheet");
-    assert_eq!(personal_accounts(&tw, nick), 0, "migrate banked an unapproved sheet");
+    assert!(
+        out.contains("unapproved"),
+        "the reason was not given: {out}"
+    );
+    assert!(
+        out.contains(&format!("#{}", nick.0)),
+        "the character was not named: {out}"
+    );
+    assert!(
+        store(&tw).profile(nick).is_none(),
+        "migrate profiled an unapproved sheet"
+    );
+    assert_eq!(
+        personal_accounts(&tw, nick),
+        0,
+        "migrate banked an unapproved sheet"
+    );
     for _ in 0..3 {
         period(&mut tw, 1);
     }
-    assert_eq!(live_income_count(tw.world()), 0, "an unapproved sheet drew an income line");
+    assert_eq!(
+        live_income_count(tw.world()),
+        0,
+        "an unapproved sheet drew an income line"
+    );
 
     // Approval is the flip that admits them, and it is the same flip
     // `chargen_approval` stamps — which is why `sheeted` reads through the same
@@ -1528,7 +1810,10 @@ fn vf_m2_migrate_skips_an_unapproved_sheet_and_reports_it() {
     approve_sheet(&mut tw, nick);
     let out = ok(&mut tw, GOD, "@wod/economy migrate");
     assert!(out.contains("profile(s) created"), "{out}");
-    assert!(store(&tw).profile(nick).is_some(), "an approved sheet was still skipped");
+    assert!(
+        store(&tw).profile(nick).is_some(),
+        "an approved sheet was still skipped"
+    );
 }
 
 #[test]
@@ -1569,7 +1854,11 @@ fn vf_m3_an_orphaned_income_line_is_adopted_at_boot_and_never_doubled() {
         Some(nick_line),
         "the boot did not adopt the orphaned income line (it named itself)"
     );
-    assert_eq!(live_income_count(&engine.world), 1, "the boot left a second line running");
+    assert_eq!(
+        live_income_count(&engine.world),
+        1,
+        "the boot left a second line running"
+    );
     let quinn_status = income_lines(&engine.world)
         .into_iter()
         .find(|(id, _)| *id == quinn_line)
@@ -1586,7 +1875,11 @@ fn vf_m3_an_orphaned_income_line_is_adopted_at_boot_and_never_doubled() {
     for _ in 0..3 {
         engine_period(&mut engine, cadence, 1);
     }
-    assert_eq!(live_income_count(&engine.world), 1, "the tick opened a second income line");
+    assert_eq!(
+        live_income_count(&engine.world),
+        1,
+        "the tick opened a second income line"
+    );
     assert_eq!(engine_profile(&engine, nick).income, Some(nick_line));
 }
 
@@ -1611,9 +1904,20 @@ fn vf_m4_a_cancelled_income_line_is_not_resurrected() {
         period(&mut tw, 1);
     }
     let p = profile(&tw, nick);
-    assert!(p.income.is_none(), "the profile still names a cancelled line");
-    assert_eq!(p.income_cancelled_at, Some(3), "the decision was not recorded");
-    assert_eq!(live_income_count(tw.world()), 0, "the cancel was undone by the tick");
+    assert!(
+        p.income.is_none(),
+        "the profile still names a cancelled line"
+    );
+    assert_eq!(
+        p.income_cancelled_at,
+        Some(3),
+        "the decision was not recorded"
+    );
+    assert_eq!(
+        live_income_count(tw.world()),
+        0,
+        "the cancel was undone by the tick"
+    );
     assert!(
         p.history
             .iter()
@@ -1624,7 +1928,10 @@ fn vf_m4_a_cancelled_income_line_is_not_resurrected() {
     );
     // The exact-mode screen says so, so staff can find the rule without reading code.
     let screen = ok(&mut tw, GOD, "@wod/economy");
-    assert!(screen.contains("cancels by hand stays cancelled"), "{screen}");
+    assert!(
+        screen.contains("cancels by hand stays cancelled"),
+        "{screen}"
+    );
 
     // A Resources change is a deliberate act, and it opens the next one.
     ok(&mut tw, GOD, "@sheet/set Nick/backgrounds:Resources=4");
@@ -1651,7 +1958,10 @@ fn vf_m5_an_over_cap_starting_stake_is_reported_not_silent() {
     c.starting_funds_major = 1_000_000; // twenty times the default 50,000 ceiling
     let mut tw = boot(c);
     let screen = ok(&mut tw, GOD, "@wod/economy");
-    assert!(screen.contains("ABOVE THE MINT CAP 50000"), "the stake was silent: {screen}");
+    assert!(
+        screen.contains("ABOVE THE MINT CAP 50000"),
+        "the stake was silent: {screen}"
+    );
     assert!(
         screen.contains("bounded by starting_funds_major alone"),
         "the screen did not say what actually bounds it: {screen}"
@@ -1663,13 +1973,23 @@ fn vf_m5_an_over_cap_starting_stake_is_reported_not_silent() {
     // And it still never refuses: an approved character gets the whole stake.
     let who = chargen(&mut tw, "Nick", 3);
     approve(&mut tw, who);
-    let account = store(&tw).profile(who).and_then(|p| p.account).expect("a wallet");
+    let account = store(&tw)
+        .profile(who)
+        .and_then(|p| p.account)
+        .expect("a wallet");
     let bal = tw
         .world()
         .module_state::<EconomyStore>()
-        .and_then(|s| s.snapshot().account(account).map(|a| a.posted_balance.minor()))
+        .and_then(|s| {
+            s.snapshot()
+                .account(account)
+                .map(|a| a.posted_balance.minor())
+        })
         .expect("the account");
-    assert_eq!(bal, 100_000_000, "the over-cap stake was refused or clamped");
+    assert_eq!(
+        bal, 100_000_000,
+        "the over-cap stake was refused or clamped"
+    );
 }
 
 #[test]
@@ -1719,9 +2039,18 @@ fn vf_m7_approval_drops_a_residence_the_approved_sheet_cannot_carry() {
     ok(&mut tw, who, "+stat backgrounds:Contacts=3");
     let out = approve(&mut tw, who);
 
-    assert!(out.contains("tier 5"), "the approver was not told the tier: {out}");
-    assert!(out.contains("support level 2"), "the approver was not told the level: {out}");
-    assert!(out.contains("dropped"), "the pick was not reported as dropped: {out}");
+    assert!(
+        out.contains("tier 5"),
+        "the approver was not told the tier: {out}"
+    );
+    assert!(
+        out.contains("support level 2"),
+        "the approver was not told the level: {out}"
+    );
+    assert!(
+        out.contains("dropped"),
+        "the pick was not reported as dropped: {out}"
+    );
     assert_eq!(store(&tw).residence(who), None, "the pick was not consumed");
     assert_eq!(
         housing(&tw).live_tenancies_of_tenant(who).count(),
@@ -1756,10 +2085,15 @@ fn vf_t1_a_lost_profile_is_re_derived_at_boot_and_the_home_stays_active() {
     let mut engine = reboot_fresh(&tw, kv, cfg(PersonalMode::Abstract));
 
     let p = engine_profile(&engine, nick);
-    assert_eq!(p.resources, 3, "the profile was not re-derived from the sheet");
+    assert_eq!(
+        p.resources, 3,
+        "the profile was not re-derived from the sheet"
+    );
     assert_eq!(p.level, 3);
     assert!(
-        p.history.iter().any(|h| h.what.contains("re-derived at boot")),
+        p.history
+            .iter()
+            .any(|h| h.what.contains("re-derived at boot")),
         "the re-derivation left no note: {:?}",
         p.history
     );
@@ -1777,7 +2111,11 @@ fn vf_t1_a_lost_profile_is_re_derived_at_boot_and_the_home_stays_active() {
             .module_state::<HousingStore>()
             .and_then(|s| s.tenancy(t).map(|x| x.status.kind()))
             .expect("the tenancy");
-        assert_eq!(st, TenancyStatusKind::Active, "a lost profile cost the home its lease");
+        assert_eq!(
+            st,
+            TenancyStatusKind::Active,
+            "a lost profile cost the home its lease"
+        );
     }
 }
 
@@ -1790,12 +2128,24 @@ fn vf_t2_a_profile_doc_that_claims_another_id_is_skipped() {
     let claimant = SpendingProfile::new(ObjId(7), 3, Engagement::Ambient);
     let honest = SpendingProfile::new(ObjId(9), 4, Engagement::Ambient);
     let kv = vec![
-        (SmolStr::new("profile:5"), serde_json::to_value(&claimant).expect("serializes")),
-        (SmolStr::new("profile:9"), serde_json::to_value(&honest).expect("serializes")),
+        (
+            SmolStr::new("profile:5"),
+            serde_json::to_value(&claimant).expect("serializes"),
+        ),
+        (
+            SmolStr::new("profile:9"),
+            serde_json::to_value(&honest).expect("serializes"),
+        ),
     ];
     let store = ruleset_wod::economy::load_store(&kv, cfg(PersonalMode::Abstract));
-    assert!(store.profile(ObjId(5)).is_none(), "the mismatched doc was installed under its key");
-    assert!(store.profile(ObjId(7)).is_none(), "the mismatched doc was installed under its claim");
+    assert!(
+        store.profile(ObjId(5)).is_none(),
+        "the mismatched doc was installed under its key"
+    );
+    assert!(
+        store.profile(ObjId(7)).is_none(),
+        "the mismatched doc was installed under its claim"
+    );
     assert_eq!(
         store.profile(ObjId(9)).map(|p| p.resources),
         Some(4),
@@ -1823,10 +2173,16 @@ fn vf_t3_a_prompt_stamped_in_a_future_ordinal_lapses_at_once() {
     };
     let future = stamped(5);
     for now in [0_u64, 1, 4] {
-        assert!(future.expired(now), "a future stamp read as fresh at ordinal {now}");
+        assert!(
+            future.expired(now),
+            "a future stamp read as fresh at ordinal {now}"
+        );
     }
     // The ordinary arithmetic is untouched.
-    assert!(!future.expired(5), "a prompt expired in the period it opened");
+    assert!(
+        !future.expired(5),
+        "a prompt expired in the period it opened"
+    );
     assert!(!future.expired(6));
     assert!(future.expired(7));
 
@@ -1835,7 +2191,10 @@ fn vf_t3_a_prompt_stamped_in_a_future_ordinal_lapses_at_once() {
     p.prompt = Some(stamped(5));
     let lapsed = ruleset_wod::economy::prompt::expire(&mut p, 1, 0);
     assert_eq!(lapsed, Some(PromptDefault::StatusQuo));
-    assert!(p.prompt.is_none(), "the stranded prompt kept the attention slot");
+    assert!(
+        p.prompt.is_none(),
+        "the stranded prompt kept the attention slot"
+    );
     assert_eq!(p.strain, 0, "a lapse cost strain");
 }
 
@@ -1856,11 +2215,18 @@ fn vf_t4_a_going_character_is_not_evaluated() {
 
     // Marked `GOING`, not swept: the husk is still resolvable.
     tw.world_mut().destroy(nick).expect("destroy");
-    assert!(tw.world().get(nick).is_some(), "the husk was swept; the window under test is gone");
+    assert!(
+        tw.world().get(nick).is_some(),
+        "the husk was swept; the window under test is gone"
+    );
     for _ in 0..3 {
         period(&mut tw, 1);
     }
-    assert_eq!(profile(&tw, nick).strain, strain, "a GOING character was still evaluated");
+    assert_eq!(
+        profile(&tw, nick).strain,
+        strain,
+        "a GOING character was still evaluated"
+    );
     assert_eq!(
         canon_kinds(&tw, "wod.career.exposure"),
         canon,
@@ -1893,10 +2259,16 @@ fn vf_t5_housing_pressure_opens_at_delinquent_and_grace_is_a_notice() {
         );
         match st {
             TenancyStatusKind::Active | TenancyStatusKind::Pending => {
-                assert!(!pressure, "pressure opened before the tenancy was behind at all");
+                assert!(
+                    !pressure,
+                    "pressure opened before the tenancy was behind at all"
+                );
             }
             TenancyStatusKind::Grace => {
-                assert!(!pressure, "the Grace rung opened a prompt; it is housing's notice");
+                assert!(
+                    !pressure,
+                    "the Grace rung opened a prompt; it is housing's notice"
+                );
                 saw_grace = true;
             }
             _ => {}
@@ -1906,7 +2278,10 @@ fn vf_t5_housing_pressure_opens_at_delinquent_and_grace_is_a_notice() {
             break;
         }
     }
-    assert!(saw_grace, "the ladder never passed through Grace, so nothing was pinned");
+    assert!(
+        saw_grace,
+        "the ladder never passed through Grace, so nothing was pinned"
+    );
     assert!(
         matches!(
             pressure_at,
@@ -1931,16 +2306,25 @@ fn vf_t6_the_lapse_line_counts_down() {
     assert!(profile(&tw, nick).prompt.is_some(), "no prompt to read");
 
     let fresh = ok(&mut tw, nick, "+prompt");
-    assert!(fresh.contains("in 2 period(s)"), "the fresh prompt did not say two: {fresh}");
+    assert!(
+        fresh.contains("in 2 period(s)"),
+        "the fresh prompt did not say two: {fresh}"
+    );
     period(&mut tw, 1);
     let last = ok(&mut tw, nick, "+prompt");
     assert!(
         !last.contains("in 2 period(s)"),
         "the countdown did not move off the constant: {last}"
     );
-    assert!(last.contains("last one"), "the last period was not called out: {last}");
+    assert!(
+        last.contains("last one"),
+        "the last period was not called out: {last}"
+    );
     period(&mut tw, 1);
-    assert!(profile(&tw, nick).prompt.is_none(), "the prompt outlived its own countdown");
+    assert!(
+        profile(&tw, nick).prompt.is_none(),
+        "the prompt outlived its own countdown"
+    );
 }
 
 #[test]
@@ -1962,8 +2346,14 @@ fn vf_t7_the_loader_pins_every_corrupt_doc_row() {
     });
     let kv = vec![
         // row 1 — a profile that does not parse is skipped and its neighbours live.
-        (SmolStr::new("profile:3"), serde_json::json!("not a profile at all")),
-        (SmolStr::new("profile:4"), serde_json::to_value(&good).expect("serializes")),
+        (
+            SmolStr::new("profile:3"),
+            serde_json::json!("not a profile at all"),
+        ),
+        (
+            SmolStr::new("profile:4"),
+            serde_json::to_value(&good).expect("serializes"),
+        ),
         (SmolStr::new("profile:nope"), serde_json::json!({})),
         // row 2 — an unparsable cursor is skipped and re-seeded (it reads as default).
         (
@@ -1972,29 +2362,64 @@ fn vf_t7_the_loader_pins_every_corrupt_doc_row() {
         ),
         (SmolStr::new("eval:3"), serde_json::json!("torn")),
         // row 3 — a residence pick with no property is skipped; a good one survives.
-        (SmolStr::new("residence:4"), serde_json::json!({ "property": 9 })),
+        (
+            SmolStr::new("residence:4"),
+            serde_json::json!({ "property": 9 }),
+        ),
         (SmolStr::new("residence:3"), serde_json::json!({})),
         // row 4 — the allocator doc is tolerated field by field.
-        (SmolStr::new("econ:meta"), serde_json::json!({ "next_prompt_id": 3, "junk": true })),
+        (
+            SmolStr::new("econ:meta"),
+            serde_json::json!({ "next_prompt_id": 3, "junk": true }),
+        ),
         // …and a key that is not ours at all (M17's) is simply not ours.
-        (SmolStr::new("conceal"), serde_json::json!({ "anything": 1 })),
+        (
+            SmolStr::new("conceal"),
+            serde_json::json!({ "anything": 1 }),
+        ),
     ];
     let mut store = ruleset_wod::economy::load_store(&kv, cfg(PersonalMode::Abstract));
 
-    assert!(store.profile(ObjId(3)).is_none(), "an unparsable profile was installed");
-    assert_eq!(store.profile(ObjId(4)).map(|p| p.resources), Some(2), "a good profile was lost");
-    assert_eq!(store.profiles().count(), 1, "an unparsable key produced a profile");
+    assert!(
+        store.profile(ObjId(3)).is_none(),
+        "an unparsable profile was installed"
+    );
+    assert_eq!(
+        store.profile(ObjId(4)).map(|p| p.resources),
+        Some(2),
+        "a good profile was lost"
+    );
+    assert_eq!(
+        store.profiles().count(),
+        1,
+        "an unparsable key produced a profile"
+    );
 
-    assert_eq!(store.eval_state(ObjId(4)).period, 7, "a good cursor was lost");
+    assert_eq!(
+        store.eval_state(ObjId(4)).period,
+        7,
+        "a good cursor was lost"
+    );
     let torn = store.eval_state(ObjId(3));
-    assert!(!torn.seeded && torn.period == 0, "a torn cursor was not re-seeded from default");
+    assert!(
+        !torn.seeded && torn.period == 0,
+        "a torn cursor was not re-seeded from default"
+    );
 
     assert_eq!(store.residence(ObjId(4)), Some(mush_housing::PropertyId(9)));
-    assert_eq!(store.residence(ObjId(3)), None, "a residence pick with no property was kept");
+    assert_eq!(
+        store.residence(ObjId(3)),
+        None,
+        "a residence pick with no property was kept"
+    );
 
     // The allocator floors past every id a SURVIVING profile actually holds, never
     // only past `meta` — a hand-written 40 must not be re-minted over.
-    assert_eq!(store.alloc_prompt(), Some(41), "the prompt allocator did not floor past the docs");
+    assert_eq!(
+        store.alloc_prompt(),
+        Some(41),
+        "the prompt allocator did not floor past the docs"
+    );
 }
 
 // ---- Lens D -------------------------------------------------------------
@@ -2012,21 +2437,33 @@ fn vf_d1_a_hidden_faction_never_reaches_a_non_member_render() {
     ok(&mut tw, GOD, &format!("@career/set Nick=front={f}:{fr}"));
 
     let out = ok(&mut tw, nick, "+career");
-    assert!(!out.contains("Sabbat"), "a hidden faction's name reached a non-member: {out}");
+    assert!(
+        !out.contains("Sabbat"),
+        "a hidden faction's name reached a non-member: {out}"
+    );
     assert!(
         !out.contains("Burn the waterfront"),
         "a staff-only front title reached a non-member: {out}"
     );
-    assert!(out.contains(&format!("front #{f}/#{fr}")), "the raw id form was not used: {out}");
+    assert!(
+        out.contains(&format!("front #{f}/#{fr}")),
+        "the raw id form was not used: {out}"
+    );
     // "You may not see it" and "it is gone" must read identically — an orphan marker
     // here would be the oracle the fallback exists to close.
-    assert!(!out.contains("(orphaned front)"), "the refusal was distinguishable: {out}");
+    assert!(
+        !out.contains("(orphaned front)"),
+        "the refusal was distinguishable: {out}"
+    );
 
     // Unhide it and the same render names it: the narrowing is the predicate, not a
     // blanket redaction, and attribution on the record never changed.
     ok(&mut tw, GOD, "@faction/set Sabbat=hidden:false");
     let out = ok(&mut tw, nick, "+career");
-    assert!(out.contains("Sabbat"), "a listed faction stopped rendering: {out}");
+    assert!(
+        out.contains("Sabbat"),
+        "a listed faction stopped rendering: {out}"
+    );
     assert!(out.contains("Burn the waterfront"), "{out}");
 }
 
@@ -2044,7 +2481,11 @@ fn vf_d2_careers_off_neither_moves_the_level_nor_accepts_a_stance() {
     ok(&mut tw, nick, "+career/stance exploit");
     period(&mut tw, 1);
     period(&mut tw, 1);
-    assert_eq!(profile(&tw, nick).level, 4, "the control never bought the tier");
+    assert_eq!(
+        profile(&tw, nick).level,
+        4,
+        "the control never bought the tier"
+    );
 
     // The deployment edits `[wod.economy].careers = false` and restarts.
     let kv = fold_kv(&mut tw);
@@ -2059,11 +2500,22 @@ fn vf_d2_careers_off_neither_moves_the_level_nor_accepts_a_stance() {
 
     let p = engine_profile(&engine, nick);
     assert_eq!(p.resources, 3);
-    assert_eq!(p.level, 3, "a stance still moved the support level on a careers-off server");
+    assert_eq!(
+        p.level, 3,
+        "a stance still moved the support level on a careers-off server"
+    );
     // …and the three verbs that drive it refuse, in the off-mode gate's own words.
-    for line in ["+career/stance conceal", "+career/engage on", "+career/source add career=fixer"] {
+    for line in [
+        "+career/stance conceal",
+        "+career/engage on",
+        "+career/source add career=fixer",
+    ] {
         let ev = engine_cmd(&mut engine, nick, line);
-        assert!(has_error(&ev), "`{line}` was accepted with careers off: {}", texts(&ev));
+        assert!(
+            has_error(&ev),
+            "`{line}` was accepted with careers off: {}",
+            texts(&ev)
+        );
         assert!(
             texts(&ev).contains("does not run the WoD career layer"),
             "`{line}` refused with the wrong words: {}",
@@ -2073,7 +2525,11 @@ fn vf_d2_careers_off_neither_moves_the_level_nor_accepts_a_stance() {
     // A non-career source is housing attribution, which `careers = false` does not
     // switch off.
     let ev = engine_cmd(&mut engine, nick, "+career/source add inheritance");
-    assert!(!has_error(&ev), "careers=false refused a housing attribution: {}", texts(&ev));
+    assert!(
+        !has_error(&ev),
+        "careers=false refused a housing attribution: {}",
+        texts(&ev)
+    );
 }
 
 #[test]
@@ -2092,8 +2548,14 @@ fn vf_d3_a_non_staff_third_party_is_refused_and_the_word_branch_is_gone() {
     period(&mut tw, 1);
 
     let refusal = err(&mut tw, quinn, "+resources Nick");
-    assert!(refusal.contains("permission"), "the refusal changed shape: {refusal}");
-    assert!(!refusal.to_lowercase().contains("they look"), "the word branch survived: {refusal}");
+    assert!(
+        refusal.contains("permission"),
+        "the refusal changed shape: {refusal}"
+    );
+    assert!(
+        !refusal.to_lowercase().contains("they look"),
+        "the word branch survived: {refusal}"
+    );
 
     // Self and staff still get the number and the home word — the branch that is
     // actually reachable.
@@ -2115,19 +2577,31 @@ fn vf_d4_career_set_says_when_a_front_does_not_resolve() {
     let mut tw = boot(cfg(PersonalMode::Abstract));
     let nick = character(&mut tw, "Nick", 3);
     let out = ok(&mut tw, GOD, "@career/set Nick=front=999:888");
-    assert!(out.contains("Set front=999:888"), "the set-ahead case was refused: {out}");
-    assert!(out.contains("does not resolve yet"), "the advisory was not said: {out}");
+    assert!(
+        out.contains("Set front=999:888"),
+        "the set-ahead case was refused: {out}"
+    );
+    assert!(
+        out.contains("does not resolve yet"),
+        "the advisory was not said: {out}"
+    );
     assert!(out.contains("generates nothing until it does"), "{out}");
     // It really is recorded — set-ahead is the point.
     assert_eq!(
-        profile(&tw, nick).career().and_then(|c| c.front).map(|f| (f.faction.0, f.front.0)),
+        profile(&tw, nick)
+            .career()
+            .and_then(|c| c.front)
+            .map(|f| (f.faction.0, f.front.0)),
         Some((999, 888))
     );
 
     // A front that resolves says nothing extra.
     let (f, fr) = front(&mut tw, "Giovanni", "The docks");
     let out = ok(&mut tw, GOD, &format!("@career/set Nick=front={f}:{fr}"));
-    assert!(!out.contains("does not resolve"), "a live front was called broken: {out}");
+    assert!(
+        !out.contains("does not resolve"),
+        "a live front was called broken: {out}"
+    );
 }
 
 #[test]
@@ -2144,22 +2618,39 @@ fn vf_d5_domain_help_matches_the_parser_and_is_no_org_oracle() {
         .spec_of("+career")
         .map(|s| s.help.to_string())
         .expect("+career is registered");
-    assert!(help.contains("domain=<org id>"), "the help still advertises a name: {help}");
+    assert!(
+        help.contains("domain=<org id>"),
+        "the help still advertises a name: {help}"
+    );
 
     let refusal = err(&mut tw, nick, "+career/source add domain=Camarilla");
-    assert!(refusal.contains("A domain needs an org id"), "still a bare fragment: {refusal}");
+    assert!(
+        refusal.contains("A domain needs an org id"),
+        "still a bare fragment: {refusal}"
+    );
 
     // A phantom id is ACCEPTED: `SupportSource::Domain` is a lossy attribution label
     // housing renders as the constant "domain support" and never interprets, so it
     // authorizes nothing — and refusing it would answer "no such org" to an
     // unprivileged verb.
     let out = ok(&mut tw, nick, "+career/source add domain=987654");
-    assert!(!out.to_lowercase().contains("no such org"), "the player verb became an oracle: {out}");
-    assert!(profile(&tw, nick).sources.iter().any(|s| s.key() == "domain"));
+    assert!(
+        !out.to_lowercase().contains("no such org"),
+        "the player verb became an oracle: {out}"
+    );
+    assert!(
+        profile(&tw, nick)
+            .sources
+            .iter()
+            .any(|s| s.key() == "domain")
+    );
 
     // On the STAFF side there is no oracle to protect, so it is said out loud.
     let staff = ok(&mut tw, GOD, "@career/set Nick=employer=org:987654");
-    assert!(staff.contains("org:987654 does not resolve"), "staff were not told: {staff}");
+    assert!(
+        staff.contains("org:987654 does not resolve"),
+        "staff were not told: {staff}"
+    );
 }
 
 #[test]
@@ -2170,13 +2661,23 @@ fn vf_d6_wod_economy_refuses_an_unknown_argument() {
     // turned into a silent no-op. `[rulesets].enabled`'s own rule, one layer up.
     let mut tw = boot(cfg(PersonalMode::Abstract));
     let _nick = character(&mut tw, "Nick", 3);
-    for bad in ["@wod/economy migrat", "@wod/economy migrate now", "@wod/economy show"] {
+    for bad in [
+        "@wod/economy migrat",
+        "@wod/economy migrate now",
+        "@wod/economy show",
+    ] {
         let refusal = err(&mut tw, GOD, bad);
-        assert!(refusal.contains("Usage: @wod/economy [migrate]"), "`{bad}`: {refusal}");
+        assert!(
+            refusal.contains("Usage: @wod/economy [migrate]"),
+            "`{bad}`: {refusal}"
+        );
     }
     // The two real forms still work.
     let show = ok(&mut tw, GOD, "@wod/economy");
-    assert!(show.contains("[wod.economy] as this server is running it:"), "{show}");
+    assert!(
+        show.contains("[wod.economy] as this server is running it:"),
+        "{show}"
+    );
     let migrate = ok(&mut tw, GOD, "@wod/economy migrate");
     assert!(migrate.contains("@wod/economy migrate:"), "{migrate}");
 }
@@ -2199,7 +2700,11 @@ fn profiled_population(tw: &mut TestWorld, n: u32) -> (Engine, Vec<ObjId>) {
     let now = i64::try_from(
         tw.world()
             .module_state::<EconomyStore>()
-            .and_then(|s| s.snapshot().cadence(mush_economy::CadenceId(cadence_id(tw))).map(|c| c.position))
+            .and_then(|s| {
+                s.snapshot()
+                    .cadence(mush_economy::CadenceId(cadence_id(tw)))
+                    .map(|c| c.position)
+            })
             .expect("cadence"),
     )
     .unwrap_or(0);
@@ -2211,7 +2716,10 @@ fn profiled_population(tw: &mut TestWorld, n: u32) -> (Engine, Vec<ObjId>) {
     let entry = kv.entry(SmolStr::new("wod")).or_default();
     for obj in &who {
         let p = SpendingProfile::new(*obj, 0, Engagement::Ambient);
-        entry.push((SmolStr::new(format!("profile:{}", obj.0)), serde_json::to_value(&p).expect("serializes")));
+        entry.push((
+            SmolStr::new(format!("profile:{}", obj.0)),
+            serde_json::to_value(&p).expect("serializes"),
+        ));
         entry.push((
             SmolStr::new(format!("eval:{}", obj.0)),
             serde_json::json!({ "position": now, "period": 0, "seeded": true }),
@@ -2237,51 +2745,101 @@ fn lb_dlbk2_a_fire_visits_at_most_256_works_at_most_128_and_idles_between_period
     for _ in 0..4 {
         engine_fire(&mut engine);
         let f = engine_store(&engine).last_fire();
-        assert!(f.visited <= ruleset_wod::economy::store::MAX_VISITED_PER_FIRE, "visited {}", f.visited);
+        assert!(
+            f.visited <= ruleset_wod::economy::store::MAX_VISITED_PER_FIRE,
+            "visited {}",
+            f.visited
+        );
         assert!(f.visited > 0, "an idle fire before the sweep was complete");
         assert_eq!(f.worked, 0);
         assert_eq!(f.cloned, 0, "a profile was cloned before the due check");
         cursors.push(engine_store(&engine).cursor());
     }
-    assert_eq!(cursors[0], who[255].0 + 1, "the cursor did not advance past the last visited id");
-    assert_eq!(cursors[1], who[511].0 + 1, "the second fire did not visit the next block");
+    assert_eq!(
+        cursors[0],
+        who[255].0 + 1,
+        "the cursor did not advance past the last visited id"
+    );
+    assert_eq!(
+        cursors[1],
+        who[511].0 + 1,
+        "the second fire did not visit the next block"
+    );
     engine_fire(&mut engine);
     let f = engine_store(&engine).last_fire();
     assert_eq!(f.visited, 0, "a fire scanned after a complete idle sweep");
     assert!(f.short_circuited);
 
     // A new profile bumps the population version and wakes the scan…
-    let fresh = engine.world.create(ObjKind::Player, "Newcomer", GOD, Some(LIMBO)).expect("a player");
-    let ev = engine_cmd(&mut engine, GOD, "@sheet/set Newcomer/backgrounds:Resources=2");
+    let fresh = engine
+        .world
+        .create(ObjKind::Player, "Newcomer", GOD, Some(LIMBO))
+        .expect("a player");
+    let ev = engine_cmd(
+        &mut engine,
+        GOD,
+        "@sheet/set Newcomer/backgrounds:Resources=2",
+    );
     assert!(!has_error(&ev), "{}", texts(&ev));
-    let mut doc = engine.world.attr(fresh, "sheet:wod").and_then(mush_core::Attr::as_json).cloned().expect("a sheet");
+    let mut doc = engine
+        .world
+        .attr(fresh, "sheet:wod")
+        .and_then(mush_core::Attr::as_json)
+        .cloned()
+        .expect("a sheet");
     doc["approved"] = serde_json::json!({ "approved": { "by": GOD.0, "at": 0 } });
-    engine.world.set_attr(fresh, "sheet:wod", mush_core::Attr::json(doc, GOD)).expect("writable");
+    engine
+        .world
+        .set_attr(fresh, "sheet:wod", mush_core::Attr::json(doc, GOD))
+        .expect("writable");
     let version = engine_store(&engine).population_version();
     let ev = engine_cmd(&mut engine, GOD, "@wod/economy migrate");
     assert!(!has_error(&ev), "{}", texts(&ev));
-    assert!(engine_store(&engine).population_version() > version, "a new profile did not bump the version");
+    assert!(
+        engine_store(&engine).population_version() > version,
+        "a new profile did not bump the version"
+    );
     engine_fire(&mut engine);
-    assert!(engine_store(&engine).last_fire().visited > 0, "a new profile did not wake the scan");
+    assert!(
+        engine_store(&engine).last_fire().visited > 0,
+        "a new profile did not wake the scan"
+    );
     for _ in 0..4 {
         engine_fire(&mut engine);
     }
-    assert!(engine_store(&engine).last_fire().short_circuited, "the scan never went idle again");
+    assert!(
+        engine_store(&engine).last_fire().short_circuited,
+        "the scan never went idle again"
+    );
 
     // …and a cadence advance makes everything due: at most 128 worked per fire, the
     // rest on later fires.
-    let ev = engine_cmd(&mut engine, GOD, &format!("@econ/cadence advance {cadence} 1"));
+    let ev = engine_cmd(
+        &mut engine,
+        GOD,
+        &format!("@econ/cadence advance {cadence} 1"),
+    );
     assert!(!has_error(&ev), "{}", texts(&ev));
     let mut worked_total = 0usize;
     for _ in 0..12 {
         engine_fire(&mut engine);
         let f = engine_store(&engine).last_fire();
-        assert!(f.worked <= ruleset_wod::economy::store::MAX_WORKED_PER_FIRE, "worked {}", f.worked);
+        assert!(
+            f.worked <= ruleset_wod::economy::store::MAX_WORKED_PER_FIRE,
+            "worked {}",
+            f.worked
+        );
         assert!(f.visited <= ruleset_wod::economy::store::MAX_VISITED_PER_FIRE);
-        assert!(f.cloned <= f.worked, "a profile was cloned without being worked");
+        assert!(
+            f.cloned <= f.worked,
+            "a profile was cloned without being worked"
+        );
         worked_total += f.worked;
     }
-    assert_eq!(worked_total, 1_001, "the period was not spread over later fires: {worked_total}");
+    assert_eq!(
+        worked_total, 1_001,
+        "the period was not spread over later fires: {worked_total}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2291,7 +2849,12 @@ fn lb_dlbk2_a_fire_visits_at_most_256_works_at_most_128_and_idles_between_period
 /// Boot `tw` fresh over `base`'s documents with `who`'s profile rewritten by `f`,
 /// and say whether the loader refused it (the profile is then re-derived in the
 /// same boot).
-fn reboot_with_patched_profile(tw: &TestWorld, base: &Kv, who: ObjId, f: impl Fn(&mut serde_json::Value)) -> (Engine, bool) {
+fn reboot_with_patched_profile(
+    tw: &TestWorld,
+    base: &Kv,
+    who: ObjId,
+    f: impl Fn(&mut serde_json::Value),
+) -> (Engine, bool) {
     let mut kv = base.clone();
     let key = format!("profile:{}", who.0);
     let entry = kv.get_mut(&SmolStr::new("wod")).expect("wod namespace");
@@ -2305,7 +2868,10 @@ fn reboot_with_patched_profile(tw: &TestWorld, base: &Kv, who: ObjId, f: impl Fn
     assert!(seen, "no persisted profile for #{}", who.0);
     let engine = reboot_fresh(tw, kv, cfg(PersonalMode::Abstract));
     let p = engine_profile(&engine, who);
-    let rederived = p.history.iter().any(|e| e.what.contains("re-derived at boot"));
+    let rederived = p
+        .history
+        .iter()
+        .any(|e| e.what.contains("re-derived at boot"));
     (engine, rederived)
 }
 
@@ -2331,40 +2897,76 @@ fn lb_dlbk3_an_over_cap_profile_refuses_to_load_and_is_re_derived() {
     }
     type Patch = Box<dyn Fn(&mut serde_json::Value)>;
     let cases: Vec<(&str, Patch)> = vec![
-        ("33 history entries", Box::new(|v| {
-            let history: Vec<serde_json::Value> = (0..33).map(|i| serde_json::json!({ "at": i, "what": "x" })).collect();
-            v["history"] = serde_json::Value::Array(history);
-        })),
-        ("9 sources", Box::new(|v| {
-            let sources: Vec<serde_json::Value> = (0..9).map(|_| serde_json::json!("Inheritance")).collect();
-            v["sources"] = serde_json::Value::Array(sources);
-        })),
-        ("two sources of one kind", Box::new(|v| {
-            v["sources"] = serde_json::json!(["Inheritance", "Inheritance"]);
-        })),
-        ("a 5-option prompt", Box::new(|v| { v["prompt"] = prompt(5); })),
-        ("a 65-byte career kind", Box::new(|v| {
-            v["sources"] = serde_json::json!([{ "Career": { "kind": "k".repeat(65) } }]);
-        })),
-        ("a 257-byte history line", Box::new(|v| {
-            v["history"] = serde_json::json!([{ "at": 0, "what": "h".repeat(257) }]);
-        })),
-        ("9 haven qualities", Box::new(|v| {
-            let qualities: Vec<&str> = (0..9).map(|_| "q").collect();
-            v["haven"] = serde_json::json!({ "dots": 3, "qualities": qualities });
-        })),
-        ("strain above the ceiling", Box::new(|v| { v["strain"] = serde_json::json!(11); })),
+        (
+            "33 history entries",
+            Box::new(|v| {
+                let history: Vec<serde_json::Value> = (0..33)
+                    .map(|i| serde_json::json!({ "at": i, "what": "x" }))
+                    .collect();
+                v["history"] = serde_json::Value::Array(history);
+            }),
+        ),
+        (
+            "9 sources",
+            Box::new(|v| {
+                let sources: Vec<serde_json::Value> =
+                    (0..9).map(|_| serde_json::json!("Inheritance")).collect();
+                v["sources"] = serde_json::Value::Array(sources);
+            }),
+        ),
+        (
+            "two sources of one kind",
+            Box::new(|v| {
+                v["sources"] = serde_json::json!(["Inheritance", "Inheritance"]);
+            }),
+        ),
+        (
+            "a 5-option prompt",
+            Box::new(|v| {
+                v["prompt"] = prompt(5);
+            }),
+        ),
+        (
+            "a 65-byte career kind",
+            Box::new(|v| {
+                v["sources"] = serde_json::json!([{ "Career": { "kind": "k".repeat(65) } }]);
+            }),
+        ),
+        (
+            "a 257-byte history line",
+            Box::new(|v| {
+                v["history"] = serde_json::json!([{ "at": 0, "what": "h".repeat(257) }]);
+            }),
+        ),
+        (
+            "9 haven qualities",
+            Box::new(|v| {
+                let qualities: Vec<&str> = (0..9).map(|_| "q").collect();
+                v["haven"] = serde_json::json!({ "dots": 3, "qualities": qualities });
+            }),
+        ),
+        (
+            "strain above the ceiling",
+            Box::new(|v| {
+                v["strain"] = serde_json::json!(11);
+            }),
+        ),
     ];
     for (what, f) in cases {
         let (engine, rederived) = reboot_with_patched_profile(&tw, &base, nick, f);
         assert!(rederived, "{what}: the over-cap profile loaded as written");
         let p = engine_profile(&engine, nick);
-        assert_eq!(p.resources, 3, "{what}: the re-derived profile lost the sheet reading");
+        assert_eq!(
+            p.resources, 3,
+            "{what}: the re-derived profile lost the sheet reading"
+        );
         assert!(p.prompt.is_none() && p.strain == 0, "{what}");
     }
     // Inside every cap, the document loads exactly as written.
     let (engine, rederived) = reboot_with_patched_profile(&tw, &base, nick, |v| {
-        let history: Vec<serde_json::Value> = (0..32).map(|i| serde_json::json!({ "at": i, "what": "x" })).collect();
+        let history: Vec<serde_json::Value> = (0..32)
+            .map(|i| serde_json::json!({ "at": i, "what": "x" }))
+            .collect();
         v["history"] = serde_json::Value::Array(history);
         v["prompt"] = prompt(4);
         v["strain"] = serde_json::json!(10);
@@ -2383,9 +2985,11 @@ fn lb_dlbk3_prompt_renders_at_most_four_options() {
     let mut tw = boot(cfg(PersonalMode::Abstract));
     let nick = character(&mut tw, "Nick", 3);
     let base = fold_kv(&mut tw);
-    let option = |k: &str| serde_json::json!({ "key": k, "label": "an answer", "outcome": "StatusQuo" });
+    let option =
+        |k: &str| serde_json::json!({ "key": k, "label": "an answer", "outcome": "StatusQuo" });
     let (mut engine, rederived) = reboot_with_patched_profile(&tw, &base, nick, move |v| {
-        let options: Vec<serde_json::Value> = ["a", "b", "c", "d"].iter().map(|k| option(k)).collect();
+        let options: Vec<serde_json::Value> =
+            ["a", "b", "c", "d"].iter().map(|k| option(k)).collect();
         v["prompt"] = serde_json::json!({
             "id": 7, "kind": "StrainRelief", "options": options,
             "default": "StatusQuo", "opened_at": 0, "opened_period": 0, "expires_after_periods": 2
@@ -2436,7 +3040,11 @@ fn lb_e5cc96_a_lapsed_housing_pressure_prompt_waits_one_period_before_re_asking(
             );
             break;
         }
-        assert_eq!(p.prompt.as_ref().map(|x| x.opened_period), Some(opened), "a second prompt replaced the first");
+        assert_eq!(
+            p.prompt.as_ref().map(|x| x.opened_period),
+            Some(opened),
+            "a second prompt replaced the first"
+        );
     }
     let lapsed_at = lapsed_at.expect("the prompt never lapsed");
     assert!(lapsed_at > opened);
@@ -2445,11 +3053,17 @@ fn lb_e5cc96_a_lapsed_housing_pressure_prompt_waits_one_period_before_re_asking(
     period(&mut tw, 1);
     let p = profile(&tw, nick);
     assert!(
-        matches!(p.prompt.as_ref().map(|x| &x.kind), Some(PromptKind::HousingPressure { .. })),
+        matches!(
+            p.prompt.as_ref().map(|x| &x.kind),
+            Some(PromptKind::HousingPressure { .. })
+        ),
         "housing pressure did not re-ask next period: {:?}",
         p.prompt
     );
-    assert_eq!(p.prompt.as_ref().map(|x| x.opened_period), Some(lapsed_at + 1));
+    assert_eq!(
+        p.prompt.as_ref().map(|x| x.opened_period),
+        Some(lapsed_at + 1)
+    );
 }
 
 /// The same quiet period for `StrainRelief`: at the ceiling, a lapsed relief prompt
@@ -2479,7 +3093,11 @@ fn lb_e5cc96_a_lapsed_strain_relief_prompt_waits_one_period_before_re_asking() {
             lapsed_at = Some(ordinal);
             break;
         }
-        assert_eq!(p.prompt.as_ref().map(|x| x.opened_period), Some(opened), "a second prompt replaced the first");
+        assert_eq!(
+            p.prompt.as_ref().map(|x| x.opened_period),
+            Some(opened),
+            "a second prompt replaced the first"
+        );
     }
     let lapsed_at = lapsed_at.expect("the relief prompt never lapsed");
     assert!(lapsed_at > opened, "the quiet period was skipped");
@@ -2487,9 +3105,15 @@ fn lb_e5cc96_a_lapsed_strain_relief_prompt_waits_one_period_before_re_asking() {
     let p = profile(&tw, nick);
     assert_eq!(p.strain, STRAIN_MAX, "strain left the ceiling");
     assert!(
-        matches!(p.prompt.as_ref().map(|x| &x.kind), Some(PromptKind::StrainRelief)),
+        matches!(
+            p.prompt.as_ref().map(|x| &x.kind),
+            Some(PromptKind::StrainRelief)
+        ),
         "relief did not re-ask next period: {:?}",
         p.prompt
     );
-    assert_eq!(p.prompt.as_ref().map(|x| x.opened_period), Some(lapsed_at + 1));
+    assert_eq!(
+        p.prompt.as_ref().map(|x| x.opened_period),
+        Some(lapsed_at + 1)
+    );
 }

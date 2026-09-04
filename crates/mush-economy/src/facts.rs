@@ -97,7 +97,10 @@ impl WorldFacts<'_> {
     /// form the canon/settlement paths want), or `None` for unknown.
     #[must_use]
     pub fn state(&self, fact: &ExternalRef) -> Option<FactState> {
-        let provider = self.providers.iter().find(|p| p.provider() == fact.provider.as_str())?;
+        let provider = self
+            .providers
+            .iter()
+            .find(|p| p.provider() == fact.provider.as_str())?;
         provider.resolve(self.w, fact.kind.as_str(), fact.id.as_str(), fact.revision)
     }
 }

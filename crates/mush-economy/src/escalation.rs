@@ -285,8 +285,11 @@ impl Escalation {
         if !self.is_open() {
             return false;
         }
-        let interval =
-            if self.notifications == 0 { crate::ESCALATION_RENOTIFY_SECS } else { 86_400 };
+        let interval = if self.notifications == 0 {
+            crate::ESCALATION_RENOTIFY_SECS
+        } else {
+            86_400
+        };
         now.saturating_sub(self.notified_at) >= interval
     }
 

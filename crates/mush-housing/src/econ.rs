@@ -142,7 +142,9 @@ fn on_obligation(ctx: &mut Ctx<'_>, id: ObligationId, kind: ObligationStatusKind
     if !t.status.is_live() {
         return;
     }
-    let Some(now) = crate::module::cadence_now(ctx.w, t.cadence) else { return };
+    let Some(now) = crate::module::cadence_now(ctx.w, t.cadence) else {
+        return;
+    };
     let before = t.status.kind();
     let moved = match kind {
         // Paid, or finished paying: back to Active, silently (§3.2).
@@ -183,11 +185,15 @@ fn bind_pending_lease(ctx: &mut Ctx<'_>, id: ObligationId) {
     }) else {
         return;
     };
-    let Some(t) = tenancy_under(ctx, contract) else { return };
+    let Some(t) = tenancy_under(ctx, contract) else {
+        return;
+    };
     if !matches!(t.status, crate::record::TenancyStatus::Pending) || !is_pending_lease(&t.funding) {
         return;
     }
-    let Some(now) = crate::module::cadence_now(ctx.w, t.cadence) else { return };
+    let Some(now) = crate::module::cadence_now(ctx.w, t.cadence) else {
+        return;
+    };
     // This edge exists *because* the obligation was just created, so "there is no
     // rent record" here is a real fault.
     activate_lease(ctx, &t, contract, now, BindEdge::BindingDue);
@@ -203,7 +209,9 @@ pub(crate) fn bind_if_ready(ctx: &mut Ctx<'_>, t: &Tenancy) {
     if !matches!(t.status, crate::record::TenancyStatus::Pending) || !is_pending_lease(&t.funding) {
         return;
     }
-    let Funding::Exact { contract, .. } = &t.funding else { return };
+    let Funding::Exact { contract, .. } = &t.funding else {
+        return;
+    };
     let contract = *contract;
     let live = ctx
         .w
@@ -212,7 +220,9 @@ pub(crate) fn bind_if_ready(ctx: &mut Ctx<'_>, t: &Tenancy) {
     if live != Some(true) {
         return;
     }
-    let Some(now) = crate::module::cadence_now(ctx.w, t.cadence) else { return };
+    let Some(now) = crate::module::cadence_now(ctx.w, t.cadence) else {
+        return;
+    };
     // Binding is *due* by the time the tick asks — the contract is live and its
     // deliverables have long since been created — so a missing rent record here is
     // the genuine fault deviation 7's sentinel exists to make visible.
@@ -221,8 +231,12 @@ pub(crate) fn bind_if_ready(ctx: &mut Ctx<'_>, t: &Tenancy) {
 
 /// Activation and unwind.
 fn on_contract(ctx: &mut Ctx<'_>, id: mush_economy::ContractId, state: ContractStateKind) {
-    let Some(t) = tenancy_under(ctx, id) else { return };
-    let Some(now) = crate::module::cadence_now(ctx.w, t.cadence) else { return };
+    let Some(t) = tenancy_under(ctx, id) else {
+        return;
+    };
+    let Some(now) = crate::module::cadence_now(ctx.w, t.cadence) else {
+        return;
+    };
     match state {
         // **Quiet** (verify fold, T9) — see [`BindEdge`].
         ContractStateKind::Active => {
@@ -300,7 +314,10 @@ fn activate_lease(
         return;
     };
     let mut bound = t.clone();
-    bound.funding = Funding::Exact { contract, obligation };
+    bound.funding = Funding::Exact {
+        contract,
+        obligation,
+    };
     let before = bound.status.kind();
     // Both sides have consented by construction: the landlord's acceptance is the
     // offer (a staff act on their behalf) and every tenant's is the acceptance that

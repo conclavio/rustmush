@@ -18,16 +18,14 @@ use mush_core::{
     PreparedLedgerAppend, Role, World, perm,
 };
 use mush_org::{
-    ApprovalPolicy, AuthRequest, CapabilityId, MembershipStatus, OrgScopeId, OrgStatus, PrincipalId,
-    ScopeStatus, authorize_in_world,
+    ApprovalPolicy, AuthRequest, CapabilityId, MembershipStatus, OrgScopeId, OrgStatus,
+    PrincipalId, ScopeStatus, authorize_in_world,
 };
 use smol_str::SmolStr;
 
 use crate::amount::Amount;
 use crate::custody::{CustodyError, WorldCustody};
-use crate::engine::{
-    APPROVAL_TTL_SECS, AuthEval, ValidateEnv, apply, plan_reversal, validate,
-};
+use crate::engine::{APPROVAL_TTL_SECS, AuthEval, ValidateEnv, apply, plan_reversal, validate};
 use crate::ids::{
     AccountId, ApprovalRequestId, CadenceId, HoldId, InstrumentId, ObligationId, TransactionId,
     VaultId,
@@ -106,73 +104,112 @@ pub fn contract_key(id: crate::ids::ContractId) -> SmolStr {
 // ---- persist helpers ------------------------------------------------------
 
 pub(crate) fn push_op(out: &mut Outbox, op: ModuleWrite) {
-    out.defer(Deferred::Persist(ModuleOp { ns: SmolStr::new_static(NS), op }));
+    out.defer(Deferred::Persist(ModuleOp {
+        ns: SmolStr::new_static(NS),
+        op,
+    }));
 }
 pub(crate) fn persist_instrument(out: &mut Outbox, def: &InstrumentDef) {
-    push_op(out, ModuleWrite::JsonSet {
-        key: instrument_key(&def.id),
-        value: serde_json::to_value(def).expect("instrument serializes"),
-    });
+    push_op(
+        out,
+        ModuleWrite::JsonSet {
+            key: instrument_key(&def.id),
+            value: serde_json::to_value(def).expect("instrument serializes"),
+        },
+    );
 }
 pub(crate) fn persist_account(out: &mut Outbox, a: &Account) {
-    push_op(out, ModuleWrite::JsonSet {
-        key: account_key(a.id),
-        value: serde_json::to_value(a).expect("account serializes"),
-    });
+    push_op(
+        out,
+        ModuleWrite::JsonSet {
+            key: account_key(a.id),
+            value: serde_json::to_value(a).expect("account serializes"),
+        },
+    );
 }
 pub(crate) fn persist_asset(out: &mut Outbox, a: &EconomicAsset) {
-    push_op(out, ModuleWrite::JsonSet {
-        key: asset_key(a.object),
-        value: serde_json::to_value(a).expect("asset serializes"),
-    });
+    push_op(
+        out,
+        ModuleWrite::JsonSet {
+            key: asset_key(a.object),
+            value: serde_json::to_value(a).expect("asset serializes"),
+        },
+    );
 }
 pub(crate) fn persist_vault(out: &mut Outbox, v: &Vault) {
-    push_op(out, ModuleWrite::JsonSet {
-        key: vault_key(v.id),
-        value: serde_json::to_value(v).expect("vault serializes"),
-    });
+    push_op(
+        out,
+        ModuleWrite::JsonSet {
+            key: vault_key(v.id),
+            value: serde_json::to_value(v).expect("vault serializes"),
+        },
+    );
 }
 pub(crate) fn persist_approval(out: &mut Outbox, r: &ApprovalRequest) {
-    push_op(out, ModuleWrite::JsonSet {
-        key: approval_key(r.id),
-        value: serde_json::to_value(r).expect("approval request serializes"),
-    });
+    push_op(
+        out,
+        ModuleWrite::JsonSet {
+            key: approval_key(r.id),
+            value: serde_json::to_value(r).expect("approval request serializes"),
+        },
+    );
 }
 pub(crate) fn persist_hold(out: &mut Outbox, h: &crate::record::Hold) {
-    push_op(out, ModuleWrite::JsonSet {
-        key: hold_key(h.id),
-        value: serde_json::to_value(h).expect("hold serializes"),
-    });
+    push_op(
+        out,
+        ModuleWrite::JsonSet {
+            key: hold_key(h.id),
+            value: serde_json::to_value(h).expect("hold serializes"),
+        },
+    );
 }
 pub(crate) fn persist_obligation(out: &mut Outbox, o: &crate::obligation::Obligation) {
-    push_op(out, ModuleWrite::JsonSet {
-        key: obligation_key(o.id),
-        value: serde_json::to_value(o).expect("obligation serializes"),
-    });
+    push_op(
+        out,
+        ModuleWrite::JsonSet {
+            key: obligation_key(o.id),
+            value: serde_json::to_value(o).expect("obligation serializes"),
+        },
+    );
 }
 pub(crate) fn persist_cadence(out: &mut Outbox, c: &crate::clock::CadenceClock) {
-    push_op(out, ModuleWrite::JsonSet {
-        key: cadence_key(c.id),
-        value: serde_json::to_value(c).expect("cadence serializes"),
-    });
+    push_op(
+        out,
+        ModuleWrite::JsonSet {
+            key: cadence_key(c.id),
+            value: serde_json::to_value(c).expect("cadence serializes"),
+        },
+    );
 }
 pub(crate) fn persist_contract(out: &mut Outbox, c: &crate::contract::EconomicContract) {
-    push_op(out, ModuleWrite::JsonSet {
-        key: contract_key(c.id),
-        value: serde_json::to_value(c).expect("contract serializes"),
-    });
+    push_op(
+        out,
+        ModuleWrite::JsonSet {
+            key: contract_key(c.id),
+            value: serde_json::to_value(c).expect("contract serializes"),
+        },
+    );
 }
 pub(crate) fn persist_escalation(out: &mut Outbox, e: &crate::escalation::Escalation) {
-    push_op(out, ModuleWrite::JsonSet {
-        key: crate::escalation::escalation_key(e.id),
-        value: serde_json::to_value(e).expect("escalation serializes"),
-    });
+    push_op(
+        out,
+        ModuleWrite::JsonSet {
+            key: crate::escalation::escalation_key(e.id),
+            value: serde_json::to_value(e).expect("escalation serializes"),
+        },
+    );
 }
 pub(crate) fn delete_key(out: &mut Outbox, key: SmolStr) {
     push_op(out, ModuleWrite::Del { key });
 }
 pub(crate) fn persist_meta(out: &mut Outbox, meta: serde_json::Value) {
-    push_op(out, ModuleWrite::JsonSet { key: SmolStr::new_static(META_KEY), value: meta });
+    push_op(
+        out,
+        ModuleWrite::JsonSet {
+            key: SmolStr::new_static(META_KEY),
+            value: meta,
+        },
+    );
 }
 /// Wrap the journal `Ledger::append` write in the economy namespace.
 pub(crate) fn persist_journal(out: &mut Outbox, op: ModuleWrite) {
@@ -191,7 +228,8 @@ pub fn post_capability() -> CapabilityId {
 /// `GOING`) — the liveness half of [`AuthEval::authorize_approver`].
 #[must_use]
 fn approver_live(w: &World, who: ObjId) -> bool {
-    w.get(who).is_some_and(|o| !o.flags.contains(mush_core::Flags::GOING))
+    w.get(who)
+        .is_some_and(|o| !o.flags.contains(mush_core::Flags::GOING))
 }
 
 /// Staff: `SIM_ADMIN` or `Royalty` — the one staff predicate the whole crate uses.
@@ -204,9 +242,22 @@ pub(crate) fn is_staff(w: &World, who: ObjId) -> bool {
 /// None` — these are not amount-carrying operations, and a `GrantLimit` on a
 /// non-amount capability never authorizes, by design).
 #[must_use]
-pub(crate) fn holds_capability(w: &World, actor: ObjId, capability: &str, scope: OrgScopeId) -> bool {
-    let Some(capability) = CapabilityId::new(capability) else { return false };
-    let req = AuthRequest { actor, capability, scope, now: w.now(), amount: None };
+pub(crate) fn holds_capability(
+    w: &World,
+    actor: ObjId,
+    capability: &str,
+    scope: OrgScopeId,
+) -> bool {
+    let Some(capability) = CapabilityId::new(capability) else {
+        return false;
+    };
+    let req = AuthRequest {
+        actor,
+        capability,
+        scope,
+        now: w.now(),
+        amount: None,
+    };
     authorize_in_world(w, &req).is_allow()
 }
 
@@ -218,14 +269,22 @@ pub(crate) fn holds_capability(w: &World, actor: ObjId, capability: &str, scope:
 #[must_use]
 pub(crate) fn scope_coherent(w: &World, scope: Option<OrgScopeId>, owner: &PrincipalId) -> bool {
     let Some(sid) = scope else { return true };
-    let PrincipalId::Organization(org) = owner else { return false };
-    let Some(store) = w.module_state::<mush_org::OrgStore>() else { return false };
+    let PrincipalId::Organization(org) = owner else {
+        return false;
+    };
+    let Some(store) = w.module_state::<mush_org::OrgStore>() else {
+        return false;
+    };
     let state = store.state();
-    let Some(sc) = state.scope(sid) else { return false };
+    let Some(sc) = state.scope(sid) else {
+        return false;
+    };
     if sc.org != *org || sc.status != ScopeStatus::Active {
         return false;
     }
-    state.org(*org).is_some_and(|o| o.status == OrgStatus::Active)
+    state
+        .org(*org)
+        .is_some_and(|o| o.status == OrgStatus::Active)
 }
 
 /// An object plus everything it transitively contains, depth-capped — what the
@@ -265,8 +324,12 @@ pub(crate) fn credit_allowed(w: &World, account: &Account) -> bool {
     if account.scope.is_none() {
         return true;
     }
-    let PrincipalId::Organization(org) = &account.owner else { return false };
-    let Some(store) = w.module_state::<mush_org::OrgStore>() else { return false };
+    let PrincipalId::Organization(org) = &account.owner else {
+        return false;
+    };
+    let Some(store) = w.module_state::<mush_org::OrgStore>() else {
+        return false;
+    };
     store
         .state()
         .org(*org)
@@ -309,7 +372,9 @@ impl AuthEval for WorldAuth<'_> {
         // own `authorize` denies `Inactive` on the same facts after E3b2, so this is
         // defence in depth, not the only lock.
         if let Some(scope) = account.scope {
-            let PrincipalId::Object(obj) = actor else { return false };
+            let PrincipalId::Object(obj) = actor else {
+                return false;
+            };
             if !scope_coherent(self.w, Some(scope), &account.owner) {
                 return false;
             }
@@ -333,8 +398,15 @@ impl AuthEval for WorldAuth<'_> {
     /// org compartment. `Title` and `Encumber` are **staff-only in E3**;
     /// `Release(Lien)` is additionally open to its own creditor, `Release(Disputed)`
     /// is staff.
-    fn authorize_asset(&self, actor: &PrincipalId, asset: Option<&EconomicAsset>, op: &AssetOp) -> bool {
-        let PrincipalId::Object(a) = actor else { return false };
+    fn authorize_asset(
+        &self,
+        actor: &PrincipalId,
+        asset: Option<&EconomicAsset>,
+        op: &AssetOp,
+    ) -> bool {
+        let PrincipalId::Object(a) = actor else {
+            return false;
+        };
         let staff = is_staff(self.w, *a);
         match op {
             // Creating a title mints a compartment binding; never an incoherent one,
@@ -364,8 +436,15 @@ impl AuthEval for WorldAuth<'_> {
     /// not free the way a money credit is. To an org → `asset.title.transfer` on
     /// `to_scope`, which must be present and belong to that org. To an object
     /// principal → the actor IS that principal, or staff.
-    fn authorize_title_receipt(&self, actor: &PrincipalId, to: &PrincipalId, to_scope: Option<OrgScopeId>) -> bool {
-        let PrincipalId::Object(a) = actor else { return false };
+    fn authorize_title_receipt(
+        &self,
+        actor: &PrincipalId,
+        to: &PrincipalId,
+        to_scope: Option<OrgScopeId>,
+    ) -> bool {
+        let PrincipalId::Object(a) = actor else {
+            return false;
+        };
         let staff = is_staff(self.w, *a);
         match to {
             PrincipalId::Organization(_) => {
@@ -385,7 +464,9 @@ impl AuthEval for WorldAuth<'_> {
     /// Vault policy (§4.4): the vault's owner, `vault.deposit`/`vault.withdraw` on
     /// its compartment, or staff. Vault ops never consult title (D5).
     fn authorize_vault(&self, actor: &PrincipalId, vault: &Vault, op: &CustodyOp) -> bool {
-        let PrincipalId::Object(a) = actor else { return false };
+        let PrincipalId::Object(a) = actor else {
+            return false;
+        };
         if is_staff(self.w, *a) || vault.owner == *actor {
             return true;
         }
@@ -400,7 +481,9 @@ impl AuthEval for WorldAuth<'_> {
     /// Crediting is free, so a zero-delta probe through [`AuthEval::authorize`]
     /// proves nothing — and a `System` faucet/sink is staff-only either way (A6).
     fn authorize_maintenance(&self, actor: &PrincipalId, account: &Account) -> bool {
-        let PrincipalId::Object(a) = actor else { return false };
+        let PrincipalId::Object(a) = actor else {
+            return false;
+        };
         if is_staff(self.w, *a) {
             return true;
         }
@@ -433,7 +516,12 @@ impl AuthEval for WorldAuth<'_> {
     /// `OneAuthorizedActor` qualifies nobody: it is inert (the one authorized actor
     /// is the poster, and four-eyes bars them), which is why `@account/approval`
     /// refuses to store it (A11).
-    fn authorize_approver(&self, approver: ObjId, account: &Account, policy: &ApprovalPolicy) -> bool {
+    fn authorize_approver(
+        &self,
+        approver: ObjId,
+        account: &Account,
+        policy: &ApprovalPolicy,
+    ) -> bool {
         // Liveness first, for both policies: a recorded approval is re-qualified at
         // post time, and a destroyed approver qualifies for nothing. The `Threshold`
         // arm fails closed anyway (a dead object holds no capability and no live
@@ -456,10 +544,16 @@ impl AuthEval for WorldAuth<'_> {
                     return false;
                 }
                 let Some(role) = from_role else { return true };
-                let Some(scope) = account.scope else { return false };
-                let Some(store) = self.w.module_state::<mush_org::OrgStore>() else { return false };
+                let Some(scope) = account.scope else {
+                    return false;
+                };
+                let Some(store) = self.w.module_state::<mush_org::OrgStore>() else {
+                    return false;
+                };
                 let state = store.state();
-                let Some(sc) = state.scope(scope) else { return false };
+                let Some(sc) = state.scope(scope) else {
+                    return false;
+                };
                 state
                     .membership(sc.org, approver)
                     .is_some_and(|m| m.status == MembershipStatus::Active && m.roles.contains(role))
@@ -525,9 +619,15 @@ impl AuthEval for WorldAuth<'_> {
                 if let Some(beneficiary) = &hold.beneficiary {
                     return self.acts_for(actor, beneficiary);
                 }
-                let Some(store) = self.w.module_state::<EconomyStore>() else { return false };
-                let Some(account) = store.snapshot().account(hold.account) else { return false };
-                let Some(probe) = hold.amount.checked_neg() else { return false };
+                let Some(store) = self.w.module_state::<EconomyStore>() else {
+                    return false;
+                };
+                let Some(account) = store.snapshot().account(hold.account) else {
+                    return false;
+                };
+                let Some(probe) = hold.amount.checked_neg() else {
+                    return false;
+                };
                 self.authorize(actor, account, probe)
             }
             // Expiry is the scheduler's act, not a player verb: only the sweep's own
@@ -574,7 +674,9 @@ impl AuthEval for WorldAuth<'_> {
                 PrincipalId::System(_) => false,
             },
             crate::AttestorSet::Capability { scope, capability } => {
-                let (PrincipalId::Object(a), Some(scope)) = (actor, scope) else { return false };
+                let (PrincipalId::Object(a), Some(scope)) = (actor, scope) else {
+                    return false;
+                };
                 let req = AuthRequest {
                     actor: *a,
                     capability: capability.clone(),
@@ -594,9 +696,16 @@ impl AuthEval for WorldAuth<'_> {
 
 impl WorldAuth<'_> {
     /// The capability path: a live, coherent compartment plus the capability on it.
-    fn scoped_capability(&self, scope: Option<OrgScopeId>, owner: &PrincipalId, capability: &str, actor: ObjId) -> bool {
+    fn scoped_capability(
+        &self,
+        scope: Option<OrgScopeId>,
+        owner: &PrincipalId,
+        capability: &str,
+        actor: ObjId,
+    ) -> bool {
         let Some(scope) = scope else { return false };
-        scope_coherent(self.w, Some(scope), owner) && holds_capability(self.w, actor, capability, scope)
+        scope_coherent(self.w, Some(scope), owner)
+            && holds_capability(self.w, actor, capability, scope)
     }
 
     /// Whether `actor` acts **for** `who` — the beneficiary question a capture asks,
@@ -618,7 +727,9 @@ impl WorldAuth<'_> {
     /// to be the only thing that can. Staff have `@econ/mint` and `@econ/reverse` for
     /// what they legitimately need here.
     pub(crate) fn acts_for(&self, actor: &PrincipalId, who: &PrincipalId) -> bool {
-        let PrincipalId::Object(a) = actor else { return false };
+        let PrincipalId::Object(a) = actor else {
+            return false;
+        };
         if matches!(who, PrincipalId::System(_)) {
             return false;
         }
@@ -628,8 +739,12 @@ impl WorldAuth<'_> {
         match who {
             PrincipalId::Object(o) => *a == *o || mush_core::perm::controls(self.w, *a, *o),
             PrincipalId::Organization(org) => {
-                let Some(store) = self.w.module_state::<mush_org::OrgStore>() else { return false };
-                let Some(root) = store.state().org(*org).map(|o| o.root_scope) else { return false };
+                let Some(store) = self.w.module_state::<mush_org::OrgStore>() else {
+                    return false;
+                };
+                let Some(root) = store.state().org(*org).map(|o| o.root_scope) else {
+                    return false;
+                };
                 scope_coherent(self.w, Some(root), who)
                     && holds_capability(self.w, *a, "economy.account.post", root)
             }
@@ -683,7 +798,10 @@ pub(crate) fn sweep_principal() -> PrincipalId {
 /// [`EconomyError::InstrumentExists`] for an id already registered;
 /// [`EconomyError::EconomyFrozen`] when the module is not loaded.
 pub fn register_instrument(ctx: &mut Ctx<'_>, def: InstrumentDef) -> Result<(), EconomyError> {
-    let store = ctx.w.module_state_mut::<EconomyStore>().ok_or(EconomyError::EconomyFrozen)?;
+    let store = ctx
+        .w
+        .module_state_mut::<EconomyStore>()
+        .ok_or(EconomyError::EconomyFrozen)?;
     if store.snapshot.instrument(&def.id).is_some() {
         return Err(EconomyError::InstrumentExists(def.id));
     }
@@ -722,11 +840,18 @@ pub fn suspend_obligation(
 ) -> Result<(), EconomyError> {
     let now = ctx.w.now();
     let next = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or(EconomyError::EconomyFrozen)?;
-        let o = store.snapshot().obligation(id).ok_or(EconomyError::NoSuchObligation(id))?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or(EconomyError::EconomyFrozen)?;
+        let o = store
+            .snapshot()
+            .obligation(id)
+            .ok_or(EconomyError::NoSuchObligation(id))?;
         if matches!(
             o.status,
-            crate::obligation::ObligationStatus::Cancelled | crate::obligation::ObligationStatus::Satisfied
+            crate::obligation::ObligationStatus::Cancelled
+                | crate::obligation::ObligationStatus::Satisfied
         ) {
             return Err(EconomyError::ObligationTerminal(id));
         }
@@ -760,20 +885,30 @@ pub fn resume_obligation(
     let now = ctx.w.now();
     let ic_now = ctx.w.game_now_unix();
     let (next, returned) = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or(EconomyError::EconomyFrozen)?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or(EconomyError::EconomyFrozen)?;
         let snap = store.snapshot();
-        let o = snap.obligation(id).ok_or(EconomyError::NoSuchObligation(id))?;
+        let o = snap
+            .obligation(id)
+            .ok_or(EconomyError::NoSuchObligation(id))?;
         if !o.held_by(key) {
             return Ok(false);
         }
         let mut holders = o.holders();
         holders.remove(key);
-        let returning =
-            matches!(o.status, crate::obligation::ObligationStatus::Suspended { .. }) && holders.is_empty();
+        let returning = matches!(
+            o.status,
+            crate::obligation::ObligationStatus::Suspended { .. }
+        ) && holders.is_empty();
         let mut base = o.clone();
         if returning
-            && let Some(clock_now) =
-                crate::clock::Clocks::new(now, ic_now).now_on(o.schedule.clock, snap, o.schedule.manual_now)
+            && let Some(clock_now) = crate::clock::Clocks::new(now, ic_now).now_on(
+                o.schedule.clock,
+                snap,
+                o.schedule.manual_now,
+            )
         {
             let due = crate::clock::due_periods(&o.schedule, clock_now);
             if due > 0 {
@@ -795,7 +930,9 @@ pub fn resume_obligation(
 /// from [`EconomyStore::alloc_account`].
 pub fn open_account(ctx: &mut Ctx<'_>, account: Account) {
     let meta = {
-        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return };
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
+            return;
+        };
         store.snapshot.put_account(account.clone());
         store.meta_doc()
     };
@@ -808,7 +945,9 @@ pub fn open_account(ctx: &mut Ctx<'_>, account: Account) {
 /// caller has already proved the backing is usable and unclaimed.
 pub fn create_vault(ctx: &mut Ctx<'_>, vault: Vault) {
     let meta = {
-        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return };
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
+            return;
+        };
         store.snapshot.put_vault(vault.clone());
         store.meta_doc()
     };
@@ -824,10 +963,19 @@ pub fn create_vault(ctx: &mut Ctx<'_>, vault: Vault) {
 /// field, and moving it here would make the doc disagree with the journal at its own
 /// claimed sequence — the next boot would read the freeze itself as drift and latch
 /// the whole-economy freeze (the C2 regression).
-pub fn set_asset_frozen(ctx: &mut Ctx<'_>, object: ObjId, frozen: bool, reason: Option<SmolStr>) -> bool {
+pub fn set_asset_frozen(
+    ctx: &mut Ctx<'_>,
+    object: ObjId,
+    frozen: bool,
+    reason: Option<SmolStr>,
+) -> bool {
     let doc = {
-        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return false };
-        let Some(a) = store.snapshot.asset_mut(object) else { return false };
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
+            return false;
+        };
+        let Some(a) = store.snapshot.asset_mut(object) else {
+            return false;
+        };
         a.frozen = frozen;
         a.frozen_reason = if frozen { reason } else { None };
         a.clone()
@@ -842,10 +990,18 @@ pub fn set_asset_frozen(ctx: &mut Ctx<'_>, object: ObjId, frozen: bool, reason: 
 /// the journal (`apply` bumps it on every touched account), so nudging it from a doc
 /// write would make the doc claim a state its own `last_journal_seq` never produced.
 /// Returns `false` if the account is unknown.
-pub fn set_account_status(ctx: &mut Ctx<'_>, id: AccountId, status: crate::record::AccountStatus) -> bool {
+pub fn set_account_status(
+    ctx: &mut Ctx<'_>,
+    id: AccountId,
+    status: crate::record::AccountStatus,
+) -> bool {
     let doc = {
-        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return false };
-        let Some(a) = store.snapshot.account_mut(id) else { return false };
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
+            return false;
+        };
+        let Some(a) = store.snapshot.account_mut(id) else {
+            return false;
+        };
         a.status = status;
         a.clone()
     };
@@ -860,10 +1016,18 @@ pub fn set_account_status(ctx: &mut Ctx<'_>, id: AccountId, status: crate::recor
 /// The rule is **not** part of the plan hash: an approval authorizes an intent, so
 /// changing the rule never invalidates a request already collected — but the rule is
 /// re-read live at every post, so raising it does take effect immediately.
-pub fn set_account_approval(ctx: &mut Ctx<'_>, id: AccountId, rule: Option<crate::record::ApprovalRule>) -> bool {
+pub fn set_account_approval(
+    ctx: &mut Ctx<'_>,
+    id: AccountId,
+    rule: Option<crate::record::ApprovalRule>,
+) -> bool {
     let doc = {
-        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return false };
-        let Some(a) = store.snapshot.account_mut(id) else { return false };
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
+            return false;
+        };
+        let Some(a) = store.snapshot.account_mut(id) else {
+            return false;
+        };
         a.approval = rule;
         a.clone()
     };
@@ -883,7 +1047,9 @@ pub fn set_account_approval(ctx: &mut Ctx<'_>, id: AccountId, rule: Option<crate
 /// resources actually need attention.
 pub fn set_economy_frozen(ctx: &mut Ctx<'_>, frozen: bool) -> bool {
     let meta = {
-        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return false };
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
+            return false;
+        };
         store.frozen = frozen;
         store.meta_doc()
     };
@@ -892,10 +1058,18 @@ pub fn set_economy_frozen(ctx: &mut Ctx<'_>, frozen: bool) -> bool {
 }
 
 /// Staff: set a vault's doc-authority status. Not journaled (same split).
-pub fn set_vault_status(ctx: &mut Ctx<'_>, id: VaultId, status: crate::record::VaultStatus) -> bool {
+pub fn set_vault_status(
+    ctx: &mut Ctx<'_>,
+    id: VaultId,
+    status: crate::record::VaultStatus,
+) -> bool {
     let doc = {
-        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return false };
-        let Some(v) = store.snapshot.vault_mut(id) else { return false };
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
+            return false;
+        };
+        let Some(v) = store.snapshot.vault_mut(id) else {
+            return false;
+        };
         v.status = status;
         v.revision += 1;
         v.clone()
@@ -985,7 +1159,10 @@ pub(crate) fn post_with_companions(
     companions: Vec<crate::contract::EconomicContract>,
 ) -> Result<PostOutcome, EconomyError> {
     let (outcome, providers) = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or(EconomyError::EconomyFrozen)?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or(EconomyError::EconomyFrozen)?;
         if store.frozen {
             return Err(EconomyError::EconomyFrozen);
         }
@@ -995,11 +1172,17 @@ pub(crate) fn post_with_companions(
             PostAuth::World => &world_auth,
             PostAuth::Injected(a) => a,
         };
-        let custody = WorldCustody { w: ctx.w, providers: providers.clone() };
+        let custody = WorldCustody {
+            w: ctx.w,
+            providers: providers.clone(),
+        };
         // E4c: the wiring-frozen fact table, read live. An empty table answers
         // `None` for everything, which is unknown, which is unsatisfied — exactly
         // the `NoFacts` behaviour this replaced.
-        let facts = crate::facts::WorldFacts { w: ctx.w, providers: store.facts() };
+        let facts = crate::facts::WorldFacts {
+            w: ctx.w,
+            providers: store.facts(),
+        };
         let env = ValidateEnv {
             auth,
             custody: &custody,
@@ -1023,13 +1206,22 @@ pub fn reverse(
     cause: EconomicCause,
 ) -> Result<PostOutcome, EconomyError> {
     let (outcome, providers) = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or(EconomyError::EconomyFrozen)?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or(EconomyError::EconomyFrozen)?;
         if store.frozen {
             return Err(EconomyError::EconomyFrozen);
         }
-        let original = store.transaction(target).ok_or(EconomyError::NoSuchTransaction(target))?.clone();
+        let original = store
+            .transaction(target)
+            .ok_or(EconomyError::NoSuchTransaction(target))?
+            .clone();
         let auth = WorldAuth { w: ctx.w };
-        (plan_reversal(&original, actor.clone(), cause, store.snapshot(), &auth), store.providers())
+        (
+            plan_reversal(&original, actor.clone(), cause, store.snapshot(), &auth),
+            store.providers(),
+        )
     };
     finish(ctx, outcome, &providers, &actor, Vec::new())
 }
@@ -1052,13 +1244,21 @@ fn run_custody_effects(
         return Ok(());
     }
     let PrincipalId::Object(actor) = prepared.actor else {
-        return Err(EconomyError::Custody("only an object principal can move custody".into()));
+        return Err(EconomyError::Custody(
+            "only an object principal can move custody".into(),
+        ));
     };
     let mut moves: Vec<(crate::record::CustodyRef, ObjId, CustodyDirection, ObjId)> = Vec::new();
     {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or(EconomyError::EconomyFrozen)?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or(EconomyError::EconomyFrozen)?;
         for e in &prepared.custody_effects {
-            let vault = store.snapshot().vault(e.vault).ok_or(EconomyError::NoSuchVault(e.vault))?;
+            let vault = store
+                .snapshot()
+                .vault(e.vault)
+                .ok_or(EconomyError::NoSuchVault(e.vault))?;
             moves.push((vault.backing.clone(), e.object, e.direction, e.to));
         }
     }
@@ -1105,7 +1305,10 @@ fn mint_or_serve_approval(
     // re-served — this is what makes re-submitting the same plan idempotent instead
     // of minting a second request that could collect approvals in parallel.
     let (live, stale) = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or(EconomyError::EconomyFrozen)?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or(EconomyError::EconomyFrozen)?;
         match store.snapshot().live_approval_for_hash(&need.plan_hash) {
             Some(r) if now < r.expires_at => (Some(r.id), None),
             Some(r) => (None, Some(r.clone())),
@@ -1124,19 +1327,30 @@ fn mint_or_serve_approval(
     // by-hash index would go quiet in RAM while the durable record still claimed a
     // live request. Nothing between here and the mint reads the retired request.
     {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or(EconomyError::EconomyFrozen)?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or(EconomyError::EconomyFrozen)?;
         let pending = || {
             store
                 .snapshot()
                 .approvals()
                 .filter(move |r| r.status == ApprovalStatus::Pending && now < r.expires_at)
         };
-        if pending().filter(|r| r.requested_by == *requester).count() >= crate::MAX_PENDING_PER_REQUESTER {
-            return Err(EconomyError::TooLarge("too many pending approval requests for this requester"));
+        if pending().filter(|r| r.requested_by == *requester).count()
+            >= crate::MAX_PENDING_PER_REQUESTER
+        {
+            return Err(EconomyError::TooLarge(
+                "too many pending approval requests for this requester",
+            ));
         }
         for account in &need.accounts {
-            if pending().filter(|r| r.accounts.contains(account)).count() >= crate::MAX_PENDING_PER_ACCOUNT {
-                return Err(EconomyError::TooLarge("too many pending approval requests for this account"));
+            if pending().filter(|r| r.accounts.contains(account)).count()
+                >= crate::MAX_PENDING_PER_ACCOUNT
+            {
+                return Err(EconomyError::TooLarge(
+                    "too many pending approval requests for this account",
+                ));
             }
         }
     }
@@ -1151,12 +1365,17 @@ fn mint_or_serve_approval(
     }
 
     let request = {
-        let store = ctx.w.module_state_mut::<EconomyStore>().expect("economy store");
+        let store = ctx
+            .w
+            .module_state_mut::<EconomyStore>()
+            .expect("economy store");
         // B2: the allocator can refuse at the ceiling. A request that cannot be
         // minted is not an approval that is silently skipped — the post is refused,
         // loudly, and nothing moves.
         let Some(id) = store.alloc_approval() else {
-            tracing::error!("economy: the approval-request allocator is exhausted; refusing the post");
+            tracing::error!(
+                "economy: the approval-request allocator is exhausted; refusing the post"
+            );
             return Err(EconomyError::Overflow);
         };
         ApprovalRequest {
@@ -1174,7 +1393,11 @@ fn mint_or_serve_approval(
     };
     let id = request.id;
     put_approval(ctx, request);
-    let meta = ctx.w.module_state::<EconomyStore>().expect("economy store").meta_doc();
+    let meta = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .expect("economy store")
+        .meta_doc();
     persist_meta(ctx.out, meta);
     ctx.gate_on_durable_ack();
     Ok(PostOutcome::NeedsApproval(id))
@@ -1185,7 +1408,9 @@ fn mint_or_serve_approval(
 /// mints and expires) — this is the single write path for both.
 pub(crate) fn put_approval(ctx: &mut Ctx<'_>, request: ApprovalRequest) {
     {
-        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return };
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
+            return;
+        };
         store.snapshot.put_approval(request.clone());
     }
     persist_approval(ctx.out, &request);
@@ -1252,13 +1477,17 @@ pub fn create_system_obligation(
         return Err(EconomyError::ScopeOwnerMismatch);
     }
     let (debtor, creditor) = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or(EconomyError::EconomyFrozen)?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or(EconomyError::EconomyFrozen)?;
         if store.frozen {
             return Err(EconomyError::EconomyFrozen);
         }
         let snap = store.snapshot();
-        let debit =
-            snap.account(spec.debit_account).ok_or(EconomyError::NoSuchAccount(spec.debit_account))?;
+        let debit = snap
+            .account(spec.debit_account)
+            .ok_or(EconomyError::NoSuchAccount(spec.debit_account))?;
         let credit = snap
             .account(spec.credit_account)
             .ok_or(EconomyError::NoSuchAccount(spec.credit_account))?;
@@ -1287,7 +1516,10 @@ pub fn create_system_obligation(
         (debit.owner.clone(), credit.owner.clone())
     };
     let id = {
-        let store = ctx.w.module_state_mut::<EconomyStore>().ok_or(EconomyError::EconomyFrozen)?;
+        let store = ctx
+            .w
+            .module_state_mut::<EconomyStore>()
+            .ok_or(EconomyError::EconomyFrozen)?;
         store.alloc_obligation().ok_or(EconomyError::Overflow)?
     };
     let o = crate::obligation::Obligation {
@@ -1312,7 +1544,10 @@ pub fn create_system_obligation(
         revision: 1,
     };
     put_obligation(ctx, o);
-    let meta = ctx.w.module_state::<EconomyStore>().map(EconomyStore::meta_doc);
+    let meta = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .map(EconomyStore::meta_doc);
     if let Some(meta) = meta {
         persist_meta(ctx.out, meta);
     }
@@ -1370,7 +1605,10 @@ pub fn set_system_obligation(
         return Err(EconomyError::ZeroLine(0));
     }
     let next = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or(EconomyError::EconomyFrozen)?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or(EconomyError::EconomyFrozen)?;
         if store.frozen {
             return Err(EconomyError::EconomyFrozen);
         }
@@ -1495,18 +1733,28 @@ pub fn create_cadence(
         return Err(CadenceError::Period);
     }
     {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or(CadenceError::NoEconomy)?;
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or(CadenceError::NoEconomy)?;
         if store.snapshot().cadences().count() >= MAX_CADENCES {
             return Err(CadenceError::TooMany);
         }
-        if store.snapshot().cadences().any(|c| c.name.eq_ignore_ascii_case(name)) {
+        if store
+            .snapshot()
+            .cadences()
+            .any(|c| c.name.eq_ignore_ascii_case(name))
+        {
             return Err(CadenceError::Duplicate);
         }
     }
     let now = ctx.w.now();
     let ic_now = ctx.w.game_now_unix();
     let id = {
-        let store = ctx.w.module_state_mut::<EconomyStore>().ok_or(CadenceError::NoEconomy)?;
+        let store = ctx
+            .w
+            .module_state_mut::<EconomyStore>()
+            .ok_or(CadenceError::NoEconomy)?;
         store.alloc_cadence().ok_or(CadenceError::Exhausted)?
     };
     let c = crate::clock::CadenceClock {
@@ -1516,7 +1764,9 @@ pub fn create_cadence(
         period,
         // Clamped at both ends by `advance_cadence` anyway; clamped here too so the
         // stored record never *claims* a cap it cannot honour.
-        catch_up_cap: catch_up.unwrap_or(crate::DEFAULT_CATCH_UP).clamp(1, crate::MAX_CATCH_UP_CAP),
+        catch_up_cap: catch_up
+            .unwrap_or(crate::DEFAULT_CATCH_UP)
+            .clamp(1, crate::MAX_CATCH_UP_CAP),
         position: 0,
         advanced_at: match source {
             crate::clock::CadenceSource::RealUtc => now,
@@ -1528,7 +1778,10 @@ pub fn create_cadence(
         schema: crate::clock::CADENCE_SCHEMA_LEGACY,
     };
     put_cadence(ctx, c);
-    let meta = ctx.w.module_state::<EconomyStore>().map(EconomyStore::meta_doc);
+    let meta = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .map(EconomyStore::meta_doc);
     if let Some(meta) = meta {
         persist_meta(ctx.out, meta);
     }
@@ -1545,7 +1798,9 @@ pub fn create_cadence(
 /// never make a doc disagree with the journal at a sequence it claims.
 pub(crate) fn put_obligation(ctx: &mut Ctx<'_>, o: crate::obligation::Obligation) {
     let changed = {
-        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return };
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
+            return;
+        };
         // E4c: an event marks a **transition**, not a write. An obligation is
         // re-persisted on every settled period, and an observer that published one
         // canon line per rent payment would be a chronicle nobody could read.
@@ -1556,17 +1811,22 @@ pub(crate) fn put_obligation(ctx: &mut Ctx<'_>, o: crate::obligation::Obligation
     };
     persist_obligation(ctx.out, &o);
     if changed {
-        crate::observer::emit(ctx, &crate::record::EconomicEvent::ObligationChanged {
-            id: o.id,
-            status_kind: o.status.kind(),
-        });
+        crate::observer::emit(
+            ctx,
+            &crate::record::EconomicEvent::ObligationChanged {
+                id: o.id,
+                status_kind: o.status.kind(),
+            },
+        );
     }
 }
 
 /// Install a cadence clock into RAM and queue its container doc (E4b1, D-E4-2).
 pub(crate) fn put_cadence(ctx: &mut Ctx<'_>, c: crate::clock::CadenceClock) {
     {
-        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return };
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
+            return;
+        };
         store.snapshot.put_cadence(c.clone());
     }
     persist_cadence(ctx.out, &c);
@@ -1586,7 +1846,9 @@ pub(crate) fn put_cadence(ctx: &mut Ctx<'_>, c: crate::clock::CadenceClock) {
 /// state change that is being written and never a moment earlier.
 pub(crate) fn put_contract(ctx: &mut Ctx<'_>, c: crate::contract::EconomicContract) {
     let changed = {
-        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return };
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
+            return;
+        };
         // Only a real **state transition** is an event (E4c). A contract doc is
         // rewritten by every builder verb, every acceptance and every failed settle
         // attempt; publishing all of those would make the canon bridge a firehose.
@@ -1606,11 +1868,14 @@ pub(crate) fn put_contract(ctx: &mut Ctx<'_>, c: crate::contract::EconomicContra
             crate::contract::ContractState::Settled { transaction } => Some(*transaction),
             _ => None,
         };
-        crate::observer::emit(ctx, &crate::record::EconomicEvent::ContractChanged {
-            id: c.id,
-            state: c.state.kind(),
-            transaction,
-        });
+        crate::observer::emit(
+            ctx,
+            &crate::record::EconomicEvent::ContractChanged {
+                id: c.id,
+                state: c.state.kind(),
+                transaction,
+            },
+        );
     }
 }
 
@@ -1637,7 +1902,12 @@ impl AuthEval for TitleIssuerAuth {
     fn authorize(&self, _actor: &PrincipalId, _account: &Account, _delta: Amount) -> bool {
         false
     }
-    fn authorize_asset(&self, actor: &PrincipalId, asset: Option<&EconomicAsset>, op: &AssetOp) -> bool {
+    fn authorize_asset(
+        &self,
+        actor: &PrincipalId,
+        asset: Option<&EconomicAsset>,
+        op: &AssetOp,
+    ) -> bool {
         asset.is_none()
             && *actor == self.issuer
             && matches!(op, AssetOp::Title { object, owner, scope, .. }
@@ -1723,12 +1993,25 @@ pub fn issue_title(
             SmolStr::new(format!("{}/{generation}", object.0)),
         ),
         actor.clone(),
-        EconomicCause::Internal { kind: SmolStr::new_static("title.issue"), id: u64::from(object.0) },
+        EconomicCause::Internal {
+            kind: SmolStr::new_static("title.issue"),
+            id: u64::from(object.0),
+        },
         Vec::new(),
     );
-    plan.asset_ops = vec![AssetOp::Title { object, owner: owner.clone(), scope, catalog: None }];
+    plan.asset_ops = vec![AssetOp::Title {
+        object,
+        owner: owner.clone(),
+        scope,
+        catalog: None,
+    }];
     plan.description = format!("title issued for #{} by {actor:?}", object.0);
-    let auth = TitleIssuerAuth { issuer: actor, object, owner, scope };
+    let auth = TitleIssuerAuth {
+        issuer: actor,
+        object,
+        owner,
+        scope,
+    };
     post_with(ctx, &plan, PostAuth::Injected(&auth))
 }
 
@@ -1739,7 +2022,9 @@ pub fn issue_title(
 /// leaves behind: the asset is `WrittenOff`, the effect that created it is still
 /// there, and "how many times has this been titled" is exactly what the key needs.
 fn title_generation(ctx: &Ctx<'_>, object: ObjId) -> u64 {
-    let Some(store) = ctx.w.module_state::<EconomyStore>() else { return 0 };
+    let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+        return 0;
+    };
     store
         .transactions()
         .flat_map(|t| t.asset_effects.iter())
@@ -1761,7 +2046,10 @@ fn title_generation(ctx: &Ctx<'_>, object: ObjId) -> u64 {
 /// line, and re-pointing it at a second one would be admitting the duplicate this
 /// exists to prevent.
 pub fn mark_canon_published(ctx: &mut Ctx<'_>, id: crate::ids::ContractId, canon_ref: &str) {
-    let Some(mut c) = ctx.w.module_state::<EconomyStore>().and_then(|s| s.snapshot().contract(id).cloned())
+    let Some(mut c) = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().contract(id).cloned())
     else {
         return;
     };
@@ -1829,12 +2117,11 @@ pub fn open_escalation(
 /// left exactly as it is and answers `false`. It deliberately does **not** resume
 /// anything — resumption is subject-specific and belongs to whoever owns the
 /// subject (`@econ/ack` does the obligation half).
-pub fn acknowledge_escalation(
-    ctx: &mut Ctx<'_>,
-    id: crate::ids::EscalationId,
-    by: ObjId,
-) -> bool {
-    let record = ctx.w.module_state::<EconomyStore>().and_then(|s| s.escalation(id).cloned());
+pub fn acknowledge_escalation(ctx: &mut Ctx<'_>, id: crate::ids::EscalationId, by: ObjId) -> bool {
+    let record = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.escalation(id).cloned());
     let Some(mut record) = record.filter(crate::escalation::Escalation::is_open) else {
         return false;
     };
@@ -1849,7 +2136,9 @@ pub fn acknowledge_escalation(
 /// Install an escalation record into RAM and queue its leaf doc (E4b1, §4.6).
 pub(crate) fn put_escalation(ctx: &mut Ctx<'_>, e: crate::escalation::Escalation) {
     {
-        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return };
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
+            return;
+        };
         store.put_escalation(e.clone());
     }
     persist_escalation(ctx.out, &e);
@@ -1888,7 +2177,9 @@ fn finish(
             // The module-layer custody arity cap: refuse a shape that could
             // half-apply, BEFORE any provider is called.
             if prepared.custody_effects.len() > MAX_CUSTODY_EFFECTS_AT_MODULE {
-                return Err(EconomyError::TooLarge("one custody op per plan at the module layer"));
+                return Err(EconomyError::TooLarge(
+                    "one custody op per plan at the module layer",
+                ));
             }
             let now = ctx.w.now();
             // Prove the exact journal append and every economic post-image
@@ -1922,14 +2213,21 @@ fn finish(
 /// `cause` string is carried anywhere.
 fn emit_post_events(ctx: &mut Ctx<'_>, txid: TransactionId) {
     let events: Vec<crate::record::EconomicEvent> = {
-        let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return;
+        };
         if store.observers.is_empty() {
             return;
         }
-        let Some(tx) = store.transaction(txid) else { return };
+        let Some(tx) = store.transaction(txid) else {
+            return;
+        };
         let mut v = vec![crate::record::EconomicEvent::TransactionPosted { id: txid }];
         for e in &tx.hold_effects {
-            v.push(crate::record::EconomicEvent::HoldChanged { id: e.hold.id, kind: e.kind });
+            v.push(crate::record::EconomicEvent::HoldChanged {
+                id: e.hold.id,
+                kind: e.kind,
+            });
         }
         for e in &tx.asset_effects {
             v.push(crate::record::EconomicEvent::AssetTitleChanged {
@@ -1998,8 +2296,10 @@ fn prepare_commit(
         .touched_accounts()
         .chain(prepared.hold_effects.iter().map(|e| e.hold.account))
         .collect();
-    let account_docs =
-        touched_accounts.into_iter().filter_map(|id| snapshot.account(id).cloned()).collect();
+    let account_docs = touched_accounts
+        .into_iter()
+        .filter_map(|id| snapshot.account(id).cloned())
+        .collect();
     let asset_docs = prepared
         .asset_effects
         .iter()
@@ -2081,26 +2381,35 @@ fn install_commit(ctx: &mut Ctx<'_>, commit: PreparedEconomyCommit) -> Transacti
         approval_doc,
         contract_docs,
     } = commit;
-    let (journal_op, meta) = {
-        let store = ctx.w.module_state_mut::<EconomyStore>().expect("economy store");
-        assert_eq!(
-            store.peek_next_transaction(),
-            txid.0,
-            "economy: the transaction allocator moved between prepare and install — \
+    let (journal_op, meta) =
+        {
+            let store = ctx
+                .w
+                .module_state_mut::<EconomyStore>()
+                .expect("economy store");
+            assert_eq!(
+                store.peek_next_transaction(),
+                txid.0,
+                "economy: the transaction allocator moved between prepare and install — \
              something re-entered post() after the custody move (see install_commit)"
-        );
-        let (applied_seq, journal_op) = store.journal.apply_prepared(journal).unwrap_or_else(|error| {
-            panic!(
-                "economy: the journal tail moved between prepare and install ({error}) — \
+            );
+            let (applied_seq, journal_op) = store.journal.apply_prepared(journal).unwrap_or_else(
+                |error| {
+                    panic!(
+                        "economy: the journal tail moved between prepare and install ({error}) — \
                  something re-entered post() after the custody move (see install_commit)"
-            )
-        });
-        assert_eq!(journal_seq, applied_seq, "economy: prepared journal seq is exact");
-        store.next_transaction = next_transaction;
-        store.snapshot = snapshot;
-        store.index_transaction(transaction);
-        (journal_op, store.meta_doc())
-    };
+                    )
+                },
+            );
+            assert_eq!(
+                journal_seq, applied_seq,
+                "economy: prepared journal seq is exact"
+            );
+            store.next_transaction = next_transaction;
+            store.snapshot = snapshot;
+            store.index_transaction(transaction);
+            (journal_op, store.meta_doc())
+        };
     persist_journal(ctx.out, journal_op);
     for a in &account_docs {
         persist_account(ctx.out, a);

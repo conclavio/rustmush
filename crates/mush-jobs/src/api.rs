@@ -297,7 +297,11 @@ impl fmt::Display for PlainJobError {
                 f,
                 "job {id} carries a payload; only +job/approve, which runs it, may resolve it"
             ),
-            PlainJobError::WrongQueue { job, expected, actual } => write!(
+            PlainJobError::WrongQueue {
+                job,
+                expected,
+                actual,
+            } => write!(
                 f,
                 "job {job} lives in queue {actual:?}, not the caller's {expected:?}"
             ),
@@ -373,7 +377,10 @@ fn close_plain_job(
     note: &str,
 ) -> Result<(), PlainJobError> {
     {
-        let st = ctx.w.module_state::<JobsState>().ok_or(PlainJobError::NoJobs)?;
+        let st = ctx
+            .w
+            .module_state::<JobsState>()
+            .ok_or(PlainJobError::NoJobs)?;
         let job = st.jobs.get(&id).ok_or(PlainJobError::NoSuchJob(id))?;
         if job.payload.is_some() {
             return Err(PlainJobError::PayloadNotPlain(id));
@@ -386,7 +393,10 @@ fn close_plain_job(
             });
         }
         if job.status.is_terminal() {
-            return Err(PlainJobError::NotOpen { job: id, status: job.status });
+            return Err(PlainJobError::NotOpen {
+                job: id,
+                status: job.status,
+            });
         }
     }
     set_job_status(ctx, id, by, status, note).map_err(|_| PlainJobError::NoSuchJob(id))

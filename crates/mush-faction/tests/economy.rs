@@ -45,7 +45,9 @@ const NAMESPACES: [&str; 3] = ["faction", "org", "economy"];
 /// early, loud report.
 fn modules() -> Vec<Box<dyn GameModule>> {
     vec![
-        Box::new(OrgModule::with_predicates(vec![Arc::new(FactionStandingProvider)])),
+        Box::new(OrgModule::with_predicates(vec![Arc::new(
+            FactionStandingProvider,
+        )])),
         Box::new(FactionModule::new()),
         Box::new(EconomyModule::with_custody(vec![])),
     ]
@@ -68,7 +70,11 @@ fn boot() -> TestWorld {
 }
 
 fn texts(events: &[(Audience, OutputEvent)]) -> String {
-    events.iter().map(|(_, e)| text_of(e)).collect::<Vec<_>>().join("\n")
+    events
+        .iter()
+        .map(|(_, e)| text_of(e))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 fn has_error(events: &[(Audience, OutputEvent)]) -> bool {
     events.iter().any(|(_, e)| {
@@ -84,7 +90,11 @@ fn ok(tw: &mut TestWorld, actor: ObjId, line: &str) -> String {
 /// Run a command that must be refused, returning what the actor saw.
 fn err(tw: &mut TestWorld, actor: ObjId, line: &str) -> String {
     let ev = tw.run(actor, line);
-    assert!(has_error(&ev), "`{line}` should have been refused, got: {}", texts(&ev));
+    assert!(
+        has_error(&ev),
+        "`{line}` should have been refused, got: {}",
+        texts(&ev)
+    );
     texts(&ev)
 }
 
@@ -119,23 +129,43 @@ fn reboot(kv: Kv) -> TestWorld {
     let mut tw = boot();
     let boot_map: HashMap<SmolStr, ModuleBootData> = kv
         .into_iter()
-        .map(|(ns, kv)| (ns, ModuleBootData { kv, streams: HashMap::new() }))
+        .map(|(ns, kv)| {
+            (
+                ns,
+                ModuleBootData {
+                    kv,
+                    streams: HashMap::new(),
+                },
+            )
+        })
         .collect();
     tw.modules_loaded(boot_map);
     tw
 }
 
 fn fac_state(tw: &TestWorld) -> &FactionState {
-    tw.world().module_state::<FactionState>().expect("faction state")
+    tw.world()
+        .module_state::<FactionState>()
+        .expect("faction state")
 }
 fn faction(tw: &TestWorld, name: &str) -> Faction {
-    fac_state(tw).faction_by_name(name).expect("faction exists").clone()
+    fac_state(tw)
+        .faction_by_name(name)
+        .expect("faction exists")
+        .clone()
 }
 fn store(tw: &TestWorld) -> &EconomyStore {
-    tw.world().module_state::<EconomyStore>().expect("economy store")
+    tw.world()
+        .module_state::<EconomyStore>()
+        .expect("economy store")
 }
 fn bal(tw: &TestWorld, id: AccountId) -> i64 {
-    store(tw).snapshot().account(id).expect("account").posted_balance.minor()
+    store(tw)
+        .snapshot()
+        .account(id)
+        .expect("account")
+        .posted_balance
+        .minor()
 }
 fn tx_count(tw: &TestWorld) -> usize {
     store(tw).transactions().count()
@@ -143,7 +173,11 @@ fn tx_count(tw: &TestWorld) -> usize {
 /// The org's root-scope account (the migration destination), by construction the
 /// only scoped account in these fixtures.
 fn org_account(tw: &TestWorld) -> Option<AccountId> {
-    store(tw).snapshot().accounts().find(|a| a.scope.is_some()).map(|a| a.id)
+    store(tw)
+        .snapshot()
+        .accounts()
+        .find(|a| a.scope.is_some())
+        .map(|a| a.id)
 }
 fn root_scope(tw: &TestWorld, org: OrgId) -> mush_org::OrgScopeId {
     tw.world()
@@ -160,7 +194,11 @@ fn setup(tw: &mut TestWorld) {
     ok(tw, GOD, "@instrument/register gold=2");
     ok(tw, GOD, "@account/system faucet=gold");
     ok(tw, GOD, "@faction/create Camarilla");
-    ok(tw, GOD, "@faction/resource Camarilla=influence.police/3/precinct captains");
+    ok(
+        tw,
+        GOD,
+        "@faction/resource Camarilla=influence.police/3/precinct captains",
+    );
     ok(tw, GOD, "@faction/resource Camarilla=gold/250/turf income");
     ok(tw, GOD, "@faction/org Camarilla=new");
 }
@@ -192,9 +230,17 @@ fn bind_new_unbind_and_rebind_an_existing_org() {
 
     // `none` unbinds and leaves the org standing.
     ok(&mut tw, GOD, "@faction/org Camarilla=none");
-    assert_eq!(backing_org(tw.world(), &faction(&tw, "Camarilla")), Err(LinkError::Unbound));
+    assert_eq!(
+        backing_org(tw.world(), &faction(&tw, "Camarilla")),
+        Err(LinkError::Unbound)
+    );
     assert!(
-        tw.world().module_state::<OrgStore>().unwrap().state().org(org).is_some(),
+        tw.world()
+            .module_state::<OrgStore>()
+            .unwrap()
+            .state()
+            .org(org)
+            .is_some(),
         "unbinding is not a deletion"
     );
 
@@ -235,12 +281,19 @@ fn one_org_backs_one_faction_and_a_duplicate_makes_both_unusable() {
         backing_org(tw.world(), &faction(&tw, "Camarilla")),
         Err(LinkError::Conflict(org))
     );
-    assert_eq!(backing_org(tw.world(), &faction(&tw, "Sabbat")), Err(LinkError::Conflict(org)));
+    assert_eq!(
+        backing_org(tw.world(), &faction(&tw, "Sabbat")),
+        Err(LinkError::Conflict(org))
+    );
     assert!(ok(&mut tw, GOD, "@faction/show Camarilla").contains("org #0 (CONFLICT)"));
     assert!(ok(&mut tw, GOD, "@faction/show Sabbat").contains("org #0 (CONFLICT)"));
     // And the money command refuses on either side.
     for f in ["Camarilla", "Sabbat"] {
-        let seen = err(&mut tw, GOD, &format!("@faction/migrate/confirm {f}=gold #0"));
+        let seen = err(
+            &mut tw,
+            GOD,
+            &format!("@faction/migrate/confirm {f}=gold #0"),
+        );
         assert!(seen.contains("more than one faction"), "{seen}");
     }
     assert_eq!(tx_count(&tw), 0, "nothing posted under a conflicted link");
@@ -281,7 +334,11 @@ fn boot_reports_a_missing_backing_org_and_preserves_the_link() {
     // reports the gap — and must NOT repair it by unbinding (doc 08 §15.2).
     patch_faction_doc(&mut kv, fid, |doc| doc["org"] = serde_json::json!(9));
     let mut tw2 = reboot(kv);
-    assert_eq!(faction(&tw2, "Camarilla").org, Some(OrgId(9)), "boot reports, never unbinds");
+    assert_eq!(
+        faction(&tw2, "Camarilla").org,
+        Some(OrgId(9)),
+        "boot reports, never unbinds"
+    );
     assert_eq!(
         backing_org(tw2.world(), &faction(&tw2, "Camarilla")),
         Err(LinkError::Missing(OrgId(9)))
@@ -314,7 +371,10 @@ fn destroy_is_refused_while_bound_and_allowed_after_unbinding() {
     setup(&mut tw);
     let seen = err(&mut tw, GOD, "@faction/destroy Camarilla");
     assert!(seen.contains("unbind it first"), "{seen}");
-    assert!(fac_state(&tw).faction_by_name("Camarilla").is_some(), "still there");
+    assert!(
+        fac_state(&tw).faction_by_name("Camarilla").is_some(),
+        "still there"
+    );
 
     // A MISSING link blocks destruction too: it is exactly the state that needs
     // staff attention, not a licence to delete the attribution.
@@ -332,7 +392,14 @@ fn destroy_is_refused_while_bound_and_allowed_after_unbinding() {
     ok(&mut tw, GOD, "@faction/destroy Camarilla");
     assert!(fac_state(&tw).faction_by_name("Camarilla").is_none());
     // The org outlives the faction.
-    assert!(tw.world().module_state::<OrgStore>().unwrap().state().org(OrgId(0)).is_some());
+    assert!(
+        tw.world()
+            .module_state::<OrgStore>()
+            .unwrap()
+            .state()
+            .org(OrgId(0))
+            .is_some()
+    );
 }
 
 // ----------------------------------------------------------------------
@@ -346,8 +413,15 @@ fn a_rating_key_still_applies_and_a_migrated_key_is_refused() {
     ok(&mut tw, GOD, "@faction/migrate/confirm Camarilla=gold #0");
 
     // The untouched rating pool keeps its saturating, unaudited arithmetic.
-    ok(&mut tw, GOD, "@faction/resource Camarilla=influence.police/-1/lost a captain");
-    assert_eq!(faction(&tw, "Camarilla").resources.get("influence.police"), Some(&2));
+    ok(
+        &mut tw,
+        GOD,
+        "@faction/resource Camarilla=influence.police/-1/lost a captain",
+    );
+    assert_eq!(
+        faction(&tw, "Camarilla").resources.get("influence.police"),
+        Some(&2)
+    );
 
     // The migrated key is money now and this verb refuses it, with the pointer.
     let seen = err(&mut tw, GOD, "@faction/resource Camarilla=gold/100");
@@ -356,7 +430,10 @@ fn a_rating_key_still_applies_and_a_migrated_key_is_refused() {
     // Case and spacing do not smuggle it past the check.
     err(&mut tw, GOD, "@faction/resource Camarilla= GOLD /100");
     let f = faction(&tw, "Camarilla");
-    assert!(!f.resources.contains_key("gold"), "no zeroed rating shadowing the money");
+    assert!(
+        !f.resources.contains_key("gold"),
+        "no zeroed rating shadowing the money"
+    );
     assert!(f.migrated.contains("gold"));
 }
 
@@ -385,10 +462,18 @@ fn migrate_refuses_an_unregistered_or_inactive_instrument() {
     let mut tw = boot();
     setup(&mut tw);
     // Not a registered instrument at all.
-    let seen = err(&mut tw, GOD, "@faction/migrate/confirm Camarilla=influence.police #0");
+    let seen = err(
+        &mut tw,
+        GOD,
+        "@faction/migrate/confirm Camarilla=influence.police #0",
+    );
     assert!(seen.contains("No instrument"), "{seen}");
     // Not even a usable instrument code.
-    err(&mut tw, GOD, "@faction/migrate/confirm Camarilla=boon credit #0");
+    err(
+        &mut tw,
+        GOD,
+        "@faction/migrate/confirm Camarilla=boon credit #0",
+    );
 
     // Suspend gold the way a lifecycle change would, through a reboot, and the
     // migration refuses rather than marking a key it cannot post.
@@ -437,7 +522,11 @@ fn migrate_refuses_a_zero_or_negative_pool() {
     assert!(seen.contains("nothing to migrate"), "{seen}");
 
     // A negative pool: the journal cannot express minted debt.
-    ok(&mut tw, GOD, "@faction/resource Camarilla=silver/-40/overspent");
+    ok(
+        &mut tw,
+        GOD,
+        "@faction/resource Camarilla=silver/-40/overspent",
+    );
     let seen = err(&mut tw, GOD, "@faction/migrate/confirm Camarilla=silver #1");
     assert!(seen.contains("NEGATIVE"), "{seen}");
     assert_eq!(tx_count(&tw), 0);
@@ -465,7 +554,9 @@ fn account_count(tw: &TestWorld) -> usize {
 }
 /// Whether anything was queued to the economy namespace since the last drain.
 fn wrote_economy(tw: &mut TestWorld) -> bool {
-    tw.take_module_ops().iter().any(|op| op.ns.as_str() == "economy")
+    tw.take_module_ops()
+        .iter()
+        .any(|op| op.ns.as_str() == "economy")
 }
 /// Rewrite an org's persisted status. The only route to a wound-down org — the org
 /// mutation alphabet has no status op — and the same trick `mush-economy`'s e3b2
@@ -503,10 +594,20 @@ fn a_frozen_economy_refuses_the_migration_before_a_wallet_is_opened() {
 
     // The refusal landed above `open_root_account`: no wallet in RAM, none on the
     // scope, and not one economy write queued (so the allocator never moved either).
-    assert_eq!(account_count(&tw2), before, "a phantom wallet was opened under a freeze");
-    assert!(org_account(&tw2).is_none(), "no org root-scope wallet exists");
+    assert_eq!(
+        account_count(&tw2),
+        before,
+        "a phantom wallet was opened under a freeze"
+    );
+    assert!(
+        org_account(&tw2).is_none(),
+        "no org root-scope wallet exists"
+    );
     assert_eq!(tx_count(&tw2), 0);
-    assert!(!wrote_economy(&mut tw2), "a refused migration wrote to the economy");
+    assert!(
+        !wrote_economy(&mut tw2),
+        "a refused migration wrote to the economy"
+    );
     // And the rating is untouched: still a rating, still unmarked.
     let f = faction(&tw2, "Camarilla");
     assert_eq!(f.resources.get("gold"), Some(&250));
@@ -526,10 +627,20 @@ fn a_suspended_backing_org_refuses_the_migration_before_a_wallet_is_opened() {
     let _ = wrote_economy(&mut tw2);
     let seen = err(&mut tw2, GOD, "@faction/migrate/confirm Camarilla=gold #0");
     assert!(seen.contains("Suspended"), "{seen}");
-    assert_eq!(account_count(&tw2), before, "a phantom wallet was opened for an uncreditable org");
-    assert!(org_account(&tw2).is_none(), "no org root-scope wallet exists");
+    assert_eq!(
+        account_count(&tw2),
+        before,
+        "a phantom wallet was opened for an uncreditable org"
+    );
+    assert!(
+        org_account(&tw2).is_none(),
+        "no org root-scope wallet exists"
+    );
     assert_eq!(tx_count(&tw2), 0);
-    assert!(!wrote_economy(&mut tw2), "a refused migration wrote to the economy");
+    assert!(
+        !wrote_economy(&mut tw2),
+        "a refused migration wrote to the economy"
+    );
     let f = faction(&tw2, "Camarilla");
     assert_eq!(f.resources.get("gold"), Some(&250));
     assert!(f.migrated.is_empty());
@@ -561,7 +672,11 @@ fn a_confirmed_migrate_posts_once_and_a_second_run_changes_nothing() {
 
     // The wallet is the org's, on its root scope, and cannot go negative.
     let org = backing_org(tw.world(), &faction(&tw, "Camarilla")).expect("bound");
-    let acct = store(&tw).snapshot().account(dest).expect("account").clone();
+    let acct = store(&tw)
+        .snapshot()
+        .account(dest)
+        .expect("account")
+        .clone();
     assert_eq!(acct.owner, mush_org::PrincipalId::Organization(org));
     assert_eq!(acct.scope, Some(root_scope(&tw, org)));
     assert!(!acct.credit.allow_negative);
@@ -574,7 +689,12 @@ fn a_confirmed_migrate_posts_once_and_a_second_run_changes_nothing() {
     let last = f.resource_log.last().expect("a log entry");
     assert_eq!(last.kind, "gold");
     assert_eq!(last.delta, -250);
-    assert!(last.reason.contains(&format!("migrated to account #{dest}")), "{}", last.reason);
+    assert!(
+        last.reason
+            .contains(&format!("migrated to account #{dest}")),
+        "{}",
+        last.reason
+    );
     assert_eq!(last.by, GOD);
 
     // A second run is an idempotency HIT: no second transaction, no second wallet,
@@ -584,8 +704,15 @@ fn a_confirmed_migrate_posts_once_and_a_second_run_changes_nothing() {
     assert_eq!(tx_count(&tw), 1);
     assert_eq!(bal(&tw, AccountId(0)), -250);
     assert_eq!(bal(&tw, dest), 250);
-    assert_eq!(store(&tw).snapshot().accounts().count(), 2, "no duplicate wallet");
-    assert_eq!(faction(&tw, "Camarilla").resource_log.len(), f.resource_log.len());
+    assert_eq!(
+        store(&tw).snapshot().accounts().count(),
+        2,
+        "no duplicate wallet"
+    );
+    assert_eq!(
+        faction(&tw, "Camarilla").resource_log.len(),
+        f.resource_log.len()
+    );
 }
 
 #[test]
@@ -646,11 +773,20 @@ fn a_dropped_faction_doc_write_converges_on_a_re_run() {
 fn posted_but_unmarked(tw: &mut TestWorld) -> (TestWorld, AccountId, mush_economy::TransactionId) {
     setup(tw);
     let mut kv = fold_kv(tw);
-    let stale = kv["faction"].iter().find(|(k, _)| k == "fac:0").expect("faction doc").1.clone();
+    let stale = kv["faction"]
+        .iter()
+        .find(|(k, _)| k == "fac:0")
+        .expect("faction doc")
+        .1
+        .clone();
 
     ok(tw, GOD, "@faction/migrate/confirm Camarilla=gold #0");
     let dest = org_account(tw).expect("org wallet");
-    let tx = store(tw).transactions().next().expect("the migration transaction").id;
+    let tx = store(tw)
+        .transactions()
+        .next()
+        .expect("the migration transaction")
+        .id;
     fold_into(tw, &mut kv);
     for (k, v) in kv.get_mut("faction").expect("faction kv") {
         if k == "fac:0" {
@@ -670,13 +806,20 @@ fn a_pool_edited_between_the_post_and_the_re_run_still_converges() {
     let (mut tw2, dest, tx) = posted_but_unmarked(&mut tw);
 
     // Staff, not knowing the money moved, top the rating up.
-    ok(&mut tw2, GOD, "@faction/resource Camarilla=gold/50/more turf");
+    ok(
+        &mut tw2,
+        GOD,
+        "@faction/resource Camarilla=gold/50/more turf",
+    );
     assert_eq!(faction(&tw2, "Camarilla").resources.get("gold"), Some(&300));
     let before = faction(&tw2, "Camarilla").resource_log.len();
 
     let seen = ok(&mut tw2, GOD, "@faction/migrate/confirm Camarilla=gold #0");
     assert!(seen.contains("already migrated"), "{seen}");
-    assert!(seen.contains(&format!("transaction #{tx}")), "the ORIGINAL transaction: {seen}");
+    assert!(
+        seen.contains(&format!("transaction #{tx}")),
+        "the ORIGINAL transaction: {seen}"
+    );
 
     // Converged: the key is retired, marked, and the residual is logged as DROPPED.
     let f = faction(&tw2, "Camarilla");
@@ -684,16 +827,27 @@ fn a_pool_edited_between_the_post_and_the_re_run_still_converges() {
     assert!(f.migrated.contains("gold"));
     let last = f.resource_log.last().expect("a log entry");
     assert_eq!(last.kind, "gold");
-    assert_eq!(last.delta, -300, "the whole residual is dropped, not just the migrated 250");
+    assert_eq!(
+        last.delta, -300,
+        "the whole residual is dropped, not just the migrated 250"
+    );
     assert!(last.reason.contains("already posted"), "{}", last.reason);
     assert_eq!(last.by, GOD);
     assert_eq!(f.resource_log.len(), before + 1);
 
     // Not a minor unit moved: a rating edited after the post was never money.
-    assert_eq!(tx_count(&tw2), 1, "the residual must not mint a second transaction");
+    assert_eq!(
+        tx_count(&tw2),
+        1,
+        "the residual must not mint a second transaction"
+    );
     assert_eq!(bal(&tw2, AccountId(0)), -250, "balances unchanged");
     assert_eq!(bal(&tw2, dest), 250);
-    assert_eq!(store(&tw2).snapshot().accounts().count(), 2, "no duplicate wallet");
+    assert_eq!(
+        store(&tw2).snapshot().accounts().count(),
+        2,
+        "no duplicate wallet"
+    );
 
     // And it is idempotent in its own right: a third run reports the same
     // transaction, writes no doc, and appends no log line.
@@ -711,7 +865,11 @@ fn a_pool_zeroed_between_the_post_and_the_re_run_still_converges() {
 
     // The other half of the same trap: spending the rating down to 0 used to make the
     // re-run die on "holds no pool" instead, so the key was never marked either way.
-    ok(&mut tw2, GOD, "@faction/resource Camarilla=gold/-250/spent it");
+    ok(
+        &mut tw2,
+        GOD,
+        "@faction/resource Camarilla=gold/-250/spent it",
+    );
     assert_eq!(faction(&tw2, "Camarilla").resources.get("gold"), Some(&0));
     let before = faction(&tw2, "Camarilla").resource_log.len();
 
@@ -720,7 +878,10 @@ fn a_pool_zeroed_between_the_post_and_the_re_run_still_converges() {
     assert!(seen.contains(&format!("transaction #{tx}")), "{seen}");
 
     let f = faction(&tw2, "Camarilla");
-    assert!(!f.resources.contains_key("gold"), "the zeroed key is gone, not left shadowing");
+    assert!(
+        !f.resources.contains_key("gold"),
+        "the zeroed key is gone, not left shadowing"
+    );
     assert!(f.migrated.contains("gold"));
     // A zero residual is nothing to log — the drop entry would be noise.
     assert_eq!(f.resource_log.len(), before);
@@ -745,7 +906,11 @@ fn a_reboot_after_migrate_reproduces_the_balances_from_the_journal() {
     assert_eq!(bal(&tw2, AccountId(0)), -250);
     assert_eq!(bal(&tw2, dest), 250);
     // Conservation across every gold account is zero (the E2 tripwire).
-    let sum: i128 = store(&tw2).snapshot().accounts().map(|a| a.posted_balance.widen()).sum();
+    let sum: i128 = store(&tw2)
+        .snapshot()
+        .accounts()
+        .map(|a| a.posted_balance.widen())
+        .sum();
     assert_eq!(sum, 0);
     // The link, the marking, and the log tail all round-trip.
     let f = faction(&tw2, "Camarilla");
@@ -786,8 +951,14 @@ fn a_faction_officer_sees_ratings_but_not_money_and_cannot_spend() {
     // not even the fact that a wallet exists.
     let seen = ok(&mut tw, ophelia, "+faction Camarilla");
     assert!(seen.contains("influence.police = 3"), "{seen}");
-    assert!(!seen.contains("Account #"), "money leaked to a faction officer: {seen}");
-    assert!(!seen.contains("2.50"), "balance leaked to a faction officer: {seen}");
+    assert!(
+        !seen.contains("Account #"),
+        "money leaked to a faction officer: {seen}"
+    );
+    assert!(
+        !seen.contains("2.50"),
+        "balance leaked to a faction officer: {seen}"
+    );
 
     // Staff see it in the same render.
     let seen = ok(&mut tw, GOD, "+faction Camarilla");
@@ -810,7 +981,14 @@ fn a_faction_officer_sees_ratings_but_not_money_and_cannot_spend() {
     // A real grant of `economy.account.view` on the root scope — and only that —
     // opens the read. The gate is the economy's, not the faction's.
     let root = root_scope(&tw, OrgId(0));
-    ok(&mut tw, GOD, &format!("@org/grant #{}=Camarilla economy.account.view scope=#{root}", ophelia.0));
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@org/grant #{}=Camarilla economy.account.view scope=#{root}",
+            ophelia.0
+        ),
+    );
     let seen = ok(&mut tw, ophelia, "+faction Camarilla");
     assert!(seen.contains(&format!("Account #{dest}")), "{seen}");
     assert!(seen.contains("2.50"), "{seen}");

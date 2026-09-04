@@ -56,12 +56,16 @@ const END_SWEEP_MAX: usize = 4_096;
 /// this tenancy is assessed on.**
 pub(crate) fn seed_assessment(ctx: &mut Ctx<'_>, t: &Tenancy) {
     let position = crate::module::cadence_now(ctx.w, t.cadence).unwrap_or(0);
-    crate::module::put_assess(ctx, t.id, crate::module::AssessState {
-        position,
-        period: 0,
-        unknown_periods: 0,
-        seeded: true,
-    });
+    crate::module::put_assess(
+        ctx,
+        t.id,
+        crate::module::AssessState {
+            position,
+            period: 0,
+            unknown_periods: 0,
+            seeded: true,
+        },
+    );
 }
 
 /// **Create a live abstract tenancy** (E5c, 08d §5.4's chargen approval).
@@ -95,8 +99,13 @@ pub fn create_tenancy(
     terms: crate::record::AccessTerms,
 ) -> Result<TenancyId, crate::HousingError> {
     {
-        let store = ctx.w.module_state::<HousingStore>().ok_or(crate::HousingError::NotLoaded)?;
-        let p = store.property(property).ok_or(crate::HousingError::NoSuchProperty(property))?;
+        let store = ctx
+            .w
+            .module_state::<HousingStore>()
+            .ok_or(crate::HousingError::NotLoaded)?;
+        let p = store
+            .property(property)
+            .ok_or(crate::HousingError::NoSuchProperty(property))?;
         if p.status == PropertyStatus::Withdrawn {
             return Err(crate::HousingError::Withdrawn(property));
         }
@@ -114,9 +123,13 @@ pub fn create_tenancy(
         return Err(crate::HousingError::NoSuchCadence);
     }
     let id = {
-        let store =
-            ctx.w.module_state_mut::<HousingStore>().ok_or(crate::HousingError::NotLoaded)?;
-        store.alloc_tenancy().ok_or(crate::HousingError::Exhausted("tenancy-id"))?
+        let store = ctx
+            .w
+            .module_state_mut::<HousingStore>()
+            .ok_or(crate::HousingError::NotLoaded)?;
+        store
+            .alloc_tenancy()
+            .ok_or(crate::HousingError::Exhausted("tenancy-id"))?
     };
     let mut t = Tenancy::new(id, property, tenants.clone(), cadence)?;
     t.terms = terms;
@@ -136,7 +149,10 @@ pub fn create_tenancy(
 /// housing set — never a copy of the roster, which is why a co-tenant who later leaves
 /// still has theirs cleared at ending time.
 pub(crate) fn activate(ctx: &mut Ctx<'_>, t: &Tenancy) {
-    let Some(p) = ctx.w.module_state::<HousingStore>().and_then(|s| s.property(t.property).cloned())
+    let Some(p) = ctx
+        .w
+        .module_state::<HousingStore>()
+        .and_then(|s| s.property(t.property).cloned())
     else {
         return;
     };
@@ -165,7 +181,10 @@ pub(crate) fn activate(ctx: &mut Ctx<'_>, t: &Tenancy) {
 pub(crate) fn end(ctx: &mut Ctx<'_>, t: &Tenancy) {
     let ending = end_lease(ctx, t);
     report_lease_ending(ctx, t, &ending);
-    let Some(p) = ctx.w.module_state::<HousingStore>().and_then(|s| s.property(t.property).cloned())
+    let Some(p) = ctx
+        .w
+        .module_state::<HousingStore>()
+        .and_then(|s| s.property(t.property).cloned())
     else {
         return;
     };
@@ -184,7 +203,12 @@ pub(crate) fn end(ctx: &mut Ctx<'_>, t: &Tenancy) {
     //   pointed at the house.
     let mut candidates: Vec<ObjId> = contents_deep(ctx.w, &rooms, p.anchor);
     candidates.extend(homed_inside_anywhere(ctx.w, p.anchor, &rooms));
-    clear.extend(crate::homed_inside(candidates, resolve_home, p.anchor, &rooms));
+    clear.extend(crate::homed_inside(
+        candidates,
+        resolve_home,
+        p.anchor,
+        &rooms,
+    ));
     for who in &clear {
         if let Err(error) = ctx.w.set_home(*who, None) {
             tracing::warn!(tenancy = t.id.0, who = who.0, %error, "housing: could not clear a home");
@@ -196,7 +220,9 @@ pub(crate) fn end(ctx: &mut Ctx<'_>, t: &Tenancy) {
     // not "the one that just ended".
     for who in clear {
         let elsewhere = {
-            let Some(store) = ctx.w.module_state::<HousingStore>() else { break };
+            let Some(store) = ctx.w.module_state::<HousingStore>() else {
+                break;
+            };
             store
                 .live_tenancies_of_tenant(who)
                 .find(|other| other.id != t.id)
@@ -211,8 +237,14 @@ pub(crate) fn end(ctx: &mut Ctx<'_>, t: &Tenancy) {
     // The latch follows the tenancies: `Withdrawn` is a decision and is never
     // re-derived away here.
     let want = {
-        let Some(store) = ctx.w.module_state::<HousingStore>() else { return };
-        if store.has_live_tenancy(p.id) { PropertyStatus::Let } else { PropertyStatus::Vacant }
+        let Some(store) = ctx.w.module_state::<HousingStore>() else {
+            return;
+        };
+        if store.has_live_tenancy(p.id) {
+            PropertyStatus::Let
+        } else {
+            PropertyStatus::Vacant
+        }
     };
     set_status(ctx, &p, want);
 }
@@ -225,7 +257,11 @@ pub(crate) fn end(ctx: &mut Ctx<'_>, t: &Tenancy) {
 /// the tick path, where a hang is the world task.
 fn contents_deep(w: &World, rooms: &BTreeSet<ObjId>, anchor: ObjId) -> Vec<ObjId> {
     let mut out: Vec<ObjId> = Vec::new();
-    let mut frontier: Vec<ObjId> = rooms.iter().copied().chain(std::iter::once(anchor)).collect();
+    let mut frontier: Vec<ObjId> = rooms
+        .iter()
+        .copied()
+        .chain(std::iter::once(anchor))
+        .collect();
     for _ in 0..END_SWEEP_DEPTH {
         let mut next: Vec<ObjId> = Vec::new();
         for r in frontier.drain(..) {
@@ -290,13 +326,14 @@ pub(crate) enum LeaseEnding {
 /// different things of it: [`end`] logs and pages only when it could not be done,
 /// boot's pass pages about every one it finds.
 pub(crate) fn end_lease(ctx: &mut Ctx<'_>, t: &Tenancy) -> LeaseEnding {
-    let Funding::Exact { contract, .. } = &t.funding else { return LeaseEnding::Nothing };
+    let Funding::Exact { contract, .. } = &t.funding else {
+        return LeaseEnding::Nothing;
+    };
     let contract = *contract;
-    let Some((lessor, premises)) = ctx
-        .w
-        .module_state::<HousingStore>()
-        .and_then(|s| s.property(t.property).map(|p| (p.landlord.clone(), p.anchor)))
-    else {
+    let Some((lessor, premises)) = ctx.w.module_state::<HousingStore>().and_then(|s| {
+        s.property(t.property)
+            .map(|p| (p.landlord.clone(), p.anchor))
+    }) else {
         return LeaseEnding::NoProperty;
     };
     let key = mush_economy::LeaseKey { lessor, premises };
@@ -317,7 +354,9 @@ pub(crate) fn end_lease(ctx: &mut Ctx<'_>, t: &Tenancy) -> LeaseEnding {
 /// finish its own pending transition, and two pages about one contract is the thing
 /// 08a decision 25 exists to prevent.
 fn report_lease_ending(ctx: &mut Ctx<'_>, t: &Tenancy, ending: &LeaseEnding) {
-    let Funding::Exact { contract, .. } = &t.funding else { return };
+    let Funding::Exact { contract, .. } = &t.funding else {
+        return;
+    };
     let contract = *contract;
     match ending {
         LeaseEnding::Nothing => {}
@@ -443,7 +482,9 @@ pub fn submit_support_plan(
 /// answer it, arguments filled in** — 08a decision 25's rule, applied to the story
 /// half: the ST is going to want to know what they can do, so say it.
 pub(crate) fn open_story_job(ctx: &mut Ctx<'_>, t: &Tenancy) -> Option<u64> {
-    let TenancyStatus::EvictionPending { window } = &t.status else { return None };
+    let TenancyStatus::EvictionPending { window } = &t.status else {
+        return None;
+    };
     if window.job.is_some() {
         return window.job;
     }
@@ -505,10 +546,16 @@ pub(crate) fn close_window(ctx: &mut Ctx<'_>, t: &Tenancy) {
                 t.id
             ),
         ) {
-            Ok(()) => tracing::info!(tenancy = t.id.0, job, "housing: story job resolved (recovered)"),
+            Ok(()) => tracing::info!(
+                tenancy = t.id.0,
+                job,
+                "housing: story job resolved (recovered)"
+            ),
             // Already closed, or the jobs module is not loaded: either way there is
             // no ST left holding a stale decision, which is the property that matters.
-            Err(error) => tracing::debug!(tenancy = t.id.0, job, %error, "housing: story job not closed"),
+            Err(error) => {
+                tracing::debug!(tenancy = t.id.0, job, %error, "housing: story job not closed")
+            }
         }
     }
     if let Some(escalation) = window.escalation {
@@ -523,7 +570,9 @@ pub(crate) fn close_window(ctx: &mut Ctx<'_>, t: &Tenancy) {
 /// the window that is still open on the tenancy being resolved, because a resolution
 /// does not park it anywhere — the tenancy goes straight to `Ended`.
 pub(crate) fn close_pending_job(ctx: &mut Ctx<'_>, t: &Tenancy, waived: bool) {
-    let TenancyStatus::EvictionPending { window } = &t.status else { return };
+    let TenancyStatus::EvictionPending { window } = &t.status else {
+        return;
+    };
     let (job, escalation) = (window.job, window.escalation);
     // T4: the person who decided it, not `GOD` — this path is always somebody's
     // explicit act (`@tenancy/resolve`, or the tenant's own `+home/leave`).
@@ -554,7 +603,11 @@ pub(crate) fn summary(ctx: &Ctx<'_>, t: &Tenancy) -> String {
     let who: Vec<String> = t
         .tenants
         .iter()
-        .map(|o| ctx.w.get(*o).map_or_else(|| format!("#{}", o.0), |x| x.name.clone()))
+        .map(|o| {
+            ctx.w
+                .get(*o)
+                .map_or_else(|| format!("#{}", o.0), |x| x.name.clone())
+        })
         .collect();
     format!(
         "Tenancy #{} — {name} (property #{}), {} · {} · funding {}",
@@ -566,7 +619,10 @@ pub(crate) fn summary(ctx: &Ctx<'_>, t: &Tenancy) -> String {
             crate::record::Funding::Abstract { plans } => {
                 format!("abstract ({} plan(s))", plans.len())
             }
-            crate::record::Funding::Exact { contract, obligation } => {
+            crate::record::Funding::Exact {
+                contract,
+                obligation,
+            } => {
                 format!("exact (contract #{contract}, obligation #{obligation})")
             }
         }

@@ -57,28 +57,39 @@ pub fn plan_hash(plan: &EconomyPlan) -> [u8; 32] {
     let mut lines: Vec<CanonicalLine<'_>> = plan
         .requested_lines
         .iter()
-        .map(|l| CanonicalLine { account: l.account.0, delta: l.delta.minor(), memo: l.memo.as_str() })
+        .map(|l| CanonicalLine {
+            account: l.account.0,
+            delta: l.delta.minor(),
+            memo: l.memo.as_str(),
+        })
         .collect();
     // Total order over (account, delta, memo) — reordered request lines hash the same.
-    lines.sort_by(|a, b| {
-        (a.account, a.delta, a.memo).cmp(&(b.account, b.delta, b.memo))
-    });
+    lines.sort_by(|a, b| (a.account, a.delta, a.memo).cmp(&(b.account, b.delta, b.memo)));
     // Total order over the ops (B7): asset ops by (object, discriminant, canonical
     // bytes) — the byte tiebreak makes it total even for two ops of the same kind on
     // the same object; custody ops by (object, vault, discriminant), which is total
     // because at most one custody op per object survives validation.
-    let mut asset_ops: Vec<(AssetOpKey, &AssetOp)> =
-        plan.asset_ops.iter().map(|op| (asset_op_key(op), op)).collect();
+    let mut asset_ops: Vec<(AssetOpKey, &AssetOp)> = plan
+        .asset_ops
+        .iter()
+        .map(|op| (asset_op_key(op), op))
+        .collect();
     asset_ops.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut custody_ops: Vec<(CustodyOpKey, &CustodyOp)> =
-        plan.custody_ops.iter().map(|op| (custody_op_key(op), op)).collect();
+    let mut custody_ops: Vec<(CustodyOpKey, &CustodyOp)> = plan
+        .custody_ops
+        .iter()
+        .map(|op| (custody_op_key(op), op))
+        .collect();
     custody_ops.sort_by_key(|(k, _)| *k);
     // Hold ops by (hold-or-account id, discriminant, canonical bytes) - the byte
     // tiebreak makes it total, and the sort is STABLE so two identical `Place`s (two
     // genuinely distinct reservations with the same shape) keep their relative order
     // instead of being an unordered pair.
-    let mut hold_ops: Vec<(HoldOpKey, &HoldOp)> =
-        plan.hold_ops.iter().map(|op| (hold_op_key(op), op)).collect();
+    let mut hold_ops: Vec<(HoldOpKey, &HoldOp)> = plan
+        .hold_ops
+        .iter()
+        .map(|op| (hold_op_key(op), op))
+        .collect();
     hold_ops.sort_by(|a, b| a.0.cmp(&b.0));
     let canonical = CanonicalPlan {
         actor: &plan.actor,
@@ -184,7 +195,9 @@ mod tests {
         let mut p = EconomyPlan::new(
             IdempotencyKey::new("pin", "v2"),
             PrincipalId::Object(ObjId(7)),
-            EconomicCause::Staff { reason: "pin".into() },
+            EconomicCause::Staff {
+                reason: "pin".into(),
+            },
             vec![
                 RequestedLine {
                     account: AccountId(1),
@@ -209,7 +222,9 @@ mod tests {
         let mut p = EconomyPlan::new(
             IdempotencyKey::new("pin", "v3"),
             PrincipalId::Object(ObjId(11)),
-            EconomicCause::Staff { reason: "pin3".into() },
+            EconomicCause::Staff {
+                reason: "pin3".into(),
+            },
             vec![
                 RequestedLine {
                     account: AccountId(3),
@@ -239,7 +254,10 @@ mod tests {
                 },
             },
         ];
-        p.custody_ops = vec![CustodyOp::Deposit { object: ObjId(23), vault: VaultId(5) }];
+        p.custody_ops = vec![CustodyOp::Deposit {
+            object: ObjId(23),
+            vault: VaultId(5),
+        }];
         p
     }
 
@@ -268,8 +286,17 @@ mod tests {
             hold_ops: Vec::new(),
         })
         .unwrap();
-        assert!(!json.contains("asset_ops"), "empty asset_ops must not serialize");
-        assert!(!json.contains("custody_ops"), "empty custody_ops must not serialize");
-        assert!(!json.contains("hold_ops"), "empty hold_ops must not serialize");
+        assert!(
+            !json.contains("asset_ops"),
+            "empty asset_ops must not serialize"
+        );
+        assert!(
+            !json.contains("custody_ops"),
+            "empty custody_ops must not serialize"
+        );
+        assert!(
+            !json.contains("hold_ops"),
+            "empty hold_ops must not serialize"
+        );
     }
 }

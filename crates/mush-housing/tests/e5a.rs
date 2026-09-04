@@ -73,8 +73,14 @@ fn plan(resident: u32, level: u8, at: i64) -> SupportPlan {
 }
 /// A plan with its cadence position and its freshness period named separately.
 fn plan_in(resident: u32, level: u8, at: i64, period: u64) -> SupportPlan {
-    SupportPlan::new(obj(resident), SupportLevel::new(level), Vec::new(), at, period)
-        .expect("a well-formed plan")
+    SupportPlan::new(
+        obj(resident),
+        SupportLevel::new(level),
+        Vec::new(),
+        at,
+        period,
+    )
+    .expect("a well-formed plan")
 }
 /// A tenancy live at period 0 with one tenant and one guest.
 fn live(tenants: &[u32]) -> Tenancy {
@@ -149,7 +155,11 @@ fn the_ladder_walks_active_to_the_window_in_three_periods() {
 
     let w = advance(&waiting, Assessment::Unsupported, 1 + DELINQUENT_PERIODS).expect("window");
     assert_eq!(w.status.kind(), TenancyStatusKind::EvictionPending);
-    assert_eq!(w.status.since(), Some(3), "three periods from the first miss");
+    assert_eq!(
+        w.status.since(),
+        Some(3),
+        "three periods from the first miss"
+    );
 }
 
 #[test]
@@ -171,11 +181,17 @@ fn the_elapse_arrows_refuse_off_their_state_and_before_their_period() {
     // Off-state is `State`; too early is `NotDue`. The two answers are different on
     // purpose: one is a retry, the other is a bug.
     assert_eq!(grace_elapsed(&t, 5), Err(HousingError::State(TenancyId(1))));
-    assert_eq!(delinquent_elapsed(&t, 5), Err(HousingError::State(TenancyId(1))));
+    assert_eq!(
+        delinquent_elapsed(&t, 5),
+        Err(HousingError::State(TenancyId(1)))
+    );
 
     let g = period_missed(&t, 0).expect("miss");
     assert_eq!(grace_elapsed(&g, 0), Err(HousingError::NotDue));
-    assert_eq!(delinquent_elapsed(&g, 9), Err(HousingError::State(TenancyId(1))));
+    assert_eq!(
+        delinquent_elapsed(&g, 9),
+        Err(HousingError::State(TenancyId(1)))
+    );
 
     let d = grace_elapsed(&g, 1).expect("grace elapsed");
     assert_eq!(delinquent_elapsed(&d, 2), Err(HousingError::NotDue));
@@ -209,12 +225,18 @@ fn recovery_returns_to_active_silently_from_every_failure_state() {
 fn a_pending_tenancy_is_not_in_the_ladder() {
     let t = tenancy(&[TENANT]);
     assert_eq!(period_missed(&t, 0), Err(HousingError::State(TenancyId(1))));
-    assert_eq!(period_supported(&t, 0), Err(HousingError::State(TenancyId(1))));
+    assert_eq!(
+        period_supported(&t, 0),
+        Err(HousingError::State(TenancyId(1)))
+    );
     assert_eq!(
         advance(&t, Assessment::Unsupported, 0),
         Err(HousingError::State(TenancyId(1)))
     );
-    assert_eq!(window_elapsed(&t, 0, None), Err(HousingError::NoWindow(TenancyId(1))));
+    assert_eq!(
+        window_elapsed(&t, 0, None),
+        Err(HousingError::NoWindow(TenancyId(1)))
+    );
 }
 
 #[test]
@@ -244,7 +266,10 @@ fn only_an_explicit_resolution_reaches_ended_and_it_always_carries_one() {
         if window_due(&cur, now) != WindowAction::Silent {
             cur = window_elapsed(&cur, now, Some(EscalationId(1))).expect("a notice");
         }
-        assert!(!cur.status.is_ended(), "automatic processing ended a tenancy at period {now}");
+        assert!(
+            !cur.status.is_ended(),
+            "automatic processing ended a tenancy at period {now}"
+        );
     }
     assert_eq!(cur.status.kind(), TenancyStatusKind::EvictionPending);
 
@@ -269,18 +294,30 @@ fn only_an_explicit_resolution_reaches_ended_and_it_always_carries_one() {
 fn a_pending_offer_may_be_declined_and_the_last_tenant_leaves_only_by_resolution() {
     let t = tenancy(&[TENANT, CO_TENANT]);
     let declined = resolve(&t, Resolution::TenantLeft, 0).expect("a declined offer ends");
-    assert_eq!(declined.status, TenancyStatus::Ended { how: Resolution::TenantLeft });
+    assert_eq!(
+        declined.status,
+        TenancyStatus::Ended {
+            how: Resolution::TenantLeft
+        }
+    );
 
     let l = live(&[TENANT, CO_TENANT]);
-    let one = l.remove_tenant(obj(CO_TENANT), 1).expect("a co-tenant may leave");
+    let one = l
+        .remove_tenant(obj(CO_TENANT), 1)
+        .expect("a co-tenant may leave");
     assert_eq!(one.tenants, BTreeSet::from([obj(TENANT)]));
     // `homed` keeps them: the roster entry is gone, but the `Obj.home` pointer housing
     // set is still out there and only the ending sweep clears it (`vf_a1_...`).
     assert!(one.homed.contains(&obj(CO_TENANT)));
-    assert!(one.history.contains(&TenancyEvent::TenantRemoved { who: obj(CO_TENANT), at: 1 }));
+    assert!(one.history.contains(&TenancyEvent::TenantRemoved {
+        who: obj(CO_TENANT),
+        at: 1
+    }));
     assert_eq!(
         one.remove_tenant(obj(TENANT), 2),
-        Err(HousingError::Invalid("the last tenant leaves through an explicit resolution")),
+        Err(HousingError::Invalid(
+            "the last tenant leaves through an explicit resolution"
+        )),
         "removing the last tenant would end a tenancy nobody resolved"
     );
     // Removing somebody who is not a tenant is a no-op, not an error.
@@ -295,19 +332,28 @@ fn a_clock_that_moved_backwards_elapses_nothing() {
     // backup. Zero periods elapsed, so nothing is due, and nothing wraps.
     assert_eq!(periods_since(100, 5), Ok(0));
     assert_eq!(grace_elapsed(&g, 5), Err(HousingError::NotDue));
-    assert_eq!(advance(&g, Assessment::Unsupported, 5).map(|t| t.status), Ok(g.status.clone()));
+    assert_eq!(
+        advance(&g, Assessment::Unsupported, 5).map(|t| t.status),
+        Ok(g.status.clone())
+    );
 }
 
 #[test]
 fn period_arithmetic_is_checked_at_the_i64_extremes() {
-    assert_eq!(periods_since(i64::MIN, i64::MAX), Err(HousingError::Overflow));
+    assert_eq!(
+        periods_since(i64::MIN, i64::MAX),
+        Err(HousingError::Overflow)
+    );
     assert_eq!(periods_since(0, i64::MAX), Ok(i64::MAX));
     assert_eq!(periods_since(i64::MAX, i64::MAX), Ok(0));
     // The overflow propagates as a refusal, never as a fired arrow.
     let mut g = live(&[TENANT]);
     g.status = TenancyStatus::Grace { since: i64::MIN };
     assert_eq!(grace_elapsed(&g, i64::MAX), Err(HousingError::Overflow));
-    assert_eq!(advance(&g, Assessment::Unsupported, i64::MAX), Err(HousingError::Overflow));
+    assert_eq!(
+        advance(&g, Assessment::Unsupported, i64::MAX),
+        Err(HousingError::Overflow)
+    );
 }
 
 // ===========================================================================
@@ -317,7 +363,11 @@ fn period_arithmetic_is_checked_at_the_i64_extremes() {
 #[test]
 fn the_window_re_notifies_three_times_and_then_goes_quiet() {
     let (w, opened) = to_window(&live(&[TENANT]));
-    assert_eq!(window_due(&w, opened), WindowAction::Silent, "not on the opening period");
+    assert_eq!(
+        window_due(&w, opened),
+        WindowAction::Silent,
+        "not on the opening period"
+    );
 
     let mut cur = w;
     for n in 1..=i64::from(MAX_WINDOW_NOTICES) {
@@ -360,7 +410,10 @@ fn the_escalation_opens_after_the_quiet_gap_and_refuses_to_be_skipped() {
     };
     assert_eq!(window.escalation, Some(EscalationId(42)));
     assert_eq!(window.notified, MAX_WINDOW_NOTICES);
-    assert!(e.history.contains(&TenancyEvent::Escalated { id: EscalationId(42), at: due }));
+    assert!(e.history.contains(&TenancyEvent::Escalated {
+        id: EscalationId(42),
+        at: due
+    }));
 }
 
 #[test]
@@ -376,7 +429,11 @@ fn after_the_escalation_notices_slow_to_the_long_interval_and_the_count_stays_ca
     // Six quiet periods, then one notice; and the notice count never grows past the
     // cap however long this runs.
     for gap in 1..WINDOW_ESCALATED_RENOTIFY {
-        assert_eq!(window_due(&cur, esc_at + gap), WindowAction::Silent, "gap {gap}");
+        assert_eq!(
+            window_due(&cur, esc_at + gap),
+            WindowAction::Silent,
+            "gap {gap}"
+        );
     }
     let mut at = esc_at;
     for _ in 0..5 {
@@ -401,9 +458,16 @@ fn a_window_elapsing_changes_nothing_but_the_notice_bookkeeping() {
     assert_eq!(after.homed, w.homed);
     assert_eq!(after.funding, w.funding);
     assert_eq!(after.status.kind(), w.status.kind());
-    assert_eq!(after.status.since(), w.status.since(), "the window did not reopen");
+    assert_eq!(
+        after.status.since(),
+        w.status.since(),
+        "the window did not reopen"
+    );
     // And the tenant still gets in.
-    assert_eq!(may_enter(&after, &after.terms, obj(TENANT), false, opened + 1), Access::Tenant);
+    assert_eq!(
+        may_enter(&after, &after.terms, obj(TENANT), false, opened + 1),
+        Access::Tenant
+    );
 }
 
 #[test]
@@ -418,8 +482,14 @@ fn the_window_records_the_job_and_the_scene_the_module_opened() {
     assert_eq!(window.scene, Some(SceneRef(9)));
 
     let live = live(&[TENANT]);
-    assert_eq!(attach_window(&live, Some(1), None), Err(HousingError::NoWindow(TenancyId(1))));
-    assert_eq!(window_elapsed(&live, 5, None), Err(HousingError::NoWindow(TenancyId(1))));
+    assert_eq!(
+        attach_window(&live, Some(1), None),
+        Err(HousingError::NoWindow(TenancyId(1)))
+    );
+    assert_eq!(
+        window_elapsed(&live, 5, None),
+        Err(HousingError::NoWindow(TenancyId(1)))
+    );
     assert_eq!(window_due(&live, 5), WindowAction::Silent);
 }
 
@@ -440,7 +510,11 @@ fn assess_maps_the_bands_to_supported_strained_and_unsupported() {
     ];
     for (tier, level, want) in cases {
         let plans = BTreeMap::from([(obj(TENANT), plan(TENANT, level, 0))]);
-        assert_eq!(assess(PropertyTier::new(tier), &plans), want, "tier {tier} level {level}");
+        assert_eq!(
+            assess(PropertyTier::new(tier), &plans),
+            want,
+            "tier {tier} level {level}"
+        );
     }
     assert!(Assessment::Supported.covers() && Assessment::Strained.covers());
     assert!(!Assessment::Unsupported.covers() && !Assessment::Unknown.covers());
@@ -460,7 +534,10 @@ fn assess_is_best_of_across_residents_so_one_payer_carries_the_lease() {
         (obj(TENANT), plan(TENANT, 0, 1)),
         (obj(CO_TENANT), plan(CO_TENANT, 0, 1)),
     ]);
-    assert_eq!(assess(PropertyTier::new(3), &plans), Assessment::Unsupported);
+    assert_eq!(
+        assess(PropertyTier::new(3), &plans),
+        Assessment::Unsupported
+    );
 
     // A resident whose plan is missing entirely does not drag the other down.
     let plans = BTreeMap::from([(obj(CO_TENANT), plan(CO_TENANT, 3, 2))]);
@@ -474,11 +551,22 @@ fn no_plan_is_unknown_and_only_hardens_into_a_miss_after_the_grace() {
     assert_eq!(best_level(&empty), None);
 
     for periods in 0..=UNKNOWN_GRACE {
-        assert_eq!(harden(Assessment::Unknown, periods), Assessment::Unknown, "{periods}");
+        assert_eq!(
+            harden(Assessment::Unknown, periods),
+            Assessment::Unknown,
+            "{periods}"
+        );
     }
-    assert_eq!(harden(Assessment::Unknown, UNKNOWN_GRACE + 1), Assessment::Unsupported);
+    assert_eq!(
+        harden(Assessment::Unknown, UNKNOWN_GRACE + 1),
+        Assessment::Unsupported
+    );
     // Nothing else is touched.
-    for a in [Assessment::Supported, Assessment::Strained, Assessment::Unsupported] {
+    for a in [
+        Assessment::Supported,
+        Assessment::Strained,
+        Assessment::Unsupported,
+    ] {
         assert_eq!(harden(a, 99), a);
     }
 
@@ -501,29 +589,55 @@ fn a_plan_must_name_a_current_tenant_and_never_overwrites_another_resident() {
     let b = submit_plan(&a, plan(CO_TENANT, 4, 0)).expect("the other's");
     let plans = b.funding.plans().expect("abstract").clone();
     assert_eq!(plans.len(), 2);
-    assert_eq!(plans.get(&obj(TENANT)).map(|p| p.level), Some(SupportLevel::new(1)));
-    assert_eq!(plans.get(&obj(CO_TENANT)).map(|p| p.level), Some(SupportLevel::new(4)));
+    assert_eq!(
+        plans.get(&obj(TENANT)).map(|p| p.level),
+        Some(SupportLevel::new(1))
+    );
+    assert_eq!(
+        plans.get(&obj(CO_TENANT)).map(|p| p.level),
+        Some(SupportLevel::new(4))
+    );
 
     // Re-submitting replaces only that resident's own plan.
     let c = submit_plan(&b, plan(TENANT, 5, 1)).expect("a fresh assertion");
     let plans = c.funding.plans().expect("abstract");
-    assert_eq!(plans.get(&obj(TENANT)).map(|p| p.level), Some(SupportLevel::new(5)));
-    assert_eq!(plans.get(&obj(CO_TENANT)).map(|p| p.level), Some(SupportLevel::new(4)));
+    assert_eq!(
+        plans.get(&obj(TENANT)).map(|p| p.level),
+        Some(SupportLevel::new(5))
+    );
+    assert_eq!(
+        plans.get(&obj(CO_TENANT)).map(|p| p.level),
+        Some(SupportLevel::new(4))
+    );
     assert!(c.history.iter().any(|e| matches!(
         e,
         TenancyEvent::PlanSubmitted { resident, .. } if *resident == obj(TENANT)
     )));
 
     // A tenant who leaves takes their plan with them.
-    let gone = c.remove_tenant(obj(TENANT), 2).expect("a co-tenant may leave");
-    assert!(!gone.funding.plans().expect("abstract").contains_key(&obj(TENANT)));
+    let gone = c
+        .remove_tenant(obj(TENANT), 2)
+        .expect("a co-tenant may leave");
+    assert!(
+        !gone
+            .funding
+            .plans()
+            .expect("abstract")
+            .contains_key(&obj(TENANT))
+    );
 }
 
 #[test]
 fn an_exact_tenancy_takes_no_abstract_plans() {
     let mut t = live(&[TENANT]);
-    t.funding = Funding::Exact { contract: ContractId(3), obligation: ObligationId(4) };
-    assert_eq!(submit_plan(&t, plan(TENANT, 5, 0)), Err(HousingError::WrongFunding));
+    t.funding = Funding::Exact {
+        contract: ContractId(3),
+        obligation: ObligationId(4),
+    };
+    assert_eq!(
+        submit_plan(&t, plan(TENANT, 5, 0)),
+        Err(HousingError::WrongFunding)
+    );
     assert!(t.funding.plans().is_none());
 }
 
@@ -548,8 +662,16 @@ fn tenants_and_guests_enter_at_every_live_status_including_delinquency() {
     let t = live(&[TENANT]);
     for (kind, cur) in statuses_live(&t) {
         assert_eq!(cur.status.kind(), kind);
-        assert_eq!(may_enter(&cur, &cur.terms, obj(TENANT), false, 9), Access::Tenant, "{kind:?}");
-        assert_eq!(may_enter(&cur, &cur.terms, obj(GUEST), false, 9), Access::Guest, "{kind:?}");
+        assert_eq!(
+            may_enter(&cur, &cur.terms, obj(TENANT), false, 9),
+            Access::Tenant,
+            "{kind:?}"
+        );
+        assert_eq!(
+            may_enter(&cur, &cur.terms, obj(GUEST), false, 9),
+            Access::Guest,
+            "{kind:?}"
+        );
         assert_eq!(
             may_enter(&cur, &cur.terms, obj(STRANGER), false, 9),
             Access::Refused,
@@ -563,7 +685,10 @@ fn inspection_needs_an_explicit_term_and_while_delinquent_means_while_delinquent
     let base = live(&[TENANT]);
     // No term at all: the inspector is a stranger.
     for (_, cur) in statuses_live(&base) {
-        assert_eq!(may_enter(&cur, &cur.terms, obj(INSPECTOR), false, 9), Access::Refused);
+        assert_eq!(
+            may_enter(&cur, &cur.terms, obj(INSPECTOR), false, 9),
+            Access::Refused
+        );
     }
 
     let mut always = base.clone();
@@ -589,15 +714,29 @@ fn inspection_needs_an_explicit_term_and_while_delinquent_means_while_delinquent
         }),
     };
     for (kind, cur) in statuses_live(&behind) {
-        let want = if cur.status.is_behind() { Access::Inspection } else { Access::Refused };
-        assert_eq!(may_enter(&cur, &behind.terms, obj(INSPECTOR), false, 9), want, "{kind:?}");
+        let want = if cur.status.is_behind() {
+            Access::Inspection
+        } else {
+            Access::Refused
+        };
+        assert_eq!(
+            may_enter(&cur, &behind.terms, obj(INSPECTOR), false, 9),
+            want,
+            "{kind:?}"
+        );
     }
 
     // A `since` stamp in the future (a rewound cadence) does not open the door.
     let mut future = behind.clone();
     future.status = TenancyStatus::Delinquent { since: 100 };
-    assert_eq!(may_enter(&future, &future.terms, obj(INSPECTOR), false, 9), Access::Refused);
-    assert_eq!(may_enter(&future, &future.terms, obj(INSPECTOR), false, 100), Access::Inspection);
+    assert_eq!(
+        may_enter(&future, &future.terms, obj(INSPECTOR), false, 9),
+        Access::Refused
+    );
+    assert_eq!(
+        may_enter(&future, &future.terms, obj(INSPECTOR), false, 100),
+        Access::Inspection
+    );
 }
 
 #[test]
@@ -610,7 +749,10 @@ fn an_org_inspection_term_fails_closed_until_the_module_resolves_it() {
         }),
     };
     // The pure library cannot resolve org membership from an ObjId, so it refuses.
-    assert_eq!(may_enter(&t, &t.terms, obj(INSPECTOR), false, 0), Access::Refused);
+    assert_eq!(
+        may_enter(&t, &t.terms, obj(INSPECTOR), false, 0),
+        Access::Refused
+    );
     // E5b answers the membership question and calls the `_with` form.
     assert_eq!(
         may_enter_with(&t, &t.terms, obj(INSPECTOR), true, false, 0),
@@ -625,9 +767,15 @@ fn an_org_inspection_term_fails_closed_until_the_module_resolves_it() {
 #[test]
 fn staff_bypass_applies_and_a_pending_or_ended_tenancy_admits_nobody_else() {
     let t = live(&[TENANT]);
-    assert_eq!(may_enter(&t, &t.terms, obj(STAFFER), true, 0), Access::Staff);
+    assert_eq!(
+        may_enter(&t, &t.terms, obj(STAFFER), true, 0),
+        Access::Staff
+    );
     // A staffer who is also the tenant reads as the tenant (the more specific fact).
-    assert_eq!(may_enter(&t, &t.terms, obj(TENANT), true, 0), Access::Tenant);
+    assert_eq!(
+        may_enter(&t, &t.terms, obj(TENANT), true, 0),
+        Access::Tenant
+    );
 
     let pending = tenancy(&[TENANT]);
     let ended = resolve(&t, Resolution::TenantLeft, 1).expect("a tenant may leave");
@@ -640,11 +788,18 @@ fn staff_bypass_applies_and_a_pending_or_ended_tenancy_admits_nobody_else() {
                 cur.status.kind()
             );
         }
-        assert_eq!(may_enter(&cur, &cur.terms, obj(STAFFER), true, 5), Access::Staff);
+        assert_eq!(
+            may_enter(&cur, &cur.terms, obj(STAFFER), true, 5),
+            Access::Staff
+        );
     }
     assert!(!Access::Refused.allowed());
     assert!(Access::Tenant.allowed() && Access::Guest.allowed() && Access::Inspection.allowed());
-    assert_eq!(Access::default(), Access::Refused, "the default answer is no");
+    assert_eq!(
+        Access::default(),
+        Access::Refused,
+        "the default answer is no"
+    );
 }
 
 #[test]
@@ -658,9 +813,13 @@ fn carry_mirrors_enter_exactly() {
     };
     let ended = resolve(&t, Resolution::TenantLeft, 1).expect("a tenant may leave");
     for cur in [t.clone(), ended] {
-        for (who, staff) in
-            [(TENANT, false), (GUEST, false), (INSPECTOR, false), (STRANGER, false), (STAFFER, true)]
-        {
+        for (who, staff) in [
+            (TENANT, false),
+            (GUEST, false),
+            (INSPECTOR, false),
+            (STRANGER, false),
+            (STAFFER, true),
+        ] {
             assert_eq!(
                 may_take(&cur, &cur.terms, obj(who), staff, 3),
                 may_enter(&cur, &cur.terms, obj(who), staff, 3),
@@ -675,7 +834,10 @@ fn a_removed_guest_is_refused_again() {
     let t = live(&[TENANT]);
     assert_eq!(may_enter(&t, &t.terms, obj(GUEST), false, 0), Access::Guest);
     let t = t.remove_guest(obj(GUEST));
-    assert_eq!(may_enter(&t, &t.terms, obj(GUEST), false, 0), Access::Refused);
+    assert_eq!(
+        may_enter(&t, &t.terms, obj(GUEST), false, 0),
+        Access::Refused
+    );
     // Removing somebody who was never a guest changes nothing.
     assert_eq!(t.remove_guest(obj(STRANGER)), t);
 }
@@ -687,7 +849,10 @@ fn a_removed_guest_is_refused_again() {
 #[test]
 fn homed_on_activate_is_the_tenants_and_never_the_guests() {
     let t = live(&[TENANT, CO_TENANT]);
-    assert_eq!(homed_on_activate(&t), BTreeSet::from([obj(TENANT), obj(CO_TENANT)]));
+    assert_eq!(
+        homed_on_activate(&t),
+        BTreeSet::from([obj(TENANT), obj(CO_TENANT)])
+    );
     assert!(!homed_on_activate(&t).contains(&obj(GUEST)));
     assert_eq!(t.homed, BTreeSet::from([obj(TENANT), obj(CO_TENANT)]));
 }
@@ -706,7 +871,10 @@ fn ending_clears_every_home_that_points_inside_and_leaves_one_that_moved_away() 
     };
     let out = to_unhome_on_end(&t, resolve_home, obj(ANCHOR), &rooms);
     assert!(out.contains(&obj(TENANT)), "the homed tenant is cleared");
-    assert!(out.contains(&obj(GUEST)), "a guest homed inside is cleared too");
+    assert!(
+        out.contains(&obj(GUEST)),
+        "a guest homed inside is cleared too"
+    );
     assert!(
         !out.contains(&obj(CO_TENANT)),
         "a home that has moved to another property belongs to that tenancy now"
@@ -727,8 +895,12 @@ fn an_item_homed_inside_the_property_is_found_by_the_content_sweep() {
         702 => Some(obj(901)),
         _ => None,
     };
-    let found =
-        homed_inside([obj(700), obj(701), obj(702), obj(703)], resolve_home, obj(ANCHOR), &rooms);
+    let found = homed_inside(
+        [obj(700), obj(701), obj(702), obj(703)],
+        resolve_home,
+        obj(ANCHOR),
+        &rooms,
+    );
     assert_eq!(found, BTreeSet::from([obj(700), obj(701)]));
     assert!(homed_inside([], resolve_home, obj(ANCHOR), &rooms).is_empty());
 }
@@ -742,7 +914,14 @@ fn every_property_cap_refuses_rather_than_panics() {
     // Rooms.
     let many: BTreeSet<ObjId> = (0..MAX_ROOMS_PER_PROPERTY as u32 + 1).map(obj).collect();
     assert_eq!(
-        Property::new(PropertyId(1), "x", obj(0), many, PropertyTier::new(1), housing_principal()),
+        Property::new(
+            PropertyId(1),
+            "x",
+            obj(0),
+            many,
+            PropertyTier::new(1),
+            housing_principal()
+        ),
         Err(HousingError::TooLarge("rooms per property"))
     );
     let mut p = property(2);
@@ -764,7 +943,13 @@ fn every_property_cap_refuses_rather_than_panics() {
         p.remove_room(obj(ANCHOR)),
         Err(HousingError::Invalid("the anchor room cannot be removed"))
     );
-    assert!(p.remove_room(obj(ROOM_B)).expect("a spare room").rooms.len() < p.rooms.len());
+    assert!(
+        p.remove_room(obj(ROOM_B))
+            .expect("a spare room")
+            .rooms
+            .len()
+            < p.rooms.len()
+    );
 
     // Name.
     let long = "n".repeat(MAX_PROPERTY_NAME_BYTES + 1);
@@ -794,14 +979,20 @@ fn every_property_cap_refuses_rather_than_panics() {
     // Features.
     let mut p = property(2);
     for n in 0..MAX_FEATURES {
-        p = p.add_feature(format!("f{n}"), obj(STAFFER)).expect("a feature fits");
+        p = p
+            .add_feature(format!("f{n}"), obj(STAFFER))
+            .expect("a feature fits");
     }
     assert_eq!(p.features.len(), MAX_FEATURES);
     assert_eq!(
         p.add_feature("one-too-many", obj(STAFFER)),
         Err(HousingError::TooLarge("features per property"))
     );
-    assert_eq!(p.add_feature("f0", obj(STAFFER)).expect("a duplicate is a no-op"), p);
+    assert_eq!(
+        p.add_feature("f0", obj(STAFFER))
+            .expect("a duplicate is a no-op"),
+        p
+    );
     assert_eq!(
         p.add_feature("k".repeat(MAX_FEATURE_KEY_BYTES + 1), obj(STAFFER)),
         Err(HousingError::TooLarge("feature key"))
@@ -837,7 +1028,10 @@ fn every_tenancy_cap_refuses_rather_than_panics() {
         };
     }
     assert_eq!(t.guests.len(), MAX_GUESTS);
-    assert_eq!(t.add_guest(obj(999)), Err(HousingError::TooLarge("guests per tenancy")));
+    assert_eq!(
+        t.add_guest(obj(999)),
+        Err(HousingError::TooLarge("guests per tenancy"))
+    );
     assert_eq!(t.add_guest(obj(GUEST)).expect("a duplicate is a no-op"), t);
     assert_eq!(
         t.add_guest(obj(TENANT)),
@@ -877,7 +1071,10 @@ fn the_history_tail_is_bounded_at_thirty_two() {
         // A *changing* assertion each period: an identical restatement is a no-op that
         // writes no history at all (see `vf_s3_...`), so the cap needs real events.
         t = submit_plan(&t, plan(TENANT, (n % 6) as u8, n)).expect("a plan each period");
-        assert!(t.history.len() <= MAX_TENANCY_HISTORY, "history grew past the cap at {n}");
+        assert!(
+            t.history.len() <= MAX_TENANCY_HISTORY,
+            "history grew past the cap at {n}"
+        );
     }
     assert_eq!(t.history.len(), MAX_TENANCY_HISTORY);
     // The tail is a FIFO: the newest event survives, the oldest is gone.
@@ -905,7 +1102,10 @@ where
 fn every_record_round_trips_through_serde() {
     let mut p = property(3);
     p.landlord_scope = Some(OrgScopeId(4));
-    p.features = vec![Feature { key: "workshop".into(), approved_by: obj(STAFFER) }];
+    p.features = vec![Feature {
+        key: "workshop".into(),
+        approved_by: obj(STAFFER),
+    }];
     p.status = PropertyStatus::Let;
     round_trip(&p, "Property");
     round_trip(&PropertyStatus::Withdrawn, "PropertyStatus");
@@ -916,8 +1116,12 @@ fn every_record_round_trips_through_serde() {
     round_trip(&SceneRef(9), "SceneRef");
 
     for s in [
-        SupportSource::Career { kind: "clerk".into() },
-        SupportSource::Patron { who: PrincipalId::Object(obj(STRANGER)) },
+        SupportSource::Career {
+            kind: "clerk".into(),
+        },
+        SupportSource::Patron {
+            who: PrincipalId::Object(obj(STRANGER)),
+        },
         SupportSource::Inheritance,
         SupportSource::Criminal,
         SupportSource::Domain { org: OrgId(2) },
@@ -928,7 +1132,10 @@ fn every_record_round_trips_through_serde() {
     let sp = SupportPlan::new(
         obj(TENANT),
         SupportLevel::new(3),
-        vec![SupportSource::Criminal, SupportSource::Domain { org: OrgId(1) }],
+        vec![
+            SupportSource::Criminal,
+            SupportSource::Domain { org: OrgId(1) },
+        ],
         11,
         11,
     )
@@ -947,7 +1154,10 @@ fn every_record_round_trips_through_serde() {
     );
     round_trip(&InspectionWhen::Always, "InspectionWhen");
     round_trip(
-        &Funding::Exact { contract: ContractId(1), obligation: ObligationId(2) },
+        &Funding::Exact {
+            contract: ContractId(1),
+            obligation: ObligationId(2),
+        },
         "Funding::Exact",
     );
     round_trip(&Funding::default(), "Funding::Abstract");
@@ -958,17 +1168,29 @@ fn every_record_round_trips_through_serde() {
     w.notified = 2;
     w.escalation = Some(EscalationId(6));
     round_trip(&w, "StoryWindow");
-    round_trip(&TenancyStatus::EvictionPending { window: w }, "TenancyStatus::EvictionPending");
+    round_trip(
+        &TenancyStatus::EvictionPending { window: w },
+        "TenancyStatus::EvictionPending",
+    );
     round_trip(&TenancyStatus::Grace { since: 1 }, "TenancyStatus::Grace");
-    round_trip(&TenancyStatus::Delinquent { since: 1 }, "TenancyStatus::Delinquent");
+    round_trip(
+        &TenancyStatus::Delinquent { since: 1 },
+        "TenancyStatus::Delinquent",
+    );
     round_trip(&TenancyStatusKind::Delinquent, "TenancyStatusKind");
     for how in [
         Resolution::TenantLeft,
-        Resolution::StaffEnded { by: obj(STAFFER), reason: "after the scene".into() },
+        Resolution::StaffEnded {
+            by: obj(STAFFER),
+            reason: "after the scene".into(),
+        },
         Resolution::Waived { by: obj(STAFFER) },
         Resolution::Settled,
     ] {
-        round_trip(&TenancyStatus::Ended { how: how.clone() }, "TenancyStatus::Ended");
+        round_trip(
+            &TenancyStatus::Ended { how: how.clone() },
+            "TenancyStatus::Ended",
+        );
         round_trip(&how, "Resolution");
     }
     for e in [
@@ -978,11 +1200,24 @@ fn every_record_round_trips_through_serde() {
             to: TenancyStatusKind::Grace,
             at: 2,
         },
-        TenancyEvent::PlanSubmitted { resident: obj(TENANT), level: SupportLevel::new(2), at: 3 },
+        TenancyEvent::PlanSubmitted {
+            resident: obj(TENANT),
+            level: SupportLevel::new(2),
+            at: 3,
+        },
         TenancyEvent::Notified { count: 2, at: 4 },
-        TenancyEvent::Escalated { id: EscalationId(1), at: 5 },
-        TenancyEvent::TenantRemoved { who: obj(CO_TENANT), at: 6 },
-        TenancyEvent::Ended { how: Resolution::Settled, at: 7 },
+        TenancyEvent::Escalated {
+            id: EscalationId(1),
+            at: 5,
+        },
+        TenancyEvent::TenantRemoved {
+            who: obj(CO_TENANT),
+            at: 6,
+        },
+        TenancyEvent::Ended {
+            how: Resolution::Settled,
+            at: 7,
+        },
     ] {
         round_trip(&e, "TenancyEvent");
     }
@@ -993,7 +1228,10 @@ fn every_record_round_trips_through_serde() {
     let w = submit_plan(&w, plan(TENANT, 2, 3)).expect("a plan");
     let w = attach_window(&w, Some(4), Some(SceneRef(5))).expect("a job");
     round_trip(&w, "Tenancy (eviction-pending)");
-    round_trip(&resolve(&w, Resolution::Settled, 9).expect("settled"), "Tenancy (ended)");
+    round_trip(
+        &resolve(&w, Resolution::Settled, 9).expect("settled"),
+        "Tenancy (ended)",
+    );
     round_trip(&tenancy(&[TENANT]), "Tenancy (pending)");
 }
 
@@ -1008,7 +1246,10 @@ fn an_omitted_optional_field_loads_as_its_default() {
     assert!(t.guests.is_empty() && t.homed.is_empty() && t.history.is_empty());
     assert_eq!(t.terms, AccessTerms::default());
     assert_eq!(t.funding.plans().map(BTreeMap::len), Some(0));
-    assert_eq!(may_enter(&t, &t.terms, obj(TENANT), false, 0), Access::Refused);
+    assert_eq!(
+        may_enter(&t, &t.terms, obj(TENANT), false, 0),
+        Access::Refused
+    );
 
     let json = r#"{"id":1,"name":"x","anchor":100,"rooms":[100],"tier":2,
                    "landlord":{"System":"wod.housing"},"revision":1}"#;
@@ -1042,7 +1283,12 @@ fn fuzz_random_transition_sequences_never_panic_or_end_without_a_resolution() {
             now = now.saturating_add((next() % 5) as i64 - 1);
             let before = t.clone();
             let out = match next() % 11 {
-                0 => accept(&t, next() % 4 != 0, &BTreeSet::from([obj(TENANT), obj(CO_TENANT)]), now),
+                0 => accept(
+                    &t,
+                    next() % 4 != 0,
+                    &BTreeSet::from([obj(TENANT), obj(CO_TENANT)]),
+                    now,
+                ),
                 1 => period_missed(&t, now),
                 2 => period_supported(&t, now),
                 3 => grace_elapsed(&t, now),
@@ -1120,7 +1366,10 @@ fn fuzz_random_transition_sequences_never_panic_or_end_without_a_resolution() {
 
 /// How many `PlanSubmitted` entries the audit tail carries.
 fn plan_events(t: &Tenancy) -> usize {
-    t.history.iter().filter(|e| matches!(e, TenancyEvent::PlanSubmitted { .. })).count()
+    t.history
+        .iter()
+        .filter(|e| matches!(e, TenancyEvent::PlanSubmitted { .. }))
+        .count()
 }
 /// A rooms set that is *missing* the anchor — what E5b builds from the world when
 /// the anchor room has been destroyed or is `GOING`.
@@ -1131,7 +1380,9 @@ fn rooms_without_anchor() -> BTreeSet<ObjId> {
 #[test]
 fn vf_a1_removing_a_tenant_keeps_the_home_anchor_until_the_tenancy_ends() {
     let t = live(&[TENANT, CO_TENANT]);
-    let one = t.remove_tenant(obj(CO_TENANT), 1).expect("a co-tenant may leave");
+    let one = t
+        .remove_tenant(obj(CO_TENANT), 1)
+        .expect("a co-tenant may leave");
     assert!(!one.tenants.contains(&obj(CO_TENANT)), "off the roster");
     assert!(
         one.homed.contains(&obj(CO_TENANT)),
@@ -1144,14 +1395,23 @@ fn vf_a1_removing_a_tenant_keeps_the_home_anchor_until_the_tenancy_ends() {
     // no longer rent — and dispersed *into* it when a room was destroyed (D-E5-11).
     let ended = resolve(&one, Resolution::TenantLeft, 2).expect("an explicit act ends it");
     let out = to_unhome_on_end(&ended, |_| Some(obj(ANCHOR)), obj(ANCHOR), &rooms());
-    assert!(out.contains(&obj(CO_TENANT)), "the departed co-tenant is unhomed with the tenancy");
+    assert!(
+        out.contains(&obj(CO_TENANT)),
+        "the departed co-tenant is unhomed with the tenancy"
+    );
     assert!(out.contains(&obj(TENANT)));
 
     // Deviation 7's carve-out still applies to them: somebody re-homed elsewhere is
     // left alone, because that pointer belongs to another tenancy now.
     let elsewhere = to_unhome_on_end(
         &ended,
-        |o| if o == obj(CO_TENANT) { Some(obj(900)) } else { Some(obj(ANCHOR)) },
+        |o| {
+            if o == obj(CO_TENANT) {
+                Some(obj(900))
+            } else {
+                Some(obj(ANCHOR))
+            }
+        },
         obj(ANCHOR),
         &rooms(),
     );
@@ -1178,7 +1438,10 @@ fn vf_a2_a_persisted_property_cannot_bypass_its_own_invariants() {
         r#"{{"id":1,"name":"x","anchor":100,"rooms":[{}],"tier":2,{landlord},"revision":1}}"#,
         many.join(",")
     );
-    assert!(serde_json::from_str::<Property>(&oversized).is_err(), "56 rooms must not load");
+    assert!(
+        serde_json::from_str::<Property>(&oversized).is_err(),
+        "56 rooms must not load"
+    );
 
     // And the constructor's other refusals, which the derive had made advisory.
     let dupe_features = format!(
@@ -1186,11 +1449,17 @@ fn vf_a2_a_persisted_property_cannot_bypass_its_own_invariants() {
              "features":[{{"key":"shop","approved_by":50}},{{"key":"shop","approved_by":50}}],
              "revision":1}}"#
     );
-    assert!(serde_json::from_str::<Property>(&dupe_features).is_err(), "a duplicate feature key");
+    assert!(
+        serde_json::from_str::<Property>(&dupe_features).is_err(),
+        "a duplicate feature key"
+    );
     let blank_name = format!(
         r#"{{"id":1,"name":"  ","anchor":100,"rooms":[100],"tier":2,{landlord},"revision":1}}"#
     );
-    assert!(serde_json::from_str::<Property>(&blank_name).is_err(), "an empty name");
+    assert!(
+        serde_json::from_str::<Property>(&blank_name).is_err(),
+        "an empty name"
+    );
 
     // A well-formed document still loads, and every built property round-trips.
     let ok = format!(
@@ -1205,10 +1474,23 @@ fn vf_a2_a_persisted_property_cannot_bypass_its_own_invariants() {
     // property whether or not it is in the rooms set the caller built — a destroyed
     // anchor is exactly when the tenants' `Obj.home` pointers must still be found.
     let t = live(&[TENANT]);
-    let out = to_unhome_on_end(&t, |_| Some(obj(ANCHOR)), obj(ANCHOR), &rooms_without_anchor());
-    assert!(out.contains(&obj(TENANT)), "a home on the anchor is inside, `rooms` or not");
+    let out = to_unhome_on_end(
+        &t,
+        |_| Some(obj(ANCHOR)),
+        obj(ANCHOR),
+        &rooms_without_anchor(),
+    );
+    assert!(
+        out.contains(&obj(TENANT)),
+        "a home on the anchor is inside, `rooms` or not"
+    );
     assert_eq!(
-        homed_inside([obj(700)], |_| Some(obj(ANCHOR)), obj(ANCHOR), &rooms_without_anchor()),
+        homed_inside(
+            [obj(700)],
+            |_| Some(obj(ANCHOR)),
+            obj(ANCHOR),
+            &rooms_without_anchor()
+        ),
         BTreeSet::from([obj(700)]),
         "and the content sweep agrees with it"
     );
@@ -1218,23 +1500,35 @@ fn vf_a2_a_persisted_property_cannot_bypass_its_own_invariants() {
 fn vf_a3_a_persisted_tenancy_cannot_bypass_its_caps() {
     // No tenants at all: a `Let` property nobody may enter and nobody may end.
     let empty = r#"{"id":1,"property":1,"tenants":[],"cadence":7,"revision":1}"#;
-    assert!(serde_json::from_str::<Tenancy>(empty).is_err(), "an empty roster must not load");
+    assert!(
+        serde_json::from_str::<Tenancy>(empty).is_err(),
+        "an empty roster must not load"
+    );
 
     // Nine tenants through a cap of eight.
     let many = r#"{"id":1,"property":1,"tenants":[1,2,3,4,5,6,7,8,9],"cadence":7,"revision":1}"#;
-    assert!(serde_json::from_str::<Tenancy>(many).is_err(), "nine tenants must not load");
+    assert!(
+        serde_json::from_str::<Tenancy>(many).is_err(),
+        "nine tenants must not load"
+    );
 
     // A tenant on their own guest list — two answers to "on what footing does this
     // person enter", from one record.
     let both = r#"{"id":1,"property":1,"tenants":[10],"guests":[10],"cadence":7,"revision":1}"#;
-    assert!(serde_json::from_str::<Tenancy>(both).is_err(), "a tenant is not their own guest");
+    assert!(
+        serde_json::from_str::<Tenancy>(both).is_err(),
+        "a tenant is not their own guest"
+    );
 
     // A plan filed under somebody who did not assert it: the map key is the whole of
     // D-E5-13's "a co-tenant can neither raise nor drag down another's".
     let t = submit_plan(&live(&[TENANT, CO_TENANT]), plan(TENANT, 3, 0)).expect("a plan");
     let json = serde_json::to_string(&t).expect("serializes");
     let forged = json.replace(r#""resident":10"#, r#""resident":11"#);
-    assert!(serde_json::from_str::<Tenancy>(&forged).is_err(), "a misfiled plan must not load");
+    assert!(
+        serde_json::from_str::<Tenancy>(&forged).is_err(),
+        "a misfiled plan must not load"
+    );
     let back: Tenancy = serde_json::from_str(&json).expect("the honest document still loads");
     assert_eq!(back, t);
 }
@@ -1261,7 +1555,10 @@ fn vf_a4_an_inspection_stamp_in_the_future_refuses_and_its_own_period_admits() {
         Access::Inspection,
         "the period the stamp itself names admits"
     );
-    assert_eq!(may_enter(&t, &t.terms, obj(INSPECTOR), false, 101), Access::Inspection);
+    assert_eq!(
+        may_enter(&t, &t.terms, obj(INSPECTOR), false, 101),
+        Access::Inspection
+    );
 }
 
 #[test]
@@ -1276,33 +1573,69 @@ fn vf_a6_an_inspection_term_never_defaults_to_a_standing_right_of_entry() {
     );
     let spelled = r#"{"inspection":{"who":{"Object":40},"when":"WhileDelinquent"}}"#;
     let terms: AccessTerms = serde_json::from_str(spelled).expect("a spelled-out term loads");
-    assert_eq!(terms.inspection.map(|i| i.when), Some(InspectionWhen::WhileDelinquent));
+    assert_eq!(
+        terms.inspection.map(|i| i.when),
+        Some(InspectionWhen::WhileDelinquent)
+    );
 
     // And the empty policy is still the default policy: nobody but tenants and guests.
     assert!(AccessTerms::default().inspection.is_none());
     let t = live(&[TENANT]);
-    assert_eq!(may_enter(&t, &AccessTerms::default(), obj(INSPECTOR), false, 0), Access::Refused);
+    assert_eq!(
+        may_enter(&t, &AccessTerms::default(), obj(INSPECTOR), false, 0),
+        Access::Refused
+    );
 }
 
 #[test]
 fn vf_a7_strictest_composes_two_answers_without_ever_widening_them() {
-    let all = [Access::Refused, Access::Inspection, Access::Guest, Access::Tenant, Access::Staff];
+    let all = [
+        Access::Refused,
+        Access::Inspection,
+        Access::Guest,
+        Access::Tenant,
+        Access::Staff,
+    ];
     // A refusal on either side wins, in both argument orders — the property the
     // derived `Ord` got backwards (it ranked `Tenant` below `Refused`, so `min` picked
     // the *most* permissive answer).
     for a in all {
-        assert_eq!(Access::strictest(a, Access::Refused), Access::Refused, "{a:?}");
-        assert_eq!(Access::strictest(Access::Refused, a), Access::Refused, "{a:?}");
+        assert_eq!(
+            Access::strictest(a, Access::Refused),
+            Access::Refused,
+            "{a:?}"
+        );
+        assert_eq!(
+            Access::strictest(Access::Refused, a),
+            Access::Refused,
+            "{a:?}"
+        );
         assert_eq!(Access::strictest(a, a), a, "{a:?}");
     }
     // The narrowing order among the positives, and its symmetry.
-    assert_eq!(Access::strictest(Access::Staff, Access::Tenant), Access::Tenant);
-    assert_eq!(Access::strictest(Access::Tenant, Access::Guest), Access::Guest);
-    assert_eq!(Access::strictest(Access::Guest, Access::Inspection), Access::Inspection);
-    assert_eq!(Access::strictest(Access::Inspection, Access::Staff), Access::Inspection);
+    assert_eq!(
+        Access::strictest(Access::Staff, Access::Tenant),
+        Access::Tenant
+    );
+    assert_eq!(
+        Access::strictest(Access::Tenant, Access::Guest),
+        Access::Guest
+    );
+    assert_eq!(
+        Access::strictest(Access::Guest, Access::Inspection),
+        Access::Inspection
+    );
+    assert_eq!(
+        Access::strictest(Access::Inspection, Access::Staff),
+        Access::Inspection
+    );
     for a in all {
         for b in all {
-            assert_eq!(Access::strictest(a, b), Access::strictest(b, a), "{a:?} / {b:?}");
+            assert_eq!(
+                Access::strictest(a, b),
+                Access::strictest(b, a),
+                "{a:?} / {b:?}"
+            );
             assert!(
                 !Access::strictest(a, b).allowed() || (a.allowed() && b.allowed()),
                 "{a:?} / {b:?} composed to an allowed answer"
@@ -1323,7 +1656,12 @@ fn vf_s1_removing_a_tenant_is_refused_on_an_ended_tenancy() {
     // Nothing moved: not the roster, not `homed`, not the tail.
     assert_eq!(ended.tenants, BTreeSet::from([obj(TENANT), obj(CO_TENANT)]));
     assert_eq!(ended.homed, BTreeSet::from([obj(TENANT), obj(CO_TENANT)]));
-    assert!(!ended.history.iter().any(|e| matches!(e, TenancyEvent::TenantRemoved { .. })));
+    assert!(
+        !ended
+            .history
+            .iter()
+            .any(|e| matches!(e, TenancyEvent::TenantRemoved { .. }))
+    );
     // Removing a stranger is still a no-op while live, and refused once ended.
     assert_eq!(t.remove_tenant(obj(STRANGER), 2), Ok(t.clone()));
     assert_eq!(
@@ -1344,7 +1682,10 @@ fn vf_s2_an_unreadable_notice_gap_pages_instead_of_going_silent_forever() {
     // `last_notice`, so the window was silent *forever*: an eviction nobody is told
     // about, on a home nobody is paged about.
     window.last_notice = i64::MIN;
-    assert_eq!(periods_since(i64::MIN, i64::MAX), Err(HousingError::Overflow));
+    assert_eq!(
+        periods_since(i64::MIN, i64::MAX),
+        Err(HousingError::Overflow)
+    );
     assert_eq!(window_due(&broken, i64::MAX), WindowAction::Escalate);
     assert_eq!(
         window_elapsed(&broken, i64::MAX, None),
@@ -1365,7 +1706,10 @@ fn vf_s2_an_unreadable_notice_gap_pages_instead_of_going_silent_forever() {
         panic!("eviction-pending");
     };
     window.escalation = Some(EscalationId(7));
-    assert_eq!(window_due(&escalated, i64::MAX), WindowAction::NotifyEscalated);
+    assert_eq!(
+        window_due(&escalated, i64::MAX),
+        WindowAction::NotifyEscalated
+    );
 }
 
 #[test]
@@ -1377,7 +1721,10 @@ fn vf_s3_a_restated_plan_is_a_no_op_and_never_floods_the_audit_tail() {
 
     // The same answer, in the same period: the same tenancy back. No revision, no
     // event, nothing for the module to persist.
-    assert_eq!(submit_plan(&first, plan_in(TENANT, 3, 0, 0)).expect("a no-op"), first);
+    assert_eq!(
+        submit_plan(&first, plan_in(TENANT, 3, 0, 0)).expect("a no-op"),
+        first
+    );
 
     // Thirty-two periods of an unchanged character: one revision each (the freshness
     // stamp moves, so `assess_at` still sees a live answer) and not one more entry.
@@ -1386,30 +1733,49 @@ fn vf_s3_a_restated_plan_is_a_no_op_and_never_floods_the_audit_tail() {
         let before = cur.revision;
         let at = i64::try_from(period).expect("a small period");
         cur = submit_plan(&cur, plan_in(TENANT, 3, at, period)).expect("a restatement");
-        assert_eq!(cur.revision, before + 1, "one revision per period (period {period})");
+        assert_eq!(
+            cur.revision,
+            before + 1,
+            "one revision per period (period {period})"
+        );
         assert_eq!(
             submit_plan(&cur, plan_in(TENANT, 3, at, period)).expect("a no-op"),
             cur,
             "a second evaluator run in the same period costs nothing (period {period})"
         );
     }
-    assert_eq!(plan_events(&cur), 1, "32 restatements are not 32 audit entries");
+    assert_eq!(
+        plan_events(&cur),
+        1,
+        "32 restatements are not 32 audit entries"
+    );
     assert!(
         cur.history.contains(&TenancyEvent::Accepted { at: 0 }),
         "and the tail still remembers the tenancy going live"
     );
     assert_eq!(
-        cur.funding.plans().and_then(|p| p.get(&obj(TENANT))).map(|p| p.asserted_period),
+        cur.funding
+            .plans()
+            .and_then(|p| p.get(&obj(TENANT)))
+            .map(|p| p.asserted_period),
         Some(32)
     );
 
     // A changed level, or changed sources, is news again.
     let changed = submit_plan(&cur, plan_in(TENANT, 4, 33, 33)).expect("a new assertion");
     assert_eq!(plan_events(&changed), 2);
-    let resourced =
-        SupportPlan::new(obj(TENANT), SupportLevel::new(4), vec![SupportSource::Inheritance], 34, 34)
-            .expect("a plan");
-    assert_eq!(plan_events(&submit_plan(&changed, resourced).expect("new sources")), 3);
+    let resourced = SupportPlan::new(
+        obj(TENANT),
+        SupportLevel::new(4),
+        vec![SupportSource::Inheritance],
+        34,
+        34,
+    )
+    .expect("a plan");
+    assert_eq!(
+        plan_events(&submit_plan(&changed, resourced).expect("new sources")),
+        3
+    );
 }
 
 #[test]
@@ -1432,8 +1798,14 @@ fn vf_s4_a_plan_expires_so_a_dead_evaluator_stops_carrying_the_lease() {
     );
     // `Unknown`, not `Unsupported`: an evaluator that stopped gets the same tolerance
     // as one that has not answered yet, and `harden`/`UNKNOWN_GRACE` decides from there.
-    assert_eq!(harden(Assessment::Unknown, UNKNOWN_GRACE), Assessment::Unknown);
-    assert_eq!(harden(Assessment::Unknown, UNKNOWN_GRACE + 1), Assessment::Unsupported);
+    assert_eq!(
+        harden(Assessment::Unknown, UNKNOWN_GRACE),
+        Assessment::Unknown
+    );
+    assert_eq!(
+        harden(Assessment::Unknown, UNKNOWN_GRACE + 1),
+        Assessment::Unsupported
+    );
     // The ageless form is unchanged, for callers that have already filtered.
     assert_eq!(assess(tier, &plans), Assessment::Supported);
 
@@ -1452,7 +1824,9 @@ fn vf_s5_a_let_propertys_rooms_cannot_be_removed() {
     p.status = PropertyStatus::Let;
     assert_eq!(
         p.remove_room(obj(ROOM_B)),
-        Err(HousingError::Invalid("a let property's rooms cannot be removed")),
+        Err(HousingError::Invalid(
+            "a let property's rooms cannot be removed"
+        )),
         "a room dropped from a let property is one somebody lives in that the hook stops answering for"
     );
     assert_eq!(
@@ -1464,7 +1838,9 @@ fn vf_s5_a_let_propertys_rooms_cannot_be_removed() {
     for status in [PropertyStatus::Vacant, PropertyStatus::Withdrawn] {
         let mut p = property(2);
         p.status = status;
-        let smaller = p.remove_room(obj(ROOM_B)).expect("a spare room of an unlet property");
+        let smaller = p
+            .remove_room(obj(ROOM_B))
+            .expect("a spare room of an unlet property");
         assert_eq!(smaller.rooms, BTreeSet::from([obj(ANCHOR)]));
     }
 }
@@ -1472,7 +1848,11 @@ fn vf_s5_a_let_propertys_rooms_cannot_be_removed() {
 #[test]
 fn vf_s6_attaching_a_window_is_idempotent_and_never_replaces_an_id() {
     let (w, _) = to_window(&live(&[TENANT]));
-    assert_eq!(attach_window(&w, None, None).expect("nothing to do"), w, "a no-op writes nothing");
+    assert_eq!(
+        attach_window(&w, None, None).expect("nothing to do"),
+        w,
+        "a no-op writes nothing"
+    );
 
     let job = attach_window(&w, Some(77), None).expect("a job id");
     assert_eq!(job.revision, w.revision + 1);
@@ -1487,7 +1867,10 @@ fn vf_s6_attaching_a_window_is_idempotent_and_never_replaces_an_id() {
         "a second job id would orphan the one the ST is working"
     );
     let scened = attach_window(&job, None, Some(SceneRef(9))).expect("a scene later");
-    assert_eq!(attach_window(&scened, None, Some(SceneRef(9))).expect("the same scene"), scened);
+    assert_eq!(
+        attach_window(&scened, None, Some(SceneRef(9))).expect("the same scene"),
+        scened
+    );
     assert_eq!(
         attach_window(&scened, None, Some(SceneRef(10))),
         Err(HousingError::WindowAlreadyAttached)
@@ -1519,12 +1902,22 @@ fn vf_s7_post_escalation_notices_do_not_evict_the_ladder_from_the_tail() {
         assert_eq!(window_due(&cur, at), WindowAction::NotifyEscalated);
         cur = window_elapsed(&cur, at, None).expect("a slow notice");
     }
-    assert_eq!(cur.history.len(), settled, "a re-notice that says nothing new writes nothing");
-    assert!(cur.history.contains(&TenancyEvent::Escalated { id: EscalationId(42), at: esc_at }));
+    assert_eq!(
+        cur.history.len(),
+        settled,
+        "a re-notice that says nothing new writes nothing"
+    );
+    assert!(cur.history.contains(&TenancyEvent::Escalated {
+        id: EscalationId(42),
+        at: esc_at
+    }));
     assert!(cur.history.contains(&TenancyEvent::Accepted { at: 0 }));
     assert!(cur.history.iter().any(|e| matches!(
         e,
-        TenancyEvent::StatusChanged { to: TenancyStatusKind::EvictionPending, .. }
+        TenancyEvent::StatusChanged {
+            to: TenancyStatusKind::EvictionPending,
+            ..
+        }
     )));
     // The notices still went out — the stamp moved every time.
     let TenancyStatus::EvictionPending { window } = &cur.status else {
@@ -1549,13 +1942,23 @@ fn vf_s8_recovery_keeps_the_closed_windows_job_scene_and_escalation() {
     assert_eq!(back.status, TenancyStatus::Active);
     // Recovery used to drop the window whole, leaving an open story job and an open
     // level-2 escalation pointing at a tenancy that is fine.
-    let last = back.last_window.expect("the closed window is kept for E5b to resolve");
+    let last = back
+        .last_window
+        .expect("the closed window is kept for E5b to resolve");
     assert_eq!(last.job, Some(77), "the job E5b resolves recovered");
     assert_eq!(last.scene, Some(SceneRef(9)));
-    assert_eq!(last.escalation, Some(EscalationId(42)), "the page E5b acknowledges");
+    assert_eq!(
+        last.escalation,
+        Some(EscalationId(42)),
+        "the page E5b acknowledges"
+    );
     assert_eq!(last.notified, MAX_WINDOW_NOTICES);
     assert_eq!(last.closed, Some(esc_at + 1));
-    assert_eq!(window_due(&back, 999), WindowAction::Silent, "and the window really is closed");
+    assert_eq!(
+        window_due(&back, 999),
+        WindowAction::Silent,
+        "and the window really is closed"
+    );
     round_trip(&back, "Tenancy (recovered, with a closed window)");
 }
 
@@ -1591,7 +1994,10 @@ fn vf_s9_a_flickering_tenancy_still_reaches_the_escalation() {
         now += 1;
     }
     assert!(now <= 32, "four cycles inside 32 periods, not {now}");
-    assert!(escalated.is_some(), "four cycles of pressure and nobody was ever paged");
+    assert!(
+        escalated.is_some(),
+        "four cycles of pressure and nobody was ever paged"
+    );
     assert!(notices >= 1, "the tenant was notified at all");
     assert!(
         notices <= usize::from(MAX_WINDOW_NOTICES),
@@ -1610,7 +2016,10 @@ fn vf_s9_a_flickering_tenancy_still_reaches_the_escalation() {
     let TenancyStatus::EvictionPending { window } = &later.status else {
         panic!("a new window opened");
     };
-    assert_eq!(window.notified, 0, "a long recovery earns a fresh notice budget");
+    assert_eq!(
+        window.notified, 0,
+        "a long recovery earns a fresh notice budget"
+    );
     assert!(window.escalation.is_none());
 }
 
@@ -1632,7 +2041,10 @@ fn vf_s10_best_level_hands_back_a_clamped_band() {
         "and it re-serializes as the band, not as the injected 255"
     );
     // The assessment was already clamped; this keeps the two agreeing.
-    assert_eq!(assess(PropertyTier::new(MAX_LEVEL), &plans), Assessment::Supported);
+    assert_eq!(
+        assess(PropertyTier::new(MAX_LEVEL), &plans),
+        Assessment::Supported
+    );
     assert!(best_level(&BTreeMap::new()).is_none());
 }
 
@@ -1643,11 +2055,22 @@ fn vf_s11_a_plan_cannot_outlive_the_roster_entry_it_belongs_to() {
     let t = live(&[TENANT, CO_TENANT]);
     let t = submit_plan(&t, plan_in(TENANT, 5, 0, 0)).expect("the solvent tenant's plan");
     let t = submit_plan(&t, plan_in(CO_TENANT, 0, 0, 0)).expect("the other's");
-    let gone = t.remove_tenant(obj(TENANT), 1).expect("the object was destroyed");
+    let gone = t
+        .remove_tenant(obj(TENANT), 1)
+        .expect("the object was destroyed");
     let plans = gone.funding.plans().expect("abstract").clone();
-    assert!(!plans.contains_key(&obj(TENANT)), "`remove_tenant` drops the plan with the tenant");
+    assert!(
+        !plans.contains_key(&obj(TENANT)),
+        "`remove_tenant` drops the plan with the tenant"
+    );
     assert_eq!(
-        assess_at(PropertyTier::new(3), &plans, &gone.tenants, 0, PLAN_MAX_AGE_PERIODS),
+        assess_at(
+            PropertyTier::new(3),
+            &plans,
+            &gone.tenants,
+            0,
+            PLAN_MAX_AGE_PERIODS
+        ),
         Assessment::Unsupported,
         "and the lease is assessed on who actually lives there"
     );
@@ -1657,7 +2080,13 @@ fn vf_s11_a_plan_cannot_outlive_the_roster_entry_it_belongs_to() {
     let stale = t.funding.plans().expect("abstract").clone();
     let roster = BTreeSet::from([obj(CO_TENANT)]);
     assert_eq!(
-        assess_at(PropertyTier::new(3), &stale, &roster, 0, PLAN_MAX_AGE_PERIODS),
+        assess_at(
+            PropertyTier::new(3),
+            &stale,
+            &roster,
+            0,
+            PLAN_MAX_AGE_PERIODS
+        ),
         Assessment::Unsupported,
         "the departed tenant's level must not carry the lease"
     );

@@ -190,7 +190,10 @@ impl TryFrom<PendingNoticeWire> for PendingNotice {
                 w.text.len()
             ));
         }
-        Ok(PendingNotice { at: w.at, text: w.text })
+        Ok(PendingNotice {
+            at: w.at,
+            text: w.text,
+        })
     }
 }
 
@@ -344,8 +347,12 @@ impl HousingStore {
     }
     /// Re-derive [`HousingStore::open`] from the loaded tenancies (boot).
     pub(crate) fn reindex_open(&mut self) {
-        self.open =
-            self.tenancies.values().filter(|t| !t.status.is_ended()).map(|t| t.id).collect();
+        self.open = self
+            .tenancies
+            .values()
+            .filter(|t| !t.status.is_ended())
+            .map(|t| t.id)
+            .collect();
     }
 
     /// **Rebuild both projections from the records** (D-LBK-4a) — at boot, and in a
@@ -397,7 +404,9 @@ impl HousingStore {
                 .iter()
                 .find(|(k, v)| self.live_index.get(k) != Some(v))
                 .or_else(|| self.live_index.iter().find(|(k, _)| !live.contains_key(k)));
-            return Err(format!("live-tenancy index drifted from the records at {first:?}"));
+            return Err(format!(
+                "live-tenancy index drifted from the records at {first:?}"
+            ));
         }
         Ok(())
     }
@@ -429,7 +438,9 @@ impl HousingStore {
         if is_live && (!was_live || old.is_some_and(|o| o.property != new.property)) {
             live_index_add(&mut self.live_index, new.property, new.id);
         }
-        old.is_none() || was_live != is_live || old.is_some_and(|o| o.status.is_ended() != new.status.is_ended())
+        old.is_none()
+            || was_live != is_live
+            || old.is_some_and(|o| o.status.is_ended() != new.status.is_ended())
     }
 
     /// The debug-build equivalence assertion the write path carries (D-LBK-4a).
@@ -458,20 +469,27 @@ impl HousingStore {
     }
     /// One conflict.
     #[must_use]
-    pub fn conflict(&self, key: crate::quarantine::QuarantineKey) -> Option<&crate::quarantine::Conflict> {
+    pub fn conflict(
+        &self,
+        key: crate::quarantine::QuarantineKey,
+    ) -> Option<&crate::quarantine::Conflict> {
         self.quarantine.get(&key)
     }
     /// Whether any conflict involves this property (every one of its rooms then
     /// refuses everyone but staff).
     #[must_use]
     pub fn is_quarantined_property(&self, property: PropertyId) -> bool {
-        self.quarantine.values().any(|c| c.properties.contains(&property))
+        self.quarantine
+            .values()
+            .any(|c| c.properties.contains(&property))
     }
     /// Whether any conflict involves this tenancy (the tick skips it; its rent is
     /// suspended).
     #[must_use]
     pub fn is_quarantined_tenancy(&self, tenancy: TenancyId) -> bool {
-        self.quarantine.values().any(|c| c.tenancies.contains(&tenancy))
+        self.quarantine
+            .values()
+            .any(|c| c.tenancies.contains(&tenancy))
     }
     /// The population version the tick's short-circuit is keyed on (D-LBK-2).
     #[must_use]
@@ -541,7 +559,10 @@ impl HousingStore {
     /// `@tenancy/create` enforces) — one **or more**: a conflict is occupied too.
     #[must_use]
     pub fn has_live_tenancy(&self, property: PropertyId) -> bool {
-        matches!(self.live_index.get(&property), Some(LiveEntry::Live(_) | LiveEntry::Conflict(_)))
+        matches!(
+            self.live_index.get(&property),
+            Some(LiveEntry::Live(_) | LiveEntry::Conflict(_))
+        )
     }
 
     /// The property one room belongs to — the **unique** holder, read off the
@@ -589,7 +610,10 @@ impl HousingStore {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn push_op(out: &mut Outbox, op: ModuleWrite) {
-    out.defer(mush_core::Deferred::Persist(ModuleOp { ns: SmolStr::new_static(NS), op }));
+    out.defer(mush_core::Deferred::Persist(ModuleOp {
+        ns: SmolStr::new_static(NS),
+        op,
+    }));
 }
 
 /// Install a property into RAM and queue its container doc. Both always happen
@@ -605,10 +629,13 @@ pub(crate) fn put_property(ctx: &mut Ctx<'_>, p: Property) {
         store.index_property(old.as_ref(), &p);
         store.assert_projections();
     }
-    push_op(ctx.out, ModuleWrite::JsonSet {
-        key: property_key(p.id),
-        value: serde_json::to_value(&p).expect("property serializes"),
-    });
+    push_op(
+        ctx.out,
+        ModuleWrite::JsonSet {
+            key: property_key(p.id),
+            value: serde_json::to_value(&p).expect("property serializes"),
+        },
+    );
     crate::quarantine::revalidate(ctx);
 }
 
@@ -629,10 +656,13 @@ pub(crate) fn put_tenancy(ctx: &mut Ctx<'_>, t: Tenancy) {
         }
         store.assert_projections();
     }
-    push_op(ctx.out, ModuleWrite::JsonSet {
-        key: tenancy_key(t.id),
-        value: serde_json::to_value(&t).expect("tenancy serializes"),
-    });
+    push_op(
+        ctx.out,
+        ModuleWrite::JsonSet {
+            key: tenancy_key(t.id),
+            value: serde_json::to_value(&t).expect("tenancy serializes"),
+        },
+    );
     crate::quarantine::revalidate(ctx);
 }
 
@@ -643,7 +673,9 @@ fn room_index_add(index: &mut BTreeMap<ObjId, RoomEntry>, room: ObjId, property:
         }
         Some(RoomEntry::Unique(p)) if *p == property => {}
         Some(entry @ RoomEntry::Unique(_)) => {
-            let RoomEntry::Unique(p) = entry.clone() else { return };
+            let RoomEntry::Unique(p) = entry.clone() else {
+                return;
+            };
             *entry = RoomEntry::Conflict(BTreeSet::from([p, property]));
         }
         Some(RoomEntry::Conflict(set)) => {
@@ -680,14 +712,20 @@ fn room_index_remove(index: &mut BTreeMap<ObjId, RoomEntry>, room: ObjId, proper
     }
 }
 
-fn live_index_add(index: &mut BTreeMap<PropertyId, LiveEntry>, property: PropertyId, tenancy: TenancyId) {
+fn live_index_add(
+    index: &mut BTreeMap<PropertyId, LiveEntry>,
+    property: PropertyId,
+    tenancy: TenancyId,
+) {
     match index.get_mut(&property) {
         None | Some(LiveEntry::Vacant) => {
             index.insert(property, LiveEntry::Live(tenancy));
         }
         Some(LiveEntry::Live(t)) if *t == tenancy => {}
         Some(entry @ LiveEntry::Live(_)) => {
-            let LiveEntry::Live(t) = entry.clone() else { return };
+            let LiveEntry::Live(t) = entry.clone() else {
+                return;
+            };
             *entry = LiveEntry::Conflict(BTreeSet::from([t, tenancy]));
         }
         Some(LiveEntry::Conflict(set)) => {
@@ -736,18 +774,31 @@ pub(crate) fn put_assess(ctx: &mut Ctx<'_>, id: TenancyId, state: AssessState) {
     if let Some(store) = ctx.w.module_state_mut::<HousingStore>() {
         store.assess.insert(id, state);
     }
-    push_op(ctx.out, ModuleWrite::JsonSet {
-        key: assess_key(id),
-        value: serde_json::to_value(state).expect("assess state serializes"),
-    });
+    push_op(
+        ctx.out,
+        ModuleWrite::JsonSet {
+            key: assess_key(id),
+            value: serde_json::to_value(state).expect("assess state serializes"),
+        },
+    );
 }
 
 /// Queue the allocator meta doc.
 pub(crate) fn persist_meta(ctx: &mut Ctx<'_>) {
-    let Some(meta) = ctx.w.module_state::<HousingStore>().map(HousingStore::meta_doc) else {
+    let Some(meta) = ctx
+        .w
+        .module_state::<HousingStore>()
+        .map(HousingStore::meta_doc)
+    else {
         return;
     };
-    push_op(ctx.out, ModuleWrite::JsonSet { key: SmolStr::new_static(META_KEY), value: meta });
+    push_op(
+        ctx.out,
+        ModuleWrite::JsonSet {
+            key: SmolStr::new_static(META_KEY),
+            value: meta,
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -772,15 +823,17 @@ pub fn alive(w: &World, id: ObjId) -> bool {
 /// Whether `id` is a live [`ObjKind::Room`].
 #[must_use]
 pub fn is_live_room(w: &World, id: ObjId) -> bool {
-    w.get(id).is_some_and(|o| o.kind == ObjKind::Room && !o.flags.contains(Flags::GOING))
+    w.get(id)
+        .is_some_and(|o| o.kind == ObjKind::Room && !o.flags.contains(Flags::GOING))
 }
 
 /// Whether `id` is a character-shaped object — the subjects `add_guest` and a tenancy
 /// roster admit (E5a fold, handoff 2: the library accepts any `ObjId`).
 #[must_use]
 pub fn is_character(w: &World, id: ObjId) -> bool {
-    w.get(id)
-        .is_some_and(|o| matches!(o.kind, ObjKind::Player | ObjKind::Npc) && !o.flags.contains(Flags::GOING))
+    w.get(id).is_some_and(|o| {
+        matches!(o.kind, ObjKind::Player | ObjKind::Npc) && !o.flags.contains(Flags::GOING)
+    })
 }
 
 /// The room an object is *in* — itself when it **is** a room, otherwise its
@@ -812,7 +865,11 @@ pub fn cadence_now(w: &World, cadence: mush_economy::CadenceId) -> Option<i64> {
 /// the `Obj.home` helpers are handed.
 #[must_use]
 pub fn live_rooms(w: &World, p: &Property) -> BTreeSet<ObjId> {
-    p.rooms.iter().copied().filter(|r| is_live_room(w, *r)).collect()
+    p.rooms
+        .iter()
+        .copied()
+        .filter(|r| is_live_room(w, *r))
+        .collect()
 }
 
 /// Render one object for a job note or a staff line — the same shape
@@ -906,8 +963,14 @@ impl GameModule for HousingModule {
         let access: Arc<crate::hooks::AccessHook> = Arc::new(crate::hooks::AccessHook);
         reg.hook(mush_core::module::HookPoint::MoveAttempt, access.clone());
         reg.hook(mush_core::module::HookPoint::CarryAttempt, access);
-        reg.hook(mush_core::module::HookPoint::Connected, Arc::new(crate::hooks::ReconnectNotice));
-        reg.subscribe(WorldEventKind::ObjDestroyed, Arc::new(crate::hooks::on_obj_destroyed));
+        reg.hook(
+            mush_core::module::HookPoint::Connected,
+            Arc::new(crate::hooks::ReconnectNotice),
+        );
+        reg.subscribe(
+            WorldEventKind::ObjDestroyed,
+            Arc::new(crate::hooks::on_obj_destroyed),
+        );
         reg.destroy_gate(Arc::new(crate::hooks::HousingDestroyGate));
         reg.job_queue(JobQueueSpec {
             name: STORY_QUEUE.into(),

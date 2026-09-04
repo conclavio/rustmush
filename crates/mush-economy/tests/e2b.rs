@@ -26,7 +26,11 @@ fn boot() -> TestWorld {
     ])
 }
 fn texts(events: &[(Audience, OutputEvent)]) -> String {
-    events.iter().map(|(_, e)| text_of(e)).collect::<Vec<_>>().join("\n")
+    events
+        .iter()
+        .map(|(_, e)| text_of(e))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 fn has_error(events: &[(Audience, OutputEvent)]) -> bool {
     events.iter().any(|(_, e)| {
@@ -34,10 +38,17 @@ fn has_error(events: &[(Audience, OutputEvent)]) -> bool {
     })
 }
 fn store(tw: &TestWorld) -> &EconomyStore {
-    tw.world().module_state::<EconomyStore>().expect("economy store")
+    tw.world()
+        .module_state::<EconomyStore>()
+        .expect("economy store")
 }
 fn bal(tw: &TestWorld, id: u64) -> i64 {
-    store(tw).snapshot().account(AccountId(id)).expect("account").posted_balance.minor()
+    store(tw)
+        .snapshot()
+        .account(AccountId(id))
+        .expect("account")
+        .posted_balance
+        .minor()
 }
 fn fold_kv(tw: &mut TestWorld) -> Vec<(SmolStr, serde_json::Value)> {
     let mut kv: Vec<(SmolStr, serde_json::Value)> = Vec::new();
@@ -58,7 +69,13 @@ fn fold_kv(tw: &mut TestWorld) -> Vec<(SmolStr, serde_json::Value)> {
 }
 fn reboot(kv: Vec<(SmolStr, serde_json::Value)>) -> TestWorld {
     let mut tw = boot();
-    tw.modules_loaded(HashMap::from([(SmolStr::new(NS), ModuleBootData { kv, streams: HashMap::new() })]));
+    tw.modules_loaded(HashMap::from([(
+        SmolStr::new(NS),
+        ModuleBootData {
+            kv,
+            streams: HashMap::new(),
+        },
+    )]));
     tw
 }
 fn try_boot(tw: &mut TestWorld, kv: Vec<(SmolStr, serde_json::Value)>) -> Result<(), String> {
@@ -66,7 +83,13 @@ fn try_boot(tw: &mut TestWorld, kv: Vec<(SmolStr, serde_json::Value)>) -> Result
     let mut fx = Effects::new();
     tw.engine_mut()
         .modules_loaded(
-            HashMap::from([(SmolStr::new(NS), ModuleBootData { kv, streams: HashMap::new() })]),
+            HashMap::from([(
+                SmolStr::new(NS),
+                ModuleBootData {
+                    kv,
+                    streams: HashMap::new(),
+                },
+            )]),
             &mut out,
             &mut fx,
         )
@@ -77,8 +100,14 @@ fn try_boot(tw: &mut TestWorld, kv: Vec<(SmolStr, serde_json::Value)>) -> Result
 fn setup_mint(tw: &mut TestWorld, amount: i64) -> ObjId {
     assert!(!has_error(&tw.run(GOD, "@instrument/register gold=2")));
     let p = tw.spawn_player("Pat");
-    assert!(!has_error(&tw.run(GOD, "@account/system faucet=gold")), "system account");
-    assert!(!has_error(&tw.run(GOD, &format!("@account/open #{}=gold", p.0))), "player account");
+    assert!(
+        !has_error(&tw.run(GOD, "@account/system faucet=gold")),
+        "system account"
+    );
+    assert!(
+        !has_error(&tw.run(GOD, &format!("@account/open #{}=gold", p.0))),
+        "player account"
+    );
     let ev = tw.run(GOD, &format!("@econ/mint 0=1 {amount}"));
     assert!(!has_error(&ev), "mint refused: {}", texts(&ev));
     p
@@ -103,7 +132,11 @@ fn mint_transfer_and_reverse_move_balances() {
     assert_eq!(bal(&tw, 1), 1000, "transfer compensated");
     assert_eq!(bal(&tw, 2), 0);
     // Conservation across all gold accounts is zero.
-    let sum: i128 = store(&tw).snapshot().accounts().map(|a| a.posted_balance.widen()).sum();
+    let sum: i128 = store(&tw)
+        .snapshot()
+        .accounts()
+        .map(|a| a.posted_balance.widen())
+        .sum();
     assert_eq!(sum, 0);
 }
 
@@ -114,7 +147,11 @@ fn a_post_persists_the_bundle_and_survives_reboot() {
     // The mint persisted the journal chunk + both account docs + meta.
     let ops = tw.take_module_ops();
     assert!(ops.iter().any(|o| o.ns == NS && matches!(&o.op, ModuleWrite::JsonSet { key, .. } if key.starts_with("log:journal:"))), "journal chunk persisted");
-    assert!(ops.iter().any(|o| o.ns == NS && matches!(&o.op, ModuleWrite::JsonSet { key, .. } if key == "account:1")), "account persisted");
+    assert!(
+        ops.iter().any(|o| o.ns == NS
+            && matches!(&o.op, ModuleWrite::JsonSet { key, .. } if key == "account:1")),
+        "account persisted"
+    );
     // Redo to capture the folded kv (take_module_ops above drained it).
     let mut tw = boot();
     setup_mint(&mut tw, 500);
@@ -145,7 +182,11 @@ fn boot_heals_a_lagging_projection_without_freezing() {
     }
     let tw2 = reboot(kv);
     assert!(!store(&tw2).is_frozen(), "a benign lag must NOT freeze");
-    assert_eq!(bal(&tw2, 1), 700, "the lagging projection is re-derived to the journal head");
+    assert_eq!(
+        bal(&tw2, 1),
+        700,
+        "the lagging projection is re-derived to the journal head"
+    );
 }
 
 #[test]
@@ -165,7 +206,10 @@ fn boot_freezes_on_a_drifted_projection() {
         }
     }
     let tw2 = reboot(kv);
-    assert!(store(&tw2).is_frozen(), "real drift must freeze the economy");
+    assert!(
+        store(&tw2).is_frozen(),
+        "real drift must freeze the economy"
+    );
 }
 
 #[test]
@@ -177,11 +221,13 @@ fn boot_freezes_on_a_conservation_break() {
         "id": "gold", "ruleset": "t", "code": "gold", "kind": "Currency", "scale": 0,
         "transferable": true, "negative_policy": "SystemOnly", "status": "Active", "revision": 1
     });
-    let acct = |id: u64, bal: i64| serde_json::json!({
-        "id": id, "owner": { "Object": 1 }, "instrument": "gold", "scope": null,
-        "name": format!("a{id}"), "status": "Active", "posted_balance": bal, "held_amount": 0,
-        "credit": { "allow_negative": true, "floor": null }, "last_journal_seq": 0, "revision": 1
-    });
+    let acct = |id: u64, bal: i64| {
+        serde_json::json!({
+            "id": id, "owner": { "Object": 1 }, "instrument": "gold", "scope": null,
+            "name": format!("a{id}"), "status": "Active", "posted_balance": bal, "held_amount": 0,
+            "credit": { "allow_negative": true, "floor": null }, "last_journal_seq": 0, "revision": 1
+        })
+    };
     // Two credit lines, +500 each — sum +1000, not zero.
     let zero_hash = vec![0u8; 32];
     let tx = serde_json::json!({
@@ -192,16 +238,29 @@ fn boot_freezes_on_a_conservation_break() {
             { "account": 2, "instrument": "gold", "delta": 500, "memo": "" }
         ], "reverses": null, "visibility": "Parties", "plan_hash": zero_hash
     });
-    let chunk = LedgerChunk { chunk: 0, sealed: false, entries: vec![LedgerEntry { seq: 0, value: tx }] };
+    let chunk = LedgerChunk {
+        chunk: 0,
+        sealed: false,
+        entries: vec![LedgerEntry { seq: 0, value: tx }],
+    };
     let kv = vec![
         (SmolStr::new("instrument:gold"), instrument),
         (SmolStr::new("account:1"), acct(1, 500)),
         (SmolStr::new("account:2"), acct(2, 500)),
-        (SmolStr::new("log:journal:0"), serde_json::to_value(&chunk).unwrap()),
+        (
+            SmolStr::new("log:journal:0"),
+            serde_json::to_value(&chunk).unwrap(),
+        ),
     ];
     let res = try_boot(&mut tw, kv);
-    assert!(res.is_ok(), "boot proceeds (frozen), does not error: {res:?}");
-    assert!(store(&tw).is_frozen(), "a non-zero per-instrument sum freezes the economy");
+    assert!(
+        res.is_ok(),
+        "boot proceeds (frozen), does not error: {res:?}"
+    );
+    assert!(
+        store(&tw).is_frozen(),
+        "a non-zero per-instrument sum freezes the economy"
+    );
 }
 
 #[test]
@@ -219,7 +278,10 @@ fn a_frozen_economy_refuses_posts() {
     let mut tw2 = reboot(kv);
     assert!(store(&tw2).is_frozen());
     // A mint into the frozen economy is refused.
-    assert!(has_error(&tw2.run(GOD, "@econ/mint 0=1 50")), "frozen economy refuses posting");
+    assert!(
+        has_error(&tw2.run(GOD, "@econ/mint 0=1 50")),
+        "frozen economy refuses posting"
+    );
 }
 
 #[test]
@@ -232,7 +294,10 @@ fn an_idempotency_hit_still_requests_the_durable_gate() {
     assert!(!has_error(&tw.run(GOD, "@econ/reverse 0")), "first reverse");
     let _ = tw.engine_mut().take_durable_gate();
     // Reverse tx 0 AGAIN → AlreadyPosted (deterministic reversal key) → must gate.
-    assert!(!has_error(&tw.run(GOD, "@econ/reverse 0")), "second reverse is an idempotent HIT");
+    assert!(
+        !has_error(&tw.run(GOD, "@econ/reverse 0")),
+        "second reverse is an idempotent HIT"
+    );
     assert!(
         matches!(tw.engine_mut().take_durable_gate(), Some((_, true))),
         "an AlreadyPosted HIT still rides the strict durable gate (R-R2)"
@@ -244,9 +309,18 @@ fn mint_and_reverse_are_staff_only() {
     let mut tw = boot();
     setup_mint(&mut tw, 1000);
     let joe = tw.spawn_player("Joe");
-    assert!(has_error(&tw.run(joe, "@econ/mint 0=1 100")), "mint refused for non-staff");
-    assert!(has_error(&tw.run(joe, "@econ/reverse 0")), "reverse refused for non-staff");
-    assert!(has_error(&tw.run(joe, "@instrument/register silver=0")), "register refused for non-staff");
+    assert!(
+        has_error(&tw.run(joe, "@econ/mint 0=1 100")),
+        "mint refused for non-staff"
+    );
+    assert!(
+        has_error(&tw.run(joe, "@econ/reverse 0")),
+        "reverse refused for non-staff"
+    );
+    assert!(
+        has_error(&tw.run(joe, "@instrument/register silver=0")),
+        "register refused for non-staff"
+    );
 }
 
 #[test]
@@ -257,11 +331,20 @@ fn destroying_an_owner_freezes_their_account() {
     tw.world_mut().destroy(p).unwrap();
     let mut out = Outbox::new();
     let mut fx = Effects::new();
-    tw.engine_mut().emit_world_event(&WorldEvent::ObjDestroyed { obj: p }, &mut out, &mut fx);
+    tw.engine_mut()
+        .emit_world_event(&WorldEvent::ObjDestroyed { obj: p }, &mut out, &mut fx);
     // The account is FROZEN (money preserved, no new posting), not deleted.
-    assert_eq!(store(&tw).snapshot().account(AccountId(1)).unwrap().status, mush_economy::AccountStatus::Frozen);
+    assert_eq!(
+        store(&tw).snapshot().account(AccountId(1)).unwrap().status,
+        mush_economy::AccountStatus::Frozen
+    );
     assert_eq!(bal(&tw, 1), 1000, "balance preserved");
-    assert!(tw.take_module_ops().iter().any(|o| matches!(&o.op, ModuleWrite::JsonSet { key, .. } if key == "account:1")), "frozen account re-persisted");
+    assert!(
+        tw.take_module_ops()
+            .iter()
+            .any(|o| matches!(&o.op, ModuleWrite::JsonSet { key, .. } if key == "account:1")),
+        "frozen account re-persisted"
+    );
 }
 
 #[test]
@@ -278,7 +361,10 @@ fn boot_freezes_on_a_projection_ahead_of_the_journal() {
         }
     }
     let tw2 = reboot(kv);
-    assert!(store(&tw2).is_frozen(), "a projection ahead of the journal (lost tail) must freeze");
+    assert!(
+        store(&tw2).is_frozen(),
+        "a projection ahead of the journal (lost tail) must freeze"
+    );
 }
 
 #[test]
@@ -291,7 +377,10 @@ fn boot_refuses_a_missing_account_doc() {
     let mut kv = fold_kv(&mut tw);
     kv.retain(|(k, _)| k != "account:1");
     let res = try_boot(&mut tw, kv);
-    assert!(res.is_err(), "a journal line referencing an account with no doc must refuse the boot");
+    assert!(
+        res.is_err(),
+        "a journal line referencing an account with no doc must refuse the boot"
+    );
     assert!(
         res.unwrap_err().contains("unknown account"),
         "the refusal should name the cause"

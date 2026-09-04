@@ -181,7 +181,10 @@ impl AssetOp {
     /// `WriteOff` are mutually exclusive per object, invariant 11).
     #[must_use]
     pub fn is_title_changing(&self) -> bool {
-        matches!(self, AssetOp::Title { .. } | AssetOp::TransferTitle { .. } | AssetOp::WriteOff { .. })
+        matches!(
+            self,
+            AssetOp::Title { .. } | AssetOp::TransferTitle { .. } | AssetOp::WriteOff { .. }
+        )
     }
 }
 
@@ -803,6 +806,9 @@ impl EconomyError {
     /// it would tell a payer their own operational error is "no such account".
     #[must_use]
     pub fn concerns_named_subjects(&self) -> bool {
-        matches!(self, EconomyError::Unauthorized | EconomyError::ScopeOwnerMismatch)
+        matches!(
+            self,
+            EconomyError::Unauthorized | EconomyError::ScopeOwnerMismatch
+        )
     }
 }

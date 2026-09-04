@@ -118,7 +118,12 @@ pub fn wod_economy_config(cfg: &WodCfg) -> Result<ruleset_wod::WodEconomyConfig,
         default_engagement,
         cadence: smol_str::SmolStr::new(cadence),
         starting_funds_major: e.starting_funds_major,
-        reserved_rooms: e.reserved_rooms.iter().copied().map(mush_core::ObjId).collect(),
+        reserved_rooms: e
+            .reserved_rooms
+            .iter()
+            .copied()
+            .map(mush_core::ObjId)
+            .collect(),
         income,
     })
 }

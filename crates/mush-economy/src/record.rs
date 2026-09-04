@@ -170,12 +170,18 @@ impl CreditPolicy {
     /// The default: no negative balance.
     #[must_use]
     pub const fn forbid() -> CreditPolicy {
-        CreditPolicy { allow_negative: false, floor: Some(Amount::ZERO) }
+        CreditPolicy {
+            allow_negative: false,
+            floor: Some(Amount::ZERO),
+        }
     }
     /// An unbounded-negative policy (system source/sink only).
     #[must_use]
     pub const fn unbounded() -> CreditPolicy {
-        CreditPolicy { allow_negative: true, floor: None }
+        CreditPolicy {
+            allow_negative: true,
+            floor: None,
+        }
     }
     /// Whether `balance` is within this policy.
     #[must_use]
@@ -377,7 +383,13 @@ impl EconomicVisibility {
     /// [`EconomicVisibility::Audience`], which has no notice render.
     #[must_use]
     pub fn announce_issuer(&self) -> bool {
-        matches!(self, EconomicVisibility::Audience { announce_issuer: true, .. })
+        matches!(
+            self,
+            EconomicVisibility::Audience {
+                announce_issuer: true,
+                ..
+            }
+        )
     }
     /// Whether this visibility is the one E4c's canon bridge may publish (D-E4-12:
     /// only a `Public` contract, whose every party accepted that disclosure, ever
@@ -415,14 +427,20 @@ impl IdempotencyKey {
     /// Construct a key.
     #[must_use]
     pub fn new(namespace: impl Into<SmolStr>, key: impl Into<SmolStr>) -> IdempotencyKey {
-        IdempotencyKey { namespace: namespace.into(), key: key.into() }
+        IdempotencyKey {
+            namespace: namespace.into(),
+            key: key.into(),
+        }
     }
     /// The deterministic reversal key for a target transaction (R-B4): namespace
     /// `econ.reverse`, key = the target id. A second reverse of the same tx therefore
     /// resolves to the same key → `AlreadyPosted`.
     #[must_use]
     pub fn reversal_of(target: TransactionId) -> IdempotencyKey {
-        IdempotencyKey::new(SmolStr::new_static("econ.reverse"), SmolStr::new(target.0.to_string()))
+        IdempotencyKey::new(
+            SmolStr::new_static("econ.reverse"),
+            SmolStr::new(target.0.to_string()),
+        )
     }
 }
 

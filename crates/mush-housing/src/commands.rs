@@ -234,23 +234,34 @@ fn cmd_housing(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             Ok(())
         }
         "recheck" => {
-            let key = QuarantineKey::parse(&arg)
-                .ok_or_else(|| CmdError::msg("recheck takes a key as @housing/quarantine show prints it."))?;
-            let known = ctx.w.module_state::<HousingStore>().is_some_and(|s| s.conflict(key).is_some());
+            let key = QuarantineKey::parse(&arg).ok_or_else(|| {
+                CmdError::msg("recheck takes a key as @housing/quarantine show prints it.")
+            })?;
+            let known = ctx
+                .w
+                .module_state::<HousingStore>()
+                .is_some_and(|s| s.conflict(key).is_some());
             if !known {
                 return Err(CmdError::msg(format!("Nothing is under review as {key}.")));
             }
             // The same check the write path runs; nothing here can release a conflict
             // that still exists.
             crate::quarantine::revalidate(ctx);
-            match ctx.w.module_state::<HousingStore>().and_then(|s| s.conflict(key).cloned()) {
+            match ctx
+                .w
+                .module_state::<HousingStore>()
+                .and_then(|s| s.conflict(key).cloned())
+            {
                 Some(c) => Err(CmdError::msg(format!(
                     "{key} still exists: {}. Repair it — {} — and it lifts by itself.",
                     c.summary,
                     c.repair.join(" · ")
                 ))),
                 None => {
-                    info(ctx, format!("{key}: the invariant holds again; the quarantine is lifted."));
+                    info(
+                        ctx,
+                        format!("{key}: the invariant holds again; the quarantine is lifted."),
+                    );
                     ctx.gate_on_durable_ack();
                     Ok(())
                 }
@@ -267,8 +278,16 @@ fn render_conflict(c: &crate::quarantine::Conflict) -> String {
         "{} — {} [properties: {}; tenancies: {}] repair: {}",
         c.key,
         c.summary,
-        if props.is_empty() { "none".to_string() } else { props.join(", ") },
-        if tenancies.is_empty() { "none".to_string() } else { tenancies.join(", ") },
+        if props.is_empty() {
+            "none".to_string()
+        } else {
+            props.join(", ")
+        },
+        if tenancies.is_empty() {
+            "none".to_string()
+        } else {
+            tenancies.join(", ")
+        },
         c.repair.join(" · ")
     )
 }
@@ -293,8 +312,16 @@ fn require_staff(ctx: &Ctx<'_>) -> Result<(), CmdError> {
 /// Whether `actor` holds `capability` on `scope`, live.
 #[must_use]
 pub fn holds(w: &World, actor: ObjId, capability: &str, scope: OrgScopeId) -> bool {
-    let Some(capability) = CapabilityId::new(capability) else { return false };
-    let req = AuthRequest { actor, capability, scope, now: w.now(), amount: None };
+    let Some(capability) = CapabilityId::new(capability) else {
+        return false;
+    };
+    let req = AuthRequest {
+        actor,
+        capability,
+        scope,
+        now: w.now(),
+        amount: None,
+    };
     mush_org::authorize_in_world(w, &req).is_allow()
 }
 
@@ -377,7 +404,10 @@ fn guest_only_property(w: &World, actor: ObjId, p: &Property) -> bool {
     }
     w.module_state::<HousingStore>().is_some_and(|s| {
         let mut guest = false;
-        for t in s.tenancies().filter(|t| t.property == p.id && t.status.is_live()) {
+        for t in s
+            .tenancies()
+            .filter(|t| t.property == p.id && t.status.is_live())
+        {
             if t.is_tenant(actor) {
                 return false;
             }
@@ -411,7 +441,11 @@ fn property_of(ctx: &Ctx<'_>, s: &str) -> Result<Property, CmdError> {
         .module_state::<HousingStore>()
         .and_then(|st| st.property(id).cloned())
         .ok_or_else(hidden_property)?;
-    if may_view_property(ctx.w, ctx.actor, &p) { Ok(p) } else { Err(hidden_property()) }
+    if may_view_property(ctx.w, ctx.actor, &p) {
+        Ok(p)
+    } else {
+        Err(hidden_property())
+    }
 }
 
 /// Resolve a tenancy the actor may view, or the one refusal text.
@@ -422,7 +456,11 @@ fn tenancy_of(ctx: &Ctx<'_>, s: &str) -> Result<Tenancy, CmdError> {
         .module_state::<HousingStore>()
         .and_then(|st| st.tenancy(id).cloned())
         .ok_or_else(hidden_tenancy)?;
-    if may_view_tenancy(ctx.w, ctx.actor, &t) { Ok(t) } else { Err(hidden_tenancy()) }
+    if may_view_tenancy(ctx.w, ctx.actor, &t) {
+        Ok(t)
+    } else {
+        Err(hidden_tenancy())
+    }
 }
 
 fn hidden_property() -> CmdError {
@@ -492,7 +530,11 @@ fn room_arg(ctx: &Ctx<'_>, s: &str) -> Result<ObjId, CmdError> {
         Some(n) => ObjId(u32::try_from(n).map_err(|_| CmdError::msg("No such room."))?),
         None => match_object(ctx.w, ctx.actor, s).map_err(|_| CmdError::msg("No such room."))?,
     };
-    if is_live_room(ctx.w, id) { Ok(id) } else { Err(CmdError::msg("No such room.")) }
+    if is_live_room(ctx.w, id) {
+        Ok(id)
+    } else {
+        Err(CmdError::msg("No such room."))
+    }
 }
 
 /// `<principal>` = `#obj` / a matchable name | `org:<id|name>` | `sys:<name>` |
@@ -529,7 +571,9 @@ fn parse_landlord(ctx: &Ctx<'_>, s: &str) -> Option<PrincipalId> {
             .find(|o| o.name.eq_ignore_ascii_case(rest))
             .map(|o| PrincipalId::Organization(o.id));
     }
-    match_object(ctx.w, ctx.actor, s).ok().map(PrincipalId::Object)
+    match_object(ctx.w, ctx.actor, s)
+        .ok()
+        .map(PrincipalId::Object)
 }
 
 // ---------------------------------------------------------------------------
@@ -576,10 +620,20 @@ fn property_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if name.is_empty() {
         return Err(CmdError::msg(USAGE));
     }
-    let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?.to_string();
+    let rhs = ctx
+        .args
+        .rhs()
+        .ok_or_else(|| CmdError::msg(USAGE))?
+        .to_string();
     let (rest, opts) = parse_opts(&rhs, &["tier", "landlord", "scope"]);
-    let names: Vec<&str> = rest.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
-    let Some(anchor_name) = names.first() else { return Err(CmdError::msg(USAGE)) };
+    let names: Vec<&str> = rest
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    let Some(anchor_name) = names.first() else {
+        return Err(CmdError::msg(USAGE));
+    };
     let anchor = room_arg(ctx, anchor_name)?;
     let tier = PropertyTier::new(
         opts.get("tier")
@@ -652,8 +706,20 @@ fn property_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let rendered = render_principal(ctx.w, &landlord);
     put_property(ctx, p);
     crate::module::persist_meta(ctx);
-    info(ctx, format!("Property #{id} created: \"{name}\", tier {}, let by {rendered}.", tier.get()));
-    info(ctx, format!("Anchor #{} now carries the title record. @property/show {id}", anchor.0));
+    info(
+        ctx,
+        format!(
+            "Property #{id} created: \"{name}\", tier {}, let by {rendered}.",
+            tier.get()
+        ),
+    );
+    info(
+        ctx,
+        format!(
+            "Anchor #{} now carries the title record. @property/show {id}",
+            anchor.0
+        ),
+    );
     ctx.gate_on_durable_ack();
     Ok(())
 }
@@ -680,7 +746,9 @@ fn check_room(
             Some(RoomEntry::Unique(other)) if Some(*other) != property => {
                 // Existence hiding: naming somebody else's residence would confirm
                 // it exists.
-                let visible = store.property(*other).is_some_and(|p| may_view_property(ctx.w, ctx.actor, p));
+                let visible = store
+                    .property(*other)
+                    .is_some_and(|p| may_view_property(ctx.w, ctx.actor, p));
                 return Err(CmdError::msg(if visible {
                     format!("#{} is already a room of property #{other}.", room.0)
                 } else {
@@ -781,13 +849,21 @@ fn reserved(w: &World, room: ObjId) -> Option<&'static str> {
 }
 
 fn property_rooms(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    const USAGE: &str = "Usage: @property/rooms <id>=<room>[,…]  |  @property/rooms <id>=-<room>[,…]";
+    const USAGE: &str =
+        "Usage: @property/rooms <id>=<room>[,…]  |  @property/rooms <id>=-<room>[,…]";
     let p = property_of(ctx, ctx.args.lhs())?;
-    let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?.to_string();
+    let rhs = ctx
+        .args
+        .rhs()
+        .ok_or_else(|| CmdError::msg(USAGE))?
+        .to_string();
     let removing = rhs.trim_start().starts_with('-');
     let list = rhs.trim_start().trim_start_matches('-');
-    let names: Vec<String> =
-        list.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let names: Vec<String> = list
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
     if names.is_empty() {
         return Err(CmdError::msg(USAGE));
     }
@@ -802,7 +878,9 @@ fn property_rooms(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             let mut proposed = next.rooms.clone();
             proposed.insert(room);
             check_room(ctx, room, Some(p.id), next.anchor, &proposed)?;
-            next = next.add_room(room).map_err(|e| hidden(ctx, Some(&p), None, e.to_string()))?;
+            next = next
+                .add_room(room)
+                .map_err(|e| hidden(ctx, Some(&p), None, e.to_string()))?;
         }
     }
     // Adding rooms back to a residence whose rooms went missing is exactly how a
@@ -843,7 +921,13 @@ fn property_tier(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     next.tier = PropertyTier::new(tier);
     next.revision = next.revision.saturating_add(1);
     put_property(ctx, next);
-    info(ctx, format!("Property #{} is tier {tier}. The next assessed period uses it.", p.id));
+    info(
+        ctx,
+        format!(
+            "Property #{} is tier {tier}. The next assessed period uses it.",
+            p.id
+        ),
+    );
     ctx.gate_on_durable_ack();
     Ok(())
 }
@@ -861,7 +945,10 @@ fn property_feature(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .add_feature(&key, ctx.actor)
         .map_err(|e| hidden(ctx, Some(&p), None, e.to_string()))?;
     put_property(ctx, next);
-    info(ctx, format!("Property #{}: feature \"{key}\" approved.", p.id));
+    info(
+        ctx,
+        format!("Property #{}: feature \"{key}\" approved.", p.id),
+    );
     ctx.gate_on_durable_ack();
     Ok(())
 }
@@ -875,9 +962,17 @@ fn property_feature(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 fn property_withdraw(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let p = property_of(ctx, ctx.args.lhs())?;
     if p.status == PropertyStatus::Withdrawn {
-        return Err(hidden(ctx, Some(&p), None, format!("Property #{} is already withdrawn.", p.id)));
+        return Err(hidden(
+            ctx,
+            Some(&p),
+            None,
+            format!("Property #{} is already withdrawn.", p.id),
+        ));
     }
-    let live = ctx.w.module_state::<HousingStore>().is_some_and(|s| s.has_live_tenancy(p.id));
+    let live = ctx
+        .w
+        .module_state::<HousingStore>()
+        .is_some_and(|s| s.has_live_tenancy(p.id));
     let mut next = p.clone();
     next.status = PropertyStatus::Withdrawn;
     next.revision = next.revision.saturating_add(1);
@@ -912,13 +1007,26 @@ fn property_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Ok(());
     }
     if !review.is_empty() && !is_staff(ctx.w, ctx.actor) {
-        info(ctx, under_review(&format!("Property #{} — \"{}\"", p.id, p.name)));
+        info(
+            ctx,
+            under_review(&format!("Property #{} — \"{}\"", p.id, p.name)),
+        );
         return Ok(());
     }
     let landlord = render_principal(ctx.w, &p.landlord);
     let rooms: Vec<String> = p.rooms.iter().map(|r| format!("#{}", r.0)).collect();
-    info(ctx, format!("Property #{} — \"{}\" [{:?}]", p.id, p.name, p.status));
-    info(ctx, format!("  landlord {landlord}  tier {}  anchor #{}", p.tier.get(), p.anchor.0));
+    info(
+        ctx,
+        format!("Property #{} — \"{}\" [{:?}]", p.id, p.name, p.status),
+    );
+    info(
+        ctx,
+        format!(
+            "  landlord {landlord}  tier {}  anchor #{}",
+            p.tier.get(),
+            p.anchor.0
+        ),
+    );
     info(ctx, format!("  rooms: {}", rooms.join(" ")));
     for line in review {
         info(ctx, line);
@@ -1017,22 +1125,35 @@ fn tenancy_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                          [inspect=<who>:<always|delinquent>] \
                          [mode=exact rent=<n> from=<acct> to=<acct>]";
     let p = property_of(ctx, ctx.args.lhs())?;
-    let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?.to_string();
+    let rhs = ctx
+        .args
+        .rhs()
+        .ok_or_else(|| CmdError::msg(USAGE))?
+        .to_string();
     // A7: `every=` was read by `offer_lease` and never collected here, so the key
     // fell through into the tenant list and the rent period silently stayed at the
     // default whatever anybody typed.
-    let (rest, opts) =
-        parse_opts(&rhs, &["cadence", "inspect", "mode", "rent", "from", "to", "every"]);
+    let (rest, opts) = parse_opts(
+        &rhs,
+        &["cadence", "inspect", "mode", "rent", "from", "to", "every"],
+    );
     if p.status == PropertyStatus::Withdrawn {
         return Err(hidden(
             ctx,
             Some(&p),
             None,
-            format!("Property #{} is withdrawn; put it back in service first.", p.id),
+            format!(
+                "Property #{} is withdrawn; put it back in service first.",
+                p.id
+            ),
         ));
     }
     // **One live tenancy per property** (E5a fold, handoff 1).
-    if ctx.w.module_state::<HousingStore>().is_some_and(|s| s.has_live_tenancy(p.id)) {
+    if ctx
+        .w
+        .module_state::<HousingStore>()
+        .is_some_and(|s| s.has_live_tenancy(p.id))
+    {
         return Err(hidden(
             ctx,
             Some(&p),
@@ -1048,7 +1169,9 @@ fn tenancy_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     for n in rest.split(',').map(str::trim).filter(|s| !s.is_empty()) {
         let who = match parse_id(n) {
             Some(v) => ObjId(u32::try_from(v).map_err(|_| CmdError::msg("No such player."))?),
-            None => match_object(ctx.w, ctx.actor, n).map_err(|_| CmdError::msg("No such player."))?,
+            None => {
+                match_object(ctx.w, ctx.actor, n).map_err(|_| CmdError::msg("No such player."))?
+            }
         };
         // E5a fold, handoff 2: the library takes any `ObjId`; a tenancy is for people.
         if !is_character(ctx.w, who) {
@@ -1073,9 +1196,13 @@ fn tenancy_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         })?;
     let terms = match opts.get("inspect") {
         None => AccessTerms::default(),
-        Some(spec) => AccessTerms { inspection: Some(parse_inspection(ctx, spec)?) },
+        Some(spec) => AccessTerms {
+            inspection: Some(parse_inspection(ctx, spec)?),
+        },
     };
-    let exact = opts.get("mode").is_some_and(|m| m.eq_ignore_ascii_case("exact"));
+    let exact = opts
+        .get("mode")
+        .is_some_and(|m| m.eq_ignore_ascii_case("exact"));
 
     if exact {
         let id = {
@@ -1091,12 +1218,17 @@ fn tenancy_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .map_err(|e| CmdError::msg(e.to_string()))?;
         t.terms = terms;
         let contract = offer_lease(ctx, &p, &t, &opts)?;
-        t.funding =
-            Funding::Exact { contract, obligation: crate::econ::PENDING_OBLIGATION };
+        t.funding = Funding::Exact {
+            contract,
+            obligation: crate::econ::PENDING_OBLIGATION,
+        };
         crate::flow::seed_assessment(ctx, &t);
         put_tenancy(ctx, t);
         crate::module::persist_meta(ctx);
-        info(ctx, format!("Tenancy #{id} drafted on lease contract #{contract}."));
+        info(
+            ctx,
+            format!("Tenancy #{id} drafted on lease contract #{contract}."),
+        );
         info(
             ctx,
             format!(
@@ -1114,7 +1246,14 @@ fn tenancy_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let id = crate::flow::create_tenancy(ctx, p.id, tenants.clone(), cadence, terms)
         .map_err(|e| hidden(ctx, Some(&p), None, e.to_string()))?;
     let who: Vec<String> = tenants.iter().map(|o| format!("#{}", o.0)).collect();
-    info(ctx, format!("Tenancy #{id} is active on property #{}: {}.", p.id, who.join(", ")));
+    info(
+        ctx,
+        format!(
+            "Tenancy #{id} is active on property #{}: {}.",
+            p.id,
+            who.join(", ")
+        ),
+    );
     info(
         ctx,
         "Their home anchor now points at the property. Assessment runs on the named cadence; \
@@ -1214,7 +1353,9 @@ fn offer_lease(
         },
     };
     mush_economy::offer_lease(ctx, spec).map_err(|e| {
-        CmdError::msg(format!("The lease could not be offered, so nothing was created: {e}"))
+        CmdError::msg(format!(
+            "The lease could not be offered, so nothing was created: {e}"
+        ))
     })
 }
 
@@ -1242,7 +1383,12 @@ fn parse_inspection(ctx: &Ctx<'_>, spec: &str) -> Result<InspectionTerm, CmdErro
 fn tenancy_resolve(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     const USAGE: &str = "Usage: @tenancy/resolve <id>=extend|scene|end|waive [reason]";
     let t = tenancy_of(ctx, ctx.args.lhs())?;
-    let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?.trim().to_string();
+    let rhs = ctx
+        .args
+        .rhs()
+        .ok_or_else(|| CmdError::msg(USAGE))?
+        .trim()
+        .to_string();
     let (verb, reason) = match rhs.split_once(char::is_whitespace) {
         Some((v, r)) => (v.to_ascii_lowercase(), r.trim().to_string()),
         None => (rhs.to_ascii_lowercase(), String::new()),
@@ -1292,7 +1438,10 @@ fn tenancy_resolve(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     next.id
                 ),
             );
-            info(ctx, format!("Tenancy #{}: the story window is extended.", t.id));
+            info(
+                ctx,
+                format!("Tenancy #{}: the story window is extended.", t.id),
+            );
         }
         "scene" => {
             // 08d §4's "optionally starts a scene, when the ST asks via the job".
@@ -1354,7 +1503,11 @@ fn tenancy_resolve(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 &format!(
                     "HOME: tenancy #{} has ended ({}). Your home anchor there is cleared.",
                     next.id,
-                    if verb == "waive" { "waived by staff" } else { "ended by staff" }
+                    if verb == "waive" {
+                        "waived by staff"
+                    } else {
+                        "ended by staff"
+                    }
                 ),
             );
             crate::flow::close_pending_job(ctx, &t, verb == "waive");
@@ -1384,7 +1537,14 @@ fn tenancy_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Ok(());
     }
     if !review.is_empty() && !is_staff(ctx.w, ctx.actor) {
-        info(ctx, under_review(&format!("Tenancy #{} — {}", t.id, property_name(ctx.w, t.property))));
+        info(
+            ctx,
+            under_review(&format!(
+                "Tenancy #{} — {}",
+                t.id,
+                property_name(ctx.w, t.property)
+            )),
+        );
         return Ok(());
     }
     for row in render_tenancy(ctx, &t) {
@@ -1402,7 +1562,14 @@ fn review_lines_for_property(w: &World, property: PropertyId) -> Vec<String> {
         .map(|s| {
             s.quarantine()
                 .filter(|c| c.properties.contains(&property))
-                .map(|c| format!("  UNDER REVIEW {}: {} — repair: {}", c.key, c.summary, c.repair.join(" · ")))
+                .map(|c| {
+                    format!(
+                        "  UNDER REVIEW {}: {} — repair: {}",
+                        c.key,
+                        c.summary,
+                        c.repair.join(" · ")
+                    )
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -1414,7 +1581,14 @@ fn review_lines_for_tenancy(w: &World, tenancy: TenancyId) -> Vec<String> {
         .map(|s| {
             s.quarantine()
                 .filter(|c| c.tenancies.contains(&tenancy))
-                .map(|c| format!("  UNDER REVIEW {}: {} — repair: {}", c.key, c.summary, c.repair.join(" · ")))
+                .map(|c| {
+                    format!(
+                        "  UNDER REVIEW {}: {} — repair: {}",
+                        c.key,
+                        c.summary,
+                        c.repair.join(" · ")
+                    )
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -1422,7 +1596,10 @@ fn review_lines_for_tenancy(w: &World, tenancy: TenancyId) -> Vec<String> {
 
 fn tenancy_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (_, opts) = parse_opts(ctx.args.raw(), &["property"]);
-    let filter = opts.get("property").and_then(|s| parse_id(s)).map(PropertyId);
+    let filter = opts
+        .get("property")
+        .and_then(|s| parse_id(s))
+        .map(PropertyId);
     let rows: Vec<String> = ctx
         .w
         .module_state::<HousingStore>()
@@ -1476,12 +1653,17 @@ fn property_name(w: &World, property: PropertyId) -> String {
 /// The **assessment word** for an abstract tenancy: what the ladder makes of the
 /// residents' plans this period, and nothing about where the number came from
 /// (fold A2).
-fn assessment_word(w: &World, t: &Tenancy, plans: &BTreeMap<ObjId, crate::SupportPlan>) -> &'static str {
+fn assessment_word(
+    w: &World,
+    t: &Tenancy,
+    plans: &BTreeMap<ObjId, crate::SupportPlan>,
+) -> &'static str {
     let (tier, period) = w.module_state::<HousingStore>().map_or_else(
         || (crate::PropertyTier::default(), 0),
         |s| {
             (
-                s.property(t.property).map_or_else(crate::PropertyTier::default, |p| p.tier),
+                s.property(t.property)
+                    .map_or_else(crate::PropertyTier::default, |p| p.tier),
                 s.assess_state(t.id).period,
             )
         },
@@ -1503,14 +1685,22 @@ fn render_tenancy(ctx: &Ctx<'_>, t: &Tenancy) -> Vec<String> {
     let who: Vec<String> = t
         .tenants
         .iter()
-        .map(|o| ctx.w.get(*o).map_or_else(|| format!("#{}", o.0), |x| x.name.clone()))
+        .map(|o| {
+            ctx.w
+                .get(*o)
+                .map_or_else(|| format!("#{}", o.0), |x| x.name.clone())
+        })
         .collect();
     out.push(format!("  tenants: {}", who.join(", ")));
     if !t.guests.is_empty() {
         let g: Vec<String> = t
             .guests
             .iter()
-            .map(|o| ctx.w.get(*o).map_or_else(|| format!("#{}", o.0), |x| x.name.clone()))
+            .map(|o| {
+                ctx.w
+                    .get(*o)
+                    .map_or_else(|| format!("#{}", o.0), |x| x.name.clone())
+            })
             .collect();
         out.push(format!("  guests: {}", g.join(", ")));
     }
@@ -1539,9 +1729,14 @@ fn render_tenancy(ctx: &Ctx<'_>, t: &Tenancy) -> Vec<String> {
                 ));
             }
         }
-        Funding::Exact { contract, obligation } => {
+        Funding::Exact {
+            contract,
+            obligation,
+        } => {
             if crate::econ::is_pending_lease(&t.funding) {
-                out.push(format!("  funding: exact · lease contract #{contract} (not yet accepted)"));
+                out.push(format!(
+                    "  funding: exact · lease contract #{contract} (not yet accepted)"
+                ));
             } else {
                 out.push(format!(
                     "  funding: exact · contract #{contract} · rent obligation #{obligation}"
@@ -1565,8 +1760,12 @@ fn render_tenancy(ctx: &Ctx<'_>, t: &Tenancy) -> Vec<String> {
             window.opened,
             window.notified,
             crate::MAX_WINDOW_NOTICES,
-            window.job.map_or_else(|| "—".to_string(), |j| format!("#{j}")),
-            window.escalation.map_or_else(|| "—".to_string(), |e| format!("#{e}"))
+            window
+                .job
+                .map_or_else(|| "—".to_string(), |j| format!("#{j}")),
+            window
+                .escalation
+                .map_or_else(|| "—".to_string(), |e| format!("#{e}"))
         ));
         out.push(format!(
             "  @tenancy/resolve {}=extend | end | waive — nothing else will happen on its own",
@@ -1599,19 +1798,39 @@ fn cmd_home(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .module_state::<HousingStore>()
         .map(|s| {
             (
-                s.tenancies().filter(|t| t.status.is_live() && t.is_tenant(me)).cloned().collect(),
-                s.tenancies().filter(|t| t.status.is_live() && t.is_guest(me)).cloned().collect(),
+                s.tenancies()
+                    .filter(|t| t.status.is_live() && t.is_tenant(me))
+                    .cloned()
+                    .collect(),
+                s.tenancies()
+                    .filter(|t| t.status.is_live() && t.is_guest(me))
+                    .cloned()
+                    .collect(),
             )
         })
         .unwrap_or_default();
     if tenant.is_empty() && guest.is_empty() {
-        info(ctx, "You have no home and no standing invitation.".to_string());
+        info(
+            ctx,
+            "You have no home and no standing invitation.".to_string(),
+        );
         return Ok(());
     }
     for t in &tenant {
         // Look-back fold, D-LBK-1: a home under review reads as exactly that.
-        if ctx.w.module_state::<HousingStore>().is_some_and(|s| s.is_quarantined_tenancy(t.id)) {
-            info(ctx, under_review(&format!("Tenancy #{} — {}", t.id, property_name(ctx.w, t.property))));
+        if ctx
+            .w
+            .module_state::<HousingStore>()
+            .is_some_and(|s| s.is_quarantined_tenancy(t.id))
+        {
+            info(
+                ctx,
+                under_review(&format!(
+                    "Tenancy #{} — {}",
+                    t.id,
+                    property_name(ctx.w, t.property)
+                )),
+            );
             continue;
         }
         for row in render_tenancy(ctx, t) {
@@ -1631,7 +1850,11 @@ fn cmd_home(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // and nothing at all about a home under review (D-LBK-1: the hidden text, which
     // on this list is no line).
     for t in &guest {
-        if ctx.w.module_state::<HousingStore>().is_some_and(|s| s.is_quarantined_tenancy(t.id)) {
+        if ctx
+            .w
+            .module_state::<HousingStore>()
+            .is_some_and(|s| s.is_quarantined_tenancy(t.id))
+        {
             continue;
         }
         let name = property_name(ctx.w, t.property);
@@ -1660,7 +1883,10 @@ fn my_tenancy(ctx: &Ctx<'_>, named: Option<&str>, none: &str) -> Result<Tenancy,
         let id = parse_id(arg).map(TenancyId).ok_or_else(hidden_tenancy)?;
         // Existence hiding: naming somebody *else's* tenancy answers exactly as a
         // nonexistent one does.
-        return mine.into_iter().find(|t| t.id == id).ok_or_else(hidden_tenancy);
+        return mine
+            .into_iter()
+            .find(|t| t.id == id)
+            .ok_or_else(hidden_tenancy);
     }
     match mine.len() {
         0 => Err(CmdError::msg(none.to_string())),
@@ -1687,7 +1913,10 @@ fn my_tenancy(ctx: &Ctx<'_>, named: Option<&str>, none: &str) -> Result<Tenancy,
 /// dispersal — which honours no hook — would have dropped them in Limbo instead of
 /// the house they still live in.
 fn drop_home_here(ctx: &mut Ctx<'_>, who: ObjId, t: &Tenancy) {
-    let Some(p) = ctx.w.module_state::<HousingStore>().and_then(|s| s.property(t.property).cloned())
+    let Some(p) = ctx
+        .w
+        .module_state::<HousingStore>()
+        .and_then(|s| s.property(t.property).cloned())
     else {
         return;
     };
@@ -1724,13 +1953,21 @@ fn home_leave(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // library refuses to remove the last tenant precisely so that "everybody left"
     // still goes through an explicit resolution.
     if t.tenants.len() > 1 {
-        let next = t.remove_tenant(me, now).map_err(|e| CmdError::msg(e.to_string()))?;
+        let next = t
+            .remove_tenant(me, now)
+            .map_err(|e| CmdError::msg(e.to_string()))?;
         put_tenancy(ctx, next);
         // Their own home pointer is theirs to drop — but only the one that points
         // *here* (H3); the tenancy's `homed` set keeps the record of what housing
         // set, and the ending sweep is what clears it (E5a fold A1).
         drop_home_here(ctx, me, &t);
-        info(ctx, format!("You have moved out of tenancy #{}. Your co-tenants stay.", t.id));
+        info(
+            ctx,
+            format!(
+                "You have moved out of tenancy #{}. Your co-tenants stay.",
+                t.id
+            ),
+        );
         ctx.gate_on_durable_ack();
         return Ok(());
     }
@@ -1738,14 +1975,19 @@ fn home_leave(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .map_err(|e| CmdError::msg(e.to_string()))?;
     crate::flow::close_pending_job(ctx, &t, false);
     crate::flow::commit(ctx, before, next);
-    info(ctx, format!("You have moved out. Tenancy #{} is ended and your home is cleared.", t.id));
+    info(
+        ctx,
+        format!(
+            "You have moved out. Tenancy #{} is ended and your home is cleared.",
+            t.id
+        ),
+    );
     ctx.gate_on_durable_ack();
     Ok(())
 }
 
 fn cmd_guest(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    const USAGE: &str =
-        "Usage: +guest [home=<tenancy>]  |  +guest add <who> [home=<tenancy>]  |  \
+    const USAGE: &str = "Usage: +guest [home=<tenancy>]  |  +guest add <who> [home=<tenancy>]  |  \
          +guest remove <who> [home=<tenancy>]";
     let me = ctx.actor;
     // Both spellings: the switch form and the bare word the help prints. `home=` is
@@ -1771,12 +2013,17 @@ fn cmd_guest(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let g: Vec<String> = t
             .guests
             .iter()
-            .map(|o| ctx.w.get(*o).map_or_else(|| format!("#{}", o.0), |x| x.name.clone()))
+            .map(|o| {
+                ctx.w
+                    .get(*o)
+                    .map_or_else(|| format!("#{}", o.0), |x| x.name.clone())
+            })
             .collect();
         emit_list(ctx, g, "You have let nobody in.");
         return Ok(());
     }
-    let who = match_object(ctx.w, me, target.trim()).map_err(|_| CmdError::msg("No such player."))?;
+    let who =
+        match_object(ctx.w, me, target.trim()).map_err(|_| CmdError::msg("No such player."))?;
     match verb.as_str() {
         "add" => {
             // E5a fold, handoff 2.
@@ -1789,7 +2036,10 @@ fn cmd_guest(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             crate::notice::notify(
                 ctx,
                 who,
-                format!("HOME: you have been made a guest of {}.", property_name(ctx.w, t.property)),
+                format!(
+                    "HOME: you have been made a guest of {}.",
+                    property_name(ctx.w, t.property)
+                ),
             );
         }
         "remove" => {

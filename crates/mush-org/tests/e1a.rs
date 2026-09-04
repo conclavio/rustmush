@@ -1075,49 +1075,93 @@ fn policy_replace_moving_orgs_leaves_the_old_org() {
 #[test]
 fn a_retired_scope_confers_no_authority() {
     let mut s = two_orgs();
-    s = apply(&s, vec![OrgMutationOp::PutGrant {
-        grant: grant(1, 1, 100, "economy.account.post", ScopeSelector::SubtreeLive(OrgScopeId(10)), false),
-    }]);
-    assert!(mush_org::authorize(&s, &req(100, "economy.account.post", 11, 0), &NoPredicates).is_allow());
+    s = apply(
+        &s,
+        vec![OrgMutationOp::PutGrant {
+            grant: grant(
+                1,
+                1,
+                100,
+                "economy.account.post",
+                ScopeSelector::SubtreeLive(OrgScopeId(10)),
+                false,
+            ),
+        }],
+    );
+    assert!(
+        mush_org::authorize(&s, &req(100, "economy.account.post", 11, 0), &NoPredicates).is_allow()
+    );
 
     // Retiring the child kills authority ON it while leaving the rest of the tree
     // (and the grant record itself) untouched — retire is never a delete.
-    s = apply(&s, vec![OrgMutationOp::RetireScope { scope: OrgScopeId(11) }]);
+    s = apply(
+        &s,
+        vec![OrgMutationOp::RetireScope {
+            scope: OrgScopeId(11),
+        }],
+    );
     assert_eq!(
         mush_org::authorize(&s, &req(100, "economy.account.post", 11, 0), &NoPredicates),
         Decision::Deny(DenyReason::Inactive)
     );
-    assert!(mush_org::authorize(&s, &req(100, "economy.account.post", 10, 0), &NoPredicates).is_allow());
-    assert!(s.grant(mush_org::GrantId(1)).is_some(), "retire deleted the grant");
-    assert_eq!(s.scope(OrgScopeId(11)).expect("kept").status, ScopeStatus::Retired);
+    assert!(
+        mush_org::authorize(&s, &req(100, "economy.account.post", 10, 0), &NoPredicates).is_allow()
+    );
+    assert!(
+        s.grant(mush_org::GrantId(1)).is_some(),
+        "retire deleted the grant"
+    );
+    assert_eq!(
+        s.scope(OrgScopeId(11)).expect("kept").status,
+        ScopeStatus::Retired
+    );
 }
 
 #[test]
 fn a_non_active_org_confers_no_authority_on_any_scope() {
     let mut s = two_orgs();
-    s = apply(&s, vec![OrgMutationOp::PutGrant {
-        grant: grant(1, 1, 100, "economy.account.post", ScopeSelector::SubtreeLive(OrgScopeId(10)), false),
-    }]);
+    s = apply(
+        &s,
+        vec![OrgMutationOp::PutGrant {
+            grant: grant(
+                1,
+                1,
+                100,
+                "economy.account.post",
+                ScopeSelector::SubtreeLive(OrgScopeId(10)),
+                false,
+            ),
+        }],
+    );
     // A policy Allow must not out-vote the org status either.
-    s = apply(&s, vec![OrgMutationOp::PutPolicy {
-        policy: AccessPolicy {
-            id: mush_org::PolicyId(1),
-            org: OrgId(1),
-            owner: PrincipalId::Organization(OrgId(1)),
-            rules: vec![PolicyRule {
-                effect: PolicyEffect::Allow,
-                subject: PolicySubject::Principal(PrincipalId::Object(ObjId(100))),
-                capability: cap("economy.account.post"),
-                scope: ScopeSelector::SubtreeLive(OrgScopeId(10)),
-                conditions: vec![],
-            }],
-            default: PolicyEffect::Deny,
-            revision: 1,
-        },
-    }]);
-    assert!(mush_org::authorize(&s, &req(100, "economy.account.post", 11, 0), &NoPredicates).is_allow());
+    s = apply(
+        &s,
+        vec![OrgMutationOp::PutPolicy {
+            policy: AccessPolicy {
+                id: mush_org::PolicyId(1),
+                org: OrgId(1),
+                owner: PrincipalId::Organization(OrgId(1)),
+                rules: vec![PolicyRule {
+                    effect: PolicyEffect::Allow,
+                    subject: PolicySubject::Principal(PrincipalId::Object(ObjId(100))),
+                    capability: cap("economy.account.post"),
+                    scope: ScopeSelector::SubtreeLive(OrgScopeId(10)),
+                    conditions: vec![],
+                }],
+                default: PolicyEffect::Deny,
+                revision: 1,
+            },
+        }],
+    );
+    assert!(
+        mush_org::authorize(&s, &req(100, "economy.account.post", 11, 0), &NoPredicates).is_allow()
+    );
 
-    for status in [OrgStatus::Suspended, OrgStatus::Dissolving, OrgStatus::Closed] {
+    for status in [
+        OrgStatus::Suspended,
+        OrgStatus::Dissolving,
+        OrgStatus::Closed,
+    ] {
         let mut org = s.org(OrgId(1)).expect("org").clone();
         org.status = status;
         // `put_org` is crate-private; go through the plan alphabet (CreateOrg would
@@ -1125,15 +1169,31 @@ fn a_non_active_org_confers_no_authority_on_any_scope() {
         let mut wound = OrgState::new();
         let mut root = scope_rec(10, 1, None, 0, 1);
         root.status = ScopeStatus::Active;
-        wound = apply(&wound, vec![
-            OrgMutationOp::CreateOrg { org, root },
-            OrgMutationOp::CreateScope { scope: scope_rec(11, 1, Some(10), 1, 1) },
-            OrgMutationOp::PutGrant {
-                grant: grant(1, 1, 100, "economy.account.post", ScopeSelector::SubtreeLive(OrgScopeId(10)), false),
-            },
-        ]);
+        wound = apply(
+            &wound,
+            vec![
+                OrgMutationOp::CreateOrg { org, root },
+                OrgMutationOp::CreateScope {
+                    scope: scope_rec(11, 1, Some(10), 1, 1),
+                },
+                OrgMutationOp::PutGrant {
+                    grant: grant(
+                        1,
+                        1,
+                        100,
+                        "economy.account.post",
+                        ScopeSelector::SubtreeLive(OrgScopeId(10)),
+                        false,
+                    ),
+                },
+            ],
+        );
         assert_eq!(
-            mush_org::authorize(&wound, &req(100, "economy.account.post", 11, 0), &NoPredicates),
+            mush_org::authorize(
+                &wound,
+                &req(100, "economy.account.post", 11, 0),
+                &NoPredicates
+            ),
             Decision::Deny(DenyReason::Inactive),
             "{status:?} org still authorized"
         );
@@ -1143,16 +1203,23 @@ fn a_non_active_org_confers_no_authority_on_any_scope() {
 #[test]
 fn retire_refuses_a_root_scope_and_a_missing_one() {
     let s = two_orgs();
-    let e = OrgMutationPlan::of(vec![OrgMutationOp::RetireScope { scope: OrgScopeId(10) }])
-        .apply(&s)
-        .expect_err("a root scope must not retire");
+    let e = OrgMutationPlan::of(vec![OrgMutationOp::RetireScope {
+        scope: OrgScopeId(10),
+    }])
+    .apply(&s)
+    .expect_err("a root scope must not retire");
     assert!(matches!(e, OrgError::Invalid(_)), "{e:?}");
-    let e = OrgMutationPlan::of(vec![OrgMutationOp::RetireScope { scope: OrgScopeId(999) }])
-        .apply(&s)
-        .expect_err("a missing scope must not retire");
+    let e = OrgMutationPlan::of(vec![OrgMutationOp::RetireScope {
+        scope: OrgScopeId(999),
+    }])
+    .apply(&s)
+    .expect_err("a missing scope must not retire");
     assert!(matches!(e, OrgError::NotFound(_)), "{e:?}");
     // ...and the refusal left the state alone.
-    assert_eq!(s.scope(OrgScopeId(10)).expect("root").status, ScopeStatus::Active);
+    assert_eq!(
+        s.scope(OrgScopeId(10)).expect("root").status,
+        ScopeStatus::Active
+    );
 }
 
 #[test]
@@ -1161,18 +1228,27 @@ fn scope_creation_stops_at_the_per_org_cap() {
     // org 1 already holds 2 scopes (root 10 + child 11); fill to the cap.
     let mut next = 100u64;
     for _ in 2..mush_org::MAX_SCOPES_PER_ORG {
-        s = apply(&s, vec![OrgMutationOp::CreateScope { scope: scope_rec(next, 1, Some(10), 1, 1) }]);
+        s = apply(
+            &s,
+            vec![OrgMutationOp::CreateScope {
+                scope: scope_rec(next, 1, Some(10), 1, 1),
+            }],
+        );
         next += 1;
     }
     assert_eq!(s.scopes_in(OrgId(1)).count(), mush_org::MAX_SCOPES_PER_ORG);
-    let e = OrgMutationPlan::of(vec![OrgMutationOp::CreateScope { scope: scope_rec(next, 1, Some(10), 1, 1) }])
-        .apply(&s)
-        .expect_err("the cap must refuse");
+    let e = OrgMutationPlan::of(vec![OrgMutationOp::CreateScope {
+        scope: scope_rec(next, 1, Some(10), 1, 1),
+    }])
+    .apply(&s)
+    .expect_err("the cap must refuse");
     assert_eq!(e, OrgError::TooManyScopes);
     // The other org is unaffected — the cap is per organization.
     assert!(
-        OrgMutationPlan::of(vec![OrgMutationOp::CreateScope { scope: scope_rec(next, 2, Some(20), 1, 1) }])
-            .apply(&s)
-            .is_ok()
+        OrgMutationPlan::of(vec![OrgMutationOp::CreateScope {
+            scope: scope_rec(next, 2, Some(20), 1, 1)
+        }])
+        .apply(&s)
+        .is_ok()
     );
 }

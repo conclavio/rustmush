@@ -86,8 +86,8 @@ pub use record::{
     AccessTerms, Feature, Funding, InspectionTerm, InspectionWhen, MAX_FEATURE_KEY_BYTES,
     MAX_FEATURES, MAX_GUESTS, MAX_LEVEL, MAX_PLAN_SOURCES, MAX_PROPERTY_NAME_BYTES,
     MAX_REASON_BYTES, MAX_ROOMS_PER_PROPERTY, MAX_TENANCY_HISTORY, MAX_TENANTS, Property,
-    PropertyStatus, PropertyTier, Resolution, StoryWindow, SupportLevel, SupportPlan, SupportSource,
-    Tenancy, TenancyEvent, TenancyStatus, TenancyStatusKind, submit_plan,
+    PropertyStatus, PropertyTier, Resolution, StoryWindow, SupportLevel, SupportPlan,
+    SupportSource, Tenancy, TenancyEvent, TenancyStatus, TenancyStatusKind, submit_plan,
 };
 pub use tenancy::{
     DELINQUENT_PERIODS, GRACE_PERIODS, MAX_WINDOW_NOTICES, RELAPSE_WINDOW_PERIODS, WINDOW_ESCALATE,
@@ -97,11 +97,11 @@ pub use tenancy::{
 };
 
 // E5b — the module surface.
+pub use commands::officer_of;
 pub use commands::{
     LIST_CAP, NO_SUCH_PROPERTY, NO_SUCH_TENANCY, may_view_property, may_view_tenancy,
 };
 pub use econ::{BindEdge, HousingEconomyObserver, PENDING_OBLIGATION};
-pub use commands::officer_of;
 pub use flow::{create_tenancy, submit_support_plan};
 pub use hooks::{NO_DESTROY, REFUSED, REFUSED_CARRY, may_reach};
 pub use module::{

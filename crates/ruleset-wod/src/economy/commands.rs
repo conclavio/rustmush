@@ -53,11 +53,15 @@ fn require_staff(ctx: &Ctx<'_>) -> Result<(), CmdError> {
 
 /// The layer's own "is this on at all" gate. `off` shows nothing, per §5.1.
 fn config(ctx: &Ctx<'_>) -> Option<crate::economy::WodEconomyConfig> {
-    ctx.w.module_state::<WodEconomyStore>().map(|s| s.config().clone())
+    ctx.w
+        .module_state::<WodEconomyStore>()
+        .map(|s| s.config().clone())
 }
 
 fn profile_of(ctx: &Ctx<'_>, who: ObjId) -> Option<SpendingProfile> {
-    ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.profile(who).cloned())
+    ctx.w
+        .module_state::<WodEconomyStore>()
+        .and_then(|s| s.profile(who).cloned())
 }
 
 /// The cadence position, for a stamp. Zero when no clock resolves — a stamp is a
@@ -82,11 +86,20 @@ fn housing_word(ctx: &Ctx<'_>, who: ObjId) -> Option<&'static str> {
     let store = ctx.w.module_state::<HousingStore>()?;
     let t = store.live_tenancies_of_tenant(who).next()?;
     let plans = t.funding.plans()?;
-    let tier = store.property(t.property).map(|p| p.tier).unwrap_or_default();
+    let tier = store
+        .property(t.property)
+        .map(|p| p.tier)
+        .unwrap_or_default();
     let period = store.assess_state(t.id).period;
     Some(
-        mush_housing::assess_at(tier, plans, &t.tenants, period, mush_housing::PLAN_MAX_AGE_PERIODS)
-            .label(),
+        mush_housing::assess_at(
+            tier,
+            plans,
+            &t.tenants,
+            period,
+            mush_housing::PLAN_MAX_AGE_PERIODS,
+        )
+        .label(),
     )
 }
 
@@ -99,14 +112,18 @@ fn career_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("The WoD economy is not loaded."));
     };
     if !cfg.personal_mode.is_on() {
-        return Err(CmdError::msg("This game does not run the WoD career layer."));
+        return Err(CmdError::msg(
+            "This game does not run the WoD career layer.",
+        ));
     }
     // `careers = false` switches the career layer off, and that has to include the
     // player verbs that drive it (E5c fold D2): a stance on a careers-off server would
     // still have bought a support tier through `level_delta`. Same wording as the
     // off-mode gate — the two refusals are the same refusal.
     if !cfg.careers && (ctx.switches.has("stance") || ctx.switches.has("engage")) {
-        return Err(CmdError::msg("This game does not run the WoD career layer."));
+        return Err(CmdError::msg(
+            "This game does not run the WoD career layer.",
+        ));
     }
     if ctx.switches.has("stance") {
         return set_stance(ctx);
@@ -150,7 +167,10 @@ fn show_career(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 c.risk
             ));
             if let Some(next) = c.pending_stance {
-                lines.push(format!("  stance {} takes effect next period.", next.label()));
+                lines.push(format!(
+                    "  stance {} takes effect next period.",
+                    next.label()
+                ));
             }
             match &c.front {
                 None => lines.push(
@@ -160,7 +180,10 @@ fn show_career(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 Some(f) => lines.push(format!("  front: {}", prompt::render_front(ctx, me, f))),
             }
             if let Some(e) = &c.employer {
-                lines.push(format!("  employer: {}", mush_housing::render_principal(ctx.w, e)));
+                lines.push(format!(
+                    "  employer: {}",
+                    mush_housing::render_principal(ctx.w, e)
+                ));
             }
         }
     }
@@ -172,7 +195,11 @@ fn show_career(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         lines.push(format!(
             "  haven ({} dot(s)): {}",
             h.dots,
-            h.qualities.iter().map(smol_str::SmolStr::as_str).collect::<Vec<_>>().join(", ")
+            h.qualities
+                .iter()
+                .map(smol_str::SmolStr::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     if p.prompt.is_some() {
@@ -188,15 +215,17 @@ fn show_career(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// boundary (D-E5-6), never the current one.
 fn set_stance(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let me = ctx.actor;
-    let want = Stance::parse(ctx.args.raw()).ok_or_else(|| {
-        CmdError::msg("Usage: +career/stance <coast|advance|exploit|conceal>")
-    })?;
+    let want = Stance::parse(ctx.args.raw())
+        .ok_or_else(|| CmdError::msg("Usage: +career/stance <coast|advance|exploit|conceal>"))?;
     let mut p = profile_of(ctx, me).ok_or_else(|| CmdError::msg("You have no support profile."))?;
     let Some(c) = p.career_mut() else {
         return Err(CmdError::msg("You have no career to take a stance in."));
     };
     if c.stance == want && c.pending_stance.is_none() {
-        return Err(CmdError::msg(format!("You are already coasting on {}.", want.label())));
+        return Err(CmdError::msg(format!(
+            "You are already coasting on {}.",
+            want.label()
+        )));
     }
     c.pending_stance = Some(want);
     let at = now(ctx);
@@ -223,15 +252,18 @@ fn set_engagement(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     p.engagement = want;
     p.revision = p.revision.saturating_add(1);
     put_profile(ctx, p);
-    ctx.out.info(me, match want {
-        crate::economy::Engagement::Engaged => {
-            "Engaged: your career will bring you things to decide."
-        }
-        crate::economy::Engagement::Ambient => {
-            "Ambient: your career runs quietly. It still supports your home and still costs \
+    ctx.out.info(
+        me,
+        match want {
+            crate::economy::Engagement::Engaged => {
+                "Engaged: your career will bring you things to decide."
+            }
+            crate::economy::Engagement::Ambient => {
+                "Ambient: your career runs quietly. It still supports your home and still costs \
              you strain; it simply will not ask."
-        }
-    });
+            }
+        },
+    );
     Ok(())
 }
 
@@ -245,7 +277,9 @@ fn edit_source(ctx: &mut Ctx<'_>, careers: bool) -> Result<(), CmdError> {
                          patron=<who>|domain=<org id>>  /  +career/source remove <kind>";
     let me = ctx.actor;
     let raw = ctx.args.raw().trim().to_string();
-    let (verb, rest) = raw.split_once(char::is_whitespace).unwrap_or((raw.as_str(), ""));
+    let (verb, rest) = raw
+        .split_once(char::is_whitespace)
+        .unwrap_or((raw.as_str(), ""));
     let rest = rest.trim();
     let mut p = profile_of(ctx, me).ok_or_else(|| CmdError::msg("You have no support profile."))?;
     let at = now(ctx);
@@ -270,7 +304,9 @@ fn edit_source(ctx: &mut Ctx<'_>, careers: bool) -> Result<(), CmdError> {
                 "patron" => {
                     let who = match_object(ctx.w, me, value.trim())
                         .map_err(|_| CmdError::msg("No such person."))?;
-                    SupportSource::Patron { who: PrincipalId::Object(who) }
+                    SupportSource::Patron {
+                        who: PrincipalId::Object(who),
+                    }
                 }
                 "domain" => {
                     // **An id, and no org-existence check** (E5c fold D5). This verb
@@ -286,9 +322,7 @@ fn edit_source(ctx: &mut Ctx<'_>, careers: bool) -> Result<(), CmdError> {
                         .trim()
                         .trim_start_matches('#')
                         .parse::<u64>()
-                        .map_err(|_| {
-                            CmdError::msg("A domain needs an org id: domain=<org id>.")
-                        })?;
+                        .map_err(|_| CmdError::msg("A domain needs an org id: domain=<org id>."))?;
                     SupportSource::Domain { org: OrgId(id) }
                 }
                 // `Dependent` is reserved (D-E5-10) and nothing constructs it.
@@ -305,7 +339,10 @@ fn edit_source(ctx: &mut Ctx<'_>, careers: bool) -> Result<(), CmdError> {
             p.note(at, format!("source added: {label}"));
             p.revision = p.revision.saturating_add(1);
             put_profile(ctx, p);
-            ctx.out.info(me, format!("Added {label}. It counts from the next period."));
+            ctx.out.info(
+                me,
+                format!("Added {label}. It counts from the next period."),
+            );
             Ok(())
         }
         "remove" | "rem" | "del" => {
@@ -334,7 +371,9 @@ fn prompt_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("The WoD economy is not loaded."));
     };
     if !cfg.personal_mode.is_on() {
-        return Err(CmdError::msg("This game does not run the WoD career layer."));
+        return Err(CmdError::msg(
+            "This game does not run the WoD career layer.",
+        ));
     }
     let choice = ctx.args.raw().trim().to_string();
     if !choice.is_empty() {
@@ -359,7 +398,10 @@ fn prompt_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             format!("An opportunity — {}", prompt::render_front(ctx, me, front))
         }
         crate::economy::PromptKind::Advancement { front } => {
-            format!("A chance to move up — {}", prompt::render_front(ctx, me, front))
+            format!(
+                "A chance to move up — {}",
+                prompt::render_front(ctx, me, front)
+            )
         }
         crate::economy::PromptKind::HousingPressure { tenancy } => {
             format!("Your home (tenancy #{tenancy}) is behind.")
@@ -373,7 +415,8 @@ fn prompt_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // refuses more on the way in, and the render is bounded by the same number
     // regardless of what carried it here.
     for o in prompt.options.iter().take(MAX_PROMPT_OPTIONS) {
-        ctx.out.sys_to_actor(me, "wod", format!("  +prompt {}  --  {}", o.key, o.label));
+        ctx.out
+            .sys_to_actor(me, "wod", format!("  +prompt {}  --  {}", o.key, o.label));
     }
     // **The time actually left, from this character's own evaluation ordinal** (E5c
     // fold T6). Interpolating `expires_after_periods` — a write-once constant — made
@@ -382,7 +425,10 @@ fn prompt_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // the time left is the one number a player needs in order to choose it
     // deliberately. This is the first player-facing read of `EvalState::period`
     // outside the tick; any later view quoting a deadline reads the same ordinal.
-    let period = ctx.w.module_state::<WodEconomyStore>().map_or(0, |s| s.eval_state(me).period);
+    let period = ctx
+        .w
+        .module_state::<WodEconomyStore>()
+        .map_or(0, |s| s.eval_state(me).period);
     let left = u64::from(prompt.expires_after_periods)
         .saturating_sub(period.saturating_sub(prompt.opened_period));
     let lapse = if left <= 1 {
@@ -412,15 +458,16 @@ fn resources_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("The WoD economy is not loaded."));
     };
     if !cfg.personal_mode.is_on() {
-        return Err(CmdError::msg("This game does not track personal resources."));
+        return Err(CmdError::msg(
+            "This game does not track personal resources.",
+        ));
     }
     // A staffer may look at somebody else; anyone else sees their own.
     let target = match ctx.args.raw().trim() {
         "" => me,
         name => {
             require_staff(ctx)?;
-            match_object(ctx.w, me, name)
-                .map_err(|_| CmdError::msg("No such person."))?
+            match_object(ctx.w, me, name).map_err(|_| CmdError::msg("No such person."))?
         }
     };
     let Some(p) = profile_of(ctx, target) else {
@@ -447,10 +494,12 @@ fn resources_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     );
     if !p.sources.is_empty() {
         let words: Vec<String> = p.sources.iter().map(SupportSource::label).collect();
-        ctx.out.sys_to_actor(me, "wod", format!("  sources: {}", words.join(", ")));
+        ctx.out
+            .sys_to_actor(me, "wod", format!("  sources: {}", words.join(", ")));
     }
     if let Some(word) = housing_word(ctx, target) {
-        ctx.out.sys_to_actor(me, "wod", format!("  your home assesses: {word}"));
+        ctx.out
+            .sys_to_actor(me, "wod", format!("  your home assesses: {word}"));
     }
     // Exact mode only, and only through the economy's own view rule. In abstract
     // mode the account is **hidden**, not zeroed — the balance persists untouched.
@@ -469,7 +518,10 @@ fn resources_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 fn balance_line(ctx: &Ctx<'_>, account: mush_economy::AccountId) -> Option<String> {
     let store = ctx.w.module_state::<EconomyStore>()?;
     let a = store.snapshot().account(account)?;
-    let scale = store.snapshot().instrument(&a.instrument).map_or(WOD_USD_SCALE, |i| i.scale);
+    let scale = store
+        .snapshot()
+        .instrument(&a.instrument)
+        .map_or(WOD_USD_SCALE, |i| i.scale);
     Some(format!(
         "  account #{account} ({}): {}",
         a.instrument.as_str(),
@@ -501,7 +553,8 @@ fn wod_cmd(dispatch: &Dispatch, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             return Err(CmdError::msg("Usage: @wod/economy [migrate]"));
         }
         let report = crate::economy::migrate::run(ctx, &cfg, dispatch);
-        ctx.out.sys_to_actor(ctx.actor, "wod", "@wod/economy migrate:");
+        ctx.out
+            .sys_to_actor(ctx.actor, "wod", "@wod/economy migrate:");
         for l in report.lines() {
             ctx.out.sys_to_actor(ctx.actor, "wod", l);
         }
@@ -512,26 +565,48 @@ fn wod_cmd(dispatch: &Dispatch, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (cadence, created, instrument, profiles) = ctx
         .w
         .module_state::<WodEconomyStore>()
-        .map(|s| (s.cadence(), s.cadence_created(), s.instrument().cloned(), s.profiles().count()))
+        .map(|s| {
+            (
+                s.cadence(),
+                s.cadence_created(),
+                s.instrument().cloned(),
+                s.profiles().count(),
+            )
+        })
         .unwrap_or((None, false, None, 0));
-    ctx.out.sys_to_actor(me, "wod", "[wod.economy] as this server is running it:");
-    ctx.out.sys_to_actor(me, "wod", format!("  personal_mode      {}", cfg.personal_mode.label()));
-    ctx.out.sys_to_actor(me, "wod", format!("  housing            {}", cfg.housing));
-    ctx.out.sys_to_actor(me, "wod", format!("  careers            {}", cfg.careers));
+    ctx.out
+        .sys_to_actor(me, "wod", "[wod.economy] as this server is running it:");
+    ctx.out.sys_to_actor(
+        me,
+        "wod",
+        format!("  personal_mode      {}", cfg.personal_mode.label()),
+    );
+    ctx.out
+        .sys_to_actor(me, "wod", format!("  housing            {}", cfg.housing));
+    ctx.out
+        .sys_to_actor(me, "wod", format!("  careers            {}", cfg.careers));
     ctx.out.sys_to_actor(
         me,
         "wod",
         format!("  default_engagement {}", cfg.default_engagement.label()),
     );
     let clock = match cadence {
-        Some(id) if created => format!("{} (#{}) — created by this ruleset's boot", cfg.cadence, id.0),
+        Some(id) if created => format!(
+            "{} (#{}) — created by this ruleset's boot",
+            cfg.cadence, id.0
+        ),
         Some(id) => format!("{} (#{}) — already existed", cfg.cadence, id.0),
-        None => format!("{} — DOES NOT RESOLVE; nothing is evaluated (@econ/cadence create {})",
-            cfg.cadence, cfg.cadence),
+        None => format!(
+            "{} — DOES NOT RESOLVE; nothing is evaluated (@econ/cadence create {})",
+            cfg.cadence, cfg.cadence
+        ),
     };
-    ctx.out.sys_to_actor(me, "wod", format!("  cadence            {clock}"));
+    ctx.out
+        .sys_to_actor(me, "wod", format!("  cadence            {clock}"));
     match instrument {
-        Some(i) => ctx.out.sys_to_actor(me, "wod", format!("  instrument         {}", i.as_str())),
+        Some(i) => ctx
+            .out
+            .sys_to_actor(me, "wod", format!("  instrument         {}", i.as_str())),
         None => ctx.out.sys_to_actor(
             me,
             "wod",
@@ -543,7 +618,9 @@ fn wod_cmd(dispatch: &Dispatch, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         // (per-instrument override included), so this screen and the settlement that
         // enforces it cannot disagree.
         let cap = mush_economy::InstrumentId::new(WOD_USD).and_then(|id| {
-            ctx.w.module_state::<EconomyStore>().map(|s| s.config().cap_major(&id))
+            ctx.w
+                .module_state::<EconomyStore>()
+                .map(|s| s.config().cap_major(&id))
         });
         // An income row above the cap boots clean and pays nobody: every
         // `create_system_obligation` for that dot fails `MintCapExceeded` into a
@@ -563,7 +640,11 @@ fn wod_cmd(dispatch: &Dispatch, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         if dots.is_empty() {
             dots.push("(empty — no income lines are opened)".to_string());
         }
-        ctx.out.sys_to_actor(me, "wod", format!("  income (major)     {}", dots.join(" ")));
+        ctx.out.sys_to_actor(
+            me,
+            "wod",
+            format!("  income (major)     {}", dots.join(" ")),
+        );
         // The chargen stake is **not** bounded by the mint cap and is not meant to be
         // (§5.6 deviation 10: it is an attributed post, not a standing mint). Saying
         // so beats implying a ceiling that does not exist (E5c fold M5).
@@ -591,7 +672,8 @@ fn wod_cmd(dispatch: &Dispatch, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .to_string(),
         );
     }
-    ctx.out.sys_to_actor(me, "wod", format!("  profiles           {profiles}"));
+    ctx.out
+        .sys_to_actor(me, "wod", format!("  profiles           {profiles}"));
     ctx.out.sys_to_actor(
         me,
         "wod",
@@ -614,12 +696,19 @@ fn career_set_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let me = ctx.actor;
     let who = match_object(ctx.w, me, ctx.args.lhs().trim())
         .map_err(|_| CmdError::msg("No such person."))?;
-    let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?.to_string();
-    let mut p = profile_of(ctx, who).ok_or_else(|| CmdError::msg("They have no support profile."))?;
+    let rhs = ctx
+        .args
+        .rhs()
+        .ok_or_else(|| CmdError::msg(USAGE))?
+        .to_string();
+    let mut p =
+        profile_of(ctx, who).ok_or_else(|| CmdError::msg("They have no support profile."))?;
     // A career is created on demand here, so a staffer can set a front on a character
     // who has not typed `+career/source add career=…` yet.
     if p.career().is_none() {
-        p.sources.push(SupportSource::Career(Box::new(crate::economy::CareerProfile::new("work"))));
+        p.sources.push(SupportSource::Career(Box::new(
+            crate::economy::CareerProfile::new("work"),
+        )));
     }
     let mut changed: Vec<String> = Vec::new();
     // What to say out loud once the write has landed (E5c fold D4/D5). Deviation 5
@@ -694,7 +783,8 @@ fn career_set_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     p.note(at, format!("staff set {}", changed.join(" ")));
     p.revision = p.revision.saturating_add(1);
     put_profile(ctx, p);
-    ctx.out.info(me, format!("Set {} on #{}.", changed.join(", "), who.0));
+    ctx.out
+        .info(me, format!("Set {} on #{}.", changed.join(", "), who.0));
     // A front (or an org employer) that does not resolve is still recorded — a
     // staffer may be setting it up ahead of the faction, deviation 5 — and it is said
     // out loud rather than silently inert. The staffer who can fix the typo is the
@@ -725,8 +815,7 @@ fn parse_employer(ctx: &Ctx<'_>, v: &str) -> Result<Option<PrincipalId>, CmdErro
             .map_err(|_| CmdError::msg("employer=org:<id>"))?;
         return Ok(Some(PrincipalId::Organization(OrgId(id))));
     }
-    let who = match_object(ctx.w, ctx.actor, v)
-        .map_err(|_| CmdError::msg("No such employer."))?;
+    let who = match_object(ctx.w, ctx.actor, v).map_err(|_| CmdError::msg("No such employer."))?;
     Ok(Some(PrincipalId::Object(who)))
 }
 

@@ -299,7 +299,11 @@ fn resolve_org(w: &World, s: &str) -> Option<OrgId> {
 }
 
 fn parse_account(s: &str) -> Option<AccountId> {
-    s.trim().trim_start_matches('#').parse::<u64>().ok().map(AccountId)
+    s.trim()
+        .trim_start_matches('#')
+        .parse::<u64>()
+        .ok()
+        .map(AccountId)
 }
 
 // ----------------------------------------------------------------------
@@ -393,7 +397,9 @@ fn org_mint_and_bind(ctx: &mut Ctx<'_>, f: &Faction) -> Result<(), CmdError> {
         )));
     }
     if ctx.w.module_state::<OrgStore>().is_none() {
-        return Err(CmdError::msg("Organizations are not available on this world."));
+        return Err(CmdError::msg(
+            "Organizations are not available on this world.",
+        ));
     }
     let name = f.name.to_string();
     // Exactly `@org/create`'s shape: allocate the org + its root scope from the
@@ -550,10 +556,11 @@ pub(crate) fn faction_migrate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     //     pool to 0 instead dies on "holds no pool". Neither ever marks the key. On a
     //     hit there is nothing left to post, so converge on the doc instead. (This
     //     subsumes the old `pool == 0 && migrated` report.)
-    let posted = ctx
-        .w
-        .module_state::<EconomyStore>()
-        .and_then(|s| s.snapshot().idempotency(&idempotency).map(|r| r.transaction));
+    let posted = ctx.w.module_state::<EconomyStore>().and_then(|s| {
+        s.snapshot()
+            .idempotency(&idempotency)
+            .map(|r| r.transaction)
+    });
     if let Some(tx) = posted {
         return converge_already_posted(ctx, &f, &key, tx);
     }
@@ -570,7 +577,10 @@ pub(crate) fn faction_migrate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // 4. Nothing to mint / no minting debt.
     if pool <= 0 {
         return Err(CmdError::msg(if pool == 0 {
-            format!("{} holds no {key} pool; there is nothing to migrate.", f.name)
+            format!(
+                "{} holds no {key} pool; there is nothing to migrate.",
+                f.name
+            )
         } else {
             format!(
                 "{} holds a NEGATIVE {key} pool ({pool}). Minting debt is not a thing \
@@ -587,8 +597,7 @@ pub(crate) fn faction_migrate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // 5. The source must be a registered system source/sink of the same instrument:
     //    a migration MINTS (the rating had no counterparty), and minting is what a
     //    faucet is for. The economy re-checks that a system debit is staff (A6).
-    let source = parse_account(raw_src)
-        .ok_or_else(|| CmdError::msg(format!("Usage: {USAGE}")))?;
+    let source = parse_account(raw_src).ok_or_else(|| CmdError::msg(format!("Usage: {USAGE}")))?;
     {
         let store = ctx.w.module_state::<EconomyStore>().expect("checked above");
         let src = store
@@ -663,10 +672,20 @@ pub(crate) fn faction_migrate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let mut plan = EconomyPlan::new(
         idempotency,
         PrincipalId::Object(ctx.actor),
-        EconomicCause::Staff { reason: "faction resource migration".to_string() },
+        EconomicCause::Staff {
+            reason: "faction resource migration".to_string(),
+        },
         vec![
-            RequestedLine { account: source, delta: neg, memo: SmolStr::default() },
-            RequestedLine { account: dest, delta: amount, memo: SmolStr::default() },
+            RequestedLine {
+                account: source,
+                delta: neg,
+                memo: SmolStr::default(),
+            },
+            RequestedLine {
+                account: dest,
+                delta: amount,
+                memo: SmolStr::default(),
+            },
         ],
     );
     plan.description = format!("faction {} resource {code} migration", f.name);
@@ -792,7 +811,10 @@ fn converge_already_posted(
         persist_faction(ctx.out, updated);
     }
     let msg = if residual == 0 {
-        format!("{}: {key} was already migrated (transaction #{tx}). Nothing moved.", f.name)
+        format!(
+            "{}: {key} was already migrated (transaction #{tx}). Nothing moved.",
+            f.name
+        )
     } else {
         format!(
             "{}: {key} was already migrated (transaction #{tx}); the {residual} left on the \
@@ -842,11 +864,19 @@ fn open_root_account(
     let label = {
         let store = ctx.w.module_state::<OrgStore>().expect("resolved above");
         let state = store.state();
-        let oname = state.org(org).map_or_else(|| format!("#{org}"), |o| o.name.to_string());
-        let sname = state.scope(root).map_or_else(|| "root".to_string(), |s| s.name.to_string());
+        let oname = state
+            .org(org)
+            .map_or_else(|| format!("#{org}"), |o| o.name.to_string());
+        let sname = state
+            .scope(root)
+            .map_or_else(|| "root".to_string(), |s| s.name.to_string());
         SmolStr::new(format!("{oname}/{sname}"))
     };
-    let id = ctx.w.module_state_mut::<EconomyStore>().expect("checked above").alloc_account()?;
+    let id = ctx
+        .w
+        .module_state_mut::<EconomyStore>()
+        .expect("checked above")
+        .alloc_account()?;
     mush_economy::open_account(
         ctx,
         Account {

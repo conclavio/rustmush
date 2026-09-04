@@ -80,9 +80,17 @@ pub const KIND_HOUSING_PRESSURE: &str = "wod.housing.pressure";
 /// One fire of the evaluation tick.
 pub fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     let mut stats = EvalStats::default();
-    let Some((cfg, cadence, cursor, ids, version)) = ctx.w.module_state::<WodEconomyStore>().map(|s| {
-        (s.config().clone(), s.cadence(), s.cursor, s.profiled(), s.population_version)
-    }) else {
+    let Some((cfg, cadence, cursor, ids, version)) =
+        ctx.w.module_state::<WodEconomyStore>().map(|s| {
+            (
+                s.config().clone(),
+                s.cadence(),
+                s.cursor,
+                s.profiled(),
+                s.population_version,
+            )
+        })
+    else {
         return;
     };
     if !cfg.personal_mode.is_on() || ids.is_empty() {
@@ -104,15 +112,24 @@ pub fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
         return;
     };
     let Some(now) = mush_housing::cadence_now(ctx.w, cadence) else {
-        tracing::error!(cadence = cadence.0, "wod.economy: the cadence record has gone away");
+        tracing::error!(
+            cadence = cadence.0,
+            "wod.economy: the cadence record has gone away"
+        );
         return;
     };
     // The short-circuit (D-LBK-2): nothing was due at the end of the last complete
     // sweep, nobody has joined the population since, and the clock has not moved.
     // Then nothing is due now, and the scan is skipped.
     let mut scan = {
-        let Some(store) = ctx.w.module_state_mut::<WodEconomyStore>() else { return };
-        if store.idle.as_ref().is_some_and(|m| m.position == now && m.version == version) {
+        let Some(store) = ctx.w.module_state_mut::<WodEconomyStore>() else {
+            return;
+        };
+        if store
+            .idle
+            .as_ref()
+            .is_some_and(|m| m.position == now && m.version == version)
+        {
             stats.short_circuited = true;
             store.last_fire = stats;
             return;
@@ -120,13 +137,23 @@ pub fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
         store.idle = None;
         match store.scan.take() {
             Some(s) if s.position == now && s.version == version && s.population == ids.len() => s,
-            _ => IdleScan { position: now, version, visited: 0, population: ids.len(), clean: true },
+            _ => IdleScan {
+                position: now,
+                version,
+                visited: 0,
+                population: ids.len(),
+                clean: true,
+            },
         }
     };
 
     // The rotation: start at the first id at or past the cursor, wrap once.
     let start = ids.iter().position(|id| id.0 >= cursor).unwrap_or(0);
-    let order: Vec<ObjId> = ids[start..].iter().chain(ids[..start].iter()).copied().collect();
+    let order: Vec<ObjId> = ids[start..]
+        .iter()
+        .chain(ids[..start].iter())
+        .copied()
+        .collect();
 
     let mut last = None;
     for who in order {
@@ -141,14 +168,19 @@ pub fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
         }
     }
     scan.visited = scan.visited.saturating_add(stats.visited);
-    let Some(store) = ctx.w.module_state_mut::<WodEconomyStore>() else { return };
+    let Some(store) = ctx.w.module_state_mut::<WodEconomyStore>() else {
+        return;
+    };
     // Resume **past** the last character this fire visited — skipped ones included.
     if let Some(last) = last {
         store.cursor = last.0.saturating_add(1);
     }
     if scan.visited >= scan.population {
         if scan.clean && store.population_version == version {
-            store.idle = Some(IdleMark { position: now, version });
+            store.idle = Some(IdleMark {
+                position: now,
+                version,
+            });
         }
         store.scan = None;
     } else {
@@ -161,22 +193,39 @@ pub fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
 }
 
 /// Evaluate one character for one period. Returns whether a period was spent.
-fn step(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig, who: ObjId, now: i64, stats: &mut EvalStats) -> bool {
+fn step(
+    ctx: &mut Ctx<'_>,
+    cfg: &WodEconomyConfig,
+    who: ObjId,
+    now: i64,
+    stats: &mut EvalStats,
+) -> bool {
     // **The small cursor document first, the profile only once it is due** (D-LBK-2).
-    let state = ctx.w.module_state::<WodEconomyStore>().map_or_else(EvalState::default, |s| {
-        s.eval_state(who)
-    });
+    let state = ctx
+        .w
+        .module_state::<WodEconomyStore>()
+        .map_or_else(EvalState::default, |s| s.eval_state(who));
     // A profile created between two fires has never been evaluated, and a zeroed
     // cursor on a clock at period 900 would read as "900 periods are owed".
     if !state.seeded {
-        put_eval(ctx, who, EvalState { position: now, period: 0, seeded: true });
+        put_eval(
+            ctx,
+            who,
+            EvalState {
+                position: now,
+                period: 0,
+                seeded: true,
+            },
+        );
         return false;
     }
     if now <= state.position {
         return false;
     }
-    let Some(mut profile) =
-        ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.profile(who).cloned())
+    let Some(mut profile) = ctx
+        .w
+        .module_state::<WodEconomyStore>()
+        .and_then(|s| s.profile(who).cloned())
     else {
         return false;
     };
@@ -191,7 +240,11 @@ fn step(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig, who: ObjId, now: i64, stats: 
     // `wod.career.exposure` record naming them. Every neighbour defines it this way
     // (`mush_housing::alive`, `mush-economy`'s custody checks); this is that
     // predicate, inline, on the one path that needs it.
-    if !ctx.w.get(who).is_some_and(|o| !o.flags.contains(mush_core::Flags::GOING)) {
+    if !ctx
+        .w
+        .get(who)
+        .is_some_and(|o| !o.flags.contains(mush_core::Flags::GOING))
+    {
         return false;
     }
     let period = state.period.saturating_add(1);
@@ -209,7 +262,11 @@ fn step(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig, who: ObjId, now: i64, stats: 
     // no `level_delta` buying a support tier, no `strain_delta`, no offer, no
     // exposure. `+career/stance` refuses on such a server, so `pending_stance` can
     // never be set there either.
-    let stance = if cfg.careers { profile.stance() } else { Stance::Coast };
+    let stance = if cfg.careers {
+        profile.stance()
+    } else {
+        Stance::Coast
+    };
 
     // 2 — re-read the sheet. Read only: the economy never writes a dot (D-E5-3).
     profile.resources = read_resources(ctx, who);
@@ -220,7 +277,11 @@ fn step(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig, who: ObjId, now: i64, stats: 
         stance.strain_delta()
     } else {
         // No career, no stance: §5.2's plain decay, and only while nothing is behind.
-        if behind_tenancy(ctx, who).is_some() { 0 } else { -1 }
+        if behind_tenancy(ctx, who).is_some() {
+            0
+        } else {
+            -1
+        }
     });
 
     // 4 — a lapsed prompt, under its own default.
@@ -228,7 +289,15 @@ fn step(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig, who: ObjId, now: i64, stats: 
 
     profile.revision = profile.revision.saturating_add(1);
     put_profile(ctx, profile.clone());
-    put_eval(ctx, who, EvalState { position: now, period, seeded: true });
+    put_eval(
+        ctx,
+        who,
+        EvalState {
+            position: now,
+            period,
+            seeded: true,
+        },
+    );
 
     // 5 — the plan, every period, for every live abstract tenancy.
     submit_plans(ctx, &profile);
@@ -288,7 +357,11 @@ fn submit_plans(ctx: &mut Ctx<'_>, profile: &SpendingProfile) {
     let ids: Vec<mush_housing::TenancyId> = ctx
         .w
         .module_state::<HousingStore>()
-        .map(|s| s.live_tenancies_of_tenant(profile.obj).map(|t| t.id).collect())
+        .map(|s| {
+            s.live_tenancies_of_tenant(profile.obj)
+                .map(|t| t.id)
+                .collect()
+        })
         .unwrap_or_default();
     let level = mush_housing::SupportLevel::new(profile.level);
     let sources = profile.housing_sources();
@@ -329,7 +402,9 @@ fn offer_prompts(
     }
     // Housing pressure: a home that is behind asks, whatever else is open, and
     // whatever the character's engagement is — it is not an opportunity.
-    if cfg.housing && let Some(tenancy) = behind_tenancy(ctx, profile.obj) {
+    if cfg.housing
+        && let Some(tenancy) = behind_tenancy(ctx, profile.obj)
+    {
         let already = profile
             .prompt
             .as_ref()
@@ -365,7 +440,9 @@ fn offer_prompts(
     if !cfg.careers {
         return;
     }
-    let Some(career) = profile.career() else { return };
+    let Some(career) = profile.career() else {
+        return;
+    };
     // Ambient is the quiet default: the career still supports the lease and still
     // carries strain; it simply never asks (§5.2's `engagement`).
     if profile.engagement != crate::economy::config::Engagement::Engaged {
@@ -396,12 +473,22 @@ fn offer_prompts(
         PromptShape::Opportunity => prompt::opportunity_options(),
         PromptShape::Advancement => prompt::advancement_options(),
     };
-    match prompt::offer(ctx, profile.obj, kind, options, PromptDefault::StatusQuo, now, period) {
+    match prompt::offer(
+        ctx,
+        profile.obj,
+        kind,
+        options,
+        PromptDefault::StatusQuo,
+        now,
+        period,
+    ) {
         Ok(_) => {
             // Only a prompt that actually opened moves the `Coast` rate limit — a
             // declined offer must not cost the next six periods' worth of chances.
-            if let Some(mut p) =
-                ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.profile(profile.obj).cloned())
+            if let Some(mut p) = ctx
+                .w
+                .module_state::<WodEconomyStore>()
+                .and_then(|s| s.profile(profile.obj).cloned())
             {
                 p.last_opportunity_period = period;
                 put_profile(ctx, p);
@@ -425,23 +512,20 @@ fn offer_prompts(
 /// It is evidence a Storyteller reads, and a contract gated on it would be one a
 /// player could seal for themselves.
 fn emit_exposure(ctx: &mut Ctx<'_>, who: ObjId, period: u64, now: i64) {
-    let Some(front) = ctx
-        .w
-        .module_state::<WodEconomyStore>()
-        .and_then(|s| s.profile(who).and_then(|p| p.career().and_then(|c| c.front)))
-    else {
+    let Some(front) = ctx.w.module_state::<WodEconomyStore>().and_then(|s| {
+        s.profile(who)
+            .and_then(|p| p.career().and_then(|c| c.front))
+    }) else {
         return;
     };
     // An orphaned front **stops generating** (§5.3) — including this.
     if !prompt::front_resolves(ctx, &front) {
         return;
     }
-    let name = ctx
-        .w
-        .get(who)
-        .map_or_else(|| format!("#{}", who.0), |o| {
-            mush_core::output::primary_name(&o.name).to_string()
-        });
+    let name = ctx.w.get(who).map_or_else(
+        || format!("#{}", who.0),
+        |o| mush_core::output::primary_name(&o.name).to_string(),
+    );
     let ic = ctx.world_ic_now();
     let ic_time = ctx.w.game_now_unix();
     let detail = serde_json::json!({
@@ -454,17 +538,20 @@ fn emit_exposure(ctx: &mut Ctx<'_>, who: ObjId, period: u64, now: i64) {
         // it across a rate change by accident.
         "world_ic": ic,
     });
-    mush_canon::commit(ctx, CanonDraft {
-        kind: SmolStr::new_static(KIND_EXPOSURE),
-        summary: format!("{name} left a trace working an angle."),
-        entities: vec![who],
-        // Evidence, not a headline: it is about the character and whoever can read
-        // their file, not the whole chronicle.
-        scope: CanonScope::Restricted,
-        ic_time,
-        source: front.source(),
-        detail,
-    });
+    mush_canon::commit(
+        ctx,
+        CanonDraft {
+            kind: SmolStr::new_static(KIND_EXPOSURE),
+            summary: format!("{name} left a trace working an angle."),
+            entities: vec![who],
+            // Evidence, not a headline: it is about the character and whoever can read
+            // their file, not the whole chronicle.
+            scope: CanonScope::Restricted,
+            ic_time,
+            source: front.source(),
+            detail,
+        },
+    );
 }
 
 /// Keep the exact-mode income obligation matching the character's **Resources dot**
@@ -486,16 +573,23 @@ fn emit_exposure(ctx: &mut Ctx<'_>, who: ObjId, period: u64, now: i64) {
 /// by `[economy].mint_obligation_cap_major` (with the `wod.usd` override),
 /// re-checked at every settlement (08c §4.8 M1).
 fn maintain_income(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig, who: ObjId) {
-    let Some(profile) = ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.profile(who).cloned())
+    let Some(profile) = ctx
+        .w
+        .module_state::<WodEconomyStore>()
+        .and_then(|s| s.profile(who).cloned())
     else {
         return;
     };
-    let Some(instrument) =
-        ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.instrument().cloned())
+    let Some(instrument) = ctx
+        .w
+        .module_state::<WodEconomyStore>()
+        .and_then(|s| s.instrument().cloned())
     else {
         return;
     };
-    let Some(credit) = profile.account else { return };
+    let Some(credit) = profile.account else {
+        return;
+    };
     let want = cfg
         .income_major(profile.resources)
         .and_then(|major| crate::economy::boot::major_to_amount(ctx, &instrument, major));
@@ -515,16 +609,22 @@ fn maintain_income(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig, who: ObjId) {
 
     // A live obligation this profile already owns.
     let live = profile.income.and_then(|id| {
-        ctx.w.module_state::<mush_economy::EconomyStore>().and_then(|s| {
-            s.snapshot().obligation(id).map(|o| (id, o.amount, o.status.kind()))
-        })
+        ctx.w
+            .module_state::<mush_economy::EconomyStore>()
+            .and_then(|s| {
+                s.snapshot()
+                    .obligation(id)
+                    .map(|o| (id, o.amount, o.status.kind()))
+            })
     });
     // A pointer at a record that is not there any more: the pointer is a cache, and a
     // cache with nothing behind it is cleared (E5c fold M3).
     if profile.income.is_some() && live.is_none() {
         clear_income(ctx, who);
     }
-    let Some(faucet) = crate::economy::boot::principal(FAUCET_INCOME) else { return };
+    let Some(faucet) = crate::economy::boot::principal(FAUCET_INCOME) else {
+        return;
+    };
     match (live, want) {
         // Nothing owed and nothing running: the common case.
         (None, None) => {}
@@ -584,7 +684,10 @@ fn maintain_income(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig, who: ObjId) {
 
 /// Forget the income obligation on a profile (it was cancelled or has gone away).
 fn clear_income(ctx: &mut Ctx<'_>, who: ObjId) {
-    let Some(mut p) = ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.profile(who).cloned())
+    let Some(mut p) = ctx
+        .w
+        .module_state::<WodEconomyStore>()
+        .and_then(|s| s.profile(who).cloned())
     else {
         return;
     };
@@ -603,7 +706,10 @@ fn clear_income(ctx: &mut Ctx<'_>, who: ObjId) {
 /// nothing about it ever again until the dot moves, `@wod/economy migrate` runs, or
 /// staff open the next one deliberately.
 fn mark_income_cancelled(ctx: &mut Ctx<'_>, who: ObjId, id: mush_economy::ObligationId) {
-    let Some(mut p) = ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.profile(who).cloned())
+    let Some(mut p) = ctx
+        .w
+        .module_state::<WodEconomyStore>()
+        .and_then(|s| s.profile(who).cloned())
     else {
         return;
     };
@@ -612,7 +718,13 @@ fn mark_income_cancelled(ctx: &mut Ctx<'_>, who: ObjId, id: mush_economy::Obliga
     }
     p.income = None;
     p.income_cancelled_at = Some(p.resources);
-    p.note(0, format!("income line #{} was cancelled; none is opened in its place", id.0));
+    p.note(
+        0,
+        format!(
+            "income line #{} was cancelled; none is opened in its place",
+            id.0
+        ),
+    );
     p.revision = p.revision.saturating_add(1);
     put_profile(ctx, p);
 }
@@ -636,16 +748,25 @@ fn open_income(
         .into_iter()
         .find(|(_, account)| *account == credit)
     {
-        if let Some(mut p) =
-            ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.profile(who).cloned())
+        if let Some(mut p) = ctx
+            .w
+            .module_state::<WodEconomyStore>()
+            .and_then(|s| s.profile(who).cloned())
         {
             p.income = Some(existing);
             p.revision = p.revision.saturating_add(1);
-            p.note(0, format!("income line #{} adopted (it was already running)", existing.0));
+            p.note(
+                0,
+                format!(
+                    "income line #{} adopted (it was already running)",
+                    existing.0
+                ),
+            );
             put_profile(ctx, p);
         }
         tracing::warn!(
-            obligation = existing.0, who = who.0,
+            obligation = existing.0,
+            who = who.0,
             "wod.economy: a live income line already credits this wallet; adopted it rather than \
              opening a second"
         );
@@ -654,11 +775,16 @@ fn open_income(
     let Some(debit) = crate::economy::boot::system_account(ctx, FAUCET_INCOME, instrument) else {
         return;
     };
-    let Some(cadence) = ctx.w.module_state::<WodEconomyStore>().and_then(WodEconomyStore::cadence)
+    let Some(cadence) = ctx
+        .w
+        .module_state::<WodEconomyStore>()
+        .and_then(WodEconomyStore::cadence)
     else {
         return;
     };
-    let Some(next_due) = mush_housing::cadence_now(ctx.w, cadence) else { return };
+    let Some(next_due) = mush_housing::cadence_now(ctx.w, cadence) else {
+        return;
+    };
     let spec = mush_economy::ObligationSpec {
         debit_account: debit,
         credit_account: credit,
@@ -679,8 +805,10 @@ fn open_income(
     };
     match mush_economy::create_system_obligation(ctx, faucet, spec) {
         Ok(id) => {
-            if let Some(mut p) =
-                ctx.w.module_state::<WodEconomyStore>().and_then(|s| s.profile(who).cloned())
+            if let Some(mut p) = ctx
+                .w
+                .module_state::<WodEconomyStore>()
+                .and_then(|s| s.profile(who).cloned())
             {
                 p.income = Some(id);
                 p.revision = p.revision.saturating_add(1);

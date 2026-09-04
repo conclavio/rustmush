@@ -972,11 +972,17 @@ pub fn principal_key(p: &PrincipalId) -> (u8, u64, &str) {
 #[must_use]
 pub fn canonical_visibility(v: &EconomicVisibility) -> EconomicVisibility {
     match v {
-        EconomicVisibility::Audience { members, announce_issuer } => {
+        EconomicVisibility::Audience {
+            members,
+            announce_issuer,
+        } => {
             let mut out: Vec<PrincipalId> = members.clone();
             out.sort_by(|a, b| principal_key(a).cmp(&principal_key(b)));
             out.dedup_by(|a, b| principal_key(a) == principal_key(b));
-            EconomicVisibility::Audience { members: out, announce_issuer: *announce_issuer }
+            EconomicVisibility::Audience {
+                members: out,
+                announce_issuer: *announce_issuer,
+            }
         }
         other => other.clone(),
     }
@@ -1129,7 +1135,9 @@ pub fn qualifying_escrow<'a>(
     let mut claimed = vec![false; considerations.len()];
     let mut holds: Vec<&Hold> = Vec::with_capacity(c.escrow.len());
     for id in &c.escrow {
-        let Some(hold) = snapshot.hold(*id) else { continue };
+        let Some(hold) = snapshot.hold(*id) else {
+            continue;
+        };
         if !hold.status.is_held() {
             continue;
         }
@@ -1143,7 +1151,10 @@ pub fn qualifying_escrow<'a>(
         claimed[i] = true;
         holds.push(hold);
     }
-    QualifyingEscrow { holds, complete: claimed.iter().all(|c| *c) }
+    QualifyingEscrow {
+        holds,
+        complete: claimed.iter().all(|c| *c),
+    }
 }
 
 // ---- the deterministic split (scenario 17) --------------------------------
@@ -1156,7 +1167,10 @@ pub fn qualifying_escrow<'a>(
 /// The floor is what makes the split deterministic: three equal thirds of 100 pay
 /// 33/33/33 and the remaining 1 goes where the parties agreed it goes, rather than
 /// depending on rounding mode or iteration order.
-pub fn apply_split(total: Amount, terms: &ContractTerms) -> Result<Vec<(AccountId, Amount)>, ContractError> {
+pub fn apply_split(
+    total: Amount,
+    terms: &ContractTerms,
+) -> Result<Vec<(AccountId, Amount)>, ContractError> {
     let total_w = total.widen();
     if total_w < 0 {
         return Err(ContractError::SplitInfeasible);
@@ -1314,7 +1328,9 @@ fn account_instrument(
     id: AccountId,
     seen: &mut Option<InstrumentId>,
 ) -> Result<(), ContractError> {
-    let account = snapshot.account(id).ok_or(ContractError::NoSuchAccount(id))?;
+    let account = snapshot
+        .account(id)
+        .ok_or(ContractError::NoSuchAccount(id))?;
     if account.status != AccountStatus::Active {
         return Err(ContractError::NoSuchAccount(id));
     }
@@ -1371,10 +1387,14 @@ fn check_structure_basic(c: &EconomicContract) -> Result<(), ContractError> {
         return Err(ContractError::TooLarge("too many shares"));
     }
     if c.satisfied.len() != consent.conditions.len() {
-        return Err(ContractError::Infeasible("satisfaction vector does not match the conditions"));
+        return Err(ContractError::Infeasible(
+            "satisfaction vector does not match the conditions",
+        ));
     }
     if consent.parties.is_empty() {
-        return Err(ContractError::Infeasible("a contract with no parties binds nobody"));
+        return Err(ContractError::Infeasible(
+            "a contract with no parties binds nobody",
+        ));
     }
     if !consent.parties.iter().any(|p| p == &c.issuer) {
         return Err(ContractError::Infeasible("the issuer is not a party"));
@@ -1389,15 +1409,23 @@ fn check_structure_basic(c: &EconomicContract) -> Result<(), ContractError> {
     let mut total: i128 = 0;
     for con in &consent.terms.consideration {
         if !con.amount.widen().gt(&0) {
-            return Err(ContractError::Infeasible("a consideration must be positive"));
+            return Err(ContractError::Infeasible(
+                "a consideration must be positive",
+            ));
         }
         // E4b2 verify fold, M8: **every payer is a party.** A consideration is an
         // escrow obligation, and `@contract/accept` places exactly the ones whose
         // `from` is the accepting party — so a `from` who is not a party is money the
         // contract waits for that nobody can ever place, and `qualifying_escrow` could
         // never be `complete`. Refuse it where a human can still fix the draft.
-        if !consent.parties.iter().any(|p| principal_key(p) == principal_key(&con.from)) {
-            return Err(ContractError::Infeasible("a consideration names a payer who is not a party"));
+        if !consent
+            .parties
+            .iter()
+            .any(|p| principal_key(p) == principal_key(&con.from))
+        {
+            return Err(ContractError::Infeasible(
+                "a consideration names a payer who is not a party",
+            ));
         }
         total += con.amount.widen();
     }
@@ -1415,13 +1443,22 @@ fn check_structure_basic(c: &EconomicContract) -> Result<(), ContractError> {
             return Err(ContractError::TooLarge("too many shares in one outcome"));
         }
         if o.when.len() > MAX_CONDITIONS {
-            return Err(ContractError::TooLarge("too many conditions in one outcome"));
+            return Err(ContractError::TooLarge(
+                "too many conditions in one outcome",
+            ));
         }
         if o.when.iter().any(|i| *i >= consent.conditions.len()) {
-            return Err(ContractError::Infeasible("an outcome names a condition that does not exist"));
+            return Err(ContractError::Infeasible(
+                "an outcome names a condition that does not exist",
+            ));
         }
-        if o.asset_consequences.iter().any(|i| *i >= consent.terms.deliverables.len()) {
-            return Err(ContractError::Infeasible("an outcome names a deliverable that does not exist"));
+        if o.asset_consequences
+            .iter()
+            .any(|i| *i >= consent.terms.deliverables.len())
+        {
+            return Err(ContractError::Infeasible(
+                "an outcome names a deliverable that does not exist",
+            ));
         }
         apply_outcome(escrow_total, &o.payouts)?;
         if o.payouts.len() + consent.terms.consideration.len() > MAX_LINES_PER_TX {
@@ -1456,7 +1493,9 @@ fn check_structure_basic(c: &EconomicContract) -> Result<(), ContractError> {
         }
     }
     if title_ops > MAX_ASSET_OPS_PER_PLAN {
-        return Err(ContractError::TooLarge("too many title ops for one settlement"));
+        return Err(ContractError::TooLarge(
+            "too many title ops for one settlement",
+        ));
     }
     if deposits > 1 {
         return Err(ContractError::Infeasible("one custody op per settlement"));
@@ -1479,15 +1518,23 @@ fn check_structure_basic(c: &EconomicContract) -> Result<(), ContractError> {
             ));
         }
     }
-    if consent.adjudicator.as_ref().is_some_and(|set| !attestor_satisfiable(set)) {
-        return Err(ContractError::Infeasible("the adjudicator is a set nobody can satisfy"));
+    if consent
+        .adjudicator
+        .as_ref()
+        .is_some_and(|set| !attestor_satisfiable(set))
+    {
+        return Err(ContractError::Infeasible(
+            "the adjudicator is a set nobody can satisfy",
+        ));
     }
 
     // Conditions must be resolvable: an `After` anchor must exist and never be
     // itself (a self-anchored condition can never become true).
     for (i, con) in consent.conditions.iter().enumerate() {
         match con {
-            TypedCondition::After { condition, clock, .. } => {
+            TypedCondition::After {
+                condition, clock, ..
+            } => {
                 if *condition >= consent.conditions.len() || *condition == i {
                     return Err(ContractError::BadConditionRef(i));
                 }
@@ -1512,7 +1559,10 @@ fn check_structure_basic(c: &EconomicContract) -> Result<(), ContractError> {
     // one outgoing edge, so following the chain is enough; the walk is bounded by
     // MAX_CONDITIONS (16) both ways.
     for i in 0..consent.conditions.len() {
-        if !matches!(consent.conditions.get(i), Some(TypedCondition::After { .. })) {
+        if !matches!(
+            consent.conditions.get(i),
+            Some(TypedCondition::After { .. })
+        ) {
             continue;
         }
         let mut seen = vec![false; consent.conditions.len()];
@@ -1610,7 +1660,9 @@ pub fn check_offerable(
     for d in &consent.terms.deliverables {
         match d {
             Deliverable::DepositInto { vault, .. } => {
-                snapshot.vault(*vault).ok_or(ContractError::NoSuchVault(*vault))?;
+                snapshot
+                    .vault(*vault)
+                    .ok_or(ContractError::NoSuchVault(*vault))?;
             }
             // E5b verify fold, T2: **a contract's standing charge debits a party.**
             // Same rule, same reason as the `Collateral` clause below — an
@@ -1647,12 +1699,18 @@ pub fn check_offerable(
             // object as collateral encumbered it at activation and made it
             // untransferable until the contract ended.
             Deliverable::Collateral { object, from } => {
-                if !consent.parties.iter().any(|p| principal_key(p) == principal_key(from)) {
+                if !consent
+                    .parties
+                    .iter()
+                    .any(|p| principal_key(p) == principal_key(from))
+                {
                     return Err(ContractError::Infeasible(
                         "a collateral is pledged by someone who is not a party",
                     ));
                 }
-                let asset = snapshot.asset(*object).ok_or(ContractError::NoSuchAsset(*object))?;
+                let asset = snapshot
+                    .asset(*object)
+                    .ok_or(ContractError::NoSuchAsset(*object))?;
                 if asset.lifecycle != AssetLifecycle::Active || &asset.title_owner != from {
                     return Err(ContractError::NoSuchAsset(*object));
                 }
@@ -1662,7 +1720,9 @@ pub fn check_offerable(
     }
     for con in &consent.conditions {
         if let TypedCondition::DepositInto { vault, .. } = con {
-            snapshot.vault(*vault).ok_or(ContractError::NoSuchVault(*vault))?;
+            snapshot
+                .vault(*vault)
+                .ok_or(ContractError::NoSuchVault(*vault))?;
         }
     }
     Ok(())
@@ -1685,7 +1745,9 @@ pub fn reverify(
         return Err(ContractError::ConsentMismatch);
     }
     if c.satisfied.len() != c.consent.conditions.len() {
-        return Err(ContractError::Infeasible("satisfaction vector does not match the conditions"));
+        return Err(ContractError::Infeasible(
+            "satisfaction vector does not match the conditions",
+        ));
     }
     // With an outcome table, the conditions an outcome's `when` names are the ones
     // that decide WHICH result happened, and they are mutually exclusive by
@@ -1746,9 +1808,10 @@ fn attestation_matches(att: &Attestation, set: &AttestorSet, env: &ValidateEnv<'
 #[must_use]
 pub fn canon_set_accepts(set: &AttestorSet, kind: &str, source: &str) -> bool {
     match set {
-        AttestorSet::Canon { kind: want_kind, source: want_source } => {
-            want_kind == kind && want_source.as_ref().is_none_or(|s| s == source)
-        }
+        AttestorSet::Canon {
+            kind: want_kind,
+            source: want_source,
+        } => want_kind == kind && want_source.as_ref().is_none_or(|s| s == source),
         _ => false,
     }
 }
@@ -1763,8 +1826,12 @@ pub fn condition_holds(
     snapshot: &EconomySnapshot,
     env: &ValidateEnv<'_>,
 ) -> bool {
-    let Some(condition) = c.consent.conditions.get(i) else { return false };
-    let Some(recorded) = c.satisfied.get(i) else { return false };
+    let Some(condition) = c.consent.conditions.get(i) else {
+        return false;
+    };
+    let Some(recorded) = c.satisfied.get(i) else {
+        return false;
+    };
     let clocks = Clocks::new(env.now, env.ic_now);
     {
         match condition {
@@ -1786,9 +1853,9 @@ pub fn condition_holds(
             TypedCondition::DepositInto { object, vault } => snapshot
                 .vault(*vault)
                 .is_some_and(|v| env.custody.holds(v, *object)),
-            TypedCondition::TitleHeld { object, by } => snapshot.asset(*object).is_some_and(|a| {
-                a.lifecycle == AssetLifecycle::Active && &a.title_owner == by
-            }),
+            TypedCondition::TitleHeld { object, by } => snapshot
+                .asset(*object)
+                .is_some_and(|a| a.lifecycle == AssetLifecycle::Active && &a.title_owner == by),
             // `None` (unknown) is unsatisfied, never a pass: the fact provider seam
             // is E4c and defaults to unknown, so a contract cannot settle on a fact
             // nobody can answer.
@@ -1801,7 +1868,11 @@ pub fn condition_holds(
             TypedCondition::Before { deadline } => clocks
                 .now_on(deadline.clock, snapshot, i64::MAX)
                 .is_some_and(|now| now <= deadline.at),
-            TypedCondition::After { condition, delay, clock } => {
+            TypedCondition::After {
+                condition,
+                delay,
+                clock,
+            } => {
                 match c.satisfied.get(*condition).and_then(|s| s.as_ref()) {
                     // Two stamps are comparable only on the SAME clock (doc 09 §2.5):
                     // an anchor stamped on wall time can never satisfy an IC delay.
@@ -1864,13 +1935,17 @@ pub fn stamp_observed(
             .conditions
             .iter()
             .find_map(|cond| match cond {
-                TypedCondition::After { condition, clock, .. } if *condition == i => Some(*clock),
+                TypedCondition::After {
+                    condition, clock, ..
+                } if *condition == i => Some(*clock),
                 _ => None,
             })
             .unwrap_or(EconomicClock::RealUtc);
         // A clock this engine cannot resolve stamps nothing: an anchor nobody can
         // place is worse than no anchor at all.
-        let Some(at) = clocks.now_on(clock, snapshot, env.now) else { continue };
+        let Some(at) = clocks.now_on(clock, snapshot, env.now) else {
+            continue;
+        };
         if let Some(slot) = c.satisfied.get_mut(i) {
             *slot = Some(Attestation {
                 by: AttestorRef::Observed { clock },
@@ -1956,7 +2031,10 @@ pub fn contract_encumbrance(c: &EconomicContract, from: &PrincipalId) -> Encumbr
         .iter()
         .any(|d| matches!(d, Deliverable::Obligation { .. }));
     if leased {
-        Encumbrance::Lease { lessor: from.clone(), contract: c.id }
+        Encumbrance::Lease {
+            lessor: from.clone(),
+            contract: c.id,
+        }
     } else {
         Encumbrance::Collateral { contract: c.id }
     }
@@ -1982,7 +2060,10 @@ pub fn release_asset_ops(c: &EconomicContract, snapshot: &EconomySnapshot) -> Ve
                 snapshot
                     .asset(*object)
                     .filter(|a| a.encumbrances.contains(&encumbrance))
-                    .map(|_| AssetOp::Release { object: *object, encumbrance })
+                    .map(|_| AssetOp::Release {
+                        object: *object,
+                        encumbrance,
+                    })
             }
             _ => None,
         })
@@ -2032,12 +2113,17 @@ pub fn forfeit_plan(
     // Either the transition has already landed (boot, a retry after a restart) or it
     // is **in flight** — `pending: Forfeit` (M2+M3). The plan posts first and the
     // state moves after it, so "already `Expired`" cannot be the only way in.
-    let in_flight = c.pending.as_ref().is_some_and(|p| p.kind == PendingKind::Forfeit);
+    let in_flight = c
+        .pending
+        .as_ref()
+        .is_some_and(|p| p.kind == PendingKind::Forfeit);
     if !matches!(c.state, ContractState::Expired) && !in_flight {
         return Err(ContractError::WrongState(c.id));
     }
     let Expiry::Forfeit { to } = c.consent.terms.on_expiry else {
-        return Err(ContractError::Infeasible("this contract does not forfeit on expiry"));
+        return Err(ContractError::Infeasible(
+            "this contract does not forfeit on expiry",
+        ));
     };
     if !c.consent_intact() {
         return Err(ContractError::ConsentMismatch);
@@ -2053,8 +2139,14 @@ pub fn forfeit_plan(
     let mut total: i128 = 0;
     for hold in &escrow.holds {
         total += hold.amount.widen();
-        hold_ops.push(HoldOp::Capture { hold: hold.id, amount: hold.amount });
-        expected_hold_revisions.push(HoldRevision { hold: hold.id, revision: hold.revision });
+        hold_ops.push(HoldOp::Capture {
+            hold: hold.id,
+            amount: hold.amount,
+        });
+        expected_hold_revisions.push(HoldRevision {
+            hold: hold.id,
+            revision: hold.revision,
+        });
         let debit = hold.amount.checked_neg().ok_or(ContractError::Overflow)?;
         lines.push(RequestedLine {
             account: hold.account,
@@ -2074,7 +2166,10 @@ pub fn forfeit_plan(
     let mut plan = EconomyPlan::new(
         contract_op_key(c.id, "forfeit", c.amendments),
         c.issuer.clone(),
-        EconomicCause::Internal { kind: SmolStr::new_static("contract"), id: c.id.0 },
+        EconomicCause::Internal {
+            kind: SmolStr::new_static("contract"),
+            id: c.id.0,
+        },
         lines,
     );
     plan.description = format!("forfeit of contract {}", c.id);
@@ -2112,7 +2207,10 @@ pub fn settlement_plan(
     snapshot: &EconomySnapshot,
     env: &ValidateEnv<'_>,
 ) -> Result<EconomyPlan, ContractError> {
-    if !matches!(c.state, ContractState::ReadyToSettle | ContractState::Active) {
+    if !matches!(
+        c.state,
+        ContractState::ReadyToSettle | ContractState::Active
+    ) {
         return Err(ContractError::State(c.id));
     }
     if !c.consent_intact() {
@@ -2145,8 +2243,14 @@ pub fn settlement_plan(
     let mut total: i128 = 0;
     for hold in &escrow.holds {
         total += hold.amount.widen();
-        hold_ops.push(HoldOp::Capture { hold: hold.id, amount: hold.amount });
-        expected_hold_revisions.push(HoldRevision { hold: hold.id, revision: hold.revision });
+        hold_ops.push(HoldOp::Capture {
+            hold: hold.id,
+            amount: hold.amount,
+        });
+        expected_hold_revisions.push(HoldRevision {
+            hold: hold.id,
+            revision: hold.revision,
+        });
         let debit = hold.amount.checked_neg().ok_or(ContractError::Overflow)?;
         debits.push(RequestedLine {
             account: hold.account,
@@ -2193,7 +2297,10 @@ pub fn settlement_plan(
                 asset_ops.push(AssetOp::TransferTitle {
                     object: *object,
                     to: to.clone(),
-                    to_scope: c.consent.scope.filter(|_| matches!(to, PrincipalId::Organization(_))),
+                    to_scope: c
+                        .consent
+                        .scope
+                        .filter(|_| matches!(to, PrincipalId::Organization(_))),
                 });
             }
             Deliverable::Collateral { object, from } => {
@@ -2203,7 +2310,10 @@ pub fn settlement_plan(
                     .asset(*object)
                     .is_some_and(|a| a.encumbrances.contains(&encumbrance))
                 {
-                    asset_ops.push(AssetOp::Release { object: *object, encumbrance });
+                    asset_ops.push(AssetOp::Release {
+                        object: *object,
+                        encumbrance,
+                    });
                 }
             }
             Deliverable::DepositInto { .. } | Deliverable::Obligation { .. } => {}
@@ -2213,7 +2323,10 @@ pub fn settlement_plan(
     let mut plan = EconomyPlan::new(
         contract_op_key(c.id, "settle", c.amendments),
         c.issuer.clone(),
-        EconomicCause::Internal { kind: SmolStr::new_static("contract"), id: c.id.0 },
+        EconomicCause::Internal {
+            kind: SmolStr::new_static("contract"),
+            id: c.id.0,
+        },
         lines,
     );
     plan.description = format!("settlement of contract {}", c.id);
@@ -2278,11 +2391,16 @@ pub fn refund_plan(
         })
         .take(MAX_DEPOSITS)
         .collect();
-    let actor = returns.first().map_or_else(|| c.issuer.clone(), |(d, _)| d.deposited_by.clone());
+    let actor = returns
+        .first()
+        .map_or_else(|| c.issuer.clone(), |(d, _)| d.deposited_by.clone());
     let mut plan = EconomyPlan::new(
         contract_op_key(c.id, "refund", c.amendments),
         actor,
-        EconomicCause::Internal { kind: SmolStr::new_static("contract"), id: c.id.0 },
+        EconomicCause::Internal {
+            kind: SmolStr::new_static("contract"),
+            id: c.id.0,
+        },
         Vec::new(),
     );
     plan.description = format!("refund of contract {}", c.id);
@@ -2295,7 +2413,11 @@ pub fn refund_plan(
     plan.asset_ops = release_asset_ops(c, snapshot);
     plan.custody_ops = returns
         .iter()
-        .map(|(d, to)| CustodyOp::Withdraw { object: d.object, vault: d.vault, to: *to })
+        .map(|(d, to)| CustodyOp::Withdraw {
+            object: d.object,
+            vault: d.vault,
+            to: *to,
+        })
         .collect();
     Ok(plan)
 }
@@ -2407,7 +2529,10 @@ impl<'a> ContractAuth<'a> {
         ContractAuth {
             contract,
             qualifying: qualifying_ids(contract, snapshot),
-            purpose: ContractPurpose::Settle { payouts: net_payouts(&payouts.unwrap_or_default()), titles },
+            purpose: ContractPurpose::Settle {
+                payouts: net_payouts(&payouts.unwrap_or_default()),
+                titles,
+            },
         }
     }
 
@@ -2481,7 +2606,11 @@ impl<'a> ContractAuth<'a> {
 
 /// The ids of the holds that really are this contract's escrow.
 fn qualifying_ids(c: &EconomicContract, snapshot: &EconomySnapshot) -> Vec<HoldId> {
-    qualifying_escrow(c, snapshot).holds.iter().map(|h| h.id).collect()
+    qualifying_escrow(c, snapshot)
+        .holds
+        .iter()
+        .map(|h| h.id)
+        .collect()
 }
 
 /// What this contract's **qualifying** escrow adds up to right now — the same total
@@ -2504,14 +2633,21 @@ fn net_payouts(payouts: &[(AccountId, Amount)]) -> Vec<(AccountId, Amount)> {
     let mut out: BTreeMap<AccountId, Amount> = BTreeMap::new();
     for (account, amount) in payouts {
         let slot = out.entry(*account).or_insert(Amount::ZERO);
-        let Some(sum) = slot.checked_add(*amount) else { return Vec::new() };
+        let Some(sum) = slot.checked_add(*amount) else {
+            return Vec::new();
+        };
         *slot = sum;
     }
     out.into_iter().collect()
 }
 
 impl crate::engine::AuthEval for ContractAuth<'_> {
-    fn authorize(&self, _actor: &PrincipalId, account: &crate::record::Account, delta: Amount) -> bool {
+    fn authorize(
+        &self,
+        _actor: &PrincipalId,
+        account: &crate::record::Account,
+        delta: Amount,
+    ) -> bool {
         if !self.bound() {
             return false;
         }
@@ -2527,9 +2663,9 @@ impl crate::engine::AuthEval for ContractAuth<'_> {
         // about the netted delta per account, so one question answers both halves of
         // the rule — "the right amount" and "credited once".
         match &self.purpose {
-            ContractPurpose::Settle { payouts, .. } => {
-                payouts.iter().any(|(id, owed)| *id == account.id && *owed == delta)
-            }
+            ContractPurpose::Settle { payouts, .. } => payouts
+                .iter()
+                .any(|(id, owed)| *id == account.id && *owed == delta),
             ContractPurpose::Forfeit { to, total } => *to == account.id && *total == delta,
             // An unwind moves no money at all: it hands reservations back, and a
             // release is an effect, not a credit.
@@ -2570,10 +2706,18 @@ impl crate::engine::AuthEval for ContractAuth<'_> {
         let Some(asset) = asset else { return false };
         match op {
             AssetOp::TransferTitle { object, to, .. } => {
-                let ContractPurpose::Settle { titles, .. } = &self.purpose else { return false };
-                self.contract.consent.terms.deliverables.iter().enumerate().any(|(i, d)| {
-                    titles.contains(&i)
-                        && matches!(d, Deliverable::TitleTransfer { object: o, from, to: t }
+                let ContractPurpose::Settle { titles, .. } = &self.purpose else {
+                    return false;
+                };
+                self.contract
+                    .consent
+                    .terms
+                    .deliverables
+                    .iter()
+                    .enumerate()
+                    .any(|(i, d)| {
+                        titles.contains(&i)
+                            && matches!(d, Deliverable::TitleTransfer { object: o, from, to: t }
                             if o == object
                                 && t == to
                                 && from == &asset.title_owner
@@ -2581,14 +2725,17 @@ impl crate::engine::AuthEval for ContractAuth<'_> {
                                 // someone who never agreed to its liabilities.
                                 && self.contract.accepted_by(from)
                                 && self.contract.accepted_by(t))
-                })
+                    })
             }
             // **Placing** a claim takes something away: an encumbered asset cannot be
             // transferred (invariant 12). So it asks two more questions than a release
             // (E4b2 verify fold, M1): the pledger must hold the title *now*, and must
             // have accepted this contract. A pledge is consent, and consent is the
             // acceptance.
-            AssetOp::Encumber { object, encumbrance } => {
+            AssetOp::Encumber {
+                object,
+                encumbrance,
+            } => {
                 self.pledges(*object, encumbrance)
                     && self.contract.consent.terms.deliverables.iter().any(|d| {
                         matches!(d, Deliverable::Collateral { object: o, from }
@@ -2600,7 +2747,10 @@ impl crate::engine::AuthEval for ContractAuth<'_> {
             // **Releasing** stays unconditional within the pledge check: a pledge
             // always comes back, whatever happened to the acceptance or the title,
             // or the claim strands on the asset forever.
-            AssetOp::Release { object, encumbrance } => self.pledges(*object, encumbrance),
+            AssetOp::Release {
+                object,
+                encumbrance,
+            } => self.pledges(*object, encumbrance),
             _ => false,
         }
     }
@@ -2611,13 +2761,22 @@ impl crate::engine::AuthEval for ContractAuth<'_> {
         to: &PrincipalId,
         _to_scope: Option<OrgScopeId>,
     ) -> bool {
-        let ContractPurpose::Settle { titles, .. } = &self.purpose else { return false };
+        let ContractPurpose::Settle { titles, .. } = &self.purpose else {
+            return false;
+        };
         self.contract.fully_accepted()
             && self.contract.accepted_by(to)
-            && self.contract.consent.terms.deliverables.iter().enumerate().any(|(i, d)| {
-                titles.contains(&i)
-                    && matches!(d, Deliverable::TitleTransfer { to: t, .. } if t == to)
-            })
+            && self
+                .contract
+                .consent
+                .terms
+                .deliverables
+                .iter()
+                .enumerate()
+                .any(|(i, d)| {
+                    titles.contains(&i)
+                        && matches!(d, Deliverable::TitleTransfer { to: t, .. } if t == to)
+                })
     }
 
     /// The **one** vault op a contract ever authorizes: an unwind returning a
@@ -2638,7 +2797,11 @@ impl crate::engine::AuthEval for ContractAuth<'_> {
             return false;
         }
         match op {
-            CustodyOp::Withdraw { object, vault: v, to } => {
+            CustodyOp::Withdraw {
+                object,
+                vault: v,
+                to,
+            } => {
                 *v == vault.id
                     && self.contract.deposits.iter().any(|d| {
                         d.object == *object
@@ -2668,7 +2831,11 @@ impl crate::engine::AuthEval for ContractAuth<'_> {
     fn authorize_custody_unlock(&self, object: ObjId, vault: VaultId) -> bool {
         matches!(self.purpose, ContractPurpose::Unwind)
             && self.bound()
-            && self.contract.deposits.iter().any(|d| d.object == object && d.vault == vault)
+            && self
+                .contract
+                .deposits
+                .iter()
+                .any(|d| d.object == object && d.vault == vault)
     }
 }
 
@@ -2691,9 +2858,18 @@ mod tests {
     fn permille_shares_floor_and_the_remainder_is_deterministic() {
         let t = terms(
             vec![
-                PayoutShare { to: AccountId(1), share: Share::Permille(333) },
-                PayoutShare { to: AccountId(2), share: Share::Permille(333) },
-                PayoutShare { to: AccountId(3), share: Share::Permille(333) },
+                PayoutShare {
+                    to: AccountId(1),
+                    share: Share::Permille(333),
+                },
+                PayoutShare {
+                    to: AccountId(2),
+                    share: Share::Permille(333),
+                },
+                PayoutShare {
+                    to: AccountId(3),
+                    share: Share::Permille(333),
+                },
             ],
             AccountId(9),
         );
@@ -2713,21 +2889,36 @@ mod tests {
     fn exact_shares_come_first_and_an_oversized_one_is_infeasible() {
         let t = terms(
             vec![
-                PayoutShare { to: AccountId(1), share: Share::Exact(Amount::from_minor(40)) },
-                PayoutShare { to: AccountId(2), share: Share::Permille(500) },
+                PayoutShare {
+                    to: AccountId(1),
+                    share: Share::Exact(Amount::from_minor(40)),
+                },
+                PayoutShare {
+                    to: AccountId(2),
+                    share: Share::Permille(500),
+                },
             ],
             AccountId(9),
         );
         let out = apply_split(Amount::from_minor(100), &t).unwrap();
-        assert_eq!(out, vec![
-            (AccountId(1), Amount::from_minor(40)),
-            (AccountId(2), Amount::from_minor(30)),
-            (AccountId(9), Amount::from_minor(30)),
-        ]);
+        assert_eq!(
+            out,
+            vec![
+                (AccountId(1), Amount::from_minor(40)),
+                (AccountId(2), Amount::from_minor(30)),
+                (AccountId(9), Amount::from_minor(30)),
+            ]
+        );
         let bad = terms(
-            vec![PayoutShare { to: AccountId(1), share: Share::Exact(Amount::from_minor(500)) }],
+            vec![PayoutShare {
+                to: AccountId(1),
+                share: Share::Exact(Amount::from_minor(500)),
+            }],
             AccountId(9),
         );
-        assert_eq!(apply_split(Amount::from_minor(100), &bad), Err(ContractError::SplitInfeasible));
+        assert_eq!(
+            apply_split(Amount::from_minor(100), &bad),
+            Err(ContractError::SplitInfeasible)
+        );
     }
 }

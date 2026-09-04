@@ -41,7 +41,9 @@ pub struct InstrumentCaps {
 
 impl Default for InstrumentCaps {
     fn default() -> InstrumentCaps {
-        InstrumentCaps { mint_obligation_cap_major: DEFAULT_MINT_OBLIGATION_CAP_MAJOR }
+        InstrumentCaps {
+            mint_obligation_cap_major: DEFAULT_MINT_OBLIGATION_CAP_MAJOR,
+        }
     }
 }
 
@@ -72,7 +74,9 @@ impl EconomyConfig {
     pub fn cap_major(&self, instrument: &InstrumentId) -> u64 {
         self.instruments
             .get(instrument.as_str())
-            .map_or(self.mint_obligation_cap_major, |c| c.mint_obligation_cap_major)
+            .map_or(self.mint_obligation_cap_major, |c| {
+                c.mint_obligation_cap_major
+            })
     }
 
     /// The cap for `instrument` as a **minor-unit** [`Amount`], scaled by that
@@ -83,7 +87,11 @@ impl EconomyConfig {
     /// not an unlimited one. A settlement whose cap cannot be computed is a
     /// settlement that does not happen.
     #[must_use]
-    pub fn mint_cap(&self, snapshot: &EconomySnapshot, instrument: &InstrumentId) -> Option<Amount> {
+    pub fn mint_cap(
+        &self,
+        snapshot: &EconomySnapshot,
+        instrument: &InstrumentId,
+    ) -> Option<Amount> {
         let scale = snapshot.instrument(instrument)?.scale;
         let factor = 10_i128.checked_pow(u32::from(scale))?;
         let minor = i128::from(self.cap_major(instrument)).checked_mul(factor)?;

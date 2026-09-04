@@ -200,7 +200,9 @@ pub(crate) fn load(data: &ModuleBootData) -> Result<HousingStore, ModError> {
 }
 
 fn meta_u64(meta: Option<&serde_json::Value>, field: &str) -> u64 {
-    meta.and_then(|m| m.get(field)).and_then(serde_json::Value::as_u64).unwrap_or(0)
+    meta.and_then(|m| m.get(field))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0)
 }
 /// One past the largest id seen, saturating (never `m + 1`).
 fn next_after(max: Option<u64>) -> u64 {
@@ -237,20 +239,30 @@ pub(crate) fn reconcile(ctx: &mut Ctx<'_>) {
 /// there, and D-E5-1 guarantees they still do.
 fn reconcile_properties(ctx: &mut Ctx<'_>, pages: &mut usize) {
     let broken: Vec<(Property, Vec<ObjId>)> = {
-        let Some(store) = ctx.w.module_state::<HousingStore>() else { return };
+        let Some(store) = ctx.w.module_state::<HousingStore>() else {
+            return;
+        };
         store
             .properties()
             .filter(|p| p.status != PropertyStatus::Withdrawn || store.has_live_tenancy(p.id))
             .filter_map(|p| {
-                let gone: Vec<ObjId> =
-                    p.rooms.iter().copied().filter(|r| !is_live_room(ctx.w, *r)).collect();
+                let gone: Vec<ObjId> = p
+                    .rooms
+                    .iter()
+                    .copied()
+                    .filter(|r| !is_live_room(ctx.w, *r))
+                    .collect();
                 (!gone.is_empty()).then(|| (p.clone(), gone))
             })
             .collect()
     };
     for (p, gone) in broken {
         let id = p.id;
-        let missing = gone.iter().map(|r| format!("#{}", r.0)).collect::<Vec<_>>().join(", ");
+        let missing = gone
+            .iter()
+            .map(|r| format!("#{}", r.0))
+            .collect::<Vec<_>>()
+            .join(", ");
         let anchor_gone = gone.contains(&p.anchor);
         // Only write when the latch actually moves: an already-withdrawn property
         // must not gain a revision (and a store document) at every boot.
@@ -277,7 +289,11 @@ fn reconcile_properties(ctx: &mut Ctx<'_>, pages: &mut usize) {
                      every tenancy on it is untouched. A home does not end because its rooms \
                      vanished — rebuild the rooms and @property/rooms them back, or end the \
                      tenancy deliberately",
-                    if anchor_gone { " (the anchor among them)" } else { "" }
+                    if anchor_gone {
+                        " (the anchor among them)"
+                    } else {
+                        ""
+                    }
                 ),
                 vec![
                     format!("@property/show {id}"),
@@ -291,13 +307,19 @@ fn reconcile_properties(ctx: &mut Ctx<'_>, pages: &mut usize) {
 /// Pass 2 — a tenant object that no longer exists.
 fn reconcile_tenants(ctx: &mut Ctx<'_>, pages: &mut usize) {
     let candidates: Vec<(TenancyId, Vec<ObjId>)> = {
-        let Some(store) = ctx.w.module_state::<HousingStore>() else { return };
+        let Some(store) = ctx.w.module_state::<HousingStore>() else {
+            return;
+        };
         store
             .tenancies()
             .filter(|t| !t.status.is_ended())
             .filter_map(|t| {
-                let gone: Vec<ObjId> =
-                    t.tenants.iter().copied().filter(|w| !alive(ctx.w, *w)).collect();
+                let gone: Vec<ObjId> = t
+                    .tenants
+                    .iter()
+                    .copied()
+                    .filter(|w| !alive(ctx.w, *w))
+                    .collect();
                 (!gone.is_empty()).then_some((t.id, gone))
             })
             .collect()
@@ -308,7 +330,10 @@ fn reconcile_tenants(ctx: &mut Ctx<'_>, pages: &mut usize) {
         // would be a position on a clock this record has never been on.
         let now = tenancy_now(ctx, id).unwrap_or(0);
         for who in gone {
-            let Some(t) = ctx.w.module_state::<HousingStore>().and_then(|s| s.tenancy(id).cloned())
+            let Some(t) = ctx
+                .w
+                .module_state::<HousingStore>()
+                .and_then(|s| s.tenancy(id).cloned())
             else {
                 continue;
             };
@@ -362,13 +387,17 @@ fn reconcile_tenants(ctx: &mut Ctx<'_>, pages: &mut usize) {
 /// Pass 3 — an exact tenancy whose obligation is gone.
 fn reconcile_exact(ctx: &mut Ctx<'_>, pages: &mut usize) {
     let orphans: Vec<(TenancyId, u64)> = {
-        let Some(store) = ctx.w.module_state::<HousingStore>() else { return };
+        let Some(store) = ctx.w.module_state::<HousingStore>() else {
+            return;
+        };
         let econ = ctx.w.module_state::<mush_economy::EconomyStore>();
         store
             .tenancies()
             .filter(|t| t.status.is_live())
             .filter_map(|t| {
-                let Funding::Exact { obligation, .. } = &t.funding else { return None };
+                let Funding::Exact { obligation, .. } = &t.funding else {
+                    return None;
+                };
                 let known = econ.is_some_and(|e| {
                     e.snapshot()
                         .obligation(*obligation)
@@ -420,13 +449,17 @@ fn reconcile_exact(ctx: &mut Ctx<'_>, pages: &mut usize) {
 /// (`@tenancy/resolve <id>=end`) and a person types it.
 fn reconcile_pending(ctx: &mut Ctx<'_>, pages: &mut usize) {
     let stuck: Vec<(TenancyId, u64, &'static str)> = {
-        let Some(store) = ctx.w.module_state::<HousingStore>() else { return };
+        let Some(store) = ctx.w.module_state::<HousingStore>() else {
+            return;
+        };
         let econ = ctx.w.module_state::<mush_economy::EconomyStore>();
         store
             .tenancies()
             .filter(|t| matches!(t.status, crate::record::TenancyStatus::Pending))
             .filter_map(|t| {
-                let Funding::Exact { contract, .. } = &t.funding else { return None };
+                let Funding::Exact { contract, .. } = &t.funding else {
+                    return None;
+                };
                 let state = econ.and_then(|e| e.snapshot().contract(*contract).map(|c| c.state));
                 match state {
                     None => Some((t.id, contract.0, "gone")),
@@ -473,7 +506,9 @@ fn reconcile_pending(ctx: &mut Ctx<'_>, pages: &mut usize) {
 /// otherwise answerable only by reading the document.
 fn reconcile_cadences(ctx: &mut Ctx<'_>, pages: &mut usize) {
     let frozen: Vec<Tenancy> = {
-        let Some(store) = ctx.w.module_state::<HousingStore>() else { return };
+        let Some(store) = ctx.w.module_state::<HousingStore>() else {
+            return;
+        };
         store
             .tenancies()
             .filter(|t| t.status.is_live())
@@ -504,7 +539,9 @@ fn reconcile_cadences(ctx: &mut Ctx<'_>, pages: &mut usize) {
 /// boot is what makes the handle honestly boot-local.
 fn reconcile_scenes(ctx: &mut Ctx<'_>) {
     let stale: Vec<Tenancy> = {
-        let Some(store) = ctx.w.module_state::<HousingStore>() else { return };
+        let Some(store) = ctx.w.module_state::<HousingStore>() else {
+            return;
+        };
         store
             .tenancies()
             .filter(|t| {
@@ -519,7 +556,10 @@ fn reconcile_scenes(ctx: &mut Ctx<'_>) {
             window.scene = None;
         }
         t.revision = t.revision.saturating_add(1);
-        tracing::debug!(tenancy = t.id.0, "housing: cleared a boot-local scene ref on a story window");
+        tracing::debug!(
+            tenancy = t.id.0,
+            "housing: cleared a boot-local scene ref on a story window"
+        );
         put_tenancy(ctx, t);
     }
 }
@@ -532,7 +572,9 @@ fn reconcile_scenes(ctx: &mut Ctx<'_>) {
 /// decision or pass 1's, and only `@property/rooms` un-withdraws.
 fn reconcile_let_status(ctx: &mut Ctx<'_>) {
     let fixes: Vec<Property> = {
-        let Some(store) = ctx.w.module_state::<HousingStore>() else { return };
+        let Some(store) = ctx.w.module_state::<HousingStore>() else {
+            return;
+        };
         store
             .properties()
             .filter(|p| p.status != PropertyStatus::Withdrawn)
@@ -574,8 +616,12 @@ fn reconcile_let_status(ctx: &mut Ctx<'_>) {
 /// ordinary shape (the observer's `Resolution::Settled`, or a lease ended here).
 fn reconcile_ended_leases(ctx: &mut Ctx<'_>, pages: &mut usize) {
     let stale: Vec<Tenancy> = {
-        let Some(store) = ctx.w.module_state::<HousingStore>() else { return };
-        let Some(econ) = ctx.w.module_state::<mush_economy::EconomyStore>() else { return };
+        let Some(store) = ctx.w.module_state::<HousingStore>() else {
+            return;
+        };
+        let Some(econ) = ctx.w.module_state::<mush_economy::EconomyStore>() else {
+            return;
+        };
         store
             .tenancies()
             .filter(|t| t.status.is_ended())
@@ -590,13 +636,20 @@ fn reconcile_ended_leases(ctx: &mut Ctx<'_>, pages: &mut usize) {
             .collect()
     };
     for t in stale {
-        let Funding::Exact { contract, obligation } = &t.funding else { continue };
+        let Funding::Exact {
+            contract,
+            obligation,
+        } = &t.funding
+        else {
+            continue;
+        };
         let (contract, obligation) = (*contract, *obligation);
         let ending = crate::flow::end_lease(ctx, &t);
         let (level, outcome) = match &ending {
-            crate::flow::LeaseEnding::Ended => {
-                ("ended", "it has been ended now and its rent obligation cancelled".to_string())
-            }
+            crate::flow::LeaseEnding::Ended => (
+                "ended",
+                "it has been ended now and its rent obligation cancelled".to_string(),
+            ),
             crate::flow::LeaseEnding::Retrying => (
                 "retrying",
                 "its unwind was refused; the economy is retrying it from the sweep and has \
@@ -664,5 +717,3 @@ pub(crate) fn tenancy_now(ctx: &Ctx<'_>, id: TenancyId) -> Option<i64> {
 pub(crate) fn tenancy_ids(store: &HousingStore) -> Vec<TenancyId> {
     store.open_tenancy_ids().collect()
 }
-
-

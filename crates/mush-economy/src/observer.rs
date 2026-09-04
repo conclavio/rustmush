@@ -87,7 +87,9 @@ pub fn observer_depth() -> u32 {
 /// Deliver one event to every wired observer, post-commit.
 pub(crate) fn emit(ctx: &mut Ctx<'_>, ev: &EconomicEvent) {
     let observers = {
-        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else { return };
+        let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
+            return;
+        };
         if store.observers.is_empty() {
             return;
         }
@@ -139,9 +141,10 @@ fn page_dropped(ctx: &mut Ctx<'_>, ev: &EconomicEvent) {
         ),
         EconomicEvent::TransactionPosted { .. }
         | EconomicEvent::HoldChanged { .. }
-        | EconomicEvent::AssetTitleChanged { .. } => {
-            (crate::escalation::EscalationSubject::Economy, "an economic event".to_string())
-        }
+        | EconomicEvent::AssetTitleChanged { .. } => (
+            crate::escalation::EscalationSubject::Economy,
+            "an economic event".to_string(),
+        ),
     };
     let now = ctx.w.now();
     let _ = crate::sweep::page(

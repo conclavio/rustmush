@@ -38,9 +38,9 @@
 use mush_core::behavior::DestroyGate;
 use mush_core::module::{EventHook, WorldEvent};
 use mush_core::{Ctx, ObjId, Registry, World};
-use mush_proto::RichText;
 use mush_economy::{EscalationKind, EscalationSubject};
 use mush_org::{OrgScopeId, PrincipalId};
+use mush_proto::RichText;
 
 use crate::access::Access;
 use crate::module::{HousingStore, LiveEntry, RoomEntry, is_let, is_staff, room_of};
@@ -130,8 +130,16 @@ impl EventHook for AccessHook {
 /// are the source of truth; the quarantine is their consequence.
 #[must_use]
 pub fn may_reach(w: &World, who: ObjId, room: ObjId) -> Access {
-    let Some(store) = w.module_state::<HousingStore>() else { return Access::Staff };
-    let closed = || if is_staff(w, who) { Access::Staff } else { Access::Refused };
+    let Some(store) = w.module_state::<HousingStore>() else {
+        return Access::Staff;
+    };
+    let closed = || {
+        if is_staff(w, who) {
+            Access::Staff
+        } else {
+            Access::Refused
+        }
+    };
     let property = match store.room_entry(room) {
         None => return Access::Staff,
         Some(RoomEntry::Conflict(_)) => return closed(),
@@ -140,7 +148,9 @@ pub fn may_reach(w: &World, who: ObjId, room: ObjId) -> Access {
     if store.is_quarantined_property(property) {
         return closed();
     }
-    let Some(property) = store.property(property) else { return Access::Staff };
+    let Some(property) = store.property(property) else {
+        return Access::Staff;
+    };
     // **The live tenancy alone, never the `Let` latch** (fold H1). See the module
     // doc: `Withdrawn` is a service decision about the destroy gate, and a home
     // somebody still lives in does not stop being theirs because the property was
@@ -209,7 +219,9 @@ pub struct HousingDestroyGate;
 
 impl DestroyGate for HousingDestroyGate {
     fn check(&self, w: &World, _reg: &Registry, actor: ObjId, target: ObjId) -> Result<(), String> {
-        let Some(store) = w.module_state::<HousingStore>() else { return Ok(()) };
+        let Some(store) = w.module_state::<HousingStore>() else {
+            return Ok(());
+        };
         // Look-back fold, D-LBK-1: a room under review is refused to everyone. A
         // viewer of any property involved is told so; everyone else gets the
         // neutral sentence.
@@ -279,19 +291,27 @@ impl DestroyGate for HousingDestroyGate {
 /// and the economy's ladder dedupes by subject, so paging every time costs one record
 /// rather than one per room.
 pub(crate) fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
-    let WorldEvent::ObjDestroyed { obj } = ev else { return };
+    let WorldEvent::ObjDestroyed { obj } = ev else {
+        return;
+    };
     let obj = *obj;
     // Every property that held the room — one, or (a quarantined overlap) several;
     // each is withdrawn and paged on its own record (look-back fold, D-LBK-4a).
     let hits: Vec<(Property, bool)> = {
-        let Some(store) = ctx.w.module_state::<HousingStore>() else { return };
+        let Some(store) = ctx.w.module_state::<HousingStore>() else {
+            return;
+        };
         let ids: Vec<crate::ids::PropertyId> = match store.room_entry(obj) {
             None => Vec::new(),
             Some(RoomEntry::Unique(id)) => vec![*id],
             Some(RoomEntry::Conflict(set)) => set.iter().copied().collect(),
         };
         ids.into_iter()
-            .filter_map(|id| store.property(id).map(|p| (p.clone(), store.has_live_tenancy(p.id))))
+            .filter_map(|id| {
+                store
+                    .property(id)
+                    .map(|p| (p.clone(), store.has_live_tenancy(p.id)))
+            })
             .collect()
     };
     for (p, live) in hits {
@@ -331,14 +351,20 @@ fn withdraw_destroyed(ctx: &mut Ctx<'_>, obj: ObjId, p: Property, live: bool) {
             obj.0,
             if was_let { " while it was LET" } else { "" }
         ),
-        vec![format!("@property/show {id}"), format!("@tenancy/list property={id}")],
+        vec![
+            format!("@property/show {id}"),
+            format!("@tenancy/list property={id}"),
+        ],
     );
     // Whoever lives there should hear it from the game rather than from a wall that
     // is not there any more.
     let tenants: Vec<ObjId> = ctx
         .w
         .module_state::<HousingStore>()
-        .and_then(|s| s.live_tenancy_of(id).map(|t| t.tenants.iter().copied().collect()))
+        .and_then(|s| {
+            s.live_tenancy_of(id)
+                .map(|t| t.tenants.iter().copied().collect())
+        })
         .unwrap_or_default();
     for who in tenants {
         crate::notice::notify(
