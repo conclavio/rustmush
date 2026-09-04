@@ -39,13 +39,13 @@ use mush_config::ipguard::IpGuard;
 use mush_config::metrics::Metrics;
 use mush_config::offer_keys::DurableOfferKeyStore;
 use mush_core::{
-    ActionInvocation, ActionInvocationDraft, CanonicalId, ControlMsg, Engine, IdempotencyKey,
-    IdempotencyScope, Inbound, IngressEnvelope, IngressPayload, IngressSurfaceVersion, PrincipalId,
+    CanonicalId, ControlMsg, Engine, IdempotencyKey, IdempotencyScope, Inbound, IngressEnvelope,
+    IngressPayload, IngressSurfaceVersion, OfferRouteTable, OfferSubmission, PrincipalId,
     ScopedIdempotencyKey,
 };
 use mush_ipc::{
     BoxWrite, FrameReader, GatewayInput, GatewayRequest, GatewayRequestDisposition, IPC_VERSION,
-    IpcEndpoint, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES,
+    IpcEndpoint, LegalActionsError, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES,
     MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES_PER_CONNECTION, MAX_IN_FLIGHT_GATEWAY_INPUTS,
     MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
     MAX_IN_FLIGHT_SERVICE_REQUESTS, RequestUid, ServiceReq, ServiceResp, ToGateway, ToServer,
@@ -76,7 +76,9 @@ use crate::persist::AuthoritativeCommitFailure;
 use crate::persist::{load_or_seed_world, reconcile_authoritative_for_writable_boot};
 use crate::quarantine::QuarantineSpool;
 use crate::staff::{StaffQueue, register_server_commands_with_cap};
-use crate::world_task::{CreatePlayerErr, ServerDeps, WorldHandle, WorldReadError};
+use crate::world_task::{
+    CreatePlayerErr, LegalActionReadError, ServerDeps, WorldHandle, WorldReadError,
+};
 
 pub use gateway_sink::{GatewaySink, SocketSink as ServerSocketSink};
 
@@ -333,6 +335,13 @@ pub async fn serve_with_quarantine_spool(
         None => open_store(&config).await?,
     };
     let (engine, staff) = build_engine(&config, &store, &quarantine_spool).await?;
+    let offer_routes = Arc::new(
+        engine
+            .registry
+            .action_providers()
+            .ok_or_else(|| "legal-action provider registry is unavailable".to_owned())?
+            .offer_route_table(),
+    );
 
     // The web hello manifest, collected while the registry is still in hand — a
     // verbatim port of `mushd::main`'s assembly (crates/mushd/src/main.rs): every
@@ -439,6 +448,7 @@ pub async fn serve_with_quarantine_spool(
         reader_half,
         world.clone(),
         ingress_store,
+        offer_routes,
         reply_sink,
         &metrics,
     )
@@ -751,24 +761,33 @@ fn release_input_claim(
         .release(request)
 }
 
-fn authoritative_ingress(request: &GatewayRequest) -> Result<IngressEnvelope, String> {
+fn authoritative_ingress(
+    request: &GatewayRequest,
+    routes: &OfferRouteTable,
+) -> Result<IngressEnvelope, String> {
     let GatewayInput::Action(input) = &request.input else {
         return Err("coordinator ingress received a non-action request".to_owned());
     };
+    // The route prefix is deliberately insufficient to authorize execution.
+    // It selects only the frozen provider/idempotency namespace needed for
+    // preflight; the world later regenerates the complete offer and verifies
+    // its HMAC before provider planning or intent reservation.
+    let action = routes
+        .get(input.offered_action.route_id())
+        .ok_or_else(|| "opaque offer route is not registered".to_owned())?;
     let principal = PrincipalId::Object { id: input.actor };
     let namespace =
-        CanonicalId::new(input.action.key().id.as_str()).map_err(|error| error.to_string())?;
+        CanonicalId::new(action.key().id.as_str()).map_err(|error| error.to_string())?;
     let idempotency = ScopedIdempotencyKey::new(
         IdempotencyScope {
             principal: principal.clone(),
-            owner: input.action.key().owner.clone(),
+            owner: action.key().owner.clone(),
             namespace,
         },
         request.epoch,
         IdempotencyKey::Request(request.uid),
     );
     let canonical_payload = IngressPayload::structured(serde_json::json!({
-        "action": input.action,
         "offered_action": input.offered_action,
         "subject": input.subject,
         "targets": input.targets,
@@ -779,7 +798,7 @@ fn authoritative_ingress(request: &GatewayRequest) -> Result<IngressEnvelope, St
         request.uid,
         principal.clone(),
         IngressSurfaceVersion::new(
-            CanonicalId::new("ipc.structured_action").expect("static surface id is valid"),
+            CanonicalId::new("ipc.legal_action").expect("static surface id is valid"),
             1,
         )
         .expect("non-zero static surface version"),
@@ -789,28 +808,9 @@ fn authoritative_ingress(request: &GatewayRequest) -> Result<IngressEnvelope, St
     .map_err(|error| error.to_string())
 }
 
-fn authoritative_invocation(
-    request: &GatewayRequest,
-    idempotency: ScopedIdempotencyKey,
-) -> Result<ActionInvocation, String> {
-    let GatewayInput::Action(input) = &request.input else {
-        return Err("coordinator invocation received a non-action request".to_owned());
-    };
-    ActionInvocation::new(ActionInvocationDraft {
-        request: request.uid,
-        principal: PrincipalId::Object { id: input.actor },
-        actor: input.actor,
-        offered_action: input.offered_action,
-        subject: input.subject.clone(),
-        targets: input.targets.clone(),
-        parameters: input.parameters.clone(),
-        idempotency,
-    })
-    .map_err(|error| error.to_string())
-}
-
 async fn handle_authoritative_input(
     request: GatewayRequest,
+    routes: Arc<OfferRouteTable>,
     world: WorldHandle,
     store: Arc<dyn ObjectStore>,
     sink: SocketSink,
@@ -821,7 +821,7 @@ async fn handle_authoritative_input(
         GatewayInput::Action(input) => (input.conn, input.actor),
         _ => unreachable!("only action requests enter the coordinator handler"),
     };
-    let envelope = match authoritative_ingress(&request) {
+    let envelope = match authoritative_ingress(&request, &routes) {
         Ok(envelope) => envelope,
         Err(detail) => {
             release_input_claim(&claims, uid);
@@ -834,11 +834,6 @@ async fn handle_authoritative_input(
             return;
         }
     };
-    let action = match &request.input {
-        GatewayInput::Action(input) => input.action.clone(),
-        _ => unreachable!("validated coordinator request changed variants"),
-    };
-
     let Some(authoritative_store) = store.authoritative_store() else {
         tracing::error!(%uid, "configured store lacks authoritative request capability; preserving custody");
         return;
@@ -942,22 +937,17 @@ async fn handle_authoritative_input(
         }
     }
 
-    let invocation =
-        match authoritative_invocation(&request, permit.ingress().idempotency().clone()) {
-            Ok(invocation) => invocation,
-            Err(detail) => {
-                release_input_claim(&claims, uid);
-                request_disposition(
-                    &sink,
-                    uid,
-                    GatewayRequestDisposition::Rejected { retryable: false },
-                );
-                tracing::warn!(%uid, %detail, "invalid coordinator action invocation");
-                return;
-            }
-        };
+    let submission = match &request.input {
+        GatewayInput::Action(input) => OfferSubmission {
+            offer: input.offered_action,
+            subject: input.subject.clone(),
+            targets: input.targets.clone(),
+            parameters: input.parameters.clone(),
+        },
+        _ => unreachable!("validated coordinator request changed variants"),
+    };
 
-    let watch = match world.authoritative_action(permit, action, invocation).await {
+    let watch = match world.authoritative_action(permit, submission).await {
         Ok(watch) => watch,
         Err(world_task::AuthoritativeActionStartError::Busy) => {
             release_input_claim(&claims, uid);
@@ -1039,6 +1029,7 @@ async fn reader_loop(
     r: mush_ipc::BoxRead,
     world: WorldHandle,
     store: Arc<dyn ObjectStore>,
+    offer_routes: Arc<OfferRouteTable>,
     reply_sink: SocketSink,
     metrics: &Metrics,
 ) -> std::io::Result<()> {
@@ -1052,7 +1043,7 @@ async fn reader_loop(
                     wire,
                     mush_ipc::WireInbound::Cmd { .. } | mush_ipc::WireInbound::Query { .. }
                 ) {
-                    tracing::error!("raw player input bypassed the version-2 custody envelope");
+                    tracing::error!("raw player input bypassed the version-3 custody envelope");
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         "player input requires GatewayRequest custody",
@@ -1138,11 +1129,14 @@ async fn reader_loop(
                             ServerClaimAdmission::New => {
                                 let world = world.clone();
                                 let store = Arc::clone(&store);
+                                let routes = Arc::clone(&offer_routes);
                                 let sink = reply_sink.clone();
                                 let claims = Arc::clone(&input_claims);
                                 tokio::spawn(async move {
-                                    handle_authoritative_input(request, world, store, sink, claims)
-                                        .await;
+                                    handle_authoritative_input(
+                                        request, routes, world, store, sink, claims,
+                                    )
+                                    .await;
                                 });
                             }
                             ServerClaimAdmission::Duplicate => {
@@ -1303,6 +1297,18 @@ async fn handle_request(world: &WorldHandle, req: ServiceReq) -> ServiceResp {
                 Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
             }
         }
+        ServiceReq::LegalActions {
+            conn,
+            actor,
+            subject,
+        } => match world.legal_actions(conn, actor, subject).await {
+            Ok(offers) => ServiceResp::LegalActions(Ok(offers)),
+            Err(LegalActionReadError::Busy) => ServiceResp::Busy,
+            Err(LegalActionReadError::Unavailable) => ServiceResp::Unavailable,
+            Err(LegalActionReadError::InvalidSubject) => {
+                ServiceResp::LegalActions(Err(LegalActionsError::InvalidSubject))
+            }
+        },
         ServiceReq::Barrier => barrier_response(world.barrier_result().await),
     }
 }

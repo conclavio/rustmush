@@ -7,8 +7,8 @@
 //! pairs matched by a `u64` request id.
 
 use mush_core::{
-    ActionOfferId, CanonicalHash, CommitToken, DefinitionRef, DisconnectKind, Inbound, ObjId,
-    PerceivedRef, RequestUid,
+    ActionOfferId, CanonicalHash, CommitToken, DisconnectKind, Inbound, ObjId, PerceivedRef,
+    ProjectedLegalAction, RequestUid,
 };
 use mush_proto::OutputEvent;
 use serde::{Deserialize, Serialize};
@@ -26,7 +26,7 @@ pub use mush_core::ControlMsg;
 /// breaking change; additive changes (new enum arms, new struct fields under a
 /// self-describing encoding) keep the same version and stay wire-compatible
 /// with older peers.
-pub const IPC_VERSION: u32 = 2;
+pub const IPC_VERSION: u32 = 3;
 
 /// Maximum replayable player inputs held by either half of one split-process
 /// boundary. The gateway enforces the limit before accepting custody and the
@@ -166,11 +166,9 @@ pub enum GatewayInput {
     /// The connection/actor pair is transport evidence only: for a new request
     /// the server verifies it against the live connection map and constructs
     /// the authenticated principal itself. An exact existing durable binding
-    /// may settle a replay after that original connection disappears. `action`
-    /// is an exact mechanics definition. No public gateway interface produces this arm before K5's
-    /// legal-offer verification lands; doing so would bypass the still-open
-    /// offer-binding gate. K5 can become its producer without changing the
-    /// custody protocol.
+    /// may settle a replay after that original connection disappears. The
+    /// opaque offer is the only action selector crossing this boundary; exact
+    /// mechanics identity remains server-held and is regenerated before use.
     Action(Box<GatewayAction>),
 }
 
@@ -183,8 +181,6 @@ pub struct GatewayAction {
     pub conn: u64,
     /// The actor asserted by the gateway and revalidated by the server.
     pub actor: ObjId,
-    /// Exact action definition selected by the projected offer.
-    pub action: DefinitionRef,
     /// Opaque offer identity echoed into the semantic invocation.
     pub offered_action: ActionOfferId,
     /// Perceived subject reference, never an unrestricted truth lookup.
@@ -222,7 +218,6 @@ impl GatewayInput {
             }
             Self::Action(action) => {
                 let payload = serde_json::to_vec(&serde_json::json!({
-                    "action": action.action,
                     "offered_action": action.offered_action,
                     "subject": action.subject,
                     "targets": action.targets,
@@ -521,6 +516,18 @@ pub enum ServiceReq {
         /// The actor the gateway attached locally.
         actor: ObjId,
     },
+    /// Enumerate viewer-safe legal actions for one perceived subject. The
+    /// connection/actor pair is revalidated by the world task before any
+    /// provider can project an offer.
+    LegalActions {
+        /// The physical connection making the request.
+        conn: u64,
+        /// The actor currently attached to `conn`.
+        actor: ObjId,
+        /// A previously projected subject reference. K5 initially accepts
+        /// only `SelfActor`; K6 adds revision-checked object/contact scopes.
+        subject: PerceivedRef,
+    },
     /// Ordering barrier: answered once every message queued before it has been
     /// processed and its output delivered.
     Barrier,
@@ -541,6 +548,10 @@ pub enum ServiceResp {
     /// Result of a [`ServiceReq::ConnectionReady`]: `true` = the exact
     /// connection-to-actor association exists in the engine.
     ConnectionReady(bool),
+    /// Result of a [`ServiceReq::LegalActions`] projection. Busy and world
+    /// disappearance retain the request-level [`Self::Busy`] and
+    /// [`Self::Unavailable`] arms; this result carries semantic refusals.
+    LegalActions(Result<Vec<ProjectedLegalAction>, LegalActionsError>),
     /// Acknowledgement of a [`ServiceReq::Barrier`].
     Barrier,
     /// The boundary has reached its fixed correlated-request custody limit.
@@ -555,6 +566,15 @@ pub enum ServiceResp {
     /// In particular, a failed ordering barrier must use this arm: failure may
     /// never be synthesized into [`ServiceResp::Barrier`].
     Unavailable,
+}
+
+/// Semantic refusal for a legal-action projection that reached the world.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+pub enum LegalActionsError {
+    /// The perceived subject kind is not yet backed by a safe authoritative
+    /// projection/revision path.
+    #[error("that perceived subject cannot be used for legal-action discovery")]
+    InvalidSubject,
 }
 
 /// Player-creation failure, carried in [`ServiceResp::CreatePlayer`]. A

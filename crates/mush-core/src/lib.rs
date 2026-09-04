@@ -180,10 +180,10 @@ pub use offer::{
     MAX_PROJECTED_ACTION_CHANNELS, MAX_PROJECTED_ACTION_CHOICES, MAX_PROJECTED_ACTION_PARAMETERS,
     MAX_PROJECTED_ACTION_TEXT_BYTES, MAX_PROJECTED_LEGAL_ACTION_BYTES,
     MAX_PROJECTED_LEGAL_ACTION_SET_BYTES, MAX_PROJECTED_LEGAL_ACTIONS, OfferBuildError,
-    OfferExecutionContext, OfferKeyRing, OfferResolveError, OfferSecret, OfferSecretError,
-    OfferSubmission, ProjectedLegalAction, ProjectedLegalActionSink, ProjectedParameter,
-    ProjectedParameterKind, ProjectedParameterSchema, ProjectedTargetSchema, ProjectionScopeId,
-    ProviderOfferDraft, ResolvedOffer,
+    OfferExecutionContext, OfferKeyRing, OfferResolveError, OfferRouteId, OfferRouteTable,
+    OfferSecret, OfferSecretError, OfferSubmission, ProjectedLegalAction, ProjectedLegalActionSink,
+    ProjectedParameter, ProjectedParameterKind, ProjectedParameterSchema, ProjectedTargetSchema,
+    ProjectionScopeId, ProviderOfferDraft, ResolvedOffer,
 };
 pub use output::{
     Audience, ConnId, DeliveryClass, DeliveryOutcome, Outbox, name_span, obj_ref, room_view,

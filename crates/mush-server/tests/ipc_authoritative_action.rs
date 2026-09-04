@@ -5,17 +5,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mush_config::config::Config;
-use mush_core::{
-    ActionOfferId, CanonicalHash, DefinitionId, DefinitionKey, DefinitionKind, DefinitionRef,
-    Engine, GOD, LIMBO, OwnerId, PerceivedRef,
-};
+use mush_core::{ActionOfferId, CanonicalHash, GOD, LIMBO, PerceivedRef};
 use mush_ipc::{
-    FrameReader, GatewayAction, GatewayInput, GatewayRequest, GatewayRequestDisposition, ToGateway,
-    ToServer, WireInbound, write_frame,
+    FrameReader, GatewayAction, GatewayInput, GatewayRequest, GatewayRequestDisposition,
+    ServiceReq, ServiceResp, ToGateway, ToServer, WireInbound, write_frame,
 };
 use mush_store::{AuthoritativeStore, BundleStatus, InMemoryStore, ObjectStore};
-use mush_tactics::{BRACE_ACTION_ID, TacticsModule};
-use mush_testkit::boot_world;
 
 fn scratch_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -35,24 +30,6 @@ fn test_config(tag: &str) -> Config {
     config.ipc.listen = "127.0.0.1:0".to_owned();
     config.rulesets.enabled = vec![];
     config
-}
-
-fn brace_action() -> DefinitionRef {
-    let (world, registry) = boot_world();
-    let engine = Engine::with_modules(world, registry, vec![Box::new(TacticsModule::new())])
-        .expect("tactics composition");
-    let key = DefinitionKey::new(
-        OwnerId::new("tactics").unwrap(),
-        DefinitionKind::new("action").unwrap(),
-        DefinitionId::new(BRACE_ACTION_ID).unwrap(),
-    );
-    engine
-        .registry
-        .definitions()
-        .unwrap()
-        .current(&key)
-        .expect("current brace action")
-        .clone()
 }
 
 async fn boot_server(tag: &'static str) -> (mush_ipc::IpcEndpoint, Arc<InMemoryStore>) {
@@ -103,15 +80,18 @@ async fn hello_and_attach(
     (frames, writer)
 }
 
-fn action_request(sequence: u64, actor: mush_core::ObjId) -> GatewayRequest {
+fn action_request(
+    sequence: u64,
+    actor: mush_core::ObjId,
+    offered_action: ActionOfferId,
+) -> GatewayRequest {
     GatewayRequest::new(
         77,
         sequence,
         GatewayInput::Action(Box::new(GatewayAction {
             conn: 41,
             actor,
-            action: brace_action(),
-            offered_action: ActionOfferId(CanonicalHash::from_bytes([0x51; 32])),
+            offered_action,
             subject: PerceivedRef::SelfActor,
             targets: Vec::new(),
             parameters: serde_json::json!({}),
@@ -119,11 +99,48 @@ fn action_request(sequence: u64, actor: mush_core::ObjId) -> GatewayRequest {
     )
 }
 
+async fn brace_offer(
+    frames: &mut FrameReader<mush_ipc::BoxRead>,
+    writer: &mut mush_ipc::BoxWrite,
+) -> ActionOfferId {
+    write_frame(
+        writer,
+        &ToServer::Request {
+            id: 900,
+            req: ServiceReq::LegalActions {
+                conn: 41,
+                actor: GOD,
+                subject: PerceivedRef::SelfActor,
+            },
+        },
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let ToGateway::Reply {
+                id: 900,
+                resp: ServiceResp::LegalActions(Ok(offers)),
+            } = frames.read::<ToGateway>().await.unwrap().unwrap()
+            {
+                let offer = offers
+                    .iter()
+                    .find(|offer| offer.presentation().verb == "brace")
+                    .expect("tactics brace is publicly projected");
+                break offer.offer();
+            }
+        }
+    })
+    .await
+    .expect("legal-action projection timed out")
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn authenticated_action_transfers_ownership_only_after_exact_intent() {
     let (endpoint, store) = boot_server("owned-finished").await;
     let (mut frames, mut writer) = hello_and_attach(&endpoint).await;
-    let request = action_request(1, GOD);
+    let offer = brace_offer(&mut frames, &mut writer).await;
+    let request = action_request(1, GOD, offer);
     write_frame(&mut writer, &ToServer::Input(request.clone()))
         .await
         .unwrap();
@@ -219,7 +236,8 @@ async fn authenticated_action_transfers_ownership_only_after_exact_intent() {
 async fn actor_field_cannot_spoof_the_authenticated_connection() {
     let (endpoint, _store) = boot_server("spoof-rejected").await;
     let (mut frames, mut writer) = hello_and_attach(&endpoint).await;
-    let request = action_request(2, LIMBO);
+    let offer = brace_offer(&mut frames, &mut writer).await;
+    let request = action_request(2, LIMBO, offer);
     write_frame(&mut writer, &ToServer::Input(request.clone()))
         .await
         .unwrap();
@@ -238,6 +256,45 @@ async fn actor_field_cannot_spoof_the_authenticated_connection() {
     })
     .await
     .expect("spoof rejection timed out");
+    assert_eq!(
+        disposition,
+        GatewayRequestDisposition::Rejected { retryable: false }
+    );
+
+    write_frame(
+        &mut writer,
+        &ToServer::Control(mush_core::ControlMsg::Shutdown),
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tampered_offer_tag_is_rejected_before_intent() {
+    let (endpoint, _store) = boot_server("tampered-offer").await;
+    let (mut frames, mut writer) = hello_and_attach(&endpoint).await;
+    let offer = brace_offer(&mut frames, &mut writer).await;
+    let mut tampered = *offer.0.as_bytes();
+    tampered[31] ^= 0x01;
+    let request = action_request(3, GOD, ActionOfferId(CanonicalHash::from_bytes(tampered)));
+    write_frame(&mut writer, &ToServer::Input(request.clone()))
+        .await
+        .unwrap();
+
+    let disposition = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let ToGateway::RequestDisposition {
+                request: seen,
+                disposition,
+            } = frames.read::<ToGateway>().await.unwrap().unwrap()
+                && seen == request.uid
+            {
+                break disposition;
+            }
+        }
+    })
+    .await
+    .expect("tampered-offer rejection timed out");
     assert_eq!(
         disposition,
         GatewayRequestDisposition::Rejected { retryable: false }

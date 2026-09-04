@@ -72,12 +72,12 @@ use mush_config::ipguard::IpGuard;
 use mush_config::metrics::{LlmFeatureStat, LlmTodaySpend, Metrics, WorldSample};
 use mush_core::commands::movement::find_exit;
 use mush_core::{
-    ActionInvocation, Audience, ControlMsg, DefinitionRef, DeliveryClass, DeliveryOutcome,
-    DisconnectKind, Effect, Effects, Engine, Flags, Inbound, IncidentId, ObjId, ObjKind, Outbox,
-    PreparedInstallation, Registry, RevisionSet, Role, ScheduledKind, StagedAction,
-    StagedActionPersistence, StepOutcome, TickCadence, World, WorldCommand, WorldEvent,
-    can_perceive, event_subject, is_ignoring, narrative_actor, register_core_commands,
-    register_engine_commands,
+    Audience, ControlMsg, DeliveryClass, DeliveryOutcome, DisconnectKind, Effect, Effects, Engine,
+    Flags, Inbound, IncidentId, LegalActionQuery, ObjId, ObjKind, OfferExecutionContext,
+    OfferSubmission, Outbox, PerceivedRef, PreparedInstallation, PrincipalId, ProjectedLegalAction,
+    Registry, Role, ScheduledKind, StagedAction, StagedActionPersistence, StepOutcome, SubjectKey,
+    TickCadence, World, WorldCommand, WorldEvent, can_perceive, event_subject, is_ignoring,
+    narrative_actor, register_core_commands, register_engine_commands,
 };
 use mush_ipc::{MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, SendTarget};
 use mush_llm::LlmService;
@@ -258,6 +258,14 @@ pub enum WorldMsg {
         /// `true` only for the exact tracked association.
         reply: oneshot::Sender<Result<bool, WorldReadError>>,
     },
+    /// Project the current legal actions for one authenticated actor and
+    /// perceived subject inside the authoritative single-writer.
+    LegalActions {
+        conn: u64,
+        actor: ObjId,
+        subject: PerceivedRef,
+        reply: oneshot::Sender<Result<Vec<ProjectedLegalAction>, LegalActionReadError>>,
+    },
     /// Execute one already-preflighted authoritative action inside the world
     /// single-writer. The opaque permit proves the store lookup happened
     /// before provider resolution or truth reads.
@@ -274,8 +282,7 @@ pub enum WorldMsg {
 /// Boxed world message payload for one preflighted coordinator action.
 pub struct AuthoritativeActionRequest {
     permit: Box<ActionPermit>,
-    action: DefinitionRef,
-    invocation: ActionInvocation,
+    submission: OfferSubmission,
     reply: oneshot::Sender<Result<AuthoritativeActionWatch, AuthoritativeActionStartError>>,
 }
 
@@ -296,6 +303,43 @@ pub enum WorldReadError {
     /// The world task disappeared or is not able to answer this read.
     #[error("the world is unavailable")]
     Unavailable,
+}
+
+/// Legal-action discovery can distinguish world availability from a subject
+/// representation that has no safe truth projection yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum LegalActionReadError {
+    #[error("the world is busy committing another action")]
+    Busy,
+    #[error("the world is unavailable")]
+    Unavailable,
+    #[error("the perceived subject has no authoritative projection path")]
+    InvalidSubject,
+}
+
+// K5's first public provider is actor-self scoped. K6 will replace this
+// bootstrap generation with the persisted perception/view generation and add
+// revision-checked KnownObject/Contact resolution. Keeping unsupported
+// references closed here prevents a placeholder from becoming authority.
+const BOOTSTRAP_SELF_PROJECTION_GENERATION: u64 = 1;
+
+fn self_legal_action_query(
+    principal: PrincipalId,
+    actor: ObjId,
+    subject: PerceivedRef,
+) -> Result<LegalActionQuery, LegalActionReadError> {
+    if subject != PerceivedRef::SelfActor {
+        return Err(LegalActionReadError::InvalidSubject);
+    }
+    LegalActionQuery::new(
+        principal,
+        actor,
+        SubjectKey::Object { id: actor },
+        subject,
+        BOOTSTRAP_SELF_PROJECTION_GENERATION,
+        None,
+    )
+    .map_err(|_| LegalActionReadError::Unavailable)
 }
 
 /// Immediate refusal before an authoritative intent can exist.
@@ -795,7 +839,8 @@ fn classify_world_msg(msg: &WorldMsg) -> IngressClass {
         }
         WorldMsg::NameFree { .. }
         | WorldMsg::InInputContext { .. }
-        | WorldMsg::ConnectionReady { .. } => IngressClass::WorldRead,
+        | WorldMsg::ConnectionReady { .. }
+        | WorldMsg::LegalActions { .. } => IngressClass::WorldRead,
         WorldMsg::Barrier { .. } => IngressClass::OrderingBarrier,
     }
 }
@@ -1014,6 +1059,32 @@ impl WorldHandle {
         rx.await.unwrap_or(Err(WorldReadError::Unavailable))
     }
 
+    /// Enumerate the current viewer-safe action offers for an authenticated
+    /// connection. The world task owns both connection truth and provider
+    /// projection, so no interface can manufacture either side of the query.
+    pub async fn legal_actions(
+        &self,
+        conn: u64,
+        actor: ObjId,
+        subject: PerceivedRef,
+    ) -> Result<Vec<ProjectedLegalAction>, LegalActionReadError> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(WorldMsg::LegalActions {
+                conn,
+                actor,
+                subject,
+                reply,
+            })
+            .await
+            .is_err()
+        {
+            return Err(LegalActionReadError::Unavailable);
+        }
+        rx.await.unwrap_or(Err(LegalActionReadError::Unavailable))
+    }
+
     /// Hand one preflighted semantic action to the world single-writer.
     ///
     /// The returned watch is not an acceptance acknowledgement. Its `owned`
@@ -1022,8 +1093,7 @@ impl WorldHandle {
     pub async fn authoritative_action(
         &self,
         permit: Box<ActionPermit>,
-        action: DefinitionRef,
-        invocation: ActionInvocation,
+        submission: OfferSubmission,
     ) -> Result<AuthoritativeActionWatch, AuthoritativeActionStartError> {
         let (reply, rx) = oneshot::channel();
         if self
@@ -1031,8 +1101,7 @@ impl WorldHandle {
             .send(WorldMsg::AuthoritativeAction(Box::new(
                 AuthoritativeActionRequest {
                     permit,
-                    action,
-                    invocation,
+                    submission,
                     reply,
                 },
             )))
@@ -1858,44 +1927,90 @@ async fn run(
                             let _ = reply.send(Ok(engine.actor_of(conn) == Some(actor)));
                             StepOutcome::Continue
                         }
+                        WorldMsg::LegalActions {
+                            conn,
+                            actor,
+                            subject,
+                            reply,
+                        } => {
+                            let result = if engine.actor_of(conn) != Some(actor) {
+                                Err(LegalActionReadError::InvalidSubject)
+                            } else {
+                                self_legal_action_query(
+                                    PrincipalId::Object { id: actor },
+                                    actor,
+                                    subject,
+                                )
+                                .and_then(|query| {
+                                    engine
+                                        .project_legal_actions(&query)
+                                        .map(|offers| offers.projected())
+                                        .map_err(|error| {
+                                            tracing::error!(
+                                                %actor,
+                                                error = %error,
+                                                "legal-action projection failed"
+                                            );
+                                            LegalActionReadError::Unavailable
+                                        })
+                                })
+                            };
+                            let _ = reply.send(result);
+                            StepOutcome::Continue
+                        }
                         WorldMsg::AuthoritativeAction(request) => {
                             let AuthoritativeActionRequest {
                                 permit,
-                                action,
-                                invocation,
+                                submission,
                                 reply,
                             } = *request;
-                            let staged = (|| {
-                                let definitions =
-                                    engine.registry.definitions().ok_or_else(|| {
-                                        "mechanics definition registry is unavailable".to_owned()
-                                    })?;
-                                let mut builder = engine
-                                    .registry
-                                    .server_guard_set_builder(RevisionSet::default())
+                            let staged = (|| -> Result<_, String> {
+                                let principal = permit.ingress().principal().clone();
+                                let PrincipalId::Object { id: actor } = principal else {
+                                    return Err(
+                                        "coordinator principal is not an object actor".to_owned()
+                                    );
+                                };
+                                let query = self_legal_action_query(
+                                    PrincipalId::Object { id: actor },
+                                    actor,
+                                    submission.subject.clone(),
+                                )
+                                .map_err(|error| error.to_string())?;
+                                let offers = engine
+                                    .project_legal_actions(&query)
                                     .map_err(|error| error.to_string())?;
-                                builder
-                                    .add_definition(action.clone(), definitions)
+                                let resolved = engine
+                                    .resolve_legal_action(
+                                        &offers,
+                                        OfferExecutionContext {
+                                            request: permit.ingress().request(),
+                                            principal: PrincipalId::Object { id: actor },
+                                            actor,
+                                            idempotency: permit.ingress().idempotency().clone(),
+                                            viewer_scope: query.viewer_scope(),
+                                            now: None,
+                                        },
+                                        submission,
+                                    )
                                     .map_err(|error| error.to_string())?;
-                                let guards = builder.finish().map_err(|error| error.to_string())?;
-                                ActionCoordinator::prepare_and_stage(
+                                ActionCoordinator::prepare_and_stage_resolved(
                                     permit,
                                     &mut engine,
-                                    &action,
-                                    &invocation,
-                                    guards,
+                                    resolved,
                                 )
+                                .map(|staged| (staged, actor))
                                 .map_err(|error| error.to_string())
                             })();
                             match staged {
-                                Ok(staged) => {
+                                Ok((staged, actor)) => {
                                     let (owned, owned_rx) = oneshot::channel();
                                     let (finished, finished_rx) = oneshot::channel();
                                     let _ = reply.send(Ok(AuthoritativeActionWatch {
                                         owned: owned_rx,
                                         finished: finished_rx,
                                     }));
-                                    failure_actor = Some(invocation.actor());
+                                    failure_actor = Some(actor);
                                     action_completion = Some(ActionCompletion {
                                         staged,
                                         owned: Some(owned),
@@ -2733,6 +2848,14 @@ fn refuse_world_msg(msg: WorldMsg, reason: RefusalReason, gateway: &Gateway) {
                 WorldReadError::Busy
             } else {
                 WorldReadError::Unavailable
+            };
+            let _ = reply.send(Err(error));
+        }
+        WorldMsg::LegalActions { reply, .. } => {
+            let error = if reason == RefusalReason::CommitPending {
+                LegalActionReadError::Busy
+            } else {
+                LegalActionReadError::Unavailable
             };
             let _ = reply.send(Err(error));
         }

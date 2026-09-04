@@ -32,16 +32,18 @@ use mush_core::module::{
 };
 use mush_core::output::display_name;
 use mush_core::{
-    ActionError, ActionErrorCode, ActionInvocation, ActionProvider, ActionStateError, ActionTxn,
-    ArgShape, Audience, AuthoritativeActionOutput, BehaviorBinding, BehaviorId, BehaviorSpec,
-    CanonicalId, CmdError, CommandSpec, Ctx, Deferred, DefinitionDescriptor, DefinitionDigest,
-    DefinitionId, DefinitionKind, DefinitionLookupError, DefinitionMigrationDescriptor,
-    DefinitionRef, DefinitionValidationContext, DestroyGate, DetachGate, Flags, IncidentId,
-    IncidentState, MAX_BOOT_REPORT_DETAILS, MechanicalState, MigrationPlanSummary,
-    ModuleBootReport, ModuleOp, ModuleWrite, ObjId, ObjKind, Outbox, OwnerId, PanelFeedHandle,
-    PerceivedRef, Powers, RecoveryIncident, RecoveryReason, RecoveryReporter, RecoveryScope,
-    RecoverySeverity, RecoverySubject, Registry, Role, RulesValue, StateFamilyDescriptor,
-    StateFamilyHandle, StateFamilyId, World, canonical_json_bytes_with_limit, match_object, perm,
+    ActionError, ActionErrorCode, ActionInvocation, ActionPresentation, ActionProvider,
+    ActionStateError, ActionTxn, ArgShape, Audience, AuthoritativeActionOutput, BehaviorBinding,
+    BehaviorId, BehaviorSpec, CanonicalId, CmdError, CommandSpec, Ctx, Deferred,
+    DefinitionDescriptor, DefinitionDigest, DefinitionId, DefinitionKind, DefinitionLookupError,
+    DefinitionMigrationDescriptor, DefinitionRef, DefinitionValidationContext, DestroyGate,
+    DetachGate, Engine, Flags, IncidentId, IncidentState, LegalActionQuery,
+    MAX_BOOT_REPORT_DETAILS, MechanicalState, MigrationPlanSummary, ModuleBootReport, ModuleOp,
+    ModuleWrite, ObjId, ObjKind, Outbox, OwnerId, PanelFeedHandle, PerceivedRef, Powers,
+    ProjectedParameterSchema, ProjectedTargetSchema, ProviderOfferDraft, RecoveryIncident,
+    RecoveryReason, RecoveryReporter, RecoveryScope, RecoverySeverity, RecoverySubject, Registry,
+    RevisionSet, Role, RulesValue, StateFamilyDescriptor, StateFamilyHandle, StateFamilyId,
+    SubjectKey, World, canonical_json_bytes_with_limit, match_object, perm,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -539,6 +541,77 @@ impl BraceProvider {
 impl ActionProvider for BraceProvider {
     fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
         Self::validate(invocation)
+    }
+
+    fn project_offer(
+        &self,
+        action: &DefinitionRef,
+        query: &LegalActionQuery,
+        engine: &Engine,
+    ) -> Result<Option<ProviderOfferDraft>, ActionError> {
+        let SubjectKey::Object { id: subject } = query.truth_subject() else {
+            return Ok(None);
+        };
+        if *subject != query.actor() || query.projected_subject() != &PerceivedRef::SelfActor {
+            return Ok(None);
+        }
+        let definitions = engine.registry.definitions().ok_or_else(|| {
+            ActionError::new(
+                ActionErrorCode::Integrity,
+                false,
+                "tactics definition registry is unavailable",
+            )
+            .expect("static tactics projection error is bounded")
+        })?;
+        let mut guards = engine
+            .registry
+            .server_guard_set_builder(RevisionSet::default())
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "tactics guard registry is unavailable",
+                )
+                .expect("static tactics projection error is bounded")
+            })?;
+        guards
+            .add_definition(action.clone(), definitions)
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "tactics brace definition guard is unavailable",
+                )
+                .expect("static tactics projection error is bounded")
+            })?;
+        Ok(Some(ProviderOfferDraft {
+            fixed_parameters: json!({}),
+            parameters: ProjectedParameterSchema::empty(),
+            targets: ProjectedTargetSchema::None,
+            required_channels: Vec::new(),
+            expires: None,
+            presentation: ActionPresentation::new(
+                "brace",
+                "Brace",
+                "Adopt a braced tactical stance.",
+            )
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "tactics brace presentation is invalid",
+                )
+                .expect("static tactics projection error is bounded")
+            })?,
+            guards: guards.finish().map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "tactics brace offer guards are invalid",
+                )
+                .expect("static tactics projection error is bounded")
+            })?,
+        }))
     }
 
     fn prepare_invocation(

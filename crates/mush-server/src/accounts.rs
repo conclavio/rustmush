@@ -9,9 +9,9 @@
 
 use futures::future::BoxFuture;
 use mush_core::Inbound;
-use mush_ipc::{GatewayLink, ServiceReq, ServiceResp, ToServer};
+use mush_ipc::{GatewayLink, LegalActionsError, ServiceReq, ServiceResp, ToServer};
 
-use crate::world_task::{WorldHandle, WorldReadError};
+use crate::world_task::{LegalActionReadError, WorldHandle, WorldReadError};
 use crate::{barrier_response, create_player_response};
 
 impl GatewayLink for WorldHandle {
@@ -76,6 +76,18 @@ impl GatewayLink for WorldHandle {
                         Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
                     }
                 }
+                ServiceReq::LegalActions {
+                    conn,
+                    actor,
+                    subject,
+                } => match self.legal_actions(conn, actor, subject).await {
+                    Ok(offers) => ServiceResp::LegalActions(Ok(offers)),
+                    Err(LegalActionReadError::Busy) => ServiceResp::Busy,
+                    Err(LegalActionReadError::Unavailable) => ServiceResp::Unavailable,
+                    Err(LegalActionReadError::InvalidSubject) => {
+                        ServiceResp::LegalActions(Err(LegalActionsError::InvalidSubject))
+                    }
+                },
                 ServiceReq::Barrier => barrier_response(self.barrier_result().await),
             })
         })

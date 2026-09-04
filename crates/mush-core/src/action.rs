@@ -3512,9 +3512,21 @@ impl ActionProviderRegistryBuilder {
                 owner_readiness: owner_readiness.clone(),
             });
         }
+        let mut offer_routes = BTreeMap::new();
+        for (locator, entry) in &entries {
+            let route = crate::offer::OfferRouteId::derive(&entry.action)
+                .map_err(ActionProviderRegistryError::OfferRouteHash)?;
+            if let Some(existing) = offer_routes.insert(route, locator.clone()) {
+                return Err(ActionProviderRegistryError::OfferRouteCollision {
+                    first: Box::new(existing),
+                    second: Box::new(locator.clone()),
+                });
+            }
+        }
         let fingerprint = provider_fingerprint(entries.values())?;
         Ok(ActionProviderRegistry {
             entries,
+            offer_routes,
             fingerprint,
             owner_readiness,
         })
@@ -3524,6 +3536,7 @@ impl ActionProviderRegistryBuilder {
 /// Immutable exact-action provider lookup.
 pub struct ActionProviderRegistry {
     entries: BTreeMap<crate::mechanics::DefinitionLocator, ActionProviderEntry>,
+    offer_routes: BTreeMap<crate::offer::OfferRouteId, crate::mechanics::DefinitionLocator>,
     fingerprint: DefinitionDigest,
     owner_readiness: MechanicalOwnerReadiness,
 }
@@ -3562,6 +3575,19 @@ impl ActionProviderRegistry {
         Ok(entry)
     }
 
+    /// Route-only immutable snapshot used for early idempotency scope
+    /// selection before the world task regenerates and verifies an offer.
+    #[must_use]
+    pub fn offer_route_table(&self) -> crate::offer::OfferRouteTable {
+        crate::offer::OfferRouteTable::from_entries(self.offer_routes.iter().filter_map(
+            |(route, locator)| {
+                self.entries
+                    .get(locator)
+                    .map(|entry| (*route, entry.action.clone()))
+            },
+        ))
+    }
+
     /// Enumerate providers in canonical action order and stamp every returned
     /// draft with the exact frozen action identity. The callback runs against
     /// immutable engine truth and owner readiness is checked again after it
@@ -3597,6 +3623,12 @@ impl ActionProviderRegistry {
             let offer = crate::offer::InternalOffer::new(
                 crate::offer::InternalOfferDraft {
                     action: entry.action().clone(),
+                    route: crate::offer::OfferRouteId::derive(entry.action()).map_err(
+                        |source| crate::offer::LegalActionProjectionError::Offer {
+                            action: Box::new(entry.action().clone()),
+                            source: Box::new(crate::offer::OfferBuildError::Hash(source)),
+                        },
+                    )?,
                     viewer_scope: query.viewer_scope(),
                     truth_subject: query.truth_subject().clone(),
                     projected_subject: query.projected_subject().clone(),
@@ -3859,6 +3891,13 @@ pub enum ActionProviderRegistryError {
     MissingActionDefinition {
         action: Box<DefinitionRef>,
         source: Box<DefinitionLookupError>,
+    },
+    #[error("cannot derive an opaque offer route: {0}")]
+    OfferRouteHash(#[source] CanonicalHashError),
+    #[error("opaque offer route collision between {first:?} and {second:?}")]
+    OfferRouteCollision {
+        first: Box<crate::mechanics::DefinitionLocator>,
+        second: Box<crate::mechanics::DefinitionLocator>,
     },
     #[error("cannot fingerprint action providers: {0}")]
     Fingerprint(#[from] CanonicalEncodingError),
