@@ -27,6 +27,7 @@ use crate::mechanics::{
     OwnerId, RulesValue, canonical_json_bytes_with_limit,
 };
 use crate::obj::ObjId;
+use crate::resolution::PreparedResolution;
 use crate::world::World;
 
 /// Maximum caller-supplied bytes in an idempotency key.
@@ -3194,6 +3195,7 @@ impl SameCommitTrigger {
 #[derive(Clone, Debug, PartialEq)]
 pub struct AuthoritativeActionOutput {
     outcome: RulesValue,
+    resolution: Option<PreparedResolution>,
     definitions: Vec<DefinitionRef>,
     eligible_witnesses: Vec<PrincipalId>,
     durable_outbox: Vec<DurableOutboxIntent>,
@@ -3205,6 +3207,7 @@ impl AuthoritativeActionOutput {
     pub fn new(outcome: RulesValue) -> Self {
         Self {
             outcome,
+            resolution: None,
             definitions: Vec::new(),
             eligible_witnesses: Vec::new(),
             durable_outbox: Vec::new(),
@@ -3215,6 +3218,12 @@ impl AuthoritativeActionOutput {
     #[must_use]
     pub fn with_definitions(mut self, definitions: Vec<DefinitionRef>) -> Self {
         self.definitions = definitions;
+        self
+    }
+
+    #[must_use]
+    pub fn with_resolution(mut self, resolution: PreparedResolution) -> Self {
+        self.resolution = Some(resolution);
         self
     }
 
@@ -3242,6 +3251,11 @@ impl AuthoritativeActionOutput {
     }
 
     #[must_use]
+    pub const fn resolution(&self) -> Option<&PreparedResolution> {
+        self.resolution.as_ref()
+    }
+
+    #[must_use]
     pub fn definitions(&self) -> &[DefinitionRef] {
         &self.definitions
     }
@@ -3256,17 +3270,10 @@ impl AuthoritativeActionOutput {
         &self.durable_outbox
     }
 
-    fn into_cascade_parts(
-        self,
-    ) -> (
-        RulesValue,
-        Vec<DefinitionRef>,
-        Vec<PrincipalId>,
-        Vec<DurableOutboxIntent>,
-        Vec<SameCommitTrigger>,
-    ) {
+    fn into_cascade_parts(self) -> AuthoritativeCascadeParts {
         (
             self.outcome,
+            self.resolution,
             self.definitions,
             self.eligible_witnesses,
             self.durable_outbox,
@@ -3275,12 +3282,22 @@ impl AuthoritativeActionOutput {
     }
 }
 
+type AuthoritativeCascadeParts = (
+    RulesValue,
+    Option<PreparedResolution>,
+    Vec<DefinitionRef>,
+    Vec<PrincipalId>,
+    Vec<DurableOutboxIntent>,
+    Vec<SameCommitTrigger>,
+);
+
 /// Complete semantic products of a fully expanded authoritative action.
 /// The transaction remains separate and one-shot so the server can bind the
 /// same immutable event graph and post-images to one durable bundle.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PreparedAuthoritativeAction {
     outcome: RulesValue,
+    resolution: Option<PreparedResolution>,
     definitions: Vec<DefinitionRef>,
     eligible_witnesses: Vec<PrincipalId>,
     durable_outbox: Vec<DurableOutboxIntent>,
@@ -3288,17 +3305,10 @@ pub struct PreparedAuthoritativeAction {
 }
 
 impl PreparedAuthoritativeAction {
-    pub fn into_parts(
-        self,
-    ) -> (
-        RulesValue,
-        Vec<DefinitionRef>,
-        Vec<PrincipalId>,
-        Vec<DurableOutboxIntent>,
-        Vec<AuthoritativeSemanticEvent>,
-    ) {
+    pub fn into_parts(self) -> PreparedAuthoritativeActionParts {
         (
             self.outcome,
+            self.resolution,
             self.definitions,
             self.eligible_witnesses,
             self.durable_outbox,
@@ -3306,6 +3316,16 @@ impl PreparedAuthoritativeAction {
         )
     }
 }
+
+/// Owned components of a prepared authoritative action.
+pub type PreparedAuthoritativeActionParts = (
+    RulesValue,
+    Option<PreparedResolution>,
+    Vec<DefinitionRef>,
+    Vec<PrincipalId>,
+    Vec<DurableOutboxIntent>,
+    Vec<AuthoritativeSemanticEvent>,
+);
 
 /// Frozen deterministic provider ordering assigned from canonical registry order.
 /// Callers cannot construct or choose this value.
@@ -3738,8 +3758,22 @@ impl ActionProviderRegistry {
                     source: Box::new(source),
                 })
             })?;
-        let (outcome, mut definitions, mut eligible_witnesses, mut durable_outbox, root_triggers) =
-            root_output.into_cascade_parts();
+        let (
+            outcome,
+            resolution,
+            mut definitions,
+            mut eligible_witnesses,
+            mut durable_outbox,
+            root_triggers,
+        ) = root_output.into_cascade_parts();
+        if let Some(prepared) = &resolution {
+            if prepared.outcome() != &outcome {
+                return Err(ActionProviderPrepareError::ResolutionOutcomeMismatch);
+            }
+            definitions.extend(prepared.definition_refs().iter().cloned());
+            definitions.push(prepared.modifiers().schema().clone());
+            definitions.push(prepared.outcome().schema().clone());
+        }
         definitions.push(outcome.schema().clone());
         let root_event = AuthoritativeSemanticEvent::new(
             root_cause,
@@ -3767,8 +3801,17 @@ impl ActionProviderRegistry {
                     source: Box::new(source),
                 })?;
             charge_new_operations(&mut queue, before_operations, &txn)?;
-            let (event_truth, event_definitions, event_witnesses, event_outbox, triggers) =
-                output.into_cascade_parts();
+            let (
+                event_truth,
+                event_resolution,
+                event_definitions,
+                event_witnesses,
+                event_outbox,
+                triggers,
+            ) = output.into_cascade_parts();
+            if event_resolution.is_some() {
+                return Err(ActionProviderPrepareError::TriggerResolutionUnsupported);
+            }
             definitions.push(event_truth.schema().clone());
             let event = AuthoritativeSemanticEvent::new(
                 cause,
@@ -3797,6 +3840,7 @@ impl ActionProviderRegistry {
             prepared,
             PreparedAuthoritativeAction {
                 outcome,
+                resolution,
                 definitions,
                 eligible_witnesses,
                 durable_outbox,
@@ -3848,6 +3892,10 @@ pub enum ActionProviderPrepareError {
     Cascade(#[from] CascadeError),
     #[error("authoritative semantic event preparation failed: {0}")]
     Semantic(#[from] AuthoritativeBundleError),
+    #[error("prepared resolution outcome does not match the authoritative action outcome")]
+    ResolutionOutcomeMismatch,
+    #[error("same-commit triggers cannot introduce an independent resolution transcript")]
+    TriggerResolutionUnsupported,
     #[error("action state preparation failed: {0}")]
     State(#[from] ActionStateError),
 }

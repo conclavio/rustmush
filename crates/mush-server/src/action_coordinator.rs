@@ -255,8 +255,14 @@ fn assemble_bundle(
 ) -> Result<AuthoritativeBundle, ActionCoordinatorError> {
     let provider = prepared.owner().clone();
     let writes = prepared.authoritative_replay_writes();
-    let (outcome, mut definitions, mut witnesses, durable_outbox, semantic_events) =
-        output.into_parts();
+    let (
+        outcome,
+        prepared_resolution,
+        mut definitions,
+        mut witnesses,
+        durable_outbox,
+        semantic_events,
+    ) = output.into_parts();
     definitions.push(action.clone());
     definitions.push(outcome.schema().clone());
     definitions.sort();
@@ -271,6 +277,7 @@ fn assemble_bundle(
     let cause = PreparedCausalRef::new(invocation.request(), None, 0)
         .map_err(ActionCoordinatorError::Causality)?;
     let token = deterministic_commit_token(ingress)?;
+    let resolution = prepared_resolution.map(|prepared| prepared.bind(token));
     let plan_hash = CanonicalHash::for_canonical_value(
         "authoritative_action_plan.v1",
         1,
@@ -282,6 +289,7 @@ fn assemble_bundle(
             "definitions": definitions,
             "writes": writes,
             "outcome": outcome,
+            "resolution": resolution,
             "semantic_events": semantic_events,
             "eligible_witnesses": witnesses,
             "durable_outbox": durable_outbox,
@@ -301,6 +309,7 @@ fn assemble_bundle(
         definitions,
         writes,
         outcome,
+        resolution,
         semantic_events,
         eligible_witnesses: witnesses,
         durable_outbox,

@@ -2310,6 +2310,7 @@ mod tests {
                 serde_json::json!({ "ok": true }),
             )
             .unwrap(),
+            resolution: None,
             semantic_events: vec![
                 mush_core::AuthoritativeSemanticEvent::root(
                     PreparedCausalRef::new(request, None, 0).unwrap(),

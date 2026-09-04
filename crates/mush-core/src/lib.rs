@@ -199,9 +199,9 @@ pub use output::{
 };
 pub use resolution::{
     MAX_RESOLUTION_DEFINITIONS, MAX_RESOLUTION_DRAWS, MAX_RESOLUTION_SECRET_VERSIONS,
-    MAX_RESOLUTION_STREAMS, MAX_RNG_REJECTION_ATTEMPTS, RecordedDraw, RecordedDrawValue,
-    ResolutionKeyRing, ResolutionRecord, ResolutionRecordError, ResolutionRng, ResolutionRngError,
-    ResolutionSecret, ResolutionSecretError, RngAlgorithmVersion,
+    MAX_RESOLUTION_STREAMS, MAX_RNG_REJECTION_ATTEMPTS, PreparedResolution, RecordedDraw,
+    RecordedDrawValue, ResolutionKeyRing, ResolutionRecord, ResolutionRecordError, ResolutionRng,
+    ResolutionRngError, ResolutionSecret, ResolutionSecretError, RngAlgorithmVersion,
 };
 pub use resource::{
     BoundedScalar, EffectDuration, EffectInstance, EffectInstanceError, EffectInstanceId,

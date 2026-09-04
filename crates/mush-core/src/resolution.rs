@@ -365,19 +365,16 @@ impl ResolutionRng {
         mac.finalize().into_bytes().into()
     }
 
-    /// Consume the generator into an immutable, serializable resolution
-    /// record. Exact definitions are sorted canonically before storage.
-    pub fn into_record(
+    /// Consume the generator into provider output that has no commit token.
+    /// The central coordinator binds the token while building the bundle.
+    pub fn into_prepared(
         self,
-        action: CommitToken,
         mut definitions: Vec<DefinitionRef>,
         modifiers: RulesValue,
         outcome: RulesValue,
-    ) -> Result<ResolutionRecord, ResolutionRecordError> {
+    ) -> Result<PreparedResolution, ResolutionRecordError> {
         definitions.sort();
-        ResolutionRecord::from_parts(
-            ResolutionRecord::SCHEMA_VERSION,
-            action,
+        PreparedResolution::new(
             self.algorithm,
             self.secret_version,
             definitions,
@@ -386,6 +383,74 @@ impl ResolutionRng {
             modifiers,
             outcome,
         )
+    }
+}
+
+/// Provider-produced resolution material before the coordinator assigns its
+/// authoritative commit identity. This type is intentionally not serializable.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreparedResolution {
+    algorithm: RngAlgorithmVersion,
+    secret_version: u32,
+    definition_refs: Vec<DefinitionRef>,
+    inputs_hash: CanonicalHash,
+    draws: Vec<RecordedDraw>,
+    modifiers: RulesValue,
+    outcome: RulesValue,
+}
+
+impl PreparedResolution {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        algorithm: RngAlgorithmVersion,
+        secret_version: u32,
+        definition_refs: Vec<DefinitionRef>,
+        inputs_hash: CanonicalHash,
+        draws: Vec<RecordedDraw>,
+        modifiers: RulesValue,
+        outcome: RulesValue,
+    ) -> Result<Self, ResolutionRecordError> {
+        validate_resolution_parts(secret_version, &definition_refs, &draws)?;
+        Ok(Self {
+            algorithm,
+            secret_version,
+            definition_refs,
+            inputs_hash,
+            draws,
+            modifiers,
+            outcome,
+        })
+    }
+
+    #[must_use]
+    pub fn definition_refs(&self) -> &[DefinitionRef] {
+        &self.definition_refs
+    }
+
+    #[must_use]
+    pub const fn modifiers(&self) -> &RulesValue {
+        &self.modifiers
+    }
+
+    #[must_use]
+    pub const fn outcome(&self) -> &RulesValue {
+        &self.outcome
+    }
+
+    /// Attach the coordinator-owned commit identity.
+    #[must_use]
+    pub fn bind(self, action: CommitToken) -> ResolutionRecord {
+        ResolutionRecord {
+            schema_version: ResolutionRecord::SCHEMA_VERSION,
+            action,
+            algorithm: self.algorithm,
+            secret_version: self.secret_version,
+            definition_refs: self.definition_refs,
+            inputs_hash: self.inputs_hash,
+            draws: self.draws,
+            modifiers: self.modifiers,
+            outcome: self.outcome,
+        }
     }
 }
 
@@ -460,18 +525,7 @@ impl ResolutionRecord {
                 supported: Self::SCHEMA_VERSION,
             });
         }
-        if secret_version == 0 {
-            return Err(ResolutionRecordError::ZeroSecretVersion);
-        }
-        if definition_refs.len() > MAX_RESOLUTION_DEFINITIONS {
-            return Err(ResolutionRecordError::DefinitionLimit {
-                max: MAX_RESOLUTION_DEFINITIONS,
-            });
-        }
-        if definition_refs.windows(2).any(|pair| pair[0] >= pair[1]) {
-            return Err(ResolutionRecordError::NonCanonicalDefinitions);
-        }
-        validate_draws(&draws)?;
+        validate_resolution_parts(secret_version, &definition_refs, &draws)?;
         Ok(Self {
             schema_version,
             action,
@@ -524,6 +578,25 @@ impl ResolutionRecord {
     pub const fn outcome(&self) -> &RulesValue {
         &self.outcome
     }
+}
+
+fn validate_resolution_parts(
+    secret_version: u32,
+    definition_refs: &[DefinitionRef],
+    draws: &[RecordedDraw],
+) -> Result<(), ResolutionRecordError> {
+    if secret_version == 0 {
+        return Err(ResolutionRecordError::ZeroSecretVersion);
+    }
+    if definition_refs.len() > MAX_RESOLUTION_DEFINITIONS {
+        return Err(ResolutionRecordError::DefinitionLimit {
+            max: MAX_RESOLUTION_DEFINITIONS,
+        });
+    }
+    if definition_refs.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(ResolutionRecordError::NonCanonicalDefinitions);
+    }
+    validate_draws(draws)
 }
 
 fn validate_draws(draws: &[RecordedDraw]) -> Result<(), ResolutionRecordError> {
@@ -748,13 +821,13 @@ mod tests {
             .unwrap();
         let schema = definition("result");
         let record = rng
-            .into_record(
-                CommitToken::from_bytes([0x77; 16]),
+            .into_prepared(
                 vec![definition("attack"), schema.clone()],
                 RulesValue::new(schema.clone(), json!({ "pool": 7 })).unwrap(),
                 RulesValue::new(schema, json!({ "successes": 3 })).unwrap(),
             )
-            .unwrap();
+            .unwrap()
+            .bind(CommitToken::from_bytes([0x77; 16]));
         let restored: ResolutionRecord =
             serde_json::from_slice(&serde_json::to_vec(&record).unwrap()).unwrap();
         assert_eq!(restored, record);

@@ -67,6 +67,7 @@ fn recovery_bundle() -> AuthoritativeBundle {
             ReplayWrite::ObjectAllocatorSet { next_id: 3 },
         ],
         outcome: RulesValue::new(outcome.clone(), serde_json::json!({ "created": 2 })).unwrap(),
+        resolution: None,
         semantic_events: vec![
             mush_core::AuthoritativeSemanticEvent::root(
                 PreparedCausalRef::new(request, None, 0).unwrap(),
