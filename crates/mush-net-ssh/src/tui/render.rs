@@ -713,6 +713,8 @@ mod tests {
         let theme = AnsiTheme::classic();
         let data = serde_json::json!([{
             "offer": "secret-opaque-token",
+            "truth_subject": { "clock": "scene_turn" },
+            "private": { "definition": "private-definition-digest" },
             "presentation": {
                 "verb": "brace",
                 "label": "Brace",
@@ -720,6 +722,7 @@ mod tests {
             }
         }]);
         let lines = render_legal_actions_panel(&data, &theme, ColorDepth::Ansi16);
+        let rendered = lines.iter().map(text_of).collect::<Vec<_>>().join("\n");
         assert_eq!(lines.len(), 2);
         assert!(text_of(&lines[0]).contains("+act brace"));
         assert!(text_of(&lines[0]).contains("Brace"));
@@ -727,6 +730,15 @@ mod tests {
         assert!(
             lines.iter().all(|line| !text_of(line).contains("secret")),
             "the TUI must not display opaque execution tokens"
+        );
+        mush_contract_tests::assert_projection_text_clean(
+            "TUI legal-action panel",
+            &rendered,
+            &[
+                "secret-opaque-token",
+                "scene_turn",
+                "private-definition-digest",
+            ],
         );
     }
 

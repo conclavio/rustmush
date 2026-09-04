@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 mush-core.workspace = true
+mush-proto.workspace = true
 mush-testkit.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -25,6 +25,111 @@ use std::sync::{Arc, Mutex};
 /// Canonical owner stamped on every toy definition.
 pub const TOY_OWNER: &str = "toy";
 
+/// Recursively find forbidden field names or string fragments in projected
+/// JSON. Contract gates use this on the exact value handed to a player, bot,
+/// or LLM so a newly nested private field cannot evade a top-level assertion.
+///
+/// Field matching is ASCII case-insensitive. Fragment matching is exact and
+/// case-sensitive so callers can include opaque identifiers and digests.
+#[must_use]
+pub fn projection_json_leaks(
+    value: &Value,
+    forbidden_fields: &[&str],
+    forbidden_fragments: &[&str],
+) -> Vec<String> {
+    fn visit(
+        value: &Value,
+        path: &str,
+        forbidden_fields: &[&str],
+        forbidden_fragments: &[&str],
+        leaks: &mut Vec<String>,
+    ) {
+        match value {
+            Value::Object(object) => {
+                for (key, child) in object {
+                    let child_path = format!("{path}.{key}");
+                    if forbidden_fields
+                        .iter()
+                        .any(|forbidden| key.eq_ignore_ascii_case(forbidden))
+                    {
+                        leaks.push(format!("forbidden field at {child_path}"));
+                    }
+                    for fragment in forbidden_fragments {
+                        if !fragment.is_empty() && key.contains(fragment) {
+                            leaks.push(format!("forbidden fragment in field at {child_path}"));
+                        }
+                    }
+                    visit(
+                        child,
+                        &child_path,
+                        forbidden_fields,
+                        forbidden_fragments,
+                        leaks,
+                    );
+                }
+            }
+            Value::Array(array) => {
+                for (index, child) in array.iter().enumerate() {
+                    visit(
+                        child,
+                        &format!("{path}[{index}]"),
+                        forbidden_fields,
+                        forbidden_fragments,
+                        leaks,
+                    );
+                }
+            }
+            Value::String(text) => {
+                for fragment in forbidden_fragments {
+                    if !fragment.is_empty() && text.contains(fragment) {
+                        leaks.push(format!("forbidden fragment in string at {path}"));
+                    }
+                }
+            }
+            Value::Null | Value::Bool(_) | Value::Number(_) => {}
+        }
+    }
+
+    let mut leaks = Vec::new();
+    visit(
+        value,
+        "$",
+        forbidden_fields,
+        forbidden_fragments,
+        &mut leaks,
+    );
+    leaks
+}
+
+/// Assert that projected JSON contains none of the supplied private fields or
+/// exact private values. The failure includes structural paths, not the
+/// private values themselves.
+pub fn assert_projection_json_clean(
+    surface: &str,
+    value: &Value,
+    forbidden_fields: &[&str],
+    forbidden_fragments: &[&str],
+) {
+    let leaks = projection_json_leaks(value, forbidden_fields, forbidden_fragments);
+    assert!(leaks.is_empty(), "{surface} projection leaked: {leaks:?}");
+}
+
+/// Assert that a rendered player/AI-facing text surface contains none of the
+/// supplied exact private fragments.
+pub fn assert_projection_text_clean(surface: &str, text: &str, forbidden_fragments: &[&str]) {
+    let leaks: Vec<usize> = forbidden_fragments
+        .iter()
+        .enumerate()
+        .filter_map(|(index, fragment)| {
+            (!fragment.is_empty() && text.contains(fragment)).then_some(index)
+        })
+        .collect();
+    assert!(
+        leaks.is_empty(),
+        "{surface} projection leaked forbidden fragment indexes: {leaks:?}"
+    );
+}
+
 /// Exact identities used by the first action-kernel proving gate.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ToyDefinitions {
@@ -1133,6 +1238,24 @@ mod tests {
         install_toy_focus(world.engine_mut(), families, actor, amount);
     }
 
+    #[test]
+    fn recursive_projection_inspector_reports_nested_fields_and_values() {
+        let value = json!({
+            "public": [{
+                "nested": {
+                    "truth_subject": "hidden-contact-17"
+                }
+            }]
+        });
+        let leaks = projection_json_leaks(&value, &["truth_subject"], &["hidden-contact-17"]);
+        assert_eq!(leaks.len(), 2);
+        assert!(
+            leaks
+                .iter()
+                .all(|leak| leak.contains("$.public[0].nested.truth_subject"))
+        );
+    }
+
     fn bootstrap_guarded(
         world: &mut TestWorld,
         families: &ToyStateFamilies,
@@ -1602,10 +1725,54 @@ mod tests {
             .expect("offer projection succeeds");
         assert_eq!(offers.len(), 1);
         let projected = offers.projected().pop().unwrap();
-        let encoded = serde_json::to_string(&projected).unwrap();
-        assert!(!encoded.contains("scene_turn"));
-        assert!(!encoded.contains("truth_subject"));
-        assert!(!encoded.contains("guard_hash"));
+        let definition_digest = toy_definitions().brace.digest().to_string();
+        let forbidden_fields = [
+            "action",
+            "definition",
+            "fixed_parameters",
+            "guards",
+            "guard_hash",
+            "provider",
+            "provider_ordinal",
+            "projection_scope",
+            "revision_set",
+            "truth_subject",
+            "viewer_scope",
+        ];
+        let forbidden_fragments = ["scene_turn", definition_digest.as_str()];
+        let projected_json = serde_json::to_value(&projected).unwrap();
+        assert_projection_json_clean(
+            "structured legal action",
+            &projected_json,
+            &forbidden_fields,
+            &forbidden_fragments,
+        );
+
+        let view = mush_proto::ViewEnvelope::keyframe(
+            "legal.actions",
+            1,
+            7,
+            1,
+            json!([projected.clone()]),
+        )
+        .unwrap();
+        assert_projection_json_clean(
+            "semantic legal-action view",
+            &serde_json::to_value(view).unwrap(),
+            &forbidden_fields,
+            &forbidden_fragments,
+        );
+
+        let mock_llm_snapshot = json!({
+            "decision": "choose one offered tool",
+            "tools": [projected.clone()],
+        });
+        assert_projection_json_clean(
+            "mock LLM legal-action snapshot",
+            &mock_llm_snapshot,
+            &forbidden_fields,
+            &forbidden_fragments,
+        );
 
         let request = RequestUid::from_bytes([0xD1; 16]);
         let principal = PrincipalId::Object { id: mush_core::GOD };

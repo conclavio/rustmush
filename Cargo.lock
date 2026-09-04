@@ -1973,6 +1973,7 @@ name = "mush-contract-tests"
 version = "0.1.0"
 dependencies = [
  "mush-core",
+ "mush-proto",
  "mush-testkit",
  "serde",
  "serde_json",
@@ -2053,6 +2054,7 @@ dependencies = [
  "futures",
  "mush-ansi",
  "mush-config",
+ "mush-contract-tests",
  "mush-core",
  "mush-ipc",
  "mush-net-ssh",
@@ -2145,6 +2147,7 @@ dependencies = [
  "futures",
  "getrandom 0.4.3",
  "mush-ansi",
+ "mush-contract-tests",
  "mush-proto",
  "mush-session",
  "proptest",

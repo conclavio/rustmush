@@ -2220,7 +2220,9 @@ two kernel primitives forward before finishing the rest of K4/K5:
    `OutputEvent::View` now wraps `legal.actions` with stable schema, gateway-lifetime generation,
    per-connection sequence, exact delta base, and optional projected commit token. Both TUI and web
    consumers classify cursors identically, remove stale action controls on a gap, and coalesce one
-   ordinary `legal.actions` query until a valid replacement keyframe arrives.
+   ordinary `legal.actions` query until a valid replacement keyframe arrives. Reusable recursive
+   projection inspectors now scan nested field names and exact private values across the legal
+   action DTO, semantic view, line/TUI renderings, and mock-LLM snapshot.
 
 The K3.1 checkpoint-readback and pending-allocator findings are already closed in both memory and
 Redis and therefore are not prerequisites. Mixed authoritative write sets, synchronous typed-family
@@ -2268,6 +2270,8 @@ Work:
    projected receipt frames, authorized status, and resync query.
 4. Register line renderers over projected DTOs; structured transports use the same DTOs.
 5. Add leak-test helpers that recursively inspect all player/AI-facing serializations and text.
+   **Implemented for the Gate-1 legal-action DTO, semantic view, line/TUI renderings, and mock-LLM
+   snapshot; reuse the helper as each later projected DTO is introduced.**
 6. Migrate the Gate-1 action from any temporary direct handler to action offers only.
 
 Exit criteria:

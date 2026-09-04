@@ -54,6 +54,22 @@ const DELIVERY_BARRIER_ATTEMPTS: usize = 3;
 const DELIVERY_BARRIER_TIMEOUT: Duration = Duration::from_secs(5);
 const DELIVERY_BARRIER_RETRY_DELAY: Duration = Duration::from_millis(25);
 
+fn render_legal_action_list(offers: &[ProjectedLegalAction]) -> String {
+    let mut text = String::from("Available actions:");
+    for offer in offers {
+        let presentation = offer.presentation();
+        text.push_str("\n  +act ");
+        text.push_str(&presentation.verb);
+        text.push_str(" — ");
+        text.push_str(&presentation.label);
+        if !presentation.help.is_empty() {
+            text.push_str(": ");
+            text.push_str(&presentation.help);
+        }
+    }
+    text
+}
+
 /// One character offered on a character-select surface (welcome screen,
 /// web character picker). The `id` is a widened `ObjId`, opaque to
 /// transports.
@@ -331,18 +347,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                     OutputEvent::Sys(RichText::tag("system", "No actions are available.")),
                 ),
                 Ok(offers) => {
-                    let mut text = String::from("Available actions:");
-                    for offer in offers {
-                        let presentation = offer.presentation();
-                        text.push_str("\n  +act ");
-                        text.push_str(&presentation.verb);
-                        text.push_str(" — ");
-                        text.push_str(&presentation.label);
-                        if !presentation.help.is_empty() {
-                            text.push_str(": ");
-                            text.push_str(&presentation.help);
-                        }
-                    }
+                    let text = render_legal_action_list(&offers);
                     send_event_to_conn(
                         &self.sessions,
                         conn,
@@ -936,5 +941,35 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             );
         }
         self.rollback_local_attach(conn, revived_linkdead);
+    }
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::render_legal_action_list;
+    use mush_contract_tests::{
+        assert_projection_text_clean, install_toy_focus, toy_brace_offers, toy_definitions,
+        toy_world_with_state,
+    };
+    use mush_core::{GOD, OfferKeyRing, OfferSecret};
+
+    #[test]
+    fn line_action_list_renders_only_projected_presentation() {
+        let (mut world, families) = toy_world_with_state();
+        install_toy_focus(world.engine_mut(), &families, GOD, 3);
+        world.engine_mut().set_offer_keys(
+            OfferKeyRing::new(OfferSecret::new(1, [0x53; 32]).unwrap(), []).unwrap(),
+        );
+        let offers = toy_brace_offers(world.engine(), GOD, 11, 4)
+            .unwrap()
+            .projected();
+        let rendered = render_legal_action_list(&offers);
+
+        assert!(rendered.contains("+act brace — Brace"));
+        assert_projection_text_clean(
+            "line legal-action list",
+            &rendered,
+            &["scene_turn", &toy_definitions().brace.digest().to_string()],
+        );
     }
 }
