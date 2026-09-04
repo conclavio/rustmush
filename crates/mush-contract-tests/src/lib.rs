@@ -5,6 +5,8 @@
 //! rulesets, tactics, simulation, server, and fault stores without creating a
 //! production dependency cycle.
 
+pub mod tactical_gate;
+
 use mush_core::{
     ActionError, ActionErrorCode, ActionInvocation, ActionInvocationDraft, ActionOfferId,
     ActionPresentation, ActionProvider, ActionStateError, ActionTxn, ActionWindow,

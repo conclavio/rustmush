@@ -2456,6 +2456,17 @@ the truth subject, while later transitions retain the ID and check the exact rec
 generic durable outcome includes only ID, operation, generation/revision, and active state. Sensor
 formulas, confidence/classification, automatic tactical-network sharing, trusted ingress,
 terminal-record compaction, and the viewer-specific tactical DTO/keyframe path remain in items 4-5.
+The first isolated Gate-2 fixture now registers exact unit/component/action/outcome definitions and
+an engine-owned `TacticalUnit` family under a test-only owner. Its component-provided `fire`
+provider consumes ammunition, adds heat, damages one RNG-selected target section, and prepares both
+complete unit post-images before staging either family replacement. The same preparation owns the
+to-hit/location/damage transcript and a private durable outcome; its receipt projector emits no
+unit IDs, revisions, section, exact damage, or draw. Tests prove the two live records remain
+byte-identical before installation, a stale/disabled source or un-damageable target leaves both
+unchanged, and identical inputs reproduce replay writes, outcome, and RNG evidence. This is a
+transaction-shape proof, not a second production unit authority. Placement/window/lease guards,
+legal-offer enablement, durable simultaneous resolution, opaque contact targets, and the
+cross-owner bridge remain before Gates 2-3 can be claimed complete.
 
 Exit criteria:
 
@@ -2467,9 +2478,11 @@ Exit criteria:
 - component removal removes the action from every interface.
 
 **Integration gate before K7:** once K6 and the parallel E5 audit both close, synchronize the two
-development lines, review each side's implementation against its contract claims, reconcile shared
-ownership/typed-state/clock/projection assumptions, rebase, and run the combined workspace and
-Redis-gated suites. Do not begin K7 on an unreviewed E5/K6 boundary.
+development lines, review each side's implementation against its contract claims, and reconcile
+shared ownership/typed-state/clock/projection assumptions. After the histories agree, land one
+dedicated semantic-free whole-tree `cargo fmt --all` commit and have both development lines rebase
+onto it once. Then require `cargo fmt --all -- --check` alongside the combined workspace and
+Redis-gated suites. Do not begin K7 on an unreviewed or format-divergent E5/K6 boundary.
 
 ### K7. Asynchronous decision re-entry
 

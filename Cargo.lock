@@ -1974,6 +1974,7 @@ version = "0.1.0"
 dependencies = [
  "mush-core",
  "mush-proto",
+ "mush-tactics",
  "mush-testkit",
  "serde",
  "serde_json",
