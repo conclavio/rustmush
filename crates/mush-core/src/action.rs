@@ -17,7 +17,9 @@ use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
 use crate::action_state::{ActionStateError, ActionStateStore, ActionTxn, PreparedTxn};
-use crate::authoritative::DurableOutboxIntent;
+use crate::authoritative::{
+    AuthoritativeBundleError, AuthoritativeSemanticEvent, DurableOutboxIntent,
+};
 use crate::behavior::ChannelId;
 use crate::mechanics::{
     CanonicalEncodingError, CanonicalId, CanonicalIdError, DefinitionDigest, DefinitionLookupError,
@@ -3084,6 +3086,19 @@ pub enum CascadeError {
 pub trait ActionProvider: Send + Sync {
     fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError>;
 
+    /// Project this exact registered action for one server-authenticated
+    /// viewer/subject query. The default means that this action is not exposed
+    /// through legal-action discovery. Returned data remains internal until
+    /// the registry stamps the exact action and signs it.
+    fn project_offer(
+        &self,
+        _action: &DefinitionRef,
+        _query: &crate::offer::LegalActionQuery,
+        _engine: &crate::engine::Engine,
+    ) -> Result<Option<crate::offer::ProviderOfferDraft>, ActionError> {
+        Ok(None)
+    }
+
     /// Prepare bounded owner-scoped post-images without access to live mutable
     /// world or module state. Existing validation-only providers inherit a
     /// fail-closed empty transaction; only providers that add state mutations
@@ -3113,6 +3128,64 @@ pub trait ActionProvider: Send + Sync {
         )
         .expect("static provider migration error is bounded"))
     }
+
+    /// Expand one provider-owned same-commit trigger against the root
+    /// action's still-unprepared scratch transaction. Trigger callbacks have
+    /// the same mutation authority as the root provider, but no persistence,
+    /// live-world, or asynchronous side-effect access.
+    fn prepare_same_commit_trigger(
+        &self,
+        _invocation: &ActionInvocation,
+        _trigger: &PreparedTrigger,
+        _txn: &mut ActionTxn<'_>,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        Err(ActionError::new(
+            ActionErrorCode::Unavailable,
+            false,
+            "this action provider does not implement the requested same-commit trigger",
+        )
+        .expect("static trigger migration error is bounded"))
+    }
+}
+
+/// Provider-requested work that must finish in the root action's transaction.
+///
+/// The frozen registry stamps provider identity and ordering when this is
+/// admitted to [`CausalTriggerQueue`]; providers can choose only their own
+/// handler id, target, phase, and bounded payload.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SameCommitTrigger {
+    handler: CanonicalId,
+    target: SubjectKey,
+    phase: u16,
+    payload: Value,
+}
+
+impl SameCommitTrigger {
+    #[must_use]
+    pub const fn new(handler: CanonicalId, target: SubjectKey, phase: u16, payload: Value) -> Self {
+        Self {
+            handler,
+            target,
+            phase,
+            payload,
+        }
+    }
+
+    fn into_prepared(
+        self,
+        provider: &ActionProviderEntry,
+        source_event: PreparedEventId,
+    ) -> PreparedTriggerDraft {
+        PreparedTriggerDraft::new(
+            provider,
+            source_event,
+            self.handler,
+            self.target,
+            self.phase,
+            self.payload,
+        )
+    }
 }
 
 /// Provider-owned semantic material for one K3 action. The central
@@ -3124,6 +3197,7 @@ pub struct AuthoritativeActionOutput {
     definitions: Vec<DefinitionRef>,
     eligible_witnesses: Vec<PrincipalId>,
     durable_outbox: Vec<DurableOutboxIntent>,
+    same_commit_triggers: Vec<SameCommitTrigger>,
 }
 
 impl AuthoritativeActionOutput {
@@ -3134,6 +3208,7 @@ impl AuthoritativeActionOutput {
             definitions: Vec::new(),
             eligible_witnesses: Vec::new(),
             durable_outbox: Vec::new(),
+            same_commit_triggers: Vec::new(),
         }
     }
 
@@ -3152,6 +3227,12 @@ impl AuthoritativeActionOutput {
     #[must_use]
     pub fn with_durable_outbox(mut self, outbox: Vec<DurableOutboxIntent>) -> Self {
         self.durable_outbox = outbox;
+        self
+    }
+
+    #[must_use]
+    pub fn with_same_commit_triggers(mut self, triggers: Vec<SameCommitTrigger>) -> Self {
+        self.same_commit_triggers = triggers;
         self
     }
 
@@ -3175,6 +3256,38 @@ impl AuthoritativeActionOutput {
         &self.durable_outbox
     }
 
+    fn into_cascade_parts(
+        self,
+    ) -> (
+        RulesValue,
+        Vec<DefinitionRef>,
+        Vec<PrincipalId>,
+        Vec<DurableOutboxIntent>,
+        Vec<SameCommitTrigger>,
+    ) {
+        (
+            self.outcome,
+            self.definitions,
+            self.eligible_witnesses,
+            self.durable_outbox,
+            self.same_commit_triggers,
+        )
+    }
+}
+
+/// Complete semantic products of a fully expanded authoritative action.
+/// The transaction remains separate and one-shot so the server can bind the
+/// same immutable event graph and post-images to one durable bundle.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreparedAuthoritativeAction {
+    outcome: RulesValue,
+    definitions: Vec<DefinitionRef>,
+    eligible_witnesses: Vec<PrincipalId>,
+    durable_outbox: Vec<DurableOutboxIntent>,
+    semantic_events: Vec<AuthoritativeSemanticEvent>,
+}
+
+impl PreparedAuthoritativeAction {
     pub fn into_parts(
         self,
     ) -> (
@@ -3182,12 +3295,14 @@ impl AuthoritativeActionOutput {
         Vec<DefinitionRef>,
         Vec<PrincipalId>,
         Vec<DurableOutboxIntent>,
+        Vec<AuthoritativeSemanticEvent>,
     ) {
         (
             self.outcome,
             self.definitions,
             self.eligible_witnesses,
             self.durable_outbox,
+            self.semantic_events,
         )
     }
 }
@@ -3447,6 +3562,67 @@ impl ActionProviderRegistry {
         Ok(entry)
     }
 
+    /// Enumerate providers in canonical action order and stamp every returned
+    /// draft with the exact frozen action identity. The callback runs against
+    /// immutable engine truth and owner readiness is checked again after it
+    /// returns.
+    pub fn project_legal_actions(
+        &self,
+        engine: &crate::engine::Engine,
+        query: &crate::offer::LegalActionQuery,
+        keys: &crate::offer::OfferKeyRing,
+    ) -> Result<crate::offer::ProjectedLegalActionSink, crate::offer::LegalActionProjectionError>
+    {
+        let mut sink = crate::offer::ProjectedLegalActionSink::new(query.viewer_scope());
+        for entry in self.entries.values() {
+            let projected = entry
+                .provider()
+                .project_offer(entry.action(), query, engine)
+                .map_err(
+                    |source| crate::offer::LegalActionProjectionError::Provider {
+                        action: Box::new(entry.action().clone()),
+                        source: Box::new(source),
+                    },
+                )?;
+            self.owner_readiness
+                .require_ready(entry.owner())
+                .map_err(
+                    |_| crate::offer::LegalActionProjectionError::ProviderUnavailable {
+                        action: Box::new(entry.action().clone()),
+                    },
+                )?;
+            let Some(projected) = projected else {
+                continue;
+            };
+            let offer = crate::offer::InternalOffer::new(
+                crate::offer::InternalOfferDraft {
+                    action: entry.action().clone(),
+                    viewer_scope: query.viewer_scope(),
+                    truth_subject: query.truth_subject().clone(),
+                    projected_subject: query.projected_subject().clone(),
+                    fixed_parameters: projected.fixed_parameters,
+                    parameters: projected.parameters,
+                    targets: projected.targets,
+                    required_channels: projected.required_channels,
+                    expires: projected.expires,
+                    presentation: projected.presentation,
+                    guards: projected.guards,
+                },
+                keys,
+            )
+            .map_err(|source| crate::offer::LegalActionProjectionError::Offer {
+                action: Box::new(entry.action().clone()),
+                source: Box::new(source),
+            })?;
+            sink.push(offer)
+                .map_err(|source| crate::offer::LegalActionProjectionError::Offer {
+                    action: Box::new(entry.action().clone()),
+                    source: Box::new(source),
+                })?;
+        }
+        Ok(sink)
+    }
+
     /// Validate through the exact ready provider without exposing a callable
     /// trait-object handle that could outlive the readiness check.
     pub fn validate_invocation(
@@ -3508,16 +3684,20 @@ impl ActionProviderRegistry {
         action: &DefinitionRef,
         invocation: &ActionInvocation,
         state: &mut ActionStateStore,
-    ) -> Result<(PreparedTxn, AuthoritativeActionOutput), ActionProviderPrepareError> {
+    ) -> Result<(PreparedTxn, PreparedAuthoritativeAction), ActionProviderPrepareError> {
         let entry = self.get_exact(action)?;
         let mut txn = state.transaction_for_provider(entry.registration_ordinal())?;
-        let output = entry
+        let mut queue = CausalTriggerQueue::new(invocation.request(), self.owner_readiness.clone());
+        let root_cause = queue.allocate_root_event()?;
+        let root_before_operations = txn.operation_count();
+        let root_output = entry
             .provider()
             .prepare_authoritative(invocation, &mut txn)
             .map_err(|source| ActionProviderPrepareError::Provider {
                 action: Box::new(action.clone()),
                 source: Box::new(source),
             })?;
+        charge_new_operations(&mut queue, root_before_operations, &txn)?;
         self.owner_readiness
             .require_ready(&entry.owner)
             .map_err(|source| {
@@ -3526,14 +3706,91 @@ impl ActionProviderRegistry {
                     source: Box::new(source),
                 })
             })?;
+        let (outcome, mut definitions, mut eligible_witnesses, mut durable_outbox, root_triggers) =
+            root_output.into_cascade_parts();
+        definitions.push(outcome.schema().clone());
+        let root_event = AuthoritativeSemanticEvent::new(
+            root_cause,
+            entry.owner.clone(),
+            CanonicalId::parse_canonical(action.key().id.as_str())
+                .expect("a definition id is also a canonical mechanics id"),
+            outcome.clone(),
+            eligible_witnesses.clone(),
+        )?;
+        queue.charge_bytes(root_event.canonical_len()?)?;
+        for trigger in root_triggers {
+            queue.enqueue(trigger.into_prepared(entry, root_cause.event_id()))?;
+        }
+        let mut semantic_events = vec![root_event];
+
+        while let Some(work) = queue.pop_next()? {
+            let cause = queue.allocate_derived_event(&work)?;
+            let before_operations = txn.operation_count();
+            let output = entry
+                .provider()
+                .prepare_same_commit_trigger(invocation, work.trigger(), &mut txn)
+                .map_err(|source| ActionProviderPrepareError::Trigger {
+                    action: Box::new(action.clone()),
+                    handler: work.trigger().identity().handler.id().clone(),
+                    source: Box::new(source),
+                })?;
+            charge_new_operations(&mut queue, before_operations, &txn)?;
+            let (event_truth, event_definitions, event_witnesses, event_outbox, triggers) =
+                output.into_cascade_parts();
+            definitions.push(event_truth.schema().clone());
+            let event = AuthoritativeSemanticEvent::new(
+                cause,
+                entry.owner.clone(),
+                work.trigger().identity().handler.id().clone(),
+                event_truth,
+                event_witnesses.clone(),
+            )?;
+            queue.charge_bytes(event.canonical_len()?)?;
+            for trigger in triggers {
+                queue.enqueue(trigger.into_prepared(entry, cause.event_id()))?;
+            }
+            definitions.extend(event_definitions);
+            durable_outbox.extend(event_outbox);
+            semantic_events.push(event);
+            queue.complete_trigger(work)?;
+        }
+        queue.finish()?;
+        definitions.sort();
+        definitions.dedup();
+        eligible_witnesses.sort();
+        eligible_witnesses.dedup();
+        durable_outbox.sort_by_key(DurableOutboxIntent::ordinal);
         let prepared = txn.prepare().map_err(ActionProviderPrepareError::State)?;
-        Ok((prepared, output))
+        Ok((
+            prepared,
+            PreparedAuthoritativeAction {
+                outcome,
+                definitions,
+                eligible_witnesses,
+                durable_outbox,
+                semantic_events,
+            },
+        ))
     }
 
     #[must_use]
     pub const fn fingerprint(&self) -> DefinitionDigest {
         self.fingerprint
     }
+}
+
+fn charge_new_operations(
+    queue: &mut CausalTriggerQueue,
+    before: usize,
+    txn: &ActionTxn<'_>,
+) -> Result<(), CascadeError> {
+    let added = txn
+        .operation_count()
+        .checked_sub(before)
+        .expect("action transaction operation count is monotonic");
+    queue.charge_operations(
+        u32::try_from(added).expect("action transaction hard operation limit fits u32"),
+    )
 }
 
 /// Exact transactional action-preparation failure. Every variant precedes
@@ -3549,6 +3806,16 @@ pub enum ActionProviderPrepareError {
         action: Box<DefinitionRef>,
         source: Box<ActionError>,
     },
+    #[error("same-commit trigger {handler} for {action} was rejected: {source}")]
+    Trigger {
+        action: Box<DefinitionRef>,
+        handler: CanonicalId,
+        source: Box<ActionError>,
+    },
+    #[error("same-commit causal expansion failed: {0}")]
+    Cascade(#[from] CascadeError),
+    #[error("authoritative semantic event preparation failed: {0}")]
+    Semantic(#[from] AuthoritativeBundleError),
     #[error("action state preparation failed: {0}")]
     State(#[from] ActionStateError),
 }

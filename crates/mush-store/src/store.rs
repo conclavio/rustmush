@@ -39,11 +39,12 @@ use mush_core::{
 };
 
 use crate::types::{
-    AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeEpochRetirement,
-    AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult, AuthoritativeOutboxRecord,
-    AuthoritativeReceipt, AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec,
-    BundleStatus, IdempotencyStatus, IntentReceipt, PendingAuthoritativeIntent, SshKeyRec,
-    StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt,
+    AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeDiscardReceipt,
+    AuthoritativeEpochRetirement, AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult,
+    AuthoritativeOutboxRecord, AuthoritativeReceipt, AuthoritativeRetentionUsage,
+    AuthoritativeScanCursor, BanRec, BundleStatus, IdempotencyStatus, IntentReceipt,
+    PendingAuthoritativeIntent, SshKeyRec, StoreError, TokenRecord, WorldSnapshot, WriteBatch,
+    WriteReceipt,
 };
 
 /// Exact-intent persistence used by the K3 action coordinator.
@@ -85,6 +86,27 @@ pub trait AuthoritativeStore: ObjectStore {
         expected_bundle_hash: CanonicalHash,
     ) -> BoxFuture<'_, Result<AuthoritativeCheckpointReceipt, StoreError>>;
 
+    /// Release a never-finalized poisoned intent after the caller has durably
+    /// preserved the complete bundle in the independent quarantine spool.
+    /// The compact tombstone and idempotency binding remain, so neither exact
+    /// nor conflicting retries can execute the discarded action.
+    fn discard_quarantined_authoritative_intent(
+        &self,
+        token: CommitToken,
+        expected_bundle_hash: CanonicalHash,
+        evidence_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<AuthoritativeDiscardReceipt, StoreError>>;
+
+    /// Restore the exact full intent from independently verified quarantine
+    /// custody so recovery can retry it after the underlying fault is fixed.
+    /// This is the sole transition that makes a quarantine tombstone pending
+    /// again and it requires the exact evidence identity.
+    fn restore_quarantined_authoritative_intent(
+        &self,
+        bundle: AuthoritativeBundle,
+        evidence_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<IntentReceipt, StoreError>>;
+
     /// Discover every finalized, non-terminal durable delivery item. Stable
     /// item ids are suitable for adapter-side deduplication.
     fn pending_authoritative_outbox(
@@ -110,6 +132,18 @@ pub trait AuthoritativeStore: ObjectStore {
         result: AuthoritativeOutboxAttemptResult,
     ) -> BoxFuture<'_, Result<AuthoritativeOutboxRecord, StoreError>>;
 
+    /// Persist one bounded discovery pass for which no adapter could route
+    /// this item. This counter is independent of real delivery attempts and
+    /// lets the dispatcher eventually dead-letter permanently unroutable work
+    /// without penalizing an adapter that appears later.
+    fn note_authoritative_outbox_unroutable(
+        &self,
+        item_id: CanonicalHash,
+        expected_payload_hash: CanonicalHash,
+        expected_passes: u32,
+        error: String,
+    ) -> BoxFuture<'_, Result<AuthoritativeOutboxRecord, StoreError>>;
+
     /// Advance one idempotency scope's durable retry horizon and remove every
     /// compact receipt/binding below it. Implementations must refuse while a
     /// full intent remains below the proposed watermark. Redis may commit the
@@ -128,6 +162,65 @@ pub trait AuthoritativeStore: ObjectStore {
         expected_bundle_hash: CanonicalHash,
     ) -> BoxFuture<'_, Result<BundleStatus, StoreError>>;
 
+    /// Inspect an exact complete bundle identity. Unlike the legacy
+    /// token/hash-only lookup, this can consult the scoped epoch watermark and
+    /// therefore distinguish a retired action from one that never existed.
+    fn authoritative_bundle_status<'a>(
+        &'a self,
+        bundle: &'a AuthoritativeBundle,
+    ) -> BoxFuture<'a, Result<BundleStatus, StoreError>> {
+        Box::pin(async move {
+            let direct = self
+                .authoritative_status(bundle.token(), bundle.bundle_hash())
+                .await?;
+            if !matches!(direct, BundleStatus::Absent) {
+                return Ok(direct);
+            }
+            Ok(
+                match self
+                    .authoritative_idempotency_status(bundle.idempotency(), bundle.ingress_hash())
+                    .await?
+                {
+                    IdempotencyStatus::Retired {
+                        minimum_accepted_epoch,
+                    } => BundleStatus::Retired {
+                        minimum_accepted_epoch,
+                    },
+                    IdempotencyStatus::Vacant => BundleStatus::Absent,
+                    IdempotencyStatus::Conflict => {
+                        return Err(StoreError::AuthoritativeIdempotencyConflict);
+                    }
+                    IdempotencyStatus::PendingExact { token, bundle_hash }
+                        if token == bundle.token() && bundle_hash == bundle.bundle_hash() =>
+                    {
+                        BundleStatus::PendingExact
+                    }
+                    IdempotencyStatus::PendingExact { bundle_hash, .. } => BundleStatus::Conflict {
+                        stored_bundle_hash: bundle_hash,
+                    },
+                    IdempotencyStatus::FinalizedExact(receipt)
+                        if receipt.token() == bundle.token()
+                            && receipt.bundle_hash() == bundle.bundle_hash() =>
+                    {
+                        BundleStatus::FinalizedExact(receipt)
+                    }
+                    IdempotencyStatus::FinalizedExact(receipt) => BundleStatus::Conflict {
+                        stored_bundle_hash: receipt.bundle_hash(),
+                    },
+                    IdempotencyStatus::QuarantinedExact(receipt)
+                        if receipt.token() == bundle.token()
+                            && receipt.bundle_hash() == bundle.bundle_hash() =>
+                    {
+                        BundleStatus::QuarantinedExact(receipt)
+                    }
+                    IdempotencyStatus::QuarantinedExact(receipt) => BundleStatus::Conflict {
+                        stored_bundle_hash: receipt.bundle_hash(),
+                    },
+                },
+            )
+        })
+    }
+
     /// Read the bounded recovery accelerator. This index is never the only
     /// discovery source because its last update may have been interrupted.
     fn pending_authoritative_intents(
@@ -143,12 +236,18 @@ pub trait AuthoritativeStore: ObjectStore {
         limit: usize,
     ) -> BoxFuture<'_, Result<AuthoritativeIntentPage, StoreError>>;
 
+    /// Read the generation that changes whenever full-intent retention gains
+    /// or releases a record. Recovery captures this before its exhaustive
+    /// scan and supplies it to the repair CAS.
+    fn authoritative_retention_generation(&self) -> BoxFuture<'_, Result<u64, StoreError>>;
+
     /// Repair the non-authoritative count/byte capacity indexes from a
-    /// complete validated intent scan. This may only run during exclusive
-    /// boot, before a live writer can reserve another intent. Backends must
-    /// replace the pair atomically and return `true` only when it changed.
+    /// complete validated intent scan. Backends replace the pair only if the
+    /// retained generation still equals the pre-scan witness, and return
+    /// `true` only when either counter changed.
     fn repair_authoritative_retention(
         &self,
+        expected_generation: u64,
         usage: AuthoritativeRetentionUsage,
     ) -> BoxFuture<'_, Result<bool, StoreError>>;
 }

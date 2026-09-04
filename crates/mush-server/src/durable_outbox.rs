@@ -91,6 +91,9 @@ pub enum DurableOutboxRegistryError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DurableOutboxPolicy {
     pub max_attempts: u32,
+    /// Number of persisted discovery passes an item may remain without a
+    /// registered adapter before it reaches terminal dead-letter state.
+    pub max_unroutable_passes: u32,
     pub attempt_timeout: Duration,
     pub max_items_per_pass: usize,
 }
@@ -105,6 +108,7 @@ impl DurableOutboxPolicy {
         }
         Ok(Self {
             max_attempts,
+            max_unroutable_passes: 3_600,
             attempt_timeout,
             max_items_per_pass: 16,
         })
@@ -115,12 +119,19 @@ impl DurableOutboxPolicy {
         self.max_items_per_pass = max_items_per_pass.max(1);
         self
     }
+
+    #[must_use]
+    pub fn with_max_unroutable_passes(mut self, max_unroutable_passes: u32) -> Self {
+        self.max_unroutable_passes = max_unroutable_passes.max(1);
+        self
+    }
 }
 
 impl Default for DurableOutboxPolicy {
     fn default() -> Self {
         Self {
             max_attempts: 8,
+            max_unroutable_passes: 3_600,
             attempt_timeout: Duration::from_secs(10),
             max_items_per_pass: 16,
         }
@@ -138,8 +149,9 @@ pub struct DurableOutboxDispatchReport {
     pub checkpointed_parents: usize,
 }
 
-/// Run one recovery/dispatch pass. Missing adapters remain pending so a
-/// configuration error cannot silently discard externally visible work.
+/// Run one recovery/dispatch pass. Missing adapters retain the exact item and
+/// advance an independent durable pass counter until the configured terminal
+/// dead-letter bound is reached.
 pub async fn dispatch_authoritative_outbox(
     store: &dyn AuthoritativeStore,
     registry: &DurableOutboxRegistry,
@@ -152,9 +164,50 @@ pub async fn dispatch_authoritative_outbox(
     };
 
     let mut processed = 0_usize;
+    let mut unroutable_processed = 0_usize;
     for item in pending {
         let Some(adapter) = registry.get(&item) else {
             report.missing_adapters += 1;
+            if unroutable_processed >= policy.max_items_per_pass.max(1) {
+                continue;
+            }
+            unroutable_processed += 1;
+            let payload_hash = item.intent().payload_hash();
+            let detail = bounded_error(&format!(
+                "durable outbox adapter is unavailable: {}:{}",
+                item.intent().owner(),
+                item.intent().adapter()
+            ));
+            let observed = if item.unroutable_passes() >= policy.max_unroutable_passes {
+                item
+            } else {
+                store
+                    .note_authoritative_outbox_unroutable(
+                        item.item_id(),
+                        payload_hash,
+                        item.unroutable_passes(),
+                        detail,
+                    )
+                    .await?
+            };
+            if observed.unroutable_passes() >= policy.max_unroutable_passes {
+                let terminal = store
+                    .complete_authoritative_outbox_attempt(
+                        observed.item_id(),
+                        payload_hash,
+                        observed.attempts(),
+                        AuthoritativeOutboxAttemptResult::DeadLetter {
+                            error: bounded_error(
+                                "durable outbox adapter remained unavailable through its discovery-pass budget",
+                            ),
+                        },
+                    )
+                    .await?;
+                report.dead_lettered += 1;
+                checkpoint_terminal_parent(store, &terminal, &mut report).await?;
+            } else {
+                report.retry_pending += 1;
+            }
             continue;
         };
         // Scan past unavailable adapters before applying the per-pass delivery

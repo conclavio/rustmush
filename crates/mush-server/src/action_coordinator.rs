@@ -9,10 +9,13 @@
 use mush_core::{
     ActionInvocation, ActionProviderPrepareError, AuthoritativeBundle, AuthoritativeBundleDraft,
     CanonicalHash, CanonicalHashError, CommitToken, DefinitionRef, Engine, GuardSet,
-    IngressEnvelope, MAX_AUTHORITATIVE_BUNDLE_BYTES, PreparedCausalRef, PrincipalId,
+    IngressEnvelope, MAX_AUTHORITATIVE_BUNDLE_BYTES, PreparedCausalRef, PrincipalId, ResolvedOffer,
     ScopedIdempotencyKey, StagePreparedActionError,
 };
-use mush_store::{AuthoritativeReceipt, AuthoritativeStore, IdempotencyStatus, StoreError};
+use mush_store::{
+    AuthoritativeQuarantineReceipt, AuthoritativeReceipt, AuthoritativeStore, IdempotencyStatus,
+    StoreError,
+};
 use serde_json::json;
 
 /// Result of the mandatory durable lookup that precedes parsing and planning.
@@ -32,6 +35,9 @@ pub enum ActionPreflight {
     /// The same request already completed. Callers project this receipt
     /// without invoking the provider or RNG again.
     Finalized(Box<AuthoritativeReceipt>),
+    /// The request was consumed by a never-finalized intent whose complete
+    /// recovery material is in quarantine. It must not be planned again.
+    Quarantined(Box<AuthoritativeQuarantineReceipt>),
     /// The scoped key is already bound to different canonical ingress.
     Conflict,
 }
@@ -50,6 +56,7 @@ pub enum SemanticActionStatus {
         bundle_hash: CanonicalHash,
     },
     Finalized(Box<AuthoritativeReceipt>),
+    Quarantined(Box<AuthoritativeQuarantineReceipt>),
     Conflict,
 }
 
@@ -111,6 +118,9 @@ impl ActionCoordinator {
                         SemanticActionStatus::Forbidden
                     }
                 }
+                IdempotencyStatus::QuarantinedExact(receipt) => {
+                    SemanticActionStatus::Quarantined(receipt)
+                }
                 IdempotencyStatus::Conflict => SemanticActionStatus::Conflict,
             },
         )
@@ -138,6 +148,9 @@ impl ActionCoordinator {
                 Ok(ActionPreflight::Pending { token, bundle_hash })
             }
             IdempotencyStatus::FinalizedExact(receipt) => Ok(ActionPreflight::Finalized(receipt)),
+            IdempotencyStatus::QuarantinedExact(receipt) => {
+                Ok(ActionPreflight::Quarantined(receipt))
+            }
             IdempotencyStatus::Conflict => Ok(ActionPreflight::Conflict),
         }
     }
@@ -170,6 +183,17 @@ impl ActionCoordinator {
             .map_err(ActionCoordinatorError::Stage)?;
         Ok(StagedAuthoritativeAction { token, bundle_hash })
     }
+
+    /// Execute only the exact route, invocation, and server-held guards
+    /// produced by regenerating and resolving a K5 opaque offer.
+    pub fn prepare_and_stage_resolved(
+        permit: Box<ActionPermit>,
+        engine: &mut Engine,
+        resolved: ResolvedOffer,
+    ) -> Result<StagedAuthoritativeAction, ActionCoordinatorError> {
+        let (action, invocation, guards) = resolved.into_parts();
+        Self::prepare_and_stage(permit, engine, &action, &invocation, guards)
+    }
 }
 
 fn assemble_bundle(
@@ -177,11 +201,12 @@ fn assemble_bundle(
     action: &DefinitionRef,
     invocation: &ActionInvocation,
     prepared: &mush_core::PreparedTxn,
-    output: mush_core::AuthoritativeActionOutput,
+    output: mush_core::PreparedAuthoritativeAction,
 ) -> Result<AuthoritativeBundle, ActionCoordinatorError> {
     let provider = prepared.owner().clone();
     let writes = prepared.authoritative_replay_writes();
-    let (outcome, mut definitions, mut witnesses, durable_outbox) = output.into_parts();
+    let (outcome, mut definitions, mut witnesses, durable_outbox, semantic_events) =
+        output.into_parts();
     definitions.push(action.clone());
     definitions.push(outcome.schema().clone());
     definitions.sort();
@@ -207,6 +232,7 @@ fn assemble_bundle(
             "definitions": definitions,
             "writes": writes,
             "outcome": outcome,
+            "semantic_events": semantic_events,
             "eligible_witnesses": witnesses,
             "durable_outbox": durable_outbox,
         }),
@@ -225,6 +251,7 @@ fn assemble_bundle(
         definitions,
         writes,
         outcome,
+        semantic_events,
         eligible_witnesses: witnesses,
         durable_outbox,
     })?)

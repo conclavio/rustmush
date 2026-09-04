@@ -14,8 +14,8 @@ use smol_str::SmolStr;
 use thiserror::Error;
 
 use crate::action::{
-    CanonicalHash, CanonicalHashError, CommitToken, IdempotencyKey, PreparedCausalRef, PrincipalId,
-    RequestUid, ScopedIdempotencyKey,
+    CanonicalHash, CanonicalHashError, CommitToken, IdempotencyKey, MAX_SEMANTIC_EVENTS,
+    PreparedCausalRef, PrincipalId, RequestUid, ScopedIdempotencyKey,
 };
 use crate::mechanics::{
     CanonicalId, DefinitionLocator, DefinitionRef, OwnerId, RulesValue,
@@ -38,6 +38,141 @@ pub const MAX_DURABLE_OUTBOX_PAYLOAD_BYTES: usize = 256 * 1_024;
 pub const MAX_AUTHORITATIVE_BUNDLE_BYTES: usize = 16 * 1_024 * 1_024;
 
 const ACTION_DEFINITION_KIND: &str = "action";
+
+/// One immutable semantic fact prepared inside an authoritative action.
+///
+/// Its durable identity is the enclosing bundle's commit token plus the
+/// ordinal carried by [`Self::cause`]. Keeping the pre-commit causal identity
+/// here lets the K2 executor build and hash the complete event graph before
+/// persistence assigns success.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(try_from = "AuthoritativeSemanticEventWire", deny_unknown_fields)]
+pub struct AuthoritativeSemanticEvent {
+    cause: PreparedCausalRef,
+    owner: OwnerId,
+    kind: CanonicalId,
+    truth: RulesValue,
+    eligible_witnesses: Vec<PrincipalId>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthoritativeSemanticEventWire {
+    cause: PreparedCausalRef,
+    owner: OwnerId,
+    kind: CanonicalId,
+    truth: RulesValue,
+    eligible_witnesses: Vec<PrincipalId>,
+}
+
+impl AuthoritativeSemanticEvent {
+    pub fn root(
+        cause: PreparedCausalRef,
+        action: &DefinitionRef,
+        truth: RulesValue,
+        eligible_witnesses: Vec<PrincipalId>,
+    ) -> Result<Self, AuthoritativeBundleError> {
+        Self::new(
+            cause,
+            action.key().owner.clone(),
+            CanonicalId::parse_canonical(action.key().id.as_str())
+                .expect("a definition id is also a canonical mechanics id"),
+            truth,
+            eligible_witnesses,
+        )
+    }
+
+    pub fn new(
+        cause: PreparedCausalRef,
+        owner: OwnerId,
+        kind: CanonicalId,
+        truth: RulesValue,
+        mut eligible_witnesses: Vec<PrincipalId>,
+    ) -> Result<Self, AuthoritativeBundleError> {
+        eligible_witnesses.sort();
+        eligible_witnesses.dedup();
+        if eligible_witnesses.len() > MAX_AUTHORITATIVE_WITNESSES {
+            return Err(AuthoritativeBundleError::EventWitnessLimit {
+                ordinal: cause.ordinal(),
+                actual: eligible_witnesses.len(),
+                max: MAX_AUTHORITATIVE_WITNESSES,
+            });
+        }
+        let event = Self {
+            cause,
+            owner,
+            kind,
+            truth,
+            eligible_witnesses,
+        };
+        event.canonical_len()?;
+        Ok(event)
+    }
+
+    #[must_use]
+    pub const fn cause(&self) -> PreparedCausalRef {
+        self.cause
+    }
+
+    #[must_use]
+    pub const fn owner(&self) -> &OwnerId {
+        &self.owner
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> &CanonicalId {
+        &self.kind
+    }
+
+    #[must_use]
+    pub const fn truth(&self) -> &RulesValue {
+        &self.truth
+    }
+
+    #[must_use]
+    pub fn eligible_witnesses(&self) -> &[PrincipalId] {
+        &self.eligible_witnesses
+    }
+
+    pub(crate) fn canonical_len(&self) -> Result<usize, AuthoritativeBundleError> {
+        canonical_json_bytes_with_limit(
+            &json!({
+                "cause": self.cause,
+                "owner": self.owner,
+                "kind": self.kind,
+                "truth": self.truth,
+                "eligible_witnesses": self.eligible_witnesses,
+            }),
+            crate::action::MAX_CASCADE_BYTES,
+        )
+        .map(|bytes| bytes.len())
+        .map_err(|_| AuthoritativeBundleError::SemanticEventTooLarge {
+            ordinal: self.cause.ordinal(),
+            max: crate::action::MAX_CASCADE_BYTES,
+        })
+    }
+}
+
+impl TryFrom<AuthoritativeSemanticEventWire> for AuthoritativeSemanticEvent {
+    type Error = AuthoritativeBundleError;
+
+    fn try_from(value: AuthoritativeSemanticEventWire) -> Result<Self, Self::Error> {
+        let original_witnesses = value.eligible_witnesses.clone();
+        let event = Self::new(
+            value.cause,
+            value.owner,
+            value.kind,
+            value.truth,
+            value.eligible_witnesses,
+        )?;
+        if event.eligible_witnesses != original_witnesses {
+            return Err(AuthoritativeBundleError::NonCanonicalEventWitnesses {
+                ordinal: event.cause.ordinal(),
+            });
+        }
+        Ok(event)
+    }
+}
 
 /// Canonical bounded key below an owner-stamped module namespace.
 ///
@@ -281,6 +416,7 @@ pub struct AuthoritativeBundleDraft {
     pub definitions: Vec<DefinitionRef>,
     pub writes: Vec<ReplayWrite>,
     pub outcome: RulesValue,
+    pub semantic_events: Vec<AuthoritativeSemanticEvent>,
     pub eligible_witnesses: Vec<PrincipalId>,
     pub durable_outbox: Vec<DurableOutboxIntent>,
 }
@@ -301,6 +437,8 @@ pub struct AuthoritativeBundle {
     definitions: Vec<DefinitionRef>,
     writes: Vec<ReplayWrite>,
     outcome: RulesValue,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    semantic_events: Vec<AuthoritativeSemanticEvent>,
     eligible_witnesses: Vec<PrincipalId>,
     durable_outbox: Vec<DurableOutboxIntent>,
     bundle_hash: CanonicalHash,
@@ -308,7 +446,29 @@ pub struct AuthoritativeBundle {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AuthoritativeBundleWire {
+struct AuthoritativeBundleWireV2 {
+    schema_version: u16,
+    token: CommitToken,
+    request: RequestUid,
+    idempotency: ScopedIdempotencyKey,
+    ingress_hash: CanonicalHash,
+    request_hash: CanonicalHash,
+    plan_hash: CanonicalHash,
+    action: DefinitionRef,
+    provider: OwnerId,
+    cause: PreparedCausalRef,
+    definitions: Vec<DefinitionRef>,
+    writes: Vec<ReplayWrite>,
+    outcome: RulesValue,
+    semantic_events: Vec<AuthoritativeSemanticEvent>,
+    eligible_witnesses: Vec<PrincipalId>,
+    durable_outbox: Vec<DurableOutboxIntent>,
+    bundle_hash: CanonicalHash,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthoritativeBundleWireV1 {
     schema_version: u16,
     token: CommitToken,
     request: RequestUid,
@@ -327,15 +487,24 @@ struct AuthoritativeBundleWire {
     bundle_hash: CanonicalHash,
 }
 
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum AuthoritativeBundleWire {
+    V2(AuthoritativeBundleWireV2),
+    V1(AuthoritativeBundleWireV1),
+}
+
 impl AuthoritativeBundle {
-    pub const SCHEMA_VERSION: u16 = 1;
+    pub const SCHEMA_VERSION: u16 = 2;
+    const LEGACY_SCHEMA_VERSION: u16 = 1;
 
     pub fn new(draft: AuthoritativeBundleDraft) -> Result<Self, AuthoritativeBundleError> {
-        Self::build(draft, false, None)
+        Self::build(draft, Self::SCHEMA_VERSION, false, None)
     }
 
     fn build(
         mut draft: AuthoritativeBundleDraft,
+        schema_version: u16,
         require_canonical_order: bool,
         claimed_hash: Option<CanonicalHash>,
     ) -> Result<Self, AuthoritativeBundleError> {
@@ -413,6 +582,7 @@ impl AuthoritativeBundle {
                 max: MAX_AUTHORITATIVE_WITNESSES,
             });
         }
+        validate_semantic_events(&draft, schema_version)?;
 
         let original_outbox = require_canonical_order.then(|| draft.durable_outbox.clone());
         draft
@@ -439,10 +609,15 @@ impl AuthoritativeBundle {
             }
         }
 
-        let hash_material = bundle_hash_material(&draft);
+        let hash_material = bundle_hash_material(&draft, schema_version);
+        let hash_domain = if schema_version == Self::LEGACY_SCHEMA_VERSION {
+            "authoritative_bundle.v1"
+        } else {
+            "authoritative_bundle.v2"
+        };
         let bundle_hash = CanonicalHash::for_canonical_value(
-            "authoritative_bundle.v1",
-            Self::SCHEMA_VERSION,
+            hash_domain,
+            schema_version,
             &hash_material,
             MAX_AUTHORITATIVE_BUNDLE_BYTES,
         )?;
@@ -461,7 +636,7 @@ impl AuthoritativeBundle {
                 max: MAX_AUTHORITATIVE_BUNDLE_BYTES,
             })?;
         Ok(Self {
-            schema_version: Self::SCHEMA_VERSION,
+            schema_version,
             token: draft.token,
             request: draft.request,
             idempotency: draft.idempotency,
@@ -474,6 +649,7 @@ impl AuthoritativeBundle {
             definitions: draft.definitions,
             writes: draft.writes,
             outcome: draft.outcome,
+            semantic_events: draft.semantic_events,
             eligible_witnesses: draft.eligible_witnesses,
             durable_outbox: draft.durable_outbox,
             bundle_hash,
@@ -546,6 +722,11 @@ impl AuthoritativeBundle {
     }
 
     #[must_use]
+    pub fn semantic_events(&self) -> &[AuthoritativeSemanticEvent] {
+        &self.semantic_events
+    }
+
+    #[must_use]
     pub fn eligible_witnesses(&self) -> &[PrincipalId] {
         &self.eligible_witnesses
     }
@@ -562,35 +743,127 @@ impl<'de> Deserialize<'de> for AuthoritativeBundle {
         D: Deserializer<'de>,
     {
         let wire = AuthoritativeBundleWire::deserialize(deserializer)?;
-        if wire.schema_version != Self::SCHEMA_VERSION {
-            return Err(D::Error::custom(format!(
-                "unsupported authoritative bundle schema {}; expected {}",
-                wire.schema_version,
-                Self::SCHEMA_VERSION
-            )));
+        match wire {
+            AuthoritativeBundleWire::V1(wire) => {
+                if wire.schema_version != Self::LEGACY_SCHEMA_VERSION {
+                    return Err(D::Error::custom(format!(
+                        "unsupported authoritative bundle schema version {}",
+                        wire.schema_version
+                    )));
+                }
+                Self::build(
+                    AuthoritativeBundleDraft {
+                        token: wire.token,
+                        request: wire.request,
+                        idempotency: wire.idempotency,
+                        ingress_hash: wire.ingress_hash,
+                        request_hash: wire.request_hash,
+                        plan_hash: wire.plan_hash,
+                        action: wire.action,
+                        provider: wire.provider,
+                        cause: wire.cause,
+                        definitions: wire.definitions,
+                        writes: wire.writes,
+                        outcome: wire.outcome,
+                        semantic_events: Vec::new(),
+                        eligible_witnesses: wire.eligible_witnesses,
+                        durable_outbox: wire.durable_outbox,
+                    },
+                    wire.schema_version,
+                    true,
+                    Some(wire.bundle_hash),
+                )
+            }
+            AuthoritativeBundleWire::V2(wire) => {
+                if wire.schema_version != Self::SCHEMA_VERSION {
+                    return Err(D::Error::custom(format!(
+                        "unsupported authoritative bundle schema version {}",
+                        wire.schema_version
+                    )));
+                }
+                Self::build(
+                    AuthoritativeBundleDraft {
+                        token: wire.token,
+                        request: wire.request,
+                        idempotency: wire.idempotency,
+                        ingress_hash: wire.ingress_hash,
+                        request_hash: wire.request_hash,
+                        plan_hash: wire.plan_hash,
+                        action: wire.action,
+                        provider: wire.provider,
+                        cause: wire.cause,
+                        definitions: wire.definitions,
+                        writes: wire.writes,
+                        outcome: wire.outcome,
+                        semantic_events: wire.semantic_events,
+                        eligible_witnesses: wire.eligible_witnesses,
+                        durable_outbox: wire.durable_outbox,
+                    },
+                    wire.schema_version,
+                    true,
+                    Some(wire.bundle_hash),
+                )
+            }
         }
-        Self::build(
-            AuthoritativeBundleDraft {
-                token: wire.token,
-                request: wire.request,
-                idempotency: wire.idempotency,
-                ingress_hash: wire.ingress_hash,
-                request_hash: wire.request_hash,
-                plan_hash: wire.plan_hash,
-                action: wire.action,
-                provider: wire.provider,
-                cause: wire.cause,
-                definitions: wire.definitions,
-                writes: wire.writes,
-                outcome: wire.outcome,
-                eligible_witnesses: wire.eligible_witnesses,
-                durable_outbox: wire.durable_outbox,
-            },
-            true,
-            Some(wire.bundle_hash),
-        )
         .map_err(D::Error::custom)
     }
+}
+
+fn validate_semantic_events(
+    draft: &AuthoritativeBundleDraft,
+    schema_version: u16,
+) -> Result<(), AuthoritativeBundleError> {
+    if schema_version == AuthoritativeBundle::LEGACY_SCHEMA_VERSION {
+        if !draft.semantic_events.is_empty() {
+            return Err(AuthoritativeBundleError::LegacySemanticEvents);
+        }
+        return Ok(());
+    }
+    if draft.semantic_events.is_empty() {
+        return Err(AuthoritativeBundleError::MissingRootSemanticEvent);
+    }
+    if draft.semantic_events.len() > MAX_SEMANTIC_EVENTS as usize {
+        return Err(AuthoritativeBundleError::SemanticEventLimit {
+            actual: draft.semantic_events.len(),
+            max: MAX_SEMANTIC_EVENTS,
+        });
+    }
+    for (expected, event) in draft.semantic_events.iter().enumerate() {
+        let expected = u32::try_from(expected).expect("semantic event hard limit fits u32");
+        if event.cause.ordinal() != expected {
+            return Err(AuthoritativeBundleError::SemanticEventOrdinal {
+                expected,
+                actual: event.cause.ordinal(),
+            });
+        }
+        if event.cause.root_request() != draft.request {
+            return Err(AuthoritativeBundleError::SemanticEventRequestMismatch {
+                ordinal: event.cause.ordinal(),
+            });
+        }
+        if event.owner != draft.provider {
+            return Err(AuthoritativeBundleError::SemanticEventOwnerMismatch {
+                ordinal: event.cause.ordinal(),
+            });
+        }
+        if draft
+            .definitions
+            .binary_search(event.truth.schema())
+            .is_err()
+        {
+            return Err(AuthoritativeBundleError::MissingDefinition {
+                definition: Box::new(event.truth.schema().clone()),
+            });
+        }
+    }
+    let root = &draft.semantic_events[0];
+    if root.cause != draft.cause
+        || root.truth != draft.outcome
+        || root.eligible_witnesses != draft.eligible_witnesses
+    {
+        return Err(AuthoritativeBundleError::RootSemanticEventMismatch);
+    }
+    Ok(())
 }
 
 fn validate_identity(draft: &AuthoritativeBundleDraft) -> Result<(), AuthoritativeBundleError> {
@@ -630,9 +903,9 @@ fn validate_allocator(writes: &[ReplayWrite]) -> Result<(), AuthoritativeBundleE
     Ok(())
 }
 
-fn bundle_hash_material(draft: &AuthoritativeBundleDraft) -> Value {
-    json!({
-        "schema_version": AuthoritativeBundle::SCHEMA_VERSION,
+fn bundle_hash_material(draft: &AuthoritativeBundleDraft, schema_version: u16) -> Value {
+    let mut material = json!({
+        "schema_version": schema_version,
         "token": draft.token,
         "request": draft.request,
         "idempotency": draft.idempotency,
@@ -647,7 +920,14 @@ fn bundle_hash_material(draft: &AuthoritativeBundleDraft) -> Value {
         "outcome": draft.outcome,
         "eligible_witnesses": draft.eligible_witnesses,
         "durable_outbox": draft.durable_outbox,
-    })
+    });
+    if schema_version >= 2 {
+        material
+            .as_object_mut()
+            .expect("bundle hash material is an object")
+            .insert("semantic_events".to_owned(), json!(draft.semantic_events));
+    }
+    material
 }
 
 /// Rejected K3 bundle construction or persisted wire input.
@@ -671,6 +951,30 @@ pub enum AuthoritativeBundleError {
     DefinitionLimit { actual: usize, max: usize },
     #[error("bundle omits required exact definition {definition}")]
     MissingDefinition { definition: Box<DefinitionRef> },
+    #[error("authoritative bundle v1 cannot contain semantic events")]
+    LegacySemanticEvents,
+    #[error("authoritative bundle omits its root semantic event")]
+    MissingRootSemanticEvent,
+    #[error("bundle semantic events contain {actual} entries; maximum is {max}")]
+    SemanticEventLimit { actual: usize, max: u32 },
+    #[error("semantic event ordinal is {actual}; expected contiguous ordinal {expected}")]
+    SemanticEventOrdinal { expected: u32, actual: u32 },
+    #[error("semantic event {ordinal} belongs to a different root request")]
+    SemanticEventRequestMismatch { ordinal: u32 },
+    #[error("semantic event {ordinal} is not owned by the bundle provider")]
+    SemanticEventOwnerMismatch { ordinal: u32 },
+    #[error("the root semantic event does not match bundle cause/outcome")]
+    RootSemanticEventMismatch,
+    #[error("semantic event {ordinal} witnesses are not canonical and duplicate-free")]
+    NonCanonicalEventWitnesses { ordinal: u32 },
+    #[error("semantic event {ordinal} has {actual} witnesses; maximum is {max}")]
+    EventWitnessLimit {
+        ordinal: u32,
+        actual: usize,
+        max: usize,
+    },
+    #[error("semantic event {ordinal} exceeds {max} canonical bytes")]
+    SemanticEventTooLarge { ordinal: u32, max: usize },
     #[error("persisted bundle replay writes are not in canonical target order")]
     NonCanonicalWrites,
     #[error("bundle writes target {target} more than once")]
@@ -757,6 +1061,17 @@ mod tests {
         );
         let (action, outcome_definition) = definitions();
         let object = Obj::new(ObjId(7), ObjKind::Thing, "guard", GOD, 0);
+        let cause = PreparedCausalRef::new(request, None, 0).unwrap();
+        let outcome = RulesValue::new(outcome_definition.clone(), json!({ "ok": true })).unwrap();
+        let witnesses = vec![PrincipalId::Object { id: ObjId(9) }, principal.clone()];
+        let root_event = AuthoritativeSemanticEvent::new(
+            cause,
+            action.key().owner.clone(),
+            CanonicalId::new("brace").unwrap(),
+            outcome.clone(),
+            witnesses.clone(),
+        )
+        .unwrap();
         AuthoritativeBundleDraft {
             token: CommitToken::from_bytes([2; 16]),
             request,
@@ -765,7 +1080,7 @@ mod tests {
             request_hash: hash(4),
             plan_hash: hash(5),
             provider: action.key().owner.clone(),
-            cause: PreparedCausalRef::new(request, None, 0).unwrap(),
+            cause,
             definitions: vec![outcome_definition.clone(), action.clone()],
             writes: vec![
                 ReplayWrite::ModuleDelete {
@@ -776,8 +1091,9 @@ mod tests {
                 ReplayWrite::ObjectSet { object },
             ],
             action,
-            outcome: RulesValue::new(outcome_definition, json!({ "ok": true })).unwrap(),
-            eligible_witnesses: vec![PrincipalId::Object { id: ObjId(9) }, principal],
+            outcome,
+            semantic_events: vec![root_event],
+            eligible_witnesses: witnesses,
             durable_outbox: vec![],
         }
     }
@@ -789,6 +1105,55 @@ mod tests {
         let encoded = serde_json::to_string(&bundle).unwrap();
         let decoded: AuthoritativeBundle = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, bundle);
+    }
+
+    #[test]
+    fn legacy_v1_bundle_round_trips_without_inventing_events() {
+        let mut legacy = draft();
+        legacy.semantic_events.clear();
+        let bundle = AuthoritativeBundle::build(
+            legacy,
+            AuthoritativeBundle::LEGACY_SCHEMA_VERSION,
+            false,
+            None,
+        )
+        .unwrap();
+        let encoded = serde_json::to_value(&bundle).unwrap();
+        assert_eq!(encoded["schema_version"], 1);
+        assert!(encoded.get("semantic_events").is_none());
+        let decoded: AuthoritativeBundle = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded, bundle);
+        assert!(decoded.semantic_events().is_empty());
+    }
+
+    #[test]
+    fn semantic_event_graph_is_contiguous_and_root_bound() {
+        let mut missing = draft();
+        missing.semantic_events.clear();
+        assert_eq!(
+            AuthoritativeBundle::new(missing).unwrap_err(),
+            AuthoritativeBundleError::MissingRootSemanticEvent
+        );
+
+        let mut skipped = draft();
+        let root = skipped.semantic_events[0].clone();
+        skipped.semantic_events.push(
+            AuthoritativeSemanticEvent::new(
+                PreparedCausalRef::new(skipped.request, Some(root.cause().event_id()), 2).unwrap(),
+                root.owner().clone(),
+                CanonicalId::new("derived").unwrap(),
+                root.truth().clone(),
+                root.eligible_witnesses().to_vec(),
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            AuthoritativeBundle::new(skipped).unwrap_err(),
+            AuthoritativeBundleError::SemanticEventOrdinal {
+                expected: 1,
+                actual: 2,
+            }
+        );
     }
 
     #[test]
@@ -888,5 +1253,13 @@ mod tests {
         let mut value = serde_json::to_value(AuthoritativeBundle::new(draft()).unwrap()).unwrap();
         value["unknown"] = json!(true);
         assert!(serde_json::from_value::<AuthoritativeBundle>(value).is_err());
+
+        let encoded = serde_json::to_string(&AuthoritativeBundle::new(draft()).unwrap()).unwrap();
+        let duplicated = encoded.replacen(
+            "{\"schema_version\":2",
+            "{\"schema_version\":2,\"schema_version\":2",
+            1,
+        );
+        assert!(serde_json::from_str::<AuthoritativeBundle>(&duplicated).is_err());
     }
 }

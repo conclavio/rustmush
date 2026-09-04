@@ -17,7 +17,7 @@ use std::time::Duration;
 use futures::future::BoxFuture;
 use mush_config::metrics::Metrics;
 use mush_core::{LedgerChunk, LedgerEntry, ModuleOp, ModuleWrite, chunk_key};
-use mush_server::persist::{PersistenceIntegrityLatch, StoreJob, spawn_store_writer};
+use mush_server::persist::{PersistenceIntegrityLatch, StoreJob, StoreWriter, spawn_store_writer};
 use mush_server::quarantine::{QUARANTINE_RECORD_VERSION, QuarantineSpool};
 use mush_server::retained::RetainedSeals;
 use mush_server::world_task::{WriterSignal, WriterSignalReceiver, writer_signal_channel};
@@ -26,7 +26,7 @@ use mush_store::{
     WorldSnapshot, WriteBatch, WriteReceipt,
 };
 use smol_str::SmolStr;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
 /// An [`ObjectStore`] that deterministically DROPS any batch whose module ops
 /// contain a poison key, delegating everything else to an inner in-memory store.
@@ -199,6 +199,24 @@ fn drain_breaches(rx: &mut WriterSignalReceiver) -> Vec<Option<(SmolStr, SmolStr
     out
 }
 
+fn quarantine_records(path: &std::path::Path) -> Vec<serde_json::Value> {
+    let mut records: Vec<_> = std::fs::read_dir(path)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        .map(|entry| {
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(entry.path()).unwrap())
+                .unwrap()
+        })
+        .collect();
+    records.sort_by(|left, right| {
+        left["content"]["kind"]
+            .as_str()
+            .cmp(&right["content"]["kind"].as_str())
+    });
+    records
+}
+
 /// One sealed-chunk `ModuleOp` (`log:{log}:{chunk}` with `sealed: true`).
 fn seal_op(ns: &str, log: &str, chunk: u64) -> ModuleOp {
     let value = serde_json::to_value(LedgerChunk {
@@ -235,7 +253,7 @@ fn poison_op(ns: &str, key: &str) -> ModuleOp {
 /// Returns `None` when the flush would be empty (nothing to do).
 async fn flush(
     retained: &mut RetainedSeals,
-    writer: &mpsc::Sender<StoreJob>,
+    writer: &StoreWriter,
     serial: &mut u64,
     fresh: Vec<ModuleOp>,
     high_water: &AtomicU64,
@@ -270,7 +288,7 @@ async fn flush(
 /// The wiring one spawned writer exposes to a test.
 type Rig = (
     Arc<FaultStore>,
-    mpsc::Sender<StoreJob>,
+    StoreWriter,
     tokio::task::JoinHandle<()>,
     Arc<AtomicU64>,
     WriterSignalReceiver,
@@ -293,11 +311,7 @@ fn spawn(poison: Option<&str>, quarantine_spool: QuarantineSpool) -> Rig {
 }
 
 /// Send one durable batch and await the writer's result.
-async fn send(
-    writer: &mpsc::Sender<StoreJob>,
-    serial: u64,
-    ops: Vec<ModuleOp>,
-) -> Result<u64, String> {
+async fn send(writer: &StoreWriter, serial: u64, ops: Vec<ModuleOp>) -> Result<u64, String> {
     let batch = WriteBatch {
         serial,
         module_ops: ops,
@@ -426,8 +440,12 @@ async fn collateral_seal_heals_in_isolation_and_freezes() {
 /// chunk rode in the batch: RAM may already contain the uncommitted mutation.
 #[tokio::test]
 async fn non_ledger_deterministic_drop_latches_integrity_failure() {
-    let (_store, writer, join, _high_water, mut rx) =
-        spawn(Some("comsys:poison"), QuarantineSpool::in_memory());
+    let spool = std::env::temp_dir().join(format!("rustmush-e0-non-ledger-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&spool);
+    let (_store, writer, join, _high_water, mut rx) = spawn(
+        Some("comsys:poison"),
+        QuarantineSpool::open(spool.clone()).unwrap(),
+    );
     let result = send(&writer, 1, vec![poison_op("comsys", "comsys:poison")]).await;
     assert!(result.is_err());
 
@@ -437,12 +455,21 @@ async fn non_ledger_deterministic_drop_latches_integrity_failure() {
         WriterSignal::DeterministicFailure { detail }
             if detail.contains("deterministic drop of batch 1")
     )));
+    let records = quarantine_records(&spool);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["content"]["kind"], "legacy_write_batch");
+    assert_eq!(records[0]["content"]["batch"]["serial"], 1);
+    assert_eq!(
+        records[0]["content"]["batch"]["module_ops"][0]["ns"],
+        "comsys"
+    );
 
     drop(writer);
     tokio::time::timeout(Duration::from_secs(5), join)
         .await
         .unwrap()
         .unwrap();
+    let _ = std::fs::remove_dir_all(&spool);
 }
 
 /// A seal that is ITSELF the deterministic poison: isolated retries all fail, so
@@ -491,13 +518,18 @@ async fn poison_seal_is_quarantined_to_spool_and_frozen() {
     );
 
     // The spool holds a durable recovery record with the full payload + hash.
-    let files: Vec<_> = std::fs::read_dir(&spool)
-        .unwrap()
-        .filter_map(Result::ok)
-        .collect();
-    assert_eq!(files.len(), 1, "exactly one quarantine record was spooled");
-    let record: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(files[0].path()).unwrap()).unwrap();
+    let records = quarantine_records(&spool);
+    assert_eq!(records.len(), 2, "the complete batch and seal are spooled");
+    let record = records
+        .iter()
+        .find(|record| record["content"]["kind"] == "ledger_seal")
+        .expect("seal-specific recovery record");
+    assert!(
+        records
+            .iter()
+            .any(|record| record["content"]["kind"] == "legacy_write_batch"),
+        "the complete causal batch is also preserved"
+    );
     assert_eq!(record["record_version"], QUARANTINE_RECORD_VERSION);
     assert_eq!(record["content"]["kind"], "ledger_seal");
     assert_eq!(record["content"]["namespace"], "econ");
@@ -517,11 +549,12 @@ async fn poison_seal_is_quarantined_to_spool_and_frozen() {
     let _ = std::fs::remove_dir_all(&spool);
 }
 
-/// Re-quarantining the same poison seal is idempotent — one spool record, no
-/// duplicate isolation storm (the content-addressed filename + writer PoisonState
-/// both guard it), so a poison re-emitted many times never truncates or floods.
+/// Re-quarantining the same poison seal is idempotent — one complete-batch
+/// record plus one seal record, with no serial-dependent record per retained
+/// re-emit. The content-addressed seal and writer PoisonState prevent an
+/// isolation storm while retaining the original causal batch.
 #[tokio::test]
-async fn requarantining_a_poison_seal_is_idempotent_one_record() {
+async fn requarantining_a_poison_seal_has_bounded_record_custody() {
     let spool = std::env::temp_dir().join(format!("rustmush-e0-idem-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&spool);
     let poison_key = chunk_key("econ", 0);
@@ -537,17 +570,20 @@ async fn requarantining_a_poison_seal_is_idempotent_one_record() {
     }
     let _ = store; // silence unused in case asserts change
 
-    // Exactly one durable record, and exactly one quarantine signal (the freeze
-    // + first quarantine); later re-sends are recognized and skipped.
-    let json_files: Vec<_> = std::fs::read_dir(&spool)
-        .unwrap()
-        .filter_map(Result::ok)
-        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
-        .collect();
+    // Exactly two durable records, and exactly one quarantine signal (the
+    // freeze + first quarantine); later re-sends are recognized and skipped.
+    let records = quarantine_records(&spool);
     assert_eq!(
-        json_files.len(),
-        1,
-        "one content-addressed record, no duplicates/truncation"
+        records.len(),
+        2,
+        "one original batch plus one seal record; no retry duplicates"
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record["content"]["kind"] == "legacy_write_batch")
+            .count(),
+        1
     );
     let quarantines = drain_breaches(&mut rx)
         .into_iter()
@@ -590,12 +626,19 @@ async fn distinct_payloads_under_one_poison_key_are_both_quarantined() {
     // the writer deliberately halts and will not inspect later jobs.
     assert!(send(&writer, 1, vec![first, second]).await.is_err());
 
-    let records = std::fs::read_dir(&spool)
-        .unwrap()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
-        .count();
-    assert_eq!(records, 2, "each distinct poison payload must survive");
+    let records = quarantine_records(&spool);
+    assert_eq!(
+        records.len(),
+        3,
+        "one complete batch plus each distinct poison payload must survive"
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record["content"]["kind"] == "ledger_seal")
+            .count(),
+        2
+    );
     assert_eq!(
         drain_breaches(&mut rx)
             .into_iter()

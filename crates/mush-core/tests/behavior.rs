@@ -614,10 +614,12 @@ fn operated_link_outranks_carried_and_ambient_is_the_room_by_opt_in() {
     g.w.publish_command_subject(CommandSubjectLink {
         actor: g.bob,
         subject: remote,
+        station: "cockpit".into(),
         relation: "pilot".into(),
         owner: "vehicle".into(),
         priority: 0,
         channels: Default::default(),
+        epoch: 0,
     });
     let t = texts(&g.run(g.bob, "startup"));
     assert!(
@@ -640,10 +642,12 @@ fn destroying_a_subject_scrubs_its_links() {
     g.w.publish_command_subject(CommandSubjectLink {
         actor: g.bob,
         subject: remote,
+        station: "cockpit".into(),
         relation: "pilot".into(),
         owner: "vehicle".into(),
         priority: 0,
         channels: Default::default(),
+        epoch: 0,
     });
     assert_eq!(g.w.command_subjects_of(g.bob).len(), 1);
     g.w.destroy(remote).unwrap();
@@ -700,10 +704,12 @@ fn a_linked_subject_keeps_its_carried_only_verbs() {
     g.w.publish_command_subject(CommandSubjectLink {
         actor: bob,
         subject: c,
+        station: "cockpit".into(),
         relation: "pilot".into(),
         owner: "vehicle".into(),
         priority: 0,
         channels: Default::default(),
+        epoch: 0,
     });
     let t = texts(&g.run(bob, "stow"));
     assert!(
@@ -727,10 +733,12 @@ fn link_priority_forms_subtiers_and_equal_priority_is_ambiguous() {
     let link = |s: ObjId, p: u16| CommandSubjectLink {
         actor: bob,
         subject: s,
+        station: "remote".into(),
         relation: "remote".into(),
         owner: "vehicle".into(),
         priority: p,
         channels: Default::default(),
+        epoch: 0,
     };
     g.w.publish_command_subject(link(a, 5));
     g.w.publish_command_subject(link(b, 0));
@@ -760,10 +768,12 @@ fn an_ambiguous_tier_never_falls_through() {
         g.w.publish_command_subject(CommandSubjectLink {
             actor: bob,
             subject: s,
+            station: "remote".into(),
             relation: "remote".into(),
             owner: "vehicle".into(),
             priority: 0,
             channels: Default::default(),
+            epoch: 0,
         });
     }
     let t = texts(&g.run(bob, "startup"));
@@ -951,10 +961,12 @@ fn link(
     CommandSubjectLink {
         actor,
         subject,
+        station: "primary".into(),
         relation: "pilot".into(),
         owner: owner.into(),
         priority,
         channels: chans(channels),
+        epoch: 1,
     }
 }
 
@@ -983,7 +995,7 @@ fn a_channelled_command_resolves_only_with_the_granted_channel() {
 }
 
 #[test]
-fn channels_union_across_multiple_owner_links() {
+fn a_channel_grant_from_another_owner_remains_independently_eligible() {
     let mut g = Game::new();
     let mut r = Registrar::new(&mut g.reg, "vehicle");
     r.behavior(chan_spec("test.drive", "drive", "movement"))
@@ -992,13 +1004,102 @@ fn channels_union_across_multiple_owner_links() {
     let bob = g.bob;
     let mech = g.thing("Mech", bob);
     bind(&mut g, mech, "test.drive");
-    // `sim` grants weapons; a `rigging` module grants movement — the union authorizes.
+    // `sim` grants weapons; a separate `rigging` grant carries movement. The
+    // movement grant authorizes on its own; the two grants are never unioned.
     g.w.publish_command_subject(link(bob, mech, "sim", 1, &["weapons"]));
     g.w.publish_command_subject(link(bob, mech, "rigging", 0, &["movement"]));
     assert!(
         texts(&g.run(bob, "drive")).contains(&format!("ran on {mech}")),
-        "channels union across owner links"
+        "independent movement grant remains eligible"
     );
+}
+
+#[test]
+fn station_priority_cannot_promote_another_stations_channel() {
+    let mut g = Game::new();
+    let mut r = Registrar::new(&mut g.reg, "vehicle");
+    r.behavior(chan_spec("test.drive", "drive", "movement"))
+        .unwrap();
+    drop(r);
+    let bob = g.bob;
+    let mixed = g.thing("Mixed", bob);
+    let driver = g.thing("Driver", bob);
+    bind(&mut g, mixed, "test.drive");
+    bind(&mut g, driver, "test.drive");
+
+    // Mixed has a priority-10 sensor station and a priority-1 movement
+    // station. Driver has a priority-5 movement station. The old union/max
+    // projection incorrectly promoted Mixed's movement to priority 10.
+    g.w.publish_command_subject(CommandSubjectLink {
+        actor: bob,
+        subject: mixed,
+        station: "sensors".into(),
+        relation: "sensor".into(),
+        owner: "sim".into(),
+        priority: 10,
+        channels: chans(&["sensors"]),
+        epoch: 4,
+    });
+    g.w.publish_command_subject(CommandSubjectLink {
+        actor: bob,
+        subject: mixed,
+        station: "driver".into(),
+        relation: "driver".into(),
+        owner: "sim".into(),
+        priority: 1,
+        channels: chans(&["movement"]),
+        epoch: 4,
+    });
+    g.w.publish_command_subject(CommandSubjectLink {
+        actor: bob,
+        subject: driver,
+        station: "driver".into(),
+        relation: "driver".into(),
+        owner: "sim".into(),
+        priority: 5,
+        channels: chans(&["movement"]),
+        epoch: 8,
+    });
+
+    let text = texts(&g.run(bob, "drive"));
+    assert!(
+        text.contains(&format!("ran on {driver}")) && !text.contains("Ambiguous"),
+        "priority must be selected from the movement-carrying grant: {text}"
+    );
+}
+
+#[test]
+fn exact_station_epoch_and_channel_revalidate_stale_intents() {
+    let mut g = Game::new();
+    let bob = g.bob;
+    let mech = g.thing("Mech", bob);
+    let movement = ChannelId::new("movement").unwrap();
+    g.w.publish_command_subject(CommandSubjectLink {
+        actor: bob,
+        subject: mech,
+        station: "cockpit".into(),
+        relation: "pilot".into(),
+        owner: "sim".into(),
+        priority: 2,
+        channels: chans(&["movement"]),
+        epoch: 12,
+    });
+    assert!(g.w.channel_grant_is_current(bob, mech, "sim", "cockpit", 12, &movement));
+    assert!(!g.w.channel_grant_is_current(bob, mech, "sim", "cockpit", 11, &movement));
+
+    // Revocation/republish advances the epoch; a previously issued intent no
+    // longer validates even though actor, station, and channel are unchanged.
+    g.w.publish_command_subject(CommandSubjectLink {
+        actor: bob,
+        subject: mech,
+        station: "cockpit".into(),
+        relation: "pilot".into(),
+        owner: "sim".into(),
+        priority: 2,
+        channels: chans(&["movement"]),
+        epoch: 13,
+    });
+    assert!(!g.w.channel_grant_is_current(bob, mech, "sim", "cockpit", 12, &movement));
 }
 
 #[test]

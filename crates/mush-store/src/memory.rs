@@ -31,10 +31,11 @@ use mush_core::{
 
 use crate::store::{AuthoritativeStore, ObjectStore};
 use crate::types::{
-    AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeEpochRetirement,
-    AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult, AuthoritativeOutboxRecord,
-    AuthoritativeReceipt, AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec,
-    BundleStatus, CharacterRef, IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
+    AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeDiscardReceipt,
+    AuthoritativeEpochRetirement, AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult,
+    AuthoritativeOutboxRecord, AuthoritativeQuarantineReceipt, AuthoritativeReceipt,
+    AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec, BundleStatus, CharacterRef,
+    IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
     MAX_PENDING_AUTHORITATIVE_OUTBOX, MAX_RETAINED_AUTHORITATIVE_BYTES,
     MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleWrite, PendingAuthoritativeIntent, SshKeyRec,
     StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt, validate_module_key,
@@ -75,6 +76,9 @@ struct Inner {
     authoritative_intents: BTreeMap<CommitToken, String>,
     /// Immutable compact finalized/checkpoint witnesses.
     authoritative_receipts: BTreeMap<CommitToken, String>,
+    /// Compact witnesses for never-finalized intents released only after
+    /// independent quarantine custody was established.
+    authoritative_quarantines: BTreeMap<CommitToken, String>,
     /// Early lookup binding installed atomically with the full intent.
     authoritative_idempotency: BTreeMap<ScopedIdempotencyKey, IdempotencyBinding>,
     /// Durable per-scope retry horizon. Epochs below this watermark can never
@@ -88,6 +92,8 @@ struct Inner {
     /// Independently enumerable recovery index. Later fault tests deliberately
     /// damage this index and prove exhaustive intent discovery repairs it.
     authoritative_pending: BTreeSet<CommitToken>,
+    /// Changes whenever a full retained intent is added or released.
+    authoritative_retention_generation: u64,
     closed: bool,
 }
 
@@ -208,6 +214,20 @@ fn decode_checkpoint_receipt(doc: &str) -> Result<AuthoritativeReceipt, StoreErr
     Ok(receipt)
 }
 
+fn decode_quarantine_receipt(doc: &str) -> Result<AuthoritativeQuarantineReceipt, StoreError> {
+    let receipt: AuthoritativeQuarantineReceipt = serde_json::from_str(doc)
+        .map_err(|error| StoreError::AuthoritativeCorrupt(error.to_string()))?;
+    receipt.validate()?;
+    let canonical = serde_json::to_string(&receipt)
+        .map_err(|error| StoreError::AuthoritativeCorrupt(error.to_string()))?;
+    if canonical != doc {
+        return Err(StoreError::AuthoritativeCorrupt(
+            "quarantine receipt document is not in canonical storage form".to_owned(),
+        ));
+    }
+    Ok(receipt)
+}
+
 fn decode_outbox_record(doc: &str) -> Result<AuthoritativeOutboxRecord, StoreError> {
     let record: AuthoritativeOutboxRecord = serde_json::from_str(doc)
         .map_err(|error| StoreError::AuthoritativeCorrupt(error.to_string()))?;
@@ -310,6 +330,35 @@ fn validate_receipt_binding(
     {
         return Err(StoreError::AuthoritativeCorrupt(
             "authoritative receipt disagrees with its idempotency binding".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_quarantine_binding(
+    inner: &Inner,
+    stored_token: CommitToken,
+    receipt: &AuthoritativeQuarantineReceipt,
+) -> Result<(), StoreError> {
+    if receipt.token() != stored_token {
+        return Err(StoreError::AuthoritativeCorrupt(
+            "authoritative quarantine receipt is stored under the wrong token".to_owned(),
+        ));
+    }
+    let binding = inner
+        .authoritative_idempotency
+        .get(receipt.idempotency())
+        .ok_or_else(|| {
+            StoreError::AuthoritativeCorrupt(
+                "authoritative quarantine receipt is missing its idempotency binding".to_owned(),
+            )
+        })?;
+    if binding.token != stored_token
+        || binding.ingress_hash != receipt.ingress_hash()
+        || binding.bundle_hash != receipt.bundle_hash()
+    {
+        return Err(StoreError::AuthoritativeCorrupt(
+            "authoritative quarantine receipt disagrees with its idempotency binding".to_owned(),
         ));
     }
     Ok(())
@@ -522,6 +571,18 @@ fn retained_authoritative_usage(inner: &Inner) -> Result<(usize, usize), StoreEr
     Ok((count, bytes))
 }
 
+fn advance_retention_generation(inner: &mut Inner) -> Result<(), StoreError> {
+    inner.authoritative_retention_generation = inner
+        .authoritative_retention_generation
+        .checked_add(1)
+        .ok_or_else(|| {
+            StoreError::AuthoritativeCorrupt(
+                "authoritative retention generation exhausted".to_owned(),
+            )
+        })?;
+    Ok(())
+}
+
 fn enforce_retained_authoritative_capacity(
     inner: &Inner,
     candidate_bytes: usize,
@@ -611,6 +672,17 @@ impl AuthoritativeStore for InMemoryStore {
                     resumed: true,
                 });
             }
+            if let Some(quarantine_doc) = inner.authoritative_quarantines.get(&token) {
+                let quarantine = decode_quarantine_receipt(quarantine_doc)?;
+                validate_quarantine_binding(&inner, token, &quarantine)?;
+                if !quarantine.matches_bundle(&bundle) {
+                    return Err(StoreError::AuthoritativeTokenConflict);
+                }
+                inner.authoritative_pending.remove(&token);
+                return Err(StoreError::AuthoritativeIntentQuarantined {
+                    evidence_hash: quarantine.evidence_hash(),
+                });
+            }
             if let Some(receipt_doc) = inner.authoritative_receipts.get(&token) {
                 let receipt = decode_checkpoint_receipt(receipt_doc)?;
                 validate_receipt_binding(&inner, token, &receipt)?;
@@ -635,6 +707,11 @@ impl AuthoritativeStore for InMemoryStore {
                     "idempotency binding exists without its exact intent".to_owned(),
                 ));
             }
+            if !inner.authoritative_pending.is_empty() {
+                return Err(StoreError::AuthoritativeIntentInFlight {
+                    pending: inner.authoritative_pending.len(),
+                });
+            }
             validate_replay_admission(&inner, &bundle)?;
             enforce_retained_authoritative_capacity(
                 &inner,
@@ -642,6 +719,7 @@ impl AuthoritativeStore for InMemoryStore {
                 MAX_RETAINED_AUTHORITATIVE_INTENTS,
                 MAX_RETAINED_AUTHORITATIVE_BYTES,
             )?;
+            advance_retention_generation(&mut inner)?;
             inner.authoritative_intents.insert(token, doc);
             inner.authoritative_idempotency.insert(
                 key,
@@ -684,22 +762,33 @@ impl AuthoritativeStore for InMemoryStore {
                 return Ok(IdempotencyStatus::Conflict);
             }
             let Some(intent_doc) = inner.authoritative_intents.get(&binding.token) else {
-                let receipt_doc = inner
-                    .authoritative_receipts
+                if let Some(receipt_doc) = inner.authoritative_receipts.get(&binding.token) {
+                    let receipt = decode_checkpoint_receipt(receipt_doc)?;
+                    validate_receipt_binding(&inner, binding.token, &receipt)?;
+                    if receipt.idempotency() != key {
+                        return Err(StoreError::AuthoritativeCorrupt(
+                            "checkpoint receipt disagrees with its idempotency address".to_owned(),
+                        ));
+                    }
+                    return Ok(IdempotencyStatus::FinalizedExact(Box::new(receipt)));
+                }
+                let quarantine_doc = inner
+                    .authoritative_quarantines
                     .get(&binding.token)
                     .ok_or_else(|| {
                         StoreError::AuthoritativeCorrupt(
-                            "idempotency binding names no intent or receipt".to_owned(),
+                            "idempotency binding names no intent, receipt, or quarantine"
+                                .to_owned(),
                         )
                     })?;
-                let receipt = decode_checkpoint_receipt(receipt_doc)?;
-                validate_receipt_binding(&inner, binding.token, &receipt)?;
-                if receipt.idempotency() != key {
+                let quarantine = decode_quarantine_receipt(quarantine_doc)?;
+                validate_quarantine_binding(&inner, binding.token, &quarantine)?;
+                if quarantine.idempotency() != key {
                     return Err(StoreError::AuthoritativeCorrupt(
-                        "checkpoint receipt disagrees with its idempotency address".to_owned(),
+                        "quarantine receipt disagrees with its idempotency address".to_owned(),
                     ));
                 }
-                return Ok(IdempotencyStatus::FinalizedExact(Box::new(receipt)));
+                return Ok(IdempotencyStatus::QuarantinedExact(Box::new(quarantine)));
             };
             let intent = decode_intent(intent_doc)?;
             if intent.idempotency() != key {
@@ -863,6 +952,12 @@ impl AuthoritativeStore for InMemoryStore {
             }
             let receipt = validate_retained_intent(&inner, token, &bundle)?
                 .ok_or(StoreError::AuthoritativeNotFinalized)?;
+            let planned = plan_replay(&bundle)?;
+            if !replay_matches(&inner, &planned) {
+                return Err(StoreError::AuthoritativeCorrupt(
+                    "authoritative checkpoint post-image readback mismatch".to_owned(),
+                ));
+            }
             for expected in expected_outbox_records(&bundle)? {
                 let record = decode_outbox_record(
                     inner
@@ -880,12 +975,140 @@ impl AuthoritativeStore for InMemoryStore {
             }
             validate_receipt_binding(&inner, token, &receipt)?;
             let checkpoint_doc = serde_json::to_string(&receipt)?;
+            advance_retention_generation(&mut inner)?;
             inner.authoritative_receipts.insert(token, checkpoint_doc);
             inner.authoritative_intents.remove(&token);
             inner.authoritative_pending.remove(&token);
             Ok(AuthoritativeCheckpointReceipt {
                 receipt,
                 released_intent_bytes: intent_doc.len(),
+                resumed: false,
+            })
+        })
+    }
+
+    fn discard_quarantined_authoritative_intent(
+        &self,
+        token: CommitToken,
+        expected_bundle_hash: CanonicalHash,
+        evidence_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<AuthoritativeDiscardReceipt, StoreError>> {
+        Box::pin(async move {
+            let mut inner = self.lock()?;
+            if let Some(doc) = inner.authoritative_quarantines.get(&token) {
+                let quarantine = decode_quarantine_receipt(doc)?;
+                validate_quarantine_binding(&inner, token, &quarantine)?;
+                if quarantine.bundle_hash() != expected_bundle_hash
+                    || quarantine.evidence_hash() != evidence_hash
+                {
+                    return Err(StoreError::AuthoritativeTokenConflict);
+                }
+                inner.authoritative_pending.remove(&token);
+                return Ok(AuthoritativeDiscardReceipt {
+                    quarantine,
+                    released_intent_bytes: 0,
+                    resumed: true,
+                });
+            }
+            let intent_doc = inner
+                .authoritative_intents
+                .get(&token)
+                .cloned()
+                .ok_or(StoreError::AuthoritativeIntentMissing)?;
+            let bundle = decode_intent(&intent_doc)?;
+            if bundle.bundle_hash() != expected_bundle_hash {
+                return Err(StoreError::AuthoritativeTokenConflict);
+            }
+            if inner.authoritative_receipts.contains_key(&token) {
+                return Err(StoreError::AuthoritativeIntentAlreadyFinalized);
+            }
+            let Some(binding) = inner.authoritative_idempotency.get(bundle.idempotency()) else {
+                return Err(StoreError::AuthoritativeCorrupt(
+                    "discarded intent is missing its idempotency binding".to_owned(),
+                ));
+            };
+            if binding.token != token
+                || binding.ingress_hash != bundle.ingress_hash()
+                || binding.bundle_hash != expected_bundle_hash
+            {
+                return Err(StoreError::AuthoritativeCorrupt(
+                    "discarded intent disagrees with its idempotency binding".to_owned(),
+                ));
+            }
+            let quarantine = AuthoritativeQuarantineReceipt::new(&bundle, evidence_hash);
+            let quarantine_doc = serde_json::to_string(&quarantine)?;
+            advance_retention_generation(&mut inner)?;
+            inner
+                .authoritative_quarantines
+                .insert(token, quarantine_doc);
+            inner.authoritative_intents.remove(&token);
+            inner.authoritative_pending.remove(&token);
+            Ok(AuthoritativeDiscardReceipt {
+                quarantine,
+                released_intent_bytes: intent_doc.len(),
+                resumed: false,
+            })
+        })
+    }
+
+    fn restore_quarantined_authoritative_intent(
+        &self,
+        bundle: AuthoritativeBundle,
+        evidence_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<IntentReceipt, StoreError>> {
+        Box::pin(async move {
+            let token = bundle.token();
+            let bundle_hash = bundle.bundle_hash();
+            let doc = serde_json::to_string(&bundle)?;
+            let mut inner = self.lock()?;
+            if let Some(intent_doc) = inner.authoritative_intents.get(&token) {
+                let existing = decode_intent(intent_doc)?;
+                if existing != bundle {
+                    return Err(StoreError::AuthoritativeTokenConflict);
+                }
+                if inner.authoritative_quarantines.contains_key(&token) {
+                    return Err(StoreError::AuthoritativeCorrupt(
+                        "authoritative intent and quarantine receipt coexist".to_owned(),
+                    ));
+                }
+                return Ok(IntentReceipt {
+                    token,
+                    bundle_hash,
+                    resumed: true,
+                });
+            }
+            let quarantine_doc = inner
+                .authoritative_quarantines
+                .get(&token)
+                .ok_or(StoreError::AuthoritativeIntentMissing)?;
+            let quarantine = decode_quarantine_receipt(quarantine_doc)?;
+            validate_quarantine_binding(&inner, token, &quarantine)?;
+            if !quarantine.matches_bundle(&bundle) || quarantine.evidence_hash() != evidence_hash {
+                return Err(StoreError::AuthoritativeTokenConflict);
+            }
+            if inner.authoritative_receipts.contains_key(&token) {
+                return Err(StoreError::AuthoritativeCorrupt(
+                    "quarantine receipt coexists with a finalized witness".to_owned(),
+                ));
+            }
+            if !inner.authoritative_pending.is_empty() {
+                return Err(StoreError::AuthoritativeIntentInFlight {
+                    pending: inner.authoritative_pending.len(),
+                });
+            }
+            enforce_retained_authoritative_capacity(
+                &inner,
+                doc.len(),
+                MAX_RETAINED_AUTHORITATIVE_INTENTS,
+                MAX_RETAINED_AUTHORITATIVE_BYTES,
+            )?;
+            advance_retention_generation(&mut inner)?;
+            inner.authoritative_intents.insert(token, doc);
+            inner.authoritative_quarantines.remove(&token);
+            inner.authoritative_pending.insert(token);
+            Ok(IntentReceipt {
+                token,
+                bundle_hash,
                 resumed: false,
             })
         })
@@ -1009,6 +1232,44 @@ impl AuthoritativeStore for InMemoryStore {
             } else {
                 inner.authoritative_outbox_pending.insert(item_id);
             }
+            Ok(next)
+        })
+    }
+
+    fn note_authoritative_outbox_unroutable(
+        &self,
+        item_id: CanonicalHash,
+        expected_payload_hash: CanonicalHash,
+        expected_passes: u32,
+        error: String,
+    ) -> BoxFuture<'_, Result<AuthoritativeOutboxRecord, StoreError>> {
+        Box::pin(async move {
+            let mut inner = self.lock()?;
+            let doc = inner
+                .authoritative_outbox
+                .get(&item_id)
+                .ok_or(StoreError::AuthoritativeOutboxMissing)?;
+            let record = decode_outbox_record(doc)?;
+            if record.intent().payload_hash() != expected_payload_hash {
+                return Err(StoreError::AuthoritativeOutboxConflict);
+            }
+            validate_outbox_parent(&inner, &record)?;
+            if expected_passes < u32::MAX
+                && record.unroutable_passes() == expected_passes + 1
+                && matches!(
+                    record.state(),
+                    crate::types::AuthoritativeOutboxState::Pending {
+                        last_error: Some(stored)
+                    } if stored == &error
+                )
+            {
+                return Ok(record);
+            }
+            let next = record.note_unroutable(expected_passes, error)?;
+            inner
+                .authoritative_outbox
+                .insert(item_id, serde_json::to_string(&next)?);
+            inner.authoritative_outbox_pending.insert(item_id);
             Ok(next)
         })
     }
@@ -1142,6 +1403,16 @@ impl AuthoritativeStore for InMemoryStore {
                 }
                 return Ok(BundleStatus::FinalizedExact(Box::new(receipt)));
             }
+            if let Some(quarantine_doc) = inner.authoritative_quarantines.get(&token) {
+                let quarantine = decode_quarantine_receipt(quarantine_doc)?;
+                validate_quarantine_binding(&inner, token, &quarantine)?;
+                if quarantine.bundle_hash() != expected_bundle_hash {
+                    return Ok(BundleStatus::Conflict {
+                        stored_bundle_hash: quarantine.bundle_hash(),
+                    });
+                }
+                return Ok(BundleStatus::QuarantinedExact(Box::new(quarantine)));
+            }
             Ok(BundleStatus::Absent)
         })
     }
@@ -1233,12 +1504,20 @@ impl AuthoritativeStore for InMemoryStore {
         })
     }
 
+    fn authoritative_retention_generation(&self) -> BoxFuture<'_, Result<u64, StoreError>> {
+        Box::pin(async move { Ok(self.lock()?.authoritative_retention_generation) })
+    }
+
     fn repair_authoritative_retention(
         &self,
+        expected_generation: u64,
         usage: AuthoritativeRetentionUsage,
     ) -> BoxFuture<'_, Result<bool, StoreError>> {
         Box::pin(async move {
             let inner = self.lock()?;
+            if inner.authoritative_retention_generation != expected_generation {
+                return Err(StoreError::AuthoritativeRetentionContention);
+            }
             let (count, bytes) = retained_authoritative_usage(&inner)?;
             let actual = AuthoritativeRetentionUsage { count, bytes };
             if actual != usage {
@@ -2024,10 +2303,22 @@ mod tests {
             action: action.clone(),
             provider: owner.clone(),
             cause: PreparedCausalRef::new(request, None, 0).unwrap(),
-            definitions: vec![action, outcome_definition.clone()],
+            definitions: vec![action.clone(), outcome_definition.clone()],
             writes,
-            outcome: RulesValue::new(outcome_definition, serde_json::json!({ "ok": true }))
+            outcome: RulesValue::new(
+                outcome_definition.clone(),
+                serde_json::json!({ "ok": true }),
+            )
+            .unwrap(),
+            semantic_events: vec![
+                mush_core::AuthoritativeSemanticEvent::root(
+                    PreparedCausalRef::new(request, None, 0).unwrap(),
+                    &action,
+                    RulesValue::new(outcome_definition, serde_json::json!({ "ok": true })).unwrap(),
+                    vec![principal.clone()],
+                )
                 .unwrap(),
+            ],
             eligible_witnesses: vec![principal],
             durable_outbox,
         })
@@ -2290,13 +2581,22 @@ mod tests {
             count: 1,
             bytes: serde_json::to_string(&bundle).unwrap().len(),
         };
-        assert!(!store.repair_authoritative_retention(usage).await.unwrap());
+        let generation = store.authoritative_retention_generation().await.unwrap();
+        assert!(
+            !store
+                .repair_authoritative_retention(generation, usage)
+                .await
+                .unwrap()
+        );
         assert!(matches!(
             store
-                .repair_authoritative_retention(AuthoritativeRetentionUsage {
-                    count: 1,
-                    bytes: usage.bytes + 1,
-                })
+                .repair_authoritative_retention(
+                    generation,
+                    AuthoritativeRetentionUsage {
+                        count: 1,
+                        bytes: usage.bytes + 1,
+                    },
+                )
                 .await,
             Err(StoreError::AuthoritativeCorrupt(_))
         ));
@@ -2313,6 +2613,32 @@ mod tests {
             store.scan_authoritative_intents(None, 1).await,
             Err(StoreError::AuthoritativeCorrupt(message))
                 if message.contains("canonical storage form")
+        ));
+    }
+
+    #[tokio::test]
+    async fn authoritative_retention_repair_rejects_a_stale_generation() {
+        let store = InMemoryStore::new();
+        seed_minimal_world(&store).await;
+        let bundle = authoritative_bundle(73, 74);
+        let token = bundle.token();
+        let hash = bundle.bundle_hash();
+        store
+            .reserve_authoritative_intent(bundle.clone())
+            .await
+            .unwrap();
+        let generation = store.authoritative_retention_generation().await.unwrap();
+        let stale_usage = AuthoritativeRetentionUsage {
+            count: 1,
+            bytes: serde_json::to_string(&bundle).unwrap().len(),
+        };
+        store.reconcile_authoritative(token, hash).await.unwrap();
+        store.checkpoint_authoritative(token, hash).await.unwrap();
+        assert!(matches!(
+            store
+                .repair_authoritative_retention(generation, stale_usage)
+                .await,
+            Err(StoreError::AuthoritativeRetentionContention)
         ));
     }
 
@@ -2482,6 +2808,153 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn authoritative_checkpoint_retains_intent_when_a_post_image_was_clobbered() {
+        let store = InMemoryStore::new();
+        seed_minimal_world(&store).await;
+        let bundle = authoritative_bundle(83, 84);
+        let token = bundle.token();
+        let hash = bundle.bundle_hash();
+
+        store
+            .reserve_authoritative_intent(bundle)
+            .await
+            .expect("reserve checkpoint candidate");
+        store
+            .reconcile_authoritative(token, hash)
+            .await
+            .expect("finalize checkpoint candidate");
+        store.lock().unwrap().next_id = Some(4);
+
+        assert!(matches!(
+            store.checkpoint_authoritative(token, hash).await,
+            Err(StoreError::AuthoritativeCorrupt(message))
+                if message.contains("post-image readback mismatch")
+        ));
+        assert_eq!(
+            store
+                .scan_authoritative_intents(None, 1)
+                .await
+                .unwrap()
+                .intents
+                .len(),
+            1,
+            "failed checkpoint must retain the exact repair witness"
+        );
+    }
+
+    #[tokio::test]
+    async fn authoritative_store_refuses_a_second_unresolved_intent() {
+        let store = InMemoryStore::new();
+        seed_minimal_world(&store).await;
+        let first = authoritative_bundle_for_request(85, 86, 1, ObjId(2), Some(3));
+        let second = authoritative_bundle_for_request(87, 88, 2, ObjId(2), Some(3));
+
+        store
+            .reserve_authoritative_intent(first.clone())
+            .await
+            .expect("reserve first intent");
+        assert!(matches!(
+            store.reserve_authoritative_intent(second.clone()).await,
+            Err(StoreError::AuthoritativeIntentInFlight { pending: 1 })
+        ));
+
+        store
+            .reconcile_authoritative(first.token(), first.bundle_hash())
+            .await
+            .expect("resolve first intent");
+        store
+            .reserve_authoritative_intent(second)
+            .await
+            .expect("reservation proceeds after the first intent resolves");
+    }
+
+    #[tokio::test]
+    async fn quarantined_discard_releases_capacity_without_reopening_identity() {
+        let store = InMemoryStore::new();
+        seed_minimal_world(&store).await;
+        let bundle = authoritative_bundle(89, 90);
+        let token = bundle.token();
+        let hash = bundle.bundle_hash();
+        let key = bundle.idempotency().clone();
+        let ingress = bundle.ingress_hash();
+        let evidence_hash = CanonicalHash::from_bytes([91; 32]);
+        let intent_bytes = serde_json::to_string(&bundle).unwrap().len();
+        store
+            .reserve_authoritative_intent(bundle.clone())
+            .await
+            .unwrap();
+
+        let discard = store
+            .discard_quarantined_authoritative_intent(token, hash, evidence_hash)
+            .await
+            .unwrap();
+        assert!(!discard.resumed);
+        assert_eq!(discard.released_intent_bytes, intent_bytes);
+        assert_eq!(discard.quarantine.evidence_hash(), evidence_hash);
+        assert!(
+            store
+                .scan_authoritative_intents(None, 1)
+                .await
+                .unwrap()
+                .intents
+                .is_empty()
+        );
+        assert_eq!(
+            store.authoritative_status(token, hash).await.unwrap(),
+            BundleStatus::QuarantinedExact(Box::new(discard.quarantine.clone()))
+        );
+        assert_eq!(
+            store
+                .authoritative_idempotency_status(&key, ingress)
+                .await
+                .unwrap(),
+            IdempotencyStatus::QuarantinedExact(Box::new(discard.quarantine.clone()))
+        );
+        assert!(matches!(
+            store.reserve_authoritative_intent(bundle.clone()).await,
+            Err(StoreError::AuthoritativeIntentQuarantined {
+                evidence_hash: observed
+            }) if observed == evidence_hash
+        ));
+        let resumed = store
+            .discard_quarantined_authoritative_intent(token, hash, evidence_hash)
+            .await
+            .unwrap();
+        assert!(resumed.resumed);
+        assert_eq!(resumed.released_intent_bytes, 0);
+        let restored = store
+            .restore_quarantined_authoritative_intent(bundle, evidence_hash)
+            .await
+            .unwrap();
+        assert!(!restored.resumed);
+        assert_eq!(
+            store.authoritative_status(token, hash).await.unwrap(),
+            BundleStatus::PendingExact
+        );
+    }
+
+    #[tokio::test]
+    async fn finalized_intent_cannot_be_discarded_as_quarantine() {
+        let store = InMemoryStore::new();
+        seed_minimal_world(&store).await;
+        let bundle = authoritative_bundle(92, 93);
+        let token = bundle.token();
+        let hash = bundle.bundle_hash();
+        store.reserve_authoritative_intent(bundle).await.unwrap();
+        store.reconcile_authoritative(token, hash).await.unwrap();
+        assert!(matches!(
+            store
+                .discard_quarantined_authoritative_intent(
+                    token,
+                    hash,
+                    CanonicalHash::from_bytes([94; 32]),
+                )
+                .await,
+            Err(StoreError::AuthoritativeIntentAlreadyFinalized)
+        ));
+    }
+
+    #[tokio::test]
     async fn durable_outbox_is_finalization_gated_retryable_and_blocks_checkpoint() {
         let store = InMemoryStore::new();
         seed_minimal_world(&store).await;
@@ -2512,6 +2985,30 @@ mod tests {
         assert_eq!(pending.len(), 1);
         let item_id = pending[0].item_id();
         assert_eq!(pending[0].attempts(), 0);
+        let unroutable = store
+            .note_authoritative_outbox_unroutable(
+                item_id,
+                payload_hash,
+                0,
+                "adapter unavailable".to_owned(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unroutable.unroutable_passes(), 1);
+        assert_eq!(unroutable.attempts(), 0);
+        assert_eq!(
+            store
+                .note_authoritative_outbox_unroutable(
+                    item_id,
+                    payload_hash,
+                    0,
+                    "adapter unavailable".to_owned(),
+                )
+                .await
+                .unwrap(),
+            unroutable,
+            "a lost acknowledgement joins the exact persisted pass"
+        );
         assert!(matches!(
             store.checkpoint_authoritative(token, hash).await,
             Err(StoreError::AuthoritativeOutboxPending)
@@ -2630,7 +3127,7 @@ mod tests {
             }
         );
         assert!(matches!(
-            store.reserve_authoritative_intent(old).await,
+            store.reserve_authoritative_intent(old.clone()).await,
             Err(StoreError::AuthoritativeEpochRetired {
                 requested_epoch: 0,
                 minimum_accepted_epoch: 1,
@@ -2642,6 +3139,12 @@ mod tests {
                 .await
                 .unwrap(),
             BundleStatus::Absent
+        );
+        assert_eq!(
+            store.authoritative_bundle_status(&old).await.unwrap(),
+            BundleStatus::Retired {
+                minimum_accepted_epoch: 1
+            }
         );
 
         let resumed = store.retire_authoritative_epochs(&scope, 1).await.unwrap();

@@ -19,9 +19,9 @@
 //! - **One writer.** See the concurrency contract in [`store`].
 //!
 //! Testing: the shared behavior [`suite`] runs against [`InMemoryStore`]
-//! unconditionally and against [`RedisStore`] when `REDIS_URL` is set
-//! (`tests/redis_suite.rs` — skips with a note otherwise, since dev boxes
-//! may have no Redis; Linux CI provides one).
+//! unconditionally and against [`RedisStore`] through explicitly ignored
+//! `tests/redis_suite.rs` wrappers. Linux CI supplies `REDIS_URL` and runs
+//! those wrappers explicitly, so absent Redis coverage is visible.
 
 pub mod memory;
 pub mod migrate;
@@ -38,13 +38,13 @@ pub use migrate::{
 pub use redis::RedisStore;
 pub use store::{AuthoritativeStore, ObjectStore};
 pub use types::{
-    AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeEpochRetirement,
-    AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult, AuthoritativeOutboxRecord,
-    AuthoritativeOutboxState, AuthoritativeReceipt, AuthoritativeRetentionUsage,
-    AuthoritativeScanCursor, BanRec, BundleStatus, CharacterRef, IdempotencyStatus, IntentReceipt,
-    MAX_AUTHORITATIVE_DISCOVERY_PAGE, MAX_AUTHORITATIVE_OUTBOX_ERROR_BYTES,
-    MAX_AUTHORITATIVE_SCAN_CURSOR_BYTES, MAX_PENDING_AUTHORITATIVE_OUTBOX,
-    MAX_RETAINED_AUTHORITATIVE_BYTES, MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleOp, ModuleWrite,
-    PendingAuthoritativeIntent, SshKeyRec, StoreError, TokenRecord, WorldSnapshot, WriteBatch,
-    WriteReceipt,
+    AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeDiscardReceipt,
+    AuthoritativeEpochRetirement, AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult,
+    AuthoritativeOutboxRecord, AuthoritativeOutboxState, AuthoritativeQuarantineReceipt,
+    AuthoritativeReceipt, AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec,
+    BundleStatus, CharacterRef, IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
+    MAX_AUTHORITATIVE_OUTBOX_ERROR_BYTES, MAX_AUTHORITATIVE_SCAN_CURSOR_BYTES,
+    MAX_PENDING_AUTHORITATIVE_OUTBOX, MAX_RETAINED_AUTHORITATIVE_BYTES,
+    MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleOp, ModuleWrite, PendingAuthoritativeIntent,
+    SshKeyRec, StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt,
 };

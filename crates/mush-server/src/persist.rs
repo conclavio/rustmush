@@ -12,9 +12,10 @@
 //!   (full-object upserts, tombstones as deletes, `next_id` last).
 //!   `mush-core` never learns the store exists: the seam is exactly
 //!   `World::take_dirty()` + `Obj: Clone`.
-//! - [`spawn_store_writer`] — the dedicated writer task. One bounded queue
-//!   of [`StoreJob`]s, applied **in order**, each awaited to its ack before
-//!   the next (write-through per command; no timer batching). On a
+//! - [`spawn_store_writer`] — the dedicated writer task. Independently bounded
+//!   legacy, authoritative, and control admission lanes are merged by one
+//!   monotonic acceptance sequence, then applied **in order**, each awaited to
+//!   its ack before the next (write-through per command; no timer batching). On a
 //!   *transient* write failure (connection, timeout — see
 //!   [`StoreError::is_transient`]) it retries the same batch with
 //!   exponential backoff forever — order is preserved, nothing is dropped —
@@ -43,14 +44,14 @@ use mush_config::metrics::Metrics;
 use mush_core::{AuthoritativeBundle, CommitToken, ObjId, World};
 use mush_store::{
     AuthoritativeReceipt, AuthoritativeRetentionUsage, AuthoritativeStore, BundleStatus,
-    MAX_AUTHORITATIVE_DISCOVERY_PAGE, MAX_RETAINED_AUTHORITATIVE_BYTES, ModuleOp, ModuleWrite,
-    ObjectStore, StoreError, WorldSnapshot, WriteBatch,
+    IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE, MAX_RETAINED_AUTHORITATIVE_BYTES, ModuleOp,
+    ModuleWrite, ObjectStore, StoreError, WorldSnapshot, WriteBatch,
 };
 use smol_str::SmolStr;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-use crate::quarantine::QuarantineSpool;
+use crate::quarantine::{QuarantineSpool, authoritative_bundle_evidence_hash};
 use crate::world_task::WriterSignalSender;
 use mush_config::unix_now_s;
 
@@ -62,17 +63,25 @@ use mush_config::unix_now_s;
 /// identically, so a handful of attempts is diagnosis, not hope.
 const POISON_ISOLATION_ATTEMPTS: u32 = 5;
 
-/// Capacity of the writer's job queue. The world task `await`s its sends,
-/// so a full queue back-pressures the single producer instead of dropping
-/// batches (and read-only mode keeps it from filling during a detected
-/// outage).
+/// Capacity of the legacy writer lane. The world task `await`s its sends, so a
+/// full lane back-pressures legacy production instead of dropping batches.
 ///
 /// Deliberately small: every queued batch is a command whose output the
 /// player has already seen but whose write has not yet been acked, so this
 /// bounds the worst-case `kill -9` loss window while the store is merely
 /// *slow* (a stalled BGSAVE, a saturated disk). In the steady state the
 /// queue is empty and the loss window is exactly the in-flight command.
-const WRITER_QUEUE: usize = 64;
+const WRITER_LEGACY_QUEUE: usize = 64;
+
+/// Reserved admission for exact-token actions. A legacy seal/retry flood can
+/// fill its own lane but cannot consume these slots. Cross-lane execution still
+/// follows the global accepted order, so this is isolation without overtaking.
+const WRITER_AUTHORITATIVE_QUEUE: usize = 16;
+
+/// Reserved admission for snapshot/recovery control. Boot recovery runs before
+/// the runtime writer exists; runtime maintenance uses this lane and cannot be
+/// crowded out by gameplay writes.
+const WRITER_CONTROL_QUEUE: usize = 8;
 
 /// First retry delay after a failed write; doubles up to [`RETRY_MAX`].
 const RETRY_INITIAL: Duration = Duration::from_millis(100);
@@ -134,6 +143,10 @@ pub struct AuthoritativeBootRecoveryReport {
 pub async fn reconcile_authoritative_for_writable_boot(
     store: &dyn AuthoritativeStore,
 ) -> Result<AuthoritativeBootRecoveryReport, String> {
+    let retention_generation = store
+        .authoritative_retention_generation()
+        .await
+        .map_err(|error| format!("reading authoritative retention generation: {error}"))?;
     let indexed = store
         .pending_authoritative_intents()
         .await
@@ -240,10 +253,13 @@ pub async fn reconcile_authoritative_for_writable_boot(
     }
 
     report.retention_counters_repaired = store
-        .repair_authoritative_retention(AuthoritativeRetentionUsage {
-            count: report.retained,
-            bytes: report.retained_bytes,
-        })
+        .repair_authoritative_retention(
+            retention_generation,
+            AuthoritativeRetentionUsage {
+                count: report.retained,
+                bytes: report.retained_bytes,
+            },
+        )
         .await
         .map_err(|error| format!("repairing authoritative retention counters: {error}"))?;
 
@@ -254,6 +270,13 @@ pub async fn reconcile_authoritative_for_writable_boot(
             .await
             .map_err(|error| format!("reading authoritative status for {token}: {error}"))?
         {
+            BundleStatus::Retired {
+                minimum_accepted_epoch,
+            } => {
+                return Err(format!(
+                    "retained authoritative intent {token} is below minimum epoch {minimum_accepted_epoch}"
+                ));
+            }
             BundleStatus::PendingExact => {
                 reconcile_one_authoritative_boot_intent(store, token, hash).await?;
                 report.reconciled += 1;
@@ -270,6 +293,11 @@ pub async fn reconcile_authoritative_for_writable_boot(
                     // backend's idempotent stale-index repair path.
                     reconcile_one_authoritative_boot_intent(store, token, hash).await?;
                 }
+            }
+            BundleStatus::QuarantinedExact(_) => {
+                return Err(format!(
+                    "retained authoritative intent {token} simultaneously has a quarantine tombstone"
+                ));
             }
             BundleStatus::Absent => {
                 return Err(format!(
@@ -448,6 +476,10 @@ pub enum StoreJob {
     /// immutable receipt or a typed refusal/integrity failure.
     Authoritative {
         bundle: Box<AuthoritativeBundle>,
+        /// Resolves at the request-ownership linearization point: only after
+        /// the exact immutable intent exists (or an exact finalized result was
+        /// rediscovered). This is deliberately separate from `notify`.
+        ownership: oneshot::Sender<Result<IntentReceipt, AuthoritativeCommitFailure>>,
         notify: oneshot::Sender<Result<AuthoritativeReceipt, AuthoritativeCommitFailure>>,
     },
     /// Trigger an ordinary background snapshot (`@dump`), ordered behind
@@ -460,6 +492,226 @@ pub enum StoreJob {
         /// Resolved when the store acknowledged the BGSAVE request.
         done: oneshot::Sender<Result<(), String>>,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WriterLane {
+    Legacy,
+    Authoritative,
+    Control,
+}
+
+impl WriterLane {
+    const fn for_job(job: &StoreJob) -> Self {
+        match job {
+            StoreJob::Write { .. } => Self::Legacy,
+            StoreJob::Authoritative { .. } => Self::Authoritative,
+            StoreJob::Bgsave { .. } => Self::Control,
+        }
+    }
+}
+
+struct SequencedStoreJob {
+    order: u64,
+    lane: WriterLane,
+    job: StoreJob,
+    /// Lane capacity is held through merge buffering and store completion,
+    /// rather than released merely because the channel receiver copied this
+    /// job into its ordering map.
+    _capacity: OwnedSemaphorePermit,
+}
+
+/// Cloneable admission handle for the single persistence writer.
+///
+/// Each work class owns a separate bounded channel. A sender reserves capacity
+/// in its class before taking the next global order, so a blocked/full legacy
+/// lane neither consumes an order nor prevents authoritative/control custody.
+/// Once accepted, all classes execute in exact global order.
+#[derive(Clone)]
+pub struct StoreWriter {
+    legacy: mpsc::Sender<SequencedStoreJob>,
+    authoritative: mpsc::Sender<SequencedStoreJob>,
+    control: mpsc::Sender<SequencedStoreJob>,
+    legacy_capacity: Arc<Semaphore>,
+    authoritative_capacity: Arc<Semaphore>,
+    control_capacity: Arc<Semaphore>,
+    next_order: Arc<AtomicU64>,
+    metrics: Arc<Metrics>,
+}
+
+impl StoreWriter {
+    /// Transfer one job into its independently bounded lane.
+    pub async fn send(&self, job: StoreJob) -> Result<(), mpsc::error::SendError<StoreJob>> {
+        let lane = WriterLane::for_job(&job);
+        let sender = match lane {
+            WriterLane::Legacy => &self.legacy,
+            WriterLane::Authoritative => &self.authoritative,
+            WriterLane::Control => &self.control,
+        };
+        let capacity = match lane {
+            WriterLane::Legacy => Arc::clone(&self.legacy_capacity),
+            WriterLane::Authoritative => Arc::clone(&self.authoritative_capacity),
+            WriterLane::Control => Arc::clone(&self.control_capacity),
+        };
+        let capacity = match capacity.acquire_owned().await {
+            Ok(capacity) => capacity,
+            Err(_) => return Err(mpsc::error::SendError(job)),
+        };
+        let permit = match sender.reserve().await {
+            Ok(permit) => permit,
+            Err(_) => return Err(mpsc::error::SendError(job)),
+        };
+        let order =
+            match self
+                .next_order
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    current.checked_add(1)
+                }) {
+                Ok(order) => order,
+                Err(_) => {
+                    tracing::error!("store writer acceptance sequence exhausted");
+                    return Err(mpsc::error::SendError(job));
+                }
+            };
+        self.metrics.add_store_write_queue_depth(1);
+        match lane {
+            WriterLane::Legacy => self.metrics.add_store_legacy_queue_depth(1),
+            WriterLane::Authoritative => {
+                self.metrics.add_store_authoritative_queue_depth(1);
+            }
+            WriterLane::Control => self.metrics.add_store_control_queue_depth(1),
+        }
+        permit.send(SequencedStoreJob {
+            order,
+            lane,
+            job,
+            _capacity: capacity,
+        });
+        Ok(())
+    }
+}
+
+struct StoreWriterReceivers {
+    legacy: mpsc::Receiver<SequencedStoreJob>,
+    authoritative: mpsc::Receiver<SequencedStoreJob>,
+    control: mpsc::Receiver<SequencedStoreJob>,
+    buffered: BTreeMap<u64, SequencedStoreJob>,
+    next_order: u64,
+}
+
+impl StoreWriterReceivers {
+    fn buffer(&mut self, job: SequencedStoreJob) {
+        let prior = self.buffered.insert(job.order, job);
+        assert!(prior.is_none(), "duplicate store-writer acceptance order");
+    }
+
+    fn drain_ready(&mut self) {
+        while let Ok(job) = self.legacy.try_recv() {
+            self.buffer(job);
+        }
+        while let Ok(job) = self.authoritative.try_recv() {
+            self.buffer(job);
+        }
+        while let Ok(job) = self.control.try_recv() {
+            self.buffer(job);
+        }
+    }
+
+    async fn recv(&mut self) -> Option<SequencedStoreJob> {
+        loop {
+            self.drain_ready();
+            if let Some(job) = self.buffered.remove(&self.next_order) {
+                self.next_order = self
+                    .next_order
+                    .checked_add(1)
+                    .expect("accepted writer order cannot overflow");
+                return Some(job);
+            }
+            if self.legacy.is_closed() && self.authoritative.is_closed() && self.control.is_closed()
+            {
+                assert!(
+                    self.buffered.is_empty(),
+                    "store-writer acceptance sequence closed with a gap"
+                );
+                return None;
+            }
+            tokio::select! {
+                job = self.legacy.recv(), if !self.legacy.is_closed() => {
+                    if let Some(job) = job { self.buffer(job); }
+                }
+                job = self.authoritative.recv(), if !self.authoritative.is_closed() => {
+                    if let Some(job) = job { self.buffer(job); }
+                }
+                job = self.control.recv(), if !self.control.is_closed() => {
+                    if let Some(job) = job { self.buffer(job); }
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn try_recv(&mut self) -> Result<SequencedStoreJob, mpsc::error::TryRecvError> {
+        self.drain_ready();
+        if let Some(job) = self.buffered.remove(&self.next_order) {
+            self.next_order = self
+                .next_order
+                .checked_add(1)
+                .expect("accepted writer order cannot overflow");
+            return Ok(job);
+        }
+        if self.legacy.is_closed() && self.authoritative.is_closed() && self.control.is_closed() {
+            Err(mpsc::error::TryRecvError::Disconnected)
+        } else {
+            Err(mpsc::error::TryRecvError::Empty)
+        }
+    }
+}
+
+fn store_writer_channels(metrics: Arc<Metrics>) -> (StoreWriter, StoreWriterReceivers) {
+    let (legacy, legacy_rx) = mpsc::channel(WRITER_LEGACY_QUEUE);
+    let (authoritative, authoritative_rx) = mpsc::channel(WRITER_AUTHORITATIVE_QUEUE);
+    let (control, control_rx) = mpsc::channel(WRITER_CONTROL_QUEUE);
+    (
+        StoreWriter {
+            legacy,
+            authoritative,
+            control,
+            legacy_capacity: Arc::new(Semaphore::new(WRITER_LEGACY_QUEUE)),
+            authoritative_capacity: Arc::new(Semaphore::new(WRITER_AUTHORITATIVE_QUEUE)),
+            control_capacity: Arc::new(Semaphore::new(WRITER_CONTROL_QUEUE)),
+            next_order: Arc::new(AtomicU64::new(0)),
+            metrics,
+        },
+        StoreWriterReceivers {
+            legacy: legacy_rx,
+            authoritative: authoritative_rx,
+            control: control_rx,
+            buffered: BTreeMap::new(),
+            next_order: 0,
+        },
+    )
+}
+
+#[cfg(test)]
+pub(crate) struct StoreWriterTestReceiver(StoreWriterReceivers);
+
+#[cfg(test)]
+impl StoreWriterTestReceiver {
+    pub(crate) async fn recv(&mut self) -> Option<StoreJob> {
+        self.0.recv().await.map(|queued| queued.job)
+    }
+
+    pub(crate) fn try_recv(&mut self) -> Result<StoreJob, mpsc::error::TryRecvError> {
+        self.0.try_recv().map(|queued| queued.job)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_store_writer_channel(
+    metrics: Arc<Metrics>,
+) -> (StoreWriter, StoreWriterTestReceiver) {
+    let (writer, receiver) = store_writer_channels(metrics);
+    (writer, StoreWriterTestReceiver(receiver))
 }
 
 /// Terminal result from an authoritative writer job.
@@ -495,8 +747,8 @@ pub fn spawn_store_writer(
     high_water: Arc<AtomicU64>,
     quarantine_spool: QuarantineSpool,
     integrity: PersistenceIntegrityLatch,
-) -> (mpsc::Sender<StoreJob>, JoinHandle<()>) {
-    let (tx, rx) = mpsc::channel(WRITER_QUEUE);
+) -> (StoreWriter, JoinHandle<()>) {
+    let (tx, rx) = store_writer_channels(Arc::clone(&metrics));
     let join = tokio::spawn(writer_loop(
         store,
         rx,
@@ -511,7 +763,7 @@ pub fn spawn_store_writer(
 
 async fn writer_loop(
     store: Arc<dyn ObjectStore>,
-    mut rx: mpsc::Receiver<StoreJob>,
+    mut rx: StoreWriterReceivers,
     signals: WriterSignalSender,
     metrics: Arc<Metrics>,
     high_water: Arc<AtomicU64>,
@@ -529,7 +781,13 @@ async fn writer_loop(
     // writer. Ordinary BGSAVE is refused too: snapshotting known-ambiguous
     // durable state would turn the breach into a misleading recovery point.
     let mut integrity_halt: Option<String> = None;
-    while let Some(job) = rx.recv().await {
+    while let Some(SequencedStoreJob {
+        lane,
+        job,
+        _capacity: capacity,
+        ..
+    }) = rx.recv().await
+    {
         match job {
             StoreJob::Write { batch, notify } => {
                 let batch_serial = batch.serial;
@@ -543,6 +801,21 @@ async fn writer_loop(
                     let detail = format!(
                         "persistence integrity halted after an unresolved predecessor: {reason}"
                     );
+                    // A retained seal that was already healed or quarantined
+                    // is merely the world's delivery retry. Its exact bytes
+                    // already have terminal custody, so do not manufacture a
+                    // new serial-dependent legacy-batch record on every flush.
+                    // Any collateral operation still requires its own complete
+                    // batch record before this rejected job leaves RAM.
+                    if !batch_fully_covered_by_handled_seals(&batch, &poison) {
+                        spool_legacy_batch_until_preserved(
+                            &quarantine_spool,
+                            &batch,
+                            &StoreError::Invalid(detail.clone()),
+                            0,
+                        )
+                        .await;
+                    }
                     preserve_terminal_seals(
                         &signals,
                         &quarantine_spool,
@@ -584,7 +857,6 @@ async fn writer_loop(
                 // The batch has left the queue (acked or dropped): drop the
                 // depth the world task incremented on enqueue, and stamp the
                 // last-ack time on success (the metrics surface's store health).
-                metrics.add_store_write_queue_depth(-1);
                 if let Ok(&serial) = result.as_ref() {
                     metrics.set_store_last_ack_unix(unix_now_s());
                     // Publish the durable-commit high-water (E0): the world loop
@@ -600,17 +872,24 @@ async fn writer_loop(
                     let _ = notify.send(result);
                 }
             }
-            StoreJob::Authoritative { bundle, notify } => {
+            StoreJob::Authoritative {
+                bundle,
+                ownership,
+                notify,
+            } => {
                 let token = bundle.token();
                 let result = if let Some(reason) = &integrity_halt {
                     integrity.latch();
-                    Err(AuthoritativeCommitFailure::Integrity(format!(
+                    let failure = AuthoritativeCommitFailure::Integrity(format!(
                         "persistence integrity halted after an unresolved predecessor: {reason}"
-                    )))
+                    ));
+                    let _ = ownership.send(Err(failure.clone()));
+                    Err(failure)
                 } else {
                     let result = commit_authoritative_with_retry(
                         &*store,
                         *bundle,
+                        ownership,
                         &mut healthy,
                         &signals,
                         &quarantine_spool,
@@ -630,7 +909,6 @@ async fn writer_loop(
                     }
                     result
                 };
-                metrics.add_store_write_queue_depth(-1);
                 if result.is_ok() {
                     metrics.set_store_last_ack_unix(unix_now_s());
                 }
@@ -648,6 +926,13 @@ async fn writer_loop(
                 let _ = done.send(result);
             }
         }
+        metrics.add_store_write_queue_depth(-1);
+        match lane {
+            WriterLane::Legacy => metrics.add_store_legacy_queue_depth(-1),
+            WriterLane::Authoritative => metrics.add_store_authoritative_queue_depth(-1),
+            WriterLane::Control => metrics.add_store_control_queue_depth(-1),
+        }
+        drop(capacity);
     }
     tracing::info!("store writer drained and exiting");
 }
@@ -655,6 +940,7 @@ async fn writer_loop(
 async fn commit_authoritative_with_retry(
     store: &dyn ObjectStore,
     bundle: AuthoritativeBundle,
+    ownership: oneshot::Sender<Result<IntentReceipt, AuthoritativeCommitFailure>>,
     healthy: &mut bool,
     signals: &WriterSignalSender,
     quarantine_spool: &QuarantineSpool,
@@ -662,23 +948,28 @@ async fn commit_authoritative_with_retry(
     let token = bundle.token();
     let hash = bundle.bundle_hash();
     let mut delay = RETRY_INITIAL;
-    let authoritative = store.authoritative_store().ok_or_else(|| {
-        AuthoritativeCommitFailure::Integrity(
+    let Some(authoritative) = store.authoritative_store() else {
+        let failure = AuthoritativeCommitFailure::Integrity(
             "configured store has no K3 authoritative capability".to_owned(),
-        )
-    })?;
+        );
+        let _ = ownership.send(Err(failure.clone()));
+        return Err(failure);
+    };
     let mut deterministic_reconcile_attempts = 0u32;
+    let mut ownership = Some(ownership);
 
-    loop {
+    let intent = loop {
         match authoritative
             .reserve_authoritative_intent(bundle.clone())
             .await
         {
-            Ok(receipt) if receipt.token == token && receipt.bundle_hash == hash => break,
+            Ok(receipt) if receipt.token == token && receipt.bundle_hash == hash => break receipt,
             Ok(_) => {
-                return Err(AuthoritativeCommitFailure::Integrity(format!(
+                let failure = AuthoritativeCommitFailure::Integrity(format!(
                     "authoritative reservation returned a non-exact witness for {token}"
-                )));
+                ));
+                publish_ownership(&mut ownership, Err(failure.clone()));
+                return Err(failure);
             }
             Err(error) if error.is_transient() => {
                 mark_authoritative_transient(healthy, signals, token, &error);
@@ -688,10 +979,41 @@ async fn commit_authoritative_with_retry(
             Err(error) => {
                 let status = authoritative.authoritative_status(token, hash).await;
                 match status {
-                    Ok(BundleStatus::PendingExact) => break,
+                    Ok(BundleStatus::Retired {
+                        minimum_accepted_epoch,
+                    }) => {
+                        let failure = AuthoritativeCommitFailure::Integrity(format!(
+                            "authoritative reservation for {token} is below minimum epoch {minimum_accepted_epoch}"
+                        ));
+                        publish_ownership(&mut ownership, Err(failure.clone()));
+                        return Err(failure);
+                    }
+                    Ok(BundleStatus::PendingExact) => {
+                        break IntentReceipt {
+                            token,
+                            bundle_hash: hash,
+                            resumed: true,
+                        };
+                    }
+                    Ok(BundleStatus::QuarantinedExact(quarantine)) => {
+                        let failure = AuthoritativeCommitFailure::Integrity(format!(
+                            "authoritative reservation for {token} reached quarantine evidence {}",
+                            quarantine.evidence_hash()
+                        ));
+                        publish_ownership(&mut ownership, Err(failure.clone()));
+                        return Err(failure);
+                    }
                     Ok(BundleStatus::FinalizedExact(receipt))
                         if receipt.token() == token && receipt.bundle_hash() == hash =>
                     {
+                        publish_ownership(
+                            &mut ownership,
+                            Ok(IntentReceipt {
+                                token,
+                                bundle_hash: hash,
+                                resumed: true,
+                            }),
+                        );
                         return checkpoint_finalized_with_retry(
                             authoritative,
                             &bundle,
@@ -704,32 +1026,41 @@ async fn commit_authoritative_with_retry(
                         .await;
                     }
                     Ok(BundleStatus::FinalizedExact(_)) => {
-                        return Err(AuthoritativeCommitFailure::Integrity(format!(
+                        let failure = AuthoritativeCommitFailure::Integrity(format!(
                             "authoritative status returned a non-exact finalized witness for {token}"
-                        )));
+                        ));
+                        publish_ownership(&mut ownership, Err(failure.clone()));
+                        return Err(failure);
                     }
                     Ok(BundleStatus::Absent)
                         if matches!(
                             error,
                             StoreError::AuthoritativeCapacity { .. }
+                                | StoreError::AuthoritativeIntentInFlight { .. }
                                 | StoreError::AuthoritativeIdempotencyConflict
                                 | StoreError::Invalid(_)
                         ) =>
                     {
                         mark_authoritative_recovered(healthy, signals, token);
-                        return Err(AuthoritativeCommitFailure::Refused(format!(
+                        let failure = AuthoritativeCommitFailure::Refused(format!(
                             "authoritative reservation refused before intent: {error}"
-                        )));
+                        ));
+                        publish_ownership(&mut ownership, Err(failure.clone()));
+                        return Err(failure);
                     }
                     Ok(BundleStatus::Absent) => {
-                        return Err(AuthoritativeCommitFailure::Integrity(format!(
+                        let failure = AuthoritativeCommitFailure::Integrity(format!(
                             "authoritative reservation failed without an intent: {error}"
-                        )));
+                        ));
+                        publish_ownership(&mut ownership, Err(failure.clone()));
+                        return Err(failure);
                     }
                     Ok(BundleStatus::Conflict { stored_bundle_hash }) => {
-                        return Err(AuthoritativeCommitFailure::Integrity(format!(
+                        let failure = AuthoritativeCommitFailure::Integrity(format!(
                             "authoritative token {token} conflicts with stored bundle {stored_bundle_hash}"
-                        )));
+                        ));
+                        publish_ownership(&mut ownership, Err(failure.clone()));
+                        return Err(failure);
                     }
                     Err(status_error) if status_error.is_transient() => {
                         mark_authoritative_transient(healthy, signals, token, &status_error);
@@ -737,14 +1068,17 @@ async fn commit_authoritative_with_retry(
                         delay = (delay * 2).min(RETRY_MAX);
                     }
                     Err(status_error) => {
-                        return Err(AuthoritativeCommitFailure::Integrity(format!(
+                        let failure = AuthoritativeCommitFailure::Integrity(format!(
                             "cannot determine authoritative reservation state for {token}: {status_error}"
-                        )));
+                        ));
+                        publish_ownership(&mut ownership, Err(failure.clone()));
+                        return Err(failure);
                     }
                 }
             }
         }
-    }
+    };
+    publish_ownership(&mut ownership, Ok(intent));
 
     loop {
         match authoritative.reconcile_authoritative(token, hash).await {
@@ -771,6 +1105,13 @@ async fn commit_authoritative_with_retry(
                 delay = (delay * 2).min(RETRY_MAX);
             }
             Err(error) => match authoritative.authoritative_status(token, hash).await {
+                Ok(BundleStatus::Retired {
+                    minimum_accepted_epoch,
+                }) => {
+                    return Err(AuthoritativeCommitFailure::Integrity(format!(
+                        "authoritative intent {token} is below minimum epoch {minimum_accepted_epoch}: {error}"
+                    )));
+                }
                 Ok(BundleStatus::FinalizedExact(receipt))
                     if receipt.token() == token && receipt.bundle_hash() == hash =>
                 {
@@ -810,8 +1151,49 @@ async fn commit_authoritative_with_retry(
                                 "authoritative bundle {token} remained pending after {deterministic_reconcile_attempts} deterministic attempts and its dead-letter could not be preserved: {quarantine_error}"
                             ))
                         })?;
+                    let evidence_hash = authoritative_bundle_evidence_hash(&bundle);
+                    loop {
+                        match authoritative
+                            .discard_quarantined_authoritative_intent(token, hash, evidence_hash)
+                            .await
+                        {
+                            Ok(discard)
+                                if discard.quarantine.token() == token
+                                    && discard.quarantine.bundle_hash() == hash
+                                    && discard.quarantine.evidence_hash() == evidence_hash =>
+                            {
+                                break;
+                            }
+                            Ok(_) => {
+                                return Err(AuthoritativeCommitFailure::Integrity(format!(
+                                    "authoritative discard returned a non-exact quarantine witness for {token}"
+                                )));
+                            }
+                            Err(discard_error) if discard_error.is_transient() => {
+                                mark_authoritative_transient(
+                                    healthy,
+                                    signals,
+                                    token,
+                                    &discard_error,
+                                );
+                                tokio::time::sleep(delay).await;
+                                delay = (delay * 2).min(RETRY_MAX);
+                            }
+                            Err(discard_error) => {
+                                return Err(AuthoritativeCommitFailure::Integrity(format!(
+                                    "authoritative bundle {token} was spooled but its pending intent could not be replaced by an exact quarantine tombstone: {discard_error}"
+                                )));
+                            }
+                        }
+                    }
                     return Err(AuthoritativeCommitFailure::Integrity(format!(
-                        "authoritative bundle {token} remains durably pending and was quarantined after {deterministic_reconcile_attempts} deterministic reconciliation failures: {error}"
+                        "authoritative bundle {token} was quarantined and its pending intent released to an exact non-replayable tombstone after {deterministic_reconcile_attempts} deterministic reconciliation failures: {error}"
+                    )));
+                }
+                Ok(BundleStatus::QuarantinedExact(quarantine)) => {
+                    return Err(AuthoritativeCommitFailure::Integrity(format!(
+                        "authoritative intent {token} is quarantined under evidence {}",
+                        quarantine.evidence_hash()
                     )));
                 }
                 Ok(BundleStatus::Absent) => {
@@ -841,6 +1223,15 @@ async fn commit_authoritative_with_retry(
                 }
             },
         }
+    }
+}
+
+fn publish_ownership(
+    slot: &mut Option<oneshot::Sender<Result<IntentReceipt, AuthoritativeCommitFailure>>>,
+    result: Result<IntentReceipt, AuthoritativeCommitFailure>,
+) {
+    if let Some(sender) = slot.take() {
+        let _ = sender.send(result);
     }
 }
 
@@ -977,6 +1368,8 @@ async fn write_with_retry(
                     );
                     notify_deterministic_failure(signals, detail.clone());
                     let terminal = StoreError::Invalid(detail.clone());
+                    spool_legacy_batch_until_preserved(quarantine_spool, &batch, &terminal, 0)
+                        .await;
                     preserve_terminal_seals(
                         signals,
                         quarantine_spool,
@@ -1008,6 +1401,13 @@ async fn write_with_retry(
                     signals,
                     format!("store closed while dropping batch {}", batch.serial),
                 );
+                spool_legacy_batch_until_preserved(
+                    quarantine_spool,
+                    &batch,
+                    &StoreError::Closed,
+                    0,
+                )
+                .await;
                 preserve_terminal_seals(
                     signals,
                     quarantine_spool,
@@ -1034,6 +1434,11 @@ async fn write_with_retry(
                     signals,
                     format!("deterministic drop of batch {}: {e}", batch.serial),
                 );
+                // Preserve the complete causal write set before isolating any
+                // seal. Object post-images, deletes, open Ledger chunks, and
+                // collateral module operations must not disappear merely
+                // because only sealed chunks have an older recovery format.
+                spool_legacy_batch_until_preserved(quarantine_spool, &batch, &e, 1).await;
                 if !batch.module_ops.is_empty() {
                     let mut keys: Vec<String> = Vec::new();
                     let mut ledger_keys: Vec<String> = Vec::new();
@@ -1240,6 +1645,31 @@ fn sealed_chunks_in(batch: &WriteBatch) -> Vec<(SmolStr, SmolStr, serde_json::Va
             _ => None,
         })
         .collect()
+}
+
+/// Whether every operation in a rejected batch is an exact seal generation
+/// whose terminal outcome is already held by [`PoisonState`]. This is narrowly
+/// a retained-delivery de-duplication rule: object writes, deletes, allocator
+/// changes, non-seal module ops, and mixed batches always need complete batch
+/// custody even if one member seal was seen before.
+fn batch_fully_covered_by_handled_seals(batch: &WriteBatch, poison: &PoisonState) -> bool {
+    if !batch.upserts.is_empty()
+        || !batch.deletes.is_empty()
+        || batch.next_id.is_some()
+        || batch.module_ops.is_empty()
+    {
+        return false;
+    }
+    let seals = sealed_chunks_in(batch);
+    seals.len() == batch.module_ops.len()
+        && seals.iter().all(|(namespace, key, value)| {
+            let id = (
+                namespace.clone(),
+                key.clone(),
+                crate::quarantine::seal_identity_hash(namespace, key, value),
+            );
+            poison.handled.contains_key(&id)
+        })
 }
 
 /// Preserve every authoritative seal in a batch whose acknowledgement can no
@@ -1575,6 +2005,79 @@ async fn spool_quarantine_until_preserved(
     }
 }
 
+fn spool_legacy_batch(
+    spool: &QuarantineSpool,
+    batch: &WriteBatch,
+    err: &StoreError,
+    attempts: u32,
+) -> bool {
+    match spool.quarantine_legacy_batch(batch, err, attempts) {
+        Ok(true) => {
+            tracing::error!(
+                serial = batch.serial,
+                operations = batch.upserts.len()
+                    + batch.deletes.len()
+                    + batch.module_ops.len()
+                    + usize::from(batch.next_id.is_some()),
+                "complete failed legacy batch preserved in quarantine"
+            );
+            true
+        }
+        Ok(false) => false,
+        Err(error) => {
+            tracing::error!(
+                serial = batch.serial,
+                %error,
+                "FAILED to preserve complete legacy batch in quarantine"
+            );
+            false
+        }
+    }
+}
+
+/// Keep custody in the fail-stopped writer until the independent spool has a
+/// verified complete batch record. This is deliberately the same unbounded
+/// operational retry posture as authoritative bundle/seal preservation: disk
+/// or capacity repair is safer than allowing the only complete recovery bytes
+/// to leave RAM.
+async fn spool_legacy_batch_until_preserved(
+    spool: &QuarantineSpool,
+    batch: &WriteBatch,
+    err: &StoreError,
+    attempts: u32,
+) {
+    if batch.is_empty() {
+        return;
+    }
+    let mut delay = QUARANTINE_RETRY_INITIAL;
+    loop {
+        if spool_legacy_batch(spool, batch, err, attempts) {
+            return;
+        }
+        tracing::error!(
+            serial = batch.serial,
+            retry_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+            "CRITICAL: complete failed legacy batch is still RAM-only; keeping writer fail-stopped and retrying"
+        );
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(QUARANTINE_RETRY_MAX);
+    }
+}
+
+/// Spill a complete legacy batch that could not enter writer custody, then
+/// preserve its sealed members under the older per-seal recovery protocol as
+/// supplemental evidence. The complete record is what protects unrelated
+/// object/module/delete/allocator state.
+pub(crate) async fn preserve_unqueued_batch(
+    spool: &QuarantineSpool,
+    batch: &WriteBatch,
+    detail: &str,
+) {
+    let error = StoreError::Invalid(bounded_detail(detail.to_owned()));
+    spool_legacy_batch_until_preserved(spool, batch, &error, 0).await;
+    preserve_unqueued_seals(spool, &batch.module_ops, batch.serial, detail).await;
+}
+
 /// Durably spill every valid sealed-ledger operation from a batch that never
 /// entered the writer's custody (retention conflict or closed queue). This is
 /// the world side of the same fail-stop contract: returning means either there
@@ -1777,16 +2280,25 @@ mod tests {
             request_hash: CanonicalHash::from_bytes([74; 32]),
             plan_hash: CanonicalHash::from_bytes([75; 32]),
             action: action.clone(),
-            provider: owner,
+            provider: owner.clone(),
             cause: PreparedCausalRef::new(request, None, 0).unwrap(),
-            definitions: vec![action, outcome.clone()],
+            definitions: vec![action.clone(), outcome.clone()],
             writes: vec![
                 ReplayWrite::ObjectSet {
                     object: Obj::new(ObjId(2), ObjKind::Thing, "recovered marker", GOD, 0),
                 },
                 ReplayWrite::ObjectAllocatorSet { next_id: 3 },
             ],
-            outcome: RulesValue::new(outcome, serde_json::json!({ "created": 2 })).unwrap(),
+            outcome: RulesValue::new(outcome.clone(), serde_json::json!({ "created": 2 })).unwrap(),
+            semantic_events: vec![
+                mush_core::AuthoritativeSemanticEvent::root(
+                    PreparedCausalRef::new(request, None, 0).unwrap(),
+                    &action,
+                    RulesValue::new(outcome, serde_json::json!({ "created": 2 })).unwrap(),
+                    vec![principal.clone()],
+                )
+                .unwrap(),
+            ],
             eligible_witnesses: vec![principal],
             durable_outbox: vec![],
         })
@@ -1848,6 +2360,100 @@ mod tests {
         let empty = batch_from_dirty(&w, dirty, 8, false);
         assert!(empty.is_empty());
         assert_eq!(empty.next_id, None);
+    }
+
+    #[tokio::test]
+    async fn writer_lanes_reserve_capacity_and_merge_by_acceptance_order() {
+        let metrics = Arc::new(Metrics::new());
+        let (writer, mut receivers) = store_writer_channels(Arc::clone(&metrics));
+        for serial in 0..WRITER_LEGACY_QUEUE {
+            writer
+                .send(StoreJob::Write {
+                    batch: WriteBatch {
+                        serial: u64::try_from(serial).unwrap(),
+                        ..WriteBatch::default()
+                    },
+                    notify: None,
+                })
+                .await
+                .unwrap();
+        }
+
+        // This producer is blocked on legacy capacity and therefore owns no
+        // global acceptance order yet.
+        let blocked_writer = writer.clone();
+        let blocked_legacy = tokio::spawn(async move {
+            blocked_writer
+                .send(StoreJob::Write {
+                    batch: WriteBatch {
+                        serial: 10_000,
+                        ..WriteBatch::default()
+                    },
+                    notify: None,
+                })
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(!blocked_legacy.is_finished());
+        receivers.drain_ready();
+        tokio::task::yield_now().await;
+        assert!(
+            !blocked_legacy.is_finished(),
+            "moving jobs into the order buffer must not release lane capacity"
+        );
+
+        let (authoritative_ownership, _authoritative_owned) = oneshot::channel();
+        let (authoritative_notify, _authoritative_receipt) = oneshot::channel();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            writer.send(StoreJob::Authoritative {
+                bundle: Box::new(boot_recovery_bundle()),
+                ownership: authoritative_ownership,
+                notify: authoritative_notify,
+            }),
+        )
+        .await
+        .expect("authoritative lane must admit while legacy is full")
+        .unwrap();
+        let (control_done, _control_receipt) = oneshot::channel();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            writer.send(StoreJob::Bgsave { done: control_done }),
+        )
+        .await
+        .expect("control lane must admit while legacy is full")
+        .unwrap();
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(
+            snapshot.store_legacy_queue_depth,
+            i64::try_from(WRITER_LEGACY_QUEUE).unwrap()
+        );
+        assert_eq!(snapshot.store_authoritative_queue_depth, 1);
+        assert_eq!(snapshot.store_control_queue_depth, 1);
+
+        // Independent admission does not weaken persistence ordering: the two
+        // reserved-lane jobs follow all previously accepted legacy work, and
+        // precede the legacy sender that was waiting for capacity.
+        for expected in 0..WRITER_LEGACY_QUEUE {
+            let StoreJob::Write { batch, .. } = receivers.recv().await.unwrap().job else {
+                panic!("previously accepted legacy work must remain first");
+            };
+            assert_eq!(batch.serial, u64::try_from(expected).unwrap());
+        }
+        assert!(matches!(
+            receivers.recv().await.unwrap().job,
+            StoreJob::Authoritative { .. }
+        ));
+        assert!(matches!(
+            receivers.recv().await.unwrap().job,
+            StoreJob::Bgsave { .. }
+        ));
+        blocked_legacy.await.unwrap().unwrap();
+        let StoreJob::Write { batch, .. } = receivers.recv().await.unwrap().job else {
+            panic!("capacity-blocked legacy sender must follow accepted reserved-lane work");
+        };
+        assert_eq!(batch.serial, 10_000);
     }
 
     #[tokio::test]
@@ -1942,13 +2548,13 @@ mod tests {
 
         let before = store.load_world().await.unwrap().unwrap();
         assert!(before.objects.iter().all(|object| object.id != ObjId(2)));
-        assert_eq!(
+        assert!(matches!(
             store
                 .authoritative_status(bundle.token(), bundle.bundle_hash())
                 .await
                 .unwrap(),
             BundleStatus::PendingExact
-        );
+        ));
 
         let report = reconcile_authoritative_for_writable_boot(&store)
             .await
@@ -1992,11 +2598,21 @@ mod tests {
         let mut healthy = true;
 
         let spool = QuarantineSpool::in_memory();
-        let receipt =
-            commit_authoritative_with_retry(&store, bundle.clone(), &mut healthy, &signals, &spool)
-                .await
-                .unwrap();
+        let (ownership, owned) = oneshot::channel();
+        let receipt = commit_authoritative_with_retry(
+            &store,
+            bundle.clone(),
+            ownership,
+            &mut healthy,
+            &signals,
+            &spool,
+        )
+        .await
+        .unwrap();
 
+        let owned = owned.await.unwrap().unwrap();
+        assert_eq!(owned.token, bundle.token());
+        assert_eq!(owned.bundle_hash, bundle.bundle_hash());
         assert!(receipt.matches_bundle(&bundle));
         assert!(healthy);
         assert_eq!(
@@ -2051,23 +2667,42 @@ mod tests {
         let (signals, _signal_rx) = crate::world_task::writer_signal_channel();
         let mut healthy = true;
         let mut spool = QuarantineSpool::in_memory();
-        let error =
-            commit_authoritative_with_retry(&store, bundle.clone(), &mut healthy, &signals, &spool)
-                .await
-                .unwrap_err();
+        let (ownership, owned) = oneshot::channel();
+        let error = commit_authoritative_with_retry(
+            &store,
+            bundle.clone(),
+            ownership,
+            &mut healthy,
+            &signals,
+            &spool,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(owned.await.unwrap().unwrap().token, bundle.token());
 
         assert!(matches!(
             error,
             AuthoritativeCommitFailure::Integrity(ref detail)
-                if detail.contains("quarantined after 3 deterministic reconciliation failures")
+                if detail.contains("quarantined")
+                    && detail.contains("after 3 deterministic reconciliation failures")
         ));
-        assert_eq!(
+        assert!(matches!(
             store
                 .authoritative_status(bundle.token(), bundle.bundle_hash())
                 .await
                 .unwrap(),
-            BundleStatus::PendingExact,
-            "the authoritative intent remains the primary durable truth"
+            BundleStatus::QuarantinedExact(receipt)
+                if receipt.matches_bundle(&bundle)
+                    && receipt.evidence_hash() == authoritative_bundle_evidence_hash(&bundle)
+        ));
+        assert!(
+            store
+                .scan_authoritative_intents(None, 1)
+                .await
+                .unwrap()
+                .intents
+                .is_empty(),
+            "the independent spool now permits bounded full-intent release"
         );
 
         // The independently retained whole-bundle record participates in the
@@ -2081,19 +2716,14 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires live Redis; CI runs this proof explicitly"]
     async fn live_redis_wrong_type_bundle_quarantines_repairs_and_recovers() {
         use fred::interfaces::KeysInterface as _;
 
-        let Some(url) = std::env::var("REDIS_URL")
+        let url = std::env::var("REDIS_URL")
             .ok()
             .filter(|value| !value.is_empty())
-        else {
-            eprintln!(
-                "skipping live_redis_wrong_type_bundle_quarantines_repairs_and_recovers: \
-                 REDIS_URL not set"
-            );
-            return;
-        };
+            .expect("REDIS_URL must be set when explicitly running the live Redis proof");
         let store = RedisStore::connect(&url)
             .await
             .expect("connect to disposable live Redis");
@@ -2126,18 +2756,28 @@ mod tests {
         let mut spool = QuarantineSpool::open(&spool_path).unwrap();
         let (signals, _signal_rx) = crate::world_task::writer_signal_channel();
         let mut healthy = true;
-        let error =
-            commit_authoritative_with_retry(&store, bundle.clone(), &mut healthy, &signals, &spool)
-                .await
-                .unwrap_err();
+        let (ownership, owned) = oneshot::channel();
+        let error = commit_authoritative_with_retry(
+            &store,
+            bundle.clone(),
+            ownership,
+            &mut healthy,
+            &signals,
+            &spool,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(owned.await.unwrap().unwrap().token, bundle.token());
         assert!(matches!(error, AuthoritativeCommitFailure::Integrity(_)));
-        assert_eq!(
+        assert!(matches!(
             store
                 .authoritative_status(bundle.token(), bundle.bundle_hash())
                 .await
                 .unwrap(),
-            BundleStatus::PendingExact
-        );
+            BundleStatus::QuarantinedExact(receipt)
+                if receipt.matches_bundle(&bundle)
+                    && receipt.evidence_hash() == authoritative_bundle_evidence_hash(&bundle)
+        ));
 
         let files: Vec<_> = std::fs::read_dir(&spool_path)
             .unwrap()

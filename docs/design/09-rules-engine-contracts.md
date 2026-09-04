@@ -1,13 +1,24 @@
 # Cross-ruleset mechanical contracts and proving gates
 
-**Status:** Implementing 0.11 — K0/K1 formal exit criteria landed. K2 has strict atomic boot
-hydration, bounded typed transactions, final guard revalidation, and provider registration, but its
-same-bundle trigger executor, independently bounded must-retain lanes, and split-gateway request
-custody protocol remain open. The self-contained K3 persistence kernel is implemented: exact bundle
+**Status:** Implementing 0.13 — K0/K1 formal exit criteria landed. K2 has strict atomic boot
+hydration, bounded typed transactions, final guard revalidation, provider registration, and a
+versioned split-gateway request custody protocol. Same-owner causal triggers now execute against
+one root scratch transaction and persist their complete event graph in the same bundle and compact
+receipt. A structured split-gateway action now enters the coordinator under exact connection/actor
+authentication and receives `Owned` only from the separate exact-intent receipt, followed by
+`Finished` after finalization/RAM install. Public parser/legal-offer production of that transport
+shape and the remaining process-kill matrix remain open. K3's
+persistence kernel and durability-audit closeout are implemented: exact bundle
 reservation/reconciliation, pre-hydration recovery, store-owned authoritative prefixes, compact
 checkpoints, watermark-first epoch retirement, a production coordinator plus first tactics provider,
-and recovery-driven durable-outbox dispatch. Transport/legal-offer integration and the IPC portions
-of Gate 5 remain cross-cut work with K2/K5; all five end-to-end proving gates remain open.
+and recovery-driven durable-outbox dispatch. K4 now also has checked bounded scalars, exact durable
+reservation transitions, inert typed effect instances, and a Gate-1 `focus -> brace -> guarded ->
+expiry` history that survives checkpoint/restart. K5 now has bounded separate internal/projected
+offers, restart-stable rotating HMAC verification, durable private key provisioning, hidden fixed
+inputs and guards, canonical registered-provider enumeration, opaque submission resolution, and a
+coordinator route into the same Gate-1 provider. Public line/panel producers, semantic view
+envelopes, and the IPC portions of Gate 5 remain cross-cut work; all five complete end-to-end
+proving gates remain open.
 
 **Scope:** the shared contracts that must be stable before RustMUSH substantially expands character,
 tactical, economic, and AI-driven rules
@@ -306,7 +317,7 @@ pub enum ClockRef {
 
 pub struct ClockStamp {
     pub clock: ClockRef,
-    pub value: i64,
+    pub at: i64,
 }
 ```
 
@@ -442,7 +453,6 @@ Rejected(uid, projected_refusal)   no intent; gateway drops only after receiving
 Busy(uid, retry_hint)              no intent; bounded refusal/backpressure
 EphemeralFinished(uid, output)     pure/replay-safe query completed; no server ownership
 LegacyClaimed(uid)                 classified; server waits for GatewayReleased(uid)
-LegacyFinished(uid, output)        legacy execution finished; never causes gateway replay
 Owned(uid, commit_token)           exact intent exists; server/recovery now owns completion
 Finished(uid, projected_receipt)   terminal committed result
 ```
@@ -463,9 +473,10 @@ Because the gateway cannot classify a raw line, the server must return one dispo
 causes a replay that is safe but may observe newer state. A legacy mutating command must either use
 an exact legacy request journal or use a two-step at-most-once handoff: the server classifies and
 sends `LegacyClaimed` without executing; the gateway removes the raw request from custody and sends
-`GatewayReleased`; only then may the server execute. Loss before release causes replay of
-classification only; a server crash after release may lose the command, but cannot make the gateway
-duplicate it. Both sides bound their short-lived classification tables. This weaker bridge avoids
+`GatewayReleased`; only then may the server execute. The gateway intentionally receives no false
+completion promise for this compatibility lane: loss before release causes replay of classification
+only; a server crash after release may lose the command, but cannot make the gateway duplicate it.
+Both sides bound their short-lived classification tables. This weaker bridge avoids
 duplicate legacy mutation without pretending to provide Gate-5 durability. Commands become
 eligible for `Owned/Finished` only when their entire mutation has moved to the authoritative
 protocol.
@@ -988,8 +999,14 @@ a declared safe boundary.
 
 Command-subject priority is channel-specific. Unioning all seat channels and assigning the maximum
 seat priority to the union can promote a low-priority movement grant to weapons/command priority.
-Use `ChannelGrant { channel, priority }`; unchannelled contextual commands may retain a separate
-relationship priority.
+The projection unit is
+`ChannelGrant { actor, subject, owner, station, channels, priority, epoch }`: one grant per occupied
+station, with no union across seats. Resolution may select the highest-priority grant that carries
+the requested channel, but channel eligibility and priority must come from that same grant.
+`epoch` is captured by delayed work and checked against the exact station grant at re-entry;
+revocation, republish, or channel narrowing invalidates it. Unchannelled contextual commands may
+retain a separate relationship priority. A station grant is lease eligibility, not the active
+exclusive lease.
 
 Reservations have a small durable state machine:
 
@@ -1418,6 +1435,7 @@ pub struct AuthoritativeBundle {
     pub definitions: Vec<DefinitionRef>,
     pub writes: Vec<ReplayWrite>,
     pub outcome: AuthoritativeOutcome,
+    pub semantic_events: Vec<SemanticEvent>,
     pub eligible_witnesses: WitnessSet,
     pub durable_outbox: Vec<DurableOutboxIntent>,
 }
@@ -1442,6 +1460,12 @@ state key are rejected even when their bytes agree; conflicting writes are an in
 versioned, domain-separated `bundle_hash` covers every field except itself, including the complete
 authoritative outcome, event-time witness facts, and durable outbox intents. Observer-specific
 redaction and prose are not stored in this bundle.
+
+Bundle v2 adds the contiguous `semantic_events` graph. Event zero must exactly match the root cause,
+outcome, and outcome witnesses; every later event names an earlier parent and all events remain
+owned by the bundle provider in the current same-owner transaction model. Bundle v1 remains
+strictly readable without inventing events. Compact receipt v3 retains the event graph after replay
+writes are checkpointed; receipt v2 remains strictly readable for legacy v1 actions.
 
 Initial bounds are configurable with conservative hard defaults:
 
@@ -1776,13 +1800,13 @@ The repository already contains useful local proofs. They should be adapted, not
 | Contract | Current foundation | Missing shared contract |
 |---|---|---|
 | C1 definitions | shared canonical owner/kind/id/digest identities; bounded `RulesValue`; immutable global definition registry; exact-reference closure; one provider semantic validator per owner/kind; bounded monotonic owner-readiness latch; tactics exact-digest owner fan-out; dry-run migration registry; tactics/sim adapters | owner-freeze discovery in remaining rules-bearing adapters, executing one migration through K3 durability, broader production provider coverage |
-| C2 plan/commit | `mush-sim::Transition`, `UnitMutationPlan`, world single writer, `WriteBatch`, K0 exact receipt gate, typed output/effect custody and one `CommitPending` batch; K2 action invocation/provider metadata; engine-owned typed state families; owner-scoped bounded multi-record `ActionTxn`; one-shot `PreparedTxn`; exact staged pairing between typed post-images and an immutable K3 bundle; FIFO reserve/reconcile custody; exact 128-bit token/hash receipt validation before RAM install; canonical bounded K3 bundle/token/replay/outbox models; in-memory exact intent protocol and cut-point matrix; Redis checked-Lua intent/idempotency reservation plus replay/readback/finalization; object-plus-allocator admission; hash-aware status; live Redis 8.10 fault execution; exhaustive pre-hydration server recovery; bounded runtime deterministic retries and whole-bundle dead-letter; compact finalized checkpoints; watermark-first epoch retirement; typestate early-idempotency coordinator and first real tactics provider; recovery-driven bounded durable-outbox worker with stable-ID at-least-once delivery | transport/parser/legal-offer coordinator wiring; same-bundle trigger execution; independent must-retain lanes; gateway UID/custody/dispositions and remaining process/IPC fault matrix; broader provider and legacy migration |
-| C3 legal actions | contextual behavior commands, required channels, command-subject links, LLM tool manifests, exact owner-stamped action-provider registry | separate internal/projected legal actions, bounded offer store, one submission path for human/UI/AI/LLM |
-| C4 time/windows | scheduler, `GameClock`, Timestop turns, passive domain clock, Journey timing, mobility switching | typed clock identity/provider, generic window generations, simultaneous intent collection/order, restart/catch-up policy |
+| C2 plan/commit | `mush-sim::Transition`, `UnitMutationPlan`, world single writer, `WriteBatch`, K0 exact receipt gate, typed output/effect custody and one `CommitPending` batch; K2 action invocation/provider metadata; engine-owned typed state families; owner-scoped bounded multi-record `ActionTxn`; one-shot `PreparedTxn`; same-owner trigger execution in the root scratch transaction; exact staged pairing between typed post-images and an immutable K3 bundle; FIFO reserve/reconcile custody; separate exact-intent ownership and terminal receipts; exact 128-bit token/hash receipt validation before RAM install; canonical bounded K3 bundle/token/replay/event/outbox models; in-memory exact intent protocol and cut-point matrix; Redis checked-Lua intent/idempotency reservation plus replay/readback/finalization; object-plus-allocator admission; hash-aware status; live Redis 8.10 fault execution; exhaustive pre-hydration server recovery; bounded runtime deterministic retries and whole-bundle dead-letter; event-preserving compact finalized checkpoints; watermark-first epoch retirement; typestate early-idempotency coordinator and first real tactics provider; recovery-driven durable-outbox worker with stable-ID at-least-once delivery; independent bounded authoritative/legacy/control writer lanes; versioned epoch-scoped gateway request UIDs, bounded per-connection/global count+byte custody, explicit dispositions, legacy claim/release, post-reattach FIFO replay, and a structured transport-authenticated action ingress whose exact finalized replay works after the original connection disappears | public parser/K5 legal-offer production of coordinator requests; remaining ownership-ack process-kill matrix; cross-owner transaction/bridge execution; broader provider and legacy migration |
+| C3 legal actions | contextual behavior commands, required channels, exact per-actor/per-station `ChannelGrant` projection with paired channel/priority and epoch revalidation, LLM tool manifests, exact owner-stamped action-provider registry; bounded separate internal/projected offers; canonical HMAC binding to server-held action, subject, fixed inputs, guards, projection scope, and presentation; append-only crash-safe private key provisioning and bounded retained-key rotation; projected parameter/target schemas; canonical registered-provider enumeration; uniform stale resolution; resolved-offer coordinator entry | grant-bound offer witnesses and one public submission path for human/UI/AI/LLM |
+| C4 time/windows | scheduler; strict `ClockRef`/`ClockStamp`; bounded append-only world-IC epoch history `{ real_anchor, ic_anchor, rate, generation }`; continuous rate changes; atomic epoch/head persistence; boot hydration before modules; synchronous `(ic_now, generation)` module-context read; Timestop turns, passive domain clock, Journey timing, mobility switching | registered provider lookup, typed deadline validation, generic window generations, simultaneous intent collection/order, restart/catch-up policy |
 | C5 RNG | injectable `mush-dice::RollCtx`; test-seeded ChaCha in rulesets | idempotency-derived resolution streams, draw transcript, algorithm/version and durable outcome record |
-| C6 causality | `WorldEvent`, scene/canon ledgers, module observers; stable pre-commit request/event IDs and causal references; bounded deterministic trigger queue with duplicate suppression and non-droppable active-work custody | commit-token-bound semantic events, intent-resolution-commit-observation integration, trigger execution inside `ActionTxn` and the durable bundle |
-| C7 tracks/effects | sheet tracks, tactical `ScalarCell`, ruleset-specific damage/effect state | common checked operations, resource/effect addressing, provenance/duration/revision contract and adapters |
-| C8 guards | F3 control channels, unit `control_gen`, expected unit revision, economy plan draft; canonical `RevisionSet`, owner-stamped validator registries, explicit server-created `GuardSet` on every staged typed action, final fail-closed revalidation at the synchronous writer-custody transition, durable exact-bundle reservation, and coordinator-owned early idempotency preflight | actual per-channel leases and wiring every delayed result through guards |
+| C6 causality | `WorldEvent`, scene/canon ledgers, module observers; stable pre-commit request/event IDs and causal references; bounded deterministic trigger queue with duplicate suppression and non-droppable active-work custody; queue execution inside one root `ActionTxn`; v2 bundles and v3 compact receipts retaining ordered root/derived semantic events and event-time witnesses | public commit-token-bound event IDs, intent-resolution-commit-observation integration, cross-owner trigger execution through validated bridges |
+| C7 tracks/effects | sheet tracks and tactical `ScalarCell`; common `BoundedScalar` operations; exact `ResourceRef`; revision/clock-checked `ReservationRecord`; exact-identity/provenance/typed-duration inert `EffectInstance`; Gate-1 toy storage adapted without moving owner truth | composition-frozen resource/effect adapter registries, reservation storage/contention gate, broader owner adapters |
+| C8 guards | per-station channel grants (no cross-seat union/max promotion), persisted unit `control_gen` carried as each grant's epoch, exact station/channel/epoch stale-intent revalidation, expected unit revision, economy plan draft; canonical `RevisionSet`, owner-stamped validator registries, explicit server-created `GuardSet` on every staged typed action, final fail-closed revalidation at the synchronous writer-custody transition, durable exact-bundle reservation, and coordinator-owned early idempotency preflight | active per-channel leases, safe-boundary handoff, and wiring every delayed result/offer through the exact grant plus lease guards |
 | C9 projection | per-observer perception and delivery, witness-aware power events | opaque contact references, dedicated view DTOs, shared legal-action/error/LLM projection |
 | C10 ownership | registrar-stamped definition/action/state-family owners; composition-bound opaque typed state handles; provider-stamped transactions that reject cross-owner handles; fail-closed cross-owner tactical references; immutable directional exact-definition bridge registry; shared owner-readiness gates on executable definitions/providers/validators/bridge routes | ownership migration for state outside `ActionStateStore`, executable bridge preparation across typed transactions, freeze aggregation from remaining owner adapters |
 | C11 lifecycle | pre-boot validated unified poison spool; v1 Ledger read compatibility plus tagged v2 Ledger/bundle records sharing one lock, capacity gate, and evidence archive; exact seal retention/isolation; structural world modes; bounded recovery incidents/reports; tactical Active/Frozen/Migrating/Quarantined records; tactics owner-scoped digest-conflict freeze; prepared typed images install or abort on the matching legacy serial or K3 token/hash receipt; strict atomic state-family decode/validate/canonical boot hydration; legacy isolation of `action-state/*`; store-enforced ownership of authoritative module prefixes; bounded in-memory and Redis pending indexes plus independent paged full-intent discovery; exhaustive bounded boot reconciliation before world hydration or writable bootstrap; exact retry repair of stale pending-index membership; canonical retained-intent storage validation; atomic reconstruction of derived Redis count/byte counters from exhaustive boot discovery; exact bundle quarantine recovery with live Redis WRONGTYPE proof; coordinator abort of typed reservations on pre-stage assembly failure; exact checkpoint/epoch/outbox cleanup and retry | exhaustive orphan-owner discovery; full C11 resolution receipts; owner freezes in remaining lifecycle adapters; authoritative account ingress; automated runbook |
@@ -1790,8 +1814,12 @@ The repository already contains useful local proofs. They should be adapted, not
 
 None of the five gates currently traverses all of these through one action pipeline. The first real
 `tactics:brace` slice now crosses early idempotency, provider preparation, whole-bundle durability,
-compact retry and fresh-engine typed-state hydration directly through the coordinator/store APIs.
-It does not yet cross transport custody, legal offers, clock expiry, projection, or presentation.
+compact retry, fresh-engine typed-state hydration, and the structured split-process custody path.
+Its toy variant now also checkpoints, rehydrates, and expires a typed two-turn effect exactly once,
+and a regenerated opaque offer reaches that same provider without serializing its exact action,
+truth subject, fixed clock input, or guards. It does not yet have a public line/panel producer;
+public interface routing, grant witnesses, semantic views, and registered clock/window policy remain
+K4/K5 work.
 That is the reason for using toy vertical slices rather than declaring the contracts finished from
 their local precursors.
 
@@ -1821,6 +1849,44 @@ K0 integrity -> K1 definitions -> K2 logical transactions -> K3 durable bundles
 
 The synthetic Gate-5 fault harness begins in K3 and is rerun/expanded at every later cut; it is not
 deferred until the end.
+
+### Execution sequence after the K3 durability audit
+
+The remaining milestones are delivered as vertical proofs, not as independent piles of framework
+types. Each phase leaves one executable path that the next phase extends:
+
+1. **Durability closeout (K3.1e-f).** Run one authoritative conformance suite unchanged against
+   memory and Redis. Preserve the complete canonical legacy batch—not only sealed Ledger members—on
+   deterministic failure, and give authoritative, legacy, and recovery/control work independently
+   bounded lanes with guaranteed service. Exit only when poison re-emission cannot wedge or starve
+   unrelated authoritative persistence.
+2. **Execution closeout (K2).** Execute the bounded causal trigger queue against the root scratch
+   transaction and materialize one bundle or no mutation. Route transport-authenticated request UIDs
+   into the coordinator, then prove claim/release/ownership convergence across dropped frames,
+   gateway restart, and server kill. This is the sole new mutating ingress path.
+3. **Mechanical Gate-1 slice (K4).** Add only the clocks, deterministic RNG, checked resource
+   reservation, and temporary-effect lifecycle needed by `focus`, `brace`, and two-turn `guarded`.
+   Prove spend + effect + expiry + receipt as one restart-safe causal history before generalizing the
+   provider APIs.
+4. **Projected Gate-1 slice (K5).** Expose that same action through one internal offer and one
+   bounded projected DTO used by line, TUI/web, deterministic NPC, and mock LLM callers. Add
+   keyframe/gap recovery and authorized action status. No interface receives a second authorization
+   or execution implementation.
+5. **First production migration.** Move one modest WoD resource/effect action through the complete
+   K2-K5 path, compare its old/new semantics with golden tests, then remove its legacy mutation
+   handler. Economy remains domain-model work until its Ledger append/seal and all mixed post-images
+   can join one authoritative bundle.
+6. **Tactical and asynchronous slices (K6-K7).** Extend the proven offer/transaction path to atomic
+   source/target damage and hidden contacts, then make delayed NPC/LLM decisions return only opaque
+   projected offers through ordinary coordinator re-entry.
+7. **Production closure (K8).** Run the complete crash matrix against the toy and migrated WoD,
+   Shadowrun, and tactics paths; publish compatibility rules only after all three exercise the same
+   protocol.
+
+Until K8 closes, new work follows four anti-debt rules: no new mutating legacy handlers, no direct
+LLM mechanical mutation, no trigger side effect in a later commit, and no backend-specific
+authoritative behavior without a shared conformance assertion. Existing legacy outcome/effect
+construction remains compatibility debt and may not gain new unbounded item or payload shapes.
 
 ### K0. Integrity prerequisites and contract harness
 
@@ -1907,8 +1973,12 @@ Work:
    boundary.
 
 Implementation status: item 1's shared identities/provider registry and item 3's state-record
-transaction plus atomic typed boot hydration are implemented; item 4 has a bounded deterministic
-trigger queue, while its execution inside the same transaction/bundle remains open. The
+transaction plus atomic typed boot hydration are implemented. Item 4 now executes the bounded
+deterministic queue against that same root scratch transaction: each handler produces one ordered
+derived semantic event, handler failure or any cascade bound discards the root scratch, and bundle
+v2 plus compact receipt v3 retain the complete graph while continuing to read legacy bundle v1 and
+receipt v2. Trigger dispatch is deliberately same-owner until K6's bridge-backed multi-owner
+transaction proof. The
 revision/authority registries, mandatory staged-action `GuardSet`, final synchronous guard
 revalidation, and central `CommitPending` admission foundation cover parts of items 2 and 6. A
 provider can now prepare the toy two-record action without mutable-world access, and the server can
@@ -1919,10 +1989,22 @@ the images across FIFO reserve/reconcile and installs them only after an exact t
 The `action-state/*` keyspace is isolated from legacy module boot, migration, and server write paths.
 The production coordinator now performs early exact-idempotency preflight and assembles the bounded
 semantic causal/outcome/outbox portion of a complete bundle; the first `mush-tactics` provider uses
-it directly. What remains at K2 is execution of the bounded trigger queue inside the same
-transaction/bundle, independent bounded operational lanes, gateway ownership replay/dispositions,
-and transport-authenticated entry into the coordinator. Recovery-driven durable-outbox delivery is
-implemented; viewer projection and keyframe recovery remain C9/C12 work.
+it directly. IPC version 2 wraps every split-mode command/query in an epoch-scoped stable UID;
+gateway custody is independently bounded per connection and globally by count and logical bytes,
+survives server restart, and replays in FIFO order only after the reattachment barrier. Queries end
+with `EphemeralFinished`; legacy commands use the at-most-once `LegacyClaimed`/`GatewayReleased`
+handoff, and both peers independently bound retained classifications. Structured action requests
+are independently bounded in the same pre-ownership table; a vacant request may construct its
+semantic invocation only after exact connection/actor verification, then crosses the world
+single-writer through the coordinator. The
+writer publishes a separate exact-intent receipt, so IPC `Owned` cannot be emitted on queue
+acceptance; `Finished` follows exact finalization and RAM installation. Exact finalized replay is
+proven even after the original connection disappears. The store writer also reserves
+independent bounded authoritative, legacy, and recovery/control lanes while retaining global
+accepted-order execution. What remains at K2/K5 is exposing this structured shape only through the
+line/parser and legal-offer verifier, plus the remaining deliberate process-kill matrix.
+Recovery-driven durable-outbox delivery is implemented; viewer projection and keyframe recovery
+remain C9/C12 work.
 
 Exit criteria:
 
@@ -1950,8 +2032,7 @@ retention counters, pending-index and cursor discovery, and live-gated tests for
 missing accelerator membership, conflicts, and wrong-type partial execution. Retained intent reads
 now require the exact canonical storage form, and exclusive boot atomically rebuilds the derivative
 count/byte pair from exhaustive validated discovery, including over wrong-typed keys. The full
-30-test Redis
-suite and server recovery integration test pass against disposable Redis 8.10.1. Server startup now
+Redis suite and server recovery integration test pass against disposable Redis 8.10.1. Server startup now
 connects without ordinary bootstrap writes, exhaustively reconciles every retained exact intent,
 repairs stale pending membership, refuses conflicting or incomplete recovery, and only then creates
 indexes, migrates, imports, or hydrates the world. The opt-in action lane now rejects a bundle whose
@@ -1980,11 +2061,59 @@ manifest; terminal records survive checkpointing and are removed with their reti
 bounded production worker rediscovers finalized outbox items, persists the attempt before delivery,
 reuses stable item IDs for ambiguous send/ack loss, records retry or terminal state, and checkpoints
 the parent only after all items are terminal. Missing adapters retain work and cannot starve
-installed adapters. The remaining K3 exit work is cross-cut: transport/parser/legal-offer entry into
-the coordinator, gateway UID ownership transfer and its process/IPC fault cases, recoverable
-projection/keyframes, and broader provider/legacy migration. Those depend respectively on unfinished
-K2 custody/trigger work and K5/C9/C12 projection; the self-contained K3 store, coordinator, and
-durable-delivery kernel is complete.
+installed adapters. The remaining cross-cut work includes transport/parser/legal-offer entry into
+the coordinator, the remaining gateway ownership process/IPC fault cases, recoverable
+projection/keyframes, and broader provider/legacy migration. Those depend
+respectively on unfinished K2 trigger/transport work and K5/C9/C12 projection. K3.1 is closed for
+bounded accepted work; K0's explicitly documented legacy pre-mutation construction gap is retired
+incrementally by migrating handlers onto the bounded authoritative path.
+
+#### K3.1. Durability-audit closure (closed for bounded accepted work)
+
+Post-implementation memory-store probes found two correctness violations and several liveness,
+parity, and observability gaps. They are tracked here rather than hidden inside later economy or
+Gate-5 work:
+
+1. **K3.1a — checkpoint proof (closed):** memory and Redis atomically verify every exact replay
+   post-image before deleting the full intent. A mismatch retains the intent and fails closed.
+2. **K3.1b — store-owned admission (closed):** the store enforces the initial single unresolved
+   authoritative reservation bound (or a future equivalent per-target claim protocol), so two
+   pending bundles cannot claim the same fresh object ID.
+3. **K3.1c — poison release valve (closed):** an audited exact token/hash/evidence transition is
+   legal only after the unified quarantine spool durably proves custody. It releases only a
+   never-finalized full intent, keeps a non-replayable idempotency tombstone, and remains recoverable:
+   a later boot can atomically restore the exact spooled bundle, retry it, and rediscard it if the
+   deterministic fault remains. Finalized intents can never use this discard path.
+4. **K3.1d — unroutable outbox policy (closed):** missing adapters advance a separate durable,
+   bounded discovery-pass counter without consuming real delivery attempts, persist a terminal
+   dead-letter outcome with diagnostics, and then permit parent checkpoint/epoch progress. Installed
+   adapters must remain independently dispatchable.
+5. **K3.1e — Redis concurrency/parity (closed):** Redis-gated tests are explicit ignored
+   tests locally and an explicit Linux CI job, so skipped Lua coverage cannot count as passing.
+   Retention-counter repair now uses the generation captured before exhaustive scanning, and the
+   complete-bundle recovery lookup reports `Retired` from the scope watermark after compact records
+   are purged. One shared suite now proves exact lifecycle/discovery, store-owned admission,
+   quarantine restore, durable outbox, epoch retirement, conflict handling, and retention-generation
+   CAS semantics unchanged against memory and Redis; backend-specific corruption probes remain in
+   their native harnesses.
+6. **K3.1f — K0/K3 integration (closed for bounded accepted work):** deterministic E0
+   drops now preserve the complete canonical legacy batch in the unified quarantine spool before
+   seal isolation, including object post-images, deletes, module operations, allocator state, and
+   original FIFO serial. Boot recovery replays only provably idempotent absolute batches in serial
+   order; ambiguous stream appends remain active and fail closed. Retained poison-seal re-emission
+   reuses exact existing custody rather than creating serial-dependent duplicate records.
+   Authoritative, legacy, and recovery/control work now have separate admission capacities and
+   gauges; accepted jobs carry their lane permit through merge buffering and completion. A global
+   acceptance sequence preserves cross-lane FIFO, while the finite legacy capacity bounds how much
+   older seal traffic can precede newly accepted authoritative/control work. Boot recovery runs
+   before these runtime lanes exist. This closure inherits K0's explicitly documented pre-mutation
+   construction gap: an outcome too large for any finite quarantine budget must be refused before
+   live installation as legacy handlers are migrated, never "fixed" by an unbounded spool.
+
+Economy obligations/contracts remain on their legacy durable path until mixed authoritative write
+sets can include the Ledger append, modules can read their own typed families outside an action, and
+the Ledger seal participates in the same bundle instead of blocking it. That migration is a later
+provider milestone, not part of K3.1's kernel repair.
 
 Work:
 
@@ -2022,6 +2151,49 @@ Exit criteria:
 - restart after ack/before output recovers the receipt and keyframe;
 - an action-created object and allocator restart without ID reuse;
 - legacy pre-state dependencies cannot be lost beneath a later committed action.
+
+#### E7-enabling priority cut (K4a/K5a)
+
+E7's first production/requisition cuts must not mint temporary clock or control models.  Pull these
+two kernel primitives forward before finishing the rest of K4/K5:
+
+1. **K4a — versioned world timeline (implemented):** `ClockRef`/`ClockStamp`, a bounded
+   append-only `{ real_anchor, ic_anchor, rate, generation }` epoch history, continuous rate
+   changes, immutable generation documents plus an atomically updated head, fail-closed boot
+   validation, configuration-as-genesis-only behavior, and synchronous `Ctx::world_ic_now()`.
+   Campaign policy decides who may open a generation; the kernel only enforces shape, continuity,
+   generation, bounds, persistence, and comparison rules.
+2. **K5a — station channel grants (implemented):** project one
+   `ChannelGrant { actor, subject, owner, station, channels, priority, epoch }` per occupied station.
+   Command resolution selects priority from the same grant that supplies the required channel, and
+   delayed intents can revalidate the exact station/channel/epoch. The existing persisted unit
+   `control_gen` is a conservative grant epoch: any control-surface change invalidates every grant
+   on that unit. Per-channel active leases and safe-boundary transfer remain K6 work.
+3. **K4b — checked resources and typed effects (implemented):** rules-neutral `ResourceRef` and
+   `BoundedScalar` enforce exact addressing, checked integer bounds, and monotonic revisions;
+   `ReservationRecord` enforces deterministic identity, amount, clock, revision, and terminal
+   transitions; `EffectInstance` enforces exact definition/owner, causal source, typed duration,
+   stack bounds, and revision. The Gate-1 toy now spends `focus`, creates `guarded` in the same
+   causal bundle, rehydrates it after restart, and removes only that exact instance through a
+   deterministic authoritative expiry action. Provider registries, reservation contention, and
+   registered clock/window scheduling remain later K4 work.
+4. **K5b — bounded signed offers (implemented):** server-only `InternalOffer` records bind the
+   exact provider action, truth subject, fixed inputs, guard set, projection scope, public schema,
+   channels, expiry, and presentation. Clients receive only a bounded `ProjectedLegalAction` with
+   perceived references and an opaque HMAC token. Execution regenerates the current bounded set,
+   verifies against the current or retained key without revealing the failure reason, validates
+   public inputs, reconstructs the canonical invocation, and enters the existing coordinator.
+   Providers are enumerated in frozen canonical action order and cannot redirect the registry-stamped
+   route. Both binaries provision a private versioned key directory before module boot; immutable
+   key/manifest publication survives a pre-manifest crash, newest-manifest corruption fails closed,
+   and rotation retains/prunes a hard-bounded verification history. Grant witnesses and public
+   interface routing remain the next K5 cut.
+
+The K3.1 checkpoint-readback and pending-allocator findings are already closed in both memory and
+Redis and therefore are not prerequisites. Mixed authoritative write sets, synchronous typed-family
+module reads, and folding a Ledger seal into an authoritative bundle remain the migration gate
+before E7 reservations or production settlement move from the economy journal onto kernel
+authority; they do not block E7 records and policy from using the two primitives above.
 
 ### K4. Typed clocks, resolution RNG, resources, and effects
 

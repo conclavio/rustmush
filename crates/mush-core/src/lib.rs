@@ -62,8 +62,10 @@ pub mod matchit;
 pub mod mechanics;
 pub mod module;
 pub mod obj;
+pub mod offer;
 pub mod output;
 pub mod perm;
+pub mod resource;
 pub mod sched;
 pub mod world;
 
@@ -86,13 +88,13 @@ pub use action::{
     MAX_CASCADE_BYTES, MAX_CASCADE_OPERATIONS, MAX_CASCADE_TRIGGERS, MAX_GUARD_SET_BYTES,
     MAX_IDEMPOTENCY_KEY_BYTES, MAX_INGRESS_LINE_BYTES, MAX_INGRESS_PAYLOAD_BYTES,
     MAX_REVISION_VALIDATORS, MAX_REVISION_VALIDATORS_PER_OWNER, MAX_SEMANTIC_EVENTS,
-    MAX_TRIGGER_DEPTH, PerceivedRef, PreparedCausalRef, PreparedEventId, PreparedTrigger,
-    PreparedTriggerDraft, PrincipalId, ProviderRegistrationOrdinal, RequestUid, RevisionKey,
-    RevisionKind, RevisionMismatch, RevisionSet, RevisionSetError, RevisionStamp,
-    RevisionValidator, RevisionValidatorEntry, RevisionValidatorLookupError,
-    RevisionValidatorRegistry, RevisionValidatorRegistryBuilder, RevisionValidatorRegistryError,
-    ScopedIdempotencyKey, ServerGuardSetBuilder, SubjectKey, TriggerEnqueue, TriggerHandlerId,
-    TriggerIdentity, TriggerWork,
+    MAX_TRIGGER_DEPTH, PerceivedRef, PreparedAuthoritativeAction, PreparedCausalRef,
+    PreparedEventId, PreparedTrigger, PreparedTriggerDraft, PrincipalId,
+    ProviderRegistrationOrdinal, RequestUid, RevisionKey, RevisionKind, RevisionMismatch,
+    RevisionSet, RevisionSetError, RevisionStamp, RevisionValidator, RevisionValidatorEntry,
+    RevisionValidatorLookupError, RevisionValidatorRegistry, RevisionValidatorRegistryBuilder,
+    RevisionValidatorRegistryError, SameCommitTrigger, ScopedIdempotencyKey, ServerGuardSetBuilder,
+    SubjectKey, TriggerEnqueue, TriggerHandlerId, TriggerIdentity, TriggerWork,
 };
 pub use action_state::{
     ACTION_STATE_PERSISTENCE_ROOT, ActionStateBootRecord, ActionStateError, ActionStateStore,
@@ -107,9 +109,10 @@ pub use action_state::{
 pub use attr::{Attr, AttrFlags, AttrMap, AttrValue, UncasedName};
 pub use authoritative::{
     AuthoritativeBundle, AuthoritativeBundleDraft, AuthoritativeBundleError, AuthoritativeKey,
-    AuthoritativeKeyError, DurableOutboxIntent, MAX_AUTHORITATIVE_BUNDLE_BYTES,
-    MAX_AUTHORITATIVE_DEFINITIONS, MAX_AUTHORITATIVE_REPLAY_WRITES, MAX_AUTHORITATIVE_WITNESSES,
-    MAX_DURABLE_OUTBOX_INTENTS, MAX_DURABLE_OUTBOX_PAYLOAD_BYTES, ReplayWrite,
+    AuthoritativeKeyError, AuthoritativeSemanticEvent, DurableOutboxIntent,
+    MAX_AUTHORITATIVE_BUNDLE_BYTES, MAX_AUTHORITATIVE_DEFINITIONS, MAX_AUTHORITATIVE_REPLAY_WRITES,
+    MAX_AUTHORITATIVE_WITNESSES, MAX_DURABLE_OUTBOX_INTENTS, MAX_DURABLE_OUTBOX_PAYLOAD_BYTES,
+    ReplayWrite,
 };
 pub use behavior::{
     BINDING_SCHEMA_VERSION, BehaviorBinding, BehaviorCommand, BehaviorCommandHandler, BehaviorId,
@@ -117,7 +120,13 @@ pub use behavior::{
     CommandReach, DestroyGate, DestroyPolicy, DetachGate, MAX_CARRIED_SCAN,
     resolve_behavior_command,
 };
-pub use clock::{CivilDate, GameClock, Season, TimeOfDay};
+pub use clock::{
+    CivilDate, ClockArithmeticError, ClockMismatch, ClockRef, ClockStamp, GameClock,
+    MAX_WORLD_TIMELINE_EPOCHS, Season, TimeOfDay, WORLD_TIMELINE_EPOCH_PREFIX,
+    WORLD_TIMELINE_HEAD_KEY, WORLD_TIMELINE_NAMESPACE, WorldTimeline, WorldTimelineChangeError,
+    WorldTimelineEpoch, WorldTimelineError, WorldTimelineHead, WorldTimelinePersistenceError,
+    world_timeline_epoch_key, world_timeline_persistence_ops,
+};
 pub use cmd::{
     AliasOutcome, AliasStage, ArgShape, CmdError, CommandFallback, CommandGate, CommandHandler,
     CommandSpec, Ctx, HelpTopic, LookupErr, ParsedArgs, Registry, RegistryError, SceneClass,
@@ -165,11 +174,30 @@ pub use module::{
     WorldEventKind, WorldObserver, WxSnapshot, can_perceive, is_concealed, perceives_via,
 };
 pub use obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
+pub use offer::{
+    ActionPresentation, InternalOffer, InternalOfferDraft, LegalActionProjectionError,
+    LegalActionQuery, LegalActionResolutionError, MAX_OFFER_SECRET_VERSIONS,
+    MAX_PROJECTED_ACTION_CHANNELS, MAX_PROJECTED_ACTION_CHOICES, MAX_PROJECTED_ACTION_PARAMETERS,
+    MAX_PROJECTED_ACTION_TEXT_BYTES, MAX_PROJECTED_LEGAL_ACTION_BYTES,
+    MAX_PROJECTED_LEGAL_ACTION_SET_BYTES, MAX_PROJECTED_LEGAL_ACTIONS, OfferBuildError,
+    OfferExecutionContext, OfferKeyRing, OfferResolveError, OfferSecret, OfferSecretError,
+    OfferSubmission, ProjectedLegalAction, ProjectedLegalActionSink, ProjectedParameter,
+    ProjectedParameterKind, ProjectedParameterSchema, ProjectedTargetSchema, ProjectionScopeId,
+    ProviderOfferDraft, ResolvedOffer,
+};
 pub use output::{
     Audience, ConnId, DeliveryClass, DeliveryOutcome, Outbox, name_span, obj_ref, room_view,
+};
+pub use resource::{
+    BoundedScalar, EffectDuration, EffectInstance, EffectInstanceError, EffectInstanceId,
+    EffectTarget, MAX_EFFECT_STACKS, MAX_RESOURCE_RESERVATIONS, ReservationAvailabilityError,
+    ReservationError, ReservationId, ReservationRecord, ReservationState, ResourceOperation,
+    ResourceRef, ResourceValueError, checked_resource_availability,
 };
 pub use sched::{
     MAX_PENDING_ENTRIES_PER_INSPECTION, MAX_SCHEDULED_FIRES_PER_STEP, PendingEntrySnapshot,
     ScheduledKind, Scheduler, TimerId,
 };
-pub use world::{CommandSubjectLink, MAX_CONTAINMENT_DEPTH, SessionStat, World, WorldError};
+pub use world::{
+    ChannelGrant, CommandSubjectLink, MAX_CONTAINMENT_DEPTH, SessionStat, World, WorldError,
+};

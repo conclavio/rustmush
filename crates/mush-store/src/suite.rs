@@ -4,8 +4,8 @@
 //!
 //! Each function takes an **empty** store and panics (via `assert!`) on any
 //! contract violation. The unit tests run them against [`crate::InMemoryStore`]
-//! unconditionally; `tests/redis_suite.rs` runs the same functions against a
-//! live Redis when `REDIS_URL` is set.
+//! unconditionally; CI runs the explicitly ignored `tests/redis_suite.rs`
+//! wrappers against a live disposable Redis with `REDIS_URL` set.
 //!
 //! This module is `#[doc(hidden)] pub` only so integration tests can reach
 //! it; it is not API.
@@ -15,14 +15,19 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use mush_core::{
-    Attr, AttrFlags, AttrValue, Flags, GOD, LIMBO, LockExpr, LockType, Obj, ObjId, ObjKind, Powers,
-    World,
+    Attr, AttrFlags, AttrValue, AuthoritativeBundle, AuthoritativeBundleDraft, AuthoritativeKey,
+    CanonicalHash, CanonicalId, CommitToken, DefinitionDescriptor, DefinitionId, DefinitionKind,
+    DefinitionRegistryBuilder, DurableOutboxIntent, Flags, GOD, IdempotencyKey, IdempotencyScope,
+    LIMBO, LockExpr, LockType, Obj, ObjId, ObjKind, OwnerId, Powers, PreparedCausalRef,
+    PrincipalId, ReplayWrite, RequestUid, RulesValue, ScopedIdempotencyKey, World,
 };
 
 use crate::migrate::{Migration, run_migrations};
-use crate::store::ObjectStore;
+use crate::store::{AuthoritativeStore, ObjectStore};
 use crate::types::{
-    AccountRec, ModuleOp, ModuleWrite, SshKeyRec, StoreError, TokenRecord, WriteBatch,
+    AccountRec, AuthoritativeOutboxAttemptResult, AuthoritativeRetentionUsage,
+    AuthoritativeScanCursor, BundleStatus, IdempotencyStatus, ModuleOp, ModuleWrite, SshKeyRec,
+    StoreError, TokenRecord, WriteBatch,
 };
 
 fn now_unix() -> i64 {
@@ -1096,5 +1101,524 @@ pub async fn module_empty_namespace_list(store: &dyn ObjectStore) {
             .expect("range")
             .len(),
         1
+    );
+}
+
+// -------------------------------------------------------------------------
+// Shared authoritative-store contract
+// -------------------------------------------------------------------------
+
+pub(crate) fn authoritative_bundle(token_byte: u8, request_byte: u8) -> AuthoritativeBundle {
+    authoritative_bundle_with(token_byte, request_byte, 0, vec![])
+}
+
+fn authoritative_bundle_with(
+    token_byte: u8,
+    request_byte: u8,
+    epoch: u64,
+    durable_outbox: Vec<DurableOutboxIntent>,
+) -> AuthoritativeBundle {
+    let owner = OwnerId::new("store_contract").expect("contract owner");
+    let mut definitions = DefinitionRegistryBuilder::new();
+    let action = definitions
+        .register(
+            owner.clone(),
+            DefinitionDescriptor::new(
+                DefinitionKind::new("action").expect("kind"),
+                DefinitionId::new("brace").expect("definition"),
+                1,
+                serde_json::json!({}),
+            )
+            .expect("action descriptor"),
+        )
+        .expect("register action");
+    let outcome = definitions
+        .register(
+            owner.clone(),
+            DefinitionDescriptor::new(
+                DefinitionKind::new("outcome").expect("kind"),
+                DefinitionId::new("braced").expect("definition"),
+                1,
+                serde_json::json!({}),
+            )
+            .expect("outcome descriptor"),
+        )
+        .expect("register outcome");
+    let request = RequestUid::from_bytes([request_byte; 16]);
+    let principal = PrincipalId::Object { id: GOD };
+    AuthoritativeBundle::new(AuthoritativeBundleDraft {
+        token: CommitToken::from_bytes([token_byte; 16]),
+        request,
+        idempotency: ScopedIdempotencyKey::new(
+            IdempotencyScope {
+                principal: principal.clone(),
+                owner: owner.clone(),
+                namespace: CanonicalId::new("brace").expect("namespace"),
+            },
+            epoch,
+            IdempotencyKey::Request(request),
+        ),
+        ingress_hash: CanonicalHash::from_bytes([request_byte; 32]),
+        request_hash: CanonicalHash::from_bytes([3; 32]),
+        plan_hash: CanonicalHash::from_bytes([4; 32]),
+        action: action.clone(),
+        provider: owner.clone(),
+        cause: PreparedCausalRef::new(request, None, 0).expect("root cause"),
+        definitions: vec![action.clone(), outcome.clone()],
+        writes: vec![
+            ReplayWrite::ObjectSet {
+                object: Obj::new(ObjId(2), ObjKind::Thing, "guard", GOD, 0),
+            },
+            ReplayWrite::ObjectAllocatorSet { next_id: 3 },
+            ReplayWrite::ModuleJsonSet {
+                namespace: owner,
+                key: AuthoritativeKey::parse_canonical("action-state/v1/guarded/2")
+                    .expect("state key"),
+                value: serde_json::json!({ "amount": 1 }),
+            },
+        ],
+        outcome: RulesValue::new(outcome.clone(), serde_json::json!({ "ok": true }))
+            .expect("outcome value"),
+        semantic_events: vec![
+            mush_core::AuthoritativeSemanticEvent::root(
+                PreparedCausalRef::new(request, None, 0).expect("root cause"),
+                &action,
+                RulesValue::new(outcome, serde_json::json!({ "ok": true })).expect("event value"),
+                vec![principal.clone()],
+            )
+            .expect("root event"),
+        ],
+        eligible_witnesses: vec![principal],
+        durable_outbox,
+    })
+    .expect("authoritative contract bundle")
+}
+
+async fn seed_authoritative_world(store: &dyn AuthoritativeStore) {
+    let (seed, _) = minimal_seed_batch(1);
+    store.write(seed).await.expect("seed minimal world");
+}
+
+/// Exact reservation, both discovery paths, replay/finalization, compact
+/// checkpoint, and exact retry have identical semantics on every backend.
+pub async fn authoritative_exact_lifecycle(store: &dyn AuthoritativeStore) {
+    seed_authoritative_world(store).await;
+    let bundle = authoritative_bundle(11, 21);
+    let token = bundle.token();
+    let hash = bundle.bundle_hash();
+
+    assert_eq!(
+        store
+            .authoritative_idempotency_status(bundle.idempotency(), bundle.ingress_hash())
+            .await
+            .expect("empty idempotency lookup"),
+        IdempotencyStatus::Vacant
+    );
+    let reservation = store
+        .reserve_authoritative_intent(bundle.clone())
+        .await
+        .expect("reserve intent");
+    assert!(!reservation.resumed);
+    assert_eq!(reservation.token, token);
+    assert_eq!(reservation.bundle_hash, hash);
+    assert_eq!(
+        store
+            .pending_authoritative_intents()
+            .await
+            .expect("pending accelerator")
+            .len(),
+        1
+    );
+
+    let mut cursor: Option<AuthoritativeScanCursor> = None;
+    let mut discovered = Vec::new();
+    loop {
+        let page = store
+            .scan_authoritative_intents(cursor, 1)
+            .await
+            .expect("scan full intent keyspace");
+        discovered.extend(page.intents);
+        let Some(next) = page.next_cursor else {
+            break;
+        };
+        cursor = Some(next);
+    }
+    assert_eq!(discovered, vec![bundle.clone()]);
+
+    let receipt = store
+        .reconcile_authoritative(token, hash)
+        .await
+        .expect("reconcile intent");
+    assert!(receipt.matches_bundle(&bundle));
+    assert_eq!(receipt.semantic_events(), bundle.semantic_events());
+    assert_eq!(
+        store.authoritative_status(token, hash).await.unwrap(),
+        BundleStatus::FinalizedExact(Box::new(receipt.clone()))
+    );
+    assert!(
+        store
+            .pending_authoritative_intents()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let checkpoint = store
+        .checkpoint_authoritative(token, hash)
+        .await
+        .expect("checkpoint finalized intent");
+    assert_eq!(checkpoint.receipt, receipt);
+    assert_eq!(
+        checkpoint.receipt.semantic_events(),
+        bundle.semantic_events()
+    );
+    assert!(!checkpoint.resumed);
+    assert!(
+        store
+            .scan_authoritative_intents(None, 1)
+            .await
+            .unwrap()
+            .intents
+            .is_empty()
+    );
+    assert!(
+        store
+            .reserve_authoritative_intent(bundle)
+            .await
+            .expect("join exact compact retry")
+            .resumed
+    );
+    assert!(
+        store
+            .checkpoint_authoritative(token, hash)
+            .await
+            .expect("join checkpoint retry")
+            .resumed
+    );
+}
+
+/// Admission is enforced by the backend, not merely by a single coordinator
+/// task, and is released only after the unresolved intent finalizes.
+pub async fn authoritative_single_pending_admission(store: &dyn AuthoritativeStore) {
+    seed_authoritative_world(store).await;
+    let first = authoritative_bundle(12, 22);
+    let second = authoritative_bundle(13, 23);
+    store
+        .reserve_authoritative_intent(first.clone())
+        .await
+        .expect("reserve first intent");
+    assert!(matches!(
+        store.reserve_authoritative_intent(second.clone()).await,
+        Err(StoreError::AuthoritativeIntentInFlight { pending: 1 })
+    ));
+    store
+        .reconcile_authoritative(first.token(), first.bundle_hash())
+        .await
+        .expect("finalize first intent");
+    store
+        .reserve_authoritative_intent(second)
+        .await
+        .expect("admit after first finalizes");
+}
+
+/// Quarantine consumes identity, releases full-intent capacity, rejects
+/// replay, and permits only an exact evidence-backed restore.
+pub async fn authoritative_quarantine_lifecycle(store: &dyn AuthoritativeStore) {
+    seed_authoritative_world(store).await;
+    let bundle = authoritative_bundle(14, 24);
+    let token = bundle.token();
+    let hash = bundle.bundle_hash();
+    let evidence_hash = CanonicalHash::from_bytes([0x1c; 32]);
+    store
+        .reserve_authoritative_intent(bundle.clone())
+        .await
+        .expect("reserve quarantine candidate");
+    let discarded = store
+        .discard_quarantined_authoritative_intent(token, hash, evidence_hash)
+        .await
+        .expect("discard to quarantine tombstone");
+    assert!(!discarded.resumed);
+    assert_eq!(
+        store.authoritative_status(token, hash).await.unwrap(),
+        BundleStatus::QuarantinedExact(Box::new(discarded.quarantine.clone()))
+    );
+    assert!(matches!(
+        store.reserve_authoritative_intent(bundle.clone()).await,
+        Err(StoreError::AuthoritativeIntentQuarantined {
+            evidence_hash: observed
+        }) if observed == evidence_hash
+    ));
+    assert!(
+        store
+            .discard_quarantined_authoritative_intent(token, hash, evidence_hash)
+            .await
+            .expect("join discard acknowledgement")
+            .resumed
+    );
+    assert!(matches!(
+        store
+            .restore_quarantined_authoritative_intent(
+                bundle.clone(),
+                CanonicalHash::from_bytes([0x2c; 32]),
+            )
+            .await,
+        Err(StoreError::AuthoritativeTokenConflict)
+    ));
+    assert!(
+        !store
+            .restore_quarantined_authoritative_intent(bundle, evidence_hash)
+            .await
+            .expect("restore exact evidence")
+            .resumed
+    );
+    assert_eq!(
+        store.authoritative_status(token, hash).await.unwrap(),
+        BundleStatus::PendingExact
+    );
+}
+
+/// Outbox state is finalization-gated, attempt and unroutable acknowledgement
+/// loss is idempotent, and checkpoint remains blocked until terminal state.
+pub async fn authoritative_outbox_lifecycle(store: &dyn AuthoritativeStore) {
+    seed_authoritative_world(store).await;
+    let intent = DurableOutboxIntent::new(
+        0,
+        OwnerId::new("store_contract").expect("owner"),
+        CanonicalId::new("webhook").expect("adapter"),
+        serde_json::json!({"event": "braced"}),
+    )
+    .expect("outbox intent");
+    let payload_hash = intent.payload_hash();
+    let bundle = authoritative_bundle_with(15, 25, 0, vec![intent]);
+    let token = bundle.token();
+    let hash = bundle.bundle_hash();
+    store
+        .reserve_authoritative_intent(bundle)
+        .await
+        .expect("reserve outbox parent");
+    assert!(
+        store
+            .pending_authoritative_outbox()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    store
+        .reconcile_authoritative(token, hash)
+        .await
+        .expect("finalize outbox parent");
+    let pending = store.pending_authoritative_outbox().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    let item_id = pending[0].item_id();
+    let unroutable = store
+        .note_authoritative_outbox_unroutable(
+            item_id,
+            payload_hash,
+            0,
+            "adapter unavailable".to_owned(),
+        )
+        .await
+        .expect("record unroutable pass");
+    assert_eq!(unroutable.unroutable_passes(), 1);
+    assert_eq!(unroutable.attempts(), 0);
+    assert_eq!(
+        store
+            .note_authoritative_outbox_unroutable(
+                item_id,
+                payload_hash,
+                0,
+                "adapter unavailable".to_owned(),
+            )
+            .await
+            .expect("join unroutable acknowledgement"),
+        unroutable
+    );
+    assert!(matches!(
+        store.checkpoint_authoritative(token, hash).await,
+        Err(StoreError::AuthoritativeOutboxPending)
+    ));
+    let attempt = store
+        .begin_authoritative_outbox_attempt(item_id, payload_hash, 0)
+        .await
+        .expect("begin delivery attempt");
+    assert_eq!(attempt.attempts(), 1);
+    assert_eq!(
+        store
+            .begin_authoritative_outbox_attempt(item_id, payload_hash, 0)
+            .await
+            .expect("join attempt acknowledgement"),
+        attempt
+    );
+    store
+        .complete_authoritative_outbox_attempt(
+            item_id,
+            payload_hash,
+            1,
+            AuthoritativeOutboxAttemptResult::Delivered,
+        )
+        .await
+        .expect("complete delivery");
+    assert!(
+        store
+            .pending_authoritative_outbox()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    store
+        .complete_authoritative_outbox_attempt(
+            item_id,
+            payload_hash,
+            1,
+            AuthoritativeOutboxAttemptResult::Delivered,
+        )
+        .await
+        .expect("join delivery acknowledgement");
+    store
+        .checkpoint_authoritative(token, hash)
+        .await
+        .expect("terminal outbox permits checkpoint");
+}
+
+/// Retirement advances a durable scope watermark, does not reopen compacted
+/// identities, and remains blocked by pending or uncheckpointed epochs.
+pub async fn authoritative_epoch_lifecycle(store: &dyn AuthoritativeStore) {
+    seed_authoritative_world(store).await;
+    let old = authoritative_bundle_with(16, 26, 0, vec![]);
+    let scope = old.idempotency().scope().clone();
+    store
+        .reserve_authoritative_intent(old.clone())
+        .await
+        .expect("reserve old epoch");
+    store
+        .reconcile_authoritative(old.token(), old.bundle_hash())
+        .await
+        .expect("finalize old epoch");
+    store
+        .checkpoint_authoritative(old.token(), old.bundle_hash())
+        .await
+        .expect("checkpoint old epoch");
+    assert_eq!(
+        store
+            .retire_authoritative_epochs(&scope, 1)
+            .await
+            .expect("retire old epoch")
+            .retired_tombstones,
+        1
+    );
+    assert!(matches!(
+        store.reserve_authoritative_intent(old.clone()).await,
+        Err(StoreError::AuthoritativeEpochRetired {
+            requested_epoch: 0,
+            minimum_accepted_epoch: 1,
+        })
+    ));
+    assert_eq!(
+        store.authoritative_bundle_status(&old).await.unwrap(),
+        BundleStatus::Retired {
+            minimum_accepted_epoch: 1
+        }
+    );
+
+    let current = authoritative_bundle_with(17, 27, 1, vec![]);
+    store
+        .reserve_authoritative_intent(current.clone())
+        .await
+        .expect("reserve current epoch");
+    assert!(matches!(
+        store.retire_authoritative_epochs(&scope, 2).await,
+        Err(StoreError::AuthoritativeEpochPending { .. })
+    ));
+    store
+        .reconcile_authoritative(current.token(), current.bundle_hash())
+        .await
+        .expect("finalize current epoch");
+    assert!(matches!(
+        store.retire_authoritative_epochs(&scope, 2).await,
+        Err(StoreError::AuthoritativeEpochPending { .. })
+    ));
+    store
+        .checkpoint_authoritative(current.token(), current.bundle_hash())
+        .await
+        .expect("checkpoint current epoch");
+    store
+        .retire_authoritative_epochs(&scope, 2)
+        .await
+        .expect("retire current epoch");
+}
+
+/// Token/hash and scoped-idempotency conflicts are closed identically by all
+/// stores, including the hash-aware status path.
+pub async fn authoritative_conflict_contract(store: &dyn AuthoritativeStore) {
+    seed_authoritative_world(store).await;
+    let first = authoritative_bundle(18, 28);
+    store
+        .reserve_authoritative_intent(first.clone())
+        .await
+        .expect("reserve first identity");
+    assert!(matches!(
+        store
+            .reserve_authoritative_intent(authoritative_bundle(18, 29))
+            .await,
+        Err(StoreError::AuthoritativeTokenConflict)
+    ));
+    assert!(matches!(
+        store
+            .reserve_authoritative_intent(authoritative_bundle(19, 28))
+            .await,
+        Err(StoreError::AuthoritativeIdempotencyConflict)
+    ));
+    let wrong_hash = CanonicalHash::from_bytes([99; 32]);
+    assert_eq!(
+        store
+            .authoritative_status(first.token(), wrong_hash)
+            .await
+            .expect("hash-aware status"),
+        BundleStatus::Conflict {
+            stored_bundle_hash: first.bundle_hash()
+        }
+    );
+    assert!(matches!(
+        store
+            .reconcile_authoritative(first.token(), wrong_hash)
+            .await,
+        Err(StoreError::AuthoritativeTokenConflict)
+    ));
+}
+
+/// Retention repair is guarded by membership generation so a stale complete
+/// scan can never overwrite counters after another caller changes custody.
+pub async fn authoritative_retention_generation_contract(store: &dyn AuthoritativeStore) {
+    seed_authoritative_world(store).await;
+    let stale_generation = store
+        .authoritative_retention_generation()
+        .await
+        .expect("capture empty generation");
+    let bundle = authoritative_bundle(20, 30);
+    let usage = AuthoritativeRetentionUsage {
+        count: 1,
+        bytes: serde_json::to_string(&bundle)
+            .expect("canonical bundle JSON")
+            .len(),
+    };
+    store
+        .reserve_authoritative_intent(bundle)
+        .await
+        .expect("change retained membership");
+    assert!(matches!(
+        store
+            .repair_authoritative_retention(stale_generation, usage)
+            .await,
+        Err(StoreError::AuthoritativeRetentionContention)
+    ));
+    let current_generation = store
+        .authoritative_retention_generation()
+        .await
+        .expect("capture current generation");
+    assert!(
+        !store
+            .repair_authoritative_retention(current_generation, usage)
+            .await
+            .expect("exact counters are an idempotent no-op")
     );
 }

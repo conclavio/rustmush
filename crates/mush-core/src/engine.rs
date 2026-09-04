@@ -521,6 +521,10 @@ pub struct Engine {
     modules: Vec<Box<dyn GameModule>>,
     /// Engine-owned authoritative state for registered action families.
     action_state: ActionStateStore,
+    /// Process-local durable key ring for opaque legal-action offers. The
+    /// deployment loader installs it before module boot; it is never part of
+    /// world persistence or a projected DTO.
+    offer_keys: Option<crate::offer::OfferKeyRing>,
     /// At most one prepared action awaiting transfer to the driver.
     staged_action: Option<StagedAction>,
     /// Module persistence ops drained from handlers, awaiting
@@ -562,6 +566,7 @@ impl Engine {
             sched: Scheduler::new(),
             modules: Vec::new(),
             action_state,
+            offer_keys: None,
             staged_action: None,
             module_ops: Vec::new(),
             scene_ticks: HashMap::new(),
@@ -572,6 +577,49 @@ impl Engine {
             lag_last_ms: 0,
             lag_max_ms: 0,
         }
+    }
+
+    /// Install or atomically replace the process-local offer key ring. A
+    /// replacement is used for bounded online rotation; existing tokens remain
+    /// valid while their key version is retained by the new ring.
+    pub fn set_offer_keys(&mut self, keys: crate::offer::OfferKeyRing) {
+        self.offer_keys = Some(keys);
+    }
+
+    /// Enumerate the current viewer-safe legal actions through the frozen
+    /// provider registry and deployment offer key ring.
+    pub fn project_legal_actions(
+        &self,
+        query: &crate::offer::LegalActionQuery,
+    ) -> Result<crate::offer::ProjectedLegalActionSink, crate::offer::LegalActionProjectionError>
+    {
+        let keys = self
+            .offer_keys
+            .as_ref()
+            .ok_or(crate::offer::LegalActionProjectionError::KeyRingUnavailable)?;
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::offer::LegalActionProjectionError::RegistryUnavailable)?;
+        providers.project_legal_actions(self, query, keys)
+    }
+
+    /// Resolve one untrusted opaque submission against a freshly regenerated
+    /// internal set without exposing the deployment key ring to providers or
+    /// interface code.
+    pub fn resolve_legal_action(
+        &self,
+        offers: &crate::offer::ProjectedLegalActionSink,
+        execution: crate::offer::OfferExecutionContext,
+        submission: crate::offer::OfferSubmission,
+    ) -> Result<crate::offer::ResolvedOffer, crate::offer::LegalActionResolutionError> {
+        let keys = self
+            .offer_keys
+            .as_ref()
+            .ok_or(crate::offer::LegalActionResolutionError::KeyRingUnavailable)?;
+        offers
+            .resolve(keys, execution, submission)
+            .map_err(crate::offer::LegalActionResolutionError::from)
     }
 
     /// Record one loop-iteration duration from the driving loop's watchdog
@@ -609,6 +657,11 @@ impl Engine {
         let mut noncanonical_name: Option<(&'static str, String)> = None;
         for m in &modules {
             let name = m.name();
+            if name == crate::clock::WORLD_TIMELINE_NAMESPACE {
+                return Err(ModError::msg(format!(
+                    "module name {name:?} is reserved for engine-owned world timeline state"
+                )));
+            }
             let owner = crate::mechanics::OwnerId::new(name).map_err(|error| {
                 ModError::msg(format!(
                     "module name {name:?} is not a valid mechanics owner id: {error}"
@@ -821,7 +874,7 @@ impl Engine {
         action: &crate::mechanics::DefinitionRef,
         invocation: &crate::action::ActionInvocation,
     ) -> Result<
-        (PreparedTxn, crate::action::AuthoritativeActionOutput),
+        (PreparedTxn, crate::action::PreparedAuthoritativeAction),
         crate::action::ActionProviderPrepareError,
     > {
         let providers = self

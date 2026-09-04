@@ -6,7 +6,13 @@
 //! ruleset systems need: stable seasons and times of day, configurable
 //! speed ([`GameClock::ic_ratio`]) and phase ([`GameClock::epoch_offset`]).
 
+use std::cmp::Ordering;
+
 use serde::{Deserialize, Serialize};
+use smol_str::SmolStr;
+
+use crate::mechanics::{CanonicalId, OwnerId};
+use crate::module::{ModuleOp, ModuleWrite};
 
 /// Seconds per IC day.
 pub const SECS_PER_DAY: i64 = 86_400;
@@ -37,6 +43,478 @@ pub const MONTH_NAMES: [&str; 12] = [
     "November",
     "December",
 ];
+
+/// Maximum number of world-IC epochs accepted at boot.
+///
+/// Rate changes are expected to be rare campaign operations.  Keeping a hard
+/// limit makes corrupt or hostile persisted state bounded without requiring
+/// old generations to be discarded (old [`ClockStamp`] values retain their
+/// meaning forever).
+pub const MAX_WORLD_TIMELINE_EPOCHS: usize = 4_096;
+
+/// Persistence namespace reserved for engine-owned clock state.
+pub const WORLD_TIMELINE_NAMESPACE: &str = "rustmush_kernel_time";
+
+/// Persistence key containing the current world-IC generation.
+pub const WORLD_TIMELINE_HEAD_KEY: &str = "world_ic/head";
+
+/// Prefix for immutable per-generation world-IC epoch documents.
+pub const WORLD_TIMELINE_EPOCH_PREFIX: &str = "world_ic/epoch/";
+
+/// Identity of a clock.  A generation is part of every mutable clock's
+/// identity, so an old deadline can never silently be interpreted under a
+/// later rate, scene, domain, or provider definition.
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ClockRef {
+    /// Unix UTC seconds.  UTC has no mutable generation.
+    Utc,
+    /// The versioned world in-character timeline.
+    WorldIc {
+        /// Exact timeline generation.
+        generation: u64,
+    },
+    /// A scene-local turn counter.
+    SceneTurn {
+        /// Stable scene identifier supplied by its provider.
+        scene: u64,
+        /// Exact scene-clock generation.
+        generation: u64,
+    },
+    /// A tactical/spatial domain tick counter.  Core deliberately does not
+    /// depend on a particular simulation crate's domain-id representation.
+    DomainTick {
+        /// Module that owns the domain clock.
+        owner: OwnerId,
+        /// Owner-local canonical domain identifier.
+        id: CanonicalId,
+        /// Exact domain-clock generation.
+        generation: u64,
+    },
+    /// Any other registered module-owned clock.
+    Registered {
+        /// Clock provider.
+        owner: OwnerId,
+        /// Provider-local clock identifier.
+        id: CanonicalId,
+        /// Exact provider-clock generation.
+        generation: u64,
+    },
+}
+
+/// A scalar value on one exact typed clock generation.
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClockStamp {
+    /// Complete clock identity, including generation where mutable.
+    pub clock: ClockRef,
+    /// Scalar position on that clock (seconds, turns, or ticks as defined by
+    /// the clock provider).
+    pub at: i64,
+}
+
+impl ClockStamp {
+    /// Compare two stamps only when they belong to the same exact clock
+    /// generation.
+    pub fn checked_cmp(&self, other: &Self) -> Result<Ordering, ClockMismatch> {
+        if self.clock != other.clock {
+            return Err(ClockMismatch {
+                left: Box::new(self.clock.clone()),
+                right: Box::new(other.clock.clone()),
+            });
+        }
+        Ok(self.at.cmp(&other.at))
+    }
+
+    /// Checked distance on one exact clock generation.
+    pub fn checked_duration_since(&self, earlier: &Self) -> Result<i64, ClockArithmeticError> {
+        self.checked_cmp(earlier)?;
+        self.at
+            .checked_sub(earlier.at)
+            .ok_or(ClockArithmeticError::Overflow)
+    }
+}
+
+/// Two scalar clock values were compared without a shared identity.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("clock stamps are incomparable: {left:?} versus {right:?}")]
+pub struct ClockMismatch {
+    /// Left clock identity.
+    pub left: Box<ClockRef>,
+    /// Right clock identity.
+    pub right: Box<ClockRef>,
+}
+
+/// Failure while comparing or subtracting typed clock values.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum ClockArithmeticError {
+    /// The clocks or generations differ.
+    #[error(transparent)]
+    Mismatch(#[from] ClockMismatch),
+    /// The scalar difference is outside `i64`.
+    #[error("clock arithmetic overflow")]
+    Overflow,
+}
+
+/// One immutable generation of the world in-character timeline.
+///
+/// `rate` is IC seconds per real second.  Zero deliberately represents a
+/// paused world clock.  Opening a new generation anchors it to the exact IC
+/// value produced by the preceding generation at `real_anchor`, so a rate
+/// change is continuous while earlier stamps keep their old identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorldTimelineEpoch {
+    /// Wall-clock Unix second at which this generation begins.
+    pub real_anchor: i64,
+    /// World-IC second at the anchor.
+    pub ic_anchor: i64,
+    /// IC seconds advanced per wall-clock second (`0` pauses).
+    pub rate: u32,
+    /// Monotonic generation, beginning at one.
+    pub generation: u64,
+}
+
+impl WorldTimelineEpoch {
+    /// Evaluate this epoch at a wall-clock Unix second with saturating
+    /// arithmetic.  Callers normally evaluate only the current generation at
+    /// or after its anchor; supporting earlier values makes continuity checks
+    /// exact and deterministic.
+    #[must_use]
+    pub fn ic_at(self, real_unix: i64) -> i64 {
+        let delta = i128::from(real_unix) - i128::from(self.real_anchor);
+        let value = i128::from(self.ic_anchor) + delta * i128::from(self.rate);
+        value.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
+    }
+}
+
+/// The append-only world-IC epoch log held in RAM.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorldTimeline(Vec<WorldTimelineEpoch>);
+
+impl Default for WorldTimeline {
+    fn default() -> Self {
+        Self::from_game_clock(GameClock::default())
+    }
+}
+
+impl WorldTimeline {
+    /// Seed generation one from the legacy boot configuration without
+    /// changing its `ic = offset + real * ratio` behavior.
+    #[must_use]
+    pub fn from_game_clock(clock: GameClock) -> Self {
+        Self(vec![WorldTimelineEpoch {
+            real_anchor: 0,
+            ic_anchor: clock.epoch_offset,
+            rate: clock.ic_ratio.max(1),
+            generation: 1,
+        }])
+    }
+
+    /// Validate and construct a persisted contiguous epoch log.
+    pub fn from_epochs(epochs: Vec<WorldTimelineEpoch>) -> Result<Self, WorldTimelineError> {
+        if epochs.is_empty() {
+            return Err(WorldTimelineError::Empty);
+        }
+        if epochs.len() > MAX_WORLD_TIMELINE_EPOCHS {
+            return Err(WorldTimelineError::TooMany {
+                actual: epochs.len(),
+                max: MAX_WORLD_TIMELINE_EPOCHS,
+            });
+        }
+        for (index, epoch) in epochs.iter().copied().enumerate() {
+            let expected_generation = u64::try_from(index)
+                .ok()
+                .and_then(|value| value.checked_add(1))
+                .ok_or(WorldTimelineError::GenerationExhausted)?;
+            if epoch.generation != expected_generation {
+                return Err(WorldTimelineError::NonContiguousGeneration {
+                    expected: expected_generation,
+                    actual: epoch.generation,
+                });
+            }
+            if let Some(previous) = index.checked_sub(1).map(|i| epochs[i]) {
+                validate_epoch_transition(previous, epoch)?;
+            }
+        }
+        Ok(Self(epochs))
+    }
+
+    /// All immutable epochs, oldest first.
+    #[must_use]
+    pub fn epochs(&self) -> &[WorldTimelineEpoch] {
+        &self.0
+    }
+
+    /// Current epoch.  A timeline is structurally non-empty.
+    #[must_use]
+    pub fn current(&self) -> WorldTimelineEpoch {
+        *self.0.last().expect("validated timeline is non-empty")
+    }
+
+    /// Current world-IC value and generation at `real_unix`.
+    #[must_use]
+    pub fn stamp_at(&self, real_unix: i64) -> ClockStamp {
+        let current = self.current();
+        ClockStamp {
+            clock: ClockRef::WorldIc {
+                generation: current.generation,
+            },
+            at: current.ic_at(real_unix),
+        }
+    }
+
+    /// Prepare a continuous rate change without mutating the log.
+    pub fn next_rate_epoch(
+        &self,
+        real_anchor: i64,
+        rate: u32,
+    ) -> Result<WorldTimelineEpoch, WorldTimelineError> {
+        let current = self.current();
+        if real_anchor < current.real_anchor {
+            return Err(WorldTimelineError::AnchorMovedBackward {
+                previous: current.real_anchor,
+                proposed: real_anchor,
+            });
+        }
+        let generation = current
+            .generation
+            .checked_add(1)
+            .ok_or(WorldTimelineError::GenerationExhausted)?;
+        if self.0.len() >= MAX_WORLD_TIMELINE_EPOCHS {
+            return Err(WorldTimelineError::TooMany {
+                actual: self.0.len() + 1,
+                max: MAX_WORLD_TIMELINE_EPOCHS,
+            });
+        }
+        Ok(WorldTimelineEpoch {
+            real_anchor,
+            ic_anchor: current.ic_at(real_anchor),
+            rate,
+            generation,
+        })
+    }
+
+    /// Append one exact prepared epoch.  Re-validating the transition keeps
+    /// persisted hydration and live mutation on the same invariant path.
+    pub fn append(&mut self, epoch: WorldTimelineEpoch) -> Result<(), WorldTimelineError> {
+        if self.0.len() >= MAX_WORLD_TIMELINE_EPOCHS {
+            return Err(WorldTimelineError::TooMany {
+                actual: self.0.len() + 1,
+                max: MAX_WORLD_TIMELINE_EPOCHS,
+            });
+        }
+        validate_epoch_transition(self.current(), epoch)?;
+        self.0.push(epoch);
+        Ok(())
+    }
+}
+
+fn validate_epoch_transition(
+    previous: WorldTimelineEpoch,
+    next: WorldTimelineEpoch,
+) -> Result<(), WorldTimelineError> {
+    let expected = previous
+        .generation
+        .checked_add(1)
+        .ok_or(WorldTimelineError::GenerationExhausted)?;
+    if next.generation != expected {
+        return Err(WorldTimelineError::NonContiguousGeneration {
+            expected,
+            actual: next.generation,
+        });
+    }
+    if next.real_anchor < previous.real_anchor {
+        return Err(WorldTimelineError::AnchorMovedBackward {
+            previous: previous.real_anchor,
+            proposed: next.real_anchor,
+        });
+    }
+    let expected_ic = previous.ic_at(next.real_anchor);
+    if next.ic_anchor != expected_ic {
+        return Err(WorldTimelineError::DiscontinuousAnchor {
+            generation: next.generation,
+            expected: expected_ic,
+            actual: next.ic_anchor,
+        });
+    }
+    Ok(())
+}
+
+/// Invalid world-IC epoch history or transition.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum WorldTimelineError {
+    /// A timeline must contain generation one.
+    #[error("world timeline is empty")]
+    Empty,
+    /// Persisted or proposed history exceeds the boot/work bound.
+    #[error("world timeline contains {actual} epochs; maximum is {max}")]
+    TooMany {
+        /// Observed/proposed count.
+        actual: usize,
+        /// Hard limit.
+        max: usize,
+    },
+    /// Generations must be exactly `1, 2, ...`.
+    #[error("world timeline generation is not contiguous: expected {expected}, got {actual}")]
+    NonContiguousGeneration {
+        /// Required next generation.
+        expected: u64,
+        /// Supplied generation.
+        actual: u64,
+    },
+    /// Rate changes cannot be installed before the current generation began.
+    #[error("world timeline anchor moved backward from {previous} to {proposed}")]
+    AnchorMovedBackward {
+        /// Current epoch anchor.
+        previous: i64,
+        /// Proposed epoch anchor.
+        proposed: i64,
+    },
+    /// A new rate generation must preserve the preceding IC value at its
+    /// anchor.
+    #[error(
+        "world timeline generation {generation} is discontinuous: expected IC {expected}, got {actual}"
+    )]
+    DiscontinuousAnchor {
+        /// Proposed generation.
+        generation: u64,
+        /// Value derived from the previous epoch.
+        expected: i64,
+        /// Supplied anchor value.
+        actual: i64,
+    },
+    /// No further generation can be represented.
+    #[error("world timeline generation exhausted")]
+    GenerationExhausted,
+}
+
+/// Small materialized pointer paired atomically with every immutable epoch
+/// document.  Boot verifies that it names the last contiguous generation; it
+/// is an index, never a substitute for the epoch log.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorldTimelineHead {
+    schema_version: u16,
+    generation: u64,
+}
+
+impl WorldTimelineHead {
+    /// Current persistence schema.
+    pub const SCHEMA_VERSION: u16 = 1;
+
+    /// Build a head for an installed epoch.
+    #[must_use]
+    pub const fn new(generation: u64) -> Self {
+        Self {
+            schema_version: Self::SCHEMA_VERSION,
+            generation,
+        }
+    }
+
+    /// Validate and return the named generation.
+    pub fn validated_generation(self) -> Result<u64, WorldTimelinePersistenceError> {
+        if self.schema_version != Self::SCHEMA_VERSION {
+            return Err(WorldTimelinePersistenceError::UnsupportedHeadSchema(
+                self.schema_version,
+            ));
+        }
+        if self.generation == 0 {
+            return Err(WorldTimelinePersistenceError::ZeroHeadGeneration);
+        }
+        Ok(self.generation)
+    }
+}
+
+/// Canonical immutable persistence key for one timeline generation.
+#[must_use]
+pub fn world_timeline_epoch_key(generation: u64) -> SmolStr {
+    SmolStr::new(format!("{WORLD_TIMELINE_EPOCH_PREFIX}{generation:020}"))
+}
+
+/// Exact two-document append representation for a world-time generation.
+///
+/// Per-generation keys are never reused by the kernel.  Retrying an ambiguous
+/// legacy-store acknowledgement writes the same bytes to the same two keys,
+/// while the store transaction keeps epoch and head atomic.  Boot validates
+/// the whole contiguous log before exposing it to modules.
+pub fn world_timeline_persistence_ops(
+    epoch: WorldTimelineEpoch,
+) -> Result<[ModuleOp; 2], WorldTimelinePersistenceError> {
+    let epoch_value = serde_json::to_value(epoch)?;
+    let head_value = serde_json::to_value(WorldTimelineHead::new(epoch.generation))?;
+    Ok([
+        ModuleOp {
+            ns: SmolStr::new_static(WORLD_TIMELINE_NAMESPACE),
+            op: ModuleWrite::JsonSet {
+                key: world_timeline_epoch_key(epoch.generation),
+                value: epoch_value,
+            },
+        },
+        ModuleOp {
+            ns: SmolStr::new_static(WORLD_TIMELINE_NAMESPACE),
+            op: ModuleWrite::JsonSet {
+                key: SmolStr::new_static(WORLD_TIMELINE_HEAD_KEY),
+                value: head_value,
+            },
+        },
+    ])
+}
+
+/// Corrupt or unrepresentable timeline persistence metadata.
+#[derive(Debug, thiserror::Error)]
+pub enum WorldTimelinePersistenceError {
+    /// Epoch/head serialization failed before any mutation.
+    #[error("world timeline serialization failed: {0}")]
+    Serialize(#[from] serde_json::Error),
+    /// A head document belongs to a future incompatible schema.
+    #[error("unsupported world timeline head schema {0}")]
+    UnsupportedHeadSchema(u16),
+    /// Generation zero is reserved for "no persisted timeline".
+    #[error("world timeline head generation must be positive")]
+    ZeroHeadGeneration,
+}
+
+impl crate::cmd::Ctx<'_> {
+    /// Typed world-IC `now`, available to commands, hooks, ticks, observers,
+    /// and module boot callbacks through the ordinary module context.
+    #[must_use]
+    pub fn world_ic_now(&self) -> ClockStamp {
+        self.w.world_ic_now()
+    }
+
+    /// Open and persist a continuous world-IC rate generation.
+    ///
+    /// This is mechanism, not policy: the campaign/staff layer decides who may
+    /// invoke it.  The handler should perform every other fallible validation
+    /// first and return success after this call.  Confirmation is held behind
+    /// the durable write acknowledgement; a store failure freezes mutations
+    /// under the existing persistence-integrity policy.
+    pub fn change_world_time_rate(
+        &mut self,
+        rate: u32,
+    ) -> Result<WorldTimelineEpoch, WorldTimelineChangeError> {
+        let epoch = self.w.next_world_timeline_epoch(rate)?;
+        let ops = world_timeline_persistence_ops(epoch)?;
+        for op in ops {
+            self.persist(op);
+        }
+        self.gate_on_durable_ack_strict();
+        self.w.append_world_timeline_epoch(epoch)?;
+        Ok(epoch)
+    }
+}
+
+/// Failure to prepare or queue a live world-time rate generation.
+#[derive(Debug, thiserror::Error)]
+pub enum WorldTimelineChangeError {
+    /// Invalid transition or exhausted history.
+    #[error(transparent)]
+    Timeline(#[from] WorldTimelineError),
+    /// Epoch/head encoding failed before live installation.
+    #[error(transparent)]
+    Persistence(#[from] WorldTimelinePersistenceError),
+}
 
 /// Converts real (OOC) unix time into IC time and derives season and
 /// time-of-day from it.
@@ -536,5 +1014,87 @@ mod tests {
         let one_day_ooc = 6 * SECS_PER_HOUR;
         assert_eq!(c.ic_day(one_day_ooc), 2);
         assert_eq!(c.ic_month(one_day_ooc), 1);
+    }
+
+    #[test]
+    fn rate_change_opens_a_continuous_new_generation() {
+        let mut timeline = WorldTimeline::from_game_clock(GameClock {
+            ic_ratio: 4,
+            epoch_offset: 100,
+        });
+        let before = timeline.stamp_at(50);
+        assert_eq!(before.at, 300);
+        assert_eq!(before.clock, ClockRef::WorldIc { generation: 1 });
+
+        let paused = timeline.next_rate_epoch(50, 0).unwrap();
+        assert_eq!(paused.ic_anchor, before.at);
+        timeline.append(paused).unwrap();
+        let after = timeline.stamp_at(5_000);
+        assert_eq!(after.at, 300);
+        assert_eq!(after.clock, ClockRef::WorldIc { generation: 2 });
+
+        assert!(matches!(
+            before.checked_cmp(&after),
+            Err(ClockMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn persisted_timeline_rejects_gaps_backwards_time_and_discontinuity() {
+        let first = WorldTimeline::default().current();
+        let gap = WorldTimelineEpoch {
+            real_anchor: 1,
+            ic_anchor: 1,
+            rate: 1,
+            generation: 3,
+        };
+        assert!(matches!(
+            WorldTimeline::from_epochs(vec![first, gap]),
+            Err(WorldTimelineError::NonContiguousGeneration { .. })
+        ));
+
+        let backwards = WorldTimelineEpoch {
+            real_anchor: -1,
+            ic_anchor: -1,
+            rate: 1,
+            generation: 2,
+        };
+        assert!(matches!(
+            WorldTimeline::from_epochs(vec![first, backwards]),
+            Err(WorldTimelineError::AnchorMovedBackward { .. })
+        ));
+
+        let discontinuous = WorldTimelineEpoch {
+            real_anchor: 1,
+            ic_anchor: 99,
+            rate: 1,
+            generation: 2,
+        };
+        assert!(matches!(
+            WorldTimeline::from_epochs(vec![first, discontinuous]),
+            Err(WorldTimelineError::DiscontinuousAnchor { .. })
+        ));
+    }
+
+    #[test]
+    fn clock_stamp_wire_shape_is_strict_and_cross_clock_math_fails() {
+        let world = ClockStamp {
+            clock: ClockRef::WorldIc { generation: 7 },
+            at: 42,
+        };
+        let utc = ClockStamp {
+            clock: ClockRef::Utc,
+            at: 42,
+        };
+        assert!(matches!(
+            world.checked_duration_since(&utc),
+            Err(ClockArithmeticError::Mismatch(_))
+        ));
+        assert!(
+            serde_json::from_str::<ClockStamp>(
+                r#"{"clock":{"kind":"world_ic","generation":7},"at":42,"extra":true}"#
+            )
+            .is_err()
+        );
     }
 }

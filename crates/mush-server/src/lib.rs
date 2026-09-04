@@ -27,8 +27,9 @@
 //! [`WireInbound`]: mush_ipc::WireInbound
 //! [`ServiceReq`]: mush_ipc::ServiceReq
 
-use std::sync::Arc;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use std::time::Duration;
 
@@ -36,10 +37,18 @@ use mush_config::accounts::import_accounts_json;
 use mush_config::config::{Config, StoreBackend, StoreReceiptPolicy};
 use mush_config::ipguard::IpGuard;
 use mush_config::metrics::Metrics;
-use mush_core::{ControlMsg, Engine, Inbound};
+use mush_config::offer_keys::DurableOfferKeyStore;
+use mush_core::{
+    ActionInvocation, ActionInvocationDraft, CanonicalId, ControlMsg, Engine, IdempotencyKey,
+    IdempotencyScope, Inbound, IngressEnvelope, IngressPayload, IngressSurfaceVersion, PrincipalId,
+    ScopedIdempotencyKey,
+};
 use mush_ipc::{
-    BoxWrite, FrameReader, IPC_VERSION, IpcEndpoint, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
-    MAX_IN_FLIGHT_SERVICE_REQUESTS, ServiceReq, ServiceResp, ToGateway, ToServer,
+    BoxWrite, FrameReader, GatewayInput, GatewayRequest, GatewayRequestDisposition, IPC_VERSION,
+    IpcEndpoint, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES,
+    MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES_PER_CONNECTION, MAX_IN_FLIGHT_GATEWAY_INPUTS,
+    MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
+    MAX_IN_FLIGHT_SERVICE_REQUESTS, RequestUid, ServiceReq, ServiceResp, ToGateway, ToServer,
 };
 use mush_llm::LlmService;
 use mush_store::{InMemoryStore, ObjectStore, RedisStore, core_migrations, run_migrations};
@@ -60,9 +69,12 @@ pub mod persist;
 pub mod quarantine;
 pub mod retained;
 pub mod staff;
+pub mod timeline;
 pub mod world_task;
 
+use crate::action_coordinator::{ActionCoordinator, ActionPreflight};
 use crate::gateway_sink::SocketSink;
+use crate::persist::AuthoritativeCommitFailure;
 use crate::persist::{load_or_seed_world, reconcile_authoritative_for_writable_boot};
 use crate::quarantine::QuarantineSpool;
 use crate::staff::{StaffQueue, register_server_commands_with_cap};
@@ -181,6 +193,14 @@ async fn build_engine(
     store: &Arc<dyn ObjectStore>,
     _validated_spool: &QuarantineSpool,
 ) -> Result<(Engine, Arc<StaffQueue>), String> {
+    let offer_keys = DurableOfferKeyStore::new(config.offer_key_dir())
+        .load_or_create()
+        .map_err(|error| format!("offer key provisioning failed: {error}"))?;
+    tracing::info!(
+        current_version = offer_keys.current_version(),
+        key_dir = %config.offer_key_dir().display(),
+        "durable legal-action offer keys loaded"
+    );
     let authoritative = store.authoritative_store().ok_or_else(|| {
         "configured store does not implement K3 exact-token durability; refusing writable boot"
             .to_owned()
@@ -243,8 +263,9 @@ async fn build_engine(
         Engine::compose_modules(registry, mods).map_err(|e| format!("module registration: {e}"))?;
     let mut world = load_or_seed_world(&**store).await?;
     let clock = config.game.game_clock().map_err(|e| e.to_string())?;
-    world.set_game_clock(clock);
+    timeline::hydrate_world_timeline(&mut world, &**store, clock).await?;
     let mut engine = Engine::from_composition(world, composition);
+    engine.set_offer_keys(offer_keys);
     modules::boot_modules(&mut engine, &**store).await?;
     Ok((engine, staff))
 }
@@ -372,6 +393,7 @@ pub async fn serve_with_quarantine_spool(
     // overflow counter) so a full channel tears the boundary down there too — a
     // dropped `Reply` would hang its `ServiceReq` oneshot (I1).
     let reply_sink = sink.clone();
+    let ingress_store = Arc::clone(&store);
     let handles = world_task::spawn_persist_with_gateway(engine, deps, move |_weak_inbound| {
         // The forked server never polices (it owns no connection buffers), so it
         // ignores the loop's inbound weak sender and just serializes to the boundary.
@@ -417,7 +439,14 @@ pub async fn serve_with_quarantine_spool(
 
     // Reader: pump the gateway's `ToServer` traffic into the world. Runs until
     // the gateway closes the boundary (clean EOF) or a protocol fault.
-    let reader_result = reader_loop(reader_half, world.clone(), reply_sink, &metrics).await;
+    let reader_result = reader_loop(
+        reader_half,
+        world.clone(),
+        ingress_store,
+        reply_sink,
+        &metrics,
+    )
+    .await;
     match reader_result {
         Ok(()) => tracing::info!("gateway disconnected (clean EOF)"),
         Err(e) => tracing::warn!(error = %e, "ipc reader ended on error"),
@@ -611,18 +640,569 @@ impl ServiceRequestLimiter {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct ServerConnectionClaims {
+    count: usize,
+    bytes: usize,
+}
+
+#[derive(Clone, Debug)]
+struct ServerLegacyClaim {
+    request: GatewayRequest,
+    bytes: usize,
+}
+
+/// Server-side bounded pre-ownership custody.
+///
+/// Legacy commands remain here until the gateway releases its replay copy.
+/// Coordinator actions remain here until exact intent ownership (or a proven
+/// pre-intent refusal). Independent limits defend against a raw IPC peer that
+/// ignores the gateway's own custody caps.
+#[derive(Default)]
+struct ServerInputClaims {
+    entries: HashMap<RequestUid, ServerLegacyClaim>,
+    per_connection: HashMap<u64, ServerConnectionClaims>,
+    bytes: usize,
+    capacity_warned: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ServerClaimAdmission {
+    New,
+    Duplicate,
+    Full { warn: bool },
+    Invalid,
+    Conflict,
+}
+
+impl ServerInputClaims {
+    fn admit(&mut self, request: GatewayRequest) -> ServerClaimAdmission {
+        if !request.has_valid_uid() {
+            return ServerClaimAdmission::Invalid;
+        }
+        let Ok(bytes) = request.input.logical_bytes() else {
+            return ServerClaimAdmission::Invalid;
+        };
+        if let Some(existing) = self.entries.get(&request.uid) {
+            return if existing.request == request {
+                ServerClaimAdmission::Duplicate
+            } else {
+                ServerClaimAdmission::Conflict
+            };
+        }
+
+        let conn = request.input.conn();
+        let account = self.per_connection.get(&conn).copied().unwrap_or_default();
+        let full = self.entries.len() >= MAX_IN_FLIGHT_GATEWAY_INPUTS
+            || self.bytes.saturating_add(bytes) > MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES
+            || account.count >= MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION
+            || account.bytes.saturating_add(bytes)
+                > MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES_PER_CONNECTION;
+        if full {
+            let warn = !self.capacity_warned;
+            self.capacity_warned = true;
+            return ServerClaimAdmission::Full { warn };
+        }
+
+        self.entries
+            .insert(request.uid, ServerLegacyClaim { request, bytes });
+        self.bytes += bytes;
+        let account = self.per_connection.entry(conn).or_default();
+        account.count += 1;
+        account.bytes += bytes;
+        self.capacity_warned = false;
+        ServerClaimAdmission::New
+    }
+
+    fn release(&mut self, uid: RequestUid) -> Option<GatewayRequest> {
+        let held = self.entries.remove(&uid)?;
+        let conn = held.request.input.conn();
+        self.bytes = self.bytes.saturating_sub(held.bytes);
+        if let Some(account) = self.per_connection.get_mut(&conn) {
+            account.count = account.count.saturating_sub(1);
+            account.bytes = account.bytes.saturating_sub(held.bytes);
+            if account.count == 0 {
+                self.per_connection.remove(&conn);
+            }
+        }
+        if self.entries.len() < MAX_IN_FLIGHT_GATEWAY_INPUTS
+            && self.bytes < MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES
+        {
+            self.capacity_warned = false;
+        }
+        Some(held.request)
+    }
+}
+
+fn request_disposition(
+    sink: &SocketSink,
+    request: RequestUid,
+    disposition: GatewayRequestDisposition,
+) {
+    sink.send(ToGateway::RequestDisposition {
+        request,
+        disposition,
+    });
+}
+
+fn release_input_claim(
+    claims: &Arc<Mutex<ServerInputClaims>>,
+    request: RequestUid,
+) -> Option<GatewayRequest> {
+    claims
+        .lock()
+        .expect("server input claims poisoned")
+        .release(request)
+}
+
+fn authoritative_ingress(request: &GatewayRequest) -> Result<IngressEnvelope, String> {
+    let GatewayInput::Action(input) = &request.input else {
+        return Err("coordinator ingress received a non-action request".to_owned());
+    };
+    let principal = PrincipalId::Object { id: input.actor };
+    let namespace =
+        CanonicalId::new(input.action.key().id.as_str()).map_err(|error| error.to_string())?;
+    let idempotency = ScopedIdempotencyKey::new(
+        IdempotencyScope {
+            principal: principal.clone(),
+            owner: input.action.key().owner.clone(),
+            namespace,
+        },
+        request.epoch,
+        IdempotencyKey::Request(request.uid),
+    );
+    let canonical_payload = IngressPayload::structured(serde_json::json!({
+        "action": input.action,
+        "offered_action": input.offered_action,
+        "subject": input.subject,
+        "targets": input.targets,
+        "parameters": input.parameters,
+    }))
+    .map_err(|error| error.to_string())?;
+    IngressEnvelope::new(
+        request.uid,
+        principal.clone(),
+        IngressSurfaceVersion::new(
+            CanonicalId::new("ipc.structured_action").expect("static surface id is valid"),
+            1,
+        )
+        .expect("non-zero static surface version"),
+        canonical_payload,
+        idempotency.clone(),
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn authoritative_invocation(
+    request: &GatewayRequest,
+    idempotency: ScopedIdempotencyKey,
+) -> Result<ActionInvocation, String> {
+    let GatewayInput::Action(input) = &request.input else {
+        return Err("coordinator invocation received a non-action request".to_owned());
+    };
+    ActionInvocation::new(ActionInvocationDraft {
+        request: request.uid,
+        principal: PrincipalId::Object { id: input.actor },
+        actor: input.actor,
+        offered_action: input.offered_action,
+        subject: input.subject.clone(),
+        targets: input.targets.clone(),
+        parameters: input.parameters.clone(),
+        idempotency,
+    })
+    .map_err(|error| error.to_string())
+}
+
+async fn handle_authoritative_input(
+    request: GatewayRequest,
+    world: WorldHandle,
+    store: Arc<dyn ObjectStore>,
+    sink: SocketSink,
+    claims: Arc<Mutex<ServerInputClaims>>,
+) {
+    let uid = request.uid;
+    let (conn, actor) = match &request.input {
+        GatewayInput::Action(input) => (input.conn, input.actor),
+        _ => unreachable!("only action requests enter the coordinator handler"),
+    };
+    let envelope = match authoritative_ingress(&request) {
+        Ok(envelope) => envelope,
+        Err(detail) => {
+            release_input_claim(&claims, uid);
+            request_disposition(
+                &sink,
+                uid,
+                GatewayRequestDisposition::Rejected { retryable: false },
+            );
+            tracing::warn!(%uid, %detail, "invalid structured coordinator request");
+            return;
+        }
+    };
+    let action = match &request.input {
+        GatewayInput::Action(input) => input.action.clone(),
+        _ => unreachable!("validated coordinator request changed variants"),
+    };
+
+    let Some(authoritative_store) = store.authoritative_store() else {
+        tracing::error!(%uid, "configured store lacks authoritative request capability; preserving custody");
+        return;
+    };
+    let mut preflight_delay = Duration::from_millis(100);
+    let preflight = loop {
+        match ActionCoordinator::preflight(authoritative_store, envelope.clone()).await {
+            Ok(preflight) => break preflight,
+            Err(error) if error.is_transient() => {
+                // Busy means "proved no intent" and would be a lie here: this
+                // may be a replay whose exact intent already exists. Retain
+                // bounded custody and retry the read-only lookup in place.
+                tracing::warn!(%uid, error = %error, "coordinator preflight transient; retaining custody");
+                tokio::time::sleep(preflight_delay).await;
+                preflight_delay = (preflight_delay * 2).min(Duration::from_secs(5));
+            }
+            Err(error) => {
+                // A deterministic/ambiguous store error cannot prove that no
+                // intent exists. Preserve both gateway and server custody and
+                // publish no lying rejection.
+                tracing::error!(%uid, error = %error, "coordinator preflight could not prove request state");
+                return;
+            }
+        }
+    };
+
+    let permit = match preflight {
+        ActionPreflight::Vacant(permit) => permit,
+        ActionPreflight::Pending { token, bundle_hash } => {
+            release_input_claim(&claims, uid);
+            request_disposition(
+                &sink,
+                uid,
+                GatewayRequestDisposition::Owned { token, bundle_hash },
+            );
+            return;
+        }
+        ActionPreflight::Finalized(receipt) => {
+            release_input_claim(&claims, uid);
+            request_disposition(
+                &sink,
+                uid,
+                GatewayRequestDisposition::Finished {
+                    token: receipt.token(),
+                },
+            );
+            return;
+        }
+        ActionPreflight::Retired { .. } | ActionPreflight::Conflict => {
+            release_input_claim(&claims, uid);
+            request_disposition(
+                &sink,
+                uid,
+                GatewayRequestDisposition::Rejected { retryable: false },
+            );
+            return;
+        }
+        ActionPreflight::Quarantined(receipt) => {
+            // Quarantine is terminal evidence, but not successful completion
+            // and not proof of "no intent". Hold custody for the incident.
+            tracing::error!(
+                %uid,
+                token = %receipt.token(),
+                evidence = %receipt.evidence_hash(),
+                "coordinator request is quarantined; preserving gateway custody"
+            );
+            return;
+        }
+    };
+
+    // Exact pending/finalized retries above are already authenticated by the
+    // durable binding that created them. Only a genuinely vacant request may
+    // enter planning, and that requires the current transport association.
+    // This ordering lets a lost ownership acknowledgement converge even if
+    // the original connection disappeared before gateway replay.
+    match world.connection_ready(conn, actor).await {
+        Ok(true) => {}
+        Ok(false) => {
+            release_input_claim(&claims, uid);
+            request_disposition(
+                &sink,
+                uid,
+                GatewayRequestDisposition::Rejected { retryable: false },
+            );
+            tracing::warn!(%uid, conn, %actor, "coordinator request failed transport authentication");
+            return;
+        }
+        Err(WorldReadError::Busy) => {
+            release_input_claim(&claims, uid);
+            request_disposition(&sink, uid, GatewayRequestDisposition::Busy);
+            return;
+        }
+        Err(WorldReadError::Unavailable) => {
+            release_input_claim(&claims, uid);
+            request_disposition(
+                &sink,
+                uid,
+                GatewayRequestDisposition::Rejected { retryable: true },
+            );
+            return;
+        }
+    }
+
+    let invocation =
+        match authoritative_invocation(&request, permit.ingress().idempotency().clone()) {
+            Ok(invocation) => invocation,
+            Err(detail) => {
+                release_input_claim(&claims, uid);
+                request_disposition(
+                    &sink,
+                    uid,
+                    GatewayRequestDisposition::Rejected { retryable: false },
+                );
+                tracing::warn!(%uid, %detail, "invalid coordinator action invocation");
+                return;
+            }
+        };
+
+    let watch = match world.authoritative_action(permit, action, invocation).await {
+        Ok(watch) => watch,
+        Err(world_task::AuthoritativeActionStartError::Busy) => {
+            release_input_claim(&claims, uid);
+            request_disposition(&sink, uid, GatewayRequestDisposition::Busy);
+            return;
+        }
+        Err(world_task::AuthoritativeActionStartError::Unavailable) => {
+            release_input_claim(&claims, uid);
+            request_disposition(
+                &sink,
+                uid,
+                GatewayRequestDisposition::Rejected { retryable: true },
+            );
+            return;
+        }
+        Err(world_task::AuthoritativeActionStartError::Rejected(detail)) => {
+            release_input_claim(&claims, uid);
+            request_disposition(
+                &sink,
+                uid,
+                GatewayRequestDisposition::Rejected { retryable: false },
+            );
+            tracing::warn!(%uid, %detail, "coordinator rejected action before durable ownership");
+            return;
+        }
+    };
+
+    let owned = match watch.owned.await {
+        Ok(Ok(staged)) => staged,
+        Ok(Err(AuthoritativeCommitFailure::Refused(detail))) => {
+            release_input_claim(&claims, uid);
+            request_disposition(&sink, uid, GatewayRequestDisposition::Busy);
+            tracing::warn!(%uid, %detail, "coordinator action refused before intent reservation");
+            return;
+        }
+        Ok(Err(AuthoritativeCommitFailure::Integrity(detail))) => {
+            tracing::error!(%uid, %detail, "coordinator ownership became ambiguous; preserving custody");
+            return;
+        }
+        Err(_) => {
+            tracing::error!(%uid, "world dropped coordinator ownership result; preserving custody");
+            return;
+        }
+    };
+    release_input_claim(&claims, uid);
+    request_disposition(
+        &sink,
+        uid,
+        GatewayRequestDisposition::Owned {
+            token: owned.token,
+            bundle_hash: owned.bundle_hash,
+        },
+    );
+
+    match watch.finished.await {
+        Ok(Ok(finished)) if finished == owned => request_disposition(
+            &sink,
+            uid,
+            GatewayRequestDisposition::Finished {
+                token: finished.token,
+            },
+        ),
+        Ok(Ok(finished)) => tracing::error!(
+            %uid,
+            owned_token = %owned.token,
+            finished_token = %finished.token,
+            "coordinator terminal identity differed from owned intent"
+        ),
+        Ok(Err(failure)) => tracing::error!(
+            %uid,
+            error = %failure.detail(),
+            "owned coordinator request ended in an integrity incident"
+        ),
+        Err(_) => tracing::error!(%uid, "world dropped coordinator terminal result"),
+    }
+}
+
 async fn reader_loop(
     r: mush_ipc::BoxRead,
     world: WorldHandle,
+    store: Arc<dyn ObjectStore>,
     reply_sink: SocketSink,
     metrics: &Metrics,
 ) -> std::io::Result<()> {
     let mut reader = FrameReader::new(r);
     let service_requests = ServiceRequestLimiter::new();
+    let input_claims = Arc::new(Mutex::new(ServerInputClaims::default()));
     while let Some(msg) = reader.read::<ToServer>().await? {
         match msg {
             ToServer::Inbound(wire) => {
+                if matches!(
+                    wire,
+                    mush_ipc::WireInbound::Cmd { .. } | mush_ipc::WireInbound::Query { .. }
+                ) {
+                    tracing::error!("raw player input bypassed the version-2 custody envelope");
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "player input requires GatewayRequest custody",
+                    ));
+                }
                 world.inbound(Inbound::from(wire)).await;
+            }
+            ToServer::Input(request) => {
+                let uid = request.uid;
+                if !request.has_valid_uid() || request.input.logical_bytes().is_err() {
+                    tracing::error!(request = %uid, "invalid gateway request envelope");
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "invalid gateway request envelope",
+                    ));
+                }
+                match &request.input {
+                    GatewayInput::Query { .. } => {
+                        let accepted = world.inbound(request.input.into()).await;
+                        request_disposition(
+                            &reply_sink,
+                            uid,
+                            if accepted {
+                                GatewayRequestDisposition::EphemeralFinished
+                            } else {
+                                GatewayRequestDisposition::Rejected { retryable: true }
+                            },
+                        );
+                    }
+                    GatewayInput::Cmd { .. } => {
+                        let admission = input_claims
+                            .lock()
+                            .expect("server input claims poisoned")
+                            .admit(request);
+                        match admission {
+                            ServerClaimAdmission::New | ServerClaimAdmission::Duplicate => {
+                                request_disposition(
+                                    &reply_sink,
+                                    uid,
+                                    GatewayRequestDisposition::LegacyClaimed,
+                                );
+                            }
+                            ServerClaimAdmission::Full { warn } => {
+                                if warn {
+                                    tracing::warn!(
+                                        request = %uid,
+                                        held = input_claims
+                                            .lock()
+                                            .expect("server input claims poisoned")
+                                            .entries
+                                            .len(),
+                                        bytes = input_claims
+                                            .lock()
+                                            .expect("server input claims poisoned")
+                                            .bytes,
+                                        "server legacy-claim custody full; refusing request"
+                                    );
+                                }
+                                request_disposition(
+                                    &reply_sink,
+                                    uid,
+                                    GatewayRequestDisposition::Busy,
+                                );
+                            }
+                            ServerClaimAdmission::Invalid | ServerClaimAdmission::Conflict => {
+                                tracing::error!(
+                                    request = %uid,
+                                    "conflicting or invalid gateway request identity"
+                                );
+                                return Err(std::io::Error::new(
+                                    std::io::ErrorKind::InvalidData,
+                                    "conflicting or invalid gateway request identity",
+                                ));
+                            }
+                        }
+                    }
+                    GatewayInput::Action(_) => {
+                        let admission = input_claims
+                            .lock()
+                            .expect("server input claims poisoned")
+                            .admit(request.clone());
+                        match admission {
+                            ServerClaimAdmission::New => {
+                                let world = world.clone();
+                                let store = Arc::clone(&store);
+                                let sink = reply_sink.clone();
+                                let claims = Arc::clone(&input_claims);
+                                tokio::spawn(async move {
+                                    handle_authoritative_input(request, world, store, sink, claims)
+                                        .await;
+                                });
+                            }
+                            ServerClaimAdmission::Duplicate => {
+                                tracing::debug!(
+                                    request = %uid,
+                                    "duplicate coordinator input joined server pre-ownership custody"
+                                );
+                            }
+                            ServerClaimAdmission::Full { warn } => {
+                                if warn {
+                                    tracing::warn!(
+                                        request = %uid,
+                                        "server coordinator custody full; refusing request"
+                                    );
+                                }
+                                request_disposition(
+                                    &reply_sink,
+                                    uid,
+                                    GatewayRequestDisposition::Busy,
+                                );
+                            }
+                            ServerClaimAdmission::Invalid | ServerClaimAdmission::Conflict => {
+                                tracing::error!(
+                                    request = %uid,
+                                    "conflicting or invalid coordinator request identity"
+                                );
+                                return Err(std::io::Error::new(
+                                    std::io::ErrorKind::InvalidData,
+                                    "conflicting or invalid gateway request identity",
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            ToServer::GatewayReleased { request } => {
+                let Some(claim) = input_claims
+                    .lock()
+                    .expect("server input claims poisoned")
+                    .release(request)
+                else {
+                    tracing::debug!(
+                        request = %request,
+                        "duplicate or stale legacy release ignored"
+                    );
+                    continue;
+                };
+                // Remove the server claim before enqueueing. From this point a
+                // crash can lose the command, but neither this boundary nor a
+                // gateway replay can execute it twice.
+                if !world.inbound(claim.input.into()).await {
+                    tracing::warn!(
+                        request = %request,
+                        "world closed after legacy release; command was not executed"
+                    );
+                }
             }
             ToServer::Control(ctrl) => {
                 world.inbound(Inbound::Control(ctrl)).await;
@@ -767,9 +1347,12 @@ fn create_player_response(result: Result<mush_core::ObjId, CreatePlayerErr>) -> 
 #[cfg(test)]
 mod service_request_tests {
     use super::{
-        CreatePlayerErr, MAX_IN_FLIGHT_SERVICE_REQUESTS, ServiceRequestLimiter, ServiceResp,
-        WorldReadError, barrier_response, create_player_response,
+        CreatePlayerErr, GatewayInput, GatewayRequest, MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION,
+        MAX_IN_FLIGHT_SERVICE_REQUESTS, ServerClaimAdmission, ServerInputClaims,
+        ServiceRequestLimiter, ServiceResp, WorldReadError, barrier_response,
+        create_player_response,
     };
+    use mush_core::ObjId;
 
     #[test]
     fn failed_world_barrier_is_never_promoted_to_an_ack() {
@@ -810,6 +1393,75 @@ mod service_request_tests {
         assert!(
             limiter.try_admit().is_ok(),
             "a completed request must release one handler slot"
+        );
+    }
+
+    fn legacy_request(sequence: u64, conn: u64) -> GatewayRequest {
+        GatewayRequest::new(
+            19,
+            sequence,
+            GatewayInput::Cmd {
+                conn,
+                actor: ObjId(7),
+                line: format!("say {sequence}"),
+            },
+        )
+    }
+
+    #[test]
+    fn legacy_claim_is_exact_bounded_and_released_before_reuse() {
+        let mut claims = ServerInputClaims::default();
+        let first = legacy_request(1, 9);
+        assert_eq!(claims.admit(first.clone()), ServerClaimAdmission::New);
+        assert_eq!(
+            claims.admit(first.clone()),
+            ServerClaimAdmission::Duplicate,
+            "an exact replay must re-emit the claim without taking more custody"
+        );
+
+        let mut conflicting = first.clone();
+        conflicting.input = GatewayInput::Cmd {
+            conn: 9,
+            actor: ObjId(7),
+            line: "different payload".to_string(),
+        };
+        assert_eq!(
+            claims.admit(conflicting),
+            ServerClaimAdmission::Conflict,
+            "one UID may never identify two payloads"
+        );
+
+        assert_eq!(claims.release(first.uid), Some(first));
+        assert!(claims.entries.is_empty());
+        assert!(claims.per_connection.is_empty());
+        assert_eq!(claims.bytes, 0);
+    }
+
+    #[test]
+    fn raw_peer_cannot_exceed_per_connection_legacy_claim_cap() {
+        let mut claims = ServerInputClaims::default();
+        for sequence in 0..MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION as u64 {
+            assert_eq!(
+                claims.admit(legacy_request(sequence, 9)),
+                ServerClaimAdmission::New
+            );
+        }
+        assert_eq!(
+            claims.admit(legacy_request(10_000, 9)),
+            ServerClaimAdmission::Full { warn: true }
+        );
+        assert_eq!(
+            claims.admit(legacy_request(10_001, 9)),
+            ServerClaimAdmission::Full { warn: false },
+            "continued overload is edge-logged rather than log-amplified"
+        );
+
+        let released = claims.release(legacy_request(0, 9).uid).unwrap();
+        assert_eq!(released.input.conn(), 9);
+        assert_eq!(
+            claims.admit(legacy_request(10_002, 9)),
+            ServerClaimAdmission::New,
+            "release must restore exactly one slot"
         );
     }
 }

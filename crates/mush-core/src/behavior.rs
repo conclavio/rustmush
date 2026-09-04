@@ -23,7 +23,6 @@
 //! Programmatic `World::destroy` bypasses the veto by design (validate before you
 //! mutate).
 
-use std::collections::BTreeSet;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -36,7 +35,7 @@ use crate::matchit::match_object;
 use crate::module::can_perceive;
 use crate::obj::{ObjId, ObjKind};
 use crate::perm;
-use crate::world::World;
+use crate::world::{ChannelGrant, World};
 
 // ----------------------------------------------------------------------
 // Data types (persisted on the object)
@@ -469,17 +468,15 @@ pub enum BehaviorResolution {
 /// so a bound console is never hidden behind a pile of ordinary props.
 pub const MAX_CARRIED_SCAN: usize = 64;
 
-/// One reachable subject: every tier it was found at (highest first) and, for
-/// a subject first reached through a link, that link's priority.
+/// One reachable subject: every tier it was found at (highest first) and its
+/// exact per-station operated grants.
 struct Candidate {
     subject: ObjId,
     /// Reaches this subject was found at, highest tier first.
     reaches: Vec<CommandReach>,
-    /// The link priority when first reached as Operated — a sub-tier.
-    priority: Option<u16>,
-    /// The UNION of granted channels across every Operated link to this subject
-    /// (multi-owner authority composes at the gate).
-    channels: BTreeSet<ChannelId>,
+    /// Grants are never unioned: channel eligibility and priority are selected
+    /// from the same exact station grant for each command.
+    grants: Vec<ChannelGrant>,
 }
 
 /// The ordering key for "the first tier with a hit wins": the subject's highest
@@ -495,23 +492,31 @@ fn push_candidate(
     cands: &mut Vec<Candidate>,
     id: ObjId,
     reach: CommandReach,
-    priority: Option<u16>,
-    channels: &BTreeSet<ChannelId>,
+    grant: Option<&ChannelGrant>,
 ) {
     if let Some(c) = cands.iter_mut().find(|c| c.subject == id) {
         if !c.reaches.contains(&reach) {
             c.reaches.push(reach);
         }
-        // Channels UNION across all Operated links to this subject.
-        c.channels.extend(channels.iter().cloned());
+        if let Some(grant) = grant {
+            c.grants.push(grant.clone());
+        }
     } else {
         cands.push(Candidate {
             subject: id,
             reaches: vec![reach],
-            priority,
-            channels: channels.clone(),
+            grants: grant.into_iter().cloned().collect(),
         });
     }
+}
+
+fn operated_priority(candidate: &Candidate, channel: Option<&ChannelId>) -> Option<u16> {
+    candidate
+        .grants
+        .iter()
+        .filter(|grant| channel.is_none_or(|required| grant.channels.contains(required)))
+        .map(|grant| grant.priority)
+        .max()
 }
 
 /// Resolve `verb` against the subjects `actor` can reach (design §4.3).
@@ -554,35 +559,21 @@ pub fn resolve_behavior_command(
     // Candidates in tier order; a repeated subject keeps its first (highest)
     // position and accumulates the lower reaches it was also found at.
     let mut candidates: Vec<Candidate> = Vec::new();
-    // Operated links FIRST, so a subject's channel union is complete before any
-    // non-Operated reach for the same subject is considered.
-    let no_channels = BTreeSet::new();
+    // Operated grants FIRST. They accumulate as distinct station grants on a
+    // subject; channels and priorities are deliberately never unioned.
     for link in w.command_subjects_of(actor) {
         push_candidate(
             &mut candidates,
             link.subject,
             CommandReach::Operated,
-            Some(link.priority),
-            &link.channels,
+            Some(link),
         );
     }
-    push_candidate(
-        &mut candidates,
-        actor,
-        CommandReach::Actor,
-        None,
-        &no_channels,
-    );
+    push_candidate(&mut candidates, actor, CommandReach::Actor, None);
     if let Some(loc) = actor_obj.location
         && w.get(loc).is_some_and(|o| o.kind != ObjKind::Room)
     {
-        push_candidate(
-            &mut candidates,
-            loc,
-            CommandReach::Container,
-            None,
-            &no_channels,
-        );
+        push_candidate(&mut candidates, loc, CommandReach::Container, None);
     }
     let carried = w
         .contents_of(actor)
@@ -591,39 +582,15 @@ pub fn resolve_behavior_command(
         .filter(|&c| w.get(c).is_some_and(|o| !o.behaviors.is_empty()))
         .take(MAX_CARRIED_SCAN);
     for c in carried {
-        push_candidate(
-            &mut candidates,
-            c,
-            CommandReach::Carried,
-            None,
-            &no_channels,
-        );
+        push_candidate(&mut candidates, c, CommandReach::Carried, None);
     }
     if let Some(room) = w.containing_room(actor) {
-        push_candidate(
-            &mut candidates,
-            room,
-            CommandReach::Ambient,
-            None,
-            &no_channels,
-        );
+        push_candidate(&mut candidates, room, CommandReach::Ambient, None);
     }
 
     let verb_lc = verb.to_lowercase();
-    let mut current: Option<TierKey> = None;
-    let mut hits: Vec<(BehaviorTarget, usize)> = Vec::new();
+    let mut hits: Vec<(TierKey, BehaviorTarget, usize)> = Vec::new();
     for cand in &candidates {
-        let key = TierKey {
-            reach: cand.reaches.first().copied().unwrap_or(CommandReach::Actor),
-            priority: cand.priority,
-        };
-        if let Some(k) = current
-            && k != key
-            && !hits.is_empty()
-        {
-            break;
-        }
-        current = Some(key);
         let subject = cand.subject;
         let Some(obj) = w.get(subject) else {
             continue;
@@ -644,19 +611,24 @@ pub fn resolve_behavior_command(
                 let Some(&reach) = cand.reaches.iter().find(|r| cmd.reach.contains(r)) else {
                     continue;
                 };
-                // Control-channel gate: a channelled command (Operated-exclusive)
-                // resolves only if the actor's control over this subject GRANTS
-                // the channel. A denial drops this candidate BEFORE ambiguity
-                // counting — it never becomes a hit and never causes ambiguity.
-                if let Some(ch) = &cmd.required_channel
-                    && !cand.channels.contains(ch)
-                {
-                    continue;
-                }
+                // The winning Operated sub-tier is command-specific. Select
+                // priority only from a station grant carrying the required
+                // channel; this is the invariant that prevents a high-priority
+                // sensor seat from promoting a low-priority weapons seat.
+                let priority = if reach == CommandReach::Operated {
+                    let Some(priority) = operated_priority(cand, cmd.required_channel.as_ref())
+                    else {
+                        continue;
+                    };
+                    Some(priority)
+                } else {
+                    None
+                };
                 let matches = cmd.spec.name.to_lowercase() == verb_lc
                     || cmd.spec.aliases.iter().any(|a| a.to_lowercase() == verb_lc);
                 if matches {
                     hits.push((
+                        TierKey { reach, priority },
                         BehaviorTarget {
                             subject,
                             behavior: bid.clone(),
@@ -672,11 +644,21 @@ pub fn resolve_behavior_command(
     if hits.is_empty() {
         return BehaviorResolution::None;
     }
+    let winning = hits
+        .iter()
+        .map(|(key, _, _)| *key)
+        .min_by(|left, right| {
+            left.reach
+                .cmp(&right.reach)
+                .then_with(|| right.priority.cmp(&left.priority))
+        })
+        .expect("non-empty hit set has a winning tier");
+    hits.retain(|(key, _, _)| *key == winning);
     if hits.len() == 1 {
-        let (target, index) = hits.remove(0);
+        let (_, target, index) = hits.remove(0);
         return BehaviorResolution::One { target, index };
     }
-    BehaviorResolution::Ambiguous(hits.into_iter().map(|(t, _)| t).collect())
+    BehaviorResolution::Ambiguous(hits.into_iter().map(|(_, target, _)| target).collect())
 }
 
 // ----------------------------------------------------------------------

@@ -1,8 +1,13 @@
+use mush_contract_tests::{
+    TOY_OWNER, install_toy_focus, toy_brace_invocation, toy_brace_offers, toy_definitions,
+    toy_guarded_expiry_invocation, toy_scene_turn, toy_world_with_state,
+};
 use mush_core::{
     ActionInvocation, ActionInvocationDraft, ActionOfferId, CanonicalHash, CanonicalId,
     DefinitionId, DefinitionKey, DefinitionKind, DefinitionRef, Engine, GOD, IdempotencyKey,
-    IdempotencyScope, IngressEnvelope, IngressPayload, IngressSurfaceVersion, OwnerId,
-    PerceivedRef, PrincipalId, RequestUid, RevisionSet, ScopedIdempotencyKey,
+    IdempotencyScope, IngressEnvelope, IngressPayload, IngressSurfaceVersion,
+    OfferExecutionContext, OfferKeyRing, OfferSecret, OfferSubmission, OwnerId, PerceivedRef,
+    PrincipalId, ProjectionScopeId, RequestUid, RevisionSet, ScopedIdempotencyKey,
     StagedActionPersistence,
 };
 use mush_server::action_coordinator::{ActionCoordinator, ActionPreflight, SemanticActionStatus};
@@ -132,6 +137,8 @@ async fn real_provider_is_exactly_once_and_hydrates_before_the_next_action() {
     assert_eq!(bundle.token(), staged.token);
     assert_eq!(bundle.bundle_hash(), staged.bundle_hash);
     assert_eq!(bundle.outcome().data()["revision"], 1);
+    assert_eq!(bundle.semantic_events().len(), 1);
+    assert_eq!(bundle.semantic_events()[0].kind().as_str(), BRACE_ACTION_ID);
 
     let intent = store
         .reserve_authoritative_intent(bundle.clone())
@@ -240,4 +247,303 @@ async fn real_provider_is_exactly_once_and_hydrates_before_the_next_action() {
         StagedActionPersistence::Legacy(_) => panic!("brace used the legacy persistence lane"),
     };
     assert_eq!(bundle.outcome().data()["revision"], 2);
+}
+
+#[tokio::test]
+async fn gate_one_offer_is_preflighted_regenerated_and_routed_without_hidden_client_fields() {
+    let store = InMemoryStore::new();
+    let (mut world, families) = toy_world_with_state();
+    install_toy_focus(world.engine_mut(), &families, GOD, 3);
+    let _ = world.drain_write_batch();
+    let keys = OfferKeyRing::new(OfferSecret::new(1, [0x42; 32]).unwrap(), []).unwrap();
+    world.engine_mut().set_offer_keys(keys.clone());
+    let initially_projected = toy_brace_offers(world.engine(), GOD, 11, 7)
+        .unwrap()
+        .projected()
+        .pop()
+        .unwrap();
+    let request = RequestUid::from_bytes([0xA7; 16]);
+    let principal = PrincipalId::Object { id: GOD };
+    let idempotency = ScopedIdempotencyKey::new(
+        IdempotencyScope {
+            principal: principal.clone(),
+            owner: OwnerId::new(TOY_OWNER).unwrap(),
+            namespace: CanonicalId::new("brace").unwrap(),
+        },
+        0,
+        IdempotencyKey::Request(request),
+    );
+    let envelope = IngressEnvelope::new(
+        request,
+        principal.clone(),
+        IngressSurfaceVersion::new(CanonicalId::new("test.offer").unwrap(), 1).unwrap(),
+        IngressPayload::structured(json!({
+            "offer": initially_projected.offer(),
+            "subject": initially_projected.subject(),
+            "targets": [],
+            "parameters": {},
+        }))
+        .unwrap(),
+        idempotency.clone(),
+    )
+    .unwrap();
+    let permit = match ActionCoordinator::preflight(&store, envelope)
+        .await
+        .unwrap()
+    {
+        ActionPreflight::Vacant(permit) => permit,
+        other => panic!("offered action was not vacant: {other:?}"),
+    };
+
+    // This is the execution-time regeneration. It happens only after the
+    // durable preflight and reconstructs hidden clock/guard/action data.
+    let regenerated = toy_brace_offers(world.engine(), GOD, 11, 7).unwrap();
+    let resolved = world
+        .engine()
+        .resolve_legal_action(
+            &regenerated,
+            OfferExecutionContext {
+                request,
+                principal,
+                actor: GOD,
+                idempotency,
+                viewer_scope: ProjectionScopeId::derive(&PrincipalId::Object { id: GOD }, 7)
+                    .unwrap(),
+                now: None,
+            },
+            OfferSubmission {
+                offer: initially_projected.offer(),
+                subject: initially_projected.subject().clone(),
+                targets: Vec::new(),
+                parameters: json!({}),
+            },
+        )
+        .unwrap();
+    ActionCoordinator::prepare_and_stage_resolved(permit, world.engine_mut(), resolved).unwrap();
+    let (persistence, installation) = world
+        .engine_mut()
+        .take_staged_action()
+        .unwrap()
+        .unwrap()
+        .into_parts();
+    let bundle = match persistence {
+        StagedActionPersistence::Authoritative(bundle) => *bundle,
+        StagedActionPersistence::Legacy(_) => panic!("resolved offer used legacy persistence"),
+    };
+    assert_eq!(bundle.writes().len(), 2);
+    assert_eq!(bundle.outcome().data()["focus"], 2);
+    world.engine_mut().abort_prepared_action(installation);
+}
+
+#[tokio::test]
+async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
+    let store = InMemoryStore::new();
+    let (mut world, families) = toy_world_with_state();
+    install_toy_focus(world.engine_mut(), &families, GOD, 3);
+    let _ = world.drain_write_batch();
+    let request = RequestUid::from_bytes([0xB1; 16]);
+    let invocation = toy_brace_invocation(GOD, 11, request);
+    let envelope = IngressEnvelope::new(
+        request,
+        invocation.principal().clone(),
+        IngressSurfaceVersion::new(CanonicalId::new("test.structured").unwrap(), 1).unwrap(),
+        IngressPayload::structured(json!({"action": "brace", "scene_turn": 11})).unwrap(),
+        invocation.idempotency().clone(),
+    )
+    .unwrap();
+    let permit = match ActionCoordinator::preflight(&store, envelope)
+        .await
+        .unwrap()
+    {
+        ActionPreflight::Vacant(permit) => permit,
+        other => panic!("toy request was not vacant: {other:?}"),
+    };
+    let action = toy_definitions().brace;
+    let action_guards = guards(world.engine(), &action);
+    ActionCoordinator::prepare_and_stage(
+        permit,
+        world.engine_mut(),
+        &action,
+        &invocation,
+        action_guards,
+    )
+    .unwrap();
+    let (persistence, installation) = world
+        .engine_mut()
+        .take_staged_action()
+        .unwrap()
+        .expect("toy cascade staged")
+        .into_parts();
+    let bundle = match persistence {
+        StagedActionPersistence::Authoritative(bundle) => *bundle,
+        StagedActionPersistence::Legacy(_) => panic!("toy cascade used legacy persistence"),
+    };
+    assert_eq!(bundle.writes().len(), 2);
+    assert_eq!(bundle.semantic_events().len(), 2);
+    assert_eq!(bundle.semantic_events()[0].kind().as_str(), "brace");
+    assert_eq!(bundle.semantic_events()[1].kind().as_str(), "apply_guarded");
+    assert_eq!(
+        bundle.semantic_events()[1].cause().parent(),
+        Some(bundle.semantic_events()[0].cause().event_id())
+    );
+
+    store
+        .reserve_authoritative_intent(bundle.clone())
+        .await
+        .unwrap();
+    let receipt = store
+        .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+        .await
+        .unwrap();
+    assert_eq!(receipt.semantic_events(), bundle.semantic_events());
+    world.engine_mut().install_prepared_action(installation);
+    assert_eq!(
+        world
+            .engine()
+            .action_state()
+            .get(&families.focus, &GOD)
+            .unwrap()
+            .unwrap()
+            .amount(),
+        2
+    );
+    assert_eq!(
+        world
+            .engine()
+            .action_state()
+            .get(&families.guarded, &GOD)
+            .unwrap()
+            .unwrap()
+            .expires_at(),
+        &toy_scene_turn(13)
+    );
+    let checkpoint = store
+        .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
+        .await
+        .unwrap();
+    assert_eq!(
+        checkpoint.receipt.semantic_events(),
+        bundle.semantic_events()
+    );
+
+    let (mut restarted, restarted_families) = toy_world_with_state();
+    boot_modules(restarted.engine_mut(), &store).await.unwrap();
+    let _ = restarted.engine_mut().world.take_dirty();
+    assert!(restarted.engine_mut().take_module_ops().is_empty());
+    assert_eq!(
+        restarted
+            .engine()
+            .action_state()
+            .get(&restarted_families.focus, &GOD)
+            .unwrap()
+            .unwrap()
+            .amount(),
+        2
+    );
+    assert_eq!(
+        restarted
+            .engine()
+            .action_state()
+            .get(&restarted_families.guarded, &GOD)
+            .unwrap()
+            .unwrap()
+            .expires_at(),
+        &toy_scene_turn(13)
+    );
+
+    let effect = restarted
+        .engine()
+        .action_state()
+        .get(&restarted_families.guarded, &GOD)
+        .unwrap()
+        .unwrap()
+        .effect
+        .id();
+    let expiry_request = RequestUid::from_bytes([0xB2; 16]);
+    let expiry = toy_guarded_expiry_invocation(GOD, effect, 13, expiry_request);
+    let expiry_envelope = IngressEnvelope::new(
+        expiry_request,
+        expiry.principal().clone(),
+        IngressSurfaceVersion::new(CanonicalId::new("test.scheduler").unwrap(), 1).unwrap(),
+        IngressPayload::structured(json!({
+            "action": "guarded_expire",
+            "effect": effect,
+            "now": toy_scene_turn(13),
+        }))
+        .unwrap(),
+        expiry.idempotency().clone(),
+    )
+    .unwrap();
+    let expiry_permit = match ActionCoordinator::preflight(&store, expiry_envelope.clone())
+        .await
+        .unwrap()
+    {
+        ActionPreflight::Vacant(permit) => permit,
+        other => panic!("expiry request was not vacant: {other:?}"),
+    };
+    let expiry_action = toy_definitions().guarded_expire;
+    let expiry_guards = guards(restarted.engine(), &expiry_action);
+    ActionCoordinator::prepare_and_stage(
+        expiry_permit,
+        restarted.engine_mut(),
+        &expiry_action,
+        &expiry,
+        expiry_guards,
+    )
+    .unwrap();
+    let (persistence, installation) = restarted
+        .engine_mut()
+        .take_staged_action()
+        .unwrap()
+        .expect("expiry staged")
+        .into_parts();
+    let expiry_bundle = match persistence {
+        StagedActionPersistence::Authoritative(bundle) => *bundle,
+        StagedActionPersistence::Legacy(_) => panic!("expiry used legacy persistence"),
+    };
+    assert_eq!(expiry_bundle.writes().len(), 1);
+    assert_eq!(
+        expiry_bundle.semantic_events()[0].kind().as_str(),
+        "guarded_expire"
+    );
+    store
+        .reserve_authoritative_intent(expiry_bundle.clone())
+        .await
+        .unwrap();
+    store
+        .reconcile_authoritative(expiry_bundle.token(), expiry_bundle.bundle_hash())
+        .await
+        .unwrap();
+    restarted.engine_mut().install_prepared_action(installation);
+    store
+        .checkpoint_authoritative(expiry_bundle.token(), expiry_bundle.bundle_hash())
+        .await
+        .unwrap();
+    assert!(
+        restarted
+            .engine()
+            .action_state()
+            .get(&restarted_families.guarded, &GOD)
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(
+        ActionCoordinator::preflight(&store, expiry_envelope)
+            .await
+            .unwrap(),
+        ActionPreflight::Finalized(_)
+    ));
+
+    let (mut after_expiry_restart, after_expiry_families) = toy_world_with_state();
+    boot_modules(after_expiry_restart.engine_mut(), &store)
+        .await
+        .unwrap();
+    assert!(
+        after_expiry_restart
+            .engine()
+            .action_state()
+            .get(&after_expiry_families.guarded, &GOD)
+            .unwrap()
+            .is_none()
+    );
 }

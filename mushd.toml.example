@@ -20,6 +20,12 @@ store = "redis"                    # (M2) "redis" (authoritative) or "memory" (n
 redis_url = "redis://127.0.0.1:6379"   # (M2)
 receipt_policy = "applied"         # "applied" or strict AOF-fsync "host_power_loss"
 
+[offers]                           # (K5) opaque legal-action offer signing
+# key_dir = "./data/offer-keys"    # defaults to <server.data_dir>/offer-keys
+# The server creates a private version-1 key on first boot. Rotation publishes
+# a new immutable manifest while retaining at most three prior verification
+# keys, so unchanged in-flight offers survive restart and bounded rotation.
+
 [ssh]
 listen = "0.0.0.0:2222"            # (M2)
 

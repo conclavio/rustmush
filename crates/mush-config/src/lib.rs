@@ -13,12 +13,15 @@
 //! - [`ipguard`] — the per-IP auth-failure guard + siteban mirror.
 //! - [`accounts`] — transport-agnostic account helpers (validation, argon2id
 //!   hashing/verification, the one-time `accounts.json` import).
+//! - [`offer_keys`] — durable, bounded, restart-stable HMAC key provisioning
+//!   for K5 legal-action offers.
 
 pub mod accounts;
 pub mod config;
 pub mod ipguard;
 pub mod logging;
 pub mod metrics;
+pub mod offer_keys;
 
 /// The current wall clock as unix seconds (0 if the system clock is broken).
 #[must_use]

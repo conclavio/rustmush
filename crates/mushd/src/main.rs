@@ -20,6 +20,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
+use mush_config::offer_keys::DurableOfferKeyStore;
 use mush_core::{ControlMsg, Engine, Inbound};
 use mush_llm::LlmService;
 use mush_net_web::{Metrics, WebConfig};
@@ -163,6 +164,14 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     // valid active records through the store's read-only connection before
     // migrations, account import, world seeding, or module boot can write.
     mush_server::prepare_quarantine_for_writable_boot(&config, &mut quarantine_spool, None).await?;
+    let offer_keys = DurableOfferKeyStore::new(config.offer_key_dir())
+        .load_or_create()
+        .map_err(|error| format!("offer key provisioning failed: {error}"))?;
+    tracing::info!(
+        current_version = offer_keys.current_version(),
+        key_dir = %config.offer_key_dir().display(),
+        "durable legal-action offer keys loaded"
+    );
     tracing::info!(
         name = %config.server.name,
         data_dir = %data_dir.display(),
@@ -269,16 +278,18 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     let composition =
         Engine::compose_modules(registry, mods).map_err(|e| format!("module registration: {e}"))?;
     let mut world = load_or_seed_world(&*store).await?;
-    // Install the IC game clock from [game] before module state and ticks are
-    // materialized into the engine.
+    // Hydrate the versioned IC timeline before module state and ticks are
+    // materialized into the engine. [game] seeds an empty store only;
+    // persisted epochs remain authoritative across configuration changes.
     let clock = config.game.game_clock().map_err(|e| e.to_string())?;
-    world.set_game_clock(clock);
+    mush_server::timeline::hydrate_world_timeline(&mut world, &*store, clock).await?;
     tracing::info!(
-        ic_ratio = clock.ic_ratio,
-        ic_epoch = %config.game.ic_epoch,
-        "game clock installed",
+        generation = world.world_timeline().current().generation,
+        ic_rate = world.world_timeline().current().rate,
+        "world timeline installed",
     );
     let mut engine = Engine::from_composition(world, composition);
+    engine.set_offer_keys(offer_keys);
     modules::boot_modules(&mut engine, &*store).await?;
 
     // The web hello manifest, collected while the registry is still in

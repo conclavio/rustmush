@@ -100,10 +100,11 @@ use fred::types::{Key, RespVersion, Value};
 
 use crate::store::{AuthoritativeStore, ObjectStore};
 use crate::types::{
-    AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeEpochRetirement,
-    AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult, AuthoritativeOutboxRecord,
-    AuthoritativeReceipt, AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec,
-    BundleStatus, CharacterRef, IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
+    AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeDiscardReceipt,
+    AuthoritativeEpochRetirement, AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult,
+    AuthoritativeOutboxRecord, AuthoritativeQuarantineReceipt, AuthoritativeReceipt,
+    AuthoritativeRetentionUsage, AuthoritativeScanCursor, BanRec, BundleStatus, CharacterRef,
+    IdempotencyStatus, IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE,
     MAX_PENDING_AUTHORITATIVE_OUTBOX, MAX_RETAINED_AUTHORITATIVE_BYTES,
     MAX_RETAINED_AUTHORITATIVE_INTENTS, ModuleWrite, PendingAuthoritativeIntent, SshKeyRec,
     StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt, validate_module_key,
@@ -130,6 +131,8 @@ pub const OBJ_INDEX: &str = "idx:objs";
 pub const AUTHORITATIVE_INTENT_PREFIX: &str = "auth:intent:";
 /// Prefix of immutable finalized authoritative witnesses.
 pub const AUTHORITATIVE_RECEIPT_PREFIX: &str = "auth:receipt:";
+/// Prefix of compact never-finalized quarantine witnesses.
+pub const AUTHORITATIVE_QUARANTINE_PREFIX: &str = "auth:quarantine:";
 /// Prefix of scoped idempotency bindings addressed by canonical scope hash.
 pub const AUTHORITATIVE_IDEMPOTENCY_PREFIX: &str = "auth:idempotency:";
 /// Recovery accelerator; exhaustive intent scanning remains mandatory.
@@ -152,6 +155,8 @@ pub const AUTHORITATIVE_OUTBOX_PENDING_INDEX: &str = "auth:outbox:pending";
 const RESERVE_AUTHORITATIVE_LUA: &str = include_str!("lua/reserve_authoritative.lua");
 const FINALIZE_AUTHORITATIVE_LUA: &str = include_str!("lua/finalize_authoritative.lua");
 const CHECKPOINT_AUTHORITATIVE_LUA: &str = include_str!("lua/checkpoint_authoritative.lua");
+const DISCARD_AUTHORITATIVE_LUA: &str = include_str!("lua/discard_authoritative.lua");
+const RESTORE_AUTHORITATIVE_LUA: &str = include_str!("lua/restore_authoritative.lua");
 const ADVANCE_AUTHORITATIVE_EPOCH_LUA: &str = include_str!("lua/advance_authoritative_epoch.lua");
 const PURGE_AUTHORITATIVE_RECEIPT_LUA: &str = include_str!("lua/purge_authoritative_receipt.lua");
 const TRANSITION_AUTHORITATIVE_OUTBOX_LUA: &str =
@@ -200,6 +205,10 @@ fn authoritative_intent_key(token: CommitToken) -> String {
 
 fn authoritative_receipt_key(token: CommitToken) -> String {
     format!("{AUTHORITATIVE_RECEIPT_PREFIX}{token}")
+}
+
+fn authoritative_quarantine_key(token: CommitToken) -> String {
+    format!("{AUTHORITATIVE_QUARANTINE_PREFIX}{token}")
 }
 
 fn authoritative_outbox_key(item_id: CanonicalHash) -> String {
@@ -283,6 +292,15 @@ impl RedisIdempotencyBinding {
     }
 
     fn for_receipt(receipt: &AuthoritativeReceipt) -> Self {
+        Self {
+            key: receipt.idempotency().clone(),
+            ingress_hash: receipt.ingress_hash(),
+            token: receipt.token(),
+            bundle_hash: receipt.bundle_hash(),
+        }
+    }
+
+    fn for_quarantine(receipt: &AuthoritativeQuarantineReceipt) -> Self {
         Self {
             key: receipt.idempotency().clone(),
             ingress_hash: receipt.ingress_hash(),
@@ -386,6 +404,9 @@ fn authoritative_script_error(code: &str) -> StoreError {
     if code == "NOT_FINALIZED" {
         return StoreError::AuthoritativeNotFinalized;
     }
+    if code == "ALREADY_FINALIZED" {
+        return StoreError::AuthoritativeIntentAlreadyFinalized;
+    }
     if code == "OUTBOX_PENDING" {
         return StoreError::AuthoritativeOutboxPending;
     }
@@ -410,6 +431,11 @@ fn authoritative_script_error(code: &str) -> StoreError {
                 max_bytes: MAX_RETAINED_AUTHORITATIVE_BYTES,
             };
         }
+    }
+    if let Some(pending) = code.strip_prefix("INTENT_IN_FLIGHT:")
+        && let Ok(pending) = pending.parse::<usize>()
+    {
+        return StoreError::AuthoritativeIntentInFlight { pending };
     }
     if matches!(code, "INVALID_ALLOCATOR" | "MISSING_ALLOCATOR" | "ID_REUSE") {
         return StoreError::Invalid(format!(
@@ -708,6 +734,42 @@ impl RedisStore {
             ));
         }
         Ok(())
+    }
+
+    async fn load_quarantine_receipt(
+        &self,
+        token: CommitToken,
+    ) -> Result<Option<AuthoritativeQuarantineReceipt>, StoreError> {
+        let doc: Option<String> = self.client.get(authoritative_quarantine_key(token)).await?;
+        let Some(doc) = doc else {
+            return Ok(None);
+        };
+        let receipt: AuthoritativeQuarantineReceipt = serde_json::from_str(&doc)
+            .map_err(|error| StoreError::AuthoritativeCorrupt(error.to_string()))?;
+        receipt.validate()?;
+        if serde_json::to_string(&receipt)? != doc || receipt.token() != token {
+            return Err(StoreError::AuthoritativeCorrupt(
+                "Redis quarantine receipt is non-canonical or stored under the wrong token"
+                    .to_owned(),
+            ));
+        }
+        let binding_doc: Option<String> = self
+            .client
+            .get(authoritative_idempotency_key(receipt.idempotency())?)
+            .await?;
+        let binding: RedisIdempotencyBinding =
+            serde_json::from_str(&binding_doc.ok_or_else(|| {
+                StoreError::AuthoritativeCorrupt(
+                    "Redis quarantine receipt is missing its idempotency binding".to_owned(),
+                )
+            })?)
+            .map_err(|error| StoreError::AuthoritativeCorrupt(error.to_string()))?;
+        if binding != RedisIdempotencyBinding::for_quarantine(&receipt) {
+            return Err(StoreError::AuthoritativeCorrupt(
+                "Redis quarantine receipt disagrees with its idempotency binding".to_owned(),
+            ));
+        }
+        Ok(Some(receipt))
     }
 
     async fn load_validated_authoritative(
@@ -1033,6 +1095,7 @@ impl AuthoritativeStore for RedisStore {
                 AUTHORITATIVE_RETAINED_GENERATION.to_owned(),
             ];
             keys.extend(object_sets.iter().map(|id| obj_key(*id)));
+            keys.push(authoritative_quarantine_key(token));
             let mut args = vec![
                 intent_doc,
                 binding_doc,
@@ -1053,6 +1116,21 @@ impl AuthoritativeStore for RedisStore {
                 "NEW" => false,
                 "RESUMED" => true,
                 _ => {
+                    if code == "QUARANTINED" {
+                        let quarantine =
+                            self.load_quarantine_receipt(token).await?.ok_or_else(|| {
+                                StoreError::AuthoritativeCorrupt(
+                                    "Redis reservation reported quarantine without its receipt"
+                                        .to_owned(),
+                                )
+                            })?;
+                        if !quarantine.matches_bundle(&bundle) {
+                            return Err(StoreError::AuthoritativeTokenConflict);
+                        }
+                        return Err(StoreError::AuthoritativeIntentQuarantined {
+                            evidence_hash: quarantine.evidence_hash(),
+                        });
+                    }
                     if let Some(minimum) = code.strip_prefix("EPOCH_RETIRED:")
                         && let Ok(minimum_accepted_epoch) = minimum.parse::<u64>()
                     {
@@ -1113,14 +1191,26 @@ impl AuthoritativeStore for RedisStore {
                     "Redis idempotency address contains a different scoped key".to_owned(),
                 ));
             }
-            let Some(loaded) = self.load_validated_authoritative(binding.token).await? else {
-                return Err(StoreError::AuthoritativeCorrupt(
-                    "Redis idempotency binding names no retained intent".to_owned(),
-                ));
-            };
             if ingress_hash != binding.ingress_hash {
                 return Ok(IdempotencyStatus::Conflict);
             }
+            let Some(loaded) = self.load_validated_authoritative(binding.token).await? else {
+                let quarantine = self
+                    .load_quarantine_receipt(binding.token)
+                    .await?
+                    .ok_or_else(|| {
+                        StoreError::AuthoritativeCorrupt(
+                            "Redis idempotency binding names no intent, receipt, or quarantine"
+                                .to_owned(),
+                        )
+                    })?;
+                if binding != RedisIdempotencyBinding::for_quarantine(&quarantine) {
+                    return Err(StoreError::AuthoritativeCorrupt(
+                        "Redis idempotency binding disagrees with quarantine receipt".to_owned(),
+                    ));
+                }
+                return Ok(IdempotencyStatus::QuarantinedExact(Box::new(quarantine)));
+            };
             match loaded {
                 LoadedAuthoritative::Retained { bundle, receipt } => {
                     if binding != RedisIdempotencyBinding::for_bundle(&bundle) {
@@ -1301,6 +1391,7 @@ impl AuthoritativeStore for RedisStore {
                 prior_receipt_doc.ok_or(StoreError::AuthoritativeNotFinalized)?;
             let checkpoint_doc = serde_json::to_string(&receipt)?;
             let binding_doc = serde_json::to_string(&RedisIdempotencyBinding::for_bundle(&bundle))?;
+            let planned = plan_authoritative_replay(&bundle)?;
             let mut outbox_docs = Vec::with_capacity(bundle.durable_outbox().len());
             for expected in expected_outbox_records(&bundle)? {
                 let doc: Option<String> = self
@@ -1334,6 +1425,7 @@ impl AuthoritativeStore for RedisStore {
                 AUTHORITATIVE_RETAINED_GENERATION.to_owned(),
                 authoritative_outbox_parent_key(token),
             ];
+            keys.extend(planned.iter().map(|write| write.key.clone()));
             keys.extend(
                 outbox_docs
                     .iter()
@@ -1346,9 +1438,14 @@ impl AuthoritativeStore for RedisStore {
                 binding_doc,
                 token.to_string(),
                 intent_doc.len().to_string(),
+                planned.len().to_string(),
                 outbox_docs.len().to_string(),
                 outbox_parent_doc,
             ];
+            for write in &planned {
+                args.push(write.kind.to_owned());
+                args.push(write.post_image.clone());
+            }
             args.extend(outbox_docs.iter().map(|(_, doc)| doc.clone()));
             let code: String = self
                 .client
@@ -1372,6 +1469,145 @@ impl AuthoritativeStore for RedisStore {
             Ok(AuthoritativeCheckpointReceipt {
                 receipt: stored,
                 released_intent_bytes: if resumed { 0 } else { intent_doc.len() },
+                resumed,
+            })
+        })
+    }
+
+    fn discard_quarantined_authoritative_intent(
+        &self,
+        token: CommitToken,
+        expected_bundle_hash: CanonicalHash,
+        evidence_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<AuthoritativeDiscardReceipt, StoreError>> {
+        Box::pin(async move {
+            if let Some(quarantine) = self.load_quarantine_receipt(token).await? {
+                if quarantine.bundle_hash() != expected_bundle_hash
+                    || quarantine.evidence_hash() != evidence_hash
+                {
+                    return Err(StoreError::AuthoritativeTokenConflict);
+                }
+                return Ok(AuthoritativeDiscardReceipt {
+                    quarantine,
+                    released_intent_bytes: 0,
+                    resumed: true,
+                });
+            }
+            let Some(loaded) = self.load_validated_authoritative(token).await? else {
+                return Err(StoreError::AuthoritativeIntentMissing);
+            };
+            let LoadedAuthoritative::Retained { bundle, receipt } = loaded else {
+                return Err(StoreError::AuthoritativeIntentAlreadyFinalized);
+            };
+            if bundle.bundle_hash() != expected_bundle_hash {
+                return Err(StoreError::AuthoritativeTokenConflict);
+            }
+            if receipt.is_some() {
+                return Err(StoreError::AuthoritativeIntentAlreadyFinalized);
+            }
+            let intent_doc = serde_json::to_string(&bundle)?;
+            let binding_doc = serde_json::to_string(&RedisIdempotencyBinding::for_bundle(&bundle))?;
+            let quarantine = AuthoritativeQuarantineReceipt::new(&bundle, evidence_hash);
+            let quarantine_doc = serde_json::to_string(&quarantine)?;
+            let code: String = self
+                .client
+                .eval(
+                    DISCARD_AUTHORITATIVE_LUA,
+                    vec![
+                        authoritative_intent_key(token),
+                        authoritative_receipt_key(token),
+                        authoritative_idempotency_key(bundle.idempotency())?,
+                        AUTHORITATIVE_PENDING_INDEX.to_owned(),
+                        AUTHORITATIVE_RETAINED_COUNT.to_owned(),
+                        AUTHORITATIVE_RETAINED_BYTES.to_owned(),
+                        AUTHORITATIVE_RETAINED_GENERATION.to_owned(),
+                        authoritative_quarantine_key(token),
+                    ],
+                    vec![
+                        intent_doc.clone(),
+                        binding_doc,
+                        quarantine_doc,
+                        token.to_string(),
+                        intent_doc.len().to_string(),
+                    ],
+                )
+                .await?;
+            let resumed = match code.as_str() {
+                "DISCARDED" => false,
+                "RESUMED" => true,
+                _ => return Err(authoritative_script_error(&code)),
+            };
+            let stored = self.load_quarantine_receipt(token).await?.ok_or_else(|| {
+                StoreError::AuthoritativeCorrupt(
+                    "Redis discard returned without a quarantine receipt".to_owned(),
+                )
+            })?;
+            if stored != quarantine {
+                return Err(StoreError::AuthoritativeTokenConflict);
+            }
+            Ok(AuthoritativeDiscardReceipt {
+                quarantine: stored,
+                released_intent_bytes: if resumed { 0 } else { intent_doc.len() },
+                resumed,
+            })
+        })
+    }
+
+    fn restore_quarantined_authoritative_intent(
+        &self,
+        bundle: AuthoritativeBundle,
+        evidence_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<IntentReceipt, StoreError>> {
+        Box::pin(async move {
+            let token = bundle.token();
+            let bundle_hash = bundle.bundle_hash();
+            let intent_doc = serde_json::to_string(&bundle)?;
+            let binding_doc = serde_json::to_string(&RedisIdempotencyBinding::for_bundle(&bundle))?;
+            let quarantine = AuthoritativeQuarantineReceipt::new(&bundle, evidence_hash);
+            let quarantine_doc = serde_json::to_string(&quarantine)?;
+            let code: String = self
+                .client
+                .eval(
+                    RESTORE_AUTHORITATIVE_LUA,
+                    vec![
+                        authoritative_intent_key(token),
+                        authoritative_receipt_key(token),
+                        authoritative_idempotency_key(bundle.idempotency())?,
+                        AUTHORITATIVE_PENDING_INDEX.to_owned(),
+                        AUTHORITATIVE_RETAINED_COUNT.to_owned(),
+                        AUTHORITATIVE_RETAINED_BYTES.to_owned(),
+                        AUTHORITATIVE_RETAINED_GENERATION.to_owned(),
+                        authoritative_quarantine_key(token),
+                    ],
+                    vec![
+                        intent_doc.clone(),
+                        binding_doc,
+                        quarantine_doc,
+                        token.to_string(),
+                        intent_doc.len().to_string(),
+                        MAX_RETAINED_AUTHORITATIVE_INTENTS.to_string(),
+                        MAX_RETAINED_AUTHORITATIVE_BYTES.to_string(),
+                    ],
+                )
+                .await?;
+            let resumed = match code.as_str() {
+                "RESTORED" => false,
+                "RESUMED" => true,
+                _ => return Err(authoritative_script_error(&code)),
+            };
+            let Some(LoadedAuthoritative::Retained { bundle: stored, .. }) =
+                self.load_validated_authoritative(token).await?
+            else {
+                return Err(StoreError::AuthoritativeCorrupt(
+                    "Redis restore returned without the retained intent".to_owned(),
+                ));
+            };
+            if *stored != bundle {
+                return Err(StoreError::AuthoritativeTokenConflict);
+            }
+            Ok(IntentReceipt {
+                token,
+                bundle_hash,
                 resumed,
             })
         })
@@ -1475,6 +1711,38 @@ impl AuthoritativeStore for RedisStore {
                 return Ok(record);
             }
             let next = record.complete_attempt(expected_attempt, result)?;
+            self.transition_outbox_record(prior_doc, next).await
+        })
+    }
+
+    fn note_authoritative_outbox_unroutable(
+        &self,
+        item_id: CanonicalHash,
+        expected_payload_hash: CanonicalHash,
+        expected_passes: u32,
+        error: String,
+    ) -> BoxFuture<'_, Result<AuthoritativeOutboxRecord, StoreError>> {
+        Box::pin(async move {
+            let (record, prior_doc) = self
+                .load_outbox_record(item_id)
+                .await?
+                .ok_or(StoreError::AuthoritativeOutboxMissing)?;
+            if record.intent().payload_hash() != expected_payload_hash {
+                return Err(StoreError::AuthoritativeOutboxConflict);
+            }
+            self.validate_outbox_parent(&record).await?;
+            if expected_passes < u32::MAX
+                && record.unroutable_passes() == expected_passes + 1
+                && matches!(
+                    record.state(),
+                    crate::types::AuthoritativeOutboxState::Pending {
+                        last_error: Some(stored)
+                    } if stored == &error
+                )
+            {
+                return Ok(record);
+            }
+            let next = record.note_unroutable(expected_passes, error)?;
             self.transition_outbox_record(prior_doc, next).await
         })
     }
@@ -1716,6 +1984,14 @@ impl AuthoritativeStore for RedisStore {
     ) -> BoxFuture<'_, Result<BundleStatus, StoreError>> {
         Box::pin(async move {
             let Some(loaded) = self.load_validated_authoritative(token).await? else {
+                if let Some(quarantine) = self.load_quarantine_receipt(token).await? {
+                    if quarantine.bundle_hash() != expected_bundle_hash {
+                        return Ok(BundleStatus::Conflict {
+                            stored_bundle_hash: quarantine.bundle_hash(),
+                        });
+                    }
+                    return Ok(BundleStatus::QuarantinedExact(Box::new(quarantine)));
+                }
                 return Ok(BundleStatus::Absent);
             };
             let stored_hash = match &loaded {
@@ -1853,8 +2129,18 @@ impl AuthoritativeStore for RedisStore {
         })
     }
 
+    fn authoritative_retention_generation(&self) -> BoxFuture<'_, Result<u64, StoreError>> {
+        Box::pin(async move {
+            parse_redis_u64(
+                "retention generation",
+                self.client.get(AUTHORITATIVE_RETAINED_GENERATION).await?,
+            )
+        })
+    }
+
     fn repair_authoritative_retention(
         &self,
+        expected_generation: u64,
         usage: AuthoritativeRetentionUsage,
     ) -> BoxFuture<'_, Result<bool, StoreError>> {
         Box::pin(async move {
@@ -1875,13 +2161,19 @@ impl AuthoritativeStore for RedisStore {
                     vec![
                         AUTHORITATIVE_RETAINED_COUNT.to_owned(),
                         AUTHORITATIVE_RETAINED_BYTES.to_owned(),
+                        AUTHORITATIVE_RETAINED_GENERATION.to_owned(),
                     ],
-                    vec![usage.count.to_string(), usage.bytes.to_string()],
+                    vec![
+                        usage.count.to_string(),
+                        usage.bytes.to_string(),
+                        expected_generation.to_string(),
+                    ],
                 )
                 .await?;
             match code.as_str() {
                 "UNCHANGED" => Ok(false),
                 "REPAIRED" => Ok(true),
+                "GENERATION_CHANGED" => Err(StoreError::AuthoritativeRetentionContention),
                 _ => Err(authoritative_script_error(&code)),
             }
         })

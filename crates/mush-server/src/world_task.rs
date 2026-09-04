@@ -72,17 +72,19 @@ use mush_config::ipguard::IpGuard;
 use mush_config::metrics::{LlmFeatureStat, LlmTodaySpend, Metrics, WorldSample};
 use mush_core::commands::movement::find_exit;
 use mush_core::{
-    Audience, ControlMsg, DeliveryClass, DeliveryOutcome, DisconnectKind, Effect, Effects, Engine,
-    Flags, Inbound, IncidentId, ObjId, ObjKind, Outbox, PreparedInstallation, Registry, Role,
-    ScheduledKind, StagedAction, StagedActionPersistence, StepOutcome, TickCadence, World,
-    WorldCommand, WorldEvent, can_perceive, event_subject, is_ignoring, narrative_actor,
-    register_core_commands, register_engine_commands,
+    ActionInvocation, Audience, ControlMsg, DefinitionRef, DeliveryClass, DeliveryOutcome,
+    DisconnectKind, Effect, Effects, Engine, Flags, Inbound, IncidentId, ObjId, ObjKind, Outbox,
+    PreparedInstallation, Registry, RevisionSet, Role, ScheduledKind, StagedAction,
+    StagedActionPersistence, StepOutcome, TickCadence, World, WorldCommand, WorldEvent,
+    can_perceive, event_subject, is_ignoring, narrative_actor, register_core_commands,
+    register_engine_commands,
 };
 use mush_ipc::{MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, SendTarget};
 use mush_llm::LlmService;
 use mush_proto::{OutputEvent, RichText};
 use mush_store::{
-    AccountRec, AuthoritativeReceipt, InMemoryStore, ObjectStore, SshKeyRec, WriteBatch,
+    AccountRec, AuthoritativeReceipt, InMemoryStore, IntentReceipt, ObjectStore, SshKeyRec,
+    WriteBatch,
 };
 use sha2::{Digest, Sha256};
 use smol_str::SmolStr;
@@ -90,11 +92,14 @@ use tokio::sync::mpsc::error::{TryRecvError, TrySendError};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
+use crate::action_coordinator::{ActionCoordinator, ActionPermit, StagedAuthoritativeAction};
 use crate::durable_outbox::{
     DurableOutboxPolicy, DurableOutboxRegistry, run_authoritative_outbox_worker,
 };
 use crate::gateway_sink::GatewaySink;
-use crate::persist::{self, AuthoritativeCommitFailure, PersistenceIntegrityLatch, StoreJob};
+use crate::persist::{
+    self, AuthoritativeCommitFailure, PersistenceIntegrityLatch, StoreJob, StoreWriter,
+};
 use crate::retained::RetainedSeals;
 use crate::staff::{StaffOp, StaffOpKind, StaffQueue};
 
@@ -253,6 +258,10 @@ pub enum WorldMsg {
         /// `true` only for the exact tracked association.
         reply: oneshot::Sender<Result<bool, WorldReadError>>,
     },
+    /// Execute one already-preflighted authoritative action inside the world
+    /// single-writer. The opaque permit proves the store lookup happened
+    /// before provider resolution or truth reads.
+    AuthoritativeAction(Box<AuthoritativeActionRequest>),
     /// Ordering barrier: replied to once every message queued before it has
     /// been processed *and its output delivered*. The QUIT flow uses this to
     /// flush a quitting player's in-flight output before detaching them.
@@ -260,6 +269,14 @@ pub enum WorldMsg {
         /// Completed only when the preceding delivery boundary succeeds.
         reply: oneshot::Sender<Result<(), WorldReadError>>,
     },
+}
+
+/// Boxed world message payload for one preflighted coordinator action.
+pub struct AuthoritativeActionRequest {
+    permit: Box<ActionPermit>,
+    action: DefinitionRef,
+    invocation: ActionInvocation,
+    reply: oneshot::Sender<Result<AuthoritativeActionWatch, AuthoritativeActionStartError>>,
 }
 
 /// A typed refusal for a world read that cannot safely observe authoritative
@@ -279,6 +296,28 @@ pub enum WorldReadError {
     /// The world task disappeared or is not able to answer this read.
     #[error("the world is unavailable")]
     Unavailable,
+}
+
+/// Immediate refusal before an authoritative intent can exist.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum AuthoritativeActionStartError {
+    #[error("the world is busy with another authoritative action")]
+    Busy,
+    #[error("the world is unavailable for authoritative actions")]
+    Unavailable,
+    #[error("the authoritative action was rejected before durable ownership: {0}")]
+    Rejected(String),
+}
+
+/// Two-phase result of a world-admitted authoritative action.
+///
+/// `owned` resolves only after exact intent reservation. `finished` resolves
+/// after exact finalization and infallible RAM installation. Keeping them
+/// separate prevents IPC from confusing writer-queue acceptance with request
+/// ownership.
+pub struct AuthoritativeActionWatch {
+    pub owned: oneshot::Receiver<Result<StagedAuthoritativeAction, AuthoritativeCommitFailure>>,
+    pub finished: oneshot::Receiver<Result<StagedAuthoritativeAction, AuthoritativeCommitFailure>>,
 }
 
 /// A control signal from the store-writer task to the world loop (health
@@ -751,7 +790,9 @@ fn classify_world_msg(msg: &WorldMsg) -> IngressClass {
     match msg {
         WorldMsg::Inbound(msg) => classify_inbound(msg),
         WorldMsg::ReAttach { .. } => IngressClass::TransportBookkeeping,
-        WorldMsg::CreatePlayer { .. } => IngressClass::WorldMutation,
+        WorldMsg::CreatePlayer { .. } | WorldMsg::AuthoritativeAction(_) => {
+            IngressClass::WorldMutation
+        }
         WorldMsg::NameFree { .. }
         | WorldMsg::InInputContext { .. }
         | WorldMsg::ConnectionReady { .. } => IngressClass::WorldRead,
@@ -971,6 +1012,37 @@ impl WorldHandle {
             return Err(WorldReadError::Unavailable);
         }
         rx.await.unwrap_or(Err(WorldReadError::Unavailable))
+    }
+
+    /// Hand one preflighted semantic action to the world single-writer.
+    ///
+    /// The returned watch is not an acceptance acknowledgement. Its `owned`
+    /// receiver is the only proof that the K3 writer crossed the exact durable
+    /// intent boundary; callers must retain pre-intent custody until then.
+    pub async fn authoritative_action(
+        &self,
+        permit: Box<ActionPermit>,
+        action: DefinitionRef,
+        invocation: ActionInvocation,
+    ) -> Result<AuthoritativeActionWatch, AuthoritativeActionStartError> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(WorldMsg::AuthoritativeAction(Box::new(
+                AuthoritativeActionRequest {
+                    permit,
+                    action,
+                    invocation,
+                    reply,
+                },
+            )))
+            .await
+            .is_err()
+        {
+            return Err(AuthoritativeActionStartError::Unavailable);
+        }
+        rx.await
+            .unwrap_or(Err(AuthoritativeActionStartError::Unavailable))
     }
 
     /// Typed round-trip barrier: resolves once everything sent through this
@@ -1242,11 +1314,16 @@ fn spawn_persist_with_gateway_mode(
 enum Wake {
     Msg(WorldMsg),
     Signal(WriterSignal),
-    CommitAck(Result<(), AuthoritativeCommitFailure>),
+    CommitReceipt(PendingReceiptEvent),
     Timer,
     Shutdown,
     ShutdownDeadline,
     Closed,
+}
+
+enum PendingReceiptEvent {
+    Owned(Result<IntentReceipt, AuthoritativeCommitFailure>),
+    Final(Result<(), AuthoritativeCommitFailure>),
 }
 
 type ClassifiedSend = (DeliveryClass, SendTarget, Arc<OutputEvent>);
@@ -1254,6 +1331,14 @@ type ClassifiedSend = (DeliveryClass, SendTarget, Arc<OutputEvent>);
 struct CreateCompletion {
     id: ObjId,
     reply: oneshot::Sender<Result<ObjId, CreatePlayerErr>>,
+}
+
+struct ActionCompletion {
+    staged: StagedAuthoritativeAction,
+    owned: Option<oneshot::Sender<Result<StagedAuthoritativeAction, AuthoritativeCommitFailure>>>,
+    finished:
+        Option<oneshot::Sender<Result<StagedAuthoritativeAction, AuthoritativeCommitFailure>>>,
+    ownership_valid: bool,
 }
 
 /// One authoritative batch whose presentation and external work remain held
@@ -1265,6 +1350,7 @@ struct PendingCommit {
     effects: Vec<(DeliveryClass, Effect)>,
     failure_actor: Option<ObjId>,
     create: Option<CreateCompletion>,
+    action: Option<ActionCompletion>,
     /// Typed action-state images installed only after this exact receipt.
     prepared_installation: Option<PreparedInstallation>,
     barriers: Vec<oneshot::Sender<Result<(), WorldReadError>>>,
@@ -1284,6 +1370,7 @@ enum PendingReceipt {
     Authoritative {
         expected_token: mush_core::CommitToken,
         expected_hash: mush_core::CanonicalHash,
+        ownership: Option<oneshot::Receiver<Result<IntentReceipt, AuthoritativeCommitFailure>>>,
         receiver: oneshot::Receiver<Result<AuthoritativeReceipt, AuthoritativeCommitFailure>>,
     },
 }
@@ -1319,6 +1406,7 @@ impl PendingReceipt {
                 expected_token,
                 expected_hash,
                 receiver,
+                ..
             } => match receiver.await {
                 Ok(Ok(receipt))
                     if receipt.token() == *expected_token
@@ -1336,6 +1424,40 @@ impl PendingReceipt {
                     "store writer dropped the authoritative commit receipt".to_owned(),
                 )),
             },
+        }
+    }
+
+    async fn receive_ownership(&mut self) -> Result<IntentReceipt, AuthoritativeCommitFailure> {
+        match self {
+            Self::Legacy { .. } => std::future::pending().await,
+            Self::Authoritative { ownership, .. } => {
+                let Some(receiver) = ownership.take() else {
+                    return std::future::pending().await;
+                };
+                receiver.await.unwrap_or_else(|_| {
+                    Err(AuthoritativeCommitFailure::Integrity(
+                        "store writer dropped the authoritative ownership receipt".to_owned(),
+                    ))
+                })
+            }
+        }
+    }
+
+    const fn expects_ownership(&self) -> bool {
+        matches!(
+            self,
+            Self::Authoritative {
+                ownership: Some(_),
+                ..
+            }
+        )
+    }
+
+    async fn receive_next(&mut self) -> PendingReceiptEvent {
+        if self.expects_ownership() {
+            PendingReceiptEvent::Owned(self.receive_ownership().await)
+        } else {
+            PendingReceiptEvent::Final(self.receive().await)
         }
     }
 }
@@ -1430,7 +1552,7 @@ async fn run(
     mut engine: Engine,
     mut rx: mpsc::Receiver<WorldMsg>,
     tx: mpsc::WeakSender<WorldMsg>,
-    writer: mpsc::Sender<StoreJob>,
+    writer: StoreWriter,
     deps: ServerDeps,
     staff_ops: mpsc::Sender<StaffOp>,
     gateway: Gateway,
@@ -1568,12 +1690,12 @@ async fn run(
                 Some(sig) => Wake::Signal(sig),
                 None => { signals_open = false; Wake::Timer }
             },
-            ack = async {
+            receipt = async {
                 match pending_commit.as_mut() {
-                    Some(pending) => pending.receipt.receive().await,
+                    Some(pending) => pending.receipt.receive_next().await,
                     None => std::future::pending().await,
                 }
-            } => Wake::CommitAck(ack),
+            } => Wake::CommitReceipt(receipt),
             () = sleep_until_unix_ms(next_due), if sched_armed => Wake::Timer,
             () = tokio::time::sleep(REEMIT_INTERVAL), if reemit_pending => Wake::Timer,
             changed = shutdown.changed(), if !shutdown_requested => {
@@ -1612,6 +1734,7 @@ async fn run(
         // player of a Cmd — the only path that pushes/pops input contexts).
         let mut flood_sync: Option<ObjId> = None;
         let mut create_completion: Option<CreateCompletion> = None;
+        let mut action_completion: Option<ActionCompletion> = None;
         let mut failure_actor: Option<ObjId> = None;
         let outcome = match wake {
             Wake::Msg(msg) => {
@@ -1735,6 +1858,58 @@ async fn run(
                             let _ = reply.send(Ok(engine.actor_of(conn) == Some(actor)));
                             StepOutcome::Continue
                         }
+                        WorldMsg::AuthoritativeAction(request) => {
+                            let AuthoritativeActionRequest {
+                                permit,
+                                action,
+                                invocation,
+                                reply,
+                            } = *request;
+                            let staged = (|| {
+                                let definitions =
+                                    engine.registry.definitions().ok_or_else(|| {
+                                        "mechanics definition registry is unavailable".to_owned()
+                                    })?;
+                                let mut builder = engine
+                                    .registry
+                                    .server_guard_set_builder(RevisionSet::default())
+                                    .map_err(|error| error.to_string())?;
+                                builder
+                                    .add_definition(action.clone(), definitions)
+                                    .map_err(|error| error.to_string())?;
+                                let guards = builder.finish().map_err(|error| error.to_string())?;
+                                ActionCoordinator::prepare_and_stage(
+                                    permit,
+                                    &mut engine,
+                                    &action,
+                                    &invocation,
+                                    guards,
+                                )
+                                .map_err(|error| error.to_string())
+                            })();
+                            match staged {
+                                Ok(staged) => {
+                                    let (owned, owned_rx) = oneshot::channel();
+                                    let (finished, finished_rx) = oneshot::channel();
+                                    let _ = reply.send(Ok(AuthoritativeActionWatch {
+                                        owned: owned_rx,
+                                        finished: finished_rx,
+                                    }));
+                                    failure_actor = Some(invocation.actor());
+                                    action_completion = Some(ActionCompletion {
+                                        staged,
+                                        owned: Some(owned),
+                                        finished: Some(finished),
+                                        ownership_valid: false,
+                                    });
+                                }
+                                Err(detail) => {
+                                    let _ = reply
+                                        .send(Err(AuthoritativeActionStartError::Rejected(detail)));
+                                }
+                            }
+                            StepOutcome::Continue
+                        }
                         WorldMsg::Barrier { reply } => {
                             if let Some(pending) = pending_commit.as_mut() {
                                 // Processing is not delivery: keep the barrier
@@ -1813,7 +1988,21 @@ async fn run(
                 }
                 StepOutcome::Continue
             }
-            Wake::CommitAck(ack) => {
+            Wake::CommitReceipt(PendingReceiptEvent::Owned(ownership)) => {
+                let pending = pending_commit
+                    .as_mut()
+                    .expect("ownership receipt cannot resolve without a pending commit");
+                complete_pending_ownership(
+                    pending,
+                    ownership,
+                    &engine.world,
+                    &gateway,
+                    &mut health,
+                    &persistence_integrity,
+                );
+                StepOutcome::Continue
+            }
+            Wake::CommitReceipt(PendingReceiptEvent::Final(ack)) => {
                 let pending = pending_commit
                     .take()
                     .expect("commit receipt cannot resolve without a pending commit");
@@ -1964,7 +2153,27 @@ async fn run(
             .await
             {
                 FlushOutcome::Clean => {
-                    if create_completion.is_some() {
+                    if action_completion.is_some() {
+                        fail_action_completion(
+                            action_completion.take(),
+                            AuthoritativeCommitFailure::Integrity(
+                                "authoritative action produced no durable write".to_owned(),
+                            ),
+                        );
+                        abort_without_receipt(
+                            classified_sends,
+                            classified_effects,
+                            failure_actor,
+                            create_completion.take(),
+                            "authoritative action produced no durable write",
+                            &engine.world,
+                            &gateway,
+                            &mut health,
+                            &persistence_integrity,
+                            &tx,
+                            llm.as_ref(),
+                        );
+                    } else if create_completion.is_some() {
                         // Creating a player necessarily dirties the world. A
                         // clean result is an invariant breach, never success.
                         abort_without_receipt(
@@ -2014,6 +2223,7 @@ async fn run(
                         effects: classified_effects,
                         failure_actor,
                         create: create_completion.take(),
+                        action: action_completion.take(),
                         prepared_installation,
                         barriers: Vec::new(),
                         coalesced_reattach: None,
@@ -2024,6 +2234,13 @@ async fn run(
                     receipt: None,
                     prepared_installation,
                 } => {
+                    fail_action_completion(
+                        action_completion.take(),
+                        AuthoritativeCommitFailure::Integrity(
+                            "durable writer accepted an authoritative action without returning its receipt"
+                                .to_owned(),
+                        ),
+                    );
                     if let Some(installation) = prepared_installation {
                         engine.abort_prepared_action(installation);
                     }
@@ -2042,6 +2259,10 @@ async fn run(
                     );
                 }
                 FlushOutcome::Refused(detail) => {
+                    fail_action_completion(
+                        action_completion.take(),
+                        AuthoritativeCommitFailure::Refused(detail.clone()),
+                    );
                     refuse_before_submission(
                         classified_sends,
                         classified_effects,
@@ -2055,6 +2276,10 @@ async fn run(
                     );
                 }
                 FlushOutcome::Rejected(detail) => {
+                    fail_action_completion(
+                        action_completion.take(),
+                        AuthoritativeCommitFailure::Integrity(detail.clone()),
+                    );
                     abort_without_receipt(
                         classified_sends,
                         classified_effects,
@@ -2070,6 +2295,13 @@ async fn run(
                     );
                 }
                 FlushOutcome::WriterGone => {
+                    fail_action_completion(
+                        action_completion.take(),
+                        AuthoritativeCommitFailure::Integrity(
+                            "store writer disappeared before accepting the authoritative batch"
+                                .to_owned(),
+                        ),
+                    );
                     abort_without_receipt(
                         classified_sends,
                         classified_effects,
@@ -2156,6 +2388,7 @@ async fn run(
                         effects,
                         failure_actor: local_failure_actor,
                         create: None,
+                        action: None,
                         prepared_installation,
                         barriers: Vec::new(),
                         coalesced_reattach: None,
@@ -2336,6 +2569,7 @@ async fn run(
                         effects,
                         failure_actor: None,
                         create: None,
+                        action: None,
                         prepared_installation,
                         barriers: Vec::new(),
                         coalesced_reattach: None,
@@ -2501,6 +2735,14 @@ fn refuse_world_msg(msg: WorldMsg, reason: RefusalReason, gateway: &Gateway) {
                 WorldReadError::Unavailable
             };
             let _ = reply.send(Err(error));
+        }
+        WorldMsg::AuthoritativeAction(request) => {
+            let error = if reason == RefusalReason::CommitPending {
+                AuthoritativeActionStartError::Busy
+            } else {
+                AuthoritativeActionStartError::Unavailable
+            };
+            let _ = request.reply.send(Err(error));
         }
         WorldMsg::Barrier { reply } => {
             let error = if reason == RefusalReason::CommitPending {
@@ -2715,7 +2957,7 @@ enum FlushOutcome {
 #[allow(clippy::too_many_arguments)]
 async fn flush_engine_step(
     engine: &mut Engine,
-    writer: &mpsc::Sender<StoreJob>,
+    writer: &StoreWriter,
     serial: &mut u64,
     health: &mut StoreHealth,
     metrics: &Metrics,
@@ -2752,10 +2994,10 @@ async fn flush_engine_step(
 /// writer and install only after its matching durable receipt.
 async fn flush_prepared_action(
     engine: &mut Engine,
-    writer: &mpsc::Sender<StoreJob>,
+    writer: &StoreWriter,
     serial: &mut u64,
     health: &mut StoreHealth,
-    metrics: &Metrics,
+    _metrics: &Metrics,
     retained: &mut RetainedSeals,
     high_water: &AtomicU64,
 ) -> FlushOutcome {
@@ -2828,9 +3070,14 @@ async fn flush_prepared_action(
         StagedActionPersistence::Authoritative(bundle) => {
             let expected_token = bundle.token();
             let expected_hash = bundle.bundle_hash();
+            let (ownership_notify, ownership) = oneshot::channel();
             let (notify, receiver) = oneshot::channel();
             if writer
-                .send(StoreJob::Authoritative { bundle, notify })
+                .send(StoreJob::Authoritative {
+                    bundle,
+                    ownership: ownership_notify,
+                    notify,
+                })
                 .await
                 .is_err()
             {
@@ -2844,11 +3091,11 @@ async fn flush_prepared_action(
             PendingReceipt::Authoritative {
                 expected_token,
                 expected_hash,
+                ownership: Some(ownership),
                 receiver,
             }
         }
     };
-    metrics.add_store_write_queue_depth(1);
     health.last_write_unix = Some(unix_now_s());
     FlushOutcome::Queued {
         receipt: Some(receipt),
@@ -2882,11 +3129,11 @@ fn legacy_reserved_action_state_violation(ops: &[mush_core::ModuleOp]) -> Option
 #[allow(clippy::too_many_arguments)] // threads the loop's persistence context
 async fn flush_dirty(
     engine: &mut Engine,
-    writer: &mpsc::Sender<StoreJob>,
+    writer: &StoreWriter,
     serial: &mut u64,
     durable: bool,
     health: &mut StoreHealth,
-    metrics: &Metrics,
+    _metrics: &Metrics,
     retained: &mut RetainedSeals,
     high_water: &AtomicU64,
     quarantine_spool: &crate::quarantine::QuarantineSpool,
@@ -2959,8 +3206,7 @@ async fn flush_dirty(
             "authoritative batch rejected before enqueue: retained-seal custody invariant"
         );
         let detail = retention_error.to_string();
-        persist::preserve_unqueued_seals(quarantine_spool, &batch.module_ops, *serial, &detail)
-            .await;
+        persist::preserve_unqueued_batch(quarantine_spool, &batch, &detail).await;
         return FlushOutcome::Rejected(detail);
     }
     let (notify, receipt) = if durable {
@@ -2983,18 +3229,16 @@ async fn flush_dirty(
             serial = *serial,
             "store writer gone; batch dropped (teardown)"
         );
-        persist::preserve_unqueued_seals(
+        persist::preserve_unqueued_batch(
             quarantine_spool,
-            &batch.module_ops,
-            *serial,
+            &batch,
             "store writer queue closed before accepting authoritative batch",
         )
         .await;
         return FlushOutcome::WriterGone;
     }
-    // The writer decrements this as it drains each batch; together they track
-    // the store write-queue depth for `/metrics` and `@stats`.
-    metrics.add_store_write_queue_depth(1);
+    // StoreWriter acquired the matching lane permit and published queue depth
+    // before returning; it holds both until the writer finishes this job.
     health.last_write_unix = Some(unix_now_s());
     FlushOutcome::Queued {
         receipt,
@@ -3591,7 +3835,7 @@ fn human_duration(mut s: i64) -> String {
 async fn run_staff_ops(
     _deps: &ServerDeps,
     gateway: &Gateway,
-    writer: &mpsc::Sender<StoreJob>,
+    writer: &StoreWriter,
     staff_ops: &mpsc::Sender<StaffOp>,
     ops: Vec<StaffOp>,
 ) -> bool {
@@ -4423,6 +4667,79 @@ fn release_independent_while_pending(
 // single boundary; hiding the mutable health/latch pair in ambient state would
 // make it easier to freeze the world without publishing the shutdown barrier.
 #[allow(clippy::too_many_arguments)]
+fn complete_pending_ownership(
+    pending: &mut PendingCommit,
+    ownership: Result<IntentReceipt, AuthoritativeCommitFailure>,
+    world: &World,
+    gateway: &Gateway,
+    health: &mut StoreHealth,
+    persistence_integrity: &PersistenceIntegrityLatch,
+) {
+    let expected = match &pending.receipt {
+        PendingReceipt::Authoritative {
+            expected_token,
+            expected_hash,
+            ..
+        } => Some((*expected_token, *expected_hash)),
+        PendingReceipt::Legacy { .. } => None,
+    };
+    let mut result = match (expected, ownership) {
+        (Some((token, hash)), Ok(receipt))
+            if receipt.token == token && receipt.bundle_hash == hash =>
+        {
+            Ok(())
+        }
+        (Some((token, hash)), Ok(receipt)) => Err(AuthoritativeCommitFailure::Integrity(format!(
+            "authoritative ownership receipt mismatch: expected {token}/{hash}, received {}/{}",
+            receipt.token, receipt.bundle_hash
+        ))),
+        (Some(_), Err(failure)) => Err(failure),
+        (None, _) => Err(AuthoritativeCommitFailure::Integrity(
+            "legacy commit produced an authoritative ownership receipt".to_owned(),
+        )),
+    };
+
+    if let Some(action) = pending.action.as_mut() {
+        if result.is_ok()
+            && expected.is_some_and(|(token, hash)| {
+                action.staged.token != token || action.staged.bundle_hash != hash
+            })
+        {
+            result = Err(AuthoritativeCommitFailure::Integrity(
+                "world action identity does not match its authoritative ownership receipt"
+                    .to_owned(),
+            ));
+        }
+        action.ownership_valid = result.is_ok();
+        if let Some(reply) = action.owned.take() {
+            let projected = result
+                .as_ref()
+                .map(|()| action.staged)
+                .map_err(Clone::clone);
+            let _ = reply.send(projected);
+        }
+    }
+    if let Err(AuthoritativeCommitFailure::Integrity(detail)) = result {
+        apply_integrity_freeze(world, gateway, health, persistence_integrity, &detail);
+    }
+}
+
+fn fail_action_completion(
+    completion: Option<ActionCompletion>,
+    failure: AuthoritativeCommitFailure,
+) {
+    let Some(mut completion) = completion else {
+        return;
+    };
+    if let Some(owned) = completion.owned.take() {
+        let _ = owned.send(Err(failure.clone()));
+    }
+    if let Some(finished) = completion.finished.take() {
+        let _ = finished.send(Err(failure));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn complete_pending_commit(
     pending: PendingCommit,
     ack: Result<(), AuthoritativeCommitFailure>,
@@ -4438,11 +4755,13 @@ fn complete_pending_commit(
         effects,
         failure_actor,
         create,
+        mut action,
         prepared_installation,
         barriers,
         coalesced_reattach,
         ..
     } = pending;
+    let terminal_failure = ack.as_ref().err().cloned();
     let (outcome, failure, integrity_failure) = match ack {
         Ok(()) => (DeliveryOutcome::Committed, None, false),
         Err(AuthoritativeCommitFailure::Refused(detail)) => {
@@ -4464,6 +4783,20 @@ fn complete_pending_commit(
         } else {
             engine.abort_prepared_action(installation);
         }
+    }
+    if let Some(completion) = action.as_mut()
+        && let Some(finished) = completion.finished.take()
+    {
+        let result = if outcome == DeliveryOutcome::Committed && completion.ownership_valid {
+            Ok(completion.staged)
+        } else {
+            Err(terminal_failure.unwrap_or_else(|| {
+                AuthoritativeCommitFailure::Integrity(
+                    "authoritative action finalized without an exact ownership receipt".to_owned(),
+                )
+            }))
+        };
+        let _ = finished.send(result);
     }
     release_classified_sends(gateway, sends, outcome);
     let effect_mode = if outcome == DeliveryOutcome::Committed && !health.mode.integrity_frozen() {
@@ -5142,12 +5475,25 @@ mod tests {
             request_hash: CanonicalHash::from_bytes([identity.wrapping_add(3); 32]),
             plan_hash: CanonicalHash::from_bytes([identity.wrapping_add(4); 32]),
             action: action.clone(),
-            provider: owner,
+            provider: owner.clone(),
             cause: PreparedCausalRef::new(request, None, 0).unwrap(),
-            definitions: vec![action, outcome_definition.clone()],
+            definitions: vec![action.clone(), outcome_definition.clone()],
             writes: prepared.authoritative_replay_writes(),
-            outcome: RulesValue::new(outcome_definition, serde_json::json!({ "accepted": true }))
+            outcome: RulesValue::new(
+                outcome_definition.clone(),
+                serde_json::json!({ "accepted": true }),
+            )
+            .unwrap(),
+            semantic_events: vec![
+                mush_core::AuthoritativeSemanticEvent::root(
+                    PreparedCausalRef::new(request, None, 0).unwrap(),
+                    &action,
+                    RulesValue::new(outcome_definition, serde_json::json!({ "accepted": true }))
+                        .unwrap(),
+                    vec![principal.clone()],
+                )
                 .unwrap(),
+            ],
             eligible_witnesses: vec![principal],
             durable_outbox: vec![],
         })
@@ -5169,6 +5515,7 @@ mod tests {
             effects: Vec::new(),
             failure_actor: None,
             create: None,
+            action: None,
             prepared_installation: Some(installation),
             barriers: Vec::new(),
             coalesced_reattach: None,
@@ -6047,6 +6394,7 @@ mod tests {
             )],
             failure_actor: Some(GOD),
             create: None,
+            action: None,
             prepared_installation: None,
             barriers: Vec::new(),
             coalesced_reattach: None,
@@ -6069,7 +6417,7 @@ mod tests {
             .stage_prepared_action(prepared, guards)
             .expect("clean engine accepts prepared action");
 
-        let (writer, mut writer_rx) = mpsc::channel(1);
+        let (writer, mut writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
         let mut serial = 0;
         let mut health = StoreHealth::new();
         let metrics = Metrics::new();
@@ -6163,7 +6511,7 @@ mod tests {
             .stage_authoritative_action(prepared, guards, bundle.clone())
             .expect("matching bundle stages");
 
-        let (writer, mut writer_rx) = mpsc::channel(1);
+        let (writer, mut writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
         let mut serial = 0;
         let mut health = StoreHealth::new();
         let metrics = Metrics::new();
@@ -6193,6 +6541,7 @@ mod tests {
         );
         let StoreJob::Authoritative {
             bundle: queued,
+            ownership,
             notify,
         } = writer_rx.recv().await.expect("exact bundle queued")
         else {
@@ -6201,15 +6550,19 @@ mod tests {
         assert_eq!(queued.as_ref(), &bundle);
 
         let store = InMemoryStore::new();
-        store
+        let intent = store
             .reserve_authoritative_intent((*queued).clone())
             .await
             .unwrap();
+        ownership.send(Ok(intent)).unwrap();
         let exact = store
             .reconcile_authoritative(expected_token, expected_hash)
             .await
             .unwrap();
         notify.send(Ok(exact)).unwrap();
+        let owned = pending_receipt.receive_ownership().await.unwrap();
+        assert_eq!(owned.token, expected_token);
+        assert_eq!(owned.bundle_hash, expected_hash);
         let ack = pending_receipt.receive().await;
 
         let mut pending = pending_with_prepared_installation(0, installation);
@@ -6317,7 +6670,7 @@ mod tests {
             "revision changes used by pure validation are not legacy writes"
         );
 
-        let (writer, mut writer_rx) = mpsc::channel(1);
+        let (writer, mut writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
         let mut serial = 0;
         let mut health = StoreHealth::new();
         let metrics = Metrics::new();
@@ -6434,7 +6787,7 @@ mod tests {
             .stage_prepared_action(prepared, guards)
             .expect("clean engine accepts prepared action");
 
-        let (writer, writer_rx) = mpsc::channel(1);
+        let (writer, writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
         drop(writer_rx);
         let mut serial = 0;
         let mut health = StoreHealth::new();
@@ -6503,7 +6856,8 @@ mod tests {
             }
             assert!(engine.has_legacy_persistence_work());
 
-            let (writer, mut writer_rx) = mpsc::channel(1);
+            let (writer, mut writer_rx) =
+                persist::test_store_writer_channel(Arc::new(Metrics::new()));
             let mut serial = 0;
             let mut health = StoreHealth::new();
             let metrics = Metrics::new();
@@ -6726,10 +7080,10 @@ mod tests {
             tx: tx.clone(),
             shutdown: Some(shutdown_tx),
         };
-        let (writer, mut writer_rx) = mpsc::channel(2);
         let (staff_tx, _staff_rx) = mpsc::channel(STAFF_OPS_CAPACITY);
         let (_signal_tx, signal_rx) = writer_signal_channel();
         let metrics = Arc::new(Metrics::new());
+        let (writer, mut writer_rx) = persist::test_store_writer_channel(Arc::clone(&metrics));
         let mut deps = ServerDeps::in_memory();
         deps.metrics = Arc::clone(&metrics);
         let recorder = Arc::new(RecordingGateway::default());
@@ -6890,6 +7244,7 @@ mod tests {
             )],
             failure_actor: None,
             create: None,
+            action: None,
             prepared_installation: None,
             barriers: Vec::new(),
             coalesced_reattach: None,

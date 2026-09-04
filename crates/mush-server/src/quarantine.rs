@@ -19,7 +19,9 @@ use mush_core::{
     AuthoritativeBundle, CanonicalHash, CommitToken, LedgerChunk, MAX_MODULE_KEY_BYTES,
     MAX_MODULE_NAMESPACE_BYTES,
 };
-use mush_store::{AuthoritativeReceipt, BundleStatus, ObjectStore, StoreError};
+use mush_store::{
+    AuthoritativeReceipt, BundleStatus, ModuleOp, ModuleWrite, ObjectStore, StoreError, WriteBatch,
+};
 use serde::{Deserialize, Serialize};
 
 use mush_config::unix_now_s;
@@ -80,13 +82,12 @@ pub trait QuarantineTargetReader: Send + Sync {
 
     /// Inspect an exact authoritative bundle identity without exposing any
     /// non-recovery write surface.
-    fn quarantine_bundle_status(
-        &self,
-        token: CommitToken,
-        bundle_hash: CanonicalHash,
-    ) -> BoxFuture<'_, Result<BundleStatus, StoreError>> {
+    fn quarantine_bundle_status<'a>(
+        &'a self,
+        bundle: &'a AuthoritativeBundle,
+    ) -> BoxFuture<'a, Result<BundleStatus, StoreError>> {
         Box::pin(async move {
-            let _ = (token, bundle_hash);
+            let _ = bundle;
             Err(StoreError::AuthoritativeCorrupt(
                 "quarantine reader has no authoritative bundle capability".to_owned(),
             ))
@@ -106,6 +107,53 @@ pub trait QuarantineTargetReader: Send + Sync {
             ))
         })
     }
+
+    /// Restore one exact bundle from its quarantine tombstone before a
+    /// recovery retry. The evidence hash is the verified spool record
+    /// identity.
+    fn restore_quarantine_bundle<'a>(
+        &'a self,
+        bundle: &'a AuthoritativeBundle,
+        evidence_hash: CanonicalHash,
+    ) -> BoxFuture<'a, Result<(), StoreError>> {
+        Box::pin(async move {
+            let _ = (bundle, evidence_hash);
+            Err(StoreError::AuthoritativeCorrupt(
+                "quarantine reader cannot restore an authoritative bundle".to_owned(),
+            ))
+        })
+    }
+
+    /// Return a failed recovery retry to its compact non-replayable tombstone.
+    fn rediscard_quarantine_bundle(
+        &self,
+        token: CommitToken,
+        bundle_hash: CanonicalHash,
+        evidence_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<(), StoreError>> {
+        Box::pin(async move {
+            let _ = (token, bundle_hash, evidence_hash);
+            Err(StoreError::AuthoritativeCorrupt(
+                "quarantine reader cannot rediscard an authoritative bundle".to_owned(),
+            ))
+        })
+    }
+
+    /// Prove or safely restore one complete legacy batch. `true` means every
+    /// final post-image is exact. `false` means the batch is deterministic
+    /// poison or contains a non-idempotent operation whose application cannot
+    /// be proven; its recovery record must remain active.
+    fn reconcile_quarantine_legacy_batch<'a>(
+        &'a self,
+        batch: &'a WriteBatch,
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        Box::pin(async move {
+            let _ = batch;
+            Err(StoreError::AuthoritativeCorrupt(
+                "quarantine reader cannot reconcile a legacy write batch".to_owned(),
+            ))
+        })
+    }
 }
 
 impl<T: ObjectStore + ?Sized> QuarantineTargetReader for T {
@@ -117,11 +165,10 @@ impl<T: ObjectStore + ?Sized> QuarantineTargetReader for T {
         ObjectStore::module_json_get(self, namespace, key)
     }
 
-    fn quarantine_bundle_status(
-        &self,
-        token: CommitToken,
-        bundle_hash: CanonicalHash,
-    ) -> BoxFuture<'_, Result<BundleStatus, StoreError>> {
+    fn quarantine_bundle_status<'a>(
+        &'a self,
+        bundle: &'a AuthoritativeBundle,
+    ) -> BoxFuture<'a, Result<BundleStatus, StoreError>> {
         Box::pin(async move {
             self.authoritative_store()
                 .ok_or_else(|| {
@@ -129,7 +176,7 @@ impl<T: ObjectStore + ?Sized> QuarantineTargetReader for T {
                         "quarantine store has no authoritative bundle capability".to_owned(),
                     )
                 })?
-                .authoritative_status(token, bundle_hash)
+                .authoritative_bundle_status(bundle)
                 .await
         })
     }
@@ -150,6 +197,150 @@ impl<T: ObjectStore + ?Sized> QuarantineTargetReader for T {
                 .await
         })
     }
+
+    fn restore_quarantine_bundle<'a>(
+        &'a self,
+        bundle: &'a AuthoritativeBundle,
+        evidence_hash: CanonicalHash,
+    ) -> BoxFuture<'a, Result<(), StoreError>> {
+        Box::pin(async move {
+            self.authoritative_store()
+                .ok_or_else(|| {
+                    StoreError::AuthoritativeCorrupt(
+                        "quarantine store has no authoritative bundle capability".to_owned(),
+                    )
+                })?
+                .restore_quarantined_authoritative_intent(bundle.clone(), evidence_hash)
+                .await
+                .map(|_| ())
+        })
+    }
+
+    fn rediscard_quarantine_bundle(
+        &self,
+        token: CommitToken,
+        bundle_hash: CanonicalHash,
+        evidence_hash: CanonicalHash,
+    ) -> BoxFuture<'_, Result<(), StoreError>> {
+        Box::pin(async move {
+            self.authoritative_store()
+                .ok_or_else(|| {
+                    StoreError::AuthoritativeCorrupt(
+                        "quarantine store has no authoritative bundle capability".to_owned(),
+                    )
+                })?
+                .discard_quarantined_authoritative_intent(token, bundle_hash, evidence_hash)
+                .await
+                .map(|_| ())
+        })
+    }
+
+    fn reconcile_quarantine_legacy_batch<'a>(
+        &'a self,
+        batch: &'a WriteBatch,
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        Box::pin(async move {
+            if legacy_batch_matches(self, batch).await? {
+                return Ok(true);
+            }
+            if batch
+                .module_ops
+                .iter()
+                .any(|op| matches!(op.op, ModuleWrite::StreamAppend { .. }))
+            {
+                return Ok(false);
+            }
+            if let Some(expected_next_id) = batch.next_id
+                && let Some(snapshot) = self.load_world().await?
+                && snapshot.next_id > expected_next_id
+            {
+                // Never move the allocator backwards merely to reproduce an
+                // older failed batch. That could remint a live/tombstoned id.
+                return Ok(false);
+            }
+            match self.write(batch.clone()).await {
+                Ok(receipt) if receipt.serial == batch.serial => {
+                    legacy_batch_matches(self, batch).await
+                }
+                Ok(receipt) => Err(StoreError::AuthoritativeCorrupt(format!(
+                    "legacy quarantine replay expected receipt {}, got {}",
+                    batch.serial, receipt.serial
+                ))),
+                Err(error) if error.is_transient() => Err(error),
+                Err(_) => Ok(false),
+            }
+        })
+    }
+}
+
+async fn legacy_batch_matches<T: ObjectStore + ?Sized>(
+    store: &T,
+    batch: &WriteBatch,
+) -> Result<bool, StoreError> {
+    // Legacy XADD allocates its entry id inside Redis. Without a stable item
+    // identity, an equal payload at the tail cannot prove this particular
+    // append happened, and replay could duplicate it.
+    if batch
+        .module_ops
+        .iter()
+        .any(|op| matches!(op.op, ModuleWrite::StreamAppend { .. }))
+    {
+        return Ok(false);
+    }
+
+    let mut object_postimages: BTreeMap<mush_core::ObjId, Option<&mush_core::Obj>> =
+        BTreeMap::new();
+    for object in &batch.upserts {
+        object_postimages.insert(object.id, Some(object));
+    }
+    for object in &batch.deletes {
+        object_postimages.insert(*object, None);
+    }
+    if !object_postimages.is_empty() || batch.next_id.is_some() {
+        let Some(snapshot) = store.load_world().await? else {
+            return Ok(false);
+        };
+        if batch
+            .next_id
+            .is_some_and(|expected| snapshot.next_id != expected)
+        {
+            return Ok(false);
+        }
+        let observed: BTreeMap<_, _> = snapshot
+            .objects
+            .iter()
+            .map(|object| (object.id, object))
+            .collect();
+        for (id, expected) in object_postimages {
+            match (expected, observed.get(&id).copied()) {
+                (Some(expected), Some(observed)) if expected == observed => {}
+                (None, None) => {}
+                _ => return Ok(false),
+            }
+        }
+    }
+
+    let mut module_postimages: BTreeMap<(&str, &str), Option<&serde_json::Value>> = BTreeMap::new();
+    for op in &batch.module_ops {
+        match &op.op {
+            ModuleWrite::JsonSet { key, value } => {
+                module_postimages.insert((op.ns.as_str(), key.as_str()), Some(value));
+            }
+            ModuleWrite::Del { key } => {
+                module_postimages.insert((op.ns.as_str(), key.as_str()), None);
+            }
+            ModuleWrite::StreamAppend { .. } => unreachable!("rejected above"),
+        }
+    }
+    for ((namespace, key), expected) in module_postimages {
+        let observed = store.module_json_get(namespace, key).await?;
+        match (expected, observed.as_ref()) {
+            (Some(expected), Some(observed)) if expected == observed => {}
+            (None, None) => {}
+            _ => return Ok(false),
+        }
+    }
+    Ok(true)
 }
 
 /// Result of one bounded exact-target recovery pass.
@@ -199,6 +390,15 @@ pub enum QuarantineRecoveryError {
     BundleWitnessMismatch {
         /// Durable bundle identity from the validated record.
         token: CommitToken,
+    },
+    /// A complete legacy batch could not be inspected or safely replayed.
+    #[error("recovering quarantined legacy batch {serial}: {source}")]
+    LegacyBatchRecovery {
+        /// Original FIFO writer serial.
+        serial: u64,
+        /// Transient or integrity failure from the store.
+        #[source]
+        source: StoreError,
     },
     /// The spool or resolved-evidence archive could not be read, validated, or
     /// durably updated.
@@ -359,6 +559,52 @@ enum QuarantineContentV2 {
         bundle_hash: CanonicalHash,
         bundle: Box<AuthoritativeBundle>,
     },
+    /// Complete custody for one legacy writer batch whose acknowledgement is
+    /// deterministic or unknowable. Unlike the older seal-only record, this
+    /// retains object post-images, deletes, every module operation, and the
+    /// allocator together. Recovery replays it only when every operation is
+    /// an idempotent absolute post-image.
+    LegacyWriteBatch {
+        batch_hash: CanonicalHash,
+        batch: Box<LegacyBatchPayload>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyBatchPayload {
+    serial: u64,
+    upserts: Vec<mush_core::Obj>,
+    deletes: Vec<mush_core::ObjId>,
+    module_ops: Vec<ModuleOp>,
+    next_id: Option<u32>,
+    durable: bool,
+}
+
+impl From<&WriteBatch> for LegacyBatchPayload {
+    fn from(batch: &WriteBatch) -> Self {
+        Self {
+            serial: batch.serial,
+            upserts: batch.upserts.clone(),
+            deletes: batch.deletes.clone(),
+            module_ops: batch.module_ops.clone(),
+            next_id: batch.next_id,
+            durable: batch.durable,
+        }
+    }
+}
+
+impl From<LegacyBatchPayload> for WriteBatch {
+    fn from(batch: LegacyBatchPayload) -> Self {
+        Self {
+            serial: batch.serial,
+            upserts: batch.upserts,
+            deletes: batch.deletes,
+            module_ops: batch.module_ops,
+            next_id: batch.next_id,
+            durable: batch.durable,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -419,6 +665,11 @@ enum RecoveryTargetKind {
     AuthoritativeBundle {
         token: CommitToken,
         bundle_hash: CanonicalHash,
+        bundle: Box<AuthoritativeBundle>,
+    },
+    LegacyWriteBatch {
+        batch_hash: CanonicalHash,
+        batch: Box<WriteBatch>,
     },
 }
 
@@ -427,6 +678,9 @@ enum RecoveryProof<'a> {
     AuthoritativeBundle {
         token: CommitToken,
         bundle_hash: CanonicalHash,
+    },
+    LegacyWriteBatch {
+        batch_hash: CanonicalHash,
     },
 }
 
@@ -681,14 +935,19 @@ impl QuarantineSpool {
                         resolved = resolved.saturating_add(1);
                     }
                 }
-                RecoveryTargetKind::AuthoritativeBundle { token, bundle_hash } => {
-                    let status = reader
-                        .quarantine_bundle_status(token, bundle_hash)
-                        .await
-                        .map_err(|source| QuarantineRecoveryError::BundleRecovery {
-                            token,
-                            source,
-                        })?;
+                RecoveryTargetKind::AuthoritativeBundle {
+                    token,
+                    bundle_hash,
+                    bundle,
+                } => {
+                    let status =
+                        reader
+                            .quarantine_bundle_status(&bundle)
+                            .await
+                            .map_err(|source| QuarantineRecoveryError::BundleRecovery {
+                                token,
+                                source,
+                            })?;
                     let exact = match status {
                         BundleStatus::FinalizedExact(receipt) => {
                             if receipt.token() != token || receipt.bundle_hash() != bundle_hash {
@@ -720,12 +979,99 @@ impl QuarantineSpool {
                                 }
                             }
                         }
-                        BundleStatus::Absent | BundleStatus::Conflict { .. } => false,
+                        BundleStatus::QuarantinedExact(receipt) => {
+                            let evidence_hash = CanonicalHash::from_hex(&target.identity)
+                                .expect("validated bundle quarantine identity is SHA-256");
+                            if receipt.token() != token
+                                || receipt.bundle_hash() != bundle_hash
+                                || receipt.evidence_hash() != evidence_hash
+                                || !receipt.matches_bundle(&bundle)
+                            {
+                                return Err(QuarantineRecoveryError::BundleWitnessMismatch {
+                                    token,
+                                });
+                            }
+                            let restored = match reader
+                                .restore_quarantine_bundle(&bundle, evidence_hash)
+                                .await
+                            {
+                                Ok(()) => true,
+                                Err(error) if !error.is_transient() => false,
+                                Err(source) => {
+                                    return Err(QuarantineRecoveryError::BundleRecovery {
+                                        token,
+                                        source,
+                                    });
+                                }
+                            };
+                            if !restored {
+                                false
+                            } else {
+                                match reader.reconcile_quarantine_bundle(token, bundle_hash).await {
+                                    Ok(finalized)
+                                        if finalized.token() == token
+                                            && finalized.bundle_hash() == bundle_hash =>
+                                    {
+                                        true
+                                    }
+                                    Ok(_) => {
+                                        return Err(
+                                            QuarantineRecoveryError::BundleWitnessMismatch {
+                                                token,
+                                            },
+                                        );
+                                    }
+                                    Err(error) if !error.is_transient() => {
+                                        reader
+                                            .rediscard_quarantine_bundle(
+                                                token,
+                                                bundle_hash,
+                                                evidence_hash,
+                                            )
+                                            .await
+                                            .map_err(|source| {
+                                                QuarantineRecoveryError::BundleRecovery {
+                                                    token,
+                                                    source,
+                                                }
+                                            })?;
+                                        false
+                                    }
+                                    Err(source) => {
+                                        return Err(QuarantineRecoveryError::BundleRecovery {
+                                            token,
+                                            source,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        BundleStatus::Retired { .. }
+                        | BundleStatus::Absent
+                        | BundleStatus::Conflict { .. } => false,
                     };
                     if exact
                         && self.resolve_with_proof(
                             &target.identity,
                             RecoveryProof::AuthoritativeBundle { token, bundle_hash },
+                        )?
+                    {
+                        resolved = resolved.saturating_add(1);
+                    }
+                }
+                RecoveryTargetKind::LegacyWriteBatch { batch_hash, batch } => {
+                    let serial = batch.serial;
+                    let exact = reader
+                        .reconcile_quarantine_legacy_batch(&batch)
+                        .await
+                        .map_err(|source| QuarantineRecoveryError::LegacyBatchRecovery {
+                            serial,
+                            source,
+                        })?;
+                    if exact
+                        && self.resolve_with_proof(
+                            &target.identity,
+                            RecoveryProof::LegacyWriteBatch { batch_hash },
                         )?
                     {
                         resolved = resolved.saturating_add(1);
@@ -771,6 +1117,7 @@ impl QuarantineSpool {
                     })?;
                     targets.push(recovery_target(identity.clone(), record));
                 }
+                targets.sort_by(|left, right| recovery_order(left).cmp(&recovery_order(right)));
                 Ok(targets)
             }
             Backend::Durable(backend) => {
@@ -791,6 +1138,7 @@ impl QuarantineSpool {
                         .to_owned();
                     targets.push(recovery_target(identity, &record));
                 }
+                targets.sort_by(|left, right| recovery_order(left).cmp(&recovery_order(right)));
                 Ok(targets)
             }
         }
@@ -915,6 +1263,40 @@ impl QuarantineSpool {
                 key: key.to_owned(),
                 serial,
                 payload: value.clone(),
+            },
+            store_error: truncate(err.to_string(), MAX_ERROR_BYTES),
+            error_transient: err.is_transient(),
+            isolation_attempts: attempts,
+            quarantined_unix: unix_now_s(),
+            server_version: env!("CARGO_PKG_VERSION").to_owned(),
+        });
+        self.preserve_record(identity, record)
+    }
+
+    /// Preserve every persisted post-image and operation from one legacy
+    /// writer batch. This is the authoritative custody unit for a dropped
+    /// legacy batch; seal-specific records remain supplemental evidence used
+    /// by the older isolation protocol.
+    pub(crate) fn quarantine_legacy_batch(
+        &self,
+        batch: &WriteBatch,
+        err: &StoreError,
+        attempts: u32,
+    ) -> Result<bool, QuarantineWriteError> {
+        if batch.is_empty() {
+            return Err(QuarantineWriteError::InvalidCandidate(
+                "cannot quarantine an empty legacy batch".to_owned(),
+            ));
+        }
+        let payload = LegacyBatchPayload::from(batch);
+        let batch_hash = legacy_batch_hash(&payload)?;
+        let identity = batch_hash.to_string();
+        let record = StoredQuarantineRecord::V2(QuarantineRecordV2 {
+            record_version: QUARANTINE_RECORD_VERSION,
+            identity_hash: identity.clone(),
+            content: QuarantineContentV2::LegacyWriteBatch {
+                batch_hash,
+                batch: Box::new(payload),
             },
             store_error: truncate(err.to_string(), MAX_ERROR_BYTES),
             error_transient: err.is_transient(),
@@ -1059,6 +1441,15 @@ impl QuarantineSpool {
     }
 }
 
+fn recovery_order(target: &RecoveryTarget) -> (u8, u64, &str) {
+    match &target.kind {
+        RecoveryTargetKind::LegacyWriteBatch { batch, .. } => (0, batch.serial, &target.identity),
+        RecoveryTargetKind::LedgerSeal { .. } | RecoveryTargetKind::AuthoritativeBundle { .. } => {
+            (1, 0, &target.identity)
+        }
+    }
+}
+
 fn reserve_capacity(
     current: SpoolState,
     encoded_len: usize,
@@ -1125,11 +1516,20 @@ fn recovery_target(identity: String, record: &StoredQuarantineRecord) -> Recover
                 }
             }
             QuarantineContentV2::AuthoritativeBundle {
-                token, bundle_hash, ..
+                token,
+                bundle_hash,
+                bundle,
             } => RecoveryTargetKind::AuthoritativeBundle {
                 token: *token,
                 bundle_hash: *bundle_hash,
+                bundle: bundle.clone(),
             },
+            QuarantineContentV2::LegacyWriteBatch { batch_hash, batch } => {
+                RecoveryTargetKind::LegacyWriteBatch {
+                    batch_hash: *batch_hash,
+                    batch: Box::new(WriteBatch::from((**batch).clone())),
+                }
+            }
         },
     };
     RecoveryTarget { identity, kind }
@@ -1170,6 +1570,20 @@ fn record_matches_proof(
                 bundle_hash: proven_hash,
             },
         ) => token == proven_token && bundle_hash == proven_hash,
+        (
+            StoredQuarantineRecord::V2(QuarantineRecordV2 {
+                content:
+                    QuarantineContentV2::LegacyWriteBatch {
+                        batch_hash, batch, ..
+                    },
+                ..
+            }),
+            RecoveryProof::LegacyWriteBatch {
+                batch_hash: proven_hash,
+            },
+        ) => {
+            batch_hash == proven_hash && legacy_batch_hash(batch).ok().as_ref() == Some(batch_hash)
+        }
         _ => false,
     }
 }
@@ -2080,6 +2494,36 @@ fn validate_v2_record(expected_identity: &str, record: &QuarantineRecordV2) -> R
             }
             Ok(())
         }
+        QuarantineContentV2::LegacyWriteBatch { batch_hash, batch } => {
+            let actual = legacy_batch_hash(batch).map_err(|error| error.to_string())?;
+            if *batch_hash != actual || expected_identity != actual.to_string() {
+                return Err("SHA-256 identity does not match complete legacy batch".to_owned());
+            }
+            if batch.upserts.is_empty()
+                && batch.deletes.is_empty()
+                && batch.module_ops.is_empty()
+                && batch.next_id.is_none()
+            {
+                return Err("legacy batch recovery record is empty".to_owned());
+            }
+            for op in &batch.module_ops {
+                if op.ns.is_empty()
+                    || op.ns.contains(':')
+                    || op.ns.len() > MAX_MODULE_NAMESPACE_BYTES
+                {
+                    return Err("legacy batch contains an invalid module namespace".to_owned());
+                }
+                let key = match &op.op {
+                    ModuleWrite::JsonSet { key, .. }
+                    | ModuleWrite::Del { key }
+                    | ModuleWrite::StreamAppend { key, .. } => key,
+                };
+                if key.is_empty() || key.len() > MAX_MODULE_KEY_BYTES {
+                    return Err("legacy batch contains an invalid module key".to_owned());
+                }
+            }
+            Ok(())
+        }
     }
 }
 
@@ -2341,6 +2785,33 @@ pub fn authoritative_bundle_identity_hash(bundle: &AuthoritativeBundle) -> Strin
     hex
 }
 
+fn legacy_batch_hash(batch: &LegacyBatchPayload) -> Result<CanonicalHash, QuarantineWriteError> {
+    let value = serde_json::to_value(batch).map_err(|error| {
+        QuarantineWriteError::InvalidCandidate(format!(
+            "legacy batch cannot be represented canonically: {error}"
+        ))
+    })?;
+    CanonicalHash::for_canonical_value(
+        "quarantine_legacy_write_batch.v1",
+        1,
+        &value,
+        usize::try_from(MAX_RECORD_BYTES).expect("record bound fits usize"),
+    )
+    .map_err(|error| {
+        QuarantineWriteError::InvalidCandidate(format!(
+            "legacy batch canonical hash failed: {error}"
+        ))
+    })
+}
+
+/// Typed form of the exact filename/content identity returned only after the
+/// caller has successfully preserved the corresponding bundle record.
+#[must_use]
+pub(crate) fn authoritative_bundle_evidence_hash(bundle: &AuthoritativeBundle) -> CanonicalHash {
+    CanonicalHash::from_hex(&authoritative_bundle_identity_hash(bundle))
+        .expect("quarantine SHA-256 identity is a canonical 32-byte hash")
+}
+
 fn truncate(mut value: String, max_bytes: usize) -> String {
     if value.len() <= max_bytes {
         return value;
@@ -2481,13 +2952,22 @@ mod tests {
             action: action.clone(),
             provider: owner.clone(),
             cause: PreparedCausalRef::new(request, None, 0).unwrap(),
-            definitions: vec![action, outcome.clone()],
+            definitions: vec![action.clone(), outcome.clone()],
             writes: vec![ReplayWrite::ModuleJsonSet {
                 namespace: owner,
                 key: AuthoritativeKey::parse_canonical("quarantine/v1/marker").unwrap(),
                 value: serde_json::json!({"retained": true}),
             }],
-            outcome: RulesValue::new(outcome, serde_json::json!({"ok": true})).unwrap(),
+            outcome: RulesValue::new(outcome.clone(), serde_json::json!({"ok": true})).unwrap(),
+            semantic_events: vec![
+                mush_core::AuthoritativeSemanticEvent::root(
+                    PreparedCausalRef::new(request, None, 0).unwrap(),
+                    &action,
+                    RulesValue::new(outcome, serde_json::json!({"ok": true})).unwrap(),
+                    vec![principal.clone()],
+                )
+                .unwrap(),
+            ],
             eligible_witnesses: vec![principal],
             durable_outbox: vec![],
         })
@@ -2498,6 +2978,124 @@ mod tests {
         let mut name = OsString::from(active.file_name().unwrap());
         name.push("-resolved");
         active.parent().unwrap().join(name)
+    }
+
+    fn legacy_json_batch(serial: u64, value: i64) -> WriteBatch {
+        WriteBatch {
+            serial,
+            module_ops: vec![ModuleOp {
+                ns: "legacy_test".into(),
+                op: ModuleWrite::JsonSet {
+                    key: "state".into(),
+                    value: serde_json::json!({"value": value}),
+                },
+            }],
+            durable: true,
+            ..WriteBatch::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_legacy_batches_recover_idempotent_postimages_in_fifo_order() {
+        let mut spool = QuarantineSpool::in_memory();
+        let first = legacy_json_batch(7, 1);
+        let second = legacy_json_batch(8, 2);
+        // Preserve in reverse insertion order; recovery order comes from the
+        // original writer serial, never the content-hash map order.
+        spool
+            .quarantine_legacy_batch(
+                &second,
+                &StoreError::Invalid("later dropped batch".to_owned()),
+                1,
+            )
+            .unwrap();
+        spool
+            .quarantine_legacy_batch(
+                &first,
+                &StoreError::Invalid("first dropped batch".to_owned()),
+                1,
+            )
+            .unwrap();
+        let store = InMemoryStore::new();
+        let report = spool.reconcile_exact_matches(&store).await.unwrap();
+        assert_eq!(report.examined, 2);
+        assert_eq!(report.resolved, 2);
+        assert_eq!(report.remaining, SpoolState::default());
+        assert_eq!(
+            store.module_json_get("legacy_test", "state").await.unwrap(),
+            Some(serde_json::json!({"value": 2}))
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_legacy_batch_survives_reopen_before_recovery() {
+        let dir = temp_spool("legacy-batch-reopen");
+        let _ = std::fs::remove_dir_all(&dir);
+        let batch = legacy_json_batch(17, 41);
+        {
+            let spool = QuarantineSpool::open(dir.clone()).unwrap();
+            assert!(
+                spool
+                    .quarantine_legacy_batch(
+                        &batch,
+                        &StoreError::Invalid("dropped before restart".to_owned()),
+                        1,
+                    )
+                    .unwrap()
+            );
+        }
+
+        let mut reopened = QuarantineSpool::open(dir.clone()).unwrap();
+        assert_eq!(reopened.opened_state().unresolved_records, 1);
+        let store = InMemoryStore::new();
+        let report = reopened.reconcile_exact_matches(&store).await.unwrap();
+        assert_eq!(report.resolved, 1);
+        assert_eq!(report.remaining, SpoolState::default());
+        assert_eq!(
+            store.module_json_get("legacy_test", "state").await.unwrap(),
+            Some(serde_json::json!({"value": 41}))
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn non_idempotent_legacy_stream_batch_is_preserved_without_replay() {
+        let mut spool = QuarantineSpool::in_memory();
+        let batch = WriteBatch {
+            serial: 9,
+            module_ops: vec![ModuleOp {
+                ns: "legacy_test".into(),
+                op: ModuleWrite::StreamAppend {
+                    key: "events".into(),
+                    value: serde_json::json!({"event": "once"}),
+                    maxlen: 10,
+                },
+            }],
+            durable: true,
+            ..WriteBatch::default()
+        };
+        spool
+            .quarantine_legacy_batch(
+                &batch,
+                &StoreError::Invalid("ambiguous stream batch".to_owned()),
+                1,
+            )
+            .unwrap();
+
+        let store = InMemoryStore::new();
+        let report = spool.reconcile_exact_matches(&store).await.unwrap();
+        assert_eq!(report.examined, 1);
+        assert_eq!(report.resolved, 0);
+        assert_eq!(report.remaining.unresolved_records, 1);
+        assert!(
+            store
+                .stream_range("legacy_test", "events", 10)
+                .await
+                .unwrap()
+                .is_empty(),
+            "recovery must not duplicate an append whose identity is unknowable"
+        );
     }
 
     #[tokio::test]
