@@ -78,7 +78,7 @@ in-crate — **ruleset-wod 270** (`e5c.rs` 65), **mush-economy 408** (`e4b1.rs` 
 (`jobs.rs` 24), **mush-server 155 (+2 ignored)**. `cargo test -p mush-housing -p ruleset-wod -p mush-economy
 -p mush-jobs -p mush-server` runs **994 passing, 0 failing**; `cargo test --workspace --no-fail-fast`
 runs **2779 passing across 184 suites, 0 failing**; `cargo clippy --workspace --all-targets -- -D
-warnings` is clean. rustfmt: 2,467 hunks in 88 files at `5409c73` (reformat after K6, 08h §3); CI's
+warnings` is clean. rustfmt: 2,467 hunks in 88 files at `5409c73` (reformat after K6, 08h §3); CI's **Done:** the whole-tree reformat landed as `91208ab` on the converged main (rustfmt.toml, CI Format blocking; gates identical 2924/0/48).
 Format step is advisory until then.
 
 ### The E4 seams a later milestone consumes

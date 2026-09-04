@@ -67,7 +67,7 @@ The five bullets stand. Add to "preserve": `Outbox::pin_deferred` (a canon-commi
 
 *The K side's audit source.* Their doc 09 (`09-rules-engine-contracts.md` in the K tree), bilateral integration gate near line 2559, to be condensed into a K6 look-back memo that separates **completed** K6 contracts and fixture proofs from the **remaining** production placement migration and viewer-feed wiring. The E side reads that distinction literally: `10b`'s three-condition K6 gate for E7 cut 10 is satisfied by the production placement, not by fixture proofs alone, and "K6 complete" in any E document means the memo's narrow sense.
 
-Order: K6 lands → both audits filed (`08g` here; the K6 memo there) → bilateral review → merge → full gates → the single semantic-free whole-tree `rustfmt` commit, last, both sides rebasing once.
+Order: K6 lands → both audits filed (`08g` here; the K6 memo there) → bilateral review → merge → full gates → the single semantic-free whole-tree `rustfmt` commit, last, both sides rebasing once. *Status 2026-09-04: the owner directed merge-then-reformat ahead of the bilateral review — merge `1d5aa3d`, K-side npc regression fix `2b62190`, reformat `91208ab`; the review's E-side input is `08i`; the K6 memo is still owed.*
 
 ## 4. Fold table
 
