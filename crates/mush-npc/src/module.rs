@@ -1024,8 +1024,10 @@ impl AsyncCompletion for NpcCompletion {
         // (`ctx.actor` is the effect's actor) BEFORE decoding, so a malformed
         // payload for the active turn cannot wedge it forever. The correlation
         // check is load-bearing: a delayed duplicate from an older turn must
-        // neither clear a newer turn nor replay its stale actions. We do not
-        // trust `outcome.npc()` for either identity.
+        // neither clear a newer turn nor replay its stale actions, while an
+        // idle NPC applies a completion it has not seen before (a finished
+        // turn re-entered with nothing in flight). We do not trust
+        // `outcome.npc()` for either identity.
         let npc = ctx.actor;
         let now = now_ms(ctx.w);
         let active = ctx

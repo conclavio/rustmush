@@ -68,6 +68,10 @@ pub struct NpcRuntime {
     pub in_flight: bool,
     /// The in-flight turn's correlation id.
     pub correlation: Option<u64>,
+    /// The newest correlation this NPC has issued or applied, in flight or
+    /// not. The world allocates correlations monotonically, so a completion
+    /// at or below this watermark is a replay.
+    pub last_correlation: Option<u64>,
     /// When the last turn started (ms) — the cooldown anchor.
     pub last_turn_at: Option<i64>,
     /// The rolling memory buffer (layer 1) + cached summary (layer 2).
@@ -235,6 +239,7 @@ impl NpcHostState {
         let rt = self.runtime_mut(npc);
         rt.in_flight = true;
         rt.correlation = Some(correlation);
+        rt.last_correlation = Some(correlation);
         rt.last_turn_at = Some(now_ms);
         rt.pending_since = None;
         rt.mailbox_bytes = 0;
@@ -247,6 +252,7 @@ impl NpcHostState {
         let rt = self.runtime_mut(npc);
         rt.in_flight = true;
         rt.correlation = Some(correlation);
+        rt.last_correlation = Some(correlation);
         rt.summarize_pending = false;
         rt.memory
             .drain_old_half()
@@ -269,24 +275,35 @@ impl NpcHostState {
         }
     }
 
-    /// Finish only the exact currently in-flight turn. A duplicate or delayed
-    /// completion from an older turn must neither clear a newer turn nor make
-    /// its stale actions eligible for application.
+    /// Decide whether a completion for `correlation` may be applied, clearing
+    /// the in-flight turn when it is that turn's. While a turn is in flight
+    /// only its own correlation is accepted: a duplicate or delayed completion
+    /// from an older turn must neither clear a newer turn nor make its stale
+    /// actions eligible for application. An idle NPC — including one that has
+    /// never turned — accepts a completion it has not seen before (the typed
+    /// completion is the world task's re-entry seam for a finished turn, and
+    /// a finished turn may reach an NPC with nothing in flight); anything at
+    /// or below its `last_correlation` watermark is a replay and is dropped.
     pub fn finish_turn_if_correlation(
         &mut self,
         npc: ObjId,
         correlation: u64,
         now_ms: i64,
     ) -> bool {
-        if self
-            .runtimes
-            .get(&npc)
-            .is_none_or(|rt| !rt.in_flight || rt.correlation != Some(correlation))
-        {
-            return false;
+        match self.runtimes.get(&npc) {
+            Some(rt) if rt.in_flight => {
+                if rt.correlation != Some(correlation) {
+                    return false;
+                }
+                self.finish_turn(npc, now_ms);
+                true
+            }
+            Some(rt) if rt.last_correlation.is_some_and(|last| correlation <= last) => false,
+            _ => {
+                self.runtime_mut(npc).last_correlation = Some(correlation);
+                true
+            }
         }
-        self.finish_turn(npc, now_ms);
-        true
     }
 
     /// Drop an NPC's pending mailbox and reset its window (no players, or the
@@ -468,5 +485,32 @@ mod tests {
         assert!(h.finish_turn_if_correlation(npc, 10, 1));
         assert!(!h.runtime(npc).unwrap().in_flight);
         assert!(!h.finish_turn_if_correlation(npc, 10, 2));
+    }
+
+    #[test]
+    fn idle_npc_applies_an_unseen_completion_once() {
+        let mut h = host();
+        let npc = ObjId(9);
+        // Nothing in flight and no runtime yet: a completion re-entered for
+        // this NPC is applied ...
+        assert!(h.finish_turn_if_correlation(npc, 1, 0));
+        assert!(!h.runtime(npc).unwrap().in_flight);
+        // ... exactly once — a replay, or anything older, is dropped ...
+        assert!(!h.finish_turn_if_correlation(npc, 1, 1));
+        assert!(!h.finish_turn_if_correlation(npc, 0, 1));
+        // ... and a newer one is applied.
+        assert!(h.finish_turn_if_correlation(npc, 2, 2));
+
+        // A turn begun afterwards still accepts only its own correlation,
+        // whether the stranger is newer or older ...
+        h.begin_turn(npc, 3, 10);
+        assert!(!h.finish_turn_if_correlation(npc, 11, 4));
+        assert!(!h.finish_turn_if_correlation(npc, 2, 4));
+        assert!(h.runtime(npc).unwrap().in_flight);
+        assert!(h.finish_turn_if_correlation(npc, 10, 5));
+        assert!(!h.runtime(npc).unwrap().in_flight);
+        // ... and, once finished, refuses everything it has already seen.
+        assert!(!h.finish_turn_if_correlation(npc, 10, 6));
+        assert!(!h.finish_turn_if_correlation(npc, 2, 6));
     }
 }

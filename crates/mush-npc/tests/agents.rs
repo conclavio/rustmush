@@ -511,6 +511,42 @@ async fn delayed_completion_cannot_clear_or_act_during_a_newer_turn() {
     assert!(!rig.host().runtime(npc).unwrap().in_flight);
 }
 
+/// The typed completion is the world task's re-entry seam for a finished
+/// turn, and it may reach an NPC with nothing in flight (nothing fired through
+/// the tick — the persistence round trip re-enters a remember + a summary this
+/// way). Such a completion is applied exactly once: a replay of the same
+/// correlation is dropped, a newer one is applied.
+#[tokio::test]
+async fn completion_for_an_idle_npc_is_applied_once() {
+    let mut rig = Rig::new();
+    let bar = rig.room("Bar");
+    let npc = rig.npc("Bartender", bar, &profile(NpcTier::Major));
+    let summary = |rig: &Rig| {
+        rig.engine
+            .world
+            .attr(npc, SUMMARY_ATTR)
+            .and_then(|a| a.as_text())
+            .map(str::to_owned)
+    };
+    let outcome = |text: &str| {
+        serde_json::json!({ "status": "summary", "npc": npc, "summary": text }).to_string()
+    };
+
+    rig.complete(npc, 1, &outcome("Alice runs a tab."));
+    assert_eq!(summary(&rig).as_deref(), Some("Alice runs a tab."));
+    assert!(!rig.host().runtime(npc).unwrap().in_flight);
+
+    rig.complete(npc, 1, &outcome("replayed"));
+    assert_eq!(
+        summary(&rig).as_deref(),
+        Some("Alice runs a tab."),
+        "a replay of an applied completion must not re-apply"
+    );
+
+    rig.complete(npc, 2, &outcome("Alice paid up."));
+    assert_eq!(summary(&rig).as_deref(), Some("Alice paid up."));
+}
+
 #[tokio::test]
 async fn say_action_renders_through_formatter() {
     let mut rig = Rig::new();
