@@ -221,9 +221,11 @@ async fn build_engine(
     let llm_config = crate::config_ext::llm_config(&config.llm)?;
     let llm =
         Arc::new(LlmService::from_config(&llm_config).map_err(|e| format!("llm config: {e}"))?);
+    let onboarding = crate::config_ext::onboarding_ruleset(&config.onboarding);
     let mut mods = modules::server_modules_with(
         crate::config_ext::weather_config(&config.weather),
         crate::config_ext::economy_config(&config.economy),
+        &onboarding,
     );
     mods.push(modules::worldgen_module_with(
         Arc::clone(&llm),
@@ -231,11 +233,8 @@ async fn build_engine(
     ));
     let npc_grounding = modules::npc_agent_adapter(&config.rulesets.enabled);
     mods.push(modules::npc_module(npc_grounding));
-    let rulesets = modules::ruleset_modules(
-        &config.rulesets.enabled,
-        &crate::config_ext::onboarding_ruleset(&config.onboarding),
-    )
-    .map_err(|e| format!("ruleset selection: {e}"))?;
+    let rulesets = modules::ruleset_modules(&config.rulesets.enabled, &onboarding)
+        .map_err(|e| format!("ruleset selection: {e}"))?;
     mods.extend(rulesets);
     // Compose and freeze every mechanics registry before any persisted world
     // record is loaded. Rules-bearing attrs must never be interpreted against

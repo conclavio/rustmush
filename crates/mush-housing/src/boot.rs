@@ -26,8 +26,11 @@
 //!
 //! Nothing here ends a tenancy. **D-E5-1 runs at boot too**: a residence whose rooms
 //! vanished, or whose rent obligation is missing, is a staff question — a level-2 page
-//! carrying the command that answers it — and never an automatic ending. The three
-//! passes are exactly 08d §4's:
+//! carrying the command that answers it — and never an automatic ending. The first
+//! three passes are exactly 08d §4's; the verify fold added three more of the same
+//! shape (a `Pending` lease that can never activate, a cadence clock that no longer
+//! resolves, and a scene handle that cannot survive a boot) plus the `Let`
+//! re-derivation:
 //!
 //! 1. **A property whose anchor or rooms are gone or `GOING` → `Withdrawn` + a page.**
 //!    Its tenancies stay exactly as they are.
@@ -41,6 +44,16 @@
 //! 3. **An exact tenancy whose obligation is missing → paged**, and left in whatever
 //!    status it was in. Never `EvictionPending`: "the record we mirror is gone" is not
 //!    evidence that anybody missed a payment.
+//! 4. **A `Pending` exact tenancy whose lease contract is missing or terminal →
+//!    paged**, with `@tenancy/resolve <id>=end` recommended. It is waiting on an
+//!    acceptance that can never arrive, and it is still nobody's to end but a
+//!    person's (verify fold, T5).
+//! 5. **A live tenancy whose cadence clock no longer resolves → paged**, with the
+//!    clock named, and left frozen (T6).
+//! 6. **A story window's persisted `SceneRef` → cleared.** Core scene ids restart at
+//!    0 every boot, so a kept one names somebody else's scene (T8).
+//! 7. **The `Let`/`Vacant` latch → re-derived** from the live tenancies. `Withdrawn`
+//!    is never re-derived away.
 
 use mush_core::module::{ModError, ModuleBootData};
 use mush_core::{Ctx, ObjId};
@@ -151,6 +164,10 @@ pub(crate) fn load(data: &ModuleBootData) -> Result<HousingStore, ModError> {
     store.next_property = meta_u64(meta, "next_property_id").max(next_after(max_property));
     store.next_tenancy = meta_u64(meta, "next_tenancy_id").max(next_after(max_tenancy));
     store.cursor = meta_u64(meta, "assess_cursor");
+    // The tick's working set is derived from the loaded statuses, never persisted:
+    // an index that could disagree with the record it indexes is a second source of
+    // truth about who still lives somewhere (fold T7).
+    store.reindex_open();
     Ok(store)
 }
 
@@ -168,17 +185,27 @@ pub(crate) fn reconcile(ctx: &mut Ctx<'_>) {
     reconcile_properties(ctx, &mut pages);
     reconcile_tenants(ctx, &mut pages);
     reconcile_exact(ctx, &mut pages);
+    reconcile_pending(ctx, &mut pages);
+    reconcile_cadences(ctx, &mut pages);
+    reconcile_scenes(ctx);
     reconcile_let_status(ctx);
     crate::module::persist_meta(ctx);
 }
 
 /// Pass 1 — a property whose anchor or rooms went away.
+///
+/// **A `Withdrawn` property with a live tenancy is still checked** (verify fold, H6).
+/// It used to be skipped outright, which meant a property that had already lost one
+/// room — and was therefore already withdrawn — could lose every other room, and the
+/// anchor, without a word: the one home most likely to be broken was the one boot
+/// stopped looking at. Being out of service says nothing about whether somebody lives
+/// there, and D-E5-1 guarantees they still do.
 fn reconcile_properties(ctx: &mut Ctx<'_>, pages: &mut usize) {
     let broken: Vec<(Property, Vec<ObjId>)> = {
         let Some(store) = ctx.w.module_state::<HousingStore>() else { return };
         store
             .properties()
-            .filter(|p| p.status != PropertyStatus::Withdrawn)
+            .filter(|p| p.status != PropertyStatus::Withdrawn || store.has_live_tenancy(p.id))
             .filter_map(|p| {
                 let gone: Vec<ObjId> =
                     p.rooms.iter().copied().filter(|r| !is_live_room(ctx.w, *r)).collect();
@@ -186,13 +213,18 @@ fn reconcile_properties(ctx: &mut Ctx<'_>, pages: &mut usize) {
             })
             .collect()
     };
-    for (mut p, gone) in broken {
+    for (p, gone) in broken {
         let id = p.id;
         let missing = gone.iter().map(|r| format!("#{}", r.0)).collect::<Vec<_>>().join(", ");
         let anchor_gone = gone.contains(&p.anchor);
-        p.status = PropertyStatus::Withdrawn;
-        p.revision = p.revision.saturating_add(1);
-        put_property(ctx, p);
+        // Only write when the latch actually moves: an already-withdrawn property
+        // must not gain a revision (and a store document) at every boot.
+        if p.status != PropertyStatus::Withdrawn {
+            let mut next = p.clone();
+            next.status = PropertyStatus::Withdrawn;
+            next.revision = next.revision.saturating_add(1);
+            put_property(ctx, next);
+        }
         tracing::error!(
             property = id.0,
             %missing,
@@ -337,7 +369,127 @@ fn reconcile_exact(ctx: &mut Ctx<'_>, pages: &mut usize) {
     }
 }
 
-/// Pass 4 — the `Let`/`Vacant` latch follows the tenancies, not the other way round.
+/// Pass 4 — a **`Pending`** exact tenancy whose lease will never activate (verify
+/// fold, T5).
+///
+/// Pass 3 only inspects *live* tenancies, deliberately: a draft carries the
+/// [`crate::PENDING_OBLIGATION`] sentinel and must not be mistaken for a lease whose
+/// rent record went missing. That left the drafts themselves invisible. A tenancy
+/// `Pending` on a contract that has been settled, cancelled, expired or deleted is
+/// waiting for an acceptance that can never arrive — it will sit there forever,
+/// holding the property's "one live tenancy" slot free but showing on every list as a
+/// home somebody is about to move into.
+///
+/// It is **never** ended here and never made `EvictionPending`: D-E5-1 applies to a
+/// `Pending` tenancy exactly as it does to a live one, so the page carries the verb
+/// (`@tenancy/resolve <id>=end`) and a person types it.
+fn reconcile_pending(ctx: &mut Ctx<'_>, pages: &mut usize) {
+    let stuck: Vec<(TenancyId, u64, &'static str)> = {
+        let Some(store) = ctx.w.module_state::<HousingStore>() else { return };
+        let econ = ctx.w.module_state::<mush_economy::EconomyStore>();
+        store
+            .tenancies()
+            .filter(|t| matches!(t.status, crate::record::TenancyStatus::Pending))
+            .filter_map(|t| {
+                let Funding::Exact { contract, .. } = &t.funding else { return None };
+                let state = econ.and_then(|e| e.snapshot().contract(*contract).map(|c| c.state));
+                match state {
+                    None => Some((t.id, contract.0, "gone")),
+                    Some(s) if s.is_terminal() => Some((t.id, contract.0, "terminal")),
+                    Some(_) => None,
+                }
+            })
+            .collect()
+    };
+    for (id, contract, why) in stuck {
+        tracing::error!(
+            tenancy = id.0,
+            contract,
+            why,
+            "housing: a pending tenancy's lease will never activate; paging"
+        );
+        if *pages < MAX_BOOT_PAGES {
+            *pages += 1;
+            mush_economy::open_escalation(
+                ctx,
+                EscalationKind::BootReconciliation,
+                EscalationSubject::HousingTenancy(id.0),
+                format!(
+                    "tenancy #{id} is still PENDING on lease contract #{contract}, which is \
+                     {why}. No acceptance can activate it, so it will wait forever — and \
+                     nothing ends a home automatically, not even one nobody has moved into \
+                     yet. Decide it"
+                ),
+                vec![
+                    format!("@tenancy/show {id}"),
+                    format!("@contract/show {contract}"),
+                    format!("@tenancy/resolve {id}=end"),
+                ],
+            );
+        }
+    }
+}
+
+/// Pass 5 — a tenancy whose **cadence clock** no longer resolves (verify fold, T6).
+///
+/// Same rule as the tick's, at the one moment a staffer is most likely to be looking:
+/// the tenancy is left exactly where it is (a clock nobody can read never moves a
+/// home) and the page names the clock, because "why did this stop being assessed" is
+/// otherwise answerable only by reading the document.
+fn reconcile_cadences(ctx: &mut Ctx<'_>, pages: &mut usize) {
+    let frozen: Vec<Tenancy> = {
+        let Some(store) = ctx.w.module_state::<HousingStore>() else { return };
+        store
+            .tenancies()
+            .filter(|t| t.status.is_live())
+            .filter(|t| crate::module::cadence_now(ctx.w, t.cadence).is_none())
+            .cloned()
+            .collect()
+    };
+    for t in frozen {
+        tracing::error!(
+            tenancy = t.id.0,
+            cadence = t.cadence.0,
+            "housing: a live tenancy's cadence clock has no record; frozen, and paging"
+        );
+        if *pages < MAX_BOOT_PAGES {
+            *pages += 1;
+            crate::flow::page_missing_cadence(ctx, &t);
+        }
+    }
+}
+
+/// Pass 6 — **a persisted `SceneRef` names nothing** (verify fold, T8).
+///
+/// A core `SceneId` restarts at 0 every boot (E5a deviation 8 says so and then
+/// persisted one anyway), so a story window that recorded a scene before a restart
+/// came back naming a scene id core had since handed to somebody else's scene — and
+/// `attach_window` refuses to replace a *different* id, so `@tenancy/resolve
+/// <id>=scene` could never attach again for the life of that window. Clearing it at
+/// boot is what makes the handle honestly boot-local.
+fn reconcile_scenes(ctx: &mut Ctx<'_>) {
+    let stale: Vec<Tenancy> = {
+        let Some(store) = ctx.w.module_state::<HousingStore>() else { return };
+        store
+            .tenancies()
+            .filter(|t| {
+                matches!(&t.status, crate::record::TenancyStatus::EvictionPending { window }
+                    if window.scene.is_some())
+            })
+            .cloned()
+            .collect()
+    };
+    for mut t in stale {
+        if let crate::record::TenancyStatus::EvictionPending { window } = &mut t.status {
+            window.scene = None;
+        }
+        t.revision = t.revision.saturating_add(1);
+        tracing::debug!(tenancy = t.id.0, "housing: cleared a boot-local scene ref on a story window");
+        put_tenancy(ctx, t);
+    }
+}
+
+/// Pass 7 — the `Let`/`Vacant` latch follows the tenancies, not the other way round.
 ///
 /// It is a projection, so boot re-derives it rather than trusting it: a property with
 /// a live tenancy is `Let` (the access hook and the destroy gate both key off that),
@@ -377,10 +529,15 @@ pub(crate) fn tenancy_now(ctx: &Ctx<'_>, id: TenancyId) -> Option<i64> {
     crate::module::cadence_now(ctx.w, t.cadence)
 }
 
-/// Every tenancy id, in id order (the rotation the tick walks).
+/// Every **unended** tenancy id, in id order (the rotation the tick walks).
+///
+/// Ended tenancies are kept forever — they are the record of who lived where — and
+/// nothing periodic ever needs one again, so they are not in the rotation at all
+/// (verify fold, T7). On a world that has been running a while they are most of the
+/// store, and walking them cost a fire's whole budget in `Skipped` steps.
 #[must_use]
 pub(crate) fn tenancy_ids(store: &HousingStore) -> Vec<TenancyId> {
-    store.tenancies.keys().copied().collect()
+    store.open_tenancy_ids().collect()
 }
 
 

@@ -15,9 +15,17 @@
 //! | question | answer |
 //! |---|---|
 //! | is `r` a room of a property this store knows? | no → **allow** (abstain) |
-//! | is that property `Let`? | no → **allow** — a `Vacant` or `Withdrawn` residence is an ordinary room |
-//! | does it have exactly one live tenancy? | no → **allow**: nobody lives there yet |
+//! | does that property have exactly one live tenancy? | no → **allow**: nobody lives there |
 //! | [`crate::may_enter_with`] | `Refused` → **veto** with one neutral text; anything else → allow |
+//!
+//! **The `Let` latch is not part of that decision** (verify fold, H1). It used to be
+//! the first question, and it made `Withdrawn` a master key: withdrawing a property —
+//! or a single room dying, which withdraws it automatically — cancelled every access
+//! rule on a home somebody still lived in, while D-E5-1 guarantees the tenancy itself
+//! is untouched. Withdrawal is a *service* decision, so it still lifts the destroy
+//! gate (that is what it is for), and it still stops nothing about who may walk in.
+//! The question the hook asks is the only one that means anything at a door: **does
+//! somebody live here?**
 //!
 //! A carry asks the same question **twice** — of the room the object is coming out
 //! of and of the room it is going into — because "may not enter" has to mean both
@@ -61,10 +69,34 @@ impl EventHook for AccessHook {
         // issued a `@teleport` (08d §1.1 scopes that limitation): a staffer
         // teleporting a stranger in is refused exactly like the stranger walking in,
         // which is the fail-closed direction. Add them as a guest first.
-        match may_reach(w, actor, dest) {
-            Access::Refused => Err(RichText::tag("error", REFUSED)),
-            _ => Ok(()),
+        if matches!(may_reach(w, actor, dest), Access::Refused) {
+            return Err(RichText::tag("error", REFUSED));
         }
+        // **The source half, for things** (verify fold, H2). A move only ever asked
+        // about the destination, so `@teleport #lamp=#yard` walked an object straight
+        // out of a home nobody was allowed to reach into — the exact hole
+        // `carry_attempt` closes for `get`, reopened by a different verb.
+        //
+        // The hook cannot see who issued the teleport (08d §1.1's scoped limitation,
+        // and the reason the destination check is already phrased as "the moved
+        // object's own standing"), so the source check is the same shape and fails
+        // the same way: a thing has no standing of its own, so a thing standing in an
+        // occupied home cannot be teleported out of it **by anybody**. A tenant moves
+        // their own belongings with `get`/`drop`, which is `carry_attempt` and does
+        // ask about the mover.
+        //
+        // **People are exempt on purpose.** A person is never trapped by this hook:
+        // an ex-tenant standing in the house they were just evicted from must always
+        // be able to walk out, and a staffer must always be able to pull somebody
+        // out. It is the same asymmetry `to_unhome_on_end` has — the door is about
+        // reaching *in*.
+        if !crate::module::is_character(w, actor)
+            && let Some(from) = room_of(w, actor)
+            && matches!(may_reach(w, actor, from), Access::Refused)
+        {
+            return Err(RichText::tag("error", REFUSED_CARRY));
+        }
+        Ok(())
     }
 
     fn carry_attempt(
@@ -95,9 +127,10 @@ impl EventHook for AccessHook {
 pub fn may_reach(w: &World, who: ObjId, room: ObjId) -> Access {
     let Some(store) = w.module_state::<HousingStore>() else { return Access::Staff };
     let Some(property) = store.property_of_room(room) else { return Access::Staff };
-    if !is_let(property) {
-        return Access::Staff;
-    }
+    // **The live tenancy alone, never the `Let` latch** (fold H1). See the module
+    // doc: `Withdrawn` is a service decision about the destroy gate, and a home
+    // somebody still lives in does not stop being theirs because the property was
+    // taken out of service or a spare room fell down.
     let Some(t) = store.live_tenancy_of(property.id) else { return Access::Staff };
     // The inspection term's authority is an org/world question E5a cannot answer, so
     // it is answered here and handed in (`may_enter_with`).
@@ -130,14 +163,14 @@ fn holds_principal(
 ) -> bool {
     match principal {
         PrincipalId::Object(o) => *o == who,
-        PrincipalId::Organization(org) => {
-            let Some(store) = w.module_state::<mush_org::OrgStore>() else { return false };
-            let state = store.state();
-            let scope = hint
-                .filter(|s| state.scope(*s).is_some_and(|sc| sc.org == *org))
-                .or_else(|| state.org(*org).map(|o| o.root_scope));
-            scope.is_some_and(|s| crate::commands::holds(w, who, "property.manage", s))
-        }
+        // **One authority path** (fold A4): the compartment is resolved by the same
+        // helper `may_view_property` uses — the hinted one when it really belongs to
+        // this org, else the org's root scope — so a property created without
+        // `scope=` is not a different question here than it is there. The
+        // *capability* deliberately stays `property.manage` alone: inspection is a
+        // management right, and a read grant must not open a door.
+        PrincipalId::Organization(_) => crate::commands::officer_scope(w, principal, hint)
+            .is_some_and(|s| crate::commands::holds(w, who, "property.manage", s)),
         PrincipalId::System(_) => false,
     }
 }
@@ -192,26 +225,40 @@ impl DestroyGate for HousingDestroyGate {
 /// A destroyed *tenant* is not handled here: `remove_tenant` writes a history entry
 /// and the roster is a container document, so it belongs to the boot pass that can do
 /// the whole reconciliation at once (`crate::boot`).
+///
+/// **The latch is not the condition** (verify fold, H6). It used to be: a property
+/// that was already `Withdrawn` — because the first room died, or because staff
+/// withdrew it deliberately to clear the way for a demolition — was skipped entirely,
+/// so the *second* room of somebody's home fell down in total silence, and so did the
+/// third, and so did the anchor. What matters is whether anybody still lives there,
+/// and the economy's ladder dedupes by subject, so paging every time costs one record
+/// rather than one per room.
 pub(crate) fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     let WorldEvent::ObjDestroyed { obj } = ev else { return };
     let obj = *obj;
-    let hit: Option<Property> = {
+    let hit: Option<(Property, bool)> = {
         let Some(store) = ctx.w.module_state::<HousingStore>() else { return };
-        store
-            .property_of_room(obj)
-            .filter(|p| p.status != PropertyStatus::Withdrawn)
-            .cloned()
+        store.property_of_room(obj).map(|p| (p.clone(), store.has_live_tenancy(p.id)))
     };
-    let Some(mut p) = hit else { return };
+    let Some((p, live)) = hit else { return };
+    if p.status == PropertyStatus::Withdrawn && !live {
+        // Already out of service and nobody's home: there is no decision left to
+        // hand a staffer, so this is the one case that stays quiet.
+        return;
+    }
     let (id, name) = (p.id, p.name.clone());
     let was_let = is_let(&p);
-    p.status = PropertyStatus::Withdrawn;
-    p.revision = p.revision.saturating_add(1);
-    crate::module::put_property(ctx, p);
+    if p.status != PropertyStatus::Withdrawn {
+        let mut next = p.clone();
+        next.status = PropertyStatus::Withdrawn;
+        next.revision = next.revision.saturating_add(1);
+        crate::module::put_property(ctx, next);
+    }
     tracing::error!(
         property = id.0,
         room = obj.0,
         was_let,
+        live,
         "housing: a property room was destroyed; the property is withdrawn, tenancies untouched"
     );
     mush_economy::open_escalation(

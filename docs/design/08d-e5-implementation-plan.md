@@ -436,7 +436,7 @@ escalation on recovery (S8).
   their own guest standing), `+home/leave` (explicit move-out → `Ended{TenantLeft}`), `+guest
   add|remove <who>`.
 
-Tests (planned ~30; **43 as built**, `crates/mush-housing/tests/e5b.rs`): scenario 23's housing half in abstract mode — supported periods are silent; an
+Tests (planned ~30; **43 as built, 66 after the verify fold**, `crates/mush-housing/tests/e5b.rs`): scenario 23's housing half in abstract mode — supported periods are silent; an
 `Unsupported` plan walks Grace → Delinquent → EvictionPending with exactly one notice each and no
 movement; the window elapsing re-notifies three times, then is silent until the escalation, and the
 tenant still enters and `home` still works; `@tenancy/resolve end` clears `Obj.home` for every
@@ -453,9 +453,9 @@ assess once with bounded catch-up.
 
 ### 4.1 As built (E5b, `crates/mush-housing` + the `mush-economy` seams it consumes)
 
-Built as the world-attached half of the same crate. `cargo test -p mush-housing` **98 passing**
-(54 E5a + 43 E5b + 1 in-crate); `cargo clippy --workspace --all-targets -- -D warnings` clean;
-`cargo fmt` stays off, unchanged.
+Built as the world-attached half of the same crate. `cargo test -p mush-housing` **121 passing**
+(54 E5a + 66 E5b + 1 in-crate; 98 before the verify fold); `cargo clippy --workspace --all-targets
+-- -D warnings` clean; `cargo fmt` stays off, unchanged.
 
 **Files.** `src/module.rs` (`HousingModule`, `HousingStore`, the keys, registration) ·
 `src/boot.rs` (load + the four reconciliation passes) · `src/hooks.rs` (the
@@ -651,6 +651,74 @@ ST is left holding a decision about a home that is fine.
     one fails the boot), and adding a typed family now would be a schema commitment made ahead of
     the review that owns it. **Carried to the K-series review, not to E5c.**
 
+**Verify-fold deltas** (the shipped cut, amended — every one of these is a
+`vf_<lens><n>_…` regression test in `tests/e5b.rs`):
+
+- **One authority path for a landlord's officer** (A4/A5). `commands::officer_scope` resolves the
+  compartment — the property's own when it names one, else the landlord org's **root scope** — and
+  `officer_of` asks it for `property.view` **or** `property.manage`. `may_view_property`,
+  `guest_only` and the access hook's inspector resolution all go through it, so a property created
+  without `scope=` no longer locks its own officers out of the record while still letting them
+  inspect it, and an invitation no longer demotes a manage-only officer to "just a guest". The
+  hook's *capability* stays `property.manage` alone: inspection is a management right, and a read
+  grant must not open a door.
+- **The guest reduction is every read verb** (A1). `@property/show|list` and `@tenancy/list` join
+  `+home` and `@tenancy/show`: a guest-only viewer gets the property's name and their own standing,
+  never the landlord, tier, rooms, features, status or occupancy.
+- **The assessment word, not the number** (A2). `@tenancy/show` renders `supported` / `strained` /
+  `unsupported` / `unknown` to tenants and landlord officers; the numeric `SupportLevel`, the plan
+  count and the sources are **staff only** — a `SupportLevel` is the Resources reading
+  `ruleset-wod` derives from a sheet (D-E5-5), and best-of publishes the *stronger* co-tenant's band.
+- **`landlord=` is not an org oracle** (A3). An unresolvable value, and a landlord for which the
+  actor can view no property, both answer `No such property.`; it never widens to "no filter".
+- **`+home/leave` and `+guest` never guess** (A6/H3). Both take the tenancy (`+home/leave <id>`,
+  `+guest … home=<id>`) and refuse with a list when the actor lives in more than one place; a
+  co-tenant's `Obj.home` is cleared **only when it resolves inside the property being left**, then
+  re-homed on another live lease.
+- **`every=` is a real key** (A7), documented as the rent period (default `DEFAULT_RENT_PERIOD_SECS`).
+- **The access hook keys on the live tenancy, never the `Let` latch** (H1). `Withdrawn` is a
+  service decision that lifts the *destroy gate*; it never unlocks a home somebody lives in, before
+  or after a reboot. `HousingDestroyGate` keeps its `is_let` filter, so a withdrawn property can
+  still be demolished once its tenancy ends.
+- **`move_attempt` checks the source for things** (H2). A non-actor standing in an occupied home
+  cannot be teleported out of it — the same fail-closed shape §1.1 already forces on the
+  destination, since the hook cannot see who issued the move. People are exempt: nobody is trapped.
+- **The anchor is exempt from the thoroughfare rule and nothing else** (H4). Every other check
+  applies to it: Limbo, the `no-property` marker, the reserved list, a room another property holds,
+  and — new — **any room carrying a `BehaviorBinding`**, which is the sim-space / interior-anchor /
+  presentation-room test without the `mush-sim` edge §2 forbids. `mush-server` now wires
+  `with_reserved_rooms` from `[onboarding]`'s two start rooms plus Limbo (deviation 3's handoff,
+  landed here rather than in E5c).
+- **The ending sweep walks transitively and scans for homes** (H5): the property's contents to a
+  depth cap, plus a bounded pass over every object whose `Obj.home` resolves inside wherever it
+  stands.
+- **A destroyed room pages whenever somebody lives there** (H6), independent of the latch — the
+  `ObjDestroyed` backstop and boot pass 1 both — because the economy's ladder dedupes by subject.
+- **A relapsed window inherits `notified`, never `escalation`** (T1). Carrying the id made
+  `window_due` answer `NotifyEscalated` forever, so a home that recovered and relapsed could never
+  ask for a person again; re-paging reopens the same record (same id, `reopened` bumped), so it
+  cannot double-mint. Same rule for `@tenancy/resolve <id>=extend`, which drops it too (T3).
+- **The rent obligation debits a tenant** (T2). `offer_lease` refuses a `from=` account whose owner
+  is not `PrincipalId::Object(o)` with `o` among the tenants, and refuses a system source by name
+  (a standing mint); `mush_economy`'s `check_offerable` enforces the same rule generically for every
+  `Deliverable::Obligation` — the debtor is a **party** and is never a system principal.
+- **The causing actor is recorded** (T4). `close_window` / `close_pending_job` credit
+  `acknowledge_escalation` and the job's resolution note to `ctx.actor` — the reinstating creditor,
+  the resolving staffer, or the tick's `GOD` — instead of always `GOD`. A landlord-initiated
+  recovery stays allowed: it is a recovery, not an ending.
+- **Three new boot passes.** A `Pending` exact tenancy whose lease contract is missing or terminal
+  is paged once with `@tenancy/resolve <id>=end` recommended, never ended and never
+  `EvictionPending` (T5). A live tenancy whose cadence does not resolve is paged with the clock
+  named, at boot and on every tick fire, and stays frozen (T6). A persisted `SceneRef` is cleared
+  at boot, because core scene ids restart per boot (T8) — and `=scene` now checks that
+  `attach_window` would accept **before** calling `ctx.start_scene`, so a second one leaks nothing.
+- **The tick's working set is the unended tenancies** (T7). `HousingStore::open` is a derived index
+  (`put_tenancy` and boot re-derive it from the status, never persisted), and `step` reads the
+  status through the store borrow before cloning anything.
+- **`BindEdge`** (T9) names whether "no rent obligation yet" is a fault: it is not on
+  `ContractChanged { Active }`, where deviation 8 guarantees the record does not exist yet, and it
+  is everywhere binding is due.
+
 **Handoffs to E5c:**
 
 - **`mush_housing::submit_support_plan(ctx, tenancy, resident, level, sources)`** is the whole
@@ -661,7 +729,9 @@ ST is left holding a decision about a home that is fine.
 - **Restate every period.** A plan older than `PLAN_MAX_AGE_PERIODS` (2) is *absent*, not asserted,
   so an evaluator that stops running lets `UNKNOWN_GRACE` fire rather than propping the lease up
   forever (§3.5 S4).
-- **Wire the chargen start rooms** into `HousingModule::with_reserved_rooms` (deviation 3).
+- ~~**Wire the chargen start rooms** into `HousingModule::with_reserved_rooms` (deviation 3).~~
+  **Landed in the verify fold (H4):** `mush-server` passes `[onboarding].start_room`,
+  `start_room_unapproved` and Limbo. E5c extends the list, it does not create it.
 - **The `[wod.economy].housing` knob** decides whether the server registers `system:wod.housing` as
   a title issuer at all; it is wired unconditionally for now, and is inert without housing.
 - **Chargen's Residence step** creates the tenancy through the same `@tenancy/create` path
@@ -669,6 +739,51 @@ ST is left holding a decision about a home that is fine.
   offer vacancies without disclosing occupancy.
 - **An org or system landlord has no inbox.** The delinquency notice reaches an *object* landlord
   only; E4c's observer seam is where an org's staff channel gets one.
+
+### 4.2 E5b verify outcome (2026-09-03)
+
+Three adversarial lenses over the shipped module, twenty-three findings, all confirmed by probe and
+all folded with a regression test each (`tests/e5b.rs`, the `// ---- E5b verify fold ----` section).
+
+**Lens A (command authority, existence hiding):** one HIGH — every guest read verb but `+home` and
+`@tenancy/show` handed a guest the whole record; three MEDIUM — the sheet-derived support level
+published to tenants and officers, `@property/list landlord=` as an org-existence oracle, and an
+officer locked out of a property created without `scope=`; three LOW-MEDIUM/LOW — the invitation
+demoting a manage-only officer, both player verbs silently picking the lowest-id tenancy, and a
+dead `every=` key; one doc-only.
+
+**Lens H (hooks, home safety):** one HIGH — `Withdrawn` cancelling every access rule on a home
+somebody still lived in, which a single destroyed spare room was enough to trigger; three MEDIUM —
+`@teleport` walking a thing out of an occupied home with no source check, `+home/leave` clearing
+the wrong home, and the anchor exempt from every room rule rather than only the thoroughfare one
+(with `with_reserved_rooms` never wired at all); two LOW-MEDIUM/LOW — the end sweep missing carried
+and remotely-homed items, and a second destruction on a withdrawn property being silent forever.
+
+**Lens T (tick, ladder, exact mode, durability):** three MEDIUM — a relapsed window that could
+never page again, a rent obligation that could debit a non-party or a faucet, and `extend`
+silencing the window it was meant to keep open; six LOW-MEDIUM/LOW — the ack credited to `GOD`, a
+`Pending` tenancy invisible to boot, a vanished cadence freezing a home in silence, the tick
+cloning every tenancy ever, `=scene` leaking a scene it could not re-attach after a reboot, and an
+`error!` on the happy path.
+
+Nothing in any lens found a path to `Ended` without a `Resolution`: D-E5-1 held throughout, and the
+two findings that mattered most are again the ones where a *quiet* failure had replaced a loud one
+(H1's master key and T1's permanently-silenced window). Gates: `cargo test -p mush-housing`
+**121 passing**, `cargo test --workspace` **2674 passing across 182 suites**, `cargo clippy
+--workspace --all-targets -- -D warnings` clean.
+
+**Handoffs to E5c** (in addition to §4.1's):
+
+- **Extend `with_reserved_rooms`.** It is wired from `[onboarding].start_room` and
+  `start_room_unapproved` plus Limbo; E5c should add whatever else the ruleset knows is never
+  somebody's living room (domain presentation rooms it names explicitly, festival grounds, and so on).
+- **The assessment word is the tenant-facing vocabulary.** `+resources` and the chargen Residence
+  step must render the word (`supported`/`strained`/`unsupported`/`unknown`), never the numeric
+  `SupportLevel`, to anyone but staff — the split is enforced in `@tenancy/show` and has to be kept
+  by every new render that touches funding.
+- **The tick's live-id index.** `HousingStore::open_tenancy_ids` is the working set; any E5c code
+  that iterates tenancies periodically should use it rather than `tenancies()`, and any new writer
+  must go through `put_tenancy` so the index stays derived.
 
 ---
 

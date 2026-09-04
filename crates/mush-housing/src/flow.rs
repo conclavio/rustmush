@@ -23,14 +23,27 @@
 
 use std::collections::BTreeSet;
 
-use mush_core::{Ctx, GOD, ObjId};
+use mush_core::{Ctx, GOD, ObjId, World};
 use mush_economy::{EscalationKind, EscalationSubject};
 
 use crate::ids::TenancyId;
 use crate::module::{
-    HousingStore, STORY_QUEUE, live_rooms, put_property, put_tenancy,
+    HousingStore, STORY_QUEUE, live_rooms, put_property, put_tenancy, render_actor,
 };
 use crate::record::{Property, PropertyStatus, Tenancy, TenancyStatus, TenancyStatusKind};
+
+/// How deep the ending sweep walks a property's contents — a lamp, in a bag, in a
+/// coat, on a shelf (verify fold, H5).
+///
+/// The sweep used to look one level down, at `contents_of(room)` and no further, so
+/// anything a tenant was *carrying* kept its `Obj.home` pointing into a house that
+/// was no longer theirs — and core's destroy dispersal, which honours no hook, would
+/// have posted it back through the front door.
+const END_SWEEP_DEPTH: usize = 6;
+/// The most objects one ending sweep will look at, in each of its two halves. It is
+/// the same bound the economy puts on its own contents walks: a world-sized scan
+/// belongs in a tick handler only when it cannot run away.
+const END_SWEEP_MAX: usize = 4_096;
 
 /// Stamp a brand-new tenancy's assessment cursor at the clock's **current** position
 /// (08d §4's pull model).
@@ -87,15 +100,18 @@ pub(crate) fn end(ctx: &mut Ctx<'_>, t: &Tenancy) {
     let resolve_home = |o: ObjId| ctx.w.get(o).and_then(|x| x.home);
     // The tenancy's own roster and guest list…
     let mut clear: BTreeSet<ObjId> = crate::to_unhome_on_end(t, resolve_home, p.anchor, &rooms);
-    // …plus everything standing in the property that is homed inside it, which is how
-    // a departing tenant's belongings leave with them instead of staying as somebody
-    // else's furniture.
-    let contents: Vec<ObjId> = rooms
-        .iter()
-        .chain(std::iter::once(&p.anchor))
-        .flat_map(|r| ctx.w.contents_of(*r).to_vec())
-        .collect();
-    clear.extend(crate::homed_inside(contents, resolve_home, p.anchor, &rooms));
+    // …plus everything homed inside it, which is how a departing tenant's belongings
+    // leave with them instead of staying as somebody else's furniture. Two halves,
+    // because "homed here" and "standing here" are different questions (H5):
+    //
+    // - the property's contents walked **transitively**, so a lamp in a pocket in the
+    //   spare room is found;
+    // - a bounded pass over everything whose `Obj.home` resolves inside, **wherever
+    //   it is standing**, because an item its owner carried out of the house is still
+    //   pointed at the house.
+    let mut candidates: Vec<ObjId> = contents_deep(ctx.w, &rooms, p.anchor);
+    candidates.extend(homed_inside_anywhere(ctx.w, p.anchor, &rooms));
+    clear.extend(crate::homed_inside(candidates, resolve_home, p.anchor, &rooms));
     for who in &clear {
         if let Err(error) = ctx.w.set_home(*who, None) {
             tracing::warn!(tenancy = t.id.0, who = who.0, %error, "housing: could not clear a home");
@@ -126,6 +142,45 @@ pub(crate) fn end(ctx: &mut Ctx<'_>, t: &Tenancy) {
         if store.has_live_tenancy(p.id) { PropertyStatus::Let } else { PropertyStatus::Vacant }
     };
     set_status(ctx, &p, want);
+}
+
+/// Everything inside a property's rooms, transitively, to [`END_SWEEP_DEPTH`] and at
+/// most [`END_SWEEP_MAX`] objects (H5).
+///
+/// Breadth-first with both a depth and a total cap, so a container cycle a corrupt
+/// world could hold cannot make an ending loop forever — this runs on the command and
+/// the tick path, where a hang is the world task.
+fn contents_deep(w: &World, rooms: &BTreeSet<ObjId>, anchor: ObjId) -> Vec<ObjId> {
+    let mut out: Vec<ObjId> = Vec::new();
+    let mut frontier: Vec<ObjId> = rooms.iter().copied().chain(std::iter::once(anchor)).collect();
+    for _ in 0..END_SWEEP_DEPTH {
+        let mut next: Vec<ObjId> = Vec::new();
+        for r in frontier.drain(..) {
+            for c in w.contents_of(r) {
+                if out.len() >= END_SWEEP_MAX {
+                    tracing::warn!(anchor = anchor.0, "housing: the ending sweep hit its cap");
+                    return out;
+                }
+                out.push(*c);
+                next.push(*c);
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
+    }
+    out
+}
+
+/// Every object whose `Obj.home` resolves inside the property, wherever it is
+/// standing (H5) — bounded by [`END_SWEEP_MAX`].
+fn homed_inside_anywhere(w: &World, anchor: ObjId, rooms: &BTreeSet<ObjId>) -> Vec<ObjId> {
+    w.iter()
+        .filter(|o| matches!(o.home, Some(h) if h == anchor || rooms.contains(&h)))
+        .map(|o| o.id)
+        .take(END_SWEEP_MAX)
+        .collect()
 }
 
 /// Move a property's lifecycle latch, writing nothing when it already says that.
@@ -239,8 +294,20 @@ pub(crate) fn open_story_job(ctx: &mut Ctx<'_>, t: &Tenancy) -> Option<u64> {
 
 /// Close the job and acknowledge the page a **recovered** tenancy left behind (E5a
 /// fold, S8).
+///
+/// **Who caused it is recorded** (verify fold, T4). Recovery does not only arrive
+/// from the tick: a landlord who is the rent obligation's creditor can
+/// `@obligation/reinstate` it, and the observer mirrors that straight onto the ladder
+/// — a legitimate recovery, and one this module deliberately still allows, because it
+/// is somebody *un*-ending a home rather than ending one. The escalation it closes
+/// was credited to `GOD` regardless, so `@econ/alerts` said a page about a private
+/// landlord's tenant had been handled by the game itself. `ctx.actor` is the tick's
+/// `GOD` on the automatic path and the real person on every other one, which is
+/// exactly the distinction the alert list needs to show.
 pub(crate) fn close_window(ctx: &mut Ctx<'_>, t: &Tenancy) {
     let Some(window) = t.last_window else { return };
+    let by = ctx.actor;
+    let who = render_actor(ctx.w, by);
     if let Some(job) = window.job {
         match mush_jobs::set_job_status(
             ctx,
@@ -248,8 +315,8 @@ pub(crate) fn close_window(ctx: &mut Ctx<'_>, t: &Tenancy) {
             GOD,
             mush_jobs::JobStatus::Resolved,
             &format!(
-                "Recovered: tenancy #{} is supported again and back to Active. No decision is \
-                 needed.",
+                "Recovered: tenancy #{} is supported again and back to Active (recovery caused \
+                 by {who}). No decision is needed.",
                 t.id
             ),
         ) {
@@ -260,7 +327,7 @@ pub(crate) fn close_window(ctx: &mut Ctx<'_>, t: &Tenancy) {
         }
     }
     if let Some(escalation) = window.escalation {
-        mush_economy::acknowledge_escalation(ctx, escalation, GOD);
+        mush_economy::acknowledge_escalation(ctx, escalation, by);
     }
 }
 
@@ -273,9 +340,13 @@ pub(crate) fn close_window(ctx: &mut Ctx<'_>, t: &Tenancy) {
 pub(crate) fn close_pending_job(ctx: &mut Ctx<'_>, t: &Tenancy, waived: bool) {
     let TenancyStatus::EvictionPending { window } = &t.status else { return };
     let (job, escalation) = (window.job, window.escalation);
+    // T4: the person who decided it, not `GOD` — this path is always somebody's
+    // explicit act (`@tenancy/resolve`, or the tenant's own `+home/leave`).
+    let by = ctx.actor;
+    let who = render_actor(ctx.w, by);
     if let Some(job) = job {
         let note = format!(
-            "Decided: tenancy #{} was {}. Nothing further is pending.",
+            "Decided: tenancy #{} was {} by {who}. Nothing further is pending.",
             t.id,
             if waived { "waived" } else { "ended" }
         );
@@ -286,7 +357,7 @@ pub(crate) fn close_pending_job(ctx: &mut Ctx<'_>, t: &Tenancy, waived: bool) {
         }
     }
     if let Some(escalation) = escalation {
-        mush_economy::acknowledge_escalation(ctx, escalation, GOD);
+        mush_economy::acknowledge_escalation(ctx, escalation, by);
     }
 }
 
@@ -339,6 +410,34 @@ pub(crate) fn page_window(ctx: &mut Ctx<'_>, t: &Tenancy) -> Option<mush_economy
             format!("@tenancy/show {id}"),
         ],
     )
+}
+
+/// A tenancy whose **campaign clock has gone away** is frozen, and used to be frozen
+/// in total silence (verify fold, T6).
+///
+/// "An unresolvable clock never makes anything happen" is the right rule and the
+/// wrong output: every housing arrow takes a position on the tenancy's own cadence,
+/// so a deleted or renumbered clock stops the ladder, stops the notices and stops the
+/// story window — indefinitely, with nothing anywhere saying why the home in trouble
+/// went quiet. The economy's ladder dedupes by subject, so asking on every fire costs
+/// one record however many times it is asked.
+pub(crate) fn page_missing_cadence(ctx: &mut Ctx<'_>, t: &Tenancy) {
+    let (id, cadence) = (t.id, t.cadence);
+    mush_economy::open_escalation(
+        ctx,
+        EscalationKind::BootReconciliation,
+        EscalationSubject::HousingTenancy(id.0),
+        format!(
+            "tenancy #{id} is assessed on cadence #{cadence}, which has no record. It is FROZEN: \
+             nothing is assessed, nothing is notified and nobody is evicted, because a clock \
+             nobody can read must never move a home. Restore the clock, or point the tenancy at \
+             a live one"
+        ),
+        vec![
+            "@econ/cadence list".to_string(),
+            format!("@tenancy/show {id}"),
+        ],
+    );
 }
 
 // ---------------------------------------------------------------------------

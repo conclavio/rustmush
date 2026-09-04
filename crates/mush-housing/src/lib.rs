@@ -99,7 +99,7 @@ pub use tenancy::{
 pub use commands::{
     LIST_CAP, NO_SUCH_PROPERTY, NO_SUCH_TENANCY, may_view_property, may_view_tenancy,
 };
-pub use econ::{HousingEconomyObserver, PENDING_OBLIGATION};
+pub use econ::{BindEdge, HousingEconomyObserver, PENDING_OBLIGATION};
 pub use flow::submit_support_plan;
 pub use hooks::{NO_DESTROY, REFUSED, REFUSED_CARRY, may_reach};
 pub use module::{

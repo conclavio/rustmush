@@ -76,18 +76,21 @@ pub fn server_modules() -> Vec<Box<dyn GameModule>> {
     server_modules_with(
         mush_weather::WeatherConfig::default(),
         mush_economy::EconomyConfig::default(),
+        &ruleset_wod::OnboardingConfig::default(),
     )
 }
 
 /// [`server_modules`] with explicit module configs: the `[weather]` knobs (the M10
-/// flavor-variant sizing) and the `[economy]` knobs (E4's mint bound on a ruleset's
-/// faucet-funded obligations). `main.rs` uses this so those sections in `mushd.toml`
-/// actually reach their modules; every other caller (tests) takes the crate defaults
-/// via [`server_modules`].
+/// flavor-variant sizing), the `[economy]` knobs (E4's mint bound on a ruleset's
+/// faucet-funded obligations), and `[onboarding]`'s start rooms (E5b's reserved-room
+/// list). `main.rs` uses this so those sections in `mushd.toml` actually reach their
+/// modules; every other caller (tests) takes the crate defaults via
+/// [`server_modules`].
 #[must_use]
 pub fn server_modules_with(
     weather: mush_weather::WeatherConfig,
     economy: mush_economy::EconomyConfig,
+    onboarding: &ruleset_wod::OnboardingConfig,
 ) -> Vec<Box<dyn GameModule>> {
     vec![
         Box::new(mush_comsys::ComsysModule::new()),
@@ -178,8 +181,21 @@ pub fn server_modules_with(
         // reconciliation asks all four of them questions: org for the landlord
         // compartment, the economy for cadence positions and rent obligations, jobs
         // for the story queue, and the world itself for the rooms.
+        // E5b verify fold (H4): the reserved-room list is wired **now**, not left to
+        // E5c. D-E5-12 says a chargen start room is never somebody's living room, and
+        // housing enforces it without a `mush-config` edge by being told — so until
+        // the host tells it, `@property/create <name>=<the start room>` was accepted
+        // and every fresh character would have walked out of chargen into a private
+        // residence the access hook then answered for. `[onboarding]` owns the two
+        // rooms; Limbo is on the list belt-and-braces (housing refuses it anyway).
         Box::new(
-            mush_housing::HousingModule::new().with_issuer(housing_title_issuer()),
+            mush_housing::HousingModule::new()
+                .with_issuer(housing_title_issuer())
+                .with_reserved_rooms([
+                    onboarding.start_room,
+                    onboarding.start_room_unapproved,
+                    mush_core::LIMBO,
+                ]),
         ),
         Box::new(mush_weather::WeatherModule::with_config(weather)),
         Box::new(mush_script::ScriptModule::new()),

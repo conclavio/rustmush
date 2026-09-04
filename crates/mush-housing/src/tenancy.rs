@@ -85,8 +85,8 @@ pub const WINDOW_ESCALATED_RENOTIFY: i64 = 7;
 /// and the escalation, which only fires once the notices are *spent*, never fired.
 /// Nobody was ever paged about the home that had been in trouble for a year.
 ///
-/// So a window that reopens too soon inherits the previous one's `notified` count and
-/// its escalation instead: it is the same pressure, not a new one. "Too soon" is
+/// So a window that reopens too soon inherits the previous one's `notified` count
+/// instead: it is the same pressure, not a new one. "Too soon" is
 /// measured from the previous window closing to the new one opening, allowing for the
 /// ladder's own length — the fastest possible relapse is `GRACE_PERIODS +
 /// DELINQUENT_PERIODS` after recovery, and this is how much slack on top of that still
@@ -233,9 +233,10 @@ pub fn grace_elapsed(t: &Tenancy, now: i64) -> Result<Tenancy, HousingError> {
 /// only counts notices, and [`resolve`] needs a [`Resolution`] somebody chose.
 ///
 /// **Hysteresis** ([`RELAPSE_WINDOW_PERIODS`]): a window that reopens within the
-/// relapse gap of the last one closing inherits its `notified` count and its
-/// escalation rather than starting a fresh budget, so a tenancy flickering in and out
-/// of the ladder still reaches the escalation instead of re-notifying forever.
+/// relapse gap of the last one closing inherits its `notified` count rather than
+/// starting a fresh budget, so a tenancy flickering in and out of the ladder still
+/// reaches the escalation instead of re-notifying forever. It does **not** inherit
+/// the escalation id — see the note at the carry-over itself.
 pub fn delinquent_elapsed(t: &Tenancy, now: i64) -> Result<Tenancy, HousingError> {
     if t.status.is_ended() {
         return Err(HousingError::AlreadyEnded(t.id));
@@ -255,8 +256,21 @@ pub fn delinquent_elapsed(t: &Tenancy, now: i64) -> Result<Tenancy, HousingError
         && let Some(closed) = prev.closed
         && periods_since(closed, now).unwrap_or(0) <= relapse_gap
     {
+        // **The notice budget carries over; the escalation does NOT** (E5b verify
+        // fold, T1). Inheriting the id looked like the same conservatism, and was the
+        // opposite: `window_due` answers `NotifyEscalated` — the slow, weekly notice
+        // — for *any* window that already has an escalation, and never `Escalate`
+        // again. So a tenancy that reached the page, recovered (which acknowledges
+        // it), and relapsed inside the hysteresis carried a dead id into a window
+        // that could therefore never ask for a person: the ladder was closed and the
+        // second run of trouble was silent forever.
+        //
+        // Dropping it is safe because the ladder is the **economy's**, not this
+        // module's: paging again finds the same `EscalationSubject::HousingTenancy`
+        // and either hands back the record that is still open or reopens the one that
+        // was acknowledged — same id, same history, `reopened` bumped. Re-paging
+        // cannot mint a second alert about one home.
         window.notified = prev.notified.min(MAX_WINDOW_NOTICES);
-        window.escalation = prev.escalation;
     }
     Ok(move_to(t, TenancyStatus::EvictionPending { window }, now))
 }

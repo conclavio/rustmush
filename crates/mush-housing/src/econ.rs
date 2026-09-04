@@ -59,6 +59,34 @@ pub fn is_pending_lease(f: &Funding) -> bool {
     matches!(f, Funding::Exact { obligation, .. } if *obligation == PENDING_OBLIGATION)
 }
 
+/// Which edge asked housing to bind a lease's rent obligation — and therefore
+/// whether "there is no obligation yet" is a **fault** (E5b verify fold, T9).
+///
+/// The distinction is not cosmetic. Deviation 8 is a real ordering fact:
+/// `ContractChanged { Active }` is emitted by the contract's own state write, which
+/// happens *before* the economy creates the obligations its deliverables describe. So
+/// on that edge a missing rent record is the ordinary answer on the **happy path**,
+/// every single time a lease activates, and logging it at `error!` meant every
+/// correct activation wrote a line that reads like a broken one — which is how a real
+/// one stops being noticed. Everywhere else, binding is already due.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum BindEdge {
+    /// `ContractChanged { Active }` — the obligation does not exist yet by
+    /// construction, and the edge that creates it is the one that binds.
+    ContractActivated,
+    /// The obligation's own `ObligationChanged` edge, or the tick's restart-safe
+    /// catch-up: the contract is live and its deliverables were created long ago.
+    BindingDue,
+}
+
+impl BindEdge {
+    /// Whether a missing rent obligation on this edge is worth an `error!`.
+    #[must_use]
+    pub fn missing_obligation_is_a_fault(self) -> bool {
+        matches!(self, BindEdge::BindingDue)
+    }
+}
+
 /// Housing's ear on the economy (E4c's `with_observers` table).
 ///
 /// It is wired in `mush-server` alongside the canon bridge. Omitting it does not
@@ -154,7 +182,9 @@ fn bind_pending_lease(ctx: &mut Ctx<'_>, id: ObligationId) {
         return;
     }
     let Some(now) = crate::module::cadence_now(ctx.w, t.cadence) else { return };
-    activate_lease(ctx, &t, contract, now);
+    // This edge exists *because* the obligation was just created, so "there is no
+    // rent record" here is a real fault.
+    activate_lease(ctx, &t, contract, now, BindEdge::BindingDue);
 }
 
 /// Catch-up for the same binding, from the tick (08d §4).
@@ -177,7 +207,10 @@ pub(crate) fn bind_if_ready(ctx: &mut Ctx<'_>, t: &Tenancy) {
         return;
     }
     let Some(now) = crate::module::cadence_now(ctx.w, t.cadence) else { return };
-    activate_lease(ctx, t, contract, now);
+    // Binding is *due* by the time the tick asks — the contract is live and its
+    // deliverables have long since been created — so a missing rent record here is
+    // the genuine fault deviation 7's sentinel exists to make visible.
+    activate_lease(ctx, t, contract, now, BindEdge::BindingDue);
 }
 
 /// Activation and unwind.
@@ -185,7 +218,10 @@ fn on_contract(ctx: &mut Ctx<'_>, id: mush_economy::ContractId, state: ContractS
     let Some(t) = tenancy_under(ctx, id) else { return };
     let Some(now) = crate::module::cadence_now(ctx.w, t.cadence) else { return };
     match state {
-        ContractStateKind::Active => activate_lease(ctx, &t, id, now),
+        // **Quiet** (verify fold, T9) — see [`BindEdge`].
+        ContractStateKind::Active => {
+            activate_lease(ctx, &t, id, now, BindEdge::ContractActivated);
+        }
         // Every route into a terminal contract state is an explicit act — a staff
         // attestation that settles it, the issuer or staff cancelling it, a deadline
         // the parties wrote into the surface — so this is a `Resolution`, not an
@@ -225,24 +261,36 @@ fn on_contract(ctx: &mut Ctx<'_>, id: mush_economy::ContractId, state: ContractS
 }
 
 /// The lease activated: bind the obligation it created, then run E5a's `accept`.
+///
+/// `edge` says whether "there is no rent obligation yet" is a **fault** here
+/// ([`BindEdge`], T9).
 fn activate_lease(
     ctx: &mut Ctx<'_>,
     t: &Tenancy,
     contract: mush_economy::ContractId,
     now: i64,
+    edge: BindEdge,
 ) {
     if !matches!(t.status, crate::record::TenancyStatus::Pending) {
         return;
     }
     let Some(obligation) = obligation_of_contract(ctx, contract) else {
-        // The contract activated but minted no rent record (an exhausted allocator —
-        // the economy logs that loudly). The tenancy stays `Pending`: a home nobody
-        // is being charged for is not a home anybody agreed to.
-        tracing::error!(
-            tenancy = t.id.0,
-            contract = contract.0,
-            "housing: a lease activated with no rent obligation; the tenancy stays pending"
-        );
+        // The contract activated but minted no rent record. The tenancy stays
+        // `Pending` either way: a home nobody is being charged for is not a home
+        // anybody agreed to, and the very next edge (or the tick) binds it.
+        if edge.missing_obligation_is_a_fault() {
+            tracing::error!(
+                tenancy = t.id.0,
+                contract = contract.0,
+                "housing: a lease activated with no rent obligation; the tenancy stays pending"
+            );
+        } else {
+            tracing::debug!(
+                tenancy = t.id.0,
+                contract = contract.0,
+                "housing: the lease's rent obligation does not exist yet; binding on its own edge"
+            );
+        }
         return;
     };
     let mut bound = t.clone();

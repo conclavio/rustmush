@@ -161,6 +161,18 @@ pub struct PendingNotice {
 pub struct HousingStore {
     pub(crate) properties: BTreeMap<PropertyId, Property>,
     pub(crate) tenancies: BTreeMap<TenancyId, Tenancy>,
+    /// The ids of every tenancy that has **not ended** — the tick's whole working
+    /// set (verify fold, T7).
+    ///
+    /// A tenancy record is the largest document this module holds: a roster, a guest
+    /// list, a plan per resident and a 32-entry history tail. Ended ones are kept
+    /// forever (they are the audit record of who lived where), so on any world that
+    /// has been running a while they are *most* of the store — and the tick was
+    /// cloning every one of them, thirty seconds at a time, to discover that they
+    /// were ended. This index is derived, never authoritative: [`put_tenancy`] and
+    /// boot both re-derive it from the status, so it cannot drift into admitting an
+    /// ended tenancy.
+    pub(crate) open: BTreeSet<TenancyId>,
     pub(crate) next_property: u64,
     pub(crate) next_tenancy: u64,
     pub(crate) assess: BTreeMap<TenancyId, AssessState>,
@@ -196,6 +208,17 @@ impl HousingStore {
     /// Every tenancy, in id order.
     pub fn tenancies(&self) -> impl Iterator<Item = &Tenancy> {
         self.tenancies.values()
+    }
+    /// Every tenancy that has **not ended**, in id order — the ids the assessment
+    /// tick walks (fold T7). Ended tenancies are kept forever as the record of who
+    /// lived where, and nothing periodic ever needs to look at one again.
+    pub fn open_tenancy_ids(&self) -> impl Iterator<Item = TenancyId> + '_ {
+        self.open.iter().copied()
+    }
+    /// Re-derive [`HousingStore::open`] from the loaded tenancies (boot).
+    pub(crate) fn reindex_open(&mut self) {
+        self.open =
+            self.tenancies.values().filter(|t| !t.status.is_ended()).map(|t| t.id).collect();
     }
     /// The wired title issuer, if this server has one.
     #[must_use]
@@ -309,6 +332,13 @@ pub(crate) fn put_property(ctx: &mut Ctx<'_>, p: Property) {
 /// Install a tenancy into RAM and queue its container doc.
 pub(crate) fn put_tenancy(ctx: &mut Ctx<'_>, t: Tenancy) {
     if let Some(store) = ctx.w.module_state_mut::<HousingStore>() {
+        // The open index is re-derived from the status on every write, so it says
+        // exactly what the record says and no caller has to remember to maintain it.
+        if t.status.is_ended() {
+            store.open.remove(&t.id);
+        } else {
+            store.open.insert(t.id);
+        }
         store.tenancies.insert(t.id, t.clone());
     }
     push_op(ctx.out, ModuleWrite::JsonSet {
@@ -399,6 +429,13 @@ pub fn cadence_now(w: &World, cadence: mush_economy::CadenceId) -> Option<i64> {
 #[must_use]
 pub fn live_rooms(w: &World, p: &Property) -> BTreeSet<ObjId> {
     p.rooms.iter().copied().filter(|r| is_live_room(w, *r)).collect()
+}
+
+/// Render one object for a job note or a staff line — the same shape
+/// [`render_principal`] gives an object principal.
+#[must_use]
+pub fn render_actor(w: &World, who: ObjId) -> String {
+    render_principal(w, &PrincipalId::Object(who))
 }
 
 /// Render a principal for a housing line, without leaking anything the economy's own

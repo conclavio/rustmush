@@ -5,9 +5,9 @@
 //! | verb | who |
 //! |---|---|
 //! | `@property/create|rooms|tier|feature|withdraw` | staff |
-//! | `@property/show|list` | staff, or a landlord officer holding `property.view` / `property.manage` on the compartment |
+//! | `@property/show|list` | staff, a landlord officer holding `property.view` / `property.manage` on the compartment (or the landlord org's root scope), a tenant, or a guest (**reduced**) |
 //! | `@tenancy/create|resolve` | **staff only** (08d §11 answer 3, binding: `property.manage` covers show/list and guest policy, never tenancy creation) |
-//! | `@tenancy/show|list` | staff, a landlord officer in their own compartment, a tenant, or a guest (reduced) |
+//! | `@tenancy/show|list` | staff, a landlord officer in their own compartment, a tenant, or a guest (**reduced**) |
 //! | `+home`, `+home/leave`, `+guest` | the tenant; `+home` also answers a guest, with their own standing and nothing else |
 //!
 //! ## Existence hiding (§4.5, D-E3-6, applied to homes)
@@ -79,9 +79,13 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @property/feature <id>=<key>            record an approved feature (staff)\n\
                    @property/withdraw <id>                 take it out of service (staff)\n\
                    @property/show <id>   @property/list [landlord=<org>]\n\
-                   \x20                                      staff, or an officer holding\n\
-                   \x20                                      property.view / property.manage on the\n\
-                   \x20                                      landlord's compartment\n\
+                   \x20  Who may read them: staff; an officer holding property.view or\n\
+                   \x20  property.manage on the landlord's compartment (or, when the property\n\
+                   \x20  named no compartment, the landlord org's root scope); a tenant; and a\n\
+                   \x20  GUEST, who sees the property's name and their own standing and nothing\n\
+                   \x20  else — never the landlord, tier, rooms, features, status or occupancy.\n\
+                   \x20  A property you may not view answers \"No such property.\", and so does an\n\
+                   \x20  unresolvable landlord= filter.\n\
                    A property is ORDINARY PRIVATE ROOMS a builder already dug (D-E5-12): never a\n\
                    sim space, a domain presentation room, the chargen start room, a room another\n\
                    property already holds, or a thoroughfare — a room reachable from outside the\n\
@@ -102,7 +106,15 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 .collect(),
             help: "@tenancy/create <property>=<tenant>[,<tenant>…] cadence=<id>\n\
                    \x20   [inspect=<who>:<always|delinquent>]\n\
-                   \x20   [mode=abstract|exact rent=<minor units> from=<acct> to=<acct>]   (staff)\n\
+                   \x20   [mode=abstract|exact rent=<minor units> from=<acct> to=<acct>\n\
+                   \x20    every=<seconds>]                                              (staff)\n\
+                   \x20                                      every= is the rent period (default one\n\
+                   \x20                                        real day). from= must be an account a\n\
+                   \x20                                        TENANT owns — never a bystander's and\n\
+                   \x20                                        never a system faucet.\n\
+                   \x20   Creating and resolving a tenancy is STAFF, even for a landlord's own\n\
+                   \x20   officers: property.manage covers show/list and guest policy and never\n\
+                   \x20   tenancy creation (§11 answer 3, the default the owner accepted).\n\
                    \x20                                      abstract: live immediately; the ruleset\n\
                    \x20                                        submits support plans and NOTHING posts.\n\
                    \x20                                      exact: offers a LEASE CONTRACT instead. The\n\
@@ -115,6 +127,10 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    \x20  end     end it: every homed tenant's home anchor is cleared\n\
                    \x20  waive   end it as forgiven — no fault recorded against anyone\n\
                    @tenancy/show <id>   @tenancy/list [property=<id>]\n\
+                   \x20  Who may read them: staff; a landlord officer in their own compartment;\n\
+                   \x20  a tenant; and a GUEST, who sees the property's name and their own\n\
+                   \x20  standing and nothing else. Staff alone see the numeric support level\n\
+                   \x20  and the plan count — everyone else reads the assessment word.\n\
                    Nothing ends a home automatically (D-E5-1). Automatic assessment stops at\n\
                    eviction-pending with a bounded story window: the tenant is notified at most 3\n\
                    times, then staff are paged, and the tenant keeps their key throughout."
@@ -132,7 +148,9 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    \x20                                      have let in, and any notice waiting for you\n\
                    \x20                                      As a GUEST it shows the property's name and\n\
                    \x20                                      your own standing — never who lives there.\n\
-                   +home/leave                             move out, deliberately and for good\n\
+                   +home/leave [<tenancy>]                 move out, deliberately and for good\n\
+                   \x20                                      With more than one home it REFUSES and lists\n\
+                   \x20                                      them: it never guesses which one to end.\n\
                    \x20                                      Your home anchor is cleared, the access hook\n\
                    \x20                                      stops admitting you, and it does not come\n\
                    \x20                                      back. This is the tenant's half of \"a home\n\
@@ -150,6 +168,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             help: "+guest                                  who you have let into your home\n\
                    +guest add <who>                        let somebody in (they may enter and carry)\n\
                    +guest remove <who>                     stop letting them in\n\
+                   \x20  home=<tenancy> names which home, and is required when you have more\n\
+                   \x20  than one.\n\
                    Guests are the TENANT's to manage, at any status: a delinquent tenant still\n\
                    invites whoever they like. A guest is not homed on the property — an invitation\n\
                    is not a residence."
@@ -186,6 +206,50 @@ pub fn holds(w: &World, actor: ObjId, capability: &str, scope: OrgScopeId) -> bo
     mush_org::authorize_in_world(w, &req).is_allow()
 }
 
+/// The compartment an organization principal's authority is asked on for a housing
+/// record: the hinted one when it really belongs to that org, else the org's **root
+/// scope**.
+///
+/// One helper because there was one bug (verify fold, A4). `may_view_property` asked
+/// only about `Property::landlord_scope` and the access hook asked about the root
+/// scope as a fallback, so a property created without `scope=` — which the command
+/// allows, and which is the obvious thing to type — locked every one of the
+/// landlord's officers out of the record while still letting them inspect it. Two
+/// answers to "is this person an officer here" is one too many.
+#[must_use]
+pub(crate) fn officer_scope(
+    w: &World,
+    principal: &PrincipalId,
+    hint: Option<OrgScopeId>,
+) -> Option<OrgScopeId> {
+    match principal {
+        PrincipalId::Organization(org) => {
+            let store = w.module_state::<mush_org::OrgStore>()?;
+            let state = store.state();
+            hint.filter(|s| state.scope(*s).is_some_and(|sc| sc.org == *org))
+                .or_else(|| state.org(*org).map(|o| o.root_scope))
+        }
+        // A property let by a person or a system principal has no org to fall back
+        // to; it can still name a compartment its officers are read in.
+        PrincipalId::Object(_) | PrincipalId::System(_) => hint,
+    }
+}
+
+/// Whether `actor` is one of this property's **landlord officers** — the single
+/// authority path (fold A4/A5).
+///
+/// Either capability is standing. §11 answer 3 makes `property.manage` the wider
+/// right (it covers show/list *and* guest policy), so a manage-only officer who could
+/// not read the property would hold a right they had no way to exercise — which is
+/// exactly how an invitation used to demote one to "just a guest".
+#[must_use]
+pub fn officer_of(w: &World, actor: ObjId, p: &Property) -> bool {
+    let Some(scope) = officer_scope(w, &p.landlord, p.landlord_scope) else {
+        return false;
+    };
+    holds(w, actor, "property.view", scope) || holds(w, actor, "property.manage", scope)
+}
+
 /// §4.5 view standing over a property: staff, a landlord officer on its compartment,
 /// or somebody who lives (or is invited) there.
 #[must_use]
@@ -193,9 +257,7 @@ pub fn may_view_property(w: &World, actor: ObjId, p: &Property) -> bool {
     if is_staff(w, actor) {
         return true;
     }
-    if let Some(scope) = p.landlord_scope
-        && (holds(w, actor, "property.view", scope) || holds(w, actor, "property.manage", scope))
-    {
+    if officer_of(w, actor, p) {
         return true;
     }
     // A landlord who is a person sees their own.
@@ -207,6 +269,35 @@ pub fn may_view_property(w: &World, actor: ObjId, p: &Property) -> bool {
             .filter(|t| t.property == p.id && t.status.is_live())
             .any(|t| t.is_tenant(actor) || t.is_guest(actor))
     })
+}
+
+/// Whether this actor's **only** standing on `p` is "somebody let me in" (fold A1).
+///
+/// A guest was already reduced on `+home` and `@tenancy/show`, and read the whole
+/// record — landlord, tier, every room, every approved feature, the status and how
+/// many people live there — off `@property/show`, `@property/list` and
+/// `@tenancy/list`. An invitation is not a tenancy and it is certainly not a
+/// landlord's books: a guest gets the name of the place and their own standing.
+#[must_use]
+fn guest_only_property(w: &World, actor: ObjId, p: &Property) -> bool {
+    if is_staff(w, actor) || officer_of(w, actor, p) || p.landlord == PrincipalId::Object(actor) {
+        return false;
+    }
+    w.module_state::<HousingStore>().is_some_and(|s| {
+        let mut guest = false;
+        for t in s.tenancies().filter(|t| t.property == p.id && t.status.is_live()) {
+            if t.is_tenant(actor) {
+                return false;
+            }
+            guest = guest || t.is_guest(actor);
+        }
+        guest
+    })
+}
+
+/// The one line a guest reads about a place they were let into.
+fn guest_line(name: &str) -> String {
+    format!("{name}: you are a guest here.")
 }
 
 /// §4.5 view standing over a tenancy.
@@ -520,6 +611,22 @@ fn check_room(
             room.0
         )));
     }
+    // **A room carrying a behavior binding belongs to another module** (verify fold,
+    // H4). It is the sim-space / presentation-room / interior-anchor test without the
+    // `mush-sim` dependency §2 forbids: a simulation domain, a tactics host and an
+    // interior anchor are all *structural* rooms some module keeps state about, and
+    // every one of them is marked by a `BehaviorBinding` on the object itself. The
+    // thoroughfare rule catches them only when they are reachable from outside — and
+    // the **anchor is exempt from the thoroughfare rule**, which left exactly one
+    // hole: a sim domain named as a property's anchor passed every check there was.
+    if ctx.w.get(room).is_some_and(|o| !o.behaviors.is_empty()) {
+        return Err(CmdError::msg(format!(
+            "#{} carries a behavior binding, so another module owns it as a structural room \
+             (a simulation domain, an interior anchor, a presentation space). It is never a \
+             private residence (D-E5-12).",
+            room.0
+        )));
+    }
     // **The thoroughfare rule.** A room reachable by an exit from a room *outside* the
     // property is a public way, not a private residence — the one exception being the
     // anchor, which is the property's declared entrance and is meant to be reachable.
@@ -527,8 +634,9 @@ fn check_room(
     // It is also what keeps a sim space, a domain presentation room and the chargen
     // start room out without a `mush-sim` dependency housing must not have: every one
     // of them is somewhere a character arrives from outside, so every one of them
-    // fails this test. The reserved list above closes the one gap it leaves — the
-    // anchor, which is exempt by construction.
+    // fails this test. **This is the only rule the anchor is exempt from**, and the
+    // reserved list, the `no-property` marker and the behavior-binding test above are
+    // what close the gap that exemption leaves.
     if room != anchor {
         let inside = |r: ObjId| proposed.contains(&r);
         let offending: Option<(ObjId, ObjId)> = ctx
@@ -691,6 +799,13 @@ fn property_withdraw(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 fn property_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let p = property_of(ctx, ctx.args.lhs())?;
+    // A1: the guest reduction `+home` and `@tenancy/show` already apply. One line,
+    // and nothing about the landlord, the tier, the rooms, the features, the status
+    // or who lives there.
+    if guest_only_property(ctx.w, ctx.actor, &p) {
+        info(ctx, guest_line(&p.name));
+        return Ok(());
+    }
     let landlord = render_principal(ctx.w, &p.landlord);
     let rooms: Vec<String> = p.rooms.iter().map(|r| format!("#{}", r.0)).collect();
     info(ctx, format!("Property #{} — \"{}\" [{:?}]", p.id, p.name, p.status));
@@ -721,7 +836,17 @@ fn property_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 fn property_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (_, opts) = parse_opts(ctx.args.raw(), &["landlord"]);
-    let filter = opts.get("landlord").and_then(|s| parse_landlord(ctx, s));
+    // **A3: `landlord=` never widens to "no filter".** An unresolvable value used to
+    // fall through to an unfiltered list, so the *shape* of the answer told a probe
+    // whether an organization exists: `landlord=org:Ironhold` listed nothing and
+    // `landlord=org:Nowhere` listed everything they could see. It is now the same
+    // refusal `@property/create` gives an unknown landlord, and it is the record's
+    // own hidden text — so a typo, a nonexistent org and an org whose properties this
+    // actor may not see are one message.
+    let filter = match opts.get("landlord") {
+        None => None,
+        Some(s) => Some(parse_landlord(ctx, s).ok_or_else(hidden_property)?),
+    };
     let rows: Vec<String> = ctx
         .w
         .module_state::<HousingStore>()
@@ -730,6 +855,10 @@ fn property_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .filter(|p| may_view_property(ctx.w, ctx.actor, p))
                 .filter(|p| filter.as_ref().is_none_or(|f| p.landlord == *f))
                 .map(|p| {
+                    // A1: a guest's row is their own standing, never the books.
+                    if guest_only_property(ctx.w, ctx.actor, p) {
+                        return format!("#{} — {}", p.id, guest_line(&p.name));
+                    }
                     format!(
                         "#{} \"{}\" — tier {} · {} room(s) · {:?}",
                         p.id,
@@ -742,6 +871,9 @@ fn property_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .collect()
         })
         .unwrap_or_default();
+    if filter.is_some() && rows.is_empty() {
+        return Err(hidden_property());
+    }
     emit_list(ctx, rows, "No properties.");
     Ok(())
 }
@@ -777,8 +909,11 @@ fn tenancy_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                          [mode=exact rent=<n> from=<acct> to=<acct>]";
     let p = property_of(ctx, ctx.args.lhs())?;
     let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?.to_string();
+    // A7: `every=` was read by `offer_lease` and never collected here, so the key
+    // fell through into the tenant list and the rent period silently stayed at the
+    // default whatever anybody typed.
     let (rest, opts) =
-        parse_opts(&rhs, &["cadence", "inspect", "mode", "rent", "from", "to"]);
+        parse_opts(&rhs, &["cadence", "inspect", "mode", "rent", "from", "to", "every"]);
     if p.status == PropertyStatus::Withdrawn {
         return Err(hidden(
             ctx,
@@ -926,6 +1061,34 @@ fn offer_lease(
         };
         (d.owner.clone(), c.owner.clone())
     };
+    // **T2: the rent debits a tenant, and only a tenant.**
+    //
+    // `from=` was any account id at all, so `@tenancy/create … mode=exact` could
+    // point a standing per-period charge at somebody who is not on the lease, is not
+    // a party to the contract, and is never asked — their `@contract/accept` is not
+    // required because they are not a party, so the tenants' acceptance alone
+    // activated a charge against a bystander's wallet. And `from=<faucet>` was worse
+    // than that: a system source on the debit side is a standing mint, which is the
+    // one thing `@obligation/create` refuses by name.
+    //
+    // The economy re-checks the same rule at `check_offerable` (the debtor must be a
+    // party, and must not be a system principal), so this refusal is the readable
+    // one rather than the only one.
+    match &debtor {
+        PrincipalId::Object(o) if t.tenants.contains(o) => {}
+        PrincipalId::System(_) => {
+            return Err(CmdError::msg(
+                "A system source/sink cannot be the debit side of the rent: that would be a \
+                 standing mint. Name a tenant's own account.",
+            ));
+        }
+        _ => {
+            return Err(CmdError::msg(
+                "from= must be an account one of this tenancy's TENANTS owns: the rent \
+                 obligation debits a party to the lease, never a bystander.",
+            ));
+        }
+    }
     let now = ctx.w.now();
     let spec = mush_economy::LeaseSpec {
         name: SmolStr::new(format!("Lease of {}", p.name)),
@@ -997,10 +1160,19 @@ fn tenancy_resolve(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             // is: a staffer said "keep this open and tell them again", so the notice
             // count starts over while the job and the page it already opened stay
             // pointed at the same records.
+            //
+            // **T3: the escalation id is NOT carried over.** It used to be, and that
+            // made `extend` the quietest way to end a story: `window_due` answers
+            // `NotifyEscalated` (weekly, forever) for any window that already has an
+            // escalation, so a staffer who typed `extend` after the page had opened
+            // re-armed three notices that could never be sent and guaranteed the
+            // window would never ask for a person again. Dropping it is safe
+            // precisely because the ladder is the **economy's**: paging again finds
+            // the same subject and reopens the same record, id and history intact, so
+            // "extend" costs a re-page rather than a second alert.
             let mut fresh = StoryWindow::opened_at(now);
             fresh.job = window.job;
             fresh.scene = window.scene;
-            fresh.escalation = window.escalation;
             let mut next = t.clone();
             next.status = TenancyStatus::EvictionPending { window: fresh };
             next.revision = next.revision.saturating_add(1);
@@ -1024,12 +1196,30 @@ fn tenancy_resolve(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             // boot-local by construction (E5a deviation 8) — a core `SceneId`
             // restarts at 0 every boot, so a persisted one would name a different
             // scene after a restart.
-            if !matches!(t.status, TenancyStatus::EvictionPending { .. }) {
+            let TenancyStatus::EvictionPending { window } = &t.status else {
                 return Err(hidden(
                     ctx,
                     None,
                     Some(&t),
                     format!("Tenancy #{} has no open story window.", t.id),
+                ));
+            };
+            // **T8: ask before starting one.** `attach_window` refuses to replace a
+            // different scene id, but the scene was started *first* — so a second
+            // `=scene` created a real core scene, pulled every tenant into it, and
+            // then threw away the only reference to it. The refusal has to come
+            // before the side effect.
+            if window.scene.is_some() {
+                return Err(hidden(
+                    ctx,
+                    None,
+                    Some(&t),
+                    format!(
+                        "Tenancy #{}'s story window already has a scene. (A scene recorded \
+                         before a reboot is cleared at boot — core scene ids restart — so this \
+                         is only ever a scene running now.)",
+                        t.id
+                    ),
                 ));
             }
             let mut members: BTreeSet<ObjId> = t.tenants.clone();
@@ -1075,9 +1265,9 @@ fn tenancy_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let t = tenancy_of(ctx, ctx.args.lhs())?;
     // A **guest** sees the property's name and their own standing, and nothing about
     // who lives there (08d §4's per-role fields).
-    if !is_staff(ctx.w, ctx.actor) && !t.is_tenant(ctx.actor) && guest_only(ctx, &t) {
-        let name = property_name(ctx, &t);
-        info(ctx, format!("{name}: you are a guest here."));
+    if guest_only(ctx.w, ctx.actor, &t) {
+        let name = property_name(ctx.w, t.property);
+        info(ctx, guest_line(&name));
         return Ok(());
     }
     for row in render_tenancy(ctx, &t) {
@@ -1097,6 +1287,15 @@ fn tenancy_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .filter(|t| may_view_tenancy(ctx.w, ctx.actor, t))
                 .filter(|t| filter.is_none_or(|f| t.property == f))
                 .map(|t| {
+                    // A1: a guest reads their own standing here too — the status and
+                    // the tenant count are exactly what an invitation does not buy.
+                    if guest_only(ctx.w, ctx.actor, t) {
+                        return format!(
+                            "#{} — {}",
+                            t.id,
+                            guest_line(&property_name(ctx.w, t.property))
+                        );
+                    }
                     format!(
                         "#{} — property #{} · {} · {} tenant(s)",
                         t.id,
@@ -1113,31 +1312,44 @@ fn tenancy_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 /// Whether this actor's only standing on the tenancy is "guest".
-fn guest_only(ctx: &Ctx<'_>, t: &Tenancy) -> bool {
-    if !t.is_guest(ctx.actor) {
+fn guest_only(w: &World, actor: ObjId, t: &Tenancy) -> bool {
+    if !t.is_guest(actor) || t.is_tenant(actor) || is_staff(w, actor) {
         return false;
     }
-    ctx.w
-        .module_state::<HousingStore>()
+    w.module_state::<HousingStore>()
         .and_then(|s| s.property(t.property).cloned())
-        .is_none_or(|p| {
-            // A landlord officer is not "just a guest".
-            !p.landlord_scope
-                .is_some_and(|scope| holds(ctx.w, ctx.actor, "property.view", scope))
-        })
+        // A landlord officer — of either capability, on the compartment or the org's
+        // root scope — is not "just a guest" (fold A4/A5).
+        .is_none_or(|p| !officer_of(w, actor, &p) && p.landlord != PrincipalId::Object(actor))
 }
 
-fn property_name(ctx: &Ctx<'_>, t: &Tenancy) -> String {
-    ctx.w
-        .module_state::<HousingStore>()
-        .and_then(|s| s.property(t.property).map(|p| p.name.to_string()))
-        .unwrap_or_else(|| format!("property #{}", t.property))
+fn property_name(w: &World, property: PropertyId) -> String {
+    w.module_state::<HousingStore>()
+        .and_then(|s| s.property(property).map(|p| p.name.to_string()))
+        .unwrap_or_else(|| format!("property #{property}"))
+}
+
+/// The **assessment word** for an abstract tenancy: what the ladder makes of the
+/// residents' plans this period, and nothing about where the number came from
+/// (fold A2).
+fn assessment_word(w: &World, t: &Tenancy, plans: &BTreeMap<ObjId, crate::SupportPlan>) -> &'static str {
+    let (tier, period) = w.module_state::<HousingStore>().map_or_else(
+        || (crate::PropertyTier::default(), 0),
+        |s| {
+            (
+                s.property(t.property).map_or_else(crate::PropertyTier::default, |p| p.tier),
+                s.assess_state(t.id).period,
+            )
+        },
+    );
+    crate::assess_at(tier, plans, &t.tenants, period, crate::PLAN_MAX_AGE_PERIODS).label()
 }
 
 /// The full tenancy render (staff, landlord officer, tenant).
 fn render_tenancy(ctx: &Ctx<'_>, t: &Tenancy) -> Vec<String> {
+    let staff = is_staff(ctx.w, ctx.actor);
     let mut out = Vec::new();
-    let name = property_name(ctx, t);
+    let name = property_name(ctx.w, t.property);
     out.push(format!(
         "Tenancy #{} — {name} (property #{}) · {}",
         t.id,
@@ -1159,9 +1371,29 @@ fn render_tenancy(ctx: &Ctx<'_>, t: &Tenancy) -> Vec<String> {
         out.push(format!("  guests: {}", g.join(", ")));
     }
     match &t.funding {
+        // **A2: the assessment word to everyone, the number to staff alone.**
+        //
+        // A `SupportLevel` is the reading `ruleset-wod` derives from a *sheet*
+        // (D-E5-5's whole point is that housing never sees one), and the best-of is
+        // the **stronger** co-tenant's band — so printing it told a landlord's
+        // officer, and every co-tenant, roughly how rich somebody's character is.
+        // The number, how many residents have filed a plan, and which sources they
+        // named are all staff-only; what a tenant or an officer needs is whether the
+        // place is being carried, which is the word the ladder itself acts on.
         Funding::Abstract { plans } => {
-            let best = crate::best_level(plans).map_or("—".to_string(), |l| l.get().to_string());
-            out.push(format!("  funding: abstract · {} plan(s) · best level {best}", plans.len()));
+            if staff {
+                let best =
+                    crate::best_level(plans).map_or("—".to_string(), |l| l.get().to_string());
+                out.push(format!(
+                    "  funding: abstract · {} plan(s) · best level {best}",
+                    plans.len()
+                ));
+            } else {
+                out.push(format!(
+                    "  funding: abstract · {}",
+                    assessment_word(ctx.w, t, plans)
+                ));
+            }
         }
         Funding::Exact { contract, obligation } => {
             if crate::econ::is_pending_lease(&t.funding) {
@@ -1248,20 +1480,90 @@ fn cmd_home(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     // A guest sees the property's name and their own standing, and nothing else.
     for t in &guest {
-        let name = property_name(ctx, t);
-        info(ctx, format!("{name}: you are a guest here."));
+        let name = property_name(ctx.w, t.property);
+        info(ctx, guest_line(&name));
     }
     Ok(())
 }
 
-/// `+home/leave` — the tenant's own move-out (D-E5-11's clearing half).
-fn home_leave(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+/// **Which of the actor's own homes a `+home`/`+guest` verb acts on** (verify fold,
+/// A6).
+///
+/// Both verbs used to take `live_tenancies_of_tenant(me).next()` — the **lowest id**,
+/// silently. So a player on two leases who typed a bare `+home/leave` ended whichever
+/// one they happened to have taken first, and `+guest add` let somebody into a house
+/// they may not have meant. `+home/leave` is the one irreversible act in the whole
+/// player surface (D-E5-1's tenant half), so with more than one and none named it
+/// refuses and lists them rather than guessing.
+fn my_tenancy(ctx: &Ctx<'_>, named: Option<&str>, none: &str) -> Result<Tenancy, CmdError> {
     let me = ctx.actor;
-    let t = ctx
+    let mine: Vec<Tenancy> = ctx
         .w
         .module_state::<HousingStore>()
-        .and_then(|s| s.live_tenancies_of_tenant(me).next().cloned())
-        .ok_or_else(|| CmdError::msg("You have no home to leave."))?;
+        .map(|s| s.live_tenancies_of_tenant(me).cloned().collect())
+        .unwrap_or_default();
+    if let Some(arg) = named.map(str::trim).filter(|s| !s.is_empty()) {
+        let id = parse_id(arg).map(TenancyId).ok_or_else(hidden_tenancy)?;
+        // Existence hiding: naming somebody *else's* tenancy answers exactly as a
+        // nonexistent one does.
+        return mine.into_iter().find(|t| t.id == id).ok_or_else(hidden_tenancy);
+    }
+    match mine.len() {
+        0 => Err(CmdError::msg(none.to_string())),
+        1 => mine.into_iter().next().ok_or_else(hidden_tenancy),
+        _ => {
+            let list: Vec<String> = mine
+                .iter()
+                .map(|t| format!("#{} ({})", t.id, property_name(ctx.w, t.property)))
+                .collect();
+            Err(CmdError::msg(format!(
+                "You live in more than one place; say which one: {}",
+                list.join(", ")
+            )))
+        }
+    }
+}
+
+/// Clear a leaver's `Obj.home` **only when it points inside the property they are
+/// leaving**, then re-home them onto another live lease (verify fold, H3).
+///
+/// The unconditional `set_home(me, None)` this replaces is `to_unhome_on_end`'s
+/// carve-out inverted: a co-tenant of two leases whose home already pointed at the
+/// *other* property had that pointer cleared by leaving this one, so core's destroy
+/// dispersal — which honours no hook — would have dropped them in Limbo instead of
+/// the house they still live in.
+fn drop_home_here(ctx: &mut Ctx<'_>, who: ObjId, t: &Tenancy) {
+    let Some(p) = ctx.w.module_state::<HousingStore>().and_then(|s| s.property(t.property).cloned())
+    else {
+        return;
+    };
+    let rooms = crate::module::live_rooms(ctx.w, &p);
+    let inside = ctx
+        .w
+        .get(who)
+        .and_then(|o| o.home)
+        .is_some_and(|h| h == p.anchor || rooms.contains(&h));
+    if !inside {
+        return;
+    }
+    // The invariant is "`Obj.home` follows *a* live tenancy", so a leaver who still
+    // rents elsewhere is re-homed rather than un-homed (the same A5 rule `flow::end`
+    // applies to the whole roster).
+    let elsewhere = ctx.w.module_state::<HousingStore>().and_then(|s| {
+        s.live_tenancies_of_tenant(who)
+            .find(|other| other.id != t.id)
+            .and_then(|other| s.property(other.property).map(|op| op.anchor))
+    });
+    if let Err(error) = ctx.w.set_home(who, elsewhere) {
+        tracing::warn!(who = who.0, %error, "housing: could not move a leaver's home");
+    }
+}
+
+/// `+home/leave [<tenancy>]` — the tenant's own move-out (D-E5-11's clearing half).
+fn home_leave(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let me = ctx.actor;
+    let named = ctx.args.lhs().to_string();
+    let t = my_tenancy(ctx, Some(&named), "You have no home to leave.")?;
     let now = crate::module::cadence_now(ctx.w, t.cadence).unwrap_or(0);
     let before = t.status.kind();
     // A co-tenant leaving a shared lease is a roster change, not an ending: the
@@ -1270,12 +1572,10 @@ fn home_leave(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if t.tenants.len() > 1 {
         let next = t.remove_tenant(me, now).map_err(|e| CmdError::msg(e.to_string()))?;
         put_tenancy(ctx, next);
-        // Their own home pointer is theirs to drop; the tenancy's `homed` set keeps
-        // the record of what housing set, and the ending sweep is what clears it
-        // (E5a fold A1).
-        if let Err(error) = ctx.w.set_home(me, None) {
-            tracing::warn!(who = me.0, %error, "housing: could not clear a leaver's home");
-        }
+        // Their own home pointer is theirs to drop — but only the one that points
+        // *here* (H3); the tenancy's `homed` set keeps the record of what housing
+        // set, and the ending sweep is what clears it (E5a fold A1).
+        drop_home_here(ctx, me, &t);
         info(ctx, format!("You have moved out of tenancy #{}. Your co-tenants stay.", t.id));
         ctx.gate_on_durable_ack();
         return Ok(());
@@ -1290,15 +1590,18 @@ fn home_leave(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 fn cmd_guest(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    const USAGE: &str = "Usage: +guest  |  +guest add <who>  |  +guest remove <who>";
+    const USAGE: &str =
+        "Usage: +guest [home=<tenancy>]  |  +guest add <who> [home=<tenancy>]  |  \
+         +guest remove <who> [home=<tenancy>]";
     let me = ctx.actor;
-    let t = ctx
-        .w
-        .module_state::<HousingStore>()
-        .and_then(|s| s.live_tenancies_of_tenant(me).next().cloned())
-        .ok_or_else(|| CmdError::msg("You have no home to invite anybody into."))?;
-    // Both spellings: the switch form and the bare word the help prints.
-    let raw = ctx.args.raw().trim().to_string();
+    // Both spellings: the switch form and the bare word the help prints. `home=` is
+    // A6's disambiguator — a player on two leases has to say which door.
+    let (raw, opts) = parse_opts(ctx.args.raw().trim(), &["home"]);
+    let t = my_tenancy(
+        ctx,
+        opts.get("home").map(String::as_str),
+        "You have no home to invite anybody into.",
+    )?;
     let (verb, target) = if ctx.switches.has("add") {
         ("add".to_string(), raw)
     } else if ctx.switches.has("remove") {
@@ -1332,7 +1635,7 @@ fn cmd_guest(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             crate::notice::notify(
                 ctx,
                 who,
-                format!("HOME: you have been made a guest of {}.", property_name(ctx, &t)),
+                format!("HOME: you have been made a guest of {}.", property_name(ctx.w, t.property)),
             );
         }
         "remove" => {

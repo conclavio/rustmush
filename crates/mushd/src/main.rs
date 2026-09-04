@@ -242,8 +242,12 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     // approval payload handlers see a loaded jobs module. Then run each
     // namespace's store migrations and hand each module its persisted boot
     // data — all before the world task starts serving.
-    let mut mods =
-        modules::server_modules_with(weather_config(&config.weather), economy_config(&config.economy));
+    let onboarding = onboarding_ruleset(&config.onboarding);
+    let mut mods = modules::server_modules_with(
+        weather_config(&config.weather),
+        economy_config(&config.economy),
+        &onboarding,
+    );
     mods.push(modules::worldgen_module_with(
         Arc::clone(&llm),
         worldgen_config(&config.worldgen),
@@ -253,11 +257,8 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     // Shadowrun, …); dialogue-only when no ruleset is enabled.
     let npc_grounding = modules::npc_agent_adapter(&config.rulesets.enabled);
     mods.push(modules::npc_module(npc_grounding));
-    let rulesets = modules::ruleset_modules(
-        &config.rulesets.enabled,
-        &onboarding_ruleset(&config.onboarding),
-    )
-    .map_err(|e| format!("ruleset selection: {e}"))?;
+    let rulesets = modules::ruleset_modules(&config.rulesets.enabled, &onboarding)
+        .map_err(|e| format!("ruleset selection: {e}"))?;
     if !rulesets.is_empty() {
         tracing::info!(rulesets = ?config.rulesets.enabled, "rulesets enabled");
     }

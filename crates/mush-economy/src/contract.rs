@@ -1611,9 +1611,32 @@ pub fn check_offerable(
             Deliverable::DepositInto { vault, .. } => {
                 snapshot.vault(*vault).ok_or(ContractError::NoSuchVault(*vault))?;
             }
+            // E5b verify fold, T2: **a contract's standing charge debits a party.**
+            // Same rule, same reason as the `Collateral` clause below — an
+            // `Obligation` deliverable creates a per-period debit at activation, and
+            // the only consent anywhere near it is the parties' acceptance of this
+            // surface. A template naming a bystander charged somebody who was never
+            // asked and whose acceptance was never required; a template naming a
+            // *system* account made the contract a standing mint, which is what
+            // `@obligation/create` and `@contract/deliver` both refuse by name.
             Deliverable::Obligation { template } => {
                 account_instrument(snapshot, template.debit_account, &mut instrument)?;
                 account_instrument(snapshot, template.credit_account, &mut instrument)?;
+                if matches!(template.debtor, PrincipalId::System(_)) {
+                    return Err(ContractError::Infeasible(
+                        "a system source/sink cannot be the debtor of a contract's obligation: \
+                         that would be a standing mint",
+                    ));
+                }
+                if !consent
+                    .parties
+                    .iter()
+                    .any(|p| principal_key(p) == principal_key(&template.debtor))
+                {
+                    return Err(ContractError::Infeasible(
+                        "a contract's obligation debits someone who is not a party",
+                    ));
+                }
             }
             // E4b2 verify fold, M1: **a contract encumbers only its own parties'
             // property.** A pledge is a claim placed against somebody's asset without

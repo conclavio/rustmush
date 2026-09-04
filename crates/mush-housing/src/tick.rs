@@ -96,17 +96,35 @@ enum Step {
 }
 
 fn step(ctx: &mut Ctx<'_>, id: TenancyId) -> Step {
-    let Some(t) = crate::flow::tenancy_of(ctx, id) else { return Step::Skipped };
-    // A drafted lease whose contract has since activated: bind its rent obligation and
-    // go live. The observer is the fast path; this is the one that survives a restart
-    // between the acceptance and housing's own boot.
-    if !t.status.is_live() {
-        crate::econ::bind_if_ready(ctx, &t);
+    // **Ask what it is before cloning it** (verify fold, T7). A tenancy record carries
+    // a roster, a guest list, a plan per resident and a 32-entry history tail, and
+    // this used to clone one for every tenancy in the store, every fire, only to
+    // discover most of them were ended. The status is two words through the borrow.
+    let (live, pending_lease) = {
+        let Some(store) = ctx.w.module_state::<HousingStore>() else { return Step::Skipped };
+        let Some(t) = store.tenancy(id) else { return Step::Skipped };
+        (
+            t.status.is_live(),
+            matches!(t.status, TenancyStatus::Pending)
+                && crate::econ::is_pending_lease(&t.funding),
+        )
+    };
+    if !live {
+        // A drafted lease whose contract has since activated: bind its rent
+        // obligation and go live. The observer is the fast path; this is the one that
+        // survives a restart between the acceptance and housing's own boot.
+        if pending_lease && let Some(t) = crate::flow::tenancy_of(ctx, id) {
+            crate::econ::bind_if_ready(ctx, &t);
+        }
         return Step::Skipped;
     }
+    let Some(t) = crate::flow::tenancy_of(ctx, id) else { return Step::Skipped };
     // A tenancy whose cadence record is gone is **frozen**, not advanced: an
-    // unresolvable clock never makes anything happen (the economy's own rule).
+    // unresolvable clock never makes anything happen (the economy's own rule). T6:
+    // and it says so — a home that stopped being assessed is a staff question, and
+    // the ladder dedupes by subject so this pages once, not once a fire.
     let Some(now) = crate::module::cadence_now(ctx.w, t.cadence) else {
+        crate::flow::page_missing_cadence(ctx, &t);
         return Step::Skipped;
     };
     let state = {

@@ -1272,8 +1272,12 @@ fn cmd_econ(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// tenancy is assessed on one. Until now a cadence could only be created by a test
 /// rig writing the record directly, which is not a thing a game can do.
 ///
-/// The whole subcommand is **staff**: a cadence is campaign structure — a season, a
-/// payroll cycle — and *creating* one is not the interesting risk. Advancing a
+/// **`create` and `advance` are staff; `list` and `show` are open** (E5b verify fold,
+/// A8 — this comment used to say the whole subcommand was staff, which the gate below
+/// has never done). A campaign clock is public structure: every tenancy names one,
+/// `@tenancy/create cadence=<id>` needs the id, and `@tenancy/show` prints the
+/// position, so hiding the list would only mean asking a wizard to read a number the
+/// render already shows. Creating one is not the interesting risk either. Advancing a
 /// `Manual` one is: `position` is what every schedule on that clock reads as "now",
 /// so one advance can make a period of rent due for every tenancy and every
 /// obligation pointing at it. That is a staff act by construction, and only for a
