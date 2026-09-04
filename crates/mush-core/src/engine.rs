@@ -525,6 +525,10 @@ pub struct Engine {
     /// deployment loader installs it before module boot; it is never part of
     /// world persistence or a projected DTO.
     offer_keys: Option<crate::offer::OfferKeyRing>,
+    /// Process-local durable key ring for authoritative resolution RNG. Only
+    /// short-lived [`PrepareCtx`](crate::resolution::PrepareCtx) capabilities
+    /// cross into providers; the ring and root bytes never do.
+    resolution_keys: Option<crate::resolution::ResolutionKeyRing>,
     /// At most one prepared action awaiting transfer to the driver.
     staged_action: Option<StagedAction>,
     /// Module persistence ops drained from handlers, awaiting
@@ -567,6 +571,7 @@ impl Engine {
             modules: Vec::new(),
             action_state,
             offer_keys: None,
+            resolution_keys: None,
             staged_action: None,
             module_ops: Vec::new(),
             scene_ticks: HashMap::new(),
@@ -584,6 +589,13 @@ impl Engine {
     /// valid while their key version is retained by the new ring.
     pub fn set_offer_keys(&mut self, keys: crate::offer::OfferKeyRing) {
         self.offer_keys = Some(keys);
+    }
+
+    /// Install or atomically replace the process-local resolution key ring.
+    /// Accepted actions carry their draw transcript, so replay never depends
+    /// on rerunning the provider with this mutable current version.
+    pub fn set_resolution_keys(&mut self, keys: crate::resolution::ResolutionKeyRing) {
+        self.resolution_keys = Some(keys);
     }
 
     /// Enumerate the current viewer-safe legal actions through the frozen
@@ -881,7 +893,12 @@ impl Engine {
             .registry
             .action_providers()
             .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
-        providers.prepare_authoritative_invocation(action, invocation, &mut self.action_state)
+        providers.prepare_authoritative_invocation(
+            action,
+            invocation,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+        )
     }
 
     /// Release a prepared transaction that could not be assembled into a

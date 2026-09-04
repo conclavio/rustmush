@@ -3130,6 +3130,20 @@ pub trait ActionProvider: Send + Sync {
         .expect("static provider migration error is bounded"))
     }
 
+    /// Prepare authoritative output with a kernel-owned, one-action
+    /// capability for deterministic resolution. Existing non-random
+    /// providers remain source-compatible through the default delegation;
+    /// providers that need randomness override this method and obtain their
+    /// [`ResolutionRng`](crate::resolution::ResolutionRng) only from `context`.
+    fn prepare_authoritative_with_context(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        _context: &mut crate::resolution::PrepareCtx<'_>,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        self.prepare_authoritative(invocation, txn)
+    }
+
     /// Expand one provider-owned same-commit trigger against the root
     /// action's still-unprepared scratch transaction. Trigger callbacks have
     /// the same mutation authority as the root provider, but no persistence,
@@ -3736,19 +3750,26 @@ impl ActionProviderRegistry {
         action: &DefinitionRef,
         invocation: &ActionInvocation,
         state: &mut ActionStateStore,
+        resolution_keys: Option<&crate::resolution::ResolutionKeyRing>,
     ) -> Result<(PreparedTxn, PreparedAuthoritativeAction), ActionProviderPrepareError> {
         let entry = self.get_exact(action)?;
         let mut txn = state.transaction_for_provider(entry.registration_ordinal())?;
         let mut queue = CausalTriggerQueue::new(invocation.request(), self.owner_readiness.clone());
         let root_cause = queue.allocate_root_event()?;
         let root_before_operations = txn.operation_count();
+        let mut prepare_context =
+            crate::resolution::PrepareCtx::new(invocation.idempotency(), resolution_keys);
         let root_output = entry
             .provider()
-            .prepare_authoritative(invocation, &mut txn)
+            .prepare_authoritative_with_context(invocation, &mut txn, &mut prepare_context)
             .map_err(|source| ActionProviderPrepareError::Provider {
                 action: Box::new(action.clone()),
                 source: Box::new(source),
             })?;
+        validate_resolution_custody(
+            prepare_context.resolution_opened(),
+            root_output.resolution().is_some(),
+        )?;
         charge_new_operations(&mut queue, root_before_operations, &txn)?;
         self.owner_readiness
             .require_ready(&entry.owner)
@@ -3869,6 +3890,17 @@ fn charge_new_operations(
     )
 }
 
+fn validate_resolution_custody(
+    context_opened: bool,
+    transcript_supplied: bool,
+) -> Result<(), ActionProviderPrepareError> {
+    match (context_opened, transcript_supplied) {
+        (false, false) | (true, true) => Ok(()),
+        (true, false) => Err(ActionProviderPrepareError::UnrecordedResolution),
+        (false, true) => Err(ActionProviderPrepareError::ResolutionOutsideContext),
+    }
+}
+
 /// Exact transactional action-preparation failure. Every variant precedes
 /// both live installation and persistence submission.
 #[derive(Debug, Error)]
@@ -3894,6 +3926,10 @@ pub enum ActionProviderPrepareError {
     Semantic(#[from] AuthoritativeBundleError),
     #[error("prepared resolution outcome does not match the authoritative action outcome")]
     ResolutionOutcomeMismatch,
+    #[error("provider opened an authoritative RNG but did not return its resolution transcript")]
+    UnrecordedResolution,
+    #[error("provider returned a resolution transcript without opening its PrepareCtx RNG")]
+    ResolutionOutsideContext,
     #[error("same-commit triggers cannot introduce an independent resolution transcript")]
     TriggerResolutionUnsupported,
     #[error("action state preparation failed: {0}")]
@@ -4843,6 +4879,20 @@ mod tests {
         assert!(
             ActionAttemptMetadata::new(ActionLifecycle::Rejected, receipt, Some(failure)).is_ok()
         );
+    }
+
+    #[test]
+    fn resolution_custody_requires_context_and_transcript_to_pair() {
+        assert!(validate_resolution_custody(false, false).is_ok());
+        assert!(validate_resolution_custody(true, true).is_ok());
+        assert!(matches!(
+            validate_resolution_custody(true, false),
+            Err(ActionProviderPrepareError::UnrecordedResolution)
+        ));
+        assert!(matches!(
+            validate_resolution_custody(false, true),
+            Err(ActionProviderPrepareError::ResolutionOutsideContext)
+        ));
     }
 
     struct Accept;

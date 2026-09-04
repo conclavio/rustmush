@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mush_config::offer_keys::DurableOfferKeyStore;
+use mush_config::resolution_keys::DurableResolutionKeyStore;
 use mush_core::{ControlMsg, Engine, Inbound};
 use mush_llm::LlmService;
 use mush_net_web::{Metrics, WebConfig};
@@ -170,6 +171,14 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
         key_dir = %config.offer_key_dir().display(),
         "durable legal-action offer keys loaded"
     );
+    let resolution_keys = DurableResolutionKeyStore::new(config.resolution_key_dir())
+        .load_or_create()
+        .map_err(|error| format!("resolution key provisioning failed: {error}"))?;
+    tracing::info!(
+        current_version = resolution_keys.current_version(),
+        key_dir = %config.resolution_key_dir().display(),
+        "durable authoritative resolution keys loaded"
+    );
     tracing::info!(
         name = %config.server.name,
         data_dir = %data_dir.display(),
@@ -286,6 +295,7 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     );
     let mut engine = Engine::from_composition(world, composition);
     engine.set_offer_keys(offer_keys);
+    engine.set_resolution_keys(resolution_keys);
     modules::boot_modules(&mut engine, &*store).await?;
 
     // The web hello manifest, collected while the registry is still in

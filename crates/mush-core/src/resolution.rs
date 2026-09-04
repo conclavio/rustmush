@@ -168,6 +168,76 @@ pub enum ResolutionSecretError {
     VersionLimit { max: usize },
 }
 
+/// Short-lived capability passed only while one authoritative provider is
+/// preparing an action. It exposes no root key bytes and can mint at most one
+/// resolution-scoped generator for the invocation's exact idempotency scope.
+pub struct PrepareCtx<'a> {
+    idempotency: &'a ScopedIdempotencyKey,
+    keys: Option<&'a ResolutionKeyRing>,
+    resolution_opened: bool,
+}
+
+impl fmt::Debug for PrepareCtx<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PrepareCtx")
+            .field("idempotency", self.idempotency)
+            .field(
+                "current_secret_version",
+                &self.keys.map(ResolutionKeyRing::current_version),
+            )
+            .field("resolution_opened", &self.resolution_opened)
+            .finish()
+    }
+}
+
+impl<'a> PrepareCtx<'a> {
+    pub(crate) const fn new(
+        idempotency: &'a ScopedIdempotencyKey,
+        keys: Option<&'a ResolutionKeyRing>,
+    ) -> Self {
+        Self {
+            idempotency,
+            keys,
+            resolution_opened: false,
+        }
+    }
+
+    /// Open the only RNG stream set available to this action preparation.
+    /// The provider supplies an action-specific domain and a canonical hash of
+    /// every truth input used by its formula; the kernel supplies identity and
+    /// secret custody.
+    pub fn start_resolution(
+        &mut self,
+        domain: &CanonicalId,
+        inputs_hash: CanonicalHash,
+    ) -> Result<ResolutionRng, PrepareContextError> {
+        if self.resolution_opened {
+            return Err(PrepareContextError::AlreadyOpened);
+        }
+        let keys = self.keys.ok_or(PrepareContextError::KeyRingUnavailable)?;
+        let rng = keys.start(self.idempotency, domain, inputs_hash)?;
+        self.resolution_opened = true;
+        Ok(rng)
+    }
+
+    #[must_use]
+    pub(crate) const fn resolution_opened(&self) -> bool {
+        self.resolution_opened
+    }
+}
+
+/// Failure to obtain a centrally scoped authoritative RNG.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+pub enum PrepareContextError {
+    #[error("durable resolution keys are not installed")]
+    KeyRingUnavailable,
+    #[error("an authoritative action may open at most one resolution RNG")]
+    AlreadyOpened,
+    #[error("cannot start the authoritative resolution RNG: {0}")]
+    Rng(#[from] ResolutionRngError),
+}
+
 /// Shape and result of one logical deterministic draw.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -839,5 +909,31 @@ mod tests {
         let upper = value["draws"][0]["draw"]["upper_exclusive"].clone();
         value["draws"][0]["draw"]["value"] = upper;
         assert!(serde_json::from_value::<ResolutionRecord>(value).is_err());
+    }
+
+    #[test]
+    fn prepare_context_is_key_opaque_and_single_use() {
+        let idempotency = key(1);
+        let domain = CanonicalId::new("attack").unwrap();
+        let mut missing = PrepareCtx::new(&idempotency, None);
+        assert_eq!(
+            missing.start_resolution(&domain, inputs()).unwrap_err(),
+            PrepareContextError::KeyRingUnavailable
+        );
+
+        let ring = ring();
+        let mut context = PrepareCtx::new(&idempotency, Some(&ring));
+        assert_eq!(
+            context
+                .start_resolution(&domain, inputs())
+                .unwrap()
+                .secret_version(),
+            ring.current_version()
+        );
+        assert_eq!(
+            context.start_resolution(&domain, inputs()).unwrap_err(),
+            PrepareContextError::AlreadyOpened
+        );
+        assert!(!format!("{context:?}").contains("34, 34"));
     }
 }

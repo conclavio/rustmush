@@ -38,6 +38,7 @@ use mush_config::config::{Config, StoreBackend, StoreReceiptPolicy};
 use mush_config::ipguard::IpGuard;
 use mush_config::metrics::Metrics;
 use mush_config::offer_keys::DurableOfferKeyStore;
+use mush_config::resolution_keys::DurableResolutionKeyStore;
 use mush_core::{ControlMsg, Engine, Inbound, OfferRouteTable, OfferSubmission};
 use mush_ipc::{
     BoxWrite, FrameReader, GatewayInput, GatewayRequest, GatewayRequestDisposition, IPC_VERSION,
@@ -197,6 +198,14 @@ async fn build_engine(
         key_dir = %config.offer_key_dir().display(),
         "durable legal-action offer keys loaded"
     );
+    let resolution_keys = DurableResolutionKeyStore::new(config.resolution_key_dir())
+        .load_or_create()
+        .map_err(|error| format!("resolution key provisioning failed: {error}"))?;
+    tracing::info!(
+        current_version = resolution_keys.current_version(),
+        key_dir = %config.resolution_key_dir().display(),
+        "durable authoritative resolution keys loaded"
+    );
     let authoritative = store.authoritative_store().ok_or_else(|| {
         "configured store does not implement K3 exact-token durability; refusing writable boot"
             .to_owned()
@@ -260,6 +269,7 @@ async fn build_engine(
     timeline::hydrate_world_timeline(&mut world, &**store, clock).await?;
     let mut engine = Engine::from_composition(world, composition);
     engine.set_offer_keys(offer_keys);
+    engine.set_resolution_keys(resolution_keys);
     modules::boot_modules(&mut engine, &**store).await?;
     Ok((engine, staff))
 }

@@ -26,6 +26,12 @@ receipt_policy = "applied"         # "applied" or strict AOF-fsync "host_power_l
 # a new immutable manifest while retaining at most three prior verification
 # keys, so unchanged in-flight offers survive restart and bounded rotation.
 
+[resolution]                       # (K4) authoritative resolution RNG
+# key_dir = "./data/resolution-keys" # defaults to <server.data_dir>/resolution-keys
+# This is a separate private key family: never point it at offer-keys. The
+# server provisions it before writable boot; rulesets receive only a bounded
+# per-action RNG capability and never receive these root bytes.
+
 [ssh]
 listen = "0.0.0.0:2222"            # (M2)
 

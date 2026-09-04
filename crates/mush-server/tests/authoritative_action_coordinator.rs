@@ -332,6 +332,10 @@ async fn gate_one_offer_is_preflighted_regenerated_and_routed_without_hidden_cli
     };
     assert_eq!(bundle.writes().len(), 2);
     assert_eq!(bundle.outcome().data()["focus"], 2);
+    let resolution = bundle.resolution().expect("toy brace records its RNG");
+    assert_eq!(resolution.action(), bundle.token());
+    assert_eq!(resolution.outcome(), bundle.outcome());
+    assert_eq!(resolution.draws().len(), 1);
     world.engine_mut().abort_prepared_action(installation);
 }
 
@@ -386,6 +390,10 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
         bundle.semantic_events()[1].cause().parent(),
         Some(bundle.semantic_events()[0].cause().event_id())
     );
+    let exact_resolution = bundle
+        .resolution()
+        .cloned()
+        .expect("Gate-1 brace records resolution");
 
     store
         .reserve_authoritative_intent(bundle.clone())
@@ -396,6 +404,7 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
         .await
         .unwrap();
     assert_eq!(receipt.semantic_events(), bundle.semantic_events());
+    assert_eq!(receipt.resolution(), Some(&exact_resolution));
     world.engine_mut().install_prepared_action(installation);
     assert_eq!(
         world
@@ -425,6 +434,7 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
         checkpoint.receipt.semantic_events(),
         bundle.semantic_events()
     );
+    assert_eq!(checkpoint.receipt.resolution(), Some(&exact_resolution));
 
     let (mut restarted, restarted_families) = toy_world_with_state();
     boot_modules(restarted.engine_mut(), &store).await.unwrap();

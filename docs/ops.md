@@ -409,6 +409,24 @@ Treat the spool like sensitive recovery material:
   or an LLM prompt;
 - preserve a copy before repair, and bind every action to the record's exact
   namespace, key, and payload digest;
+
+### Private action-protocol keys
+
+Writable boot provisions two independent append-only key families beneath
+`<data_dir>` by default:
+
+- `offer-keys/` signs opaque legal-action offers;
+- `resolution-keys/` derives deterministic authoritative resolution streams.
+
+Both directories and their immutable key/manifest files must remain private to
+the service account (`0700` directories and `0600` files on Unix); unsafe paths,
+permissions, oversized files, malformed newest manifests, and missing referenced
+keys fail boot closed. Override them separately with `[offers].key_dir` and
+`[resolution].key_dir`. Never point both settings at the same directory. Logs
+report only the directory and current version, never key bytes. Include both
+directories in protected backups; restoring Redis without the matching key
+directories invalidates outstanding offers and can prevent future deterministic
+resolution of an accepted window.
 - let boot archive an active record only after the authoritative target has
   been read back and its exact expected bytes/hash are proven. Merely deleting
   the file is not recovery;

@@ -12,10 +12,11 @@ use mush_core::{
     DefinitionId, DefinitionKind, DefinitionRef, DefinitionRegistryBuilder,
     DefinitionValidationContext, EffectDuration, EffectInstance, EffectInstanceId, EffectTarget,
     Engine, GameModule, IdempotencyKey, IdempotencyScope, LegalActionQuery, ModError, ObjId,
-    OwnerId, PerceivedRef, PreparedCausalRef, PreparedTrigger, PrincipalId,
+    OwnerId, PerceivedRef, PrepareCtx, PreparedCausalRef, PreparedTrigger, PrincipalId,
     ProjectedLegalActionSink, ProjectedParameterSchema, ProjectedTargetSchema, ProviderOfferDraft,
-    Registrar, RequestUid, ResourceOperation, RulesValue, SameCommitTrigger, ScopedIdempotencyKey,
-    StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey,
+    Registrar, RequestUid, ResolutionKeyRing, ResolutionSecret, ResourceOperation, RulesValue,
+    SameCommitTrigger, ScopedIdempotencyKey, StateFamilyDescriptor, StateFamilyHandle,
+    StateFamilyId, SubjectKey,
 };
 use mush_testkit::TestWorld;
 use serde::{Deserialize, Serialize};
@@ -600,10 +601,11 @@ impl ActionProvider for BraceProvider {
         Ok(())
     }
 
-    fn prepare_authoritative(
+    fn prepare_authoritative_with_context(
         &self,
         invocation: &ActionInvocation,
         txn: &mut ActionTxn<'_>,
+        context: &mut PrepareCtx<'_>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         self.validate_invocation(invocation)?;
         let actor = invocation.actor();
@@ -634,9 +636,54 @@ impl ActionProvider for BraceProvider {
             })?;
         txn.replace(&self.focus, &actor, ToyFocusState { value })
             .map_err(|error| Self::state_error(&error))?;
+        let inputs_hash = CanonicalHash::for_canonical_value(
+            "toy_brace_inputs.v1",
+            1,
+            &json!({ "actor": actor, "scene_turn": turn, "focus_before": focus.value }),
+            4 * 1024,
+        )
+        .map_err(|_| {
+            ActionError::new(
+                ActionErrorCode::BoundsExceeded,
+                false,
+                "brace resolution inputs exceed canonical bounds",
+            )
+            .expect("static action error is bounded")
+        })?;
+        let mut rng = context
+            .start_resolution(
+                &CanonicalId::new("toy_brace").expect("static resolution domain"),
+                inputs_hash,
+            )
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Unavailable,
+                    false,
+                    "authoritative resolution RNG is unavailable",
+                )
+                .expect("static action error is bounded")
+            })?;
+        let initiative_tiebreak = rng
+            .draw_bounded_u64(
+                &CanonicalId::new("initiative_tiebreak").expect("static draw label"),
+                100,
+            )
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::BoundsExceeded,
+                    false,
+                    "brace resolution draw was refused",
+                )
+                .expect("static action error is bounded")
+            })?;
         let outcome = RulesValue::new(
             self.brace_definition.clone(),
-            json!({ "actor": actor.0, "event": "braced", "focus": value.current() }),
+            json!({
+                "actor": actor.0,
+                "event": "braced",
+                "focus": value.current(),
+                "initiative_tiebreak": initiative_tiebreak,
+            }),
         )
         .map_err(|_| {
             ActionError::new(
@@ -646,7 +693,30 @@ impl ActionProvider for BraceProvider {
             )
             .expect("static action error is bounded")
         })?;
+        let resolution = rng
+            .into_prepared(
+                vec![self.brace_definition.clone()],
+                RulesValue::new(self.brace_definition.clone(), json!({ "focus_spent": 1 }))
+                    .map_err(|_| {
+                        ActionError::new(
+                            ActionErrorCode::BoundsExceeded,
+                            false,
+                            "brace modifiers exceed canonical bounds",
+                        )
+                        .expect("static action error is bounded")
+                    })?,
+                outcome.clone(),
+            )
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "brace resolution transcript is invalid",
+                )
+                .expect("static action error is bounded")
+            })?;
         Ok(AuthoritativeActionOutput::new(outcome)
+            .with_resolution(resolution)
             .with_eligible_witnesses(vec![invocation.principal().clone()])
             .with_same_commit_triggers(vec![SameCommitTrigger::new(
                 CanonicalId::new("apply_guarded").expect("static handler id"),
@@ -1034,7 +1104,9 @@ impl GameModule for ToyRulesModule {
 /// Fresh in-process world composed with the deterministic toy provider.
 #[must_use]
 pub fn toy_world() -> TestWorld {
-    TestWorld::with_modules(vec![Box::<ToyRulesModule>::default()])
+    let mut world = TestWorld::with_modules(vec![Box::<ToyRulesModule>::default()]);
+    install_toy_resolution_keys(world.engine_mut());
+    world
 }
 
 /// Fresh toy world plus the composition-branded state capabilities used by
@@ -1043,13 +1115,24 @@ pub fn toy_world() -> TestWorld {
 pub fn toy_world_with_state() -> (TestWorld, ToyStateFamilies) {
     let captured = Arc::new(Mutex::new(None));
     let module = ToyRulesModule::with_capture(Arc::clone(&captured));
-    let world = TestWorld::with_modules(vec![Box::new(module)]);
+    let mut world = TestWorld::with_modules(vec![Box::new(module)]);
+    install_toy_resolution_keys(world.engine_mut());
     let families = captured
         .lock()
         .expect("toy family capture poisoned")
         .clone()
         .expect("toy module registered state families");
     (world, families)
+}
+
+fn install_toy_resolution_keys(engine: &mut Engine) {
+    engine.set_resolution_keys(
+        ResolutionKeyRing::new(
+            ResolutionSecret::new(1, [0x71; 32]).expect("toy resolution secret"),
+            [],
+        )
+        .expect("toy resolution key ring"),
+    );
 }
 
 /// Install a valid focus pre-state through the same typed state-family path
@@ -1446,7 +1529,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["focus", "guarded"]
         );
-        let (_outcome, definitions, witnesses, outbox, events) = cascade.into_parts();
+        let (_outcome, resolution, definitions, witnesses, outbox, events) = cascade.into_parts();
+        assert!(resolution.is_some());
         assert_eq!(
             definitions,
             vec![toy_definitions().brace, toy_definitions().guarded]
@@ -2038,7 +2122,7 @@ mod tests {
             .prepare_registered_authoritative_action(&toy_definitions().guarded_expire, &due)
             .expect("due expiry prepares");
         assert_eq!(prepared.operation_count(), 1);
-        let (outcome, _, _, _, events) = cascade.into_parts();
+        let (outcome, _, _, _, _, events) = cascade.into_parts();
         assert_eq!(
             outcome.data()["source"]["root_request"],
             brace_request.to_hex()
