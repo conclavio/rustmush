@@ -184,10 +184,28 @@ pub struct EconomyStore {
     /// `sys:wod.housing`, E7's production output), and nothing a command or a
     /// document can add to. `@asset/title` remains the staff path and is unchanged.
     pub(crate) title_issuers: Arc<std::collections::BTreeSet<mush_org::SystemPrincipalId>>,
+    /// The wiring-frozen canon kinds that count as a **producer-declared outcome**
+    /// (E4c verify fold, E1). Empty refuses every `canon:` attestor at `Offer`, which
+    /// is the fail-closed default until E6b ships `scene.outcome`.
+    pub(crate) canon_outcome_kinds: Arc<crate::contract::CanonOutcomeKinds>,
     /// How deep the current observer-emission chain is (RAM-only, §6.1's
     /// re-entrancy note). See [`crate::observer::MAX_OBSERVER_DEPTH`].
     pub(crate) event_depth: u32,
+    /// The **canon records this world has seen**, newest last, bounded to
+    /// [`CANON_TAIL`] (RAM-only, E4c verify fold E4a).
+    ///
+    /// Canon evidence is edge-triggered: the observer runs once, when the record
+    /// lands, and a contract that was not yet `Active` — or an economy that was
+    /// frozen — missed the edge with no way back. This is the economy's own tail of
+    /// what it saw, so `@econ/unfreeze` and a contract's activation can re-scan it.
+    /// It is deliberately not the canon ledger (which this crate must not depend on)
+    /// and it does not survive a restart; a record older than the tail is the
+    /// documented limit, and `@contract/resolve <id>=settle` is the answer past it.
+    pub(crate) canon_tail: std::collections::VecDeque<(u64, SmolStr, SmolStr)>,
 }
+
+/// How many canon records the economy remembers seeing (E4c verify fold, E4a).
+pub const CANON_TAIL: usize = 64;
 
 /// One object's last journaled custody movement (E4b2): which vault, which way, and
 /// **which principal's post did it**. The depositor is the transaction's `actor`,
@@ -263,7 +281,9 @@ impl EconomyStore {
             facts: crate::facts::FactTable::default(),
             observers: crate::observer::ObserverTable::default(),
             title_issuers: Arc::default(),
+            canon_outcome_kinds: Arc::default(),
             event_depth: 0,
+            canon_tail: std::collections::VecDeque::new(),
         }
     }
 
@@ -346,6 +366,27 @@ impl EconomyStore {
     #[must_use]
     pub(crate) fn is_title_issuer(&self, issuer: &mush_org::SystemPrincipalId) -> bool {
         self.title_issuers.contains(issuer)
+    }
+    /// The wiring-frozen canon outcome kinds (an `Arc` clone — cheap), so a
+    /// structural check can run while the world is borrowed (E4c verify fold, E1).
+    #[must_use]
+    pub(crate) fn canon_outcome_kinds(&self) -> Arc<crate::contract::CanonOutcomeKinds> {
+        self.canon_outcome_kinds.clone()
+    }
+    /// Remember one canon record the world announced (E4c verify fold, E4a).
+    pub(crate) fn note_canon(&mut self, id: u64, kind: &str, source: &str) {
+        if self.canon_tail.iter().any(|(seen, _, _)| *seen == id) {
+            return;
+        }
+        while self.canon_tail.len() >= CANON_TAIL {
+            self.canon_tail.pop_front();
+        }
+        self.canon_tail.push_back((id, SmolStr::new(kind), SmolStr::new(source)));
+    }
+    /// The canon records this world has seen, oldest first (E4c verify fold, E4a).
+    #[must_use]
+    pub(crate) fn canon_tail(&self) -> Vec<(u64, SmolStr, SmolStr)> {
+        self.canon_tail.iter().cloned().collect()
     }
     /// The next transaction id WITHOUT allocating it (a unique idempotency-key seed
     /// for interactive commands).
@@ -529,6 +570,7 @@ pub struct EconomyModule {
     facts: crate::facts::FactTable,
     observers: crate::observer::ObserverTable,
     title_issuers: Arc<std::collections::BTreeSet<mush_org::SystemPrincipalId>>,
+    canon_outcome_kinds: Arc<crate::contract::CanonOutcomeKinds>,
 }
 
 impl EconomyModule {
@@ -560,9 +602,39 @@ impl EconomyModule {
     /// `mush-sim`/`mush-tactics` for doc 10 §15's boundary facts. Omitting this
     /// leaves every [`crate::TypedCondition::Fact`] resolving *unknown*, which is
     /// unsatisfied: a `Fact`-gated contract simply never matures.
+    ///
+    /// # Panics
+    ///
+    /// If two providers claim the same namespace (E4c verify fold, E8). The table is
+    /// routed first-match-wins, so a duplicate silently shadows: the second `jobs`
+    /// provider would answer nothing, every `Fact` condition it owns would resolve
+    /// *unknown*, and the contracts gated on them would wait forever with no error
+    /// anywhere. This is composition-root data — a wiring mistake a developer makes
+    /// once, at startup, with the fix in the panic message — so it is loud.
     #[must_use]
     pub fn with_facts(mut self, providers: Vec<Arc<dyn crate::facts::FactProvider>>) -> EconomyModule {
+        {
+            let mut seen: std::collections::BTreeSet<SmolStr> = std::collections::BTreeSet::new();
+            for p in &providers {
+                assert!(
+                    seen.insert(SmolStr::new(p.provider())),
+                    "economy: two fact providers claim the namespace {:?}; the table routes \
+                     first-match-wins, so the second would silently answer nothing",
+                    p.provider()
+                );
+            }
+        }
         self.facts = Arc::new(providers);
+        self
+    }
+
+    /// Wire the canon kinds that count as a **producer-declared outcome** (E4c
+    /// verify fold, E1). Omitting this refuses every `canon:` attestor set at
+    /// `Offer`, which is the fail-closed default until E6b ships `scene.outcome`
+    /// under facilitator authority.
+    #[must_use]
+    pub fn with_canon_outcome_kinds(mut self, kinds: Vec<SmolStr>) -> EconomyModule {
+        self.canon_outcome_kinds = Arc::new(kinds.into_iter().collect());
         self
     }
 
@@ -623,13 +695,14 @@ impl GameModule for EconomyModule {
     }
 
     fn on_world_loaded(&mut self, ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModError> {
-        let mut store = boot::load_boot(ctx, data, &self.providers)?;
+        let mut store = boot::load_boot(ctx, data, &self.providers, &self.canon_outcome_kinds)?;
         // Inject the wiring-frozen tables and config into the freshly booted slot.
         store.providers = self.providers.clone();
         store.config = self.config.clone();
         store.facts = self.facts.clone();
         store.observers = self.observers.clone();
         store.title_issuers = self.title_issuers.clone();
+        store.canon_outcome_kinds = self.canon_outcome_kinds.clone();
         *ctx.w.module_state_mut::<EconomyStore>().expect("economy store slot") = store;
         Ok(())
     }

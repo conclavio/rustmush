@@ -184,6 +184,14 @@ pub fn commit(ctx: &mut Ctx<'_>, draft: CanonDraft) -> Option<CanonId> {
         entities,
         source,
     });
+    // **Terminal means terminal** (E4c verify fold, V1). Everything queued up to
+    // here — this append, its meta, and every write the synchronous observers made
+    // (an economy attestation, a settlement's journal chunk, a faction clock) — is
+    // pinned against dispatch's abort path. RAM is not rolled back when a command
+    // later returns `Err`, so dropping these would leave the store behind a world
+    // that has already moved: canon recorded and an escrow released, with neither on
+    // disk. Anything the command queues *after* this point is discarded as usual.
+    ctx.out.pin_deferred();
     Some(id)
 }
 

@@ -1042,6 +1042,7 @@ fn contract_shell() -> EconomicContract {
         created_at: NOW,
         amendments: 0,
         disputed_at: None,
+        canon_published: None,
         roster_locked: true,
         deposits: Vec::new(),
         agreements: Vec::new(),

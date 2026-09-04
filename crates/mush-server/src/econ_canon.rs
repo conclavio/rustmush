@@ -80,14 +80,40 @@ impl EconomyObserver for CanonEvidenceBridge {
                 // publish twice, so nothing is published at all.
                 let Some(tx) = transaction else { return };
                 let Some(parties) = public_contract_parties(ctx, *id) else { return };
-                commit_once(
+                // **The durable marker is the replay guard** (E4c verify fold,
+                // V2+V3+V5). Canon's RAM tail rolls, and a settlement republished
+                // after it had rolled would double the line; the contract document
+                // carries the answer forever.
+                let published = ctx
+                    .w
+                    .module_state::<EconomyStore>()
+                    .and_then(|s| s.snapshot().contract(*id))
+                    .and_then(|c| c.canon_published.clone());
+                if let Some(canon_ref) = published {
+                    tracing::debug!(contract = id.0, %canon_ref, "economy bridge: already chronicled");
+                    return;
+                }
+                let Some(canon_id) = commit_once(
                     ctx,
                     KIND_SETTLED,
                     format!("economy.tx:{tx}"),
                     format!("A public contract (#{id}) settled."),
                     parties,
                     serde_json::json!({ "contract": id.0 }),
-                );
+                ) else {
+                    // A commit that failed leaves the marker UNSET on purpose: the
+                    // economy sweep re-announces an unmarked public settlement a
+                    // sweep period later, so the retry is a mechanism rather than a
+                    // hope. Loudly, because a chronicle line went missing.
+                    tracing::error!(
+                        contract = id.0,
+                        transaction = tx.0,
+                        "economy bridge: a public settlement could not be committed to canon; the \
+                         sweep will retry it"
+                    );
+                    return;
+                };
+                mush_economy::mark_canon_published(ctx, *id, &format!("canon:{}", canon_id.0));
             }
             EconomicEvent::ObligationChanged { id, status_kind } => {
                 if *status_kind != ObligationStatusKind::Delinquent {
@@ -96,15 +122,22 @@ impl EconomyObserver for CanonEvidenceBridge {
                 // Only an obligation a **public contract** created: a lease's rent is
                 // otherwise as private as the lease, and E4b1's obligations are not
                 // consent surfaces at all.
-                let Some((contract, parties)) = public_contract_of_obligation(ctx, *id) else {
+                let Some((contract, debtor, missed)) = public_contract_of_obligation(ctx, *id)
+                else {
                     return;
                 };
-                commit_once(
+                // **Once per missed period, not once ever** (E4c verify fold, V4).
+                // The key was `economy.obligation:{id}`, so the *second* time a
+                // tenant fell behind on the same lease the guard read its own first
+                // line and published nothing: the chronicle said a lease went
+                // delinquent in March and never that it went delinquent again in
+                // April, which is exactly the fact a public lease's readers want.
+                let _ = commit_once(
                     ctx,
                     KIND_DELINQUENT,
-                    format!("economy.obligation:{id}"),
+                    format!("economy.obligation:{id}:{missed}"),
                     format!("An obligation of a public contract (#{contract}) went delinquent."),
-                    parties,
+                    debtor,
                     serde_json::json!({ "contract": contract.0, "obligation": id.0 }),
                 );
             }
@@ -127,11 +160,19 @@ fn public_contract_parties(ctx: &Ctx<'_>, id: mush_economy::ContractId) -> Optio
     Some(object_parties(&c.consent.parties))
 }
 
-/// The contract behind an obligation, when that contract is `Public`.
+/// The contract behind an obligation, when that contract is `Public` - with the
+/// **debtor alone** and how many periods have been missed.
+///
+/// D7 (E4c verify fold): a delinquency line used to name every party of the contract
+/// the obligation came from. "Who is behind on their rent" is a fact about the
+/// debtor; the other runners on a job that happened to create the lease consented to
+/// the *settlement* being public, not to being listed beside somebody else's
+/// default. The debtor is resolved from the **debit account's owner**, which is the
+/// journal's answer to who owes rather than the surface's list of who signed.
 fn public_contract_of_obligation(
     ctx: &Ctx<'_>,
     id: mush_economy::ObligationId,
-) -> Option<(mush_economy::ContractId, Vec<ObjId>)> {
+) -> Option<(mush_economy::ContractId, Vec<ObjId>, u32)> {
     let store = ctx.w.module_state::<EconomyStore>()?;
     let o = store.snapshot().obligation(id)?;
     let ObligationCause::Contract(contract) = o.cause else { return None };
@@ -139,7 +180,12 @@ fn public_contract_of_obligation(
     if !c.consent.visibility.is_public() {
         return None;
     }
-    Some((contract, object_parties(&c.consent.parties)))
+    let debtor = store
+        .snapshot()
+        .account(o.debit_account)
+        .map(|a| object_parties(std::slice::from_ref(&a.owner)))
+        .unwrap_or_default();
+    Some((contract, debtor, o.missed_total))
 }
 
 /// Only the parties canon can name: `entities` is a list of world objects, so an
@@ -163,17 +209,17 @@ fn commit_once(
     summary: String,
     entities: Vec<ObjId>,
     detail: serde_json::Value,
-) {
+) -> Option<mush_canon::CanonId> {
     let already = ctx
         .w
         .module_state::<CanonState>()
         .is_some_and(|st| st.recent().iter().any(|e| e.kind == kind && e.source == source));
     if already {
         tracing::debug!(kind, source, "economy bridge: that consequence is already canon");
-        return;
+        return None;
     }
     let ic_time = ctx.w.game_now_unix();
-    let _ = mush_canon::commit(ctx, CanonDraft {
+    mush_canon::commit(ctx, CanonDraft {
         kind: SmolStr::new(kind),
         summary,
         entities,
@@ -182,5 +228,5 @@ fn commit_once(
         ic_time,
         source,
         detail,
-    });
+    })
 }

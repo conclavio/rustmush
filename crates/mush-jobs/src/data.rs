@@ -124,6 +124,18 @@ pub struct Job {
     /// Optional structured payload consumed by `+job/approve`.
     #[serde(default)]
     pub payload: Option<JobPayload>,
+    /// When the payload handler actually **ran** (unix seconds), for a
+    /// payload-bearing job (E4c verify fold, E3).
+    ///
+    /// `status == Resolved` is a *state*: staff set it with `+job/status`, and before
+    /// the fold that flip was indistinguishable — to the economy's fact provider, and
+    /// therefore to a contract settling on `jobs.resolved` — from an approval that
+    /// had actually applied the payload. It is the applied marker, not the status,
+    /// that is a fact about the past: `+job/approve` writes it in the same command,
+    /// the same `WriteBatch`, as the handler's own mutations, and nothing ever
+    /// clears it.
+    #[serde(default)]
+    pub payload_applied: Option<i64>,
     /// When it was opened (unix seconds).
     pub opened_at: i64,
     /// Last mutation time (unix seconds).
@@ -289,6 +301,7 @@ mod tests {
                 handler: "wod.xp".into(),
                 data: serde_json::json!({"dots": 1}),
             }),
+            payload_applied: None,
             opened_at: 100,
             updated_at: 200,
         };

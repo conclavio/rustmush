@@ -104,8 +104,10 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @econ/reverse <txid>                    reverse a transaction (staff)\n\
                    @econ/audit                             recent journal entries (staff)\n\
                    @econ/history <account> [n]             what touched an account you may see\n\
-                   \x20                                      your own side in full; a counterparty you\n\
-                   \x20                                      may not see is \"another account\"\n\
+                   \x20                                      n is 1-20 (default 20)\n\
+                   \x20                                      your own side in full; counterparties you\n\
+                   \x20                                      may not see collapse to \"other accounts\",\n\
+                   \x20                                      with no amounts and no count\n\
                    @econ/approve <id>   @econ/deny <id>    decide an approval request\n\
                    @econ/approvals                         requests awaiting your decision\n\
                    @econ/alerts                            open economy escalations (staff)\n\
@@ -190,6 +192,10 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @hold/release <id>                     give a reservation back unspent\n\
                    @hold/capture <id>=<to account> <amount>  spend (part of) it; the rest is released\n\
                    @hold/show <id>    @hold/list [account=<id>]\n\
+                   \x20                                      printed account ids are masked by your\n\
+                   \x20                                      view standing, and a reservation held for a\n\
+                   \x20                                      contract you are outside of shows the\n\
+                   \x20                                      reservation and never the contract\n\
                    A hold makes money UNAVAILABLE without moving it: every debit is checked\n\
                    against posted minus held, so a reservation is a promise you cannot spend\n\
                    twice. expires= is a duration from now (ic: for the in-character clock); a\n\
@@ -218,6 +224,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    \x20   [every=<secs|ic:<secs>|manual:<secs>>] [start=<secs>] [grace=<n>]\n\
                    \x20   [catchup=<n>] [notify]                       recurring debt (staff)\n\
                    @obligation/show <id>   @obligation/list\n\
+                   \x20                                      printed account ids are masked by your\n\
+                   \x20                                      view standing (\"an account\")\n\
                    @obligation/suspend <id>=<reason>   @obligation/resume <id>    (staff)\n\
                    @obligation/cancel <id>                                       (staff or creditor)\n\
                    @obligation/advance <id>               step a manual: clock one period\n\
@@ -1300,6 +1308,11 @@ fn econ_unfreeze(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
          @asset/unfreeze and @vault/unfreeze."
             .to_string(),
     );
+    // E4c verify fold, E4a: canon evidence is edge-triggered, and every record that
+    // landed while the freeze was set was dropped on the floor by the attestation
+    // observer — deliberately, because a frozen economy cannot act on it. Re-scan
+    // what the world announced meanwhile, now that it can.
+    crate::attest::rescan_canon_tail(ctx);
     // A control-doc write, not money: the ordinary durable gate (§4.2).
     ctx.gate_on_durable_ack();
     Ok(())
@@ -1781,14 +1794,23 @@ fn hold_word(kind: HoldEffectKind) -> &'static str {
 /// Staff read it as the audit view: every entry, every id, every description.
 fn econ_history(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     const NO_SUCH: &str = "No such account.";
+    const USAGE: &str = "Usage: @econ/history <account> [n]   (n is 1-20)";
     let raw = ctx.args.raw().to_string();
     let mut words = raw.split_whitespace();
     let id = words.next().and_then(parse_account).ok_or_else(|| CmdError::msg(NO_SUCH))?;
-    let n = words
-        .next()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(HISTORY_CAP)
-        .clamp(1, HISTORY_CAP);
+    // D8 (E4c verify fold): `n` is validated, never clamped. Clamping split the bad
+    // inputs into two observable classes — `0` silently became 1 and `banana`
+    // silently became 20 — so the reply told you which kind of wrong you were.
+    let n = match words.next() {
+        None => HISTORY_CAP,
+        Some(word) => match word.parse::<usize>() {
+            Ok(n) if (1..=HISTORY_CAP).contains(&n) => n,
+            _ => return Err(CmdError::msg(USAGE)),
+        },
+    };
+    if words.next().is_some() {
+        return Err(CmdError::msg(USAGE));
+    }
     // Rule 1: standing, then existence — one message for both.
     if !may_view_account(ctx.w, ctx.actor, id) {
         return Err(CmdError::msg(NO_SUCH));
@@ -1808,8 +1830,16 @@ fn econ_history(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 t.lines.iter().any(|l| l.account == id)
                     || t.hold_effects.iter().any(|e| e.hold.account == id)
             })
-            // Rule 4.
-            .filter(|t| staff || !matches!(t.visibility, crate::record::EconomicVisibility::Staff))
+            // Rule 4, **relaxed for an effect-only entry** (D3): a reservation on an
+            // account is a fact its viewers may see, and an escrow placement produces
+            // no journal line at all — so omitting the whole entry hid the one thing
+            // the payer most needs to see. The entry is shown; what it was FOR is
+            // not (no description, and `render_effect` names no contract).
+            .filter(|t| {
+                staff
+                    || !matches!(t.visibility, crate::record::EconomicVisibility::Staff)
+                    || t.lines.is_empty()
+            })
             .cloned()
             .collect();
         // Rule 6: newest first, then capped. (`transactions()` is id order, and ids
@@ -1818,9 +1848,12 @@ fn econ_history(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         touching.truncate(n);
         touching
     };
+    /// The one token every masked counterparty collapses into (D4).
+    const MASKED: &str = "other accounts";
     let mut rows: Vec<String> = Vec::new();
     for t in &entries {
         let mut parts: Vec<String> = Vec::new();
+        let mut masked = false;
         for l in &t.lines {
             // Rules 2 and 3.
             if may_view_account(ctx.w, ctx.actor, l.account) {
@@ -1830,8 +1863,18 @@ fn econ_history(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     .and_then(|s| s.snapshot().instrument(&l.instrument).map(|i| i.scale))
                     .unwrap_or(0);
                 parts.push(format!("account #{} {}", l.account, l.delta.to_decimal_string(scale)));
-            } else {
-                parts.push("another account".to_string());
+            } else if !masked {
+                // D4 (E4c verify fold): every masked line on one entry COLLAPSES
+                // into a single token. One `another account` per hidden line
+                // published the arity of the split — a runner could count the other
+                // runners — and with the viewer's own side and the total in hand, a
+                // two-hidden-line entry was solvable by subtraction. One token says
+                // the same true thing and counts nothing. (The finding asked for
+                // *consecutive* runs; collapsing them all is strictly stronger, and
+                // a run whose masked lines straddle the viewer's own would otherwise
+                // still publish "there are others on both sides".)
+                masked = true;
+                parts.push(MASKED.to_string());
             }
         }
         for e in &t.hold_effects {
@@ -1861,8 +1904,11 @@ fn econ_history(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             }
         }
         rows.push(format!("tx #{} at {}: {}", t.id, t.posted_at, parts.join(", ")));
-        // Rule 5.
-        if !t.description.is_empty() && entry_descriptive(ctx, t) {
+        // Rule 5 — and never for a `Staff`-visibility entry a non-staff viewer only
+        // sees because it is effect-only (D3): the reservation is the disclosure, the
+        // free text about why is not.
+        let staff_only = matches!(t.visibility, crate::record::EconomicVisibility::Staff);
+        if !t.description.is_empty() && (staff || !staff_only) && entry_descriptive(ctx, t) {
             rows.push(format!("  \u{201c}{}\u{201d}", t.description));
         }
     }
@@ -2703,6 +2749,30 @@ fn refuse_escrow(ctx: &Ctx<'_>, id: HoldId, verb: &str) -> Result<(), CmdError> 
 /// to them was therefore being shown the payer's account id, and a contract id they
 /// may have no standing over. Both now go through the same masks the rest of the
 /// filter uses ([`mask_account`], [`crate::may_view_contract`]).
+/// **A reservation on an account is a fact its viewers may see; the contract behind
+/// it is not** (E4c verify fold, D3).
+///
+/// `@contract/show` omits a `Staff`-visibility contract from everyone outside its
+/// class, and `@econ/history` omits its entries — and then `@hold/show` handed the
+/// same person the contract id, the escrow beneficiary and a purpose line naming it.
+/// One story, one predicate: when the hold is a contract's escrow and the viewer is
+/// not staff and is not inside that contract's disclosure class, the *reservation* is
+/// rendered and the *contract* is not.
+fn escrow_contract_hidden(ctx: &Ctx<'_>, h: &crate::record::Hold) -> bool {
+    let HoldPurpose::Escrow { contract } = &h.purpose else { return false };
+    if is_admin(ctx.w, ctx.actor) {
+        return false;
+    }
+    if !crate::contract_live::may_view_contract(ctx.w, ctx.actor, *contract) {
+        return true;
+    }
+    ctx.w.module_state::<EconomyStore>().is_some_and(|s| {
+        s.snapshot().contract(*contract).is_some_and(|c| {
+            matches!(c.consent.visibility, crate::record::EconomicVisibility::Staff)
+        })
+    })
+}
+
 fn render_hold(ctx: &Ctx<'_>, h: &crate::record::Hold, staff: bool, scale: u8) -> Vec<String> {
     let status = match &h.status {
         HoldStatus::Held => "held".to_string(),
@@ -2723,15 +2793,20 @@ fn render_hold(ctx: &Ctx<'_>, h: &crate::record::Hold, staff: bool, scale: u8) -
         HoldPurpose::Reservation { kind, id } => format!("{kind} #{id}"),
         HoldPurpose::Manual { reason } => reason.to_string(),
     };
-    let mut lines = vec![
-        format!(
-            "hold #{} on {} — {} [{status}]",
-            h.id,
-            mask_account(ctx, h.account, "an account"),
-            h.amount.to_decimal_string(scale)
-        ),
-        format!("  for {purpose}"),
-    ];
+    let hidden = escrow_contract_hidden(ctx, h);
+    let mut lines = vec![format!(
+        "hold #{} on {} — {} [{status}]",
+        h.id,
+        mask_account(ctx, h.account, "an account"),
+        h.amount.to_decimal_string(scale)
+    )];
+    // D3: no purpose text and no beneficiary for a contract this viewer is outside
+    // of — `sys:economy.contract` is itself the answer to "is this a contract?".
+    if hidden {
+        lines.push("  the reason it is reserved is not yours to see".to_string());
+        return lines;
+    }
+    lines.push(format!("  for {purpose}"));
     if let Some(b) = &h.beneficiary {
         lines.push(format!("  beneficiary {}", render_principal(ctx, b)));
     }
@@ -3109,11 +3184,16 @@ fn obligation_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         })
         .unwrap_or(0);
     let mut lines = vec![
+        // D2 (E4c verify fold): the ids go through the same mask every other render
+        // uses. `may_view_obligation` admits either party and anyone who may view
+        // EITHER account, so a debtor was being handed the id of a creditor account
+        // they have no standing over — a handle for `@econ/history` and `@econ/pay`.
+        // The amount stays: it is the viewer's own side of the debt.
         format!(
-            "obligation #{} — account #{} owes account #{} {} [{}]",
+            "obligation #{} — {} owes {} {} [{}]",
             o.id,
-            o.debit_account,
-            o.credit_account,
+            mask_account(ctx, o.debit_account, "an account"),
+            mask_account(ctx, o.credit_account, "an account"),
             o.amount.to_decimal_string(scale),
             render_status(&o)
         ),
@@ -3173,10 +3253,10 @@ fn obligation_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .and_then(|a| snap.instrument(&a.instrument))
                 .map_or(0, |i| i.scale);
             Some(format!(
-                "#{} #{} → #{} {} [{}]",
+                "#{} {} → {} {} [{}]",
                 o.id,
-                o.debit_account,
-                o.credit_account,
+                mask_account(ctx, o.debit_account, "an account"),
+                mask_account(ctx, o.credit_account, "an account"),
                 o.amount.to_decimal_string(scale),
                 render_status(o)
             ))

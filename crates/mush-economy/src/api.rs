@@ -1342,6 +1342,21 @@ pub fn issue_title(
     scope: Option<OrgScopeId>,
     issuer: mush_org::SystemPrincipalId,
 ) -> Result<PostOutcome, EconomyError> {
+    // E4c verify fold, E6: **the object has to exist.** The staff path reaches
+    // `@asset/title` through `asset_target`, which resolves a live world object; this
+    // one took an `ObjId` from its caller and minted title for whatever number it was
+    // handed. A title record on a destroyed or never-created object is an asset the
+    // economy will carry forever, that no custody provider can locate, that
+    // `@asset/show` renders as a ghost, and that boot's reconciliation pass must
+    // freeze. Refuse it where it is cheap.
+    if !approver_live(ctx.w, object) {
+        tracing::warn!(
+            issuer = issuer.as_str(),
+            object = object.0,
+            "economy: a title issuer named an object that is not a live world object; refused"
+        );
+        return Err(EconomyError::NoSuchAsset(object));
+    }
     let registered = ctx
         .w
         .module_state::<EconomyStore>()
@@ -1359,11 +1374,19 @@ pub fn issue_title(
     if !scope_coherent(ctx.w, scope, &owner) {
         return Err(EconomyError::ScopeOwnerMismatch);
     }
+    // E4c verify fold, E7: the key carries the object's **title generation** — how
+    // many `Created` title effects the journal already has for it. `title.issue/{object}`
+    // alone made a re-issue after a write-off an idempotency HIT: the caller got
+    // `AlreadyPosted(<the old transaction>)`, which reads as success, and no title was
+    // minted. A ruleset handing out the same flat twice would have handed it out once.
+    // Two calls in the same generation still resolve to one transaction, which is the
+    // property the key exists for.
+    let generation = title_generation(ctx, object);
     let actor = PrincipalId::System(issuer);
     let mut plan = EconomyPlan::new(
         crate::record::IdempotencyKey::new(
             SmolStr::new_static("title.issue"),
-            SmolStr::new(object.0.to_string()),
+            SmolStr::new(format!("{}/{generation}", object.0)),
         ),
         actor.clone(),
         EconomicCause::Internal { kind: SmolStr::new_static("title.issue"), id: u64::from(object.0) },
@@ -1373,6 +1396,47 @@ pub fn issue_title(
     plan.description = format!("title issued for #{} by {actor:?}", object.0);
     let auth = TitleIssuerAuth { issuer: actor, object, owner, scope };
     post_with(ctx, &plan, PostAuth::Injected(&auth))
+}
+
+/// How many title records the journal has already `Created` for `object` (E4c
+/// verify fold, E7) — the generation the next issue mints under.
+///
+/// The **journal** and not the live asset, because that is the record a write-off
+/// leaves behind: the asset is `WrittenOff`, the effect that created it is still
+/// there, and "how many times has this been titled" is exactly what the key needs.
+fn title_generation(ctx: &Ctx<'_>, object: ObjId) -> u64 {
+    let Some(store) = ctx.w.module_state::<EconomyStore>() else { return 0 };
+    store
+        .transactions()
+        .flat_map(|t| t.asset_effects.iter())
+        .filter(|e| e.object == object && e.kind == crate::record::AssetEffectKind::Created)
+        .count() as u64
+}
+
+/// Record that this contract's settlement reached the chronicle (E4c verify fold,
+/// V2+V3+V5).
+///
+/// The canon **bridge** calls it — from `mush-server`, after `mush_canon::commit`
+/// returned an id — and it is the whole reason publication stopped being
+/// best-effort: the marker is durable, so a commit that failed leaves it unset and
+/// the sweep re-announces the settlement on its next fire. It is deliberately a
+/// narrow, public seam rather than a general "write this contract" API: an observer
+/// may record *that it published*, and nothing else.
+///
+/// Idempotent, and never moves an existing marker: the first line published is the
+/// line, and re-pointing it at a second one would be admitting the duplicate this
+/// exists to prevent.
+pub fn mark_canon_published(ctx: &mut Ctx<'_>, id: crate::ids::ContractId, canon_ref: &str) {
+    let Some(mut c) = ctx.w.module_state::<EconomyStore>().and_then(|s| s.snapshot().contract(id).cloned())
+    else {
+        return;
+    };
+    if c.canon_published.is_some() {
+        return;
+    }
+    c.canon_published = Some(SmolStr::new(canon_ref));
+    c.revision = c.revision.saturating_add(1);
+    put_contract(ctx, c);
 }
 
 /// The system principal every contract's escrow is made out to (§5).

@@ -155,3 +155,47 @@ fn an_unopened_job_an_unknown_kind_and_a_versioned_reference_are_all_unknown() {
         "a reference claiming a revision was answered by a provider that has none"
     );
 }
+
+// ======================================================================
+// ---- E4c verify fold ----
+// ======================================================================
+
+/// E3. `jobs.resolved` was answered from the job's **status**, and a status is a
+/// state staff set by hand. `+job/status <n>=resolved` was therefore a settlement
+/// lever: escrow released on a payload that had never run.
+#[test]
+fn vf_e3_the_fact_is_the_applied_marker_and_a_status_flip_is_not_one() {
+    let mut env = setup();
+    run(env.nick, &mut env, "+xspend Raise Strength=");
+    let p = JobsFactProvider;
+
+    // `=resolved` is refused outright on a payload job: only `/approve` runs it.
+    run(env.wanda, &mut env, "+job/status 1=resolved");
+    let job = mush_jobs::get_job(&env.engine.world, 1).expect("job 1");
+    assert_ne!(
+        job.status,
+        mush_jobs::JobStatus::Resolved,
+        "a payload job was resolved without running its payload"
+    );
+    assert_eq!(job.payload_applied, None, "a status flip wrote the applied marker");
+    assert!(
+        p.resolve(&env.engine.world, "resolved", "1", None).is_some_and(|f| !f.satisfied),
+        "a status flip answered the fact"
+    );
+
+    // The approval is what makes it a fact — the marker and the status together.
+    run(env.wanda, &mut env, "+job/approve 1=done");
+    let job = mush_jobs::get_job(&env.engine.world, 1).expect("job 1");
+    assert!(job.payload_applied.is_some(), "approve did not stamp the applied marker");
+    let fact = p.resolve(&env.engine.world, "resolved", "1", None).expect("answers");
+    assert!(fact.satisfied, "an applied payload is not a fact");
+    assert_eq!(fact.at, job.payload_applied.expect("marker"), "the fact is stamped at the flip");
+
+    // …and it cannot be taken back afterwards, which is what makes it terminal.
+    run(env.wanda, &mut env, "+job/status 1=denied");
+    assert_eq!(
+        mush_jobs::get_job(&env.engine.world, 1).expect("job 1").status,
+        mush_jobs::JobStatus::Resolved,
+        "a resolved payload job was moved off Resolved after money could have settled on it"
+    );
+}

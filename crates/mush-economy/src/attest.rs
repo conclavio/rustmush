@@ -8,6 +8,15 @@
 //!
 //! ## What "actually answers" means
 //!
+//! **A producer-declared outcome kind, an exact source, and the right people**
+//! (E4c verify fold, E1 + E2). `mush_canon` records *lifecycle* as readily as it
+//! records outcomes: `scene.concluded` says a scene ended, and any participant can
+//! end a scene — so a payee gated on one could manufacture their own settlement.
+//! A canon attestor set must therefore name a kind the composition root registered
+//! as an outcome ([`crate::CanonOutcomeKinds`], refused at `Offer` otherwise), must
+//! name a specific source rather than wildcarding the kind, and the record must name
+//! (or be named by somebody acting for) one of the contract's own parties.
+//!
 //! **Kind *and* source.** [`AttestorSet::Canon`] names both, and
 //! [`crate::canon_set_accepts`] is the single predicate the observer and
 //! [`crate::reverify`] share. E5's owner answer 20 is the reason: progress must cite
@@ -21,8 +30,9 @@
 //!
 //! All four of 08e answer 6's routes go through the one `TypedCondition` alphabet
 //! and therefore through this seam or beside it: a **sealed scene outcome** is a
-//! typed canon record with `source: scene:{uid}` (`mush-scenes` already commits
-//! `scene.concluded` that way) matched by an `Attestation { by: Canon { .. } }`
+//! typed canon record with `source: scene:{uid}` — E6b's `scene.outcome`, sealed
+//! under facilitator authority and registered as an outcome kind — matched by an
+//! `Attestation { by: Canon { .. } }`
 //! condition; an **authorized attestation** is `@contract/attest` under a
 //! `Party`/`Capability`/`Staff` set; a **deterministic condition** is
 //! `Fact`/`TitleHeld`/`DepositInto`/`Before`/`After`; a **composite** is several of
@@ -43,7 +53,8 @@
 //! is attempted and is not conditional on it.
 
 use mush_core::module::WorldEvent;
-use mush_core::Ctx;
+use mush_core::{Ctx, ObjId};
+use mush_org::PrincipalId;
 use smol_str::SmolStr;
 
 use crate::clock::EconomicClock;
@@ -54,21 +65,73 @@ use crate::contract::{
 use crate::ids::ContractId;
 use crate::module::EconomyStore;
 
+/// How many contracts one canon record may **settle** in the observer's own step
+/// (E4c verify fold, E10).
+///
+/// A record can answer a condition on any number of contracts, and each settlement
+/// builds a plan, re-verifies, posts and emits — inside a synchronous observer, on
+/// canon's own write batch. Past this many, the attestation is still recorded
+/// (durably, on the document) and the contract is left for the sweep, which settles
+/// it on the next fire with its own budget. Evidence is never dropped; only the
+/// *timing* of the payout moves.
+pub const MAX_OBSERVER_SETTLEMENTS_PER_EVENT: usize = 8;
+
 /// The `CanonRecorded` observer.
 pub(crate) fn on_canon_recorded(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
-    let WorldEvent::CanonRecorded { canon_id, kind, source, .. } = ev else { return };
+    let WorldEvent::CanonRecorded { canon_id, kind, entities, source } = ev else { return };
+    // **Remembered first, and whatever happens next** (E4c verify fold, E4a). Canon
+    // evidence is edge-triggered: this callback is the only moment the record passes
+    // through the economy, and a contract that was not yet `Active` — or an economy
+    // that was frozen — missed it with no way back. The tail is what
+    // `@econ/unfreeze` and a contract's activation re-scan.
+    if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
+        store.note_canon(*canon_id, kind, source);
+    }
     // A frozen economy records nothing: every post refuses anyway, and writing an
     // attestation whose settlement can never be attempted would leave a contract
     // claiming evidence the world had stopped acting on.
     if ctx.w.module_state::<EconomyStore>().is_none_or(EconomyStore::is_frozen) {
         return;
     }
-    let matched = matching_contracts(ctx, kind, source);
+    record_and_settle(ctx, *canon_id, kind, source, Some(entities));
+}
+
+/// Re-scan the canon records this world has seen against every live `Canon`
+/// condition (E4c verify fold, E4a).
+///
+/// Called from `@econ/unfreeze` and from a contract's activation — the two moments a
+/// missed edge becomes recoverable. It records nothing twice: a slot that is already
+/// filled is skipped, exactly as the live path skips it.
+pub(crate) fn rescan_canon_tail(ctx: &mut Ctx<'_>) {
+    let tail = match ctx.w.module_state::<EconomyStore>() {
+        Some(store) if !store.is_frozen() => store.canon_tail(),
+        _ => return,
+    };
+    for (canon_id, kind, source) in tail {
+        // The tail carries no entity list — it is a record of what the world
+        // announced, not a copy of canon — so the party-intersection check does not
+        // run here. `source` is still exact, which is the load-bearing half: a
+        // re-scan can only reach a condition that named this specific front.
+        record_and_settle(ctx, canon_id, &kind, &source, None);
+    }
+}
+
+/// Record this canon record against every live condition it answers, and settle what
+/// that makes ready (bounded by [`MAX_OBSERVER_SETTLEMENTS_PER_EVENT`]).
+fn record_and_settle(
+    ctx: &mut Ctx<'_>,
+    canon_id: u64,
+    kind: &str,
+    source: &str,
+    entities: Option<&[ObjId]>,
+) {
+    let matched = matching_contracts(ctx, kind, source, entities);
     if matched.is_empty() {
         return;
     }
     let canon = SmolStr::new(format!("canon:{canon_id}"));
     let now = ctx.w.now();
+    let mut settled = 0usize;
     for (id, slots) in matched {
         let Some(mut c) = live_contract(ctx, id) else { continue };
         if c.satisfied.len() < c.consent.conditions.len() {
@@ -110,6 +173,19 @@ pub(crate) fn on_canon_recorded(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
         // settlement that refuses (or a contract that is not ready) still leaves the
         // attestation on the document.
         crate::api::put_contract(ctx, c.clone());
+        // E4c verify fold, E10: past the per-event settlement cap the evidence still
+        // stands — it is already installed and queued above — and the contract is
+        // left for the sweep, which has its own budget and its own batch.
+        if settled >= MAX_OBSERVER_SETTLEMENTS_PER_EVENT {
+            tracing::warn!(
+                contract = id.0,
+                canon = canon_id,
+                "economy: one canon record answered more contracts than an observer settles in \
+                 one step; the attestation stands and the sweep will settle it"
+            );
+            continue;
+        }
+        settled = settled.saturating_add(1);
         // …and, when settlement is attempted in the same step, the same record rides
         // the settlement post's own batch (`post_with_companions`), so the evidence
         // and the money it released are one durable write rather than two.
@@ -119,7 +195,12 @@ pub(crate) fn on_canon_recorded(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
 
 /// Every live contract, and which of its condition indexes this canon record
 /// answers. Read-only: the world is not touched until the caller writes.
-fn matching_contracts(ctx: &Ctx<'_>, kind: &str, source: &str) -> Vec<(ContractId, Vec<usize>)> {
+fn matching_contracts(
+    ctx: &Ctx<'_>,
+    kind: &str,
+    source: &str,
+    entities: Option<&[ObjId]>,
+) -> Vec<(ContractId, Vec<usize>)> {
     let Some(store) = ctx.w.module_state::<EconomyStore>() else { return Vec::new() };
     let mut out: Vec<(ContractId, Vec<usize>)> = Vec::new();
     for c in store.snapshot().contracts() {
@@ -131,6 +212,16 @@ fn matching_contracts(ctx: &Ctx<'_>, kind: &str, source: &str) -> Vec<(ContractI
             c.state,
             ContractState::Active | ContractState::ReadyToSettle | ContractState::Disputed
         ) {
+            continue;
+        }
+        // **The record has to be about these people** (E4c verify fold, E1). A
+        // producer-declared outcome kind and an exact source are the first two gates;
+        // this is the third, and it is what stops a correctly-typed outcome sealed
+        // about somebody else's operation from discharging this contract. A record
+        // naming nobody names nobody here either.
+        if let Some(entities) = entities
+            && !names_a_party(ctx, entities, c)
+        {
             continue;
         }
         let slots: Vec<usize> = c
@@ -147,6 +238,20 @@ fn matching_contracts(ctx: &Ctx<'_>, kind: &str, source: &str) -> Vec<(ContractI
         }
     }
     out
+}
+
+/// Whether any of the record's entities is (or acts for) one of the contract's
+/// parties (E4c verify fold, E1).
+///
+/// `acts_for` rather than an identity match, for the same reason `may_view_hold`
+/// uses it: a contract whose party is `org:Ironhold` is answered by an outcome naming
+/// one of Ironhold's officers, and an identity match would silently never fire.
+fn names_a_party(ctx: &Ctx<'_>, entities: &[ObjId], c: &EconomicContract) -> bool {
+    let auth = crate::api::WorldAuth { w: ctx.w };
+    entities.iter().any(|o| {
+        let me = PrincipalId::Object(*o);
+        c.consent.parties.iter().any(|p| p == &me || auth.acts_for(&me, p))
+    })
 }
 
 /// Whether this canon record answers `cond` on `c`.

@@ -55,6 +55,35 @@ pub trait EconomyObserver: Send + Sync + std::fmt::Debug {
 /// The wiring-frozen observer table.
 pub type ObserverTable = Arc<Vec<Arc<dyn EconomyObserver>>>;
 
+/// Restores the depth counter **however** the emission ends (E4c verify fold, V6).
+///
+/// An observer is trusted composition-root code, but a panic in one used to leave
+/// `event_depth` incremented forever: `catch_unwind` at the world-task boundary meant
+/// the world survived, the counter did not come back down, and after four such
+/// panics every economic event in the process was silently dropped — the chronicle
+/// stopped, and nothing said why. A drop guard is the only shape that cannot be
+/// skipped.
+struct DepthGuard;
+
+impl Drop for DepthGuard {
+    fn drop(&mut self) {
+        DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
+thread_local! {
+    /// The live emission depth. It is thread-local rather than a store field for the
+    /// drop guard's sake: `Drop::drop` gets no `&mut Ctx`, and a guard that needed
+    /// one could not run on the unwind path — which is the whole point of it.
+    static DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// The live emission depth (for the store's diagnostic view and the tests).
+#[must_use]
+pub fn observer_depth() -> u32 {
+    DEPTH.with(std::cell::Cell::get)
+}
+
 /// Deliver one event to every wired observer, post-commit.
 pub(crate) fn emit(ctx: &mut Ctx<'_>, ev: &EconomicEvent) {
     let observers = {
@@ -62,21 +91,69 @@ pub(crate) fn emit(ctx: &mut Ctx<'_>, ev: &EconomicEvent) {
         if store.observers.is_empty() {
             return;
         }
-        if store.event_depth >= MAX_OBSERVER_DEPTH {
-            tracing::error!(
-                depth = store.event_depth,
-                event = ?ev,
-                "economy: observer chain hit its depth cap; the event was dropped"
-            );
-            return;
-        }
-        store.event_depth = store.event_depth.saturating_add(1);
         store.observers()
     };
+    let depth = DEPTH.with(std::cell::Cell::get);
+    if depth >= MAX_OBSERVER_DEPTH {
+        tracing::error!(
+            depth,
+            event = ?ev,
+            "economy: observer chain hit its depth cap; the event was dropped"
+        );
+        // **And page.** A dropped event costs a chronicle line — a public settlement
+        // that never becomes canon, a delinquency nobody is told about — and a cap hit
+        // silently in a log is a cap nobody knows was hit. Level 2, deduped on the
+        // subject, so a runaway chain opens one record and not a thousand.
+        page_dropped(ctx, ev);
+        return;
+    }
+    DEPTH.with(|d| d.set(depth.saturating_add(1)));
+    let _guard = DepthGuard;
+    // Kept in step for `@econ/audit`'s diagnostic view; the guard above is what makes
+    // the counter honest.
+    if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
+        store.event_depth = depth.saturating_add(1);
+    }
     for o in observers.iter() {
         o.on_economic_event(ctx, ev);
     }
     if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
-        store.event_depth = store.event_depth.saturating_sub(1);
+        store.event_depth = depth;
     }
+}
+
+/// Open (or reuse) the level-2 record for an emission the depth cap dropped.
+///
+/// The subject is **the contract whose emission was dropped** when the event names
+/// one, so a staffer is pointed at the settlement that lost its chronicle line rather
+/// than at "the economy".
+fn page_dropped(ctx: &mut Ctx<'_>, ev: &EconomicEvent) {
+    let (subject, what) = match ev {
+        EconomicEvent::ContractChanged { id, state, .. } => (
+            crate::escalation::EscalationSubject::Contract(*id),
+            format!("contract #{id}'s transition to {state:?}"),
+        ),
+        EconomicEvent::ObligationChanged { id, status_kind } => (
+            crate::escalation::EscalationSubject::Obligation(*id),
+            format!("obligation #{id}'s transition to {status_kind:?}"),
+        ),
+        EconomicEvent::TransactionPosted { .. }
+        | EconomicEvent::HoldChanged { .. }
+        | EconomicEvent::AssetTitleChanged { .. } => {
+            (crate::escalation::EscalationSubject::Economy, "an economic event".to_string())
+        }
+    };
+    let now = ctx.w.now();
+    let _ = crate::sweep::page(
+        ctx,
+        crate::escalation::EscalationKind::SettlementRefused,
+        subject,
+        None,
+        format!(
+            "the economy's observer chain hit its depth cap ({MAX_OBSERVER_DEPTH}) and {what} was \
+             never announced; the money moved and its chronicle line did not"
+        ),
+        vec!["@econ/alerts".to_string()],
+        now,
+    );
 }

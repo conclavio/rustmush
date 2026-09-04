@@ -12,7 +12,10 @@
 //! payload-bearing job**. A payload job is one-shot by construction: `+job/approve`
 //! runs its handler and `+job/status` refuses to reopen it afterwards
 //! (`commands.rs`, the double-XP-spend guard), so `Resolved` is a fact about the
-//! past that cannot be taken back. A **payload-less** job has no such latch: staff
+//! past that cannot be taken back — and the fact it answers is the **applied
+//! marker** `+job/approve` writes when it actually runs the handler, never the
+//! `Resolved` status, which is a state staff can set by hand (E4c verify fold, E3).
+//! A **payload-less** job has no such latch: staff
 //! may set it back to `Open` at any time, so its resolution is a *state*, not a
 //! terminal fact, and a contract that settled on it could be settling on something
 //! that stops being true a minute later. This provider therefore answers `None`
@@ -50,10 +53,15 @@ impl FactProvider for JobsFactProvider {
         let job = w.module_state::<JobsState>()?.jobs.get(&job_id)?;
         // The payload rule, above.
         job.payload.as_ref()?;
+        // **The applied marker, not the status** (E4c verify fold, E3). `Resolved`
+        // is a state a staffer sets with `+job/status`; `payload_applied` is the
+        // stamp `+job/approve` writes in the same batch as the handler's own
+        // mutations, and only ever then. Answering from the status made a status
+        // flip a settlement lever: the escrow moved on a payload that had never run.
         Some(FactState {
-            satisfied: job.status == JobStatus::Resolved,
+            satisfied: job.payload_applied.is_some() && job.status == JobStatus::Resolved,
             actor: job.assignee,
-            at: job.updated_at,
+            at: job.payload_applied.unwrap_or(job.updated_at),
         })
     }
 }

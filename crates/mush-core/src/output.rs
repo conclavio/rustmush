@@ -113,6 +113,9 @@ pub struct Outbox {
     // while giving the persistence driver typed entries.
     classes: Vec<DeliveryClass>,
     deferred: Vec<Deferred>,
+    /// How much of `deferred` is **pinned** — non-truncatable by a failing
+    /// handler. See [`Outbox::pin_deferred`].
+    deferred_pin: usize,
 }
 
 impl Outbox {
@@ -267,18 +270,43 @@ impl Outbox {
         &self.deferred
     }
 
-    /// Truncate the deferred-work side-queue back to `len` entries.
+    /// Pin the deferred-work queued **so far** as non-truncatable: a later
+    /// [`truncate_deferred`](Self::truncate_deferred) can only discard entries
+    /// pushed after this call.
+    ///
+    /// The one caller is a **terminal commit** — `mush_canon::commit`, which
+    /// appends to the chronicle, then synchronously runs observers that may
+    /// mutate the world and queue writes of their own. Dispatch does not roll
+    /// RAM back when a handler returns `Err`, only the deferred queue, so
+    /// truncating a terminal commit's writes leaves RAM claiming something the
+    /// store never received — canon recorded, an economy contract settled, and
+    /// neither on disk. Pinning makes "committed" mean the same thing on both
+    /// sides. Everything queued *after* the pin is still discarded normally.
+    pub fn pin_deferred(&mut self) {
+        self.deferred_pin = self.deferred.len();
+    }
+
+    /// How much of the deferred queue is pinned (see
+    /// [`pin_deferred`](Self::pin_deferred)).
+    #[must_use]
+    pub fn deferred_pin(&self) -> usize {
+        self.deferred_pin
+    }
+
+    /// Truncate the deferred-work side-queue back to `len` entries — or to the
+    /// [pin](Self::pin_deferred), whichever is longer.
     /// Dispatch uses this to discard everything a **failed** handler
     /// deferred (persistence ops, timers, effects) — an `Err` return must
     /// not half-commit the handler's queued writes.
     pub fn truncate_deferred(&mut self, len: usize) {
-        self.deferred.truncate(len);
+        self.deferred.truncate(len.max(self.deferred_pin));
     }
 
     /// Drain the deferred-work side-queue, leaving it empty. (Separate from
     /// [`Outbox::take`]: events go to delivery, deferred work goes to the
     /// engine's effects queue and scheduler.)
     pub fn take_deferred(&mut self) -> Vec<Deferred> {
+        self.deferred_pin = 0;
         std::mem::take(&mut self.deferred)
     }
 

@@ -770,9 +770,28 @@ fn resolve_asset_ops(
         let object = op.object();
         let effect_kind = match op {
             AssetOp::Title { owner, scope, catalog, .. } => {
-                if work.contains_key(&object) || snapshot.asset(object).is_some() {
+                if work.contains_key(&object) {
                     return Err(EconomyError::AssetExists(object));
                 }
+                // E4c verify fold, E7: a **written-off** title may be re-issued.
+                // Write-off is how a title ends, and an object whose title ended is
+                // an object with no live title — the state `Title` is for. Refusing
+                // it made a re-issue an idempotency hit that reported success and
+                // minted nothing, so a ruleset handing out the same flat twice
+                // handed it out once. Anything with a LIVE title is refused exactly
+                // as before, and so is one still carrying claims: a lien outlives the
+                // write-off it was recorded against, and a fresh title over it would
+                // silently drop somebody's security.
+                let previous = match snapshot.asset(object) {
+                    None => None,
+                    Some(a)
+                        if a.lifecycle == AssetLifecycle::WrittenOff
+                            && a.encumbrances.is_empty() =>
+                    {
+                        Some(a.revision)
+                    }
+                    Some(_) => return Err(EconomyError::AssetExists(object)),
+                };
                 if !scope_owner_coherent(*scope, owner) {
                     return Err(EconomyError::ScopeOwnerMismatch);
                 }
@@ -791,7 +810,10 @@ fn resolve_asset_ops(
                     acquisition: None,
                     lifecycle: AssetLifecycle::Active,
                     last_journal_seq: 0,
-                    revision: 1,
+                    // A re-issue keeps counting from the record it replaces, so an
+                    // expected-revision guard written against the old title cannot
+                    // match the new one by accident.
+                    revision: previous.map_or(1, |r| r.saturating_add(1)),
                     frozen: false,
                     frozen_reason: None,
                 });

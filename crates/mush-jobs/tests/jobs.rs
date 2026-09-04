@@ -982,9 +982,28 @@ fn terminal_payload_jobs_cannot_be_reopened() {
         get_job(&env.engine.world, 1).unwrap().status,
         JobStatus::Resolved
     );
-    // Terminal-to-terminal is fine (bookkeeping correction).
+    // E4c verify fold (E3): terminal-to-terminal is NOT fine either. A payload
+    // job's `Resolved` is the economy's `jobs.resolved` fact, so moving off it
+    // would take back an answer a contract may already have settled on.
     let out = run(env.wanda, &mut env, "+job/status 1=denied");
-    assert!(has_text(&out, "Job 1 status set to Denied."));
+    assert!(
+        has_text(&out, "cannot be moved"),
+        "a resolved payload job was re-statused: {:?}",
+        sys_texts(&out)
+    );
+    // …and `=resolved` never resolves one: only `/approve` runs the payload.
+    run(env.nick, &mut env, "+xspend Buy another dot=xp.apply");
+    let out = run(env.wanda, &mut env, "+job/status 2=resolved");
+    assert!(
+        has_text(&out, "resolved by +job/approve"),
+        "a payload job was resolved by hand: {:?}",
+        sys_texts(&out)
+    );
+    assert_eq!(
+        get_job(&env.engine.world, 2).unwrap().payload_applied,
+        None,
+        "a status flip wrote the applied marker"
+    );
     // And no second application ever happened.
     assert_eq!(env.applied.load(Ordering::SeqCst), 1);
 }

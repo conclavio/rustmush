@@ -501,8 +501,16 @@ fn job_approve(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     let (who, ts) = (ctx.actor, ctx.w.now());
     let stamp = comment.clone();
+    let applied = job.payload.is_some();
     let job = update_job(ctx, id, move |j| {
         j.status = JobStatus::Resolved;
+        // E4c verify fold, E3: the **applied marker**, written in the same command
+        // and the same batch as the handler mutations above. It is what the
+        // economy's `jobs.resolved` fact answers from: a status flip settles
+        // nothing, because a status is not a fact about the past.
+        if applied {
+            j.payload_applied = Some(ts);
+        }
         if let Some(text) = stamp {
             j.comments.push(JobComment { who, ts, text });
         }
@@ -586,6 +594,28 @@ fn job_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
              reopened (file a new one).",
             job.status.to_string().to_lowercase()
         )));
+    }
+    // E4c verify fold, E3: **a payload job resolves only through `/approve`**, and
+    // its `Resolved` is not a status staff can move off afterwards.
+    //
+    // `Resolved` on a payload job is what the economy's `jobs.resolved` fact is
+    // about, so this command was a settlement lever: `+job/status <n>=resolved`
+    // released escrow on a payload that had never run, and `Resolved` -> `Denied`
+    // (terminal to terminal, so the reopen guard above let it through) took the
+    // answer back after money had already moved on it.
+    if job.payload.is_some() {
+        if status == JobStatus::Resolved {
+            return Err(CmdError::msg(format!(
+                "Job {id} carries a payload: it is resolved by +job/approve, which runs the \
+                 payload, and by nothing else."
+            )));
+        }
+        if job.status == JobStatus::Resolved {
+            return Err(CmdError::msg(format!(
+                "Job {id} carries a payload and is resolved; that is a fact about what was \
+                 applied and cannot be moved."
+            )));
+        }
     }
     let job = update_job(ctx, id, move |j| {
         j.status = status;

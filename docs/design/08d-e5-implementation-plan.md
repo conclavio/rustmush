@@ -506,7 +506,7 @@ default expiry 2 periods · history and pending-notice caps 32.
     never a failed homework assignment.
 20. Front attribution: progress must cite a specific front, opportunity, or operation.
 
-## 11. Open questions (defaults chosen)
+## 11. Open questions (defaults chosen — **accepted by the owner 2026-09-03**; all three are binding as written)
 
 1. `GRACE_PERIODS` 1 and `DELINQUENT_PERIODS` 2 on the cadence — three assessed periods from the
    first unsupported one to the story window.

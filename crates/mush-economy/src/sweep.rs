@@ -1072,6 +1072,8 @@ enum ContractStep {
 ///    id order, so a sixty-fifth contract would never be reached. The cursor makes
 ///    the pass a rotation, so every record is reached within one sweep of the pool.
 fn step_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
+    stamp_observed_conditions(ctx, now, ic_now);
+    republish_settlements(ctx, now);
     let clocks = Clocks::new(now, ic_now);
     let due: Vec<(crate::ids::ContractId, ContractStep)> = {
         let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
@@ -1196,6 +1198,179 @@ fn step_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
             }
             ContractStep::Collect => collect_draft(ctx, id),
         }
+    }
+    page_stale_contracts(ctx, now);
+}
+
+/// Stamp every live contract's deterministic conditions that hold but carry no
+/// observation yet (E4c verify fold, E5).
+///
+/// It runs **before** the due-list is computed, so an `After` anchored on a `Fact`
+/// sees its anchor on the same fire the fact becomes true. The stamp is not evidence:
+/// `condition_holds` re-evaluates the condition against the live world at settlement
+/// exactly as before, so a fact that stops holding still stops settling. Bounded by
+/// the same [`MAX_CONTRACTS_PER_SWEEP`] budget as everything else here.
+fn stamp_observed_conditions(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
+    let stamped: Vec<crate::contract::EconomicContract> = {
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
+        let providers = store.providers();
+        let custody = crate::custody::WorldCustody { w: ctx.w, providers };
+        let facts = crate::facts::WorldFacts { w: ctx.w, providers: store.facts() };
+        let world = api::WorldAuth { w: ctx.w };
+        let env = crate::engine::ValidateEnv {
+            auth: &world,
+            custody: &custody,
+            facts: &facts,
+            now,
+            ic_now,
+            next_hold_id: store.peek_next_hold(),
+        };
+        let snap = store.snapshot();
+        snap.contracts()
+            .filter(|c| {
+                matches!(
+                    c.state,
+                    crate::contract::ContractState::Active
+                        | crate::contract::ContractState::ReadyToSettle
+                        | crate::contract::ContractState::Disputed
+                )
+            })
+            .filter_map(|c| {
+                let mut next = c.clone();
+                crate::contract::stamp_observed(&mut next, snap, &env).then(|| {
+                    next.revision = next.revision.saturating_add(1);
+                    next
+                })
+            })
+            .take(MAX_CONTRACTS_PER_SWEEP)
+            .collect()
+    };
+    for c in stamped {
+        api::put_contract(ctx, c);
+    }
+}
+
+/// How many settlements one sweep fire re-announces to the observers (E4c verify
+/// fold, V2+V3+V5).
+pub const MAX_REPUBLISH_PER_SWEEP: usize = 8;
+
+/// Re-announce settled `Public` contracts that never reached the chronicle
+/// (E4c verify fold, V2 + V3 + V5).
+///
+/// Publication was best-effort in three separate ways, and they share one cure. The
+/// bridge's `mush_canon::commit` could return `None` — an exhausted id allocator, a
+/// ledger append the store refused — and the line was simply lost, with a `let _ =`
+/// where the error should have been. Boot's `finished_transition` moves a contract to
+/// `Settled` by writing the document directly, so no event is ever emitted and a
+/// settlement recovered at boot was *never* chronicled. And the replay guard read
+/// canon's RAM tail, which rolls.
+///
+/// The cure is [`EconomicContract::canon_published`]: a **durable** marker the bridge
+/// writes only after a commit succeeded. Anything settled, public, older than a sweep
+/// period and still unmarked is announced again — the bridge de-dupes on the marker,
+/// so a line that did land is never doubled, and one that did not is retried until it
+/// does.
+fn republish_settlements(ctx: &mut Ctx<'_>, now: i64) {
+    let due: Vec<(crate::ids::ContractId, crate::ids::TransactionId)> = {
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
+        let snap = store.snapshot();
+        snap.contracts()
+            .filter(|c| c.canon_published.is_none() && c.consent.visibility.is_public())
+            .filter_map(|c| match c.state {
+                crate::contract::ContractState::Settled { transaction } => {
+                    Some((c.id, transaction))
+                }
+                _ => None,
+            })
+            // **At least one sweep old.** A settlement that just happened has already
+            // been announced once, in its own step; re-announcing it on the very next
+            // fire would race the bridge's own marker write rather than recover from
+            // its failure.
+            .filter(|(_, tx)| {
+                store
+                    .transactions()
+                    .find(|t| t.id == *tx)
+                    .is_some_and(|t| now.saturating_sub(t.posted_at) >= crate::SWEEP_PERIOD_SECS)
+            })
+            .take(MAX_REPUBLISH_PER_SWEEP)
+            .collect()
+    };
+    for (id, transaction) in due {
+        tracing::info!(
+            contract = id.0,
+            transaction = transaction.0,
+            "economy: a public settlement has no chronicle line; announcing it again"
+        );
+        crate::observer::emit(ctx, &crate::record::EconomicEvent::ContractChanged {
+            id,
+            state: crate::record::ContractStateKind::Settled,
+            transaction: Some(transaction),
+        });
+    }
+}
+
+/// Page for a live contract that has made **no condition progress at all** for
+/// [`STALE_CONTRACT_AGE_SECS`] (E4c verify fold, E9).
+///
+/// A deadline is optional, and a contract without one that is waiting on evidence
+/// nobody will ever produce — a canon edge that was missed, a fact provider that was
+/// never wired, an attestor who left the game — waits silently forever with its
+/// escrow reserved. Nothing else on the ladder notices: `Draft` has its TTL,
+/// `Disputed` has its TTL, and *live and stuck* had neither. Progress is the newest
+/// stamp on any condition, or the contract's own creation when none has ever been
+/// made; [`page`] dedupes on the subject, so this says it once and renotifies on the
+/// ladder's own cadence.
+fn page_stale_contracts(ctx: &mut Ctx<'_>, now: i64) {
+    let stale: Vec<(crate::ids::ContractId, i64)> = {
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
+        store
+            .snapshot()
+            .contracts()
+            .filter(|c| {
+                matches!(
+                    c.state,
+                    crate::contract::ContractState::Active
+                        | crate::contract::ContractState::ReadyToSettle
+                )
+            })
+            .filter_map(|c| {
+                let progress = c
+                    .satisfied
+                    .iter()
+                    .flatten()
+                    .map(|a| a.at)
+                    .max()
+                    .unwrap_or(c.created_at)
+                    .max(c.created_at);
+                (now.saturating_sub(progress) > crate::STALE_CONTRACT_AGE_SECS)
+                    .then_some((c.id, progress))
+            })
+            .take(MAX_CONTRACTS_PER_SWEEP)
+            .collect()
+    };
+    for (id, progress) in stale {
+        let days = now.saturating_sub(progress) / 86_400;
+        page(
+            ctx,
+            EscalationKind::SettlementRefused,
+            EscalationSubject::Contract(id),
+            None,
+            format!(
+                "contract #{id} has been in force for {days} day(s) with no condition progress at \
+                 all; its escrow is reserved the whole time and nothing is going to change on its \
+                 own"
+            ),
+            vec![
+                format!("@contract/show #{id}"),
+                // `@contract/resolve` acts on a *disputed* contract, so the ladder
+                // says how to get there rather than recommending a command that
+                // would refuse.
+                format!("@contract/dispute #{id}"),
+                format!("@contract/resolve #{id}=settle <reason>"),
+                format!("@contract/resolve #{id}=refund <reason>"),
+            ],
+            now,
+        );
     }
 }
 

@@ -81,6 +81,7 @@ pub(crate) fn load_boot(
     ctx: &mut ModuleCtx<'_>,
     data: ModuleBootData,
     providers: &CustodyTable,
+    outcomes: &crate::contract::CanonOutcomeKinds,
 ) -> Result<EconomyStore, ModError> {
     // Unreplayable journal → fail the boot (never destructively "recover" money).
     if !scan_contiguity(&data.kv).is_empty() {
@@ -760,7 +761,7 @@ pub(crate) fn load_boot(
         // here (the world half needs a snapshot boot is still assembling) and
         // quarantine what it refuses; the escrow is untouched either way.
         if !c.state.is_terminal()
-            && let Err(e) = crate::contract::check_structure(&c)
+            && let Err(e) = crate::contract::check_structure(&c, outcomes)
         {
             quarantine = Some(format!(
                 "contract #{} could not settle as stored ({e}); its surface is quarantined",

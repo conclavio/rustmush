@@ -38,7 +38,8 @@ have their own adversarial pass and fold commit, and 08c §3.7 / §4.8 / §5.2 r
 | **E4a** | `mush-economy` (pure) | `29282fe`, fold `13f11d0` | `Hold`/`HoldOp`/`HoldEffect` + available-balance enforcement; clock/schedule/catch-up math; `Obligation` and `Contract` records with their pure state machines; the deterministic split; `ContractAuth`; `plan_hash` v3; `FactEval`, `ExternalRef` (the `CausalRef` rename), `reverify` |
 | **E4b1** | `mush-economy` module | `0805f5e`, fold `389c521` | holds + obligations live: persistence and boot, journal-derived `held_amount` on its own seq anchor, the **one economy sweep** tick, the graded escalation ladder, `post_with`/`PostAuth`, infallible `install_commit`, `@hold/*`, `@obligation/*`, `@econ/alerts\|ack`, faucet-funded obligations under a mint cap |
 | **E4b2** | `mush-economy` module | `e56c2a9`, fold `4972455` | contracts end to end: draft/offer/accept (escrow at accept)/attest/settle/dispute/cancel/expire, live re-verification, custody locks, `Lease`/`Collateral`, the sweep's contract step, `@contract/*`, the outcome table + roster lock + adjudicator, `EconomicVisibility::Audience`, and the plan-first terminal-transition rule |
-| **E4c** | `mush-economy` + `mush-org` + `mush-jobs` + `mush-server` | *(pending)* | the `FactProvider` seam (jobs implements it), the `CanonRecorded` attestation observer, `EconomyObserver` + compact events + the canon evidence bridge, `mush_org::audit`, `@econ/history` under the disclosure filter, `issue_title` for registered system principals; **one `mush-core` change** — `WorldEvent::CanonRecorded` gains `source` |
+| **E4c** | `mush-economy` + `mush-org` + `mush-jobs` + `mush-server` | `8873863`, fold *(uncommitted)* | the `FactProvider` seam (jobs implements it), the `CanonRecorded` attestation observer, `EconomyObserver` + compact events + the canon evidence bridge, `mush_org::audit`, `@econ/history` under the disclosure filter, `issue_title` for registered system principals; **two `mush-core` changes** — `WorldEvent::CanonRecorded` gains `source`, and (verify fold) `Outbox::pin_deferred` makes a terminal canon commit non-truncatable by a failing command |
+| **E4c verify fold** | economy + jobs + server + core + canon | *(uncommitted)* | three lenses' confirmed findings, each with a regression test (08c §6.2): canon attestors must be **producer-declared outcome kinds** with a mandatory source and a party in `entities`; `jobs.resolved` answers from an applied-payload marker; a missed canon edge is recoverable (`@econ/unfreeze`, activation re-scan, `@contract/resolve <id>=settle [reason]`); deterministic conditions carry an observed-at stamp so `After` can anchor on one; `issue_title` needs a live object and mints a title **generation**; the reservation-visible / contract-hidden rule; publication keyed on a durable `canon_published` marker with a sweep retry |
 
 Test tally after E3 (post-fold): **mush-org 46**, **mush-economy 157**, **mush-sim 72**,
 **mush-tactics 52**, **mush-faction 56**, **mush-server 62**; `cargo test --workspace --no-fail-fast` runs 2012 passing. The one
@@ -46,10 +47,12 @@ failing workspace test, `mushd::web_e2e::spa_and_healthz_are_served`, predates E
 `web/dist` build). `cargo fmt` is **not** applied anywhere in E3: the tree had 1334 rustfmt hunks at
 `d7f6707`, so CI's fmt step was already red before E3.
 
-Test tally after E4 (each cut post-fold): **mush-economy 386** — `e4a.rs` 83, `e4b1.rs` 61,
-`e4b2.rs` 59, `e4c.rs` 18, plus the E2/E3 files and the in-crate unit tests — **mush-jobs 26**
-(`e4c_facts.rs` 2), **mush-server 111** (`e4c_bridge.rs` 4), **mush-org 46**.
-`cargo test --workspace --no-fail-fast` runs **2472 passing, 0 failing** — the E3-era
+Test tally after E4 (each cut post-fold): **mush-economy 403** — `e4a.rs` 83, `e4b1.rs` 61,
+`e4b2.rs` 59, `e4c.rs` 35, plus the E2/E3 files and the in-crate unit tests — **mush-jobs 27**
+(`e4c_facts.rs` 3), **mush-server 118** (`e4c_bridge.rs` 11), **mush-org 46**.
+The E4c verify fold added **25**: 17 in `e4c.rs`, 7 in `e4c_bridge.rs`, 1 in `e4c_facts.rs`, all
+named `vf_<lens><n>_…`.
+`cargo test --workspace` runs **2497 passing, 0 failing** — the E3-era
 `mushd::web_e2e` failure is gone (it is `spa_if_built_and_healthz_are_served` now and tolerates an
 unbuilt `web/dist`). Both digest pins (E2 `9c917eee…`, E3-shaped `b780e3a0…`) are green in every
 cut. `cargo fmt` stays off, unchanged.
@@ -70,7 +73,13 @@ Wiring-frozen tables on `EconomyModule`, in the composition root's construction 
   `ContractChanged` carries the landed transaction id, which is the publication key.
 - `.with_title_issuers(vec![..])` (E4c) — the system principals `mush_economy::issue_title` will
   mint title for. **Empty today**; E5's `sys:wod.housing` is the first entry, and `@asset/title`
-  stays the staff path meanwhile.
+  stays the staff path meanwhile. The object must be live and non-`GOING`, and the key carries a
+  title **generation**, so a re-issue after a write-off mints rather than reporting `AlreadyPosted`.
+- `.with_canon_outcome_kinds(vec![..])` (E4c verify fold) — the canon kinds that count as a
+  **producer-declared outcome**. **Empty today, deliberately**: `scene.concluded` is a lifecycle
+  record any participant can produce, so a contract gated on one is a contract its payee can settle
+  alone. E6b registers `scene.outcome` here once `mush-scenes` can seal one under facilitator
+  authority; until then `@contract/offer` refuses every `canon:` attestor set.
 
 Plus: `mush_org::audit(ctx, OrgAction)` records an org-authority act that mutates no org state
 (`@econ/approve|deny` is the first caller), and `mush_economy::may_view_account` +
@@ -284,9 +293,13 @@ so a reader can see which cut answered what:
 - **Clocks + bounded catch-up** — E4a's schedule math and E4b1's one economy sweep; cadence clocks
   exist through persistence, boot and the sweep (no `@econ/cadence` verb yet — E5's).
 - **The disclosure filter** — E4c. `EconomicVisibility` is now **enforced for reads**:
-  `@econ/history` renders the viewer's own side in full, masks a counterparty they may not view,
-  omits `Staff` entries entirely, and shows a description only to a party; `@contract/show` and
-  `@hold/show` render through the same rule.
+  `@econ/history` renders the viewer's own side in full, collapses every counterparty they may not
+  view into one `other accounts` token (no ids, no amounts, no count), omits `Staff` entries except
+  the effect-only ones, and shows a description only to a party; `@contract/show`, `@contract/list`,
+  `@hold/show|list` and `@obligation/show|list` render through the same `mask_account` rule. The
+  verify fold added the rule that ties them together: **a reservation on an account is a fact its
+  viewers may see; the contract behind it is not**, so a `Staff`-visibility escrow shows as a
+  reservation with no purpose and no beneficiary to anybody outside that contract's class.
 - **Approval → org audit** — E4c's `mush_org::audit`; `@econ/approve|deny` append an entry naming
   the request id and the account scope.
 - Still open from that list, unchanged by E4: an `Organization.revision` bump op +

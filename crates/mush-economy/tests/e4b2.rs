@@ -892,22 +892,53 @@ fn a_dispute_freezes_the_escrow_and_unanimous_agreement_ends_it() {
     assert_eq!(bal(&tw, r.j_acct), 3_000);
 }
 
+/// Rewritten by the E4c verify fold (E4b). `@contract/resolve <id>=settle` now
+/// records a **staff attestation** on every unmet `Attestation` condition, which is
+/// the level-2 answer to evidence nobody can produce any more — a canon edge missed
+/// under a freeze, an attestor who left the game. What it emphatically does *not* do
+/// is decide a question of fact: a deterministic condition is still re-verified
+/// against the live world, and still refuses (D-E4-4).
 #[test]
 fn staff_resolve_settles_a_dispute_and_still_re_verifies() {
     let mut tw = boot();
     let r = run_rig(&mut tw, 3_000);
-    let id = offered_run(&mut tw, &r, 300);
+    let flat = thing(&mut tw, "flat");
+    ok(&mut tw, r.johnson, "@contract/draft Extraction");
+    let id = only_contract(&tw);
+    for who in [r.a, r.b, r.c] {
+        ok(&mut tw, r.johnson, &format!("@contract/party {id}=#{}", who.0));
+    }
+    ok(&mut tw, r.johnson, &format!("@contract/pay {id}={} 300", r.j_acct));
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/split {id}={} 333‰ {} 333‰ {} 333‰", r.a_acct, r.b_acct, r.c_acct),
+    );
+    ok(&mut tw, r.johnson, &format!("@contract/remainder {id}={}", r.j_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/condition {id}=attest party:#{}", r.johnson.0));
+    // The deterministic half: nobody holds title to the flat at all.
+    ok(&mut tw, r.johnson, &format!("@contract/condition {id}=title #{} #{}", flat.0, r.a.0));
+    ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
     accept_all(&mut tw, &r, id);
     ok(&mut tw, r.b, &format!("@contract/dispute {id}"));
 
-    // Unanimity is consent to settle, not evidence: nothing is attested, so a staff
-    // resolution re-verifies, refuses, and pays nobody (D-E4-4).
-    ok(&mut tw, GOD, &format!("@contract/resolve {id}=settle"));
-    assert_ne!(bal(&tw, r.a_acct), 99, "an unmet condition was paid out");
+    // Staff resolve attests the evidence condition — and settles nothing, because
+    // the title condition is a fact about the world and is false.
+    ok(&mut tw, GOD, &format!("@contract/resolve {id}=settle the fixer vanished"));
+    assert!(
+        !matches!(state(&tw, id), ContractState::Settled { .. }),
+        "a deterministic condition was overridden"
+    );
+    assert_ne!(bal(&tw, r.a_acct), 99, "an unmet deterministic condition was paid out");
     assert_eq!(held(&tw, r.j_acct), 300, "a refused resolution released the escrow");
+    // The staff attestation stands on the document, with the reason, forever.
+    let show = ok(&mut tw, GOD, &format!("@contract/show {id}"));
+    assert!(show.contains("the fixer vanished"), "the resolve reason is not on the record: {show}");
 
-    // With the evidence in hand it settles on the ordinary retry path.
-    ok(&mut tw, r.johnson, &format!("@contract/attest {id}=0"));
+    // Make the world true: the ordinary retry path settles it, on the evidence staff
+    // recorded and the fact the world now carries.
+    ok(&mut tw, GOD, &format!("@asset/title #{}=#{}", flat.0, r.a.0));
+    sweep_at(&mut tw, 100);
     assert!(matches!(state(&tw, id), ContractState::Settled { .. }));
     assert_eq!(bal(&tw, r.a_acct), 99);
 }
@@ -2165,10 +2196,10 @@ fn vf_m8_a_non_party_payer_is_neither_offerable_nor_bootable() {
     let mut c = contract(&tw, id);
     c.consent.terms.consideration[0].from = PrincipalId::Object(r.watcher);
     assert!(
-        matches!(mush_economy::check_structure(&c), Err(mush_economy::ContractError::Infeasible(_))),
+        matches!(mush_economy::check_structure(&c, &Default::default()), Err(mush_economy::ContractError::Infeasible(_))),
         "a payer who is not a party passed the structural check"
     );
-    assert!(mush_economy::check_structure(&contract(&tw, id)).is_ok());
+    assert!(mush_economy::check_structure(&contract(&tw, id), &Default::default()).is_ok());
 
     // …and a stored record carrying one is quarantined rather than left waiting for
     // money nobody can place.

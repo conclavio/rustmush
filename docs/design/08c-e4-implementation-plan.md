@@ -1343,14 +1343,15 @@ staff-visibility entries; approve/deny land in the org audit ledger.
 
 ### 6.1 As built (E4c)
 
-The cut connects the economy to the rest of the world. Six seams, one core change, and
-the read side of `EconomicVisibility` — which had been *recorded* since E2 and is
-enforced from here on. **24** tests across three files (`mush-economy/tests/e4c.rs`
-**18**, `mush-server/tests/e4c_bridge.rs` **4**, `mush-jobs/tests/e4c_facts.rs` **2**);
-`mush-economy` is **386**, and both digest pins (E2 `9c917eee…`, E3-shaped
+The cut connects the economy to the rest of the world. Six seams, **two** core changes
+(the second folded in after the verify — see below), and the read side of
+`EconomicVisibility` — which had been *recorded* since E2 and is enforced from here on.
+**49** tests across three files after the verify fold (`mush-economy/tests/e4c.rs`
+**35**, `mush-server/tests/e4c_bridge.rs` **11**, `mush-jobs/tests/e4c_facts.rs` **3**);
+`mush-economy` is **403**, and both digest pins (E2 `9c917eee…`, E3-shaped
 `b780e3a0…`) are green.
 
-**The one `mush-core` change, in full.** `WorldEvent::CanonRecorded` gains
+**The first `mush-core` change, in full.** `WorldEvent::CanonRecorded` gains
 `source: String` (`mush-core/src/module.rs`), `mush-canon`'s emitter passes
 `draft.source` through (`mush-canon/src/lib.rs`), and the one constructing test site
 (`mush-faction/tests/simulation.rs`) names the new field. Three files, four lines of
@@ -1473,6 +1474,99 @@ it and lives in the wrong crate for the economy to use. Moving it to `mush-core`
 second core change for a cosmetic gain, so the render prints the raw `posted_at`
 stamp and the move is E5's if anything else wants it.
 
+**Verify-fold deltas (2026-09-03).** The end-of-build adversarial verify ran three
+lenses over the cut; §6.2 records the outcome, and this is what the as-built above
+now says instead.
+
+- **A canon attestor must be a producer-declared outcome kind.**
+  `CanonOutcomeKinds` is a fourth wiring-frozen table
+  (`EconomyModule::with_canon_outcome_kinds`), checked by `check_structure` at
+  `@contract/offer` and at boot. `scene.concluded` is a *lifecycle* record any
+  participant can produce, so it is not on it — the server registers **nothing**
+  until E6b ships `scene.outcome` sealed under facilitator authority. The observer
+  additionally requires the record's `entities` to intersect (or act for) the
+  contract's own parties. §6's E6b handoff is rewritten accordingly: `scene.concluded`
+  never attests.
+- **`Canon { source }` is mandatory.** `parse_attestor` refuses `canon:<kind>` with no
+  source, `check_structure` refuses a stored one, and `/adjudicator` goes through the
+  same parser. A set naming no source was a wildcard over every record of its kind.
+- **`jobs.resolved` answers from an applied-payload marker.** `Job.payload_applied` is
+  stamped by `+job/approve` in the same batch as the handler's own mutations;
+  `+job/status` refuses `=resolved` on a payload job and refuses any move off
+  `Resolved`. A status is a state; the marker is a fact about the past.
+- **Canon evidence is re-scannable.** `EconomyStore.canon_tail` (RAM-only, 64 records)
+  remembers every `CanonRecorded` the world announced, including while frozen;
+  `@econ/unfreeze` and a contract's **activation** re-scan it, and
+  `@contract/resolve <id>=settle [reason]` records an `AttestorRef::StaffOverride` on
+  every unmet `Attestation` condition (canon sets included) as the level-2 answer past
+  the tail. Deterministic conditions are still re-verified and still refuse.
+- **Deterministic conditions carry an observed-at stamp.** `stamp_observed` fills the
+  satisfaction slot of a `Fact`/`DepositInto`/`TitleHeld`/`Before`/`After` the first
+  sweep that finds it holding, with `AttestorRef::Observed { clock }` on the clock the
+  anchoring `After` will compare against — so "pay 60 s after the job is approved"
+  matures. The condition is still re-evaluated live at settlement.
+- **`issue_title` checks the world and the generation.** The object must be a live,
+  non-`GOING` world object (the staff path's rule), and the idempotency key is
+  `title.issue/{object}/{n}` where `n` counts prior `Created` title effects in the
+  journal; the engine lets a **written-off** title be re-issued (with no live
+  encumbrances), so issue → write-off → re-issue mints the next generation instead of
+  reporting `AlreadyPosted` and minting nothing.
+- **`with_facts` refuses duplicate provider namespaces** (a wiring panic —
+  composition-root data), and **`MAX_OBSERVER_SETTLEMENTS_PER_EVENT`** (8) bounds how
+  many contracts one canon record settles inside the observer; past it the attestation
+  still stands and the sweep finishes the job.
+- **`STALE_CONTRACT_AGE_SECS`** (7 d, §9): a live contract with no condition progress
+  for that long is paged at level 2, deduped on the subject, recommending
+  `@contract/dispute` then `@contract/resolve`.
+- **The observer depth guard is RAII and loud.** The counter is thread-local behind a
+  drop guard (a panicking observer used to leave it raised forever, silently dropping
+  every event afterwards), and hitting `MAX_OBSERVER_DEPTH` now pages level 2 with the
+  contract whose emission was dropped as the subject.
+- **`Outbox::pin_deferred` — the cut's second and last `mush-core` change.**
+  `mush_canon::commit` pins the deferred prefix at its end, and `run_handler`'s abort
+  path truncates only past the pin. Canon is terminal by contract, so nothing that rode
+  with it may be dropped when the command later returns `Err`; RAM is not rolled back,
+  and dropping those writes left the store behind a world that had already moved. Two
+  files in `mush-core` (`output.rs` — a field, `pin_deferred`, `deferred_pin`, and a
+  `max` in `truncate_deferred`; `cmd.rs` — a comment), one line in `mush-canon`.
+- **Publication is no longer best-effort.** `EconomicContract.canon_published:
+  Option<SmolStr>` (`#[serde(default)]`) is written by `mush_economy::mark_canon_published`
+  — the bridge's one call back into the economy, and the only thing it may write — after
+  a `mush_canon::commit` that **succeeded**. The bridge de-dupes on that marker rather
+  than canon's rolling RAM tail; a failed commit logs `tracing::error!` and leaves it
+  unset, and the sweep re-emits `ContractChanged { Settled }` for `Public` contracts
+  whose marker is unset and whose landing is at least one sweep old
+  (`MAX_REPUBLISH_PER_SWEEP` = 8). That is also what finally chronicles a settlement
+  boot's `finished_transition` healed, which emits no event at all. The delinquency
+  draft is keyed `economy.obligation:{id}:{missed_total}`, so a second delinquency on
+  one lease is a second line.
+- **The reservation-visible / contract-hidden rule** (D3): *a reservation on an account
+  is a fact its viewers may see; the contract behind it is not.* For an
+  `Escrow { contract }` hold whose contract is `Staff`-visibility (or whose viewer is
+  outside its disclosure class), a non-staff `@hold/show` prints the amount and state
+  with no purpose line and no beneficiary, and `@econ/history` relaxes rule 4 for an
+  **effect-only** entry (the placement is shown; its description is not).
+  `@obligation/show|list` mask both account ids through `mask_account`;
+  `@contract/deliver … obligation` resolves both accounts through the `hidden_text`
+  loop first (an account a **party** owns counts as known, or a lease's rent would be
+  undraftable by anybody but staff); `@econ/history`'s `n` is validated to `1..=20`
+  rather than clamped; a viewer admitted to a non-`Public` contract only through
+  `economy.account.view` on its scope gets `Notice`, and a `Notice` viewer's `/list`
+  drops the party count while `render_state` drops the settlement transaction id.
+- **Masked-line collapse** (D4). Every masked counterparty on one `@econ/history` entry
+  collapses into a single `other accounts` token — the finding asked for consecutive
+  runs; collapsing them all is strictly stronger, because a run whose masked lines
+  straddle the viewer's own would otherwise still publish "there are others on both
+  sides". The accepted residual limit is the **two-line** case, where the mirror amount
+  is arithmetic rather than disclosure.
+- **Doc-only (E11/E12).** Boot's `finished_transition` restores *state*, not evidence:
+  it reads a deterministic key out of the idempotency index and moves the contract to
+  the transition that already posted, and it never fabricates an attestation, so it has
+  no money consequence beyond the one the journal already carries. And `FactProvider`'s
+  contract is stated on the trait: **never panic, never block, composition-root
+  trusted** — it is consulted inside validation, on the world task, with the store
+  borrowed.
+
 **Handoffs.**
 
 - **E5** takes the fact seam's first real registration beyond jobs and the title
@@ -1481,15 +1575,22 @@ stamp and the move is E5's if anything else wants it.
   passes an empty list on purpose (`@asset/title` stays the staff path until a ruleset
   owns one). `@econ/cadence` and the `Delinquent` consequence hook are unchanged from
   §4.7's handoff.
-- **E6b** gates on the attestation seam and now has it: all four of 08e answer 6's
-  routes go through the one `TypedCondition` alphabet — a **sealed scene outcome** is a
-  typed canon record with `source: scene:{uid}` matched by an
-  `Attestation { by: Canon { kind, source } }` condition (`mush-scenes` already commits
-  `scene.concluded` that way, so E6b needs no new producer); an **authorized
-  attestation** is `@contract/attest` under a `Party`/`Capability`/`Staff` set; a
-  **deterministic condition** is `Fact`/`TitleHeld`/`DepositInto`/`Before`/`After`; a
-  **composite** is several of them on one contract. Prose settles nothing: a canon
-  record with no matching typed condition attests nothing at all, whatever it says.
+- **E6b** gates on the attestation seam and now has it — and, after the verify fold,
+  **owes it a producer.** All four of 08e answer 6's routes go through the one
+  `TypedCondition` alphabet: a **sealed scene outcome** is a typed canon record with
+  `source: scene:{uid}` matched by an `Attestation { by: Canon { kind, source } }`
+  condition; an **authorized attestation** is `@contract/attest` under a
+  `Party`/`Capability`/`Staff` set; a **deterministic condition** is
+  `Fact`/`TitleHeld`/`DepositInto`/`Before`/`After`; a **composite** is several of them
+  on one contract. Prose settles nothing: a canon record with no matching typed
+  condition attests nothing at all, whatever it says.
+  **`scene.concluded` never attests** (fold E1). It is a *lifecycle* record — any
+  participant can conclude a scene — so a payee gated on one could seal their own
+  settlement. E6b must build **`scene.outcome`**: outcome-bearing, sealed under
+  facilitator/adjudicator authority, naming its subject at offer, and registered
+  through `EconomyModule::with_canon_outcome_kinds`. The server registers **no** canon
+  outcome kind until it ships, so every `canon:` attestor set is refused at
+  `@contract/offer` in the meantime — fail-closed, and visible to whoever drafts it.
 - **E7 / `mush-sim` / `mush-tactics`** register the doc 10 §15 boundary facts as
   `FactProvider`s. The kinds the plan names, so they are a registration rather than a
   rediscovery: `sim.journey.arrived`, `sim.sortie.flown`, `sim.station.served`
@@ -1504,6 +1605,61 @@ stamp and the move is E5's if anything else wants it.
   economy learning about channels.
 
 ---
+
+### 6.2 E4c verify outcome
+
+Three lenses ran at end of build (2026-09-03) — the **disclosure filter** (D1–D8),
+**settlement by evidence** (E1–E12), and **events / the canon bridge / durability of
+emission** (V1–V6). Every confirmed finding is folded above with a regression test
+named `vf_<lens><n>_…` in a `// ---- E4c verify fold ----` section
+(`mush-economy/tests/e4c.rs` 17, `mush-server/tests/e4c_bridge.rs` 7,
+`mush-jobs/tests/e4c_facts.rs` 1).
+
+**Disclosure.** The cut enforced `EconomicVisibility` on the pages it was written for
+and left three side doors: `@contract/deliver … obligation` answered three
+distinguishable messages for an id (an account existence *and* faucet oracle, D1);
+`@obligation/show|list` printed both account ids raw to anybody who could view either
+one (D2); and `@hold/show` handed a `Staff`-visibility contract's id and beneficiary
+to exactly the people `@contract/show` had just been taught to omit it from (D3). The
+smaller three were arity (one `another account` per hidden line counted the split, D4),
+class (an `economy.account.view` auditor read the full terms, D5; a notice viewer read
+the party count and the settlement transaction id, D6), and shape (`n` clamped, so `0`
+and `banana` were distinguishable, D8). The bridge named every party of a lease's
+contract on a delinquency line (D7); it names the debtor now.
+
+**Evidence.** The HIGH findings were all one shape — *something that is not an outcome
+was being read as one.* `scene.concluded` is a lifecycle record a payee can produce
+alone (E1); `Canon { source: None }` accepted every record of its kind (E2); and
+`jobs.resolved` read a **status** staff can set by hand rather than the fact that a
+payload ran (E3). Below them, evidence that arrived at the wrong moment was
+unrecoverable (E4), an `After` anchored on a deterministic condition never matured
+because a deterministic condition never filled its slot (E5), `issue_title` minted
+title for any `ObjId` (E6) and silently minted nothing after a write-off (E7), a
+duplicate provider namespace shadowed in silence (E8), a contract could wait forever
+without anybody being told (E9), and one canon record could settle an unbounded number
+of contracts inside a synchronous observer (E10).
+
+**Events and durability.** A command that returned `Err` after committing canon dropped
+canon's own append, the settlement's journal chunk and the contract document while RAM
+kept all three (V1) — the cut's second `mush-core` change, `Outbox::pin_deferred`.
+Publication was best-effort in three ways that share one cure (V2 + V3 + V5): a failed
+commit was lost behind a `let _ =`, a boot-healed settlement emitted no event at all,
+and the replay guard read a RAM tail that rolls. A second delinquency on one lease read
+its own first line and said nothing (V4). And the observer's depth counter was not
+panic-safe, so four panics silenced every economic event in the process, with the bound
+itself logged and never paged (V6).
+
+**Handoffs out of the fold.**
+
+- **E6b** builds `scene.outcome` — a typed, outcome-bearing canon record sealed under
+  **facilitator/adjudicator authority**, named at offer — and registers it through
+  `EconomyModule::with_canon_outcome_kinds`. `scene.concluded` never attests; a run
+  gated on one is refused at `@contract/offer` today.
+- **E7 / `mush-sim` / `mush-tactics`** must answer their `FactProvider`s from **applied
+  markers**, never from status: `jobs.resolved` reads `payload_applied`, and a sortie,
+  journey or salvage fact has to name the moment the domain journal recorded the effect,
+  not the state a record happens to be in now. A provider that can only report status
+  should answer `None`.
 
 ## 7. Build discipline
 
@@ -1582,6 +1738,9 @@ owner says so. `cargo fmt` stays off until the pending reformat lands.
 `MAX_CONTRACTS_PER_SWEEP` 64 (E4b2) ·
 `MAX_DELIVERABLES` 16 · `MAX_SHARES` 32 · `MAX_OPEN_CONTRACTS_PER_ISSUER` 16 ·
 `MAX_LIVE_CONTRACTS_PER_PARTY` 32 · `MAX_SETTLE_ATTEMPTS` 8 · `DRAFT_TTL` 7 d · `DISPUTE_TTL` 3 d ·
+`MAX_OBSERVER_DEPTH` 4 (E4c) · `MAX_OBSERVER_SETTLEMENTS_PER_EVENT` 8 (E4c fold) ·
+`MAX_REPUBLISH_PER_SWEEP` 8 (E4c fold) · `CANON_TAIL` 64 (E4c fold) ·
+`STALE_CONTRACT_AGE_SECS` 7 d (E4c fold) · `HISTORY_CAP` 20 (E4c, and `n` is validated to 1..=20) ·
 `ESCALATION_WINDOW` 7 d · `ESCALATION_RENOTIFY` 1 h, then daily · `MAX_OBLIGATION_HISTORY` 32 ·
 hold/approval/escalation GC retention 7 d after terminal · list cap 20.
 
@@ -1631,6 +1790,28 @@ invariants with the reachability argument recorded), keeping the custody move as
 act; a regression test drives a stub provider that reenters and proves the assertion, not a desync,
 is what fires. `mush-org`'s split already runs its fallible check before any mutation and is the
 shape to match.
+**K3 review (2026-09-03).** Re-asked at the end of the E4c verify fold, with the
+records as built: **do not migrate `obligation:{id}` / `contract:{id}` to K2 state
+families yet.** Three concrete blockers, none of them a matter of taste. (1) A K2
+bundle carries one state family's write set; E4's terminal steps do not — a settlement
+is a **journal append plus companion documents** (the contract, its holds, its
+accounts) in one batch, and `post_with_companions` exists precisely because the
+evidence and the money it released must be one durable write. (2) `Ctx` has no family
+**read** path, so boot's reconciliation pass and the sweep — both of which scan every
+stored obligation and contract — would go blind the day the documents moved. (3) The
+K3 lane refuses to run behind an unacknowledged legacy seal, and E4's records are
+written by legacy K0-lane handlers today. The migration is unblocked by three things,
+in this order: **mixed write sets** (a bundle that can carry a ledger append and
+companion docs), a **`Ctx` family read path**, and the **seal folded into the bundle**.
+It is then still an explicit **owner decision**, not a mechanical port, because the
+journal would stop being sole authority for money-adjacent truth — which is the one
+property every invariant in §3.3 is anchored to. Recorded alongside it: the
+**pre-existing E0 hazard** that a batch dropped deterministically only ever logs an
+unsealed journal chunk and the non-ledger module ops, so a lost write is visible as a
+gap rather than as an error — E4's contract, obligation and escalation documents ride
+that batch and inherit it. Fixing that belongs to K's rebase, with the ledger and the
+module ops sealed together.
+
 `mush_core::ScopedIdempotencyKey`/`IdempotencyScope` (`action.rs:374-426`) exist but are ingress/
 gateway machinery; the sweep's server-internal deterministic keys stay `IdempotencyKey` (optional
 future alignment, not required). `mush-contract-tests` hosts only the toy `focus/brace/guarded`

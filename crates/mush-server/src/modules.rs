@@ -142,7 +142,14 @@ pub fn server_modules_with(
             // `@asset/title` stays the staff path meanwhile.
             .with_facts(vec![Arc::new(mush_jobs::JobsFactProvider)])
             .with_observers(vec![Arc::new(crate::econ_canon::CanonEvidenceBridge)])
-            .with_title_issuers(Vec::new()),
+            .with_title_issuers(Vec::new())
+            // E4c verify fold (E1): the canon kinds that count as a
+            // **producer-declared outcome**. Deliberately empty — `scene.concluded`
+            // is a lifecycle record any participant can produce, so a payee gated on
+            // one could seal their own settlement. E6b registers `scene.outcome`
+            // here once `mush-scenes` can seal one under facilitator authority;
+            // until then every `canon:` attestor set is refused at `@contract/offer`.
+            .with_canon_outcome_kinds(Vec::new()),
         ),
         Box::new(mush_mail::MailModule),
         Box::new(mush_jobs::JobsModule::new()),

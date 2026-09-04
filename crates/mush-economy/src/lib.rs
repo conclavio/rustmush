@@ -152,7 +152,8 @@ pub use clock::{
     advance_cadence, advance_cadence_manual, cadence_elapsed, due_periods, reanchor,
 };
 pub use contract::{
-    Acceptance, Attestation, AttestorRef, AttestorSet, ConsentSurface, Consideration,
+    Acceptance, Attestation, AttestorRef, AttestorSet, CanonOutcomeKinds, ConsentSurface,
+    Consideration,
     ContractAuth, ContractError, ContractPurpose, ContractRoles, ContractState, ContractTerms,
     DISPUTE_TTL_SECS, DRAFT_TTL_SECS, Deliverable, DepositRecord, EconomicContract, EvidenceKind,
     ExpenseTreatment, Expiry, MAX_AGREEMENTS, MAX_AMENDMENTS, MAX_CONDITIONS,
@@ -160,7 +161,7 @@ pub use contract::{
     MAX_DELIVERABLES, MAX_DEPOSITS, MAX_LIVE_CONTRACTS_PER_PARTY, MAX_OPEN_CONTRACTS_PER_ISSUER,
     MAX_OUTCOMES, MAX_PARTIES, MAX_SETTLE_ATTEMPTS, MAX_SHARES, ObligationTemplate, OutcomeTerms,
     PERMILLE, PartyAgreement, PayoutShare, PendingKind, PendingTerminal, QualifyingEscrow,
-    Readiness, Resolution, Share,
+    Readiness, Resolution, STALE_CONTRACT_AGE_SECS, Share,
     TypedCondition,
     activate_key, activation_asset_ops, apply_outcome, apply_split, canon_set_accepts,
     canonical_visibility,
@@ -169,7 +170,7 @@ pub use contract::{
     contract_encumbrance,
     forfeit_key, forfeit_plan, outcome_conditions, principal_key, qualifying_escrow, refund_key,
     readiness, refund_plan, release_asset_ops, resolve_outcome, reverify, settle_key,
-    settlement_plan,
+    settlement_plan, stamp_observed,
 };
 pub use obligation::{
     DEFAULT_GRACE_PERIODS, ForgiveCause, GracePolicy, MAX_GRACE_PERIODS, MAX_OBLIGATION_HISTORY,
@@ -193,12 +194,16 @@ pub use contract_live::may_view_contract;
 
 // E4c — facts, events, evidence.
 pub use facts::{FactProvider, FactState, FactTable, WorldFacts};
-pub use observer::{EconomyObserver, MAX_OBSERVER_DEPTH, ObserverTable};
+pub use attest::MAX_OBSERVER_SETTLEMENTS_PER_EVENT;
+pub use module::CANON_TAIL;
+pub use observer::{EconomyObserver, MAX_OBSERVER_DEPTH, ObserverTable, observer_depth};
+pub use sweep::MAX_REPUBLISH_PER_SWEEP;
 
 // E2b/E3b1 public surface.
 pub use api::{
     META_KEY, ObligationSpec, PostOutcome, account_key, approval_key, asset_key, cadence_key,
     contract_key, create_system_obligation, create_vault, hold_key, instrument_key, issue_title,
+    mark_canon_published,
     obligation_key as obligation_doc_key, open_account, post, post_capability, register_instrument,
     reverse, set_account_approval, set_account_status, set_asset_frozen, set_economy_frozen,
     set_vault_status, vault_key,

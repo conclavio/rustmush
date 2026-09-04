@@ -148,6 +148,7 @@ pub fn open_job(ctx: &mut Ctx<'_>, spec: OpenJob) -> Result<u64, String> {
         tags: spec.tags,
         comments,
         payload: spec.payload,
+        payload_applied: None,
         opened_at: now,
         updated_at: now,
     };

@@ -88,6 +88,14 @@ pub const DRAFT_TTL_SECS: i64 = 7 * 86_400;
 /// How long a `Disputed` contract waits for unanimous party agreement before a
 /// level-2 escalation (§9).
 pub const DISPUTE_TTL_SECS: i64 = 3 * 86_400;
+/// How long a **live** contract may go with no condition progress at all before the
+/// sweep pages a human (§9, E4c verify fold E9).
+///
+/// A contract waiting forever was silent: escrow reserved, nobody told, no deadline
+/// (a deadline is optional), and the only trace a `@contract/list` nobody runs. The
+/// page is level 2 and deduped like every other, and it recommends
+/// `@contract/resolve` — the command that can actually end it.
+pub const STALE_CONTRACT_AGE_SECS: i64 = 7 * 86_400;
 /// Permille denominator — a `Share::Permille` is out of this.
 pub const PERMILLE: u32 = 1000;
 
@@ -286,12 +294,32 @@ pub enum AttestorSet {
     /// cite a **specific** front/opportunity/operation, so `kind` alone is not a
     /// match key (§6.2).
     Canon {
-        /// The canon event kind.
+        /// The canon event kind. It must be a **producer-declared outcome kind**
+        /// ([`CanonOutcomeKinds`], E4c verify fold E1): a lifecycle record any
+        /// participant can emit — `scene.concluded` — is not an outcome, and a payee
+        /// who can produce one alone could manufacture their own settlement.
         kind: SmolStr,
-        /// The specific source it must name; `None` accepts any source of that kind.
+        /// The specific source it must name. **Mandatory** since the E4c verify fold
+        /// (E2): `None` was a wildcard over every record of that kind, which is the
+        /// broad match E5's owner answer 20 exists to refuse. The field keeps its
+        /// `Option` shape so records written before the fold still deserialize —
+        /// [`check_structure`] refuses them.
         source: Option<SmolStr>,
     },
 }
+
+/// The wiring-frozen set of canon kinds that count as a **producer-declared
+/// outcome** (E4c verify fold, E1; 08e answer 6).
+///
+/// `mush_canon` records *lifecycle* as readily as it records outcomes:
+/// `scene.concluded` says a scene ended, and any participant can end a scene. A
+/// contract whose settlement cites one is a contract its payee can settle alone. So
+/// a canon attestor set names a kind from this table or it is refused at `Offer`,
+/// and the table is composition-root data ([`crate::EconomyModule::with_canon_outcome_kinds`])
+/// — never something a command, a document or a grant can add to. The server
+/// registers nothing until E6b ships `scene.outcome`, sealed under facilitator
+/// authority.
+pub type CanonOutcomeKinds = std::collections::BTreeSet<SmolStr>;
 
 /// Who actually attested.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -318,6 +346,36 @@ pub enum AttestorRef {
     Fact(ExternalRef),
     /// The clock itself (a `Before`/`After` condition).
     Clock,
+    /// **Observed holding** — the stamp a sweep or an attest step writes the first
+    /// time it finds a *deterministic* condition (`Fact`/`DepositInto`/`TitleHeld`/
+    /// `Before`/`After`) true (E4c verify fold, E5).
+    ///
+    /// It is not evidence and confers no authority: the condition is re-evaluated
+    /// live at settlement exactly as before. Its only job is to give an
+    /// [`TypedCondition::After`] an anchor to count from, because before the fold a
+    /// deterministic condition never filled its slot and "pay 60 s after the job is
+    /// approved" could therefore never mature.
+    Observed {
+        /// The clock `Attestation::at` is expressed on.
+        clock: EconomicClock,
+    },
+    /// A **staff resolution** of a disputed contract (`@contract/resolve <id>=settle`,
+    /// E4c verify fold, E4b).
+    ///
+    /// It satisfies whatever attestor set the condition names, canon sets included,
+    /// which is exactly why it is a separate variant and not a `Principal`: the
+    /// override is visible on the document, carries the staffer and their reason
+    /// forever, and can never be confused with an ordinary party or capability
+    /// attestation. It is the level-2 answer to E4's edge-triggered evidence — a
+    /// canon record that landed while the economy was frozen, a provider that was
+    /// never wired — and it moves no deterministic condition: those are still
+    /// re-verified at settlement and still refuse.
+    StaffOverride {
+        /// The staffer who resolved it.
+        by: PrincipalId,
+        /// The reason they gave.
+        reason: SmolStr,
+    },
 }
 
 /// One recorded satisfaction of one condition.
@@ -678,6 +736,18 @@ pub struct EconomicContract {
     /// sweep pages on. `None` on a contract that has never been disputed.
     #[serde(default)]
     pub disputed_at: Option<i64>,
+    /// The chronicle line this contract's settlement became, when it became one
+    /// (E4c verify fold, V2+V3+V5) — `canon:{id}`, written by
+    /// [`crate::mark_canon_published`] after the bridge's commit **succeeded**.
+    ///
+    /// It replaces the bridge's RAM-tail replay guard with a **durable** one, and it
+    /// is what makes publication more than best-effort: a settlement of a `Public`
+    /// contract whose marker is still unset after a sweep period is re-announced, so
+    /// a canon commit that failed (an exhausted id allocator, an unsafe append) is
+    /// retried, and a settlement finished by boot's `finished_transition` — which
+    /// emits no event at all — is chronicled at last.
+    #[serde(default)]
+    pub canon_published: Option<SmolStr>,
     /// Whether the roster is frozen (08e answers 5/7). The **first acceptance**
     /// locks it: a party who has funded escrow agreed to a specific set of
     /// counterparties and a specific set of shares, and adding a runner afterwards
@@ -1267,7 +1337,25 @@ fn account_instrument(
 /// anchors, a clock nothing can resolve, an infeasible split, a payer who is not a
 /// party — must be quarantined at boot rather than left holding escrow forever. The
 /// world-dependent half ([`check_offerable`]) needs a snapshot boot is still building.
-pub fn check_structure(c: &EconomicContract) -> Result<(), ContractError> {
+///
+/// `outcomes` is the wiring-frozen [`CanonOutcomeKinds`] table (E4c verify fold, E1):
+/// a `Canon` attestor set naming a kind outside it is refused here, at `Offer`, where
+/// a human can still fix the draft.
+pub fn check_structure(
+    c: &EconomicContract,
+    outcomes: &CanonOutcomeKinds,
+) -> Result<(), ContractError> {
+    check_structure_basic(c)?;
+    check_canon_sets(c, outcomes)
+}
+
+/// The **world-free, table-free** half of [`check_structure`].
+///
+/// [`check_offerable`] and every settlement/forfeit plan re-run this and *not* the
+/// canon-kind rule, deliberately: a live contract must never be stranded because the
+/// composition root's outcome table changed under it. The table is checked once, at
+/// `Offer`, where a human can still fix the draft.
+fn check_structure_basic(c: &EconomicContract) -> Result<(), ContractError> {
     let consent = &c.consent;
     if consent.parties.len() > MAX_PARTIES {
         return Err(ContractError::TooLarge("too many parties"));
@@ -1440,11 +1528,50 @@ pub fn check_structure(c: &EconomicContract) -> Result<(), ContractError> {
     Ok(())
 }
 
+/// E4c verify fold, E1 + E2: every `Canon` attestor set on the surface must cite a
+/// **producer-declared outcome kind** and a **specific source**.
+///
+/// A lifecycle record any participant can emit — `scene.concluded` — is not an
+/// outcome, and a set naming no source is a wildcard over every record of that kind.
+/// Between them, a payee who can conclude a scene could manufacture their own
+/// settlement, which is exactly what 08e answer 6 refuses.
+fn check_canon_sets(
+    c: &EconomicContract,
+    outcomes: &CanonOutcomeKinds,
+) -> Result<(), ContractError> {
+    for set in c
+        .consent
+        .conditions
+        .iter()
+        .filter_map(|con| match con {
+            TypedCondition::Attestation { by } => Some(by),
+            _ => None,
+        })
+        .chain(c.consent.adjudicator.iter())
+    {
+        if let AttestorSet::Canon { kind, source } = set {
+            if source.is_none() {
+                return Err(ContractError::Infeasible(
+                    "a canon attestor must name the specific source it cites",
+                ));
+            }
+            if !outcomes.contains(kind) {
+                return Err(ContractError::Infeasible(
+                    "that canon kind is not a declared outcome kind, so it settles nothing",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Whether **anyone at all** could ever qualify for this attestor set (A3).
 #[must_use]
 fn attestor_satisfiable(set: &AttestorSet) -> bool {
     match set {
         AttestorSet::Capability { scope, .. } => scope.is_some(),
+        // A canon set with no source is a wildcard, not an unsatisfiable set; it is
+        // refused for that reason a few lines above, with its own message.
         AttestorSet::Party(_) | AttestorSet::Staff | AttestorSet::Canon { .. } => true,
     }
 }
@@ -1458,7 +1585,7 @@ pub fn check_offerable(
     c: &EconomicContract,
     snapshot: &EconomySnapshot,
 ) -> Result<(), ContractError> {
-    check_structure(c)?;
+    check_structure_basic(c)?;
     let consent = &c.consent;
     // Every account exists, is active, and holds ONE instrument: there is no
     // implicit exchange in this economy, so a mixed-instrument contract could never
@@ -1562,6 +1689,13 @@ pub fn reverify(
 /// smuggling contract.
 #[must_use]
 fn attestation_matches(att: &Attestation, set: &AttestorSet, env: &ValidateEnv<'_>) -> bool {
+    // A staff resolution stands against every set (E4c verify fold, E4b): it is the
+    // documented level-2 answer to evidence that can no longer be produced, and it is
+    // written by exactly one command, on a Disputed contract, by a staffer, with a
+    // reason that stays on the record.
+    if matches!(&att.by, AttestorRef::StaffOverride { .. }) {
+        return true;
+    }
     match set {
         AttestorSet::Party(p) => matches!(&att.by, AttestorRef::Principal(a) if a == p),
         AttestorSet::Capability { .. } | AttestorSet::Staff => {
@@ -1657,6 +1791,73 @@ pub fn condition_holds(
             }
         }
     }
+}
+
+/// Whether this condition kind is **deterministic** — decided by the world and the
+/// clock rather than by somebody's word (08e answer 6's third route).
+#[must_use]
+fn is_deterministic(cond: &TypedCondition) -> bool {
+    !matches!(cond, TypedCondition::Attestation { .. })
+}
+
+/// Stamp every deterministic condition that **holds right now and carries no stamp
+/// yet** with [`AttestorRef::Observed`] (E4c verify fold, E5). Returns whether
+/// anything changed.
+///
+/// A deterministic condition never filled its satisfaction slot, so an
+/// [`TypedCondition::After`] anchored on one had nothing to count its delay from and
+/// "pay 60 s after the job is approved" could never mature. The stamp is an
+/// **observation**, not evidence: `condition_holds` still re-evaluates the condition
+/// against the live world at settlement, so a fact that stops holding still stops
+/// settling. Written **once**, like every other attestation (E4b2 fold M5), so the
+/// anchor cannot be pushed forward.
+///
+/// The clock is the one the anchoring `After` will compare on — two stamps are
+/// comparable only on the same clock (doc 09 §2.5) — and `RealUtc` when nothing
+/// anchors on it.
+pub fn stamp_observed(
+    c: &mut EconomicContract,
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+) -> bool {
+    if c.satisfied.len() != c.consent.conditions.len() {
+        return false;
+    }
+    let clocks = Clocks::new(env.now, env.ic_now);
+    let mut wrote = false;
+    for i in 0..c.consent.conditions.len() {
+        if !c.consent.conditions.get(i).is_some_and(is_deterministic) {
+            continue;
+        }
+        if c.satisfied.get(i).is_some_and(Option::is_some) {
+            continue;
+        }
+        if !condition_holds(c, i, snapshot, env) {
+            continue;
+        }
+        let clock = c
+            .consent
+            .conditions
+            .iter()
+            .find_map(|cond| match cond {
+                TypedCondition::After { condition, clock, .. } if *condition == i => Some(*clock),
+                _ => None,
+            })
+            .unwrap_or(EconomicClock::RealUtc);
+        // A clock this engine cannot resolve stamps nothing: an anchor nobody can
+        // place is worse than no anchor at all.
+        let Some(at) = clocks.now_on(clock, snapshot, env.now) else { continue };
+        if let Some(slot) = c.satisfied.get_mut(i) {
+            *slot = Some(Attestation {
+                by: AttestorRef::Observed { clock },
+                at,
+                clock,
+                source: SmolStr::new_static("observed"),
+            });
+            wrote = true;
+        }
+    }
+    wrote
 }
 
 /// Where a live contract stands right now.

@@ -189,7 +189,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @contract/remainder <id>=<acct>\n\
                    @contract/condition <id>=attest <who> | deposit <obj> <vault> | title <obj> <principal>\n\
                    \x20                    | fact <provider> <kind> <id> | before <secs|ic:secs> | after <n> <delay>\n\
-                   \x20  <who> = party:<principal> | cap:<capability>:<scope> | staff | canon:<kind>[:<source>]\n\
+                   \x20  <who> = party:<principal> | cap:<capability>:<scope> | staff | canon:<kind>:<source>\n\
                    \x20  `title` takes a bare <principal> (#123, org:Name) — no party: prefix\n\
                    @contract/deadline <id>=<secs|ic:secs> [refund|forfeit=<acct>|dispute]\n\
                    @contract/visibility <id>=parties|staff|public|audience <principal> … [announce=yes]\n\
@@ -207,7 +207,10 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @contract/dispute <id>                     a PARTY (or staff); freezes the escrow\n\
                    @contract/agree <id>=settle|refund         a PARTY; unanimity ends a dispute\n\
                    @contract/cancel <id>                      the ISSUER (Draft/Offered) or staff\n\
-                   @contract/resolve <id>=settle|refund       staff\n\
+                   @contract/resolve <id>=settle|refund [reason]   staff; /settle attests
+\
+                      every unmet attestation condition (deterministic ones are still checked)
+\
                    @contract/show <id>   @contract/list\n\
                    Accepting is TWO rights, checked separately: the right to accept, and debit\n\
                    authority on the account your consideration names. Escrow placed here belongs\n\
@@ -398,7 +401,9 @@ fn save_open(ctx: &mut Ctx<'_>, mut c: EconomicContract) -> Result<ContractId, C
         let verdict = {
             let store =
                 ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
-            check_offerable(&c, store.snapshot())
+            let outcomes = store.canon_outcome_kinds();
+            crate::contract::check_structure(&c, &outcomes)
+                .and_then(|()| check_offerable(&c, store.snapshot()))
         };
         if let Err(e) = verdict {
             return Err(contract_refusal(ctx, &c, &e));
@@ -521,6 +526,7 @@ fn contract_draft(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         created_at: now,
         amendments: 0,
         disputed_at: None,
+        canon_published: None,
         roster_locked: false,
         deposits: Vec::new(),
         agreements: Vec::new(),
@@ -689,13 +695,54 @@ fn build_deliver(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .filter(|n| *n > 0)
                 .ok_or_else(|| CmdError::msg("every= must be a positive number of seconds."))?;
             let grace = opts.get("grace").and_then(|s| s.parse::<u8>().ok()).unwrap_or(crate::DEFAULT_GRACE_PERIODS);
+            // **Standing first, through the same `hidden_text` loop the escrow
+            // builder runs** (E4c verify fold, D1).
+            //
+            // Before the fold this branch answered with three distinguishable
+            // messages — "No such account.", the system source/sink text, and
+            // silence on success — so naming an id and reading the reply told you
+            // whether the account existed and whether it was a faucet, one command
+            // at a time, from a draft nobody else ever sees.
+            //
+            // The standing an obligation deliverable needs is `@contract/pay`'s plus
+            // one clause: **an account owned by a party of this contract**. A lease's
+            // rent debits the tenant's wallet, which the landlord may not view, and
+            // credits the landlord's, which the tenant may not view — so a bare
+            // viewability gate would make the canonical lease undraftable by anybody
+            // but staff. A party's name is already on the surface; a stranger's is
+            // not, and a stranger's account is exactly what the oracle was probing
+            // for.
+            let known = |ctx: &Ctx<'_>, a: AccountId| -> bool {
+                if may_view_account(ctx.w, ctx.actor, a) {
+                    return true;
+                }
+                let Some(store) = ctx.w.module_state::<EconomyStore>() else { return false };
+                let Some(acct) = store.snapshot().account(a) else { return false };
+                c.consent.parties.iter().chain(std::iter::once(&c.issuer)).any(|p| {
+                    principal_key(p) == principal_key(&acct.owner)
+                })
+            };
+            let hidden = |ctx: &Ctx<'_>, detail: &str| -> CmdError {
+                refuse_named(
+                    ctx,
+                    NamedResource::Account(debit),
+                    [NamedResource::Account(credit)],
+                    detail.to_string(),
+                )
+            };
+            if !known(ctx, debit) || !known(ctx, credit) {
+                return Err(CmdError::msg("No such account."));
+            }
             let (debtor, creditor) = {
                 let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
                 let snap = store.snapshot();
-                let d = snap.account(debit).ok_or_else(|| CmdError::msg("No such account."))?;
-                let cr = snap.account(credit).ok_or_else(|| CmdError::msg("No such account."))?;
+                let (Some(d), Some(cr)) = (snap.account(debit).cloned(), snap.account(credit).cloned())
+                else {
+                    return Err(hidden(ctx, "No such account."));
+                };
                 if matches!(d.owner, PrincipalId::System(_)) {
-                    return Err(CmdError::msg(
+                    return Err(hidden(
+                        ctx,
                         "A system source/sink cannot be the debit side of an obligation: that would \
                          be a standing mint.",
                     ));
@@ -796,7 +843,12 @@ fn build_remainder(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-/// `party:<principal>` | `cap:<capability>[:<scope>]` | `staff` | `canon:<kind>[:<source>]`
+/// `party:<principal>` | `cap:<capability>[:<scope>]` | `staff` | `canon:<kind>:<source>`
+///
+/// The canon source is **mandatory** (E4c verify fold, E2): `canon:scene.outcome`
+/// with no source accepted every record of that kind, which is the broad match E5's
+/// owner answer 20 exists to refuse — one front's outcome would have discharged
+/// another front's contract.
 fn parse_attestor(ctx: &Ctx<'_>, s: &str) -> Option<AttestorSet> {
     let t = s.trim();
     if t.eq_ignore_ascii_case("staff") {
@@ -812,10 +864,14 @@ fn parse_attestor(ctx: &Ctx<'_>, s: &str) -> Option<AttestorSet> {
         return Some(AttestorSet::Capability { scope, capability });
     }
     if let Some(rest) = t.strip_prefix("canon:") {
-        let mut parts = rest.splitn(2, ':');
-        let kind = SmolStr::new(parts.next()?);
-        let source = parts.next().map(SmolStr::new);
-        return Some(AttestorSet::Canon { kind, source });
+        let (kind, source) = rest.split_once(':')?;
+        if kind.is_empty() || source.is_empty() {
+            return None;
+        }
+        return Some(AttestorSet::Canon {
+            kind: SmolStr::new(kind),
+            source: Some(SmolStr::new(source)),
+        });
     }
     None
 }
@@ -825,7 +881,7 @@ fn build_condition(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                          title <obj> <principal> | fact <provider> <kind> <id> | \
                          before <secs|ic:secs> | after <n> <delay>   \
                          (<who> = party:<principal> | cap:<capability>:<scope> | staff | \
-                         canon:<kind>[:<source>]; `title` takes a bare <principal>)";
+                         canon:<kind>:<source>; `title` takes a bare <principal>)";
     let mut c = editable(ctx, ctx.args.lhs())?;
     let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?.to_string();
     let mut words = rhs.split_whitespace();
@@ -1174,7 +1230,12 @@ fn contract_offer(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     c.satisfied.resize(c.consent.conditions.len(), None);
     let verdict = {
         let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
-        check_offerable(&c, store.snapshot())
+        let outcomes = store.canon_outcome_kinds();
+        // E4c verify fold, E1 + E2: the canon-outcome table is checked HERE and not
+        // inside `check_offerable`, because a live contract must never be stranded by
+        // a change to composition-root data. A draft, by contrast, can still be fixed.
+        crate::contract::check_structure(&c, &outcomes)
+            .and_then(|()| check_offerable(&c, store.snapshot()))
     };
     if let Err(e) = verdict {
         return Err(contract_refusal(ctx, &c, &e));
@@ -1470,6 +1531,12 @@ pub(crate) fn activate(ctx: &mut Ctx<'_>, id: ContractId) {
         }
     }
     create_lease_obligations(ctx, id);
+    // E4c verify fold, E4a: canon evidence is **edge-triggered**, and the edge for a
+    // record that landed while this contract was still `Offered` is gone. Re-scan
+    // what the world has announced since the economy booted, now that there is a live
+    // contract to answer. It records nothing twice — a filled slot is skipped — and
+    // it may settle in this same step, which is the point.
+    crate::attest::rescan_canon_tail(ctx);
 }
 
 /// Record what is already deposited into this contract's named vaults, and who put
@@ -1630,9 +1697,14 @@ fn contract_attest(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 matches!(&set, AttestorSet::Party(want) if want == p)
                     || auth.authorize_attestor(p, &set)
             }
-            // A canon record, a fact and the clock are not people; nothing about them
-            // stops qualifying, so they stand.
-            AttestorRef::Canon { .. } | AttestorRef::Fact(_) | AttestorRef::Clock => true,
+            // A canon record, a fact, the clock, an observation and a staff
+            // resolution are not people; nothing about them stops qualifying, so
+            // they stand.
+            AttestorRef::Canon { .. }
+            | AttestorRef::Fact(_)
+            | AttestorRef::Clock
+            | AttestorRef::Observed { .. }
+            | AttestorRef::StaffOverride { .. } => true,
         };
         if stands {
             return Err(CmdError::msg(format!(
@@ -2017,8 +2089,22 @@ fn contract_agree(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// `@contract/resolve <id>=settle|refund [reason]` — staff, level 2 of the ladder.
+///
+/// **`settle` records a staff attestation on every unmet `Attestation` condition**
+/// (E4c verify fold, E4b), canon sets included. Canon evidence is edge-triggered: a
+/// record that landed while the economy was frozen, before the contract came into
+/// force, or before the fact provider it names was ever wired, is an edge nobody can
+/// produce again — and without this the escrow sat frozen until its deadline with a
+/// staffer looking at a resolve command that refused to do anything. The override is
+/// visible on the document forever, naming the staffer and their reason.
+///
+/// It moves **no deterministic condition**. A `Fact`, a `DepositInto`, a `TitleHeld`,
+/// a `Before` or an `After` is re-verified against the live world at settlement
+/// exactly as before, so staff can resolve a question of *evidence* and never a
+/// question of *fact*: the goods are in the vault or they are not.
 fn contract_resolve(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    const USAGE: &str = "Usage: @contract/resolve <id>=settle|refund   (staff)";
+    const USAGE: &str = "Usage: @contract/resolve <id>=settle|refund [reason]   (staff)";
     if !is_admin(ctx.w, ctx.actor) {
         return Err(CmdError::msg(NO_SUCH));
     }
@@ -2026,15 +2112,73 @@ fn contract_resolve(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if c.state != ContractState::Disputed {
         return Err(CmdError::msg(format!("Contract #{} is not disputed.", c.id)));
     }
-    let resolution = match ctx.args.rhs().map(str::trim).map(str::to_ascii_lowercase).as_deref() {
-        Some("settle") => Resolution::Settle,
-        Some("refund") => Resolution::Refund,
+    let rhs = ctx.args.rhs().unwrap_or("").trim().to_string();
+    let (verb, reason) = match rhs.split_once(char::is_whitespace) {
+        Some((v, rest)) => (v.to_ascii_lowercase(), rest.trim().to_string()),
+        None => (rhs.to_ascii_lowercase(), String::new()),
+    };
+    let resolution = match verb.as_str() {
+        "settle" => Resolution::Settle,
+        "refund" => Resolution::Refund,
         _ => return Err(CmdError::msg(USAGE)),
     };
     let id = c.id;
+    if resolution == Resolution::Settle {
+        record_staff_override(ctx, id, &reason);
+    }
     apply_resolution(ctx, id, resolution);
     ctx.gate_on_durable_ack();
     Ok(())
+}
+
+/// Fill every unmet `Attestation` slot with an [`AttestorRef::StaffOverride`].
+fn record_staff_override(ctx: &mut Ctx<'_>, id: ContractId, reason: &str) {
+    let Some(mut c) = live_contract(ctx, id) else { return };
+    if c.satisfied.len() < c.consent.conditions.len() {
+        c.satisfied.resize(c.consent.conditions.len(), None);
+    }
+    let now = ctx.w.now();
+    let by = PrincipalId::Object(ctx.actor);
+    let reason = if reason.is_empty() { "resolved by staff" } else { reason };
+    let mut wrote = 0usize;
+    for i in 0..c.consent.conditions.len() {
+        if !matches!(c.consent.conditions.get(i), Some(TypedCondition::Attestation { .. })) {
+            continue;
+        }
+        let Some(slot) = c.satisfied.get_mut(i) else { continue };
+        if slot.is_some() {
+            continue;
+        }
+        *slot = Some(Attestation {
+            by: AttestorRef::StaffOverride {
+                by: by.clone(),
+                reason: SmolStr::new(reason),
+            },
+            at: now,
+            clock: EconomicClock::RealUtc,
+            source: SmolStr::new(format!("resolve:{}", ctx.actor.0)),
+        });
+        wrote += 1;
+    }
+    if wrote == 0 {
+        return;
+    }
+    c.revision = c.revision.saturating_add(1);
+    tracing::warn!(
+        contract = id.0,
+        conditions = wrote,
+        actor = ctx.actor.0,
+        reason,
+        "economy: staff resolved a dispute by attesting unmet conditions"
+    );
+    info(
+        ctx,
+        format!(
+            "Contract #{id}: {wrote} unmet attestation condition(s) recorded as resolved by you \
+             ({reason}). Deterministic conditions are still checked."
+        ),
+    );
+    api::put_contract(ctx, c);
 }
 
 /// Apply a resolution to a disputed contract.
@@ -2535,8 +2679,16 @@ enum ShowClass {
     /// A declared audience member: a **notice** — that it exists, its state, its
     /// window, and the kinds of condition. No money, no roles, no ids.
     Notice,
-    /// Anyone else who got through the gate, which means the surface said `Public`:
-    /// the consent surface as consented, with account ids masked.
+    /// Anyone else who got through the gate **on a route that consented to the
+    /// terms**: a `Public` surface, or an org member holding one of the
+    /// `contract.*` capabilities on the contract's own compartment. The consent
+    /// surface as consented, with account ids masked.
+    ///
+    /// It is emphatically *not* everyone `may_view_contract` admits (E4c verify
+    /// fold, D5): that gate also lets in an auditor holding `economy.account.view`
+    /// on the scope, which is standing over the money and not over the agreement.
+    /// A `Staff`-visibility org contract was readable in full by every such auditor,
+    /// which undid the omission `@econ/history` was built to make.
     Consented,
 }
 
@@ -2565,6 +2717,18 @@ fn show_class(ctx: &Ctx<'_>, c: &EconomicContract) -> ShowClass {
     }
     if c.consent.visibility.members().iter().any(|p| auth.acts_for(&me, p)) {
         return ShowClass::Notice;
+    }
+    // D5: a `Public` surface is consent to be read by anybody. Anything else got here
+    // through the org route, and only the `contract.*` half of that route is standing
+    // over the agreement — `economy.account.view` is an auditor's standing over the
+    // money, and it gets the notice.
+    if !c.consent.visibility.is_public() {
+        let by_contract_capability = ["contract.draft", "contract.accept", "contract.attest", "contract.dispute"]
+            .iter()
+            .any(|cap| holds_contract_capability(ctx, c.consent.scope, cap));
+        if !by_contract_capability {
+            return ShowClass::Notice;
+        }
     }
     ShowClass::Consented
 }
@@ -2733,10 +2897,12 @@ fn contract_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// (unless the surface says `announce=yes`) who is running it.
 fn notice_lines(ctx: &Ctx<'_>, c: &EconomicContract) -> Vec<String> {
     let mut lines = vec![format!(
-        "contract #{} \"{}\" — {} (you are in its declared audience)",
+        "contract #{} \"{}\" — {} (you are seeing a notice, not the terms)",
         c.id,
         c.name,
-        render_state(&c.state)
+        // D6: the settlement's transaction id is a handle into `@econ/history`;
+        // a notice says that it settled and no more.
+        render_state_notice(&c.state)
     )];
     if c.consent.visibility.announce_issuer() {
         lines.push(format!("  issued by {}", render_principal(ctx, &c.issuer)));
@@ -2766,6 +2932,16 @@ fn notice_lines(ctx: &Ctx<'_>, c: &EconomicContract) -> Vec<String> {
             .to_string(),
     );
     lines
+}
+
+/// [`render_state`] for a **notice**-class viewer (E4c verify fold, D6): the state
+/// word and nothing that hangs off it. A settlement's transaction id is a handle into
+/// `@econ/history`, and an audience was told an operation exists, not what it paid.
+fn render_state_notice(s: &ContractState) -> String {
+    match s {
+        ContractState::Settled { .. } => "settled".to_string(),
+        other => render_state(other),
+    }
 }
 
 fn render_state(s: &ContractState) -> String {
@@ -2876,6 +3052,10 @@ fn render_attestor(ctx: &Ctx<'_>, by: &AttestorRef) -> String {
         AttestorRef::Canon { canon, .. } => canon.to_string(),
         AttestorRef::Fact(f) => format!("{}/{}", f.provider, f.kind),
         AttestorRef::Clock => "the clock".to_string(),
+        AttestorRef::Observed { .. } => "observed holding".to_string(),
+        AttestorRef::StaffOverride { by, reason } => {
+            format!("staff resolution by {} ({reason})", render_principal(ctx, by))
+        }
     }
 }
 
@@ -2888,8 +3068,18 @@ fn contract_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .into_iter()
         .filter(|id| may_view_contract(ctx.w, ctx.actor, *id))
         .filter_map(|id| {
-            let store = ctx.w.module_state::<EconomyStore>()?;
-            let c = store.snapshot().contract(id)?;
+            // D6: `/list` renders per class too. A notice-class viewer used to read
+            // the party count and the settlement transaction id here — the two facts
+            // `@contract/show` had just been taught to withhold from them.
+            let c = ctx.w.module_state::<EconomyStore>()?.snapshot().contract(id)?.clone();
+            if show_class(ctx, &c) == ShowClass::Notice {
+                return Some(format!(
+                    "#{} \"{}\" — {}",
+                    c.id,
+                    c.name,
+                    render_state_notice(&c.state)
+                ));
+            }
             Some(format!(
                 "#{} \"{}\" — {} ({} part{})",
                 c.id,

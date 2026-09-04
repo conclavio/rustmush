@@ -1196,6 +1196,10 @@ fn run_handler(
     };
     if let Err(e) = result {
         out.retain_abort_since(events_before);
+        // Only past the pin: a terminal commit (`mush_canon::commit`) marks the
+        // prefix it and its synchronous observers queued as non-truncatable,
+        // because dispatch does not roll RAM back and dropping those writes would
+        // leave the store behind a world that has already moved.
         out.truncate_deferred(deferred_before);
         out.error(actor, e.to_string());
     }
