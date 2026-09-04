@@ -62,6 +62,7 @@ pub mod matchit;
 pub mod mechanics;
 pub mod module;
 pub mod obj;
+pub mod offer;
 pub mod output;
 pub mod perm;
 pub mod resource;
@@ -173,6 +174,16 @@ pub use module::{
     WorldEventKind, WorldObserver, WxSnapshot, can_perceive, is_concealed, perceives_via,
 };
 pub use obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
+pub use offer::{
+    ActionPresentation, InternalOffer, InternalOfferDraft, MAX_OFFER_SECRET_VERSIONS,
+    MAX_PROJECTED_ACTION_CHANNELS, MAX_PROJECTED_ACTION_CHOICES, MAX_PROJECTED_ACTION_PARAMETERS,
+    MAX_PROJECTED_ACTION_TEXT_BYTES, MAX_PROJECTED_LEGAL_ACTION_BYTES,
+    MAX_PROJECTED_LEGAL_ACTION_SET_BYTES, MAX_PROJECTED_LEGAL_ACTIONS, OfferBuildError,
+    OfferExecutionContext, OfferKeyRing, OfferResolveError, OfferSecret, OfferSecretError,
+    OfferSubmission, ProjectedLegalAction, ProjectedLegalActionSink, ProjectedParameter,
+    ProjectedParameterKind, ProjectedParameterSchema, ProjectedTargetSchema, ProjectionScopeId,
+    ResolvedOffer,
+};
 pub use output::{
     Audience, ConnId, DeliveryClass, DeliveryOutcome, Outbox, name_span, obj_ref, room_view,
 };

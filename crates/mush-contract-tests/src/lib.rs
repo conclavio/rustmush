@@ -7,14 +7,16 @@
 
 use mush_core::{
     ActionError, ActionErrorCode, ActionInvocation, ActionInvocationDraft, ActionOfferId,
-    ActionProvider, ActionStateError, ActionTxn, AuthoritativeActionOutput, BoundedScalar,
-    CanonicalHash, CanonicalId, ClockRef, ClockStamp, DefinitionDescriptor, DefinitionId,
-    DefinitionKind, DefinitionRef, DefinitionRegistryBuilder, DefinitionValidationContext,
-    EffectDuration, EffectInstance, EffectInstanceId, EffectTarget, Engine, GameModule,
-    IdempotencyKey, IdempotencyScope, ModError, ObjId, OwnerId, PerceivedRef, PreparedCausalRef,
-    PreparedTrigger, PrincipalId, Registrar, RequestUid, ResourceOperation, RulesValue,
-    SameCommitTrigger, ScopedIdempotencyKey, StateFamilyDescriptor, StateFamilyHandle,
-    StateFamilyId, SubjectKey,
+    ActionPresentation, ActionProvider, ActionStateError, ActionTxn, AuthoritativeActionOutput,
+    BoundedScalar, CanonicalHash, CanonicalId, ClockRef, ClockStamp, DefinitionDescriptor,
+    DefinitionId, DefinitionKind, DefinitionRef, DefinitionRegistryBuilder,
+    DefinitionValidationContext, EffectDuration, EffectInstance, EffectInstanceId, EffectTarget,
+    Engine, GameModule, IdempotencyKey, IdempotencyScope, InternalOffer, InternalOfferDraft,
+    ModError, ObjId, OfferKeyRing, OwnerId, PerceivedRef, PreparedCausalRef, PreparedTrigger,
+    PrincipalId, ProjectedLegalActionSink,
+    ProjectedParameterSchema, ProjectedTargetSchema, ProjectionScopeId, Registrar, RequestUid,
+    ResourceOperation, RulesValue, SameCommitTrigger, ScopedIdempotencyKey, StateFamilyDescriptor,
+    StateFamilyHandle, StateFamilyId, SubjectKey,
 };
 use mush_testkit::TestWorld;
 use serde::{Deserialize, Serialize};
@@ -886,6 +888,71 @@ pub fn toy_scene_turn(at: u64) -> ClockStamp {
     }
 }
 
+/// Regenerate the viewer's bounded Gate-1 offer set from current typed truth.
+/// The scene stamp is retained only in the internal offer and inserted into
+/// the invocation after opaque binding resolution.
+pub fn toy_brace_offers(
+    engine: &Engine,
+    families: &ToyStateFamilies,
+    keys: &OfferKeyRing,
+    actor: ObjId,
+    scene_turn: u64,
+    projection_generation: u64,
+) -> Result<ProjectedLegalActionSink, String> {
+    let principal = PrincipalId::Object { id: actor };
+    let viewer_scope = ProjectionScopeId::derive(&principal, projection_generation)
+        .map_err(|error| error.to_string())?;
+    let mut sink = ProjectedLegalActionSink::new(viewer_scope);
+    let focus = engine
+        .action_state()
+        .get(&families.focus, &actor)
+        .map_err(|error| error.to_string())?;
+    let guarded = engine
+        .action_state()
+        .get(&families.guarded, &actor)
+        .map_err(|error| error.to_string())?;
+    if !focus.is_some_and(|focus| focus.amount() > 0) || guarded.is_some() {
+        return Ok(sink);
+    }
+
+    let action = toy_definitions().brace;
+    let definitions = engine
+        .registry
+        .definitions()
+        .ok_or_else(|| "toy definition registry is unavailable".to_owned())?;
+    let mut guard_builder = engine
+        .registry
+        .server_guard_set_builder(mush_core::RevisionSet::default())
+        .map_err(|error| error.to_string())?;
+    guard_builder
+        .add_definition(action.clone(), definitions)
+        .map_err(|error| error.to_string())?;
+    let offer = InternalOffer::new(
+        InternalOfferDraft {
+            action,
+            viewer_scope,
+            truth_subject: SubjectKey::Object { id: actor },
+            projected_subject: PerceivedRef::SelfActor,
+            fixed_parameters: json!({ "scene_turn": toy_scene_turn(scene_turn) }),
+            parameters: ProjectedParameterSchema::empty(),
+            targets: ProjectedTargetSchema::None,
+            required_channels: Vec::new(),
+            expires: None,
+            presentation: ActionPresentation::new(
+                "brace",
+                "Brace",
+                "Spend one focus to become guarded for two scene turns.",
+            )
+            .map_err(|error| error.to_string())?,
+            guards: guard_builder.finish().map_err(|error| error.to_string())?,
+        },
+        keys,
+    )
+    .map_err(|error| error.to_string())?;
+    sink.push(offer).map_err(|error| error.to_string())?;
+    Ok(sink)
+}
+
 /// Fixture-only variant used to prove cascade bounds abort the whole action.
 pub fn toy_brace_invocation_with_cascade_steps(
     actor: ObjId,
@@ -992,7 +1059,9 @@ pub fn toy_rules_value(definition: DefinitionRef, data: Value) -> RulesValue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mush_core::{ActionProviderPrepareError, RevisionSet};
+    use mush_core::{
+        ActionProviderPrepareError, OfferExecutionContext, OfferSubmission, RevisionSet,
+    };
 
     fn bootstrap_focus(
         world: &mut TestWorld,
@@ -1459,6 +1528,88 @@ mod tests {
                 .is_none()
         );
         assert!(!world.engine().action_state().has_prepared());
+    }
+
+    #[test]
+    fn brace_offer_projects_no_hidden_clock_and_routes_to_the_same_provider() {
+        let (mut world, families) = toy_world_with_state();
+        bootstrap_focus(&mut world, &families, mush_core::GOD, 3);
+        let keys =
+            OfferKeyRing::new(mush_core::OfferSecret::new(1, [0x41; 32]).unwrap(), []).unwrap();
+        let offers = toy_brace_offers(world.engine(), &families, &keys, mush_core::GOD, 11, 4)
+            .expect("offer projection succeeds");
+        assert_eq!(offers.len(), 1);
+        let projected = offers.projected().pop().unwrap();
+        let encoded = serde_json::to_string(&projected).unwrap();
+        assert!(!encoded.contains("scene_turn"));
+        assert!(!encoded.contains("truth_subject"));
+        assert!(!encoded.contains("guard_hash"));
+
+        let request = RequestUid::from_bytes([0xD1; 16]);
+        let principal = PrincipalId::Object { id: mush_core::GOD };
+        let viewer_scope = ProjectionScopeId::derive(&principal, 4).unwrap();
+        let resolved = offers
+            .resolve(
+                &keys,
+                OfferExecutionContext {
+                    request,
+                    principal: principal.clone(),
+                    actor: mush_core::GOD,
+                    idempotency: ScopedIdempotencyKey::new(
+                        IdempotencyScope {
+                            principal,
+                            owner: OwnerId::new(TOY_OWNER).unwrap(),
+                            namespace: CanonicalId::new("brace").unwrap(),
+                        },
+                        0,
+                        IdempotencyKey::Request(request),
+                    ),
+                    viewer_scope,
+                    now: None,
+                },
+                OfferSubmission {
+                    offer: projected.offer(),
+                    subject: projected.subject().clone(),
+                    targets: Vec::new(),
+                    parameters: json!({}),
+                },
+            )
+            .expect("opaque offer resolves");
+        assert_eq!(
+            serde_json::from_value::<ClockStamp>(
+                resolved.invocation().parameters()["scene_turn"].clone()
+            )
+            .unwrap(),
+            toy_scene_turn(11)
+        );
+        let (action, invocation, _guards) = resolved.into_parts();
+        let (prepared, _) = world
+            .engine_mut()
+            .prepare_registered_authoritative_action(&action, &invocation)
+            .expect("resolved offer reaches the canonical provider");
+        world.engine_mut().abort_prepared_transaction(prepared);
+
+        let changed = toy_brace_offers(world.engine(), &families, &keys, mush_core::GOD, 11, 5)
+            .unwrap()
+            .projected()
+            .pop()
+            .unwrap();
+        assert_ne!(projected.offer(), changed.offer());
+
+        let (mut empty_world, empty_families) = toy_world_with_state();
+        bootstrap_focus(&mut empty_world, &empty_families, mush_core::GOD, 0);
+        assert!(
+            toy_brace_offers(
+                empty_world.engine(),
+                &empty_families,
+                &keys,
+                mush_core::GOD,
+                11,
+                4,
+            )
+            .unwrap()
+            .is_empty()
+        );
     }
 
     #[test]

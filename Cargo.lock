@@ -1983,6 +1983,7 @@ name = "mush-core"
 version = "0.1.0"
 dependencies = [
  "bitflags",
+ "hmac",
  "mush-proto",
  "proptest",
  "serde",

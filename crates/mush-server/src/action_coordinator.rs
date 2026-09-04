@@ -9,7 +9,7 @@
 use mush_core::{
     ActionInvocation, ActionProviderPrepareError, AuthoritativeBundle, AuthoritativeBundleDraft,
     CanonicalHash, CanonicalHashError, CommitToken, DefinitionRef, Engine, GuardSet,
-    IngressEnvelope, MAX_AUTHORITATIVE_BUNDLE_BYTES, PreparedCausalRef, PrincipalId,
+    IngressEnvelope, MAX_AUTHORITATIVE_BUNDLE_BYTES, PreparedCausalRef, PrincipalId, ResolvedOffer,
     ScopedIdempotencyKey, StagePreparedActionError,
 };
 use mush_store::{
@@ -182,6 +182,17 @@ impl ActionCoordinator {
             .stage_authoritative_action(prepared, guards, bundle)
             .map_err(ActionCoordinatorError::Stage)?;
         Ok(StagedAuthoritativeAction { token, bundle_hash })
+    }
+
+    /// Execute only the exact route, invocation, and server-held guards
+    /// produced by regenerating and resolving a K5 opaque offer.
+    pub fn prepare_and_stage_resolved(
+        permit: Box<ActionPermit>,
+        engine: &mut Engine,
+        resolved: ResolvedOffer,
+    ) -> Result<StagedAuthoritativeAction, ActionCoordinatorError> {
+        let (action, invocation, guards) = resolved.into_parts();
+        Self::prepare_and_stage(permit, engine, &action, &invocation, guards)
     }
 }
 

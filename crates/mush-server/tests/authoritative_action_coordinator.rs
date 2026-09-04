@@ -1,12 +1,13 @@
 use mush_contract_tests::{
-    install_toy_focus, toy_brace_invocation, toy_definitions, toy_guarded_expiry_invocation,
-    toy_scene_turn, toy_world_with_state,
+    TOY_OWNER, install_toy_focus, toy_brace_invocation, toy_brace_offers, toy_definitions,
+    toy_guarded_expiry_invocation, toy_scene_turn, toy_world_with_state,
 };
 use mush_core::{
     ActionInvocation, ActionInvocationDraft, ActionOfferId, CanonicalHash, CanonicalId,
     DefinitionId, DefinitionKey, DefinitionKind, DefinitionRef, Engine, GOD, IdempotencyKey,
-    IdempotencyScope, IngressEnvelope, IngressPayload, IngressSurfaceVersion, OwnerId,
-    PerceivedRef, PrincipalId, RequestUid, RevisionSet, ScopedIdempotencyKey,
+    IdempotencyScope, IngressEnvelope, IngressPayload, IngressSurfaceVersion,
+    OfferExecutionContext, OfferKeyRing, OfferSecret, OfferSubmission, OwnerId, PerceivedRef,
+    PrincipalId, ProjectionScopeId, RequestUid, RevisionSet, ScopedIdempotencyKey,
     StagedActionPersistence,
 };
 use mush_server::action_coordinator::{ActionCoordinator, ActionPreflight, SemanticActionStatus};
@@ -246,6 +247,90 @@ async fn real_provider_is_exactly_once_and_hydrates_before_the_next_action() {
         StagedActionPersistence::Legacy(_) => panic!("brace used the legacy persistence lane"),
     };
     assert_eq!(bundle.outcome().data()["revision"], 2);
+}
+
+#[tokio::test]
+async fn gate_one_offer_is_preflighted_regenerated_and_routed_without_hidden_client_fields() {
+    let store = InMemoryStore::new();
+    let (mut world, families) = toy_world_with_state();
+    install_toy_focus(world.engine_mut(), &families, GOD, 3);
+    let _ = world.drain_write_batch();
+    let keys = OfferKeyRing::new(OfferSecret::new(1, [0x42; 32]).unwrap(), []).unwrap();
+    let initially_projected = toy_brace_offers(world.engine(), &families, &keys, GOD, 11, 7)
+        .unwrap()
+        .projected()
+        .pop()
+        .unwrap();
+    let request = RequestUid::from_bytes([0xA7; 16]);
+    let principal = PrincipalId::Object { id: GOD };
+    let idempotency = ScopedIdempotencyKey::new(
+        IdempotencyScope {
+            principal: principal.clone(),
+            owner: OwnerId::new(TOY_OWNER).unwrap(),
+            namespace: CanonicalId::new("brace").unwrap(),
+        },
+        0,
+        IdempotencyKey::Request(request),
+    );
+    let envelope = IngressEnvelope::new(
+        request,
+        principal.clone(),
+        IngressSurfaceVersion::new(CanonicalId::new("test.offer").unwrap(), 1).unwrap(),
+        IngressPayload::structured(json!({
+            "offer": initially_projected.offer(),
+            "subject": initially_projected.subject(),
+            "targets": [],
+            "parameters": {},
+        }))
+        .unwrap(),
+        idempotency.clone(),
+    )
+    .unwrap();
+    let permit = match ActionCoordinator::preflight(&store, envelope)
+        .await
+        .unwrap()
+    {
+        ActionPreflight::Vacant(permit) => permit,
+        other => panic!("offered action was not vacant: {other:?}"),
+    };
+
+    // This is the execution-time regeneration. It happens only after the
+    // durable preflight and reconstructs hidden clock/guard/action data.
+    let regenerated = toy_brace_offers(world.engine(), &families, &keys, GOD, 11, 7).unwrap();
+    let resolved = regenerated
+        .resolve(
+            &keys,
+            OfferExecutionContext {
+                request,
+                principal,
+                actor: GOD,
+                idempotency,
+                viewer_scope: ProjectionScopeId::derive(&PrincipalId::Object { id: GOD }, 7)
+                    .unwrap(),
+                now: None,
+            },
+            OfferSubmission {
+                offer: initially_projected.offer(),
+                subject: initially_projected.subject().clone(),
+                targets: Vec::new(),
+                parameters: json!({}),
+            },
+        )
+        .unwrap();
+    ActionCoordinator::prepare_and_stage_resolved(permit, world.engine_mut(), resolved).unwrap();
+    let (persistence, installation) = world
+        .engine_mut()
+        .take_staged_action()
+        .unwrap()
+        .unwrap()
+        .into_parts();
+    let bundle = match persistence {
+        StagedActionPersistence::Authoritative(bundle) => *bundle,
+        StagedActionPersistence::Legacy(_) => panic!("resolved offer used legacy persistence"),
+    };
+    assert_eq!(bundle.writes().len(), 2);
+    assert_eq!(bundle.outcome().data()["focus"], 2);
+    world.engine_mut().abort_prepared_action(installation);
 }
 
 #[tokio::test]
