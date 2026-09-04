@@ -72,6 +72,7 @@ mod flow;
 mod hooks;
 mod module;
 mod notice;
+mod quarantine;
 mod tick;
 
 pub use access::{Access, may_enter, may_enter_with, may_take, may_take_with};
@@ -104,8 +105,10 @@ pub use commands::officer_of;
 pub use flow::{create_tenancy, submit_support_plan};
 pub use hooks::{NO_DESTROY, REFUSED, REFUSED_CARRY, may_reach};
 pub use module::{
-    AssessState, CAPABILITIES, HousingModule, HousingStore, MAX_ASSESSMENTS_PER_FIRE,
-    MAX_NOTICE_BYTES, MAX_PENDING_NOTICES, META_KEY, NO_PROPERTY_MARKER, NS, PendingNotice,
-    STORY_QUEUE, TICK_PERIOD_SECS, TICK_TAG, assess_key, cadence_now, is_staff, notice_key,
-    property_key, render_principal, tenancy_key,
+    AssessState, CAPABILITIES, HousingModule, HousingStore, LiveEntry, MAX_ASSESSMENTS_PER_FIRE,
+    MAX_NOTICE_BYTES, MAX_PENDING_NOTICES, MAX_VISITED_PER_FIRE, MAX_WORKED_PER_FIRE, META_KEY,
+    NO_PROPERTY_MARKER, NS, PendingNotice, RoomEntry, STORY_QUEUE, TICK_PERIOD_SECS, TICK_TAG,
+    TickStats, assess_key, cadence_now, is_staff, notice_key, property_key, render_principal,
+    tenancy_key,
 };
+pub use quarantine::{Conflict, MAX_QUARANTINE_PAGES, QuarantineKey};

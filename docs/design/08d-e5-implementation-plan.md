@@ -259,6 +259,10 @@ driven 40 periods never ends anything, and the fuzz re-checks it after every ste
 2. **"then ≤ weekly" is `WINDOW_ESCALATED_RENOTIFY = 7` periods**, because the library reads no
    wall clock. Seven periods is ≥ a week on any cadence of a day or longer, which is every cadence
    the three-period ladder is meaningful on; E5b re-checks it when it registers the clock.
+   *Look-back (E5a-D2): E5b did not re-check it. The constant is still 7 periods and **assumes a
+   daily-or-longer cadence** — on a finer cadence "≤ weekly" is false and the three-period ladder
+   finishes inside three days; the assumption is to be stated in `@tenancy/create cadence=` help
+   (08g §11, fix-during).*
 3. **`Unknown`'s grace needs a counter the record does not carry.** `assess(tier, plans)` keeps its
    §3.3 signature and answers `Unknown` when no resident has a plan; `harden(a, unknown_periods)`
    turns it into `Unsupported` once `unknown_periods > UNKNOWN_GRACE`. E5b keeps the per-tenancy
@@ -325,7 +329,7 @@ regression test each in `tests/e5a.rs`'s `---- E5a verify fold ----` section, na
 | S6 | `attach_window` bumped a revision for a no-op and silently replaced an existing job/scene | unchanged clone when nothing changes; a *different* id is `WindowAlreadyAttached` (same guard on the escalation id in `window_elapsed`) |
 | S7 | every post-escalation re-notice pushed a `Notified` entry whose count never changed | no history entry — with S3 the 32-deep tail keeps `Accepted`, every `StatusChanged`, `Escalated` and `Ended` |
 | S8 | recovery discarded the window and its ids | `Tenancy::last_window: Option<StoryWindow>` (`#[serde(default)]`, stamped `closed`) records the outgoing window on `EvictionPending → Active`, so E5b can resolve the job "recovered" and ack the escalation |
-| S9 | the notice budget re-armed on every relapse, so a flickering tenancy was re-notified forever and never escalated | hysteresis: a window reopening within `RELAPSE_WINDOW_PERIODS` of the last one closing (allowing for the ladder's own `GRACE_PERIODS + DELINQUENT_PERIODS`) inherits its `notified` and `escalation` |
+| S9 | the notice budget re-armed on every relapse, so a flickering tenancy was re-notified forever and never escalated | hysteresis: a window reopening within `RELAPSE_WINDOW_PERIODS` of the last one closing (allowing for the ladder's own `GRACE_PERIODS + DELINQUENT_PERIODS`) inherits its `notified` and `escalation` (the `escalation` half was struck by E5b's fold, T1 — `notified` only; §3.5 deviation 12, §4.1) |
 | S10 | `best_level` returned the stored newtype, which a hand-written document can load with 255 in it | `Some(SupportLevel::new(max))` |
 | S11 | — | E5b's boot reconciliation must drop a destroyed tenant through `remove_tenant` (which takes the plan with them), never by editing the sets; `assess_at`'s roster check is the library-side guard |
 
@@ -341,7 +345,10 @@ Three fold deviations, recorded rather than silent:
     against "the new window opens within 2 periods of the last one closing" can never fire — the
     fastest possible relapse is `GRACE_PERIODS + DELINQUENT_PERIODS` (3) after recovery. So the
     comparison is `closed → now ≤ GRACE_PERIODS + DELINQUENT_PERIODS + RELAPSE_WINDOW_PERIODS`, i.e.
-    two periods of slack on the soonest a window *could* reopen.
+    two periods of slack on the soonest a window *could* reopen. **The escalation half of S9 is
+    struck (E5a-D28, recorded at the look-back):** E5b's fold T1 (§4.1) made a relapsed window
+    inherit `notified` only, never `escalation` — carrying the id made `window_due` answer
+    `NotifyEscalated` forever.
 13. **`SupportPlan::new` takes the period** as a fifth argument (`asserted_at` is the raw cadence
     position `@tenancy/show` prints; `asserted_period` is the monotonic ordinal freshness is measured
     in, so staleness survives a re-pointed clock). `StoryWindow` gains `closed: Option<i64>`, set only
@@ -472,6 +479,10 @@ verb surface) · `tests/e5b.rs`.
 **Dependencies.** E5a's `{core, org, economy}` plus **`mush-jobs`** (a story window's bare `u64`
 has to become a real ticket) and `mush-proto` (`RichText`, for the hook's refusal). Deliberately
 **no** `mush-sim` and **no** `mush-config` edge — see deviation 3.
+
+**`Property.upkeep` is dropped** (look-back decision, 08g §12.1 item 11 / E5b-D34): it was parsed by
+`@property/create upkeep=` and rendered but never charged — exact-mode rent is the lease's obligation,
+not a property field — so it is ignored on load and removed from renders, `@property/create` and help.
 
 **Persistence** (namespace `housing`):
 
@@ -646,8 +657,10 @@ ST is left holding a decision about a home that is fine.
    way keeps the two the same by construction. `landlord=sys:<name>` still names one explicitly.
 10. **New capability vocabulary** `property.view`, `property.manage` (`mush_housing::CAPABILITIES`,
     chained into the server's `org_capability_vocabulary`). Per §11 answer 3, binding:
-    `property.manage` covers show/list and guest policy, and **never** tenancy creation, which is
-    staff-only in E5.
+    `property.manage` covers show/list and the landlord org's inspection standing, and **never**
+    tenancy creation, which is staff-only in E5. *(The look-back struck a "guest policy" clause here
+    — no landlord guest verb exists and `+guest` resolves only the actor's own tenancies; E5b-C30,
+    08g §3 #17.)*
 11. **No state families, still.** E5a deviation 10 asked E5b to revisit doc 09's `action-state/*`
     lane for `tenancy:{id}`. It stays conventional: 08c §12's "K3 review" decision has not moved,
     the container-doc discipline already gives the failure mode the status ladder needs (a corrupt
@@ -906,7 +919,8 @@ Tests (planned ~32; **40 as built**, **60 after the §5.7 verify fold**, `crates
 residence for N periods with no output; drop Resources via a staff `@sheet/set` → the next period's
 plan is `Unsupported` → Grace → Delinquent → EvictionPending with one notice each, a job opened,
 no movement, `home` still works; `@tenancy/resolve end` after a staff scene ends it); the same in
-exact mode with a real obligation; `off` creates nothing and shows nothing; every stance's table
+exact mode with a real obligation; `off` creates nothing and shows nothing (the one inert clock
+aside — §5.6 deviation 1); every stance's table
 row; a stance flip mid-period applies next period; `Exploit` emits one front-attributed canon event
 per period and `Conceal` none; housing pressure preempts an open opportunity and not vice versa;
 expiry applies `StatusQuo` with no strain and no money; the per-faction pool caps at 8 open and
@@ -986,7 +1000,10 @@ boot forever, which is the shape `mush-housing` refuses outright.
 **The evaluation's bounds** (`evaluate.rs`, `TickCadence::Coarse(30 s)`, tag `wod.economy`):
 
 - at most `MAX_EVALUATIONS_PER_FIRE` (128) characters per fire, from a **rotation cursor**, so a
-  world with more than that still reaches every one of them;
+  world with more than that still reaches every one of them *(E5c-D55 — superseded by 08h D-LBK-2
+  in the look-back fold: `MAX_VISITED_PER_FIRE` 256 / `MAX_WORKED_PER_FIRE` 128, the cursor
+  advancing past the last **visited** id, the due check before the clone, and a `population_version`
+  short-circuit)*;
 - **one period per character however far the clock jumped** — forty periods of downtime evaluate
   once. Catch-up is computed from the cadence `position`, never from a tick count: the position is
   the idempotency key, so a missed fire loses nothing and a duplicate fire does nothing. The 30 s
@@ -1029,9 +1046,12 @@ idempotent, and it lists what it did):
 
 1. **`personal_mode` defaults to `off`, `housing` to `true`.** §5.1's block *illustrates*
    `abstract`; making that the default would switch a live E5b server into a mode it never
-   configured. Off-config the layer registers its verbs, creates nothing, evaluates nothing and
-   shows nothing — the byte-identical back-compat rule the rest of the tree follows — while
-   `housing = true` keeps the title issuer wired exactly as E5b wired it.
+   configured. Off-config the layer registers its verbs, evaluates nothing and shows nothing — the
+   byte-identical back-compat rule the rest of the tree follows — while `housing = true` keeps the
+   title issuer wired exactly as E5b wired it. *One thing `off` does create (E5c-C2, recorded at
+   the look-back): with `housing = true` boot resolves-or-creates **one inert `Manual`
+   `chronicle.period` cadence clock** so housing can assess on it — no instrument, no principal,
+   no account; with `housing = false` it only resolves an existing clock.*
 2. **`CareerProfile::pending_stance`** joins §5.2's struct. "A stance change takes effect at the
    **next** period boundary" cannot be implemented without somewhere to hold the pending answer;
    `+career/stance` writes it, and the evaluation's first act is to land it.
@@ -1056,6 +1076,10 @@ idempotent, and it lists what it did):
    is no counter to drift. It is the seam the faction simulation shares.
 8. **A prompt that lapsed this period is not replaced this period.** The point of the budget is
    quiet; answering nothing must not summon the next question in the same breath.
+   *Qualified at the look-back (E5c-C96; 08g §12.1 item 3): as first built the `lapsed` guard sat
+   below the housing-pressure and strain-relief branches, so those two kinds re-opened in the period
+   they lapsed. The fold hoists the guard — one period of quiet for **every** prompt kind; a standing
+   condition re-asks next period; the housing ladder pages regardless.*
 9. **The Residence step does not go through `may_view_property`.** Housing's read verbs answer
    `No such property.` to anybody who is not a tenant, guest, officer or staff — which is every
    character in chargen — so the step applies its own narrower rule: only a property that is
@@ -1184,8 +1208,10 @@ carry, all consumed by exactly one new caller plus the staff verb that already e
 4. **`mush_housing`'s re-exports widen** by `officer_of` and `render_principal` — reuse rather than
    fork. `+career` renders an employer principal through housing's own renderer, and `officer_of`
    is the one landlord-authority path (E5b fold A4/A5) that any later layer needing it must go
-   through rather than re-deriving. The tick's live-id index (`open_tenancy_ids`) needed no new
-   export: E5c asks the per-character `live_tenancies_of_tenant` and never walks the store.
+   through rather than re-deriving. Housing's live-id index (`open_tenancy_ids`) needed no new
+   export: E5c's evaluation asks the per-character `live_tenancies_of_tenant`, and the one place it
+   walks `tenancies()` is its boot reconciliation pass (residents with no profile beside them; the
+   look-back corrected an earlier "never walks the store" here).
 
 **The host wiring changed shape once.** `server_modules_with` takes
 `wod: Option<&WodEconomyConfig>` and `ruleset_modules` takes `&WodEconomyConfig`. 08d §2's "the
@@ -1361,7 +1387,9 @@ the workspace tests; commit per cut; push on the owner's word. E5b starts only a
 
 `MAX_ROOMS_PER_PROPERTY` 16 · `MAX_FEATURES` 16 · `MAX_TENANTS` 8 · `MAX_GUESTS` 16 · `GRACE_PERIODS` 1 ·
 `DELINQUENT_PERIODS` 2 · `UNKNOWN_GRACE` 1 · `WINDOW_RENOTIFY` 1 period · `MAX_WINDOW_NOTICES` 3, then
-silent until escalation, then ≤ weekly · `WINDOW_ESCALATE` 2 periods · `MAX_ASSESSMENTS_PER_FIRE` 128 ·
+silent until escalation, then ≤ weekly (`WINDOW_ESCALATED_RENOTIFY` 7 periods — a daily-or-longer
+cadence assumed, §3.5 deviation 2) · `WINDOW_ESCALATE` 2 periods · `MAX_ASSESSMENTS_PER_FIRE` 128
+(and `MAX_EVALUATIONS_PER_FIRE` 128 — both superseded by D-LBK-2's visited 256 / worked 128, §5.6) ·
 `STRAIN_MAX` 10 · `COAST_OPPORTUNITY_PERIODS` 6 · `MAX_OFFSCREEN_OPS_PER_FACTION` 8 (open) · prompt
 default expiry 2 periods · history and pending-notice caps 32 · **`PLAN_MAX_AGE_PERIODS` 2** (a
 `SupportPlan` older than this is absent, not asserted — §3.5 S4) · **`RELAPSE_WINDOW_PERIODS` 2** (a

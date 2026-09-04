@@ -112,6 +112,7 @@ pub(crate) fn sweep(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     advance_cadences(ctx, now, ic_now);
     expire_holds(ctx, now, ic_now);
     settle_obligations(ctx, evidence);
+    forgive_suspended(ctx, evidence);
     step_contracts(ctx, now, ic_now);
     collect_garbage(ctx, now);
     renotify(ctx, now);
@@ -384,6 +385,8 @@ fn disposition(e: &EconomyError) -> Disposition {
         | EconomyError::InactiveAccount(_)
         | EconomyError::NoSuchInstrument(_)
         | EconomyError::InactiveInstrument(_)
+        | EconomyError::InstrumentExists(_)
+        | EconomyError::ObligationTerminal(_)
         | EconomyError::Unauthorized
         | EconomyError::ScopeOwnerMismatch
         | EconomyError::ApprovalRequired
@@ -471,6 +474,53 @@ fn settle_obligations(ctx: &mut Ctx<'_>, ev: Evidence) {
             break;
         }
         settle_one(ctx, id, ev, &mut posts);
+    }
+}
+
+/// **A period that falls due while an obligation is suspended is forgiven as it
+/// falls due** (look-back fold, D-LBK-1), recorded `Forgiven { Suspension }` in the
+/// obligation's own history and never charged.
+///
+/// Before the fold a suspended obligation simply left the due pool, and the gap it
+/// accumulated was the resumer's problem: `@obligation/resume` re-anchored it, but
+/// `@econ/ack` did not, so the sweep after an acknowledgement charged
+/// `maximum_catch_up` periods of a suspension it had promised were "forgiven by the
+/// next sweep". Forgiving here, every fire, makes that sentence true for every holder
+/// — the ladder's, staff's, and a layered module's — and leaves nothing for a
+/// release to charge. Bounded like the settlement pass: at most
+/// [`crate::MAX_OBLIGATIONS_PER_SWEEP`] records written per fire.
+fn forgive_suspended(ctx: &mut Ctx<'_>, ev: Evidence) {
+    let clocks = Clocks::new(ev.now, ev.ic_now);
+    let gaps: Vec<(ObligationId, u32, i64)> = {
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
+        let snap = store.snapshot();
+        snap.obligations()
+            .filter(|o| matches!(o.status, ObligationStatus::Suspended { .. }))
+            .filter_map(|o| {
+                let clock_now = clocks.now_on(o.schedule.clock, snap, o.schedule.manual_now)?;
+                let due = crate::clock::due_periods(&o.schedule, clock_now);
+                (due > 0).then_some((o.id, due, clock_now))
+            })
+            .take(crate::MAX_OBLIGATIONS_PER_SWEEP)
+            .collect()
+    };
+    for (id, due, clock_now) in gaps {
+        let Some(o) = ctx.w.module_state::<EconomyStore>().and_then(|s| s.snapshot().obligation(id).cloned())
+        else {
+            continue;
+        };
+        // Wholesale, consuming no period index: the schedule re-anchors past `now`
+        // and no deterministic key is reused (finding 13's shape).
+        let next = forgive_all(&o, due, ForgiveCause::Suspension, clock_now);
+        notify_both(
+            ctx,
+            &next,
+            format!(
+                "Obligation #{id}: {due} period(s) fell due while it was suspended; forgiven, \
+                 not charged."
+            ),
+        );
+        api::put_obligation(ctx, next);
     }
 }
 
@@ -820,14 +870,14 @@ fn overload_repeats(o: &Obligation, clock_now: i64) -> bool {
 /// verify fold, B2). The subject still stops: an alert that could not be minted is a
 /// reason to page harder, never a reason to keep charging an account nobody can fix.
 fn suspend_paged(o: &Obligation, record: Option<EscalationId>, at: i64) -> Obligation {
-    let mut next = o.clone();
-    next.status = match record {
-        Some(id) => ObligationStatus::Suspended { reason: SuspendReason::Escalated(id) },
-        None => ObligationStatus::Suspended {
-            reason: SuspendReason::Staff { reason: SmolStr::new_static("alert-allocator-exhausted") },
-        },
+    // The ladder holds under its own key (look-back fold, D-LBK-1): `@econ/ack`
+    // releases exactly this key, and a layered module's hold on the same obligation
+    // neither lifts it nor is lifted by it.
+    let reason = match record {
+        Some(id) => SuspendReason::Escalated(id),
+        None => SuspendReason::Staff { reason: SmolStr::new_static("alert-allocator-exhausted") },
     };
-    next.revision += 1;
+    let mut next = crate::obligation::hold(o, reason, at);
     if next.history.len() >= crate::MAX_OBLIGATION_HISTORY {
         next.history.remove(0);
     }
@@ -1006,6 +1056,9 @@ fn announce(ctx: &mut Ctx<'_>, before: &ObligationStatus, o: &Obligation) {
             ),
             SuspendReason::Staff { reason } => {
                 format!("Obligation #{} is suspended: {reason}.", o.id)
+            }
+            SuspendReason::Held { key } => {
+                format!("Obligation #{} is suspended: held by {key}.", o.id)
             }
         }),
         ObligationStatus::Satisfied => Some(format!("Obligation #{} is satisfied.", o.id)),

@@ -16,8 +16,8 @@ use mush_core::{
     register_engine_commands,
 };
 use mush_jobs::{
-    Job, JobPayload, JobStatus, JobsModule, OpenJob, get_job, get_note, open_job,
-    register_payload_handler,
+    Job, JobPayload, JobStatus, JobsModule, OpenJob, PlainJobError, deny_plain_job, get_job,
+    get_note, open_job, register_payload_handler, resolve_plain_job,
 };
 use mush_proto::OutputEvent;
 use serde_json::json;
@@ -73,6 +73,37 @@ impl GameModule for TestWod {
                 ctx.out
                     .info(ctx.actor, format!("XP spend filed as job {id}."));
                 Ok(())
+            }),
+        )?;
+        // Look-back fold, D-LBK-6: the module-side terminal path, driven from a
+        // command so it runs under a real `Ctx`. `+plainclose <id>=<queue> resolve|deny`
+        // reports the seam's own error text verbatim.
+        reg.command(
+            CommandSpec {
+                name: "+plainclose".into(),
+                shape: ArgShape::EqPair,
+                help: "+plainclose <id>=<queue> <resolve|deny> -- test: the plain-job seam".into(),
+                ..CommandSpec::default()
+            },
+            Arc::new(|ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+                let id: u64 = ctx.args.lhs().trim().parse().map_err(|_| CmdError::msg("id"))?;
+                let rhs = ctx.args.rhs().unwrap_or_default().to_string();
+                let mut words = rhs.split_whitespace();
+                let queue = words.next().unwrap_or("").to_string();
+                let how = words.next().unwrap_or("resolve").to_string();
+                let by = ctx.actor;
+                let outcome = if how == "deny" {
+                    deny_plain_job(ctx, id, &queue, by, "withdrawn by the module")
+                } else {
+                    resolve_plain_job(ctx, id, &queue, by, "answered by the module")
+                };
+                match outcome {
+                    Ok(()) => {
+                        ctx.out.info(by, format!("plain close ok: job {id} {how}d"));
+                        Ok(())
+                    }
+                    Err(e) => Err(CmdError::msg(format!("plain close refused: {e}"))),
+                }
             }),
         )?;
         Ok(())
@@ -1024,4 +1055,103 @@ fn approve_requests_the_durable_ack_gate() {
     let _ = env.engine.take_durable_gate();
     run(env.wanda, &mut env, "+job/approve 1");
     assert_eq!(env.engine.take_durable_gate(), None);
+}
+
+// ----------------------------------------------------------------------
+// ---- look-back fold: D-LBK-6 ----
+// ----------------------------------------------------------------------
+//
+// `set_job_status` left the public API: it took any `JobStatus` and ran no payload
+// handler, so a module could flip a payload-bearing job to `Resolved` without
+// applying it — the exact class E4c closed when it made `jobs.resolved` a fact
+// answered from the applied-payload marker. `resolve_plain_job` / `deny_plain_job`
+// are the only external terminal path: a payload is refused, the caller's queue is
+// checked against the job's, and a closed job is refused.
+
+/// A payload-bearing job is refused by the plain-job seam whatever queue is named,
+/// and its applied marker stays unset.
+#[test]
+fn lb_dlbk6_a_payload_job_is_refused_by_the_plain_seam() {
+    let mut env = setup();
+    run(env.nick, &mut env, "+xspend Buy a dot=xp.apply");
+    let out = run(env.wanda, &mut env, "+plainclose 1=xp resolve");
+    assert!(
+        has_text(&out, "carries a payload"),
+        "a payload job was resolved without its handler: {:?}",
+        sys_texts(&out)
+    );
+    let job = get_job(&env.engine.world, 1).unwrap();
+    assert_eq!(job.status, JobStatus::Open, "the refused close moved the status");
+    assert_eq!(job.payload_applied, None, "the refused close wrote the applied marker");
+    assert_eq!(env.applied.load(Ordering::SeqCst), 0, "a handler ran");
+    // The deny half refuses the same job the same way.
+    let out = run(env.wanda, &mut env, "+plainclose 1=xp deny");
+    assert!(has_text(&out, "carries a payload"), "{:?}", sys_texts(&out));
+}
+
+/// Producer identity is checked, not assumed: a job from another queue is refused
+/// by name, and the right queue name is accepted case-insensitively.
+#[test]
+fn lb_dlbk6_a_wrong_queue_job_is_refused() {
+    let mut env = setup();
+    run(env.nick, &mut env, "+request Fix my desc=it is wrong");
+    let out = run(env.wanda, &mut env, "+plainclose 1=xp resolve");
+    assert!(
+        has_text(&out, "lives in queue \"REQ\", not the caller's \"xp\""),
+        "wrong refusal: {:?}",
+        sys_texts(&out)
+    );
+    assert_eq!(get_job(&env.engine.world, 1).unwrap().status, JobStatus::Open);
+    let out = run(env.wanda, &mut env, "+plainclose 1=req resolve");
+    assert!(has_text(&out, "plain close ok"), "{:?}", sys_texts(&out));
+    assert_eq!(get_job(&env.engine.world, 1).unwrap().status, JobStatus::Resolved);
+}
+
+/// A plain job in the caller's own queue resolves (and another denies), the closing
+/// note is recorded as a comment, and a closed job is refused a second time.
+#[test]
+fn lb_dlbk6_a_plain_job_resolves_or_denies_once() {
+    let mut env = setup();
+    let mut store = FakeKv::default();
+    run_p(env.nick, &mut env, &mut store, "+request Story one=please");
+    run_p(env.nick, &mut env, &mut store, "+request Story two=please");
+    let out = run_p(env.wanda, &mut env, &mut store, "+plainclose 1=REQ resolve");
+    assert!(has_text(&out, "plain close ok"), "{:?}", sys_texts(&out));
+    let out = run_p(env.wanda, &mut env, &mut store, "+plainclose 2=REQ deny");
+    assert!(has_text(&out, "plain close ok"), "{:?}", sys_texts(&out));
+    let one = get_job(&env.engine.world, 1).unwrap().clone();
+    let two = get_job(&env.engine.world, 2).unwrap().clone();
+    assert_eq!(one.status, JobStatus::Resolved);
+    assert_eq!(two.status, JobStatus::Denied);
+    assert!(one.comments.iter().any(|c| c.text == "answered by the module"), "{:?}", one.comments);
+    assert!(two.comments.iter().any(|c| c.text == "withdrawn by the module"), "{:?}", two.comments);
+    // Closed is closed: a retrying module writes nothing.
+    let out = run_p(env.wanda, &mut env, &mut store, "+plainclose 1=REQ resolve");
+    assert!(has_text(&out, "is already Resolved"), "{:?}", sys_texts(&out));
+    // …and the write-through carries both closes.
+    let doc = store.0.get("job:1").expect("job:1 persisted");
+    assert_eq!(doc["status"], serde_json::json!("Resolved"));
+    let doc = store.0.get("job:2").expect("job:2 persisted");
+    assert_eq!(doc["status"], serde_json::json!("Denied"));
+    // The error type is a value a module can match on, not only a string.
+    assert_eq!(
+        PlainJobError::NotOpen { job: 1, status: JobStatus::Resolved }.to_string(),
+        "job 1 is already Resolved"
+    );
+}
+
+/// The jobs `FactProvider` still answers only from the applied-payload marker: a
+/// plain job resolved through the seam is **unknown** to `jobs.resolved`, exactly as
+/// a plain job resolved by hand always was (one assertion, unchanged by the fold).
+#[test]
+fn lb_dlbk6_the_fact_provider_still_answers_from_the_applied_marker() {
+    use mush_economy::FactProvider;
+    let mut env = setup();
+    run(env.nick, &mut env, "+request Story=please");
+    run(env.wanda, &mut env, "+plainclose 1=REQ resolve");
+    assert_eq!(get_job(&env.engine.world, 1).unwrap().status, JobStatus::Resolved);
+    assert!(
+        mush_jobs::JobsFactProvider.resolve(&env.engine.world, "resolved", "1", None).is_none(),
+        "a plain job's resolution became a settlement fact"
+    );
 }

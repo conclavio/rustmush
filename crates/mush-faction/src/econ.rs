@@ -18,14 +18,16 @@
 //!   was rejected: `@instrument/register` would then retroactively make every
 //!   faction's like-named rating mintable.
 //!
-//! ## The link is validated at every use, never at boot
+//! ## The link is validated at every use — and reported at boot
 //!
-//! `FactionModule` registers **before** `OrgModule` (`mush-server/src/modules.rs`),
-//! so at faction boot there is no org registry to ask, and E3 does not reorder the
-//! list. [`backing_org`] is therefore the single resolver every consumer calls,
-//! and it fails closed three ways: unbound, the org gone, or **two factions naming
-//! the same org** — in which case *both* links are unusable until staff re-bind,
-//! because there is no safe way to guess which faction the money belongs to.
+//! Since the post-E3 owner decision (E3-D47, 08a decision 19) `FactionModule` loads
+//! **after** `OrgModule` (`mush-server/src/modules.rs`), so faction boot can check
+//! every `Faction.org` link against loaded org state and report a missing org or a
+//! two-factions-one-org conflict loudly — never unbinding. [`backing_org`] is still
+//! the single resolver every consumer calls, and it fails closed three ways: unbound,
+//! the org gone, or **two factions naming the same org** — in which case *both* links
+//! are unusable until staff re-bind, because there is no safe way to guess which
+//! faction the money belongs to.
 //!
 //! ## Migration ordering: post first, then mark
 //!

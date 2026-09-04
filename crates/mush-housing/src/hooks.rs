@@ -43,7 +43,7 @@ use mush_economy::{EscalationKind, EscalationSubject};
 use mush_org::{OrgScopeId, PrincipalId};
 
 use crate::access::Access;
-use crate::module::{HousingStore, is_let, is_staff, room_of};
+use crate::module::{HousingStore, LiveEntry, RoomEntry, is_let, is_staff, room_of};
 use crate::record::{Property, PropertyStatus};
 
 /// The one refusal a stranger ever sees at a private door.
@@ -123,15 +123,34 @@ impl EventHook for AccessHook {
 /// It abstains ([`Access::Staff`], the permissive answer) for every room this module
 /// does not own, so a world with no properties behaves byte for byte as it did
 /// before housing existed.
+///
+/// **A conflict fails closed** (look-back fold, D-LBK-1/4a): a room two properties
+/// hold, a property two live tenancies claim, or any room of a property a quarantine
+/// involves is `Refused` for everyone but staff. The projections' `Conflict` entries
+/// are the source of truth; the quarantine is their consequence.
 #[must_use]
 pub fn may_reach(w: &World, who: ObjId, room: ObjId) -> Access {
     let Some(store) = w.module_state::<HousingStore>() else { return Access::Staff };
-    let Some(property) = store.property_of_room(room) else { return Access::Staff };
+    let closed = || if is_staff(w, who) { Access::Staff } else { Access::Refused };
+    let property = match store.room_entry(room) {
+        None => return Access::Staff,
+        Some(RoomEntry::Conflict(_)) => return closed(),
+        Some(RoomEntry::Unique(id)) => *id,
+    };
+    if store.is_quarantined_property(property) {
+        return closed();
+    }
+    let Some(property) = store.property(property) else { return Access::Staff };
     // **The live tenancy alone, never the `Let` latch** (fold H1). See the module
     // doc: `Withdrawn` is a service decision about the destroy gate, and a home
     // somebody still lives in does not stop being theirs because the property was
     // taken out of service or a spare room fell down.
-    let Some(t) = store.live_tenancy_of(property.id) else { return Access::Staff };
+    let t = match store.live_entry(property.id) {
+        Some(LiveEntry::Live(id)) => store.tenancy(*id),
+        Some(LiveEntry::Conflict(_)) => return closed(),
+        Some(LiveEntry::Vacant) | None => None,
+    };
+    let Some(t) = t else { return Access::Staff };
     // The inspection term's authority is an org/world question E5a cannot answer, so
     // it is answered here and handed in (`may_enter_with`).
     let inspector = t
@@ -191,6 +210,32 @@ pub struct HousingDestroyGate;
 impl DestroyGate for HousingDestroyGate {
     fn check(&self, w: &World, _reg: &Registry, actor: ObjId, target: ObjId) -> Result<(), String> {
         let Some(store) = w.module_state::<HousingStore>() else { return Ok(()) };
+        // Look-back fold, D-LBK-1: a room under review is refused to everyone. A
+        // viewer of any property involved is told so; everyone else gets the
+        // neutral sentence.
+        let review = match store.room_entry(target) {
+            None => return Ok(()),
+            Some(RoomEntry::Conflict(props)) => Some(props.clone()),
+            Some(RoomEntry::Unique(id)) if store.is_quarantined_property(*id) => {
+                Some(std::collections::BTreeSet::from([*id]))
+            }
+            Some(RoomEntry::Unique(_)) => None,
+        };
+        if let Some(props) = review {
+            let may_view = props
+                .iter()
+                .filter_map(|p| store.property(*p))
+                .any(|p| crate::commands::may_view_property(w, actor, p));
+            return Err(if may_view {
+                format!(
+                    "#{} is a room of a property under housing review (@housing/quarantine show); \
+                     repair the conflict first.",
+                    target.0
+                )
+            } else {
+                NO_DESTROY.to_string()
+            });
+        }
         let Some(p) = store.property_of_room(target).filter(|p| is_let(p)) else {
             return Ok(());
         };
@@ -236,11 +281,25 @@ impl DestroyGate for HousingDestroyGate {
 pub(crate) fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     let WorldEvent::ObjDestroyed { obj } = ev else { return };
     let obj = *obj;
-    let hit: Option<(Property, bool)> = {
+    // Every property that held the room — one, or (a quarantined overlap) several;
+    // each is withdrawn and paged on its own record (look-back fold, D-LBK-4a).
+    let hits: Vec<(Property, bool)> = {
         let Some(store) = ctx.w.module_state::<HousingStore>() else { return };
-        store.property_of_room(obj).map(|p| (p.clone(), store.has_live_tenancy(p.id)))
+        let ids: Vec<crate::ids::PropertyId> = match store.room_entry(obj) {
+            None => Vec::new(),
+            Some(RoomEntry::Unique(id)) => vec![*id],
+            Some(RoomEntry::Conflict(set)) => set.iter().copied().collect(),
+        };
+        ids.into_iter()
+            .filter_map(|id| store.property(id).map(|p| (p.clone(), store.has_live_tenancy(p.id))))
+            .collect()
     };
-    let Some((p, live)) = hit else { return };
+    for (p, live) in hits {
+        withdraw_destroyed(ctx, obj, p, live);
+    }
+}
+
+fn withdraw_destroyed(ctx: &mut Ctx<'_>, obj: ObjId, p: Property, live: bool) {
     if p.status == PropertyStatus::Withdrawn && !live {
         // Already out of service and nobody's home: there is no decision left to
         // hand a staffer, so this is the one case that stays quiet.

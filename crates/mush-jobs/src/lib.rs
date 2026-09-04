@@ -50,8 +50,8 @@ use mush_core::{
 };
 
 pub use api::{
-    JobsApi, OpenJob, PayloadHandlerFn, add_comment, get_job, get_note, open_job,
-    register_payload_handler, set_job_status,
+    JobsApi, OpenJob, PayloadHandlerFn, PlainJobError, add_comment, deny_plain_job, get_job,
+    get_note, open_job, register_payload_handler, resolve_plain_job,
 };
 pub use commands::NOTES_STAFF;
 pub use facts::JobsFactProvider;

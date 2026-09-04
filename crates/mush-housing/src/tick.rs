@@ -12,11 +12,28 @@
 //! sees the same gap), nothing double-fires (the position is the idempotency key),
 //! and the economy needs no change at all.
 //!
-//! ## What one fire may do
+//! ## What one fire may do (look-back fold, D-LBK-2)
 //!
-//! - at most [`crate::MAX_ASSESSMENTS_PER_FIRE`] tenancies, taken from a **rotation
-//!   cursor** (E4b2's B4): the cap bounds *work*, and id order alone would starve the
-//!   high-id tenancies of every fire, forever;
+//! - **visit** at most [`crate::MAX_VISITED_PER_FIRE`] tenancies — touch at all, due
+//!   or not — and **work** at most [`crate::MAX_WORKED_PER_FIRE`] of them, both
+//!   budgets enforced independently, from a **rotation cursor** (E4b2's B4) that
+//!   advances past the last *visited* id, skipped ones included. E5b's cursor moved
+//!   only on a worked tenancy, so an all-skipped fire scanned the whole population
+//!   and left the cursor where it was: "bounded per fire" was true of the work and
+//!   false of the scan (08h F2);
+//! - **read the small `assess:{id}` document before cloning anything.** A tenancy is
+//!   the largest record this module holds, and E5b cloned it *before* the due check;
+//!   the check now reads status, clock and cursor through the borrow and clones only
+//!   a tenancy it is about to work (or page about);
+//! - **skip the scan entirely between periods.** Every mutator that changes the
+//!   population or its due-ness bumps a `population_version`; the tick records, with
+//!   the position of every cadence, the version at the end of its last **complete**
+//!   sweep that found nothing due, and a fire skips its scan only while both are
+//!   unchanged — keyed on explicit state, never on a guess. Between period
+//!   boundaries the tick then costs O(1); at a boundary the worked budget spreads the
+//!   population over fires;
+//! - **skip a quarantined tenancy entirely** (D-LBK-1): no assessment, no window
+//!   advance, no notice;
 //! - **one assessed period per tenancy**, however far the clock jumped. A cadence that
 //!   advanced forty periods over a weekend of downtime assesses **once** — the E4 rule
 //!   that a backlog is never charged, in its housing form. The ladder is three
@@ -42,89 +59,167 @@
 //! here takes the world down (the discipline `mush-economy`'s sweep states and this
 //! file inherits).
 
-use mush_core::{Ctx, SceneId};
+use mush_core::{Ctx, SceneId, World};
 
 use crate::assess::{Assessment, PLAN_MAX_AGE_PERIODS, assess_at, harden};
 use crate::ids::TenancyId;
-use crate::module::{AssessState, HousingStore, MAX_ASSESSMENTS_PER_FIRE, put_assess, put_tenancy};
+use crate::module::{
+    AssessState, HousingStore, IdleMark, IdleScan, MAX_VISITED_PER_FIRE, MAX_WORKED_PER_FIRE,
+    TickStats, put_assess, put_tenancy,
+};
 use crate::record::{Funding, Tenancy, TenancyStatus};
 use crate::tenancy::{DELINQUENT_PERIODS, WindowAction, periods_since, window_due, window_elapsed};
 
+/// Every cadence's `(id, position)`, in id order — the "has any clock moved" half of
+/// the idle short-circuit's key. At most `MAX_CADENCES` (32) entries, so reading it
+/// every fire costs nothing worth counting.
+fn cadence_fingerprint(w: &World) -> Vec<(u64, u64)> {
+    w.module_state::<mush_economy::EconomyStore>()
+        .map(|s| s.snapshot().cadences().map(|c| (c.id.0, c.position)).collect())
+        .unwrap_or_default()
+}
+
 /// One fire.
 pub(crate) fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
-    let (ids, cursor) = {
-        let Some(store) = ctx.w.module_state::<HousingStore>() else { return };
-        (crate::boot::tenancy_ids(store), store.cursor)
+    let fingerprint = cadence_fingerprint(ctx.w);
+    let mut stats = TickStats::default();
+    let (ids, cursor, version) = {
+        let Some(store) = ctx.w.module_state_mut::<HousingStore>() else { return };
+        let version = store.population_version;
+        // The short-circuit: nothing was due at the end of the last complete sweep,
+        // nothing has been created, ended, resolved or quarantined since, and no
+        // clock has moved. Then nothing is due now, and the scan is skipped.
+        if store.idle.as_ref().is_some_and(|m| m.version == version && m.cadences == fingerprint) {
+            stats.short_circuited = true;
+            store.last_fire = stats;
+            return;
+        }
+        store.idle = None;
+        (crate::boot::tenancy_ids(store), store.cursor, version)
     };
     if ids.is_empty() {
+        if let Some(store) = ctx.w.module_state_mut::<HousingStore>() {
+            store.scan = None;
+            store.last_fire = stats;
+        }
         return;
     }
+    // The sweep in progress, or a fresh one: a sweep is only "complete" when it has
+    // visited the whole population under one version and one set of clock
+    // positions, so either changing restarts it.
+    let mut scan = {
+        let Some(store) = ctx.w.module_state_mut::<HousingStore>() else { return };
+        match store.scan.take() {
+            Some(s) if s.version == version && s.cadences == fingerprint && s.population == ids.len() => s,
+            _ => IdleScan {
+                version,
+                cadences: fingerprint.clone(),
+                visited: 0,
+                population: ids.len(),
+                clean: true,
+            },
+        }
+    };
+
     // The rotation: start at the first id at or past the cursor, wrap once.
     let start = ids.iter().position(|id| id.0 >= cursor).unwrap_or(0);
-    let order: Vec<TenancyId> =
-        ids[start..].iter().chain(ids[..start].iter()).copied().collect();
+    let order: Vec<TenancyId> = ids[start..].iter().chain(ids[..start].iter()).copied().collect();
 
-    let mut worked = 0usize;
     let mut last = None;
     for id in order {
-        if worked >= MAX_ASSESSMENTS_PER_FIRE {
+        if stats.visited >= MAX_VISITED_PER_FIRE || stats.worked >= MAX_WORKED_PER_FIRE {
             break;
         }
-        match step(ctx, id) {
+        stats.visited += 1;
+        last = Some(id);
+        match step(ctx, id, &mut stats) {
             Step::Skipped => {}
+            Step::Pending => scan.clean = false,
             Step::Worked => {
-                worked += 1;
-                last = Some(id);
+                stats.worked += 1;
+                scan.clean = false;
             }
         }
     }
-    // Resume **past** the last tenancy this fire reached, so the next one starts with
-    // whoever was cut off rather than at the top of the list again.
+    scan.visited = scan.visited.saturating_add(stats.visited);
+    let Some(store) = ctx.w.module_state_mut::<HousingStore>() else { return };
+    // Resume **past** the last tenancy this fire visited — skipped ones included — so
+    // the next fire starts with whoever was cut off rather than at the top again.
     if let Some(last) = last {
-        let Some(store) = ctx.w.module_state_mut::<HousingStore>() else { return };
         store.cursor = last.0.saturating_add(1);
+    }
+    if scan.visited >= scan.population {
+        if scan.clean && store.population_version == version {
+            store.idle = Some(IdleMark { version, cadences: fingerprint });
+        }
+        store.scan = None;
+    } else {
+        store.scan = Some(scan);
+    }
+    store.last_fire = stats;
+    if last.is_some() {
         crate::module::persist_meta(ctx);
     }
 }
 
 /// What one tenancy cost this fire.
 enum Step {
-    /// Nothing to do: not live, no clock, or the clock has not moved.
+    /// Nothing to do: not live, quarantined, no clock, or the clock has not moved.
     Skipped,
+    /// A drafted lease waiting to bind — not due, but not idle either: the catch-up
+    /// must keep asking, so a fire that saw one never arms the idle mark.
+    Pending,
     /// One assessed period.
     Worked,
 }
 
-fn step(ctx: &mut Ctx<'_>, id: TenancyId) -> Step {
-    // **Ask what it is before cloning it** (verify fold, T7). A tenancy record carries
-    // a roster, a guest list, a plan per resident and a 32-entry history tail, and
-    // this used to clone one for every tenancy in the store, every fire, only to
-    // discover most of them were ended. The status is two words through the borrow.
-    let (live, pending_lease) = {
+/// Clone a tenancy for work, counting it (the "no clone before the due check"
+/// claim is pinned on this counter).
+fn clone_tenancy(ctx: &Ctx<'_>, id: TenancyId, stats: &mut TickStats) -> Option<Tenancy> {
+    let t = crate::flow::tenancy_of(ctx, id)?;
+    stats.cloned += 1;
+    Some(t)
+}
+
+fn step(ctx: &mut Ctx<'_>, id: TenancyId, stats: &mut TickStats) -> Step {
+    // **Ask what it is before cloning it** (verify fold T7; look-back fold D-LBK-2).
+    // Status, clock, quarantine and the assessment cursor are all read through the
+    // borrow; the record itself is cloned only once it is known to be due.
+    let (live, pending_lease, cadence, quarantined) = {
         let Some(store) = ctx.w.module_state::<HousingStore>() else { return Step::Skipped };
         let Some(t) = store.tenancy(id) else { return Step::Skipped };
         (
             t.status.is_live(),
-            matches!(t.status, TenancyStatus::Pending)
-                && crate::econ::is_pending_lease(&t.funding),
+            matches!(t.status, TenancyStatus::Pending) && crate::econ::is_pending_lease(&t.funding),
+            t.cadence,
+            store.is_quarantined_tenancy(id),
         )
     };
+    // D-LBK-1: a quarantined tenancy is neither assessed nor advanced nor told
+    // anything until the invariant holds again.
+    if quarantined {
+        return Step::Skipped;
+    }
     if !live {
         // A drafted lease whose contract has since activated: bind its rent
         // obligation and go live. The observer is the fast path; this is the one that
         // survives a restart between the acceptance and housing's own boot.
-        if pending_lease && let Some(t) = crate::flow::tenancy_of(ctx, id) {
-            crate::econ::bind_if_ready(ctx, &t);
+        if pending_lease {
+            if let Some(t) = clone_tenancy(ctx, id, stats) {
+                crate::econ::bind_if_ready(ctx, &t);
+            }
+            return Step::Pending;
         }
         return Step::Skipped;
     }
-    let Some(t) = crate::flow::tenancy_of(ctx, id) else { return Step::Skipped };
     // A tenancy whose cadence record is gone is **frozen**, not advanced: an
     // unresolvable clock never makes anything happen (the economy's own rule). T6:
     // and it says so — a home that stopped being assessed is a staff question, and
     // the ladder dedupes by subject so this pages once, not once a fire.
-    let Some(now) = crate::module::cadence_now(ctx.w, t.cadence) else {
-        crate::flow::page_missing_cadence(ctx, &t);
+    let Some(now) = crate::module::cadence_now(ctx.w, cadence) else {
+        if let Some(t) = clone_tenancy(ctx, id, stats) {
+            crate::flow::page_missing_cadence(ctx, &t);
+        }
         return Step::Skipped;
     };
     let state = {
@@ -141,6 +236,7 @@ fn step(ctx: &mut Ctx<'_>, id: TenancyId) -> Step {
     if now <= state.position {
         return Step::Skipped;
     }
+    let Some(t) = clone_tenancy(ctx, id, stats) else { return Step::Skipped };
 
     // **One period, however far the clock moved.**
     let period = state.period.saturating_add(1);
@@ -237,7 +333,8 @@ fn due(since: i64, now: i64, wanted: i64) -> bool {
 
 /// The property's tier, or the lowest band when the property is somehow gone —
 /// tier 0 is carried by every support level, so a missing property never walks a
-/// tenancy toward eviction on a number nobody wrote.
+/// tenancy toward eviction on a number nobody wrote. (A live tenancy on a missing
+/// property is quarantined by pass 0 and never reaches here — D-LBK-1.)
 fn property_tier(ctx: &Ctx<'_>, t: &Tenancy) -> crate::record::PropertyTier {
     ctx.w
         .module_state::<HousingStore>()

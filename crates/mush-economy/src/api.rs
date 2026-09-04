@@ -652,7 +652,9 @@ impl WorldAuth<'_> {
 ///   name one, and so may `@hold/place for=`. Every such verb is **staff-only** and
 ///   resolves the name against a **registered** system account first, so a player
 ///   cannot conjure a system beneficiary and staff cannot conjure one that does not
-///   already exist.
+///   already exist. (`@econ/mint`'s "the source must be a system account" holds by
+///   that usage, not structurally — E2-C159, fix-during: resolve `<sysacct>` through
+///   the registered system accounts or check `owner == System` in the command.)
 /// - Nobody acts for a `System` principal, staff included ([`WorldAuth::acts_for`]),
 ///   so a reservation held for one is capturable only through an internal settlement
 ///   authority — never from a command.
@@ -665,13 +667,128 @@ pub(crate) fn sweep_principal() -> PrincipalId {
 
 // ---- instrument + account creation (non-money writes) ---------------------
 
-/// Register (or replace) an instrument definition. Not money — a normal write.
-/// The caller has validated the scale ≤ [`crate::MAX_SCALE`].
-pub fn register_instrument(ctx: &mut Ctx<'_>, def: InstrumentDef) {
-    persist_instrument(ctx.out, &def);
-    if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
-        store.snapshot.put_instrument(def);
+/// Register an instrument definition. Not money — a normal write. The caller has
+/// validated the scale ≤ [`crate::MAX_SCALE`].
+///
+/// **Create-only** (look-back fold, E2-C18). This used to upsert, so a second call
+/// with the same id replaced the live definition — and since nothing else ever writes
+/// an instrument doc, that was the one route by which `status` could become
+/// `Suspended` or `Retired` (or `scale` and the negative policy change) under every
+/// account of that instrument, with no verb, no journal line and no page. A
+/// registered id is refused; the command and the WoD boot each still check first so
+/// their own messages stay readable.
+///
+/// # Errors
+///
+/// [`EconomyError::InstrumentExists`] for an id already registered;
+/// [`EconomyError::EconomyFrozen`] when the module is not loaded.
+pub fn register_instrument(ctx: &mut Ctx<'_>, def: InstrumentDef) -> Result<(), EconomyError> {
+    let store = ctx.w.module_state_mut::<EconomyStore>().ok_or(EconomyError::EconomyFrozen)?;
+    if store.snapshot.instrument(&def.id).is_some() {
+        return Err(EconomyError::InstrumentExists(def.id));
     }
+    store.snapshot.put_instrument(def.clone());
+    persist_instrument(ctx.out, &def);
+    Ok(())
+}
+
+// ---- the layered-module suspension seam (look-back fold, D-LBK-1) ---------
+
+/// **Hold an obligation out of the due pool under `key`** — the seam a layered
+/// module uses when it must guarantee that a period is never charged while it
+/// decides something (housing's fail-closed quarantine is the first caller).
+///
+/// The obligation carries a **set** of holders ([`crate::Obligation::suspensions`]);
+/// it leaves the due pool the moment the first holder arrives and returns only when
+/// the last one releases, so a module's release can never lift the ladder's own
+/// page-suspension or a staff suspension, and neither of those can lift the module's
+/// ([`crate::SuspensionKey`]). Every period that falls due while it is held is
+/// forgiven as it falls due, `Forgiven { cause: Suspension }`, by the sweep — nothing
+/// is charged and nothing is left for the release to charge.
+///
+/// Applied to the in-memory record **synchronously** and queued in the caller's own
+/// batch (at boot, the boot batch), so the sweep can never see the obligation as due
+/// first. Idempotent: a key already held changes nothing.
+///
+/// # Errors
+///
+/// [`EconomyError::NoSuchObligation`]; [`EconomyError::ObligationTerminal`] for a
+/// `Cancelled`/`Satisfied` obligation (nobody's to suspend);
+/// [`EconomyError::EconomyFrozen`] when the module is not loaded.
+pub fn suspend_obligation(
+    ctx: &mut Ctx<'_>,
+    id: ObligationId,
+    key: crate::obligation::SuspensionKey,
+) -> Result<(), EconomyError> {
+    let now = ctx.w.now();
+    let next = {
+        let store = ctx.w.module_state::<EconomyStore>().ok_or(EconomyError::EconomyFrozen)?;
+        let o = store.snapshot().obligation(id).ok_or(EconomyError::NoSuchObligation(id))?;
+        if matches!(
+            o.status,
+            crate::obligation::ObligationStatus::Cancelled | crate::obligation::ObligationStatus::Satisfied
+        ) {
+            return Err(EconomyError::ObligationTerminal(id));
+        }
+        let next = crate::obligation::hold(o, crate::obligation::SuspendReason::Held { key }, now);
+        if next.revision == o.revision {
+            return Ok(());
+        }
+        next
+    };
+    put_obligation(ctx, next);
+    Ok(())
+}
+
+/// **Release `key`'s hold** ([`suspend_obligation`]'s other half). Returns whether the
+/// obligation **returned to the due pool** — only when `key` was its last holder.
+///
+/// The gap since the last sweep fire is forgiven on the way back (`Forgiven {
+/// Suspension }`, re-anchoring the schedule past now and consuming no period index),
+/// so the next period charged is the next one to fall due. A key that holds nothing
+/// is a no-op answering `false`.
+///
+/// # Errors
+///
+/// [`EconomyError::NoSuchObligation`]; [`EconomyError::EconomyFrozen`] when the
+/// module is not loaded.
+pub fn resume_obligation(
+    ctx: &mut Ctx<'_>,
+    id: ObligationId,
+    key: &crate::obligation::SuspensionKey,
+) -> Result<bool, EconomyError> {
+    let now = ctx.w.now();
+    let ic_now = ctx.w.game_now_unix();
+    let (next, returned) = {
+        let store = ctx.w.module_state::<EconomyStore>().ok_or(EconomyError::EconomyFrozen)?;
+        let snap = store.snapshot();
+        let o = snap.obligation(id).ok_or(EconomyError::NoSuchObligation(id))?;
+        if !o.held_by(key) {
+            return Ok(false);
+        }
+        let mut holders = o.holders();
+        holders.remove(key);
+        let returning =
+            matches!(o.status, crate::obligation::ObligationStatus::Suspended { .. }) && holders.is_empty();
+        let mut base = o.clone();
+        if returning
+            && let Some(clock_now) =
+                crate::clock::Clocks::new(now, ic_now).now_on(o.schedule.clock, snap, o.schedule.manual_now)
+        {
+            let due = crate::clock::due_periods(&o.schedule, clock_now);
+            if due > 0 {
+                base = crate::obligation::forgive_all(
+                    &base,
+                    due,
+                    crate::obligation::ForgiveCause::Suspension,
+                    clock_now,
+                );
+            }
+        }
+        crate::obligation::release(&base, key, now)
+    };
+    put_obligation(ctx, next);
+    Ok(returned)
 }
 
 /// Open an account (zero balance). Not money — a normal write. The `id` must come
@@ -1191,6 +1308,7 @@ pub fn create_system_obligation(
         settled_total: 0,
         missed_total: 0,
         forgiven_total: 0,
+        suspensions: std::collections::BTreeSet::new(),
         revision: 1,
     };
     put_obligation(ctx, o);
@@ -1406,6 +1524,8 @@ pub fn create_cadence(
             crate::clock::CadenceSource::Manual => 0,
         },
         revision: 1,
+        generation: crate::clock::CADENCE_GENERATION_INITIAL,
+        schema: crate::clock::CADENCE_SCHEMA_LEGACY,
     };
     put_cadence(ctx, c);
     let meta = ctx.w.module_state::<EconomyStore>().map(EconomyStore::meta_doc);

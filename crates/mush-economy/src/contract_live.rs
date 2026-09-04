@@ -16,10 +16,14 @@
 //!   and `WorldAuth::authorize_hold` refuses every op on such a hold. The only
 //!   authority that can capture or release it is [`ContractAuth`], built from the
 //!   live record at the moment of use.
-//! - **The state change comes first, then the money.** A refund runs *after* the
-//!   contract has moved to `Cancelled`/`Expired`, because that is what lifts the
-//!   custody lock (E4a verify fold, finding 2); a settlement is a single plan that
-//!   captures, pays out, moves title and releases pledges, or does none of it.
+//! - **The plan lands first, then the state change** (E4b2 verify fold, D31 — the
+//!   terminal-transition rule). A terminal transition is a post under the contract's
+//!   deterministic key (`settle_key`/`refund_key`/`forfeit_key`) followed by the state
+//!   write, with `pending: PendingTerminal` recorded so the sweep and boot can finish
+//!   a half-done one; a refund's release runs against a contract already marked
+//!   `Cancelled`/`Expired` in the same bundle, because that is what lifts the custody
+//!   lock (E4a verify fold, finding 2). A settlement is a single plan that captures,
+//!   pays out, moves title and releases pledges, or does none of it.
 //! - **Nothing here panics.** The sweep drives the same functions, and a panic in a
 //!   tick handler aborts the world — so there is no `unwrap`, no `expect`, and no
 //!   indexing that can panic on any path the sweep can reach.
@@ -1613,6 +1617,7 @@ fn create_lease_obligations(ctx: &mut Ctx<'_>, id: ContractId) {
             settled_total: 0,
             missed_total: 0,
             forgiven_total: 0,
+            suspensions: std::collections::BTreeSet::new(),
             revision: 1,
         };
         api::put_obligation(ctx, o);

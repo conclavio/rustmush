@@ -1457,8 +1457,10 @@ async fn write_with_retry(
                     tracing::error!(
                         serial = batch.serial,
                         ?keys,
-                        "dropped batch carried module ops that will NOT self-heal \
-                         (deletes may resurrect at next boot; stream appends are lost)"
+                        "dropped batch carried module ops; the batch is spooled to the \
+                         quarantine, which replays it at recovery only when every op is an \
+                         idempotent absolute post-image (a delete or a stream append is not, \
+                         and stays a tombstone for a person to reconcile)"
                     );
                     if !ledger_keys.is_empty() {
                         // Authoritative-ledger breach: an open-chunk rewrite

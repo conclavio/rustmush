@@ -274,10 +274,11 @@ pub struct Faction {
     /// `@faction/create` never auto-binds; binding is a deliberate staff act
     /// (`@faction/org`).
     ///
-    /// The link is validated at **every use** ([`backing_org`](crate::backing_org)),
-    /// never at boot: `FactionModule` loads before `OrgModule`, so at faction boot
-    /// the org registry is not yet there to ask. A missing org, or two factions
-    /// naming the same org, makes the link unusable — fail closed, both sides.
+    /// The link is validated at **every use** ([`backing_org`](crate::backing_org))
+    /// and checked once more at boot: `FactionModule` loads after `OrgModule`
+    /// (E3-D47), so a missing org or two factions naming one org is reported loudly
+    /// at boot and never unbound. Either makes the link unusable — fail closed, both
+    /// sides.
     #[serde(default)]
     pub org: Option<mush_org::OrgId>,
     /// Resource keys that are **money now**, not ratings (E3d, D-E3-9). The

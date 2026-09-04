@@ -37,6 +37,7 @@ use crate::ids::{
 use crate::module::EconomyStore;
 use crate::obligation::{
     GracePolicy, Obligation, ObligationCause, ObligationEvent, ObligationStatus, SuspendReason,
+    SuspensionKey,
 };
 use crate::plan::{AssetOp, CustodyOp, EconomyPlan, HoldOp, NamedResource, RequestedLine};
 use crate::record::{
@@ -745,7 +746,7 @@ fn instrument_register(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         status: InstrumentStatus::Active,
         revision: 1,
     };
-    api::register_instrument(ctx, def);
+    api::register_instrument(ctx, def).map_err(|e| CmdError::msg(e.to_string()))?;
     info(ctx, format!("Registered instrument {id} (scale {scale})."));
     Ok(())
 }
@@ -1366,6 +1367,7 @@ fn cadence_show(ctx: &mut Ctx<'_>, id: CadenceId) -> Result<(), CmdError> {
         .ok_or_else(|| CmdError::msg("No such cadence."))?;
     info(ctx, format!("Cadence #{}: {} — {}", c.id, c.name, source_word(c.source, c.period)));
     info(ctx, format!("  period {} · catch-up {} · revision {}", c.position, c.catch_up_cap, c.revision));
+    info(ctx, format!("  generation {} · schema {}", c.generation, c.schema));
     Ok(())
 }
 
@@ -2077,8 +2079,9 @@ fn econ_history(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             rows.push(format!("  \u{201c}{}\u{201d}", t.description));
         }
     }
-    // Rule 6: newest first is the order they were collected in; `emit_list` sorts,
-    // so the lines are emitted directly.
+    // Rule 6: newest first is the order they were collected in. `emit_list` does
+    // **not** sort (it caps and counts), and this render is deliberately uncapped
+    // and unsorted — the rows go out exactly as collected (look-back fold, E4c-C109).
     if rows.is_empty() {
         info(ctx, format!("Nothing recorded against account #{id}."));
     }
@@ -3267,6 +3270,7 @@ fn obligation_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         settled_total: 0,
         missed_total: 0,
         forgiven_total: 0,
+        suspensions: std::collections::BTreeSet::new(),
         revision: 1,
     };
     api::put_obligation(ctx, o);
@@ -3328,10 +3332,23 @@ fn render_status(o: &Obligation) -> String {
             format!("in grace ({missed} missed; allowance ends {} on {:?})", deadline.at, deadline.clock)
         }
         ObligationStatus::Delinquent => "delinquent".to_string(),
-        ObligationStatus::Suspended { reason } => match reason {
-            SuspendReason::Staff { reason } => format!("suspended ({reason})"),
-            SuspendReason::Escalated(id) => format!("suspended pending staff — alert #{id}"),
-        },
+        ObligationStatus::Suspended { reason } => {
+            let word = match reason {
+                SuspendReason::Staff { reason } => format!("suspended ({reason})"),
+                SuspendReason::Escalated(id) => format!("suspended pending staff — alert #{id}"),
+                SuspendReason::Held { key } => format!("suspended — held by {key}"),
+            };
+            // Every holder, when there is more than the one the reason names
+            // (look-back fold, D-LBK-1): the obligation returns to the due pool only
+            // when all of them have released.
+            let holders = o.holders();
+            if holders.len() > 1 {
+                let all: Vec<&str> = holders.iter().map(SuspensionKey::as_str).collect();
+                format!("{word} [holders: {}]", all.join(", "))
+            } else {
+                word
+            }
+        }
         ObligationStatus::Satisfied => "satisfied".to_string(),
         ObligationStatus::Cancelled => "cancelled".to_string(),
     }
@@ -3398,6 +3415,8 @@ fn render_event(e: &ObligationEvent) -> String {
         }
         ObligationEvent::Escalated { id, at } => format!("escalated as alert #{id} at {at}"),
         ObligationEvent::Resumed { at } => format!("resumed at {at}"),
+        ObligationEvent::Held { key, at } => format!("held by {key} at {at}"),
+        ObligationEvent::Released { key, at } => format!("released by {key} at {at}"),
     }
 }
 
@@ -3454,10 +3473,10 @@ fn obligation_suspend(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !o.status.in_due_pool() {
         return Err(CmdError::msg(format!("Obligation #{} is not running.", o.id)));
     }
-    let next = transition(
+    let next = crate::obligation::hold(
         &o,
-        ObligationStatus::Suspended { reason: SuspendReason::Staff { reason: SmolStr::new(reason) } },
-        None,
+        SuspendReason::Staff { reason: SmolStr::new(reason) },
+        ctx.w.now(),
     );
     let id = next.id;
     api::put_obligation(ctx, next);
@@ -3486,10 +3505,15 @@ fn obligation_suspend(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 ///   happened instead of the periods vanishing.
 fn obligation_resume(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let o = obligation_of(ctx, ctx.args.lhs())?;
-    let ObligationStatus::Suspended { reason } = &o.status else {
+    if !matches!(o.status, ObligationStatus::Suspended { .. }) {
         return Err(CmdError::msg(format!("Obligation #{} is not suspended.", o.id)));
-    };
-    if let SuspendReason::Escalated(alert) = reason {
+    }
+    // Look-back fold, D-LBK-1: the obligation carries every holder, and this verb
+    // lifts exactly one of them — staff's own. The ladder's key is `@econ/ack`'s, and
+    // a layered module's key is that module's; refusing both here is what keeps
+    // "returns to the due pool only when the set is empty" true.
+    let holders = o.holders();
+    if let Some(alert) = holders.iter().find_map(SuspensionKey::escalation_id) {
         return Err(CmdError::msg(format!(
             "Obligation #{} is suspended by alert #{alert}, which is still open. Answer the alert \
              instead — `@econ/alerts {alert}` shows the recommended fix, and `@econ/ack {alert}` \
@@ -3497,30 +3521,28 @@ fn obligation_resume(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             o.id
         )));
     }
-    let now = ctx.w.now();
-    let clock_now = {
-        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
-        Clocks::new(now, ctx.w.game_now_unix())
-            .now_on(o.schedule.clock, store.snapshot(), o.schedule.manual_now)
-    };
-    // The gap, on the obligation's own clock. `forgive_all` re-anchors past `now`
-    // and consumes no period index, so no deterministic key is reused.
-    let mut next = match clock_now {
-        Some(clock_now) => {
-            let due = crate::due_periods(&o.schedule, clock_now);
-            if due > 0 {
-                crate::forgive_all(&o, due, crate::ForgiveCause::Suspension, clock_now)
-            } else {
-                o.clone()
-            }
-        }
-        None => o.clone(),
-    };
-    let forgiven = next.forgiven_total.saturating_sub(o.forgiven_total);
-    next = transition(&next, ObligationStatus::Active, Some(ObligationEvent::Resumed { at: now }));
-    let (id, due_at) = (next.id, next.schedule.next_due);
-    api::put_obligation(ctx, next);
-    info(ctx, format!("Obligation #{id} resumed; the next period falls due at {due_at}."));
+    if let Some(held) = holders.iter().find(|k| k.is_module_hold()) {
+        return Err(CmdError::msg(format!(
+            "Obligation #{} is held out of the due pool by `{held}`, which a module holds; it \
+             returns to the due pool when that hold is released, not by this verb.",
+            o.id
+        )));
+    }
+    let before = o.forgiven_total;
+    let id = o.id;
+    let returned = api::resume_obligation(ctx, id, &SuspensionKey::staff())
+        .map_err(|e| CmdError::msg(e.to_string()))?;
+    let after = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().obligation(id).cloned());
+    let (forgiven, due_at) =
+        after.map_or((0, 0), |o| (o.forgiven_total.saturating_sub(before), o.schedule.next_due));
+    if returned {
+        info(ctx, format!("Obligation #{id} resumed; the next period falls due at {due_at}."));
+    } else {
+        info(ctx, format!("Obligation #{id}: the staff hold is released; it is still held."));
+    }
     if forgiven > 0 {
         info(
             ctx,
@@ -3684,6 +3706,15 @@ fn obligation_reinstate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !matches!(o.status, ObligationStatus::Delinquent) {
         return Err(CmdError::msg(format!("Obligation #{} is not delinquent.", o.id)));
     }
+    // Look-back fold, D-LBK-1: a holder's key on a delinquent obligation keeps it out
+    // of the pool through a reinstatement too.
+    if let Some(held) = o.holders().iter().next() {
+        return Err(CmdError::msg(format!(
+            "Obligation #{} is held out of the due pool by `{held}`; it cannot be reinstated \
+             until that hold is released.",
+            o.id
+        )));
+    }
     // A5: reinstating puts the obligation straight back in the due pool, so both
     // sides must still be able to carry it. Without this the very next sweep found a
     // closed or frozen account, refused, paged a staffer, and suspended the record
@@ -3789,28 +3820,49 @@ fn econ_ack(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let subject = record.subject;
     api::put_escalation(ctx, record);
 
+    // Look-back fold, D-LBK-1: acknowledging releases the ladder's own key and
+    // nothing else. With another holder left (a staff suspension, a layered module's
+    // hold) the obligation stays out of the pool and the line says so.
     let mut resumed = None;
     if let EscalationSubject::Obligation(oid) = subject {
-        let suspended = ctx.w.module_state::<EconomyStore>().and_then(|s| {
-            s.snapshot().obligation(oid).filter(|o| {
-                matches!(&o.status, ObligationStatus::Suspended { reason: SuspendReason::Escalated(e) } if *e == id)
-            }).cloned()
-        });
-        if let Some(o) = suspended {
-            let next =
-                transition(&o, ObligationStatus::Active, Some(ObligationEvent::Resumed { at: now }));
-            api::put_obligation(ctx, next);
-            resumed = Some(oid);
+        let key = SuspensionKey::escalation(id);
+        let held = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .and_then(|s| s.snapshot().obligation(oid).map(|o| o.held_by(&key)))
+            .unwrap_or(false);
+        if held {
+            match api::resume_obligation(ctx, oid, &key) {
+                Ok(returned) => resumed = Some((oid, returned)),
+                Err(error) => tracing::warn!(obligation = oid.0, %error, "economy: ack could not release"),
+            }
         }
     }
     info(ctx, format!("Alert #{id} acknowledged."));
     match resumed {
-        Some(oid) => {
+        Some((oid, true)) => {
             info(ctx, format!("Obligation #{oid} is back in the due pool."));
             info(
                 ctx,
-                "The periods it missed while suspended are forgiven by the next sweep, not charged."
+                "The periods that fell due while it was suspended were forgiven as they fell due, \
+                 not charged."
                     .to_string(),
+            );
+        }
+        Some((oid, false)) => {
+            let holders: Vec<String> = ctx
+                .w
+                .module_state::<EconomyStore>()
+                .and_then(|s| s.snapshot().obligation(oid).map(|o| {
+                    o.holders().iter().map(ToString::to_string).collect()
+                }))
+                .unwrap_or_default();
+            info(
+                ctx,
+                format!(
+                    "Obligation #{oid} is still out of the due pool: it is held by {}.",
+                    holders.join(", ")
+                ),
             );
         }
         None => match subject {
@@ -3845,6 +3897,15 @@ fn econ_ack(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 format!(
                     "Tenancy #{tid} is unchanged: nothing ends a home automatically. \
                      @tenancy/resolve {tid}=extend|end|waive is the decision."
+                ),
+            ),
+            // Look-back fold, D-LBK-1: a quarantined room is released only by
+            // re-validation, never by an acknowledgement.
+            EscalationSubject::HousingRoom(room) => info(
+                ctx,
+                format!(
+                    "Room #{room} is still under housing review: acknowledging does not lift a \
+                     quarantine (@housing/quarantine show)."
                 ),
             ),
             EscalationSubject::Obligation(_) | EscalationSubject::Hold(_) => {}

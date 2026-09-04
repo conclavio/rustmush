@@ -83,8 +83,8 @@ pub fn sheet_resources(w: &World, who: ObjId) -> Option<u8> {
 /// `backgrounds:Haven`, when the character has any (D-E5-7).
 ///
 /// Read for exactly one purpose — to write [`HavenQualities`](record::HavenQualities)
-/// onto the profile, which nothing then reads back. Haven never selects a property,
-/// never discounts rent, and never becomes a `PropertyTier`.
+/// onto the profile, which `+career` renders and nothing interprets. Haven never
+/// selects a property, never discounts rent, and never becomes a `PropertyTier`.
 #[must_use]
 pub fn sheet_haven(w: &World, who: ObjId) -> Option<u8> {
     let doc = w

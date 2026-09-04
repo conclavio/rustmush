@@ -41,9 +41,49 @@ pub const TICK_TAG: &str = "wod.economy";
 /// compares cadence positions, so this rate never affects what is evaluated
 /// (E5b's deviation 6, same rule).
 pub const TICK_PERIOD_SECS: u64 = 30;
-/// The most profiles one fire may evaluate (housing's `MAX_ASSESSMENTS_PER_FIRE`,
-/// restated for this tick so both bounds are visible where they apply).
-pub const MAX_EVALUATIONS_PER_FIRE: usize = 128;
+/// The most profiles one fire may **visit** — touch at all, due or not (look-back
+/// fold, D-LBK-2; housing's `MAX_VISITED_PER_FIRE`, restated so both bounds are
+/// visible where they apply). The cursor advances past the last visited id.
+pub const MAX_VISITED_PER_FIRE: usize = 256;
+/// The most profiles one fire may **work** — evaluate one period of (housing's
+/// `MAX_WORKED_PER_FIRE`).
+pub const MAX_WORKED_PER_FIRE: usize = 128;
+/// The worked budget's E5c name, kept for readers of 08d.
+pub const MAX_EVALUATIONS_PER_FIRE: usize = MAX_WORKED_PER_FIRE;
+
+/// What the last evaluation fire cost — exposed for tests (D-LBK-2's budgets are
+/// claims, and a claim needs a counter).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct EvalStats {
+    /// Profiles the scan touched, due or not.
+    pub visited: usize,
+    /// Profiles that evaluated one period.
+    pub worked: usize,
+    /// Full `SpendingProfile` records cloned (the due check reads the small
+    /// `eval:{obj}` document first, so an all-skipped fire clones nothing).
+    pub cloned: usize,
+    /// Whether the fire skipped the scan entirely — the idle short-circuit.
+    pub short_circuited: bool,
+}
+
+/// The idle short-circuit's key (D-LBK-2): the cadence position and the population
+/// version at the end of the last complete sweep that found nothing due.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct IdleMark {
+    pub(crate) position: i64,
+    pub(crate) version: u64,
+}
+
+/// A sweep in progress across fires (walked [`MAX_VISITED_PER_FIRE`] at a time); only
+/// a **complete** walk that found nothing due arms the idle mark.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct IdleScan {
+    pub(crate) position: i64,
+    pub(crate) version: u64,
+    pub(crate) visited: usize,
+    pub(crate) population: usize,
+    pub(crate) clean: bool,
+}
 
 /// `profile:{obj}`.
 #[must_use]
@@ -101,6 +141,16 @@ pub struct WodEconomyStore {
     pub(crate) cadence_created: bool,
     /// The `wod.usd` instrument id, in exact mode.
     pub(crate) instrument: Option<mush_economy::InstrumentId>,
+    /// Bumped by every mutator that changes the population (a profile created — by
+    /// chargen, `migrate` or a boot re-derivation) — half of the tick's idle
+    /// short-circuit key (D-LBK-2); the other half is the cadence position.
+    pub(crate) population_version: u64,
+    /// The idle mark, once a complete sweep found nothing due.
+    pub(crate) idle: Option<IdleMark>,
+    /// The sweep in progress, when one spans fires.
+    pub(crate) scan: Option<IdleScan>,
+    /// What the last fire cost.
+    pub(crate) last_fire: EvalStats,
 }
 
 impl WodEconomyStore {
@@ -126,6 +176,21 @@ impl WodEconomyStore {
     #[must_use]
     pub fn eval_state(&self, obj: ObjId) -> EvalState {
         self.eval.get(&obj).copied().unwrap_or_default()
+    }
+    /// The population version the tick's short-circuit is keyed on (D-LBK-2).
+    #[must_use]
+    pub fn population_version(&self) -> u64 {
+        self.population_version
+    }
+    /// What the last evaluation fire cost (D-LBK-2).
+    #[must_use]
+    pub fn last_fire(&self) -> EvalStats {
+        self.last_fire
+    }
+    /// The rotation cursor the next fire resumes at.
+    #[must_use]
+    pub fn cursor(&self) -> u32 {
+        self.cursor
     }
     /// The cadence clock everything is assessed on, once resolved.
     #[must_use]
@@ -192,9 +257,15 @@ fn push_op(out: &mut Outbox, op: ModuleWrite) {
 }
 
 /// Install a profile into RAM and queue its doc. Both always happen together.
+///
+/// A **new** profile bumps the population version (D-LBK-2): the tick's idle
+/// short-circuit is keyed on it, so a character who joins the population between
+/// periods is evaluated on the very next fire rather than after the next advance.
 pub(crate) fn put_profile(ctx: &mut Ctx<'_>, p: SpendingProfile) {
-    if let Some(store) = ctx.w.module_state_mut::<WodEconomyStore>() {
-        store.profiles.insert(p.obj, p.clone());
+    if let Some(store) = ctx.w.module_state_mut::<WodEconomyStore>()
+        && store.profiles.insert(p.obj, p.clone()).is_none()
+    {
+        store.population_version = store.population_version.saturating_add(1);
     }
     push_op(ctx.out, ModuleWrite::JsonSet {
         key: profile_key(p.obj),

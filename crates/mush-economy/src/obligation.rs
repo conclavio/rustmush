@@ -22,6 +22,8 @@
 //!   from `periods_settled`, so a restart mid-sweep rebuilds the same keys and a
 //!   re-post resolves to `AlreadyPosted` rather than double-charging.
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
@@ -80,7 +82,96 @@ impl Default for GracePolicy {
     }
 }
 
-/// Why an obligation is out of the due pool.
+/// The largest [`SuspensionKey`] a record stores (the crate's bounded-string
+/// discipline).
+pub const MAX_SUSPENSION_KEY_BYTES: usize = 64;
+
+/// **Who is holding an obligation out of the due pool** (E1–E5 look-back fold,
+/// D-LBK-1).
+///
+/// A suspension used to be one status carrying one reason, so two holders could not
+/// coexist: the sweep's page-suspension and a layered module's hold would have
+/// overwritten each other, and whichever released first would have returned the
+/// obligation to the due pool over the other's head. An obligation now carries a
+/// **set** of these ([`Obligation::suspensions`]): it leaves the due pool while the
+/// set is non-empty and returns only when the set is empty
+/// ([`crate::suspend_obligation`] / [`crate::resume_obligation`]). The sweep's own key
+/// is [`SuspensionKey::escalation`], a staff suspension's is [`SuspensionKey::staff`],
+/// and a layered module names its own (housing's `housing.corrupt:room:<room>`) —
+/// the economy stores and renders a module key and never interprets it.
+///
+/// Bounded and free of whitespace, so it round-trips as a document field and reads
+/// as one token in an alert or a `@obligation/show` line.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "SmolStr", into = "SmolStr")]
+pub struct SuspensionKey(SmolStr);
+
+impl SuspensionKey {
+    /// Build a key: 1..=[`MAX_SUSPENSION_KEY_BYTES`] bytes, no whitespace, no control
+    /// characters. `None` otherwise.
+    #[must_use]
+    pub fn new(s: &str) -> Option<SuspensionKey> {
+        let s = s.trim();
+        if s.is_empty()
+            || s.len() > MAX_SUSPENSION_KEY_BYTES
+            || s.chars().any(|c| c.is_whitespace() || c.is_control())
+        {
+            return None;
+        }
+        Some(SuspensionKey(SmolStr::new(s)))
+    }
+    /// The key a staff suspension (`@obligation/suspend`) holds.
+    #[must_use]
+    pub fn staff() -> SuspensionKey {
+        SuspensionKey(SmolStr::new_static("staff"))
+    }
+    /// The key the ladder holds while alert `id` is open (`@econ/ack` releases it).
+    #[must_use]
+    pub fn escalation(id: EscalationId) -> SuspensionKey {
+        SuspensionKey(SmolStr::new(format!("escalation:{}", id.0)))
+    }
+    /// The key, as text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+    /// The alert this key stands for, when it is the ladder's.
+    #[must_use]
+    pub fn escalation_id(&self) -> Option<EscalationId> {
+        self.0.strip_prefix("escalation:").and_then(|n| n.parse::<u64>().ok()).map(EscalationId)
+    }
+    /// Whether this key is a **layered module's** hold rather than the economy's own
+    /// (staff or the ladder) — the ones `@obligation/resume` may not lift.
+    #[must_use]
+    pub fn is_module_hold(&self) -> bool {
+        self.as_str() != "staff" && self.escalation_id().is_none()
+    }
+}
+
+impl TryFrom<SmolStr> for SuspensionKey {
+    type Error = String;
+
+    fn try_from(s: SmolStr) -> Result<SuspensionKey, String> {
+        SuspensionKey::new(s.as_str()).ok_or_else(|| {
+            format!("a suspension key is 1..={MAX_SUSPENSION_KEY_BYTES} bytes with no whitespace")
+        })
+    }
+}
+
+impl From<SuspensionKey> for SmolStr {
+    fn from(k: SuspensionKey) -> SmolStr {
+        k.0
+    }
+}
+
+impl std::fmt::Display for SuspensionKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Why an obligation is out of the due pool — the **rendered** reason. The holders
+/// themselves are [`Obligation::suspensions`]; this is the first holder's word for it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SuspendReason {
     /// A staff act.
@@ -90,6 +181,37 @@ pub enum SuspendReason {
     },
     /// A level-2 escalation is waiting on a human decision (§4.6).
     Escalated(EscalationId),
+    /// A layered module holds it under its own key (look-back fold, D-LBK-1): the
+    /// economy neither interprets the key nor lifts it — only the module's own
+    /// [`crate::resume_obligation`] does.
+    Held {
+        /// The holder's key.
+        key: SuspensionKey,
+    },
+}
+
+impl SuspendReason {
+    /// The [`SuspensionKey`] this reason stands for.
+    #[must_use]
+    pub fn key(&self) -> SuspensionKey {
+        match self {
+            SuspendReason::Staff { .. } => SuspensionKey::staff(),
+            SuspendReason::Escalated(id) => SuspensionKey::escalation(*id),
+            SuspendReason::Held { key } => key.clone(),
+        }
+    }
+    /// The rendered reason for a holder identified only by its key (the reason
+    /// rotates to a remaining holder when the first one releases).
+    #[must_use]
+    pub fn for_key(key: &SuspensionKey) -> SuspendReason {
+        if let Some(id) = key.escalation_id() {
+            return SuspendReason::Escalated(id);
+        }
+        if key.as_str() == "staff" {
+            return SuspendReason::Staff { reason: SmolStr::new_static("staff") };
+        }
+        SuspendReason::Held { key: key.clone() }
+    }
 }
 
 /// What created this obligation.
@@ -217,6 +339,21 @@ pub enum ObligationEvent {
         /// When.
         at: i64,
     },
+    /// A layered module took a hold on this obligation (look-back fold, D-LBK-1).
+    Held {
+        /// The holder's key.
+        key: SuspensionKey,
+        /// When.
+        at: i64,
+    },
+    /// A layered module released its hold; the obligation returns to the due pool
+    /// only when no holder remains ([`ObligationEvent::Resumed`] says when it did).
+    Released {
+        /// The holder's key.
+        key: SuspensionKey,
+        /// When.
+        at: i64,
+    },
 }
 
 /// A recurring debt: a fixed amount per period, on a named clock, with bounded
@@ -286,8 +423,34 @@ pub struct Obligation {
     /// How many periods have been **forgiven**, ever (D-E4-14).
     #[serde(default)]
     pub forgiven_total: u32,
+    /// **Every holder keeping this obligation out of the due pool** (look-back fold,
+    /// D-LBK-1). Non-empty ⇒ the status is never `Active`/`Grace`; the obligation
+    /// returns to the due pool only when the last holder releases ([`release`]). A
+    /// document written before the fold carries none, and its `Suspended { reason }`
+    /// is its one implicit holder ([`Obligation::holders`]).
+    #[serde(default)]
+    pub suspensions: BTreeSet<SuspensionKey>,
     /// Staleness stamp.
     pub revision: u64,
+}
+
+impl Obligation {
+    /// Every holder keeping this obligation out of the due pool: the recorded set,
+    /// plus the status reason's own key for a document written before the set
+    /// existed.
+    #[must_use]
+    pub fn holders(&self) -> BTreeSet<SuspensionKey> {
+        let mut out = self.suspensions.clone();
+        if let ObligationStatus::Suspended { reason } = &self.status {
+            out.insert(reason.key());
+        }
+        out
+    }
+    /// Whether `key` holds this obligation out of the due pool.
+    #[must_use]
+    pub fn held_by(&self, key: &SuspensionKey) -> bool {
+        self.holders().contains(key)
+    }
 }
 
 /// The deterministic idempotency key for one period of one obligation:
@@ -544,6 +707,68 @@ pub fn forgive_all(o: &Obligation, periods: u32, cause: ForgiveCause, now: i64) 
         at: now,
     });
     next
+}
+
+/// **Take a hold** on an obligation under `reason`'s key (look-back fold, D-LBK-1).
+///
+/// The key joins [`Obligation::suspensions`]; an obligation in the due pool leaves
+/// it (`Suspended { reason }`), one already suspended keeps its first holder's
+/// reason, and one that is `Delinquent` or terminal is left where it is — the set
+/// still records the holder, so [`release`] cannot return it to the pool over the
+/// holder's head. Pure: the caller persists. A key already held changes nothing.
+#[must_use]
+pub fn hold(o: &Obligation, reason: SuspendReason, now: i64) -> Obligation {
+    let key = reason.key();
+    let fresh = !o.holders().contains(&key);
+    let in_pool = o.status.in_due_pool();
+    if !fresh && !in_pool {
+        return o.clone();
+    }
+    let mut next = o.clone();
+    next.suspensions.insert(key.clone());
+    if in_pool {
+        next.status = ObligationStatus::Suspended { reason: reason.clone() };
+    }
+    if matches!(reason, SuspendReason::Held { .. }) && fresh {
+        push_event(&mut next, ObligationEvent::Held { key, at: now });
+    }
+    next.revision += 1;
+    next
+}
+
+/// **Release** `key`'s hold (look-back fold, D-LBK-1).
+///
+/// Returns the obligation and whether it **returned to the due pool** — which happens
+/// only when `key` was the last holder of a `Suspended` obligation. With other
+/// holders left, the status stays `Suspended` and its rendered reason rotates to a
+/// remaining holder when it was this key's. A key that holds nothing is a no-op.
+/// Pure: the caller forgives the gap and persists ([`crate::resume_obligation`]).
+#[must_use]
+pub fn release(o: &Obligation, key: &SuspensionKey, now: i64) -> (Obligation, bool) {
+    let mut holders = o.holders();
+    if !holders.remove(key) {
+        return (o.clone(), false);
+    }
+    let mut next = o.clone();
+    next.suspensions.remove(key);
+    next.revision += 1;
+    if key.is_module_hold() {
+        push_event(&mut next, ObligationEvent::Released { key: key.clone(), at: now });
+    }
+    let ObligationStatus::Suspended { reason } = &o.status else {
+        return (next, false);
+    };
+    if holders.is_empty() {
+        next.status = ObligationStatus::Active;
+        push_event(&mut next, ObligationEvent::Resumed { at: now });
+        return (next, true);
+    }
+    if reason.key() == *key
+        && let Some(remaining) = holders.iter().next()
+    {
+        next.status = ObligationStatus::Suspended { reason: SuspendReason::for_key(remaining) };
+    }
+    (next, false)
 }
 
 /// Classify why periods went unsettled, from the economy's **own** persisted sweep

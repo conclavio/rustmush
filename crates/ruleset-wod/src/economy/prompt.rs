@@ -234,7 +234,9 @@ pub fn expire(profile: &mut SpendingProfile, period: u64, now: i64) -> Option<Pr
         PromptDefault::PendingWindow => format!("prompt #{id} lapsed; staff still have it"),
     });
     profile.prompt = None;
-    profile.revision = profile.revision.saturating_add(1);
+    // No revision bump here (look-back fold, E5c-C90): the one caller is the
+    // evaluation, which bumps the revision once for the whole period's changes
+    // right after this returns; bumping here too counted every lapse twice.
     Some(default)
 }
 

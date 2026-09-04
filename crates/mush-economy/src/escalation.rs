@@ -105,6 +105,10 @@ pub enum EscalationSubject {
     HousingProperty(u64),
     /// One **housing tenancy** (E5b) — see [`EscalationSubject::HousingProperty`].
     HousingTenancy(u64),
+    /// One **world room** a housing quarantine is about (look-back fold, D-LBK-1: a
+    /// room two properties both hold) — see [`EscalationSubject::HousingProperty`]
+    /// for why it lives here. The `u32` is the raw object id.
+    HousingRoom(u32),
     /// The whole economy — the level-3 case, and the only one that is not local.
     Economy,
 }
@@ -119,6 +123,7 @@ impl EscalationSubject {
             EscalationSubject::Contract(id) => format!("contract #{id}"),
             EscalationSubject::HousingProperty(id) => format!("housing property #{id}"),
             EscalationSubject::HousingTenancy(id) => format!("housing tenancy #{id}"),
+            EscalationSubject::HousingRoom(id) => format!("housing room #{id}"),
             EscalationSubject::Economy => "the economy".to_string(),
         }
     }

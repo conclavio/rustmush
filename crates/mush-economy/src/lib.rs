@@ -147,9 +147,10 @@ pub use snapshot::EconomySnapshot;
 
 // E4a — clocks, holds, obligations, contracts.
 pub use clock::{
-    CadenceClock, CadenceSource, Clocks, DEFAULT_CATCH_UP, EconomicClock, EconomicDeadline,
-    EconomicSchedule, MAX_CATCH_UP_CAP, SWEEP_GAP_DOWNTIME_SECS, SWEEP_PERIOD_SECS, advance,
-    advance_cadence, advance_cadence_manual, cadence_elapsed, due_periods, reanchor,
+    CADENCE_GENERATION_INITIAL, CADENCE_SCHEMA_LEGACY, CadenceClock, CadenceSource, Clocks,
+    DEFAULT_CATCH_UP, EconomicClock, EconomicDeadline, EconomicSchedule, MAX_CATCH_UP_CAP,
+    SWEEP_GAP_DOWNTIME_SECS, SWEEP_PERIOD_SECS, advance, advance_cadence, advance_cadence_manual,
+    cadence_elapsed, due_periods, reanchor,
 };
 pub use contract::{
     Acceptance, Attestation, AttestorRef, AttestorSet, CanonOutcomeKinds, ConsentSurface,
@@ -174,9 +175,10 @@ pub use contract::{
 };
 pub use obligation::{
     DEFAULT_GRACE_PERIODS, ForgiveCause, GracePolicy, MAX_GRACE_PERIODS, MAX_OBLIGATION_HISTORY,
-    Obligation, ObligationCause, ObligationError, ObligationEvent, ObligationStatus, SettleOutcome,
-    SuspendReason, SweepIntent, advance as advance_obligation, classify_forgiveness, due_now,
-    forgive, forgive_all, obligation_key, plan_sweep,
+    MAX_SUSPENSION_KEY_BYTES, Obligation, ObligationCause, ObligationError, ObligationEvent,
+    ObligationStatus, SettleOutcome, SuspendReason, SuspensionKey, SweepIntent,
+    advance as advance_obligation, classify_forgiveness, due_now, forgive, forgive_all, hold,
+    obligation_key, plan_sweep, release,
 };
 
 // E4b1 verify fold (M1) — the ruleset's configurable limits.
@@ -205,9 +207,13 @@ pub use api::{
     account_key, acknowledge_escalation, approval_key, asset_key, cadence_key, contract_key,
     create_cadence, create_system_obligation, create_vault, hold_key, instrument_key, issue_title,
     mark_canon_published, open_escalation, obligation_key as obligation_doc_key, open_account, post,
-    post_capability, register_instrument, reverse, set_account_approval, set_account_status,
-    set_asset_frozen, set_economy_frozen, set_system_obligation, set_vault_status, vault_key,
+    post_capability, register_instrument, resume_obligation, reverse, set_account_approval,
+    set_account_status, set_asset_frozen, set_economy_frozen, set_system_obligation,
+    set_vault_status, suspend_obligation, vault_key,
 };
 pub use commands::{may_view_account, may_view_hold, may_view_obligation};
 pub use custody::{ContainerProvider, CustodyError, CustodyProvider, CustodyTable};
-pub use module::{EconomyModule, EconomyScopeUse, EconomyStore, JOURNAL_LOG, NS};
+pub use module::{
+    CHECKPOINT_REVIEW_ENTRIES, CHECKPOINT_REVIEW_SECS, EconomyModule, EconomyScopeUse,
+    EconomyStore, JOURNAL_LOG, NS,
+};

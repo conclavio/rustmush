@@ -244,8 +244,61 @@ pub(crate) fn note_doc(note: &Note) -> serde_json::Value {
     serde_json::to_value(note).expect("Note serializes")
 }
 
-/// Close (or reopen) a job **programmatically**, on behalf of the module that opened
-/// it — RAM + write-through, exactly like [`add_comment`].
+/// Why [`resolve_plain_job`] / [`deny_plain_job`] refused (look-back fold, D-LBK-6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PlainJobError {
+    /// The jobs module is not loaded.
+    NoJobs,
+    /// No job has that id.
+    NoSuchJob(u64),
+    /// The job carries a payload. A payload is applied by `+job/approve` under a
+    /// staffer's authority and nothing else may flip such a job to `Resolved`: that
+    /// is the exact class E4c closed when it made `jobs.resolved` a fact answered
+    /// from the applied-payload marker.
+    PayloadNotPlain(u64),
+    /// The job lives in a queue the caller does not own — producer identity is
+    /// checked, never assumed.
+    WrongQueue {
+        /// The job.
+        job: u64,
+        /// The queue the caller named as its own.
+        expected: SmolStr,
+        /// The queue the job actually lives in.
+        actual: SmolStr,
+    },
+    /// The job is already closed (`Resolved` or `Denied`); a retrying tick writes
+    /// nothing.
+    NotOpen {
+        /// The job.
+        job: u64,
+        /// Where it stands.
+        status: JobStatus,
+    },
+}
+
+impl fmt::Display for PlainJobError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PlainJobError::NoJobs => f.write_str("the jobs module is not loaded"),
+            PlainJobError::NoSuchJob(id) => write!(f, "no such job: {id}"),
+            PlainJobError::PayloadNotPlain(id) => write!(
+                f,
+                "job {id} carries a payload; only +job/approve, which runs it, may resolve it"
+            ),
+            PlainJobError::WrongQueue { job, expected, actual } => write!(
+                f,
+                "job {job} lives in queue {actual:?}, not the caller's {expected:?}"
+            ),
+            PlainJobError::NotOpen { job, status } => write!(f, "job {job} is already {status}"),
+        }
+    }
+}
+
+impl std::error::Error for PlainJobError {}
+
+/// **Resolve a plain (payload-less) job programmatically**, on behalf of the module
+/// that owns its queue (look-back fold, D-LBK-6) — RAM + write-through, exactly like
+/// [`add_comment`].
 ///
 /// The producing-module counterpart to [`open_job`]. `+job/approve` and `+job/deny`
 /// are how a *person* closes a ticket; this is how the module that raised one closes
@@ -254,17 +307,93 @@ pub(crate) fn note_doc(note: &Note) -> serde_json::Value {
 /// and when the tenant's support comes back the question is simply gone — leaving the
 /// job open would put an ST in front of a decision about a home that is fine.
 ///
-/// It deliberately does **not** run payload handlers: a payload is applied by
-/// `+job/approve` under a staffer's authority, and a module closing its own ticket is
-/// not that. Pass `JobStatus::Resolved` for "answered", `JobStatus::Denied` for
-/// "withdrawn"; `note` (when non-empty) is recorded as a closing comment attributed
-/// to `by`.
+/// Three refusals make it the **only** external terminal path and keep it narrow:
+///
+/// - a job that carries a **payload** is refused ([`PlainJobError::PayloadNotPlain`]).
+///   A payload is applied by `+job/approve` under a staffer's authority, and a module
+///   flipping such a job to `Resolved` without running it is precisely the shape E4c
+///   closed when it made `jobs.resolved` a fact answered from the applied marker —
+///   this path runs **no** payload handler and can therefore resolve nothing that has
+///   one;
+/// - a job from any queue but `queue`, the caller's own, is refused
+///   ([`PlainJobError::WrongQueue`]) — "only the producer resolves" is checked, not
+///   assumed;
+/// - a job already closed is refused ([`PlainJobError::NotOpen`]), so a retrying tick
+///   writes nothing.
+///
+/// `note` (when non-empty) is recorded as a closing comment attributed to `by`.
+///
+/// # Errors
+///
+/// [`PlainJobError`].
+pub fn resolve_plain_job(
+    ctx: &mut Ctx<'_>,
+    id: u64,
+    queue: &str,
+    by: ObjId,
+    note: &str,
+) -> Result<(), PlainJobError> {
+    close_plain_job(ctx, id, queue, by, JobStatus::Resolved, note)
+}
+
+/// **Deny (withdraw) a plain job programmatically** — [`resolve_plain_job`]'s other
+/// terminal, under exactly the same three refusals.
+///
+/// # Errors
+///
+/// [`PlainJobError`].
+pub fn deny_plain_job(
+    ctx: &mut Ctx<'_>,
+    id: u64,
+    queue: &str,
+    by: ObjId,
+    note: &str,
+) -> Result<(), PlainJobError> {
+    close_plain_job(ctx, id, queue, by, JobStatus::Denied, note)
+}
+
+fn close_plain_job(
+    ctx: &mut Ctx<'_>,
+    id: u64,
+    queue: &str,
+    by: ObjId,
+    status: JobStatus,
+    note: &str,
+) -> Result<(), PlainJobError> {
+    {
+        let st = ctx.w.module_state::<JobsState>().ok_or(PlainJobError::NoJobs)?;
+        let job = st.jobs.get(&id).ok_or(PlainJobError::NoSuchJob(id))?;
+        if job.payload.is_some() {
+            return Err(PlainJobError::PayloadNotPlain(id));
+        }
+        if !job.queue.eq_ignore_ascii_case(queue) {
+            return Err(PlainJobError::WrongQueue {
+                job: id,
+                expected: SmolStr::new(queue),
+                actual: job.queue.clone(),
+            });
+        }
+        if job.status.is_terminal() {
+            return Err(PlainJobError::NotOpen { job: id, status: job.status });
+        }
+    }
+    set_job_status(ctx, id, by, status, note).map_err(|_| PlainJobError::NoSuchJob(id))
+}
+
+/// Close (or reopen) a job — RAM + write-through, exactly like [`add_comment`].
+///
+/// **Crate-private since the look-back fold (D-LBK-6).** It takes any [`JobStatus`]
+/// and runs no payload handler, so as a public surface it let a module flip a
+/// payload-bearing job to `Resolved` without applying its payload. The external
+/// terminal path is [`resolve_plain_job`] / [`deny_plain_job`], which refuse a
+/// payload, check the queue, and refuse a closed job; `+job/approve|deny` keep the
+/// internal path where payload handlers run.
 ///
 /// # Errors
 ///
 /// Errors if the jobs module is not loaded, no job has that id, or the job is
 /// already in that status (so a retrying tick writes nothing).
-pub fn set_job_status(
+pub(crate) fn set_job_status(
     ctx: &mut Ctx<'_>,
     id: u64,
     by: ObjId,

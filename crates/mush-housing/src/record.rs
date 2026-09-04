@@ -16,7 +16,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use mush_core::ObjId;
-use mush_economy::{Amount, CadenceId, ContractId, EscalationId, ObligationId};
+use mush_economy::{CadenceId, ContractId, EscalationId, ObligationId};
 use mush_org::{OrgId, OrgScopeId, PrincipalId};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -171,10 +171,6 @@ pub struct Property {
     /// The org compartment that manages it (D-E3-5); `None` for a system landlord.
     #[serde(default)]
     pub landlord_scope: Option<OrgScopeId>,
-    /// Exact-mode rent per cadence period; `None` in abstract mode, which posts no
-    /// pretend rent (owner answer 6).
-    #[serde(default)]
-    pub upkeep: Option<Amount>,
     /// Approved features; ≤ [`MAX_FEATURES`].
     #[serde(default)]
     pub features: Vec<Feature>,
@@ -218,7 +214,6 @@ impl Property {
             tier,
             landlord,
             landlord_scope: None,
-            upkeep: None,
             features: Vec::new(),
             status: PropertyStatus::Vacant,
             revision: 1,
@@ -307,8 +302,11 @@ struct PropertyWire {
     landlord: PrincipalId,
     #[serde(default)]
     landlord_scope: Option<OrgScopeId>,
-    #[serde(default)]
-    upkeep: Option<Amount>,
+    /// `upkeep` was recorded and never charged (E5b-D34, 08g §12.1 item 11: dropped).
+    /// It is accepted and **ignored** so an older document still parses, and never
+    /// written again.
+    #[serde(default, rename = "upkeep")]
+    _upkeep: Option<serde_json::Value>,
     #[serde(default)]
     features: Vec<Feature>,
     #[serde(default)]
@@ -344,7 +342,6 @@ impl TryFrom<PropertyWire> for Property {
             }
         }
         p.landlord_scope = w.landlord_scope;
-        p.upkeep = w.upkeep;
         p.features = w.features;
         p.status = w.status;
         p.revision = w.revision;

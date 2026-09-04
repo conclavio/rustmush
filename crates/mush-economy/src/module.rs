@@ -38,6 +38,12 @@ use crate::ids::{
 use crate::record::{Account, EconomicTransaction, Vault};
 use crate::snapshot::EconomySnapshot;
 
+/// The cold-replay wall time past which the durability checkpoint becomes the next
+/// cut's first item (08g §12.1 item 5, C17). Boot warns when it is crossed.
+pub const CHECKPOINT_REVIEW_SECS: u64 = 5;
+/// The replayed-entry count past which the same review is due (08g §12.1 item 5).
+pub const CHECKPOINT_REVIEW_ENTRIES: usize = 1_000_000;
+
 /// The module id and persistence namespace.
 pub const NS: &str = "economy";
 /// The single journal log id (the world's double-entry ledger).
@@ -695,7 +701,24 @@ impl GameModule for EconomyModule {
     }
 
     fn on_world_loaded(&mut self, ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModError> {
+        let started = std::time::Instant::now();
         let mut store = boot::load_boot(ctx, data, &self.providers, &self.canon_outcome_kinds)?;
+        // C17 (08g §12.1 item 5): the cold replay is the whole boot cost until a
+        // durability checkpoint exists. Say what it cost, every boot, and say loudly
+        // when it crosses the line the owner drew.
+        let elapsed = started.elapsed();
+        let entries = store.transactions().count();
+        let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+        tracing::info!(entries, elapsed_ms, "economy: journal replayed at boot");
+        if elapsed.as_secs() > CHECKPOINT_REVIEW_SECS || entries > CHECKPOINT_REVIEW_ENTRIES {
+            tracing::warn!(
+                entries,
+                elapsed_ms,
+                "economy: the cold journal replay crossed the checkpoint-review threshold \
+                 ({CHECKPOINT_REVIEW_SECS} s or {CHECKPOINT_REVIEW_ENTRIES} entries): per 08g \
+                 §12.1 item 5 the durability checkpoint becomes the next cut's first item"
+            );
+        }
         // Inject the wiring-frozen tables and config into the freshly booted slot.
         store.providers = self.providers.clone();
         store.config = self.config.clone();

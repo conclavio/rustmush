@@ -16,8 +16,9 @@ one variation for E3: by owner instruction the adversarial verify ran **once, ov
 diff, after E3d**, and its confirmed findings were folded in a separate commit (see the last E3
 Shipped row) rather than per cut. **E4 went back to per-cut verifies** — E4a, E4b1 and E4b2 each
 have their own adversarial pass and fold commit, and 08c §3.7 / §4.8 / §5.2 record the outcomes.
-**E5 kept the per-cut cadence**: E5a and E5b each have their own adversarial pass and fold, recorded
-in 08d §3.6 and §4.2; E5c's is still to run.
+**E5 kept the per-cut cadence**: E5a, E5b and E5c each have their own adversarial pass and fold, recorded
+in 08d §3.6, §4.2 and §5.7; the **E1–E5 look-back** (08g) then folded its fix-before list — the K side's
+D-LBK items (08h) merged in — as one more row below.
 
 ## Shipped
 
@@ -42,12 +43,13 @@ in 08d §3.6 and §4.2; E5c's is still to run.
 | **E4a** | `mush-economy` (pure) | `29282fe`, fold `13f11d0` | `Hold`/`HoldOp`/`HoldEffect` + available-balance enforcement; clock/schedule/catch-up math; `Obligation` and `Contract` records with their pure state machines; the deterministic split; `ContractAuth`; `plan_hash` v3; `FactEval`, `ExternalRef` (the `CausalRef` rename), `reverify` |
 | **E4b1** | `mush-economy` module | `0805f5e`, fold `389c521` | holds + obligations live: persistence and boot, journal-derived `held_amount` on its own seq anchor, the **one economy sweep** tick, the graded escalation ladder, `post_with`/`PostAuth`, infallible `install_commit`, `@hold/*`, `@obligation/*`, `@econ/alerts\|ack`, faucet-funded obligations under a mint cap |
 | **E4b2** | `mush-economy` module | `e56c2a9`, fold `4972455` | contracts end to end: draft/offer/accept (escrow at accept)/attest/settle/dispute/cancel/expire, live re-verification, custody locks, `Lease`/`Collateral`, the sweep's contract step, `@contract/*`, the outcome table + roster lock + adjudicator, `EconomicVisibility::Audience`, and the plan-first terminal-transition rule |
-| **E4c** | `mush-economy` + `mush-org` + `mush-jobs` + `mush-server` | `8873863`, fold *(uncommitted)* | the `FactProvider` seam (jobs implements it), the `CanonRecorded` attestation observer, `EconomyObserver` + compact events + the canon evidence bridge, `mush_org::audit`, `@econ/history` under the disclosure filter, `issue_title` for registered system principals; **two `mush-core` changes** — `WorldEvent::CanonRecorded` gains `source`, and (verify fold) `Outbox::pin_deferred` makes a terminal canon commit non-truncatable by a failing command |
-| **E4c verify fold** | economy + jobs + server + core + canon | *(uncommitted)* | three lenses' confirmed findings, each with a regression test (08c §6.2): canon attestors must be **producer-declared outcome kinds** with a mandatory source and a party in `entities`; `jobs.resolved` answers from an applied-payload marker; a missed canon edge is recoverable (`@econ/unfreeze`, activation re-scan, `@contract/resolve <id>=settle [reason]`); deterministic conditions carry an observed-at stamp so `After` can anchor on one; `issue_title` needs a live object and mints a title **generation**; the reservation-visible / contract-hidden rule; publication keyed on a durable `canon_published` marker with a sweep retry |
+| **E4c** | `mush-economy` + `mush-org` + `mush-jobs` + `mush-server` | `8873863`, fold `fa6a979` | the `FactProvider` seam (jobs implements it), the `CanonRecorded` attestation observer, `EconomyObserver` + compact events + the canon evidence bridge, `mush_org::audit`, `@econ/history` under the disclosure filter, `issue_title` for registered system principals; **two `mush-core` changes** — `WorldEvent::CanonRecorded` gains `source`, and (verify fold) `Outbox::pin_deferred` makes a terminal canon commit non-truncatable by a failing command |
+| **E4c verify fold** | economy + jobs + server + core + canon | `fa6a979` | three lenses' confirmed findings, each with a regression test (08c §6.2): canon attestors must be **producer-declared outcome kinds** with a mandatory source and a party in `entities`; `jobs.resolved` answers from an applied-payload marker; a missed canon edge is recoverable (`@econ/unfreeze`, activation re-scan, `@contract/resolve <id>=settle [reason]`); deterministic conditions carry an observed-at stamp so `After` can anchor on one; `issue_title` needs a live object and mints a title **generation**; the reservation-visible / contract-hidden rule; publication keyed on a durable `canon_published` marker with a sweep retry |
 | **E5 plan** | docs | `08d` | three-pass reviewed, plus the owner's twenty answers (08d §10) and the three accepted defaults (§11), all binding |
-| **E5a** | `mush-housing` (pure) | shipped, folded | `Property`/`Tenancy`/`SupportPlan`, the tenancy state machine that **never ends a home on its own** (D-E5-1), the multi-resident best-of assessment (`assess_at` + `harden`), the fail-closed access predicate, the `Obj.home` invariant helpers, the story window's notice decay. 55 tests (08d §3.5/§3.6) |
-| **E5b** | `mush-housing` module | shipped, folded | persistence + boot reconciliation, the `MoveAttempt`/`CarryAttempt` hook, the destroy gate + `ObjDestroyed` backstop, the **pull-model** assessment tick, the lease-backed exact mode, the story job + escalation, `@property/*`, `@tenancy/*`, `+home`, `+guest`. 121 tests (08d §4.1/§4.2) |
-| **E5c** | `ruleset-wod::economy` + `mush-config`/`mush-server` + four additive seams | *(uncommitted)* | the WoD layer: `[wod.economy]` parsed host-side, `SpendingProfile`/`CareerProfile`/four stances, the period evaluation on the cadence clock (one period per fire, rotation-capped), the attention budget with housing preemption, the bounded per-faction pool, non-response defaults, front attribution incl. orphaned fronts, `wod.usd` + three faucets + faucet-funded income in exact mode, the chargen Residence stage and the mode-dependent approval artifacts, `@wod/economy migrate`, `+career`/`+prompt`/`+resources`/`@career/set`. 40 tests (08d §5.6) |
+| **E5a** | `mush-housing` (pure) | `6b606e5`, fold `7155efc` | `Property`/`Tenancy`/`SupportPlan`, the tenancy state machine that **never ends a home on its own** (D-E5-1), the multi-resident best-of assessment (`assess_at` + `harden`), the fail-closed access predicate, the `Obj.home` invariant helpers, the story window's notice decay. 55 tests (08d §3.5/§3.6) |
+| **E5b** | `mush-housing` module | `b1b4254`, fold `d9f9ceb` | persistence + boot reconciliation, the `MoveAttempt`/`CarryAttempt` hook, the destroy gate + `ObjDestroyed` backstop, the **pull-model** assessment tick, the lease-backed exact mode, the story job + escalation, `@property/*`, `@tenancy/*`, `+home`, `+guest`. 66 in `tests/e5b.rs` (crate 121) (08d §4.1/§4.2) |
+| **E5c** | `ruleset-wod::economy` + `mush-config`/`mush-server` + four additive seams | `816edfd`, fold `ba75fc3` | the WoD layer: `[wod.economy]` parsed host-side, `SpendingProfile`/`CareerProfile`/four stances, the period evaluation on the cadence clock (one period per fire, rotation-capped), the attention budget with housing preemption, the bounded per-faction pool, non-response defaults, front attribution incl. orphaned fronts, `wod.usd` + three faucets + faucet-funded income in exact mode, the chargen Residence stage and the mode-dependent approval artifacts, `@wod/economy migrate`, `+career`/`+prompt`/`+resources`/`@career/set`. 60 tests — 40, plus 20 in the fold (08d §5.6/§5.7) |
+| **E1–E5 look-back fold** | economy + housing + jobs + ruleset-wod + server + CI | *(this commit)* | 08g §11's fix-before list, code half (08g §13): CI's Format step advisory until the post-K6 reformat and `--no-fail-fast` on the test step (T1b/T4); housing **boot pass 0** — a room in two properties, two live tenancies on one property, a live tenancy on no property are **quarantined fail-closed** (staff-only at the door, the destroy gate refuses, the tick skips, "(under review)" renders, one page per conflict with the shipped repair, release only by re-validation, `@housing/quarantine show\|recheck`) with the **rent suspended through a new game-neutral economy seam** — an obligation carries a set of `SuspensionKey` holders and leaves/returns to the due pool with the set, the sweep forgives each suspended period as it falls due (`Suspension`), `@econ/ack`/`@obligation/resume`/`reinstate` release only their own key (D-LBK-1); room → `Unique\|Conflict` and property → `Live\|Conflict\|Vacant` projections maintained by the single write path with recomputation-equivalence tests (D-LBK-4a); visited/worked tick budgets 256/128, cursor past the last visited id, due check before the clone, a `population_version`-keyed idle short-circuit in both tickers (D-LBK-2); `TryFrom` wires for `SpendingProfile` and its nested types and a 240-byte cap on a loaded `PendingNotice` (D-LBK-3); `resolve_plain_job`/`deny_plain_job` with queue identity replace the public `set_job_status` (D-LBK-6); `CadenceClock.generation`/`schema` with serde defaults (D-LBK-7, the code half); `register_instrument` create-only + the engine-level `InactiveInstrument` test (E2-C18); the config → `with_reserved_rooms` chain pinned in `mush-server` (E5c-C231/C2); the lapse guard hoisted (E5c-C96); `Property.upkeep` dropped (E5b-D34); the boot replay log + review thresholds (C17); the comment batch. **24 tests** (housing 9, ruleset-wod 5, economy 5, jobs 4, server 1) |
 
 Test tally after E3 (post-fold): **mush-org 46**, **mush-economy 157**, **mush-sim 72**,
 **mush-tactics 52**, **mush-faction 56**, **mush-server 62**; `cargo test --workspace --no-fail-fast` runs 2012 passing. The one
@@ -66,10 +68,18 @@ unbuilt `web/dist`). Both digest pins (E2 `9c917eee…`, E3-shaped `b780e3a0…`
 cut. `cargo fmt` stays off, unchanged.
 
 Test tally after E5 (each cut post-fold): **mush-housing 121** — `e5a.rs` 54, `e5b.rs` 66, 1
-in-crate — and **ruleset-wod +40** in `e5c.rs`.
+in-crate — and **ruleset-wod +60** in `e5c.rs` (40, plus 20 in the E5c fold).
 `cargo test -p ruleset-wod -p mush-housing -p mush-economy -p mush-server` runs **923 passing**;
 `cargo test --workspace` runs **2735 passing across 184 suites, 0 failing**; `cargo clippy
 --workspace --all-targets -- -D warnings` is clean. `cargo fmt` stays off, unchanged.
+
+Test tally after the E1–E5 look-back fold: **mush-housing 130** — `e5a.rs` 54, `e5b.rs` 75, 1
+in-crate — **ruleset-wod 270** (`e5c.rs` 65), **mush-economy 408** (`e4b1.rs` 66), **mush-jobs 31**
+(`jobs.rs` 24), **mush-server 155 (+2 ignored)**. `cargo test -p mush-housing -p ruleset-wod -p mush-economy
+-p mush-jobs -p mush-server` runs **994 passing, 0 failing**; `cargo test --workspace --no-fail-fast`
+runs **2779 passing across 184 suites, 0 failing**; `cargo clippy --workspace --all-targets -- -D
+warnings` is clean. rustfmt: 2,467 hunks in 88 files at `5409c73` (reformat after K6, 08h §3); CI's
+Format step is advisory until then.
 
 ### The E4 seams a later milestone consumes
 
@@ -318,9 +328,10 @@ so a reader can see which cut answered what:
   the request id and the account scope.
 - Still open from that list, unchanged by E4: an `Organization.revision` bump op +
   `SetOrgStatus`/`PutRole` (decision 3); per-asset isolation of the whole-economy freeze; the
-  durability checkpoint (12); wiring `TacticsModule` into the server; `CustodyRef::Registered` has
-  no provider; the inert non-quarantined `Unplaced` placement doc after an interior withdrawal; an
-  operator-eviction verb for a new title owner (E7).
+  durability checkpoint (12); `CustodyRef::Registered` has no provider; the inert non-quarantined
+  `Unplaced` placement doc after an interior withdrawal; an operator-eviction verb for a new title
+  owner (E7). (`TacticsModule` has been wired into `server_modules` since E3c — the line that said
+  otherwise is struck, DL-15.)
 
 ## What E5 closed (the E4 pickup list, resolved)
 

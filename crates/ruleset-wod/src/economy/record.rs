@@ -42,6 +42,40 @@ pub const MAX_SOURCES: usize = 8;
 /// The largest free-text field any of these records stores (the `mush-economy`
 /// bounded-string discipline E5a adopted).
 pub const MAX_TEXT_BYTES: usize = 64;
+/// The most answers one prompt offers (§5.3's "≤ 4"), re-checked on load
+/// (look-back fold, D-LBK-3).
+pub const MAX_PROMPT_OPTIONS: usize = 4;
+/// The most Haven qualities one profile records (`MAX_SOURCES`, restated: the ladder
+/// has five and a hand-written record may not carry more than eight).
+pub const MAX_HAVEN_QUALITIES: usize = 8;
+/// The largest history line (four text fields' worth) and the largest option label
+/// a record stores.
+pub const MAX_LINE_BYTES: usize = MAX_TEXT_BYTES * 4;
+
+// ---------------------------------------------------------------------------
+// The validating wires (look-back fold, D-LBK-3; 08h F3)
+// ---------------------------------------------------------------------------
+//
+// Every persisted type below deserializes **through** a private `…Wire` that re-runs
+// the constructor's invariants and every documented cap. Only `Property` and
+// `Tenancy` had one before; a `SpendingProfile` was a plain derive with defaulted
+// fields, so the caps (`MAX_PROFILE_HISTORY` 32, `MAX_SOURCES` 8, options ≤ 4,
+// qualities ≤ 8, `MAX_TEXT_BYTES` 64, a history line ≤ 256) held on the write path
+// only and a hand-written document carried anything into `+prompt` and `+career`.
+// A document that fails here follows the loader's existing policy: skipped loudly
+// and re-derived in the same boot.
+
+fn over(what: &str, max: usize, n: usize) -> String {
+    format!("wod.economy: {what} is over its cap ({n} > {max})")
+}
+
+fn text_ok(what: &str, s: &str, max: usize) -> Result<(), String> {
+    if s.len() > max { Err(over(what, max, s.len())) } else { Ok(()) }
+}
+
+fn band_ok(what: &str, v: u8, max: u8) -> Result<(), String> {
+    if v > max { Err(over(what, usize::from(max), usize::from(v))) } else { Ok(()) }
+}
 
 /// A pointer at the faction fiction a piece of progress came from (owner answer 20).
 ///
@@ -188,6 +222,7 @@ pub enum PromptShape {
 
 /// One career (§5.2). Housing sees only its opaque `kind`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "CareerProfileWire")]
 pub struct CareerProfile {
     /// A free-text kind (`"detective"`, `"fixer"`), ≤ [`MAX_TEXT_BYTES`].
     pub kind: SmolStr,
@@ -233,6 +268,46 @@ impl CareerProfile {
             risk: 0,
             front: None,
         }
+    }
+}
+
+#[derive(Deserialize)]
+struct CareerProfileWire {
+    kind: SmolStr,
+    #[serde(default)]
+    employer: Option<PrincipalId>,
+    #[serde(default)]
+    stance: Stance,
+    #[serde(default)]
+    pending_stance: Option<Stance>,
+    #[serde(default)]
+    time_demand: u8,
+    #[serde(default)]
+    visibility: u8,
+    #[serde(default)]
+    risk: u8,
+    #[serde(default)]
+    front: Option<FrontRef>,
+}
+
+impl TryFrom<CareerProfileWire> for CareerProfile {
+    type Error = String;
+
+    fn try_from(w: CareerProfileWire) -> Result<CareerProfile, String> {
+        text_ok("a career kind", &w.kind, MAX_TEXT_BYTES)?;
+        band_ok("a career's time demand", w.time_demand, MAX_LEVEL)?;
+        band_ok("a career's visibility", w.visibility, MAX_LEVEL)?;
+        band_ok("a career's risk", w.risk, MAX_LEVEL)?;
+        Ok(CareerProfile {
+            kind: w.kind,
+            employer: w.employer,
+            stance: w.stance,
+            pending_stance: w.pending_stance,
+            time_demand: w.time_demand,
+            visibility: w.visibility,
+            risk: w.risk,
+            front: w.front,
+        })
     }
 }
 
@@ -315,12 +390,35 @@ impl SupportSource {
 /// and never becomes a [`mush_housing::PropertyTier`]: the whole decision is that
 /// exceptional qualities are description, and housing tier is physical class.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "HavenQualitiesWire")]
 pub struct HavenQualities {
     /// The Haven background rating the qualities were read from.
     pub dots: u8,
-    /// One short phrase per quality, ≤ [`MAX_SOURCES`] of them.
+    /// One short phrase per quality, ≤ [`MAX_HAVEN_QUALITIES`] of them.
     #[serde(default)]
     pub qualities: Vec<SmolStr>,
+}
+
+#[derive(Deserialize)]
+struct HavenQualitiesWire {
+    dots: u8,
+    #[serde(default)]
+    qualities: Vec<SmolStr>,
+}
+
+impl TryFrom<HavenQualitiesWire> for HavenQualities {
+    type Error = String;
+
+    fn try_from(w: HavenQualitiesWire) -> Result<HavenQualities, String> {
+        band_ok("a Haven rating", w.dots, MAX_LEVEL)?;
+        if w.qualities.len() > MAX_HAVEN_QUALITIES {
+            return Err(over("haven qualities", MAX_HAVEN_QUALITIES, w.qualities.len()));
+        }
+        for q in &w.qualities {
+            text_ok("a haven quality", q, MAX_TEXT_BYTES)?;
+        }
+        Ok(HavenQualities { dots: w.dots, qualities: w.qualities })
+    }
 }
 
 impl HavenQualities {
@@ -431,23 +529,46 @@ pub enum PromptOutcome {
 
 /// One answer a player may give.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "PromptOptionWire")]
 pub struct PromptOption {
-    /// What `+prompt <key>` takes.
+    /// What `+prompt <key>` takes (≤ [`MAX_TEXT_BYTES`]).
     pub key: SmolStr,
-    /// The sentence shown.
+    /// The sentence shown (≤ [`MAX_LINE_BYTES`] — the shipped labels run past 64
+    /// bytes, so the line cap is the honest one).
     pub label: SmolStr,
     /// What it does.
     pub outcome: PromptOutcome,
 }
 
+#[derive(Deserialize)]
+struct PromptOptionWire {
+    key: SmolStr,
+    label: SmolStr,
+    outcome: PromptOutcome,
+}
+
+impl TryFrom<PromptOptionWire> for PromptOption {
+    type Error = String;
+
+    fn try_from(w: PromptOptionWire) -> Result<PromptOption, String> {
+        if w.key.trim().is_empty() {
+            return Err("wod.economy: a prompt option needs a key".to_string());
+        }
+        text_ok("a prompt option key", &w.key, MAX_TEXT_BYTES)?;
+        text_ok("a prompt option label", &w.label, MAX_LINE_BYTES)?;
+        Ok(PromptOption { key: w.key, label: w.label, outcome: w.outcome })
+    }
+}
+
 /// **The one unresolved personal economic prompt** (owner answer 18, D-E5-8).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "PromptWire")]
 pub struct Prompt {
     /// Identity, from the store's allocator.
     pub id: u64,
     /// What it is about.
     pub kind: PromptKind,
-    /// The answers, ≤ 4.
+    /// The answers, `1..=`[`MAX_PROMPT_OPTIONS`].
     pub options: Vec<PromptOption>,
     /// What happens if nobody answers.
     pub default: PromptDefault,
@@ -490,17 +611,75 @@ impl Prompt {
     }
 }
 
+#[derive(Deserialize)]
+struct PromptWire {
+    id: u64,
+    kind: PromptKind,
+    options: Vec<PromptOption>,
+    default: PromptDefault,
+    opened_at: i64,
+    opened_period: u64,
+    #[serde(default)]
+    opened_ic: Option<mush_core::clock::ClockStamp>,
+    expires_after_periods: u32,
+}
+
+impl TryFrom<PromptWire> for Prompt {
+    type Error = String;
+
+    fn try_from(w: PromptWire) -> Result<Prompt, String> {
+        if w.options.is_empty() {
+            return Err("wod.economy: a prompt needs at least one option".to_string());
+        }
+        if w.options.len() > MAX_PROMPT_OPTIONS {
+            return Err(over("prompt options", MAX_PROMPT_OPTIONS, w.options.len()));
+        }
+        Ok(Prompt {
+            id: w.id,
+            kind: w.kind,
+            options: w.options,
+            default: w.default,
+            opened_at: w.opened_at,
+            opened_period: w.opened_period,
+            opened_ic: w.opened_ic,
+            expires_after_periods: w.expires_after_periods,
+        })
+    }
+}
+
 /// One line of a profile's bounded history.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "ProfileEventWire")]
 pub struct ProfileEvent {
     /// The cadence position.
     pub at: i64,
-    /// What happened, ≤ [`MAX_TEXT_BYTES`] × 4.
+    /// What happened, ≤ [`MAX_LINE_BYTES`].
     pub what: SmolStr,
 }
 
+#[derive(Deserialize)]
+struct ProfileEventWire {
+    at: i64,
+    what: SmolStr,
+}
+
+impl TryFrom<ProfileEventWire> for ProfileEvent {
+    type Error = String;
+
+    fn try_from(w: ProfileEventWire) -> Result<ProfileEvent, String> {
+        text_ok("a history line", &w.what, MAX_LINE_BYTES)?;
+        Ok(ProfileEvent { at: w.at, what: w.what })
+    }
+}
+
 /// One character's WoD economic standing (§5.2).
+///
+/// **Loading re-checks every cap** (look-back fold, D-LBK-3): the band on
+/// `resources`, `level` and `strain`, `MAX_SOURCES`, one source per kind (the
+/// `+career/source add` rule), `MAX_PROFILE_HISTORY`, and — through their own
+/// wires — every nested career, haven, prompt and history line.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "SpendingProfileWire")]
 pub struct SpendingProfile {
     /// Whose.
     pub obj: ObjId,
@@ -623,6 +802,80 @@ impl SpendingProfile {
     }
 }
 
+#[derive(Deserialize)]
+struct SpendingProfileWire {
+    obj: ObjId,
+    #[serde(default)]
+    resources: u8,
+    #[serde(default)]
+    sources: Vec<SupportSource>,
+    #[serde(default)]
+    level: u8,
+    #[serde(default)]
+    strain: u8,
+    #[serde(default)]
+    engagement: Engagement,
+    #[serde(default)]
+    haven: Option<HavenQualities>,
+    #[serde(default)]
+    prompt: Option<Prompt>,
+    #[serde(default)]
+    account: Option<mush_economy::AccountId>,
+    #[serde(default)]
+    income: Option<mush_economy::ObligationId>,
+    #[serde(default)]
+    income_cancelled_at: Option<u8>,
+    #[serde(default)]
+    last_opportunity_period: u64,
+    #[serde(default)]
+    history: Vec<ProfileEvent>,
+    revision: u64,
+}
+
+impl TryFrom<SpendingProfileWire> for SpendingProfile {
+    type Error = String;
+
+    fn try_from(w: SpendingProfileWire) -> Result<SpendingProfile, String> {
+        band_ok("a Resources rating", w.resources, MAX_LEVEL)?;
+        band_ok("a support level", w.level, MAX_LEVEL)?;
+        band_ok("strain", w.strain, STRAIN_MAX)?;
+        if let Some(dot) = w.income_cancelled_at {
+            band_ok("the cancelled-at dot", dot, MAX_LEVEL)?;
+        }
+        if w.sources.len() > MAX_SOURCES {
+            return Err(over("support sources", MAX_SOURCES, w.sources.len()));
+        }
+        let mut kinds: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+        for source in &w.sources {
+            if !kinds.insert(source.key()) {
+                return Err(format!(
+                    "wod.economy: a profile lists two support sources of kind {:?}",
+                    source.key()
+                ));
+            }
+        }
+        if w.history.len() > MAX_PROFILE_HISTORY {
+            return Err(over("profile history", MAX_PROFILE_HISTORY, w.history.len()));
+        }
+        Ok(SpendingProfile {
+            obj: w.obj,
+            resources: w.resources,
+            sources: w.sources,
+            level: w.level,
+            strain: w.strain,
+            engagement: w.engagement,
+            haven: w.haven,
+            prompt: w.prompt,
+            account: w.account,
+            income: w.income,
+            income_cancelled_at: w.income_cancelled_at,
+            last_opportunity_period: w.last_opportunity_period,
+            history: w.history,
+            revision: w.revision,
+        })
+    }
+}
+
 /// Derive a support level from a Resources rating and a stance modifier, clamped
 /// into the `0..=`[`MAX_LEVEL`] band (§5.2).
 #[must_use]
@@ -666,7 +919,7 @@ pub fn clip(s: &str) -> &str {
 /// Clip a history line (four fields' worth) on a char boundary.
 #[must_use]
 fn clip_line(s: &str) -> &str {
-    const MAX: usize = MAX_TEXT_BYTES * 4;
+    const MAX: usize = MAX_LINE_BYTES;
     let s = s.trim();
     if s.len() <= MAX {
         return s;

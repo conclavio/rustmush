@@ -36,9 +36,10 @@ use smol_str::SmolStr;
 
 use crate::ids::{PropertyId, TenancyId};
 use crate::module::{
-    HousingStore, is_character, is_live_room, is_staff, put_property, put_tenancy,
+    HousingStore, RoomEntry, is_character, is_live_room, is_staff, put_property, put_tenancy,
     render_principal,
 };
+use crate::quarantine::{QuarantineKey, under_review};
 use crate::record::{
     AccessTerms, Funding, InspectionTerm, InspectionWhen, MAX_ROOMS_PER_PROPERTY, MAX_TENANTS,
     Property, PropertyStatus, PropertyTier, Resolution, StoryWindow, Tenancy, TenancyStatus,
@@ -67,7 +68,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 .collect(),
             help: "@property/create <name>=<anchor room>[,<room>…] tier=<0-5> \
                    landlord=<org:<id|name>|housing>\n\
-                   \x20   [scope=<org scope id>] [upkeep=<minor units>]      (staff)\n\
+                   \x20   [scope=<org scope id>]                              (staff)\n\
                    \x20                                      Mints the ANCHOR's title record to the\n\
                    \x20                                      landlord. The rooms' @owner stays the\n\
                    \x20                                      builder — title is not ownership of the\n\
@@ -178,7 +179,98 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(cmd_guest),
     )?;
+    reg.command(
+        CommandSpec {
+            name: "@housing".into(),
+            shape: ArgShape::EqPair,
+            switches: ["quarantine"].iter().copied().map(SmolStr::new).collect(),
+            help: "@housing/quarantine show                the fail-closed quarantine (staff)\n\
+                   @housing/quarantine recheck <key>       re-run the check for one conflict\n\
+                   \x20  A conflict between records — one room in two properties, two live\n\
+                   \x20  tenancies on one property, a live tenancy on no property — is found at\n\
+                   \x20  boot and after every write. Every room of every property involved\n\
+                   \x20  refuses everyone but staff, the tick skips the tenancies, their rent is\n\
+                   \x20  suspended, and one alert per conflict carries the repair. There is NO\n\
+                   \x20  release verb: the quarantine lifts by itself the moment the repair holds\n\
+                   \x20  (@property/rooms <id>=-<room>, @tenancy/resolve <id>=end,\n\
+                   \x20  @property/withdraw <id>); recheck only re-runs the check after a repair\n\
+                   \x20  made some other way, and refuses while the conflict still exists."
+                .into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(cmd_housing),
+    )?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// @housing/quarantine (look-back fold, D-LBK-1)
+// ---------------------------------------------------------------------------
+
+fn cmd_housing(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    const USAGE: &str = "Usage: @housing/quarantine show  |  @housing/quarantine recheck <key>";
+    require_staff(ctx)?;
+    if !ctx.switches.has("quarantine") {
+        return Err(CmdError::msg(USAGE));
+    }
+    let raw = ctx.args.raw().trim().to_string();
+    let (verb, arg) = match raw.split_once(char::is_whitespace) {
+        Some((v, r)) => (v.to_ascii_lowercase(), r.trim().to_string()),
+        None => (raw.to_ascii_lowercase(), String::new()),
+    };
+    match verb.as_str() {
+        "show" => {
+            let rows: Vec<String> = ctx
+                .w
+                .module_state::<HousingStore>()
+                .map(|s| s.quarantine().map(render_conflict).collect())
+                .unwrap_or_default();
+            if rows.is_empty() {
+                info(ctx, "Nothing is under housing review.".to_string());
+            }
+            for row in rows {
+                info(ctx, row);
+            }
+            Ok(())
+        }
+        "recheck" => {
+            let key = QuarantineKey::parse(&arg)
+                .ok_or_else(|| CmdError::msg("recheck takes a key as @housing/quarantine show prints it."))?;
+            let known = ctx.w.module_state::<HousingStore>().is_some_and(|s| s.conflict(key).is_some());
+            if !known {
+                return Err(CmdError::msg(format!("Nothing is under review as {key}.")));
+            }
+            // The same check the write path runs; nothing here can release a conflict
+            // that still exists.
+            crate::quarantine::revalidate(ctx);
+            match ctx.w.module_state::<HousingStore>().and_then(|s| s.conflict(key).cloned()) {
+                Some(c) => Err(CmdError::msg(format!(
+                    "{key} still exists: {}. Repair it — {} — and it lifts by itself.",
+                    c.summary,
+                    c.repair.join(" · ")
+                ))),
+                None => {
+                    info(ctx, format!("{key}: the invariant holds again; the quarantine is lifted."));
+                    ctx.gate_on_durable_ack();
+                    Ok(())
+                }
+            }
+        }
+        _ => Err(CmdError::msg(USAGE)),
+    }
+}
+
+fn render_conflict(c: &crate::quarantine::Conflict) -> String {
+    let props: Vec<String> = c.properties.iter().map(|p| format!("#{p}")).collect();
+    let tenancies: Vec<String> = c.tenancies.iter().map(|t| format!("#{t}")).collect();
+    format!(
+        "{} — {} [properties: {}; tenancies: {}] repair: {}",
+        c.key,
+        c.summary,
+        if props.is_empty() { "none".to_string() } else { props.join(", ") },
+        if tenancies.is_empty() { "none".to_string() } else { tenancies.join(", ") },
+        c.repair.join(" · ")
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -470,7 +562,7 @@ fn cmd_property(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
 }
 
-/// `@property/create <name>=<anchor>[,rooms…] tier=<n> landlord=<…> [scope=] [upkeep=]`.
+/// `@property/create <name>=<anchor>[,rooms…] tier=<n> landlord=<…> [scope=]`.
 ///
 /// The **title** is minted here, through [`mush_economy::issue_title`] with the
 /// module's wired issuer (08d §4, §2, D-E3-13): a residence the economy does not know
@@ -479,13 +571,13 @@ fn cmd_property(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// player, so pointing a room's owner at an organization is not even expressible.
 fn property_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     const USAGE: &str = "Usage: @property/create <name>=<anchor room>[,<room>…] tier=<0-5> \
-                         landlord=<org:<id|name>|housing> [scope=<id>] [upkeep=<minor units>]";
+                         landlord=<org:<id|name>|housing> [scope=<id>]";
     let name = ctx.args.lhs().trim().to_string();
     if name.is_empty() {
         return Err(CmdError::msg(USAGE));
     }
     let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?.to_string();
-    let (rest, opts) = parse_opts(&rhs, &["tier", "landlord", "scope", "upkeep"]);
+    let (rest, opts) = parse_opts(&rhs, &["tier", "landlord", "scope"]);
     let names: Vec<&str> = rest.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
     let Some(anchor_name) = names.first() else { return Err(CmdError::msg(USAGE)) };
     let anchor = room_arg(ctx, anchor_name)?;
@@ -509,16 +601,6 @@ fn property_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                         .is_some_and(|st| st.state().scope(*id).is_some())
                 })
                 .ok_or_else(|| CmdError::msg("No such scope."))?,
-        ),
-    };
-    let upkeep = match opts.get("upkeep") {
-        None => None,
-        Some(s) => Some(
-            s.parse::<i64>()
-                .ok()
-                .map(Amount::from_minor)
-                .filter(|a| !a.is_negative())
-                .ok_or_else(|| CmdError::msg("upkeep= is a non-negative number of minor units."))?,
         ),
     };
     let mut rooms: BTreeSet<ObjId> = BTreeSet::new();
@@ -557,7 +639,6 @@ fn property_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let mut p = Property::new(id, &name, anchor, rooms, tier, landlord.clone())
         .map_err(|e| CmdError::msg(e.to_string()))?;
     p.landlord_scope = scope;
-    p.upkeep = upkeep;
     // **Title first**: it is the fallible half, and the module's rule is the
     // economy's — do the thing that can be refused before the thing that cannot.
     match mush_economy::issue_title(ctx, anchor, landlord.clone(), scope, issuer) {
@@ -594,16 +675,33 @@ fn check_room(
     if !is_live_room(ctx.w, room) {
         return Err(CmdError::msg("No such room."));
     }
-    if let Some(store) = ctx.w.module_state::<HousingStore>()
-        && let Some(other) = store.property_of_room(room)
-        && Some(other.id) != property
-    {
-        // Existence hiding: naming somebody else's residence would confirm it exists.
-        return Err(CmdError::msg(if may_view_property(ctx.w, ctx.actor, other) {
-            format!("#{} is already a room of property #{}.", room.0, other.id)
-        } else {
-            format!("#{} cannot be part of a property.", room.0)
-        }));
+    if let Some(store) = ctx.w.module_state::<HousingStore>() {
+        match store.room_entry(room) {
+            Some(RoomEntry::Unique(other)) if Some(*other) != property => {
+                // Existence hiding: naming somebody else's residence would confirm
+                // it exists.
+                let visible = store.property(*other).is_some_and(|p| may_view_property(ctx.w, ctx.actor, p));
+                return Err(CmdError::msg(if visible {
+                    format!("#{} is already a room of property #{other}.", room.0)
+                } else {
+                    format!("#{} cannot be part of a property.", room.0)
+                }));
+            }
+            // A room under review belongs to nobody until the review is over
+            // (look-back fold, D-LBK-1); the actor is staff here (`require_staff`),
+            // but the discipline holds for the record.
+            Some(RoomEntry::Conflict(_)) => {
+                return Err(CmdError::msg(if is_staff(ctx.w, ctx.actor) {
+                    format!(
+                        "#{} is under housing review (@housing/quarantine show); repair that first.",
+                        room.0
+                    )
+                } else {
+                    format!("#{} cannot be part of a property.", room.0)
+                }));
+            }
+            Some(RoomEntry::Unique(_)) | None => {}
+        }
     }
     if let Some(why) = reserved(ctx.w, room) {
         return Err(CmdError::msg(format!(
@@ -802,8 +900,19 @@ fn property_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // A1: the guest reduction `+home` and `@tenancy/show` already apply. One line,
     // and nothing about the landlord, the tier, the rooms, the features, the status
     // or who lives there.
+    // Look-back fold, D-LBK-1: under review, members and officers read exactly that,
+    // a guest — "everyone else" — reads the hidden text, and staff read the record
+    // and the review.
+    let review = review_lines_for_property(ctx.w, p.id);
+    if !review.is_empty() && guest_only_property(ctx.w, ctx.actor, &p) {
+        return Err(hidden_property());
+    }
     if guest_only_property(ctx.w, ctx.actor, &p) {
         info(ctx, guest_line(&p.name));
+        return Ok(());
+    }
+    if !review.is_empty() && !is_staff(ctx.w, ctx.actor) {
+        info(ctx, under_review(&format!("Property #{} — \"{}\"", p.id, p.name)));
         return Ok(());
     }
     let landlord = render_principal(ctx.w, &p.landlord);
@@ -811,8 +920,8 @@ fn property_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     info(ctx, format!("Property #{} — \"{}\" [{:?}]", p.id, p.name, p.status));
     info(ctx, format!("  landlord {landlord}  tier {}  anchor #{}", p.tier.get(), p.anchor.0));
     info(ctx, format!("  rooms: {}", rooms.join(" ")));
-    if let Some(upkeep) = p.upkeep {
-        info(ctx, format!("  upkeep {} per period", upkeep.minor()));
+    for line in review {
+        info(ctx, line);
     }
     if !p.features.is_empty() {
         let f: Vec<String> = p.features.iter().map(|f| f.key.to_string()).collect();
@@ -1262,15 +1371,53 @@ fn tenancy_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let t = tenancy_of(ctx, ctx.args.lhs())?;
     // A **guest** sees the property's name and their own standing, and nothing about
     // who lives there (08d §4's per-role fields).
+    // Look-back fold, D-LBK-1: under review, a member or an officer reads exactly
+    // that, a guest — "everyone else" — reads the hidden text, and staff read the
+    // record and the review.
+    let review = review_lines_for_tenancy(ctx.w, t.id);
+    if !review.is_empty() && guest_only(ctx.w, ctx.actor, &t) {
+        return Err(hidden_tenancy());
+    }
     if guest_only(ctx.w, ctx.actor, &t) {
         let name = property_name(ctx.w, t.property);
         info(ctx, guest_line(&name));
         return Ok(());
     }
+    if !review.is_empty() && !is_staff(ctx.w, ctx.actor) {
+        info(ctx, under_review(&format!("Tenancy #{} — {}", t.id, property_name(ctx.w, t.property))));
+        return Ok(());
+    }
     for row in render_tenancy(ctx, &t) {
         info(ctx, row);
     }
+    for line in review {
+        info(ctx, line);
+    }
     Ok(())
+}
+
+/// The review lines for a quarantined property (empty when it is not under review).
+fn review_lines_for_property(w: &World, property: PropertyId) -> Vec<String> {
+    w.module_state::<HousingStore>()
+        .map(|s| {
+            s.quarantine()
+                .filter(|c| c.properties.contains(&property))
+                .map(|c| format!("  UNDER REVIEW {}: {} — repair: {}", c.key, c.summary, c.repair.join(" · ")))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The review lines for a quarantined tenancy (empty when it is not under review).
+fn review_lines_for_tenancy(w: &World, tenancy: TenancyId) -> Vec<String> {
+    w.module_state::<HousingStore>()
+        .map(|s| {
+            s.quarantine()
+                .filter(|c| c.tenancies.contains(&tenancy))
+                .map(|c| format!("  UNDER REVIEW {}: {} — repair: {}", c.key, c.summary, c.repair.join(" · ")))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn tenancy_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -1462,6 +1609,11 @@ fn cmd_home(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Ok(());
     }
     for t in &tenant {
+        // Look-back fold, D-LBK-1: a home under review reads as exactly that.
+        if ctx.w.module_state::<HousingStore>().is_some_and(|s| s.is_quarantined_tenancy(t.id)) {
+            info(ctx, under_review(&format!("Tenancy #{} — {}", t.id, property_name(ctx.w, t.property))));
+            continue;
+        }
         for row in render_tenancy(ctx, t) {
             info(ctx, row);
         }
@@ -1475,8 +1627,13 @@ fn cmd_home(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             info(ctx, format!("  waiting for you: {text}"));
         }
     }
-    // A guest sees the property's name and their own standing, and nothing else.
+    // A guest sees the property's name and their own standing, and nothing else —
+    // and nothing at all about a home under review (D-LBK-1: the hidden text, which
+    // on this list is no line).
     for t in &guest {
+        if ctx.w.module_state::<HousingStore>().is_some_and(|s| s.is_quarantined_tenancy(t.id)) {
+            continue;
+        }
         let name = property_name(ctx.w, t.property);
         info(ctx, guest_line(&name));
     }

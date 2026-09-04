@@ -216,6 +216,22 @@ pub enum CadenceSource {
     Manual,
 }
 
+/// The `generation` a cadence is created at, and the only value any cadence carries
+/// today (look-back fold, D-LBK-7): it bumps only on a re-point, and no verb
+/// re-points yet.
+pub const CADENCE_GENERATION_INITIAL: u32 = 1;
+/// The `schema` a runtime cadence carries. A **declared** cadence (named in
+/// `[economy.cadences]` and registered at composition, the convergence commit's
+/// half of D-LBK-7) is stamped `2` when it is adopted at boot.
+pub const CADENCE_SCHEMA_LEGACY: u16 = 1;
+
+fn cadence_generation_default() -> u32 {
+    CADENCE_GENERATION_INITIAL
+}
+fn cadence_schema_default() -> u16 {
+    CADENCE_SCHEMA_LEGACY
+}
+
 /// A named campaign/domain clock the economy owns (E5's owner answer 7).
 ///
 /// Staff/config-defined, advanced by the sweep from its `source` with bounded
@@ -244,8 +260,21 @@ pub struct CadenceClock {
     /// The `source` instant `position` was last advanced from (aligned to a period
     /// boundary), so elapsed periods are computed from the record, not from ticks.
     pub advanced_at: i64,
-    /// Staleness stamp.
+    /// Staleness stamp — bumped on every advance, never compared or carried by a
+    /// consumer (08h Q6: `revision` is not a clock generation).
     pub revision: u64,
+    /// The clock **generation** (look-back fold, D-LBK-7; K4a's meaning): it changes
+    /// only when the clock is re-anchored or re-rated, and no verb does that yet, so
+    /// every cadence carries [`CADENCE_GENERATION_INITIAL`]. Serde-defaulted, so a
+    /// document written before the fold loads unchanged. The cadence doc is outside
+    /// the journal hash (`plan_hash` covers a plan alone), so nothing about an
+    /// existing world's money changes shape.
+    #[serde(default = "cadence_generation_default")]
+    pub generation: u32,
+    /// The record schema: [`CADENCE_SCHEMA_LEGACY`] for a runtime cadence, `2` for a
+    /// declared one adopted at composition (the convergence half of D-LBK-7).
+    #[serde(default = "cadence_schema_default")]
+    pub schema: u16,
 }
 
 /// How many whole periods have elapsed on `c` at `source_now`.
@@ -404,6 +433,8 @@ mod tests {
             position: 5,
             advanced_at: 1_000,
             revision: 1,
+            generation: CADENCE_GENERATION_INITIAL,
+            schema: CADENCE_SCHEMA_LEGACY,
         };
         let (next, forgiven) = advance_cadence(&c, 1_000 + 100 * 10);
         assert_eq!(forgiven, 7);

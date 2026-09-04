@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use mush_core::ObjId;
-use mush_economy::{Amount, CadenceId, ContractId, EscalationId, ObligationId};
+use mush_economy::{CadenceId, ContractId, EscalationId, ObligationId};
 use mush_housing::{
     Access, AccessTerms, Assessment, DELINQUENT_PERIODS, Feature, Funding, GRACE_PERIODS,
     HousingError, InspectionTerm, InspectionWhen, MAX_FEATURE_KEY_BYTES, MAX_FEATURES, MAX_GUESTS,
@@ -905,7 +905,6 @@ where
 fn every_record_round_trips_through_serde() {
     let mut p = property(3);
     p.landlord_scope = Some(OrgScopeId(4));
-    p.upkeep = Some(Amount::from_minor(1234));
     p.features = vec![Feature { key: "workshop".into(), approved_by: obj(STAFFER) }];
     p.status = PropertyStatus::Let;
     round_trip(&p, "Property");
@@ -1015,7 +1014,7 @@ fn an_omitted_optional_field_loads_as_its_default() {
                    "landlord":{"System":"wod.housing"},"revision":1}"#;
     let p: Property = serde_json::from_str(json).expect("an older property document loads");
     assert_eq!(p.status, PropertyStatus::Vacant);
-    assert!(p.features.is_empty() && p.upkeep.is_none() && p.landlord_scope.is_none());
+    assert!(p.features.is_empty() && p.landlord_scope.is_none());
 }
 
 // ===========================================================================

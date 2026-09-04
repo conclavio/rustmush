@@ -236,8 +236,10 @@ than `maximum_catch_up`, the sweep settles the **most recent** `maximum_catch_up
 `Forgiven { periods, from, to, cause }` with both debtor and creditor notified once. Doc 08 §2
 already forbids charging a downtime or time-jump backlog, so forgiveness is the *designed* outcome,
 not a fallback; §8.2's "explicit staff-visible reconciliation state" becomes this attributed
-history record plus an `ObligationChanged` event, **not a wait state** — there is no
-`Reconciliation` status. The cause is classified from the economy's own persisted sweep stamps
+history record plus the two party notices, **not a wait state** — there is no
+`Reconciliation` status. *As built (E4a-C114; 08g §3 #13): forgiveness emits **no**
+`ObligationChanged` — `put_obligation` emits that event on a status-**kind** change only, so a
+forgiveness is disclosed by the `Forgiven` history record and the debtor/creditor notices.* The cause is classified from the economy's own persisted sweep stamps
 (`meta.last_sweep_real`, `meta.last_sweep_ic`): `Downtime` when no sweep ran across the missed
 periods; `TimeJump` when the IC clock advanced more than `real_elapsed × ic_ratio` allows (an epoch
 or ratio change); `Overload` when sweeps did run but this obligation never received post budget.
@@ -404,7 +406,10 @@ verify at the end of the cut changed seven of them, and §3.7 records the whole 
   `refund_plan`, `escrowed_by_account` and `ContractAuth::authorize_hold` see only qualifying holds.
 - **Signatures.** `settlement_plan(c, snapshot, env: &ValidateEnv)` calls `reverify` itself;
   `refund_plan(c, snapshot) -> Result<EconomyPlan, ContractError>` requires state ∈ {`Cancelled`,
-  `Expired`} (`ContractError::WrongState`). `consent_hash(issuer, consent)` — the issuer is part of
+  `Expired`} (`ContractError::WrongState`) — *as refined by E4b2 and its fold (§5.1): the unwind may
+  also be **in flight** (`pending` set to `Cancel`/`Expire`), the bundle releases only the pledges
+  the assets really carry and returns each recorded deposit, and a pledge `Release` is
+  unconditional*. `consent_hash(issuer, consent)` — the issuer is part of
   what a party agreed to. `advance(o, period, outcome, now) -> Result<Obligation,
   ObligationError>`: `period < periods_settled` is a duplicate (`Ok(unchanged)`), `>` is
   `OutOfOrder` (which also enforces forgive-before-attempts), `==` closes the period and records
@@ -426,8 +431,9 @@ verify at the end of the cut changed seven of them, and §3.7 records the whole 
 - **Smaller.** Every hold op requires its account `Active` (`InactiveAccount`); a `Place` that
   mints an id the snapshot already holds is `EconomyError::HoldIdReused`;
   `AttestorRef::Canon { canon, kind, source }` and `AttestorSet::Canon { kind, source: Option<_> }`
-  are matched on kind **and** source at `reverify`; `Hold.holder` is documented as an attribution
-  label, never authority.
+  are matched on kind **and** source at `reverify`; `Hold.holder` is an attribution label, never
+  authority. The rule that nothing branches on it is enforced by this document and by test, not by
+  the engine (DL-16).
 
 ### 3.6 E4a tests (`tests/e4a.rs`, ~45 — built: 66; 83 after the verify fold)
 
@@ -477,7 +483,8 @@ regression test in `tests/e4a.rs` under `// ---- E4a verify fold ----`, named `v
   `hash.rs`'s invariant-27 comment claimed a `Place`-first order the key does not produce (14e).
 - **Account status (low).** Hold ops did not check the account's status, so an effect-only release
   or expiry was the one way left to move a frozen account's numbers (7).
-- **Attribution (doc).** `Hold.holder` is caller-chosen; nothing may branch on it (8).
+- **Attribution (doc).** `Hold.holder` is caller-chosen — a label, never authority; nothing may
+  branch on it, and that rule is held by doc and test only (8; DL-16).
 
 **Handoffs.**
 
@@ -488,10 +495,13 @@ regression test in `tests/e4a.rs` under `// ---- E4a verify fold ----`, named `v
   `Delinquent` has no automatic recovery path: `advance` records a late payment but deliberately
   leaves the status alone, so E4b1 adds a staff/landlord `reinstate` verb or the E5 consequence
   hook owns the transition — until one exists, a delinquent obligation stays out of the due pool.
-- **E4b2**'s `refund_plan` runs **after** the state change (which is what lifts the custody lock)
-  and, in the same step, returns each deposited object to its depositor with a `CustodyOp::Withdraw`
-  authorized by `ContractAuth` — that is the replacement for the deleted lock exception, and
-  `ContractAuth` will need a `Deliverable::DepositInto`-derived withdrawal rule to grant it.
+- **E4b2**'s `refund_plan` returns each deposited object to its depositor with a
+  `CustodyOp::Withdraw` authorized by `ContractAuth` — that is the replacement for the deleted lock
+  exception. *As built (§5.1): the rule that grants it is `AuthEval::authorize_custody_unlock(object,
+  vault)`, answered `true` only by `ContractAuth` with purpose `Unwind` for a deposit that contract
+  recorded; and the order was inverted by the fold's terminal-transition rule — the refund post comes
+  **first**, under the contract's own key, and the state write follows, so a contract is never
+  terminal while its escrow is still reserved.*
 
 ---
 
@@ -1091,9 +1101,9 @@ contract that does not exist and one they may not see.
    <credit> <amount> every=<secs>` form (§5 needs the lease's template and named no
    syntax for it); a share is a bare number (exact) or `N‰`/`Npm` (permille);
    `@contract/condition <id>=attest <who>` takes `party:<principal>` |
-   `cap:<capability>[:<scope>]` | `staff` | `canon:<kind>[:<source>]`. Four verbs are
-   added beyond §5's list for the §3.5 extensions: `/roster`, `/amend`,
-   `/adjudicator`, `/evidence`, `/outcome`, `/role`.
+   `cap:<capability>[:<scope>]` | `staff` | `canon:<kind>[:<source>]`. Six verbs are
+   added beyond §5's list for the §3.5 extensions (E4b2-D24 said "four"; the list is
+   six): `/roster`, `/amend`, `/adjudicator`, `/evidence`, `/outcome`, `/role`.
 10. **Boot's phantom-`Settled` record is minted by boot**, like E4b1's obligation
     reconciliation records, not through `sweep::page` — the ladder's dedupe/reopen
     machinery needs a `Ctx` the boot path does not have, and boot's own
@@ -1771,8 +1781,8 @@ K-side facts are cited from `docs/design/09-rules-engine-contracts.md` in that b
 
 | Doc 09 | E4 concept | Conformance |
 |---|---|---|
-| **C8 `ReservationRecord { id, owner, resource, holder: ScopedIdempotencyKey, amount, revision, expires: ClockStamp, state: Held \| Consumed(commit) \| Released \| Expired }`** | `Hold` (§3.2) | A `Hold` **is** the economy's reservation: `Active/Captured{tx}/Released/Expired` map 1:1 onto `Held/Consumed/Released/Expired`; `placed_by` + the placing plan's idempotency key is the `holder`; "acquire, replace, release, and expiry are idempotent authoritative actions … expiry is a causally linked scheduled action and survives restart" is satisfied by hold effects in the journal with deterministic keys and the sweep's `hold/{id}/expire`. Rename the states to doc 09's at build time; add `holder` (the placing key). |
-| **§2.5 `ClockRef { Utc, WorldIc{generation}, SceneTurn, DomainTick, Registered{owner,id,generation} }` + `ClockStamp`; C4 "obligations become `ClockProvider` adapters"** | `EconomicClock` / cadence clocks (§3.1) | `EconomicClock` is a **pre-K4 adapter shape**: `RealUtc ≙ Utc`, `WorldIc ≙ WorldIc{generation}`, `Cadence(id) ≙ Registered { owner: economy, id: cadence.<name>, generation }`, `Manual` folds into a registered cadence with a `Manual` source. Deadlines/schedules carry the clock identity so two stamps are comparable only on the same clock (doc 09's rule). When K4 lands, `EconomicClock` becomes a thin alias over `ClockRef` and the sweep registers as the economy's `ClockProvider`; no journal migration (the serde shape stays). |
+| **C8 `ReservationRecord { id, owner, resource, holder: ScopedIdempotencyKey, amount, revision, expires: ClockStamp, state: Held \| Consumed(commit) \| Released \| Expired }`** | `Hold` (§3.2) | A `Hold` **is** the economy's reservation: `Active/Captured{tx}/Released/Expired` map 1:1 onto `Held/Consumed/Released/Expired`; `placed_by` + the placing plan's idempotency key is the `holder`; "acquire, replace, release, and expiry are idempotent authoritative actions … expiry is a causally linked scheduled action and survives restart" is satisfied by hold effects in the journal with deterministic keys and the sweep's `hold/{id}/expire`. Both done at build (E4a): `HoldStatus` adopts doc 09's states verbatim and `Hold.holder` is the placing key (`record.rs`) — the look-back struck the stale "at build time" wording (E4c-D17). |
+| **§2.5 `ClockRef { Utc, WorldIc{generation}, SceneTurn, DomainTick, Registered{owner,id,generation} }` + `ClockStamp`; C4 "obligations become `ClockProvider` adapters"** | `EconomicClock` / cadence clocks (§3.1) | `EconomicClock` is a **pre-K4 adapter shape**: `RealUtc ≙ Utc`, `WorldIc ≙ WorldIc{generation}`, `Cadence(id) ≙ Registered { owner: economy, id: cadence.<name>, generation }`, `Manual` folds into a registered cadence with a `Manual` source. Deadlines/schedules carry the clock identity so two stamps are comparable only on the same clock (doc 09's rule). **Superseded by 08h D-LBK-7 (look-back C3):** K4a landed with a composition-frozen provider registry, so no `ClockProvider` symbol and no runtime registration verb exist and `EconomicClock` stays the four-variant adapter. What lands now: `CadenceClock` gains `generation` (default 1) and `schema` (default 1) with a load-unchanged test. What lands at convergence, after K6: **declared** cadences (`[economy.cadences]`) registered at composition as `Registered { owner: economy, id: cadence.<name>, generation }` with the sweep as their provider; **runtime** cadences (`@econ/cadence create`) stay legacy `Cadence(id)` clocks. No journal migration either way (the serde shape stays); anything that needs the world timeline reads `Ctx::world_ic_now`, not a cadence. |
 | **C6 `SemanticEvent { id, cause: CausalRef{root: CommitToken, parent, ordinal}, owner, kind, schema, truth, eligible_witnesses }`** (in K's code today only as the action-local `PreparedCausalRef`/`PreparedEventId`, `mush-core/src/action.rs:2265-2731`; `SemanticEvent`/`WitnessSet` are design vocabulary, zero matches) | `EconomicEvent` (§6.3), `EconomicCause::External(CausalRef)` (E2) | `EconomicEvent` is the **pre-C6 form** of the economy's semantic events (ids + kinds only, D-E4-13) and migrates to `SemanticEvent` when commit tokens exist. **Name collision (prose today, code later):** economy's E2 `CausalRef { provider, kind, id, revision }` (`mush-economy/src/record.rs:278-287`) is *not* doc 09's causal reference; E4 renames it **`ExternalRef`** (serde shape unchanged) and reuses it for `TypedCondition::Fact` instead of minting a `FactRef` — one external-reference type, with `revision` for free. Contract attestations record the canon event's id and `source` today, and its commit-token causal reference once C6 lands, so front attribution nests inside the kernel's causal chain rather than running as a parallel system. |
 | **§2.6 canonical hashes "state their domain/encoding version"** | `plan_hash` v3 (§3.3 inv. 27) | The hash stays byte-compatible (E2 pin) and the record gains a `hash_domain: "economy.plan/v3"` note in the journal entry's schema doc, not in the hashed bytes. |
 | **C2 / K2 "new authoritative state-family actions must use the prepared path; legacy handlers remain a compatibility risk until migrated"; §1.4 durable atomicity is K3** | `post`, `submit`, E4's new docs | E3's `post`/`submit` are legacy K0-lane handlers by doc 09's own classification, hardened by K's two-phase `PreparedLedgerAppend`. E4 **keeps the journal as authority** (holds as effects — stronger than the K2 bridge's process-local serial, which has no restart hydration) and keeps `obligation:{id}` / `contract:{id}` as conventional container docs, **but** shapes them so the K3 migration is mechanical: one mutation per key per plan, canonical post-images, no fallible step after the first install (already §4.2). Registering them as K2 state families now would put money-adjacent truth on a lane that doc 09 itself says cannot yet hydrate at boot. **Owner decision requested (§10 q4).** |
@@ -1806,11 +1816,16 @@ companion docs), a **`Ctx` family read path**, and the **seal folded into the bu
 It is then still an explicit **owner decision**, not a mechanical port, because the
 journal would stop being sole authority for money-adjacent truth — which is the one
 property every invariant in §3.3 is anchored to. Recorded alongside it: the
-**pre-existing E0 hazard** that a batch dropped deterministically only ever logs an
-unsealed journal chunk and the non-ledger module ops, so a lost write is visible as a
-gap rather than as an error — E4's contract, obligation and escalation documents ride
-that batch and inherit it. Fixing that belongs to K's rebase, with the ledger and the
-module ops sealed together.
+**pre-existing E0 hazard** that a batch dropped deterministically only ever logged an
+unsealed journal chunk and the non-ledger module ops, so a lost write was visible as a
+gap rather than as an error — E4's contract, obligation and escalation documents rode
+that batch and inherited it. **Closed for durability by the K quarantine (look-back
+C9):** complete batches spool to the quarantine on every drop path, unresolved records
+refuse writable boot, and idempotent legacy batches replay (`quarantine.rs`; only
+`StreamAppend` is non-replayable, and no E crate produces one). The residual — RAM and
+command output run ahead of durable truth in the interval before the halt — stays on
+the K6 agenda (08h §3); `persist.rs`'s "will NOT self-heal" message is to be reworded
+with it (fix-during).
 
 `mush_core::ScopedIdempotencyKey`/`IdempotencyScope` (`action.rs:374-426`) exist but are ingress/
 gateway machinery; the sweep's server-internal deterministic keys stay `IdempotencyKey` (optional

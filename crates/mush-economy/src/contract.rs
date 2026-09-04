@@ -464,9 +464,10 @@ pub struct ConsentSurface {
     pub scope: Option<OrgScopeId>,
     /// **The named adjudicator** (08e answer 6): the authority whose word settles a
     /// contested condition, named *before* acceptance so runners consent to it when
-    /// they accept. When it is `Some`, an attestation is accepted only from someone
-    /// who qualifies for this set **as well as** the condition's own `by` — an
-    /// adjudicated condition is not something a party can discharge by asserting it.
+    /// they accept. When it is `Some`, it **replaces** every condition's own `by` as
+    /// the attestor set that counts (`outcome_conditions`): an adjudicated condition
+    /// is not something a party can discharge by asserting it, and the condition's
+    /// own set is not consulted at all (look-back fold, the stale "as well as").
     ///
     /// It lives in the consent surface rather than beside the other roles because it
     /// is consented *authority*, not attribution: changing it after `Offer` must
@@ -2223,8 +2224,10 @@ pub fn settlement_plan(
     Ok(plan)
 }
 
-/// Build the refund plan: release every **qualifying** escrow hold and nothing else.
-/// Effect-only (legal under invariant 10), key `contract/{id}/refund`.
+/// Build the refund plan: release every **qualifying** escrow hold and nothing else —
+/// E4b2's collateral refinement (D-E4b2-24): a `Collateral` pledge is released by the
+/// same `release_asset_ops` a settlement uses, so a refund never leaves a pledge
+/// encumbered. Effect-only (legal under invariant 10), key `contract/{id}/refund`.
 ///
 /// Two guards the E4a verify fold added:
 ///

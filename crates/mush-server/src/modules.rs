@@ -1326,6 +1326,56 @@ mod tests {
         );
     }
 
+    /// E5c-C231 (look-back fold): the `[wod.economy].reserved_rooms` →
+    /// `server_modules_with` → `HousingModule::with_reserved_rooms` chain, pinned
+    /// before Shadowrun copies the plumbing — housing's store is told every room the
+    /// config names, plus `[onboarding]`'s two start rooms and Limbo.
+    #[test]
+    fn lb_e5cc231_the_wod_reserved_rooms_reach_housing_through_server_modules_with() {
+        use mush_testkit::TestWorld;
+        let onboarding = ruleset_wod::OnboardingConfig::default();
+        let wod = ruleset_wod::WodEconomyConfig {
+            reserved_rooms: vec![mush_core::ObjId(4_242), mush_core::ObjId(4_243)],
+            ..ruleset_wod::WodEconomyConfig::default()
+        };
+        let tw = TestWorld::with_modules(server_modules_with(
+            mush_weather::WeatherConfig::default(),
+            mush_economy::EconomyConfig::default(),
+            &onboarding,
+            Some(&wod),
+        ));
+        let store = tw
+            .world()
+            .module_state::<mush_housing::HousingStore>()
+            .expect("housing is wired");
+        for room in [
+            mush_core::ObjId(4_242),
+            mush_core::ObjId(4_243),
+            onboarding.start_room,
+            onboarding.start_room_unapproved,
+            mush_core::LIMBO,
+        ] {
+            assert!(store.is_reserved(room), "#{} did not reach housing's reserved list", room.0);
+        }
+        assert!(!store.is_reserved(mush_core::ObjId(9_999)), "an unnamed room was reserved");
+        assert!(store.issuer().is_some(), "the title issuer is wired with housing on");
+        // A server without the WoD ruleset reserves the host's rooms alone and wires
+        // no issuer.
+        let tw = TestWorld::with_modules(server_modules_with(
+            mush_weather::WeatherConfig::default(),
+            mush_economy::EconomyConfig::default(),
+            &onboarding,
+            None,
+        ));
+        let store = tw
+            .world()
+            .module_state::<mush_housing::HousingStore>()
+            .expect("housing is wired");
+        assert!(store.is_reserved(mush_core::LIMBO) && store.is_reserved(onboarding.start_room));
+        assert!(!store.is_reserved(mush_core::ObjId(4_242)));
+        assert!(store.issuer().is_none());
+    }
+
     #[test]
     fn server_modules_register_without_collision() {
         // The full production list (including org/economy and sim/tactics) shares one

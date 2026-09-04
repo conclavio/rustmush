@@ -246,6 +246,18 @@ fn off_creates_nothing_and_shows_nothing() {
     let out = ok(&mut tw, GOD, "@wod/economy migrate");
     assert!(out.contains("Nothing to do"), "off migrate did something: {out}");
     assert_eq!(store(&tw).profiles().count(), 0);
+    // E5c-C2 (look-back fold): `off` with housing on creates exactly one inert
+    // Manual clock — the one housing assesses on — and nothing else.
+    let cadences: Vec<(String, mush_economy::CadenceSource)> = tw
+        .world()
+        .module_state::<EconomyStore>()
+        .map(|s| s.snapshot().cadences().map(|c| (c.name.to_string(), c.source)).collect())
+        .unwrap_or_default();
+    assert_eq!(
+        cadences,
+        vec![("chronicle.period".to_string(), mush_economy::CadenceSource::Manual)],
+        "off created something other than the one inert clock"
+    );
 }
 
 #[test]
@@ -307,9 +319,11 @@ fn the_ruleset_boot_creates_the_named_cadence_and_says_so() {
 }
 
 #[test]
-fn the_wod_config_extends_the_reserved_room_list() {
-    // The knob is host-side; what E5c owns is that housing is *told*. Wiring a room
-    // into `with_reserved_rooms` must make `@property/create` refuse it.
+fn housing_refuses_a_room_wired_into_with_reserved_rooms() {
+    // What this pins is housing's refusal of a room the host wired into
+    // `with_reserved_rooms`. The `[wod.economy].reserved_rooms` → `server_modules_with`
+    // → `with_reserved_rooms` chain is the host's, and is pinned in `mush-server`
+    // (`modules.rs`, E5c-C231).
     let mut tw = {
         let issuer = SystemPrincipalId::new("wod.housing").expect("principal");
         TestWorld::with_modules(vec![
@@ -2165,4 +2179,317 @@ fn vf_d6_wod_economy_refuses_an_unknown_argument() {
     assert!(show.contains("[wod.economy] as this server is running it:"), "{show}");
     let migrate = ok(&mut tw, GOD, "@wod/economy migrate");
     assert!(migrate.contains("@wod/economy migrate:"), "{migrate}");
+}
+
+// ---------------------------------------------------------------------------
+// ---- look-back fold: D-LBK-2 (the WoD half) ----
+// ---------------------------------------------------------------------------
+
+fn engine_fire(engine: &mut Engine) {
+    let t = engine.world.now().saturating_add(40);
+    engine.set_now(t);
+    let mut out = Outbox::new();
+    let mut fx = Effects::new();
+    engine.fire_due(t.saturating_mul(1000), &mut out, &mut fx);
+}
+
+/// `n` profiled characters with seeded cursors, injected as documents and booted
+/// fresh — a population of a thousand for the price of a reboot.
+fn profiled_population(tw: &mut TestWorld, n: u32) -> (Engine, Vec<ObjId>) {
+    let now = i64::try_from(
+        tw.world()
+            .module_state::<EconomyStore>()
+            .and_then(|s| s.snapshot().cadence(mush_economy::CadenceId(cadence_id(tw))).map(|c| c.position))
+            .expect("cadence"),
+    )
+    .unwrap_or(0);
+    let mut who = Vec::new();
+    for i in 0..n {
+        who.push(tw.spawn_player(&format!("Pop{i}")));
+    }
+    let mut kv = fold_kv(tw);
+    let entry = kv.entry(SmolStr::new("wod")).or_default();
+    for obj in &who {
+        let p = SpendingProfile::new(*obj, 0, Engagement::Ambient);
+        entry.push((SmolStr::new(format!("profile:{}", obj.0)), serde_json::to_value(&p).expect("serializes")));
+        entry.push((
+            SmolStr::new(format!("eval:{}", obj.0)),
+            serde_json::json!({ "position": now, "period": 0, "seeded": true }),
+        ));
+    }
+    let engine = reboot_fresh(tw, kv, cfg(PersonalMode::Abstract));
+    (engine, who)
+}
+
+/// A thousand profiled characters, none due: a fire visits at most 256 and advances
+/// the cursor past the last visited id; the next fire visits the next block; after a
+/// complete sweep with nothing due a fire visits nothing until the cadence advances
+/// or a profile is created; at a period boundary a fire works at most 128 and later
+/// fires work the rest; and no profile is cloned before the due check.
+#[test]
+fn lb_dlbk2_a_fire_visits_at_most_256_works_at_most_128_and_idles_between_periods() {
+    let mut tw = boot(cfg(PersonalMode::Abstract));
+    let cadence = cadence_id(&tw);
+    let (mut engine, who) = profiled_population(&mut tw, 1_000);
+    assert_eq!(engine_store(&engine).profiles().count(), 1_000);
+
+    let mut cursors = Vec::new();
+    for _ in 0..4 {
+        engine_fire(&mut engine);
+        let f = engine_store(&engine).last_fire();
+        assert!(f.visited <= ruleset_wod::economy::store::MAX_VISITED_PER_FIRE, "visited {}", f.visited);
+        assert!(f.visited > 0, "an idle fire before the sweep was complete");
+        assert_eq!(f.worked, 0);
+        assert_eq!(f.cloned, 0, "a profile was cloned before the due check");
+        cursors.push(engine_store(&engine).cursor());
+    }
+    assert_eq!(cursors[0], who[255].0 + 1, "the cursor did not advance past the last visited id");
+    assert_eq!(cursors[1], who[511].0 + 1, "the second fire did not visit the next block");
+    engine_fire(&mut engine);
+    let f = engine_store(&engine).last_fire();
+    assert_eq!(f.visited, 0, "a fire scanned after a complete idle sweep");
+    assert!(f.short_circuited);
+
+    // A new profile bumps the population version and wakes the scan…
+    let fresh = engine.world.create(ObjKind::Player, "Newcomer", GOD, Some(LIMBO)).expect("a player");
+    let ev = engine_cmd(&mut engine, GOD, "@sheet/set Newcomer/backgrounds:Resources=2");
+    assert!(!has_error(&ev), "{}", texts(&ev));
+    let mut doc = engine.world.attr(fresh, "sheet:wod").and_then(mush_core::Attr::as_json).cloned().expect("a sheet");
+    doc["approved"] = serde_json::json!({ "approved": { "by": GOD.0, "at": 0 } });
+    engine.world.set_attr(fresh, "sheet:wod", mush_core::Attr::json(doc, GOD)).expect("writable");
+    let version = engine_store(&engine).population_version();
+    let ev = engine_cmd(&mut engine, GOD, "@wod/economy migrate");
+    assert!(!has_error(&ev), "{}", texts(&ev));
+    assert!(engine_store(&engine).population_version() > version, "a new profile did not bump the version");
+    engine_fire(&mut engine);
+    assert!(engine_store(&engine).last_fire().visited > 0, "a new profile did not wake the scan");
+    for _ in 0..4 {
+        engine_fire(&mut engine);
+    }
+    assert!(engine_store(&engine).last_fire().short_circuited, "the scan never went idle again");
+
+    // …and a cadence advance makes everything due: at most 128 worked per fire, the
+    // rest on later fires.
+    let ev = engine_cmd(&mut engine, GOD, &format!("@econ/cadence advance {cadence} 1"));
+    assert!(!has_error(&ev), "{}", texts(&ev));
+    let mut worked_total = 0usize;
+    for _ in 0..12 {
+        engine_fire(&mut engine);
+        let f = engine_store(&engine).last_fire();
+        assert!(f.worked <= ruleset_wod::economy::store::MAX_WORKED_PER_FIRE, "worked {}", f.worked);
+        assert!(f.visited <= ruleset_wod::economy::store::MAX_VISITED_PER_FIRE);
+        assert!(f.cloned <= f.worked, "a profile was cloned without being worked");
+        worked_total += f.worked;
+    }
+    assert_eq!(worked_total, 1_001, "the period was not spread over later fires: {worked_total}");
+}
+
+// ---------------------------------------------------------------------------
+// ---- look-back fold: D-LBK-3 ----
+// ---------------------------------------------------------------------------
+
+/// Boot `tw` fresh over `base`'s documents with `who`'s profile rewritten by `f`,
+/// and say whether the loader refused it (the profile is then re-derived in the
+/// same boot).
+fn reboot_with_patched_profile(tw: &TestWorld, base: &Kv, who: ObjId, f: impl Fn(&mut serde_json::Value)) -> (Engine, bool) {
+    let mut kv = base.clone();
+    let key = format!("profile:{}", who.0);
+    let entry = kv.get_mut(&SmolStr::new("wod")).expect("wod namespace");
+    let mut seen = false;
+    for (k, v) in entry.iter_mut() {
+        if k.as_str() == key {
+            f(v);
+            seen = true;
+        }
+    }
+    assert!(seen, "no persisted profile for #{}", who.0);
+    let engine = reboot_fresh(tw, kv, cfg(PersonalMode::Abstract));
+    let p = engine_profile(&engine, who);
+    let rederived = p.history.iter().any(|e| e.what.contains("re-derived at boot"));
+    (engine, rederived)
+}
+
+/// A profile past any documented cap refuses to deserialize — 33 history entries,
+/// 9 sources, a 5-option prompt, a 65-byte text field, a 257-byte history line — and
+/// the character is re-derived in the same boot; a profile inside every cap loads
+/// as written.
+#[test]
+fn lb_dlbk3_an_over_cap_profile_refuses_to_load_and_is_re_derived() {
+    let mut tw = boot(cfg(PersonalMode::Abstract));
+    let nick = character(&mut tw, "Nick", 3);
+    ok(&mut tw, nick, "+career/source add career=fixer");
+    let base = fold_kv(&mut tw);
+    fn option(k: &str) -> serde_json::Value {
+        serde_json::json!({ "key": k, "label": "x", "outcome": "StatusQuo" })
+    }
+    fn prompt(n: usize) -> serde_json::Value {
+        let options: Vec<serde_json::Value> = (0..n).map(|i| option(&format!("o{i}"))).collect();
+        serde_json::json!({
+            "id": 1, "kind": "StrainRelief", "options": options,
+            "default": "StatusQuo", "opened_at": 0, "opened_period": 0, "expires_after_periods": 2
+        })
+    }
+    type Patch = Box<dyn Fn(&mut serde_json::Value)>;
+    let cases: Vec<(&str, Patch)> = vec![
+        ("33 history entries", Box::new(|v| {
+            let history: Vec<serde_json::Value> = (0..33).map(|i| serde_json::json!({ "at": i, "what": "x" })).collect();
+            v["history"] = serde_json::Value::Array(history);
+        })),
+        ("9 sources", Box::new(|v| {
+            let sources: Vec<serde_json::Value> = (0..9).map(|_| serde_json::json!("Inheritance")).collect();
+            v["sources"] = serde_json::Value::Array(sources);
+        })),
+        ("two sources of one kind", Box::new(|v| {
+            v["sources"] = serde_json::json!(["Inheritance", "Inheritance"]);
+        })),
+        ("a 5-option prompt", Box::new(|v| { v["prompt"] = prompt(5); })),
+        ("a 65-byte career kind", Box::new(|v| {
+            v["sources"] = serde_json::json!([{ "Career": { "kind": "k".repeat(65) } }]);
+        })),
+        ("a 257-byte history line", Box::new(|v| {
+            v["history"] = serde_json::json!([{ "at": 0, "what": "h".repeat(257) }]);
+        })),
+        ("9 haven qualities", Box::new(|v| {
+            let qualities: Vec<&str> = (0..9).map(|_| "q").collect();
+            v["haven"] = serde_json::json!({ "dots": 3, "qualities": qualities });
+        })),
+        ("strain above the ceiling", Box::new(|v| { v["strain"] = serde_json::json!(11); })),
+    ];
+    for (what, f) in cases {
+        let (engine, rederived) = reboot_with_patched_profile(&tw, &base, nick, f);
+        assert!(rederived, "{what}: the over-cap profile loaded as written");
+        let p = engine_profile(&engine, nick);
+        assert_eq!(p.resources, 3, "{what}: the re-derived profile lost the sheet reading");
+        assert!(p.prompt.is_none() && p.strain == 0, "{what}");
+    }
+    // Inside every cap, the document loads exactly as written.
+    let (engine, rederived) = reboot_with_patched_profile(&tw, &base, nick, |v| {
+        let history: Vec<serde_json::Value> = (0..32).map(|i| serde_json::json!({ "at": i, "what": "x" })).collect();
+        v["history"] = serde_json::Value::Array(history);
+        v["prompt"] = prompt(4);
+        v["strain"] = serde_json::json!(10);
+    });
+    assert!(!rederived, "a profile inside every cap was refused");
+    let p = engine_profile(&engine, nick);
+    assert_eq!(p.history.len(), 32);
+    assert_eq!(p.prompt.as_ref().map(|x| x.options.len()), Some(4));
+    assert_eq!(p.strain, 10);
+}
+
+/// `+prompt` renders at most four options: a four-option prompt shows four lines, and
+/// a five-option document never reaches the render at all.
+#[test]
+fn lb_dlbk3_prompt_renders_at_most_four_options() {
+    let mut tw = boot(cfg(PersonalMode::Abstract));
+    let nick = character(&mut tw, "Nick", 3);
+    let base = fold_kv(&mut tw);
+    let option = |k: &str| serde_json::json!({ "key": k, "label": "an answer", "outcome": "StatusQuo" });
+    let (mut engine, rederived) = reboot_with_patched_profile(&tw, &base, nick, move |v| {
+        let options: Vec<serde_json::Value> = ["a", "b", "c", "d"].iter().map(|k| option(k)).collect();
+        v["prompt"] = serde_json::json!({
+            "id": 7, "kind": "StrainRelief", "options": options,
+            "default": "StatusQuo", "opened_at": 0, "opened_period": 0, "expires_after_periods": 2
+        });
+    });
+    assert!(!rederived);
+    engine_conn(&mut engine, nick);
+    let seen = texts(&engine_cmd(&mut engine, nick, "+prompt"));
+    assert_eq!(seen.matches("  +prompt ").count(), 4, "{seen}");
+    assert_eq!(ruleset_wod::economy::record::MAX_PROMPT_OPTIONS, 4);
+}
+
+// ---------------------------------------------------------------------------
+// ---- look-back fold: E5c-C96 ----
+// ---------------------------------------------------------------------------
+
+/// A `HousingPressure` prompt that lapsed this period does not re-open this period,
+/// and re-asks next period while the home is still behind.
+#[test]
+fn lb_e5cc96_a_lapsed_housing_pressure_prompt_waits_one_period_before_re_asking() {
+    let mut tw = boot(cfg(PersonalMode::Abstract));
+    let nick = character(&mut tw, "Nick", 0);
+    let flat = property(&mut tw, "Flat", 3);
+    let _t = tenancy_for(&mut tw, flat, nick);
+    let mut opened = None;
+    for _ in 0..8 {
+        period(&mut tw, 1);
+        if let Some(p) = profile(&tw, nick).prompt.as_ref()
+            && matches!(p.kind, PromptKind::HousingPressure { .. })
+        {
+            opened = Some(p.opened_period);
+            break;
+        }
+    }
+    let opened = opened.expect("housing pressure never asked");
+    // Unanswered, it lapses after PROMPT_EXPIRY_PERIODS — and that period stays quiet.
+    let mut lapsed_at = None;
+    for _ in 0..4 {
+        period(&mut tw, 1);
+        let p = profile(&tw, nick);
+        let ordinal = store(&tw).eval_state(nick).period;
+        if p.prompt.is_none() {
+            lapsed_at = Some(ordinal);
+            assert!(
+                p.history.iter().any(|e| e.what.contains("lapsed")),
+                "the prompt vanished without lapsing: {:?}",
+                p.history
+            );
+            break;
+        }
+        assert_eq!(p.prompt.as_ref().map(|x| x.opened_period), Some(opened), "a second prompt replaced the first");
+    }
+    let lapsed_at = lapsed_at.expect("the prompt never lapsed");
+    assert!(lapsed_at > opened);
+    // The home is still behind, so the standing condition re-asks — next period, not
+    // in the same breath.
+    period(&mut tw, 1);
+    let p = profile(&tw, nick);
+    assert!(
+        matches!(p.prompt.as_ref().map(|x| &x.kind), Some(PromptKind::HousingPressure { .. })),
+        "housing pressure did not re-ask next period: {:?}",
+        p.prompt
+    );
+    assert_eq!(p.prompt.as_ref().map(|x| x.opened_period), Some(lapsed_at + 1));
+}
+
+/// The same quiet period for `StrainRelief`: at the ceiling, a lapsed relief prompt
+/// is not replaced in the period it lapses and re-asks the period after.
+#[test]
+fn lb_e5cc96_a_lapsed_strain_relief_prompt_waits_one_period_before_re_asking() {
+    let mut tw = boot(cfg(PersonalMode::Abstract));
+    let nick = character(&mut tw, "Nick", 3);
+    ok(&mut tw, nick, "+career/source add career=fixer");
+    ok(&mut tw, nick, "+career/stance advance");
+    for _ in 0..(u64::from(STRAIN_MAX) + 6) {
+        period(&mut tw, 1);
+    }
+    assert_eq!(profile(&tw, nick).strain, STRAIN_MAX);
+    ok(&mut tw, nick, "+career/engage on");
+    period(&mut tw, 1);
+    let opened = match profile(&tw, nick).prompt {
+        Some(p) if matches!(p.kind, PromptKind::StrainRelief) => p.opened_period,
+        other => panic!("relief was not offered at the ceiling: {other:?}"),
+    };
+    let mut lapsed_at = None;
+    for _ in 0..4 {
+        period(&mut tw, 1);
+        let p = profile(&tw, nick);
+        let ordinal = store(&tw).eval_state(nick).period;
+        if p.prompt.is_none() {
+            lapsed_at = Some(ordinal);
+            break;
+        }
+        assert_eq!(p.prompt.as_ref().map(|x| x.opened_period), Some(opened), "a second prompt replaced the first");
+    }
+    let lapsed_at = lapsed_at.expect("the relief prompt never lapsed");
+    assert!(lapsed_at > opened, "the quiet period was skipped");
+    period(&mut tw, 1);
+    let p = profile(&tw, nick);
+    assert_eq!(p.strain, STRAIN_MAX, "strain left the ceiling");
+    assert!(
+        matches!(p.prompt.as_ref().map(|x| &x.kind), Some(PromptKind::StrainRelief)),
+        "relief did not re-ask next period: {:?}",
+        p.prompt
+    );
+    assert_eq!(p.prompt.as_ref().map(|x| x.opened_period), Some(lapsed_at + 1));
 }

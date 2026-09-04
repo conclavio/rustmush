@@ -42,20 +42,15 @@
 //! - **`+gnosis` and `+gift`/`+gifts`/`+gift/roll` are *not* registered by
 //!   this module.** [`werewolf::register_commands`] already owns those names;
 //!   registering them again here would collide (`ModError`) the moment both
-//!   splats are enabled together. Their handlers are already fully
-//!   schema-generic (they read `gnosis`/`gnosis_temp`/`gifts` off whatever
-//!   doc is passed, with no Werewolf-specific assumption beyond the actor's
-//!   template), so the **only** change needed to let a Kinfolk use them is
-//!   widening the gate at the top of `gnosis_cmd` and `gift_cmd` in
-//!   `werewolf.rs` from `require_garou` (werewolf-only) to also accept
-//!   `is_template(cmd, ctx, "kinfolk")` — while leaving `rage_cmd`,
-//!   `renown_cmd`, `shift_cmd` and `rank_cmd` on the strict Garou-only gate
-//!   (Kinfolk have none of those). **Integration TODO**, cross-file, flagged
-//!   loudly per the concurrency contract; not done here since it requires
-//!   editing `werewolf.rs`. Until then, this module's own `+tribe` command
-//!   is the only live Kinfolk command surface; the pool-building and
-//!   eligibility logic ([`eligible_gifts`], [`has_gift`]) is implemented and
-//!   tested here so the widened commands need no further logic once wired.
+//!   splats are enabled together. Their handlers are schema-generic (they read
+//!   `gnosis`/`gnosis_temp`/`gifts` off whatever doc is passed), and the gate at
+//!   the top of `gnosis_cmd` and `gift_cmd` in `werewolf.rs` is
+//!   `require_garou_or_kin`, which admits `is_template(cmd, ctx, "kinfolk")` —
+//!   so a Kinfolk uses them today (the integration this note once flagged as a
+//!   TODO is done; look-back fold T5). `rage_cmd`, `renown_cmd`, `shift_cmd` and
+//!   `rank_cmd` stay on the strict Garou-only gate (Kinfolk have none of those).
+//!   The pool-building and eligibility logic ([`eligible_gifts`], [`has_gift`])
+//!   lives and is tested here.
 //! - `werewolf::pool_raise_cost` (the Rage/Gnosis ×mult XP formula) is
 //!   private to `werewolf.rs`, so [`gnosis_raise_cost`] below is a small
 //!   local copy of the same one-line formula rather than a cross-module

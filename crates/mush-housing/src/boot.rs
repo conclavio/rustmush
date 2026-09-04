@@ -54,6 +54,12 @@
 //!    0 every boot, so a kept one names somebody else's scene (T8).
 //! 7. **The `Let`/`Vacant` latch → re-derived** from the live tenancies. `Withdrawn`
 //!    is never re-derived away.
+//!
+//! **Pass 0 runs before all of them** (look-back fold, D-LBK-1): the projections are
+//! rebuilt from the loaded records, and every cross-record conflict they represent —
+//! a room in two properties, two live tenancies on one property, a live tenancy on
+//! no property — is quarantined fail-closed, its rent suspended through the economy
+//! and one page opened per conflict ([`crate::quarantine`]). Nothing here is fatal.
 
 use mush_core::module::{ModError, ModuleBootData};
 use mush_core::{Ctx, ObjId};
@@ -136,10 +142,22 @@ pub(crate) fn load(data: &ModuleBootData) -> Result<HousingStore, ModError> {
                 tracing::warn!(%key, "housing: bad notice key; ignoring");
                 continue;
             };
-            match serde_json::from_value::<Vec<PendingNotice>>(value.clone()) {
-                Ok(mut list) => {
-                    // The cap is enforced on load as well as on write: a hand-written
-                    // list must not become an unbounded render at reconnect.
+            match serde_json::from_value::<Vec<serde_json::Value>>(value.clone()) {
+                Ok(raw) => {
+                    // Both caps are enforced on load as well as on write (look-back
+                    // fold, D-LBK-3): a hand-written list must not become an
+                    // unbounded render at reconnect, and an oversized line is dropped
+                    // on its own — notices are ephemeral — with the rest kept.
+                    let mut list: Vec<PendingNotice> = Vec::new();
+                    for entry in raw {
+                        match serde_json::from_value::<PendingNotice>(entry) {
+                            Ok(n) => list.push(n),
+                            Err(error) => tracing::warn!(
+                                %key, %error,
+                                "housing: an oversized or corrupt pending notice was dropped on load"
+                            ),
+                        }
+                    }
                     if list.len() > MAX_PENDING_NOTICES {
                         let drop = list.len() - MAX_PENDING_NOTICES;
                         list.drain(0..drop);
@@ -166,8 +184,11 @@ pub(crate) fn load(data: &ModuleBootData) -> Result<HousingStore, ModError> {
     store.cursor = meta_u64(meta, "assess_cursor");
     // The tick's working set is derived from the loaded statuses, never persisted:
     // an index that could disagree with the record it indexes is a second source of
-    // truth about who still lives somewhere (fold T7).
+    // truth about who still lives somewhere (fold T7). The two projections are
+    // rebuilt the same way (D-LBK-4a): they *represent* a conflict rather than
+    // collapsing it, which is what pass 0 reads.
     store.reindex_open();
+    store.rebuild_projections();
     Ok(store)
 }
 
@@ -181,6 +202,12 @@ fn next_after(max: Option<u64>) -> u64 {
 
 /// Reconcile the loaded records against the live world (08d §4).
 pub(crate) fn reconcile(ctx: &mut Ctx<'_>) {
+    // Pass 0 (look-back fold, D-LBK-1): the container invariants, fail-closed. It
+    // runs on the freshly built projections before any later pass writes a record,
+    // suspends the rent of every quarantined exact tenancy synchronously (the
+    // economy booted before housing; the write rides this boot's own batch), and
+    // pages once per conflict.
+    crate::quarantine::revalidate(ctx);
     let mut pages = 0usize;
     reconcile_properties(ctx, &mut pages);
     reconcile_tenants(ctx, &mut pages);

@@ -32,7 +32,7 @@ use mush_economy::{
     EconomyPlan, EconomySnapshot, EconomyStore, EscalationKind, EscalationSubject, ForgiveCause,
     GracePolicy, HoldId, HoldStatus, IdempotencyKey, InstrumentCaps, ObligationCause,
     ObligationEvent, ObligationId, ObligationSpec, ObligationStatus, PostOutcome, RequestedLine,
-    SuspendReason,
+    SuspendReason, SuspensionKey,
 };
 use mush_proto::OutputEvent;
 use mush_testkit::{TestWorld, text_of};
@@ -1260,6 +1260,11 @@ struct VfState {
     outcome: Option<Result<PostOutcome, EconomyError>>,
     spec: Option<(String, ObligationSpec)>,
     minted: Option<Result<ObligationId, EconomyError>>,
+    /// Look-back fold: the last `register_instrument` outcome (`@vf/instrument`).
+    registered: Option<Result<(), EconomyError>>,
+    /// Look-back fold: the last `suspend_obligation` / `resume_obligation` outcome
+    /// (`@vf/hold`, `@vf/release`), the release's `bool` folded in.
+    seam: Option<Result<bool, EconomyError>>,
 }
 
 #[derive(Clone, Default)]
@@ -1278,6 +1283,12 @@ impl Vf {
     fn minted(&self) -> Result<ObligationId, EconomyError> {
         self.0.lock().expect("probe lock").minted.clone().expect("a mint outcome was recorded")
     }
+    fn registered(&self) -> Result<(), EconomyError> {
+        self.0.lock().expect("probe lock").registered.clone().expect("a registration was recorded")
+    }
+    fn seam(&self) -> Result<bool, EconomyError> {
+        self.0.lock().expect("probe lock").seam.clone().expect("a seam outcome was recorded")
+    }
 }
 
 struct VfMod(Vf);
@@ -1292,12 +1303,49 @@ impl GameModule for VfMod {
             CommandSpec {
                 name: "@vf".into(),
                 shape: ArgShape::EqPair,
-                switches: ["post", "mint"].iter().copied().map(SmolStr::new).collect(),
-                help: "verify-fold probe: post a staged plan / mint a staged system obligation"
+                switches: ["post", "mint", "instrument", "hold", "release"]
+                    .iter()
+                    .copied()
+                    .map(SmolStr::new)
+                    .collect(),
+                help: "verify-fold probe: post a staged plan / mint a staged system obligation / \
+                       register an instrument / hold or release an obligation under a key"
                     .into(),
                 ..CommandSpec::default()
             },
             Arc::new(move |ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+                // Look-back fold, E2-C18: `@vf/instrument <code>` calls the API directly,
+                // past the command's own guard.
+                if ctx.switches.has("instrument") {
+                    let code = ctx.args.lhs().trim().to_string();
+                    let id = mush_economy::InstrumentId::new(&code).expect("a valid code");
+                    let outcome = mush_economy::register_instrument(ctx, mush_economy::InstrumentDef {
+                        id,
+                        ruleset: SmolStr::new_static("probe"),
+                        code: SmolStr::new(code),
+                        kind: mush_economy::InstrumentKind::Currency,
+                        scale: 0,
+                        transferable: true,
+                        negative_policy: mush_economy::NegativePolicy::SystemOnly,
+                        status: mush_economy::InstrumentStatus::Active,
+                        revision: 1,
+                    });
+                    st.0.lock().expect("probe lock").registered = Some(outcome);
+                    return Ok(());
+                }
+                // Look-back fold, D-LBK-1: `@vf/hold <obligation>=<key>` and
+                // `@vf/release <obligation>=<key>` drive the layered-module seam.
+                if ctx.switches.has("hold") || ctx.switches.has("release") {
+                    let id = ObligationId(ctx.args.lhs().trim().parse().expect("an obligation id"));
+                    let key = SuspensionKey::new(ctx.args.rhs().unwrap_or_default()).expect("a valid key");
+                    let outcome = if ctx.switches.has("hold") {
+                        mush_economy::suspend_obligation(ctx, id, key).map(|()| false)
+                    } else {
+                        mush_economy::resume_obligation(ctx, id, &key)
+                    };
+                    st.0.lock().expect("probe lock").seam = Some(outcome);
+                    return Ok(());
+                }
                 if ctx.switches.has("post") {
                     let plan =
                         st.0.lock().expect("probe lock").plan.take().expect("stage a plan first");
@@ -1945,18 +1993,27 @@ fn vf_s5_resume_forgives_the_suspended_gap_and_records_why() {
     sweep_at(&mut tw, 200);
     sweep_at(&mut tw, 300);
     sweep_at(&mut tw, 400);
-
-    let seen = ok(&mut tw, GOD, &format!("@obligation/resume {id}"));
-    assert!(seen.contains("forgiven"), "resume said nothing about the gap: {seen}");
-    let o = obligation(&tw, id);
+    // Look-back fold, D-LBK-1: the gap is forgiven **as it falls due**, by the sweep,
+    // and recorded with its cause on each fire — so by the time anybody resumes there
+    // is nothing left for the resumption to forgive, let alone charge.
+    let held = obligation(&tw, id);
+    assert_eq!(held.forgiven_total, 3, "the sweep did not forgive the suspended periods as they fell due");
     assert!(
-        o.history.iter().any(|e| matches!(
+        held.history.iter().any(|e| matches!(
             e,
             ObligationEvent::Forgiven { cause: ForgiveCause::Suspension, .. }
         )),
         "the forgiveness was not recorded with its cause: {:?}",
-        o.history
+        held.history
     );
+
+    let seen = ok(&mut tw, GOD, &format!("@obligation/resume {id}"));
+    assert!(
+        seen.contains("No period fell due") || seen.contains("forgiven"),
+        "resume said nothing about the gap: {seen}"
+    );
+    let o = obligation(&tw, id);
+    assert_eq!(o.status, ObligationStatus::Active);
     assert!(o.schedule.next_due > 400, "the schedule was not re-anchored past the gap");
 
     // ...and the next fire charges ONE period, not the whole suspension.
@@ -2403,4 +2460,228 @@ fn vf_m1_a_per_instrument_cap_overrides_the_default() {
     sweep_at(&mut tw, 100);
     assert_eq!(bal(&tw, r.quinn_acct), 5);
     assert_eq!(obligation(&tw, id).settled_total, 1);
+}
+
+// ======================================================================
+// ---- look-back fold: E2-C18 ----
+// ======================================================================
+
+/// `register_instrument` is create-only: a second registration of the same id is
+/// refused at the API (not only by the command's guard) and the live definition is
+/// untouched.
+#[test]
+fn lb_e2c18_register_instrument_refuses_an_existing_id() {
+    let (mut tw, vf) = boot_probe();
+    ok(&mut tw, GOD, "@instrument/register gold=2");
+    let before = snap(&tw).instrument(&mush_economy::InstrumentId::new("gold").unwrap()).cloned().expect("gold");
+    ok(&mut tw, GOD, "@vf/instrument gold");
+    assert_eq!(
+        vf.registered(),
+        Err(EconomyError::InstrumentExists(mush_economy::InstrumentId::new("gold").unwrap()))
+    );
+    let after = snap(&tw).instrument(&mush_economy::InstrumentId::new("gold").unwrap()).cloned().expect("gold");
+    assert_eq!(after, before, "the refused registration replaced the live definition");
+    assert_eq!(after.scale, 2, "the scale was overwritten");
+    // The command keeps its own readable refusal.
+    let seen = err(&mut tw, GOD, "@instrument/register gold=0");
+    assert!(seen.contains("already registered"), "{seen}");
+    // A fresh id still registers through the API.
+    ok(&mut tw, GOD, "@vf/instrument silver");
+    assert_eq!(vf.registered(), Ok(()));
+    assert!(snap(&tw).instrument(&mush_economy::InstrumentId::new("silver").unwrap()).is_some());
+}
+
+/// A `Suspended` instrument — reachable only through the document, since no
+/// producer exists — refuses a post at the engine (`InactiveInstrument`), and nothing
+/// moves.
+#[test]
+fn lb_e2c18_a_suspended_instrument_refuses_a_post_at_the_engine() {
+    let mut tw = boot();
+    let r = rig(&mut tw, 100);
+    let mut kv = fold_kv(&mut tw);
+    patch(&mut kv, "instrument:gold", |v| {
+        v["status"] = serde_json::json!("Suspended");
+    });
+    reboot(&mut tw, kv);
+    assert_eq!(
+        snap(&tw).instrument(&mush_economy::InstrumentId::new("gold").unwrap()).map(|i| i.status),
+        Some(mush_economy::InstrumentStatus::Suspended)
+    );
+    let before = journal_len(&tw);
+    let seen = err(&mut tw, r.pat, &format!("@econ/pay {}={} 10", r.pat_acct, r.quinn_acct));
+    assert!(seen.contains("is not active"), "wrong refusal: {seen}");
+    assert_eq!(bal(&tw, r.pat_acct), 100, "a suspended instrument still moved money");
+    assert_eq!(bal(&tw, r.quinn_acct), 0);
+    assert_eq!(journal_len(&tw), before, "the refused post journaled something");
+}
+
+// ======================================================================
+// ---- look-back fold: D-LBK-7 ----
+// ======================================================================
+
+/// An old-shape cadence document (no `generation`, no `schema`) loads with
+/// `generation = 1, schema = 1`, a round-trip preserves them, and
+/// `@econ/cadence show` prints both.
+#[test]
+fn lb_dlbk7_an_old_cadence_document_loads_with_generation_1_and_schema_1() {
+    let mut tw = boot();
+    ok(&mut tw, GOD, "@econ/cadence create chronicle source=manual");
+    let mut kv = fold_kv(&mut tw);
+    let doc = value_of(&kv, "cadence:0");
+    assert_eq!(doc["generation"], serde_json::json!(1));
+    assert_eq!(doc["schema"], serde_json::json!(1));
+    // The pre-fold shape: neither field on the document.
+    patch(&mut kv, "cadence:0", |v| {
+        v.as_object_mut().expect("an object").remove("generation");
+        v.as_object_mut().expect("an object").remove("schema");
+    });
+    reboot(&mut tw, kv);
+    let c = snap(&tw).cadence(CadenceId(0)).cloned().expect("the cadence loaded");
+    assert_eq!(c.generation, mush_economy::CADENCE_GENERATION_INITIAL);
+    assert_eq!(c.schema, mush_economy::CADENCE_SCHEMA_LEGACY);
+    assert_eq!(c.revision, 1, "the staleness stamp is not a generation");
+    // A round-trip preserves them, and an advance moves `revision` alone.
+    ok(&mut tw, GOD, "@econ/cadence advance 0 2");
+    let kv = fold_kv(&mut tw);
+    let doc = value_of(&kv, "cadence:0");
+    assert_eq!(doc["generation"], serde_json::json!(1));
+    assert_eq!(doc["schema"], serde_json::json!(1));
+    // One explicit act, one revision bump — however many periods it covered.
+    assert_eq!(doc["revision"], serde_json::json!(2));
+    let back: mush_economy::CadenceClock = serde_json::from_value(doc).expect("round-trips");
+    assert_eq!((back.generation, back.schema, back.position), (1, 1, 2));
+    let seen = ok(&mut tw, GOD, "@econ/cadence show 0");
+    assert!(seen.contains("generation 1 · schema 1"), "{seen}");
+}
+
+// ======================================================================
+// ---- look-back fold: D-LBK-1 (the economy seam alone) ----
+// ======================================================================
+
+/// Two holders on one obligation: while either holds, no period is charged (each is
+/// forgiven as it falls due, `Suspension`); releasing one keeps it suspended; releasing
+/// both returns it to the due pool, and the next period charges one period.
+#[test]
+fn lb_dlbk1_the_seam_alone_two_keys_resume_one_keeps_it_suspended() {
+    let (mut tw, vf) = boot_probe();
+    let r = rig(&mut tw, 1_000);
+    let id = owe(&mut tw, &r, 100, "");
+    sweep_at(&mut tw, 100);
+    assert_eq!(bal(&tw, r.pat_acct), 900);
+
+    ok(&mut tw, GOD, &format!("@vf/hold {id}=housing.corrupt:room:5"));
+    assert_eq!(vf.seam(), Ok(false));
+    ok(&mut tw, GOD, &format!("@vf/hold {id}=housing.corrupt:tenancy:7"));
+    assert_eq!(vf.seam(), Ok(false));
+    let o = obligation(&tw, id);
+    assert!(matches!(
+        &o.status,
+        ObligationStatus::Suspended { reason: SuspendReason::Held { key } } if key.as_str() == "housing.corrupt:room:5"
+    ), "{:?}", o.status);
+    assert_eq!(o.holders().len(), 2);
+    assert!(o.history.iter().any(|e| matches!(e, ObligationEvent::Held { key, .. } if key.as_str() == "housing.corrupt:room:5")));
+    // Idempotent: holding under a key already held changes nothing.
+    ok(&mut tw, GOD, &format!("@vf/hold {id}=housing.corrupt:room:5"));
+    assert_eq!(obligation(&tw, id).revision, o.revision);
+
+    // Held: two periods fall due and are forgiven as they fall due, never charged.
+    sweep_at(&mut tw, 200);
+    sweep_at(&mut tw, 300);
+    let held = obligation(&tw, id);
+    assert_eq!(bal(&tw, r.pat_acct), 900, "a held obligation was charged");
+    assert_eq!(held.forgiven_total, 2);
+    assert!(held.history.iter().any(|e| matches!(e, ObligationEvent::Forgiven { cause: ForgiveCause::Suspension, .. })));
+    // The staff verb may not lift a module's hold, and `@obligation/show` names both.
+    let seen = err(&mut tw, GOD, &format!("@obligation/resume {id}"));
+    assert!(seen.contains("held out of the due pool by `housing.corrupt:room:5`"), "{seen}");
+    let seen = ok(&mut tw, GOD, &format!("@obligation/show {id}"));
+    assert!(seen.contains("holders: housing.corrupt:room:5, housing.corrupt:tenancy:7"), "{seen}");
+
+    // Release one: still suspended, the rendered reason rotates to the other holder.
+    ok(&mut tw, GOD, &format!("@vf/release {id}=housing.corrupt:room:5"));
+    assert_eq!(vf.seam(), Ok(false), "releasing one of two holders returned it to the pool");
+    let o = obligation(&tw, id);
+    assert!(matches!(
+        &o.status,
+        ObligationStatus::Suspended { reason: SuspendReason::Held { key } } if key.as_str() == "housing.corrupt:tenancy:7"
+    ), "{:?}", o.status);
+    assert_eq!(o.holders().len(), 1);
+    sweep_at(&mut tw, 400);
+    assert_eq!(bal(&tw, r.pat_acct), 900, "one holder left still charged");
+
+    // Release both: back in the due pool; the next period charges exactly one.
+    ok(&mut tw, GOD, &format!("@vf/release {id}=housing.corrupt:tenancy:7"));
+    assert_eq!(vf.seam(), Ok(true));
+    let o = obligation(&tw, id);
+    assert_eq!(o.status, ObligationStatus::Active);
+    assert!(o.holders().is_empty());
+    assert!(o.history.iter().any(|e| matches!(e, ObligationEvent::Resumed { .. })));
+    assert!(o.schedule.next_due > 400, "the schedule was not re-anchored past the gap");
+    sweep_at(&mut tw, 500);
+    assert_eq!(bal(&tw, r.pat_acct), 800, "the resumed obligation did not charge one period");
+    assert_eq!(obligation(&tw, id).settled_total, 2);
+    // Releasing a key that holds nothing is a no-op.
+    ok(&mut tw, GOD, &format!("@vf/release {id}=housing.corrupt:tenancy:7"));
+    assert_eq!(vf.seam(), Ok(false));
+}
+
+/// The ladder's own page-suspension and a module's hold coexist: `@econ/ack`
+/// releases the ladder's key alone and the obligation stays out of the pool until
+/// the module releases; the module's release alone leaves the ladder's hold standing.
+#[test]
+fn lb_dlbk1_ack_and_a_module_hold_never_lift_each_other() {
+    let (mut tw, vf) = boot_probe();
+    let r = rig(&mut tw, 1_000);
+    let (obj, acct) = landlord(&mut tw, "escrow desk");
+    ok(&mut tw, GOD, &format!("@obligation/create {}={acct} 50 every=100 start=100", r.pat_acct));
+    let id = only_obligation(&tw);
+    ok(&mut tw, GOD, &format!("@destroy #{}", obj.0));
+    sweep_at(&mut tw, 100);
+    let alert = alert_for(&tw, EscalationSubject::Obligation(id)).id;
+    let o = obligation(&tw, id);
+    assert!(matches!(o.status, ObligationStatus::Suspended { reason: SuspendReason::Escalated(a) } if a == alert));
+    assert!(o.held_by(&SuspensionKey::escalation(alert)));
+
+    // A module takes its own hold on the paged obligation.
+    ok(&mut tw, GOD, &format!("@vf/hold {id}=housing.corrupt:orphan:3"));
+    assert_eq!(obligation(&tw, id).holders().len(), 2);
+    // Acknowledging releases the ladder's key and says the obligation is still held.
+    let seen = ok(&mut tw, GOD, &format!("@econ/ack {alert}"));
+    assert!(seen.contains("still out of the due pool: it is held by housing.corrupt:orphan:3"), "{seen}");
+    let o = obligation(&tw, id);
+    assert!(matches!(&o.status, ObligationStatus::Suspended { reason: SuspendReason::Held { key } } if key.as_str() == "housing.corrupt:orphan:3"), "{:?}", o.status);
+    assert!(!o.held_by(&SuspensionKey::escalation(alert)));
+    sweep_at(&mut tw, 200);
+    assert_eq!(bal(&tw, r.pat_acct), 1_000, "an acknowledged page charged over a module's hold");
+
+    // The module releases: back in the pool (the ladder's key was already gone).
+    ok(&mut tw, GOD, &format!("@vf/release {id}=housing.corrupt:orphan:3"));
+    assert_eq!(vf.seam(), Ok(true));
+    assert_eq!(obligation(&tw, id).status, ObligationStatus::Active);
+
+    // The other order cannot arise: an obligation a module holds is never attempted
+    // by the sweep and is out of the pool at boot, so the ladder never pages it
+    // while it is held — and the hold survives a reboot. Once released, the very
+    // next sweep finds the real problem and pages it (the same record, reused).
+    let (obj2, acct2) = landlord(&mut tw, "second desk");
+    ok(&mut tw, GOD, &format!("@obligation/repoint {id}=credit {acct2}"));
+    ok(&mut tw, GOD, &format!("@vf/hold {id}=housing.corrupt:room:9"));
+    ok(&mut tw, GOD, &format!("@destroy #{}", obj2.0));
+    let kv = fold_kv(&mut tw);
+    reboot(&mut tw, kv);
+    let o = obligation(&tw, id);
+    assert!(o.held_by(&SuspensionKey::new("housing.corrupt:room:9").unwrap()), "a reboot lost a module's hold: {:?}", o.holders());
+    sweep_at(&mut tw, 300);
+    assert_eq!(alerts(&tw).len(), 1, "a held obligation was paged");
+    assert!(matches!(&obligation(&tw, id).status, ObligationStatus::Suspended { reason: SuspendReason::Held { .. } }));
+    ok(&mut tw, GOD, &format!("@vf/release {id}=housing.corrupt:room:9"));
+    assert_eq!(obligation(&tw, id).status, ObligationStatus::Active);
+    sweep_at(&mut tw, 400);
+    let o = obligation(&tw, id);
+    assert!(
+        matches!(o.status, ObligationStatus::Suspended { reason: SuspendReason::Escalated(a) } if a == alert),
+        "the released obligation was not paged about its destroyed creditor: {:?}",
+        o.status
+    );
+    assert_eq!(bal(&tw, r.pat_acct), 1_000);
 }

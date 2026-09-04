@@ -10,10 +10,20 @@
 //! nothing (the next one sees the same gap) and a duplicate fire does nothing (the
 //! position is the idempotency key).
 //!
-//! ## What one fire may do
+//! ## What one fire may do (look-back fold, D-LBK-2)
 //!
-//! - at most [`MAX_EVALUATIONS_PER_FIRE`] characters, from a **rotation cursor**, so
-//!   a world with more than that still reaches every one of them;
+//! - **visit** at most [`MAX_VISITED_PER_FIRE`] characters — touch at all, due or
+//!   not — and **work** at most [`MAX_WORKED_PER_FIRE`] of them, both enforced
+//!   independently, from a **rotation cursor** that advances past the last *visited*
+//!   id (skipped ones included), so every fire's scan is bounded and a world with
+//!   more characters than either budget still reaches every one of them;
+//! - **read the small `eval:{obj}` cursor before cloning a profile**, so an
+//!   all-skipped fire clones nothing;
+//! - **skip the scan entirely between periods**: the tick records the cadence
+//!   position and the population version at the end of its last complete sweep that
+//!   found nothing due, and a fire skips its scan only while both are unchanged —
+//!   explicit state, never a guess. `put_profile` bumps the version for a new
+//!   profile; a cadence advance moves the position;
 //! - **one period per character however far the clock jumped** — a cadence that
 //!   advanced forty periods over a weekend of downtime evaluates once. That is E4's
 //!   "a backlog is never charged" in its career form: catch-up is computed from the
@@ -39,10 +49,12 @@
 //!
 //! ## Exhaustive by construction
 //!
-//! Every match here is exhaustive and there is no `?`, no `unwrap`, no `expect` and
-//! no panicking index: a tick handler runs in the world task, so a panic here takes
-//! the world down (the discipline `mush-economy`'s sweep states, `mush-housing`'s
-//! tick inherits, and this file inherits from both).
+//! Every match here is exhaustive and there is no `unwrap`, no `expect` and no
+//! panicking index; the one `?` is an `Option` `?` in [`behind_tenancy`] (a missing
+//! housing store reads as "nothing is behind"), which cannot panic. A tick handler
+//! runs in the world task, so a panic here takes the world down (the discipline
+//! `mush-economy`'s sweep states, `mush-housing`'s tick inherits, and this file
+//! inherits from both).
 
 use mush_canon::{CanonDraft, CanonScope};
 use mush_core::{Ctx, ObjId, SceneId};
@@ -56,7 +68,8 @@ use crate::economy::record::{
     Stance, derive_level,
 };
 use crate::economy::store::{
-    EvalState, MAX_EVALUATIONS_PER_FIRE, WodEconomyStore, persist_meta, put_eval, put_profile,
+    EvalState, EvalStats, IdleMark, IdleScan, MAX_VISITED_PER_FIRE, MAX_WORKED_PER_FIRE,
+    WodEconomyStore, persist_meta, put_eval, put_profile,
 };
 
 /// The canon `kind` an `Exploit` period's evidence carries (§5.3).
@@ -66,12 +79,17 @@ pub const KIND_HOUSING_PRESSURE: &str = "wod.housing.pressure";
 
 /// One fire of the evaluation tick.
 pub fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
-    let Some((cfg, cadence, cursor, ids)) = ctx.w.module_state::<WodEconomyStore>().map(|s| {
-        (s.config().clone(), s.cadence(), s.cursor, s.profiled())
+    let mut stats = EvalStats::default();
+    let Some((cfg, cadence, cursor, ids, version)) = ctx.w.module_state::<WodEconomyStore>().map(|s| {
+        (s.config().clone(), s.cadence(), s.cursor, s.profiled(), s.population_version)
     }) else {
         return;
     };
     if !cfg.personal_mode.is_on() || ids.is_empty() {
+        if let Some(store) = ctx.w.module_state_mut::<WodEconomyStore>() {
+            store.scan = None;
+            store.last_fire = stats;
+        }
         return;
     }
     // A clock that does not resolve makes nothing happen — the economy's own rule,
@@ -89,32 +107,62 @@ pub fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
         tracing::error!(cadence = cadence.0, "wod.economy: the cadence record has gone away");
         return;
     };
+    // The short-circuit (D-LBK-2): nothing was due at the end of the last complete
+    // sweep, nobody has joined the population since, and the clock has not moved.
+    // Then nothing is due now, and the scan is skipped.
+    let mut scan = {
+        let Some(store) = ctx.w.module_state_mut::<WodEconomyStore>() else { return };
+        if store.idle.as_ref().is_some_and(|m| m.position == now && m.version == version) {
+            stats.short_circuited = true;
+            store.last_fire = stats;
+            return;
+        }
+        store.idle = None;
+        match store.scan.take() {
+            Some(s) if s.position == now && s.version == version && s.population == ids.len() => s,
+            _ => IdleScan { position: now, version, visited: 0, population: ids.len(), clean: true },
+        }
+    };
 
     // The rotation: start at the first id at or past the cursor, wrap once.
     let start = ids.iter().position(|id| id.0 >= cursor).unwrap_or(0);
     let order: Vec<ObjId> = ids[start..].iter().chain(ids[..start].iter()).copied().collect();
 
-    let mut worked = 0usize;
     let mut last = None;
     for who in order {
-        if worked >= MAX_EVALUATIONS_PER_FIRE {
+        if stats.visited >= MAX_VISITED_PER_FIRE || stats.worked >= MAX_WORKED_PER_FIRE {
             break;
         }
-        if step(ctx, &cfg, who, now) {
-            worked += 1;
-            last = Some(who);
+        stats.visited += 1;
+        last = Some(who);
+        if step(ctx, &cfg, who, now, &mut stats) {
+            stats.worked += 1;
+            scan.clean = false;
         }
     }
+    scan.visited = scan.visited.saturating_add(stats.visited);
+    let Some(store) = ctx.w.module_state_mut::<WodEconomyStore>() else { return };
+    // Resume **past** the last character this fire visited — skipped ones included.
     if let Some(last) = last {
-        if let Some(store) = ctx.w.module_state_mut::<WodEconomyStore>() {
-            store.cursor = last.0.saturating_add(1);
+        store.cursor = last.0.saturating_add(1);
+    }
+    if scan.visited >= scan.population {
+        if scan.clean && store.population_version == version {
+            store.idle = Some(IdleMark { position: now, version });
         }
+        store.scan = None;
+    } else {
+        store.scan = Some(scan);
+    }
+    store.last_fire = stats;
+    if last.is_some() {
         persist_meta(ctx);
     }
 }
 
 /// Evaluate one character for one period. Returns whether a period was spent.
-fn step(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig, who: ObjId, now: i64) -> bool {
+fn step(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig, who: ObjId, now: i64, stats: &mut EvalStats) -> bool {
+    // **The small cursor document first, the profile only once it is due** (D-LBK-2).
     let state = ctx.w.module_state::<WodEconomyStore>().map_or_else(EvalState::default, |s| {
         s.eval_state(who)
     });
@@ -132,6 +180,7 @@ fn step(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig, who: ObjId, now: i64) -> bool
     else {
         return false;
     };
+    stats.cloned += 1;
     // A character who has left the world is not evaluated and is not deleted: their
     // profile is the record of what they had, and D-E5-9's "off never deletes a
     // profile" is the same rule one object down.
@@ -269,6 +318,15 @@ fn offer_prompts(
     now: i64,
     lapsed: Option<PromptDefault>,
 ) {
+    // **One period of quiet for every prompt kind** (look-back fold, E5c-C96; 08g
+    // §12.1 item 3). A prompt that lapsed **this** period does not immediately get
+    // replaced — not by an opportunity, and not by housing pressure or strain relief
+    // either: the point of the budget is quiet, and answering nothing must not
+    // summon the next question in the same breath. A standing condition re-asks
+    // next period; the housing ladder pages regardless, on its own schedule.
+    if lapsed.is_some() {
+        return;
+    }
     // Housing pressure: a home that is behind asks, whatever else is open, and
     // whatever the character's engagement is — it is not an opportunity.
     if cfg.housing && let Some(tenancy) = behind_tenancy(ctx, profile.obj) {
@@ -305,12 +363,6 @@ fn offer_prompts(
         return;
     }
     if !cfg.careers {
-        return;
-    }
-    // A prompt that lapsed **this** period does not immediately get replaced: the
-    // point of the budget is quiet, and answering nothing must not summon the next
-    // question in the same breath.
-    if lapsed.is_some() {
         return;
     }
     let Some(career) = profile.career() else { return };

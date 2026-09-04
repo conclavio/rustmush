@@ -1,10 +1,11 @@
 //! E5c boot: resolve (or create) the campaign clock, and — in exact mode only —
 //! register `wod.usd` and the three system principals' accounts (08d §5.1).
 //!
-//! `off` **creates nothing**: no instrument, no principal, no account, no clock.
-//! `abstract` creates the clock and nothing else — there is no `wod.usd` in an
-//! abstract deployment, so a character never sees a meaningless zero-dollar wallet
-//! (owner answers 2, 3, 15).
+//! `off` creates one inert `Manual` clock so housing can assess; nothing else — no
+//! instrument, no principal, no account (E5c-C2: a manual clock advances only by an
+//! explicit act, so it charges and evaluates nothing on its own). `abstract` creates
+//! the clock and nothing else — there is no `wod.usd` in an abstract deployment, so a
+//! character never sees a meaningless zero-dollar wallet (owner answers 2, 3, 15).
 //!
 //! Everything here is idempotent: it is written to run on every boot, find what the
 //! last one left, and add only what is missing.
@@ -48,7 +49,9 @@ pub fn principal(name: &str) -> Option<SystemPrincipalId> {
 pub fn run(ctx: &mut Ctx<'_>, cfg: &WodEconomyConfig) {
     if !cfg.personal_mode.is_on() && !cfg.housing {
         // `off` with housing off: the layer exists and does nothing. The clock is
-        // still worth resolving so `@wod/economy` can say what it would use.
+        // still worth resolving so `@wod/economy` can say what it would use, and it
+        // is not created here (an `off` world with housing on reaches the branch
+        // below, which creates the one inert Manual clock housing assesses on).
         resolve_cadence(ctx, cfg, false);
         return;
     }
@@ -312,7 +315,7 @@ fn ensure_instrument(ctx: &mut Ctx<'_>) -> Option<InstrumentId> {
     if known {
         return Some(id);
     }
-    mush_economy::register_instrument(ctx, InstrumentDef {
+    if let Err(error) = mush_economy::register_instrument(ctx, InstrumentDef {
         id: id.clone(),
         ruleset: SmolStr::new_static("wod"),
         code: SmolStr::new_static(WOD_USD),
@@ -325,7 +328,12 @@ fn ensure_instrument(ctx: &mut Ctx<'_>) -> Option<InstrumentId> {
         negative_policy: NegativePolicy::SystemOnly,
         status: InstrumentStatus::Active,
         revision: 1,
-    });
+    }) {
+        // Create-only since the look-back fold (E2-C18); the `known` check above
+        // makes this unreachable, and a refusal here still leaves the registered
+        // instrument exactly as it was.
+        tracing::warn!(%error, "wod.economy: wod.usd was already registered under this boot");
+    }
     Some(id)
 }
 

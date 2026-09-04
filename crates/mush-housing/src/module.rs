@@ -20,6 +20,16 @@
 //!   quietly does not exist. Both deserialize through E5a's `TryFrom` wires, so every
 //!   §9 cap is re-checked on load. `assess:{id}` and `notice:{obj}` are **leaf** docs
 //!   (a cursor and a message queue): a corrupt one is skipped loudly and re-seeded.
+//!   A shape that is corrupt **between** records — one room in two properties, two
+//!   live tenancies on one property, a live tenancy on no property — is not fatal:
+//!   it is **quarantined** fail-closed ([`crate::quarantine`], look-back fold
+//!   D-LBK-1).
+//! - **The room and live-tenancy indexes are projections** (D-LBK-4a): rebuilt at
+//!   boot after the records load, maintained only by [`put_property`] /
+//!   [`put_tenancy`], never persisted and never authority — a conflict is
+//!   *represented* ([`RoomEntry::Conflict`], [`LiveEntry::Conflict`]), never
+//!   collapsed to a first match, and a projection that disagrees with the records is
+//!   a bug in the writer (debug builds assert equivalence on every write).
 //! - **Allocators are floored on keys *and* meta, saturating** (the E3/E4b1 rule): a
 //!   single hand-written `property:18446744073709551615` must park the allocator at
 //!   the ceiling, where minting refuses, rather than wrapping a live id back into use.
@@ -59,10 +69,16 @@ pub const TICK_PERIOD_SECS: u64 = 30;
 /// The tick's tag.
 pub const TICK_TAG: &str = "housing.assess";
 
-/// The most tenancies one tick fire assesses (08d §9). The remainder is taken by the
-/// next fire, from the rotation cursor, so a world with more tenancies than this
-/// still reaches every one of them.
-pub const MAX_ASSESSMENTS_PER_FIRE: usize = 128;
+/// The most tenancies one tick fire **visits** — touches at all, due or not (look-back
+/// fold, D-LBK-2). The cursor advances past the last visited id, skipped ones
+/// included, so every fire's scan is bounded and the rotation is fair.
+pub const MAX_VISITED_PER_FIRE: usize = 256;
+/// The most tenancies one tick fire **works** — assesses one period of (08d §9). The
+/// remainder is taken by the next fire, from the rotation cursor, so a world with
+/// more due tenancies than this still reaches every one of them.
+pub const MAX_WORKED_PER_FIRE: usize = 128;
+/// The worked budget's E5b name, kept for readers of 08d.
+pub const MAX_ASSESSMENTS_PER_FIRE: usize = MAX_WORKED_PER_FIRE;
 /// The most pending notices one object queues before the oldest is dropped (§9).
 pub const MAX_PENDING_NOTICES: usize = 32;
 /// The largest single notice text a pending list stores (the bounded-string
@@ -144,12 +160,103 @@ pub struct AssessState {
 }
 
 /// One queued notice for an object that was not connected when it was sent.
+///
+/// **Loading re-checks the byte cap** (look-back fold, D-LBK-3): the text used to be
+/// clamped on the write path alone, so a hand-written document carried an unbounded
+/// line into the reconnect render. An oversized entry now refuses to deserialize;
+/// the loader drops it with a log line (notices are ephemeral) and keeps the rest.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "PendingNoticeWire")]
 pub struct PendingNotice {
     /// Wall clock, for the render.
     pub at: i64,
     /// The text (≤ [`MAX_NOTICE_BYTES`]).
     pub text: SmolStr,
+}
+
+#[derive(Deserialize)]
+struct PendingNoticeWire {
+    at: i64,
+    text: SmolStr,
+}
+
+impl TryFrom<PendingNoticeWire> for PendingNotice {
+    type Error = String;
+
+    fn try_from(w: PendingNoticeWire) -> Result<PendingNotice, String> {
+        if w.text.len() > MAX_NOTICE_BYTES {
+            return Err(format!(
+                "a pending notice is at most {MAX_NOTICE_BYTES} bytes ({} given)",
+                w.text.len()
+            ));
+        }
+        Ok(PendingNotice { at: w.at, text: w.text })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The projections (look-back fold, D-LBK-4a)
+// ---------------------------------------------------------------------------
+
+/// One room's place in the **room → property** projection.
+///
+/// A conflict is represented, never collapsed: `property_of_room` used to answer the
+/// lowest id, which for a room two properties held meant the door was answered by
+/// whichever property happened to sort first — and if that one had no live tenancy,
+/// the door of somebody's home fell open (08h F1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RoomEntry {
+    /// Exactly one property holds the room.
+    Unique(PropertyId),
+    /// More than one does — quarantined, and `Refused` for everyone but staff.
+    Conflict(BTreeSet<PropertyId>),
+}
+
+/// One property's place in the **property → live tenancy** projection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LiveEntry {
+    /// Exactly one live tenancy.
+    Live(TenancyId),
+    /// More than one — quarantined, and `Refused` for everyone but staff.
+    Conflict(BTreeSet<TenancyId>),
+    /// None.
+    Vacant,
+}
+
+/// What the last assessment fire cost — exposed for tests (D-LBK-2's budgets are
+/// claims, and a claim needs a counter).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct TickStats {
+    /// Records the scan touched, due or not.
+    pub visited: usize,
+    /// Records that assessed one period.
+    pub worked: usize,
+    /// Full `Tenancy` records cloned (the due check reads the small `assess:{id}`
+    /// document first, so an all-skipped fire clones nothing).
+    pub cloned: usize,
+    /// Whether the fire skipped the scan entirely — the idle short-circuit.
+    pub short_circuited: bool,
+}
+
+/// The idle short-circuit's key (D-LBK-2): the population version and every
+/// cadence's position at the end of the last complete sweep that found nothing due.
+/// A fire skips its scan only while both are unchanged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct IdleMark {
+    pub(crate) version: u64,
+    pub(crate) cadences: Vec<(u64, u64)>,
+}
+
+/// A sweep in progress across fires: the population is walked
+/// [`MAX_VISITED_PER_FIRE`] at a time, and only a **complete** walk that found
+/// nothing due arms the idle mark.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct IdleScan {
+    pub(crate) version: u64,
+    pub(crate) cadences: Vec<(u64, u64)>,
+    pub(crate) visited: usize,
+    pub(crate) population: usize,
+    pub(crate) clean: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +280,26 @@ pub struct HousingStore {
     /// boot both re-derive it from the status, so it cannot drift into admitting an
     /// ended tenancy.
     pub(crate) open: BTreeSet<TenancyId>,
+    /// **room → property** (D-LBK-4a). Every room of every property, `Withdrawn`
+    /// ones included: an overlap is corruption whatever the latch says.
+    pub(crate) room_index: BTreeMap<ObjId, RoomEntry>,
+    /// **property → live tenancy** (D-LBK-4a). Every loaded property has an entry;
+    /// a live tenancy on a property that is *not* loaded gets one too, so the orphan
+    /// is visible here rather than nowhere.
+    pub(crate) live_index: BTreeMap<PropertyId, LiveEntry>,
+    /// The fail-closed quarantine (D-LBK-1): recomputed from the projections on every
+    /// boot and after every write, never persisted.
+    pub(crate) quarantine: BTreeMap<crate::quarantine::QuarantineKey, crate::quarantine::Conflict>,
+    /// Bumped by every mutator that changes the population or its due-ness (a tenancy
+    /// created, ended or resolved; a quarantine change) — half of the tick's idle
+    /// short-circuit key (D-LBK-2).
+    pub(crate) population_version: u64,
+    /// The idle mark, once a complete sweep found nothing due.
+    pub(crate) idle: Option<IdleMark>,
+    /// The sweep in progress, when one spans fires.
+    pub(crate) scan: Option<IdleScan>,
+    /// What the last fire cost.
+    pub(crate) last_fire: TickStats,
     pub(crate) next_property: u64,
     pub(crate) next_tenancy: u64,
     pub(crate) assess: BTreeMap<TenancyId, AssessState>,
@@ -220,6 +347,153 @@ impl HousingStore {
         self.open =
             self.tenancies.values().filter(|t| !t.status.is_ended()).map(|t| t.id).collect();
     }
+
+    /// **Rebuild both projections from the records** (D-LBK-4a) — at boot, and in a
+    /// debug build after every write to prove the maintained copy equivalent.
+    pub(crate) fn rebuild_projections(&mut self) {
+        let (room_index, live_index) = self.derive_projections();
+        self.room_index = room_index;
+        self.live_index = live_index;
+    }
+
+    /// The projections as a pure function of the records.
+    fn derive_projections(&self) -> (BTreeMap<ObjId, RoomEntry>, BTreeMap<PropertyId, LiveEntry>) {
+        let mut rooms: BTreeMap<ObjId, RoomEntry> = BTreeMap::new();
+        let mut live: BTreeMap<PropertyId, LiveEntry> = BTreeMap::new();
+        for p in self.properties.values() {
+            live.insert(p.id, LiveEntry::Vacant);
+            for room in &p.rooms {
+                room_index_add(&mut rooms, *room, p.id);
+            }
+        }
+        for id in &self.open {
+            if let Some(t) = self.tenancies.get(id)
+                && t.status.is_live()
+            {
+                live_index_add(&mut live, t.property, t.id);
+            }
+        }
+        (rooms, live)
+    }
+
+    /// Whether the maintained projections equal a rebuild from the records — the
+    /// recomputation-equivalence check every mutator test asserts (D-LBK-4a). A
+    /// difference names the first entry that disagrees.
+    ///
+    /// # Errors
+    ///
+    /// The first disagreement, in words.
+    pub fn projections_consistent(&self) -> Result<(), String> {
+        let (rooms, live) = self.derive_projections();
+        if rooms != self.room_index {
+            let first = rooms
+                .iter()
+                .find(|(k, v)| self.room_index.get(k) != Some(v))
+                .or_else(|| self.room_index.iter().find(|(k, _)| !rooms.contains_key(k)));
+            return Err(format!("room index drifted from the records at {first:?}"));
+        }
+        if live != self.live_index {
+            let first = live
+                .iter()
+                .find(|(k, v)| self.live_index.get(k) != Some(v))
+                .or_else(|| self.live_index.iter().find(|(k, _)| !live.contains_key(k)));
+            return Err(format!("live-tenancy index drifted from the records at {first:?}"));
+        }
+        Ok(())
+    }
+
+    /// Maintain the projections through one property write (the single write path).
+    fn index_property(&mut self, old: Option<&Property>, new: &Property) {
+        if let Some(old) = old {
+            for room in old.rooms.difference(&new.rooms) {
+                room_index_remove(&mut self.room_index, *room, old.id);
+            }
+        }
+        for room in &new.rooms {
+            room_index_add(&mut self.room_index, *room, new.id);
+        }
+        self.live_index.entry(new.id).or_insert(LiveEntry::Vacant);
+    }
+
+    /// Maintain the projections through one tenancy write (the single write path).
+    /// Returns whether the population or its due-ness changed.
+    fn index_tenancy(&mut self, old: Option<&Tenancy>, new: &Tenancy) -> bool {
+        let was_live = old.is_some_and(|o| o.status.is_live());
+        let is_live = new.status.is_live();
+        if let Some(old) = old
+            && was_live
+            && (!is_live || old.property != new.property)
+        {
+            live_index_remove(&mut self.live_index, old.property, old.id, &self.properties);
+        }
+        if is_live && (!was_live || old.is_some_and(|o| o.property != new.property)) {
+            live_index_add(&mut self.live_index, new.property, new.id);
+        }
+        old.is_none() || was_live != is_live || old.is_some_and(|o| o.status.is_ended() != new.status.is_ended())
+    }
+
+    /// The debug-build equivalence assertion the write path carries (D-LBK-4a).
+    #[cfg(debug_assertions)]
+    fn assert_projections(&self) {
+        if let Err(drift) = self.projections_consistent() {
+            debug_assert!(false, "housing: {drift}");
+        }
+    }
+    #[cfg(not(debug_assertions))]
+    fn assert_projections(&self) {}
+
+    /// One room's entry in the room → property projection.
+    #[must_use]
+    pub fn room_entry(&self, room: ObjId) -> Option<&RoomEntry> {
+        self.room_index.get(&room)
+    }
+    /// One property's entry in the property → live tenancy projection.
+    #[must_use]
+    pub fn live_entry(&self, property: PropertyId) -> Option<&LiveEntry> {
+        self.live_index.get(&property)
+    }
+    /// The quarantine, in key order (D-LBK-1).
+    pub fn quarantine(&self) -> impl Iterator<Item = &crate::quarantine::Conflict> {
+        self.quarantine.values()
+    }
+    /// One conflict.
+    #[must_use]
+    pub fn conflict(&self, key: crate::quarantine::QuarantineKey) -> Option<&crate::quarantine::Conflict> {
+        self.quarantine.get(&key)
+    }
+    /// Whether any conflict involves this property (every one of its rooms then
+    /// refuses everyone but staff).
+    #[must_use]
+    pub fn is_quarantined_property(&self, property: PropertyId) -> bool {
+        self.quarantine.values().any(|c| c.properties.contains(&property))
+    }
+    /// Whether any conflict involves this tenancy (the tick skips it; its rent is
+    /// suspended).
+    #[must_use]
+    pub fn is_quarantined_tenancy(&self, tenancy: TenancyId) -> bool {
+        self.quarantine.values().any(|c| c.tenancies.contains(&tenancy))
+    }
+    /// The population version the tick's short-circuit is keyed on (D-LBK-2).
+    #[must_use]
+    pub fn population_version(&self) -> u64 {
+        self.population_version
+    }
+    /// What the last assessment fire cost (D-LBK-2).
+    #[must_use]
+    pub fn last_fire(&self) -> TickStats {
+        self.last_fire
+    }
+    /// The rotation cursor the next fire resumes at — one past the last id the last
+    /// fire **visited** (D-LBK-2).
+    #[must_use]
+    pub fn cursor(&self) -> u64 {
+        self.cursor
+    }
+    /// The notices queued for `who`, oldest first (what the next reconnect renders).
+    #[must_use]
+    pub fn pending_notices(&self, who: ObjId) -> Vec<PendingNotice> {
+        self.notices.get(&who).cloned().unwrap_or_default()
+    }
     /// The wired title issuer, if this server has one.
     #[must_use]
     pub fn issuer(&self) -> Option<&SystemPrincipalId> {
@@ -245,51 +519,52 @@ impl HousingStore {
         Some(id)
     }
 
-    /// **The one live tenancy of a property** (E5a fold, handoff 1).
+    /// **The one live tenancy of a property** (E5a fold, handoff 1), read off the
+    /// projection (D-LBK-4a).
     ///
     /// The access hook, the destroy gate and every render ask this, and it must never
     /// be "any live tenancy on this room admits": two live tenancies would mean two
     /// rosters, two guest lists and two answers to the same door. `@tenancy/create`
-    /// refuses to make a second, so the ambiguity is unreachable — and if a
-    /// half-migrated document produces one anyway, this picks the **lowest id**
-    /// deterministically and says so loudly, rather than letting the answer depend on
-    /// iteration order.
+    /// refuses to make a second — and a document that produces one anyway is a
+    /// [`LiveEntry::Conflict`], which answers **`None`** here (nobody's door opens) and
+    /// is quarantined by pass 0 (look-back fold, D-LBK-1). Callers that must tell a
+    /// conflict from a vacancy read [`HousingStore::live_entry`].
     #[must_use]
     pub fn live_tenancy_of(&self, property: PropertyId) -> Option<&Tenancy> {
-        let mut live = self
-            .tenancies
-            .values()
-            .filter(|t| t.property == property && t.status.is_live());
-        let first = live.next()?;
-        if live.next().is_some() {
-            tracing::error!(
-                property = property.0,
-                tenancy = first.id.0,
-                "housing: a property carries more than one live tenancy; answering for the \
-                 lowest id. End the others (@tenancy/resolve) — the invariant is one."
-            );
+        match self.live_index.get(&property)? {
+            LiveEntry::Live(id) => self.tenancies.get(id),
+            LiveEntry::Conflict(_) | LiveEntry::Vacant => None,
         }
-        Some(first)
     }
 
     /// Whether `property` already has a live tenancy (the invariant
-    /// `@tenancy/create` enforces).
+    /// `@tenancy/create` enforces) — one **or more**: a conflict is occupied too.
     #[must_use]
     pub fn has_live_tenancy(&self, property: PropertyId) -> bool {
-        self.tenancies.values().any(|t| t.property == property && t.status.is_live())
+        matches!(self.live_index.get(&property), Some(LiveEntry::Live(_) | LiveEntry::Conflict(_)))
     }
 
-    /// The property one room belongs to, if any. A room belongs to at most one
-    /// property (`@property/rooms` refuses a room another property already holds), so
-    /// this is a total answer.
+    /// The property one room belongs to — the **unique** holder, read off the
+    /// projection (D-LBK-4a). A room two properties hold answers `None` here: it is a
+    /// [`RoomEntry::Conflict`], quarantined by pass 0, and every caller that decides
+    /// access or destruction reads [`HousingStore::room_entry`] so a conflict refuses
+    /// rather than falling open.
     #[must_use]
     pub fn property_of_room(&self, room: ObjId) -> Option<&Property> {
-        self.properties.values().find(|p| p.rooms.contains(&room))
+        match self.room_index.get(&room)? {
+            RoomEntry::Unique(id) => self.properties.get(id),
+            RoomEntry::Conflict(_) => None,
+        }
     }
 
-    /// Every live tenancy this object is a tenant of.
+    /// Every live tenancy this object is a tenant of — walked over the **open**
+    /// index, never the ended majority (the tenant → tenancy index is D-LBK-4b,
+    /// fix-during).
     pub fn live_tenancies_of_tenant(&self, who: ObjId) -> impl Iterator<Item = &Tenancy> {
-        self.tenancies.values().filter(move |t| t.status.is_live() && t.is_tenant(who))
+        self.open
+            .iter()
+            .filter_map(move |id| self.tenancies.get(id))
+            .filter(move |t| t.status.is_live() && t.is_tenant(who))
     }
 
     /// The per-tenancy assessment cursor.
@@ -319,17 +594,26 @@ pub(crate) fn push_op(out: &mut Outbox, op: ModuleWrite) {
 
 /// Install a property into RAM and queue its container doc. Both always happen
 /// together — there is no path that writes one without the other.
+///
+/// **The single write path** (D-LBK-4a): the projections are maintained here and
+/// nowhere else, a debug build proves them equivalent to a rebuild on every write,
+/// and pass 0 re-runs afterwards so a repair lifts its quarantine the moment the
+/// invariant holds again (D-LBK-1).
 pub(crate) fn put_property(ctx: &mut Ctx<'_>, p: Property) {
     if let Some(store) = ctx.w.module_state_mut::<HousingStore>() {
-        store.properties.insert(p.id, p.clone());
+        let old = store.properties.insert(p.id, p.clone());
+        store.index_property(old.as_ref(), &p);
+        store.assert_projections();
     }
     push_op(ctx.out, ModuleWrite::JsonSet {
         key: property_key(p.id),
         value: serde_json::to_value(&p).expect("property serializes"),
     });
+    crate::quarantine::revalidate(ctx);
 }
 
-/// Install a tenancy into RAM and queue its container doc.
+/// Install a tenancy into RAM and queue its container doc — the single write path
+/// (see [`put_property`]).
 pub(crate) fn put_tenancy(ctx: &mut Ctx<'_>, t: Tenancy) {
     if let Some(store) = ctx.w.module_state_mut::<HousingStore>() {
         // The open index is re-derived from the status on every write, so it says
@@ -339,12 +623,112 @@ pub(crate) fn put_tenancy(ctx: &mut Ctx<'_>, t: Tenancy) {
         } else {
             store.open.insert(t.id);
         }
-        store.tenancies.insert(t.id, t.clone());
+        let old = store.tenancies.insert(t.id, t.clone());
+        if store.index_tenancy(old.as_ref(), &t) {
+            store.population_version = store.population_version.saturating_add(1);
+        }
+        store.assert_projections();
     }
     push_op(ctx.out, ModuleWrite::JsonSet {
         key: tenancy_key(t.id),
         value: serde_json::to_value(&t).expect("tenancy serializes"),
     });
+    crate::quarantine::revalidate(ctx);
+}
+
+fn room_index_add(index: &mut BTreeMap<ObjId, RoomEntry>, room: ObjId, property: PropertyId) {
+    match index.get_mut(&room) {
+        None => {
+            index.insert(room, RoomEntry::Unique(property));
+        }
+        Some(RoomEntry::Unique(p)) if *p == property => {}
+        Some(entry @ RoomEntry::Unique(_)) => {
+            let RoomEntry::Unique(p) = entry.clone() else { return };
+            *entry = RoomEntry::Conflict(BTreeSet::from([p, property]));
+        }
+        Some(RoomEntry::Conflict(set)) => {
+            set.insert(property);
+        }
+    }
+}
+
+fn room_index_remove(index: &mut BTreeMap<ObjId, RoomEntry>, room: ObjId, property: PropertyId) {
+    let collapse = match index.get_mut(&room) {
+        None => return,
+        Some(RoomEntry::Unique(p)) => {
+            if *p == property {
+                index.remove(&room);
+            }
+            return;
+        }
+        Some(RoomEntry::Conflict(set)) => {
+            set.remove(&property);
+            match set.len() {
+                0 => None,
+                1 => set.iter().next().copied().map(RoomEntry::Unique),
+                _ => return,
+            }
+        }
+    };
+    match collapse {
+        Some(entry) => {
+            index.insert(room, entry);
+        }
+        None => {
+            index.remove(&room);
+        }
+    }
+}
+
+fn live_index_add(index: &mut BTreeMap<PropertyId, LiveEntry>, property: PropertyId, tenancy: TenancyId) {
+    match index.get_mut(&property) {
+        None | Some(LiveEntry::Vacant) => {
+            index.insert(property, LiveEntry::Live(tenancy));
+        }
+        Some(LiveEntry::Live(t)) if *t == tenancy => {}
+        Some(entry @ LiveEntry::Live(_)) => {
+            let LiveEntry::Live(t) = entry.clone() else { return };
+            *entry = LiveEntry::Conflict(BTreeSet::from([t, tenancy]));
+        }
+        Some(LiveEntry::Conflict(set)) => {
+            set.insert(tenancy);
+        }
+    }
+}
+
+fn live_index_remove(
+    index: &mut BTreeMap<PropertyId, LiveEntry>,
+    property: PropertyId,
+    tenancy: TenancyId,
+    properties: &BTreeMap<PropertyId, Property>,
+) {
+    let next = match index.get_mut(&property) {
+        None | Some(LiveEntry::Vacant) => return,
+        Some(LiveEntry::Live(t)) => {
+            if *t != tenancy {
+                return;
+            }
+            LiveEntry::Vacant
+        }
+        Some(LiveEntry::Conflict(set)) => {
+            set.remove(&tenancy);
+            match set.len() {
+                0 => LiveEntry::Vacant,
+                1 => match set.iter().next().copied() {
+                    Some(t) => LiveEntry::Live(t),
+                    None => LiveEntry::Vacant,
+                },
+                _ => return,
+            }
+        }
+    };
+    // A loaded property keeps its `Vacant` row; an orphan's phantom row goes away
+    // with its last tenancy, exactly as a rebuild would have it.
+    if next == LiveEntry::Vacant && !properties.contains_key(&property) {
+        index.remove(&property);
+    } else {
+        index.insert(property, next);
+    }
 }
 
 /// Install a tenancy's assessment cursor and queue its leaf doc.

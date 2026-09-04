@@ -374,11 +374,13 @@ pub(crate) fn close_window(ctx: &mut Ctx<'_>, t: &Tenancy) {
     let by = ctx.actor;
     let who = render_actor(ctx.w, by);
     if let Some(job) = window.job {
-        match mush_jobs::set_job_status(
+        // The plain-job seam (look-back fold, D-LBK-6): the queue is named, a
+        // payload would be refused, and a closed job is a no-op.
+        match mush_jobs::resolve_plain_job(
             ctx,
             job,
+            STORY_QUEUE,
             GOD,
-            mush_jobs::JobStatus::Resolved,
             &format!(
                 "Recovered: tenancy #{} is supported again and back to Active (recovery caused \
                  by {who}). No decision is needed.",
@@ -415,9 +417,7 @@ pub(crate) fn close_pending_job(ctx: &mut Ctx<'_>, t: &Tenancy, waived: bool) {
             t.id,
             if waived { "waived" } else { "ended" }
         );
-        if let Err(error) =
-            mush_jobs::set_job_status(ctx, job, GOD, mush_jobs::JobStatus::Resolved, &note)
-        {
+        if let Err(error) = mush_jobs::resolve_plain_job(ctx, job, STORY_QUEUE, GOD, &note) {
             tracing::debug!(tenancy = t.id.0, job, %error, "housing: story job not closed");
         }
     }

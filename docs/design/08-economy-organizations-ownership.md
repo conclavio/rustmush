@@ -1,10 +1,15 @@
 # Economy, organizations, ownership, and accountable value
 
-**Status:** Draft 0.3 — the reference design. **E0–E3 are SHIPPED** (`mush-org` and `mush-economy`
-exist; assets, vaults, org wallets, approvals, and the faction linkage are live); see
-[08a-economy-build-status.md](08a-economy-build-status.md) for the build ledger, the decisions made
-while building, and the **E4 pickup point** — read it alongside §18 — and
-[08b-e3-implementation-plan.md](08b-e3-implementation-plan.md) for E3 as reviewed and as built.
+**Status:** Draft 0.3 — the reference design. **E0–E5 are SHIPPED** (`mush-org` and `mush-economy`
+exist; assets, vaults, org wallets, approvals, and the faction linkage are live; holds, obligations,
+contracts, facts and the disclosure filter since E4; `mush-housing` and the WoD career/housing
+layer since E5); see [08a-economy-build-status.md](08a-economy-build-status.md) for the build
+ledger, the decisions made while building, and the **E6 pickup point** — read it alongside §18 —
+and [08b](08b-e3-implementation-plan.md), [08c](08c-e4-implementation-plan.md) and
+[08d](08d-e5-implementation-plan.md) for E3, E4 and E5 as reviewed and as built. **E6 is planned
+in [08f](08f-e6-implementation-plan.md) and E7 in [10b](10b-e7-implementation-plan.md)**; the
+E1–E5 look-back is [08g](08g-e1-e5-look-back.md), whose §8 map is the source of the E4/E5
+"as shipped" notes below.
 Where an "as shipped" note below disagrees with the surrounding prose, the note wins.
 Reconciled with the shipped tactical spine (F3 control channels/lease, M32 `TacticalUnit`/`UnitMutationPlan` + the `asset` seam, M33 tactics module)<br>
 **Scope:** cross-ruleset economic accounts and journals, first-class organizations, scoped
@@ -181,7 +186,7 @@ membership/level model and exposes standing to org policies through the `Registe
 (`FactionStandingProvider`); a membership merge was judged redundant and dropped.** A backing-`OrgId`
 mapping is deferred to E3. See [08a](08a-economy-build-status.md).
 
-### 4.3 `mush-economy` (E2 + E3 shipped; holds, obligations, contracts, work orders are E4+)
+### 4.3 `mush-economy` (E2–E4 shipped; work orders are E7)
 
 `mush-economy` owns exact accountable value:
 
@@ -207,6 +212,12 @@ reverse. `mush-faction` likewise depends on `mush-economy` (E3d) for the backing
 (`with_capabilities`) and the scope-use binder (`with_scope_use`, so a scope an account/asset/vault
 still binds cannot be retired). Boot order matters: sim before economy, org before faction (08a
 decision 19).
+
+**As shipped (E4):** holds, obligations and contracts are built — `Hold`/`HoldStatus`/`HoldEffect`
+(`record.rs`), `Obligation`/`ObligationStatus` (`obligation.rs`), `EconomicContract`/`ContractState`
+(`contract.rs`), the cadence clocks (`clock.rs`), the bounded sweep and its escalation ladder, and
+the `FactProvider`/`EconomyObserver` seams with the disclosure filter (08c). Work orders are E7
+(10b).
 
 ### 4.4 `mush-faction`
 
@@ -307,6 +318,12 @@ pub enum OrgStatus {
 
 Closing an organization is a workflow, not a delete. It must resolve or transfer accounts, assets,
 holds, obligations, contracts, memberships, and delegations. IDs are never reused.
+
+> **As shipped (E1–E5; look-back E1-C122):** the never-delete / never-reuse half is built; the
+> closing *workflow* is **not** — no op or verb moves an organization out of `Active`
+> (`OrgMutationOp` has no status op) and `OrgMembership` has no runtime writer. Interim: staff change
+> `status` by store edit and reboot. The lifecycle cut — `SetStatus`, `PutRole`, a revision bump,
+> `@org/status`, a membership producer — is DL-06, owed before E6c (08g §3 #3).
 
 ### 5.3 Membership, titles, and role templates
 
@@ -436,6 +453,12 @@ Explicit access-list entries and denies take precedence over broad organization/
 Every policy evaluation is revision-stamped so a deferred withdrawal, purchase, or LLM-proposed
 action becomes stale when the ACL, standing, membership, or source grant changes.
 
+> **As shipped (E1a; recorded at the look-back, E1-C129):** there is no specificity ordering — a
+> matching explicit `Deny` always wins, whatever else matches (`mush-org/src/authorize.rs`).
+> Deferred actions are made safe not by a revision stamp but by **live re-authorization** at the
+> moment they execute (R-D4; `mush-economy` re-runs `authorize` when a plan is posted).
+> `AuthWitness` exists on the Allow path only, as a hint; nothing outside `mush-org` reads it.
+
 ### 5.6 Delegation
 
 ```rust
@@ -549,6 +572,11 @@ pub enum InstrumentKind {
 }
 ```
 
+> **As shipped (E2; decided at the look-back):** `display` was not built in E2 (E2-C16) and is
+> **kept** — E6a builds it as `display: Option<InstrumentDisplay { symbol, position: Prefix |
+> Suffix }>` (serde default, `None` for every existing instrument) when it registers nuyen (08g §12.1
+> item 4). `InstrumentStatus::Suspended | Retired` have no producer yet (E2-C18).
+
 Instrument codes are namespaced and registered by trusted modules. Authoritative values are signed
 `i64` minor units. Arithmetic uses checked operations; validation may sum in `i128`, but a posted
 line and projected balance must fit `i64`. Saturating arithmetic is forbidden. Wire protocols carry
@@ -587,8 +615,10 @@ pub enum AccountStatus {
 > **As shipped:** `posted_balance`/`held_amount` are the checked `Amount` (serde-transparent `i64`);
 > `policy: PolicyRef` **does not exist** (D-E3-5 — per-resource policy is a dedicated leaf scope plus
 > org `AccessPolicy` rules against `ScopeSelector::Exact`); E3 added `approval: Option<ApprovalRule>`
-> (§5.6). `held_amount` is still a zero projection until E4's holds. Invariant 18: `scope: Some(s)` ⇒
-> `owner == Organization(s.org)`, and a scoped debit needs the org and scope `Active`.
+> (§5.6). `held_amount` was a zero projection through E3 and is **journal-derived from hold effects
+> since E4b1** (`engine.rs`; `available = posted_balance − held_amount`). Invariant 18:
+> `scope: Some(s)` ⇒ `owner == Organization(s.org)`, and a scoped debit needs the org and scope
+> `Active`.
 
 Each account holds one instrument. `posted_balance` and `held_amount` are materialized projections,
 not competing truths. Available funds are derived:
@@ -639,7 +669,10 @@ for incidental ammunition, fuel, or meals while keeping major purchases exact.
 > **directional self-heal**: a projection that merely lags re-derives silently to the head; only real
 > drift, an ahead projection (lost tail), an unreplayable journal, or a per-instrument conservation
 > break freezes the *whole* economy (single latch — per-account isolation is later). The durability
-> **checkpoint and cold-chunk paging are deferred** (full-replay is the E2 baseline). See
+> **checkpoint and cold-chunk paging are deferred** (full-replay is the E2 baseline and still the E5
+> one; the trigger was fixed at the look-back, 08g §12.1 item 5 — the checkpoint becomes the next
+> cut's first item **when a cold replay exceeds 5 s or 1,000,000 entries**, read from boot's replay
+> log; asset-projection drift keeps latching the whole economy). See
 > [08a](08a-economy-build-status.md).
 >
 > **E3 extended the journal's authority to title** (D-E3-1): every asset title / assignment /
@@ -708,6 +741,8 @@ attribution even if the external record is later archived.
 > contributes nothing to conservation); authorization is asked about each account's **gross debit**,
 > never its net (a net-zero pair on one account is not a free write). `validate` now takes a
 > `ValidateEnv { auth, custody, now }` — the clock is a real dependency (approval expiry).
+> `posted_at` is a plain wall-clock `i64` (unix seconds); no `EconomicTimestamp` type was ever
+> defined (08g §8).
 
 Normative invariants:
 
@@ -813,9 +848,18 @@ sequence, and a deterministic state hash. They accelerate boot but do not replac
 Cold audit pages through Ledger chunks; immediate account views may use a bounded derived recent
 tail. A derived tail may be rebuilt and must never become authority.
 
+> **As shipped (E2–E5):** step 4's checkpoint does not exist — boot replays the whole journal — and
+> cold paging has no reader. Both stay deferred with the trigger in §7's note: **when a cold replay
+> exceeds 5 s or 1,000,000 entries**, the checkpoint becomes the next cut's first item (08g §12.1
+> item 5).
+
 ---
 
 ## 8. Holds, escrow, obligations, and contracts
+
+> **As shipped (E4):** §8.1–§8.4 are built (E4a pure engine, E4b1 holds/obligations live, E4b2
+> contracts live, E4c facts/events/disclosure — 08c is the as-built record). The note under each
+> sketch records where the shipped shape differs; the sketches remain the design intent.
 
 ### 8.1 Holds
 
@@ -839,6 +883,10 @@ pub enum HoldStatus {
 }
 ```
 
+> **As shipped (E4a):** `HoldStatus` is doc 09 C8's `Held | Consumed { transaction, amount } |
+> Released | Expired`, and `Hold` carries `placed_by` and `holder` (the placing plan's idempotency
+> key — an attribution label, never authority; 08c §12).
+
 Creating a hold reduces available funds but does not change posted balance. Capture posts a
 transaction and closes the hold atomically. Release and expiry never move money. Holds are the
 foundation for run escrow, market orders, hotel/rental deposits, bids, pending approvals, and
@@ -861,6 +909,10 @@ pub struct EconomicSchedule {
     pub maximum_catch_up: u8,
 }
 ```
+
+> **As shipped (E4a):** `EconomicClock` is `RealUtc | WorldIc | Manual | Cadence(CadenceId)` —
+> `Registered { provider, id }` is deferred (D-E4-2; the adapter's future is 08h D-LBK-7) — and
+> `EconomicSchedule` gained `manual_now`, the `Manual` position the record itself carries.
 
 Every obligation declares its clock. A deployment must not accidentally charge a month of rent
 because the server was offline, nor charge years of upkeep because staff jumped IC time. Scheduled
@@ -894,6 +946,11 @@ pub enum ObligationStatus {
     Cancelled,
 }
 ```
+
+> **As shipped (E4b1):** `Obligation` has **no `SettlementPolicy`** field — settlement is the sweep's
+> attempt → grace → delinquent ladder (`GracePolicy`, plus `notify_on_success`, `minted_by`,
+> `periods_settled` and a bounded `history`), and the consequence policy is the ruleset's hook on
+> `ObligationChanged` (08c §3.4).
 
 An obligation attempts settlement; it does not assume settlement succeeded. Failure advances a
 ruleset-owned typed consequence policy. Rent should normally move through grace, delinquency,
@@ -929,6 +986,10 @@ pub enum ContractState {
     Expired,
 }
 ```
+
+> **As shipped (E4b2):** `ContractState` folds `Accepted` into `Active` — the last acceptance
+> activates (D-E4-10) — and a terminal transition may wait in `pending: Option<PendingTerminal>`
+> until its post succeeds, so a contract is never terminal while its escrow is reserved (08c §5.1).
 
 Settlement conditions consume typed, attributable facts—scene outcomes, deliveries, approved jobs,
 or ruleset events. They do not parse narrative prose or accept “the LLM said the run succeeded.”
@@ -1063,7 +1124,15 @@ wallet.
 Destroyed, dangling, or structurally invalid backing locations freeze the vault and trigger
 recovery. They never cause the economy module to delete its title records.
 
+> **As shipped (E3; decided at the look-back, C13):** `CustodyRef::Registered` is **kept** for E7's
+> facility providers (10b cut 2). No provider exists yet, and `@vault/create` accepts only
+> `Container`/`SpatialInterior` backings, so a `Registered` vault cannot be created until a provider
+> registers (08g §12.1 item 6). `policy: PolicyRef` does not exist (D-E3-5; §9's note).
+
 ### 9.4 Catalogs, prices, and provenance
+
+> **Status (E5):** not built — catalogs, quotes and provenance are E6's (08f) and E7's (10b);
+> nothing here contradicts the tree (08g §8, C18).
 
 Rulesets register catalog definitions:
 
@@ -1090,6 +1159,9 @@ knowledge; the pricing engine does not reveal hidden truth to the seller.
 ---
 
 ## 10. Work orders, production, and services
+
+> **Status (E5):** not built — work orders and production are E7's (10b, `mush-industry`); the
+> `WorkOrder` sketch below is design intent and contradicts nothing in the tree (08g §8, C18).
 
 ### 10.1 Generic work order
 
@@ -1152,6 +1224,9 @@ maintenance, storage, and payroll may be exact, batched per sortie/period, or ab
 The ruleset chooses; the journal remains exact for whatever it elects to post.
 
 ### 10.3 Mobility and other services
+
+> **Status (E5):** not built — E7's carrier journeys (10b) are the first service contracts; the
+> generic service market is E8 (unplanned).
 
 The `MobilityJob` proposed in doc 07 becomes an economic service contract, built on the shipped M30
 `Journey` route primitive and the F3 control lease:
@@ -1252,7 +1327,17 @@ Retainers and ghouls may have payroll obligations, allowances, equipment assignm
 consequences. The system should make paying them possible and attributable, not mandatory busywork
 for chronicles that abstract it.
 
+> **As shipped (E5 — read 08d for the records as built; the sketches above are design intent):**
+> housing is `mush-housing` (E5a/E5b: property, tenancy, the story-window ladder, the home
+> invariant) and careers are the `ruleset-wod::economy` layer (E5c: `SpendingProfile`, stances,
+> strain, the attention budget); `access_policy: PolicyRef` does not exist (D-E3-5). **Retainers
+> and ghouls (dependents) were deferred** — an obligation-only E5d follow-on after E6 (08g §12.1
+> item 7); scenario 24 stays in §17.5 with that note.
+
 ### 11.2 Shadowrun: run, pay, upkeep, gear, and fences
+
+> **Status (E5):** not built — E6's slice, planned in [08f](08f-e6-implementation-plan.md) (run and
+> pay; outcomes, fences, custody; market); nothing here contradicts the tree (08g §8, C18).
 
 The first Shadowrun slice:
 
@@ -1351,8 +1436,14 @@ account” for unauthorized actors.
 > rule is implemented once, in the command layer's error renderer: any refusal touching a resource
 > the actor may not view renders as that resource's "No such …" text, collapsing against **every**
 > resource the error names (not only the command's subject); unauthorized list filters return
-> empty; lists cap at 20. `may_view_account` is the single view gate. `EconomicVisibility` is still
-> recorded and never enforced, and the journal is staff-only — the disclosure *filter* proper is E4.
+> empty; lists cap at 20. `may_view_account` is the single view gate.
+>
+> **As shipped (E4c):** the disclosure filter is enforced. `EconomicVisibility` as built is
+> `Parties | Staff | Public | Audience { members, announce_issuer }` (no `DisclosureLevel` struct —
+> E4a-D29), rendered through one predicate: `mask_account` over `may_view_account` for every account
+> id a page prints, and a contract's `ShowClass { Full, Notice, Consented }` (a declared audience gets
+> the notice of the window, never the plan). `@econ/history` still masks through its own inline
+> copy — the single renderer is owed in E6b (E4c-C110, 08g §3 #5). The journal remains staff-only.
 
 ### 12.3 Audit records
 
@@ -1367,6 +1458,12 @@ The economic transaction journal already attributes transfers. `mush-org` separa
 > journaled **economy-side** as effects inside the transaction that caused them (D-E3-1), not in
 > `mush-org`'s audit ledger; approve/deny decisions live on the `approval:{id}` doc. Routing
 > approvals into the org audit ledger is an E4 item.
+>
+> **As shipped (E4c; look-back E1-C126, C16):** approve/deny decisions reach the org audit ledger.
+> Bullet 4 does **not** hold — freezes, unfreezes, recovery acts and staff overrides are journaled
+> nowhere; routing `@econ/unfreeze`, `@account/unfreeze`, `@asset/unfreeze`, `@vault/freeze|unfreeze`
+> and `@contract/resolve` through `mush_org::audit` is E6a work (08g §3 #4). Rejected-attempt
+> telemetry (the next paragraph) does not exist — bounded per-actor refusal telemetry is C16, E6b.
 
 Rejected attempts are security telemetry, not authoritative economic history. They are bounded and
 rate-limited so an attacker cannot create an unbounded audit queue.
@@ -1450,6 +1547,11 @@ capability. Telemetry can therefore report sources and sinks by ruleset, cause, 
 period, and instrument. “Set balance to 50,000” is not a normal command; staff uses an attributed
 balanced correction transaction.
 
+> **As shipped (E2–E5):** system-principal metadata is not built — a system principal is a registered
+> name with an unbounded-credit account, and the only per-principal policy is the per-instrument mint
+> cap plus the issuer allow-list; `category`, owning module, allowed instruments and per-post
+> faucet/sink counters (`SystemPrincipalDef`) are C15, E6a (08g §11).
+
 ### 14.2 No automatic universal market
 
 Markets are ruleset modules over quotes, holds, contracts, title, custody, and routes. They decide:
@@ -1492,6 +1594,7 @@ member:{org}:{obj}
 role:{id}
 grant:{id}
 delegation:{id}
+policy:{id}
 approval:{id}
 log:audit:{chunk}
 ```
@@ -1507,6 +1610,8 @@ vault:{id}
 hold:{id}
 obligation:{id}
 contract:{id}
+cadence:{id}
+escalation:{id}
 work:{id}
 idempotency:{namespace}:{key_hash}
 checkpoint:{seq}
@@ -1518,9 +1623,12 @@ log:journal:{chunk}
 > `asset:{obj}`** (a journal *projection*), **`vault:{id}`** (a container), **`approval:{id}`** (a
 > leaf), **and `log:journal:*`**. `idempotency:*` is **not** written — the idempotency index is
 > journal-DERIVED at boot (R-B2); `checkpoint:{seq}` is **deferred** (full-replay baseline);
-> `hold`/`obligation`/`contract`/`work` are **E4+**. **`approval:{id}` lives under `economy`, not
-> `mush-org`** (D-E3-2 — the request binds the economy's `plan_hash`); the `mush-org` list above
-> should be read without it. `mush-faction`'s `fac:{id}` gained `org` and `migrated`.
+> `hold:{id}`, `obligation:{id}`, `contract:{id}`, `cadence:{id}` and `escalation:{id}` exist since
+> E4 (08c §4.2 — holds are journal projections, the rest containers); `work:{id}` is E7.
+> **`approval:{id}` lives under `economy`, not `mush-org`** (D-E3-2 — the request binds the
+> economy's `plan_hash`); the `mush-org` list above should be read without it. `policy:{id}` (E1b)
+> was missing from the `mush-org` list until the look-back (E1-C124). `mush-faction`'s `fac:{id}`
+> gained `org` and `migrated`.
 
 All IDs are monotonic and never reused. Keys and embedded IDs must agree. Unknown schema versions
 do not load active.
@@ -1562,8 +1670,9 @@ recovery; it never treats destruction as a valid transfer or debt cancellation.
 
 > **As shipped (E3):** the first, second, and fifth gates are live (`EconomicDestroyGate`, walking
 > the target's transitive contents; `@destroy/override` bypasses only `SAFE`, never the gate; the
-> non-staff refusal is neutral text so it is not an existence oracle). Tenancy and facility gates are
-> E5/E7. The backstop freezes every asset on / owned by / assigned to / naming the dead object and
+> non-staff refusal is neutral text so it is not an existence oracle). The tenancy gate is live since
+> E5b — `HousingDestroyGate` refuses `@destroy` of any room of a `Let` property, existence-hidden at
+> the gate; the facility gate is E7. The backstop freezes every asset on / owned by / assigned to / naming the dead object and
 > every vault it backs, as doc writes; boot's liveness and custody-reconciliation passes are the
 > third leg, since only `@destroy` emits `ObjDestroyed`.
 
@@ -1589,7 +1698,7 @@ with escrow/staging and an explicit completion state. They do not monopolize one
 ## 16. Commands and presentation
 
 Core module commands are administrative and neutral. **The list below is the design vision; the
-verbs/prefixes that actually shipped in E1–E3 are annotated (`✓`) — the rest are later milestones:**
+verbs/prefixes that actually shipped in E1–E5 are annotated (`✓`) — the rest are later milestones:**
 
 ```text
 @org/create ✓, @org/list ✓, @org/show ✓, @org/grant ✓, @org/audit ✓   (E1b — staff-only)
@@ -1602,8 +1711,10 @@ verbs/prefixes that actually shipped in E1–E3 are annotated (`✓`) — the re
 @asset/title|transfer|assign|unassign|maintenance|lien|release|writeoff|unfreeze|show|list ✓   (E3b1)
 @vault/create|deposit|withdraw|show|list|freeze|unfreeze|close ✓      (E3b1; interior: backings since E3c)
 @faction/org ✓, @faction/migrate ✓                                    (E3d)
-@obligation/*, @contract/*, @work/*                                   (E4+ — not built)
-@org/role, @org/delegate                                              (E1 API via submit(); no dedicated commands yet)
+@obligation/*, @contract/* ✓                                          (E4b1/E4b2 — built; verb tables in 08c §4.4, §5.1)
+@work/*                                                               (E7 — 10b)
+@org/role, @org/delegate                                              (E1 API via submit(); still no dedicated commands at E5 — E1-D8, DL-06)
+(E5's housing and career verbs are feature-module / ruleset surface — 08d §4, §5.5)
 ```
 
 Player-facing commands and panels are ruleset-owned:
@@ -1670,7 +1781,8 @@ scale, rounding, and approximate disclosure; clients do not infer secret precisi
 23. Run one WoD career period that quietly covers housing; then force failure through grace,
    delinquency, and an explicit eviction story window without teleportation.
 24. Pay a ghoul/retainer from a personal or organization account and verify private attribution and
-   optional loyalty consequences.
+   optional loyalty consequences. *(Deferred with dependents to an obligation-only E5d after E6 —
+   08g §12.1 item 7; kept as that cut's acceptance test.)*
 25. Offer, escrow, complete, split, and settle a Shadowrun job under provider success and failure.
 26. Quote and accept a fenced-goods sale; require real delivery and expose only observer-authorized
    provenance/evidence.
@@ -1756,7 +1868,10 @@ Planned, reviewed, and built per [08b](08b-e3-implementation-plan.md); ledger an
 and `mush-sim/tests/custody.rs`, each with per-boundary reboots. The end-of-build adversarial verify
 found and folded three high and a dozen lesser holes (08b §13).
 
-### E4: holds, escrow, obligations, and contracts — **NEXT** (pickup: 08a "Pick up here: E4")
+### E4: holds, escrow, obligations, and contracts — **SHIPPED** (E4a `29282fe`/`13f11d0`, E4b1 `0805f5e`/`389c521`, E4b2 `e56c2a9`/`4972455`, E4c `8873863`/`fa6a979`)
+
+Planned, reviewed, and built per [08c](08c-e4-implementation-plan.md) — four cuts, each with a
+verify fold; the as-shipped notes are in §5.5, §6.2, §8, §12.2, §12.3 and §15.1.
 
 - Add holds, capture/release/expiry, and available-balance projection.
 - Add registered clocks, bounded due processing, catch-up policy, obligations, and grace state.
@@ -1765,20 +1880,28 @@ found and folded three high and a dozen lesser holes (08b §13).
 - Add compact visibility-safe economic events and canon/evidence projection.
 
 **Exit criterion:** scenarios 13–17 pass with duplicate scheduler events, restart, stale revisions,
-large time jumps, and hidden parties.
+large time jumps, and hidden parties — met per 08c §3.6–§6.2 (test counts reconciled in 08g §9);
+the residual E4 gaps the look-back records are 08g §3 #5, #7, #10, #12 and #13.
 
-### E5: World of Darkness housing and career slice
+### E5: World of Darkness housing and career slice — **SHIPPED** (E5a `6b606e5`/`7155efc`, E5b `b1b4254`/`d9f9ceb`, E5c `816efdf`/`ba75fc3`)
 
-- Add a property/tenancy module with access and home-anchor integration.
+Planned, reviewed, and built per [08d](08d-e5-implementation-plan.md); the E5/K6 gate's fold list
+is 08g §11 (with 08h's D-LBK-1..7 merged into it).
+
+- Add a property/tenancy module with access and home-anchor integration. **(Shipped E5a/E5b as
+  `mush-housing`.)**
 - Add ruleset spending profiles, lifestyle policy, careers, stances, strain, and automatic period
-  settlement.
-- Add optional retainer/ghoul payroll and organization-owned housing/business accounts.
-- Keep routine output compact and make failures story-state transitions.
+  settlement. **(Shipped E5c as `ruleset-wod::economy`; personal mode `off | abstract | exact`.)**
+- ~~Add optional retainer/ghoul payroll~~ **(deferred — dependents are an obligation-only E5d after
+  E6, 08g §12.1 item 7)** and organization-owned housing/business accounts **(landlord
+  organizations shipped in E5b)**.
+- Keep routine output compact and make failures story-state transitions. **(Shipped: the
+  story-window ladder, one private notice per transition.)**
 
-**Exit criterion:** scenarios 23–24 pass with exact-cash mode, abstract-Resources mode, economy
-engagement disabled, and large IC-time changes.
+**Exit criterion:** scenario 23 passes in abstract and exact mode, with the layer off, and across
+IC-time jumps (08d §5.5–§5.7); scenario 24 is deferred with the dependents.
 
-### E6: Shadowrun run-and-pay slice
+### E6: Shadowrun run-and-pay slice — planned in [08f](08f-e6-implementation-plan.md) (unreviewed at the look-back; DL-02)
 
 - Add run contract templates, employer escrow, team acceptance/split, expenses, and settlement.
 - Add lifestyle/debt obligations and exact major-purchase quotes.
@@ -1788,7 +1911,7 @@ engagement disabled, and large IC-time changes.
 **Exit criterion:** scenarios 25–26 pass with provider disabled, slow, malformed, or stale; no model
 result can post without current deterministic authorization.
 
-### E7: TacSim requisition and production slice
+### E7: TacSim requisition and production slice — planned in [10b](10b-e7-implementation-plan.md)
 
 - Add divisional budget/vault templates and threshold approvals.
 - Add generic work-order reservations and a TacSim recipe/facility driver.
@@ -1828,6 +1951,11 @@ quantities.
 normally have one backing organization; not every organization is a faction. Promote rather than
 duplicate membership and authorization.
 
+**As built (E1c/E3d; recorded at the look-back, E1-C127):** the "promote rather than duplicate" half
+was **struck** — `FactionStandingProvider` (the `RegisteredPredicate` seam) is the sole bridge from
+faction standing into org policy, `Faction.org` is the backing-org link, and no org membership is
+derived from a faction (08a decision 5 / D-E3-11; §5.7's note).
+
 ### D3. The economic journal uses the existing Ledger substrate
 
 **Decision:** one dedicated double-entry economy journal uses hardened `mush_core::Ledger` chunked
@@ -1852,7 +1980,8 @@ No relationship silently implies another.
 `@asset/transfer` on a crewed unit leave its station seats and `control_gen` untouched, and a
 station assignment leaves the title record untouched; `@chown` and title are independent both ways
 and `@chown` is not gated. The one place the four axes do not yet compose: a new title owner has no
-verb to evict an operator in E3 — deliberately, until E7.
+verb to evict an operator in E3 — deliberately, until E7. **Still open at E5** — the operator-eviction
+verb is E7's (E3-D16 → 10b).
 
 ### D6. Posted transactions are immutable
 

@@ -446,6 +446,8 @@ fn a_cadence_deadline_with_no_record_is_never_passed() {
         position: 5,
         advanced_at: 0,
         revision: 1,
+        generation: mush_economy::CADENCE_GENERATION_INITIAL,
+        schema: mush_economy::CADENCE_SCHEMA_LEGACY,
     });
     assert!(validate(&p, &s, &Seams::open().env(&s)).is_post());
 }
@@ -813,6 +815,8 @@ fn a_cadence_advances_under_its_own_cap_and_forgives_the_rest() {
         position: 0,
         advanced_at: 0,
         revision: 1,
+        generation: mush_economy::CADENCE_GENERATION_INITIAL,
+        schema: mush_economy::CADENCE_SCHEMA_LEGACY,
     };
     let (next, forgiven) = advance_cadence(&c, 1_000);
     assert_eq!((next.position, forgiven), (3, 7));
@@ -843,6 +847,7 @@ fn obligation() -> Obligation {
         settled_total: 0,
         missed_total: 0,
         forgiven_total: 0,
+        suspensions: std::collections::BTreeSet::new(),
         revision: 1,
     }
 }
@@ -2152,6 +2157,8 @@ fn vf_12_a_cadence_clamps_its_cap_and_a_manual_one_never_self_advances() {
         position: 0,
         advanced_at: 0,
         revision: 1,
+        generation: mush_economy::CADENCE_GENERATION_INITIAL,
+        schema: mush_economy::CADENCE_SCHEMA_LEGACY,
     };
     // A stored cap of 0 would take no periods at all while `advanced_at` still
     // moved: every period silently swallowed, forever.

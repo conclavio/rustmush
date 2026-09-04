@@ -33,7 +33,7 @@ use mush_org::{OrgId, PrincipalId};
 use crate::economy::config::{PersonalMode, WOD_USD, WOD_USD_SCALE};
 use crate::economy::prompt;
 use crate::economy::record::{
-    MAX_SOURCES, STRAIN_MAX, SpendingProfile, Stance, SupportSource,
+    MAX_PROMPT_OPTIONS, MAX_SOURCES, STRAIN_MAX, SpendingProfile, Stance, SupportSource,
 };
 use crate::economy::store::{WodEconomyStore, put_profile};
 use crate::splats::Dispatch;
@@ -369,7 +369,10 @@ fn prompt_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
     };
     ctx.out.sys_to_actor(me, "wod", head);
-    for o in &prompt.options {
+    // At most `MAX_PROMPT_OPTIONS` (look-back fold, D-LBK-3): the persisted record
+    // refuses more on the way in, and the render is bounded by the same number
+    // regardless of what carried it here.
+    for o in prompt.options.iter().take(MAX_PROMPT_OPTIONS) {
         ctx.out.sys_to_actor(me, "wod", format!("  +prompt {}  --  {}", o.key, o.label));
     }
     // **The time actually left, from this character's own evaluation ordinal** (E5c

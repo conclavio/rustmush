@@ -68,7 +68,7 @@ use crate::ids::{
     ObligationId, TransactionId, VaultId,
 };
 use crate::module::{BootParts, CustodyMark, EconomyStore};
-use crate::obligation::{Obligation, ObligationCause, ObligationStatus, SuspendReason};
+use crate::obligation::{Obligation, ObligationCause, SuspendReason};
 use crate::record::{
     Account, AccountStatus, ApprovalRequest, CustodyDirection, EconomicAsset, EconomicTransaction,
     Encumbrance, Hold, HoldEffectKind, IdempotencyRecord, InstrumentDef, Vault, VaultStatus,
@@ -1043,8 +1043,10 @@ pub(crate) fn load_boot(
                     // logged: a broken world must not mint an unbounded alert storm.
                     SuspendReason::Staff { reason: SmolStr::new_static("boot-reconciliation") }
                 };
-                o.status = ObligationStatus::Suspended { reason: suspend };
-                o.revision += 1;
+                // Under the ladder's own key (look-back fold, D-LBK-1): `@econ/ack`
+                // releases it, and a layered module's hold is neither lifted by that
+                // nor lifts it.
+                o = crate::obligation::hold(&o, suspend, now);
                 healed_obligations.push(o.clone());
             }
         }

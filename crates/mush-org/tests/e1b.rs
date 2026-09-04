@@ -323,7 +323,8 @@ fn boot_drops_a_delegation_whose_grantor_was_destroyed() {
 
 #[test]
 fn a_new_object_reusing_no_id_is_unaffected_by_a_prior_scrub() {
-    // Destroy a grantee, then an unrelated object destroy leaves state intact.
+    // Grant to a live object, then destroy an unrelated one: the scrub touches
+    // nothing of the grantee's (no grantee is destroyed here — look-back fold).
     let mut tw = boot();
     let joe = tw.spawn_player("Joe");
     tw.run(GOD, "@org/create Camarilla");

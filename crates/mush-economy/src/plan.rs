@@ -509,6 +509,16 @@ pub enum EconomyError {
     /// A referenced instrument is not active.
     #[error("instrument {0} is not active")]
     InactiveInstrument(InstrumentId),
+    /// [`crate::register_instrument`] was handed an id that is already registered
+    /// (look-back fold, E2-C18). Registration is create-only: replacing a live
+    /// definition would let a second call flip `status`, `scale` or the negative
+    /// policy under every account of that instrument.
+    #[error("instrument {0} is already registered")]
+    InstrumentExists(InstrumentId),
+    /// A hold or release on an obligation that is `Cancelled` or `Satisfied`
+    /// (look-back fold, D-LBK-1): a finished obligation is nobody's to suspend.
+    #[error("obligation {0} is finished")]
+    ObligationTerminal(ObligationId),
     /// The deltas for an instrument do not sum to zero (invariant 3).
     #[error("instrument {0} is not balanced")]
     NotBalanced(InstrumentId),
@@ -777,7 +787,9 @@ impl EconomyError {
             EconomyError::NoSuchContract(c)
             | EconomyError::ContractState(c)
             | EconomyError::ConsentMismatch(c) => vec![NamedResource::Contract(*c)],
-            EconomyError::NoSuchObligation(o) => vec![NamedResource::Obligation(*o)],
+            EconomyError::NoSuchObligation(o) | EconomyError::ObligationTerminal(o) => {
+                vec![NamedResource::Obligation(*o)]
+            }
             _ => Vec::new(),
         }
     }
