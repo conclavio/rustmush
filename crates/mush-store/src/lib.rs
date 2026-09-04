@@ -19,9 +19,9 @@
 //! - **One writer.** See the concurrency contract in [`store`].
 //!
 //! Testing: the shared behavior [`suite`] runs against [`InMemoryStore`]
-//! unconditionally and against [`RedisStore`] when `REDIS_URL` is set
-//! (`tests/redis_suite.rs` — skips with a note otherwise, since dev boxes
-//! may have no Redis; Linux CI provides one).
+//! unconditionally and against [`RedisStore`] through explicitly ignored
+//! `tests/redis_suite.rs` wrappers. Linux CI supplies `REDIS_URL` and runs
+//! those wrappers explicitly, so absent Redis coverage is visible.
 
 pub mod memory;
 pub mod migrate;

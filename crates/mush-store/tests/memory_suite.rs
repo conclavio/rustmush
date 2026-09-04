@@ -80,6 +80,41 @@ async fn authoritative_module_prefix_is_store_owned() {
 }
 
 #[tokio::test]
+async fn authoritative_contract_exact_lifecycle() {
+    suite::authoritative_exact_lifecycle(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
+async fn authoritative_contract_single_pending_admission() {
+    suite::authoritative_single_pending_admission(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
+async fn authoritative_contract_quarantine_lifecycle() {
+    suite::authoritative_quarantine_lifecycle(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
+async fn authoritative_contract_outbox_lifecycle() {
+    suite::authoritative_outbox_lifecycle(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
+async fn authoritative_contract_epoch_lifecycle() {
+    suite::authoritative_epoch_lifecycle(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
+async fn authoritative_contract_conflicts() {
+    suite::authoritative_conflict_contract(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
+async fn authoritative_contract_retention_generation() {
+    suite::authoritative_retention_generation_contract(&InMemoryStore::new()).await;
+}
+
+#[tokio::test]
 async fn module_kv_round_trip() {
     suite::module_kv_round_trip(&InMemoryStore::new()).await;
 }

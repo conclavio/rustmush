@@ -204,6 +204,27 @@ redis_gated!(module_batch_atomicity, store, {
 redis_gated!(authoritative_module_prefix_is_store_owned, store, {
     suite::authoritative_module_prefix_is_store_owned(&store).await;
 });
+redis_gated!(authoritative_contract_exact_lifecycle, store, {
+    suite::authoritative_exact_lifecycle(&store).await;
+});
+redis_gated!(authoritative_contract_single_pending_admission, store, {
+    suite::authoritative_single_pending_admission(&store).await;
+});
+redis_gated!(authoritative_contract_quarantine_lifecycle, store, {
+    suite::authoritative_quarantine_lifecycle(&store).await;
+});
+redis_gated!(authoritative_contract_outbox_lifecycle, store, {
+    suite::authoritative_outbox_lifecycle(&store).await;
+});
+redis_gated!(authoritative_contract_epoch_lifecycle, store, {
+    suite::authoritative_epoch_lifecycle(&store).await;
+});
+redis_gated!(authoritative_contract_conflicts, store, {
+    suite::authoritative_conflict_contract(&store).await;
+});
+redis_gated!(authoritative_contract_retention_generation, store, {
+    suite::authoritative_retention_generation_contract(&store).await;
+});
 redis_gated!(module_kv_round_trip, store, {
     suite::module_kv_round_trip(&store).await;
 });

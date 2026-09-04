@@ -1823,6 +1823,44 @@ K0 integrity -> K1 definitions -> K2 logical transactions -> K3 durable bundles
 The synthetic Gate-5 fault harness begins in K3 and is rerun/expanded at every later cut; it is not
 deferred until the end.
 
+### Execution sequence after the K3 durability audit
+
+The remaining milestones are delivered as vertical proofs, not as independent piles of framework
+types. Each phase leaves one executable path that the next phase extends:
+
+1. **Durability closeout (K3.1e-f).** Run one authoritative conformance suite unchanged against
+   memory and Redis. Preserve the complete canonical legacy batch—not only sealed Ledger members—on
+   deterministic failure, and give authoritative, legacy, and recovery/control work independently
+   bounded lanes with guaranteed service. Exit only when poison re-emission cannot wedge or starve
+   unrelated authoritative persistence.
+2. **Execution closeout (K2).** Execute the bounded causal trigger queue against the root scratch
+   transaction and materialize one bundle or no mutation. Route transport-authenticated request UIDs
+   into the coordinator, then prove claim/release/ownership convergence across dropped frames,
+   gateway restart, and server kill. This is the sole new mutating ingress path.
+3. **Mechanical Gate-1 slice (K4).** Add only the clocks, deterministic RNG, checked resource
+   reservation, and temporary-effect lifecycle needed by `focus`, `brace`, and two-turn `guarded`.
+   Prove spend + effect + expiry + receipt as one restart-safe causal history before generalizing the
+   provider APIs.
+4. **Projected Gate-1 slice (K5).** Expose that same action through one internal offer and one
+   bounded projected DTO used by line, TUI/web, deterministic NPC, and mock LLM callers. Add
+   keyframe/gap recovery and authorized action status. No interface receives a second authorization
+   or execution implementation.
+5. **First production migration.** Move one modest WoD resource/effect action through the complete
+   K2-K5 path, compare its old/new semantics with golden tests, then remove its legacy mutation
+   handler. Economy remains domain-model work until its Ledger append/seal and all mixed post-images
+   can join one authoritative bundle.
+6. **Tactical and asynchronous slices (K6-K7).** Extend the proven offer/transaction path to atomic
+   source/target damage and hidden contacts, then make delayed NPC/LLM decisions return only opaque
+   projected offers through ordinary coordinator re-entry.
+7. **Production closure (K8).** Run the complete crash matrix against the toy and migrated WoD,
+   Shadowrun, and tactics paths; publish compatibility rules only after all three exercise the same
+   protocol.
+
+Until K8 closes, new work follows four anti-debt rules: no new mutating legacy handlers, no direct
+LLM mechanical mutation, no trigger side effect in a later commit, and no backend-specific
+authoritative behavior without a shared conformance assertion. Existing legacy outcome/effect
+construction remains compatibility debt and may not gain new unbounded item or payload shapes.
+
 ### K0. Integrity prerequisites and contract harness
 
 **Purpose:** make the existing durability boundary safe enough to build the action kernel on it.
@@ -1956,8 +1994,7 @@ retention counters, pending-index and cursor discovery, and live-gated tests for
 missing accelerator membership, conflicts, and wrong-type partial execution. Retained intent reads
 now require the exact canonical storage form, and exclusive boot atomically rebuilds the derivative
 count/byte pair from exhaustive validated discovery, including over wrong-typed keys. The full
-30-test Redis
-suite and server recovery integration test pass against disposable Redis 8.10.1. Server startup now
+Redis suite and server recovery integration test pass against disposable Redis 8.10.1. Server startup now
 connects without ordinary bootstrap writes, exhaustively reconciles every retained exact intent,
 repairs stale pending membership, refuses conflicting or incomplete recovery, and only then creates
 indexes, migrates, imports, or hydrates the world. The opt-in action lane now rejects a bundle whose
@@ -2012,12 +2049,14 @@ Gate-5 work:
    bounded discovery-pass counter without consuming real delivery attempts, persist a terminal
    dead-letter outcome with diagnostics, and then permit parent checkpoint/epoch progress. Installed
    adapters must remain independently dispatchable.
-5. **K3.1e — Redis concurrency/parity (in progress):** Redis-gated tests are now explicit ignored
+5. **K3.1e — Redis concurrency/parity (closed):** Redis-gated tests are explicit ignored
    tests locally and an explicit Linux CI job, so skipped Lua coverage cannot count as passing.
    Retention-counter repair now uses the generation captured before exhaustive scanning, and the
    complete-bundle recovery lookup reports `Retired` from the scope watermark after compact records
-   are purged. Consolidating the duplicated authoritative cases into one backend conformance suite
-   remains.
+   are purged. One shared suite now proves exact lifecycle/discovery, store-owned admission,
+   quarantine restore, durable outbox, epoch retirement, conflict handling, and retention-generation
+   CAS semantics unchanged against memory and Redis; backend-specific corruption probes remain in
+   their native harnesses.
 6. **K3.1f — K0/K3 integration:** deterministic E0 drops carrying unsealed Ledger chunks or other
    module writes enter the unified quarantine evidence path, and authoritative work gets a bounded
    lane that ordinary seal traffic cannot starve.
