@@ -28,7 +28,7 @@ use crate::knowledge::{
     Familiarity, KNOWLEDGE_ATTR, LoreEntry, LorePool, NpcKnowledge, Secrecy, familiarity_of,
     pool_key,
 };
-use crate::memory::{MemoryRecord, record_key};
+use crate::memory::{MAX_MEMORY_SUBJECT_BYTES, MemoryRecord, record_key};
 use crate::profile::{AgentProfile, NS, PROFILE_ATTR, SUMMARY_ATTR, THINKING_FEED};
 use crate::runtime::NpcHostState;
 use crate::snapshot::{
@@ -226,7 +226,28 @@ impl GameModule for NpcModule {
         for (key, value) in boot.kv {
             if key.starts_with("mem:") {
                 match serde_json::from_value::<MemoryRecord>(value) {
-                    Ok(rec) => store.insert(rec),
+                    Ok(rec)
+                        if rec.subject.len() <= MAX_MEMORY_SUBJECT_BYTES
+                            && record_key(rec.npc, &rec.subject) == key =>
+                    {
+                        match store.insert(rec) {
+                            Ok(Some(evicted)) => tracing::warn!(
+                                npc = evicted.npc.0,
+                                subject = %evicted.subject,
+                                "npc: boot memory subject cap evicted an older record"
+                            ),
+                            Ok(None) => {}
+                            Err(error) => tracing::error!(
+                                %key,
+                                ?error,
+                                "npc: invalid bounded memory record skipped"
+                            ),
+                        }
+                    }
+                    Ok(_) => tracing::error!(
+                        %key,
+                        "npc: memory document key does not match its record; skipped"
+                    ),
                     Err(e) => tracing::error!(%key, error = %e, "npc: unparseable memory skipped"),
                 }
             } else if key.starts_with("lore:") {
@@ -1047,12 +1068,16 @@ fn apply_action(
         }
         NpcAction::Remember { subject, note } => {
             let now = ctx.w.now();
-            let rec = match ctx.state_mut::<NpcHostState>() {
+            let update = match ctx.state_mut::<NpcHostState>() {
                 Some(h) => Some(h.long_term.remember(npc, subject, note, now)),
                 None => None,
             };
-            if let Some(rec) = rec {
-                persist_memory(ctx, &rec);
+            match update {
+                Some(Ok(update)) => persist_memory(ctx, &update),
+                Some(Err(error)) => {
+                    tracing::warn!(npc = npc.0, ?error, "npc: invalid memory action refused");
+                }
+                None => {}
             }
         }
         NpcAction::UseAbility { name, input } => {
@@ -2295,8 +2320,16 @@ fn defer_turn(ctx: &mut Ctx<'_>, npc: ObjId, correlation: u64, snap: &TurnSnapsh
     }));
 }
 
-fn persist_memory(ctx: &mut Ctx<'_>, rec: &MemoryRecord) {
-    let value = match serde_json::to_value(rec) {
+fn persist_memory(ctx: &mut Ctx<'_>, update: &crate::memory::MemoryUpdate) {
+    if let Some(evicted) = &update.evicted {
+        ctx.persist(ModuleOp {
+            ns: SmolStr::new(NS),
+            op: ModuleWrite::Del {
+                key: record_key(evicted.npc, &evicted.subject),
+            },
+        });
+    }
+    let value = match serde_json::to_value(&update.record) {
         Ok(v) => v,
         Err(e) => {
             tracing::error!(error = %e, "npc: could not serialize memory record");
@@ -2306,7 +2339,7 @@ fn persist_memory(ctx: &mut Ctx<'_>, rec: &MemoryRecord) {
     ctx.persist(ModuleOp {
         ns: SmolStr::new(NS),
         op: ModuleWrite::JsonSet {
-            key: record_key(rec.npc, &rec.subject),
+            key: record_key(update.record.npc, &update.record.subject),
             value,
         },
     });

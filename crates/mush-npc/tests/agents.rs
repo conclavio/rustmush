@@ -1252,10 +1252,13 @@ async fn familiarity_from_memory_reaches_the_user_prompt() {
     // Three durable notes about Alice ⇒ Known; nothing about Bob ⇒ Stranger.
     {
         let h = rig.host_mut();
-        h.long_term.remember(npc, "Alice", "tips well", 10);
-        h.long_term.remember(npc, "Alice", "owes for a drink", 20);
+        h.long_term.remember(npc, "Alice", "tips well", 10).unwrap();
         h.long_term
-            .remember(npc, "Alice", "asked about the cellar", 30);
+            .remember(npc, "Alice", "owes for a drink", 20)
+            .unwrap();
+        h.long_term
+            .remember(npc, "Alice", "asked about the cellar", 30)
+            .unwrap();
     }
 
     let snap = rig.dialogue_snapshot(alice, 1002, "say evening");

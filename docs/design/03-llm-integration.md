@@ -421,7 +421,13 @@ Three layers, cheapest first:
 
 1. **Rolling buffer** (in-memory, per NPC): last ~50 room events, token-capped (~1.5k). Lost on restart — acceptable.
 2. **Conversation summary** (persisted attribute `agent.memory.summary`): when the buffer overflows, a `NpcSummarize` call (cheap route) folds the oldest half into the summary ("Earlier tonight: haggled with Alice over a focusing crystal; refused to discuss the cellar."). Same mechanism at server shutdown.
-3. **Long-term records** (DB table `npc_memory(npc, subject, text, created, last_recalled, strength)`): written by the `Remember` tool and by the summarizer when it detects durable facts ("Alice owes me 50 dollars"). **Recall v1 is deliberately dumb:** on each turn, fetch memories whose `subject` matches present players' names/aliases plus the top-N by recency×strength. Embedding retrieval (fastembed + sqlite-vec) is a marked extension point behind a `MemoryRecall` trait, not built now.
+3. **Long-term records** (module documents keyed by `(npc, canonical subject)`): written by the
+   `Remember` tool. Each subject retains at most 20 bounded notes; each NPC retains at most 256
+   subjects, evicting the least recently updated with a stable subject tie-break and durably
+   deleting the victim. Complete records, subjects, and notes have hard byte ceilings, and boot
+   rejects malformed or key-mismatched documents. **Recall v1 is deliberately dumb:** on each turn,
+   fetch matching present-player subjects newest-first, with a hard maximum of 32 returned records.
+   Embedding retrieval is a marked extension point behind a `MemoryRecall` trait, not built now.
 
 Per-player relationships fall out of layer 3: memories subject-keyed by character name give the NPC continuity with returning players.
 

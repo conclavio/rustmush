@@ -308,19 +308,21 @@ mod tests {
         // No record at all: Stranger.
         assert_eq!(familiarity_of(&store, npc, "Alice"), Familiarity::Stranger);
         // One note: Acquaintance.
-        store.remember(npc, "Alice", "asked about the cellar", 100);
+        store
+            .remember(npc, "Alice", "asked about the cellar", 100)
+            .unwrap();
         assert_eq!(
             familiarity_of(&store, npc, "Alice"),
             Familiarity::Acquaintance
         );
         // Two notes: still Acquaintance.
-        store.remember(npc, "Alice", "tips well", 200);
+        store.remember(npc, "Alice", "tips well", 200).unwrap();
         assert_eq!(
             familiarity_of(&store, npc, "Alice"),
             Familiarity::Acquaintance
         );
         // Three notes: Known.
-        store.remember(npc, "Alice", "owes me money", 300);
+        store.remember(npc, "Alice", "owes me money", 300).unwrap();
         assert_eq!(familiarity_of(&store, npc, "Alice"), Familiarity::Known);
         // Matching is slug-based, like recall.
         assert_eq!(familiarity_of(&store, npc, "alice"), Familiarity::Known);
