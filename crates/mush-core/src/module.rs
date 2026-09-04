@@ -1810,6 +1810,40 @@ impl<'a> Registrar<'a> {
             })
     }
 
+    /// Register this module as the deployment's sole provider for dynamic
+    /// [`ClockRef::SceneTurn`](crate::clock::ClockRef::SceneTurn) clocks.
+    ///
+    /// Scene ids are world-global and the clock reference intentionally has
+    /// no module-owner field, so composition rejects a second provider rather
+    /// than allowing ambiguous routing.
+    pub fn scene_clock_provider<P>(&mut self, provider: P) -> Result<(), ModError>
+    where
+        P: crate::clock_provider::SceneClockProvider + 'static,
+    {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.clock_providers.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: clock-provider registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .clock_provider_builder
+            .register_scene(owner, Arc::new(provider))
+            .map_err(|e| {
+                ModError::msg(format!(
+                    "module {}: scene clock provider registration: {e}",
+                    self.module
+                ))
+            })
+    }
+
     /// Declare a durable schedule family as a bounded wake source for one
     /// exact authoritative action owned by this module.
     ///

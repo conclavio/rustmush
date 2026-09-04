@@ -141,7 +141,7 @@ fn timestop_start(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     participants.extend(npcs);
 
     let now = ctx.w.now();
-    let ic_now = ctx.w.game_now_unix();
+    let ic_now = ctx.w.world_ic_now();
     let room_name = display_name(ctx.w, room);
     let rec = {
         let st = state(ctx);
@@ -161,6 +161,8 @@ fn timestop_start(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             created_by: actor,
             created_at: now,
             ic_started_at: ic_now,
+            clock_generation: 1,
+            turn: 0,
             round_seconds: DEFAULT_ROUND_SECONDS,
             round: 1,
             turn_index: 0,
@@ -259,7 +261,8 @@ fn timestop_next(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (anchor, updated) = {
         let st = state(ctx);
         let rec = st.scenes.get_mut(&s.id).expect("resolved above");
-        rec.advance_turn();
+        rec.advance_turn()
+            .map_err(|error| CmdError::msg(error.to_string()))?;
         (rec.anchor, rec.clone())
     };
     persist_scene(ctx.out, &updated);

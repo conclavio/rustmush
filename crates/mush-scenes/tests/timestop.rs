@@ -10,9 +10,9 @@ use std::sync::Arc;
 use mush_core::engine::{Effects, Engine, Inbound};
 use mush_core::module::{GameModule, ModError, Registrar, emit_world_event};
 use mush_core::{
-    ArgShape, CmdError, CommandSpec, Ctx, GOD, ModuleBootData, ModuleOp, ModuleWrite, ObjId,
-    ObjKind, Outbox, Registry, Role, SceneClass, World, WorldEvent, register_core_commands,
-    register_engine_commands,
+    ArgShape, ClockProviderFailure, ClockReadError, ClockRef, CmdError, CommandSpec, Ctx, GOD,
+    ModuleBootData, ModuleOp, ModuleWrite, ObjId, ObjKind, Outbox, Registry, Role, SceneClass,
+    World, WorldEvent, register_core_commands, register_engine_commands,
 };
 use mush_proto::{NarrativeKind, OutputEvent};
 use mush_scenes::{
@@ -264,8 +264,16 @@ fn wizard_bypasses_the_movement_freeze() {
 #[test]
 fn turns_advance_rounds_wrap_and_the_scene_clock_tracks_rounds() {
     let mut r = rig();
-    let ic_at_start = r.engine.world.game_now_unix();
+    let ic_at_start = r.engine.world.world_ic_now();
     run(&mut r.engine, r.nick, "+timestop");
+    let (scene, generation) = {
+        let s = scenes(&r.engine).active_scene_of(r.nick).unwrap();
+        assert_eq!(s.ic_started_at, ic_at_start);
+        assert_eq!(s.scene_turn_stamp().at, 0);
+        (s.id.0, s.clock_generation)
+    };
+    let clock = ClockRef::SceneTurn { scene, generation };
+    assert_eq!(r.engine.clock_now(&clock).unwrap().at, 0);
 
     // Nick (facilitator) advances the turn: Nick -> Ann.
     run(&mut r.engine, r.nick, "+timestop/next");
@@ -274,9 +282,10 @@ fn turns_advance_rounds_wrap_and_the_scene_clock_tracks_rounds() {
     assert_eq!(s.round, 1);
     assert_eq!(
         s.scene_ic_time(),
-        ic_at_start,
+        ic_at_start.at,
         "round 1 is still the frozen start"
     );
+    assert_eq!(r.engine.clock_now(&clock).unwrap().at, 1);
 
     // Ann -> Barkeep, then wrap to round 2 (Nick), advancing the scene clock.
     run(&mut r.engine, r.nick, "+timestop/next"); // Ann -> Barkeep
@@ -286,9 +295,21 @@ fn turns_advance_rounds_wrap_and_the_scene_clock_tracks_rounds() {
     assert_eq!(s.current_actor(), Some(r.nick));
     assert_eq!(
         s.scene_ic_time(),
-        ic_at_start + i64::from(s.round_seconds),
+        ic_at_start.at + i64::from(s.round_seconds),
         "round 2 advances the scene-local IC clock by one round"
     );
+    assert_eq!(s.turn, 3);
+    assert_eq!(r.engine.clock_now(&clock).unwrap().at, 3);
+    assert!(matches!(
+        r.engine.clock_now(&ClockRef::SceneTurn {
+            scene,
+            generation: generation + 1,
+        }),
+        Err(ClockReadError::SceneProvider {
+            source: ClockProviderFailure::StaleGeneration { .. },
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -1044,6 +1065,17 @@ fn scene_survives_restart_rehydrating_paused_and_still_frozen() {
         s.current_actor(),
         Some(ObjId(4)),
         "turn state (Ann) preserved"
+    );
+    assert_eq!(s.turn, 1, "scene turn clock cursor survived restart");
+    assert_eq!(
+        engine2
+            .clock_now(&ClockRef::SceneTurn {
+                scene: s.id.0,
+                generation: s.clock_generation,
+            })
+            .unwrap()
+            .at,
+        1
     );
     for who in s.participants.clone() {
         assert!(

@@ -1,6 +1,7 @@
 use mush_core::{
     CanonicalId, ClockProvider, ClockProviderContext, ClockProviderFailure, ClockProviderKind,
-    ClockReadError, ClockRef, Engine, GameModule, ModError, OwnerId, Registrar, Registry, World,
+    ClockReadError, ClockRef, Engine, GameModule, ModError, OwnerId, Registrar, Registry,
+    SceneClockProvider, World,
 };
 
 #[derive(Clone, Debug)]
@@ -30,6 +31,22 @@ impl ClockProvider for TestClockProvider {
     }
 }
 
+struct TestSceneClockProvider;
+
+impl SceneClockProvider for TestSceneClockProvider {
+    fn now(
+        &self,
+        context: &ClockProviderContext<'_>,
+        scene: u64,
+        generation: u64,
+    ) -> Result<i64, ClockProviderFailure> {
+        if scene != 77 {
+            return Err(ClockProviderFailure::Integrity);
+        }
+        TestClockProvider.now(context, generation)
+    }
+}
+
 struct TestClockModule {
     duplicate: bool,
 }
@@ -44,6 +61,7 @@ impl GameModule for TestClockModule {
             at: 41,
             generation: 7,
         });
+        registrar.scene_clock_provider(TestSceneClockProvider)?;
         let id = CanonicalId::new("initiative").expect("canonical clock id");
         registrar.clock_provider(ClockProviderKind::Registered, id.clone(), TestClockProvider)?;
         if self.duplicate {
@@ -88,11 +106,26 @@ fn engine_reads_built_in_and_registered_clocks_without_relabelling() {
     assert_eq!(registered.clock, registered_clock(7));
     assert_eq!(registered.at, 41);
 
+    let scene = engine
+        .clock_now(&ClockRef::SceneTurn {
+            scene: 77,
+            generation: 7,
+        })
+        .expect("scene clock read");
+    assert_eq!(
+        scene.clock,
+        ClockRef::SceneTurn {
+            scene: 77,
+            generation: 7,
+        }
+    );
+    assert_eq!(scene.at, 41);
+
     let providers = engine
         .registry
         .clock_providers()
         .expect("frozen clock registry");
-    assert_eq!(providers.len(), 1);
+    assert_eq!(providers.len(), 2);
     assert!(!providers.fingerprint().to_hex().is_empty());
 }
 
@@ -125,7 +158,63 @@ fn mutable_clock_generation_mismatches_fail_closed() {
     ));
 
     assert!(matches!(
+        engine.clock_now(&ClockRef::SceneTurn {
+            scene: 77,
+            generation: 6,
+        }),
+        Err(ClockReadError::SceneProvider {
+            source: ClockProviderFailure::StaleGeneration {
+                requested: 6,
+                current: 7,
+            },
+            ..
+        })
+    ));
+
+    assert!(matches!(
         engine.clock_now(&registered_clock(0)),
+        Err(ClockReadError::ZeroGeneration { .. })
+    ));
+}
+
+struct SceneOnlyModule(&'static str);
+
+impl GameModule for SceneOnlyModule {
+    fn name(&self) -> &'static str {
+        self.0
+    }
+
+    fn register(&mut self, registrar: &mut Registrar<'_>) -> Result<(), ModError> {
+        registrar
+            .scene_clock_provider(|_context: &ClockProviderContext<'_>, _scene, _generation| Ok(0))
+    }
+}
+
+#[test]
+fn scene_clock_has_one_unambiguous_composition_owner() {
+    let error = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![
+            Box::new(SceneOnlyModule("scene_one")),
+            Box::new(SceneOnlyModule("scene_two")),
+        ],
+    )
+    .err()
+    .expect("a second scene clock provider must fail composition");
+    assert!(error.to_string().contains("already owned"));
+
+    let engine = Engine::with_modules(
+        World::new_minimal(),
+        Registry::new(),
+        vec![Box::new(SceneOnlyModule("scene_one"))],
+    )
+    .expect("one scene provider composes");
+    assert!(matches!(
+        engine.clock_now(&ClockRef::SceneTurn {
+            scene: 1,
+            generation: 0,
+        }),
         Err(ClockReadError::ZeroGeneration { .. })
     ));
 }

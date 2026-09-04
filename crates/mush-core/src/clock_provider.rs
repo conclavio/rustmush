@@ -153,6 +153,38 @@ pub trait ClockProvider: Send + Sync {
     ) -> Result<i64, ClockProviderFailure>;
 }
 
+/// Pure synchronous provider for the one first-class scene-clock namespace.
+///
+/// [`ClockRef::SceneTurn`] intentionally carries no module owner: durable
+/// scene ids are world-global coordinates. Composition therefore permits
+/// exactly one owner-stamped adapter and still subjects every read to that
+/// owner's readiness barrier.
+pub trait SceneClockProvider: Send + Sync {
+    /// Return the scalar current value for one exact scene and generation.
+    fn now(
+        &self,
+        context: &ClockProviderContext<'_>,
+        scene: u64,
+        generation: u64,
+    ) -> Result<i64, ClockProviderFailure>;
+}
+
+impl<F> SceneClockProvider for F
+where
+    F: for<'a> Fn(&ClockProviderContext<'a>, u64, u64) -> Result<i64, ClockProviderFailure>
+        + Send
+        + Sync,
+{
+    fn now(
+        &self,
+        context: &ClockProviderContext<'_>,
+        scene: u64,
+        generation: u64,
+    ) -> Result<i64, ClockProviderFailure> {
+        self(context, scene, generation)
+    }
+}
+
 impl<F> ClockProvider for F
 where
     F: for<'a> Fn(&ClockProviderContext<'a>, u64) -> Result<i64, ClockProviderFailure>
@@ -186,6 +218,20 @@ struct ClockProviderEntry {
     provider: Arc<dyn ClockProvider>,
 }
 
+struct SceneClockProviderEntry {
+    owner: OwnerId,
+    provider: Arc<dyn SceneClockProvider>,
+}
+
+impl fmt::Debug for SceneClockProviderEntry {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SceneClockProviderEntry")
+            .field("owner", &self.owner)
+            .finish_non_exhaustive()
+    }
+}
+
 impl fmt::Debug for ClockProviderEntry {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -199,6 +245,7 @@ impl fmt::Debug for ClockProviderEntry {
 #[derive(Default)]
 pub struct ClockProviderRegistryBuilder {
     entries: BTreeMap<ClockProviderKey, ClockProviderEntry>,
+    scene: Option<SceneClockProviderEntry>,
     owner_counts: BTreeMap<OwnerId, usize>,
 }
 
@@ -207,6 +254,10 @@ impl fmt::Debug for ClockProviderRegistryBuilder {
         formatter
             .debug_struct("ClockProviderRegistryBuilder")
             .field("keys", &self.entries.keys().collect::<Vec<_>>())
+            .field(
+                "scene_owner",
+                &self.scene.as_ref().map(|entry| &entry.owner),
+            )
             .finish()
     }
 }
@@ -224,7 +275,7 @@ impl ClockProviderRegistryBuilder {
         id: CanonicalId,
         provider: Arc<dyn ClockProvider>,
     ) -> Result<(), ClockProviderRegistryError> {
-        if self.entries.len() >= MAX_CLOCK_PROVIDERS {
+        if self.len() >= MAX_CLOCK_PROVIDERS {
             return Err(ClockProviderRegistryError::ProviderLimit {
                 max: MAX_CLOCK_PROVIDERS,
             });
@@ -246,6 +297,41 @@ impl ClockProviderRegistryBuilder {
         Ok(())
     }
 
+    pub(crate) fn register_scene(
+        &mut self,
+        owner: OwnerId,
+        provider: Arc<dyn SceneClockProvider>,
+    ) -> Result<(), ClockProviderRegistryError> {
+        if self.len() >= MAX_CLOCK_PROVIDERS {
+            return Err(ClockProviderRegistryError::ProviderLimit {
+                max: MAX_CLOCK_PROVIDERS,
+            });
+        }
+        let owner_count = self.owner_counts.get(&owner).copied().unwrap_or(0);
+        if owner_count >= MAX_CLOCK_PROVIDERS_PER_OWNER {
+            return Err(ClockProviderRegistryError::OwnerProviderLimit {
+                owner,
+                max: MAX_CLOCK_PROVIDERS_PER_OWNER,
+            });
+        }
+        if let Some(existing) = &self.scene {
+            return Err(ClockProviderRegistryError::DuplicateScene {
+                existing_owner: existing.owner.clone(),
+                requested_owner: owner,
+            });
+        }
+        self.scene = Some(SceneClockProviderEntry {
+            owner: owner.clone(),
+            provider,
+        });
+        self.owner_counts.insert(owner, owner_count + 1);
+        Ok(())
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len() + usize::from(self.scene.is_some())
+    }
+
     pub(crate) fn freeze_for_owners_with_readiness(
         self,
         module_owners: &BTreeSet<OwnerId>,
@@ -258,17 +344,23 @@ impl ClockProviderRegistryBuilder {
         {
             return Err(ClockProviderRegistryError::UnknownOwner { key: key.clone() });
         }
+        if let Some(scene) = &self.scene
+            && !module_owners.contains(&scene.owner)
+        {
+            return Err(ClockProviderRegistryError::UnknownSceneOwner {
+                owner: scene.owner.clone(),
+            });
+        }
         let fingerprint = DefinitionDigest::for_canonical_value(
-            "clock_provider_registry.v1",
-            &serde_json::Value::Array(
-                self.entries
-                    .keys()
-                    .map(|key| serde_json::json!(key))
-                    .collect(),
-            ),
+            "clock_provider_registry.v2",
+            &serde_json::json!({
+                "registered": self.entries.keys().collect::<Vec<_>>(),
+                "scene_owner": self.scene.as_ref().map(|entry| &entry.owner),
+            }),
         )?;
         Ok(ClockProviderRegistry {
             entries: self.entries,
+            scene: self.scene,
             fingerprint,
             owner_readiness,
         })
@@ -278,6 +370,7 @@ impl ClockProviderRegistryBuilder {
 /// Frozen owner-stamped clock-provider table.
 pub struct ClockProviderRegistry {
     entries: BTreeMap<ClockProviderKey, ClockProviderEntry>,
+    scene: Option<SceneClockProviderEntry>,
     fingerprint: DefinitionDigest,
     owner_readiness: MechanicalOwnerReadiness,
 }
@@ -287,6 +380,10 @@ impl fmt::Debug for ClockProviderRegistry {
         formatter
             .debug_struct("ClockProviderRegistry")
             .field("keys", &self.entries.keys().collect::<Vec<_>>())
+            .field(
+                "scene_owner",
+                &self.scene.as_ref().map(|entry| &entry.owner),
+            )
             .field("fingerprint", &self.fingerprint)
             .finish()
     }
@@ -300,12 +397,12 @@ impl ClockProviderRegistry {
 
     #[must_use]
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.entries.len() + usize::from(self.scene.is_some())
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.entries.is_empty() && self.scene.is_none()
     }
 
     pub(crate) fn read(
@@ -342,6 +439,42 @@ impl ClockProviderRegistry {
             at,
         })
     }
+
+    pub(crate) fn read_scene(
+        &self,
+        world: &World,
+        action_state: &ActionStateStore,
+        clock: &ClockRef,
+    ) -> Result<ClockStamp, ClockReadError> {
+        let ClockRef::SceneTurn { scene, generation } = clock else {
+            return Err(ClockReadError::UnsupportedClock {
+                clock: clock.clone(),
+            });
+        };
+        if *generation == 0 {
+            return Err(ClockReadError::ZeroGeneration {
+                clock: clock.clone(),
+            });
+        }
+        let entry = self
+            .scene
+            .as_ref()
+            .ok_or(ClockReadError::SceneProviderMissing)?;
+        self.owner_readiness.require_ready(&entry.owner)?;
+        let context = ClockProviderContext::new(world, action_state);
+        let at = entry
+            .provider
+            .now(&context, *scene, *generation)
+            .map_err(|source| ClockReadError::SceneProvider {
+                owner: entry.owner.clone(),
+                source,
+            })?;
+        self.owner_readiness.require_ready(&entry.owner)?;
+        Ok(ClockStamp {
+            clock: clock.clone(),
+            at,
+        })
+    }
 }
 
 /// Composition failure for the registered clock table.
@@ -353,8 +486,17 @@ pub enum ClockProviderRegistryError {
     OwnerProviderLimit { owner: OwnerId, max: usize },
     #[error("clock provider is registered more than once: {key:?}")]
     Duplicate { key: ClockProviderKey },
+    #[error(
+        "scene clock provider is already owned by {existing_owner}; {requested_owner} cannot replace it"
+    )]
+    DuplicateScene {
+        existing_owner: OwnerId,
+        requested_owner: OwnerId,
+    },
     #[error("clock provider names an uncomposed owner: {key:?}")]
     UnknownOwner { key: ClockProviderKey },
+    #[error("scene clock provider names an uncomposed owner: {owner}")]
+    UnknownSceneOwner { owner: OwnerId },
     #[error("clock provider registry fingerprint is not canonical: {0}")]
     Fingerprint(#[from] CanonicalEncodingError),
 }
@@ -370,6 +512,13 @@ pub enum ClockReadError {
     ZeroGeneration { clock: ClockRef },
     #[error("no provider is registered for {key:?}")]
     ProviderMissing { key: ClockProviderKey },
+    #[error("no first-class scene clock provider is registered")]
+    SceneProviderMissing,
+    #[error("scene clock provider owned by {owner} failed: {source}")]
+    SceneProvider {
+        owner: OwnerId,
+        source: ClockProviderFailure,
+    },
     #[error("clock provider {key:?} failed: {source}")]
     Provider {
         key: ClockProviderKey,

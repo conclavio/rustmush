@@ -144,7 +144,7 @@ pub use clock::{
 pub use clock_provider::{
     ClockProvider, ClockProviderContext, ClockProviderFailure, ClockProviderKey, ClockProviderKind,
     ClockProviderRegistry, ClockProviderRegistryBuilder, ClockProviderRegistryError,
-    ClockReadError, MAX_CLOCK_PROVIDERS, MAX_CLOCK_PROVIDERS_PER_OWNER,
+    ClockReadError, MAX_CLOCK_PROVIDERS, MAX_CLOCK_PROVIDERS_PER_OWNER, SceneClockProvider,
 };
 pub use cmd::{
     AliasOutcome, AliasStage, ArgShape, CmdError, CommandFallback, CommandGate, CommandHandler,

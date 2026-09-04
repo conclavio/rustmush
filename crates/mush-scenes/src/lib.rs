@@ -46,15 +46,16 @@ use mush_core::module::{
 };
 use mush_core::output::display_name;
 use mush_core::{
-    CommandGate, Ctx, ModuleOp, ObjId, ObjKind, Registry, Role, SceneClass, World, is_log_key,
-    perm, scan_contiguity,
+    ClockProviderContext, ClockProviderFailure, CommandGate, Ctx, Migration, ModuleOp, ObjId,
+    ObjKind, Registry, Role, SceneClass, SceneClockProvider, World, is_log_key, perm,
+    scan_contiguity,
 };
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
 use smol_str::SmolStr;
 
 pub use data::{
-    KIND_TIMESTOP, NS, PauseReason, SceneEvent, SceneEventKind, SceneMode, SceneRecord,
-    SceneStatus, SceneUid, ScenesState, scene_key,
+    KIND_TIMESTOP, NS, PauseReason, SceneAdvanceError, SceneEvent, SceneEventKind, SceneMode,
+    SceneRecord, SceneStatus, SceneUid, ScenesState, scene_key,
 };
 
 use data::{META_KEY, persist_scene};
@@ -89,6 +90,22 @@ impl GameModule for ScenesModule {
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.state(ScenesState::default());
+        reg.scene_clock_provider(DurableSceneClock)?;
+        reg.migrations(
+            NS,
+            vec![
+                Migration {
+                    version: 1,
+                    description: "initial durable scene records".into(),
+                    apply: Arc::new(|_key, value| Ok(value)),
+                },
+                Migration {
+                    version: 2,
+                    description: "version scene clock anchors and turn cursors".into(),
+                    apply: Arc::new(migrate_scene_clock_v2),
+                },
+            ],
+        )?;
         reg.hook(HookPoint::MoveAttempt, Arc::new(TimestopMoveGate));
         reg.subscribe(WorldEventKind::ObjDestroyed, Arc::new(on_obj_destroyed));
         // The event log: IC narrative and room join/leave inside an active
@@ -119,6 +136,90 @@ impl GameModule for ScenesModule {
     ) -> Result<(), ModError> {
         load_boot(ctx, data)
     }
+}
+
+/// Adapter from the durable scene module state to the kernel's first-class
+/// `SceneTurn` clock namespace.
+struct DurableSceneClock;
+
+impl SceneClockProvider for DurableSceneClock {
+    fn now(
+        &self,
+        context: &ClockProviderContext<'_>,
+        scene: u64,
+        generation: u64,
+    ) -> Result<i64, ClockProviderFailure> {
+        let state = context
+            .module_state::<ScenesState>()
+            .ok_or(ClockProviderFailure::Integrity)?;
+        let record = state
+            .scenes
+            .get(&SceneUid(scene))
+            .ok_or(ClockProviderFailure::Integrity)?;
+        if record.mode != data::SceneMode::TurnBased || record.validate_clock().is_err() {
+            return Err(ClockProviderFailure::Integrity);
+        }
+        if generation != record.clock_generation {
+            return Err(ClockProviderFailure::StaleGeneration {
+                requested: generation,
+                current: record.clock_generation,
+            });
+        }
+        Ok(record.turn)
+    }
+}
+
+fn migrate_scene_clock_v2(
+    key: &str,
+    mut value: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    if !key.starts_with("scene:") {
+        return Ok(value);
+    }
+    let record = value
+        .as_object_mut()
+        .ok_or_else(|| "scene document must be an object".to_owned())?;
+    let anchor = record
+        .get_mut("ic_started_at")
+        .ok_or_else(|| "scene document is missing ic_started_at".to_owned())?;
+    if let Some(at) = anchor.as_i64() {
+        *anchor = serde_json::json!({
+            "clock": { "kind": "world_ic", "generation": 1 },
+            "at": at,
+        });
+    } else if !anchor.is_object() {
+        return Err("scene ic_started_at has an invalid shape".to_owned());
+    }
+    record
+        .entry("clock_generation")
+        .or_insert_with(|| serde_json::json!(1));
+    if !record.contains_key("turn") {
+        // No SceneTurn stamp existed before v2. Establish its initial cursor
+        // from the old current round/seat without claiming historical turns
+        // across membership changes.
+        let round = record
+            .get("round")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| "scene document has no valid round".to_owned())?;
+        let turn_index = record
+            .get("turn_index")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| "scene document has no valid turn_index".to_owned())?;
+        let participants = record
+            .get("participants")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| "scene document has no valid participants".to_owned())?;
+        let seats = u64::try_from(participants.len())
+            .map_err(|_| "scene participant count is not representable".to_owned())?;
+        let prior_rounds = round.saturating_sub(1);
+        let turn = prior_rounds
+            .checked_mul(seats)
+            .and_then(|base| base.checked_add(turn_index))
+            .and_then(|value| i64::try_from(value).ok())
+            .ok_or_else(|| "scene turn cursor overflowed during migration".to_owned())?;
+        record.insert("turn".to_owned(), serde_json::json!(turn));
+    }
+    Ok(value)
 }
 
 /// The [`HookPoint::MoveAttempt`] veto: a member of a non-closed **exclusive**
@@ -601,6 +702,11 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
                     rec.id
                 )));
             }
+            rec.validate_clock().map_err(|error| {
+                ModError::msg(format!(
+                    "scenes: invalid clock in scene doc {key:?}: {error}"
+                ))
+            })?;
             // Freeze rehydrated live scenes: a restart pauses them (turns never
             // auto-advance across a restart). A Closed scene stays history.
             if matches!(rec.status, SceneStatus::Active | SceneStatus::Paused) {
@@ -686,4 +792,32 @@ fn load_boot(ctx: &mut ModuleCtx<'_>, data: ModuleBootData) -> Result<(), ModErr
         persist_scene(ctx.out, s);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod clock_migration_tests {
+    use super::*;
+
+    #[test]
+    fn v2_migration_versions_the_world_anchor_and_establishes_a_turn_cursor() {
+        let migrated = migrate_scene_clock_v2(
+            "scene:7",
+            serde_json::json!({
+                "ic_started_at": 1234,
+                "round": 3,
+                "turn_index": 1,
+                "participants": [2, 3, 4],
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            migrated["ic_started_at"],
+            serde_json::json!({
+                "clock": { "kind": "world_ic", "generation": 1 },
+                "at": 1234,
+            })
+        );
+        assert_eq!(migrated["clock_generation"], 1);
+        assert_eq!(migrated["turn"], 7);
+    }
 }

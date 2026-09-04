@@ -44,8 +44,10 @@ particular campaign economy.
   preflight; the kernel re-evaluates and advances the exact cursor in the provider transaction.
   The production world loop drives one candidate at a time through the K3 coordinator, preserving
   legacy/retained predecessors, retrying transient failures, and rebasing retired server
-  idempotency epochs without confusing them with gameplay schedule generations. E7 can register a
-  production schedule source directly; the scene-clock adapter is still outstanding.
+  idempotency epochs without confusing them with gameplay schedule generations. `mush-scenes`
+  supplies the single composition-owned `SceneTurn` adapter over a persisted generation and
+  monotonic cursor, while each scene's fictional-time floor retains its exact world-IC generation.
+  E7 can register a production schedule source directly.
 - **K5a station channel grants:** one
   `ChannelGrant { actor, subject, owner, station, channels, priority, epoch }` per occupied station.
   Channel and priority are selected from the same grant; no cross-seat union/max promotion. Exact

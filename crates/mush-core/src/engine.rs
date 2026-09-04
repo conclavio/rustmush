@@ -643,11 +643,11 @@ impl Engine {
                 }
                 Ok(current)
             }
-            crate::clock::ClockRef::SceneTurn { .. } => {
-                Err(crate::clock_provider::ClockReadError::UnsupportedClock {
-                    clock: clock.clone(),
-                })
-            }
+            crate::clock::ClockRef::SceneTurn { .. } => self
+                .registry
+                .clock_providers()
+                .ok_or(crate::clock_provider::ClockReadError::RegistryUnavailable)?
+                .read_scene(&self.world, &self.action_state, clock),
             crate::clock::ClockRef::DomainTick { .. }
             | crate::clock::ClockRef::Registered { .. } => self
                 .registry

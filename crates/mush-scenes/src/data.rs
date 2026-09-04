@@ -18,7 +18,7 @@
 
 use std::collections::BTreeSet;
 
-use mush_core::{Deferred, Ledger, ModuleOp, ModuleWrite, ObjId, Outbox};
+use mush_core::{ClockRef, ClockStamp, Deferred, Ledger, ModuleOp, ModuleWrite, ObjId, Outbox};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use std::collections::BTreeMap;
@@ -35,6 +35,10 @@ pub const KIND_TIMESTOP: &str = "timestop";
 /// Default IC seconds per turn-based round (a WoD combat turn is ~3 IC
 /// seconds; rulesets can override per scene later).
 pub const DEFAULT_ROUND_SECONDS: u32 = 3;
+
+const fn initial_scene_clock_generation() -> u64 {
+    1
+}
 
 /// A durable scene id: a monotonic per-world counter, **never reused** (the
 /// allocator resume point persists in the meta doc, exactly like faction ids).
@@ -138,10 +142,18 @@ pub struct SceneRecord {
     pub created_by: ObjId,
     /// Wall-clock creation time (unix seconds).
     pub created_at: i64,
-    /// The IC timestamp captured at scene start — the base of the scene-local
-    /// clock. The global IC clock keeps running for the rest of the world;
-    /// inside the scene, time is `ic_started_at + (round-1) * round_seconds`.
-    pub ic_started_at: i64,
+    /// Exact versioned world-IC stamp captured at scene start — the floor of
+    /// scene-local fictional time. A later world rate change cannot
+    /// reinterpret where this scene began.
+    pub ic_started_at: ClockStamp,
+    /// Generation of the scene-local turn clock. Scene ids are never reused;
+    /// generation one therefore lasts for the record's lifetime unless a
+    /// future explicit re-clock operation opens a successor generation.
+    #[serde(default = "initial_scene_clock_generation")]
+    pub clock_generation: u64,
+    /// Monotonic count of successful turn advances, starting at zero.
+    #[serde(default)]
+    pub turn: i64,
     /// IC seconds per round.
     pub round_seconds: u32,
     /// Current round, 1-based (0 while Preparing).
@@ -174,7 +186,58 @@ impl SceneRecord {
     #[must_use]
     pub fn scene_ic_time(&self) -> i64 {
         let rounds_elapsed = i64::from(self.round.saturating_sub(1));
-        self.ic_started_at + rounds_elapsed * i64::from(self.round_seconds)
+        self.ic_started_at
+            .at
+            .saturating_add(rounds_elapsed.saturating_mul(i64::from(self.round_seconds)))
+    }
+
+    /// Checked form used by boot validation and mechanical clock adapters.
+    #[must_use]
+    pub fn checked_scene_ic_time(&self) -> Option<i64> {
+        let rounds_elapsed = i64::from(self.round.saturating_sub(1));
+        rounds_elapsed
+            .checked_mul(i64::from(self.round_seconds))
+            .and_then(|elapsed| self.ic_started_at.at.checked_add(elapsed))
+    }
+
+    /// Exact typed stamp for the current scene turn.
+    #[must_use]
+    pub fn scene_turn_stamp(&self) -> ClockStamp {
+        ClockStamp {
+            clock: ClockRef::SceneTurn {
+                scene: self.id.0,
+                generation: self.clock_generation,
+            },
+            at: self.turn,
+        }
+    }
+
+    /// Validate the durable clock and cursor shape before it becomes live.
+    pub fn validate_clock(&self) -> Result<(), &'static str> {
+        if self.clock_generation == 0 {
+            return Err("scene clock generation zero is reserved");
+        }
+        if self.turn < 0 {
+            return Err("scene turn cannot be negative");
+        }
+        if !matches!(
+            self.ic_started_at.clock,
+            ClockRef::WorldIc { generation } if generation != 0
+        ) {
+            return Err("scene IC floor must name a nonzero world-IC generation");
+        }
+        if self.round_seconds == 0 {
+            return Err("scene round duration must be positive");
+        }
+        if (self.participants.is_empty() && self.turn_index != 0)
+            || (!self.participants.is_empty() && self.turn_index >= self.participants.len())
+        {
+            return Err("scene turn index is outside its participant order");
+        }
+        if self.checked_scene_ic_time().is_none() {
+            return Err("scene IC clock arithmetic overflowed");
+        }
+        Ok(())
     }
 
     /// Remove `obj` from the scene (participant or observer), keeping the turn
@@ -201,18 +264,54 @@ impl SceneRecord {
     /// Advance to the next participant's turn; wrapping past the last starts a
     /// new round. No-op for an empty participant list. Returns the new
     /// `(round, current_actor)`.
-    pub fn advance_turn(&mut self) -> (u32, Option<ObjId>) {
+    pub fn advance_turn(&mut self) -> Result<(u32, Option<ObjId>), SceneAdvanceError> {
         if self.participants.is_empty() {
-            return (self.round, None);
+            return Ok((self.round, None));
         }
-        self.turn_index += 1;
-        if self.turn_index >= self.participants.len() {
-            self.turn_index = 0;
-            self.round += 1;
-        }
-        (self.round, self.current_actor())
+        let turn = self
+            .turn
+            .checked_add(1)
+            .ok_or(SceneAdvanceError::TurnExhausted)?;
+        let next_index = self
+            .turn_index
+            .checked_add(1)
+            .ok_or(SceneAdvanceError::TurnIndexExhausted)?;
+        let (turn_index, round) = if next_index >= self.participants.len() {
+            (
+                0,
+                self.round
+                    .checked_add(1)
+                    .ok_or(SceneAdvanceError::RoundExhausted)?,
+            )
+        } else {
+            (next_index, self.round)
+        };
+        self.turn = turn;
+        self.turn_index = turn_index;
+        self.round = round;
+        Ok((self.round, self.current_actor()))
     }
 }
+
+/// A scene turn counter reached its fixed durable representation limit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SceneAdvanceError {
+    TurnExhausted,
+    TurnIndexExhausted,
+    RoundExhausted,
+}
+
+impl std::fmt::Display for SceneAdvanceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TurnExhausted => formatter.write_str("scene turn counter is exhausted"),
+            Self::TurnIndexExhausted => formatter.write_str("scene turn index is exhausted"),
+            Self::RoundExhausted => formatter.write_str("scene round counter is exhausted"),
+        }
+    }
+}
+
+impl std::error::Error for SceneAdvanceError {}
 
 /// What kind of thing one [`SceneEvent`] records. Cut 1 records the scene's
 /// **structural** timeline (lifecycle + turns) plus **IC narrative** (speech
@@ -425,7 +524,12 @@ mod tests {
             facilitator: ObjId(1),
             created_by: ObjId(1),
             created_at: 1000,
-            ic_started_at: 500,
+            ic_started_at: ClockStamp {
+                clock: ClockRef::WorldIc { generation: 1 },
+                at: 500,
+            },
+            clock_generation: 1,
+            turn: 0,
             round_seconds: DEFAULT_ROUND_SECONDS,
             round: 1,
             turn_index: 0,
@@ -437,11 +541,12 @@ mod tests {
     fn turn_advance_wraps_and_bumps_the_round() {
         let mut s = scene(vec![2, 3, 4]);
         assert_eq!(s.current_actor(), Some(ObjId(2)));
-        assert_eq!(s.advance_turn(), (1, Some(ObjId(3))));
-        assert_eq!(s.advance_turn(), (1, Some(ObjId(4))));
+        assert_eq!(s.advance_turn().unwrap(), (1, Some(ObjId(3))));
+        assert_eq!(s.advance_turn().unwrap(), (1, Some(ObjId(4))));
         // Wrapping past the last participant starts round 2 at the first.
-        assert_eq!(s.advance_turn(), (2, Some(ObjId(2))));
+        assert_eq!(s.advance_turn().unwrap(), (2, Some(ObjId(2))));
         assert_eq!(s.turn_index, 0);
+        assert_eq!(s.turn, 3);
     }
 
     #[test]
@@ -449,12 +554,12 @@ mod tests {
         let mut s = scene(vec![2, 3]);
         // Round 1: the frozen start.
         assert_eq!(s.scene_ic_time(), 500);
-        s.advance_turn(); // still round 1 (2 -> 3)
+        s.advance_turn().unwrap(); // still round 1 (2 -> 3)
         assert_eq!(s.scene_ic_time(), 500);
-        s.advance_turn(); // round 2
+        s.advance_turn().unwrap(); // round 2
         assert_eq!(s.scene_ic_time(), 500 + i64::from(DEFAULT_ROUND_SECONDS));
-        s.advance_turn(); // round 2 (2 -> 3)
-        s.advance_turn(); // round 3
+        s.advance_turn().unwrap(); // round 2 (2 -> 3)
+        s.advance_turn().unwrap(); // round 3
         assert_eq!(
             s.scene_ic_time(),
             500 + 2 * i64::from(DEFAULT_ROUND_SECONDS)
@@ -487,7 +592,7 @@ mod tests {
     #[test]
     fn advance_on_empty_participants_is_a_noop() {
         let mut s = scene(vec![]);
-        assert_eq!(s.advance_turn(), (1, None));
+        assert_eq!(s.advance_turn().unwrap(), (1, None));
         assert_eq!(s.round, 1);
     }
 }
