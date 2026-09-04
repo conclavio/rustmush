@@ -433,8 +433,13 @@ Actions do not mutate the world from the LLM task: they are sent as `WorldComman
 
 Three layers, cheapest first:
 
-1. **Rolling buffer** (in-memory, per NPC): last ~50 room events, token-capped (~1.5k). Lost on restart — acceptable.
-2. **Conversation summary** (persisted attribute `agent.memory.summary`): when the buffer overflows, a `NpcSummarize` call (cheap route) folds the oldest half into the summary ("Earlier tonight: haggled with Alice over a focusing crystal; refused to discuss the cellar."). Same mechanism at server shutdown.
+1. **Rolling buffer** (in-memory, per NPC): last ~50 room events, token-capped (~1.5k),
+   with a 100-event emergency ceiling, 1,024-character sanitizer cap, and 256 KiB
+   aggregate byte ceiling. Lost on restart — acceptable.
+2. **Conversation summary** (persisted attribute `agent.memory.summary`): when the buffer overflows,
+   a `NpcSummarize` call (cheap route) folds the oldest half into a sanitized, 4,000-character
+   summary ("Earlier tonight: haggled with Alice over a focusing crystal; refused to discuss the
+   cellar."). The world-loop completion boundary enforces the same limit again.
 3. **Long-term records** (module documents keyed by `(npc, canonical subject)`): written by the
    `Remember` tool. Each subject retains at most 20 bounded notes; each NPC retains at most 256
    subjects, evicting the least recently updated with a stable subject tie-break and durably

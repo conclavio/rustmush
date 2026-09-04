@@ -23,6 +23,16 @@ use smol_str::SmolStr;
 /// summarize turn is triggered (design 03 §6.5: ~50, token-capped).
 pub const BUFFER_CAP: usize = 50;
 
+/// Maximum characters retained from one script-formatted recent event. The
+/// sanitizer also strips controls and collapses it to one line.
+pub const MAX_MEMORY_EVENT_CHARS: usize = 1024;
+
+/// Maximum UTF-8 bytes retained across one NPC's recent event buffer.
+pub const MAX_MEMORY_BUFFER_BYTES: usize = 256 * 1024;
+
+/// Maximum characters in the persisted rolling summary.
+pub const MAX_MEMORY_SUMMARY_CHARS: usize = 4_000;
+
 /// Maximum distinct durable memory subjects retained for one NPC.
 pub const MAX_MEMORY_SUBJECTS_PER_NPC: usize = 256;
 
@@ -70,15 +80,25 @@ pub const HARD_CAP: usize = BUFFER_CAP * 2;
 
 impl MemoryBuffer {
     /// Append an event, enforcing the hard RAM cap (oldest dropped past
-    /// [`HARD_CAP`]).
+    /// [`HARD_CAP`]) and the aggregate byte ceiling.
     pub fn push(&mut self, ts: i64, text: impl Into<String>) {
-        self.events.push(MemoryEvent {
-            ts,
-            text: text.into(),
-        });
+        let text = crate::action::sanitize_line(&text.into(), MAX_MEMORY_EVENT_CHARS);
+        if text.is_empty() {
+            return;
+        }
+        self.events.push(MemoryEvent { ts, text });
         if self.events.len() > HARD_CAP {
             let overflow = self.events.len() - HARD_CAP;
             self.events.drain(..overflow);
+        }
+        while self
+            .events
+            .iter()
+            .map(|event| event.text.len())
+            .sum::<usize>()
+            > MAX_MEMORY_BUFFER_BYTES
+        {
+            self.events.remove(0);
         }
     }
 
@@ -383,6 +403,29 @@ mod tests {
             format!("event {}", HARD_CAP + 49)
         );
         assert!(!b.events.iter().any(|e| e.text == "event 0"));
+    }
+
+    #[test]
+    fn push_enforces_per_event_and_aggregate_byte_bounds() {
+        let mut buffer = MemoryBuffer::default();
+        let large = "é".repeat(MAX_MEMORY_EVENT_CHARS * 2);
+        for ts in 0..HARD_CAP as i64 {
+            buffer.push(ts, &large);
+        }
+        assert!(
+            buffer
+                .events
+                .iter()
+                .all(|event| event.text.chars().count() <= MAX_MEMORY_EVENT_CHARS + 1)
+        );
+        assert!(
+            buffer
+                .events
+                .iter()
+                .map(|event| event.text.len())
+                .sum::<usize>()
+                <= MAX_MEMORY_BUFFER_BYTES
+        );
     }
 
     #[test]

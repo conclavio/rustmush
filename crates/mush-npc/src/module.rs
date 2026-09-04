@@ -29,7 +29,7 @@ use crate::knowledge::{
     MAX_RESOLVED_LORE_BYTES, MAX_RESOLVED_LORE_ENTRIES, NpcKnowledge, Secrecy, familiarity_of,
     pool_key, validate_lore_tag,
 };
-use crate::memory::{MAX_MEMORY_SUBJECT_BYTES, MemoryRecord, record_key};
+use crate::memory::{MAX_MEMORY_SUBJECT_BYTES, MAX_MEMORY_SUMMARY_CHARS, MemoryRecord, record_key};
 use crate::profile::{AgentProfile, NS, PROFILE_ATTR, SUMMARY_ATTR, THINKING_FEED};
 use crate::runtime::NpcHostState;
 use crate::snapshot::{
@@ -1056,6 +1056,7 @@ impl AsyncCompletion for NpcCompletion {
                 notify_staff_once(ctx, npc, &reason);
             }
             TurnOutcome::Summary { summary, .. } => {
+                let summary = crate::action::sanitize_line(&summary, MAX_MEMORY_SUMMARY_CHARS);
                 let _ = ctx.w.set_attr(npc, SUMMARY_ATTR, Attr::text(&summary, npc));
                 if let Some(h) = ctx.state_mut::<NpcHostState>() {
                     h.runtime_mut(npc).memory.summary = summary;
@@ -2519,10 +2520,12 @@ fn read_profile_raw(w: &World, npc: ObjId) -> Option<AgentProfile> {
 }
 
 fn read_summary(w: &World, npc: ObjId) -> String {
-    w.attr(npc, SUMMARY_ATTR)
+    let summary = w
+        .attr(npc, SUMMARY_ATTR)
         .and_then(|a| a.as_text())
         .unwrap_or_default()
-        .to_string()
+        .to_string();
+    crate::action::sanitize_line(&summary, MAX_MEMORY_SUMMARY_CHARS)
 }
 
 fn enabled_npc(w: &World, npc: ObjId) -> bool {

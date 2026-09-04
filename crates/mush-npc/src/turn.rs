@@ -293,7 +293,8 @@ async fn run_summarize(llm: &LlmService, snap: &TurnSnapshot) -> TurnOutcome {
     };
     match llm.call(ctx, req).await {
         Ok(resp) => {
-            let summary = crate::action::sanitize_line(&resp.text(), 4000);
+            let summary =
+                crate::action::sanitize_line(&resp.text(), crate::memory::MAX_MEMORY_SUMMARY_CHARS);
             let summary = if summary.trim().is_empty() {
                 snap.summary.clone()
             } else {
