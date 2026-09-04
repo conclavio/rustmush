@@ -60,12 +60,13 @@ pub use io::{
 };
 pub use link::{ConnectionAdmission, GatewayLink, InputSend};
 pub use protocol::{
-    AttachRec, ControlMsg, CreatePlayerError, DetachCause, GatewayInput, GatewayInputSizeError,
-    GatewayRequest, GatewayRequestDisposition, IPC_VERSION, MAX_GATEWAY_INPUT_BYTES,
-    MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES_PER_CONNECTION,
-    MAX_IN_FLIGHT_GATEWAY_INPUTS, MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION,
-    MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, MAX_IN_FLIGHT_SERVICE_REQUESTS, ServiceReq, ServiceResp,
-    ToGateway, ToServer, WireInbound, WireInboundError,
+    AttachRec, ControlMsg, CreatePlayerError, DetachCause, GatewayAction, GatewayInput,
+    GatewayInputSizeError, GatewayRequest, GatewayRequestDisposition, IPC_VERSION,
+    MAX_GATEWAY_INPUT_BYTES, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES,
+    MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES_PER_CONNECTION, MAX_IN_FLIGHT_GATEWAY_INPUTS,
+    MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
+    MAX_IN_FLIGHT_SERVICE_REQUESTS, ServiceReq, ServiceResp, ToGateway, ToServer, WireInbound,
+    WireInboundError,
 };
 pub use target::SendTarget;
 

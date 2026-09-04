@@ -804,6 +804,7 @@ impl SocketGatewayLink {
     fn is_input_exempt(&self, input: &GatewayInput) -> bool {
         let actor = match input {
             GatewayInput::Cmd { actor, .. } | GatewayInput::Query { actor, .. } => *actor,
+            GatewayInput::Action(action) => action.actor,
         };
         self.sessions.is_char_flood_exempt(char_key(actor))
     }
@@ -883,7 +884,11 @@ impl SocketGatewayLink {
         } else {
             self.to_server_cap
         };
-        let is_cmd = matches!(&input, GatewayInput::Cmd { .. });
+        let input_kind = match &input {
+            GatewayInput::Cmd { .. } => "cmd",
+            GatewayInput::Query { .. } => "query",
+            GatewayInput::Action(_) => "action",
+        };
         if depth >= input_cap as u64 {
             self.metrics.ipc_frame_shed();
             self.metrics.observe_ipc_to_server_depth(depth);
@@ -893,7 +898,7 @@ impl SocketGatewayLink {
                 cap = input_cap,
                 input_context = exempt,
                 dropped_total = self.metrics.ipc_frames_shed_total(),
-                kind = if is_cmd { "cmd" } else { "query" },
+                kind = input_kind,
                 "ipc queue full; shedding input frame"
             );
             return InputSend::Shed;
@@ -916,7 +921,7 @@ impl SocketGatewayLink {
                     request = %uid,
                     ?admission,
                     conn = request.input.conn(),
-                    kind = if is_cmd { "cmd" } else { "query" },
+                    kind = input_kind,
                     "gateway input custody refused request"
                 );
             }

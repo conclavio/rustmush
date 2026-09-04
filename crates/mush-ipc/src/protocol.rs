@@ -6,7 +6,10 @@
 //! `ConnectionReady`/`Barrier`) become correlated [`ServiceReq`]/[`ServiceResp`]
 //! pairs matched by a `u64` request id.
 
-use mush_core::{CanonicalHash, CommitToken, DisconnectKind, Inbound, ObjId, RequestUid};
+use mush_core::{
+    ActionOfferId, CanonicalHash, CommitToken, DefinitionRef, DisconnectKind, Inbound, ObjId,
+    PerceivedRef, RequestUid,
+};
 use mush_proto::OutputEvent;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -158,6 +161,38 @@ pub enum GatewayInput {
         /// Handler-defined parameters.
         args: serde_json::Value,
     },
+    /// A structured action invocation for the authoritative coordinator.
+    ///
+    /// The connection/actor pair is transport evidence only: for a new request
+    /// the server verifies it against the live connection map and constructs
+    /// the authenticated principal itself. An exact existing durable binding
+    /// may settle a replay after that original connection disappears. `action`
+    /// is an exact mechanics definition. No public gateway interface produces this arm before K5's
+    /// legal-offer verification lands; doing so would bypass the still-open
+    /// offer-binding gate. K5 can become its producer without changing the
+    /// custody protocol.
+    Action(Box<GatewayAction>),
+}
+
+/// Structured payload for [`GatewayInput::Action`]. Boxed in the parent enum
+/// so adding bounded semantic metadata does not make every ordinary line/query
+/// frame carry the action variant's stack footprint.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GatewayAction {
+    /// The physical connection that submitted the action.
+    pub conn: u64,
+    /// The actor asserted by the gateway and revalidated by the server.
+    pub actor: ObjId,
+    /// Exact action definition selected by the projected offer.
+    pub action: DefinitionRef,
+    /// Opaque offer identity echoed into the semantic invocation.
+    pub offered_action: ActionOfferId,
+    /// Perceived subject reference, never an unrestricted truth lookup.
+    pub subject: PerceivedRef,
+    /// Bounded perceived target references.
+    pub targets: Vec<PerceivedRef>,
+    /// Provider-defined canonical parameters.
+    pub parameters: serde_json::Value,
 }
 
 impl GatewayInput {
@@ -166,6 +201,7 @@ impl GatewayInput {
     pub const fn conn(&self) -> u64 {
         match self {
             Self::Cmd { conn, .. } | Self::Query { conn, .. } => *conn,
+            Self::Action(action) => action.conn,
         }
     }
 
@@ -183,6 +219,17 @@ impl GatewayInput {
                 24_usize
                     .saturating_add(name.len())
                     .saturating_add(args.len())
+            }
+            Self::Action(action) => {
+                let payload = serde_json::to_vec(&serde_json::json!({
+                    "action": action.action,
+                    "offered_action": action.offered_action,
+                    "subject": action.subject,
+                    "targets": action.targets,
+                    "parameters": action.parameters,
+                }))
+                .map_err(|error| GatewayInputSizeError::InvalidJson(error.to_string()))?;
+                16_usize.saturating_add(payload.len())
             }
         };
         if bytes > MAX_GATEWAY_INPUT_BYTES {
@@ -212,6 +259,9 @@ impl From<GatewayInput> for Inbound {
                 name,
                 args,
             },
+            GatewayInput::Action(_) => {
+                unreachable!("authoritative actions enter through the coordinator, not Inbound")
+            }
         }
     }
 }

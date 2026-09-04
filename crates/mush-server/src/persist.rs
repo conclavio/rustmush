@@ -44,8 +44,8 @@ use mush_config::metrics::Metrics;
 use mush_core::{AuthoritativeBundle, CommitToken, ObjId, World};
 use mush_store::{
     AuthoritativeReceipt, AuthoritativeRetentionUsage, AuthoritativeStore, BundleStatus,
-    MAX_AUTHORITATIVE_DISCOVERY_PAGE, MAX_RETAINED_AUTHORITATIVE_BYTES, ModuleOp, ModuleWrite,
-    ObjectStore, StoreError, WorldSnapshot, WriteBatch,
+    IntentReceipt, MAX_AUTHORITATIVE_DISCOVERY_PAGE, MAX_RETAINED_AUTHORITATIVE_BYTES, ModuleOp,
+    ModuleWrite, ObjectStore, StoreError, WorldSnapshot, WriteBatch,
 };
 use smol_str::SmolStr;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
@@ -476,6 +476,10 @@ pub enum StoreJob {
     /// immutable receipt or a typed refusal/integrity failure.
     Authoritative {
         bundle: Box<AuthoritativeBundle>,
+        /// Resolves at the request-ownership linearization point: only after
+        /// the exact immutable intent exists (or an exact finalized result was
+        /// rediscovered). This is deliberately separate from `notify`.
+        ownership: oneshot::Sender<Result<IntentReceipt, AuthoritativeCommitFailure>>,
         notify: oneshot::Sender<Result<AuthoritativeReceipt, AuthoritativeCommitFailure>>,
     },
     /// Trigger an ordinary background snapshot (`@dump`), ordered behind
@@ -868,17 +872,24 @@ async fn writer_loop(
                     let _ = notify.send(result);
                 }
             }
-            StoreJob::Authoritative { bundle, notify } => {
+            StoreJob::Authoritative {
+                bundle,
+                ownership,
+                notify,
+            } => {
                 let token = bundle.token();
                 let result = if let Some(reason) = &integrity_halt {
                     integrity.latch();
-                    Err(AuthoritativeCommitFailure::Integrity(format!(
+                    let failure = AuthoritativeCommitFailure::Integrity(format!(
                         "persistence integrity halted after an unresolved predecessor: {reason}"
-                    )))
+                    ));
+                    let _ = ownership.send(Err(failure.clone()));
+                    Err(failure)
                 } else {
                     let result = commit_authoritative_with_retry(
                         &*store,
                         *bundle,
+                        ownership,
                         &mut healthy,
                         &signals,
                         &quarantine_spool,
@@ -929,6 +940,7 @@ async fn writer_loop(
 async fn commit_authoritative_with_retry(
     store: &dyn ObjectStore,
     bundle: AuthoritativeBundle,
+    ownership: oneshot::Sender<Result<IntentReceipt, AuthoritativeCommitFailure>>,
     healthy: &mut bool,
     signals: &WriterSignalSender,
     quarantine_spool: &QuarantineSpool,
@@ -936,23 +948,28 @@ async fn commit_authoritative_with_retry(
     let token = bundle.token();
     let hash = bundle.bundle_hash();
     let mut delay = RETRY_INITIAL;
-    let authoritative = store.authoritative_store().ok_or_else(|| {
-        AuthoritativeCommitFailure::Integrity(
+    let Some(authoritative) = store.authoritative_store() else {
+        let failure = AuthoritativeCommitFailure::Integrity(
             "configured store has no K3 authoritative capability".to_owned(),
-        )
-    })?;
+        );
+        let _ = ownership.send(Err(failure.clone()));
+        return Err(failure);
+    };
     let mut deterministic_reconcile_attempts = 0u32;
+    let mut ownership = Some(ownership);
 
-    loop {
+    let intent = loop {
         match authoritative
             .reserve_authoritative_intent(bundle.clone())
             .await
         {
-            Ok(receipt) if receipt.token == token && receipt.bundle_hash == hash => break,
+            Ok(receipt) if receipt.token == token && receipt.bundle_hash == hash => break receipt,
             Ok(_) => {
-                return Err(AuthoritativeCommitFailure::Integrity(format!(
+                let failure = AuthoritativeCommitFailure::Integrity(format!(
                     "authoritative reservation returned a non-exact witness for {token}"
-                )));
+                ));
+                publish_ownership(&mut ownership, Err(failure.clone()));
+                return Err(failure);
             }
             Err(error) if error.is_transient() => {
                 mark_authoritative_transient(healthy, signals, token, &error);
@@ -965,20 +982,38 @@ async fn commit_authoritative_with_retry(
                     Ok(BundleStatus::Retired {
                         minimum_accepted_epoch,
                     }) => {
-                        return Err(AuthoritativeCommitFailure::Integrity(format!(
+                        let failure = AuthoritativeCommitFailure::Integrity(format!(
                             "authoritative reservation for {token} is below minimum epoch {minimum_accepted_epoch}"
-                        )));
+                        ));
+                        publish_ownership(&mut ownership, Err(failure.clone()));
+                        return Err(failure);
                     }
-                    Ok(BundleStatus::PendingExact) => break,
+                    Ok(BundleStatus::PendingExact) => {
+                        break IntentReceipt {
+                            token,
+                            bundle_hash: hash,
+                            resumed: true,
+                        };
+                    }
                     Ok(BundleStatus::QuarantinedExact(quarantine)) => {
-                        return Err(AuthoritativeCommitFailure::Integrity(format!(
+                        let failure = AuthoritativeCommitFailure::Integrity(format!(
                             "authoritative reservation for {token} reached quarantine evidence {}",
                             quarantine.evidence_hash()
-                        )));
+                        ));
+                        publish_ownership(&mut ownership, Err(failure.clone()));
+                        return Err(failure);
                     }
                     Ok(BundleStatus::FinalizedExact(receipt))
                         if receipt.token() == token && receipt.bundle_hash() == hash =>
                     {
+                        publish_ownership(
+                            &mut ownership,
+                            Ok(IntentReceipt {
+                                token,
+                                bundle_hash: hash,
+                                resumed: true,
+                            }),
+                        );
                         return checkpoint_finalized_with_retry(
                             authoritative,
                             &bundle,
@@ -991,9 +1026,11 @@ async fn commit_authoritative_with_retry(
                         .await;
                     }
                     Ok(BundleStatus::FinalizedExact(_)) => {
-                        return Err(AuthoritativeCommitFailure::Integrity(format!(
+                        let failure = AuthoritativeCommitFailure::Integrity(format!(
                             "authoritative status returned a non-exact finalized witness for {token}"
-                        )));
+                        ));
+                        publish_ownership(&mut ownership, Err(failure.clone()));
+                        return Err(failure);
                     }
                     Ok(BundleStatus::Absent)
                         if matches!(
@@ -1005,19 +1042,25 @@ async fn commit_authoritative_with_retry(
                         ) =>
                     {
                         mark_authoritative_recovered(healthy, signals, token);
-                        return Err(AuthoritativeCommitFailure::Refused(format!(
+                        let failure = AuthoritativeCommitFailure::Refused(format!(
                             "authoritative reservation refused before intent: {error}"
-                        )));
+                        ));
+                        publish_ownership(&mut ownership, Err(failure.clone()));
+                        return Err(failure);
                     }
                     Ok(BundleStatus::Absent) => {
-                        return Err(AuthoritativeCommitFailure::Integrity(format!(
+                        let failure = AuthoritativeCommitFailure::Integrity(format!(
                             "authoritative reservation failed without an intent: {error}"
-                        )));
+                        ));
+                        publish_ownership(&mut ownership, Err(failure.clone()));
+                        return Err(failure);
                     }
                     Ok(BundleStatus::Conflict { stored_bundle_hash }) => {
-                        return Err(AuthoritativeCommitFailure::Integrity(format!(
+                        let failure = AuthoritativeCommitFailure::Integrity(format!(
                             "authoritative token {token} conflicts with stored bundle {stored_bundle_hash}"
-                        )));
+                        ));
+                        publish_ownership(&mut ownership, Err(failure.clone()));
+                        return Err(failure);
                     }
                     Err(status_error) if status_error.is_transient() => {
                         mark_authoritative_transient(healthy, signals, token, &status_error);
@@ -1025,14 +1068,17 @@ async fn commit_authoritative_with_retry(
                         delay = (delay * 2).min(RETRY_MAX);
                     }
                     Err(status_error) => {
-                        return Err(AuthoritativeCommitFailure::Integrity(format!(
+                        let failure = AuthoritativeCommitFailure::Integrity(format!(
                             "cannot determine authoritative reservation state for {token}: {status_error}"
-                        )));
+                        ));
+                        publish_ownership(&mut ownership, Err(failure.clone()));
+                        return Err(failure);
                     }
                 }
             }
         }
-    }
+    };
+    publish_ownership(&mut ownership, Ok(intent));
 
     loop {
         match authoritative.reconcile_authoritative(token, hash).await {
@@ -1177,6 +1223,15 @@ async fn commit_authoritative_with_retry(
                 }
             },
         }
+    }
+}
+
+fn publish_ownership(
+    slot: &mut Option<oneshot::Sender<Result<IntentReceipt, AuthoritativeCommitFailure>>>,
+    result: Result<IntentReceipt, AuthoritativeCommitFailure>,
+) {
+    if let Some(sender) = slot.take() {
+        let _ = sender.send(result);
     }
 }
 
@@ -2347,11 +2402,13 @@ mod tests {
             "moving jobs into the order buffer must not release lane capacity"
         );
 
+        let (authoritative_ownership, _authoritative_owned) = oneshot::channel();
         let (authoritative_notify, _authoritative_receipt) = oneshot::channel();
         tokio::time::timeout(
             Duration::from_secs(1),
             writer.send(StoreJob::Authoritative {
                 bundle: Box::new(boot_recovery_bundle()),
+                ownership: authoritative_ownership,
                 notify: authoritative_notify,
             }),
         )
@@ -2541,11 +2598,21 @@ mod tests {
         let mut healthy = true;
 
         let spool = QuarantineSpool::in_memory();
-        let receipt =
-            commit_authoritative_with_retry(&store, bundle.clone(), &mut healthy, &signals, &spool)
-                .await
-                .unwrap();
+        let (ownership, owned) = oneshot::channel();
+        let receipt = commit_authoritative_with_retry(
+            &store,
+            bundle.clone(),
+            ownership,
+            &mut healthy,
+            &signals,
+            &spool,
+        )
+        .await
+        .unwrap();
 
+        let owned = owned.await.unwrap().unwrap();
+        assert_eq!(owned.token, bundle.token());
+        assert_eq!(owned.bundle_hash, bundle.bundle_hash());
         assert!(receipt.matches_bundle(&bundle));
         assert!(healthy);
         assert_eq!(
@@ -2600,10 +2667,18 @@ mod tests {
         let (signals, _signal_rx) = crate::world_task::writer_signal_channel();
         let mut healthy = true;
         let mut spool = QuarantineSpool::in_memory();
-        let error =
-            commit_authoritative_with_retry(&store, bundle.clone(), &mut healthy, &signals, &spool)
-                .await
-                .unwrap_err();
+        let (ownership, owned) = oneshot::channel();
+        let error = commit_authoritative_with_retry(
+            &store,
+            bundle.clone(),
+            ownership,
+            &mut healthy,
+            &signals,
+            &spool,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(owned.await.unwrap().unwrap().token, bundle.token());
 
         assert!(matches!(
             error,
@@ -2681,10 +2756,18 @@ mod tests {
         let mut spool = QuarantineSpool::open(&spool_path).unwrap();
         let (signals, _signal_rx) = crate::world_task::writer_signal_channel();
         let mut healthy = true;
-        let error =
-            commit_authoritative_with_retry(&store, bundle.clone(), &mut healthy, &signals, &spool)
-                .await
-                .unwrap_err();
+        let (ownership, owned) = oneshot::channel();
+        let error = commit_authoritative_with_retry(
+            &store,
+            bundle.clone(),
+            ownership,
+            &mut healthy,
+            &signals,
+            &spool,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(owned.await.unwrap().unwrap().token, bundle.token());
         assert!(matches!(error, AuthoritativeCommitFailure::Integrity(_)));
         assert!(matches!(
             store
