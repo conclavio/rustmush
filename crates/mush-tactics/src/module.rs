@@ -32,16 +32,20 @@ use mush_core::module::{
 };
 use mush_core::output::display_name;
 use mush_core::{
-    ActionError, ActionErrorCode, ActionInvocation, ActionProvider, ActionStateError, ActionTxn,
-    ArgShape, Audience, AuthoritativeActionOutput, BehaviorBinding, BehaviorId, BehaviorSpec,
-    CanonicalId, CmdError, CommandSpec, Ctx, Deferred, DefinitionDescriptor, DefinitionDigest,
-    DefinitionId, DefinitionKind, DefinitionLookupError, DefinitionMigrationDescriptor,
-    DefinitionRef, DefinitionValidationContext, DestroyGate, DetachGate, Flags, IncidentId,
-    IncidentState, MAX_BOOT_REPORT_DETAILS, MechanicalState, MigrationPlanSummary,
-    ModuleBootReport, ModuleOp, ModuleWrite, ObjId, ObjKind, Outbox, OwnerId, PanelFeedHandle,
-    PerceivedRef, Powers, RecoveryIncident, RecoveryReason, RecoveryReporter, RecoveryScope,
-    RecoverySeverity, RecoverySubject, Registry, Role, RulesValue, StateFamilyDescriptor,
-    StateFamilyHandle, StateFamilyId, World, canonical_json_bytes_with_limit, match_object, perm,
+    ActionError, ActionErrorCode, ActionInvocation, ActionPresentation, ActionProvider,
+    ActionStateError, ActionTxn, ArgShape, Audience, AuthoritativeActionOutput, AuthorityGuardKind,
+    BehaviorBinding, BehaviorId, BehaviorSpec, CanonicalId, CmdError, CommandSpec,
+    ContactGuardValidator, ContactStateCodec, Ctx, Deferred, DefinitionDescriptor,
+    DefinitionDigest, DefinitionId, DefinitionKind, DefinitionLookupError,
+    DefinitionMigrationDescriptor, DefinitionRef, DefinitionValidationContext, DestroyGate,
+    DetachGate, Engine, Flags, IncidentId, IncidentState, LegalActionQuery,
+    MAX_BOOT_REPORT_DETAILS, MechanicalState, MigrationPlanSummary, ModuleBootReport, ModuleOp,
+    ModuleWrite, ObjId, ObjKind, Outbox, OwnerId, PanelFeedHandle, PerceivedRef, Powers,
+    PrincipalId, ProjectedParameterSchema, ProjectedTargetSchema, ProviderOfferDraft,
+    RecoveryIncident, RecoveryReason, RecoveryReporter, RecoveryScope, RecoverySeverity,
+    RecoverySubject, Registry, RevisionSet, Role, RulesValue, StateFamilyDescriptor,
+    StateFamilyHandle, StateFamilyId, SubjectKey, World, canonical_json_bytes_with_limit,
+    contact_state_family_descriptor, match_object, perm,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -74,6 +78,8 @@ pub const BRACE_ACTION_ID: &str = "brace";
 pub const BRACED_OUTCOME_ID: &str = "braced";
 /// Engine-owned typed family mutated by the brace provider.
 pub const STANCE_STATE_FAMILY: &str = "stance";
+/// Private authoritative mapping for projected tactical contact IDs.
+pub const CONTACT_STATE_FAMILY: &str = "contacts";
 
 /// Minimal rules-neutral posture state used by the first production K3
 /// provider. It intentionally lives beside, rather than inside,
@@ -469,8 +475,17 @@ fn brace_action_descriptor(outcome: DefinitionRef) -> Result<DefinitionDescripto
 
 #[derive(Debug)]
 struct BraceProvider {
+    action: DefinitionRef,
     stance: StateFamilyHandle<ObjId, TacticalStance>,
     outcome: DefinitionRef,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BracedOutcome {
+    actor: u32,
+    braced: bool,
+    revision: u64,
 }
 
 impl BraceProvider {
@@ -539,6 +554,133 @@ impl BraceProvider {
 impl ActionProvider for BraceProvider {
     fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
         Self::validate(invocation)
+    }
+
+    fn project_offer(
+        &self,
+        action: &DefinitionRef,
+        query: &LegalActionQuery,
+        engine: &Engine,
+    ) -> Result<Option<ProviderOfferDraft>, ActionError> {
+        let SubjectKey::Object { id: subject } = query.truth_subject() else {
+            return Ok(None);
+        };
+        if *subject != query.actor() || query.projected_subject() != &PerceivedRef::SelfActor {
+            return Ok(None);
+        }
+        let definitions = engine.registry.definitions().ok_or_else(|| {
+            ActionError::new(
+                ActionErrorCode::Integrity,
+                false,
+                "tactics definition registry is unavailable",
+            )
+            .expect("static tactics projection error is bounded")
+        })?;
+        let mut guards = engine
+            .registry
+            .server_guard_set_builder(RevisionSet::default())
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "tactics guard registry is unavailable",
+                )
+                .expect("static tactics projection error is bounded")
+            })?;
+        guards
+            .add_definition(action.clone(), definitions)
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "tactics brace definition guard is unavailable",
+                )
+                .expect("static tactics projection error is bounded")
+            })?;
+        Ok(Some(ProviderOfferDraft {
+            fixed_parameters: json!({}),
+            parameters: ProjectedParameterSchema::empty(),
+            targets: ProjectedTargetSchema::None,
+            required_channels: Vec::new(),
+            expires: None,
+            presentation: ActionPresentation::new(
+                "brace",
+                "Brace",
+                "Adopt a braced tactical stance.",
+            )
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "tactics brace presentation is invalid",
+                )
+                .expect("static tactics projection error is bounded")
+            })?,
+            guards: guards.finish().map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "tactics brace offer guards are invalid",
+                )
+                .expect("static tactics projection error is bounded")
+            })?,
+        }))
+    }
+
+    fn project_receipt(
+        &self,
+        action: &DefinitionRef,
+        outcome: &RulesValue,
+        viewer: &PrincipalId,
+    ) -> Result<Option<mush_proto::ProjectedActionResult>, ActionError> {
+        if action != &self.action || outcome.schema() != &self.outcome {
+            return Err(ActionError::new(
+                ActionErrorCode::Integrity,
+                false,
+                "tactics brace receipt carries the wrong durable schema",
+            )
+            .expect("static tactics projection error is bounded"));
+        }
+        let decoded: BracedOutcome =
+            serde_json::from_value(outcome.data().clone()).map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "tactics brace receipt outcome is malformed",
+                )
+                .expect("static tactics projection error is bounded")
+            })?;
+        if !decoded.braced
+            || decoded.revision == 0
+            || viewer
+                != &(PrincipalId::Object {
+                    id: ObjId(decoded.actor),
+                })
+        {
+            return Err(ActionError::new(
+                ActionErrorCode::Integrity,
+                false,
+                "tactics brace receipt outcome disagrees with its eligible viewer",
+            )
+            .expect("static tactics projection error is bounded"));
+        }
+        mush_proto::ProjectedActionResult::new(
+            "brace",
+            "Brace committed.",
+            json!({
+                "braced": decoded.braced,
+                "revision": decoded.revision,
+            }),
+        )
+        .map(Some)
+        .map_err(|_| {
+            ActionError::new(
+                ActionErrorCode::BoundsExceeded,
+                false,
+                "tactics brace receipt projection exceeds public bounds",
+            )
+            .expect("static tactics projection error is bounded")
+        })
     }
 
     fn prepare_invocation(
@@ -619,20 +761,63 @@ impl GameModule for TacticsModule {
             },
             |value: &TacticalStance| serde_json::to_value(value).map_err(|error| error.to_string()),
         )?;
+        let contact_codec = ContactStateCodec;
+        let contacts = reg.state_family(
+            contact_state_family_descriptor(
+                StateFamilyId::new(CONTACT_STATE_FAMILY)
+                    .map_err(|error| ModError::msg(error.to_string()))?,
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            contact_codec,
+            contact_codec,
+            contact_codec,
+            contact_codec,
+        )?;
+        reg.authority_guard_validator(
+            AuthorityGuardKind::Contact,
+            ContactGuardValidator::new(contacts.clone()),
+        )?;
 
         let outcome_descriptor = braced_outcome_descriptor()?;
+        let contact_outcome_descriptor = crate::contact::outcome_descriptor()?;
         reg.definition_validator(
             DefinitionKind::new("outcome").map_err(|error| ModError::msg(error.to_string()))?,
-            exact_definition_validator(std::slice::from_ref(&outcome_descriptor)),
+            exact_definition_validator(&[
+                outcome_descriptor.clone(),
+                contact_outcome_descriptor.clone(),
+            ]),
         )?;
         let outcome = reg.definition(outcome_descriptor)?;
+        let contact_outcome = reg.definition(contact_outcome_descriptor)?;
         let action_descriptor = brace_action_descriptor(outcome.clone())?;
+        let contact_action_descriptors = crate::contact::action_descriptors(&contact_outcome)?;
+        let mut action_descriptors = Vec::with_capacity(1 + contact_action_descriptors.len());
+        action_descriptors.push(action_descriptor.clone());
+        action_descriptors.extend(
+            contact_action_descriptors
+                .iter()
+                .map(|(_, descriptor)| descriptor.clone()),
+        );
         reg.definition_validator(
             DefinitionKind::new("action").map_err(|error| ModError::msg(error.to_string()))?,
-            exact_definition_validator(std::slice::from_ref(&action_descriptor)),
+            exact_definition_validator(&action_descriptors),
         )?;
         let action = reg.definition(action_descriptor)?;
-        reg.action_provider(action, BraceProvider { stance, outcome })?;
+        let contact_actions = contact_action_descriptors
+            .into_iter()
+            .map(|(operation, descriptor)| {
+                reg.definition(descriptor).map(|action| (operation, action))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        reg.action_provider(
+            action.clone(),
+            BraceProvider {
+                action,
+                stance,
+                outcome,
+            },
+        )?;
+        crate::contact::register_providers(reg, contacts, contact_outcome, contact_actions)?;
 
         // The record format itself is versioned so an old untagged unit can be
         // dry-run through the shared migration registry. The callback captures

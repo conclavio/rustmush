@@ -48,12 +48,17 @@
 
 pub mod action;
 pub mod action_state;
+pub mod action_window;
 pub mod attr;
 pub mod authoritative;
 pub mod behavior;
 pub mod clock;
+pub mod clock_provider;
 pub mod cmd;
 pub mod commands;
+pub mod contact;
+pub mod control;
+pub mod durable_schedule;
 pub mod engine;
 pub mod flags;
 pub mod ledger;
@@ -65,8 +70,11 @@ pub mod obj;
 pub mod offer;
 pub mod output;
 pub mod perm;
+pub mod resolution;
 pub mod resource;
+pub mod resource_provider;
 pub mod sched;
+pub mod schedule_source;
 pub mod world;
 
 pub use action::{
@@ -75,11 +83,12 @@ pub use action::{
     ActionOfferId, ActionProvider, ActionProviderDispatchError, ActionProviderEntry,
     ActionProviderLookupError, ActionProviderPrepareError, ActionProviderRegistry,
     ActionProviderRegistryBuilder, ActionProviderRegistryError, ActionReceiptMetadata,
-    ActionReceiptMetadataError, AuthoritativeActionOutput, AuthorityGuard, AuthorityGuardKind,
-    AuthorityGuardValidator, AuthorityGuardValidatorEntry, AuthorityGuardValidatorLookupError,
-    AuthorityGuardValidatorRegistry, AuthorityGuardValidatorRegistryBuilder,
-    AuthorityGuardValidatorRegistryError, CanonicalHash, CanonicalHashError, CascadeError,
-    CausalMetadataError, CausalTriggerQueue, CommitToken, ContactId, FixedHexIdError,
+    ActionReceiptMetadataError, AuthoritativeActionOutput, AuthorityGuard, AuthorityGuardContext,
+    AuthorityGuardKind, AuthorityGuardValidator, AuthorityGuardValidatorEntry,
+    AuthorityGuardValidatorLookupError, AuthorityGuardValidatorRegistry,
+    AuthorityGuardValidatorRegistryBuilder, AuthorityGuardValidatorRegistryError, AuthorityWitness,
+    AuthorityWitnessError, AuthorityWitnessRequest, CanonicalHash, CanonicalHashError,
+    CascadeError, CausalMetadataError, CausalTriggerQueue, CommitToken, ContactId, FixedHexIdError,
     GuardRevalidation, GuardRevalidationError, GuardSet, GuardSetBuildError, IdempotencyKey,
     IdempotencyKeyText, IdempotencyKeyTextError, IdempotencyScope, IngressEnvelope, IngressPayload,
     IngressSurfaceVersion, MAX_ACTION_ERROR_BYTES, MAX_ACTION_PARAMETER_BYTES,
@@ -90,21 +99,34 @@ pub use action::{
     MAX_REVISION_VALIDATORS, MAX_REVISION_VALIDATORS_PER_OWNER, MAX_SEMANTIC_EVENTS,
     MAX_TRIGGER_DEPTH, PerceivedRef, PreparedAuthoritativeAction, PreparedCausalRef,
     PreparedEventId, PreparedTrigger, PreparedTriggerDraft, PrincipalId,
-    ProviderRegistrationOrdinal, RequestUid, RevisionKey, RevisionKind, RevisionMismatch,
-    RevisionSet, RevisionSetError, RevisionStamp, RevisionValidator, RevisionValidatorEntry,
-    RevisionValidatorLookupError, RevisionValidatorRegistry, RevisionValidatorRegistryBuilder,
-    RevisionValidatorRegistryError, SameCommitTrigger, ScopedIdempotencyKey, ServerGuardSetBuilder,
-    SubjectKey, TriggerEnqueue, TriggerHandlerId, TriggerIdentity, TriggerWork,
+    ProviderRegistrationOrdinal, ReceiptProjectionError, ReceiptProjectionTable, RequestUid,
+    ResolvedActionInvocation, RevisionKey, RevisionKind, RevisionMismatch, RevisionSet,
+    RevisionSetError, RevisionStamp, RevisionValidator, RevisionValidatorContext,
+    RevisionValidatorEntry, RevisionValidatorLookupError, RevisionValidatorRegistry,
+    RevisionValidatorRegistryBuilder, RevisionValidatorRegistryError, SameCommitTrigger,
+    ScopedIdempotencyKey, ServerGuardSetBuilder, SubjectKey, TriggerEnqueue, TriggerHandlerId,
+    TriggerIdentity, TriggerWork,
 };
 pub use action_state::{
     ACTION_STATE_PERSISTENCE_ROOT, ActionStateBootRecord, ActionStateError, ActionStateStore,
     ActionTxn, ActionTxnLimits, CanonicalStateBytes, MAX_ACTION_BUNDLE_BYTES,
     MAX_ACTION_MUTATION_OPERATIONS, MAX_ACTION_STATE_BOOT_BYTES, MAX_ACTION_STATE_BOOT_RECORDS,
     MAX_ACTION_STATE_RECORD_BYTES, MAX_STATE_FAMILIES, MAX_STATE_FAMILIES_PER_OWNER,
-    MAX_STATE_KEY_BYTES, PreparedInstallation, PreparedRecord, PreparedTxn, StateFamilyDescriptor,
-    StateFamilyDescriptorError, StateFamilyHandle, StateFamilyId, StateFamilyRegistry,
-    StateFamilyRegistryBuilder, StateFamilyRegistryError, StateKey, StateKeyCodec,
-    StateValueDecoder, StateValueSerializer, StateValueValidator, is_action_state_persistence_key,
+    MAX_STATE_FAMILY_SCAN_RECORDS, MAX_STATE_KEY_BYTES, ModuleActionState,
+    ModuleActionStateReadError, PreparedInstallation, PreparedRecord, PreparedTxn,
+    StateFamilyDescriptor, StateFamilyDescriptorError, StateFamilyHandle, StateFamilyId,
+    StateFamilyPage, StateFamilyRegistry, StateFamilyRegistryBuilder, StateFamilyRegistryError,
+    StateFamilyScanEntry, StateKey, StateKeyCodec, StateValueDecoder, StateValueSerializer,
+    StateValueValidator, is_action_state_persistence_key,
+};
+pub use action_window::{
+    ActionWindow, ActionWindowDraft, ActionWindowError, ActionWindowGuardValidator, ActionWindowId,
+    ActionWindowPhase, ActionWindowRecord, ActionWindowStateCodec, MAX_WINDOW_CAPACITY,
+    MAX_WINDOW_CATCH_UP, MAX_WINDOW_INPUT_OPERATIONS, MAX_WINDOW_OPERATION_RECEIPTS,
+    MAX_WINDOW_ORDER_KEY_PARTS, WindowDriveCause, WindowDriveDecision, WindowIntent,
+    WindowIntentSlot, WindowMode, WindowMutationReceipt, WindowMutationResult, WindowOrderKey,
+    WindowRestartPolicy, WindowTimeoutPolicy, WindowTransition,
+    action_window_state_family_descriptor,
 };
 pub use attr::{Attr, AttrFlags, AttrMap, AttrValue, UncasedName};
 pub use authoritative::{
@@ -127,6 +149,11 @@ pub use clock::{
     WorldTimelineEpoch, WorldTimelineError, WorldTimelineHead, WorldTimelinePersistenceError,
     world_timeline_epoch_key, world_timeline_persistence_ops,
 };
+pub use clock_provider::{
+    ClockProvider, ClockProviderContext, ClockProviderFailure, ClockProviderKey, ClockProviderKind,
+    ClockProviderRegistry, ClockProviderRegistryBuilder, ClockProviderRegistryError,
+    ClockReadError, MAX_CLOCK_PROVIDERS, MAX_CLOCK_PROVIDERS_PER_OWNER, SceneClockProvider,
+};
 pub use cmd::{
     AliasOutcome, AliasStage, ArgShape, CmdError, CommandFallback, CommandGate, CommandHandler,
     CommandSpec, Ctx, HelpTopic, LookupErr, ParsedArgs, Registry, RegistryError, SceneClass,
@@ -134,6 +161,21 @@ pub use cmd::{
 };
 pub use commands::{
     event_subject, ignore_list, is_ignoring, narrative_actor, register_core_commands,
+};
+pub use contact::{
+    ContactGuardValidator, ContactLifecycle, ContactState, ContactStateCodec, ContactStateDraft,
+    ContactStateError, MAX_CONTACT_AUDIENCE, MAX_CONTACT_BYTES, contact_state_family_descriptor,
+};
+pub use control::{
+    ControlHandoff, ControlHandoffDraft, ControlLeaseError, ControlLeaseGuardValidator,
+    ControlLeaseKey, ControlLeaseState, ControlLeaseStateCodec, MAX_CONTROL_LEASE_BYTES,
+    control_lease_state_family_descriptor,
+};
+pub use durable_schedule::{
+    DurableSchedule, DurableScheduleDraft, DurableScheduleError, DurableScheduleStateCodec,
+    MAX_SCHEDULE_CATCH_UP, ScheduleAdvance, ScheduleCatchUpOrder, ScheduleDriveCause,
+    ScheduleEvaluation, ScheduleGap, ScheduleId, ScheduleOccurrence, ScheduleRestartPolicy,
+    ScheduleState, durable_schedule_state_family_descriptor,
 };
 pub use engine::{
     ControlMsg, Deferred, DisconnectKind, Effect, Effects, Engine, Inbound, ModuleComposition,
@@ -176,27 +218,52 @@ pub use module::{
 pub use obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
 pub use offer::{
     ActionPresentation, InternalOffer, InternalOfferDraft, LegalActionProjectionError,
-    LegalActionQuery, LegalActionResolutionError, MAX_OFFER_SECRET_VERSIONS,
-    MAX_PROJECTED_ACTION_CHANNELS, MAX_PROJECTED_ACTION_CHOICES, MAX_PROJECTED_ACTION_PARAMETERS,
-    MAX_PROJECTED_ACTION_TEXT_BYTES, MAX_PROJECTED_LEGAL_ACTION_BYTES,
-    MAX_PROJECTED_LEGAL_ACTION_SET_BYTES, MAX_PROJECTED_LEGAL_ACTIONS, OfferBuildError,
-    OfferExecutionContext, OfferKeyRing, OfferResolveError, OfferSecret, OfferSecretError,
+    LegalActionQuery, LegalActionResolutionError, LegalActionSubjectError,
+    MAX_OFFER_SECRET_VERSIONS, MAX_PROJECTED_ACTION_CHANNELS, MAX_PROJECTED_ACTION_CHOICES,
+    MAX_PROJECTED_ACTION_PARAMETERS, MAX_PROJECTED_ACTION_TEXT_BYTES,
+    MAX_PROJECTED_LEGAL_ACTION_BYTES, MAX_PROJECTED_LEGAL_ACTION_SET_BYTES,
+    MAX_PROJECTED_LEGAL_ACTIONS, OfferBuildError, OfferExecutionContext, OfferKeyRing,
+    OfferResolveError, OfferRouteId, OfferRouteTable, OfferSecret, OfferSecretError,
     OfferSubmission, ProjectedLegalAction, ProjectedLegalActionSink, ProjectedParameter,
     ProjectedParameterKind, ProjectedParameterSchema, ProjectedTargetSchema, ProjectionScopeId,
-    ProviderOfferDraft, ResolvedOffer,
+    ProviderOfferDraft, ResolvedAuthoritativeOffer,
 };
 pub use output::{
     Audience, ConnId, DeliveryClass, DeliveryOutcome, Outbox, name_span, obj_ref, room_view,
 };
+pub use resolution::{
+    MAX_RESOLUTION_DEFINITIONS, MAX_RESOLUTION_DRAWS, MAX_RESOLUTION_SECRET_VERSIONS,
+    MAX_RESOLUTION_STREAMS, MAX_RNG_REJECTION_ATTEMPTS, PrepareContextError, PrepareCtx,
+    PreparedResolution, RecordedDraw, RecordedDrawValue, ResolutionKeyRing, ResolutionRecord,
+    ResolutionRecordError, ResolutionRng, ResolutionRngError, ResolutionSecret,
+    ResolutionSecretError, RngAlgorithmVersion,
+};
 pub use resource::{
     BoundedScalar, EffectDuration, EffectInstance, EffectInstanceError, EffectInstanceId,
-    EffectTarget, MAX_EFFECT_STACKS, MAX_RESOURCE_RESERVATIONS, ReservationAvailabilityError,
-    ReservationError, ReservationId, ReservationRecord, ReservationState, ResourceOperation,
-    ResourceRef, ResourceValueError, checked_resource_availability,
+    EffectTarget, MAX_EFFECT_STACKS, MAX_RESERVATION_BOOK_BYTES, MAX_RESERVATION_BOOK_RECORDS,
+    MAX_RESOURCE_RESERVATIONS, ReservationAvailabilityError, ReservationBook, ReservationBookError,
+    ReservationBookId, ReservationBookStateCodec, ReservationError, ReservationId,
+    ReservationRecord, ReservationReplacement, ReservationState, ResourceOperation, ResourceRef,
+    ResourceValueError, checked_resource_availability, reservation_book_state_family_descriptor,
+};
+pub use resource_provider::{
+    EffectProvider, EffectProviderResultMismatch, EffectReadError, MAX_RESOURCE_EFFECT_PROVIDERS,
+    MAX_RESOURCE_EFFECT_PROVIDERS_PER_OWNER, ResourceEffectProviderRegistry,
+    ResourceEffectProviderRegistryBuilder, ResourceEffectProviderRegistryError, ResourceProvider,
+    ResourceProviderContext, ResourceProviderFailure, ResourceProviderKey, ResourceReadError,
+    ResourceSnapshot,
 };
 pub use sched::{
     MAX_PENDING_ENTRIES_PER_INSPECTION, MAX_SCHEDULED_FIRES_PER_STEP, PendingEntrySnapshot,
     ScheduledKind, Scheduler, TimerId,
+};
+pub use schedule_source::{
+    MAX_SCHEDULE_SOURCE_SCAN_RECORDS, MAX_SCHEDULE_SOURCES, MAX_SCHEDULE_SOURCES_PER_OWNER,
+    ScheduleActionAdapter, ScheduleActionDraft, ScheduleActionIngressError,
+    ScheduleActionPlanError, ScheduleAdvanceAdmissionError, ScheduleCandidateError,
+    ScheduleSourceCursor, ScheduleSourceKey, ScheduleSourcePage, ScheduleSourceRegistry,
+    ScheduleSourceRegistryBuilder, ScheduleSourceRegistryError, ScheduleSourceScanError,
+    ScheduledActionCandidate, ScheduledActionPlan, scheduled_action_ingress,
 };
 pub use world::{
     ChannelGrant, CommandSubjectLink, MAX_CONTAINMENT_DEPTH, SessionStat, World, WorldError,

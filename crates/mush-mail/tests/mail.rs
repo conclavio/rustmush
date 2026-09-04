@@ -12,7 +12,9 @@ use mush_core::{
     Flags, GOD, LIMBO, LockExpr, LockType, ObjId, ObjKind, Outbox, Registry, World,
     register_core_commands, register_engine_commands,
 };
-use mush_mail::{INBOX, MailModule, MailState, MailStatus, SENT, TRASH};
+use mush_mail::{
+    INBOX, MAX_MAIL_BODY_LINES, MAX_MAIL_RECIPIENTS, MailModule, MailState, MailStatus, SENT, TRASH,
+};
 use mush_proto::{InputMode, OutputEvent, PromptSpec};
 use mush_testkit::assert_actor_saw;
 use smol_str::SmolStr;
@@ -227,6 +229,38 @@ fn compose_tilde_q_aborts_without_sending() {
     assert_actor_saw(out.events(), alice, "Aborted.");
     assert_eq!(engine.world.input_depth(alice), 0);
     assert!(mail(&engine).message(1).is_none(), "nothing was sent");
+}
+
+#[test]
+fn compose_and_recipient_fanout_are_hard_bounded() {
+    let (mut engine, alice, _bob) = setup();
+    run(&mut engine, alice, "@mail/send Bob=Bounded");
+    for _ in 0..MAX_MAIL_BODY_LINES {
+        run(&mut engine, alice, "x");
+    }
+    let out = run(&mut engine, alice, "overflow");
+    assert_actor_saw(out.events(), alice, "Message body is limited");
+    run(&mut engine, alice, "--");
+    assert_eq!(
+        mail(&engine).message(1).unwrap().body.lines().count(),
+        MAX_MAIL_BODY_LINES
+    );
+
+    let mut recipients = Vec::new();
+    for n in 0..=MAX_MAIL_RECIPIENTS {
+        let id = engine
+            .world
+            .create(ObjKind::Player, &format!("Recipient{n}"), GOD, Some(LIMBO))
+            .unwrap();
+        recipients.push(engine.world.get(id).unwrap().name.clone());
+    }
+    let out = run(
+        &mut engine,
+        alice,
+        &format!("@mail/quick {}=Too many/nope", recipients.join(",")),
+    );
+    assert_actor_saw(out.events(), alice, "at most 32 recipients");
+    assert!(mail(&engine).message(2).is_none());
 }
 
 // ----------------------------------------------------------------------

@@ -22,6 +22,7 @@ serde_json.workspace = true
 
 [dev-dependencies]
 # Fuzz-style property tests for LineEditor::feed (hostile byte streams).
+mush-contract-tests.workspace = true
 proptest = { workspace = true }
 
 [lints]

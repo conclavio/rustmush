@@ -81,6 +81,7 @@ use mush_core::{
 use mush_llm::LlmService;
 use smol_str::SmolStr;
 
+pub use commands::{MAX_BUILDING_ROOMS, MIN_BUILDING_ROOMS};
 pub use data::{
     BatchRoom, BatchStatus, BriefRoomFact, BriefSnapshot, BuildingBrief, BuildingBriefContext,
     BuildingBriefPayload, DRAFT_FEED, Detail, DraftPayload, DraftStatus, ExitDraft, ExitFact,
@@ -99,15 +100,16 @@ pub use theme::{DescLength, THEME_ATTR, Theme, resolve_theme, theme_chain, theme
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WorldgenConfig {
     /// The `@gen/building` interior-walk cap: the most rooms one batch will
-    /// describe. Defaults to
-    /// [`MAX_BUILDING_ROOMS`](commands::MAX_BUILDING_ROOMS).
+    /// describe. Must be in [`MIN_BUILDING_ROOMS`]..=[`MAX_BUILDING_ROOMS`]
+    /// and defaults to [`MAX_BUILDING_ROOMS`]. Invalid values fail module
+    /// registration rather than creating an empty or unbounded batch.
     pub batch_max_rooms: usize,
 }
 
 impl Default for WorldgenConfig {
     fn default() -> WorldgenConfig {
         WorldgenConfig {
-            batch_max_rooms: commands::MAX_BUILDING_ROOMS,
+            batch_max_rooms: MAX_BUILDING_ROOMS,
         }
     }
 }
@@ -141,6 +143,7 @@ impl GameModule for WorldgenModule {
     }
 
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+        validate_batch_max_rooms(self.config.batch_max_rooms)?;
         let panel = reg.panel_feed(DRAFT_FEED)?;
         reg.state(WorldgenState::with_batch_max(
             panel,
@@ -233,5 +236,29 @@ impl GameModule for WorldgenModule {
             }
         }
         Ok(())
+    }
+}
+
+fn validate_batch_max_rooms(value: usize) -> Result<(), ModError> {
+    if (MIN_BUILDING_ROOMS..=MAX_BUILDING_ROOMS).contains(&value) {
+        Ok(())
+    } else {
+        Err(ModError::msg(format!(
+            "worldgen: batch_max_rooms must be between {MIN_BUILDING_ROOMS} and \
+             {MAX_BUILDING_ROOMS}, got {value}"
+        )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn building_room_cap_rejects_empty_and_unbounded_config() {
+        assert!(validate_batch_max_rooms(MIN_BUILDING_ROOMS).is_ok());
+        assert!(validate_batch_max_rooms(MAX_BUILDING_ROOMS).is_ok());
+        assert!(validate_batch_max_rooms(MIN_BUILDING_ROOMS - 1).is_err());
+        assert!(validate_batch_max_rooms(MAX_BUILDING_ROOMS + 1).is_err());
     }
 }

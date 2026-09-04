@@ -72,19 +72,23 @@ use mush_config::ipguard::IpGuard;
 use mush_config::metrics::{LlmFeatureStat, LlmTodaySpend, Metrics, WorldSample};
 use mush_core::commands::movement::find_exit;
 use mush_core::{
-    ActionInvocation, Audience, ControlMsg, DefinitionRef, DeliveryClass, DeliveryOutcome,
-    DisconnectKind, Effect, Effects, Engine, Flags, Inbound, IncidentId, ObjId, ObjKind, Outbox,
-    PreparedInstallation, Registry, RevisionSet, Role, ScheduledKind, StagedAction,
+    Audience, ControlMsg, DeliveryClass, DeliveryOutcome, DisconnectKind, Effect, Effects, Engine,
+    Flags, Inbound, IncidentId, LegalActionQuery, ObjId, ObjKind, OfferExecutionContext,
+    OfferRouteTable, OfferSubmission, Outbox, PerceivedRef, PreparedInstallation, PrincipalId,
+    ProjectedLegalAction, ReceiptProjectionTable, Registry, Role, ScheduledKind, StagedAction,
     StagedActionPersistence, StepOutcome, TickCadence, World, WorldCommand, WorldEvent,
     can_perceive, event_subject, is_ignoring, narrative_actor, register_core_commands,
     register_engine_commands,
 };
-use mush_ipc::{MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, SendTarget};
+use mush_ipc::{
+    ActionSend, GatewayAction, GatewayInput, GatewayRequest, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
+    SendTarget,
+};
 use mush_llm::LlmService;
-use mush_proto::{OutputEvent, RichText};
+use mush_proto::{ActionStatusId, OutputEvent, ProjectedActionStatus, RichText};
 use mush_store::{
-    AccountRec, AuthoritativeReceipt, InMemoryStore, IntentReceipt, ObjectStore, SshKeyRec,
-    WriteBatch,
+    AccountRec, AuthoritativeReceipt, AuthoritativeStore, BundleStatus, InMemoryStore,
+    IntentReceipt, ObjectStore, SshKeyRec, WriteBatch,
 };
 use sha2::{Digest, Sha256};
 use smol_str::SmolStr;
@@ -92,7 +96,9 @@ use tokio::sync::mpsc::error::{TryRecvError, TrySendError};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
-use crate::action_coordinator::{ActionCoordinator, ActionPermit, StagedAuthoritativeAction};
+use crate::action_coordinator::{
+    ActionCoordinator, ActionPermit, ActionPreflight, StagedAuthoritativeAction,
+};
 use crate::durable_outbox::{
     DurableOutboxPolicy, DurableOutboxRegistry, run_authoritative_outbox_worker,
 };
@@ -151,6 +157,10 @@ const LOOP_LAG_WARN: Duration = Duration::from_millis(500);
 /// enough that the re-flush is negligible load. Acks normally arrive within one
 /// world step, so in the steady state this fires at most once per seal.
 const REEMIT_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Bounded polling cadence for authoritative durable schedule discovery.
+/// The typed cursor is truth; this interval is only a wake hint.
+const DURABLE_SCHEDULE_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Global alarm threshold on the retained-seal depth. In healthy
 /// operation the table holds at most a handful of seals (one per log that just
@@ -258,6 +268,14 @@ pub enum WorldMsg {
         /// `true` only for the exact tracked association.
         reply: oneshot::Sender<Result<bool, WorldReadError>>,
     },
+    /// Project the current legal actions for one authenticated actor and
+    /// perceived subject inside the authoritative single-writer.
+    LegalActions {
+        conn: u64,
+        actor: ObjId,
+        subject: PerceivedRef,
+        reply: oneshot::Sender<Result<Vec<ProjectedLegalAction>, LegalActionReadError>>,
+    },
     /// Execute one already-preflighted authoritative action inside the world
     /// single-writer. The opaque permit proves the store lookup happened
     /// before provider resolution or truth reads.
@@ -274,8 +292,7 @@ pub enum WorldMsg {
 /// Boxed world message payload for one preflighted coordinator action.
 pub struct AuthoritativeActionRequest {
     permit: Box<ActionPermit>,
-    action: DefinitionRef,
-    invocation: ActionInvocation,
+    submission: OfferSubmission,
     reply: oneshot::Sender<Result<AuthoritativeActionWatch, AuthoritativeActionStartError>>,
 }
 
@@ -296,6 +313,32 @@ pub enum WorldReadError {
     /// The world task disappeared or is not able to answer this read.
     #[error("the world is unavailable")]
     Unavailable,
+}
+
+/// Legal-action discovery can distinguish world availability from a subject
+/// representation that has no safe truth projection yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum LegalActionReadError {
+    #[error("the world is busy committing another action")]
+    Busy,
+    #[error("the world is unavailable")]
+    Unavailable,
+    #[error("the perceived subject has no authoritative projection path")]
+    InvalidSubject,
+}
+
+fn legal_action_query(
+    engine: &Engine,
+    principal: PrincipalId,
+    actor: ObjId,
+    subject: PerceivedRef,
+) -> Result<LegalActionQuery, LegalActionReadError> {
+    engine
+        .legal_action_query(principal, actor, subject)
+        .map_err(|error| match error {
+            mush_core::LegalActionSubjectError::Invalid => LegalActionReadError::InvalidSubject,
+            mush_core::LegalActionSubjectError::Unavailable => LegalActionReadError::Unavailable,
+        })
 }
 
 /// Immediate refusal before an authoritative intent can exist.
@@ -795,7 +838,8 @@ fn classify_world_msg(msg: &WorldMsg) -> IngressClass {
         }
         WorldMsg::NameFree { .. }
         | WorldMsg::InInputContext { .. }
-        | WorldMsg::ConnectionReady { .. } => IngressClass::WorldRead,
+        | WorldMsg::ConnectionReady { .. }
+        | WorldMsg::LegalActions { .. } => IngressClass::WorldRead,
         WorldMsg::Barrier { .. } => IngressClass::OrderingBarrier,
     }
 }
@@ -903,6 +947,15 @@ fn admit_world_msg(mode: WorldMode, world: &World, msg: &WorldMsg) -> Admission 
 pub struct WorldHandle {
     tx: mpsc::Sender<WorldMsg>,
     shutdown: Option<watch::Sender<bool>>,
+    direct_actions: Option<Arc<DirectActionIngress>>,
+}
+
+struct DirectActionIngress {
+    store: Arc<dyn ObjectStore>,
+    routes: OfferRouteTable,
+    projections: ReceiptProjectionTable,
+    epoch: u64,
+    next_sequence: AtomicU64,
 }
 
 impl WorldHandle {
@@ -1014,6 +1067,255 @@ impl WorldHandle {
         rx.await.unwrap_or(Err(WorldReadError::Unavailable))
     }
 
+    /// Enumerate the current viewer-safe action offers for an authenticated
+    /// connection. The world task owns both connection truth and provider
+    /// projection, so no interface can manufacture either side of the query.
+    pub async fn legal_actions(
+        &self,
+        conn: u64,
+        actor: ObjId,
+        subject: PerceivedRef,
+    ) -> Result<Vec<ProjectedLegalAction>, LegalActionReadError> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(WorldMsg::LegalActions {
+                conn,
+                actor,
+                subject,
+                reply,
+            })
+            .await
+            .is_err()
+        {
+            return Err(LegalActionReadError::Unavailable);
+        }
+        rx.await.unwrap_or(Err(LegalActionReadError::Unavailable))
+    }
+
+    /// Recover an authoritative action result for an authenticated live
+    /// connection. The public reference never supplies the principal.
+    pub async fn action_status(
+        &self,
+        conn: u64,
+        actor: ObjId,
+        status: &ActionStatusId,
+    ) -> Result<ProjectedActionStatus, WorldReadError> {
+        if !self.connection_ready(conn, actor).await? {
+            return Ok(ProjectedActionStatus::Unknown);
+        }
+        let Some(direct) = &self.direct_actions else {
+            return Err(WorldReadError::Unavailable);
+        };
+        let Some(store) = direct.store.authoritative_store() else {
+            return Err(WorldReadError::Unavailable);
+        };
+        match ActionCoordinator::projected_status(
+            store,
+            &direct.projections,
+            &PrincipalId::Object { id: actor },
+            status,
+        )
+        .await
+        {
+            Ok(projected) => Ok(projected),
+            Err(crate::action_coordinator::ActionStatusError::InvalidReference)
+            | Err(crate::action_coordinator::ActionStatusError::Forbidden) => {
+                Ok(ProjectedActionStatus::Unknown)
+            }
+            Err(error) => {
+                tracing::error!(%actor, %status, error = %error, "action status projection failed");
+                Ok(ProjectedActionStatus::Unavailable {
+                    reference: status.clone(),
+                })
+            }
+        }
+    }
+
+    /// Project a receipt whose durable binding has already authenticated the
+    /// actor (for example, a split-boundary replay after its original
+    /// connection disappeared).
+    pub fn project_known_action_receipt(
+        &self,
+        actor: ObjId,
+        status: ActionStatusId,
+        receipt: &AuthoritativeReceipt,
+    ) -> Result<mush_proto::ProjectedActionReceipt, crate::action_coordinator::ActionStatusError>
+    {
+        let direct = self.direct_actions.as_ref().ok_or(
+            crate::action_coordinator::ActionStatusError::Integrity(
+                "action projection table is unavailable".to_owned(),
+            ),
+        )?;
+        ActionCoordinator::project_finalized_receipt(
+            &direct.projections,
+            &PrincipalId::Object { id: actor },
+            status,
+            receipt,
+        )
+    }
+
+    /// All-in-one counterpart of the split gateway's replay-custody path.
+    /// It performs the same mandatory preflight and does not report accepted
+    /// until the exact intent is durably owned. Split mode never calls this;
+    /// its socket link retains/replays the request and observes dispositions.
+    pub async fn submit_legal_action(&self, action: GatewayAction) -> ActionSend {
+        let Some(direct) = &self.direct_actions else {
+            return ActionSend::Gone;
+        };
+        let Some(sequence) = direct
+            .next_sequence
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current.checked_add(1)
+            })
+            .ok()
+        else {
+            tracing::error!("in-process legal-action request sequence exhausted");
+            return ActionSend::Gone;
+        };
+        let request = GatewayRequest::new(
+            direct.epoch,
+            sequence,
+            GatewayInput::Action(Box::new(action)),
+        );
+        let envelope = match ActionCoordinator::gateway_ingress(&request, &direct.routes) {
+            Ok(envelope) => envelope,
+            Err(detail) => {
+                tracing::warn!(%detail, "invalid in-process legal-action ingress");
+                return ActionSend::Rejected;
+            }
+        };
+        let status = match ActionCoordinator::status_id(envelope.idempotency()) {
+            Ok(status) => status,
+            Err(error) => {
+                tracing::error!(error = %error, "in-process action status identity failed");
+                return ActionSend::Gone;
+            }
+        };
+        let viewer = envelope.principal().clone();
+        let Some(store) = direct.store.authoritative_store() else {
+            tracing::error!("in-process store lacks authoritative request capability");
+            return ActionSend::Gone;
+        };
+        let mut delay = Duration::from_millis(100);
+        let preflight = loop {
+            match ActionCoordinator::preflight(store, envelope.clone()).await {
+                Ok(preflight) => break preflight,
+                Err(error) if error.is_transient() => {
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(Duration::from_secs(5));
+                }
+                Err(error) => {
+                    tracing::error!(error = %error, "in-process coordinator preflight failed");
+                    return ActionSend::Gone;
+                }
+            }
+        };
+        let permit = match preflight {
+            crate::action_coordinator::ActionPreflight::Vacant(permit) => permit,
+            crate::action_coordinator::ActionPreflight::Pending { .. } => {
+                return ActionSend::Owned(status);
+            }
+            crate::action_coordinator::ActionPreflight::Finalized(receipt) => {
+                return match ActionCoordinator::project_finalized_receipt(
+                    &direct.projections,
+                    &viewer,
+                    status,
+                    &receipt,
+                ) {
+                    Ok(receipt) => ActionSend::Finished(receipt),
+                    Err(error) => {
+                        tracing::error!(error = %error, "in-process finalized retry projection failed");
+                        ActionSend::Gone
+                    }
+                };
+            }
+            crate::action_coordinator::ActionPreflight::Retired { .. }
+            | crate::action_coordinator::ActionPreflight::Conflict => {
+                return ActionSend::Rejected;
+            }
+            crate::action_coordinator::ActionPreflight::Quarantined(receipt) => {
+                tracing::error!(
+                    token = %receipt.token(),
+                    evidence = %receipt.evidence_hash(),
+                    "in-process coordinator request is quarantined"
+                );
+                return ActionSend::Gone;
+            }
+        };
+        let GatewayInput::Action(input) = request.input else {
+            unreachable!("constructed legal-action request changed variants")
+        };
+        match self.connection_ready(input.conn, input.actor).await {
+            Ok(true) => {}
+            Ok(false) => return ActionSend::Rejected,
+            Err(WorldReadError::Busy) => return ActionSend::Busy,
+            Err(WorldReadError::Unavailable) => return ActionSend::Gone,
+        }
+        let submission = OfferSubmission {
+            offer: input.offered_action,
+            subject: input.subject,
+            targets: input.targets,
+            parameters: input.parameters,
+        };
+        let watch = match self.authoritative_action(permit, submission).await {
+            Ok(watch) => watch,
+            Err(AuthoritativeActionStartError::Busy) => return ActionSend::Busy,
+            Err(AuthoritativeActionStartError::Unavailable) => return ActionSend::Gone,
+            Err(AuthoritativeActionStartError::Rejected(_)) => return ActionSend::Rejected,
+        };
+        let owned = match watch.owned.await {
+            Ok(Ok(owned)) => owned,
+            Ok(Err(AuthoritativeCommitFailure::Refused(_))) => return ActionSend::Busy,
+            Ok(Err(AuthoritativeCommitFailure::Integrity(_))) | Err(_) => {
+                return ActionSend::Gone;
+            }
+        };
+        match tokio::time::timeout(Duration::from_secs(2), watch.finished).await {
+            Ok(Ok(Ok(finished))) if finished == owned => {
+                match store
+                    .authoritative_status(finished.token, finished.bundle_hash)
+                    .await
+                {
+                    Ok(BundleStatus::FinalizedExact(receipt)) => {
+                        match ActionCoordinator::project_finalized_receipt(
+                            &direct.projections,
+                            &PrincipalId::Object { id: input.actor },
+                            status.clone(),
+                            &receipt,
+                        ) {
+                            Ok(receipt) => ActionSend::Finished(receipt),
+                            Err(error) => {
+                                tracing::error!(error = %error, "in-process receipt projection failed");
+                                ActionSend::Owned(status)
+                            }
+                        }
+                    }
+                    Ok(other) => {
+                        tracing::error!(
+                            ?other,
+                            "finalized action did not have a finalized store receipt"
+                        );
+                        ActionSend::Owned(status)
+                    }
+                    Err(error) => {
+                        tracing::error!(error = %error, "finalized action receipt read failed");
+                        ActionSend::Owned(status)
+                    }
+                }
+            }
+            Ok(Ok(Ok(finished))) => {
+                tracing::error!(owned_token = %owned.token, finished_token = %finished.token, "in-process terminal identity mismatch");
+                ActionSend::Gone
+            }
+            Ok(Ok(Err(error))) => {
+                tracing::error!(error = %error.detail(), "owned in-process action ended in an integrity incident");
+                ActionSend::Owned(status)
+            }
+            Ok(Err(_)) | Err(_) => ActionSend::Owned(status),
+        }
+    }
+
     /// Hand one preflighted semantic action to the world single-writer.
     ///
     /// The returned watch is not an acceptance acknowledgement. Its `owned`
@@ -1022,8 +1324,7 @@ impl WorldHandle {
     pub async fn authoritative_action(
         &self,
         permit: Box<ActionPermit>,
-        action: DefinitionRef,
-        invocation: ActionInvocation,
+        submission: OfferSubmission,
     ) -> Result<AuthoritativeActionWatch, AuthoritativeActionStartError> {
         let (reply, rx) = oneshot::channel();
         if self
@@ -1031,8 +1332,7 @@ impl WorldHandle {
             .send(WorldMsg::AuthoritativeAction(Box::new(
                 AuthoritativeActionRequest {
                     permit,
-                    action,
-                    invocation,
+                    submission,
                     reply,
                 },
             )))
@@ -1220,9 +1520,30 @@ fn spawn_persist_with_gateway_mode(
 ) -> PersistHandles {
     let (tx, rx) = mpsc::channel(INBOUND_CAPACITY);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let routes = engine
+        .registry
+        .action_providers()
+        .map_or_else(OfferRouteTable::default, |providers| {
+            providers.offer_route_table()
+        });
+    let projections = engine
+        .registry
+        .action_providers()
+        .map_or_else(ReceiptProjectionTable::empty, |providers| {
+            providers.receipt_projection_table()
+        });
+    let action_epoch = rand::random();
+    let direct_actions = Arc::new(DirectActionIngress {
+        store: Arc::clone(&deps.store),
+        routes,
+        projections,
+        epoch: action_epoch,
+        next_sequence: AtomicU64::new(1),
+    });
     let handle = WorldHandle {
         tx: tx.clone(),
         shutdown: Some(shutdown_tx),
+        direct_actions: Some(direct_actions),
     };
     // Build the delivery sink now that the inbound queue exists: the all-in-one
     // in-process sink wires its policing feedback onto this loop's own inbound
@@ -1296,6 +1617,7 @@ fn spawn_persist_with_gateway_mode(
         high_water,
         signal_rx,
         shutdown_rx,
+        action_epoch,
         persistence_integrity.clone(),
         initial_mode,
         outbox_lifetime,
@@ -1316,9 +1638,180 @@ enum Wake {
     Signal(WriterSignal),
     CommitReceipt(PendingReceiptEvent),
     Timer,
+    DurableSchedules,
     Shutdown,
     ShutdownDeadline,
     Closed,
+}
+
+struct DurableScheduleDriver {
+    cursor: Option<mush_core::ScheduleSourceCursor>,
+    retry: Option<mush_core::ScheduledActionCandidate>,
+    cause: mush_core::ScheduleDriveCause,
+    idempotency_epoch: u64,
+}
+
+impl DurableScheduleDriver {
+    const fn new(idempotency_epoch: u64) -> Self {
+        Self {
+            cursor: None,
+            retry: None,
+            cause: mush_core::ScheduleDriveCause::Restart,
+            idempotency_epoch,
+        }
+    }
+
+    async fn drive_one(
+        &mut self,
+        engine: &mut Engine,
+        store: &dyn AuthoritativeStore,
+    ) -> Result<DurableScheduleDrive, String> {
+        // The world loop deliberately gives legacy work the next FIFO commit
+        // rather than allowing an internal schedule to collide with it.  The
+        // current wake will fall through to the ordinary flush; the retained
+        // candidate/cursor is untouched and will be retried on the next poll.
+        if engine.has_legacy_persistence_work() {
+            return Ok(DurableScheduleDrive::DeferredByLegacyPredecessor);
+        }
+        if self.retry.is_none() {
+            let page = match engine.discover_scheduled_actions(self.cause, self.cursor.as_ref(), 1)
+            {
+                Ok(page) => page,
+                Err(error) if schedule_discovery_retryable(&error) => {
+                    return Ok(DurableScheduleDrive::Transient(error.to_string()));
+                }
+                Err(error) => return Err(error.to_string()),
+            };
+            self.cursor = page.next_cursor().cloned();
+            if page.records_scanned() == 0 && self.cursor.is_none() {
+                self.cause = mush_core::ScheduleDriveCause::Live;
+            }
+            self.retry = page.candidates().first().cloned();
+        }
+        let Some(candidate) = self.retry.as_ref() else {
+            return Ok(DurableScheduleDrive::Idle);
+        };
+
+        // Epoch retirement is recoverable for internal deterministic work:
+        // no binding can exist below the durable watermark, so rebuild the
+        // same semantic key at the returned minimum and preflight again.
+        for _ in 0..3 {
+            let ingress = ActionCoordinator::scheduled_ingress(
+                candidate.action(),
+                candidate.advance(),
+                self.idempotency_epoch,
+            )
+            .map_err(|error| error.to_string())?;
+            let preflight = match ActionCoordinator::preflight(store, ingress).await {
+                Ok(preflight) => preflight,
+                Err(error) if error.is_transient() => {
+                    return Ok(DurableScheduleDrive::Transient(error.to_string()));
+                }
+                Err(error) => return Err(error.to_string()),
+            };
+            match preflight {
+                ActionPreflight::Retired {
+                    minimum_accepted_epoch,
+                } => {
+                    self.idempotency_epoch = self.idempotency_epoch.max(minimum_accepted_epoch);
+                }
+                ActionPreflight::Vacant(permit) => {
+                    let staged = match ActionCoordinator::prepare_and_stage_scheduled(
+                        permit, engine, candidate,
+                    ) {
+                        Ok(staged) => staged,
+                        Err(error) if scheduled_prepare_stale(&error) => {
+                            self.retry = None;
+                            return Ok(DurableScheduleDrive::DiscardedStale(error.to_string()));
+                        }
+                        Err(error) if scheduled_prepare_retryable(&error) => {
+                            return Ok(DurableScheduleDrive::Transient(error.to_string()));
+                        }
+                        Err(error) => return Err(error.to_string()),
+                    };
+                    self.retry = None;
+                    return Ok(DurableScheduleDrive::Staged(staged));
+                }
+                ActionPreflight::Pending { .. } => {
+                    return Err(
+                        "durable schedule rediscovered an unresolved intent after writable boot"
+                            .to_owned(),
+                    );
+                }
+                ActionPreflight::Finalized(_) => {
+                    return Err(
+                        "durable schedule pre-state remained live after its finalized action"
+                            .to_owned(),
+                    );
+                }
+                ActionPreflight::Quarantined(_) => {
+                    return Err("durable schedule action is quarantined".to_owned());
+                }
+                ActionPreflight::Conflict => {
+                    return Err("durable schedule idempotency identity conflicts".to_owned());
+                }
+            }
+        }
+        Ok(DurableScheduleDrive::Transient(
+            "durable schedule retirement watermark changed repeatedly".to_owned(),
+        ))
+    }
+}
+
+enum DurableScheduleDrive {
+    Idle,
+    DeferredByLegacyPredecessor,
+    DiscardedStale(String),
+    Transient(String),
+    Staged(StagedAuthoritativeAction),
+}
+
+fn schedule_discovery_retryable(error: &mush_core::ScheduleSourceScanError) -> bool {
+    matches!(
+        error,
+        mush_core::ScheduleSourceScanError::Clock { source, .. }
+            if matches!(
+                source.as_ref(),
+                mush_core::ClockReadError::Provider {
+                    source: mush_core::ClockProviderFailure::Unavailable,
+                    ..
+                }
+            )
+    )
+}
+
+fn scheduled_prepare_retryable(error: &crate::action_coordinator::ActionCoordinatorError) -> bool {
+    match error {
+        crate::action_coordinator::ActionCoordinatorError::SchedulePlan(source) => matches!(
+            source.as_ref(),
+            mush_core::ScheduleActionPlanError::Adapter { source, .. } if source.retryable()
+        ),
+        crate::action_coordinator::ActionCoordinatorError::Provider(
+            mush_core::ActionProviderPrepareError::Provider { source, .. },
+        ) => source.retryable(),
+        _ => false,
+    }
+}
+
+fn scheduled_prepare_stale(error: &crate::action_coordinator::ActionCoordinatorError) -> bool {
+    match error {
+        crate::action_coordinator::ActionCoordinatorError::SchedulePlan(source) => matches!(
+            source.as_ref(),
+            mush_core::ScheduleActionPlanError::Adapter { source, .. }
+                if source.code() == mush_core::ActionErrorCode::Stale
+        ),
+        crate::action_coordinator::ActionCoordinatorError::Provider(
+            mush_core::ActionProviderPrepareError::Provider { source, .. },
+        ) => source.code() == mush_core::ActionErrorCode::Stale,
+        crate::action_coordinator::ActionCoordinatorError::Provider(
+            mush_core::ActionProviderPrepareError::Schedule(source),
+        ) => matches!(
+            source.as_ref(),
+            mush_core::ScheduleAdvanceAdmissionError::MissingSchedule { .. }
+                | mush_core::ScheduleAdvanceAdmissionError::StalePlan { .. }
+        ),
+        _ => false,
+    }
 }
 
 enum PendingReceiptEvent {
@@ -1559,6 +2052,7 @@ async fn run(
     high_water: Arc<AtomicU64>,
     mut signals: WriterSignalReceiver,
     mut shutdown: watch::Receiver<bool>,
+    action_epoch: u64,
     persistence_integrity: PersistenceIntegrityLatch,
     initial_mode: Option<WorldMode>,
     _outbox_lifetime: watch::Sender<bool>,
@@ -1570,6 +2064,10 @@ async fn run(
     // borrowing `deps` (staff queue) freely each iteration.
     let llm = deps.llm.clone();
     let metrics = Arc::clone(&deps.metrics);
+    let mut durable_schedules = DurableScheduleDriver::new(action_epoch);
+    let mut durable_schedule_tick = tokio::time::interval(DURABLE_SCHEDULE_POLL_INTERVAL);
+    durable_schedule_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut durable_schedule_transient_alarmed = false;
     // The server -> gateway delivery seam (M16a/M16b): every resolved
     // `(SendTarget, OutputEvent)` pair is handed to this transport. In the
     // all-in-one binary it maps onto the shared `SessionManager`; in the forked
@@ -1631,6 +2129,11 @@ async fn run(
     // writer is gone and its final latched facts have been drained, so the
     // closed wake channel does not busy-loop the select).
     let mut signals_open = true;
+    // Store health and exact commit receipts travel on separate bounded lanes.
+    // A recovered health hint may therefore arrive first; retain it until the
+    // corresponding pending commit is finalized so the public "writable
+    // again" announcement is also a true admission guarantee.
+    let mut recovery_waits_for_commit = false;
     let mut inbound_open = true;
     // Rate-limit the retained-depth alarm so a genuinely wedged store logs once
     // per crossing, not every re-emit tick.
@@ -1669,6 +2172,14 @@ async fn run(
         // Persistence/re-emit stays live (the re-emit nudge + inbound still run).
         let sched_armed = next_due.is_some()
             && admission_for(admission_mode, IngressClass::Timer) == Admission::Allow;
+        let durable_schedule_armed = engine
+            .registry
+            .schedule_sources()
+            .is_some_and(|sources| !sources.is_empty())
+            // A retained seal is an older durability predecessor. Let its
+            // re-emit wake drain before admitting an exact-token action.
+            && retained.is_empty()
+            && admission_for(admission_mode, IngressClass::Timer) == Admission::Allow;
         let ready_deferred = if pending_commit.is_none() {
             deferred_world_msg.take()
         } else {
@@ -1697,6 +2208,7 @@ async fn run(
                 }
             } => Wake::CommitReceipt(receipt),
             () = sleep_until_unix_ms(next_due), if sched_armed => Wake::Timer,
+            _ = durable_schedule_tick.tick(), if durable_schedule_armed => Wake::DurableSchedules,
             () = tokio::time::sleep(REEMIT_INTERVAL), if reemit_pending => Wake::Timer,
             changed = shutdown.changed(), if !shutdown_requested => {
                 if changed.is_ok() && *shutdown.borrow_and_update() {
@@ -1858,44 +2370,92 @@ async fn run(
                             let _ = reply.send(Ok(engine.actor_of(conn) == Some(actor)));
                             StepOutcome::Continue
                         }
+                        WorldMsg::LegalActions {
+                            conn,
+                            actor,
+                            subject,
+                            reply,
+                        } => {
+                            let result = if engine.actor_of(conn) != Some(actor) {
+                                Err(LegalActionReadError::InvalidSubject)
+                            } else {
+                                legal_action_query(
+                                    &engine,
+                                    PrincipalId::Object { id: actor },
+                                    actor,
+                                    subject,
+                                )
+                                .and_then(|query| {
+                                    engine
+                                        .project_legal_actions(&query)
+                                        .map(|offers| offers.projected())
+                                        .map_err(|error| {
+                                            tracing::error!(
+                                                %actor,
+                                                error = %error,
+                                                "legal-action projection failed"
+                                            );
+                                            LegalActionReadError::Unavailable
+                                        })
+                                })
+                            };
+                            let _ = reply.send(result);
+                            StepOutcome::Continue
+                        }
                         WorldMsg::AuthoritativeAction(request) => {
                             let AuthoritativeActionRequest {
                                 permit,
-                                action,
-                                invocation,
+                                submission,
                                 reply,
                             } = *request;
-                            let staged = (|| {
-                                let definitions =
-                                    engine.registry.definitions().ok_or_else(|| {
-                                        "mechanics definition registry is unavailable".to_owned()
-                                    })?;
-                                let mut builder = engine
-                                    .registry
-                                    .server_guard_set_builder(RevisionSet::default())
+                            let staged = (|| -> Result<_, String> {
+                                let principal = permit.ingress().principal().clone();
+                                let PrincipalId::Object { id: actor } = principal else {
+                                    return Err(
+                                        "coordinator principal is not an object actor".to_owned()
+                                    );
+                                };
+                                let query = legal_action_query(
+                                    &engine,
+                                    PrincipalId::Object { id: actor },
+                                    actor,
+                                    submission.subject.clone(),
+                                )
+                                .map_err(|error| error.to_string())?;
+                                let offers = engine
+                                    .project_legal_actions(&query)
                                     .map_err(|error| error.to_string())?;
-                                builder
-                                    .add_definition(action.clone(), definitions)
+                                let resolved = engine
+                                    .resolve_legal_action(
+                                        &offers,
+                                        OfferExecutionContext {
+                                            request: permit.ingress().request(),
+                                            principal: PrincipalId::Object { id: actor },
+                                            actor,
+                                            idempotency: permit.ingress().idempotency().clone(),
+                                            viewer_scope: query.viewer_scope(),
+                                            now: None,
+                                        },
+                                        submission,
+                                    )
                                     .map_err(|error| error.to_string())?;
-                                let guards = builder.finish().map_err(|error| error.to_string())?;
-                                ActionCoordinator::prepare_and_stage(
+                                ActionCoordinator::prepare_and_stage_resolved(
                                     permit,
                                     &mut engine,
-                                    &action,
-                                    &invocation,
-                                    guards,
+                                    resolved,
                                 )
+                                .map(|staged| (staged, actor))
                                 .map_err(|error| error.to_string())
                             })();
                             match staged {
-                                Ok(staged) => {
+                                Ok((staged, actor)) => {
                                     let (owned, owned_rx) = oneshot::channel();
                                     let (finished, finished_rx) = oneshot::channel();
                                     let _ = reply.send(Ok(AuthoritativeActionWatch {
                                         owned: owned_rx,
                                         finished: finished_rx,
                                     }));
-                                    failure_actor = Some(invocation.actor());
+                                    failure_actor = Some(actor);
                                     action_completion = Some(ActionCompletion {
                                         staged,
                                         owned: Some(owned),
@@ -1936,7 +2496,21 @@ async fn run(
                 );
                 match signal {
                     WriterSignal::StoreStatus { healthy, detail } => {
-                        apply_store_status(&engine.world, &gateway, &mut health, healthy, &detail);
+                        if healthy && pending_commit.is_some() {
+                            recovery_waits_for_commit = true;
+                            tracing::debug!(
+                                "deferring store recovery transition until exact commit finalization"
+                            );
+                        } else {
+                            recovery_waits_for_commit = false;
+                            apply_store_status(
+                                &engine.world,
+                                &gateway,
+                                &mut health,
+                                healthy,
+                                &detail,
+                            );
+                        }
                     }
                     WriterSignal::LedgerBreach { detail, seal } => {
                         // Resolve a specific seal the writer isolated: a confirmed poison
@@ -2018,6 +2592,9 @@ async fn run(
                     llm.as_ref(),
                 );
                 finish_pending_operational(&mut engine, &gateway, completed);
+                if std::mem::take(&mut recovery_waits_for_commit) {
+                    apply_store_status(&engine.world, &gateway, &mut health, true, "");
+                }
                 if exit_after_ack {
                     StepOutcome::Shutdown
                 } else {
@@ -2032,6 +2609,61 @@ async fn run(
                 // foot-of-loop persistence flush (re-emit stays live while frozen).
                 if admission_for(admission_mode, IngressClass::Timer) == Admission::Allow {
                     engine.fire_due(unix_now_ms(), &mut out, &mut fx);
+                }
+                StepOutcome::Continue
+            }
+            Wake::DurableSchedules => {
+                let Some(store) = deps.store.authoritative_store() else {
+                    apply_integrity_freeze(
+                        &engine.world,
+                        &gateway,
+                        &mut health,
+                        &persistence_integrity,
+                        "durable schedule driver has no authoritative store capability",
+                    );
+                    continue;
+                };
+                match durable_schedules.drive_one(&mut engine, store).await {
+                    Ok(
+                        DurableScheduleDrive::Idle
+                        | DurableScheduleDrive::DeferredByLegacyPredecessor,
+                    ) => {
+                        durable_schedule_transient_alarmed = false;
+                    }
+                    Ok(DurableScheduleDrive::DiscardedStale(detail)) => {
+                        durable_schedule_transient_alarmed = false;
+                        tracing::debug!(
+                            error = %detail,
+                            "discarded stale durable schedule candidate"
+                        );
+                    }
+                    Ok(DurableScheduleDrive::Transient(detail)) => {
+                        if !durable_schedule_transient_alarmed {
+                            tracing::warn!(
+                                error = %detail,
+                                "durable schedule drive is temporarily unavailable"
+                            );
+                            durable_schedule_transient_alarmed = true;
+                        }
+                    }
+                    Ok(DurableScheduleDrive::Staged(staged)) => {
+                        durable_schedule_transient_alarmed = false;
+                        action_completion = Some(ActionCompletion {
+                            staged,
+                            owned: None,
+                            finished: None,
+                            ownership_valid: false,
+                        });
+                    }
+                    Err(detail) => {
+                        apply_integrity_freeze(
+                            &engine.world,
+                            &gateway,
+                            &mut health,
+                            &persistence_integrity,
+                            &format!("durable schedule drive failed: {detail}"),
+                        );
+                    }
                 }
                 StepOutcome::Continue
             }
@@ -2733,6 +3365,14 @@ fn refuse_world_msg(msg: WorldMsg, reason: RefusalReason, gateway: &Gateway) {
                 WorldReadError::Busy
             } else {
                 WorldReadError::Unavailable
+            };
+            let _ = reply.send(Err(error));
+        }
+        WorldMsg::LegalActions { reply, .. } => {
+            let error = if reason == RefusalReason::CommitPending {
+                LegalActionReadError::Busy
+            } else {
+                LegalActionReadError::Unavailable
             };
             let _ = reply.send(Err(error));
         }
@@ -4042,7 +4682,11 @@ async fn run_newpassword(
     // All-in-one: walk the shared manager (through the in-process sink) directly
     // — announce + bookkeeping through the world when the connection is still
     // up, then close each structured (web) connection.
-    let world = world.upgrade().map(|tx| WorldHandle { tx, shutdown: None });
+    let world = world.upgrade().map(|tx| WorldHandle {
+        tx,
+        shutdown: None,
+        direct_actions: None,
+    });
     let chars: Vec<u64> = account
         .characters
         .iter()
@@ -4259,7 +4903,11 @@ async fn run_newchar(
     }
     // The world handle for the durable, ack-gated create path. A dropped world
     // (teardown) means we cannot create; fail closed rather than orphan.
-    let Some(world) = world.upgrade().map(|tx| WorldHandle { tx, shutdown: None }) else {
+    let Some(world) = world.upgrade().map(|tx| WorldHandle {
+        tx,
+        shutdown: None,
+        direct_actions: None,
+    }) else {
         return "@newchar failed: the world is shutting down.".to_string();
     };
     // Advisory name pre-check BEFORE create (N2); the create re-checks atomically.
@@ -5166,6 +5814,7 @@ fn spawn_effect_list(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
@@ -5184,6 +5833,63 @@ mod tests {
     use mush_store::AuthoritativeStore;
 
     struct BlackholeGateway;
+
+    #[test]
+    fn operated_known_subject_requires_exact_unambiguous_grant_epoch() {
+        let mut engine = Engine::new(World::new_minimal(), Registry::new());
+        let movement = mush_core::ChannelId::new("movement").unwrap();
+        engine
+            .world
+            .publish_command_subject(mush_core::ChannelGrant {
+                actor: GOD,
+                subject: LIMBO,
+                station: SmolStr::new_static("pilot"),
+                relation: SmolStr::new_static("pilot"),
+                owner: SmolStr::new_static("sim"),
+                priority: 10,
+                channels: BTreeSet::from([movement.clone()]),
+                epoch: 7,
+            });
+        let principal = PrincipalId::Object { id: GOD };
+        let projected = PerceivedRef::KnownObject {
+            id: LIMBO,
+            revision: 7,
+        };
+        let query = legal_action_query(&engine, principal.clone(), GOD, projected.clone()).unwrap();
+        assert_eq!(query.truth_subject(), &SubjectKey::Object { id: LIMBO });
+        assert_eq!(query.projected_subject(), &projected);
+
+        assert_eq!(
+            legal_action_query(
+                &engine,
+                principal.clone(),
+                GOD,
+                PerceivedRef::KnownObject {
+                    id: LIMBO,
+                    revision: 6,
+                },
+            )
+            .unwrap_err(),
+            LegalActionReadError::InvalidSubject
+        );
+
+        engine
+            .world
+            .publish_command_subject(mush_core::ChannelGrant {
+                actor: GOD,
+                subject: LIMBO,
+                station: SmolStr::new_static("remote"),
+                relation: SmolStr::new_static("remote"),
+                owner: SmolStr::new_static("sim"),
+                priority: 5,
+                channels: BTreeSet::from([movement]),
+                epoch: 8,
+            });
+        assert_eq!(
+            legal_action_query(&engine, principal, GOD, projected).unwrap_err(),
+            LegalActionReadError::InvalidSubject
+        );
+    }
 
     impl GatewaySink for BlackholeGateway {
         fn transmit(&self, _sends: Vec<(SendTarget, Arc<OutputEvent>)>) {}
@@ -5217,6 +5923,286 @@ mod tests {
         fn session_counts(&self) -> (i64, i64) {
             (0, 0)
         }
+    }
+
+    #[tokio::test]
+    async fn durable_schedule_poll_executes_one_atomic_cursor_and_domain_bundle() {
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_test_writer()
+            .try_init();
+        use mush_contract_tests::{
+            TOY_OWNER, install_toy_focus, install_toy_scheduled_expiry, toy_brace_invocation,
+            toy_definitions, toy_world_with_state,
+        };
+        use mush_core::{
+            DurableSchedule, DurableScheduleDraft, ScheduleCatchUpOrder, ScheduleId,
+            ScheduleRestartPolicy,
+        };
+
+        let (mut world, families) = toy_world_with_state();
+        install_toy_focus(world.engine_mut(), &families, GOD, 1);
+        let invocation = toy_brace_invocation(GOD, 11, RequestUid::from_bytes([0x31; 16]));
+        let (prepared, _) = world
+            .engine_mut()
+            .prepare_registered_authoritative_action(
+                &toy_definitions().brace,
+                &invocation,
+                DurableCommitToken::from_bytes([0x32; 16]),
+            )
+            .expect("prepare guarded fixture");
+        let (_, installation) = prepared.into_parts();
+        world.engine_mut().install_prepared_action(installation);
+        let effect = world
+            .engine()
+            .action_state()
+            .get(&families.guarded, &GOD)
+            .unwrap()
+            .unwrap()
+            .effect
+            .id();
+        let owner = OwnerId::new(TOY_OWNER).unwrap();
+        let schedule = DurableSchedule::new(DurableScheduleDraft {
+            id: ScheduleId::derive(&owner, &CanonicalId::new("world_poll_expiry").unwrap())
+                .unwrap(),
+            owner,
+            clock: mush_core::ClockRef::Utc,
+            next_due: mush_core::ClockStamp {
+                clock: mush_core::ClockRef::Utc,
+                at: 0,
+            },
+            cadence: None,
+            generation: 1,
+            next_ordinal: 0,
+            restart: ScheduleRestartPolicy::Resume,
+            catch_up_order: ScheduleCatchUpOrder::OldestFirst,
+            max_catch_up: 1,
+        })
+        .unwrap();
+        let schedule_key = format!(
+            "action-state/v1/schedules/{}",
+            schedule.id().canonical_hash().to_hex()
+        );
+        install_toy_scheduled_expiry(world.engine_mut(), &families, schedule, GOD, effect);
+
+        let deps = ServerDeps::in_memory();
+        let store = Arc::clone(&deps.store);
+        let handles =
+            spawn_persist_with_gateway(world.into_engine(), deps, |_| Arc::new(BlackholeGateway));
+        let mut completed = false;
+        for _ in 0..40 {
+            if store
+                .module_json_get(TOY_OWNER, &schedule_key)
+                .await
+                .unwrap()
+                .is_some_and(|document| document["value"]["state"] == "completed")
+            {
+                completed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let persisted = store.module_json_list(TOY_OWNER).await.unwrap();
+        assert!(
+            completed,
+            "durable schedule was not committed by the wake driver: {persisted:?}"
+        );
+        assert!(
+            store
+                .module_json_get(TOY_OWNER, "action-state/v1/guarded/1")
+                .await
+                .unwrap()
+                .is_none(),
+            "the cursor and effect removal must share one authoritative commit"
+        );
+
+        assert!(
+            handles
+                .handle
+                .inbound(Inbound::Control(ControlMsg::Shutdown))
+                .await
+        );
+        handles.world_join.await.unwrap();
+        handles.writer_join.await.unwrap();
+        handles.outbox_join.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn durable_schedule_driver_rebases_retired_server_epoch() {
+        use mush_contract_tests::{
+            TOY_OWNER, install_toy_focus, install_toy_scheduled_expiry, toy_brace_invocation,
+            toy_definitions, toy_world_with_state,
+        };
+        use mush_core::{
+            DurableSchedule, DurableScheduleDraft, ScheduleCatchUpOrder, ScheduleId,
+            ScheduleRestartPolicy,
+        };
+
+        let (mut world, families) = toy_world_with_state();
+        install_toy_focus(world.engine_mut(), &families, GOD, 1);
+        let invocation = toy_brace_invocation(GOD, 11, RequestUid::from_bytes([0x41; 16]));
+        let (prepared, _) = world
+            .engine_mut()
+            .prepare_registered_authoritative_action(
+                &toy_definitions().brace,
+                &invocation,
+                DurableCommitToken::from_bytes([0x42; 16]),
+            )
+            .expect("prepare guarded fixture");
+        let (_, installation) = prepared.into_parts();
+        world.engine_mut().install_prepared_action(installation);
+        let effect = world
+            .engine()
+            .action_state()
+            .get(&families.guarded, &GOD)
+            .unwrap()
+            .unwrap()
+            .effect
+            .id();
+        let owner = OwnerId::new(TOY_OWNER).unwrap();
+        let schedule = DurableSchedule::new(DurableScheduleDraft {
+            id: ScheduleId::derive(&owner, &CanonicalId::new("retired_epoch_expiry").unwrap())
+                .unwrap(),
+            owner,
+            clock: mush_core::ClockRef::Utc,
+            next_due: mush_core::ClockStamp {
+                clock: mush_core::ClockRef::Utc,
+                at: 90,
+            },
+            cadence: None,
+            generation: 1,
+            next_ordinal: 0,
+            restart: ScheduleRestartPolicy::Resume,
+            catch_up_order: ScheduleCatchUpOrder::OldestFirst,
+            max_catch_up: 1,
+        })
+        .unwrap();
+        install_toy_scheduled_expiry(world.engine_mut(), &families, schedule, GOD, effect);
+        world.world_mut().set_now(100);
+        let candidate = world
+            .engine()
+            .discover_scheduled_actions(mush_core::ScheduleDriveCause::Live, None, 1)
+            .unwrap()
+            .candidates()[0]
+            .clone();
+        let old_ingress =
+            ActionCoordinator::scheduled_ingress(candidate.action(), candidate.advance(), 1)
+                .unwrap();
+        let store = mush_store::InMemoryStore::new();
+        store
+            .retire_authoritative_epochs(old_ingress.idempotency().scope(), 9)
+            .await
+            .expect("seed retired scheduler epoch");
+        let _ = world.drain_write_batch();
+        let mut engine = world.into_engine();
+        let mut driver = DurableScheduleDriver::new(1);
+
+        assert!(matches!(
+            driver.drive_one(&mut engine, &store).await.unwrap(),
+            DurableScheduleDrive::Staged(_)
+        ));
+        let staged = engine
+            .take_staged_action()
+            .unwrap()
+            .expect("rebased schedule action staged");
+        let (persistence, installation) = staged.into_parts();
+        let StagedActionPersistence::Authoritative(bundle) = persistence else {
+            panic!("schedule driver used legacy persistence")
+        };
+        assert_eq!(bundle.idempotency().epoch(), 9);
+        assert_eq!(driver.idempotency_epoch, 9);
+        engine.abort_prepared_action(installation);
+    }
+
+    #[tokio::test]
+    async fn durable_schedule_driver_discards_stale_retained_candidate() {
+        use mush_contract_tests::{
+            TOY_OWNER, install_toy_focus, install_toy_scheduled_expiry, toy_brace_invocation,
+            toy_definitions, toy_world_with_state,
+        };
+        use mush_core::{
+            DurableSchedule, DurableScheduleDraft, ScheduleCatchUpOrder, ScheduleId,
+            ScheduleRestartPolicy,
+        };
+
+        let (mut world, families) = toy_world_with_state();
+        install_toy_focus(world.engine_mut(), &families, GOD, 1);
+        let invocation = toy_brace_invocation(GOD, 11, RequestUid::from_bytes([0x51; 16]));
+        let (prepared, _) = world
+            .engine_mut()
+            .prepare_registered_authoritative_action(
+                &toy_definitions().brace,
+                &invocation,
+                DurableCommitToken::from_bytes([0x52; 16]),
+            )
+            .expect("prepare guarded fixture");
+        let (_, installation) = prepared.into_parts();
+        world.engine_mut().install_prepared_action(installation);
+        let effect = world
+            .engine()
+            .action_state()
+            .get(&families.guarded, &GOD)
+            .unwrap()
+            .unwrap()
+            .effect
+            .id();
+        let owner = OwnerId::new(TOY_OWNER).unwrap();
+        let schedule = DurableSchedule::new(DurableScheduleDraft {
+            id: ScheduleId::derive(&owner, &CanonicalId::new("stale_retained").unwrap()).unwrap(),
+            owner,
+            clock: mush_core::ClockRef::Utc,
+            next_due: mush_core::ClockStamp {
+                clock: mush_core::ClockRef::Utc,
+                at: 90,
+            },
+            cadence: None,
+            generation: 1,
+            next_ordinal: 0,
+            restart: ScheduleRestartPolicy::Resume,
+            catch_up_order: ScheduleCatchUpOrder::OldestFirst,
+            max_catch_up: 1,
+        })
+        .unwrap();
+        let schedule_id = schedule.id();
+        install_toy_scheduled_expiry(world.engine_mut(), &families, schedule, GOD, effect);
+        world.world_mut().set_now(100);
+        let candidate = world
+            .engine()
+            .discover_scheduled_actions(mush_core::ScheduleDriveCause::Live, None, 1)
+            .unwrap()
+            .candidates()[0]
+            .clone();
+
+        // A competing authoritative transition changes the cursor after this
+        // candidate was retained for retry. The old candidate is ordinary
+        // optimistic-concurrency loss, not an integrity breach.
+        let mut transaction = world
+            .engine_mut()
+            .action_transaction(&families.schedules)
+            .expect("schedule update transaction");
+        transaction
+            .replace(
+                &families.schedules,
+                &schedule_id,
+                candidate.advance().post_image().clone(),
+            )
+            .expect("install competing cursor advance");
+        let prepared = transaction.prepare().expect("prepare cursor update");
+        let (_, installation) = prepared.into_parts();
+        world.engine_mut().install_prepared_action(installation);
+        let _ = world.drain_write_batch();
+
+        let mut engine = world.into_engine();
+        let mut driver = DurableScheduleDriver::new(1);
+        driver.retry = Some(candidate);
+        let store = mush_store::InMemoryStore::new();
+        assert!(matches!(
+            driver.drive_one(&mut engine, &store).await.unwrap(),
+            DurableScheduleDrive::DiscardedStale(_)
+        ));
+        assert!(driver.retry.is_none());
+        assert!(!engine.action_state().has_prepared());
+        assert!(engine.take_staged_action().unwrap().is_none());
     }
 
     #[derive(Default)]
@@ -5282,6 +6268,106 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn all_in_one_offer_submission_reaches_durable_ownership() {
+        let mut engine = Engine::with_modules(
+            World::new_minimal(),
+            base_registry(),
+            vec![Box::new(mush_tactics::TacticsModule::new())],
+        )
+        .expect("tactics module composition");
+        engine.set_offer_keys(
+            mush_core::OfferKeyRing::new(
+                mush_core::OfferSecret::new(1, [0x51; 32]).expect("test offer secret"),
+                [],
+            )
+            .expect("test offer key ring"),
+        );
+
+        let store = Arc::new(InMemoryStore::new());
+        let recorder = Arc::new(RecordingGateway::default());
+        let sink = Arc::clone(&recorder);
+        let handles = spawn_persist_with_gateway(
+            engine,
+            ServerDeps {
+                store: store.clone(),
+                guard: Arc::new(IpGuard::new()),
+                staff: Arc::new(StaffQueue::new()),
+                llm: None,
+                metrics: Arc::new(Metrics::new()),
+                quarantine_spool: crate::quarantine::QuarantineSpool::in_memory(),
+            },
+            move |_| -> Gateway { sink },
+        );
+        let PersistHandles {
+            handle,
+            world_join,
+            writer_join,
+            outbox_join,
+            ..
+        } = handles;
+
+        const CONN: u64 = 0x5151;
+        assert!(
+            handle
+                .inbound(Inbound::ConnUp {
+                    conn: CONN,
+                    actor: GOD,
+                    caps_structured: true,
+                    from_linkdead: false,
+                })
+                .await
+        );
+        assert!(
+            handle.barrier().await,
+            "connection must become authoritative"
+        );
+        let offer = handle
+            .legal_actions(CONN, GOD, PerceivedRef::SelfActor)
+            .await
+            .expect("legal-action projection")
+            .into_iter()
+            .find(|offer| offer.presentation().verb == "brace")
+            .expect("tactics brace offer");
+
+        let ActionSend::Finished(receipt) = handle
+            .submit_legal_action(GatewayAction {
+                conn: CONN,
+                actor: GOD,
+                offered_action: offer.offer(),
+                subject: offer.subject().clone(),
+                targets: Vec::new(),
+                parameters: serde_json::json!({}),
+            })
+            .await
+        else {
+            panic!("all-in-one action did not return its exact projected receipt");
+        };
+        assert_eq!(receipt.result().unwrap().summary(), "Brace committed.");
+        assert!(handle.barrier().await, "authoritative receipt must settle");
+        let stance = store
+            .module_json_get("tactics", "action-state/v1/stance/1")
+            .await
+            .expect("read persisted tactics stance")
+            .expect("brace post-image must be durable");
+        assert_eq!(stance["value"]["braced"], true);
+        assert_eq!(stance["value"]["revision"], 1);
+
+        assert!(handle.inbound(Inbound::Control(ControlMsg::Shutdown)).await);
+        tokio::time::timeout(Duration::from_secs(2), world_join)
+            .await
+            .expect("world shutdown timed out")
+            .expect("world task panicked");
+        tokio::time::timeout(Duration::from_secs(2), writer_join)
+            .await
+            .expect("writer shutdown timed out")
+            .expect("writer task panicked");
+        tokio::time::timeout(Duration::from_secs(2), outbox_join)
+            .await
+            .expect("outbox shutdown timed out")
+            .expect("outbox task panicked");
+    }
+
     #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct PreparedLaneState {
@@ -5298,10 +6384,10 @@ mod tests {
     impl RevisionValidator for PreparedLaneRevision {
         fn current_generation(
             &self,
-            world: &World,
+            context: &mush_core::RevisionValidatorContext<'_>,
             _key: &RevisionKey,
         ) -> Result<Option<u64>, ActionError> {
-            Ok(world
+            Ok(context
                 .module_state::<PreparedLaneGeneration>()
                 .map(|generation| generation.0))
         }
@@ -5484,6 +6570,7 @@ mod tests {
                 serde_json::json!({ "accepted": true }),
             )
             .unwrap(),
+            resolution: None,
             semantic_events: vec![
                 mush_core::AuthoritativeSemanticEvent::root(
                     PreparedCausalRef::new(request, None, 0).unwrap(),
@@ -7036,7 +8123,11 @@ mod tests {
     #[tokio::test]
     async fn world_handle_refuses_oversized_reattach_before_enqueue() {
         let (tx, mut rx) = mpsc::channel(2);
-        let handle = WorldHandle { tx, shutdown: None };
+        let handle = WorldHandle {
+            tx,
+            shutdown: None,
+            direct_actions: None,
+        };
         let mut sparse = Vec::with_capacity(100_000);
         sparse.push(ReAttachRec {
             conn: 41,
@@ -7079,6 +8170,7 @@ mod tests {
         let handle = WorldHandle {
             tx: tx.clone(),
             shutdown: Some(shutdown_tx),
+            direct_actions: None,
         };
         let (staff_tx, _staff_rx) = mpsc::channel(STAFF_OPS_CAPACITY);
         let (_signal_tx, signal_rx) = writer_signal_channel();
@@ -7099,6 +8191,7 @@ mod tests {
             Arc::new(AtomicU64::new(0)),
             signal_rx,
             shutdown_rx,
+            1,
             PersistenceIntegrityLatch::new(),
             None,
             watch::channel(false).0,

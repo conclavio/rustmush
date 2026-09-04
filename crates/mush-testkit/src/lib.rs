@@ -144,6 +144,12 @@ impl TestWorld {
         &mut self.engine
     }
 
+    /// Consume the harness and return its real engine for driver-level tests.
+    #[must_use]
+    pub fn into_engine(self) -> Engine {
+        self.engine
+    }
+
     /// Create a player named `name` in Limbo and mark them connected
     /// (through the engine, so module `ObjCreated` observers and
     /// `Connected` hooks fire — connect-time output is discarded; use
@@ -425,6 +431,7 @@ pub fn text_of(event: &OutputEvent) -> String {
         OutputEvent::Ping { nonce } => format!("[ping {nonce}]"),
         OutputEvent::Resumed { replayed } => format!("[resumed replayed={replayed}]"),
         OutputEvent::Panel { feed, .. } => format!("[panel {feed}]"),
+        OutputEvent::View(view) => format!("[view {}]", view.view()),
         OutputEvent::Weather { text, .. } => text.to_plain_text(),
         OutputEvent::Prompt(p) => p
             .text

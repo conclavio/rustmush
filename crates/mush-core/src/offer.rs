@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use hmac::{Hmac, KeyInit, Mac};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::Sha256;
 use thiserror::Error;
@@ -18,7 +18,7 @@ use thiserror::Error;
 use crate::action::{
     ActionError, ActionInvocation, ActionInvocationDraft, ActionMetadataError, ActionOfferId,
     CanonicalHash, CanonicalHashError, GuardSet, PerceivedRef, PrincipalId, RequestUid,
-    ScopedIdempotencyKey, SubjectKey,
+    ResolvedActionInvocation, ScopedIdempotencyKey, SubjectKey,
 };
 use crate::behavior::ChannelId;
 use crate::clock::ClockStamp;
@@ -45,6 +45,79 @@ pub const MAX_PROJECTED_ACTION_TEXT_BYTES: usize = 4 * 1024;
 pub const MAX_OFFER_SECRET_VERSIONS: usize = 4;
 
 const OFFER_HMAC_DOMAIN: &[u8] = b"rustmush.offer.hmac.sha256.v1\0";
+const OFFER_ROUTE_BYTES: usize = 16;
+const OFFER_TAG_BYTES: usize = 16;
+
+/// Stable opaque routing prefix derived from an action locator (owner, kind,
+/// id), excluding its replaceable definition digest. It permits an early
+/// idempotency lookup without trusting or exposing a client-supplied exact
+/// action definition.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct OfferRouteId([u8; OFFER_ROUTE_BYTES]);
+
+impl OfferRouteId {
+    pub fn derive(action: &DefinitionRef) -> Result<Self, CanonicalHashError> {
+        let hash = CanonicalHash::for_canonical_value(
+            "offer_route.v1",
+            1,
+            &json!({
+                "owner": action.key().owner,
+                "kind": action.key().kind,
+                "id": action.key().id,
+                "version": action.version(),
+            }),
+            16 * 1024,
+        )?;
+        let mut route = [0_u8; OFFER_ROUTE_BYTES];
+        route.copy_from_slice(&hash.as_bytes()[..OFFER_ROUTE_BYTES]);
+        Ok(Self(route))
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; OFFER_ROUTE_BYTES] {
+        &self.0
+    }
+}
+
+impl ActionOfferId {
+    /// Read the unauthenticated opaque routing prefix. Callers may use it only
+    /// to select an early idempotency namespace; successful execution still
+    /// requires regeneration and HMAC verification of the complete offer.
+    #[must_use]
+    pub fn route_id(self) -> OfferRouteId {
+        let mut route = [0_u8; OFFER_ROUTE_BYTES];
+        route.copy_from_slice(&self.0.as_bytes()[..OFFER_ROUTE_BYTES]);
+        OfferRouteId(route)
+    }
+}
+
+/// Immutable route-only snapshot safe to retain outside the world task. It
+/// contains exact registry metadata, but no provider callback or world truth.
+#[derive(Clone, Debug, Default)]
+pub struct OfferRouteTable(BTreeMap<OfferRouteId, DefinitionRef>);
+
+impl OfferRouteTable {
+    pub(crate) fn from_entries(
+        entries: impl IntoIterator<Item = (OfferRouteId, DefinitionRef)>,
+    ) -> Self {
+        Self(entries.into_iter().collect())
+    }
+
+    #[must_use]
+    pub fn get(&self, route: OfferRouteId) -> Option<&DefinitionRef> {
+        self.0.get(&route)
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
 
 /// Internal identity of one viewer/sharing projection generation.
 ///
@@ -82,6 +155,22 @@ pub struct LegalActionQuery {
     projected_subject: PerceivedRef,
     viewer_scope: ProjectionScopeId,
     now: Option<ClockStamp>,
+    authority_guards: Vec<crate::action::AuthorityGuard>,
+}
+
+/// Failure while turning an untrusted perceived subject into a trusted,
+/// server-private legal-action query.
+///
+/// `Invalid` deliberately collapses nonexistent, unobservable, stale, and
+/// unauthorized references. `Unavailable` is reserved for a missing or
+/// unhealthy authority service so interfaces can retry without learning
+/// private subject truth.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum LegalActionSubjectError {
+    #[error("the perceived subject has no current authoritative projection")]
+    Invalid,
+    #[error("subject authority is unavailable")]
+    Unavailable,
 }
 
 impl LegalActionQuery {
@@ -101,6 +190,7 @@ impl LegalActionQuery {
             projected_subject,
             viewer_scope,
             now,
+            authority_guards: Vec::new(),
         })
     }
 
@@ -133,11 +223,22 @@ impl LegalActionQuery {
     pub const fn now(&self) -> Option<&ClockStamp> {
         self.now.as_ref()
     }
+
+    #[must_use]
+    pub(crate) fn with_authority_guard(mut self, guard: crate::action::AuthorityGuard) -> Self {
+        self.authority_guards.push(guard);
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn authority_guards(&self) -> &[crate::action::AuthorityGuard] {
+        &self.authority_guards
+    }
 }
 
 /// Viewer-safe parameter kind. Rulesets own semantics; core validates only
 /// the projected shape and bounds before provider execution.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProjectedParameterKind {
     Boolean,
@@ -147,7 +248,8 @@ pub enum ProjectedParameterKind {
 }
 
 /// One named public input accepted by an offer.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectedParameter {
     pub id: CanonicalId,
     pub required: bool,
@@ -155,7 +257,7 @@ pub struct ProjectedParameter {
 }
 
 /// Canonically ordered public parameter schema.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct ProjectedParameterSchema(Vec<ProjectedParameter>);
 
@@ -277,7 +379,7 @@ fn validate_parameter_value(
 }
 
 /// Viewer-safe target selection contract.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProjectedTargetSchema {
     None,
@@ -341,7 +443,8 @@ impl ProjectedTargetSchema {
 }
 
 /// Presentation shared by line, panel, NPC, and LLM projections.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ActionPresentation {
     pub verb: String,
     pub label: String,
@@ -375,7 +478,8 @@ impl ActionPresentation {
 }
 
 /// The only legal-action data exposed to a caller.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectedLegalAction {
     offer: ActionOfferId,
     subject: PerceivedRef,
@@ -506,32 +610,41 @@ impl OfferKeyRing {
         self.current.version
     }
 
-    fn sign(&self, binding: CanonicalHash) -> ActionOfferId {
-        ActionOfferId(offer_mac(&self.current, binding))
+    fn sign(&self, route: OfferRouteId, binding: CanonicalHash) -> ActionOfferId {
+        let tag = offer_mac_state(&self.current, route, binding)
+            .finalize()
+            .into_bytes();
+        let mut token = [0_u8; OFFER_ROUTE_BYTES + OFFER_TAG_BYTES];
+        token[..OFFER_ROUTE_BYTES].copy_from_slice(route.as_bytes());
+        token[OFFER_ROUTE_BYTES..].copy_from_slice(&tag[..OFFER_TAG_BYTES]);
+        ActionOfferId(CanonicalHash::from_bytes(token))
     }
 
-    fn matches(&self, offer: ActionOfferId, binding: CanonicalHash) -> bool {
+    fn matches(&self, offer: ActionOfferId, route: OfferRouteId, binding: CanonicalHash) -> bool {
+        if offer.route_id() != route {
+            return false;
+        }
         let mut matched = false;
         for secret in std::iter::once(&self.current).chain(self.retained.values()) {
-            let mac = offer_mac_state(secret, binding);
-            matched |= mac.verify_slice(offer.0.as_bytes()).is_ok();
+            let mac = offer_mac_state(secret, route, binding);
+            matched |= mac
+                .verify_truncated_left(&offer.0.as_bytes()[OFFER_ROUTE_BYTES..])
+                .is_ok();
         }
         matched
     }
 }
 
-fn offer_mac(secret: &OfferSecret, binding: CanonicalHash) -> CanonicalHash {
-    let bytes = offer_mac_state(secret, binding).finalize().into_bytes();
-    let mut result = [0_u8; 32];
-    result.copy_from_slice(&bytes);
-    CanonicalHash::from_bytes(result)
-}
-
-fn offer_mac_state(secret: &OfferSecret, binding: CanonicalHash) -> Hmac<Sha256> {
+fn offer_mac_state(
+    secret: &OfferSecret,
+    route: OfferRouteId,
+    binding: CanonicalHash,
+) -> Hmac<Sha256> {
     let mut mac = Hmac::<Sha256>::new_from_slice(&secret.key)
         .expect("HMAC-SHA256 accepts a fixed 32-byte key");
     mac.update(OFFER_HMAC_DOMAIN);
     mac.update(&secret.version.to_be_bytes());
+    mac.update(route.as_bytes());
     mac.update(binding.as_bytes());
     mac
 }
@@ -554,6 +667,7 @@ pub enum OfferSecretError {
 /// Trusted provider input for one internal offer.
 pub struct InternalOfferDraft {
     pub action: DefinitionRef,
+    pub route: OfferRouteId,
     pub viewer_scope: ProjectionScopeId,
     pub truth_subject: SubjectKey,
     pub projected_subject: PerceivedRef,
@@ -585,6 +699,7 @@ pub struct ProviderOfferDraft {
 pub struct InternalOffer {
     offer: ActionOfferId,
     binding_hash: CanonicalHash,
+    route: OfferRouteId,
     action: DefinitionRef,
     provider: OwnerId,
     viewer_scope: ProjectionScopeId,
@@ -598,6 +713,9 @@ impl InternalOffer {
     pub fn new(draft: InternalOfferDraft, keys: &OfferKeyRing) -> Result<Self, OfferBuildError> {
         if draft.action.key().kind.as_str() != "action" {
             return Err(OfferBuildError::DefinitionKind);
+        }
+        if draft.route != OfferRouteId::derive(&draft.action)? {
+            return Err(OfferBuildError::RouteMismatch);
         }
         if !draft
             .guards
@@ -655,7 +773,7 @@ impl InternalOffer {
             }),
             MAX_PROJECTED_LEGAL_ACTION_BYTES + crate::action::MAX_GUARD_SET_BYTES,
         )?;
-        let offer = keys.sign(binding_hash);
+        let offer = keys.sign(draft.route, binding_hash);
         let projected = ProjectedLegalAction {
             offer,
             subject: draft.projected_subject,
@@ -673,6 +791,7 @@ impl InternalOffer {
         Ok(Self {
             offer,
             binding_hash,
+            route: draft.route,
             action: draft.action,
             provider,
             viewer_scope: draft.viewer_scope,
@@ -789,22 +908,13 @@ impl ProjectedLegalActionSink {
 
     /// Resolve one opaque submission without distinguishing unknown, expired,
     /// changed, or wrong-viewer offers to the caller.
-    pub fn resolve(
+    pub(crate) fn resolve(
         &self,
         keys: &OfferKeyRing,
         execution: OfferExecutionContext,
         submission: OfferSubmission,
     ) -> Result<ResolvedOffer, OfferResolveError> {
-        let mut matched = None;
-        for offer in self.offers.values() {
-            if keys.matches(submission.offer, offer.binding_hash) {
-                if matched.is_some() {
-                    return Err(OfferResolveError::AmbiguousBinding);
-                }
-                matched = Some(offer);
-            }
-        }
-        let offer = matched.ok_or(OfferResolveError::Unavailable)?;
+        let offer = self.matching_offer(keys, submission.offer)?;
         if execution.viewer_scope != self.viewer_scope
             || execution.viewer_scope != offer.viewer_scope
             || execution.idempotency.scope().owner != offer.provider
@@ -849,8 +959,38 @@ impl ProjectedLegalActionSink {
         Ok(ResolvedOffer {
             action: offer.action.clone(),
             invocation,
+            truth_subject: offer.truth_subject.clone(),
             guards: offer.guards.clone(),
         })
+    }
+
+    pub(crate) fn expiration_for(
+        &self,
+        keys: &OfferKeyRing,
+        offered: ActionOfferId,
+    ) -> Result<Option<&ClockStamp>, OfferResolveError> {
+        Ok(self
+            .matching_offer(keys, offered)?
+            .projected
+            .expires
+            .as_ref())
+    }
+
+    fn matching_offer(
+        &self,
+        keys: &OfferKeyRing,
+        offered: ActionOfferId,
+    ) -> Result<&InternalOffer, OfferResolveError> {
+        let mut matched = None;
+        for offer in self.offers.values() {
+            if keys.matches(offered, offer.route, offer.binding_hash) {
+                if matched.is_some() {
+                    return Err(OfferResolveError::AmbiguousBinding);
+                }
+                matched = Some(offer);
+            }
+        }
+        matched.ok_or(OfferResolveError::Unavailable)
     }
 }
 
@@ -889,15 +1029,52 @@ pub struct OfferSubmission {
     pub parameters: Value,
 }
 
-/// Exact provider input after successful opaque-offer resolution.
+/// Intermediate offer after opaque binding resolution but before selected
+/// targets have been privately interpreted by the engine.
 #[derive(Debug)]
-pub struct ResolvedOffer {
+pub(crate) struct ResolvedOffer {
     action: DefinitionRef,
     invocation: ActionInvocation,
+    truth_subject: SubjectKey,
     guards: GuardSet,
 }
 
 impl ResolvedOffer {
+    pub(crate) fn into_resolution_parts(
+        self,
+    ) -> (DefinitionRef, ActionInvocation, SubjectKey, GuardSet) {
+        (
+            self.action,
+            self.invocation,
+            self.truth_subject,
+            self.guards,
+        )
+    }
+}
+
+/// Offer after the engine has privately resolved every selected target and
+/// attached its current authority witnesses. Only this type may enter the
+/// production authoritative coordinator.
+#[derive(Debug)]
+pub struct ResolvedAuthoritativeOffer {
+    action: DefinitionRef,
+    resolved: ResolvedActionInvocation,
+    guards: GuardSet,
+}
+
+impl ResolvedAuthoritativeOffer {
+    pub(crate) const fn new(
+        action: DefinitionRef,
+        resolved: ResolvedActionInvocation,
+        guards: GuardSet,
+    ) -> Self {
+        Self {
+            action,
+            resolved,
+            guards,
+        }
+    }
+
     #[must_use]
     pub const fn action(&self) -> &DefinitionRef {
         &self.action
@@ -905,7 +1082,12 @@ impl ResolvedOffer {
 
     #[must_use]
     pub const fn invocation(&self) -> &ActionInvocation {
-        &self.invocation
+        self.resolved.invocation()
+    }
+
+    #[must_use]
+    pub const fn resolved_invocation(&self) -> &ResolvedActionInvocation {
+        &self.resolved
     }
 
     #[must_use]
@@ -914,8 +1096,8 @@ impl ResolvedOffer {
     }
 
     #[must_use]
-    pub fn into_parts(self) -> (DefinitionRef, ActionInvocation, GuardSet) {
-        (self.action, self.invocation, self.guards)
+    pub fn into_authoritative_parts(self) -> (DefinitionRef, ResolvedActionInvocation, GuardSet) {
+        (self.action, self.resolved, self.guards)
     }
 }
 
@@ -924,6 +1106,8 @@ impl ResolvedOffer {
 pub enum OfferBuildError {
     #[error("legal offer definition is not an action")]
     DefinitionKind,
+    #[error("legal offer route does not match its exact action locator")]
+    RouteMismatch,
     #[error("legal offer does not carry its exact action-definition guard")]
     MissingDefinitionGuard,
     #[error("fixed offer parameters must be an object")]
@@ -1014,6 +1198,23 @@ pub enum LegalActionProjectionError {
     },
     #[error("provider owner became unavailable while projecting {action}")]
     ProviderUnavailable { action: Box<DefinitionRef> },
+    #[error("authority-witness registry is unavailable while projecting {action}")]
+    AuthorityRegistryUnavailable { action: Box<DefinitionRef> },
+    #[error("control-lease authority for {action} could not be witnessed: {source}")]
+    ControlLeaseAuthority {
+        action: Box<DefinitionRef>,
+        source: Box<crate::action::AuthorityWitnessError>,
+    },
+    #[error("subject authority for {action} could not be bound: {source}")]
+    SubjectAuthority {
+        action: Box<DefinitionRef>,
+        source: Box<crate::action::GuardSetBuildError>,
+    },
+    #[error("kernel could not bind an exact station grant to {action}: {source}")]
+    ChannelGrant {
+        action: Box<DefinitionRef>,
+        source: Box<crate::action::GuardSetBuildError>,
+    },
     #[error("provider {action} produced an invalid offer: {source}")]
     Offer {
         action: Box<DefinitionRef>,
@@ -1090,6 +1291,7 @@ mod tests {
         InternalOffer::new(
             InternalOfferDraft {
                 action: action.clone(),
+                route: OfferRouteId::derive(&action).unwrap(),
                 viewer_scope,
                 truth_subject: SubjectKey::Object {
                     id: crate::obj::ObjId(1),
@@ -1169,10 +1371,10 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(resolved.action().key().id.as_str(), "brace");
+        assert_eq!(resolved.action.key().id.as_str(), "brace");
         assert_eq!(
             serde_json::from_value::<ClockStamp>(
-                resolved.invocation().parameters()["scene_turn"].clone()
+                resolved.invocation.parameters()["scene_turn"].clone()
             )
             .unwrap(),
             stamp(11)
@@ -1188,7 +1390,18 @@ mod tests {
         let rotated =
             OfferKeyRing::new(OfferSecret::new(3, [3; 32]).unwrap(), [old_secret]).unwrap();
         let mut regenerated = ProjectedLegalActionSink::new(scope());
-        regenerated.push(internal_offer(&rotated, scope())).unwrap();
+        let rotated_offer = internal_offer(&rotated, scope());
+        assert_eq!(
+            old_token.route_id(),
+            rotated_offer.offer().route_id(),
+            "key rotation must not change the early idempotency route"
+        );
+        assert_ne!(
+            old_token,
+            rotated_offer.offer(),
+            "the authentication tag must identify the signing key version"
+        );
+        regenerated.push(rotated_offer).unwrap();
         assert!(
             regenerated
                 .resolve(

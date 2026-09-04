@@ -7,16 +7,44 @@
 //! stream must decode in order; a truncated frame must read as
 //! needs-more-bytes, never a panic; and the version field must be present.
 
-use mush_core::{ControlMsg as CoreControl, DisconnectKind, Inbound, ObjId, WorldCommand};
+use mush_core::{
+    ActionOfferId, ControlMsg as CoreControl, DisconnectKind, Inbound, ObjId, PerceivedRef,
+    ProjectedLegalAction, WorldCommand,
+};
 use mush_ipc::codec::{decode_frame, encode_frame_into};
 use mush_ipc::{
     AttachRec, CanonicalHash, CommitToken, CreatePlayerError, DetachCause, FrameDecoder,
-    GatewayInput, GatewayRequest, GatewayRequestDisposition, IPC_VERSION, MAX_FRAME_LEN,
-    MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES, MAX_IN_FLIGHT_GATEWAY_INPUTS,
-    MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, MAX_IN_FLIGHT_SERVICE_REQUESTS, RequestUid, ServiceReq,
-    ServiceResp, ToGateway, ToServer, WireInbound, WireInboundError, encode_frame,
+    GatewayAction, GatewayInput, GatewayRequest, GatewayRequestDisposition, IPC_VERSION,
+    LegalActionsError, MAX_FRAME_LEN, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES,
+    MAX_IN_FLIGHT_GATEWAY_INPUTS, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
+    MAX_IN_FLIGHT_SERVICE_REQUESTS, RequestUid, ServiceReq, ServiceResp, ToGateway, ToServer,
+    WireInbound, WireInboundError, encode_frame,
 };
-use mush_proto::{OutputEvent, PanelFrameKind, RichText};
+use mush_proto::{
+    ActionStatusId, OutputEvent, PanelFrameKind, ProjectedActionReceipt, ProjectedActionResult,
+    ProjectedActionStatus, RichText,
+};
+
+fn sample_status() -> ActionStatusId {
+    ActionStatusId::new("k5:toy:brace:0000000000001234:01010101010101010101010101010101")
+        .expect("sample action status")
+}
+
+fn sample_receipt() -> ProjectedActionReceipt {
+    ProjectedActionReceipt::new(
+        sample_status(),
+        CommitToken::from_bytes([2; 16]).to_string(),
+        Some(
+            ProjectedActionResult::new(
+                "brace",
+                "Brace committed.",
+                serde_json::json!({"braced": true}),
+            )
+            .expect("sample projected result"),
+        ),
+    )
+    .expect("sample projected receipt")
+}
 
 /// Encode one message and decode it back, asserting equality.
 fn round_trip_to_server(msg: &ToServer) {
@@ -86,6 +114,18 @@ fn every_to_server() -> Vec<ToServer> {
                 args: serde_json::json!({"page": 2}),
             },
         )),
+        ToServer::Input(GatewayRequest::new(
+            0x1234,
+            9,
+            GatewayInput::Action(Box::new(GatewayAction {
+                conn: 7,
+                actor: ObjId(42),
+                offered_action: ActionOfferId(CanonicalHash::from_bytes([7; 32])),
+                subject: PerceivedRef::SelfActor,
+                targets: vec![],
+                parameters: serde_json::json!({}),
+            })),
+        )),
         ToServer::GatewayReleased {
             request: command.uid,
         },
@@ -151,6 +191,22 @@ fn every_to_server() -> Vec<ToServer> {
         },
         ToServer::Request {
             id: 104,
+            req: ServiceReq::LegalActions {
+                conn: 5,
+                actor: ObjId(11),
+                subject: PerceivedRef::SelfActor,
+            },
+        },
+        ToServer::Request {
+            id: 105,
+            req: ServiceReq::ActionStatus {
+                conn: 5,
+                actor: ObjId(11),
+                status: sample_status(),
+            },
+        },
+        ToServer::Request {
+            id: 106,
             req: ServiceReq::Barrier,
         },
         ToServer::Control(CoreControl::Shutdown),
@@ -162,6 +218,20 @@ fn every_to_server() -> Vec<ToServer> {
 fn every_to_gateway() -> Vec<ToGateway> {
     use mush_ipc::SendTarget;
     let request = RequestUid::from_bytes([1; 16]);
+    let legal_offer: ProjectedLegalAction = serde_json::from_value(serde_json::json!({
+        "offer": "0707070707070707070707070707070707070707070707070707070707070707",
+        "subject": { "kind": "self_actor" },
+        "parameters": [],
+        "targets": { "kind": "none" },
+        "required_channels": [],
+        "expires": null,
+        "presentation": {
+            "verb": "brace",
+            "label": "Brace",
+            "help": "Adopt a braced tactical stance."
+        }
+    }))
+    .expect("sample legal offer");
     vec![
         ToGateway::Deliver {
             target: SendTarget::Char(42),
@@ -224,6 +294,20 @@ fn every_to_gateway() -> Vec<ToGateway> {
         },
         ToGateway::Reply {
             id: 104,
+            resp: ServiceResp::LegalActions(Ok(vec![legal_offer])),
+        },
+        ToGateway::Reply {
+            id: 104,
+            resp: ServiceResp::LegalActions(Err(LegalActionsError::InvalidSubject)),
+        },
+        ToGateway::Reply {
+            id: 105,
+            resp: ServiceResp::ActionStatus(ProjectedActionStatus::Pending {
+                reference: sample_status(),
+            }),
+        },
+        ToGateway::Reply {
+            id: 106,
             resp: ServiceResp::Barrier,
         },
         ToGateway::Reply {
@@ -254,13 +338,14 @@ fn every_to_gateway() -> Vec<ToGateway> {
             request,
             disposition: GatewayRequestDisposition::Owned {
                 token: CommitToken::from_bytes([2; 16]),
-                bundle_hash: CanonicalHash::from_bytes([3; 32]),
+                status: sample_status(),
             },
         },
         ToGateway::RequestDisposition {
             request,
             disposition: GatewayRequestDisposition::Finished {
-                token: CommitToken::from_bytes([2; 16]),
+                recipient: ObjId(42),
+                receipt: sample_receipt(),
             },
         },
         // Server → gateway session control.
@@ -322,7 +407,7 @@ fn every_to_gateway_variant_round_trips() {
 
 #[test]
 fn version_is_present_and_travels_in_hello() {
-    assert_eq!(IPC_VERSION, 2, "the boundary protocol version is pinned");
+    assert_eq!(IPC_VERSION, 4, "the boundary protocol version is pinned");
     assert_eq!(
         MAX_IN_FLIGHT_SERVICE_REQUESTS, 256,
         "service-request custody is a fixed cross-boundary contract"

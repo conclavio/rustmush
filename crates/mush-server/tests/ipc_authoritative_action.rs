@@ -5,17 +5,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mush_config::config::Config;
-use mush_core::{
-    ActionOfferId, CanonicalHash, DefinitionId, DefinitionKey, DefinitionKind, DefinitionRef,
-    Engine, GOD, LIMBO, OwnerId, PerceivedRef,
-};
+use mush_core::{ActionOfferId, CanonicalHash, GOD, LIMBO, PerceivedRef, PrincipalId};
 use mush_ipc::{
-    FrameReader, GatewayAction, GatewayInput, GatewayRequest, GatewayRequestDisposition, ToGateway,
-    ToServer, WireInbound, write_frame,
+    FrameReader, GatewayAction, GatewayInput, GatewayRequest, GatewayRequestDisposition,
+    ServiceReq, ServiceResp, ToGateway, ToServer, WireInbound, write_frame,
 };
+use mush_proto::ProjectedActionStatus;
+use mush_server::action_coordinator::ActionCoordinator;
+use mush_store::BoundIdempotencyStatus;
 use mush_store::{AuthoritativeStore, BundleStatus, InMemoryStore, ObjectStore};
-use mush_tactics::{BRACE_ACTION_ID, TacticsModule};
-use mush_testkit::boot_world;
 
 fn scratch_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -35,24 +33,6 @@ fn test_config(tag: &str) -> Config {
     config.ipc.listen = "127.0.0.1:0".to_owned();
     config.rulesets.enabled = vec![];
     config
-}
-
-fn brace_action() -> DefinitionRef {
-    let (world, registry) = boot_world();
-    let engine = Engine::with_modules(world, registry, vec![Box::new(TacticsModule::new())])
-        .expect("tactics composition");
-    let key = DefinitionKey::new(
-        OwnerId::new("tactics").unwrap(),
-        DefinitionKind::new("action").unwrap(),
-        DefinitionId::new(BRACE_ACTION_ID).unwrap(),
-    );
-    engine
-        .registry
-        .definitions()
-        .unwrap()
-        .current(&key)
-        .expect("current brace action")
-        .clone()
 }
 
 async fn boot_server(tag: &'static str) -> (mush_ipc::IpcEndpoint, Arc<InMemoryStore>) {
@@ -103,15 +83,18 @@ async fn hello_and_attach(
     (frames, writer)
 }
 
-fn action_request(sequence: u64, actor: mush_core::ObjId) -> GatewayRequest {
+fn action_request(
+    sequence: u64,
+    actor: mush_core::ObjId,
+    offered_action: ActionOfferId,
+) -> GatewayRequest {
     GatewayRequest::new(
         77,
         sequence,
         GatewayInput::Action(Box::new(GatewayAction {
             conn: 41,
             actor,
-            action: brace_action(),
-            offered_action: ActionOfferId(CanonicalHash::from_bytes([0x51; 32])),
+            offered_action,
             subject: PerceivedRef::SelfActor,
             targets: Vec::new(),
             parameters: serde_json::json!({}),
@@ -119,30 +102,69 @@ fn action_request(sequence: u64, actor: mush_core::ObjId) -> GatewayRequest {
     )
 }
 
+async fn brace_offer(
+    frames: &mut FrameReader<mush_ipc::BoxRead>,
+    writer: &mut mush_ipc::BoxWrite,
+) -> ActionOfferId {
+    write_frame(
+        writer,
+        &ToServer::Request {
+            id: 900,
+            req: ServiceReq::LegalActions {
+                conn: 41,
+                actor: GOD,
+                subject: PerceivedRef::SelfActor,
+            },
+        },
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let ToGateway::Reply {
+                id: 900,
+                resp: ServiceResp::LegalActions(Ok(offers)),
+            } = frames.read::<ToGateway>().await.unwrap().unwrap()
+            {
+                let offer = offers
+                    .iter()
+                    .find(|offer| offer.presentation().verb == "brace")
+                    .expect("tactics brace is publicly projected");
+                break offer.offer();
+            }
+        }
+    })
+    .await
+    .expect("legal-action projection timed out")
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn authenticated_action_transfers_ownership_only_after_exact_intent() {
     let (endpoint, store) = boot_server("owned-finished").await;
     let (mut frames, mut writer) = hello_and_attach(&endpoint).await;
-    let request = action_request(1, GOD);
+    let offer = brace_offer(&mut frames, &mut writer).await;
+    let request = action_request(1, GOD, offer);
     write_frame(&mut writer, &ToServer::Input(request.clone()))
         .await
         .unwrap();
 
-    let (token, bundle_hash) = tokio::time::timeout(Duration::from_secs(15), async {
+    let (token, status, projected_receipt) = tokio::time::timeout(Duration::from_secs(15), async {
         let mut owned = None;
         loop {
             match frames.read::<ToGateway>().await.unwrap().unwrap() {
                 ToGateway::RequestDisposition {
                     request: seen,
-                    disposition: GatewayRequestDisposition::Owned { token, bundle_hash },
-                } if seen == request.uid => owned = Some((token, bundle_hash)),
+                    disposition: GatewayRequestDisposition::Owned { token, status },
+                } if seen == request.uid => owned = Some((token, status)),
                 ToGateway::RequestDisposition {
                     request: seen,
-                    disposition: GatewayRequestDisposition::Finished { token },
+                    disposition: GatewayRequestDisposition::Finished { recipient, receipt },
                 } if seen == request.uid => {
-                    let (owned_token, hash) = owned.expect("Finished arrived before Owned");
-                    assert_eq!(token, owned_token);
-                    break (token, hash);
+                    let (owned_token, status) = owned.expect("Finished arrived before Owned");
+                    assert_eq!(recipient, GOD);
+                    assert_eq!(receipt.status(), &status);
+                    assert_eq!(receipt.commit(), owned_token.to_string());
+                    break (owned_token, status, receipt);
                 }
                 _ => {}
             }
@@ -150,15 +172,103 @@ async fn authenticated_action_transfers_ownership_only_after_exact_intent() {
     })
     .await
     .expect("authoritative dispositions timed out");
+    let projected = projected_receipt
+        .result()
+        .expect("production tactics owns the brace receipt projection");
+    assert_eq!(projected.summary(), "Brace committed.");
+    assert_eq!(projected.data()["braced"], true);
+    assert_eq!(projected.data()["revision"], 1);
+    let serialized = serde_json::to_value(&projected_receipt).unwrap();
+    mush_contract_tests::assert_projection_json_clean(
+        "split IPC action receipt",
+        &serialized,
+        &[
+            "action",
+            "actor",
+            "bundle_hash",
+            "definition",
+            "eligible_witnesses",
+            "guards",
+            "ingress_hash",
+            "outcome",
+            "outcome_hash",
+            "plan_hash",
+            "provider",
+            "request_hash",
+            "resolution",
+        ],
+        &[],
+    );
 
+    let key = ActionCoordinator::status_key(&PrincipalId::Object { id: GOD }, &status)
+        .expect("public status reconstructs under its authenticated principal");
+    let BoundIdempotencyStatus::FinalizedExact(internal_receipt) = store
+        .bound_authoritative_idempotency_status(&key)
+        .await
+        .unwrap()
+    else {
+        panic!("owned action did not finalize under its public status identity");
+    };
+    let bundle_hash = internal_receipt.bundle_hash();
+    assert_eq!(internal_receipt.token(), token);
     assert!(matches!(
-        store
-            .authoritative_status(token, bundle_hash)
-            .await
-            .unwrap(),
+        store.authoritative_status(token, bundle_hash).await.unwrap(),
         BundleStatus::FinalizedExact(receipt)
             if receipt.token() == token && receipt.bundle_hash() == bundle_hash
     ));
+
+    // The authenticated status service reproduces the same redacted result;
+    // changing only the actor field cannot disclose it.
+    write_frame(
+        &mut writer,
+        &ToServer::Request {
+            id: 901,
+            req: ServiceReq::ActionStatus {
+                conn: 41,
+                actor: GOD,
+                status: status.clone(),
+            },
+        },
+    )
+    .await
+    .unwrap();
+    write_frame(
+        &mut writer,
+        &ToServer::Request {
+            id: 902,
+            req: ServiceReq::ActionStatus {
+                conn: 41,
+                actor: LIMBO,
+                status: status.clone(),
+            },
+        },
+    )
+    .await
+    .unwrap();
+    let mut authorized = None;
+    let mut spoofed = None;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while authorized.is_none() || spoofed.is_none() {
+            match frames.read::<ToGateway>().await.unwrap().unwrap() {
+                ToGateway::Reply {
+                    id: 901,
+                    resp: ServiceResp::ActionStatus(result),
+                } => authorized = Some(result),
+                ToGateway::Reply {
+                    id: 902,
+                    resp: ServiceResp::ActionStatus(result),
+                } => spoofed = Some(result),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("action status replies timed out");
+    assert_eq!(
+        authorized,
+        Some(ProjectedActionStatus::Committed(projected_receipt.clone()))
+    );
+    assert_eq!(spoofed, Some(ProjectedActionStatus::Unknown));
 
     // Model loss of the first ownership/terminal frames: replay the byte-exact
     // gateway request after the original connection has disappeared. The
@@ -195,7 +305,10 @@ async fn authenticated_action_transfers_ownership_only_after_exact_intent() {
     .expect("exact replay disposition timed out");
     assert_eq!(
         replay,
-        GatewayRequestDisposition::Finished { token },
+        GatewayRequestDisposition::Finished {
+            recipient: GOD,
+            receipt: projected_receipt,
+        },
         "an exact finalized replay must return the existing result"
     );
     let BundleStatus::FinalizedExact(receipt) = store
@@ -219,7 +332,8 @@ async fn authenticated_action_transfers_ownership_only_after_exact_intent() {
 async fn actor_field_cannot_spoof_the_authenticated_connection() {
     let (endpoint, _store) = boot_server("spoof-rejected").await;
     let (mut frames, mut writer) = hello_and_attach(&endpoint).await;
-    let request = action_request(2, LIMBO);
+    let offer = brace_offer(&mut frames, &mut writer).await;
+    let request = action_request(2, LIMBO, offer);
     write_frame(&mut writer, &ToServer::Input(request.clone()))
         .await
         .unwrap();
@@ -238,6 +352,45 @@ async fn actor_field_cannot_spoof_the_authenticated_connection() {
     })
     .await
     .expect("spoof rejection timed out");
+    assert_eq!(
+        disposition,
+        GatewayRequestDisposition::Rejected { retryable: false }
+    );
+
+    write_frame(
+        &mut writer,
+        &ToServer::Control(mush_core::ControlMsg::Shutdown),
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tampered_offer_tag_is_rejected_before_intent() {
+    let (endpoint, _store) = boot_server("tampered-offer").await;
+    let (mut frames, mut writer) = hello_and_attach(&endpoint).await;
+    let offer = brace_offer(&mut frames, &mut writer).await;
+    let mut tampered = *offer.0.as_bytes();
+    tampered[31] ^= 0x01;
+    let request = action_request(3, GOD, ActionOfferId(CanonicalHash::from_bytes(tampered)));
+    write_frame(&mut writer, &ToServer::Input(request.clone()))
+        .await
+        .unwrap();
+
+    let disposition = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let ToGateway::RequestDisposition {
+                request: seen,
+                disposition,
+            } = frames.read::<ToGateway>().await.unwrap().unwrap()
+                && seen == request.uid
+            {
+                break disposition;
+            }
+        }
+    })
+    .await
+    .expect("tampered-offer rejection timed out");
     assert_eq!(
         disposition,
         GatewayRequestDisposition::Rejected { retryable: false }

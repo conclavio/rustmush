@@ -141,6 +141,7 @@ fn authoritative_bundle_for_epoch_and_outbox(
             serde_json::json!({ "ok": true }),
         )
         .unwrap(),
+        resolution: None,
         semantic_events: vec![
             mush_core::AuthoritativeSemanticEvent::root(
                 PreparedCausalRef::new(request, None, 0).unwrap(),
@@ -219,6 +220,9 @@ redis_gated!(authoritative_module_prefix_is_store_owned, store, {
 });
 redis_gated!(authoritative_contract_exact_lifecycle, store, {
     suite::authoritative_exact_lifecycle(&store).await;
+});
+redis_gated!(authoritative_contract_resolution_checkpoint, store, {
+    suite::authoritative_resolution_checkpoint(&store).await;
 });
 redis_gated!(authoritative_contract_single_pending_admission, store, {
     suite::authoritative_single_pending_admission(&store).await;

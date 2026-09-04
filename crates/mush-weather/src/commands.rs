@@ -26,7 +26,10 @@ use smol_str::SmolStr;
 
 use crate::cell::{WeatherCell, WeatherState, delete_cell, persist_cell};
 use crate::climate::{ClimateDef, ClimateSet, WxStateDef};
-use crate::flavor::{FlavorBucket, FlavorGenOutcome, FlavorGenSnapshot, FlavorKey, FlavorLine};
+use crate::flavor::{
+    FlavorBucket, FlavorGenOutcome, FlavorGenSnapshot, FlavorKey, FlavorLine,
+    MAX_FLAVOR_LINES_PER_POOL, MAX_FLAVOR_VARIANTS_PER_BUCKET,
+};
 use crate::machine::{pick_transition_line, roll_temp};
 use crate::{NS, WeatherConfig, muffle, panel_payload, scan_zone, weather_event};
 
@@ -446,9 +449,31 @@ impl WeatherCmd {
                  @weather/generate <climate> [<state>].",
             ));
         }
-        let variants = self.config.flavor_variants;
+        if self.config.flavor_variants == 0 {
+            return Err(CmdError::msg(
+                "Weather flavor generation is disabled because flavor_variants is zero.",
+            ));
+        }
+        let variants = self
+            .config
+            .flavor_variants
+            .min(MAX_FLAVOR_VARIANTS_PER_BUCKET);
         let mut fired = 0usize;
+        let mut skipped_full = 0usize;
         for (climate_id, state) in &targets {
+            let pools_full = ctx.w.module_state::<WeatherState>().is_some_and(|weather| {
+                FlavorBucket::ALL.into_iter().all(|bucket| {
+                    weather
+                        .flavor
+                        .pool(&FlavorKey::new(climate_id.clone(), state.clone(), bucket))
+                        .len()
+                        >= MAX_FLAVOR_LINES_PER_POOL
+                })
+            });
+            if pools_full {
+                skipped_full += 1;
+                continue;
+            }
             let Some(climate) = self.climates.get(climate_id) else {
                 continue;
             };
@@ -476,7 +501,8 @@ impl WeatherCmd {
             ctx.actor,
             format!(
                 "Requested LLM flavor for {fired} (climate, state) bucket(s); PENDING lines \
-                 arrive shortly (the world never blocks). Review with @weather/lines."
+                 arrive shortly (the world never blocks). {skipped_full} full bucket(s) were \
+                 skipped. Review with @weather/lines."
             ),
         );
         Ok(())
@@ -858,36 +884,47 @@ impl AsyncCompletion for WeatherFlavorCompletion {
                     }
                     return;
                 }
-                let n_t = transition.len();
-                let n_a = ambient.len();
-                let ops: Vec<_> = {
+                let offered_t = transition.len();
+                let offered_a = ambient.len();
+                let (n_t, n_a, ops): (_, _, Vec<_>) = {
                     let Some(st) = ctx.state_mut::<WeatherState>() else {
                         return;
                     };
                     let mut ops = Vec::new();
-                    if !transition.is_empty() {
-                        st.flavor.add_pending(
+                    let n_t = if transition.is_empty() {
+                        0
+                    } else {
+                        let added = st.flavor.add_pending(
                             &climate,
                             &state,
                             FlavorBucket::Transition,
                             transition,
                         );
-                        ops.push(st.flavor.persist_op(&FlavorKey::new(
-                            climate.clone(),
-                            state.clone(),
-                            FlavorBucket::Transition,
-                        )));
-                    }
-                    if !ambient.is_empty() {
-                        st.flavor
-                            .add_pending(&climate, &state, FlavorBucket::Ambient, ambient);
-                        ops.push(st.flavor.persist_op(&FlavorKey::new(
-                            climate.clone(),
-                            state.clone(),
-                            FlavorBucket::Ambient,
-                        )));
-                    }
-                    ops
+                        if added != 0 {
+                            ops.push(st.flavor.persist_op(&FlavorKey::new(
+                                climate.clone(),
+                                state.clone(),
+                                FlavorBucket::Transition,
+                            )));
+                        }
+                        added
+                    };
+                    let n_a = if ambient.is_empty() {
+                        0
+                    } else {
+                        let added =
+                            st.flavor
+                                .add_pending(&climate, &state, FlavorBucket::Ambient, ambient);
+                        if added != 0 {
+                            ops.push(st.flavor.persist_op(&FlavorKey::new(
+                                climate.clone(),
+                                state.clone(),
+                                FlavorBucket::Ambient,
+                            )));
+                        }
+                        added
+                    };
+                    (n_t, n_a, ops)
                 };
                 for op in ops {
                     ctx.persist(op);
@@ -897,8 +934,10 @@ impl AsyncCompletion for WeatherFlavorCompletion {
                         requester,
                         format!(
                             "Weather flavor for {climate}/{state}: {n_t} transition + {n_a} \
-                             ambient PENDING line(s) added (model {model}). Review: \
-                             @weather/lines {climate} {state}; approve: @weather/lines/approve <id>."
+                             ambient PENDING line(s) added; {} returned line(s) were duplicate, \
+                             oversized, or beyond the pool cap (model {model}). Review: \
+                             @weather/lines {climate} {state}; approve: @weather/lines/approve <id>.",
+                            offered_t + offered_a - n_t - n_a
                         ),
                     );
                 }

@@ -34,7 +34,8 @@ use crate::action_state::{
 };
 use crate::authoritative::AuthoritativeBundle;
 use crate::cmd::{
-    ArgShape, CmdError, CommandSpec, Ctx, ParsedArgs, Registry, RegistryError, SwitchSet, dispatch,
+    ArgShape, CmdError, CommandSpec, Ctx, ParsedArgs, Registry, RegistryError, SwitchSet,
+    dispatch_with_action_state,
 };
 use crate::commands::narrative_emit;
 use crate::flags::Role;
@@ -525,6 +526,10 @@ pub struct Engine {
     /// deployment loader installs it before module boot; it is never part of
     /// world persistence or a projected DTO.
     offer_keys: Option<crate::offer::OfferKeyRing>,
+    /// Process-local durable key ring for authoritative resolution RNG. Only
+    /// short-lived [`PrepareCtx`](crate::resolution::PrepareCtx) capabilities
+    /// cross into providers; the ring and root bytes never do.
+    resolution_keys: Option<crate::resolution::ResolutionKeyRing>,
     /// At most one prepared action awaiting transfer to the driver.
     staged_action: Option<StagedAction>,
     /// Module persistence ops drained from handlers, awaiting
@@ -567,6 +572,7 @@ impl Engine {
             modules: Vec::new(),
             action_state,
             offer_keys: None,
+            resolution_keys: None,
             staged_action: None,
             module_ops: Vec::new(),
             scene_ticks: HashMap::new(),
@@ -584,6 +590,140 @@ impl Engine {
     /// valid while their key version is retained by the new ring.
     pub fn set_offer_keys(&mut self, keys: crate::offer::OfferKeyRing) {
         self.offer_keys = Some(keys);
+    }
+
+    /// Install or atomically replace the process-local resolution key ring.
+    /// Accepted actions carry their draw transcript, so replay never depends
+    /// on rerunning the provider with this mutable current version.
+    pub fn set_resolution_keys(&mut self, keys: crate::resolution::ResolutionKeyRing) {
+        self.resolution_keys = Some(keys);
+    }
+
+    /// Root-secret versions still referenced by open or durably closed
+    /// action windows. Feed this exact set into reference-aware key rotation.
+    #[must_use]
+    pub fn resolution_key_rotation_references(&self) -> std::collections::BTreeSet<u32> {
+        self.action_state
+            .unresolved_window_resolution_secret_versions()
+    }
+
+    /// Read one exact typed clock through the kernel's built-in clocks or the
+    /// composition-frozen module provider registry.
+    ///
+    /// Mutable clock generations fail closed: callers cannot ask for an old
+    /// world-IC generation and accidentally receive a value under the current
+    /// rate, and registered providers must explicitly accept the requested
+    /// generation before the kernel constructs the returned stamp.
+    pub fn clock_now(
+        &self,
+        clock: &crate::clock::ClockRef,
+    ) -> Result<crate::clock::ClockStamp, crate::clock_provider::ClockReadError> {
+        match clock {
+            crate::clock::ClockRef::Utc => Ok(crate::clock::ClockStamp {
+                clock: crate::clock::ClockRef::Utc,
+                at: self.world.now(),
+            }),
+            crate::clock::ClockRef::WorldIc { generation } => {
+                if *generation == 0 {
+                    return Err(crate::clock_provider::ClockReadError::ZeroGeneration {
+                        clock: clock.clone(),
+                    });
+                }
+                let current = self.world.world_ic_now();
+                let crate::clock::ClockRef::WorldIc {
+                    generation: current_generation,
+                } = current.clock
+                else {
+                    unreachable!("world timeline must return a world-IC stamp")
+                };
+                if *generation != current_generation {
+                    return Err(crate::clock_provider::ClockReadError::StaleGeneration {
+                        requested: *generation,
+                        current: current_generation,
+                    });
+                }
+                Ok(current)
+            }
+            crate::clock::ClockRef::SceneTurn { .. } => self
+                .registry
+                .clock_providers()
+                .ok_or(crate::clock_provider::ClockReadError::RegistryUnavailable)?
+                .read_scene(&self.world, &self.action_state, clock),
+            crate::clock::ClockRef::DomainTick { .. }
+            | crate::clock::ClockRef::Registered { .. } => self
+                .registry
+                .clock_providers()
+                .ok_or(crate::clock_provider::ClockReadError::RegistryUnavailable)?
+                .read(&self.world, &self.action_state, clock),
+        }
+    }
+
+    /// Read one ruleset-owned resource through its composition-frozen,
+    /// read-only adapter.
+    pub fn resource_snapshot(
+        &self,
+        resource: &crate::resource::ResourceRef,
+    ) -> Result<
+        Option<crate::resource_provider::ResourceSnapshot>,
+        crate::resource_provider::ResourceReadError,
+    > {
+        self.registry
+            .resource_effect_providers()
+            .ok_or(crate::resource_provider::ResourceReadError::RegistryUnavailable)?
+            .read_resource(&self.world, &self.action_state, resource)
+    }
+
+    /// Read one exact effect instance through its definition-owned adapter.
+    pub fn effect_instance(
+        &self,
+        definition: &crate::mechanics::DefinitionRef,
+        target: &crate::resource::EffectTarget,
+        instance: crate::resource::EffectInstanceId,
+    ) -> Result<Option<crate::resource::EffectInstance>, crate::resource_provider::EffectReadError>
+    {
+        self.registry
+            .resource_effect_providers()
+            .ok_or(crate::resource_provider::EffectReadError::RegistryUnavailable)?
+            .read_effect(
+                &self.world,
+                &self.action_state,
+                definition,
+                target,
+                instance,
+            )
+    }
+
+    /// Discover a bounded canonical page of durable schedules that need an
+    /// authoritative action under the requested drive cause.
+    pub fn discover_scheduled_actions(
+        &self,
+        cause: crate::durable_schedule::ScheduleDriveCause,
+        cursor: Option<&crate::schedule_source::ScheduleSourceCursor>,
+        limit: usize,
+    ) -> Result<
+        crate::schedule_source::ScheduleSourcePage,
+        crate::schedule_source::ScheduleSourceScanError,
+    > {
+        self.registry
+            .schedule_sources()
+            .ok_or(crate::schedule_source::ScheduleSourceScanError::RegistryUnavailable)?
+            .scan(self, cause, cursor, limit)
+    }
+
+    /// Ask the source's trusted read-only adapter to build domain addressing,
+    /// parameters, and guards after exact store preflight.
+    pub fn plan_scheduled_action(
+        &self,
+        candidate: &crate::schedule_source::ScheduledActionCandidate,
+        ingress: &crate::action::IngressEnvelope,
+    ) -> Result<
+        crate::schedule_source::ScheduledActionPlan,
+        crate::schedule_source::ScheduleActionPlanError,
+    > {
+        self.registry
+            .schedule_sources()
+            .ok_or(crate::schedule_source::ScheduleActionPlanError::RegistryUnavailable)?
+            .plan_candidate(self, candidate, ingress)
     }
 
     /// Enumerate the current viewer-safe legal actions through the frozen
@@ -604,22 +744,260 @@ impl Engine {
         providers.project_legal_actions(self, query, keys)
     }
 
+    /// Resolve an untrusted perceived reference into the private truth query
+    /// consumed by action providers.
+    ///
+    /// Known objects must still be ordinarily visible and carry the one
+    /// unambiguous current station-grant epoch. Opaque contacts instead route
+    /// through their exact registered witness provider; only that trusted
+    /// provider may reveal the truth subject and mint the authority guard that
+    /// is retained in every resulting offer.
+    pub fn legal_action_query(
+        &self,
+        principal: crate::action::PrincipalId,
+        actor: ObjId,
+        subject: crate::action::PerceivedRef,
+    ) -> Result<crate::offer::LegalActionQuery, crate::offer::LegalActionSubjectError> {
+        const BOOTSTRAP_SELF_PROJECTION_GENERATION: u64 = 1;
+
+        let (truth_subject, projection_generation, witness) = match &subject {
+            crate::action::PerceivedRef::SelfActor => (
+                crate::action::SubjectKey::Object { id: actor },
+                BOOTSTRAP_SELF_PROJECTION_GENERATION,
+                None,
+            ),
+            crate::action::PerceivedRef::KnownObject { id, revision } => {
+                if self.world.get(*id).is_none()
+                    || !module::can_perceive(&self.registry, &self.world, actor, *id)
+                {
+                    return Err(crate::offer::LegalActionSubjectError::Invalid);
+                }
+                let mut epochs = self
+                    .world
+                    .command_subjects_of(actor)
+                    .iter()
+                    .filter(|grant| grant.subject == *id)
+                    .map(|grant| grant.epoch);
+                let Some(epoch) = epochs.next() else {
+                    return Err(crate::offer::LegalActionSubjectError::Invalid);
+                };
+                if epoch != *revision || epochs.any(|candidate| candidate != epoch) {
+                    return Err(crate::offer::LegalActionSubjectError::Invalid);
+                }
+                (crate::action::SubjectKey::Object { id: *id }, epoch, None)
+            }
+            crate::action::PerceivedRef::Contact {
+                provider,
+                id,
+                generation,
+            } => {
+                let validators = self
+                    .registry
+                    .authority_guard_validators()
+                    .ok_or(crate::offer::LegalActionSubjectError::Unavailable)?;
+                let context =
+                    crate::action::AuthorityGuardContext::new(&self.world, &self.action_state);
+                let request = crate::action::AuthorityWitnessRequest::Contact {
+                    provider: provider.clone(),
+                    principal: principal.clone(),
+                    id: *id,
+                    generation: *generation,
+                };
+                let issued = match validators.witness(&context, &request) {
+                    Ok(Some(witness)) => witness,
+                    Ok(None) | Err(crate::action::AuthorityWitnessError::Missing { .. }) => {
+                        return Err(crate::offer::LegalActionSubjectError::Invalid);
+                    }
+                    Err(_) => return Err(crate::offer::LegalActionSubjectError::Unavailable),
+                };
+                let crate::action::AuthorityWitness::Contact {
+                    truth_subject,
+                    guard,
+                } = issued
+                else {
+                    return Err(crate::offer::LegalActionSubjectError::Unavailable);
+                };
+                (truth_subject, *generation, Some(guard))
+            }
+        };
+
+        let query = crate::offer::LegalActionQuery::new(
+            principal,
+            actor,
+            truth_subject,
+            subject,
+            projection_generation,
+            None,
+        )
+        .map_err(|_| crate::offer::LegalActionSubjectError::Unavailable)?;
+        Ok(match witness {
+            Some(guard) => query.with_authority_guard(guard),
+            None => query,
+        })
+    }
+
     /// Resolve one untrusted opaque submission against a freshly regenerated
     /// internal set without exposing the deployment key ring to providers or
     /// interface code.
     pub fn resolve_legal_action(
         &self,
         offers: &crate::offer::ProjectedLegalActionSink,
-        execution: crate::offer::OfferExecutionContext,
+        mut execution: crate::offer::OfferExecutionContext,
         submission: crate::offer::OfferSubmission,
-    ) -> Result<crate::offer::ResolvedOffer, crate::offer::LegalActionResolutionError> {
+    ) -> Result<crate::offer::ResolvedAuthoritativeOffer, crate::offer::LegalActionResolutionError>
+    {
         let keys = self
             .offer_keys
             .as_ref()
             .ok_or(crate::offer::LegalActionResolutionError::KeyRingUnavailable)?;
-        offers
+        if let Some(expires) = offers
+            .expiration_for(keys, submission.offer)
+            .map_err(crate::offer::LegalActionResolutionError::from)?
+        {
+            execution.now = Some(self.clock_now(&expires.clock).map_err(|_| {
+                crate::offer::LegalActionResolutionError::Resolve(
+                    crate::offer::OfferResolveError::Unavailable,
+                )
+            })?);
+        }
+        let resolved = offers
             .resolve(keys, execution, submission)
-            .map_err(crate::offer::LegalActionResolutionError::from)
+            .map_err(crate::offer::LegalActionResolutionError::from)?;
+        let (action, invocation, truth_subject, guards) = resolved.into_resolution_parts();
+        let principal = invocation.principal().clone();
+        let actor = invocation.actor();
+        let mut truth_targets = Vec::with_capacity(invocation.targets().len());
+        let mut target_guards = Vec::new();
+        for target in invocation.targets() {
+            let (truth, guard) = match target {
+                crate::action::PerceivedRef::SelfActor => {
+                    (crate::action::SubjectKey::Object { id: actor }, None)
+                }
+                crate::action::PerceivedRef::KnownObject { id, .. } => {
+                    // The regenerated offer HMAC binds the provider-controlled
+                    // public revision. Recheck current existence/perception as
+                    // well; unlike an operated subject, a target needs no
+                    // station grant merely to be targetable.
+                    if self.world.get(*id).is_none()
+                        || !module::can_perceive(&self.registry, &self.world, actor, *id)
+                    {
+                        return Err(crate::offer::LegalActionResolutionError::Resolve(
+                            crate::offer::OfferResolveError::Unavailable,
+                        ));
+                    }
+                    (crate::action::SubjectKey::Object { id: *id }, None)
+                }
+                crate::action::PerceivedRef::Contact {
+                    provider,
+                    id,
+                    generation,
+                } => {
+                    let validators = self.registry.authority_guard_validators().ok_or(
+                        crate::offer::LegalActionResolutionError::Resolve(
+                            crate::offer::OfferResolveError::Unavailable,
+                        ),
+                    )?;
+                    let context =
+                        crate::action::AuthorityGuardContext::new(&self.world, &self.action_state);
+                    let request = crate::action::AuthorityWitnessRequest::Contact {
+                        provider: provider.clone(),
+                        principal: principal.clone(),
+                        id: *id,
+                        generation: *generation,
+                    };
+                    let issued = validators.witness(&context, &request).map_err(|_| {
+                        crate::offer::LegalActionResolutionError::Resolve(
+                            crate::offer::OfferResolveError::Unavailable,
+                        )
+                    })?;
+                    let Some(crate::action::AuthorityWitness::Contact {
+                        truth_subject,
+                        guard,
+                    }) = issued
+                    else {
+                        return Err(crate::offer::LegalActionResolutionError::Resolve(
+                            crate::offer::OfferResolveError::Unavailable,
+                        ));
+                    };
+                    (truth_subject, Some(guard))
+                }
+            };
+            truth_targets.push(truth);
+            if let Some(guard) = guard
+                && !guards.authority().contains(&guard)
+                && !target_guards.contains(&guard)
+            {
+                target_guards.push(guard);
+            }
+        }
+        let guards = guards.with_authority_guards(&target_guards).map_err(|_| {
+            crate::offer::LegalActionResolutionError::Resolve(
+                crate::offer::OfferResolveError::Unavailable,
+            )
+        })?;
+        let resolved =
+            crate::action::ResolvedActionInvocation::new(invocation, truth_subject, truth_targets)
+                .ok_or(crate::offer::LegalActionResolutionError::Resolve(
+                    crate::offer::OfferResolveError::Unavailable,
+                ))?;
+        let definitions = self.registry.definitions().ok_or(
+            crate::offer::LegalActionResolutionError::Resolve(
+                crate::offer::OfferResolveError::Unavailable,
+            ),
+        )?;
+        let bridges =
+            self.registry
+                .bridges()
+                .ok_or(crate::offer::LegalActionResolutionError::Resolve(
+                    crate::offer::OfferResolveError::Unavailable,
+                ))?;
+        let (revision_keys, bridge_definitions) = self
+            .registry
+            .action_providers()
+            .ok_or(crate::offer::LegalActionResolutionError::Resolve(
+                crate::offer::OfferResolveError::Unavailable,
+            ))?
+            .resolved_revision_keys(&action, &resolved, definitions, bridges)
+            .map_err(|_| {
+                crate::offer::LegalActionResolutionError::Resolve(
+                    crate::offer::OfferResolveError::Unavailable,
+                )
+            })?;
+        let mut revision_stamps = Vec::with_capacity(revision_keys.len());
+        if !revision_keys.is_empty() {
+            let validators = self.registry.revision_validators().ok_or(
+                crate::offer::LegalActionResolutionError::Resolve(
+                    crate::offer::OfferResolveError::Unavailable,
+                ),
+            )?;
+            let context =
+                crate::action::RevisionValidatorContext::new(&self.world, &self.action_state);
+            for key in revision_keys {
+                let Some(generation) =
+                    validators.current_generation(&context, &key).map_err(|_| {
+                        crate::offer::LegalActionResolutionError::Resolve(
+                            crate::offer::OfferResolveError::Unavailable,
+                        )
+                    })?
+                else {
+                    return Err(crate::offer::LegalActionResolutionError::Resolve(
+                        crate::offer::OfferResolveError::Unavailable,
+                    ));
+                };
+                revision_stamps.push(crate::action::RevisionStamp { key, generation });
+            }
+        }
+        let guards = guards
+            .with_definition_guards(bridge_definitions, definitions)
+            .and_then(|guards| guards.with_revision_stamps(revision_stamps))
+            .map_err(|_| {
+                crate::offer::LegalActionResolutionError::Resolve(
+                    crate::offer::OfferResolveError::Unavailable,
+                )
+            })?;
+        Ok(crate::offer::ResolvedAuthoritativeOffer::new(
+            action, resolved, guards,
+        ))
     }
 
     /// Record one loop-iteration duration from the driving loop's watchdog
@@ -796,6 +1174,10 @@ impl Engine {
         for m in &mut modules {
             let data = boot.remove(m.name()).unwrap_or_default();
             let module_name = SmolStr::new(m.name());
+            let typed_state = crate::action_state::ModuleActionState::for_module(
+                Some(&self.action_state),
+                Some(module_name.as_str()),
+            );
             let mut ctx = Ctx {
                 w: &mut self.world,
                 actor: GOD,
@@ -804,6 +1186,7 @@ impl Engine {
                 out,
                 reg: &self.registry,
                 module: Some(module_name),
+                typed_state,
             };
             if let Err(e) = m.on_world_loaded(&mut ctx, data) {
                 result = Err(e);
@@ -873,6 +1256,7 @@ impl Engine {
         &mut self,
         action: &crate::mechanics::DefinitionRef,
         invocation: &crate::action::ActionInvocation,
+        commit_token: crate::action::CommitToken,
     ) -> Result<
         (PreparedTxn, crate::action::PreparedAuthoritativeAction),
         crate::action::ActionProviderPrepareError,
@@ -881,7 +1265,74 @@ impl Engine {
             .registry
             .action_providers()
             .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
-        providers.prepare_authoritative_invocation(action, invocation, &mut self.action_state)
+        providers.prepare_authoritative_invocation(
+            action,
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+        )
+    }
+
+    /// Prepare an action after the engine has privately resolved its subject
+    /// and selected targets. This is the production path for contact-targeted
+    /// actions; the projected invocation remains the durable request identity.
+    pub fn prepare_registered_resolved_authoritative_action(
+        &mut self,
+        action: &crate::mechanics::DefinitionRef,
+        resolved: &crate::action::ResolvedActionInvocation,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (PreparedTxn, crate::action::PreparedAuthoritativeAction),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        providers.prepare_resolved_authoritative_invocation(
+            action,
+            resolved,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+        )
+    }
+
+    /// Prepare a scheduled action while the kernel seeds its exact durable
+    /// cursor post-image into the same owner-scoped transaction before the
+    /// provider runs. Re-evaluation against current state makes a stale
+    /// discovery non-mutating and prevents providers from forgetting to
+    /// advance (or independently advancing) the authoritative cursor.
+    pub fn prepare_registered_scheduled_authoritative_action(
+        &mut self,
+        candidate: &crate::schedule_source::ScheduledActionCandidate,
+        invocation: &crate::action::ActionInvocation,
+        commit_token: crate::action::CommitToken,
+    ) -> Result<
+        (PreparedTxn, crate::action::PreparedAuthoritativeAction),
+        crate::action::ActionProviderPrepareError,
+    > {
+        let providers = self
+            .registry
+            .action_providers()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        let schedules = self
+            .registry
+            .schedule_sources()
+            .ok_or(crate::action::ActionProviderPrepareError::RegistryUnavailable)?;
+        providers.prepare_authoritative_invocation_seeded(
+            candidate.action(),
+            invocation,
+            commit_token,
+            &mut self.action_state,
+            self.resolution_keys.as_ref(),
+            |txn| {
+                schedules.seed_advance(candidate, txn).map_err(|source| {
+                    crate::action::ActionProviderPrepareError::Schedule(Box::new(source))
+                })
+            },
+        )
     }
 
     /// Release a prepared transaction that could not be assembled into a
@@ -1010,7 +1461,13 @@ impl Engine {
             )?;
             staged
                 .guards
-                .revalidate(&self.world, revisions, authority, definitions)
+                .revalidate_with_action_state(
+                    &self.world,
+                    &self.action_state,
+                    revisions,
+                    authority,
+                    definitions,
+                )
                 .map_err(StagedActionAdmissionError::Revalidation)
         })();
         match revalidation {
@@ -1059,7 +1516,13 @@ impl Engine {
     /// queue and ride the caller's next `WriteBatch`, exactly as if the
     /// event had been emitted during a step.
     pub fn emit_world_event(&mut self, ev: &WorldEvent, out: &mut Outbox, fx: &mut Effects) {
-        module::emit_world_event(&self.registry, &mut self.world, out, ev);
+        module::emit_world_event_with_action_state(
+            &self.registry,
+            &mut self.world,
+            out,
+            ev,
+            Some(&self.action_state),
+        );
         self.drain_deferred(out, fx);
     }
 
@@ -1100,7 +1563,14 @@ impl Engine {
             } => {
                 if self.world.get(actor).is_some() {
                     self.world.session_input(actor);
-                    dispatch(&self.registry, &mut self.world, actor, &line, out);
+                    dispatch_with_action_state(
+                        &self.registry,
+                        &mut self.world,
+                        actor,
+                        &line,
+                        out,
+                        Some(&self.action_state),
+                    );
                 } else {
                     tracing::warn!(%actor, "Cmd for missing actor dropped");
                 }
@@ -1177,7 +1647,14 @@ impl Engine {
                     // Re-validate: the actor may be gone by the time the
                     // timer fires.
                     if self.world.get(actor).is_some() {
-                        dispatch(&self.registry, &mut self.world, actor, &line, out);
+                        dispatch_with_action_state(
+                            &self.registry,
+                            &mut self.world,
+                            actor,
+                            &line,
+                            out,
+                            Some(&self.action_state),
+                        );
                     } else {
                         tracing::debug!(%actor, "WaitCmd for missing actor dropped");
                     }
@@ -1212,6 +1689,10 @@ impl Engine {
             return;
         };
         {
+            let typed_state = crate::action_state::ModuleActionState::for_module(
+                Some(&self.action_state),
+                Some(module.as_str()),
+            );
             let mut ctx = Ctx {
                 w: &mut self.world,
                 actor: GOD,
@@ -1220,6 +1701,7 @@ impl Engine {
                 out,
                 reg: &self.registry,
                 module: Some(module.clone()),
+                typed_state,
             };
             handler.tick(&mut ctx, &tag, None);
         }
@@ -1258,6 +1740,10 @@ impl Engine {
             return;
         };
         {
+            let typed_state = crate::action_state::ModuleActionState::for_module(
+                Some(&self.action_state),
+                Some(module.as_str()),
+            );
             let mut ctx = Ctx {
                 w: &mut self.world,
                 actor: GOD,
@@ -1266,6 +1752,7 @@ impl Engine {
                 out,
                 reg: &self.registry,
                 module: Some(module.clone()),
+                typed_state,
             };
             handler.tick(&mut ctx, &tag, Some(scene));
         }
@@ -1371,12 +1858,20 @@ impl Engine {
                 // Hooks/observers fire on the world-side transition only — a
                 // link-dead revival never "connected" twice.
                 if !was_connected {
-                    module::fire_conn_hook(&self.registry, &mut self.world, out, actor, true);
-                    module::emit_world_event(
+                    module::fire_conn_hook_with_action_state(
+                        &self.registry,
+                        &mut self.world,
+                        out,
+                        actor,
+                        true,
+                        Some(&self.action_state),
+                    );
+                    module::emit_world_event_with_action_state(
                         &self.registry,
                         &mut self.world,
                         out,
                         &WorldEvent::Connected { who: actor },
+                        Some(&self.action_state),
                     );
                 }
             }
@@ -1439,12 +1934,20 @@ impl Engine {
                 announce_room(&self.world, actor, " has disconnected.", out);
                 self.world.set_connected(actor, false);
                 self.world.session_end(actor);
-                module::fire_conn_hook(&self.registry, &mut self.world, out, actor, false);
-                module::emit_world_event(
+                module::fire_conn_hook_with_action_state(
+                    &self.registry,
+                    &mut self.world,
+                    out,
+                    actor,
+                    false,
+                    Some(&self.action_state),
+                );
+                module::emit_world_event_with_action_state(
                     &self.registry,
                     &mut self.world,
                     out,
                     &WorldEvent::Disconnected { who: actor },
+                    Some(&self.action_state),
                 );
             } else {
                 // The character stays in the room (and connected, for WHO)
@@ -1471,12 +1974,20 @@ impl Engine {
         if self.world.is_connected(actor) {
             announce_room(&self.world, actor, " has disconnected.", out);
             self.world.set_connected(actor, false);
-            module::fire_conn_hook(&self.registry, &mut self.world, out, actor, false);
-            module::emit_world_event(
+            module::fire_conn_hook_with_action_state(
+                &self.registry,
+                &mut self.world,
+                out,
+                actor,
+                false,
+                Some(&self.action_state),
+            );
+            module::emit_world_event_with_action_state(
                 &self.registry,
                 &mut self.world,
                 out,
                 &WorldEvent::Disconnected { who: actor },
+                Some(&self.action_state),
             );
         }
         self.world.session_end(actor);
@@ -1544,7 +2055,7 @@ impl Engine {
                 // Disjoint field borrows (world mut, registry shared), the
                 // same shape emit_world_event uses. The handler re-validates
                 // against current state (treaty ruling 3).
-                module::apply_async_completion(
+                module::apply_async_completion_with_action_state(
                     &self.registry,
                     &mut self.world,
                     out,
@@ -1552,6 +2063,7 @@ impl Engine {
                     actor,
                     correlation,
                     &payload,
+                    Some(&self.action_state),
                 );
             }
         }
@@ -1837,6 +2349,250 @@ mod tests {
             engine.world.module_state::<DeferredState>(),
             Some(&DeferredState(7))
         );
+    }
+
+    #[test]
+    fn contact_subject_resolution_is_private_current_and_guarded() {
+        use std::sync::Mutex;
+
+        use crate::action::{AuthorityGuard, ContactId, PerceivedRef, PrincipalId, SubjectKey};
+        use crate::action_state::{StateFamilyHandle, StateFamilyId};
+        use crate::clock::{ClockRef, ClockStamp};
+        use crate::contact::{
+            ContactGuardValidator, ContactState, ContactStateCodec, ContactStateDraft,
+            contact_state_family_descriptor,
+        };
+        use crate::mechanics::{CanonicalId, OwnerId};
+
+        struct ContactModule {
+            captured: Arc<Mutex<Option<StateFamilyHandle<ContactId, ContactState>>>>,
+        }
+
+        impl GameModule for ContactModule {
+            fn name(&self) -> &'static str {
+                "test_contacts"
+            }
+
+            fn register(&mut self, reg: &mut module::Registrar<'_>) -> Result<(), ModError> {
+                let codec = ContactStateCodec;
+                let handle = reg.state_family(
+                    contact_state_family_descriptor(StateFamilyId::new("contacts").unwrap())
+                        .unwrap(),
+                    codec,
+                    codec,
+                    codec,
+                    codec,
+                )?;
+                reg.authority_guard_validator(
+                    crate::action::AuthorityGuardKind::Contact,
+                    ContactGuardValidator::new(handle.clone()),
+                )?;
+                *self.captured.lock().unwrap() = Some(handle);
+                Ok(())
+            }
+        }
+
+        let captured = Arc::new(Mutex::new(None));
+        let mut engine = Engine::with_modules(
+            World::new_minimal(),
+            Registry::new(),
+            vec![Box::new(ContactModule {
+                captured: Arc::clone(&captured),
+            })],
+        )
+        .unwrap();
+        let handle = captured.lock().unwrap().clone().unwrap();
+        let provider = OwnerId::new("test_contacts").unwrap();
+        let principal = PrincipalId::Object { id: GOD };
+        let id = ContactId::from_bytes([0x43; 16]);
+        let observed_at = ClockStamp {
+            clock: ClockRef::DomainTick {
+                owner: provider.clone(),
+                id: CanonicalId::new("field").unwrap(),
+                generation: 4,
+            },
+            at: 10,
+        };
+        let contact = ContactState::new(ContactStateDraft {
+            truth_subject: SubjectKey::Object { id: ObjId(90) },
+            audience: vec![principal.clone()],
+            observed_at: observed_at.clone(),
+        })
+        .unwrap();
+        let mut transaction = engine.action_transaction(&handle).unwrap();
+        transaction.insert(&handle, &id, contact.clone()).unwrap();
+        let (_, installation) = transaction.prepare().unwrap().into_parts();
+        engine.install_prepared_action(installation);
+
+        let perceived = PerceivedRef::Contact {
+            provider: provider.clone(),
+            id,
+            generation: 1,
+        };
+        let query = engine
+            .legal_action_query(principal.clone(), GOD, perceived.clone())
+            .unwrap();
+        assert_eq!(query.truth_subject(), contact.truth_subject());
+        assert_eq!(query.projected_subject(), &perceived);
+        assert_eq!(
+            query.authority_guards(),
+            &[AuthorityGuard::Contact {
+                provider: provider.clone(),
+                principal: principal.clone(),
+                id,
+                generation: 1,
+            }]
+        );
+        assert_eq!(
+            engine
+                .legal_action_query(PrincipalId::Object { id: ObjId(2) }, GOD, perceived.clone(),)
+                .unwrap_err(),
+            crate::offer::LegalActionSubjectError::Invalid
+        );
+
+        let lost = contact
+            .checked_mark_lost(
+                1,
+                ClockStamp {
+                    at: 11,
+                    ..observed_at
+                },
+                CanonicalId::new("occluded").unwrap(),
+            )
+            .unwrap();
+        let mut transaction = engine.action_transaction(&handle).unwrap();
+        transaction.replace(&handle, &id, lost).unwrap();
+        let (_, installation) = transaction.prepare().unwrap().into_parts();
+        engine.install_prepared_action(installation);
+        assert_eq!(
+            engine
+                .legal_action_query(principal, GOD, perceived)
+                .unwrap_err(),
+            crate::offer::LegalActionSubjectError::Invalid
+        );
+    }
+
+    #[test]
+    fn module_command_reads_only_its_own_typed_family() {
+        use std::sync::Mutex;
+
+        use crate::action_state::{
+            ActionStateError, ModuleActionState, ModuleActionStateReadError, StateFamilyDescriptor,
+            StateFamilyHandle, StateFamilyId,
+        };
+        use crate::mechanics::{CanonicalId, IncidentId, OwnerId, RecoveryReason};
+
+        struct TypedReaderModule {
+            captured: Arc<Mutex<Option<StateFamilyHandle<u32, u32>>>>,
+        }
+
+        impl GameModule for TypedReaderModule {
+            fn name(&self) -> &'static str {
+                "typed_reader"
+            }
+
+            fn register(&mut self, reg: &mut module::Registrar<'_>) -> Result<(), ModError> {
+                let handle = reg.state_family(
+                    StateFamilyDescriptor::new(
+                        StateFamilyId::new("records").unwrap(),
+                        CanonicalId::new("u32.decimal.v1").unwrap(),
+                        CanonicalId::new("u32.value.v1").unwrap(),
+                        1,
+                        CanonicalId::new("u32.decode.v1").unwrap(),
+                        CanonicalId::new("u32.validate.v1").unwrap(),
+                        CanonicalId::new("u32.serialize.v1").unwrap(),
+                    )
+                    .unwrap(),
+                    |key: &u32| Ok(key.to_string()),
+                    |value: &serde_json::Value| {
+                        serde_json::from_value(value.clone()).map_err(|error| error.to_string())
+                    },
+                    |_value: &u32| Ok(()),
+                    |value: &u32| serde_json::to_value(value).map_err(|error| error.to_string()),
+                )?;
+                let command_handle = handle.clone();
+                reg.command(
+                    CommandSpec {
+                        name: "typedread".into(),
+                        ..CommandSpec::default()
+                    },
+                    Arc::new(move |ctx: &mut Ctx<'_>| {
+                        let value = ctx
+                            .action_state(&command_handle, &7)
+                            .map_err(|error| CmdError::msg(error.to_string()))?
+                            .copied()
+                            .ok_or_else(|| CmdError::msg("typed record is missing"))?;
+                        let page = ctx
+                            .scan_action_state(&command_handle, None, 8)
+                            .map_err(|error| CmdError::msg(error.to_string()))?;
+                        ctx.out.info(
+                            ctx.actor,
+                            format!("typed={value}; records={}", page.entries().len()),
+                        );
+                        Ok(())
+                    }),
+                )?;
+                *self.captured.lock().unwrap() = Some(handle);
+                Ok(())
+            }
+        }
+
+        let captured = Arc::new(Mutex::new(None));
+        let mut engine = Engine::with_modules(
+            World::new_minimal(),
+            Registry::new(),
+            vec![Box::new(TypedReaderModule {
+                captured: Arc::clone(&captured),
+            })],
+        )
+        .unwrap();
+        let handle = captured.lock().unwrap().clone().unwrap();
+        let mut transaction = engine.action_transaction(&handle).unwrap();
+        transaction.insert(&handle, &7, 41).unwrap();
+        let (_, installation) = transaction.prepare().unwrap().into_parts();
+        engine.install_prepared_action(installation);
+
+        let mut out = Outbox::new();
+        let mut effects = Effects::new();
+        engine.step(
+            Inbound::Cmd {
+                conn: 1,
+                actor: GOD,
+                line: "typedread".into(),
+            },
+            &mut out,
+            &mut effects,
+        );
+        assert!(texts(&out).iter().any(|line| line == "typed=41; records=1"));
+
+        let foreign =
+            ModuleActionState::for_module(Some(engine.action_state()), Some("different_owner"));
+        assert!(matches!(
+            foreign.get(&handle, &7),
+            Err(ModuleActionStateReadError::ForeignOwner { .. })
+        ));
+        assert!(matches!(
+            ModuleActionState::unavailable().get(&handle, &7),
+            Err(ModuleActionStateReadError::Unavailable)
+        ));
+
+        let own = ModuleActionState::for_module(Some(engine.action_state()), Some("typed_reader"));
+        engine
+            .registry
+            .freeze_mechanics_owner(
+                &OwnerId::new("typed_reader").unwrap(),
+                IncidentId(701),
+                RecoveryReason::IntegrityViolation {
+                    code: CanonicalId::new("typed_read_freeze_test").unwrap(),
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            own.get(&handle, &7),
+            Err(ModuleActionStateReadError::State(
+                ActionStateError::OwnerNotReady(_)
+            ))
+        ));
     }
 
     fn room_saw(out: &Outbox, room: ObjId, needle: &str) -> bool {

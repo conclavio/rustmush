@@ -42,9 +42,9 @@ use crate::types::{
     AccountRec, AuthoritativeCheckpointReceipt, AuthoritativeDiscardReceipt,
     AuthoritativeEpochRetirement, AuthoritativeIntentPage, AuthoritativeOutboxAttemptResult,
     AuthoritativeOutboxRecord, AuthoritativeReceipt, AuthoritativeRetentionUsage,
-    AuthoritativeScanCursor, BanRec, BundleStatus, IdempotencyStatus, IntentReceipt,
-    PendingAuthoritativeIntent, SshKeyRec, StoreError, TokenRecord, WorldSnapshot, WriteBatch,
-    WriteReceipt,
+    AuthoritativeScanCursor, BanRec, BoundIdempotencyStatus, BundleStatus, IdempotencyStatus,
+    IntentReceipt, PendingAuthoritativeIntent, SshKeyRec, StoreError, TokenRecord, WorldSnapshot,
+    WriteBatch, WriteReceipt,
 };
 
 /// Exact-intent persistence used by the K3 action coordinator.
@@ -67,6 +67,14 @@ pub trait AuthoritativeStore: ObjectStore {
         key: &'a ScopedIdempotencyKey,
         ingress_hash: CanonicalHash,
     ) -> BoxFuture<'a, Result<IdempotencyStatus, StoreError>>;
+
+    /// Recover a previously bound request without requiring its private
+    /// ingress hash. Callers MUST authenticate the principal and reconstruct
+    /// the exact scoped key before invoking this method.
+    fn bound_authoritative_idempotency_status<'a>(
+        &'a self,
+        key: &'a ScopedIdempotencyKey,
+    ) -> BoxFuture<'a, Result<BoundIdempotencyStatus, StoreError>>;
 
     /// Reapply exact post-images, verify them, and atomically publish the
     /// finalized witness for one expected token/hash pair.

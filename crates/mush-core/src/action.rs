@@ -6,6 +6,7 @@
 //! authoritative completion. Commit-token storage and authoritative receipts
 //! belong to K3.
 
+use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
@@ -14,19 +15,24 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
+use smol_str::SmolStr;
 use thiserror::Error;
 
-use crate::action_state::{ActionStateError, ActionStateStore, ActionTxn, PreparedTxn};
+use crate::action_state::{
+    ActionStateError, ActionStateStore, ActionTxn, PreparedTxn, StateFamilyHandle,
+};
 use crate::authoritative::{
     AuthoritativeBundleError, AuthoritativeSemanticEvent, DurableOutboxIntent,
 };
 use crate::behavior::ChannelId;
 use crate::mechanics::{
-    CanonicalEncodingError, CanonicalId, CanonicalIdError, DefinitionDigest, DefinitionLookupError,
-    DefinitionRef, DefinitionRegistry, MechanicalOwnerReadiness, MechanicalOwnerReadinessError,
-    OwnerId, RulesValue, canonical_json_bytes_with_limit,
+    BridgeLookupError, BridgeRegistry, CanonicalEncodingError, CanonicalId, CanonicalIdError,
+    DefinitionDigest, DefinitionLookupError, DefinitionRef, DefinitionRegistry, InteractionRoute,
+    MechanicalOwnerReadiness, MechanicalOwnerReadinessError, OwnerId, RulesValue,
+    canonical_json_bytes_with_limit,
 };
 use crate::obj::ObjId;
+use crate::resolution::PreparedResolution;
 use crate::world::World;
 
 /// Maximum caller-supplied bytes in an idempotency key.
@@ -832,6 +838,66 @@ impl TryFrom<ActionInvocationWire> for ActionInvocation {
     }
 }
 
+/// Server-private interpretation of one projected invocation.
+///
+/// The durable/wire [`ActionInvocation`] retains only references the caller was
+/// allowed to see. This wrapper is constructed by the engine after resolving
+/// the subject and every selected target through current perception/authority
+/// providers. It is intentionally neither serializable nor constructible by a
+/// client, module, or action provider.
+#[derive(Clone)]
+pub struct ResolvedActionInvocation {
+    invocation: ActionInvocation,
+    truth_subject: SubjectKey,
+    truth_targets: Vec<SubjectKey>,
+}
+
+impl fmt::Debug for ResolvedActionInvocation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ResolvedActionInvocation")
+            .field("invocation", &self.invocation)
+            .field("truth_subject", &"[REDACTED]")
+            .field("truth_target_count", &self.truth_targets.len())
+            .finish()
+    }
+}
+
+impl ResolvedActionInvocation {
+    pub(crate) fn new(
+        invocation: ActionInvocation,
+        truth_subject: SubjectKey,
+        truth_targets: Vec<SubjectKey>,
+    ) -> Option<Self> {
+        if invocation.targets().len() != truth_targets.len() {
+            return None;
+        }
+        Some(Self {
+            invocation,
+            truth_subject,
+            truth_targets,
+        })
+    }
+
+    /// The canonical projected invocation retained in durable action records.
+    #[must_use]
+    pub const fn invocation(&self) -> &ActionInvocation {
+        &self.invocation
+    }
+
+    /// Private authoritative subject selected by the regenerated offer.
+    #[must_use]
+    pub const fn truth_subject(&self) -> &SubjectKey {
+        &self.truth_subject
+    }
+
+    /// Private authoritative targets in the exact order of projected targets.
+    #[must_use]
+    pub fn truth_targets(&self) -> &[SubjectKey] {
+        &self.truth_targets
+    }
+}
+
 fn semantic_request_hash(
     draft: &ActionInvocationDraft,
 ) -> Result<CanonicalHash, ActionMetadataError> {
@@ -1052,12 +1118,35 @@ pub enum AuthorityGuard {
         capability: CanonicalId,
         generation: u64,
     },
+    /// Exact transient station grant selected while projecting an offer.
+    ///
+    /// This is distinct from a durable [`Self::ControlLease`]. A rules owner
+    /// rebuilds station grants from its authoritative assignments at boot;
+    /// core binds the chosen grant into the private offer and re-reads the
+    /// projection immediately before commit. One witness is retained per
+    /// required channel so authority can never be assembled by unioning
+    /// channels or priority across seats.
+    ChannelGrant {
+        provider: OwnerId,
+        actor: ObjId,
+        subject: ObjId,
+        station: SmolStr,
+        channel: ChannelId,
+        priority: u16,
+        epoch: u64,
+    },
     ControlLease {
         provider: OwnerId,
         subject: ObjId,
         channel: ChannelId,
         holder: PrincipalId,
         epoch: u64,
+    },
+    Contact {
+        provider: OwnerId,
+        principal: PrincipalId,
+        id: ContactId,
+        generation: u64,
     },
     Reservation {
         provider: OwnerId,
@@ -1066,7 +1155,7 @@ pub enum AuthorityGuard {
     },
     Window {
         owner: OwnerId,
-        id: CanonicalId,
+        id: crate::action_window::ActionWindowId,
         generation: u64,
     },
     Definition(DefinitionRef),
@@ -1077,7 +1166,9 @@ pub enum AuthorityGuard {
 #[serde(rename_all = "snake_case")]
 pub enum AuthorityGuardKind {
     Capability,
+    ChannelGrant,
     ControlLease,
+    Contact,
     Reservation,
     Window,
     Definition,
@@ -1088,7 +1179,9 @@ impl AuthorityGuard {
     pub const fn kind(&self) -> AuthorityGuardKind {
         match self {
             Self::Capability { .. } => AuthorityGuardKind::Capability,
+            Self::ChannelGrant { .. } => AuthorityGuardKind::ChannelGrant,
             Self::ControlLease { .. } => AuthorityGuardKind::ControlLease,
+            Self::Contact { .. } => AuthorityGuardKind::Contact,
             Self::Reservation { .. } => AuthorityGuardKind::Reservation,
             Self::Window { .. } => AuthorityGuardKind::Window,
             Self::Definition(_) => AuthorityGuardKind::Definition,
@@ -1101,7 +1194,9 @@ impl AuthorityGuard {
     pub const fn provider(&self) -> Option<&OwnerId> {
         match self {
             Self::Capability { provider, .. }
+            | Self::ChannelGrant { provider, .. }
             | Self::ControlLease { provider, .. }
+            | Self::Contact { provider, .. }
             | Self::Reservation { provider, .. } => Some(provider),
             Self::Window { owner, .. } => Some(owner),
             Self::Definition(_) => None,
@@ -1122,6 +1217,24 @@ impl AuthorityGuard {
                 "capability": capability,
                 "generation": generation,
             }),
+            Self::ChannelGrant {
+                provider,
+                actor,
+                subject,
+                station,
+                channel,
+                priority,
+                epoch,
+            } => json!({
+                "kind": "channel_grant",
+                "provider": provider,
+                "actor": actor,
+                "subject": subject,
+                "station": station,
+                "channel": channel,
+                "priority": priority,
+                "epoch": epoch,
+            }),
             Self::ControlLease {
                 provider,
                 subject,
@@ -1135,6 +1248,18 @@ impl AuthorityGuard {
                 "channel": channel,
                 "holder": holder,
                 "epoch": epoch,
+            }),
+            Self::Contact {
+                provider,
+                principal,
+                id,
+                generation,
+            } => json!({
+                "kind": "contact",
+                "provider": provider,
+                "principal": principal,
+                "id": id,
+                "generation": generation,
             }),
             Self::Reservation {
                 provider,
@@ -1164,15 +1289,62 @@ impl AuthorityGuard {
     }
 }
 
+/// Immutable state visible to a revision validator. Typed-family access still
+/// requires the validator's composition-branded handle, so this does not
+/// permit cross-owner state reads.
+pub struct RevisionValidatorContext<'a> {
+    world: &'a World,
+    action_state: &'a ActionStateStore,
+}
+
+impl fmt::Debug for RevisionValidatorContext<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RevisionValidatorContext")
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> RevisionValidatorContext<'a> {
+    pub(crate) const fn new(world: &'a World, action_state: &'a ActionStateStore) -> Self {
+        Self {
+            world,
+            action_state,
+        }
+    }
+
+    #[must_use]
+    pub const fn world(&self) -> &'a World {
+        self.world
+    }
+
+    #[must_use]
+    pub fn module_state<T: Any + Send>(&self) -> Option<&'a T> {
+        self.world.module_state::<T>()
+    }
+
+    pub fn action_state<K, V>(
+        &self,
+        handle: &StateFamilyHandle<K, V>,
+        key: &K,
+    ) -> Result<Option<&'a V>, ActionStateError>
+    where
+        K: Send + Sync + 'static,
+        V: Clone + Send + Sync + 'static,
+    {
+        self.action_state.get(handle, key)
+    }
+}
+
 /// Pure, object-safe lookup of a revision's current generation.
 ///
 /// `None` means the subject/facet no longer exists and therefore makes an
 /// observed stamp stale. An error is an evaluator/configuration failure, not
-/// a stale result. Implementations receive immutable world state only.
+/// a stale result. Implementations receive immutable world and typed state.
 pub trait RevisionValidator: Send + Sync {
     fn current_generation(
         &self,
-        world: &World,
+        context: &RevisionValidatorContext<'_>,
         key: &RevisionKey,
     ) -> Result<Option<u64>, ActionError>;
 }
@@ -1344,6 +1516,32 @@ impl RevisionValidatorRegistry {
         Ok(entry)
     }
 
+    /// Read one exact current generation with owner readiness checked before
+    /// and after the immutable provider callback.
+    pub(crate) fn current_generation(
+        &self,
+        context: &RevisionValidatorContext<'_>,
+        key: &RevisionKey,
+    ) -> Result<Option<u64>, RevisionObservationError> {
+        let entry = self.get_for_key(key)?;
+        let generation = entry
+            .validator()
+            .current_generation(context, key)
+            .map_err(|source| RevisionObservationError::Provider {
+                key: Box::new(key.clone()),
+                source: Box::new(source),
+            })?;
+        self.owner_readiness
+            .require_ready(&entry.owner)
+            .map_err(|source| {
+                RevisionObservationError::Lookup(RevisionValidatorLookupError::OwnerNotReady {
+                    key: Box::new(key.clone()),
+                    source: Box::new(source),
+                })
+            })?;
+        Ok(generation)
+    }
+
     #[must_use]
     pub const fn fingerprint(&self) -> DefinitionDigest {
         self.fingerprint
@@ -1377,10 +1575,199 @@ pub enum RevisionValidatorLookupError {
     },
 }
 
+/// Failure while the kernel observes a provider-owned revision coordinate.
+#[derive(Debug, Error)]
+pub enum RevisionObservationError {
+    #[error("revision provider cannot be selected: {0}")]
+    Lookup(#[from] RevisionValidatorLookupError),
+    #[error("revision provider failed for {key:?}: {source}")]
+    Provider {
+        key: Box<RevisionKey>,
+        source: Box<ActionError>,
+    },
+}
+
+/// Immutable ordinary-world and typed-family truth available to a final
+/// authority check. This mirrors the resource/effect read boundary: validators
+/// can inspect current authoritative state but cannot mutate it or perform I/O.
+#[derive(Clone, Copy)]
+pub struct AuthorityGuardContext<'a> {
+    world: &'a World,
+    action_state: &'a ActionStateStore,
+}
+
+/// A pure request for a provider to issue current private authority evidence.
+/// The registry stamps the provider route and validates the returned witness;
+/// callers cannot turn this into authority by supplying their own guard.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AuthorityWitnessRequest {
+    ControlLease {
+        provider: OwnerId,
+        subject: ObjId,
+        channel: ChannelId,
+        holder: PrincipalId,
+    },
+    Contact {
+        provider: OwnerId,
+        principal: PrincipalId,
+        id: ContactId,
+        generation: u64,
+    },
+}
+
+impl AuthorityWitnessRequest {
+    #[must_use]
+    pub const fn provider(&self) -> &OwnerId {
+        match self {
+            Self::ControlLease { provider, .. } | Self::Contact { provider, .. } => provider,
+        }
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> AuthorityGuardKind {
+        match self {
+            Self::ControlLease { .. } => AuthorityGuardKind::ControlLease,
+            Self::Contact { .. } => AuthorityGuardKind::Contact,
+        }
+    }
+}
+
+/// Provider-issued current evidence. Contact resolution additionally carries
+/// its server-private truth subject; lease evidence never needs one.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AuthorityWitness {
+    Guard(AuthorityGuard),
+    Contact {
+        truth_subject: SubjectKey,
+        guard: AuthorityGuard,
+    },
+}
+
+impl AuthorityWitness {
+    #[must_use]
+    pub const fn guard(&self) -> &AuthorityGuard {
+        match self {
+            Self::Guard(guard) | Self::Contact { guard, .. } => guard,
+        }
+    }
+
+    #[must_use]
+    pub const fn truth_subject(&self) -> Option<&SubjectKey> {
+        match self {
+            Self::Guard(_) => None,
+            Self::Contact { truth_subject, .. } => Some(truth_subject),
+        }
+    }
+
+    fn matches_request(&self, request: &AuthorityWitnessRequest) -> bool {
+        match (request, self) {
+            (
+                AuthorityWitnessRequest::ControlLease {
+                    provider,
+                    subject,
+                    channel,
+                    holder,
+                },
+                Self::Guard(AuthorityGuard::ControlLease {
+                    provider: actual_provider,
+                    subject: actual_subject,
+                    channel: actual_channel,
+                    holder: actual_holder,
+                    ..
+                }),
+            ) => {
+                actual_provider == provider
+                    && actual_subject == subject
+                    && actual_channel == channel
+                    && actual_holder == holder
+            }
+            (
+                AuthorityWitnessRequest::Contact {
+                    provider,
+                    principal,
+                    id,
+                    generation,
+                },
+                Self::Contact {
+                    guard:
+                        AuthorityGuard::Contact {
+                            provider: actual_provider,
+                            principal: actual_principal,
+                            id: actual_id,
+                            generation: actual_generation,
+                        },
+                    ..
+                },
+            ) => {
+                actual_provider == provider
+                    && actual_principal == principal
+                    && actual_id == id
+                    && actual_generation == generation
+            }
+            _ => false,
+        }
+    }
+}
+
+impl fmt::Debug for AuthorityGuardContext<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AuthorityGuardContext")
+            .field("utc_now", &self.world.now())
+            .field("action_state_revision", &self.action_state.revision())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> AuthorityGuardContext<'a> {
+    pub(crate) const fn new(world: &'a World, action_state: &'a ActionStateStore) -> Self {
+        Self {
+            world,
+            action_state,
+        }
+    }
+
+    #[must_use]
+    pub const fn world(&self) -> &'a World {
+        self.world
+    }
+
+    #[must_use]
+    pub fn module_state<T: Any + Send>(&self) -> Option<&'a T> {
+        self.world.module_state::<T>()
+    }
+
+    pub fn action_state<K, V>(
+        &self,
+        handle: &StateFamilyHandle<K, V>,
+        key: &K,
+    ) -> Result<Option<&'a V>, ActionStateError>
+    where
+        K: Send + Sync + 'static,
+        V: Clone + Send + Sync + 'static,
+    {
+        self.action_state.get(handle, key)
+    }
+}
+
 /// Pure, object-safe final authority check owned by a module.
 pub trait AuthorityGuardValidator: Send + Sync {
     /// `true` means the exact assertion is still current; `false` means stale.
-    fn is_current(&self, world: &World, guard: &AuthorityGuard) -> Result<bool, ActionError>;
+    fn is_current(
+        &self,
+        context: &AuthorityGuardContext<'_>,
+        guard: &AuthorityGuard,
+    ) -> Result<bool, ActionError>;
+
+    /// Issue current private evidence for a trusted kernel request. Most
+    /// validators only check guards and therefore inherit no witness.
+    fn witness(
+        &self,
+        _context: &AuthorityGuardContext<'_>,
+        _request: &AuthorityWitnessRequest,
+    ) -> Result<Option<AuthorityWitness>, ActionError> {
+        Ok(None)
+    }
 }
 
 /// Immutable, owner-stamped authority validator entry.
@@ -1444,8 +1831,11 @@ impl AuthorityGuardValidatorRegistryBuilder {
         kind: AuthorityGuardKind,
         validator: Arc<dyn AuthorityGuardValidator>,
     ) -> Result<(), AuthorityGuardValidatorRegistryError> {
-        if kind == AuthorityGuardKind::Definition {
-            return Err(AuthorityGuardValidatorRegistryError::ReservedDefinitionKind);
+        if matches!(
+            kind,
+            AuthorityGuardKind::ChannelGrant | AuthorityGuardKind::Definition
+        ) {
+            return Err(AuthorityGuardValidatorRegistryError::ReservedKernelKind { kind });
         }
         if self.entries.len() >= MAX_AUTHORITY_VALIDATORS {
             return Err(AuthorityGuardValidatorRegistryError::ValidatorLimit {
@@ -1538,8 +1928,14 @@ impl AuthorityGuardValidatorRegistry {
         &self,
         guard: &AuthorityGuard,
     ) -> Result<&AuthorityGuardValidatorEntry, AuthorityGuardValidatorLookupError> {
+        if matches!(
+            guard,
+            AuthorityGuard::ChannelGrant { .. } | AuthorityGuard::Definition(_)
+        ) {
+            return Err(AuthorityGuardValidatorLookupError::KernelGuardIsCentral);
+        }
         let Some(owner) = guard.provider() else {
-            return Err(AuthorityGuardValidatorLookupError::DefinitionIsCentral);
+            return Err(AuthorityGuardValidatorLookupError::KernelGuardIsCentral);
         };
         let entry = self
             .entries
@@ -1556,10 +1952,112 @@ impl AuthorityGuardValidatorRegistry {
         Ok(entry)
     }
 
+    /// Route one witness request through the exact ready owner/kind provider,
+    /// then centrally verify both its requested identity and currentness.
+    pub fn witness(
+        &self,
+        context: &AuthorityGuardContext<'_>,
+        request: &AuthorityWitnessRequest,
+    ) -> Result<Option<AuthorityWitness>, AuthorityWitnessError> {
+        let key = (request.provider().clone(), request.kind());
+        let entry = self
+            .entries
+            .get(&key)
+            .ok_or_else(|| AuthorityWitnessError::Missing {
+                provider: key.0.clone(),
+                kind: key.1,
+            })?;
+        self.owner_readiness
+            .require_ready(&entry.owner)
+            .map_err(|source| AuthorityWitnessError::OwnerNotReady {
+                provider: entry.owner.clone(),
+                kind: entry.kind,
+                source: Box::new(source),
+            })?;
+        let witness = entry
+            .validator()
+            .witness(context, request)
+            .map_err(|source| AuthorityWitnessError::Provider {
+                provider: entry.owner.clone(),
+                kind: entry.kind,
+                source: Box::new(source),
+            })?;
+        self.owner_readiness
+            .require_ready(&entry.owner)
+            .map_err(|source| AuthorityWitnessError::OwnerNotReady {
+                provider: entry.owner.clone(),
+                kind: entry.kind,
+                source: Box::new(source),
+            })?;
+        let Some(witness) = witness else {
+            return Ok(None);
+        };
+        if !witness.matches_request(request) {
+            return Err(AuthorityWitnessError::Malformed {
+                provider: entry.owner.clone(),
+                kind: entry.kind,
+            });
+        }
+        if !entry
+            .validator()
+            .is_current(context, witness.guard())
+            .map_err(|source| AuthorityWitnessError::Provider {
+                provider: entry.owner.clone(),
+                kind: entry.kind,
+                source: Box::new(source),
+            })?
+        {
+            return Err(AuthorityWitnessError::Stale {
+                provider: entry.owner.clone(),
+                kind: entry.kind,
+            });
+        }
+        self.owner_readiness
+            .require_ready(&entry.owner)
+            .map_err(|source| AuthorityWitnessError::OwnerNotReady {
+                provider: entry.owner.clone(),
+                kind: entry.kind,
+                source: Box::new(source),
+            })?;
+        Ok(Some(witness))
+    }
+
     #[must_use]
     pub const fn fingerprint(&self) -> DefinitionDigest {
         self.fingerprint
     }
+}
+
+/// Failure while issuing server-private authority evidence.
+#[derive(Debug, Error)]
+pub enum AuthorityWitnessError {
+    #[error("no witness provider is registered for {provider}:{kind:?}")]
+    Missing {
+        provider: OwnerId,
+        kind: AuthorityGuardKind,
+    },
+    #[error("witness provider {provider}:{kind:?} is not ready: {source}")]
+    OwnerNotReady {
+        provider: OwnerId,
+        kind: AuthorityGuardKind,
+        source: Box<MechanicalOwnerReadinessError>,
+    },
+    #[error("witness provider {provider}:{kind:?} failed: {source}")]
+    Provider {
+        provider: OwnerId,
+        kind: AuthorityGuardKind,
+        source: Box<ActionError>,
+    },
+    #[error("witness provider {provider}:{kind:?} returned mismatched evidence")]
+    Malformed {
+        provider: OwnerId,
+        kind: AuthorityGuardKind,
+    },
+    #[error("witness provider {provider}:{kind:?} returned evidence that was not current")]
+    Stale {
+        provider: OwnerId,
+        kind: AuthorityGuardKind,
+    },
 }
 
 /// Authority validator composition failure.
@@ -1570,8 +2068,8 @@ pub enum AuthorityGuardValidatorRegistryError {
         owner: OwnerId,
         kind: AuthorityGuardKind,
     },
-    #[error("definition authority is validated centrally and cannot register an evaluator")]
-    ReservedDefinitionKind,
+    #[error("{kind:?} authority is validated centrally and cannot register an evaluator")]
+    ReservedKernelKind { kind: AuthorityGuardKind },
     #[error("authority-validator registry exceeds its hard limit of {max}")]
     ValidatorLimit { max: usize },
     #[error("owner {owner} exceeds its authority-validator limit of {max}")]
@@ -1585,8 +2083,8 @@ pub enum AuthorityGuardValidatorRegistryError {
 /// Missing exact `(owner, authority kind)` validator.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum AuthorityGuardValidatorLookupError {
-    #[error("definition guards use central exact-definition validation")]
-    DefinitionIsCentral,
+    #[error("kernel-owned guards use central validation")]
+    KernelGuardIsCentral,
     #[error("no authority validator is registered for {guard:?}")]
     Missing { guard: Box<AuthorityGuard> },
     #[error("authority validator owner is not ready for {guard:?}: {source}")]
@@ -1652,19 +2150,154 @@ impl GuardSet {
         &self.authority
     }
 
-    /// Re-read every registered source against immutable world truth.
+    /// Add kernel-observed revisions selected only after private target
+    /// resolution. Providers name coordinates; the kernel supplies values.
+    pub(crate) fn with_revision_stamps(
+        self,
+        stamps: Vec<RevisionStamp>,
+    ) -> Result<Self, GuardSetBuildError> {
+        if stamps.is_empty() {
+            return Ok(self);
+        }
+        let revisions = RevisionSet::from_stamps(
+            self.revisions
+                .iter()
+                .map(|(key, generation)| RevisionStamp {
+                    key: key.clone(),
+                    generation: *generation,
+                })
+                .chain(stamps),
+        )
+        .map_err(GuardSetBuildError::Revision)?;
+        let guards = Self {
+            revisions,
+            authority: self.authority,
+            owner_readiness: self.owner_readiness,
+        };
+        canonical_json_bytes_with_limit(&guards.canonical_value(), MAX_GUARD_SET_BYTES).map_err(
+            |_| GuardSetBuildError::EncodedTooLarge {
+                max: MAX_GUARD_SET_BYTES,
+            },
+        )?;
+        Ok(guards)
+    }
+
+    /// Bind exact bridge definitions selected by the frozen cross-owner route.
+    /// Existing provider-supplied definition guards are retained without
+    /// duplication, while every newly selected definition is revalidated
+    /// against this composition before it becomes a final guard.
+    pub(crate) fn with_definition_guards(
+        self,
+        references: Vec<DefinitionRef>,
+        definitions: &DefinitionRegistry,
+    ) -> Result<Self, GuardSetBuildError> {
+        if references.is_empty() {
+            return Ok(self);
+        }
+        let mut builder = ServerGuardSetBuilder {
+            revisions: self.revisions,
+            authority: self.authority.into_iter().collect(),
+            owner_readiness: self.owner_readiness,
+        };
+        for reference in references {
+            let guard = AuthorityGuard::Definition(reference.clone());
+            if !builder.authority.contains(&guard) {
+                builder.add_definition(reference, definitions)?;
+            }
+        }
+        builder.finish()
+    }
+
+    /// Add the kernel-selected exact station witnesses for one legal offer.
     ///
-    /// This method is deliberately pure. The world-task coordinator must use
-    /// a current result as part of its later atomic transition into
-    /// `CommitPending`; this method does not perform that transition itself.
-    pub fn revalidate(
+    /// Kept crate-private so providers cannot claim that arbitrary projected
+    /// station data was selected by the kernel. The provider declares only
+    /// public required channels; registry projection chooses one current
+    /// station and adds these private guards.
+    pub(crate) fn with_channel_grant(
+        self,
+        grant_owner: &OwnerId,
+        grant: &crate::world::ChannelGrant,
+        required_channels: &[ChannelId],
+    ) -> Result<Self, GuardSetBuildError> {
+        self.owner_readiness
+            .require_ready(grant_owner)
+            .map_err(|source| GuardSetBuildError::GrantOwnerUnavailable {
+                owner: grant_owner.clone(),
+                source: Box::new(source),
+            })?;
+        let mut builder = ServerGuardSetBuilder {
+            revisions: self.revisions,
+            authority: self.authority.into_iter().collect(),
+            owner_readiness: self.owner_readiness,
+        };
+        for channel in required_channels {
+            builder.add(AuthorityGuard::ChannelGrant {
+                provider: grant_owner.clone(),
+                actor: grant.actor,
+                subject: grant.subject,
+                station: grant.station.clone(),
+                channel: channel.clone(),
+                priority: grant.priority,
+                epoch: grant.epoch,
+            })?;
+        }
+        builder.finish()
+    }
+
+    /// Add authority evidence issued by the kernel's subject resolver. Kept
+    /// crate-private so an action provider cannot replace the resolver's
+    /// private contact/lease witness with self-asserted data.
+    pub(crate) fn with_authority_guards(
+        self,
+        guards: &[AuthorityGuard],
+    ) -> Result<Self, GuardSetBuildError> {
+        if guards.is_empty() {
+            return Ok(self);
+        }
+        let mut builder = ServerGuardSetBuilder {
+            revisions: self.revisions,
+            authority: self.authority.into_iter().collect(),
+            owner_readiness: self.owner_readiness,
+        };
+        for guard in guards {
+            builder.add(guard.clone())?;
+        }
+        builder.finish()
+    }
+
+    /// Unit-test convenience for guard sets whose validators do not depend on
+    /// typed state. Production admission always uses
+    /// [`Self::revalidate_with_action_state`].
+    #[cfg(test)]
+    fn revalidate(
         &self,
         world: &World,
         revisions: &RevisionValidatorRegistry,
         authority: &AuthorityGuardValidatorRegistry,
         definitions: &DefinitionRegistry,
     ) -> Result<GuardRevalidation, GuardRevalidationError> {
+        let action_state = ActionStateStore::unregistered();
+        self.revalidate_with_action_state(world, &action_state, revisions, authority, definitions)
+    }
+
+    /// Re-read every registered source against immutable world and typed-state
+    /// truth.
+    ///
+    /// This method is deliberately pure. The world-task coordinator must use
+    /// a current result as part of its later atomic transition into
+    /// `CommitPending`; this method does not perform that transition itself.
+    pub fn revalidate_with_action_state(
+        &self,
+        world: &World,
+        action_state: &ActionStateStore,
+        revisions: &RevisionValidatorRegistry,
+        authority: &AuthorityGuardValidatorRegistry,
+        definitions: &DefinitionRegistry,
+    ) -> Result<GuardRevalidation, GuardRevalidationError> {
         self.require_same_composition(revisions, authority, definitions)?;
+        let revision_context = RevisionValidatorContext::new(world, action_state);
+        let authority_context = AuthorityGuardContext::new(world, action_state);
         let mut stale_revisions = Vec::new();
         for (key, expected) in self.revisions.iter() {
             let entry = revisions
@@ -1672,7 +2305,7 @@ impl GuardSet {
                 .map_err(GuardRevalidationError::RevisionLookup)?;
             let actual = entry
                 .validator()
-                .current_generation(world, key)
+                .current_generation(&revision_context, key)
                 .map_err(|source| GuardRevalidationError::RevisionEvaluator {
                     key: Box::new(key.clone()),
                     source: Box::new(source),
@@ -1700,6 +2333,39 @@ impl GuardSet {
         let mut stale_authority = Vec::new();
         for guard in &self.authority {
             let is_current = match guard {
+                AuthorityGuard::ChannelGrant {
+                    provider,
+                    actor,
+                    subject,
+                    station,
+                    channel,
+                    priority,
+                    epoch,
+                } => {
+                    self.owner_readiness
+                        .require_ready(provider)
+                        .map_err(|source| GuardRevalidationError::ChannelGrantUnavailable {
+                            guard: Box::new(guard.clone()),
+                            source: Box::new(source),
+                        })?;
+                    let current = world
+                        .channel_grant(*actor, *subject, provider.as_str(), station.as_str())
+                        .is_some_and(|grant| {
+                            grant.priority == *priority
+                                && grant.epoch == *epoch
+                                && grant.channels.contains(channel)
+                        });
+                    // Readiness may be frozen independently of the world task.
+                    // Discard an apparent match if the owner froze during the
+                    // projection read.
+                    self.owner_readiness
+                        .require_ready(provider)
+                        .map_err(|source| GuardRevalidationError::ChannelGrantUnavailable {
+                            guard: Box::new(guard.clone()),
+                            source: Box::new(source),
+                        })?;
+                    current
+                }
                 AuthorityGuard::Definition(reference) => match definitions.get_exact(reference) {
                     Ok(_) => true,
                     Err(
@@ -1719,7 +2385,7 @@ impl GuardSet {
                         .map_err(GuardRevalidationError::AuthorityLookup)?;
                     let current = entry
                         .validator()
-                        .is_current(world, guard)
+                        .is_current(&authority_context, guard)
                         .map_err(|source| GuardRevalidationError::AuthorityEvaluator {
                             guard: Box::new(guard.clone()),
                             source: Box::new(source),
@@ -1853,6 +2519,11 @@ pub enum GuardRevalidationError {
         reference: Box<DefinitionRef>,
         source: Box<DefinitionLookupError>,
     },
+    #[error("channel-grant guard {guard:?} cannot be evaluated: {source}")]
+    ChannelGrantUnavailable {
+        guard: Box<AuthorityGuard>,
+        source: Box<MechanicalOwnerReadinessError>,
+    },
 }
 
 /// Builder with an explicitly trusted/server-owned construction name.
@@ -1937,10 +2608,17 @@ pub enum GuardSetBuildError {
     TooMany { max: usize },
     #[error("authority guard was supplied more than once: {guard:?}")]
     Duplicate { guard: Box<AuthorityGuard> },
+    #[error("revision guard set is invalid: {0}")]
+    Revision(#[source] RevisionSetError),
     #[error("definition guard does not name an exact registered definition: {0}")]
     Definition(#[source] Box<DefinitionLookupError>),
     #[error("definition guards must be added through exact registry validation")]
     DefinitionRequiresRegistry,
+    #[error("channel-grant publisher {owner} is not a ready composed mechanics owner: {source}")]
+    GrantOwnerUnavailable {
+        owner: OwnerId,
+        source: Box<MechanicalOwnerReadinessError>,
+    },
     #[error("canonical guard set exceeds its hard byte limit of {max}")]
     EncodedTooLarge { max: usize },
 }
@@ -3099,6 +3777,21 @@ pub trait ActionProvider: Send + Sync {
         Ok(None)
     }
 
+    /// Project a durable root outcome for one event-time eligible viewer.
+    ///
+    /// This callback is deliberately pure: it receives only the exact frozen
+    /// action, immutable durable outcome, and authenticated viewer. It cannot
+    /// consult current world state, so replay/status projection remains stable
+    /// after restart. Returning `None` yields a generic committed receipt.
+    fn project_receipt(
+        &self,
+        _action: &DefinitionRef,
+        _outcome: &RulesValue,
+        _viewer: &PrincipalId,
+    ) -> Result<Option<mush_proto::ProjectedActionResult>, ActionError> {
+        Ok(None)
+    }
+
     /// Prepare bounded owner-scoped post-images without access to live mutable
     /// world or module state. Existing validation-only providers inherit a
     /// fail-closed empty transaction; only providers that add state mutations
@@ -3127,6 +3820,46 @@ pub trait ActionProvider: Send + Sync {
             "this action provider has not migrated to authoritative execution",
         )
         .expect("static provider migration error is bounded"))
+    }
+
+    /// Prepare authoritative output with a kernel-owned, one-action
+    /// capability for deterministic resolution. Existing non-random
+    /// providers remain source-compatible through the default delegation;
+    /// providers that need randomness override this method and obtain their
+    /// [`ResolutionRng`](crate::resolution::ResolutionRng) only from `context`.
+    fn prepare_authoritative_with_context(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        _context: &mut crate::resolution::PrepareCtx<'_>,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        self.prepare_authoritative(invocation, txn)
+    }
+
+    /// Prepare an invocation whose projected subject/targets have been
+    /// privately resolved by the engine immediately before provider entry.
+    ///
+    /// Existing providers remain source-compatible and receive the durable
+    /// projected invocation. Providers that act on opaque contacts override
+    /// this method and use only `truth_subject`/`truth_targets` for mechanical
+    /// addressing; those identities never enter the wire invocation.
+    fn prepare_resolved_authoritative_with_context(
+        &self,
+        resolved: &ResolvedActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        context: &mut crate::resolution::PrepareCtx<'_>,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        self.prepare_authoritative_with_context(resolved.invocation(), txn, context)
+    }
+
+    /// Name exact provider-owned revision coordinates that become known only
+    /// after opaque subject/target resolution. The kernel reads and stamps
+    /// their generations; providers never supply the observed values.
+    fn resolved_revision_keys(
+        &self,
+        _resolved: &ResolvedActionInvocation,
+    ) -> Result<Vec<RevisionKey>, ActionError> {
+        Ok(Vec::new())
     }
 
     /// Expand one provider-owned same-commit trigger against the root
@@ -3194,6 +3927,7 @@ impl SameCommitTrigger {
 #[derive(Clone, Debug, PartialEq)]
 pub struct AuthoritativeActionOutput {
     outcome: RulesValue,
+    resolution: Option<PreparedResolution>,
     definitions: Vec<DefinitionRef>,
     eligible_witnesses: Vec<PrincipalId>,
     durable_outbox: Vec<DurableOutboxIntent>,
@@ -3205,6 +3939,7 @@ impl AuthoritativeActionOutput {
     pub fn new(outcome: RulesValue) -> Self {
         Self {
             outcome,
+            resolution: None,
             definitions: Vec::new(),
             eligible_witnesses: Vec::new(),
             durable_outbox: Vec::new(),
@@ -3215,6 +3950,12 @@ impl AuthoritativeActionOutput {
     #[must_use]
     pub fn with_definitions(mut self, definitions: Vec<DefinitionRef>) -> Self {
         self.definitions = definitions;
+        self
+    }
+
+    #[must_use]
+    pub fn with_resolution(mut self, resolution: PreparedResolution) -> Self {
+        self.resolution = Some(resolution);
         self
     }
 
@@ -3242,6 +3983,11 @@ impl AuthoritativeActionOutput {
     }
 
     #[must_use]
+    pub const fn resolution(&self) -> Option<&PreparedResolution> {
+        self.resolution.as_ref()
+    }
+
+    #[must_use]
     pub fn definitions(&self) -> &[DefinitionRef] {
         &self.definitions
     }
@@ -3256,17 +4002,10 @@ impl AuthoritativeActionOutput {
         &self.durable_outbox
     }
 
-    fn into_cascade_parts(
-        self,
-    ) -> (
-        RulesValue,
-        Vec<DefinitionRef>,
-        Vec<PrincipalId>,
-        Vec<DurableOutboxIntent>,
-        Vec<SameCommitTrigger>,
-    ) {
+    fn into_cascade_parts(self) -> AuthoritativeCascadeParts {
         (
             self.outcome,
+            self.resolution,
             self.definitions,
             self.eligible_witnesses,
             self.durable_outbox,
@@ -3275,12 +4014,22 @@ impl AuthoritativeActionOutput {
     }
 }
 
+type AuthoritativeCascadeParts = (
+    RulesValue,
+    Option<PreparedResolution>,
+    Vec<DefinitionRef>,
+    Vec<PrincipalId>,
+    Vec<DurableOutboxIntent>,
+    Vec<SameCommitTrigger>,
+);
+
 /// Complete semantic products of a fully expanded authoritative action.
 /// The transaction remains separate and one-shot so the server can bind the
 /// same immutable event graph and post-images to one durable bundle.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PreparedAuthoritativeAction {
     outcome: RulesValue,
+    resolution: Option<PreparedResolution>,
     definitions: Vec<DefinitionRef>,
     eligible_witnesses: Vec<PrincipalId>,
     durable_outbox: Vec<DurableOutboxIntent>,
@@ -3288,17 +4037,10 @@ pub struct PreparedAuthoritativeAction {
 }
 
 impl PreparedAuthoritativeAction {
-    pub fn into_parts(
-        self,
-    ) -> (
-        RulesValue,
-        Vec<DefinitionRef>,
-        Vec<PrincipalId>,
-        Vec<DurableOutboxIntent>,
-        Vec<AuthoritativeSemanticEvent>,
-    ) {
+    pub fn into_parts(self) -> PreparedAuthoritativeActionParts {
         (
             self.outcome,
+            self.resolution,
             self.definitions,
             self.eligible_witnesses,
             self.durable_outbox,
@@ -3306,6 +4048,16 @@ impl PreparedAuthoritativeAction {
         )
     }
 }
+
+/// Owned components of a prepared authoritative action.
+pub type PreparedAuthoritativeActionParts = (
+    RulesValue,
+    Option<PreparedResolution>,
+    Vec<DefinitionRef>,
+    Vec<PrincipalId>,
+    Vec<DurableOutboxIntent>,
+    Vec<AuthoritativeSemanticEvent>,
+);
 
 /// Frozen deterministic provider ordering assigned from canonical registry order.
 /// Callers cannot construct or choose this value.
@@ -3512,9 +4264,21 @@ impl ActionProviderRegistryBuilder {
                 owner_readiness: owner_readiness.clone(),
             });
         }
+        let mut offer_routes = BTreeMap::new();
+        for (locator, entry) in &entries {
+            let route = crate::offer::OfferRouteId::derive(&entry.action)
+                .map_err(ActionProviderRegistryError::OfferRouteHash)?;
+            if let Some(existing) = offer_routes.insert(route, locator.clone()) {
+                return Err(ActionProviderRegistryError::OfferRouteCollision {
+                    first: Box::new(existing),
+                    second: Box::new(locator.clone()),
+                });
+            }
+        }
         let fingerprint = provider_fingerprint(entries.values())?;
         Ok(ActionProviderRegistry {
             entries,
+            offer_routes,
             fingerprint,
             owner_readiness,
         })
@@ -3524,6 +4288,7 @@ impl ActionProviderRegistryBuilder {
 /// Immutable exact-action provider lookup.
 pub struct ActionProviderRegistry {
     entries: BTreeMap<crate::mechanics::DefinitionLocator, ActionProviderEntry>,
+    offer_routes: BTreeMap<crate::offer::OfferRouteId, crate::mechanics::DefinitionLocator>,
     fingerprint: DefinitionDigest,
     owner_readiness: MechanicalOwnerReadiness,
 }
@@ -3535,6 +4300,38 @@ impl fmt::Debug for ActionProviderRegistry {
             .field("fingerprint", &self.fingerprint)
             .finish()
     }
+}
+
+/// Select the one exact station that supplies every channel required by an
+/// offer. Higher priority wins, but an equal-priority tie is authority
+/// ambiguity and projects no action. In particular, channels can never be
+/// assembled across two grants.
+fn select_offer_channel_grant<'a>(
+    world: &'a World,
+    query: &crate::offer::LegalActionQuery,
+    required_channels: &[ChannelId],
+) -> Option<(OwnerId, &'a crate::world::ChannelGrant)> {
+    if required_channels.is_empty() {
+        return None;
+    }
+    let SubjectKey::Object { id: subject } = query.truth_subject() else {
+        return None;
+    };
+    let mut eligible = world
+        .command_subjects_of(query.actor())
+        .iter()
+        .filter(|grant| {
+            grant.subject == *subject
+                && required_channels
+                    .iter()
+                    .all(|channel| grant.channels.contains(channel))
+        });
+    let best = eligible.next()?;
+    if eligible.any(|candidate| candidate.priority == best.priority) {
+        return None;
+    }
+    let publisher = OwnerId::parse_canonical(best.owner.as_str()).ok()?;
+    Some((publisher, best))
 }
 
 impl ActionProviderRegistry {
@@ -3560,6 +4357,43 @@ impl ActionProviderRegistry {
                 source: Box::new(source),
             })?;
         Ok(entry)
+    }
+
+    /// Route-only immutable snapshot used for early idempotency scope
+    /// selection before the world task regenerates and verifies an offer.
+    #[must_use]
+    pub fn offer_route_table(&self) -> crate::offer::OfferRouteTable {
+        crate::offer::OfferRouteTable::from_entries(self.offer_routes.iter().filter_map(
+            |(route, locator)| {
+                self.entries
+                    .get(locator)
+                    .map(|entry| (*route, entry.action.clone()))
+            },
+        ))
+    }
+
+    /// Clone only the pure receipt-projection capabilities needed outside the
+    /// single-writer. Provider callbacks receive no engine or mutable state;
+    /// the shared readiness latch still freezes them with their owner.
+    #[must_use]
+    pub fn receipt_projection_table(&self) -> ReceiptProjectionTable {
+        ReceiptProjectionTable {
+            entries: self
+                .entries
+                .iter()
+                .map(|(locator, entry)| {
+                    (
+                        locator.clone(),
+                        ReceiptProjectionEntry {
+                            owner: entry.owner.clone(),
+                            action: entry.action.clone(),
+                            provider: Arc::clone(&entry.provider),
+                        },
+                    )
+                })
+                .collect(),
+            owner_readiness: self.owner_readiness.clone(),
+        }
     }
 
     /// Enumerate providers in canonical action order and stamp every returned
@@ -3591,12 +4425,89 @@ impl ActionProviderRegistry {
                         action: Box::new(entry.action().clone()),
                     },
                 )?;
-            let Some(projected) = projected else {
+            let Some(mut projected) = projected else {
                 continue;
             };
+            projected.guards = projected
+                .guards
+                .with_authority_guards(query.authority_guards())
+                .map_err(
+                    |source| crate::offer::LegalActionProjectionError::SubjectAuthority {
+                        action: Box::new(entry.action().clone()),
+                        source: Box::new(source),
+                    },
+                )?;
+            if !projected.required_channels.is_empty() {
+                let Some((grant_owner, grant)) =
+                    select_offer_channel_grant(&engine.world, query, &projected.required_channels)
+                else {
+                    continue;
+                };
+                projected.guards = projected
+                    .guards
+                    .with_channel_grant(&grant_owner, grant, &projected.required_channels)
+                    .map_err(
+                        |source| crate::offer::LegalActionProjectionError::ChannelGrant {
+                            action: Box::new(entry.action().clone()),
+                            source: Box::new(source),
+                        },
+                    )?;
+                let validators = engine
+                    .registry
+                    .authority_guard_validators()
+                    .ok_or_else(|| {
+                        crate::offer::LegalActionProjectionError::AuthorityRegistryUnavailable {
+                            action: Box::new(entry.action().clone()),
+                        }
+                    })?;
+                let context = AuthorityGuardContext::new(&engine.world, engine.action_state());
+                let mut lease_guards = Vec::with_capacity(projected.required_channels.len());
+                let mut all_leased = true;
+                for channel in &projected.required_channels {
+                    let request = AuthorityWitnessRequest::ControlLease {
+                        provider: grant_owner.clone(),
+                        subject: grant.subject,
+                        channel: channel.clone(),
+                        holder: query.principal().clone(),
+                    };
+                    match validators.witness(&context, &request) {
+                        Ok(Some(witness)) => lease_guards.push(witness.guard().clone()),
+                        Ok(None) => {
+                            all_leased = false;
+                            break;
+                        }
+                        Err(source) => {
+                            return Err(
+                                crate::offer::LegalActionProjectionError::ControlLeaseAuthority {
+                                    action: Box::new(entry.action().clone()),
+                                    source: Box::new(source),
+                                },
+                            );
+                        }
+                    }
+                }
+                if !all_leased {
+                    continue;
+                }
+                projected.guards = projected
+                    .guards
+                    .with_authority_guards(&lease_guards)
+                    .map_err(|source| {
+                        crate::offer::LegalActionProjectionError::SubjectAuthority {
+                            action: Box::new(entry.action().clone()),
+                            source: Box::new(source),
+                        }
+                    })?;
+            }
             let offer = crate::offer::InternalOffer::new(
                 crate::offer::InternalOfferDraft {
                     action: entry.action().clone(),
+                    route: crate::offer::OfferRouteId::derive(entry.action()).map_err(
+                        |source| crate::offer::LegalActionProjectionError::Offer {
+                            action: Box::new(entry.action().clone()),
+                            source: Box::new(crate::offer::OfferBuildError::Hash(source)),
+                        },
+                    )?,
                     viewer_scope: query.viewer_scope(),
                     truth_subject: query.truth_subject().clone(),
                     projected_subject: query.projected_subject().clone(),
@@ -3647,6 +4558,58 @@ impl ActionProviderRegistry {
         })
     }
 
+    /// Ask one exact provider which revision coordinates are selected by the
+    /// privately resolved invocation. Readiness is checked on both sides of
+    /// the callback. Cross-owner coordinates require the unique exact bridge
+    /// for this action; its definition is returned for final guarding.
+    pub(crate) fn resolved_revision_keys(
+        &self,
+        action: &DefinitionRef,
+        resolved: &ResolvedActionInvocation,
+        definitions: &DefinitionRegistry,
+        bridges: &BridgeRegistry,
+    ) -> Result<(Vec<RevisionKey>, Vec<DefinitionRef>), ActionProviderDispatchError> {
+        let entry = self.get_exact(action)?;
+        let mut keys = entry
+            .provider()
+            .resolved_revision_keys(resolved)
+            .map_err(|source| ActionProviderDispatchError::Provider {
+                action: Box::new(action.clone()),
+                source: Box::new(source),
+            })?;
+        self.owner_readiness
+            .require_ready(&entry.owner)
+            .map_err(|source| ActionProviderLookupError::OwnerNotReady {
+                requested: Box::new(action.clone()),
+                source: Box::new(source),
+            })?;
+        if keys.len() > MAX_ACTION_REVISIONS {
+            return Err(ActionProviderDispatchError::RevisionLimit {
+                max: MAX_ACTION_REVISIONS,
+            });
+        }
+        let mut bridge_definitions = BTreeSet::new();
+        for key in keys.iter().filter(|key| key.owner != entry.owner) {
+            let route = bridges
+                .require_interaction(definitions, &entry.owner, &key.owner, action)
+                .map_err(|source| ActionProviderDispatchError::RevisionBridge {
+                    key: Box::new(key.clone()),
+                    source: Box::new(source),
+                })?;
+            let InteractionRoute::Bridge(definition) = route else {
+                return Err(ActionProviderDispatchError::RevisionBridgeRoute {
+                    key: Box::new(key.clone()),
+                });
+            };
+            bridge_definitions.insert(definition);
+        }
+        keys.sort();
+        if keys.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(ActionProviderDispatchError::DuplicateRevisionKey);
+        }
+        Ok((keys, bridge_definitions.into_iter().collect()))
+    }
+
     /// Run one exact provider inside an owner-scoped logical transaction.
     /// Provider and serializer work finish before the returned one-shot
     /// materialization can cross the persistence boundary.
@@ -3683,20 +4646,112 @@ impl ActionProviderRegistry {
         &self,
         action: &DefinitionRef,
         invocation: &ActionInvocation,
+        commit_token: CommitToken,
         state: &mut ActionStateStore,
+        resolution_keys: Option<&crate::resolution::ResolutionKeyRing>,
     ) -> Result<(PreparedTxn, PreparedAuthoritativeAction), ActionProviderPrepareError> {
+        self.prepare_authoritative_invocation_seeded(
+            action,
+            invocation,
+            commit_token,
+            state,
+            resolution_keys,
+            |_| Ok(()),
+        )
+    }
+
+    /// Run one exact provider with server-private resolved subject/target
+    /// identities. The durable bundle still binds the projected invocation;
+    /// only provider preparation sees this non-serializable wrapper.
+    pub fn prepare_resolved_authoritative_invocation(
+        &self,
+        action: &DefinitionRef,
+        resolved: &ResolvedActionInvocation,
+        commit_token: CommitToken,
+        state: &mut ActionStateStore,
+        resolution_keys: Option<&crate::resolution::ResolutionKeyRing>,
+    ) -> Result<(PreparedTxn, PreparedAuthoritativeAction), ActionProviderPrepareError> {
+        self.prepare_authoritative_invocation_seeded_inner(
+            action,
+            resolved.invocation(),
+            Some(resolved),
+            commit_token,
+            state,
+            resolution_keys,
+            |_| Ok(()),
+        )
+    }
+
+    pub(crate) fn prepare_authoritative_invocation_seeded<F>(
+        &self,
+        action: &DefinitionRef,
+        invocation: &ActionInvocation,
+        commit_token: CommitToken,
+        state: &mut ActionStateStore,
+        resolution_keys: Option<&crate::resolution::ResolutionKeyRing>,
+        seed: F,
+    ) -> Result<(PreparedTxn, PreparedAuthoritativeAction), ActionProviderPrepareError>
+    where
+        F: FnOnce(&mut ActionTxn<'_>) -> Result<(), ActionProviderPrepareError>,
+    {
+        self.prepare_authoritative_invocation_seeded_inner(
+            action,
+            invocation,
+            None,
+            commit_token,
+            state,
+            resolution_keys,
+            seed,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_authoritative_invocation_seeded_inner<F>(
+        &self,
+        action: &DefinitionRef,
+        invocation: &ActionInvocation,
+        resolved: Option<&ResolvedActionInvocation>,
+        commit_token: CommitToken,
+        state: &mut ActionStateStore,
+        resolution_keys: Option<&crate::resolution::ResolutionKeyRing>,
+        seed: F,
+    ) -> Result<(PreparedTxn, PreparedAuthoritativeAction), ActionProviderPrepareError>
+    where
+        F: FnOnce(&mut ActionTxn<'_>) -> Result<(), ActionProviderPrepareError>,
+    {
         let entry = self.get_exact(action)?;
         let mut txn = state.transaction_for_provider(entry.registration_ordinal())?;
         let mut queue = CausalTriggerQueue::new(invocation.request(), self.owner_readiness.clone());
         let root_cause = queue.allocate_root_event()?;
         let root_before_operations = txn.operation_count();
-        let root_output = entry
-            .provider()
-            .prepare_authoritative(invocation, &mut txn)
-            .map_err(|source| ActionProviderPrepareError::Provider {
-                action: Box::new(action.clone()),
-                source: Box::new(source),
-            })?;
+        seed(&mut txn)?;
+        let mut prepare_context = crate::resolution::PrepareCtx::new(
+            invocation.idempotency(),
+            commit_token,
+            resolution_keys,
+        );
+        let root_output = match resolved {
+            Some(resolved) => entry
+                .provider()
+                .prepare_resolved_authoritative_with_context(
+                    resolved,
+                    &mut txn,
+                    &mut prepare_context,
+                ),
+            None => entry.provider().prepare_authoritative_with_context(
+                invocation,
+                &mut txn,
+                &mut prepare_context,
+            ),
+        }
+        .map_err(|source| ActionProviderPrepareError::Provider {
+            action: Box::new(action.clone()),
+            source: Box::new(source),
+        })?;
+        validate_resolution_custody(
+            prepare_context.resolution_opened(),
+            root_output.resolution().is_some(),
+        )?;
         charge_new_operations(&mut queue, root_before_operations, &txn)?;
         self.owner_readiness
             .require_ready(&entry.owner)
@@ -3706,9 +4761,26 @@ impl ActionProviderRegistry {
                     source: Box::new(source),
                 })
             })?;
-        let (outcome, mut definitions, mut eligible_witnesses, mut durable_outbox, root_triggers) =
-            root_output.into_cascade_parts();
+        let (
+            outcome,
+            resolution,
+            mut definitions,
+            mut eligible_witnesses,
+            mut durable_outbox,
+            root_triggers,
+        ) = root_output.into_cascade_parts();
+        if let Some(prepared) = &resolution {
+            if prepared.outcome() != &outcome {
+                return Err(ActionProviderPrepareError::ResolutionOutcomeMismatch);
+            }
+            definitions.extend(prepared.definition_refs().iter().cloned());
+            definitions.push(prepared.modifiers().schema().clone());
+            definitions.push(prepared.outcome().schema().clone());
+        }
         definitions.push(outcome.schema().clone());
+        if eligible_witnesses.is_empty() {
+            eligible_witnesses.push(invocation.principal().clone());
+        }
         let root_event = AuthoritativeSemanticEvent::new(
             root_cause,
             entry.owner.clone(),
@@ -3735,8 +4807,17 @@ impl ActionProviderRegistry {
                     source: Box::new(source),
                 })?;
             charge_new_operations(&mut queue, before_operations, &txn)?;
-            let (event_truth, event_definitions, event_witnesses, event_outbox, triggers) =
-                output.into_cascade_parts();
+            let (
+                event_truth,
+                event_resolution,
+                event_definitions,
+                event_witnesses,
+                event_outbox,
+                triggers,
+            ) = output.into_cascade_parts();
+            if event_resolution.is_some() {
+                return Err(ActionProviderPrepareError::TriggerResolutionUnsupported);
+            }
             definitions.push(event_truth.schema().clone());
             let event = AuthoritativeSemanticEvent::new(
                 cause,
@@ -3765,6 +4846,7 @@ impl ActionProviderRegistry {
             prepared,
             PreparedAuthoritativeAction {
                 outcome,
+                resolution,
                 definitions,
                 eligible_witnesses,
                 durable_outbox,
@@ -3779,6 +4861,111 @@ impl ActionProviderRegistry {
     }
 }
 
+struct ReceiptProjectionEntry {
+    owner: OwnerId,
+    action: DefinitionRef,
+    provider: Arc<dyn ActionProvider>,
+}
+
+/// Frozen, thread-safe table of pure durable-receipt projectors.
+pub struct ReceiptProjectionTable {
+    entries: BTreeMap<crate::mechanics::DefinitionLocator, ReceiptProjectionEntry>,
+    owner_readiness: MechanicalOwnerReadiness,
+}
+
+impl fmt::Debug for ReceiptProjectionTable {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ReceiptProjectionTable")
+            .field("actions", &self.entries.keys().collect::<Vec<_>>())
+            .finish_non_exhaustive()
+    }
+}
+
+impl ReceiptProjectionTable {
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            owner_readiness: MechanicalOwnerReadiness::for_owners(&BTreeSet::new()),
+        }
+    }
+
+    /// Project one exact durable root outcome without exposing provider
+    /// callbacks or allowing a current-state read.
+    pub fn project(
+        &self,
+        action: &DefinitionRef,
+        outcome: &RulesValue,
+        viewer: &PrincipalId,
+    ) -> Result<Option<mush_proto::ProjectedActionResult>, ReceiptProjectionError> {
+        let Some(entry) = self.entries.get(&action.locator()) else {
+            return Err(ReceiptProjectionError::Missing {
+                action: Box::new(action.clone()),
+            });
+        };
+        if entry.action.digest() != action.digest() {
+            return Err(ReceiptProjectionError::DigestMismatch {
+                requested: Box::new(action.clone()),
+                registered: Box::new(entry.action.clone()),
+            });
+        }
+        if outcome.schema().key().owner != entry.owner {
+            return Err(ReceiptProjectionError::OutcomeOwnerMismatch {
+                action: Box::new(action.clone()),
+                outcome: Box::new(outcome.schema().clone()),
+            });
+        }
+        self.owner_readiness
+            .require_ready(&entry.owner)
+            .map_err(|source| ReceiptProjectionError::OwnerNotReady {
+                action: Box::new(action.clone()),
+                source: Box::new(source),
+            })?;
+        let projected = entry
+            .provider
+            .project_receipt(&entry.action, outcome, viewer)
+            .map_err(|source| ReceiptProjectionError::Provider {
+                action: Box::new(action.clone()),
+                source: Box::new(source),
+            })?;
+        self.owner_readiness
+            .require_ready(&entry.owner)
+            .map_err(|source| ReceiptProjectionError::OwnerNotReady {
+                action: Box::new(action.clone()),
+                source: Box::new(source),
+            })?;
+        Ok(projected)
+    }
+}
+
+/// Failure to project a private durable result into its public receipt shape.
+#[derive(Debug, Error)]
+pub enum ReceiptProjectionError {
+    #[error("no receipt projector is registered for {action}")]
+    Missing { action: Box<DefinitionRef> },
+    #[error("receipt action {requested} differs from registered {registered}")]
+    DigestMismatch {
+        requested: Box<DefinitionRef>,
+        registered: Box<DefinitionRef>,
+    },
+    #[error("receipt outcome {outcome} is not owned by action provider {action}")]
+    OutcomeOwnerMismatch {
+        action: Box<DefinitionRef>,
+        outcome: Box<DefinitionRef>,
+    },
+    #[error("receipt projector owner is unavailable for {action}: {source}")]
+    OwnerNotReady {
+        action: Box<DefinitionRef>,
+        source: Box<MechanicalOwnerReadinessError>,
+    },
+    #[error("receipt projector refused {action}: {source}")]
+    Provider {
+        action: Box<DefinitionRef>,
+        source: Box<ActionError>,
+    },
+}
+
 fn charge_new_operations(
     queue: &mut CausalTriggerQueue,
     before: usize,
@@ -3791,6 +4978,17 @@ fn charge_new_operations(
     queue.charge_operations(
         u32::try_from(added).expect("action transaction hard operation limit fits u32"),
     )
+}
+
+fn validate_resolution_custody(
+    context_opened: bool,
+    transcript_supplied: bool,
+) -> Result<(), ActionProviderPrepareError> {
+    match (context_opened, transcript_supplied) {
+        (false, false) | (true, true) => Ok(()),
+        (true, false) => Err(ActionProviderPrepareError::UnrecordedResolution),
+        (false, true) => Err(ActionProviderPrepareError::ResolutionOutsideContext),
+    }
 }
 
 /// Exact transactional action-preparation failure. Every variant precedes
@@ -3816,8 +5014,18 @@ pub enum ActionProviderPrepareError {
     Cascade(#[from] CascadeError),
     #[error("authoritative semantic event preparation failed: {0}")]
     Semantic(#[from] AuthoritativeBundleError),
+    #[error("prepared resolution outcome does not match the authoritative action outcome")]
+    ResolutionOutcomeMismatch,
+    #[error("provider opened an authoritative RNG but did not return its resolution transcript")]
+    UnrecordedResolution,
+    #[error("provider returned a resolution transcript without opening its PrepareCtx RNG")]
+    ResolutionOutsideContext,
+    #[error("same-commit triggers cannot introduce an independent resolution transcript")]
+    TriggerResolutionUnsupported,
     #[error("action state preparation failed: {0}")]
     State(#[from] ActionStateError),
+    #[error("durable schedule advance was not admissible: {0}")]
+    Schedule(#[source] Box<crate::schedule_source::ScheduleAdvanceAdmissionError>),
 }
 
 /// Exact action-provider dispatch failure.
@@ -3830,6 +5038,17 @@ pub enum ActionProviderDispatchError {
         action: Box<DefinitionRef>,
         source: Box<ActionError>,
     },
+    #[error("resolved revision-key count exceeds its hard limit of {max}")]
+    RevisionLimit { max: usize },
+    #[error("resolved revision coordinate {key:?} has no executable bridge: {source}")]
+    RevisionBridge {
+        key: Box<RevisionKey>,
+        source: Box<BridgeLookupError>,
+    },
+    #[error("resolved revision coordinate {key:?} selected an invalid same-owner bridge route")]
+    RevisionBridgeRoute { key: Box<RevisionKey> },
+    #[error("resolved revision coordinates contain a duplicate")]
+    DuplicateRevisionKey,
 }
 
 /// Action-provider composition failure.
@@ -3859,6 +5078,13 @@ pub enum ActionProviderRegistryError {
     MissingActionDefinition {
         action: Box<DefinitionRef>,
         source: Box<DefinitionLookupError>,
+    },
+    #[error("cannot derive an opaque offer route: {0}")]
+    OfferRouteHash(#[source] CanonicalHashError),
+    #[error("opaque offer route collision between {first:?} and {second:?}")]
+    OfferRouteCollision {
+        first: Box<crate::mechanics::DefinitionLocator>,
+        second: Box<crate::mechanics::DefinitionLocator>,
     },
     #[error("cannot fingerprint action providers: {0}")]
     Fingerprint(#[from] CanonicalEncodingError),
@@ -3908,8 +5134,8 @@ fn provider_fingerprint<'a>(
 mod tests {
     use super::*;
     use crate::mechanics::{
-        DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRegistryBuilder, IncidentId,
-        RecoveryReason,
+        BridgeDescriptor, BridgeRegistryBuilder, DefinitionDescriptor, DefinitionId,
+        DefinitionKind, DefinitionRegistryBuilder, IncidentId, RecoveryReason,
     };
 
     fn owner() -> OwnerId {
@@ -4171,12 +5397,364 @@ mod tests {
         );
     }
 
+    fn test_channel_grant(
+        station: &str,
+        priority: u16,
+        epoch: u64,
+        channels: &[ChannelId],
+    ) -> crate::world::ChannelGrant {
+        crate::world::ChannelGrant {
+            actor: crate::GOD,
+            subject: crate::LIMBO,
+            station: SmolStr::new(station),
+            relation: SmolStr::new_static("operator"),
+            owner: SmolStr::new(owner().as_str()),
+            priority,
+            channels: channels.iter().cloned().collect(),
+            epoch,
+        }
+    }
+
+    fn operated_query() -> crate::offer::LegalActionQuery {
+        crate::offer::LegalActionQuery::new(
+            PrincipalId::Object { id: crate::GOD },
+            crate::GOD,
+            SubjectKey::Object { id: crate::LIMBO },
+            PerceivedRef::KnownObject {
+                id: crate::LIMBO,
+                revision: 1,
+            },
+            1,
+            None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn channel_offer_selects_one_whole_unambiguous_station_grant() {
+        let movement = ChannelId::new("movement").unwrap();
+        let weapons = ChannelId::new("weapons").unwrap();
+        let required = vec![movement.clone(), weapons.clone()];
+        let mut world = World::new_minimal();
+
+        // No cross-seat union: neither specialist grants the complete set.
+        world.publish_command_subject(test_channel_grant(
+            "driver",
+            20,
+            4,
+            std::slice::from_ref(&movement),
+        ));
+        world.publish_command_subject(test_channel_grant(
+            "gunner",
+            20,
+            9,
+            std::slice::from_ref(&weapons),
+        ));
+        assert!(select_offer_channel_grant(&world, &operated_query(), &required).is_none());
+
+        world.publish_command_subject(test_channel_grant("commander", 30, 11, &required));
+        let (publisher, selected) =
+            select_offer_channel_grant(&world, &operated_query(), &required).unwrap();
+        assert_eq!(publisher, owner());
+        assert_eq!(selected.station, "commander");
+        assert_eq!(selected.priority, 30);
+
+        // Equal best priority is an authority ambiguity, not a lexical tie
+        // break that silently chooses a seat.
+        world.publish_command_subject(test_channel_grant("remote", 30, 12, &required));
+        assert!(select_offer_channel_grant(&world, &operated_query(), &required).is_none());
+    }
+
+    #[test]
+    fn channel_grant_guard_revalidates_station_priority_epoch_and_channel() {
+        let channel = ChannelId::new("movement").unwrap();
+        let mut world = World::new_minimal();
+        let grant = test_channel_grant("cockpit", 40, 7, std::slice::from_ref(&channel));
+        world.publish_command_subject(grant.clone());
+
+        let readiness = MechanicalOwnerReadiness::for_owners(&owner_roster());
+        let (definitions, action) = action_definition();
+        let definitions = bind_definitions(definitions, &readiness);
+        let mut builder = ServerGuardSetBuilder::new(RevisionSet::default(), readiness.clone());
+        builder.add_definition(action, &definitions).unwrap();
+        let guards = builder
+            .finish()
+            .unwrap()
+            .with_channel_grant(&owner(), &grant, std::slice::from_ref(&channel))
+            .unwrap();
+        let revisions = RevisionValidatorRegistryBuilder::new()
+            .freeze_for_owners_with_readiness(&owner_roster(), readiness.clone())
+            .unwrap();
+        let authority = AuthorityGuardValidatorRegistryBuilder::new()
+            .freeze_for_owners_with_readiness(&owner_roster(), readiness)
+            .unwrap();
+
+        assert!(
+            guards
+                .revalidate(&world, &revisions, &authority, &definitions)
+                .unwrap()
+                .is_current()
+        );
+
+        // Even if a buggy publisher forgets to bump the epoch, priority is
+        // part of the exact private witness and invalidates queued work.
+        world.publish_command_subject(test_channel_grant(
+            "cockpit",
+            41,
+            7,
+            std::slice::from_ref(&channel),
+        ));
+        let stale = guards
+            .revalidate(&world, &revisions, &authority, &definitions)
+            .unwrap();
+        assert_eq!(stale.stale_authority().len(), 1);
+        assert!(matches!(
+            stale.stale_authority()[0],
+            AuthorityGuard::ChannelGrant { .. }
+        ));
+    }
+
+    struct ChannelOfferProvider {
+        guards: GuardSet,
+        channels: Vec<ChannelId>,
+    }
+
+    struct CurrentLeaseAuthority {
+        epoch: u64,
+    }
+
+    impl AuthorityGuardValidator for CurrentLeaseAuthority {
+        fn is_current(
+            &self,
+            _context: &AuthorityGuardContext<'_>,
+            guard: &AuthorityGuard,
+        ) -> Result<bool, ActionError> {
+            Ok(matches!(
+                guard,
+                AuthorityGuard::ControlLease { epoch, .. } if *epoch == self.epoch
+            ))
+        }
+
+        fn witness(
+            &self,
+            _context: &AuthorityGuardContext<'_>,
+            request: &AuthorityWitnessRequest,
+        ) -> Result<Option<AuthorityWitness>, ActionError> {
+            let AuthorityWitnessRequest::ControlLease {
+                provider,
+                subject,
+                channel,
+                holder,
+            } = request
+            else {
+                return Ok(None);
+            };
+            Ok(Some(AuthorityWitness::Guard(
+                AuthorityGuard::ControlLease {
+                    provider: provider.clone(),
+                    subject: *subject,
+                    channel: channel.clone(),
+                    holder: holder.clone(),
+                    epoch: self.epoch,
+                },
+            )))
+        }
+    }
+
+    impl ActionProvider for ChannelOfferProvider {
+        fn validate_invocation(&self, _invocation: &ActionInvocation) -> Result<(), ActionError> {
+            Ok(())
+        }
+
+        fn project_offer(
+            &self,
+            _action: &DefinitionRef,
+            _query: &crate::offer::LegalActionQuery,
+            _engine: &crate::engine::Engine,
+        ) -> Result<Option<crate::offer::ProviderOfferDraft>, ActionError> {
+            Ok(Some(crate::offer::ProviderOfferDraft {
+                fixed_parameters: json!({}),
+                parameters: crate::offer::ProjectedParameterSchema::empty(),
+                targets: crate::offer::ProjectedTargetSchema::None,
+                required_channels: self.channels.clone(),
+                expires: None,
+                presentation: crate::offer::ActionPresentation::new(
+                    "operate",
+                    "Operate",
+                    "Use the selected station.",
+                )
+                .unwrap(),
+                guards: self.guards.clone(),
+            }))
+        }
+    }
+
+    #[test]
+    fn provider_registry_privately_binds_required_channels_to_selected_grant() {
+        let movement = ChannelId::new("movement").unwrap();
+        let weapons = ChannelId::new("weapons").unwrap();
+        let channels = vec![movement, weapons];
+        let control_owner = OwnerId::new("control").unwrap();
+        let roster = BTreeSet::from([owner(), control_owner.clone()]);
+        let readiness = MechanicalOwnerReadiness::for_owners(&roster);
+        let (definitions, action) = action_definition();
+        let definitions = bind_definitions(definitions, &readiness);
+        let mut guard_builder =
+            ServerGuardSetBuilder::new(RevisionSet::default(), readiness.clone());
+        guard_builder
+            .add_definition(action.clone(), &definitions)
+            .unwrap();
+        let mut provider_builder = ActionProviderRegistryBuilder::new();
+        provider_builder
+            .register(
+                owner(),
+                action.clone(),
+                Arc::new(ChannelOfferProvider {
+                    guards: guard_builder.finish().unwrap(),
+                    channels: channels.clone(),
+                }),
+            )
+            .unwrap();
+        let providers = provider_builder
+            .freeze_for_owners_with_readiness(&definitions, &roster, readiness.clone())
+            .unwrap();
+        let keys = crate::offer::OfferKeyRing::new(
+            crate::offer::OfferSecret::new(1, [0x44; 32]).unwrap(),
+            [],
+        )
+        .unwrap();
+        let mut engine = crate::engine::Engine::new(World::new_minimal(), crate::Registry::new());
+        let mut authority_builder = AuthorityGuardValidatorRegistryBuilder::new();
+        authority_builder
+            .register(
+                control_owner.clone(),
+                AuthorityGuardKind::ControlLease,
+                Arc::new(CurrentLeaseAuthority { epoch: 29 }),
+            )
+            .unwrap();
+        engine.registry.authority_guard_validators = Some(
+            authority_builder
+                .freeze_for_owners_with_readiness(&roster, readiness.clone())
+                .unwrap(),
+        );
+
+        // A required-channel offer is absent until one exact grant supplies
+        // the complete set.
+        assert!(
+            providers
+                .project_legal_actions(&engine, &operated_query(), &keys)
+                .unwrap()
+                .is_empty()
+        );
+        let mut rogue = test_channel_grant("rogue", 99, 1, &channels);
+        rogue.owner = SmolStr::new_static("uncomposed");
+        engine.world.publish_command_subject(rogue);
+        assert!(matches!(
+            providers.project_legal_actions(&engine, &operated_query(), &keys),
+            Err(crate::offer::LegalActionProjectionError::ChannelGrant { source, .. })
+                if matches!(
+                    *source,
+                    GuardSetBuildError::GrantOwnerUnavailable { .. }
+                )
+        ));
+        engine
+            .world
+            .retract_command_subjects("uncomposed", Some(crate::GOD));
+        let mut grant = test_channel_grant("cockpit", 50, 13, &channels);
+        grant.owner = SmolStr::new(control_owner.as_str());
+        engine.world.publish_command_subject(grant.clone());
+        let offers = providers
+            .project_legal_actions(&engine, &operated_query(), &keys)
+            .unwrap();
+        let projected = offers.projected().into_iter().next().unwrap();
+        let public_json = serde_json::to_string(&projected).unwrap();
+        assert!(!public_json.contains("cockpit"));
+        assert!(!public_json.contains("epoch"));
+        assert!(!public_json.contains("priority"));
+
+        let request = request(0x45);
+        let resolved = offers
+            .resolve(
+                &keys,
+                crate::offer::OfferExecutionContext {
+                    request,
+                    principal: PrincipalId::Object { id: crate::GOD },
+                    actor: crate::GOD,
+                    idempotency: ScopedIdempotencyKey::new(
+                        IdempotencyScope {
+                            principal: PrincipalId::Object { id: crate::GOD },
+                            owner: owner(),
+                            namespace: CanonicalId::new("operate").unwrap(),
+                        },
+                        1,
+                        IdempotencyKey::Request(request),
+                    ),
+                    viewer_scope: operated_query().viewer_scope(),
+                    now: None,
+                },
+                crate::offer::OfferSubmission {
+                    offer: projected.offer(),
+                    subject: projected.subject().clone(),
+                    targets: Vec::new(),
+                    parameters: json!({}),
+                },
+            )
+            .unwrap();
+        let (_, _, _, guards) = resolved.into_resolution_parts();
+        let grant_guards = guards
+            .authority()
+            .iter()
+            .filter(|guard| {
+                matches!(
+                    guard,
+                    AuthorityGuard::ChannelGrant { provider, .. }
+                        if provider.as_str() == control_owner.as_str()
+                )
+            })
+            .count();
+        assert_eq!(grant_guards, channels.len());
+        let lease_guards = guards
+            .authority()
+            .iter()
+            .filter(|guard| {
+                matches!(
+                    guard,
+                    AuthorityGuard::ControlLease {
+                        provider,
+                        epoch: 29,
+                        ..
+                    } if provider.as_str() == control_owner.as_str()
+                )
+            })
+            .count();
+        assert_eq!(lease_guards, channels.len());
+
+        let revisions = RevisionValidatorRegistryBuilder::new()
+            .freeze_for_owners_with_readiness(&roster, readiness.clone())
+            .unwrap();
+        let authority = engine.registry.authority_guard_validators().unwrap();
+        assert!(
+            guards
+                .revalidate(&engine.world, &revisions, authority, &definitions)
+                .unwrap()
+                .is_current()
+        );
+
+        let mut changed_grant = grant.clone();
+        changed_grant.epoch += 1;
+        engine.world.publish_command_subject(changed_grant);
+        let stale = guards
+            .revalidate(&engine.world, &revisions, authority, &definitions)
+            .unwrap();
+        assert_eq!(stale.stale_authority().len(), channels.len());
+    }
+
     struct ConstantRevision(Option<u64>);
 
     impl RevisionValidator for ConstantRevision {
         fn current_generation(
             &self,
-            _world: &World,
+            _context: &RevisionValidatorContext<'_>,
             _key: &RevisionKey,
         ) -> Result<Option<u64>, ActionError> {
             Ok(self.0)
@@ -4186,7 +5764,11 @@ mod tests {
     struct ConstantAuthority(bool);
 
     impl AuthorityGuardValidator for ConstantAuthority {
-        fn is_current(&self, _world: &World, _guard: &AuthorityGuard) -> Result<bool, ActionError> {
+        fn is_current(
+            &self,
+            _context: &AuthorityGuardContext<'_>,
+            _guard: &AuthorityGuard,
+        ) -> Result<bool, ActionError> {
             Ok(self.0)
         }
     }
@@ -4208,7 +5790,7 @@ mod tests {
     impl RevisionValidator for FreezeDuringRevision {
         fn current_generation(
             &self,
-            _world: &World,
+            _context: &RevisionValidatorContext<'_>,
             _key: &RevisionKey,
         ) -> Result<Option<u64>, ActionError> {
             freeze_test_owner(&self.0, "revision_race");
@@ -4219,7 +5801,11 @@ mod tests {
     struct FreezeDuringAuthority(MechanicalOwnerReadiness);
 
     impl AuthorityGuardValidator for FreezeDuringAuthority {
-        fn is_current(&self, _world: &World, _guard: &AuthorityGuard) -> Result<bool, ActionError> {
+        fn is_current(
+            &self,
+            _context: &AuthorityGuardContext<'_>,
+            _guard: &AuthorityGuard,
+        ) -> Result<bool, ActionError> {
             freeze_test_owner(&self.0, "authority_race");
             Ok(true)
         }
@@ -4298,7 +5884,19 @@ mod tests {
                 AuthorityGuardKind::Definition,
                 Arc::new(ConstantAuthority(true)),
             ),
-            Err(AuthorityGuardValidatorRegistryError::ReservedDefinitionKind)
+            Err(AuthorityGuardValidatorRegistryError::ReservedKernelKind {
+                kind: AuthorityGuardKind::Definition
+            })
+        ));
+        assert!(matches!(
+            AuthorityGuardValidatorRegistryBuilder::new().register(
+                owner(),
+                AuthorityGuardKind::ChannelGrant,
+                Arc::new(ConstantAuthority(true)),
+            ),
+            Err(AuthorityGuardValidatorRegistryError::ReservedKernelKind {
+                kind: AuthorityGuardKind::ChannelGrant
+            })
         ));
 
         let build_authority = |reverse: bool| {
@@ -4758,6 +6356,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn resolution_custody_requires_context_and_transcript_to_pair() {
+        assert!(validate_resolution_custody(false, false).is_ok());
+        assert!(validate_resolution_custody(true, true).is_ok());
+        assert!(matches!(
+            validate_resolution_custody(true, false),
+            Err(ActionProviderPrepareError::UnrecordedResolution)
+        ));
+        assert!(matches!(
+            validate_resolution_custody(false, true),
+            Err(ActionProviderPrepareError::ResolutionOutsideContext)
+        ));
+    }
+
     struct Accept;
 
     impl ActionProvider for Accept {
@@ -4772,6 +6384,21 @@ mod tests {
         fn validate_invocation(&self, _invocation: &ActionInvocation) -> Result<(), ActionError> {
             freeze_test_owner(&self.0, "action_race");
             Ok(())
+        }
+    }
+
+    struct RevisionKeysProvider(Vec<RevisionKey>);
+
+    impl ActionProvider for RevisionKeysProvider {
+        fn validate_invocation(&self, _invocation: &ActionInvocation) -> Result<(), ActionError> {
+            Ok(())
+        }
+
+        fn resolved_revision_keys(
+            &self,
+            _resolved: &ResolvedActionInvocation,
+        ) -> Result<Vec<RevisionKey>, ActionError> {
+            Ok(self.0.clone())
         }
     }
 
@@ -4877,6 +6504,140 @@ mod tests {
                 ActionProviderLookupError::OwnerNotReady { .. }
             ))
         ));
+    }
+
+    #[test]
+    fn resolved_revision_coordinates_are_bounded_unique_and_bridge_gated() {
+        fn dispatch(
+            keys: Vec<RevisionKey>,
+        ) -> Result<Vec<RevisionKey>, ActionProviderDispatchError> {
+            let (definitions, action) = action_definition();
+            let mut roster = owner_roster();
+            roster.extend(keys.iter().map(|key| key.owner.clone()));
+            let readiness = MechanicalOwnerReadiness::for_owners(&roster);
+            let definitions = bind_definitions(definitions, &readiness);
+            let bridges = crate::mechanics::BridgeRegistryBuilder::new()
+                .freeze_for_owners_with_readiness(&definitions, &roster, readiness.clone())
+                .unwrap();
+            let mut builder = ActionProviderRegistryBuilder::new();
+            builder
+                .register(
+                    owner(),
+                    action.clone(),
+                    Arc::new(RevisionKeysProvider(keys)),
+                )
+                .unwrap();
+            let registry = builder
+                .freeze_for_owners_with_readiness(&definitions, &roster, readiness)
+                .unwrap();
+            let invocation = invocation(request(1));
+            let resolved = ResolvedActionInvocation::new(
+                invocation,
+                SubjectKey::Object { id: ObjId(7) },
+                vec![SubjectKey::Object { id: ObjId(8) }],
+            )
+            .unwrap();
+            registry
+                .resolved_revision_keys(&action, &resolved, &definitions, &bridges)
+                .map(|(keys, _)| keys)
+        }
+
+        let duplicate = revision_key("unit", 7);
+        assert_eq!(
+            dispatch(vec![duplicate.clone(), duplicate]).unwrap_err(),
+            ActionProviderDispatchError::DuplicateRevisionKey
+        );
+
+        let mut foreign = revision_key("unit", 7);
+        foreign.owner = OwnerId::new("foreign").unwrap();
+        assert!(matches!(
+            dispatch(vec![foreign]),
+            Err(ActionProviderDispatchError::RevisionBridge { source, .. })
+                if matches!(*source, BridgeLookupError::Missing { .. })
+        ));
+
+        let foreign_owner = OwnerId::new("foreign").unwrap();
+        let mut definition_builder = DefinitionRegistryBuilder::new();
+        let action = definition_builder
+            .register(
+                owner(),
+                DefinitionDescriptor::new(
+                    DefinitionKind::new("action").unwrap(),
+                    DefinitionId::new("cross_owner_fire").unwrap(),
+                    1,
+                    json!({}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let bridge_definition = definition_builder
+            .register(
+                owner(),
+                DefinitionDescriptor::new(
+                    DefinitionKind::new("bridge").unwrap(),
+                    DefinitionId::new("toy_to_foreign_fire").unwrap(),
+                    1,
+                    json!({}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let roster = BTreeSet::from([owner(), foreign_owner.clone()]);
+        let readiness = MechanicalOwnerReadiness::for_owners(&roster);
+        let definitions = bind_definitions(definition_builder.freeze().unwrap(), &readiness);
+        let mut bridge_builder = BridgeRegistryBuilder::new();
+        bridge_builder
+            .register(
+                owner(),
+                BridgeDescriptor::new(
+                    bridge_definition.clone(),
+                    owner(),
+                    foreign_owner.clone(),
+                    action.clone(),
+                ),
+            )
+            .unwrap();
+        let bridges = bridge_builder
+            .freeze_for_owners_with_readiness(&definitions, &roster, readiness.clone())
+            .unwrap();
+        let foreign_key = RevisionKey {
+            owner: foreign_owner,
+            kind: RevisionKind::new(CanonicalId::new("position").unwrap()),
+            subject: SubjectKey::Object { id: ObjId(8) },
+            facet: None,
+        };
+        let mut provider_builder = ActionProviderRegistryBuilder::new();
+        provider_builder
+            .register(
+                owner(),
+                action.clone(),
+                Arc::new(RevisionKeysProvider(vec![foreign_key.clone()])),
+            )
+            .unwrap();
+        let providers = provider_builder
+            .freeze_for_owners_with_readiness(&definitions, &roster, readiness)
+            .unwrap();
+        let resolved = ResolvedActionInvocation::new(
+            invocation(request(2)),
+            SubjectKey::Object { id: ObjId(7) },
+            vec![SubjectKey::Object { id: ObjId(8) }],
+        )
+        .unwrap();
+        let (keys, bridge_definitions) = providers
+            .resolved_revision_keys(&action, &resolved, &definitions, &bridges)
+            .unwrap();
+        assert_eq!(keys, vec![foreign_key]);
+        assert_eq!(bridge_definitions, vec![bridge_definition]);
+
+        let excessive = (0..=MAX_ACTION_REVISIONS)
+            .map(|object| revision_key("unit", u32::try_from(object).unwrap()))
+            .collect();
+        assert_eq!(
+            dispatch(excessive).unwrap_err(),
+            ActionProviderDispatchError::RevisionLimit {
+                max: MAX_ACTION_REVISIONS,
+            }
+        );
     }
 
     #[test]

@@ -1124,6 +1124,9 @@ impl Registry {
             || self.revision_validators.is_some()
             || self.authority_guard_validators.is_some()
             || self.state_families.is_some()
+            || self.clock_providers.is_some()
+            || self.resource_effect_providers.is_some()
+            || self.schedule_sources.is_some()
             || self.mechanics_owner_readiness.is_some()
         {
             return Err(ModError::msg("mechanics registries were already frozen"));
@@ -1142,6 +1145,25 @@ impl Registry {
         let state_families = std::mem::take(&mut self.state_family_builder)
             .freeze_for_owners_with_readiness(module_owners, owner_readiness.clone())
             .map_err(|e| ModError::msg(format!("state family registry: {e}")))?;
+        let clock_providers = std::mem::take(&mut self.clock_provider_builder)
+            .freeze_for_owners_with_readiness(module_owners, owner_readiness.clone())
+            .map_err(|e| ModError::msg(format!("clock provider registry: {e}")))?;
+        let resource_effect_providers = std::mem::take(&mut self.resource_effect_provider_builder)
+            .freeze_for_composition(
+                &definitions,
+                module_owners,
+                &state_families,
+                owner_readiness.clone(),
+            )
+            .map_err(|e| ModError::msg(format!("resource/effect provider registry: {e}")))?;
+        let schedule_sources = std::mem::take(&mut self.schedule_source_builder)
+            .freeze_for_composition(
+                module_owners,
+                &action_providers,
+                &state_families,
+                owner_readiness.clone(),
+            )
+            .map_err(|e| ModError::msg(format!("schedule source registry: {e}")))?;
         let revision_validators = std::mem::take(&mut self.revision_validator_builder)
             .freeze_for_owners_with_readiness(module_owners, owner_readiness.clone())
             .map_err(|e| ModError::msg(format!("revision validator registry: {e}")))?;
@@ -1159,6 +1181,9 @@ impl Registry {
         self.revision_validators = Some(revision_validators);
         self.authority_guard_validators = Some(authority_guard_validators);
         self.state_families = Some(state_families);
+        self.clock_providers = Some(clock_providers);
+        self.resource_effect_providers = Some(resource_effect_providers);
+        self.schedule_sources = Some(schedule_sources);
         self.definition_migrations = Some(definition_migrations);
         Ok(())
     }
@@ -1252,6 +1277,26 @@ impl Registry {
         self.state_families.as_ref()
     }
 
+    /// Immutable owner-stamped clock-provider registry after composition.
+    #[must_use]
+    pub fn clock_providers(&self) -> Option<&crate::clock_provider::ClockProviderRegistry> {
+        self.clock_providers.as_ref()
+    }
+
+    /// Immutable resource/effect read adapters after module composition.
+    #[must_use]
+    pub fn resource_effect_providers(
+        &self,
+    ) -> Option<&crate::resource_provider::ResourceEffectProviderRegistry> {
+        self.resource_effect_providers.as_ref()
+    }
+
+    /// Immutable declarative durable schedule sources after composition.
+    #[must_use]
+    pub fn schedule_sources(&self) -> Option<&crate::schedule_source::ScheduleSourceRegistry> {
+        self.schedule_sources.as_ref()
+    }
+
     /// Start a server-owned guard bundle bound to this exact frozen module
     /// composition. A bare or not-yet-composed registry fails closed.
     pub fn server_guard_set_builder(
@@ -1294,8 +1339,11 @@ impl Registry {
         let revisions = self.revision_validators.as_ref()?;
         let authority = self.authority_guard_validators.as_ref()?;
         let state_families = self.state_families.as_ref()?;
+        let clock_providers = self.clock_providers.as_ref()?;
+        let resource_effect_providers = self.resource_effect_providers.as_ref()?;
+        let schedule_sources = self.schedule_sources.as_ref()?;
         crate::mechanics::DefinitionDigest::for_canonical_value(
-            "mechanics_registry.v4",
+            "mechanics_registry.v7",
             &serde_json::json!({
                 "definitions": definitions.fingerprint().to_hex(),
                 "bridges": bridges.fingerprint().to_hex(),
@@ -1304,6 +1352,9 @@ impl Registry {
                 "revision_validators": revisions.fingerprint().to_hex(),
                 "authority_validators": authority.fingerprint().to_hex(),
                 "state_families": state_families.fingerprint().to_hex(),
+                "clock_providers": clock_providers.fingerprint().to_hex(),
+                "resource_effect_providers": resource_effect_providers.fingerprint().to_hex(),
+                "schedule_sources": schedule_sources.fingerprint().to_hex(),
             }),
         )
         .ok()
@@ -1748,6 +1799,230 @@ impl<'a> Registrar<'a> {
             .map_err(|e| {
                 ModError::msg(format!(
                     "module {}: state-family registration: {e}",
+                    self.module
+                ))
+            })
+    }
+
+    /// Register a synchronous provider for one exact module-owned clock.
+    ///
+    /// The registrar stamps the provider owner. At read time the kernel
+    /// supplies the requested generation and immutable world/state context;
+    /// the provider returns only the scalar value, never a relabelled stamp.
+    pub fn clock_provider<P>(
+        &mut self,
+        kind: crate::clock_provider::ClockProviderKind,
+        id: crate::mechanics::CanonicalId,
+        provider: P,
+    ) -> Result<(), ModError>
+    where
+        P: crate::clock_provider::ClockProvider + 'static,
+    {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.clock_providers.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: clock-provider registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .clock_provider_builder
+            .register(owner, kind, id, Arc::new(provider))
+            .map_err(|e| {
+                ModError::msg(format!(
+                    "module {}: clock provider registration: {e}",
+                    self.module
+                ))
+            })
+    }
+
+    /// Register this module as the deployment's sole provider for dynamic
+    /// [`ClockRef::SceneTurn`](crate::clock::ClockRef::SceneTurn) clocks.
+    ///
+    /// Scene ids are world-global and the clock reference intentionally has
+    /// no module-owner field, so composition rejects a second provider rather
+    /// than allowing ambiguous routing.
+    pub fn scene_clock_provider<P>(&mut self, provider: P) -> Result<(), ModError>
+    where
+        P: crate::clock_provider::SceneClockProvider + 'static,
+    {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.clock_providers.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: clock-provider registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .clock_provider_builder
+            .register_scene(owner, Arc::new(provider))
+            .map_err(|e| {
+                ModError::msg(format!(
+                    "module {}: scene clock provider registration: {e}",
+                    self.module
+                ))
+            })
+    }
+
+    /// Register a read-only adapter for one exact resource definition owned
+    /// by this module. The definition's stable id becomes the resource id;
+    /// composition selects exactly one version for that address.
+    pub fn resource_provider<P>(
+        &mut self,
+        definition: crate::mechanics::DefinitionRef,
+        provider: P,
+    ) -> Result<(), ModError>
+    where
+        P: crate::resource_provider::ResourceProvider + 'static,
+    {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.resource_effect_providers.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: resource/effect provider registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .resource_effect_provider_builder
+            .register_resource(owner, definition, None, Arc::new(provider))
+            .map_err(|e| {
+                ModError::msg(format!(
+                    "module {}: resource provider registration: {e}",
+                    self.module
+                ))
+            })
+    }
+
+    /// Register a resource adapter together with the owner-local
+    /// authoritative reservation-book family that gates its spendable value.
+    pub fn reservable_resource_provider<P>(
+        &mut self,
+        definition: crate::mechanics::DefinitionRef,
+        reservations: crate::action_state::StateFamilyHandle<
+            crate::resource::ReservationBookId,
+            crate::resource::ReservationBook,
+        >,
+        provider: P,
+    ) -> Result<(), ModError>
+    where
+        P: crate::resource_provider::ResourceProvider + 'static,
+    {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.resource_effect_providers.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: resource/effect provider registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .resource_effect_provider_builder
+            .register_resource(owner, definition, Some(reservations), Arc::new(provider))
+            .map_err(|e| {
+                ModError::msg(format!(
+                    "module {}: reservable resource provider registration: {e}",
+                    self.module
+                ))
+            })
+    }
+
+    /// Register a read-only adapter for instances of one exact effect
+    /// definition owned by this module.
+    pub fn effect_provider<P>(
+        &mut self,
+        definition: crate::mechanics::DefinitionRef,
+        provider: P,
+    ) -> Result<(), ModError>
+    where
+        P: crate::resource_provider::EffectProvider + 'static,
+    {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.resource_effect_providers.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: resource/effect provider registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .resource_effect_provider_builder
+            .register_effect(owner, definition, Arc::new(provider))
+            .map_err(|e| {
+                ModError::msg(format!(
+                    "module {}: effect provider registration: {e}",
+                    self.module
+                ))
+            })
+    }
+
+    /// Declare a durable schedule family as a bounded wake source for one
+    /// exact authoritative action owned by this module.
+    ///
+    /// Discovery enumerates the engine-owned typed family directly, so a
+    /// provider cannot hide an unbounded process-local queue or index. The
+    /// adapter supplies read-only domain addressing and guards after store
+    /// preflight; the kernel re-evaluates and advances the cursor in the same
+    /// authoritative bundle as the registered action's domain effects.
+    pub fn schedule_source<A>(
+        &mut self,
+        id: crate::mechanics::CanonicalId,
+        action: crate::mechanics::DefinitionRef,
+        schedules: crate::action_state::StateFamilyHandle<
+            crate::durable_schedule::ScheduleId,
+            crate::durable_schedule::DurableSchedule,
+        >,
+        adapter: A,
+    ) -> Result<(), ModError>
+    where
+        A: crate::schedule_source::ScheduleActionAdapter + 'static,
+    {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.schedule_sources.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: schedule-source registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .schedule_source_builder
+            .register(owner, id, action, schedules, Arc::new(adapter))
+            .map_err(|e| {
+                ModError::msg(format!(
+                    "module {}: schedule source registration: {e}",
                     self.module
                 ))
             })
@@ -2339,9 +2614,21 @@ pub fn look_rendered_lines(reg: &Registry, w: &World, looker: ObjId, room: ObjId
 /// Invoke every observer subscribed to `ev`'s kind, post-mutation, each
 /// with a [`Ctx`] carrying its module identity.
 pub fn emit_world_event(reg: &Registry, w: &mut World, out: &mut Outbox, ev: &WorldEvent) {
+    emit_world_event_with_action_state(reg, w, out, ev, None);
+}
+
+pub(crate) fn emit_world_event_with_action_state(
+    reg: &Registry,
+    w: &mut World,
+    out: &mut Outbox,
+    ev: &WorldEvent,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) {
     let observers = reg.observers_matching(ev);
     let actor = ev.subject();
     for (module, obs) in observers {
+        let typed_state =
+            crate::action_state::ModuleActionState::for_module(action_state, Some(module.as_str()));
         let mut ctx = Ctx {
             w: &mut *w,
             actor,
@@ -2350,6 +2637,7 @@ pub fn emit_world_event(reg: &Registry, w: &mut World, out: &mut Outbox, ev: &Wo
             out: &mut *out,
             reg,
             module: Some(module),
+            typed_state,
         };
         obs.on_event(&mut ctx, ev);
     }
@@ -2369,10 +2657,35 @@ pub fn apply_async_completion(
     correlation: u64,
     payload: &str,
 ) {
+    apply_async_completion_with_action_state(
+        reg,
+        w,
+        out,
+        module,
+        actor,
+        correlation,
+        payload,
+        None,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_async_completion_with_action_state(
+    reg: &Registry,
+    w: &mut World,
+    out: &mut Outbox,
+    module: SmolStr,
+    actor: ObjId,
+    correlation: u64,
+    payload: &str,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) {
     let Some(handler) = reg.async_completion(&module) else {
         tracing::warn!(%module, correlation, "async completion for unregistered module dropped");
         return;
     };
+    let typed_state =
+        crate::action_state::ModuleActionState::for_module(action_state, Some(module.as_str()));
     let mut ctx = Ctx {
         w,
         actor,
@@ -2381,6 +2694,7 @@ pub fn apply_async_completion(
         out,
         reg,
         module: Some(module),
+        typed_state,
     };
     handler.on_complete(&mut ctx, correlation, payload);
 }
@@ -2393,6 +2707,17 @@ pub fn fire_conn_hook(
     actor: ObjId,
     connected: bool,
 ) {
+    fire_conn_hook_with_action_state(reg, w, out, actor, connected, None);
+}
+
+pub(crate) fn fire_conn_hook_with_action_state(
+    reg: &Registry,
+    w: &mut World,
+    out: &mut Outbox,
+    actor: ObjId,
+    connected: bool,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) {
     let point = if connected {
         HookPoint::Connected
     } else {
@@ -2400,6 +2725,10 @@ pub fn fire_conn_hook(
     };
     let hooks: Vec<HookReg> = reg.hooks(point).to_vec();
     for h in hooks {
+        let typed_state = crate::action_state::ModuleActionState::for_module(
+            action_state,
+            Some(h.module.as_str()),
+        );
         let mut ctx = Ctx {
             w: &mut *w,
             actor,
@@ -2408,6 +2737,7 @@ pub fn fire_conn_hook(
             out: &mut *out,
             reg,
             module: Some(h.module.clone()),
+            typed_state,
         };
         if connected {
             h.hook.connected(&mut ctx, actor);
@@ -2426,6 +2756,17 @@ pub fn fire_scene_hook(
     scene: SceneId,
     started: bool,
 ) {
+    fire_scene_hook_with_action_state(reg, w, out, scene, started, None);
+}
+
+pub(crate) fn fire_scene_hook_with_action_state(
+    reg: &Registry,
+    w: &mut World,
+    out: &mut Outbox,
+    scene: SceneId,
+    started: bool,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) {
     let point = if started {
         HookPoint::SceneStarted
     } else {
@@ -2433,6 +2774,10 @@ pub fn fire_scene_hook(
     };
     let hooks: Vec<HookReg> = reg.hooks(point).to_vec();
     for h in hooks {
+        let typed_state = crate::action_state::ModuleActionState::for_module(
+            action_state,
+            Some(h.module.as_str()),
+        );
         let mut ctx = Ctx {
             w: &mut *w,
             actor: GOD,
@@ -2441,6 +2786,7 @@ pub fn fire_scene_hook(
             out: &mut *out,
             reg,
             module: Some(h.module.clone()),
+            typed_state,
         };
         if started {
             h.hook.scene_started(&mut ctx, scene);
@@ -2508,11 +2854,50 @@ impl Ctx<'_> {
         self.w.module_state_mut::<T>()
     }
 
+    /// Read one record from an engine-owned typed family registered by this
+    /// context's module. This is a read-only capability: authoritative
+    /// changes still require an [`ActionTxn`](crate::ActionTxn).
+    pub fn action_state<K, V>(
+        &self,
+        handle: &crate::action_state::StateFamilyHandle<K, V>,
+        key: &K,
+    ) -> Result<Option<&V>, crate::action_state::ModuleActionStateReadError>
+    where
+        K: Send + Sync + 'static,
+        V: Clone + Send + Sync + 'static,
+    {
+        self.typed_state.get(handle, key)
+    }
+
+    /// Scan one bounded canonical page of a typed family registered by this
+    /// context's module.
+    pub fn scan_action_state<K, V>(
+        &self,
+        handle: &crate::action_state::StateFamilyHandle<K, V>,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<
+        crate::action_state::StateFamilyPage<'_, V>,
+        crate::action_state::ModuleActionStateReadError,
+    >
+    where
+        K: Send + Sync + 'static,
+        V: Clone + Send + Sync + 'static,
+    {
+        self.typed_state.scan_family(handle, after, limit)
+    }
+
     /// Emit a world event to subscribed observers (post-mutation). Command
     /// handlers that mutate the world through paths not covered by the
     /// core helpers call this themselves.
     pub fn emit_world_event(&mut self, ev: &WorldEvent) {
-        emit_world_event(self.reg, self.w, self.out, ev);
+        emit_world_event_with_action_state(
+            self.reg,
+            self.w,
+            self.out,
+            ev,
+            self.typed_state.store(),
+        );
     }
 
     // ------------------------------------------------------------------
@@ -2601,7 +2986,14 @@ impl Ctx<'_> {
     pub fn start_scene(&mut self, kind: &str, members: BTreeSet<ObjId>) -> SceneId {
         let ns = self.module.clone().unwrap_or_else(|| SmolStr::new(kind));
         let id = self.w.scene_create(kind, &ns, members);
-        fire_scene_hook(self.reg, self.w, self.out, id, true);
+        fire_scene_hook_with_action_state(
+            self.reg,
+            self.w,
+            self.out,
+            id,
+            true,
+            self.typed_state.store(),
+        );
         id
     }
 
@@ -2614,7 +3006,14 @@ impl Ctx<'_> {
         if self.w.scene(id).is_none() {
             return false;
         }
-        fire_scene_hook(self.reg, self.w, self.out, id, false);
+        fire_scene_hook_with_action_state(
+            self.reg,
+            self.w,
+            self.out,
+            id,
+            false,
+            self.typed_state.store(),
+        );
         let Some(scene) = self.w.scene_remove(id) else {
             return false;
         };

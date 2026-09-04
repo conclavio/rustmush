@@ -113,24 +113,48 @@ mod turn;
 pub use action::{
     MAX_ACTIONS, MAX_ROUND_TRIPS, NpcAction, SAY_CAP, action_tools, parse_actions, sanitize_line,
 };
-pub use intel::{INTEL_CAP, IntelKind, IntelRecord, IntelStore, intel_key};
+pub use intel::{
+    INTEL_CAP, IntelKind, IntelRecord, IntelStore, IntelValidationError, MAX_INTEL_DETAIL_BYTES,
+    MAX_INTEL_DOCUMENT_BYTES, MAX_INTEL_PROJECTION_BYTES, MAX_INTEL_PROJECTION_RECORDS,
+    MAX_INTEL_PROVENANCE_BYTES, MAX_INTEL_READABLE_POOLS, MAX_INTEL_RECORD_BYTES,
+    MAX_INTEL_ROOM_NAME_BYTES, MAX_INTEL_SUBJECT_NAME_BYTES, intel_key,
+};
 pub use knowledge::{
-    Familiarity, KNOWLEDGE_ATTR, LoreEntry, LorePool, LorePools, NpcKnowledge, Secrecy,
-    familiarity_of, pool_key,
+    Familiarity, KNOWLEDGE_ATTR, LoreEntry, LorePool, LorePools, LoreValidationError,
+    MAX_LORE_DOCUMENT_BYTES, MAX_LORE_FACT_BYTES, MAX_LORE_POOL_ENTRIES, MAX_LORE_POOLS,
+    MAX_LORE_SOURCE_BYTES, MAX_LORE_SUBJECT_BYTES, MAX_LORE_TAG_BYTES, MAX_NPC_LORE_ENTRIES,
+    MAX_NPC_LORE_TAGS, MAX_RESOLVED_LORE_BYTES, MAX_RESOLVED_LORE_ENTRIES, NpcKnowledge, Secrecy,
+    familiarity_of, pool_key, validate_lore_tag,
 };
 pub use memory::{
-    BUFFER_CAP, LongTermStore, MemoryBuffer, MemoryEvent, MemoryRecall, MemoryRecord, record_key,
+    BUFFER_CAP, LongTermStore, MAX_MEMORY_BUFFER_BYTES, MAX_MEMORY_EVENT_CHARS,
+    MAX_MEMORY_NOTE_BYTES, MAX_MEMORY_NOTES_PER_SUBJECT, MAX_MEMORY_RECALL_RECORDS,
+    MAX_MEMORY_RECORD_BYTES, MAX_MEMORY_SUBJECT_BYTES, MAX_MEMORY_SUBJECTS_PER_NPC,
+    MAX_MEMORY_SUMMARY_CHARS, MemoryBuffer, MemoryEvent, MemoryRecall, MemoryRecord,
+    MemoryRecordError, MemoryUpdate, record_key,
 };
 pub use module::NpcModule;
 pub use profile::{
-    AgentProfile, KnowledgeBounds, NS, NpcTier, PROFILE_ATTR, SUMMARY_ATTR, THINKING_FEED,
+    AgentProfile, AgentProfileValidationError, KnowledgeBounds, MAX_AGENT_PROFILE_BYTES,
+    MAX_PROFILE_BACKGROUND_BYTES, MAX_PROFILE_FALLBACK_BYTES, MAX_PROFILE_FALLBACK_LINES,
+    MAX_PROFILE_GOALS, MAX_PROFILE_KNOWLEDGE_FENCES, MAX_PROFILE_LIST_ENTRY_BYTES,
+    MAX_PROFILE_PERSONA_BYTES, MAX_PROFILE_SPEECH_BYTES, MAX_PROFILE_WATCH_BYTES,
+    MAX_PROFILE_WATCH_ENTRIES, NS, NpcTier, PROFILE_ATTR, SUMMARY_ATTR, THINKING_FEED,
 };
 pub use prompt::{ENGINE_FRAME, system_prompt, user_prompt};
 pub use query::IntelListQuery;
-pub use runtime::{NpcConfig, NpcHostState, NpcRuntime};
+pub use runtime::{
+    MAX_PENDING_STIMULI, MAX_PENDING_STIMULUS_BYTES, NpcConfig, NpcHostState, NpcRuntime,
+};
 pub use snapshot::{
-    AgentGrounding, AppliedAction, NoGrounding, PresentPlayer, RecalledMemory, SceneView,
-    StimulusLine, TurnKind, TurnOutcome, TurnSnapshot,
+    AgentGrounding, AppliedAction, MAX_AGENT_CAPABILITY_BYTES, MAX_AGENT_CAPABILITY_STATS_BYTES,
+    MAX_AGENT_CAPABILITY_SUMMARY_BYTES, MAX_AGENT_CAPABILITY_TAG_BYTES, MAX_AGENT_CAPABILITY_TAGS,
+    MAX_AGENT_CAPABILITY_TOOLS, MAX_AGENT_TOOL_DESCRIPTION_BYTES, MAX_AGENT_TOOL_NAME_BYTES,
+    MAX_AGENT_TOOL_SCHEMA_BYTES, MAX_PRESENT_DESCRIPTION_BYTES, MAX_SCENE_DESCRIPTION_BYTES,
+    MAX_SCENE_EXITS, MAX_SCENE_PRESENT, MAX_SCENE_TIME_BYTES, MAX_SCENE_WEATHER_BYTES,
+    MAX_SNAPSHOT_NAME_BYTES, MAX_TURN_SNAPSHOT_BYTES, NoGrounding, PresentPlayer, RecalledMemory,
+    SceneView, SnapshotValidationError, StimulusLine, TurnKind, TurnOutcome, TurnSnapshot,
+    validate_agent_capability_profile,
 };
 pub use stimulus::{SpeechKind, Stimulus};
 pub use turn::run_npc_turn_async;

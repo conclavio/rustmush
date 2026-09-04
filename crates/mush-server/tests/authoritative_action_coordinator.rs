@@ -1,20 +1,24 @@
 use mush_contract_tests::{
-    TOY_OWNER, install_toy_focus, toy_brace_invocation, toy_brace_offers, toy_definitions,
-    toy_guarded_expiry_invocation, toy_scene_turn, toy_world_with_state,
+    TOY_OWNER, install_toy_focus, install_toy_reservation_book, install_toy_scheduled_expiry,
+    toy_action_window, toy_brace_invocation, toy_brace_offers, toy_definitions, toy_scene_turn,
+    toy_window_invocation, toy_world_with_state,
 };
 use mush_core::{
-    ActionInvocation, ActionInvocationDraft, ActionOfferId, CanonicalHash, CanonicalId,
-    DefinitionId, DefinitionKey, DefinitionKind, DefinitionRef, Engine, GOD, IdempotencyKey,
-    IdempotencyScope, IngressEnvelope, IngressPayload, IngressSurfaceVersion,
-    OfferExecutionContext, OfferKeyRing, OfferSecret, OfferSubmission, OwnerId, PerceivedRef,
-    PrincipalId, ProjectionScopeId, RequestUid, RevisionSet, ScopedIdempotencyKey,
-    StagedActionPersistence,
+    ActionInvocation, ActionInvocationDraft, ActionOfferId, ActionWindowPhase, AuthoritativeBundle,
+    CanonicalHash, CanonicalId, DefinitionId, DefinitionKey, DefinitionKind, DefinitionRef,
+    DurableSchedule, DurableScheduleDraft, Engine, GOD, IdempotencyKey, IdempotencyScope,
+    IngressEnvelope, IngressPayload, IngressSurfaceVersion, OfferExecutionContext, OfferKeyRing,
+    OfferSecret, OfferSubmission, OwnerId, PerceivedRef, PrincipalId, ProjectionScopeId,
+    RequestUid, ResolutionKeyRing, ResolutionSecret, RevisionSet, ScheduleCatchUpOrder,
+    ScheduleDriveCause, ScheduleEvaluation, ScheduleId, ScheduleRestartPolicy,
+    ScopedIdempotencyKey, StagedActionPersistence,
 };
+use mush_proto::ProjectedActionStatus;
 use mush_server::action_coordinator::{ActionCoordinator, ActionPreflight, SemanticActionStatus};
 use mush_server::modules::boot_modules;
 use mush_store::{AuthoritativeStore, InMemoryStore};
 use mush_tactics::{BRACE_ACTION_ID, TacticsModule};
-use mush_testkit::boot_world;
+use mush_testkit::{TestWorld, boot_world};
 use serde_json::{Value, json};
 
 fn fresh_engine() -> Engine {
@@ -89,6 +93,383 @@ fn guards(engine: &Engine, action: &DefinitionRef) -> mush_core::GuardSet {
         .unwrap();
     builder.add_definition(action.clone(), definitions).unwrap();
     builder.finish().unwrap()
+}
+
+#[test]
+fn scheduled_ingress_is_stable_and_owner_scoped() {
+    let engine = fresh_engine();
+    let action = brace_action(&engine);
+    let owner = OwnerId::new("tactics").unwrap();
+    let schedule = DurableSchedule::new(DurableScheduleDraft {
+        id: ScheduleId::derive(&owner, &CanonicalId::new("brace_once").unwrap()).unwrap(),
+        owner,
+        clock: mush_core::ClockRef::Utc,
+        next_due: mush_core::ClockStamp {
+            clock: mush_core::ClockRef::Utc,
+            at: 5,
+        },
+        cadence: Some(5),
+        generation: 8,
+        next_ordinal: 12,
+        restart: ScheduleRestartPolicy::Resume,
+        catch_up_order: ScheduleCatchUpOrder::OldestFirst,
+        max_catch_up: 1,
+    })
+    .unwrap();
+    let ScheduleEvaluation::Advance(advance) = schedule
+        .plan_due(
+            1,
+            &mush_core::ClockStamp {
+                clock: mush_core::ClockRef::Utc,
+                at: 5,
+            },
+            ScheduleDriveCause::Live,
+        )
+        .unwrap()
+    else {
+        panic!("one-shot schedule was not due")
+    };
+    let first = ActionCoordinator::scheduled_ingress(&action, &advance, 42).unwrap();
+    let retry = ActionCoordinator::scheduled_ingress(&action, &advance, 42).unwrap();
+    assert_eq!(first.request(), retry.request());
+    assert_eq!(first.idempotency(), retry.idempotency());
+    assert_eq!(first.ingress_hash(), retry.ingress_hash());
+    assert_eq!(first.idempotency().epoch(), 42);
+    assert!(matches!(
+        first.idempotency().key(),
+        IdempotencyKey::Deterministic(_)
+    ));
+    let ScheduleEvaluation::Advance(later_advance) = schedule
+        .plan_due(
+            1,
+            &mush_core::ClockStamp {
+                clock: mush_core::ClockRef::Utc,
+                at: 15,
+            },
+            ScheduleDriveCause::Live,
+        )
+        .unwrap()
+    else {
+        panic!("later schedule observation was not due")
+    };
+    assert_ne!(advance.post_image(), later_advance.post_image());
+    let later = ActionCoordinator::scheduled_ingress(&action, &later_advance, 42).unwrap();
+    assert_eq!(first.request(), later.request());
+    assert_eq!(first.idempotency(), later.idempotency());
+    assert_eq!(first.ingress_hash(), later.ingress_hash());
+
+    let foreign_owner = OwnerId::new("other").unwrap();
+    let foreign = DurableSchedule::new(DurableScheduleDraft {
+        id: ScheduleId::derive(&foreign_owner, &CanonicalId::new("brace_once").unwrap()).unwrap(),
+        owner: foreign_owner,
+        clock: mush_core::ClockRef::Utc,
+        next_due: mush_core::ClockStamp {
+            clock: mush_core::ClockRef::Utc,
+            at: 5,
+        },
+        cadence: None,
+        generation: 1,
+        next_ordinal: 0,
+        restart: ScheduleRestartPolicy::Resume,
+        catch_up_order: ScheduleCatchUpOrder::OldestFirst,
+        max_catch_up: 1,
+    })
+    .unwrap();
+    let ScheduleEvaluation::Advance(foreign) = foreign
+        .plan_due(
+            1,
+            &mush_core::ClockStamp {
+                clock: mush_core::ClockRef::Utc,
+                at: 5,
+            },
+            ScheduleDriveCause::Live,
+        )
+        .unwrap()
+    else {
+        panic!("foreign schedule was not due")
+    };
+    assert!(
+        ActionCoordinator::scheduled_ingress(&action, &foreign, 42)
+            .unwrap_err()
+            .to_string()
+            .contains("different owners")
+    );
+}
+
+async fn commit_toy_window_operation(
+    store: &InMemoryStore,
+    world: &mut TestWorld,
+    invocation: &ActionInvocation,
+) -> (AuthoritativeBundle, IngressEnvelope) {
+    let envelope = toy_window_envelope(invocation);
+    let permit = match ActionCoordinator::preflight(store, envelope.clone())
+        .await
+        .unwrap()
+    {
+        ActionPreflight::Vacant(permit) => permit,
+        other => panic!("window operation was not vacant: {other:?}"),
+    };
+    let action = toy_definitions().window_action;
+    let action_guards = guards(world.engine(), &action);
+    ActionCoordinator::prepare_and_stage(
+        permit,
+        world.engine_mut(),
+        &action,
+        invocation,
+        action_guards,
+    )
+    .unwrap();
+    let (persistence, installation) = world
+        .engine_mut()
+        .take_staged_action()
+        .unwrap()
+        .expect("window operation staged")
+        .into_parts();
+    let bundle = match persistence {
+        StagedActionPersistence::Authoritative(bundle) => *bundle,
+        StagedActionPersistence::Legacy(_) => panic!("window operation used legacy persistence"),
+    };
+    store
+        .reserve_authoritative_intent(bundle.clone())
+        .await
+        .unwrap();
+    let receipt = store
+        .reconcile_authoritative(bundle.token(), bundle.bundle_hash())
+        .await
+        .unwrap();
+    assert!(receipt.matches_bundle(&bundle));
+    world.engine_mut().install_prepared_action(installation);
+    let checkpoint = store
+        .checkpoint_authoritative(bundle.token(), bundle.bundle_hash())
+        .await
+        .unwrap();
+    assert!(checkpoint.receipt.matches_bundle(&bundle));
+    (bundle, envelope)
+}
+
+fn toy_window_envelope(invocation: &ActionInvocation) -> IngressEnvelope {
+    IngressEnvelope::new(
+        invocation.request(),
+        invocation.principal().clone(),
+        IngressSurfaceVersion::new(CanonicalId::new("test.window").unwrap(), 1).unwrap(),
+        IngressPayload::structured(json!({
+            "action": "window_operation",
+            "parameters": invocation.parameters(),
+        }))
+        .unwrap(),
+        invocation.idempotency().clone(),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn action_window_close_restart_and_resolution_share_exact_authority() {
+    let store = InMemoryStore::new();
+    let (mut world, families) = toy_world_with_state();
+    let _ = world.drain_write_batch();
+    let window_id = toy_action_window().id();
+
+    let open = toy_window_invocation(
+        GOD,
+        RequestUid::from_bytes([0xD0; 16]),
+        json!({ "operation": "open" }),
+    );
+    let (open_bundle, _) = commit_toy_window_operation(&store, &mut world, &open).await;
+    assert!(open_bundle.resolution().is_none());
+    assert_eq!(
+        world
+            .engine()
+            .action_state()
+            .get(&families.windows, &window_id)
+            .unwrap()
+            .unwrap()
+            .phase(),
+        ActionWindowPhase::Open
+    );
+
+    let first = toy_window_invocation(
+        mush_core::ObjId(2),
+        RequestUid::from_bytes([0xD1; 16]),
+        json!({
+            "operation": "submit",
+            "expected_revision": 1,
+            "now": toy_scene_turn(11),
+            "order": 10,
+        }),
+    );
+    commit_toy_window_operation(&store, &mut world, &first).await;
+    let second = toy_window_invocation(
+        mush_core::ObjId(3),
+        RequestUid::from_bytes([0xD2; 16]),
+        json!({
+            "operation": "submit",
+            "expected_revision": 2,
+            "now": toy_scene_turn(12),
+            "order": 1,
+        }),
+    );
+    commit_toy_window_operation(&store, &mut world, &second).await;
+
+    let close = toy_window_invocation(
+        GOD,
+        RequestUid::from_bytes([0xD3; 16]),
+        json!({
+            "operation": "close",
+            "expected_revision": 3,
+            "now": toy_scene_turn(20),
+        }),
+    );
+    let (close_bundle, _) = commit_toy_window_operation(&store, &mut world, &close).await;
+    assert!(close_bundle.resolution().is_none());
+    assert_eq!(close_bundle.outcome().data()["intent_count"], 2);
+
+    // The frozen set must be independently durable before any resolver runs.
+    let (mut restarted, restarted_families) = toy_world_with_state();
+    boot_modules(restarted.engine_mut(), &store).await.unwrap();
+    let _ = restarted.engine_mut().world.take_dirty();
+    assert!(restarted.engine_mut().take_module_ops().is_empty());
+    let closed = restarted
+        .engine()
+        .action_state()
+        .get(&restarted_families.windows, &window_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(closed.phase(), ActionWindowPhase::Closed);
+    assert_eq!(closed.revision(), 4);
+    assert_eq!(
+        restarted.engine().resolution_key_rotation_references(),
+        std::collections::BTreeSet::from([1])
+    );
+    assert_eq!(
+        closed
+            .resolution_order()
+            .unwrap()
+            .into_iter()
+            .map(|intent| intent.invocation().actor().0)
+            .collect::<Vec<_>>(),
+        vec![3, 2]
+    );
+
+    let resolve = toy_window_invocation(
+        GOD,
+        RequestUid::from_bytes([0xD4; 16]),
+        json!({
+            "operation": "resolve",
+            "expected_revision": 4,
+            "now": toy_scene_turn(21),
+        }),
+    );
+
+    // A deployment that pruned the pinned key fails before staging and
+    // leaves the closed post-image untouched.
+    restarted.engine_mut().set_resolution_keys(
+        ResolutionKeyRing::new(ResolutionSecret::new(2, [0x72; 32]).unwrap(), []).unwrap(),
+    );
+    let missing_envelope = toy_window_envelope(&resolve);
+    let missing_permit = match ActionCoordinator::preflight(&store, missing_envelope)
+        .await
+        .unwrap()
+    {
+        ActionPreflight::Vacant(permit) => permit,
+        other => panic!("unattempted resolution was not vacant: {other:?}"),
+    };
+    let window_action = toy_definitions().window_action;
+    let window_guards = guards(restarted.engine(), &window_action);
+    let error = ActionCoordinator::prepare_and_stage(
+        missing_permit,
+        restarted.engine_mut(),
+        &window_action,
+        &resolve,
+        window_guards,
+    )
+    .expect_err("missing pinned secret must fail closed");
+    assert!(error.to_string().contains("resolution RNG is unavailable"));
+    assert!(
+        restarted
+            .engine_mut()
+            .take_staged_action()
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        restarted
+            .engine()
+            .action_state()
+            .get(&restarted_families.windows, &window_id)
+            .unwrap()
+            .unwrap()
+            .phase(),
+        ActionWindowPhase::Closed
+    );
+
+    // Rotate after close while retaining the live reference. Resolution must
+    // use the version pinned when the window opened, not the new current key.
+    restarted.engine_mut().set_resolution_keys(
+        ResolutionKeyRing::new(
+            ResolutionSecret::new(2, [0x72; 32]).unwrap(),
+            [ResolutionSecret::new(1, [0x71; 32]).unwrap()],
+        )
+        .unwrap(),
+    );
+    let (resolve_bundle, resolve_envelope) =
+        commit_toy_window_operation(&store, &mut restarted, &resolve).await;
+    assert_eq!(resolve_bundle.writes().len(), 1);
+    assert_eq!(resolve_bundle.outcome().data()["order"], json!([3, 2]));
+    let resolution = resolve_bundle
+        .resolution()
+        .expect("window resolution retains its RNG transcript");
+    assert_eq!(resolution.action(), resolve_bundle.token());
+    assert_eq!(resolution.secret_version(), 1);
+    assert_eq!(resolution.outcome(), resolve_bundle.outcome());
+    assert_eq!(resolution.draws().len(), 1);
+    let consumed = restarted
+        .engine()
+        .action_state()
+        .get(&restarted_families.windows, &window_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        consumed.phase(),
+        ActionWindowPhase::Consumed {
+            commit: resolve_bundle.token(),
+        }
+    );
+    assert_eq!(consumed.revision(), 5);
+    assert!(
+        restarted
+            .engine()
+            .resolution_key_rotation_references()
+            .is_empty()
+    );
+
+    match ActionCoordinator::preflight(&store, resolve_envelope)
+        .await
+        .unwrap()
+    {
+        ActionPreflight::Finalized(receipt) => {
+            assert_eq!(receipt.resolution(), resolve_bundle.resolution());
+            assert_eq!(receipt.outcome(), resolve_bundle.outcome());
+        }
+        other => panic!("resolved-window retry was not compact and final: {other:?}"),
+    }
+
+    let (mut after_resolution, after_families) = toy_world_with_state();
+    boot_modules(after_resolution.engine_mut(), &store)
+        .await
+        .unwrap();
+    let restored = after_resolution
+        .engine()
+        .action_state()
+        .get(&after_families.windows, &window_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored, consumed);
+    assert_eq!(
+        restored.phase(),
+        ActionWindowPhase::Consumed {
+            commit: resolve_bundle.token(),
+        }
+    );
 }
 
 #[tokio::test]
@@ -166,6 +547,27 @@ async fn real_provider_is_exactly_once_and_hydrates_before_the_next_action() {
         .await
         .unwrap();
 
+    let public_status = ActionCoordinator::status_id(envelope.idempotency()).unwrap();
+    let projections = engine
+        .registry
+        .action_providers()
+        .unwrap()
+        .receipt_projection_table();
+    let ProjectedActionStatus::Committed(before_restart) = ActionCoordinator::projected_status(
+        &store,
+        &projections,
+        &PrincipalId::Object { id: GOD },
+        &public_status,
+    )
+    .await
+    .unwrap() else {
+        panic!("checkpointed action did not return a public committed receipt");
+    };
+    assert_eq!(
+        before_restart.result().unwrap().summary(),
+        "Brace committed."
+    );
+
     match ActionCoordinator::semantic_status(
         &store,
         &PrincipalId::Object { id: GOD },
@@ -220,6 +622,23 @@ async fn real_provider_is_exactly_once_and_hydrates_before_the_next_action() {
     boot_modules(&mut restarted, &store).await.unwrap();
     let _ = restarted.world.take_dirty();
     assert!(restarted.take_module_ops().is_empty());
+    let restarted_projections = restarted
+        .registry
+        .action_providers()
+        .unwrap()
+        .receipt_projection_table();
+    assert_eq!(
+        ActionCoordinator::projected_status(
+            &store,
+            &restarted_projections,
+            &PrincipalId::Object { id: GOD },
+            &public_status,
+        )
+        .await
+        .unwrap(),
+        ProjectedActionStatus::Committed(before_restart),
+        "checkpointed receipt projection must be stable across composition restart"
+    );
     let action = brace_action(&restarted);
     let permit = match ActionCoordinator::preflight(&store, ingress(2, json!({"action": "brace"})))
         .await
@@ -332,6 +751,10 @@ async fn gate_one_offer_is_preflighted_regenerated_and_routed_without_hidden_cli
     };
     assert_eq!(bundle.writes().len(), 2);
     assert_eq!(bundle.outcome().data()["focus"], 2);
+    let resolution = bundle.resolution().expect("toy brace records its RNG");
+    assert_eq!(resolution.action(), bundle.token());
+    assert_eq!(resolution.outcome(), bundle.outcome());
+    assert_eq!(resolution.draws().len(), 1);
     world.engine_mut().abort_prepared_action(installation);
 }
 
@@ -340,6 +763,7 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
     let store = InMemoryStore::new();
     let (mut world, families) = toy_world_with_state();
     install_toy_focus(world.engine_mut(), &families, GOD, 3);
+    let reservation_book = install_toy_reservation_book(world.engine_mut(), &families, GOD);
     let _ = world.drain_write_batch();
     let request = RequestUid::from_bytes([0xB1; 16]);
     let invocation = toy_brace_invocation(GOD, 11, request);
@@ -378,7 +802,7 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
         StagedActionPersistence::Authoritative(bundle) => *bundle,
         StagedActionPersistence::Legacy(_) => panic!("toy cascade used legacy persistence"),
     };
-    assert_eq!(bundle.writes().len(), 2);
+    assert_eq!(bundle.writes().len(), 3);
     assert_eq!(bundle.semantic_events().len(), 2);
     assert_eq!(bundle.semantic_events()[0].kind().as_str(), "brace");
     assert_eq!(bundle.semantic_events()[1].kind().as_str(), "apply_guarded");
@@ -386,6 +810,10 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
         bundle.semantic_events()[1].cause().parent(),
         Some(bundle.semantic_events()[0].cause().event_id())
     );
+    let exact_resolution = bundle
+        .resolution()
+        .cloned()
+        .expect("Gate-1 brace records resolution");
 
     store
         .reserve_authoritative_intent(bundle.clone())
@@ -396,6 +824,7 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
         .await
         .unwrap();
     assert_eq!(receipt.semantic_events(), bundle.semantic_events());
+    assert_eq!(receipt.resolution(), Some(&exact_resolution));
     world.engine_mut().install_prepared_action(installation);
     assert_eq!(
         world
@@ -425,6 +854,7 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
         checkpoint.receipt.semantic_events(),
         bundle.semantic_events()
     );
+    assert_eq!(checkpoint.receipt.resolution(), Some(&exact_resolution));
 
     let (mut restarted, restarted_families) = toy_world_with_state();
     boot_modules(restarted.engine_mut(), &store).await.unwrap();
@@ -450,6 +880,28 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
             .expires_at(),
         &toy_scene_turn(13)
     );
+    let restarted_book = restarted
+        .engine()
+        .action_state()
+        .get(&restarted_families.reservations, &reservation_book)
+        .unwrap()
+        .unwrap();
+    assert_eq!(restarted_book.revision(), 1);
+    assert_eq!(restarted_book.resource_revision(), 1);
+    assert_eq!(
+        restarted_book
+            .checked_available(
+                restarted
+                    .engine()
+                    .action_state()
+                    .get(&restarted_families.focus, &GOD)
+                    .unwrap()
+                    .unwrap()
+                    .value,
+            )
+            .unwrap(),
+        2
+    );
 
     let effect = restarted
         .engine()
@@ -459,21 +911,44 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
         .unwrap()
         .effect
         .id();
-    let expiry_request = RequestUid::from_bytes([0xB2; 16]);
-    let expiry = toy_guarded_expiry_invocation(GOD, effect, 13, expiry_request);
-    let expiry_envelope = IngressEnvelope::new(
-        expiry_request,
-        expiry.principal().clone(),
-        IngressSurfaceVersion::new(CanonicalId::new("test.scheduler").unwrap(), 1).unwrap(),
-        IngressPayload::structured(json!({
-            "action": "guarded_expire",
-            "effect": effect,
-            "now": toy_scene_turn(13),
-        }))
+    let expiry_action = toy_definitions().guarded_expire;
+    let schedule_owner = OwnerId::new(TOY_OWNER).unwrap();
+    let schedule = DurableSchedule::new(DurableScheduleDraft {
+        id: ScheduleId::derive(
+            &schedule_owner,
+            &CanonicalId::new("guarded_expiry_god").unwrap(),
+        )
         .unwrap(),
-        expiry.idempotency().clone(),
-    )
+        owner: schedule_owner,
+        clock: mush_core::ClockRef::Utc,
+        next_due: mush_core::ClockStamp {
+            clock: mush_core::ClockRef::Utc,
+            at: 0,
+        },
+        cadence: None,
+        generation: 1,
+        next_ordinal: 0,
+        restart: ScheduleRestartPolicy::Resume,
+        catch_up_order: ScheduleCatchUpOrder::OldestFirst,
+        max_catch_up: 1,
+    })
     .unwrap();
+    let schedule_id = schedule.id();
+    install_toy_scheduled_expiry(
+        restarted.engine_mut(),
+        &restarted_families,
+        schedule,
+        GOD,
+        effect,
+    );
+    let page = restarted
+        .engine()
+        .discover_scheduled_actions(ScheduleDriveCause::Restart, None, 1)
+        .unwrap();
+    let candidate = page.candidates()[0].clone();
+    assert_eq!(candidate.advance().occurrences().len(), 1);
+    let expiry_envelope =
+        ActionCoordinator::scheduled_ingress(&expiry_action, candidate.advance(), 1).unwrap();
     let expiry_permit = match ActionCoordinator::preflight(&store, expiry_envelope.clone())
         .await
         .unwrap()
@@ -481,14 +956,10 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
         ActionPreflight::Vacant(permit) => permit,
         other => panic!("expiry request was not vacant: {other:?}"),
     };
-    let expiry_action = toy_definitions().guarded_expire;
-    let expiry_guards = guards(restarted.engine(), &expiry_action);
-    ActionCoordinator::prepare_and_stage(
+    ActionCoordinator::prepare_and_stage_scheduled(
         expiry_permit,
         restarted.engine_mut(),
-        &expiry_action,
-        &expiry,
-        expiry_guards,
+        &candidate,
     )
     .unwrap();
     let (persistence, installation) = restarted
@@ -501,7 +972,7 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
         StagedActionPersistence::Authoritative(bundle) => *bundle,
         StagedActionPersistence::Legacy(_) => panic!("expiry used legacy persistence"),
     };
-    assert_eq!(expiry_bundle.writes().len(), 1);
+    assert_eq!(expiry_bundle.writes().len(), 2);
     assert_eq!(
         expiry_bundle.semantic_events()[0].kind().as_str(),
         "guarded_expire"
@@ -526,6 +997,16 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
             .get(&restarted_families.guarded, &GOD)
             .unwrap()
             .is_none()
+    );
+    assert_eq!(
+        restarted
+            .engine()
+            .action_state()
+            .get(&restarted_families.schedules, &schedule_id)
+            .unwrap()
+            .unwrap()
+            .state(),
+        mush_core::ScheduleState::Completed
     );
     assert!(matches!(
         ActionCoordinator::preflight(&store, expiry_envelope)

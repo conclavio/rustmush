@@ -27,8 +27,8 @@ use mush_proto::OutputEvent;
 use mush_store::{InMemoryStore, ObjectStore, WriteBatch};
 use mush_testkit::TestWorld;
 use mush_weather::{
-    ClimateDef, ClimateSet, FlavorBucket, FlavorKey, WeatherConfig, WeatherModule, WeatherState,
-    WxRng, run_weather_async,
+    ClimateDef, ClimateSet, FlavorBucket, FlavorKey, MAX_FLAVOR_LINES_PER_POOL, WeatherConfig,
+    WeatherModule, WeatherState, WxRng, run_weather_async,
 };
 use serde_json::json;
 use smol_str::SmolStr;
@@ -302,6 +302,71 @@ async fn generate_caches_pending_lines_and_prompt_carries_style_and_theme() {
         st.flavor
             .approved_texts(CLIMATE, "rain", FlavorBucket::Ambient)
             .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn duplicate_completion_reports_actual_additions_and_avoids_rewrite() {
+    let mut tw = world();
+    zone_with_climate(&mut tw);
+    let mock = Arc::new(MockProvider::new("openrouter"));
+    let response = flavor_resp(&["Same shift."], &["Same ambience."]);
+    mock.push_response(response.clone());
+    mock.push_response(response);
+    let llm = service(&mock, true);
+
+    generate(
+        &mut tw,
+        &llm,
+        GOD,
+        &format!("@weather/generate {CLIMATE} rain"),
+    )
+    .await;
+    tw.take_module_ops();
+
+    let out = generate(
+        &mut tw,
+        &llm,
+        GOD,
+        &format!("@weather/generate {CLIMATE} rain"),
+    )
+    .await;
+    let seen = tw.seen_by(&out, GOD).join("\n");
+    assert!(
+        seen.contains("0 transition + 0 ambient"),
+        "completion must report accepted rather than offered lines: {seen}"
+    );
+    assert!(
+        flavor_ops(&mut tw).is_empty(),
+        "an all-duplicate completion must not rewrite either pool"
+    );
+}
+
+#[test]
+fn generation_skips_targets_whose_two_pools_are_full() {
+    let mut tw = world();
+    zone_with_climate(&mut tw);
+    let weather = tw.world_mut().module_state_mut::<WeatherState>().unwrap();
+    for bucket in FlavorBucket::ALL {
+        assert_eq!(
+            weather.flavor.add_pending(
+                CLIMATE,
+                "rain",
+                bucket,
+                (0..MAX_FLAVOR_LINES_PER_POOL).map(|n| format!("{bucket:?} line {n}")),
+            ),
+            MAX_FLAVOR_LINES_PER_POOL
+        );
+    }
+
+    let (out, effects) = step_cmd(&mut tw, GOD, &format!("@weather/generate {CLIMATE} rain"));
+    assert!(effects.is_empty(), "a full target must spend no LLM work");
+    assert!(
+        tw.seen_by(&out, GOD)
+            .iter()
+            .any(|line| line.contains("1 full bucket(s) were skipped")),
+        "staff should be told why no request fired: {:?}",
+        tw.seen_by(&out, GOD)
     );
 }
 

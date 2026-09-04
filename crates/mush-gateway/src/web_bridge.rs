@@ -647,6 +647,10 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                     match feed.as_str() {
                         "comsys" => (SmolStr::new_static("comsys.state"), serde_json::json!({})),
                         "who" => (SmolStr::new_static("who"), serde_json::json!({})),
+                        "legal.actions" => {
+                            self.core.legal_actions_panel(conn_id, id, actor).await;
+                            return;
+                        }
                         "mail" => (
                             SmolStr::new_static("mail.list"),
                             serde_json::json!({ "folder": null }),

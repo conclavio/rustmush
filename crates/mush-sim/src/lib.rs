@@ -15,6 +15,7 @@ pub mod commands;
 pub mod custody;
 pub mod data;
 pub mod graph;
+mod handoff;
 pub mod links;
 pub mod route;
 pub mod transition;
@@ -24,9 +25,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mush_core::{
-    BehaviorId, BehaviorSpec, Ctx, DefinitionKind, DestroyGate, DestroyPolicy, DetachGate,
-    EventHook, GameModule, HookPoint, ModError, ModuleBootData, ModuleCtx, ObjId, ObjKind,
-    Registrar, Registry, Role, TickCadence, World, WorldEvent, WorldEventKind,
+    AuthorityGuardKind, BehaviorId, BehaviorSpec, ControlLeaseGuardValidator,
+    ControlLeaseStateCodec, Ctx, DefinitionKind, DestroyGate, DestroyPolicy, DetachGate, EventHook,
+    GameModule, HookPoint, ModError, ModuleBootData, ModuleCtx, ObjId, ObjKind, Registrar,
+    Registry, Role, StateFamilyId, TickCadence, World, WorldEvent, WorldEventKind,
+    control_lease_state_family_descriptor,
 };
 use mush_proto::RichText;
 
@@ -565,6 +568,23 @@ impl GameModule for SimulationModule {
         )?;
         let passive = reg.definition(data::passive_definition_descriptor())?;
         debug_assert_eq!(passive, data::passive_definition_ref());
+        let lease_codec = ControlLeaseStateCodec;
+        let control_leases = reg.state_family(
+            control_lease_state_family_descriptor(
+                StateFamilyId::new("control_leases")
+                    .map_err(|error| ModError::msg(error.to_string()))?,
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            lease_codec,
+            lease_codec,
+            lease_codec,
+            lease_codec,
+        )?;
+        reg.authority_guard_validator(
+            AuthorityGuardKind::ControlLease,
+            ControlLeaseGuardValidator::new(control_leases.clone()),
+        )?;
+        handoff::register(reg, control_leases)?;
         reg.state(SpatialState::new(self.config.recovery_room));
         reg.state(route::RouteState::default());
         reg.behavior(domain_spec())?;

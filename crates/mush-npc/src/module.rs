@@ -23,17 +23,23 @@ use smol_str::SmolStr;
 use mush_faction::{FactionId, FactionState, Principal};
 
 use crate::action::NpcAction;
-use crate::intel::{IntelKind, IntelRecord, IntelStore, intel_key, parse_intel_key_id};
-use crate::knowledge::{
-    Familiarity, KNOWLEDGE_ATTR, LoreEntry, LorePool, NpcKnowledge, Secrecy, familiarity_of,
-    pool_key,
+use crate::intel::{
+    IntelKind, IntelRecord, IntelStore, MAX_INTEL_READABLE_POOLS, finalize_projection, intel_key,
+    parse_intel_key_id, push_newest_projection,
 };
-use crate::memory::{MemoryRecord, record_key};
+use crate::knowledge::{
+    Familiarity, KNOWLEDGE_ATTR, LoreEntry, LorePool, MAX_LORE_POOLS, MAX_LORE_TAG_BYTES,
+    MAX_RESOLVED_LORE_BYTES, MAX_RESOLVED_LORE_ENTRIES, NpcKnowledge, Secrecy, familiarity_of,
+    pool_key, validate_lore_tag,
+};
+use crate::memory::{MAX_MEMORY_SUBJECT_BYTES, MAX_MEMORY_SUMMARY_CHARS, MemoryRecord, record_key};
 use crate::profile::{AgentProfile, NS, PROFILE_ATTR, SUMMARY_ATTR, THINKING_FEED};
 use crate::runtime::NpcHostState;
 use crate::snapshot::{
-    AgentGrounding, AppliedAction, NoGrounding, PresentPlayer, RecalledMemory, SceneView,
-    StimulusLine, TurnKind, TurnOutcome, TurnSnapshot,
+    AgentGrounding, AppliedAction, MAX_PRESENT_DESCRIPTION_BYTES, MAX_SCENE_DESCRIPTION_BYTES,
+    MAX_SCENE_EXITS, MAX_SCENE_PRESENT, MAX_SCENE_TIME_BYTES, MAX_SCENE_WEATHER_BYTES,
+    MAX_SNAPSHOT_NAME_BYTES, NoGrounding, PresentPlayer, RecalledMemory, SceneView, StimulusLine,
+    TurnKind, TurnOutcome, TurnSnapshot, validate_agent_capability_profile,
 };
 use crate::stimulus::{SpeechKind, Stimulus};
 
@@ -223,15 +229,49 @@ impl GameModule for NpcModule {
         let mut store = crate::memory::LongTermStore::default();
         let mut pools = crate::knowledge::LorePools::default();
         let mut intel = IntelStore::default();
+        let mut pool_docs = std::collections::BTreeMap::new();
+        let mut dropped_pool_docs = 0_usize;
         for (key, value) in boot.kv {
             if key.starts_with("mem:") {
                 match serde_json::from_value::<MemoryRecord>(value) {
-                    Ok(rec) => store.insert(rec),
+                    Ok(rec)
+                        if rec.subject.len() <= MAX_MEMORY_SUBJECT_BYTES
+                            && record_key(rec.npc, &rec.subject) == key =>
+                    {
+                        match store.insert(rec) {
+                            Ok(Some(evicted)) => tracing::warn!(
+                                npc = evicted.npc.0,
+                                subject = %evicted.subject,
+                                "npc: boot memory subject cap evicted an older record"
+                            ),
+                            Ok(None) => {}
+                            Err(error) => tracing::error!(
+                                %key,
+                                ?error,
+                                "npc: invalid bounded memory record skipped"
+                            ),
+                        }
+                    }
+                    Ok(_) => tracing::error!(
+                        %key,
+                        "npc: memory document key does not match its record; skipped"
+                    ),
                     Err(e) => tracing::error!(%key, error = %e, "npc: unparseable memory skipped"),
                 }
             } else if key.starts_with("lore:") {
                 match serde_json::from_value::<LorePool>(value) {
-                    Ok(pool) => pools.insert(pool),
+                    Ok(pool) => {
+                        if pool.tag.len() > MAX_LORE_TAG_BYTES || pool_key(&pool.tag) != key {
+                            tracing::error!(%key, "npc: lore pool key does not match its tag; skipped");
+                        } else if let Err(error) = pool.validate() {
+                            tracing::error!(%key, %error, "npc: invalid bounded lore pool skipped");
+                        } else {
+                            pool_docs.insert(key, pool);
+                            if pool_docs.len() > MAX_LORE_POOLS && pool_docs.pop_last().is_some() {
+                                dropped_pool_docs = dropped_pool_docs.saturating_add(1);
+                            }
+                        }
+                    }
                     Err(e) => {
                         tracing::error!(%key, error = %e, "npc: unparseable lore pool skipped")
                     }
@@ -241,7 +281,17 @@ impl GameModule for NpcModule {
                     parse_intel_key_id(id),
                     serde_json::from_value::<Vec<IntelRecord>>(value),
                 ) {
-                    (Some(principal), Ok(records)) => intel.load(principal, records),
+                    (Some(principal), Ok(records)) => match intel.load(principal, records) {
+                        Ok(dropped) if dropped != 0 => tracing::warn!(
+                            %key,
+                            dropped,
+                            "npc: bounded oversized intel bucket during boot"
+                        ),
+                        Ok(_) => {}
+                        Err(error) => {
+                            tracing::error!(%key, %error, "npc: invalid intel bucket skipped")
+                        }
+                    },
                     (None, _) => {
                         tracing::error!(%key, "npc: bad intel principal key skipped")
                     }
@@ -251,6 +301,18 @@ impl GameModule for NpcModule {
                 }
             } else {
                 tracing::warn!(%key, "npc: unknown persisted key ignored");
+            }
+        }
+        if dropped_pool_docs != 0 {
+            tracing::error!(
+                dropped = dropped_pool_docs,
+                max = MAX_LORE_POOLS,
+                "npc: lore pool hard count exceeded; lexically later pools skipped"
+            );
+        }
+        for (key, pool) in pool_docs {
+            if let Err(error) = pools.insert(pool) {
+                tracing::error!(%key, %error, "npc: invalid bounded lore pool skipped");
             }
         }
         if let Some(h) = ctx.state_mut::<NpcHostState>() {
@@ -562,8 +624,12 @@ fn file_intel(ctx: &mut Ctx<'_>, npc: ObjId, subject: ObjId, kind: IntelKind, de
         ts: ctx.w.now(),
     };
     let records = ctx.state_mut::<NpcHostState>().map(|h| h.intel.file(rec));
-    if let Some(records) = records {
-        persist_intel(ctx, principal, &records);
+    match records {
+        Some(Ok(records)) => persist_intel(ctx, principal, &records),
+        Some(Err(error)) => {
+            tracing::warn!(npc = npc.0, %error, "npc: invalid intel record refused");
+        }
+        None => {}
     }
 }
 
@@ -653,55 +719,47 @@ fn cmd_intel(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Ok(());
     }
 
+    let arg = ctx.args.raw().trim().to_string();
+    let by_id = if arg.is_empty() {
+        None
+    } else {
+        mush_core::match_object(ctx.w, actor, &arg).ok()
+    };
+    let needle = arg.to_lowercase();
+    let matches_filter = |record: &IntelRecord| {
+        arg.is_empty()
+            || by_id == Some(record.subject)
+            || record.subject_name.to_lowercase().contains(&needle)
+    };
+
     // The faction pools this actor is cleared to read (M21: a member whose
     // level passes the faction's intel_level). Snapshot before touching the
     // NPC state so the borrows never overlap.
     let readable_pools: Vec<(FactionId, SmolStr)> = readable_intel_pools(ctx.w, actor);
 
-    // Snapshot the actor's own records plus every readable pool's, tagging
-    // pool records with the faction name. Merged, oldest-first by timestamp.
-    let mut records: Vec<(IntelRecord, Option<SmolStr>)> = ctx
+    // Snapshot only the newest bounded matching records across the actor's own
+    // bucket and every readable faction pool. The working set is count-bounded
+    // while scanning, then byte-bounded before any output is constructed.
+    let records: Vec<(IntelRecord, Option<SmolStr>)> = ctx
         .state::<NpcHostState>()
         .map(|h| {
-            let mut v: Vec<(IntelRecord, Option<SmolStr>)> = h
-                .intel
-                .for_principal(Principal::Character(actor))
-                .iter()
-                .cloned()
-                .map(|r| (r, None))
-                .collect();
-            for (fid, fname) in &readable_pools {
-                v.extend(
-                    h.intel
-                        .for_principal(Principal::faction(*fid))
-                        .iter()
-                        .cloned()
-                        .map(|r| (r, Some(fname.clone()))),
-                );
+            let mut v = Vec::new();
+            for record in h.intel.for_principal(Principal::Character(actor)) {
+                if matches_filter(record) {
+                    push_newest_projection(&mut v, record.clone(), None);
+                }
             }
-            v
+            for (fid, fname) in &readable_pools {
+                for record in h.intel.for_principal(Principal::faction(*fid)) {
+                    if matches_filter(record) {
+                        push_newest_projection(&mut v, record.clone(), Some(fname.clone()));
+                    }
+                }
+            }
+            finalize_projection(v, |pool| pool.as_ref().map_or(0, SmolStr::len))
         })
         .unwrap_or_default();
-    records.sort_by_key(|(r, _)| r.ts);
-
-    let arg = ctx.args.raw().trim().to_string();
-    let (records, filter): (Vec<(IntelRecord, Option<SmolStr>)>, Option<String>) = if arg.is_empty()
-    {
-        (records, None)
-    } else {
-        // Resolve the subject to an id when we can (so `#42` or a present name
-        // filters exactly); always also accept a case-insensitive match on the
-        // stored subject name, so a subject who has since left is still findable.
-        let by_id = mush_core::match_object(ctx.w, actor, &arg).ok();
-        let needle = arg.to_lowercase();
-        let filtered = records
-            .into_iter()
-            .filter(|(r, _)| {
-                by_id == Some(r.subject) || r.subject_name.to_lowercase().contains(&needle)
-            })
-            .collect();
-        (filtered, Some(arg))
-    };
+    let filter = (!arg.is_empty()).then_some(arg);
 
     if records.is_empty() {
         let msg = match &filter {
@@ -722,7 +780,7 @@ fn cmd_intel(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     ctx.out.sys_to_actor(actor, "intel", header);
 
     let now = ctx.w.now();
-    for (r, pool) in records.iter().rev() {
+    for (r, pool) in &records {
         let room = if r.room_name.trim().is_empty() {
             String::new()
         } else {
@@ -758,6 +816,7 @@ fn readable_intel_pools(w: &World, actor: ObjId) -> Vec<(FactionId, SmolStr)> {
             fs.memberships_of(actor)
                 .filter(|m| fs.can_read_intel(actor, m.faction))
                 .filter_map(|m| fs.factions.get(&m.faction).map(|f| (f.id, f.name.clone())))
+                .take(MAX_INTEL_READABLE_POOLS)
                 .collect()
         })
         .unwrap_or_default()
@@ -919,8 +978,9 @@ impl NpcTick {
             &batch,
             correlation,
         );
-        emit_thinking(ctx, npc, room);
-        defer_turn(ctx, npc, correlation, &snap);
+        if defer_turn(ctx, npc, correlation, &snap) {
+            emit_thinking(ctx, npc, room);
+        }
     }
 
     fn fire_summarize(
@@ -946,7 +1006,7 @@ impl NpcTick {
             return;
         }
         let snap = build_summarize_snapshot(ctx, npc, profile, room, present, fold, correlation);
-        defer_turn(ctx, npc, correlation, &snap);
+        let _ = defer_turn(ctx, npc, correlation, &snap);
     }
 }
 
@@ -960,16 +1020,24 @@ struct NpcCompletion {
 
 impl AsyncCompletion for NpcCompletion {
     fn on_complete(&self, ctx: &mut Ctx<'_>, correlation: u64, payload: &str) {
-        // Clear in-flight on the framework-supplied NPC id (`ctx.actor` is the
-        // effect's actor — the real NPC) BEFORE decoding, so a malformed or
-        // wrong-NPC payload can never wedge the agent in-flight forever. We do
-        // not trust `outcome.npc()` for this: the undecodable-snapshot branch
-        // returns `Nothing { npc: ObjId(0) }`, which would clear the wrong
-        // runtime and leave the real NPC stuck.
+        // Match and clear in-flight on the framework-supplied NPC id
+        // (`ctx.actor` is the effect's actor) BEFORE decoding, so a malformed
+        // payload for the active turn cannot wedge it forever. The correlation
+        // check is load-bearing: a delayed duplicate from an older turn must
+        // neither clear a newer turn nor replay its stale actions. We do not
+        // trust `outcome.npc()` for either identity.
         let npc = ctx.actor;
         let now = now_ms(ctx.w);
-        if let Some(h) = ctx.state_mut::<NpcHostState>() {
-            h.finish_turn(npc, now);
+        let active = ctx
+            .state_mut::<NpcHostState>()
+            .is_some_and(|h| h.finish_turn_if_correlation(npc, correlation, now));
+        if !active {
+            tracing::debug!(
+                npc = npc.0,
+                correlation,
+                "npc: stale async completion dropped"
+            );
+            return;
         }
         let outcome: TurnOutcome = match serde_json::from_str(payload) {
             Ok(o) => o,
@@ -1001,6 +1069,7 @@ impl AsyncCompletion for NpcCompletion {
                 notify_staff_once(ctx, npc, &reason);
             }
             TurnOutcome::Summary { summary, .. } => {
+                let summary = crate::action::sanitize_line(&summary, MAX_MEMORY_SUMMARY_CHARS);
                 let _ = ctx.w.set_attr(npc, SUMMARY_ATTR, Attr::text(&summary, npc));
                 if let Some(h) = ctx.state_mut::<NpcHostState>() {
                     h.runtime_mut(npc).memory.summary = summary;
@@ -1039,12 +1108,16 @@ fn apply_action(
         }
         NpcAction::Remember { subject, note } => {
             let now = ctx.w.now();
-            let rec = match ctx.state_mut::<NpcHostState>() {
+            let update = match ctx.state_mut::<NpcHostState>() {
                 Some(h) => Some(h.long_term.remember(npc, subject, note, now)),
                 None => None,
             };
-            if let Some(rec) = rec {
-                persist_memory(ctx, &rec);
+            match update {
+                Some(Ok(update)) => persist_memory(ctx, &update),
+                Some(Err(error)) => {
+                    tracing::warn!(npc = npc.0, ?error, "npc: invalid memory action refused");
+                }
+                None => {}
             }
         }
         NpcAction::UseAbility { name, input } => {
@@ -1660,6 +1733,7 @@ fn cmd_lore(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if tag.is_empty() {
         return lore_list_all(ctx);
     }
+    validate_lore_tag(&tag).map_err(|error| CmdError::msg(error.to_string()))?;
     let rhs = ctx.args.rhs().map(str::trim).unwrap_or("").to_string();
     if rhs.is_empty() {
         return lore_show(ctx, &tag);
@@ -1743,7 +1817,7 @@ fn lore_add(ctx: &mut Ctx<'_>, tag: &str, entry: LoreEntry) -> Result<(), CmdErr
     pool.entries.push(entry);
     let idx = pool.entries.len();
     let pool_tag = pool.tag.clone();
-    persist_pool(ctx, &pool);
+    persist_pool(ctx, &pool)?;
     ctx.out.info(
         ctx.actor,
         format!("Added entry #{idx} to lore pool {pool_tag}."),
@@ -1771,7 +1845,7 @@ fn lore_del(ctx: &mut Ctx<'_>, tag: &str, arg: &str) -> Result<(), CmdError> {
     }
     let removed = pool.entries.remove(n - 1);
     let pool_tag = pool.tag.clone();
-    persist_pool(ctx, &pool);
+    persist_pool(ctx, &pool)?;
     ctx.out.info(
         ctx.actor,
         format!(
@@ -1816,12 +1890,16 @@ fn parse_lore_spec(rhs: &str) -> Result<LoreEntry, CmdError> {
     if fact.is_empty() {
         return Err(CmdError::msg("The fact can't be empty."));
     }
-    Ok(LoreEntry {
+    let entry = LoreEntry {
         subject,
         fact,
         secrecy,
         source: String::new(),
-    })
+    };
+    entry
+        .validate()
+        .map_err(|error| CmdError::msg(error.to_string()))?;
+    Ok(entry)
 }
 
 /// Parse a secrecy tier word (case-insensitive).
@@ -1990,9 +2068,40 @@ fn build_dialogue_snapshot(
     batch: &[Stimulus],
     correlation: u64,
 ) -> TurnSnapshot {
-    let mut scene = build_scene(ctx, npc, room, present);
-    let agent_profile = grounding.profile(ctx.w, npc);
-    let present_names: Vec<String> = present.iter().map(|&p| display_name(ctx.w, p)).collect();
+    // A crowded room is projected through a fixed-size view, but the players
+    // responsible for this exact batch must win admission over unrelated
+    // occupants. Otherwise crowding could make direct speech appear to come
+    // from someone absent from the model's scene.
+    let mut prioritized_present = Vec::with_capacity(MAX_SCENE_PRESENT);
+    for subject in batch
+        .iter()
+        .filter_map(Stimulus::subject)
+        .chain(present.iter().copied())
+    {
+        let is_present_player =
+            ctx.w.get(subject).is_some_and(|object| {
+                object.kind == ObjKind::Player && object.location == Some(room)
+            }) && ctx.w.is_connected(subject);
+        if is_present_player && !prioritized_present.contains(&subject) {
+            prioritized_present.push(subject);
+            if prioritized_present.len() == MAX_SCENE_PRESENT {
+                break;
+            }
+        }
+    }
+    let mut scene = build_scene(ctx, npc, room, &prioritized_present);
+    let agent_profile = grounding.profile(ctx.w, npc).and_then(|profile| {
+        if let Err(error) = validate_agent_capability_profile(&profile) {
+            tracing::error!(npc = npc.0, %error, "npc: invalid ruleset capability profile omitted");
+            return None;
+        }
+        Some(profile)
+    });
+    let present_names: Vec<String> = scene
+        .present
+        .iter()
+        .map(|player| player.name.clone())
+        .collect();
 
     let (summary, transcript, recalled) = memory_context(ctx, npc, &present_names);
     let stimuli = batch.iter().map(|s| render_line(ctx.w, s)).collect();
@@ -2015,7 +2124,7 @@ fn build_dialogue_snapshot(
     TurnSnapshot {
         kind: TurnKind::Dialogue,
         npc,
-        npc_name: display_name(ctx.w, npc),
+        npc_name: bounded_text(display_name(ctx.w, npc), MAX_SNAPSHOT_NAME_BYTES),
         profile: profile.clone(),
         agent_profile,
         scene,
@@ -2039,10 +2148,27 @@ fn resolve_shareable_knowledge(ctx: &Ctx<'_>, npc: ObjId) -> Vec<crate::knowledg
     let knowledge = read_knowledge(ctx.w, npc);
     let mut all = knowledge.lore;
     if let Some(h) = ctx.state::<NpcHostState>() {
-        all.extend(h.lore_pools.resolve(&knowledge.tags));
+        all.extend(h.lore_pools.resolve_shareable(&knowledge.tags));
     }
-    all.retain(|e| e.is_shareable());
-    all
+    let mut resolved = Vec::new();
+    let mut bytes = 0_usize;
+    for entry in all.into_iter().filter(LoreEntry::is_shareable) {
+        if resolved.len() >= MAX_RESOLVED_LORE_ENTRIES {
+            break;
+        }
+        let Ok(encoded) = serde_json::to_vec(&entry) else {
+            continue;
+        };
+        let Some(next_bytes) = bytes.checked_add(encoded.len()) else {
+            break;
+        };
+        if next_bytes > MAX_RESOLVED_LORE_BYTES {
+            break;
+        }
+        bytes = next_bytes;
+        resolved.push(entry);
+    }
+    resolved
 }
 
 fn build_summarize_snapshot(
@@ -2059,7 +2185,7 @@ fn build_summarize_snapshot(
     TurnSnapshot {
         kind: TurnKind::Summarize,
         npc,
-        npc_name: display_name(ctx.w, npc),
+        npc_name: bounded_text(display_name(ctx.w, npc), MAX_SNAPSHOT_NAME_BYTES),
         profile: profile.clone(),
         agent_profile: None,
         scene,
@@ -2075,16 +2201,23 @@ fn build_summarize_snapshot(
 }
 
 fn build_scene(ctx: &Ctx<'_>, npc: ObjId, room: ObjId, present: &[ObjId]) -> SceneView {
-    let room_name = display_name(ctx.w, room);
-    let room_desc = attr_text(ctx.w, room, "short_desc")
-        .or_else(|| attr_text(ctx.w, room, "desc"))
-        .unwrap_or_default();
+    let room_name = bounded_text(display_name(ctx.w, room), MAX_SNAPSHOT_NAME_BYTES);
+    let room_desc = bounded_text(
+        attr_text(ctx.w, room, "short_desc")
+            .or_else(|| attr_text(ctx.w, room, "desc"))
+            .unwrap_or_default(),
+        MAX_SCENE_DESCRIPTION_BYTES,
+    );
     let present = present
         .iter()
         .filter(|&&p| p != npc)
+        .take(MAX_SCENE_PRESENT)
         .map(|&p| PresentPlayer {
-            name: display_name(ctx.w, p),
-            short_desc: attr_text(ctx.w, p, "short_desc").unwrap_or_default(),
+            name: bounded_text(display_name(ctx.w, p), MAX_SNAPSHOT_NAME_BYTES),
+            short_desc: bounded_text(
+                attr_text(ctx.w, p, "short_desc").unwrap_or_default(),
+                MAX_PRESENT_DESCRIPTION_BYTES,
+            ),
             // Volatile per-asker trust is filled in by the dialogue-snapshot
             // builder (which has host state); the summarize path leaves the
             // default (Stranger).
@@ -2095,14 +2228,20 @@ fn build_scene(ctx: &Ctx<'_>, npc: ObjId, room: ObjId, present: &[ObjId]) -> Sce
         .w
         .exits_of(room)
         .iter()
-        .filter_map(|&e| ctx.w.get(e).map(|o| primary(&o.name).to_string()))
+        .filter_map(|&e| {
+            ctx.w
+                .get(e)
+                .map(|o| bounded_text(primary(&o.name).to_string(), MAX_SNAPSHOT_NAME_BYTES))
+        })
+        .take(MAX_SCENE_EXITS)
         .collect();
-    let weather = weather_digest(ctx, room);
+    let weather =
+        weather_digest(ctx, room).map(|weather| bounded_text(weather, MAX_SCENE_WEATHER_BYTES));
     SceneView {
         room_name,
         room_desc,
         present,
-        time: ctx.ic_datetime(),
+        time: bounded_text(ctx.ic_datetime(), MAX_SCENE_TIME_BYTES),
         weather,
         exits,
     }
@@ -2142,25 +2281,25 @@ fn memory_context(
 fn render_line(w: &World, s: &Stimulus) -> StimulusLine {
     match s {
         Stimulus::SpokenTo { by, text, kind } => StimulusLine {
-            who: display_name(w, *by),
+            who: bounded_text(display_name(w, *by), MAX_SNAPSHOT_NAME_BYTES),
             text: text.clone(),
             directed: true,
             tag: speech_tag(*kind).to_string(),
         },
         Stimulus::HeardInRoom { by, text } => StimulusLine {
-            who: display_name(w, *by),
+            who: bounded_text(display_name(w, *by), MAX_SNAPSHOT_NAME_BYTES),
             text: text.clone(),
             directed: false,
             tag: "say".to_string(),
         },
         Stimulus::PlayerArrived { who } => StimulusLine {
-            who: display_name(w, *who),
+            who: bounded_text(display_name(w, *who), MAX_SNAPSHOT_NAME_BYTES),
             text: String::new(),
             directed: false,
             tag: "arrived".to_string(),
         },
         Stimulus::PlayerLeft { who } => StimulusLine {
-            who: display_name(w, *who),
+            who: bounded_text(display_name(w, *who), MAX_SNAPSHOT_NAME_BYTES),
             text: String::new(),
             directed: false,
             tag: "left".to_string(),
@@ -2178,7 +2317,7 @@ fn render_line(w: &World, s: &Stimulus) -> StimulusLine {
             tag: "event".to_string(),
         },
         Stimulus::StaffPoke { by, note } => StimulusLine {
-            who: display_name(w, *by),
+            who: bounded_text(display_name(w, *by), MAX_SNAPSHOT_NAME_BYTES),
             text: note.clone(),
             directed: true,
             tag: "poke".to_string(),
@@ -2267,7 +2406,16 @@ fn notify_staff_once(ctx: &mut Ctx<'_>, npc: ObjId, reason: &str) {
     }
 }
 
-fn defer_turn(ctx: &mut Ctx<'_>, npc: ObjId, correlation: u64, snap: &TurnSnapshot) {
+fn defer_turn(ctx: &mut Ctx<'_>, npc: ObjId, correlation: u64, snap: &TurnSnapshot) -> bool {
+    if let Err(error) = snap.validate() {
+        tracing::error!(npc = npc.0, %error, "npc: invalid bounded snapshot; turn dropped");
+        let now = now_ms(ctx.w);
+        if let Some(host) = ctx.state_mut::<NpcHostState>() {
+            host.finish_turn(npc, now);
+        }
+        notify_staff_once(ctx, npc, &error.to_string());
+        return false;
+    }
     let payload = match serde_json::to_string(snap) {
         Ok(p) => p,
         Err(e) => {
@@ -2276,7 +2424,8 @@ fn defer_turn(ctx: &mut Ctx<'_>, npc: ObjId, correlation: u64, snap: &TurnSnapsh
             if let Some(h) = ctx.state_mut::<NpcHostState>() {
                 h.finish_turn(npc, nm);
             }
-            return;
+            notify_staff_once(ctx, npc, "the turn snapshot could not be serialized");
+            return false;
         }
     };
     ctx.out.defer(Deferred::Effect(Effect::ModuleAsync {
@@ -2285,10 +2434,19 @@ fn defer_turn(ctx: &mut Ctx<'_>, npc: ObjId, correlation: u64, snap: &TurnSnapsh
         correlation,
         payload,
     }));
+    true
 }
 
-fn persist_memory(ctx: &mut Ctx<'_>, rec: &MemoryRecord) {
-    let value = match serde_json::to_value(rec) {
+fn persist_memory(ctx: &mut Ctx<'_>, update: &crate::memory::MemoryUpdate) {
+    if let Some(evicted) = &update.evicted {
+        ctx.persist(ModuleOp {
+            ns: SmolStr::new(NS),
+            op: ModuleWrite::Del {
+                key: record_key(evicted.npc, &evicted.subject),
+            },
+        });
+    }
+    let value = match serde_json::to_value(&update.record) {
         Ok(v) => v,
         Err(e) => {
             tracing::error!(error = %e, "npc: could not serialize memory record");
@@ -2298,7 +2456,7 @@ fn persist_memory(ctx: &mut Ctx<'_>, rec: &MemoryRecord) {
     ctx.persist(ModuleOp {
         ns: SmolStr::new(NS),
         op: ModuleWrite::JsonSet {
-            key: record_key(rec.npc, &rec.subject),
+            key: record_key(update.record.npc, &update.record.subject),
             value,
         },
     });
@@ -2326,6 +2484,9 @@ fn persist_intel(ctx: &mut Ctx<'_>, principal: Principal, records: &[IntelRecord
 }
 
 fn store_profile(ctx: &mut Ctx<'_>, npc: ObjId, profile: &AgentProfile) -> Result<(), CmdError> {
+    profile
+        .validate()
+        .map_err(|error| CmdError::msg(error.to_string()))?;
     let value = serde_json::to_value(profile)
         .map_err(|e| CmdError::msg(format!("Could not serialize the profile: {e}")))?;
     ctx.w
@@ -2339,6 +2500,7 @@ fn read_knowledge(w: &World, npc: ObjId) -> NpcKnowledge {
     w.attr(npc, KNOWLEDGE_ATTR)
         .and_then(|a| a.as_json())
         .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .filter(|knowledge: &NpcKnowledge| knowledge.validate().is_ok())
         .unwrap_or_default()
 }
 
@@ -2350,6 +2512,9 @@ fn store_knowledge(
     npc: ObjId,
     knowledge: &NpcKnowledge,
 ) -> Result<(), CmdError> {
+    knowledge
+        .validate()
+        .map_err(|error| CmdError::msg(error.to_string()))?;
     let value = serde_json::to_value(knowledge)
         .map_err(|e| CmdError::msg(format!("Could not serialize the knowledge: {e}")))?;
     ctx.w
@@ -2361,17 +2526,16 @@ fn store_knowledge(
 /// mirror it into the in-RAM [`LorePools`] so the resolved view matches the
 /// write (the pattern `remember`/`persist_memory` follows for durable memory).
 /// Wired by the `@lore` staff commands.
-fn persist_pool(ctx: &mut Ctx<'_>, pool: &LorePool) {
+fn persist_pool(ctx: &mut Ctx<'_>, pool: &LorePool) -> Result<(), CmdError> {
+    pool.validate()
+        .map_err(|error| CmdError::msg(error.to_string()))?;
+    let value = serde_json::to_value(pool)
+        .map_err(|error| CmdError::msg(format!("Could not serialize the lore pool: {error}")))?;
     if let Some(h) = ctx.state_mut::<NpcHostState>() {
-        h.lore_pools.set(pool.clone());
+        h.lore_pools
+            .set(pool.clone())
+            .map_err(|error| CmdError::msg(error.to_string()))?;
     }
-    let value = match serde_json::to_value(pool) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::error!(error = %e, "npc: could not serialize lore pool");
-            return;
-        }
-    };
     ctx.persist(ModuleOp {
         ns: SmolStr::new(NS),
         op: ModuleWrite::JsonSet {
@@ -2379,6 +2543,7 @@ fn persist_pool(ctx: &mut Ctx<'_>, pool: &LorePool) {
             value,
         },
     });
+    Ok(())
 }
 
 /// Delete a shared lore pool: remove the persisted doc AND drop it from the
@@ -2417,14 +2582,18 @@ fn read_profile(w: &World, npc: ObjId) -> Option<AgentProfile> {
 
 fn read_profile_raw(w: &World, npc: ObjId) -> Option<AgentProfile> {
     let v = w.attr(npc, PROFILE_ATTR)?.as_json()?;
-    serde_json::from_value(v.clone()).ok()
+    serde_json::from_value(v.clone())
+        .ok()
+        .filter(|profile: &AgentProfile| profile.validate().is_ok())
 }
 
 fn read_summary(w: &World, npc: ObjId) -> String {
-    w.attr(npc, SUMMARY_ATTR)
+    let summary = w
+        .attr(npc, SUMMARY_ATTR)
         .and_then(|a| a.as_text())
         .unwrap_or_default()
-        .to_string()
+        .to_string();
+    crate::action::sanitize_line(&summary, MAX_MEMORY_SUMMARY_CHARS)
 }
 
 fn enabled_npc(w: &World, npc: ObjId) -> bool {
@@ -2436,7 +2605,20 @@ fn players_present(w: &World, room: ObjId) -> Vec<ObjId> {
         .iter()
         .copied()
         .filter(|&o| w.get(o).is_some_and(|x| x.kind == ObjKind::Player) && w.is_connected(o))
+        .take(MAX_SCENE_PRESENT)
         .collect()
+}
+
+fn bounded_text(mut value: String, maximum_bytes: usize) -> String {
+    if value.len() <= maximum_bytes {
+        return value;
+    }
+    let mut boundary = maximum_bytes;
+    while !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    value.truncate(boundary);
+    value
 }
 
 fn is_connected_player(w: &World, who: ObjId) -> bool {

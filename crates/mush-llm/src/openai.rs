@@ -12,13 +12,15 @@
 
 use std::time::Duration;
 
-use futures::StreamExt;
 use futures::channel::mpsc;
+use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 
 use crate::config::ProviderConfig;
 use crate::http;
-use crate::provider::{LlmError, LlmProvider, ProviderCaps, ProviderId};
+use crate::provider::{
+    LlmError, LlmProvider, PROVIDER_STREAM_BUFFER_EVENTS, ProviderCaps, ProviderId,
+};
 use crate::types::{
     CompletionRequest, CompletionResponse, ContentBlock, LlmStream, ReasoningConfig, Role,
     StopReason, StreamEvent, ToolChoice, Usage,
@@ -218,7 +220,8 @@ impl LlmProvider for OpenAiProvider {
         http::ensure_response_size(&resp)?;
 
         let model = req.model.clone();
-        let (tx, rx) = mpsc::unbounded::<Result<StreamEvent, LlmError>>();
+        let (mut tx, rx) =
+            mpsc::channel::<Result<StreamEvent, LlmError>>(PROVIDER_STREAM_BUFFER_EVENTS);
         let mut response_bytes = 0usize;
         let mut events = resp
             .bytes_stream()
@@ -237,22 +240,28 @@ impl LlmProvider for OpenAiProvider {
                         if event.data.trim() == "[DONE]" {
                             break;
                         }
-                        asm.on_data(&event.data, &tx);
+                        for emitted in asm.on_data(&event.data) {
+                            if tx.send(emitted).await.is_err() {
+                                return;
+                            }
+                        }
                     }
                     Err(eventsource_stream::EventStreamError::Transport(err)) => {
-                        let _ = tx.unbounded_send(Err(err));
+                        let _ = tx.send(Err(err)).await;
                         return;
                     }
                     Err(eventsource_stream::EventStreamError::Utf8(_))
                     | Err(eventsource_stream::EventStreamError::Parser(_)) => {
-                        let _ = tx.unbounded_send(Err(http::stream_protocol_error(
-                            "provider response contained invalid SSE framing",
-                        )));
+                        let _ = tx
+                            .send(Err(http::stream_protocol_error(
+                                "provider response contained invalid SSE framing",
+                            )))
+                            .await;
                         return;
                     }
                 }
             }
-            let _ = tx.unbounded_send(Ok(StreamEvent::Done(asm.finish())));
+            let _ = tx.send(Ok(StreamEvent::Done(asm.finish()))).await;
         });
 
         Ok(rx.boxed())
@@ -287,10 +296,11 @@ impl StreamAsm {
         }
     }
 
-    fn on_data(&mut self, data: &str, tx: &mpsc::UnboundedSender<Result<StreamEvent, LlmError>>) {
+    fn on_data(&mut self, data: &str) -> Vec<Result<StreamEvent, LlmError>> {
+        let mut emitted = Vec::new();
         let v: Value = match serde_json::from_str(data) {
             Ok(v) => v,
-            Err(_) => return,
+            Err(_) => return emitted,
         };
         if let Some(u) = v.get("usage").filter(|u| !u.is_null()) {
             self.usage = parse_usage(u);
@@ -305,19 +315,19 @@ impl StreamAsm {
             .and_then(Value::as_array)
             .and_then(|a| a.first())
         else {
-            return;
+            return emitted;
         };
         if let Some(fr) = choice.get("finish_reason").and_then(Value::as_str) {
             self.stop = parse_finish(fr);
         }
         let Some(delta) = choice.get("delta") else {
-            return;
+            return emitted;
         };
         if let Some(t) = delta.get("content").and_then(Value::as_str)
             && !t.is_empty()
         {
             self.text.push_str(t);
-            let _ = tx.unbounded_send(Ok(StreamEvent::TextDelta(t.to_string())));
+            emitted.push(Ok(StreamEvent::TextDelta(t.to_string())));
         }
         if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
             for call in calls {
@@ -344,7 +354,7 @@ impl StreamAsm {
                     }
                     if let Some(args) = func.get("arguments").and_then(Value::as_str) {
                         slot.args.push_str(args);
-                        let _ = tx.unbounded_send(Ok(StreamEvent::ToolInputDelta {
+                        emitted.push(Ok(StreamEvent::ToolInputDelta {
                             id: slot.id.clone(),
                             json_fragment: args.to_string(),
                         }));
@@ -352,13 +362,14 @@ impl StreamAsm {
                 }
                 if !slot.started && !slot.name.is_empty() {
                     slot.started = true;
-                    let _ = tx.unbounded_send(Ok(StreamEvent::ToolUseStart {
+                    emitted.push(Ok(StreamEvent::ToolUseStart {
                         id: slot.id.clone(),
                         name: slot.name.clone(),
                     }));
                 }
             }
         }
+        emitted
     }
 
     fn finish(self) -> CompletionResponse {

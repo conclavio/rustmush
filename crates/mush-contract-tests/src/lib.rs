@@ -5,25 +5,190 @@
 //! rulesets, tactics, simulation, server, and fault stores without creating a
 //! production dependency cycle.
 
+pub mod tactical_gate;
+
 use mush_core::{
     ActionError, ActionErrorCode, ActionInvocation, ActionInvocationDraft, ActionOfferId,
-    ActionPresentation, ActionProvider, ActionStateError, ActionTxn, AuthoritativeActionOutput,
-    BoundedScalar, CanonicalHash, CanonicalId, ClockRef, ClockStamp, DefinitionDescriptor,
-    DefinitionId, DefinitionKind, DefinitionRef, DefinitionRegistryBuilder,
-    DefinitionValidationContext, EffectDuration, EffectInstance, EffectInstanceId, EffectTarget,
+    ActionPresentation, ActionProvider, ActionStateError, ActionTxn, ActionWindow,
+    ActionWindowDraft, ActionWindowError, ActionWindowId, ActionWindowRecord,
+    ActionWindowStateCodec, AuthoritativeActionOutput, BoundedScalar, CanonicalHash, CanonicalId,
+    ClockRef, ClockStamp, DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef,
+    DefinitionRegistryBuilder, DefinitionValidationContext, DurableSchedule,
+    DurableScheduleStateCodec, EffectDuration, EffectInstance, EffectInstanceId, EffectTarget,
     Engine, GameModule, IdempotencyKey, IdempotencyScope, LegalActionQuery, ModError, ObjId,
-    OwnerId, PerceivedRef, PreparedCausalRef, PreparedTrigger, PrincipalId,
+    OwnerId, PerceivedRef, PrepareCtx, PreparedCausalRef, PreparedTrigger, PrincipalId,
     ProjectedLegalActionSink, ProjectedParameterSchema, ProjectedTargetSchema, ProviderOfferDraft,
-    Registrar, RequestUid, ResourceOperation, RulesValue, SameCommitTrigger, ScopedIdempotencyKey,
-    StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey,
+    Registrar, RequestUid, ReservationBook, ReservationBookError, ReservationBookId,
+    ReservationBookStateCodec, ResolutionKeyRing, ResolutionSecret, ResourceOperation, RulesValue,
+    SameCommitTrigger, ScheduleActionAdapter, ScheduleActionDraft, ScheduleAdvance, ScheduleId,
+    ScopedIdempotencyKey, StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey,
+    WindowIntent, WindowMode, WindowOrderKey, WindowRestartPolicy, WindowTimeoutPolicy,
+    action_window_state_family_descriptor, durable_schedule_state_family_descriptor,
+    reservation_book_state_family_descriptor,
+};
+use mush_core::{
+    EffectProvider, ResourceProvider, ResourceProviderContext, ResourceProviderFailure, ResourceRef,
 };
 use mush_testkit::TestWorld;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
+#[cfg(test)]
+use mush_core::{CommitToken, ReservationId, ReservationRecord};
+
 /// Canonical owner stamped on every toy definition.
 pub const TOY_OWNER: &str = "toy";
+
+#[cfg(test)]
+fn toy_prepare_token() -> CommitToken {
+    CommitToken::from_bytes([0xC0; 16])
+}
+
+/// Recursively find forbidden field names or string fragments in projected
+/// JSON. Contract gates use this on the exact value handed to a player, bot,
+/// or LLM so a newly nested private field cannot evade a top-level assertion.
+///
+/// Field matching is ASCII case-insensitive. Fragment matching is
+/// case-sensitive so callers can include opaque identifiers and digests. Use
+/// [`projection_json_leaks_with_values`] when a private scalar (especially a
+/// numeric `ObjId`) must be compared by JSON type and exact value.
+#[must_use]
+pub fn projection_json_leaks(
+    value: &Value,
+    forbidden_fields: &[&str],
+    forbidden_fragments: &[&str],
+) -> Vec<String> {
+    projection_json_leaks_with_values(value, forbidden_fields, forbidden_fragments, &[])
+}
+
+/// Recursively find forbidden fields/fragments plus exact typed JSON values.
+/// Exact-value matching avoids both missing numeric identifiers and treating a
+/// short decimal ID as a substring of an unrelated opaque token.
+#[must_use]
+pub fn projection_json_leaks_with_values(
+    value: &Value,
+    forbidden_fields: &[&str],
+    forbidden_fragments: &[&str],
+    forbidden_values: &[Value],
+) -> Vec<String> {
+    fn visit(
+        value: &Value,
+        path: &str,
+        forbidden_fields: &[&str],
+        forbidden_fragments: &[&str],
+        forbidden_values: &[Value],
+        leaks: &mut Vec<String>,
+    ) {
+        if forbidden_values.iter().any(|forbidden| value == forbidden) {
+            leaks.push(format!("forbidden exact value at {path}"));
+        }
+        match value {
+            Value::Object(object) => {
+                for (key, child) in object {
+                    let child_path = format!("{path}.{key}");
+                    if forbidden_fields
+                        .iter()
+                        .any(|forbidden| key.eq_ignore_ascii_case(forbidden))
+                    {
+                        leaks.push(format!("forbidden field at {child_path}"));
+                    }
+                    for fragment in forbidden_fragments {
+                        if !fragment.is_empty() && key.contains(fragment) {
+                            leaks.push(format!("forbidden fragment in field at {child_path}"));
+                        }
+                    }
+                    visit(
+                        child,
+                        &child_path,
+                        forbidden_fields,
+                        forbidden_fragments,
+                        forbidden_values,
+                        leaks,
+                    );
+                }
+            }
+            Value::Array(array) => {
+                for (index, child) in array.iter().enumerate() {
+                    visit(
+                        child,
+                        &format!("{path}[{index}]"),
+                        forbidden_fields,
+                        forbidden_fragments,
+                        forbidden_values,
+                        leaks,
+                    );
+                }
+            }
+            Value::String(text) => {
+                for fragment in forbidden_fragments {
+                    if !fragment.is_empty() && text.contains(fragment) {
+                        leaks.push(format!("forbidden fragment in string at {path}"));
+                    }
+                }
+            }
+            Value::Null | Value::Bool(_) | Value::Number(_) => {}
+        }
+    }
+
+    let mut leaks = Vec::new();
+    visit(
+        value,
+        "$",
+        forbidden_fields,
+        forbidden_fragments,
+        forbidden_values,
+        &mut leaks,
+    );
+    leaks
+}
+
+/// Assert that projected JSON contains none of the supplied private fields or
+/// exact private values. The failure includes structural paths, not the
+/// private values themselves.
+pub fn assert_projection_json_clean(
+    surface: &str,
+    value: &Value,
+    forbidden_fields: &[&str],
+    forbidden_fragments: &[&str],
+) {
+    let leaks = projection_json_leaks(value, forbidden_fields, forbidden_fragments);
+    assert!(leaks.is_empty(), "{surface} projection leaked: {leaks:?}");
+}
+
+/// Assert that projected JSON contains none of the supplied private fields,
+/// string fragments, or exact typed values.
+pub fn assert_projection_json_clean_with_values(
+    surface: &str,
+    value: &Value,
+    forbidden_fields: &[&str],
+    forbidden_fragments: &[&str],
+    forbidden_values: &[Value],
+) {
+    let leaks = projection_json_leaks_with_values(
+        value,
+        forbidden_fields,
+        forbidden_fragments,
+        forbidden_values,
+    );
+    assert!(leaks.is_empty(), "{surface} projection leaked: {leaks:?}");
+}
+
+/// Assert that a rendered player/AI-facing text surface contains none of the
+/// supplied exact private fragments.
+pub fn assert_projection_text_clean(surface: &str, text: &str, forbidden_fragments: &[&str]) {
+    let leaks: Vec<usize> = forbidden_fragments
+        .iter()
+        .enumerate()
+        .filter_map(|(index, fragment)| {
+            (!fragment.is_empty() && text.contains(fragment)).then_some(index)
+        })
+        .collect();
+    assert!(
+        leaks.is_empty(),
+        "{surface} projection leaked forbidden fragment indexes: {leaks:?}"
+    );
+}
 
 /// Exact identities used by the first action-kernel proving gate.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -32,6 +197,7 @@ pub struct ToyDefinitions {
     pub guarded: DefinitionRef,
     pub brace: DefinitionRef,
     pub guarded_expire: DefinitionRef,
+    pub window_action: DefinitionRef,
 }
 
 fn focus_descriptor() -> DefinitionDescriptor {
@@ -83,6 +249,20 @@ fn guarded_expire_descriptor(guarded: DefinitionRef) -> DefinitionDescriptor {
     .as_current()
 }
 
+fn window_action_descriptor() -> DefinitionDescriptor {
+    DefinitionDescriptor::new(
+        DefinitionKind::new("action").expect("static definition kind"),
+        DefinitionId::new("window_operation").expect("static definition id"),
+        1,
+        json!({
+            "operations": ["open", "submit", "close", "resolve"],
+            "window": "round_7",
+        }),
+    )
+    .expect("nonzero static version")
+    .as_current()
+}
+
 fn register_definitions(
     mut register: impl FnMut(DefinitionDescriptor) -> Result<DefinitionRef, String>,
 ) -> Result<ToyDefinitions, String> {
@@ -90,11 +270,13 @@ fn register_definitions(
     let guarded = register(guarded_descriptor())?;
     let brace = register(brace_descriptor(focus.clone(), guarded.clone()))?;
     let guarded_expire = register(guarded_expire_descriptor(guarded.clone()))?;
+    let window_action = register(window_action_descriptor())?;
     Ok(ToyDefinitions {
         focus,
         guarded,
         brace,
         guarded_expire,
+        window_action,
     })
 }
 
@@ -109,6 +291,8 @@ fn validate_toy_definition(context: &DefinitionValidationContext<'_>) -> Result<
         brace_descriptor(definitions.focus.clone(), definitions.guarded.clone())
     } else if entry.reference() == &definitions.guarded_expire {
         guarded_expire_descriptor(definitions.guarded.clone())
+    } else if entry.reference() == &definitions.window_action {
+        window_action_descriptor()
     } else {
         return Err("unknown toy definition".into());
     };
@@ -163,6 +347,14 @@ pub struct ToyGuardedState {
     pub effect: EffectInstance,
 }
 
+/// Provider-specific durable addressing for the toy expiry schedule.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToyScheduledExpiry {
+    pub actor: ObjId,
+    pub effect: EffectInstanceId,
+}
+
 impl ToyGuardedState {
     #[must_use]
     pub fn expires_at(&self) -> &ClockStamp {
@@ -177,18 +369,81 @@ impl ToyGuardedState {
 #[derive(Clone, Debug)]
 pub struct ToyStateFamilies {
     pub focus: StateFamilyHandle<ObjId, ToyFocusState>,
+    pub reservations: StateFamilyHandle<ReservationBookId, ReservationBook>,
     pub guarded: StateFamilyHandle<ObjId, ToyGuardedState>,
+    pub windows: StateFamilyHandle<ActionWindowId, ActionWindowRecord>,
+    pub schedules: StateFamilyHandle<ScheduleId, DurableSchedule>,
+    pub scheduled_expiries: StateFamilyHandle<ScheduleId, ToyScheduledExpiry>,
+}
+
+#[derive(Debug)]
+struct ToyFocusResourceProvider {
+    focus: StateFamilyHandle<ObjId, ToyFocusState>,
+}
+
+impl ResourceProvider for ToyFocusResourceProvider {
+    fn read(
+        &self,
+        context: &ResourceProviderContext<'_>,
+        resource: &ResourceRef,
+    ) -> Result<Option<BoundedScalar>, ResourceProviderFailure> {
+        let SubjectKey::Object { id } = &resource.subject else {
+            return Err(ResourceProviderFailure::UnsupportedSubject);
+        };
+        context
+            .action_state(&self.focus, id)
+            .map(|state| state.map(|state| state.value))
+            .map_err(|_| ResourceProviderFailure::Integrity)
+    }
+}
+
+#[derive(Debug)]
+struct ToyGuardedEffectProvider {
+    guarded: StateFamilyHandle<ObjId, ToyGuardedState>,
+}
+
+impl EffectProvider for ToyGuardedEffectProvider {
+    fn read(
+        &self,
+        context: &ResourceProviderContext<'_>,
+        target: &EffectTarget,
+        instance: EffectInstanceId,
+    ) -> Result<Option<EffectInstance>, ResourceProviderFailure> {
+        let EffectTarget::Subject {
+            subject: SubjectKey::Object { id },
+        } = target
+        else {
+            return Err(ResourceProviderFailure::UnsupportedSubject);
+        };
+        context
+            .action_state(&self.guarded, id)
+            .map(|state| {
+                state
+                    .filter(|state| state.effect.id() == instance)
+                    .map(|state| state.effect.clone())
+            })
+            .map_err(|_| ResourceProviderFailure::Integrity)
+    }
 }
 
 #[derive(Debug)]
 struct BraceProvider {
     focus: StateFamilyHandle<ObjId, ToyFocusState>,
+    reservations: StateFamilyHandle<ReservationBookId, ReservationBook>,
     guarded: StateFamilyHandle<ObjId, ToyGuardedState>,
     brace_definition: DefinitionRef,
     guarded_definition: DefinitionRef,
 }
 
 impl BraceProvider {
+    fn focus_resource(actor: ObjId) -> ResourceRef {
+        ResourceRef::new(
+            OwnerId::new(TOY_OWNER).expect("static owner"),
+            SubjectKey::Object { id: actor },
+            CanonicalId::new("focus").expect("static resource id"),
+        )
+    }
+
     fn scene_turn(invocation: &ActionInvocation) -> Result<ClockStamp, ActionError> {
         let parameters = invocation.parameters().as_object().ok_or_else(|| {
             ActionError::new(
@@ -271,6 +526,86 @@ impl BraceProvider {
         };
         ActionError::new(code, false, "toy action-state operation was refused")
             .expect("static action error is bounded")
+    }
+
+    fn reservation_error(error: &ReservationBookError) -> ActionError {
+        let code = match error {
+            ReservationBookError::Availability(_)
+            | ReservationBookError::Resource(mush_core::ResourceValueError::OutOfBounds {
+                ..
+            }) => ActionErrorCode::ProviderRejected,
+            ReservationBookError::RecordLimit { .. }
+            | ReservationBookError::RevisionExhausted
+            | ReservationBookError::Resource(
+                mush_core::ResourceValueError::ArithmeticOverflow
+                | mush_core::ResourceValueError::RevisionExhausted,
+            ) => ActionErrorCode::BoundsExceeded,
+            _ => ActionErrorCode::Integrity,
+        };
+        ActionError::new(code, false, "focus reservation gate refused the spend")
+            .expect("static action error is bounded")
+    }
+
+    fn spend_focus(
+        &self,
+        actor: ObjId,
+        txn: &mut ActionTxn<'_>,
+    ) -> Result<(ToyFocusState, BoundedScalar), ActionError> {
+        let focus = txn
+            .get(&self.focus, &actor)
+            .map_err(|error| Self::state_error(&error))?
+            .cloned()
+            .ok_or_else(|| {
+                ActionError::new(
+                    ActionErrorCode::ProviderRejected,
+                    false,
+                    "the actor has no focus resource",
+                )
+                .expect("static action error is bounded")
+            })?;
+        let resource = Self::focus_resource(actor);
+        let book_id = ReservationBookId::derive(&resource).map_err(|_| {
+            ActionError::new(
+                ActionErrorCode::BoundsExceeded,
+                false,
+                "focus reservation identity exceeds canonical bounds",
+            )
+            .expect("static action error is bounded")
+        })?;
+        let (book, value) = if let Some(book) = txn
+            .get(&self.reservations, &book_id)
+            .map_err(|error| Self::state_error(&error))?
+            .cloned()
+        {
+            let (book, value) = book
+                .checked_apply_resource(
+                    book.revision(),
+                    focus.value,
+                    ResourceOperation::Decrease { amount: 1 },
+                )
+                .map_err(|error| Self::reservation_error(&error))?;
+            (Some(book), value)
+        } else {
+            let value = focus
+                .value
+                .checked_apply(ResourceOperation::Decrease { amount: 1 })
+                .map_err(|_| {
+                    ActionError::new(
+                        ActionErrorCode::ProviderRejected,
+                        false,
+                        "insufficient focus",
+                    )
+                    .expect("static action error is bounded")
+                })?;
+            (None, value)
+        };
+        txn.replace(&self.focus, &actor, ToyFocusState { value })
+            .map_err(|error| Self::state_error(&error))?;
+        if let Some(book) = book {
+            txn.replace(&self.reservations, &book_id, book)
+                .map_err(|error| Self::state_error(&error))?;
+        }
+        Ok((focus, value))
     }
 
     fn guarded_effect(
@@ -371,14 +706,20 @@ impl ActionProvider for BraceProvider {
             return Ok(None);
         }
         let focus = engine
-            .action_state()
-            .get(&self.focus, &query.actor())
-            .map_err(|error| Self::state_error(&error))?;
+            .resource_snapshot(&Self::focus_resource(query.actor()))
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "focus resource projection is unavailable",
+                )
+                .expect("static action error is bounded")
+            })?;
         let guarded = engine
             .action_state()
             .get(&self.guarded, &query.actor())
             .map_err(|error| Self::state_error(&error))?;
-        if !focus.is_some_and(|focus| focus.amount() > 0) || guarded.is_some() {
+        if !focus.is_some_and(|focus| focus.available() > 0) || guarded.is_some() {
             return Ok(None);
         }
         let scene_turn = query.now().cloned().ok_or_else(|| {
@@ -456,6 +797,77 @@ impl ActionProvider for BraceProvider {
         }))
     }
 
+    fn project_receipt(
+        &self,
+        action: &DefinitionRef,
+        outcome: &RulesValue,
+        _viewer: &PrincipalId,
+    ) -> Result<Option<mush_proto::ProjectedActionResult>, ActionError> {
+        if action != &self.brace_definition || outcome.schema() != &self.brace_definition {
+            return Err(ActionError::new(
+                ActionErrorCode::Integrity,
+                false,
+                "brace receipt carries the wrong durable schema",
+            )
+            .expect("static projection error is bounded"));
+        }
+        let data = outcome.data().as_object().ok_or_else(|| {
+            ActionError::new(
+                ActionErrorCode::Integrity,
+                false,
+                "brace receipt outcome is malformed",
+            )
+            .expect("static projection error is bounded")
+        })?;
+        let event = data
+            .get("event")
+            .and_then(Value::as_str)
+            .filter(|event| *event == "braced")
+            .ok_or_else(|| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "brace receipt event is malformed",
+                )
+                .expect("static projection error is bounded")
+            })?;
+        let focus = data.get("focus").and_then(Value::as_u64).ok_or_else(|| {
+            ActionError::new(
+                ActionErrorCode::Integrity,
+                false,
+                "brace receipt focus is malformed",
+            )
+            .expect("static projection error is bounded")
+        })?;
+        let initiative_tiebreak = data
+            .get("initiative_tiebreak")
+            .and_then(Value::as_u64)
+            .filter(|value| *value < 100)
+            .ok_or_else(|| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "brace receipt initiative is malformed",
+                )
+                .expect("static projection error is bounded")
+            })?;
+        let projected = serde_json::json!({
+            "event": event,
+            "focus": focus,
+            "initiative_tiebreak": initiative_tiebreak,
+        });
+        mush_proto::ProjectedActionResult::new("brace", "Brace committed.", projected)
+            .map(Some)
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::BoundsExceeded,
+                    false,
+                    "brace receipt projection exceeds public bounds",
+                )
+                .expect("static projection error is bounded")
+            })
+    }
+
     fn prepare_invocation(
         &self,
         invocation: &ActionInvocation,
@@ -464,74 +876,72 @@ impl ActionProvider for BraceProvider {
         self.validate_invocation(invocation)?;
         let actor = invocation.actor();
         let turn = Self::scene_turn(invocation)?;
-        let focus = txn
-            .get(&self.focus, &actor)
-            .map_err(|error| Self::state_error(&error))?
-            .cloned()
-            .ok_or_else(|| {
-                ActionError::new(
-                    ActionErrorCode::ProviderRejected,
-                    false,
-                    "the actor has no focus resource",
-                )
-                .expect("static action error is bounded")
-            })?;
-        let value = focus
-            .value
-            .checked_apply(ResourceOperation::Decrease { amount: 1 })
-            .map_err(|_| {
-                ActionError::new(
-                    ActionErrorCode::ProviderRejected,
-                    false,
-                    "insufficient focus",
-                )
-                .expect("static action error is bounded")
-            })?;
+        self.spend_focus(actor, txn)?;
         let effect = self.guarded_effect(invocation, turn)?;
-        txn.replace(&self.focus, &actor, ToyFocusState { value })
-            .map_err(|error| Self::state_error(&error))?;
         txn.insert(&self.guarded, &actor, ToyGuardedState { effect })
             .map_err(|error| Self::state_error(&error))?;
         Ok(())
     }
 
-    fn prepare_authoritative(
+    fn prepare_authoritative_with_context(
         &self,
         invocation: &ActionInvocation,
         txn: &mut ActionTxn<'_>,
+        context: &mut PrepareCtx<'_>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
         self.validate_invocation(invocation)?;
         let actor = invocation.actor();
         let turn = Self::scene_turn(invocation)?;
         let cascade_steps = Self::cascade_steps(invocation)?;
-        let focus = txn
-            .get(&self.focus, &actor)
-            .map_err(|error| Self::state_error(&error))?
-            .cloned()
-            .ok_or_else(|| {
-                ActionError::new(
-                    ActionErrorCode::ProviderRejected,
-                    false,
-                    "the actor has no focus resource",
-                )
-                .expect("static action error is bounded")
-            })?;
-        let value = focus
-            .value
-            .checked_apply(ResourceOperation::Decrease { amount: 1 })
+        let (focus, value) = self.spend_focus(actor, txn)?;
+        let inputs_hash = CanonicalHash::for_canonical_value(
+            "toy_brace_inputs.v1",
+            1,
+            &json!({ "actor": actor, "scene_turn": turn, "focus_before": focus.value }),
+            4 * 1024,
+        )
+        .map_err(|_| {
+            ActionError::new(
+                ActionErrorCode::BoundsExceeded,
+                false,
+                "brace resolution inputs exceed canonical bounds",
+            )
+            .expect("static action error is bounded")
+        })?;
+        let mut rng = context
+            .start_resolution(
+                &CanonicalId::new("toy_brace").expect("static resolution domain"),
+                inputs_hash,
+            )
             .map_err(|_| {
                 ActionError::new(
-                    ActionErrorCode::ProviderRejected,
+                    ActionErrorCode::Unavailable,
                     false,
-                    "insufficient focus",
+                    "authoritative resolution RNG is unavailable",
                 )
                 .expect("static action error is bounded")
             })?;
-        txn.replace(&self.focus, &actor, ToyFocusState { value })
-            .map_err(|error| Self::state_error(&error))?;
+        let initiative_tiebreak = rng
+            .draw_bounded_u64(
+                &CanonicalId::new("initiative_tiebreak").expect("static draw label"),
+                100,
+            )
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::BoundsExceeded,
+                    false,
+                    "brace resolution draw was refused",
+                )
+                .expect("static action error is bounded")
+            })?;
         let outcome = RulesValue::new(
             self.brace_definition.clone(),
-            json!({ "actor": actor.0, "event": "braced", "focus": value.current() }),
+            json!({
+                "actor": actor.0,
+                "event": "braced",
+                "focus": value.current(),
+                "initiative_tiebreak": initiative_tiebreak,
+            }),
         )
         .map_err(|_| {
             ActionError::new(
@@ -541,7 +951,30 @@ impl ActionProvider for BraceProvider {
             )
             .expect("static action error is bounded")
         })?;
+        let resolution = rng
+            .into_prepared(
+                vec![self.brace_definition.clone()],
+                RulesValue::new(self.brace_definition.clone(), json!({ "focus_spent": 1 }))
+                    .map_err(|_| {
+                        ActionError::new(
+                            ActionErrorCode::BoundsExceeded,
+                            false,
+                            "brace modifiers exceed canonical bounds",
+                        )
+                        .expect("static action error is bounded")
+                    })?,
+                outcome.clone(),
+            )
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "brace resolution transcript is invalid",
+                )
+                .expect("static action error is bounded")
+            })?;
         Ok(AuthoritativeActionOutput::new(outcome)
+            .with_resolution(resolution)
             .with_eligible_witnesses(vec![invocation.principal().clone()])
             .with_same_commit_triggers(vec![SameCommitTrigger::new(
                 CanonicalId::new("apply_guarded").expect("static handler id"),
@@ -665,6 +1098,93 @@ struct GuardedExpiryProvider {
     guarded: StateFamilyHandle<ObjId, ToyGuardedState>,
     expire_definition: DefinitionRef,
     guarded_definition: DefinitionRef,
+}
+
+#[derive(Debug)]
+struct GuardedExpiryScheduleAdapter {
+    jobs: StateFamilyHandle<ScheduleId, ToyScheduledExpiry>,
+    guarded: StateFamilyHandle<ObjId, ToyGuardedState>,
+}
+
+impl ScheduleActionAdapter for GuardedExpiryScheduleAdapter {
+    fn plan(
+        &self,
+        action: &DefinitionRef,
+        advance: &ScheduleAdvance,
+        engine: &Engine,
+    ) -> Result<ScheduleActionDraft, ActionError> {
+        let job = engine
+            .action_state()
+            .get(&self.jobs, &advance.schedule())
+            .map_err(|error| BraceProvider::state_error(&error))?
+            .ok_or_else(|| {
+                ActionError::new(
+                    ActionErrorCode::Stale,
+                    false,
+                    "scheduled expiry addressing is unavailable",
+                )
+                .expect("static schedule error is bounded")
+            })?;
+        let guarded = engine
+            .action_state()
+            .get(&self.guarded, &job.actor)
+            .map_err(|error| BraceProvider::state_error(&error))?
+            .filter(|guarded| guarded.effect.id() == job.effect)
+            .ok_or_else(|| {
+                ActionError::new(
+                    ActionErrorCode::Stale,
+                    false,
+                    "scheduled guarded effect is no longer current",
+                )
+                .expect("static schedule error is bounded")
+            })?;
+        let definitions = engine.registry.definitions().ok_or_else(|| {
+            ActionError::new(
+                ActionErrorCode::Integrity,
+                false,
+                "toy definition registry is unavailable",
+            )
+            .expect("static schedule error is bounded")
+        })?;
+        let mut guard_builder = engine
+            .registry
+            .server_guard_set_builder(mush_core::RevisionSet::default())
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "toy guard registry is unavailable",
+                )
+                .expect("static schedule error is bounded")
+            })?;
+        guard_builder
+            .add_definition(action.clone(), definitions)
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "expiry definition guard is unavailable",
+                )
+                .expect("static schedule error is bounded")
+            })?;
+        Ok(ScheduleActionDraft {
+            actor: job.actor,
+            subject: PerceivedRef::SelfActor,
+            targets: Vec::new(),
+            parameters: json!({
+                "effect": job.effect,
+                "now": guarded.expires_at(),
+            }),
+            guards: guard_builder.finish().map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "expiry schedule guards are invalid",
+                )
+                .expect("static schedule error is bounded")
+            })?,
+        })
+    }
 }
 
 impl GuardedExpiryProvider {
@@ -800,6 +1320,360 @@ impl ActionProvider for GuardedExpiryProvider {
     }
 }
 
+/// Exact simultaneous window used by the K4 durability fixture.
+#[must_use]
+pub fn toy_action_window() -> ActionWindow {
+    toy_action_window_with_secret(1)
+}
+
+fn toy_action_window_with_secret(resolution_secret_version: u32) -> ActionWindow {
+    let owner = OwnerId::new(TOY_OWNER).expect("static owner");
+    let local = CanonicalId::new("round_7").expect("static window id");
+    ActionWindow::new(ActionWindowDraft {
+        id: ActionWindowId::derive(&owner, &local).expect("static window identity"),
+        clock: toy_scene_turn(0).clock,
+        opens: toy_scene_turn(10),
+        closes: toy_scene_turn(20),
+        generation: 7,
+        mode: WindowMode::CollectSimultaneous,
+        capacity: 4,
+        restart: WindowRestartPolicy::CloseIfElapsed,
+        timeout: WindowTimeoutPolicy::Close,
+        max_catch_up: 3,
+        resolution_secret_version: Some(resolution_secret_version),
+    })
+    .expect("static toy window is valid")
+}
+
+#[derive(Debug)]
+struct ActionWindowProvider {
+    windows: StateFamilyHandle<ActionWindowId, ActionWindowRecord>,
+    action: DefinitionRef,
+}
+
+impl ActionWindowProvider {
+    fn invalid(message: &'static str) -> ActionError {
+        ActionError::new(ActionErrorCode::InvalidRequest, false, message)
+            .expect("static window error is bounded")
+    }
+
+    fn rejected(error: ActionWindowError) -> ActionError {
+        let code = match error {
+            ActionWindowError::StaleRevision { .. } => ActionErrorCode::Stale,
+            ActionWindowError::OperationConflict { .. } => ActionErrorCode::Conflict,
+            ActionWindowError::CapacityReached { .. }
+            | ActionWindowError::InputOperationLimit
+            | ActionWindowError::ReceiptLimit
+            | ActionWindowError::OrderKeyTooLong { .. }
+            | ActionWindowError::RevisionExhausted => ActionErrorCode::BoundsExceeded,
+            _ => ActionErrorCode::ProviderRejected,
+        };
+        ActionError::new(
+            code,
+            false,
+            format!("window operation was refused: {error}"),
+        )
+        .expect("bounded window error remains bounded")
+    }
+
+    fn parameters(
+        invocation: &ActionInvocation,
+    ) -> Result<&serde_json::Map<String, Value>, ActionError> {
+        invocation
+            .parameters()
+            .as_object()
+            .ok_or_else(|| Self::invalid("window parameters must be an object"))
+    }
+
+    fn operation(invocation: &ActionInvocation) -> Result<&str, ActionError> {
+        Self::parameters(invocation)?
+            .get("operation")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Self::invalid("window operation is required"))
+    }
+
+    fn require_fields(
+        parameters: &serde_json::Map<String, Value>,
+        fields: &[&str],
+    ) -> Result<(), ActionError> {
+        if parameters.len() == fields.len()
+            && parameters
+                .keys()
+                .all(|candidate| fields.contains(&candidate.as_str()))
+        {
+            Ok(())
+        } else {
+            Err(Self::invalid("window operation has unexpected parameters"))
+        }
+    }
+
+    fn expected_revision(parameters: &serde_json::Map<String, Value>) -> Result<u64, ActionError> {
+        parameters
+            .get("expected_revision")
+            .and_then(Value::as_u64)
+            .filter(|revision| *revision > 0)
+            .ok_or_else(|| Self::invalid("window expected_revision must be positive"))
+    }
+
+    fn now(parameters: &serde_json::Map<String, Value>) -> Result<ClockStamp, ActionError> {
+        parameters
+            .get("now")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+            .ok_or_else(|| Self::invalid("window now must be a typed clock stamp"))
+    }
+
+    fn load(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        id: &ActionWindowId,
+    ) -> Result<ActionWindowRecord, ActionError> {
+        txn.get(&self.windows, id)
+            .map_err(|error| BraceProvider::state_error(&error))?
+            .cloned()
+            .ok_or_else(|| {
+                ActionError::new(
+                    ActionErrorCode::Stale,
+                    false,
+                    "action window no longer exists",
+                )
+                .expect("static window error is bounded")
+            })
+    }
+
+    fn outcome(&self, data: Value) -> Result<RulesValue, ActionError> {
+        RulesValue::new(self.action.clone(), data).map_err(|_| {
+            ActionError::new(
+                ActionErrorCode::BoundsExceeded,
+                false,
+                "window outcome exceeds canonical bounds",
+            )
+            .expect("static window error is bounded")
+        })
+    }
+}
+
+impl ActionProvider for ActionWindowProvider {
+    fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
+        if invocation.subject() != &PerceivedRef::SelfActor || !invocation.targets().is_empty() {
+            return Err(Self::invalid("window operations are actor-self scoped"));
+        }
+        match Self::operation(invocation)? {
+            "open" | "submit" | "close" | "resolve" => Ok(()),
+            _ => Err(Self::invalid("unknown window operation")),
+        }
+    }
+
+    fn prepare_invocation(
+        &self,
+        _invocation: &ActionInvocation,
+        _txn: &mut ActionTxn<'_>,
+    ) -> Result<(), ActionError> {
+        Err(ActionError::new(
+            ActionErrorCode::Unavailable,
+            false,
+            "window operations require the authoritative action coordinator",
+        )
+        .expect("static window error is bounded"))
+    }
+
+    fn prepare_authoritative_with_context(
+        &self,
+        invocation: &ActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        context: &mut PrepareCtx<'_>,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        self.validate_invocation(invocation)?;
+        let parameters = Self::parameters(invocation)?;
+        let operation = Self::operation(invocation)?;
+        let definition = toy_action_window();
+        let window_id = definition.id();
+
+        match operation {
+            "open" => {
+                Self::require_fields(parameters, &["operation"])?;
+                let definition = toy_action_window_with_secret(
+                    context.current_resolution_secret_version().map_err(|_| {
+                        ActionError::new(
+                            ActionErrorCode::Unavailable,
+                            false,
+                            "authoritative resolution keys are unavailable",
+                        )
+                        .expect("static window error is bounded")
+                    })?,
+                );
+                let record = ActionWindowRecord::open(definition);
+                txn.insert(&self.windows, &window_id, record.clone())
+                    .map_err(|error| BraceProvider::state_error(&error))?;
+                // Exercise the kernel's principal-as-root-witness default
+                // before it constructs the root semantic event.
+                Ok(AuthoritativeActionOutput::new(self.outcome(json!({
+                    "event": "window_opened",
+                    "window": window_id,
+                    "revision": record.revision(),
+                }))?))
+            }
+            "submit" => {
+                Self::require_fields(
+                    parameters,
+                    &["operation", "expected_revision", "now", "order"],
+                )?;
+                let expected_revision = Self::expected_revision(parameters)?;
+                let now = Self::now(parameters)?;
+                let order = parameters
+                    .get("order")
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| Self::invalid("window order must be an integer"))?;
+                let record = self.load(txn, &window_id)?;
+                let intent = WindowIntent::new(
+                    window_id,
+                    definition.generation(),
+                    SubjectKey::Object {
+                        id: invocation.actor(),
+                    },
+                    Vec::new(),
+                    self.action.clone(),
+                    invocation.clone(),
+                    WindowOrderKey::new(vec![order]).map_err(Self::rejected)?,
+                )
+                .map_err(Self::rejected)?;
+                let transition = record
+                    .checked_submit(expected_revision, &now, intent)
+                    .map_err(Self::rejected)?;
+                let result = transition.receipt().result().clone();
+                let record = transition.into_record();
+                txn.replace(&self.windows, &window_id, record.clone())
+                    .map_err(|error| BraceProvider::state_error(&error))?;
+                Ok(AuthoritativeActionOutput::new(self.outcome(json!({
+                    "event": "window_intent_submitted",
+                    "window": window_id,
+                    "revision": record.revision(),
+                    "result": result,
+                }))?)
+                .with_eligible_witnesses(vec![invocation.principal().clone()]))
+            }
+            "close" => {
+                Self::require_fields(parameters, &["operation", "expected_revision", "now"])?;
+                let expected_revision = Self::expected_revision(parameters)?;
+                let now = Self::now(parameters)?;
+                let record = self.load(txn, &window_id)?;
+                let transition = record
+                    .checked_close_due(expected_revision, invocation.request(), &now)
+                    .map_err(Self::rejected)?;
+                let record = transition.into_record();
+                txn.replace(&self.windows, &window_id, record.clone())
+                    .map_err(|error| BraceProvider::state_error(&error))?;
+                Ok(AuthoritativeActionOutput::new(self.outcome(json!({
+                    "event": "window_closed",
+                    "window": window_id,
+                    "intent_count": record.intents().len(),
+                    "revision": record.revision(),
+                }))?)
+                .with_eligible_witnesses(vec![invocation.principal().clone()]))
+            }
+            "resolve" => {
+                Self::require_fields(parameters, &["operation", "expected_revision", "now"])?;
+                let expected_revision = Self::expected_revision(parameters)?;
+                let now = Self::now(parameters)?;
+                let record = self.load(txn, &window_id)?;
+                let actors: Vec<_> = record
+                    .resolution_order()
+                    .map_err(Self::rejected)?
+                    .into_iter()
+                    .map(|intent| intent.invocation().actor().0)
+                    .collect();
+                let inputs_hash = CanonicalHash::for_canonical_value(
+                    "toy_window_resolution_inputs.v1",
+                    1,
+                    &json!({ "record": record, "actors": actors }),
+                    256 * 1024,
+                )
+                .map_err(|_| {
+                    ActionError::new(
+                        ActionErrorCode::BoundsExceeded,
+                        false,
+                        "window resolution inputs exceed canonical bounds",
+                    )
+                    .expect("static window error is bounded")
+                })?;
+                let consumed = record
+                    .checked_consume(
+                        expected_revision,
+                        invocation.request(),
+                        context.commit_token(),
+                        &now,
+                    )
+                    .map_err(Self::rejected)?
+                    .into_record();
+                txn.replace(&self.windows, &window_id, consumed.clone())
+                    .map_err(|error| BraceProvider::state_error(&error))?;
+
+                let secret_version =
+                    record.window().resolution_secret_version().ok_or_else(|| {
+                        ActionError::new(
+                            ActionErrorCode::Integrity,
+                            false,
+                            "random window has no pinned resolution secret",
+                        )
+                        .expect("static window error is bounded")
+                    })?;
+                let mut rng = context
+                    .start_resolution_at(
+                        secret_version,
+                        &CanonicalId::new("toy_window_resolve").expect("static resolution domain"),
+                        inputs_hash,
+                    )
+                    .map_err(|_| {
+                        ActionError::new(
+                            ActionErrorCode::Unavailable,
+                            false,
+                            "authoritative resolution RNG is unavailable",
+                        )
+                        .expect("static window error is bounded")
+                    })?;
+                let tiebreak = rng
+                    .draw_bounded_u64(
+                        &CanonicalId::new("window_tiebreak").expect("static draw label"),
+                        100,
+                    )
+                    .map_err(|_| {
+                        ActionError::new(
+                            ActionErrorCode::BoundsExceeded,
+                            false,
+                            "window resolution draw was refused",
+                        )
+                        .expect("static window error is bounded")
+                    })?;
+                let outcome = self.outcome(json!({
+                    "event": "window_resolved",
+                    "window": window_id,
+                    "order": actors,
+                    "revision": consumed.revision(),
+                    "tiebreak": tiebreak,
+                }))?;
+                let resolution = rng
+                    .into_prepared(
+                        vec![self.action.clone()],
+                        self.outcome(json!({ "intent_count": consumed.intents().len() }))?,
+                        outcome.clone(),
+                    )
+                    .map_err(|_| {
+                        ActionError::new(
+                            ActionErrorCode::Integrity,
+                            false,
+                            "window resolution transcript is invalid",
+                        )
+                        .expect("static window error is bounded")
+                    })?;
+                Ok(AuthoritativeActionOutput::new(outcome)
+                    .with_resolution(resolution)
+                    .with_eligible_witnesses(vec![invocation.principal().clone()]))
+            }
+            _ => unreachable!("validate_invocation rejects unknown operations"),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct ToyRulesModule {
     families: Arc<Mutex<Option<ToyStateFamilies>>>,
@@ -857,6 +1731,16 @@ impl GameModule for ToyRulesModule {
             },
             |value: &ToyFocusState| serde_json::to_value(value).map_err(|error| error.to_string()),
         )?;
+        let reservations = registrar.state_family(
+            reservation_book_state_family_descriptor(
+                StateFamilyId::new("resource_reservations").expect("static family id"),
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            ReservationBookStateCodec,
+            ReservationBookStateCodec,
+            ReservationBookStateCodec,
+            ReservationBookStateCodec,
+        )?;
         let guarded_definition = actual.guarded.clone();
         let guarded = registrar.state_family(
             StateFamilyDescriptor::new(
@@ -903,11 +1787,72 @@ impl GameModule for ToyRulesModule {
                 serde_json::to_value(value).map_err(|error| error.to_string())
             },
         )?;
-        let families = ToyStateFamilies { focus, guarded };
+        let windows = registrar.state_family(
+            action_window_state_family_descriptor(
+                StateFamilyId::new("action_windows").expect("static family id"),
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            ActionWindowStateCodec,
+            ActionWindowStateCodec,
+            ActionWindowStateCodec,
+            ActionWindowStateCodec,
+        )?;
+        let schedules = registrar.state_family(
+            durable_schedule_state_family_descriptor(
+                StateFamilyId::new("schedules").expect("static family id"),
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            DurableScheduleStateCodec,
+            DurableScheduleStateCodec,
+            DurableScheduleStateCodec,
+            DurableScheduleStateCodec,
+        )?;
+        let scheduled_expiries = registrar.state_family(
+            StateFamilyDescriptor::new(
+                StateFamilyId::new("scheduled_expiries").expect("static family id"),
+                CanonicalId::new("durable_schedule_id.v1").expect("static codec id"),
+                CanonicalId::new("toy.scheduled_expiry.v1").expect("static schema id"),
+                1,
+                CanonicalId::new("toy.scheduled_expiry.decode_json.v1").expect("static decoder id"),
+                CanonicalId::new("toy.scheduled_expiry.shape.v1").expect("static validator id"),
+                CanonicalId::new("toy.scheduled_expiry.json.v1").expect("static serializer id"),
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            |key: &ScheduleId| Ok(key.canonical_hash().to_hex()),
+            |value: &Value| {
+                serde_json::from_value(value.clone()).map_err(|error| error.to_string())
+            },
+            |_: &ToyScheduledExpiry| Ok::<(), String>(()),
+            |value: &ToyScheduledExpiry| {
+                serde_json::to_value(value).map_err(|error| error.to_string())
+            },
+        )?;
+        let families = ToyStateFamilies {
+            focus,
+            reservations,
+            guarded,
+            windows,
+            schedules,
+            scheduled_expiries,
+        };
+        registrar.reservable_resource_provider(
+            actual.focus.clone(),
+            families.reservations.clone(),
+            ToyFocusResourceProvider {
+                focus: families.focus.clone(),
+            },
+        )?;
+        registrar.effect_provider(
+            actual.guarded.clone(),
+            ToyGuardedEffectProvider {
+                guarded: families.guarded.clone(),
+            },
+        )?;
         registrar.action_provider(
             actual.brace.clone(),
             BraceProvider {
                 focus: families.focus.clone(),
+                reservations: families.reservations.clone(),
                 guarded: families.guarded.clone(),
                 brace_definition: actual.brace.clone(),
                 guarded_definition: actual.guarded.clone(),
@@ -921,6 +1866,22 @@ impl GameModule for ToyRulesModule {
                 guarded_definition: actual.guarded.clone(),
             },
         )?;
+        registrar.schedule_source(
+            CanonicalId::new("guarded_expiry").expect("static schedule source id"),
+            actual.guarded_expire.clone(),
+            families.schedules.clone(),
+            GuardedExpiryScheduleAdapter {
+                jobs: families.scheduled_expiries.clone(),
+                guarded: families.guarded.clone(),
+            },
+        )?;
+        registrar.action_provider(
+            actual.window_action.clone(),
+            ActionWindowProvider {
+                windows: families.windows.clone(),
+                action: actual.window_action.clone(),
+            },
+        )?;
         *self.families.lock().expect("toy family capture poisoned") = Some(families);
         Ok(())
     }
@@ -929,7 +1890,9 @@ impl GameModule for ToyRulesModule {
 /// Fresh in-process world composed with the deterministic toy provider.
 #[must_use]
 pub fn toy_world() -> TestWorld {
-    TestWorld::with_modules(vec![Box::<ToyRulesModule>::default()])
+    let mut world = TestWorld::with_modules(vec![Box::<ToyRulesModule>::default()]);
+    install_toy_resolution_keys(world.engine_mut());
+    world
 }
 
 /// Fresh toy world plus the composition-branded state capabilities used by
@@ -938,13 +1901,24 @@ pub fn toy_world() -> TestWorld {
 pub fn toy_world_with_state() -> (TestWorld, ToyStateFamilies) {
     let captured = Arc::new(Mutex::new(None));
     let module = ToyRulesModule::with_capture(Arc::clone(&captured));
-    let world = TestWorld::with_modules(vec![Box::new(module)]);
+    let mut world = TestWorld::with_modules(vec![Box::new(module)]);
+    install_toy_resolution_keys(world.engine_mut());
     let families = captured
         .lock()
         .expect("toy family capture poisoned")
         .clone()
         .expect("toy module registered state families");
     (world, families)
+}
+
+fn install_toy_resolution_keys(engine: &mut Engine) {
+    engine.set_resolution_keys(
+        ResolutionKeyRing::new(
+            ResolutionSecret::new(1, [0x71; 32]).expect("toy resolution secret"),
+            [],
+        )
+        .expect("toy resolution key ring"),
+    );
 }
 
 /// Install a valid focus pre-state through the same typed state-family path
@@ -962,6 +1936,87 @@ pub fn install_toy_focus(
         txn.insert(&families.focus, &actor, ToyFocusState::new(amount))
             .expect("valid focus bootstrap");
         txn.prepare().expect("focus bootstrap prepares")
+    };
+    let (_, installation) = prepared.into_parts();
+    engine.install_prepared_action(installation);
+}
+
+/// Attach an empty authoritative reservation book to an existing toy focus
+/// resource. Fixture setup uses the typed family path; later spends must keep
+/// the book and scalar revisions synchronized in one transaction.
+pub fn install_toy_reservation_book(
+    engine: &mut Engine,
+    families: &ToyStateFamilies,
+    actor: ObjId,
+) -> ReservationBookId {
+    let focus = engine
+        .action_state()
+        .get(&families.focus, &actor)
+        .expect("toy focus family read")
+        .expect("toy focus must exist before its reservation book")
+        .clone();
+    let resource = ResourceRef::new(
+        OwnerId::new(TOY_OWNER).expect("static owner"),
+        SubjectKey::Object { id: actor },
+        CanonicalId::new("focus").expect("static resource id"),
+    );
+    let book = ReservationBook::new(resource, focus.value).expect("toy reservation book");
+    let id = book.id();
+    let prepared = {
+        let mut txn = engine
+            .action_transaction(&families.reservations)
+            .expect("toy reservation transaction");
+        txn.insert(&families.reservations, &id, book)
+            .expect("valid toy reservation book");
+        txn.prepare().expect("reservation bootstrap prepares")
+    };
+    let (_, installation) = prepared.into_parts();
+    engine.install_prepared_action(installation);
+    id
+}
+
+/// Install one valid durable schedule through the typed family used by the
+/// composition-frozen toy schedule source.
+pub fn install_toy_schedule(
+    engine: &mut Engine,
+    families: &ToyStateFamilies,
+    schedule: DurableSchedule,
+) {
+    let id = schedule.id();
+    let prepared = {
+        let mut txn = engine
+            .action_transaction(&families.schedules)
+            .expect("toy schedule transaction");
+        txn.insert(&families.schedules, &id, schedule)
+            .expect("valid schedule bootstrap");
+        txn.prepare().expect("schedule bootstrap prepares")
+    };
+    let (_, installation) = prepared.into_parts();
+    engine.install_prepared_action(installation);
+}
+
+/// Atomically install a toy schedule and its provider-specific addressing.
+pub fn install_toy_scheduled_expiry(
+    engine: &mut Engine,
+    families: &ToyStateFamilies,
+    schedule: DurableSchedule,
+    actor: ObjId,
+    effect: EffectInstanceId,
+) {
+    let id = schedule.id();
+    let prepared = {
+        let mut txn = engine
+            .action_transaction(&families.schedules)
+            .expect("toy schedule transaction");
+        txn.insert(&families.schedules, &id, schedule)
+            .expect("valid schedule bootstrap");
+        txn.insert(
+            &families.scheduled_expiries,
+            &id,
+            ToyScheduledExpiry { actor, effect },
+        )
+        .expect("valid scheduled expiry addressing");
+        txn.prepare().expect("scheduled expiry bootstrap prepares")
     };
     let (_, installation) = prepared.into_parts();
     engine.install_prepared_action(installation);
@@ -987,6 +2042,46 @@ pub fn toy_scene_turn(at: u64) -> ClockStamp {
         },
         at: i64::try_from(at).expect("toy scene turn fits i64"),
     }
+}
+
+/// Canonical invocation for one K4 action-window lifecycle operation.
+pub fn toy_window_invocation(
+    actor: ObjId,
+    request: RequestUid,
+    parameters: Value,
+) -> ActionInvocation {
+    let definitions = toy_definitions();
+    let owner = OwnerId::new(TOY_OWNER).expect("static owner");
+    let principal = PrincipalId::Object { id: actor };
+    let idempotency = ScopedIdempotencyKey::new(
+        IdempotencyScope {
+            principal: principal.clone(),
+            owner,
+            namespace: CanonicalId::new("window_operation").expect("static namespace"),
+        },
+        0,
+        IdempotencyKey::Request(request),
+    );
+    let offered_action = ActionOfferId(
+        CanonicalHash::for_canonical_value(
+            "toy.offer.v1",
+            1,
+            &json!({ "action": definitions.window_action }),
+            4 * 1024,
+        )
+        .expect("static offer is canonical"),
+    );
+    ActionInvocation::new(ActionInvocationDraft {
+        request,
+        principal,
+        actor,
+        offered_action,
+        subject: PerceivedRef::SelfActor,
+        targets: Vec::new(),
+        parameters,
+        idempotency,
+    })
+    .expect("toy window invocation is canonical")
 }
 
 /// Regenerate the viewer's bounded Gate-1 offer set from current typed truth.
@@ -1121,7 +2216,7 @@ mod tests {
     use super::*;
     use mush_core::{
         ActionProviderPrepareError, OfferExecutionContext, OfferKeyRing, OfferSubmission,
-        ProjectionScopeId, RevisionSet,
+        ProjectedLegalAction, ProjectionScopeId, RevisionSet,
     };
 
     fn bootstrap_focus(
@@ -1131,6 +2226,26 @@ mod tests {
         amount: u8,
     ) {
         install_toy_focus(world.engine_mut(), families, actor, amount);
+    }
+
+    #[test]
+    fn recursive_projection_inspector_reports_nested_fields_and_values() {
+        let value = json!({
+            "public": [{
+                "nested": {
+                    "truth_subject": "hidden-contact-17",
+                    "target": 987654321
+                }
+            }]
+        });
+        let leaks = projection_json_leaks_with_values(
+            &value,
+            &["truth_subject"],
+            &["hidden-contact-17"],
+            &[json!(987654321)],
+        );
+        assert_eq!(leaks.len(), 3);
+        assert!(leaks.iter().all(|leak| leak.contains("$.public[0].nested")));
     }
 
     fn bootstrap_guarded(
@@ -1191,6 +2306,290 @@ mod tests {
                 reference
             );
         }
+    }
+
+    #[test]
+    fn resource_and_effect_adapters_expose_exact_owner_truth() {
+        let (mut world, families) = toy_world_with_state();
+        bootstrap_focus(&mut world, &families, mush_core::GOD, 3);
+        bootstrap_guarded(&mut world, &families, mush_core::GOD, 9);
+
+        let definitions = toy_definitions();
+        let resource = ResourceRef::new(
+            OwnerId::new(TOY_OWNER).unwrap(),
+            SubjectKey::Object { id: mush_core::GOD },
+            CanonicalId::new("focus").unwrap(),
+        );
+        let snapshot = world
+            .engine()
+            .resource_snapshot(&resource)
+            .expect("resource provider read succeeds")
+            .expect("focus exists");
+        assert_eq!(snapshot.definition(), &definitions.focus);
+        assert_eq!(snapshot.resource(), &resource);
+        assert_eq!(snapshot.value().current(), 3);
+        assert_eq!(snapshot.available(), 3);
+        assert!(snapshot.is_reservable());
+        assert!(snapshot.reservations().is_none());
+
+        let guarded = world
+            .engine()
+            .action_state()
+            .get(&families.guarded, &mush_core::GOD)
+            .unwrap()
+            .unwrap();
+        let effect = world
+            .engine()
+            .effect_instance(
+                &definitions.guarded,
+                guarded.effect.target(),
+                guarded.effect.id(),
+            )
+            .expect("effect provider read succeeds")
+            .expect("guarded exists");
+        assert_eq!(effect, guarded.effect);
+
+        let effect_target = effect.target().clone();
+        let effect_id = effect.id();
+        world
+            .registry()
+            .freeze_mechanics_owner(
+                &OwnerId::new(TOY_OWNER).unwrap(),
+                mush_core::IncidentId(77),
+                mush_core::RecoveryReason::IntegrityViolation {
+                    code: CanonicalId::new("provider_read_test").unwrap(),
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            world.engine().resource_snapshot(&resource),
+            Err(mush_core::ResourceReadError::OwnerNotReady(_))
+        ));
+        assert!(matches!(
+            world
+                .engine()
+                .effect_instance(&definitions.guarded, &effect_target, effect_id,),
+            Err(mush_core::EffectReadError::OwnerNotReady(_))
+        ));
+    }
+
+    #[test]
+    fn reservation_lifecycle_is_bounded_atomic_and_restart_safe() {
+        let (mut world, families) = toy_world_with_state();
+        bootstrap_focus(&mut world, &families, mush_core::GOD, 3);
+        let _bootstrap = world.drain_write_batch();
+
+        let resource = ResourceRef::new(
+            OwnerId::new(TOY_OWNER).unwrap(),
+            SubjectKey::Object { id: mush_core::GOD },
+            CanonicalId::new("focus").unwrap(),
+        );
+        let focus = world
+            .engine()
+            .action_state()
+            .get(&families.focus, &mush_core::GOD)
+            .unwrap()
+            .unwrap()
+            .clone();
+        let mut book = ReservationBook::new(resource.clone(), focus.value).unwrap();
+        let make_hold = |byte: u8, expires: u64| {
+            let holder = ScopedIdempotencyKey::new(
+                IdempotencyScope {
+                    principal: PrincipalId::Object { id: mush_core::GOD },
+                    owner: OwnerId::new(TOY_OWNER).unwrap(),
+                    namespace: CanonicalId::new("reserve_focus").unwrap(),
+                },
+                0,
+                IdempotencyKey::Request(RequestUid::from_bytes([byte; 16])),
+            );
+            let id = ReservationId::derive(&holder, &resource).unwrap();
+            (
+                id,
+                ReservationRecord::held(id, resource.clone(), holder, 1, toy_scene_turn(expires))
+                    .unwrap(),
+            )
+        };
+        let (consumed_id, consumed) = make_hold(1, 20);
+        let (released_id, released) = make_hold(2, 20);
+        let (expired_id, expired) = make_hold(3, 12);
+        book = book
+            .checked_hold(0, focus.value, consumed, &toy_scene_turn(10))
+            .unwrap();
+        book = book
+            .checked_hold(1, focus.value, released, &toy_scene_turn(10))
+            .unwrap();
+        book = book
+            .checked_hold(2, focus.value, expired, &toy_scene_turn(10))
+            .unwrap();
+        assert_eq!(book.checked_available(focus.value).unwrap(), 0);
+
+        let (next_book, focus_value) = book
+            .checked_consume(
+                3,
+                focus.value,
+                consumed_id,
+                1,
+                &toy_scene_turn(11),
+                CommitToken::from_bytes([0x51; 16]),
+            )
+            .unwrap();
+        book = next_book
+            .checked_release(4, focus_value, released_id, 1)
+            .unwrap()
+            .checked_expire(5, focus_value, expired_id, 1, &toy_scene_turn(12))
+            .unwrap();
+        assert_eq!(book.checked_available(focus_value).unwrap(), 2);
+
+        let prepared = {
+            let mut txn = world
+                .engine_mut()
+                .action_transaction(&families.focus)
+                .unwrap();
+            txn.replace(
+                &families.focus,
+                &mush_core::GOD,
+                ToyFocusState { value: focus_value },
+            )
+            .unwrap();
+            txn.insert(&families.reservations, &book.id(), book.clone())
+                .unwrap();
+            txn.prepare().unwrap()
+        };
+        assert_eq!(prepared.operation_count(), 2);
+        let (module_ops, installation) = prepared.into_parts();
+        world.engine_mut().install_prepared_action(installation);
+        let boot_records = module_ops
+            .into_iter()
+            .filter_map(|operation| match operation.op {
+                mush_core::ModuleWrite::JsonSet { key, value }
+                    if key.starts_with("action-state/") =>
+                {
+                    Some(mush_core::ActionStateBootRecord::new(
+                        operation.ns,
+                        key,
+                        value,
+                    ))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(boot_records.len(), 2);
+
+        let (mut restarted, restarted_families) = toy_world_with_state();
+        restarted
+            .engine_mut()
+            .hydrate_action_state(boot_records)
+            .unwrap();
+        let snapshot = restarted
+            .engine()
+            .resource_snapshot(&resource)
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.value().current(), 2);
+        assert_eq!(snapshot.value().revision(), 1);
+        assert_eq!(snapshot.available(), 2);
+        assert_eq!(snapshot.reservations(), Some(&book));
+        assert_eq!(
+            restarted
+                .engine()
+                .action_state()
+                .get(&restarted_families.reservations, &book.id())
+                .unwrap(),
+            Some(&book)
+        );
+    }
+
+    #[test]
+    fn reservable_focus_cannot_be_spent_around_a_live_hold() {
+        let (mut world, families) = toy_world_with_state();
+        bootstrap_focus(&mut world, &families, mush_core::GOD, 3);
+        let resource = ResourceRef::new(
+            OwnerId::new(TOY_OWNER).unwrap(),
+            SubjectKey::Object { id: mush_core::GOD },
+            CanonicalId::new("focus").unwrap(),
+        );
+        let focus = world
+            .engine()
+            .action_state()
+            .get(&families.focus, &mush_core::GOD)
+            .unwrap()
+            .unwrap()
+            .clone();
+        let holder = ScopedIdempotencyKey::new(
+            IdempotencyScope {
+                principal: PrincipalId::Object { id: mush_core::GOD },
+                owner: OwnerId::new(TOY_OWNER).unwrap(),
+                namespace: CanonicalId::new("reserve_focus").unwrap(),
+            },
+            0,
+            IdempotencyKey::Request(RequestUid::from_bytes([0x62; 16])),
+        );
+        let reservation = ReservationId::derive(&holder, &resource).unwrap();
+        let book = ReservationBook::new(resource.clone(), focus.value)
+            .unwrap()
+            .checked_hold(
+                0,
+                focus.value,
+                ReservationRecord::held(
+                    reservation,
+                    resource.clone(),
+                    holder,
+                    3,
+                    toy_scene_turn(20),
+                )
+                .unwrap(),
+                &toy_scene_turn(10),
+            )
+            .unwrap();
+        let installation = {
+            let mut txn = world
+                .engine_mut()
+                .action_transaction(&families.reservations)
+                .unwrap();
+            txn.insert(&families.reservations, &book.id(), book.clone())
+                .unwrap();
+            let (_, installation) = txn.prepare().unwrap().into_parts();
+            installation
+        };
+        world.engine_mut().install_prepared_action(installation);
+        assert_eq!(
+            world
+                .engine()
+                .resource_snapshot(&resource)
+                .unwrap()
+                .unwrap()
+                .available(),
+            0
+        );
+
+        let invocation =
+            toy_brace_invocation(mush_core::GOD, 11, RequestUid::from_bytes([0x63; 16]));
+        let error = world
+            .engine_mut()
+            .prepare_registered_action(&toy_definitions().brace, &invocation)
+            .expect_err("a live hold consumes all spendable focus");
+        assert!(matches!(
+            error,
+            ActionProviderPrepareError::Provider { source, .. }
+                if source.code() == ActionErrorCode::ProviderRejected
+        ));
+        assert!(!world.engine().action_state().has_prepared());
+        assert_eq!(
+            world
+                .engine()
+                .action_state()
+                .get(&families.focus, &mush_core::GOD)
+                .unwrap(),
+            Some(&focus)
+        );
+        assert_eq!(
+            world
+                .engine()
+                .action_state()
+                .get(&families.reservations, &book.id())
+                .unwrap(),
+            Some(&book)
+        );
     }
 
     #[test]
@@ -1312,7 +2711,11 @@ mod tests {
             toy_brace_invocation(mush_core::GOD, 11, RequestUid::from_bytes([0xA1; 16]));
         let (prepared, cascade) = world
             .engine_mut()
-            .prepare_registered_authoritative_action(&toy_definitions().brace, &invocation)
+            .prepare_registered_authoritative_action(
+                &toy_definitions().brace,
+                &invocation,
+                toy_prepare_token(),
+            )
             .expect("brace and its guarded trigger prepare together");
         assert_eq!(prepared.operation_count(), 2);
         assert_eq!(
@@ -1323,7 +2726,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["focus", "guarded"]
         );
-        let (_outcome, definitions, witnesses, outbox, events) = cascade.into_parts();
+        let (_outcome, resolution, definitions, witnesses, outbox, events) = cascade.into_parts();
+        assert!(resolution.is_some());
         assert_eq!(
             definitions,
             vec![toy_definitions().brace, toy_definitions().guarded]
@@ -1516,9 +2920,11 @@ mod tests {
         let invocation =
             toy_brace_invocation(mush_core::GOD, 10, RequestUid::from_bytes([0xA2; 16]));
         assert!(matches!(
-            world
-                .engine_mut()
-                .prepare_registered_authoritative_action(&toy_definitions().brace, &invocation,),
+            world.engine_mut().prepare_registered_authoritative_action(
+                &toy_definitions().brace,
+                &invocation,
+                toy_prepare_token(),
+            ),
             Err(ActionProviderPrepareError::Trigger { .. })
         ));
         assert_eq!(
@@ -1563,9 +2969,11 @@ mod tests {
             Some(u64::from(mush_core::MAX_TRIGGER_DEPTH) + 2),
         );
         assert!(matches!(
-            world
-                .engine_mut()
-                .prepare_registered_authoritative_action(&toy_definitions().brace, &invocation,),
+            world.engine_mut().prepare_registered_authoritative_action(
+                &toy_definitions().brace,
+                &invocation,
+                toy_prepare_token(),
+            ),
             Err(ActionProviderPrepareError::Cascade(
                 mush_core::CascadeError::DepthExceeded { .. }
             ))
@@ -1602,10 +3010,54 @@ mod tests {
             .expect("offer projection succeeds");
         assert_eq!(offers.len(), 1);
         let projected = offers.projected().pop().unwrap();
-        let encoded = serde_json::to_string(&projected).unwrap();
-        assert!(!encoded.contains("scene_turn"));
-        assert!(!encoded.contains("truth_subject"));
-        assert!(!encoded.contains("guard_hash"));
+        let definition_digest = toy_definitions().brace.digest().to_string();
+        let forbidden_fields = [
+            "action",
+            "definition",
+            "fixed_parameters",
+            "guards",
+            "guard_hash",
+            "provider",
+            "provider_ordinal",
+            "projection_scope",
+            "revision_set",
+            "truth_subject",
+            "viewer_scope",
+        ];
+        let forbidden_fragments = ["scene_turn", definition_digest.as_str()];
+        let projected_json = serde_json::to_value(&projected).unwrap();
+        assert_projection_json_clean(
+            "structured legal action",
+            &projected_json,
+            &forbidden_fields,
+            &forbidden_fragments,
+        );
+
+        let view = mush_proto::ViewEnvelope::keyframe(
+            "legal.actions",
+            1,
+            7,
+            1,
+            json!([projected.clone()]),
+        )
+        .unwrap();
+        assert_projection_json_clean(
+            "semantic legal-action view",
+            &serde_json::to_value(view).unwrap(),
+            &forbidden_fields,
+            &forbidden_fragments,
+        );
+
+        let mock_llm_snapshot = json!({
+            "decision": "choose one offered tool",
+            "tools": [projected.clone()],
+        });
+        assert_projection_json_clean(
+            "mock LLM legal-action snapshot",
+            &mock_llm_snapshot,
+            &forbidden_fields,
+            &forbidden_fragments,
+        );
 
         let request = RequestUid::from_bytes([0xD1; 16]);
         let principal = PrincipalId::Object { id: mush_core::GOD };
@@ -1645,12 +3097,69 @@ mod tests {
             .unwrap(),
             toy_scene_turn(11)
         );
-        let (action, invocation, _guards) = resolved.into_parts();
-        let (prepared, _) = world
+        let (action, invocation, _guards) = resolved.into_authoritative_parts();
+        let (prepared, output) = world
             .engine_mut()
-            .prepare_registered_authoritative_action(&action, &invocation)
+            .prepare_registered_resolved_authoritative_action(
+                &action,
+                &invocation,
+                toy_prepare_token(),
+            )
             .expect("resolved offer reaches the canonical provider");
+        let outcome = output.into_parts().0;
         world.engine_mut().abort_prepared_transaction(prepared);
+
+        let receipt_result = world
+            .engine()
+            .registry
+            .action_providers()
+            .expect("frozen action providers")
+            .receipt_projection_table()
+            .project(
+                &action,
+                &outcome,
+                &PrincipalId::Object { id: mush_core::GOD },
+            )
+            .expect("durable outcome projects")
+            .expect("brace has a semantic receipt");
+        let status = mush_proto::ActionStatusId::new(format!(
+            "k5:toy:brace:0000000000000000:{}",
+            request.to_hex()
+        ))
+        .unwrap();
+        let receipt = mush_proto::ProjectedActionReceipt::new(
+            status,
+            toy_prepare_token().to_string(),
+            Some(receipt_result),
+        )
+        .unwrap();
+        let receipt_view = receipt.view().unwrap();
+        let receipt_json = serde_json::to_value(&receipt_view).unwrap();
+        assert_projection_json_clean(
+            "semantic action receipt",
+            &receipt_json,
+            &[
+                "action",
+                "actor",
+                "bundle_hash",
+                "definition",
+                "definitions",
+                "eligible_witnesses",
+                "guard_hash",
+                "guards",
+                "ingress_hash",
+                "outcome",
+                "outcome_hash",
+                "plan_hash",
+                "provider",
+                "request_hash",
+                "resolution",
+                "truth_subject",
+            ],
+            &[definition_digest.as_str()],
+        );
+        assert_eq!(receipt.result().unwrap().data()["event"], "braced");
+        assert_eq!(receipt.result().unwrap().data()["focus"], 2);
 
         let changed = toy_brace_offers(world.engine(), mush_core::GOD, 11, 5)
             .unwrap()
@@ -1670,6 +3179,137 @@ mod tests {
     }
 
     #[test]
+    fn line_structured_npc_and_mock_llm_use_one_offer_and_provider_contract() {
+        #[derive(Clone, Copy, Debug)]
+        enum Caller {
+            Line,
+            Structured,
+            DeterministicNpc,
+            MockLlm,
+        }
+
+        fn choose(caller: Caller, offers: &[ProjectedLegalAction]) -> OfferSubmission {
+            let projected = match caller {
+                Caller::Line => offers
+                    .iter()
+                    .find(|offer| offer.presentation().verb.eq_ignore_ascii_case("brace"))
+                    .cloned()
+                    .expect("line verb is offered"),
+                Caller::Structured => offers.first().cloned().expect("panel has one action"),
+                Caller::DeterministicNpc => offers
+                    .iter()
+                    .min_by_key(|offer| offer.presentation().verb.as_str())
+                    .cloned()
+                    .expect("deterministic policy has an action"),
+                Caller::MockLlm => {
+                    let prompt = serde_json::to_string(offers).expect("LLM projection serializes");
+                    let visible: Vec<ProjectedLegalAction> =
+                        serde_json::from_str(&prompt).expect("mock LLM sees only projected DTOs");
+                    visible
+                        .into_iter()
+                        .find(|offer| offer.presentation().verb == "brace")
+                        .expect("mock LLM chooses one offered tool")
+                }
+            };
+            OfferSubmission {
+                offer: projected.offer(),
+                subject: projected.subject().clone(),
+                targets: Vec::new(),
+                parameters: json!({}),
+            }
+        }
+
+        let (mut world, families) = toy_world_with_state();
+        bootstrap_focus(&mut world, &families, mush_core::GOD, 3);
+        let keys =
+            OfferKeyRing::new(mush_core::OfferSecret::new(1, [0x42; 32]).unwrap(), []).unwrap();
+        world.engine_mut().set_offer_keys(keys);
+        let offers = toy_brace_offers(world.engine(), mush_core::GOD, 11, 4).unwrap();
+        let projected = offers.projected();
+        let principal = PrincipalId::Object { id: mush_core::GOD };
+        let viewer_scope = ProjectionScopeId::derive(&principal, 4).unwrap();
+
+        for (ordinal, caller) in [
+            Caller::Line,
+            Caller::Structured,
+            Caller::DeterministicNpc,
+            Caller::MockLlm,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let request = RequestUid::from_bytes([u8::try_from(ordinal + 1).unwrap(); 16]);
+            let resolved = world
+                .engine()
+                .resolve_legal_action(
+                    &offers,
+                    OfferExecutionContext {
+                        request,
+                        principal: principal.clone(),
+                        actor: mush_core::GOD,
+                        idempotency: ScopedIdempotencyKey::new(
+                            IdempotencyScope {
+                                principal: principal.clone(),
+                                owner: OwnerId::new(TOY_OWNER).unwrap(),
+                                namespace: CanonicalId::new("brace").unwrap(),
+                            },
+                            0,
+                            IdempotencyKey::Request(request),
+                        ),
+                        viewer_scope,
+                        now: None,
+                    },
+                    choose(caller, &projected),
+                )
+                .unwrap_or_else(|error| panic!("{caller:?} failed shared resolution: {error}"));
+            assert_eq!(resolved.action(), &toy_definitions().brace);
+            let (action, invocation, _) = resolved.into_authoritative_parts();
+            let (prepared, _) = world
+                .engine_mut()
+                .prepare_registered_resolved_authoritative_action(
+                    &action,
+                    &invocation,
+                    toy_prepare_token(),
+                )
+                .unwrap_or_else(|error| panic!("{caller:?} missed shared provider: {error}"));
+            world.engine_mut().abort_prepared_transaction(prepared);
+        }
+
+        let request = RequestUid::from_bytes([0x7F; 16]);
+        assert!(
+            world
+                .engine()
+                .resolve_legal_action(
+                    &offers,
+                    OfferExecutionContext {
+                        request,
+                        principal: principal.clone(),
+                        actor: mush_core::GOD,
+                        idempotency: ScopedIdempotencyKey::new(
+                            IdempotencyScope {
+                                principal,
+                                owner: OwnerId::new(TOY_OWNER).unwrap(),
+                                namespace: CanonicalId::new("brace").unwrap(),
+                            },
+                            0,
+                            IdempotencyKey::Request(request),
+                        ),
+                        viewer_scope,
+                        now: None,
+                    },
+                    OfferSubmission {
+                        offer: ActionOfferId(CanonicalHash::from_bytes([0xFF; 32])),
+                        subject: PerceivedRef::SelfActor,
+                        targets: Vec::new(),
+                        parameters: json!({}),
+                    },
+                )
+                .is_err(),
+            "a mock LLM cannot invent an unoffered action token"
+        );
+    }
+
+    #[test]
     fn guarded_expiry_is_exact_clocked_and_removes_only_its_instance() {
         let (mut world, families) = toy_world_with_state();
         bootstrap_focus(&mut world, &families, mush_core::GOD, 3);
@@ -1677,7 +3317,11 @@ mod tests {
         let brace = toy_brace_invocation(mush_core::GOD, 11, brace_request);
         let (prepared, _) = world
             .engine_mut()
-            .prepare_registered_authoritative_action(&toy_definitions().brace, &brace)
+            .prepare_registered_authoritative_action(
+                &toy_definitions().brace,
+                &brace,
+                toy_prepare_token(),
+            )
             .expect("brace prepares");
         let (_, installation) = prepared.into_parts();
         world.engine_mut().install_prepared_action(installation);
@@ -1698,7 +3342,8 @@ mod tests {
         assert!(matches!(
             world.engine_mut().prepare_registered_authoritative_action(
                 &toy_definitions().guarded_expire,
-                &early
+                &early,
+                toy_prepare_token(),
             ),
             Err(ActionProviderPrepareError::Provider { source, .. })
                 if source.code() == ActionErrorCode::ProviderRejected
@@ -1727,7 +3372,8 @@ mod tests {
         assert!(matches!(
             world.engine_mut().prepare_registered_authoritative_action(
                 &toy_definitions().guarded_expire,
-                &stale_clock
+                &stale_clock,
+                toy_prepare_token(),
             ),
             Err(ActionProviderPrepareError::Provider { source, .. })
                 if source.code() == ActionErrorCode::Stale
@@ -1741,10 +3387,14 @@ mod tests {
         );
         let (prepared, cascade) = world
             .engine_mut()
-            .prepare_registered_authoritative_action(&toy_definitions().guarded_expire, &due)
+            .prepare_registered_authoritative_action(
+                &toy_definitions().guarded_expire,
+                &due,
+                toy_prepare_token(),
+            )
             .expect("due expiry prepares");
         assert_eq!(prepared.operation_count(), 1);
-        let (outcome, _, _, _, events) = cascade.into_parts();
+        let (outcome, _, _, _, _, events) = cascade.into_parts();
         assert_eq!(
             outcome.data()["source"]["root_request"],
             brace_request.to_hex()

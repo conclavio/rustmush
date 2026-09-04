@@ -23,8 +23,8 @@
 //! | `[game].ic_ratio` | `1` | IC seconds per OOC second (game-clock speed); read at boot |
 //! | `[game].ic_epoch` | `"2020-01-01 00:00"` | IC datetime at OOC unix 0 — calendar phase/start; read at boot |
 //! | `[rulesets].enabled` | `["wod"]` | ruleset module(s) to load; unknown ids are a hard boot error |
-//! | `[weather].flavor_variants` | `10` | M10 `@weather/generate` variants requested per (climate,state) bucket |
-//! | `[worldgen].batch_max_rooms` | `40` | M10 `@gen/building` interior-walk cap (rooms per batch) |
+//! | `[weather].flavor_variants` | `10` | M10 variants per weather bucket (`0` disables, hard max `64`) |
+//! | `[worldgen].batch_max_rooms` | `40` | M10 `@gen/building` room cap (valid range `2..=40`) |
 //! | `[economy].mint_obligation_cap_major` | `50000` | E4 per-period ceiling on a faucet-funded obligation, in major units |
 //! | `[economy.instruments."<code>"].mint_obligation_cap_major` | (the above) | per-instrument override of that ceiling |
 //! | `[wod.economy].personal_mode` | `"off"` | E5c WoD personal economy: `off` \| `abstract` \| `exact` |
@@ -154,6 +154,15 @@ pub struct ServerCfg {
 pub struct OffersCfg {
     /// Optional key-ring directory. When absent, keys live beneath
     /// `[server].data_dir/offer-keys`.
+    pub key_dir: Option<PathBuf>,
+}
+
+/// `[resolution]` section — durable K4 authoritative RNG root keys.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct ResolutionCfg {
+    /// Optional key-ring directory. When absent, keys live beneath
+    /// `[server].data_dir/resolution-keys`.
     pub key_dir: Option<PathBuf>,
 }
 
@@ -299,8 +308,9 @@ impl Default for RulesetsCfg {
 pub struct WeatherCfg {
     /// How many flavor variants `@weather/generate` requests per
     /// `(climate, state)` bucket (transition + ambient). Defaults to the
-    /// `mush-weather` crate default (10); the typed conversion into
-    /// `mush_weather::WeatherConfig` lives in `mush-server`.
+    /// `mush-weather` crate default (10); zero disables generation and values
+    /// above the crate's hard maximum (64) are clamped. The typed conversion
+    /// into `mush_weather::WeatherConfig` lives in `mush-server`.
     pub flavor_variants: usize,
 }
 
@@ -432,8 +442,9 @@ impl Default for WodEconomyCfg {
 #[serde(default)]
 pub struct WorldgenCfg {
     /// The `@gen/building` interior-walk cap: the most rooms one batch will
-    /// describe. Defaults to the `mush-worldgen` crate default (40); the typed
-    /// conversion into `mush_worldgen::WorldgenConfig` lives in `mush-server`.
+    /// describe. Defaults to the `mush-worldgen` crate default (40); values
+    /// outside `2..=40` fail module registration. The typed conversion into
+    /// `mush_worldgen::WorldgenConfig` lives in `mush-server`.
     pub batch_max_rooms: usize,
 }
 
@@ -612,6 +623,8 @@ pub struct Config {
     pub store: StoreCfg,
     /// `[offers]` — durable opaque legal-action offer signing keys.
     pub offers: OffersCfg,
+    /// `[resolution]` — independent authoritative resolution RNG keys.
+    pub resolution: ResolutionCfg,
     /// `[ssh]`.
     pub ssh: SshCfg,
     /// `[web]` — the raw section, deserialized into `mush_net_web::WebConfig`
@@ -659,6 +672,7 @@ impl Default for Config {
             log: LogCfg::default(),
             store: StoreCfg::default(),
             offers: OffersCfg::default(),
+            resolution: ResolutionCfg::default(),
             ssh: SshCfg::default(),
             web: empty_toml_table(),
             game: GameCfg::default(),
@@ -777,6 +791,16 @@ impl Config {
             .clone()
             .unwrap_or_else(|| self.server.data_dir.join("offer-keys"))
     }
+
+    /// Directory containing the append-only K4 resolution-key manifest and
+    /// its bounded set of private key files.
+    #[must_use]
+    pub fn resolution_key_dir(&self) -> PathBuf {
+        self.resolution
+            .key_dir
+            .clone()
+            .unwrap_or_else(|| self.server.data_dir.join("resolution-keys"))
+    }
 }
 
 #[cfg(test)]
@@ -796,6 +820,10 @@ mod tests {
         assert_eq!(cfg.store.redis_url, "redis://127.0.0.1:6379");
         assert_eq!(cfg.store.receipt_policy, "applied");
         assert_eq!(cfg.offer_key_dir(), PathBuf::from("./data/offer-keys"));
+        assert_eq!(
+            cfg.resolution_key_dir(),
+            PathBuf::from("./data/resolution-keys")
+        );
         assert_eq!(cfg.store_backend().unwrap(), StoreBackend::Redis);
         assert_eq!(
             cfg.store_receipt_policy().unwrap(),
@@ -860,6 +888,24 @@ mod tests {
         assert_eq!(
             defaulted.offer_key_dir(),
             PathBuf::from("./world/offer-keys")
+        );
+    }
+
+    #[test]
+    fn resolution_key_directory_defaults_under_data_and_can_be_overridden() {
+        let cfg: Config = toml::from_str(
+            "[server]\ndata_dir = \"./world\"\n[resolution]\nkey_dir = \"./secrets/resolution\"",
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.resolution_key_dir(),
+            PathBuf::from("./secrets/resolution")
+        );
+
+        let defaulted: Config = toml::from_str("[server]\ndata_dir = \"./world\"").unwrap();
+        assert_eq!(
+            defaulted.resolution_key_dir(),
+            PathBuf::from("./world/resolution-keys")
         );
     }
 

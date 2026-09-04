@@ -8,10 +8,8 @@ description = "OutputEvent -> ANSI renderer: themes, color downgrade, wrapping"
 
 [dependencies]
 mush-proto.workspace = true
-smol_str.workspace = true
-
-[dev-dependencies]
 serde_json.workspace = true
+smol_str.workspace = true
 
 [lints]
 workspace = true

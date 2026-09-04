@@ -16,9 +16,9 @@
 //!    6s are hits, more-than-half 1s glitch, a per-test Limit caps hits, and Edge
 //!    can push the limit (waive it + explode 6s via the Rule of Six).
 //!
-//! The core (`mush-core`) knows nothing about any of this; rulesets pull the
-//! pieces they need. This crate depends on nothing but `rand` + parser deps, so
-//! it unit-tests in isolation.
+//! Rulesets pull the pieces they need. Ordinary tests may inject any `rand`
+//! source; authoritative actions use [`with_resolution_stream`] to bridge the
+//! kernel's bounded, recorded RNG into the same evaluators.
 //!
 //! ```
 //! use rand::SeedableRng;
@@ -43,9 +43,11 @@ pub mod expr;
 pub mod owod20;
 pub mod parser;
 pub mod pool;
+pub mod resolution;
 pub mod sr5;
 
 pub use error::{DiceParseError, RollLimitError};
 pub use expr::{AddOp, DiceExpr, DieRecord, Keep, RollCtx, RollLimits, RollOutcome};
 pub use parser::parse;
 pub use pool::PoolMechanic;
+pub use resolution::with_resolution_stream;

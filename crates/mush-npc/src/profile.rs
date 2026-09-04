@@ -8,6 +8,7 @@
 //! other players' data, and no staff notes beyond the NPC's own persona —
 //! anything truly secret is kept out of the context entirely.
 
+use std::fmt;
 use std::time::Duration;
 
 use mush_faction::Principal;
@@ -29,6 +30,67 @@ pub const SUMMARY_ATTR: &str = "agent:memory:summary";
 /// (design 03 §8: web shows a subtle indicator; terminal users just see the
 /// reply arrive).
 pub const THINKING_FEED: &str = "npc.thinking";
+
+/// Maximum bytes in the freeform persona field.
+pub const MAX_PROFILE_PERSONA_BYTES: usize = 8 * 1024;
+/// Maximum bytes in the freeform background field.
+pub const MAX_PROFILE_BACKGROUND_BYTES: usize = 32 * 1024;
+/// Maximum bytes in the speech-style field.
+pub const MAX_PROFILE_SPEECH_BYTES: usize = 4 * 1024;
+/// Maximum goals stored on one profile.
+pub const MAX_PROFILE_GOALS: usize = 64;
+/// Maximum knowledge-fence entries in either allow/deny list.
+pub const MAX_PROFILE_KNOWLEDGE_FENCES: usize = 64;
+/// Maximum fallback lines stored on one profile.
+pub const MAX_PROFILE_FALLBACK_LINES: usize = 32;
+/// Maximum informant watch entries stored on one profile.
+pub const MAX_PROFILE_WATCH_ENTRIES: usize = 128;
+/// Maximum bytes in one goal or knowledge-fence entry.
+pub const MAX_PROFILE_LIST_ENTRY_BYTES: usize = 2 * 1024;
+/// Maximum bytes in one fallback line.
+pub const MAX_PROFILE_FALLBACK_BYTES: usize = 2 * 1024;
+/// Maximum bytes in one watched subject.
+pub const MAX_PROFILE_WATCH_BYTES: usize = 256;
+/// Maximum encoded bytes in one complete profile.
+pub const MAX_AGENT_PROFILE_BYTES: usize = 256 * 1024;
+
+/// Invalid persisted or staff-authored agent profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AgentProfileValidationError {
+    PersonaTooLarge,
+    BackgroundTooLarge,
+    SpeechTooLarge,
+    TooManyGoals,
+    TooManyKnowledgeFences,
+    TooManyFallbackLines,
+    TooManyWatchEntries,
+    EmptyListEntry,
+    ListEntryTooLarge,
+    FallbackTooLarge,
+    WatchEntryTooLarge,
+    DocumentTooLarge,
+}
+
+impl fmt::Display for AgentProfileValidationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::PersonaTooLarge => "agent persona exceeds its byte limit",
+            Self::BackgroundTooLarge => "agent background exceeds its byte limit",
+            Self::SpeechTooLarge => "agent speech style exceeds its byte limit",
+            Self::TooManyGoals => "agent goal count exceeds its hard limit",
+            Self::TooManyKnowledgeFences => "agent knowledge-fence count exceeds its hard limit",
+            Self::TooManyFallbackLines => "agent fallback-line count exceeds its hard limit",
+            Self::TooManyWatchEntries => "agent watch-entry count exceeds its hard limit",
+            Self::EmptyListEntry => "agent profile lists may not contain empty entries",
+            Self::ListEntryTooLarge => "agent goal or knowledge fence exceeds its byte limit",
+            Self::FallbackTooLarge => "agent fallback line exceeds its byte limit",
+            Self::WatchEntryTooLarge => "agent watch entry exceeds its byte limit",
+            Self::DocumentTooLarge => "encoded agent profile exceeds its byte limit",
+        })
+    }
+}
+
+impl std::error::Error for AgentProfileValidationError {}
 
 /// NPC importance tier — selects the dialogue route, cooldown, and budget
 /// defaults (design 03 §6.1). Mirrors [`mush_llm::NpcTier`] but lives here so
@@ -157,6 +219,61 @@ impl Default for AgentProfile {
 }
 
 impl AgentProfile {
+    /// Validate all prompt-facing counts, fields, and the complete persisted
+    /// document before this profile can be stored or used by an agent turn.
+    pub fn validate(&self) -> Result<(), AgentProfileValidationError> {
+        if self.persona.len() > MAX_PROFILE_PERSONA_BYTES {
+            return Err(AgentProfileValidationError::PersonaTooLarge);
+        }
+        if self.background.len() > MAX_PROFILE_BACKGROUND_BYTES {
+            return Err(AgentProfileValidationError::BackgroundTooLarge);
+        }
+        if self.speech_style.len() > MAX_PROFILE_SPEECH_BYTES {
+            return Err(AgentProfileValidationError::SpeechTooLarge);
+        }
+        validate_list(
+            &self.goals,
+            MAX_PROFILE_GOALS,
+            MAX_PROFILE_LIST_ENTRY_BYTES,
+            AgentProfileValidationError::TooManyGoals,
+            AgentProfileValidationError::ListEntryTooLarge,
+        )?;
+        validate_list(
+            &self.knowledge.knows,
+            MAX_PROFILE_KNOWLEDGE_FENCES,
+            MAX_PROFILE_LIST_ENTRY_BYTES,
+            AgentProfileValidationError::TooManyKnowledgeFences,
+            AgentProfileValidationError::ListEntryTooLarge,
+        )?;
+        validate_list(
+            &self.knowledge.does_not_know,
+            MAX_PROFILE_KNOWLEDGE_FENCES,
+            MAX_PROFILE_LIST_ENTRY_BYTES,
+            AgentProfileValidationError::TooManyKnowledgeFences,
+            AgentProfileValidationError::ListEntryTooLarge,
+        )?;
+        validate_list(
+            &self.fallback_lines,
+            MAX_PROFILE_FALLBACK_LINES,
+            MAX_PROFILE_FALLBACK_BYTES,
+            AgentProfileValidationError::TooManyFallbackLines,
+            AgentProfileValidationError::FallbackTooLarge,
+        )?;
+        validate_list(
+            &self.watch,
+            MAX_PROFILE_WATCH_ENTRIES,
+            MAX_PROFILE_WATCH_BYTES,
+            AgentProfileValidationError::TooManyWatchEntries,
+            AgentProfileValidationError::WatchEntryTooLarge,
+        )?;
+        let encoded =
+            serde_json::to_vec(self).map_err(|_| AgentProfileValidationError::DocumentTooLarge)?;
+        if encoded.len() > MAX_AGENT_PROFILE_BYTES {
+            return Err(AgentProfileValidationError::DocumentTooLarge);
+        }
+        Ok(())
+    }
+
     /// The effective cooldown: the explicit override if set and non-zero,
     /// else the tier default.
     #[must_use]
@@ -178,6 +295,27 @@ impl AgentProfile {
         let idx = (seed as usize) % self.fallback_lines.len();
         self.fallback_lines[idx].clone()
     }
+}
+
+fn validate_list(
+    values: &[String],
+    max_items: usize,
+    max_entry_bytes: usize,
+    count_error: AgentProfileValidationError,
+    size_error: AgentProfileValidationError,
+) -> Result<(), AgentProfileValidationError> {
+    if values.len() > max_items {
+        return Err(count_error);
+    }
+    for value in values {
+        if value.trim().is_empty() {
+            return Err(AgentProfileValidationError::EmptyListEntry);
+        }
+        if value.len() > max_entry_bytes {
+            return Err(size_error);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -270,5 +408,46 @@ mod tests {
         // Empty list yields a safe generic line, never a panic.
         let empty = AgentProfile::default();
         assert!(!empty.fallback_line(7).is_empty());
+    }
+
+    #[test]
+    fn validation_rejects_prompt_growth_before_storage() {
+        let oversized = AgentProfile {
+            persona: "x".repeat(MAX_PROFILE_PERSONA_BYTES + 1),
+            ..AgentProfile::default()
+        };
+        assert_eq!(
+            oversized.validate(),
+            Err(AgentProfileValidationError::PersonaTooLarge)
+        );
+
+        let too_many = AgentProfile {
+            goals: (0..=MAX_PROFILE_GOALS)
+                .map(|index| format!("goal {index}"))
+                .collect(),
+            ..AgentProfile::default()
+        };
+        assert_eq!(
+            too_many.validate(),
+            Err(AgentProfileValidationError::TooManyGoals)
+        );
+    }
+
+    #[test]
+    fn default_and_representative_profile_validate() {
+        assert!(AgentProfile::default().validate().is_ok());
+        let profile = AgentProfile {
+            persona: "a careful fixer".into(),
+            background: "keeps the neighborhood supplied".into(),
+            goals: vec!["protect regulars".into()],
+            knowledge: KnowledgeBounds {
+                knows: vec!["local routes".into()],
+                does_not_know: vec!["the hidden vault code".into()],
+            },
+            fallback_lines: vec!["Give me a minute.".into()],
+            watch: vec!["alice".into()],
+            ..AgentProfile::default()
+        };
+        assert!(profile.validate().is_ok());
     }
 }

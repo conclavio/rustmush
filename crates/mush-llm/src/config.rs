@@ -144,15 +144,23 @@ pub struct BudgetConfig {
 pub struct ConcurrencyConfig {
     /// Max in-flight `Interactive` calls (dialogue, single-room worldgen).
     pub max_interactive: usize,
+    /// Max `Interactive` callers allowed to wait behind the in-flight set.
+    /// Additional callers fail fast as overloaded instead of becoming an
+    /// unbounded semaphore waiter queue.
+    pub max_interactive_queued: usize,
     /// Max in-flight `Background` calls (batch gen, summarization).
     pub max_background: usize,
+    /// Max `Background` callers allowed to wait behind the in-flight set.
+    pub max_background_queued: usize,
 }
 
 impl Default for ConcurrencyConfig {
     fn default() -> ConcurrencyConfig {
         ConcurrencyConfig {
             max_interactive: 8,
+            max_interactive_queued: 32,
             max_background: 3,
+            max_background_queued: 12,
         }
     }
 }
@@ -221,5 +229,23 @@ pub fn resolve_key(env_name: &str) -> Option<String> {
     match std::env::var(env_name) {
         Ok(v) if !v.trim().is_empty() => Some(v),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ConcurrencyConfig;
+
+    #[test]
+    fn legacy_concurrency_config_gets_bounded_queue_defaults() {
+        let config: ConcurrencyConfig = serde_json::from_value(serde_json::json!({
+            "max_interactive": 2,
+            "max_background": 1
+        }))
+        .unwrap();
+        assert_eq!(config.max_interactive, 2);
+        assert_eq!(config.max_interactive_queued, 32);
+        assert_eq!(config.max_background, 1);
+        assert_eq!(config.max_background_queued, 12);
     }
 }

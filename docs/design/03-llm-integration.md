@@ -397,6 +397,34 @@ Volatile suffix (the user turn):
 7. Recent event transcript (script-formatted, token-capped): `Alice says, "…"` / `Bob arrives from the north.`
 8. The triggering stimuli, with player speech wrapped: `<player_speech speaker="Alice">…</player_speech>` with `<` escaped in the payload — framing, plus the engine-frame rule, is the injection posture (§7).
 
+World-knowledge construction is bounded before it becomes a snapshot: at most 64 direct facts and
+16 unique shared-pool tags per NPC, 128 facts per pool, 512 pools per server, and 128 shareable facts
+or 256 KiB in one resolved turn. Tags, fact fields, per-NPC documents, and pool documents have hard
+byte ceilings. Authoring refuses overflow before mutation; boot validates pool key/tag agreement
+and deterministically retains only the lexically first bounded pool set. `Secret` facts are filtered
+before prompt count/byte admission, so they neither leak nor crowd later public facts out of the
+bounded projection.
+
+The agent profile is also a validated prompt envelope, not arbitrary attribute JSON: persona,
+background, and speech style have independent byte ceilings; goals, knowledge fences, fallback
+lines, and watch subjects have count and per-entry ceilings; and the complete encoded profile caps
+at 256 KiB. Staff edits validate before changing the attribute. An invalid persisted profile is not
+used to wake or prompt the NPC; a later staff edit starts from a bounded default and repairs it.
+
+Informant intel is bounded by both persistence and presentation. Each principal retains at most 50
+validated records and 256 KiB; each record has independent name/detail/room/provenance and encoded
+byte ceilings, and boot requires every embedded principal to match its document key. A personal
+plus faction pull considers at most the newest 128 records, 128 readable faction pools, and 256 KiB
+of encoded records. The line and panel paths use the same newest-first bounded selection.
+
+The legacy pre-K7 async turn handoff is also a bounded document. Scene construction retains at most
+128 present players and 128 exits, caps every copied name/description/weather/time field, and gives
+the actors responsible for the current stimulus batch priority in a crowded room. A ruleset's
+capability profile is rejected before dispatch if its summary, stats, tags, tool manifest, or tool
+schemas exceed their individual limits. The complete serialized `TurnSnapshot` is capped at 1 MiB
+and validated again by the off-loop consumer. K7 replaces this compatibility payload with its
+smaller projected prompt record; these limits do not make the legacy path authoritative.
+
 ### 6.4 Tools → safe actions
 
 ```rust
@@ -419,9 +447,20 @@ Actions do not mutate the world from the LLM task: they are sent as `WorldComman
 
 Three layers, cheapest first:
 
-1. **Rolling buffer** (in-memory, per NPC): last ~50 room events, token-capped (~1.5k). Lost on restart — acceptable.
-2. **Conversation summary** (persisted attribute `agent.memory.summary`): when the buffer overflows, a `NpcSummarize` call (cheap route) folds the oldest half into the summary ("Earlier tonight: haggled with Alice over a focusing crystal; refused to discuss the cellar."). Same mechanism at server shutdown.
-3. **Long-term records** (DB table `npc_memory(npc, subject, text, created, last_recalled, strength)`): written by the `Remember` tool and by the summarizer when it detects durable facts ("Alice owes me 50 dollars"). **Recall v1 is deliberately dumb:** on each turn, fetch memories whose `subject` matches present players' names/aliases plus the top-N by recency×strength. Embedding retrieval (fastembed + sqlite-vec) is a marked extension point behind a `MemoryRecall` trait, not built now.
+1. **Rolling buffer** (in-memory, per NPC): last ~50 room events, token-capped (~1.5k),
+   with a 100-event emergency ceiling, 1,024-character sanitizer cap, and 256 KiB
+   aggregate byte ceiling. Lost on restart — acceptable.
+2. **Conversation summary** (persisted attribute `agent.memory.summary`): when the buffer overflows,
+   a `NpcSummarize` call (cheap route) folds the oldest half into a sanitized, 4,000-character
+   summary ("Earlier tonight: haggled with Alice over a focusing crystal; refused to discuss the
+   cellar."). The world-loop completion boundary enforces the same limit again.
+3. **Long-term records** (module documents keyed by `(npc, canonical subject)`): written by the
+   `Remember` tool. Each subject retains at most 20 bounded notes; each NPC retains at most 256
+   subjects, evicting the least recently updated with a stable subject tie-break and durably
+   deleting the victim. Complete records, subjects, and notes have hard byte ceilings, and boot
+   rejects malformed or key-mismatched documents. **Recall v1 is deliberately dumb:** on each turn,
+   fetch matching present-player subjects newest-first, with a hard maximum of 32 returned records.
+   Embedding retrieval is a marked extension point behind a `MemoryRecall` trait, not built now.
 
 Per-player relationships fall out of layer 3: memories subject-keyed by character name give the NPC continuity with returning players.
 

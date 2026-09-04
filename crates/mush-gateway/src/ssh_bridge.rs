@@ -351,6 +351,9 @@ mod net {
                     "intel.list" => {
                         Some((SmolStr::new_static("intel.list"), serde_json::json!({})))
                     }
+                    "legal.actions" => {
+                        Some((SmolStr::new_static("legal.actions"), serde_json::json!({})))
+                    }
                     _ => {
                         tracing::debug!(conn, name, "unknown TUI query name dropped");
                         None

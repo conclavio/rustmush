@@ -186,6 +186,7 @@ impl Rig {
                 out: &mut out,
                 reg: &self.engine.registry,
                 module: Some(SmolStr::new("npc")),
+                typed_state: mush_core::ModuleActionState::unavailable(),
             };
             handler.tick(&mut ctx, "agent", None);
         }
@@ -226,6 +227,7 @@ impl Rig {
                 out: &mut out,
                 reg: &self.engine.registry,
                 module: Some(SmolStr::new("npc")),
+                typed_state: mush_core::ModuleActionState::unavailable(),
             };
             handler.tick(&mut ctx, "agent", None);
         }
@@ -303,6 +305,7 @@ impl Rig {
             out: &mut out,
             reg: &self.engine.registry,
             module: Some(SmolStr::new("npc")),
+            typed_state: mush_core::ModuleActionState::unavailable(),
         };
         ctx.emit_world_event(&ev);
     }
@@ -466,6 +469,46 @@ async fn only_one_call_in_flight() {
     rig.run(alice, "say two");
     rig.set_now(10);
     assert!(rig.one_turn().is_none(), "one in flight ⇒ no second turn");
+}
+
+#[tokio::test]
+async fn delayed_completion_cannot_clear_or_act_during_a_newer_turn() {
+    let mut rig = Rig::new();
+    rig.set_now(0);
+    let bar = rig.room("Bar");
+    let npc = rig.npc("Bartender", bar, &profile(NpcTier::Major));
+    let alice = rig.player("Alice", bar, true);
+
+    rig.run(alice, "say first");
+    rig.set_now(2);
+    let (_, first, _) = rig.one_turn().expect("first turn");
+    let silent = serde_json::json!({ "status": "nothing", "npc": npc, "reason": "" });
+    rig.complete(npc, first, &silent.to_string());
+
+    rig.run(alice, "say second");
+    rig.set_now(10);
+    let (_, second, _) = rig.one_turn().expect("second turn");
+    assert_ne!(first, second);
+
+    let stale = serde_json::json!({
+        "status": "ok",
+        "npc": npc,
+        "actions": [{ "action": { "action": "say", "text": "stale replay" } }]
+    });
+    assert!(
+        rig.complete(npc, first, &stale.to_string())
+            .take()
+            .is_empty()
+    );
+    let rt = rig.host().runtime(npc).unwrap();
+    assert!(
+        rt.in_flight,
+        "stale completion must not clear the newer turn"
+    );
+    assert_eq!(rt.correlation, Some(second));
+
+    rig.complete(npc, second, &silent.to_string());
+    assert!(!rig.host().runtime(npc).unwrap().in_flight);
 }
 
 #[tokio::test]
@@ -1209,10 +1252,13 @@ async fn familiarity_from_memory_reaches_the_user_prompt() {
     // Three durable notes about Alice ⇒ Known; nothing about Bob ⇒ Stranger.
     {
         let h = rig.host_mut();
-        h.long_term.remember(npc, "Alice", "tips well", 10);
-        h.long_term.remember(npc, "Alice", "owes for a drink", 20);
+        h.long_term.remember(npc, "Alice", "tips well", 10).unwrap();
         h.long_term
-            .remember(npc, "Alice", "asked about the cellar", 30);
+            .remember(npc, "Alice", "owes for a drink", 20)
+            .unwrap();
+        h.long_term
+            .remember(npc, "Alice", "asked about the cellar", 30)
+            .unwrap();
     }
 
     let snap = rig.dialogue_snapshot(alice, 1002, "say evening");
@@ -1653,6 +1699,7 @@ async fn npc_actor_power_use_files_intel_for_a_witnessing_informant() {
         }]
     })
     .to_string();
+    rig.host_mut().begin_turn(caster, 1000, 1);
     rig.complete(caster, 1, &payload);
 
     let recs = rig.host().intel.for_principal(Principal::Character(boss));

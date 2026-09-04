@@ -7,7 +7,8 @@
 //! **CRLF only** — never a bare `\n` (SSH raw mode).
 
 use mush_proto::{
-    ClientCaps, NarrativeKind, ObjRef, OutputEvent, RichText, RoomView, Span, Style, WhoEntry,
+    ClientCaps, NarrativeKind, ObjRef, OutputEvent, ProjectedActionReceipt, RichText, RoomView,
+    Span, Style, WhoEntry,
 };
 
 use crate::color::sgr;
@@ -60,6 +61,22 @@ pub fn render(event: &OutputEvent, caps: &ClientCaps, theme: &AnsiTheme, out: &m
         // Module text fallbacks register in M3 with the Registrar; until
         // then panel frames are web-only and SSH skips them silently.
         OutputEvent::Panel { .. } => {}
+        OutputEvent::View(view) => {
+            if view.view() == "resolution.outcome"
+                && let Ok(receipt) =
+                    serde_json::from_value::<ProjectedActionReceipt>(view.data().clone())
+                && receipt.view().is_ok_and(|expected| &expected == view)
+            {
+                let summary = receipt
+                    .result()
+                    .map_or("Action committed.", |result| result.summary());
+                w.tagged(
+                    "system",
+                    &format!("{summary} Transaction: {}", receipt.status()),
+                );
+                w.end_line();
+            }
+        }
         OutputEvent::Weather { text, .. } => {
             w.rich(text);
             w.end_line();

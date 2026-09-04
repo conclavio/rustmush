@@ -995,6 +995,7 @@ mod tests {
                 value,
             }],
             outcome: RulesValue::new(outcome.clone(), serde_json::json!({"seeded": true})).unwrap(),
+            resolution: None,
             semantic_events: vec![
                 mush_core::AuthoritativeSemanticEvent::root(
                     PreparedCausalRef::new(request, None, 0).unwrap(),

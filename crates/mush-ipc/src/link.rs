@@ -15,7 +15,8 @@
 
 use futures::future::BoxFuture;
 
-use crate::{ObjId, ServiceReq, ServiceResp, ToServer};
+use crate::{GatewayAction, ObjId, ServiceReq, ServiceResp, ToServer};
+use mush_proto::{ActionStatusId, ProjectedActionReceipt};
 
 /// The outcome of an input-path (`Cmd`/`Query`) send through [`GatewayLink`]
 /// ([`to_server_input`](GatewayLink::to_server_input)). Distinguishes the M18
@@ -35,6 +36,29 @@ pub enum InputSend {
     /// The boundary is gone — a restart gap
     /// ([`is_restarting`](GatewayLink::is_restarting)) or a terminal shutdown.
     Gone,
+}
+
+/// Admission result for one semantic legal-action submission.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ActionSend {
+    /// The deployment accepted custody. Split mode reports this when gateway
+    /// replay custody is installed. Any later split-mode semantic refusal is
+    /// delivered through the ordinary request-disposition error path;
+    /// all-in-one authoritative execution normally returns [`Self::Owned`] or
+    /// [`Self::Finished`] directly.
+    Accepted,
+    /// Exact durable ownership was established and this public reference can
+    /// recover the result if live completion delivery is lost.
+    Owned(ActionStatusId),
+    /// The exact committed result was projected for the caller.
+    Finished(ProjectedActionReceipt),
+    /// Bounded input/coordinator custody is full before durable ownership.
+    Busy,
+    /// The boundary/world or authoritative store is unavailable.
+    Gone,
+    /// The offer or authenticated actor/connection binding was rejected
+    /// before durable ownership.
+    Rejected,
 }
 
 /// Result of reserving split-gateway lifecycle custody before local session
@@ -91,6 +115,13 @@ pub trait GatewayLink: Send + Sync {
                 InputSend::Gone
             }
         })
+    }
+
+    /// Submit one opaque legal action through the deployment's replay-safe
+    /// coordinator ingress. Implementations must allocate the request identity
+    /// themselves; public callers never construct [`crate::GatewayRequest`].
+    fn submit_action(&self, _action: GatewayAction) -> BoxFuture<'_, ActionSend> {
+        Box::pin(async move { ActionSend::Gone })
     }
 
     /// Issue a correlated service request ([`ServiceReq`]) and await its

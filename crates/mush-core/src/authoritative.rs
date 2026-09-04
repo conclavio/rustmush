@@ -23,6 +23,7 @@ use crate::mechanics::{
 };
 use crate::module::MAX_MODULE_KEY_BYTES;
 use crate::obj::{Obj, ObjId};
+use crate::resolution::ResolutionRecord;
 
 /// Hard maximum exact replay writes in one authoritative bundle.
 pub const MAX_AUTHORITATIVE_REPLAY_WRITES: usize = 1_024;
@@ -416,6 +417,7 @@ pub struct AuthoritativeBundleDraft {
     pub definitions: Vec<DefinitionRef>,
     pub writes: Vec<ReplayWrite>,
     pub outcome: RulesValue,
+    pub resolution: Option<ResolutionRecord>,
     pub semantic_events: Vec<AuthoritativeSemanticEvent>,
     pub eligible_witnesses: Vec<PrincipalId>,
     pub durable_outbox: Vec<DurableOutboxIntent>,
@@ -437,6 +439,8 @@ pub struct AuthoritativeBundle {
     definitions: Vec<DefinitionRef>,
     writes: Vec<ReplayWrite>,
     outcome: RulesValue,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resolution: Option<ResolutionRecord>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     semantic_events: Vec<AuthoritativeSemanticEvent>,
     eligible_witnesses: Vec<PrincipalId>,
@@ -468,6 +472,29 @@ struct AuthoritativeBundleWireV2 {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct AuthoritativeBundleWireV3 {
+    schema_version: u16,
+    token: CommitToken,
+    request: RequestUid,
+    idempotency: ScopedIdempotencyKey,
+    ingress_hash: CanonicalHash,
+    request_hash: CanonicalHash,
+    plan_hash: CanonicalHash,
+    action: DefinitionRef,
+    provider: OwnerId,
+    cause: PreparedCausalRef,
+    definitions: Vec<DefinitionRef>,
+    writes: Vec<ReplayWrite>,
+    outcome: RulesValue,
+    resolution: ResolutionRecord,
+    semantic_events: Vec<AuthoritativeSemanticEvent>,
+    eligible_witnesses: Vec<PrincipalId>,
+    durable_outbox: Vec<DurableOutboxIntent>,
+    bundle_hash: CanonicalHash,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AuthoritativeBundleWireV1 {
     schema_version: u16,
     token: CommitToken,
@@ -490,16 +517,23 @@ struct AuthoritativeBundleWireV1 {
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum AuthoritativeBundleWire {
-    V2(AuthoritativeBundleWireV2),
-    V1(AuthoritativeBundleWireV1),
+    V3(Box<AuthoritativeBundleWireV3>),
+    V2(Box<AuthoritativeBundleWireV2>),
+    V1(Box<AuthoritativeBundleWireV1>),
 }
 
 impl AuthoritativeBundle {
-    pub const SCHEMA_VERSION: u16 = 2;
+    pub const SCHEMA_VERSION: u16 = 3;
+    const SEMANTIC_EVENT_SCHEMA_VERSION: u16 = 2;
     const LEGACY_SCHEMA_VERSION: u16 = 1;
 
     pub fn new(draft: AuthoritativeBundleDraft) -> Result<Self, AuthoritativeBundleError> {
-        Self::build(draft, Self::SCHEMA_VERSION, false, None)
+        let schema_version = if draft.resolution.is_some() {
+            Self::SCHEMA_VERSION
+        } else {
+            Self::SEMANTIC_EVENT_SCHEMA_VERSION
+        };
+        Self::build(draft, schema_version, false, None)
     }
 
     fn build(
@@ -583,6 +617,7 @@ impl AuthoritativeBundle {
             });
         }
         validate_semantic_events(&draft, schema_version)?;
+        validate_resolution(&draft, schema_version)?;
 
         let original_outbox = require_canonical_order.then(|| draft.durable_outbox.clone());
         draft
@@ -649,6 +684,7 @@ impl AuthoritativeBundle {
             definitions: draft.definitions,
             writes: draft.writes,
             outcome: draft.outcome,
+            resolution: draft.resolution,
             semantic_events: draft.semantic_events,
             eligible_witnesses: draft.eligible_witnesses,
             durable_outbox: draft.durable_outbox,
@@ -722,6 +758,11 @@ impl AuthoritativeBundle {
     }
 
     #[must_use]
+    pub const fn resolution(&self) -> Option<&ResolutionRecord> {
+        self.resolution.as_ref()
+    }
+
+    #[must_use]
     pub fn semantic_events(&self) -> &[AuthoritativeSemanticEvent] {
         &self.semantic_events
     }
@@ -744,37 +785,8 @@ impl<'de> Deserialize<'de> for AuthoritativeBundle {
     {
         let wire = AuthoritativeBundleWire::deserialize(deserializer)?;
         match wire {
-            AuthoritativeBundleWire::V1(wire) => {
-                if wire.schema_version != Self::LEGACY_SCHEMA_VERSION {
-                    return Err(D::Error::custom(format!(
-                        "unsupported authoritative bundle schema version {}",
-                        wire.schema_version
-                    )));
-                }
-                Self::build(
-                    AuthoritativeBundleDraft {
-                        token: wire.token,
-                        request: wire.request,
-                        idempotency: wire.idempotency,
-                        ingress_hash: wire.ingress_hash,
-                        request_hash: wire.request_hash,
-                        plan_hash: wire.plan_hash,
-                        action: wire.action,
-                        provider: wire.provider,
-                        cause: wire.cause,
-                        definitions: wire.definitions,
-                        writes: wire.writes,
-                        outcome: wire.outcome,
-                        semantic_events: Vec::new(),
-                        eligible_witnesses: wire.eligible_witnesses,
-                        durable_outbox: wire.durable_outbox,
-                    },
-                    wire.schema_version,
-                    true,
-                    Some(wire.bundle_hash),
-                )
-            }
-            AuthoritativeBundleWire::V2(wire) => {
+            AuthoritativeBundleWire::V3(wire) => {
+                let wire = *wire;
                 if wire.schema_version != Self::SCHEMA_VERSION {
                     return Err(D::Error::custom(format!(
                         "unsupported authoritative bundle schema version {}",
@@ -795,6 +807,71 @@ impl<'de> Deserialize<'de> for AuthoritativeBundle {
                         definitions: wire.definitions,
                         writes: wire.writes,
                         outcome: wire.outcome,
+                        resolution: Some(wire.resolution),
+                        semantic_events: wire.semantic_events,
+                        eligible_witnesses: wire.eligible_witnesses,
+                        durable_outbox: wire.durable_outbox,
+                    },
+                    wire.schema_version,
+                    true,
+                    Some(wire.bundle_hash),
+                )
+            }
+            AuthoritativeBundleWire::V1(wire) => {
+                let wire = *wire;
+                if wire.schema_version != Self::LEGACY_SCHEMA_VERSION {
+                    return Err(D::Error::custom(format!(
+                        "unsupported authoritative bundle schema version {}",
+                        wire.schema_version
+                    )));
+                }
+                Self::build(
+                    AuthoritativeBundleDraft {
+                        token: wire.token,
+                        request: wire.request,
+                        idempotency: wire.idempotency,
+                        ingress_hash: wire.ingress_hash,
+                        request_hash: wire.request_hash,
+                        plan_hash: wire.plan_hash,
+                        action: wire.action,
+                        provider: wire.provider,
+                        cause: wire.cause,
+                        definitions: wire.definitions,
+                        writes: wire.writes,
+                        outcome: wire.outcome,
+                        resolution: None,
+                        semantic_events: Vec::new(),
+                        eligible_witnesses: wire.eligible_witnesses,
+                        durable_outbox: wire.durable_outbox,
+                    },
+                    wire.schema_version,
+                    true,
+                    Some(wire.bundle_hash),
+                )
+            }
+            AuthoritativeBundleWire::V2(wire) => {
+                let wire = *wire;
+                if wire.schema_version != Self::SEMANTIC_EVENT_SCHEMA_VERSION {
+                    return Err(D::Error::custom(format!(
+                        "unsupported authoritative bundle schema version {}",
+                        wire.schema_version
+                    )));
+                }
+                Self::build(
+                    AuthoritativeBundleDraft {
+                        token: wire.token,
+                        request: wire.request,
+                        idempotency: wire.idempotency,
+                        ingress_hash: wire.ingress_hash,
+                        request_hash: wire.request_hash,
+                        plan_hash: wire.plan_hash,
+                        action: wire.action,
+                        provider: wire.provider,
+                        cause: wire.cause,
+                        definitions: wire.definitions,
+                        writes: wire.writes,
+                        outcome: wire.outcome,
+                        resolution: None,
                         semantic_events: wire.semantic_events,
                         eligible_witnesses: wire.eligible_witnesses,
                         durable_outbox: wire.durable_outbox,
@@ -807,6 +884,38 @@ impl<'de> Deserialize<'de> for AuthoritativeBundle {
         }
         .map_err(D::Error::custom)
     }
+}
+
+fn validate_resolution(
+    draft: &AuthoritativeBundleDraft,
+    schema_version: u16,
+) -> Result<(), AuthoritativeBundleError> {
+    let Some(resolution) = &draft.resolution else {
+        if schema_version >= AuthoritativeBundle::SCHEMA_VERSION {
+            return Err(AuthoritativeBundleError::MissingResolution);
+        }
+        return Ok(());
+    };
+    if schema_version < AuthoritativeBundle::SCHEMA_VERSION {
+        return Err(AuthoritativeBundleError::LegacyResolution);
+    }
+    if resolution.action() != draft.token {
+        return Err(AuthoritativeBundleError::ResolutionTokenMismatch);
+    }
+    if resolution.outcome() != &draft.outcome {
+        return Err(AuthoritativeBundleError::ResolutionOutcomeMismatch);
+    }
+    for definition in resolution.definition_refs().iter().chain([
+        resolution.modifiers().schema(),
+        resolution.outcome().schema(),
+    ]) {
+        if draft.definitions.binary_search(definition).is_err() {
+            return Err(AuthoritativeBundleError::MissingDefinition {
+                definition: Box::new(definition.clone()),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn validate_semantic_events(
@@ -921,11 +1030,17 @@ fn bundle_hash_material(draft: &AuthoritativeBundleDraft, schema_version: u16) -
         "eligible_witnesses": draft.eligible_witnesses,
         "durable_outbox": draft.durable_outbox,
     });
-    if schema_version >= 2 {
+    if schema_version >= AuthoritativeBundle::SEMANTIC_EVENT_SCHEMA_VERSION {
         material
             .as_object_mut()
             .expect("bundle hash material is an object")
             .insert("semantic_events".to_owned(), json!(draft.semantic_events));
+    }
+    if schema_version >= AuthoritativeBundle::SCHEMA_VERSION {
+        material
+            .as_object_mut()
+            .expect("bundle hash material is always an object")
+            .insert("resolution".to_owned(), json!(draft.resolution));
     }
     material
 }
@@ -953,6 +1068,14 @@ pub enum AuthoritativeBundleError {
     MissingDefinition { definition: Box<DefinitionRef> },
     #[error("authoritative bundle v1 cannot contain semantic events")]
     LegacySemanticEvents,
+    #[error("authoritative bundle before v3 cannot contain a resolution record")]
+    LegacyResolution,
+    #[error("authoritative bundle v3 omits its resolution record")]
+    MissingResolution,
+    #[error("resolution record names another commit token")]
+    ResolutionTokenMismatch,
+    #[error("resolution record outcome does not match the bundle outcome")]
+    ResolutionOutcomeMismatch,
     #[error("authoritative bundle omits its root semantic event")]
     MissingRootSemanticEvent,
     #[error("bundle semantic events contain {actual} entries; maximum is {max}")]
@@ -1006,12 +1129,12 @@ pub enum AuthoritativeBundleError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::IdempotencyScope;
     use crate::mechanics::{
         DefinitionDescriptor, DefinitionDigest, DefinitionId, DefinitionKind, DefinitionRef,
         DefinitionRegistryBuilder,
     };
     use crate::obj::{GOD, ObjKind};
+    use crate::{IdempotencyScope, ResolutionKeyRing, ResolutionSecret};
 
     fn hash(byte: u8) -> CanonicalHash {
         CanonicalHash::from_bytes([byte; 32])
@@ -1092,6 +1215,7 @@ mod tests {
             ],
             action,
             outcome,
+            resolution: None,
             semantic_events: vec![root_event],
             eligible_witnesses: witnesses,
             durable_outbox: vec![],
@@ -1101,10 +1225,68 @@ mod tests {
     #[test]
     fn bundle_normalizes_once_then_round_trips_strictly() {
         let bundle = AuthoritativeBundle::new(draft()).unwrap();
+        assert_eq!(bundle.schema_version, 2);
         assert_eq!(bundle.writes()[0].target(), ReplayTarget::Object(ObjId(7)));
         let encoded = serde_json::to_string(&bundle).unwrap();
         let decoded: AuthoritativeBundle = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, bundle);
+    }
+
+    #[test]
+    fn resolution_record_is_commit_outcome_and_definition_bound() {
+        let mut draft = draft();
+        let domain = CanonicalId::new("brace_resolution").unwrap();
+        let mut rng = ResolutionKeyRing::new(ResolutionSecret::new(1, [0x61; 32]).unwrap(), [])
+            .unwrap()
+            .start(&draft.idempotency, &domain, draft.request_hash)
+            .unwrap();
+        rng.draw_bounded_u64(&CanonicalId::new("effect_duration").unwrap(), 3)
+            .unwrap();
+        draft.resolution = Some(
+            rng.into_prepared(
+                draft.definitions.clone(),
+                RulesValue::new(draft.outcome.schema().clone(), json!({ "focus_spent": 1 }))
+                    .unwrap(),
+                draft.outcome.clone(),
+            )
+            .unwrap()
+            .bind(draft.token),
+        );
+        let bundle = AuthoritativeBundle::new(draft.clone()).unwrap();
+        assert_eq!(bundle.schema_version, AuthoritativeBundle::SCHEMA_VERSION);
+        assert!(bundle.resolution().is_some());
+        let encoded = serde_json::to_value(&bundle).unwrap();
+        assert_eq!(encoded["schema_version"], 3);
+        assert!(encoded.get("resolution").is_some());
+        assert_eq!(
+            serde_json::from_value::<AuthoritativeBundle>(encoded).unwrap(),
+            bundle
+        );
+
+        let mut wrong_token = draft;
+        let mut rng = ResolutionKeyRing::new(ResolutionSecret::new(1, [0x61; 32]).unwrap(), [])
+            .unwrap()
+            .start(&wrong_token.idempotency, &domain, wrong_token.request_hash)
+            .unwrap();
+        rng.draw_u32(&CanonicalId::new("effect_duration").unwrap())
+            .unwrap();
+        wrong_token.resolution = Some(
+            rng.into_prepared(
+                wrong_token.definitions.clone(),
+                RulesValue::new(
+                    wrong_token.outcome.schema().clone(),
+                    json!({ "focus_spent": 1 }),
+                )
+                .unwrap(),
+                wrong_token.outcome.clone(),
+            )
+            .unwrap()
+            .bind(CommitToken::from_bytes([0x99; 16])),
+        );
+        assert_eq!(
+            AuthoritativeBundle::new(wrong_token).unwrap_err(),
+            AuthoritativeBundleError::ResolutionTokenMismatch
+        );
     }
 
     #[test]

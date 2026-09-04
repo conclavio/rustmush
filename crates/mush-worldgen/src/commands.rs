@@ -31,6 +31,9 @@ use crate::theme::{THEME_ATTR, Theme, resolve_theme, theme_on};
 /// The BFS room cap for a `@gen/building` walk (design 03 §5.3: N ≤ 40).
 pub const MAX_BUILDING_ROOMS: usize = 40;
 
+/// The smallest useful `@gen/building` walk: an entrance plus one other room.
+pub const MIN_BUILDING_ROOMS: usize = 2;
+
 /// When the entrance is unzoned, "interior" is bounded by hop count from the
 /// entrance instead of zone membership (design 03 §5.3: "same zone, or bounded
 /// hop count").

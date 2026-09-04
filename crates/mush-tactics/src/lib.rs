@@ -45,9 +45,16 @@ use mush_core::{
 use mush_proto::RichText;
 use smol_str::SmolStr;
 
+mod contact;
 pub mod mobility;
 pub mod module;
 pub mod unit;
+
+pub use contact::{
+    CONTACT_CHANGED_OUTCOME_ID, CONTACT_LOSS_ACTION_ID, CONTACT_OBSERVE_ACTION_ID,
+    CONTACT_REACQUIRE_ACTION_ID, CONTACT_REFRESH_ACTION_ID, CONTACT_SHARE_ACTION_ID,
+    CONTACT_UNSHARE_ACTION_ID,
+};
 
 pub use mobility::{
     LocomotionId, MediumId, MobilityError, MobilityMode, MobilityModeId, MobilityProfile,

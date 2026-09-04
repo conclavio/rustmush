@@ -1447,6 +1447,7 @@ fn spawn_output_pump(
             }
 
             let mut done = false;
+            let mut resync_query = None;
             let bytes = {
                 let mut sh = shared.lock().expect("conn state poisoned");
                 match wake {
@@ -1471,14 +1472,17 @@ fn spawn_output_pump(
                                 // Coalesce: apply this event and every other
                                 // ready one, then paint a single frame.
                                 if let Some(t) = sh.tui.as_mut() {
-                                    t.apply_event(&ev);
+                                    resync_query = t.apply_event(&ev);
                                 }
                                 while let Ok(next) = rx.try_recv() {
                                     if matches!(&*next, OutputEvent::Disconnect { .. }) {
                                         done = true;
                                     }
                                     if let Some(t) = sh.tui.as_mut() {
-                                        t.apply_event(&next);
+                                        let next_resync = t.apply_event(&next);
+                                        if resync_query.is_none() {
+                                            resync_query = next_resync;
+                                        }
                                     }
                                 }
                                 sh.tui.as_mut().map(|t| t.paint()).unwrap_or_default()
@@ -1493,6 +1497,14 @@ fn spawn_output_pump(
                     Wake::Tick => Vec::new(), // handled above
                 }
             };
+
+            // A semantic-view cursor mismatch is never patched locally. Ask
+            // the ordinary read-only query seam for a fresh keyframe after the
+            // connection lock has dropped; the TUI de-duplicates this until a
+            // valid replacement arrives.
+            if let Some(query) = resync_query {
+                hooks.query(conn_id, query.to_owned()).await;
+            }
 
             if !bytes.is_empty() {
                 match tokio::time::timeout(WRITE_TIMEOUT, handle.data(channel, bytes)).await {

@@ -23,6 +23,34 @@ use smol_str::SmolStr;
 /// summarize turn is triggered (design 03 §6.5: ~50, token-capped).
 pub const BUFFER_CAP: usize = 50;
 
+/// Maximum characters retained from one script-formatted recent event. The
+/// sanitizer also strips controls and collapses it to one line.
+pub const MAX_MEMORY_EVENT_CHARS: usize = 1024;
+
+/// Maximum UTF-8 bytes retained across one NPC's recent event buffer.
+pub const MAX_MEMORY_BUFFER_BYTES: usize = 256 * 1024;
+
+/// Maximum characters in the persisted rolling summary.
+pub const MAX_MEMORY_SUMMARY_CHARS: usize = 4_000;
+
+/// Maximum distinct durable memory subjects retained for one NPC.
+pub const MAX_MEMORY_SUBJECTS_PER_NPC: usize = 256;
+
+/// Maximum notes retained in one subject record.
+pub const MAX_MEMORY_NOTES_PER_SUBJECT: usize = 20;
+
+/// Maximum canonical subject-key bytes in one durable memory record.
+pub const MAX_MEMORY_SUBJECT_BYTES: usize = 128;
+
+/// Maximum UTF-8 bytes in one durable memory note.
+pub const MAX_MEMORY_NOTE_BYTES: usize = 4 * 1024;
+
+/// Maximum encoded JSON bytes in one complete durable memory record.
+pub const MAX_MEMORY_RECORD_BYTES: usize = 128 * 1024;
+
+/// Maximum memory records returned by one built-in recall request.
+pub const MAX_MEMORY_RECALL_RECORDS: usize = 32;
+
 /// One line in the rolling buffer — a script-formatted room event.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MemoryEvent {
@@ -52,15 +80,25 @@ pub const HARD_CAP: usize = BUFFER_CAP * 2;
 
 impl MemoryBuffer {
     /// Append an event, enforcing the hard RAM cap (oldest dropped past
-    /// [`HARD_CAP`]).
+    /// [`HARD_CAP`]) and the aggregate byte ceiling.
     pub fn push(&mut self, ts: i64, text: impl Into<String>) {
-        self.events.push(MemoryEvent {
-            ts,
-            text: text.into(),
-        });
+        let text = crate::action::sanitize_line(&text.into(), MAX_MEMORY_EVENT_CHARS);
+        if text.is_empty() {
+            return;
+        }
+        self.events.push(MemoryEvent { ts, text });
         if self.events.len() > HARD_CAP {
             let overflow = self.events.len() - HARD_CAP;
             self.events.drain(..overflow);
+        }
+        while self
+            .events
+            .iter()
+            .map(|event| event.text.len())
+            .sum::<usize>()
+            > MAX_MEMORY_BUFFER_BYTES
+        {
+            self.events.remove(0);
         }
     }
 
@@ -110,6 +148,33 @@ pub struct MemoryRecord {
     pub updated: i64,
 }
 
+/// One bounded memory mutation plus an optional record evicted to preserve the
+/// per-NPC subject ceiling. Callers must persist the delete and replacement in
+/// the same world step.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MemoryUpdate {
+    /// The inserted or updated record.
+    pub record: MemoryRecord,
+    /// The least-recently-updated record removed when a new subject filled the
+    /// per-NPC subject budget.
+    pub evicted: Option<MemoryRecord>,
+}
+
+/// Why a durable memory record was refused.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemoryRecordError {
+    /// The subject does not produce one non-empty canonical key.
+    InvalidSubject,
+    /// The subject key exceeds its hard byte ceiling.
+    SubjectTooLarge,
+    /// A record contains no notes or more than the hard note count.
+    InvalidNoteCount,
+    /// At least one note is empty or exceeds its hard byte ceiling.
+    InvalidNote,
+    /// The encoded record exceeds its complete-document ceiling.
+    RecordTooLarge,
+}
+
 /// The persistence key one record lives under (subject slugged so it is a safe
 /// key). One document per `(npc, subject)`; notes accumulate inside it.
 #[must_use]
@@ -142,28 +207,81 @@ pub struct LongTermStore {
 
 impl LongTermStore {
     /// Insert or update a record for `(npc, subject)`, appending `note` and
-    /// stamping `updated`. Returns the merged record (to persist).
-    pub fn remember(&mut self, npc: ObjId, subject: &str, note: &str, now: i64) -> MemoryRecord {
-        let key = (npc, slug(subject));
-        let rec = self.records.entry(key).or_insert_with(|| MemoryRecord {
+    /// stamping `updated`. A new subject beyond the per-NPC ceiling evicts the
+    /// least recently updated record with a stable subject tie-break. Returns
+    /// the complete mutation so the caller can persist both sides.
+    pub fn remember(
+        &mut self,
+        npc: ObjId,
+        subject: &str,
+        note: &str,
+        now: i64,
+    ) -> Result<MemoryUpdate, MemoryRecordError> {
+        let subject = canonical_subject(subject)?;
+        let key = (npc, subject.clone());
+        let mut rec = self.records.get(&key).cloned().unwrap_or(MemoryRecord {
             npc,
-            subject: slug(subject),
+            subject,
             notes: Vec::new(),
             updated: now,
         });
         rec.notes.push(note.to_string());
-        // Keep the note list bounded so a single subject can't grow forever.
-        if rec.notes.len() > 20 {
-            let overflow = rec.notes.len() - 20;
+        if rec.notes.len() > MAX_MEMORY_NOTES_PER_SUBJECT {
+            let overflow = rec.notes.len() - MAX_MEMORY_NOTES_PER_SUBJECT;
             rec.notes.drain(..overflow);
         }
         rec.updated = now;
-        rec.clone()
+        validate_record(&rec)?;
+
+        let evicted = if !self.records.contains_key(&key)
+            && self.subject_count(npc) >= MAX_MEMORY_SUBJECTS_PER_NPC
+        {
+            let victim = self
+                .records
+                .iter()
+                .filter(|((record_npc, _), _)| *record_npc == npc)
+                .min_by(|left, right| {
+                    left.1
+                        .updated
+                        .cmp(&right.1.updated)
+                        .then_with(|| left.1.subject.cmp(&right.1.subject))
+                })
+                .map(|(victim, _)| victim.clone());
+            victim.and_then(|victim| self.records.remove(&victim))
+        } else {
+            None
+        };
+        self.records.insert(key, rec.clone());
+        Ok(MemoryUpdate {
+            record: rec,
+            evicted,
+        })
     }
 
-    /// Load one record (from boot data).
-    pub fn insert(&mut self, rec: MemoryRecord) {
-        self.records.insert((rec.npc, slug(&rec.subject)), rec);
+    /// Load one record from boot data. The same deterministic eviction policy
+    /// makes the retained set independent of document iteration order.
+    pub fn insert(&mut self, rec: MemoryRecord) -> Result<Option<MemoryRecord>, MemoryRecordError> {
+        validate_record(&rec)?;
+        let npc = rec.npc;
+        let key = (npc, rec.subject.clone());
+        self.records.insert(key, rec);
+        let evicted = if self.subject_count(npc) > MAX_MEMORY_SUBJECTS_PER_NPC {
+            let victim = self
+                .records
+                .iter()
+                .filter(|((record_npc, _), _)| *record_npc == npc)
+                .min_by(|left, right| {
+                    left.1
+                        .updated
+                        .cmp(&right.1.updated)
+                        .then_with(|| left.1.subject.cmp(&right.1.subject))
+                })
+                .map(|(victim, _)| victim.clone());
+            victim.and_then(|victim| self.records.remove(&victim))
+        } else {
+            None
+        };
+        Ok(evicted)
     }
 
     /// The durable record for `(npc, subject)`, if any (subject matched by the
@@ -193,8 +311,44 @@ impl LongTermStore {
             .filter(|r| r.npc == npc && wanted.contains(&r.subject))
             .collect();
         hits.sort_by_key(|r| std::cmp::Reverse(r.updated));
-        hits.into_iter().take(top_n).cloned().collect()
+        hits.into_iter()
+            .take(top_n.min(MAX_MEMORY_RECALL_RECORDS))
+            .cloned()
+            .collect()
     }
+}
+
+fn canonical_subject(subject: &str) -> Result<String, MemoryRecordError> {
+    let subject = slug(subject);
+    if subject.is_empty() {
+        return Err(MemoryRecordError::InvalidSubject);
+    }
+    if subject.len() > MAX_MEMORY_SUBJECT_BYTES {
+        return Err(MemoryRecordError::SubjectTooLarge);
+    }
+    Ok(subject)
+}
+
+fn validate_record(rec: &MemoryRecord) -> Result<(), MemoryRecordError> {
+    let subject = canonical_subject(&rec.subject)?;
+    if subject != rec.subject {
+        return Err(MemoryRecordError::InvalidSubject);
+    }
+    if rec.notes.is_empty() || rec.notes.len() > MAX_MEMORY_NOTES_PER_SUBJECT {
+        return Err(MemoryRecordError::InvalidNoteCount);
+    }
+    if rec
+        .notes
+        .iter()
+        .any(|note| note.trim().is_empty() || note.len() > MAX_MEMORY_NOTE_BYTES)
+    {
+        return Err(MemoryRecordError::InvalidNote);
+    }
+    let encoded = serde_json::to_vec(rec).map_err(|_| MemoryRecordError::RecordTooLarge)?;
+    if encoded.len() > MAX_MEMORY_RECORD_BYTES {
+        return Err(MemoryRecordError::RecordTooLarge);
+    }
+    Ok(())
 }
 
 /// The seam for a smarter recall backend (embedding / vector search over Redis
@@ -252,6 +406,29 @@ mod tests {
     }
 
     #[test]
+    fn push_enforces_per_event_and_aggregate_byte_bounds() {
+        let mut buffer = MemoryBuffer::default();
+        let large = "é".repeat(MAX_MEMORY_EVENT_CHARS * 2);
+        for ts in 0..HARD_CAP as i64 {
+            buffer.push(ts, &large);
+        }
+        assert!(
+            buffer
+                .events
+                .iter()
+                .all(|event| event.text.chars().count() <= MAX_MEMORY_EVENT_CHARS + 1)
+        );
+        assert!(
+            buffer
+                .events
+                .iter()
+                .map(|event| event.text.len())
+                .sum::<usize>()
+                <= MAX_MEMORY_BUFFER_BYTES
+        );
+    }
+
+    #[test]
     fn transcript_caps_from_the_newest() {
         let mut b = MemoryBuffer::default();
         for i in 0..10 {
@@ -274,9 +451,10 @@ mod tests {
     fn recall_matches_present_players_newest_first() {
         let mut s = LongTermStore::default();
         let npc = ObjId(9);
-        s.remember(npc, "Alice", "owes me 50 dollars", 100);
-        s.remember(npc, "Bob", "hates the cold", 200);
-        s.remember(npc, "Alice", "asked about the cellar", 300);
+        s.remember(npc, "Alice", "owes me 50 dollars", 100).unwrap();
+        s.remember(npc, "Bob", "hates the cold", 200).unwrap();
+        s.remember(npc, "Alice", "asked about the cellar", 300)
+            .unwrap();
         // Only Alice is present.
         let hits = s.recall(npc, &["Alice".into()], 5);
         assert_eq!(hits.len(), 1);
@@ -288,5 +466,79 @@ mod tests {
         assert_eq!(hits[0].subject, "alice"); // updated=300 > bob 200
         // A different NPC shares nothing.
         assert!(s.recall(ObjId(10), &["Alice".into()], 5).is_empty());
+    }
+
+    #[test]
+    fn subjects_evict_oldest_with_stable_tie_break() {
+        let mut store = LongTermStore::default();
+        let npc = ObjId(11);
+        for index in 0..MAX_MEMORY_SUBJECTS_PER_NPC {
+            store
+                .remember(npc, &format!("subject_{index:03}"), "note", 10)
+                .unwrap();
+        }
+        let update = store.remember(npc, "newest", "note", 20).unwrap();
+        assert_eq!(store.subject_count(npc), MAX_MEMORY_SUBJECTS_PER_NPC);
+        assert_eq!(update.evicted.unwrap().subject, "subject_000");
+        assert!(store.record_for(npc, "newest").is_some());
+    }
+
+    #[test]
+    fn invalid_and_oversized_records_are_refused_without_mutation() {
+        let mut store = LongTermStore::default();
+        assert_eq!(
+            store.remember(ObjId(1), "!!!", "note", 1),
+            Err(MemoryRecordError::InvalidSubject)
+        );
+        assert_eq!(
+            store.remember(ObjId(1), "alice", &"x".repeat(MAX_MEMORY_NOTE_BYTES + 1), 1),
+            Err(MemoryRecordError::InvalidNote)
+        );
+        assert_eq!(store.subject_count(ObjId(1)), 0);
+    }
+
+    #[test]
+    fn recall_has_a_hard_result_ceiling() {
+        let mut store = LongTermStore::default();
+        let npc = ObjId(12);
+        let mut present = Vec::new();
+        for index in 0..(MAX_MEMORY_RECALL_RECORDS + 4) {
+            let subject = format!("player_{index}");
+            store.remember(npc, &subject, "note", index as i64).unwrap();
+            present.push(subject);
+        }
+        assert_eq!(
+            store.recall(npc, &present, usize::MAX).len(),
+            MAX_MEMORY_RECALL_RECORDS
+        );
+    }
+
+    #[test]
+    fn boot_insertion_keeps_the_same_newest_set_in_any_order() {
+        let npc = ObjId(13);
+        let records: Vec<_> = (0..=MAX_MEMORY_SUBJECTS_PER_NPC)
+            .map(|index| MemoryRecord {
+                npc,
+                subject: format!("subject_{index:03}"),
+                notes: vec!["note".to_owned()],
+                updated: index as i64,
+            })
+            .collect();
+        let mut forward = LongTermStore::default();
+        for record in &records {
+            forward.insert(record.clone()).unwrap();
+        }
+        let mut reverse = LongTermStore::default();
+        for record in records.iter().rev() {
+            reverse.insert(record.clone()).unwrap();
+        }
+        assert_eq!(
+            forward.record_for(npc, "subject_000").is_some(),
+            reverse.record_for(npc, "subject_000").is_some()
+        );
+        assert!(forward.record_for(npc, "subject_000").is_none());
+        assert!(reverse.record_for(npc, "subject_256").is_some());
+        assert_eq!(forward.subject_count(npc), MAX_MEMORY_SUBJECTS_PER_NPC);
+        assert_eq!(reverse.subject_count(npc), MAX_MEMORY_SUBJECTS_PER_NPC);
     }
 }

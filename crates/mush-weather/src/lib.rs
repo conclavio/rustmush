@@ -61,6 +61,7 @@ pub use cell::{
 pub use climate::{ClimateDef, ClimateSet, LinePools, WxStateDef, season_key, tod_key};
 pub use flavor::{
     FlavorBucket, FlavorGenOutcome, FlavorGenSnapshot, FlavorKey, FlavorLine, FlavorStore,
+    MAX_FLAVOR_LINE_BYTES, MAX_FLAVOR_LINES_PER_POOL, MAX_FLAVOR_VARIANTS_PER_BUCKET,
     parse_flavor_key, run_weather_async,
 };
 
@@ -98,7 +99,9 @@ pub struct WeatherConfig {
     /// parts-per-thousand.
     pub ambient_permille: u32,
     /// How many generated variants `@weather/generate` requests per bucket
-    /// (the M10 LLM flavor top-up). Defaults to [`DEFAULT_FLAVOR_VARIANTS`].
+    /// (the M10 LLM flavor top-up). Defaults to [`DEFAULT_FLAVOR_VARIANTS`];
+    /// zero disables generation and larger values are clamped to
+    /// [`MAX_FLAVOR_VARIANTS_PER_BUCKET`].
     pub flavor_variants: usize,
 }
 
@@ -250,17 +253,31 @@ impl GameModule for WeatherModule {
                 // ships (its lines can never enter selection anyway).
                 let lines = serde_json::from_value::<Vec<FlavorLine>>(value)
                     .map_err(|e| ModError::msg(format!("weather: bad flavor doc {key:?}: {e}")))?;
-                if !self.climates.contains(&fkey.climate) {
+                let key_is_live = self
+                    .climates
+                    .get(&fkey.climate)
+                    .is_some_and(|climate| climate.state(&fkey.state).is_some());
+                if !key_is_live {
+                    tracing::warn!(
+                        climate = %fkey.climate,
+                        state = %fkey.state,
+                        bucket = fkey.bucket.as_str(),
+                        "weather: dropping flavor pool for unknown climate/state"
+                    );
                     stale_flavor.push(fkey);
                     continue;
                 }
-                flavor.load_pool(fkey, lines);
+                flavor.load_pool(fkey, lines).map_err(|detail| {
+                    ModError::msg(format!("weather: invalid flavor doc {key:?}: {detail}"))
+                })?;
             } else {
                 // Tolerate unknown keys (future schema).
                 continue;
             }
         }
-        flavor.recompute_next_id();
+        flavor
+            .recompute_next_id()
+            .map_err(|detail| ModError::msg(format!("weather: invalid flavor store: {detail}")))?;
         if let Some(st) = ctx.w.module_state_mut::<WeatherState>() {
             st.cells = cells;
             st.flavor = flavor;

@@ -409,6 +409,24 @@ Treat the spool like sensitive recovery material:
   or an LLM prompt;
 - preserve a copy before repair, and bind every action to the record's exact
   namespace, key, and payload digest;
+
+### Private action-protocol keys
+
+Writable boot provisions two independent append-only key families beneath
+`<data_dir>` by default:
+
+- `offer-keys/` signs opaque legal-action offers;
+- `resolution-keys/` derives deterministic authoritative resolution streams.
+
+Both directories and their immutable key/manifest files must remain private to
+the service account (`0700` directories and `0600` files on Unix); unsafe paths,
+permissions, oversized files, malformed newest manifests, and missing referenced
+keys fail boot closed. Override them separately with `[offers].key_dir` and
+`[resolution].key_dir`. Never point both settings at the same directory. Logs
+report only the directory and current version, never key bytes. Include both
+directories in protected backups; restoring Redis without the matching key
+directories invalidates outstanding offers and can prevent future deterministic
+resolution of an accepted window.
 - let boot archive an active record only after the authoritative target has
   been read back and its exact expected bytes/hash are proven. Merely deleting
   the file is not recovery;
@@ -561,7 +579,11 @@ off-loop Ambience call per bucket; the lines land **pending** and enter play onl
 after `@weather/lines/approve`, persisted alongside the cells in the `weather`
 namespace (`flavor:{climate}:{state}:{transition|ambient}`). One knob:
 `[weather].flavor_variants` (default 10) — how many variants each call requests
-per bucket. Every call is metered/budgeted/audited like the rest of the LLM layer.
+per bucket; `0` disables generation and values above 64 are clamped. Each
+generated pool is hard-capped at 256 lines of at most 512 UTF-8 bytes each.
+Approved lines are never silently evicted: when a pool is full, staff must reject
+obsolete lines before top-ups resume. Invalid oversized persisted pools fail boot
+loudly. Every call is metered/budgeted/audited like the rest of the LLM layer.
 
 **Scripting.** Builders attach sandboxed Rhai scripts to objects as `script:*`
 attributes (no separate store). Every run is bounded by operation, call-depth,
@@ -721,8 +743,11 @@ only — so a clone with only one key still runs the routes it can serve.
   **pre-flight** if any applicable layer would be exceeded. OpenRouter reports
   real spend (`usage.cost`); Anthropic cost is estimated from the route
   provider's per-MTok prices.
-- `[llm.concurrency]` — `max_interactive` / `max_background` in-flight caps
-  (plus optional `[llm.retry]` / `[llm.circuit_breaker]`).
+- `[llm.concurrency]` — `max_interactive` / `max_background` in-flight caps and
+  `max_interactive_queued` / `max_background_queued` waiter caps. Calls beyond
+  the active-plus-queued envelope fail fast as overloaded instead of growing an
+  unbounded semaphore wait list (plus optional `[llm.retry]` /
+  `[llm.circuit_breaker]`).
 - **Kill switch** — `[llm].enabled = false` disables everything; staff toggle it
   live (no restart) with `@llm/disable` / `@llm/enable`, inspect spend with
   `@llm/budget`, and read recent calls with `@llm/log [<feature>]` (Wizard).
@@ -753,7 +778,8 @@ world. All are CI-tested for the reboot round trip
 auto-committed: `@gen` and `@gen/building` yield drafts the builder reviews and
 `@gen/accept`s through the ordinary attribute path. One M10 knob:
 `[worldgen].batch_max_rooms` (default 40) caps how many rooms one `@gen/building`
-walk will describe.
+walk will describe. The valid range is 2 through 40; values outside it fail
+module registration at boot so a typo cannot create an empty or unbounded batch.
 
 ## NPC agents (M8): tiers, cost, kill switch, injection posture
 

@@ -15,13 +15,17 @@
 //!   hashing/verification, the one-time `accounts.json` import).
 //! - [`offer_keys`] — durable, bounded, restart-stable HMAC key provisioning
 //!   for K5 legal-action offers.
+//! - [`resolution_keys`] — an independent durable key family for K4
+//!   authoritative resolution RNG.
 
 pub mod accounts;
 pub mod config;
+mod durable_keys;
 pub mod ipguard;
 pub mod logging;
 pub mod metrics;
 pub mod offer_keys;
+pub mod resolution_keys;
 
 /// The current wall clock as unix seconds (0 if the system clock is broken).
 #[must_use]

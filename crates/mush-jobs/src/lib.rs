@@ -20,7 +20,9 @@
 //!   in the `jobs` namespace: `job:{id}` and `note:{char}:{category}`
 //!   JSON documents plus a `meta` doc carrying the id counter, so job
 //!   numbering stays sequential across reboots. Boot data arrives through
-//!   [`GameModule::on_world_loaded`].
+//!   [`GameModule::on_world_loaded`]. Titles and comment trails have hard
+//!   storage/render bounds; invalid documents follow the existing tolerant
+//!   quarantine policy.
 //!
 //! ## Payload handlers (the approval hook)
 //!
@@ -56,11 +58,12 @@ pub use api::{
 pub use commands::NOTES_STAFF;
 pub use facts::JobsFactProvider;
 pub use data::{
-    Approval, Job, JobComment, JobPayload, JobStatus, META_KEY, NS, Note, REQ_QUEUE, fmt_ago,
+    Approval, Job, JobComment, JobPayload, JobStatus, MAX_JOB_COMMENT_BYTES, MAX_JOB_COMMENTS,
+    MAX_JOB_TITLE_BYTES, MAX_ORDINARY_JOB_COMMENTS, META_KEY, NS, Note, REQ_QUEUE, fmt_ago,
     job_key, meta_value, note_key,
 };
 
-use data::JobsState;
+use data::{JobsState, validate_job};
 
 /// `ObjDestroyed` observer: a destroyed character's notes are removed and
 /// their persisted documents deleted. Jobs they opened stay — the ticket
@@ -153,8 +156,19 @@ impl GameModule for JobsModule {
                     Ok(job) => {
                         // Self-healing even if the meta doc is missing or
                         // behind: the counter clears every loaded job id.
-                        next_id = next_id.max(job.id + 1);
-                        jobs.insert(job.id, job);
+                        match validate_job(&job).and_then(|()| {
+                            job.id
+                                .checked_add(1)
+                                .ok_or_else(|| "job id space is exhausted".to_string())
+                        }) {
+                            Ok(after_job) => {
+                                next_id = next_id.max(after_job);
+                                jobs.insert(job.id, job);
+                            }
+                            Err(detail) => {
+                                tracing::error!(%key, %detail, "jobs: invalid job doc quarantined (skipped, left in store)");
+                            }
+                        }
                     }
                     Err(e) => {
                         tracing::error!(%key, error = %e, "jobs: unparseable job doc quarantined (skipped, left in store)");

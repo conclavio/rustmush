@@ -39,12 +39,13 @@ use mush_config::ipguard::IpGuard;
 use mush_config::metrics::Metrics;
 use mush_core::DisconnectKind;
 use mush_ipc::{
-    AttachRec, BoxRead, BoxWrite, ConnectionAdmission, DetachCause, FrameReader, GatewayInput,
-    GatewayLink, GatewayRequest, GatewayRequestDisposition, IPC_VERSION, InputSend, IpcEndpoint,
-    MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES_PER_CONNECTION,
-    MAX_IN_FLIGHT_GATEWAY_INPUTS, MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION,
-    MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, MAX_IN_FLIGHT_SERVICE_REQUESTS, RequestUid, ServiceReq,
-    ServiceResp, ToGateway, ToServer, WireInbound,
+    ActionSend, AttachRec, BoxRead, BoxWrite, ConnectionAdmission, DetachCause, FrameReader,
+    GatewayAction, GatewayInput, GatewayLink, GatewayRequest, GatewayRequestDisposition,
+    IPC_VERSION, InputSend, IpcEndpoint, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES,
+    MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES_PER_CONNECTION, MAX_IN_FLIGHT_GATEWAY_INPUTS,
+    MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
+    MAX_IN_FLIGHT_SERVICE_REQUESTS, RequestUid, ServiceReq, ServiceResp, ToGateway, ToServer,
+    WireInbound,
 };
 use mush_net_web::{WebConfig, WebHooks};
 use mush_proto::{OutputEvent, RichText};
@@ -820,8 +821,8 @@ impl SocketGatewayLink {
 
     /// The shared send + input-shed decision behind both
     /// [`to_server`](GatewayLink::to_server) and
-    /// [`to_server_input`](GatewayLink::to_server_input) (M18). ONLY
-    /// `Cmd`/`Query` are sheddable: ordinary input is dropped at
+    /// [`to_server_input`](GatewayLink::to_server_input) (M18). `Cmd`,
+    /// `Query`, and pre-custody `Action` are sheddable: ordinary input is dropped at
     /// `to_server_cap`; input-context traffic gets one additional bounded cap
     /// of burst room and is then dropped too. Every must-deliver frame
     /// (lifecycle, control, `ReAnnounce`, ...) always enqueues (I1). A missing
@@ -876,6 +877,17 @@ impl SocketGatewayLink {
             }
         };
 
+        self.classify_input_on(&conn, input)
+    }
+
+    fn classify_input(&self, input: GatewayInput) -> InputSend {
+        let Some(conn) = self.boundary.current() else {
+            return InputSend::Gone;
+        };
+        self.classify_input_on(&conn, input)
+    }
+
+    fn classify_input_on(&self, conn: &BoundaryConn, input: GatewayInput) -> InputSend {
         let depth = conn.tx.depth();
         let exempt = self.is_input_exempt(&input);
         let input_cap = if exempt {
@@ -971,6 +983,15 @@ impl GatewayLink for SocketGatewayLink {
         // The input path wants the precise outcome (Sent / Shed / Gone) so the
         // bridge can pick the right player-facing notice.
         let outcome = self.classify_send(msg);
+        Box::pin(async move { outcome })
+    }
+
+    fn submit_action(&self, action: GatewayAction) -> BoxFuture<'_, ActionSend> {
+        let outcome = match self.classify_input(GatewayInput::Action(Box::new(action))) {
+            InputSend::Sent => ActionSend::Accepted,
+            InputSend::Shed => ActionSend::Busy,
+            InputSend::Gone => ActionSend::Gone,
+        };
         Box::pin(async move { outcome })
     }
 
@@ -1136,9 +1157,29 @@ async fn gateway_reader(
                             ))),
                         );
                     }
-                    (Some(_), GatewayRequestDisposition::EphemeralFinished)
-                    | (Some(_), GatewayRequestDisposition::Owned { .. })
-                    | (Some(_), GatewayRequestDisposition::Finished { .. }) => {}
+                    (Some(_), GatewayRequestDisposition::EphemeralFinished) => {}
+                    (Some(held), GatewayRequestDisposition::Owned { status, .. }) => {
+                        let _ = sessions.send_to_conn(
+                            mush_session::ConnId(held.input.conn()),
+                            Arc::new(OutputEvent::Sys(RichText::tag(
+                                "system",
+                                format!("Action accepted. Transaction: {status}"),
+                            ))),
+                        );
+                    }
+                    (_, GatewayRequestDisposition::Finished { recipient, receipt }) => {
+                        match receipt.view() {
+                            Ok(view) => transport.transmit(vec![(
+                                mush_ipc::SendTarget::Char(u64::from(recipient.0)),
+                                Arc::new(OutputEvent::View(view)),
+                            )]),
+                            Err(error) => tracing::error!(
+                                %recipient,
+                                error = %error,
+                                "projected action receipt frame is invalid"
+                            ),
+                        }
+                    }
                     (None, disposition) => {
                         // A terminal update may legitimately follow `Owned`,
                         // and a resent disposition may cross a reconnect. Both

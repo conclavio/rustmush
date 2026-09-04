@@ -79,7 +79,9 @@ struct SceneRecord {
 
     created_by: ObjId,
     created_at: Timestamp,
-    ic_started_at: IcTimestamp,
+    ic_started_at: ClockStamp, // exact WorldIc generation + instant
+    clock_generation: u64,
+    turn: i64,                 // monotonic successful turn advances
     ic_round_seconds: Option<u32>,
     env_snapshot: Option<EnvSnapshot>,
     ended_at: Option<Timestamp>,

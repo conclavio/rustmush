@@ -38,20 +38,19 @@ use mush_config::config::{Config, StoreBackend, StoreReceiptPolicy};
 use mush_config::ipguard::IpGuard;
 use mush_config::metrics::Metrics;
 use mush_config::offer_keys::DurableOfferKeyStore;
-use mush_core::{
-    ActionInvocation, ActionInvocationDraft, CanonicalId, ControlMsg, Engine, IdempotencyKey,
-    IdempotencyScope, Inbound, IngressEnvelope, IngressPayload, IngressSurfaceVersion, PrincipalId,
-    ScopedIdempotencyKey,
-};
+use mush_config::resolution_keys::DurableResolutionKeyStore;
+use mush_core::{ControlMsg, Engine, Inbound, OfferRouteTable, OfferSubmission};
 use mush_ipc::{
     BoxWrite, FrameReader, GatewayInput, GatewayRequest, GatewayRequestDisposition, IPC_VERSION,
-    IpcEndpoint, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES,
+    IpcEndpoint, LegalActionsError, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES,
     MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES_PER_CONNECTION, MAX_IN_FLIGHT_GATEWAY_INPUTS,
     MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
     MAX_IN_FLIGHT_SERVICE_REQUESTS, RequestUid, ServiceReq, ServiceResp, ToGateway, ToServer,
 };
 use mush_llm::LlmService;
-use mush_store::{InMemoryStore, ObjectStore, RedisStore, core_migrations, run_migrations};
+use mush_store::{
+    BundleStatus, InMemoryStore, ObjectStore, RedisStore, core_migrations, run_migrations,
+};
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
@@ -78,7 +77,9 @@ use crate::persist::AuthoritativeCommitFailure;
 use crate::persist::{load_or_seed_world, reconcile_authoritative_for_writable_boot};
 use crate::quarantine::QuarantineSpool;
 use crate::staff::{StaffQueue, register_server_commands_with_cap};
-use crate::world_task::{CreatePlayerErr, ServerDeps, WorldHandle, WorldReadError};
+use crate::world_task::{
+    CreatePlayerErr, LegalActionReadError, ServerDeps, WorldHandle, WorldReadError,
+};
 
 pub use gateway_sink::{GatewaySink, SocketSink as ServerSocketSink};
 
@@ -201,6 +202,14 @@ async fn build_engine(
         key_dir = %config.offer_key_dir().display(),
         "durable legal-action offer keys loaded"
     );
+    let resolution_keys = DurableResolutionKeyStore::new(config.resolution_key_dir())
+        .load_or_create()
+        .map_err(|error| format!("resolution key provisioning failed: {error}"))?;
+    tracing::info!(
+        current_version = resolution_keys.current_version(),
+        key_dir = %config.resolution_key_dir().display(),
+        "durable authoritative resolution keys loaded"
+    );
     let authoritative = store.authoritative_store().ok_or_else(|| {
         "configured store does not implement K3 exact-token durability; refusing writable boot"
             .to_owned()
@@ -276,6 +285,7 @@ async fn build_engine(
     timeline::hydrate_world_timeline(&mut world, &**store, clock).await?;
     let mut engine = Engine::from_composition(world, composition);
     engine.set_offer_keys(offer_keys);
+    engine.set_resolution_keys(resolution_keys);
     modules::boot_modules(&mut engine, &**store).await?;
     Ok((engine, staff))
 }
@@ -347,6 +357,13 @@ pub async fn serve_with_quarantine_spool(
         None => open_store(&config).await?,
     };
     let (engine, staff) = build_engine(&config, &store, &quarantine_spool).await?;
+    let offer_routes = Arc::new(
+        engine
+            .registry
+            .action_providers()
+            .ok_or_else(|| "legal-action provider registry is unavailable".to_owned())?
+            .offer_route_table(),
+    );
 
     // The web hello manifest, collected while the registry is still in hand — a
     // verbatim port of `mushd::main`'s assembly (crates/mushd/src/main.rs): every
@@ -453,6 +470,7 @@ pub async fn serve_with_quarantine_spool(
         reader_half,
         world.clone(),
         ingress_store,
+        offer_routes,
         reply_sink,
         &metrics,
     )
@@ -491,6 +509,7 @@ fn build_hello_manifest(engine: &Engine) -> (Vec<String>, Vec<String>) {
         .map(|(feed, _)| feed.to_string())
         .collect();
     panels.push("who".to_string());
+    panels.push("legal.actions".to_string());
     let features: Vec<String> = engine
         .modules()
         .iter()
@@ -765,66 +784,9 @@ fn release_input_claim(
         .release(request)
 }
 
-fn authoritative_ingress(request: &GatewayRequest) -> Result<IngressEnvelope, String> {
-    let GatewayInput::Action(input) = &request.input else {
-        return Err("coordinator ingress received a non-action request".to_owned());
-    };
-    let principal = PrincipalId::Object { id: input.actor };
-    let namespace =
-        CanonicalId::new(input.action.key().id.as_str()).map_err(|error| error.to_string())?;
-    let idempotency = ScopedIdempotencyKey::new(
-        IdempotencyScope {
-            principal: principal.clone(),
-            owner: input.action.key().owner.clone(),
-            namespace,
-        },
-        request.epoch,
-        IdempotencyKey::Request(request.uid),
-    );
-    let canonical_payload = IngressPayload::structured(serde_json::json!({
-        "action": input.action,
-        "offered_action": input.offered_action,
-        "subject": input.subject,
-        "targets": input.targets,
-        "parameters": input.parameters,
-    }))
-    .map_err(|error| error.to_string())?;
-    IngressEnvelope::new(
-        request.uid,
-        principal.clone(),
-        IngressSurfaceVersion::new(
-            CanonicalId::new("ipc.structured_action").expect("static surface id is valid"),
-            1,
-        )
-        .expect("non-zero static surface version"),
-        canonical_payload,
-        idempotency.clone(),
-    )
-    .map_err(|error| error.to_string())
-}
-
-fn authoritative_invocation(
-    request: &GatewayRequest,
-    idempotency: ScopedIdempotencyKey,
-) -> Result<ActionInvocation, String> {
-    let GatewayInput::Action(input) = &request.input else {
-        return Err("coordinator invocation received a non-action request".to_owned());
-    };
-    ActionInvocation::new(ActionInvocationDraft {
-        request: request.uid,
-        principal: PrincipalId::Object { id: input.actor },
-        actor: input.actor,
-        offered_action: input.offered_action,
-        subject: input.subject.clone(),
-        targets: input.targets.clone(),
-        parameters: input.parameters.clone(),
-        idempotency,
-    })
-    .map_err(|error| error.to_string())
-}
-
 async fn handle_authoritative_input(
     request: GatewayRequest,
+    routes: Arc<OfferRouteTable>,
     world: WorldHandle,
     store: Arc<dyn ObjectStore>,
     sink: SocketSink,
@@ -835,7 +797,7 @@ async fn handle_authoritative_input(
         GatewayInput::Action(input) => (input.conn, input.actor),
         _ => unreachable!("only action requests enter the coordinator handler"),
     };
-    let envelope = match authoritative_ingress(&request) {
+    let envelope = match ActionCoordinator::gateway_ingress(&request, &routes) {
         Ok(envelope) => envelope,
         Err(detail) => {
             release_input_claim(&claims, uid);
@@ -848,11 +810,19 @@ async fn handle_authoritative_input(
             return;
         }
     };
-    let action = match &request.input {
-        GatewayInput::Action(input) => input.action.clone(),
-        _ => unreachable!("validated coordinator request changed variants"),
+    let status = match ActionCoordinator::status_id(envelope.idempotency()) {
+        Ok(status) => status,
+        Err(error) => {
+            release_input_claim(&claims, uid);
+            request_disposition(
+                &sink,
+                uid,
+                GatewayRequestDisposition::Rejected { retryable: false },
+            );
+            tracing::error!(%uid, error = %error, "coordinator status identity failed");
+            return;
+        }
     };
-
     let Some(authoritative_store) = store.authoritative_store() else {
         tracing::error!(%uid, "configured store lacks authoritative request capability; preserving custody");
         return;
@@ -881,24 +851,41 @@ async fn handle_authoritative_input(
 
     let permit = match preflight {
         ActionPreflight::Vacant(permit) => permit,
-        ActionPreflight::Pending { token, bundle_hash } => {
+        ActionPreflight::Pending { token, .. } => {
             release_input_claim(&claims, uid);
             request_disposition(
                 &sink,
                 uid,
-                GatewayRequestDisposition::Owned { token, bundle_hash },
+                GatewayRequestDisposition::Owned {
+                    token,
+                    status: status.clone(),
+                },
             );
             return;
         }
         ActionPreflight::Finalized(receipt) => {
             release_input_claim(&claims, uid);
-            request_disposition(
-                &sink,
-                uid,
-                GatewayRequestDisposition::Finished {
-                    token: receipt.token(),
-                },
-            );
+            match world.project_known_action_receipt(actor, status.clone(), &receipt) {
+                Ok(projected) => request_disposition(
+                    &sink,
+                    uid,
+                    GatewayRequestDisposition::Finished {
+                        recipient: actor,
+                        receipt: projected,
+                    },
+                ),
+                Err(error) => {
+                    tracing::error!(%uid, error = %error, "finalized retry projection failed");
+                    request_disposition(
+                        &sink,
+                        uid,
+                        GatewayRequestDisposition::Owned {
+                            token: receipt.token(),
+                            status: status.clone(),
+                        },
+                    );
+                }
+            }
             return;
         }
         ActionPreflight::Retired { .. } | ActionPreflight::Conflict => {
@@ -956,22 +943,17 @@ async fn handle_authoritative_input(
         }
     }
 
-    let invocation =
-        match authoritative_invocation(&request, permit.ingress().idempotency().clone()) {
-            Ok(invocation) => invocation,
-            Err(detail) => {
-                release_input_claim(&claims, uid);
-                request_disposition(
-                    &sink,
-                    uid,
-                    GatewayRequestDisposition::Rejected { retryable: false },
-                );
-                tracing::warn!(%uid, %detail, "invalid coordinator action invocation");
-                return;
-            }
-        };
+    let submission = match &request.input {
+        GatewayInput::Action(input) => OfferSubmission {
+            offer: input.offered_action,
+            subject: input.subject.clone(),
+            targets: input.targets.clone(),
+            parameters: input.parameters.clone(),
+        },
+        _ => unreachable!("validated coordinator request changed variants"),
+    };
 
-    let watch = match world.authoritative_action(permit, action, invocation).await {
+    let watch = match world.authoritative_action(permit, submission).await {
         Ok(watch) => watch,
         Err(world_task::AuthoritativeActionStartError::Busy) => {
             release_input_claim(&claims, uid);
@@ -1022,18 +1004,39 @@ async fn handle_authoritative_input(
         uid,
         GatewayRequestDisposition::Owned {
             token: owned.token,
-            bundle_hash: owned.bundle_hash,
+            status: status.clone(),
         },
     );
 
     match watch.finished.await {
-        Ok(Ok(finished)) if finished == owned => request_disposition(
-            &sink,
-            uid,
-            GatewayRequestDisposition::Finished {
-                token: finished.token,
-            },
-        ),
+        Ok(Ok(finished)) if finished == owned => {
+            match authoritative_store
+                .authoritative_status(finished.token, finished.bundle_hash)
+                .await
+            {
+                Ok(BundleStatus::FinalizedExact(receipt)) => {
+                    match world.project_known_action_receipt(actor, status.clone(), &receipt) {
+                        Ok(receipt) => request_disposition(
+                            &sink,
+                            uid,
+                            GatewayRequestDisposition::Finished {
+                                recipient: actor,
+                                receipt,
+                            },
+                        ),
+                        Err(error) => {
+                            tracing::error!(%uid, error = %error, "terminal receipt projection failed");
+                        }
+                    }
+                }
+                Ok(other) => {
+                    tracing::error!(%uid, ?other, "terminal action lacks a finalized receipt")
+                }
+                Err(error) => {
+                    tracing::error!(%uid, error = %error, "terminal action receipt read failed")
+                }
+            }
+        }
         Ok(Ok(finished)) => tracing::error!(
             %uid,
             owned_token = %owned.token,
@@ -1053,6 +1056,7 @@ async fn reader_loop(
     r: mush_ipc::BoxRead,
     world: WorldHandle,
     store: Arc<dyn ObjectStore>,
+    offer_routes: Arc<OfferRouteTable>,
     reply_sink: SocketSink,
     metrics: &Metrics,
 ) -> std::io::Result<()> {
@@ -1066,7 +1070,7 @@ async fn reader_loop(
                     wire,
                     mush_ipc::WireInbound::Cmd { .. } | mush_ipc::WireInbound::Query { .. }
                 ) {
-                    tracing::error!("raw player input bypassed the version-2 custody envelope");
+                    tracing::error!("raw player input bypassed the version-3 custody envelope");
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         "player input requires GatewayRequest custody",
@@ -1152,11 +1156,14 @@ async fn reader_loop(
                             ServerClaimAdmission::New => {
                                 let world = world.clone();
                                 let store = Arc::clone(&store);
+                                let routes = Arc::clone(&offer_routes);
                                 let sink = reply_sink.clone();
                                 let claims = Arc::clone(&input_claims);
                                 tokio::spawn(async move {
-                                    handle_authoritative_input(request, world, store, sink, claims)
-                                        .await;
+                                    handle_authoritative_input(
+                                        request, routes, world, store, sink, claims,
+                                    )
+                                    .await;
                                 });
                             }
                             ServerClaimAdmission::Duplicate => {
@@ -1317,6 +1324,27 @@ async fn handle_request(world: &WorldHandle, req: ServiceReq) -> ServiceResp {
                 Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
             }
         }
+        ServiceReq::LegalActions {
+            conn,
+            actor,
+            subject,
+        } => match world.legal_actions(conn, actor, subject).await {
+            Ok(offers) => ServiceResp::LegalActions(Ok(offers)),
+            Err(LegalActionReadError::Busy) => ServiceResp::Busy,
+            Err(LegalActionReadError::Unavailable) => ServiceResp::Unavailable,
+            Err(LegalActionReadError::InvalidSubject) => {
+                ServiceResp::LegalActions(Err(LegalActionsError::InvalidSubject))
+            }
+        },
+        ServiceReq::ActionStatus {
+            conn,
+            actor,
+            status,
+        } => match world.action_status(conn, actor, &status).await {
+            Ok(status) => ServiceResp::ActionStatus(status),
+            Err(WorldReadError::Busy) => ServiceResp::Busy,
+            Err(WorldReadError::Unavailable) => ServiceResp::Unavailable,
+        },
         ServiceReq::Barrier => barrier_response(world.barrier_result().await),
     }
 }

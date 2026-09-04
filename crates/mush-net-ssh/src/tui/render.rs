@@ -17,8 +17,8 @@
 
 use mush_ansi::{AnsiTheme, fmt_duration, merge_styles};
 use mush_proto::{
-    ClientCaps, Color as MushColor, ColorDepth, NarrativeKind, ObjRef, OutputEvent, RichText,
-    RoomView, Span as MushSpan, Style as MushStyle, WhoEntry,
+    ClientCaps, Color as MushColor, ColorDepth, NarrativeKind, ObjRef, OutputEvent,
+    ProjectedActionReceipt, RichText, RoomView, Span as MushSpan, Style as MushStyle, WhoEntry,
 };
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -197,12 +197,29 @@ pub fn render_event(
             w.rich(reason);
             w.end_line();
         }
+        OutputEvent::View(view) if view.view() == "resolution.outcome" => {
+            if let Ok(receipt) =
+                serde_json::from_value::<ProjectedActionReceipt>(view.data().clone())
+                && receipt.view().is_ok_and(|expected| &expected == view)
+            {
+                w.tagged(
+                    "system",
+                    receipt
+                        .result()
+                        .map_or("Action committed.", |result| result.summary()),
+                );
+                w.end_line();
+                w.tagged("system", &format!("Transaction: {}", receipt.status()));
+                w.end_line();
+            }
+        }
         // Routed elsewhere or intentionally silent (mirrors mush_ansi).
         OutputEvent::Who(_)
         | OutputEvent::Panel { .. }
         | OutputEvent::Prompt(_)
         | OutputEvent::Ping { .. }
         | OutputEvent::Resumed { .. } => {}
+        OutputEvent::View(_) => {}
     }
     w.finish()
 }
@@ -491,6 +508,51 @@ pub fn render_intel_panel(
     lines
 }
 
+/// Render the shared viewer-safe legal-action DTO array. Opaque offer tokens
+/// and every unrecognized field remain hidden; the TUI needs only the public
+/// verb, label, and help text used by the line adapter.
+#[must_use]
+pub fn render_legal_actions_panel(
+    data: &serde_json::Value,
+    theme: &AnsiTheme,
+    depth: ColorDepth,
+) -> Vec<Line<'static>> {
+    let system = to_ratatui_style(theme.style_for(Some("system")), depth);
+    let player = to_ratatui_style(theme.style_for(Some("player")), depth);
+    let Some(offers) = data.as_array() else {
+        return vec![Line::from(dim_span_owned("(unavailable)"))];
+    };
+    if offers.is_empty() {
+        return vec![Line::from(dim_span_owned("(none available)"))];
+    }
+    let mut lines = Vec::new();
+    for presentation in offers.iter().filter_map(|offer| offer.get("presentation")) {
+        let verb = presentation
+            .get("verb")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("action");
+        let label = presentation
+            .get("label")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(verb);
+        let help = presentation
+            .get("help")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        lines.push(Line::from(vec![
+            Span::styled(format!("+act {}", truncate_chars(verb, 18)), player),
+            Span::styled(format!(" — {}", truncate_chars(label, 18)), system),
+        ]));
+        if !help.is_empty() {
+            lines.push(Line::from(dim_span_owned(&format!(
+                "  {}",
+                truncate_chars(help, 30)
+            ))));
+        }
+    }
+    lines
+}
+
 /// A dim span with owned text (control chars stripped), for widget placeholders
 /// and detail lines.
 fn dim_span_owned(text: &str) -> Span<'static> {
@@ -585,6 +647,44 @@ mod tests {
     }
 
     #[test]
+    fn action_receipt_renders_summary_and_recovery_reference() {
+        let status = mush_proto::ActionStatusId::new(
+            "k5:toy:brace:0000000000000007:01010101010101010101010101010101",
+        )
+        .unwrap();
+        let result = mush_proto::ProjectedActionResult::new(
+            "brace",
+            "Brace committed.",
+            serde_json::json!({"event": "braced", "focus": 2}),
+        )
+        .unwrap();
+        let event = OutputEvent::View(
+            mush_proto::ProjectedActionReceipt::new(
+                status,
+                "02020202020202020202020202020202",
+                Some(result),
+            )
+            .unwrap()
+            .view()
+            .unwrap(),
+        );
+        let lines = render_event(&event, &caps(ColorDepth::None), &AnsiTheme::classic());
+        assert_eq!(text_of(&lines[0]), "Brace committed.");
+        assert_eq!(
+            text_of(&lines[1]),
+            "Transaction: k5:toy:brace:0000000000000007:01010101010101010101010101010101"
+        );
+        let OutputEvent::View(view) = event else {
+            unreachable!()
+        };
+        let forged = OutputEvent::View(
+            view.with_commit("03030303030303030303030303030303")
+                .unwrap(),
+        );
+        assert!(render_event(&forged, &caps(ColorDepth::None), &AnsiTheme::classic()).is_empty());
+    }
+
+    #[test]
     fn color_depth_none_drops_styling() {
         let theme = AnsiTheme::classic();
         let ev = OutputEvent::Narrative {
@@ -660,6 +760,40 @@ mod tests {
         let lines = render_intel_panel(&data, &theme, ColorDepth::Ansi16);
         assert_eq!(lines.len(), 2);
         assert!(text_of(&lines[1]).contains("nothing"));
+    }
+
+    #[test]
+    fn legal_action_panel_renders_only_public_presentation() {
+        let theme = AnsiTheme::classic();
+        let data = serde_json::json!([{
+            "offer": "secret-opaque-token",
+            "truth_subject": { "clock": "scene_turn" },
+            "private": { "definition": "private-definition-digest" },
+            "presentation": {
+                "verb": "brace",
+                "label": "Brace",
+                "help": "Adopt a braced tactical stance."
+            }
+        }]);
+        let lines = render_legal_actions_panel(&data, &theme, ColorDepth::Ansi16);
+        let rendered = lines.iter().map(text_of).collect::<Vec<_>>().join("\n");
+        assert_eq!(lines.len(), 2);
+        assert!(text_of(&lines[0]).contains("+act brace"));
+        assert!(text_of(&lines[0]).contains("Brace"));
+        assert!(text_of(&lines[1]).contains("braced tactical stance"));
+        assert!(
+            lines.iter().all(|line| !text_of(line).contains("secret")),
+            "the TUI must not display opaque execution tokens"
+        );
+        mush_contract_tests::assert_projection_text_clean(
+            "TUI legal-action panel",
+            &rendered,
+            &[
+                "secret-opaque-token",
+                "scene_turn",
+                "private-definition-digest",
+            ],
+        );
     }
 
     #[test]

@@ -5,14 +5,20 @@
 #![cfg(feature = "mock")]
 
 use std::sync::Arc;
+use std::time::Duration;
 
+use futures::StreamExt;
+use futures::stream;
 use mush_core::ObjId;
 use mush_llm::budget::BudgetLimit;
-use mush_llm::config::{BudgetConfig, CircuitBreakerConfig, RetryConfig, RouteConfig};
+use mush_llm::config::{
+    BudgetConfig, CircuitBreakerConfig, ConcurrencyConfig, RetryConfig, RouteConfig,
+};
 use mush_llm::mock::{self, MockProvider};
-use mush_llm::provider::{LlmError, LlmProvider};
+use mush_llm::provider::{LlmError, LlmProvider, ProviderCaps, ProviderId};
 use mush_llm::service::{CallCtx, LlmFeature, LlmService, NpcTier, Priority};
-use mush_llm::types::CompletionRequest;
+use mush_llm::types::{CompletionRequest, CompletionResponse, LlmStream, StreamEvent};
+use tokio::sync::Notify;
 
 fn route(model: &str, max_tokens: u32) -> RouteConfig {
     RouteConfig {
@@ -40,6 +46,85 @@ fn ctx(feature: LlmFeature) -> CallCtx {
 
 fn req() -> CompletionRequest {
     CompletionRequest::simple("hello there")
+}
+
+struct BlockingProvider {
+    id: ProviderId,
+    entered: Notify,
+    release: Notify,
+}
+
+impl BlockingProvider {
+    fn new() -> Self {
+        Self {
+            id: ProviderId::new("openrouter"),
+            entered: Notify::new(),
+            release: Notify::new(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for BlockingProvider {
+    fn id(&self) -> &ProviderId {
+        &self.id
+    }
+
+    fn caps(&self) -> ProviderCaps {
+        ProviderCaps::default()
+    }
+
+    async fn complete(
+        &self,
+        _req: &CompletionRequest,
+        _timeout: Duration,
+    ) -> Result<CompletionResponse, LlmError> {
+        self.entered.notify_waiters();
+        self.release.notified().await;
+        Ok(mock::ok_response("ok", mock::usage(1, 1, None)))
+    }
+
+    async fn stream(
+        &self,
+        _req: &CompletionRequest,
+        _timeout: Duration,
+    ) -> Result<LlmStream, LlmError> {
+        Ok(stream::empty::<Result<StreamEvent, LlmError>>().boxed())
+    }
+}
+
+#[tokio::test]
+async fn concurrency_admission_refuses_instead_of_growing_unbounded_waiters() {
+    let provider = Arc::new(BlockingProvider::new());
+    let svc = Arc::new(
+        LlmService::builder()
+            .global_enabled(true)
+            .provider("openrouter", Arc::clone(&provider) as Arc<dyn LlmProvider>)
+            .route("worldgen_room", route("z-ai/glm-5.3", 64))
+            .concurrency(ConcurrencyConfig {
+                max_interactive: 1,
+                max_interactive_queued: 0,
+                max_background: 1,
+                max_background_queued: 0,
+            })
+            .build(),
+    );
+
+    let entered = provider.entered.notified();
+    let first = tokio::spawn({
+        let svc = Arc::clone(&svc);
+        async move { svc.call(ctx(LlmFeature::WorldgenRoom), req()).await }
+    });
+    entered.await;
+
+    let second = svc
+        .call(ctx(LlmFeature::WorldgenRoom), req())
+        .await
+        .expect_err("active-plus-queued capacity is exhausted");
+    assert!(matches!(second, LlmError::Overloaded));
+
+    provider.release.notify_one();
+    first.await.unwrap().unwrap();
 }
 
 #[tokio::test]

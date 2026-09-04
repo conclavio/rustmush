@@ -16,8 +16,9 @@ use mush_proto::{InputMode, OutputEvent, PromptSpec, RichText};
 use smol_str::SmolStr;
 
 use crate::data::{
-    self, ARCHIVE, INBOX, MAX_USER_FOLDERS, MailMsg, MailState, MailStatus, MailboxEntry, SENT,
-    TRASH, is_builtin_folder, valid_folder_name,
+    self, ARCHIVE, INBOX, MAX_MAIL_BODY_BYTES, MAX_MAIL_BODY_LINES, MAX_MAIL_RECIPIENTS,
+    MAX_USER_FOLDERS, MailMsg, MailState, MailStatus, MailboxEntry, SENT, TRASH, is_builtin_folder,
+    valid_folder_name,
 };
 use crate::date::{format_date, format_datetime};
 
@@ -137,6 +138,11 @@ fn parse_recipients(w: &World, spec: &str) -> Result<Vec<ObjId>, CmdError> {
         match found.filter(|&i| w.get(i).is_some_and(|o| o.kind.is_actor())) {
             Some(i) => {
                 if !out.contains(&i) {
+                    if out.len() >= MAX_MAIL_RECIPIENTS {
+                        return Err(CmdError::msg(format!(
+                            "MAIL: A message may have at most {MAX_MAIL_RECIPIENTS} recipients."
+                        )));
+                    }
                     out.push(i);
                 }
             }
@@ -174,6 +180,8 @@ pub(crate) fn deliver(
     reply_to: Option<u64>,
     urgent: bool,
 ) -> Result<(), CmdError> {
+    data::validate_message_content(to, subject, body)
+        .map_err(|detail| CmdError::msg(format!("MAIL: Invalid message: {detail}.")))?;
     let from = ctx.actor;
     let quota = state(ctx).quota();
     let mut accepted: Vec<ObjId> = Vec::new();
@@ -210,7 +218,9 @@ pub(crate) fn deliver(
     let mut notices: Vec<(ObjId, u32)> = Vec::new();
     let id = {
         let st = state_mut(ctx);
-        let id = st.alloc_id();
+        let id = st
+            .alloc_id()
+            .ok_or_else(|| CmdError::msg("MAIL: Message id space is exhausted."))?;
         let msg = MailMsg {
             id,
             from,
@@ -305,6 +315,8 @@ pub(crate) struct Compose {
     pub(crate) urgent: bool,
     /// Body lines collected so far.
     pub(crate) lines: Vec<String>,
+    /// UTF-8 bytes retained by `lines`, including their join separators.
+    pub(crate) body_bytes: usize,
 }
 
 impl InputContext for Compose {
@@ -355,7 +367,27 @@ impl InputContext for Compose {
             );
             return ContextOutcome::Consumed;
         }
+        let separator = usize::from(!self.lines.is_empty());
+        let Some(next_bytes) = self
+            .body_bytes
+            .checked_add(separator)
+            .and_then(|n| n.checked_add(line.len()))
+        else {
+            ctx.out.error(ctx.actor, "MAIL: Message body is too large.");
+            return ContextOutcome::Consumed;
+        };
+        if self.lines.len() >= MAX_MAIL_BODY_LINES || next_bytes > MAX_MAIL_BODY_BYTES {
+            ctx.out.error(
+                ctx.actor,
+                format!(
+                    "MAIL: Message body is limited to {MAX_MAIL_BODY_LINES} lines and \
+                     {MAX_MAIL_BODY_BYTES} UTF-8 bytes; this line was not added."
+                ),
+            );
+            return ContextOutcome::Consumed;
+        }
         self.lines.push(line.to_string());
+        self.body_bytes = next_bytes;
         ContextOutcome::Consumed
     }
 }
@@ -368,6 +400,8 @@ fn start_compose(
     reply_to: Option<u64>,
     urgent: bool,
 ) -> Result<(), CmdError> {
+    data::validate_message_content(&to, &subject, "")
+        .map_err(|detail| CmdError::msg(format!("MAIL: Invalid message: {detail}.")))?;
     let names = name_list(ctx.w, &to);
     ctx.out.info(
         ctx.actor,
@@ -386,6 +420,7 @@ fn start_compose(
         reply_to,
         urgent,
         lines: Vec::new(),
+        body_bytes: 0,
     }));
     Ok(())
 }

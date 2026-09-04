@@ -1973,6 +1973,8 @@ name = "mush-contract-tests"
 version = "0.1.0"
 dependencies = [
  "mush-core",
+ "mush-proto",
+ "mush-tactics",
  "mush-testkit",
  "serde",
  "serde_json",
@@ -1998,6 +2000,7 @@ dependencies = [
 name = "mush-dice"
 version = "0.1.0"
 dependencies = [
+ "mush-core",
  "proptest",
  "rand 0.9.5",
  "rand_chacha 0.9.0",
@@ -2053,6 +2056,7 @@ dependencies = [
  "futures",
  "mush-ansi",
  "mush-config",
+ "mush-contract-tests",
  "mush-core",
  "mush-ipc",
  "mush-net-ssh",
@@ -2163,6 +2167,7 @@ dependencies = [
  "futures",
  "getrandom 0.4.3",
  "mush-ansi",
+ "mush-contract-tests",
  "mush-proto",
  "mush-session",
  "proptest",
@@ -2234,6 +2239,7 @@ dependencies = [
  "serde",
  "serde_json",
  "smol_str",
+ "thiserror 2.0.20",
  "ts-rs",
 ]
 

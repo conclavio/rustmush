@@ -19,15 +19,16 @@ use mush_core::{
     CanonicalHash, CanonicalId, CommitToken, DefinitionDescriptor, DefinitionId, DefinitionKind,
     DefinitionRegistryBuilder, DurableOutboxIntent, Flags, GOD, IdempotencyKey, IdempotencyScope,
     LIMBO, LockExpr, LockType, Obj, ObjId, ObjKind, OwnerId, Powers, PreparedCausalRef,
-    PrincipalId, ReplayWrite, RequestUid, RulesValue, ScopedIdempotencyKey, World,
+    PrincipalId, ReplayWrite, RequestUid, ResolutionKeyRing, ResolutionSecret, RulesValue,
+    ScopedIdempotencyKey, World,
 };
 
 use crate::migrate::{Migration, run_migrations};
 use crate::store::{AuthoritativeStore, ObjectStore};
 use crate::types::{
     AccountRec, AuthoritativeOutboxAttemptResult, AuthoritativeRetentionUsage,
-    AuthoritativeScanCursor, BundleStatus, IdempotencyStatus, ModuleOp, ModuleWrite, SshKeyRec,
-    StoreError, TokenRecord, WriteBatch,
+    AuthoritativeScanCursor, BoundIdempotencyStatus, BundleStatus, IdempotencyStatus, ModuleOp,
+    ModuleWrite, SshKeyRec, StoreError, TokenRecord, WriteBatch,
 };
 
 fn now_unix() -> i64 {
@@ -1109,7 +1110,7 @@ pub async fn module_empty_namespace_list(store: &dyn ObjectStore) {
 // -------------------------------------------------------------------------
 
 pub(crate) fn authoritative_bundle(token_byte: u8, request_byte: u8) -> AuthoritativeBundle {
-    authoritative_bundle_with(token_byte, request_byte, 0, vec![])
+    authoritative_bundle_with(token_byte, request_byte, 0, vec![], false)
 }
 
 fn authoritative_bundle_with(
@@ -1117,6 +1118,7 @@ fn authoritative_bundle_with(
     request_byte: u8,
     epoch: u64,
     durable_outbox: Vec<DurableOutboxIntent>,
+    with_resolution: bool,
 ) -> AuthoritativeBundle {
     let owner = OwnerId::new("store_contract").expect("contract owner");
     let mut definitions = DefinitionRegistryBuilder::new();
@@ -1146,25 +1148,54 @@ fn authoritative_bundle_with(
         .expect("register outcome");
     let request = RequestUid::from_bytes([request_byte; 16]);
     let principal = PrincipalId::Object { id: GOD };
+    let token = CommitToken::from_bytes([token_byte; 16]);
+    let idempotency = ScopedIdempotencyKey::new(
+        IdempotencyScope {
+            principal: principal.clone(),
+            owner: owner.clone(),
+            namespace: CanonicalId::new("brace").expect("namespace"),
+        },
+        epoch,
+        IdempotencyKey::Request(request),
+    );
+    let request_hash = CanonicalHash::from_bytes([3; 32]);
+    let outcome_value =
+        RulesValue::new(outcome.clone(), serde_json::json!({ "ok": true })).expect("outcome value");
+    let definition_refs = vec![action.clone(), outcome.clone()];
+    let resolution = with_resolution.then(|| {
+        let mut rng = ResolutionKeyRing::new(
+            ResolutionSecret::new(1, [0x51; 32]).expect("resolution secret"),
+            [],
+        )
+        .expect("resolution key ring")
+        .start(
+            &idempotency,
+            &CanonicalId::new("store_contract_resolution").expect("resolution domain"),
+            request_hash,
+        )
+        .expect("start resolution");
+        rng.draw_bounded_u64(&CanonicalId::new("effect_duration").expect("draw label"), 6)
+            .expect("draw resolution");
+        rng.into_prepared(
+            definition_refs.clone(),
+            RulesValue::new(outcome.clone(), serde_json::json!({ "bonus": 1 }))
+                .expect("modifier value"),
+            outcome_value.clone(),
+        )
+        .expect("prepare resolution")
+        .bind(token)
+    });
     AuthoritativeBundle::new(AuthoritativeBundleDraft {
-        token: CommitToken::from_bytes([token_byte; 16]),
+        token,
         request,
-        idempotency: ScopedIdempotencyKey::new(
-            IdempotencyScope {
-                principal: principal.clone(),
-                owner: owner.clone(),
-                namespace: CanonicalId::new("brace").expect("namespace"),
-            },
-            epoch,
-            IdempotencyKey::Request(request),
-        ),
+        idempotency,
         ingress_hash: CanonicalHash::from_bytes([request_byte; 32]),
-        request_hash: CanonicalHash::from_bytes([3; 32]),
+        request_hash,
         plan_hash: CanonicalHash::from_bytes([4; 32]),
         action: action.clone(),
         provider: owner.clone(),
         cause: PreparedCausalRef::new(request, None, 0).expect("root cause"),
-        definitions: vec![action.clone(), outcome.clone()],
+        definitions: definition_refs,
         writes: vec![
             ReplayWrite::ObjectSet {
                 object: Obj::new(ObjId(2), ObjKind::Thing, "guard", GOD, 0),
@@ -1177,8 +1208,8 @@ fn authoritative_bundle_with(
                 value: serde_json::json!({ "amount": 1 }),
             },
         ],
-        outcome: RulesValue::new(outcome.clone(), serde_json::json!({ "ok": true }))
-            .expect("outcome value"),
+        outcome: outcome_value,
+        resolution,
         semantic_events: vec![
             mush_core::AuthoritativeSemanticEvent::root(
                 PreparedCausalRef::new(request, None, 0).expect("root cause"),
@@ -1214,6 +1245,13 @@ pub async fn authoritative_exact_lifecycle(store: &dyn AuthoritativeStore) {
             .expect("empty idempotency lookup"),
         IdempotencyStatus::Vacant
     );
+    assert_eq!(
+        store
+            .bound_authoritative_idempotency_status(bundle.idempotency())
+            .await
+            .expect("empty bound idempotency lookup"),
+        BoundIdempotencyStatus::Vacant
+    );
     let reservation = store
         .reserve_authoritative_intent(bundle.clone())
         .await
@@ -1221,6 +1259,16 @@ pub async fn authoritative_exact_lifecycle(store: &dyn AuthoritativeStore) {
     assert!(!reservation.resumed);
     assert_eq!(reservation.token, token);
     assert_eq!(reservation.bundle_hash, hash);
+    assert_eq!(
+        store
+            .bound_authoritative_idempotency_status(bundle.idempotency())
+            .await
+            .expect("pending bound idempotency lookup"),
+        BoundIdempotencyStatus::PendingExact {
+            token,
+            bundle_hash: hash,
+        }
+    );
     assert_eq!(
         store
             .pending_authoritative_intents()
@@ -1255,6 +1303,13 @@ pub async fn authoritative_exact_lifecycle(store: &dyn AuthoritativeStore) {
         store.authoritative_status(token, hash).await.unwrap(),
         BundleStatus::FinalizedExact(Box::new(receipt.clone()))
     );
+    assert_eq!(
+        store
+            .bound_authoritative_idempotency_status(bundle.idempotency())
+            .await
+            .expect("finalized bound idempotency lookup"),
+        BoundIdempotencyStatus::FinalizedExact(Box::new(receipt.clone()))
+    );
     assert!(
         store
             .pending_authoritative_intents()
@@ -1273,6 +1328,13 @@ pub async fn authoritative_exact_lifecycle(store: &dyn AuthoritativeStore) {
         bundle.semantic_events()
     );
     assert!(!checkpoint.resumed);
+    assert_eq!(
+        store
+            .bound_authoritative_idempotency_status(bundle.idempotency())
+            .await
+            .expect("checkpointed bound idempotency lookup"),
+        BoundIdempotencyStatus::FinalizedExact(Box::new(receipt.clone()))
+    );
     assert!(
         store
             .scan_authoritative_intents(None, 1)
@@ -1294,6 +1356,54 @@ pub async fn authoritative_exact_lifecycle(store: &dyn AuthoritativeStore) {
             .await
             .expect("join checkpoint retry")
             .resumed
+    );
+}
+
+/// A resolution transcript is part of the exact authoritative identity and
+/// survives intent release into the compact checkpoint receipt. This shared
+/// witness exercises both the memory backend and the live Redis contract.
+pub async fn authoritative_resolution_checkpoint(store: &dyn AuthoritativeStore) {
+    seed_authoritative_world(store).await;
+    let bundle = authoritative_bundle_with(18, 28, 0, vec![], true);
+    let token = bundle.token();
+    let hash = bundle.bundle_hash();
+    let expected = bundle
+        .resolution()
+        .cloned()
+        .expect("resolution-bearing fixture");
+
+    store
+        .reserve_authoritative_intent(bundle.clone())
+        .await
+        .expect("reserve resolution-bearing intent");
+    let receipt = store
+        .reconcile_authoritative(token, hash)
+        .await
+        .expect("reconcile resolution-bearing intent");
+    assert_eq!(receipt.resolution(), Some(&expected));
+    assert!(receipt.matches_bundle(&bundle));
+
+    let checkpoint = store
+        .checkpoint_authoritative(token, hash)
+        .await
+        .expect("checkpoint resolution-bearing intent");
+    assert_eq!(checkpoint.receipt.resolution(), Some(&expected));
+    assert!(checkpoint.receipt.matches_bundle(&bundle));
+    assert!(
+        store
+            .reserve_authoritative_intent(bundle)
+            .await
+            .expect("join compact resolution retry")
+            .resumed
+    );
+    assert_eq!(
+        store
+            .checkpoint_authoritative(token, hash)
+            .await
+            .expect("resume compact resolution checkpoint")
+            .receipt
+            .resolution(),
+        Some(&expected)
     );
 }
 
@@ -1342,6 +1452,13 @@ pub async fn authoritative_quarantine_lifecycle(store: &dyn AuthoritativeStore) 
         store.authoritative_status(token, hash).await.unwrap(),
         BundleStatus::QuarantinedExact(Box::new(discarded.quarantine.clone()))
     );
+    assert_eq!(
+        store
+            .bound_authoritative_idempotency_status(bundle.idempotency())
+            .await
+            .expect("quarantined bound idempotency lookup"),
+        BoundIdempotencyStatus::QuarantinedExact(Box::new(discarded.quarantine.clone()))
+    );
     assert!(matches!(
         store.reserve_authoritative_intent(bundle.clone()).await,
         Err(StoreError::AuthoritativeIntentQuarantined {
@@ -1389,7 +1506,7 @@ pub async fn authoritative_outbox_lifecycle(store: &dyn AuthoritativeStore) {
     )
     .expect("outbox intent");
     let payload_hash = intent.payload_hash();
-    let bundle = authoritative_bundle_with(15, 25, 0, vec![intent]);
+    let bundle = authoritative_bundle_with(15, 25, 0, vec![intent], false);
     let token = bundle.token();
     let hash = bundle.bundle_hash();
     store
@@ -1484,7 +1601,7 @@ pub async fn authoritative_outbox_lifecycle(store: &dyn AuthoritativeStore) {
 /// identities, and remains blocked by pending or uncheckpointed epochs.
 pub async fn authoritative_epoch_lifecycle(store: &dyn AuthoritativeStore) {
     seed_authoritative_world(store).await;
-    let old = authoritative_bundle_with(16, 26, 0, vec![]);
+    let old = authoritative_bundle_with(16, 26, 0, vec![], false);
     let scope = old.idempotency().scope().clone();
     store
         .reserve_authoritative_intent(old.clone())
@@ -1519,8 +1636,17 @@ pub async fn authoritative_epoch_lifecycle(store: &dyn AuthoritativeStore) {
             minimum_accepted_epoch: 1
         }
     );
+    assert_eq!(
+        store
+            .bound_authoritative_idempotency_status(old.idempotency())
+            .await
+            .expect("retired bound idempotency lookup"),
+        BoundIdempotencyStatus::Retired {
+            minimum_accepted_epoch: 1
+        }
+    );
 
-    let current = authoritative_bundle_with(17, 27, 1, vec![]);
+    let current = authoritative_bundle_with(17, 27, 1, vec![], false);
     store
         .reserve_authoritative_intent(current.clone())
         .await

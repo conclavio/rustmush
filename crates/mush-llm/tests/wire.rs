@@ -780,6 +780,34 @@ data: [DONE]\n\n";
 }
 
 #[tokio::test]
+async fn openrouter_stream_backpressure_delivers_more_than_the_event_buffer() {
+    let mut sse = String::new();
+    for _ in 0..256 {
+        sse.push_str("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"}}]}\n\n");
+    }
+    sse.push_str("data: [DONE]\n\n");
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+        .mount(&server)
+        .await;
+
+    let cfg = provider_cfg(ProviderKind::Openai, server.uri());
+    let provider = OpenAiProvider::new("openrouter", &cfg, Some("k".to_string())).unwrap();
+    let stream = provider
+        .stream(&CompletionRequest::simple("ping"), TIMEOUT)
+        .await
+        .unwrap();
+    let (text, done) = tokio::time::timeout(TIMEOUT, collect_stream(stream))
+        .await
+        .expect("a backpressured producer resumes as the caller drains it");
+    assert_eq!(text.len(), 256);
+    assert_eq!(done.expect("Done event").text().len(), 256);
+}
+
+#[tokio::test]
 async fn anthropic_streaming_assembles_text_tool_and_usage() {
     let sse = "\
 event: message_start\n\
