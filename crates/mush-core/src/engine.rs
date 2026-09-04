@@ -1192,7 +1192,13 @@ impl Engine {
             )?;
             staged
                 .guards
-                .revalidate(&self.world, revisions, authority, definitions)
+                .revalidate_with_action_state(
+                    &self.world,
+                    &self.action_state,
+                    revisions,
+                    authority,
+                    definitions,
+                )
                 .map_err(StagedActionAdmissionError::Revalidation)
         })();
         match revalidation {

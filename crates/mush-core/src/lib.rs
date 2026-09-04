@@ -56,6 +56,7 @@ pub mod clock;
 pub mod clock_provider;
 pub mod cmd;
 pub mod commands;
+pub mod control;
 pub mod durable_schedule;
 pub mod engine;
 pub mod flags;
@@ -81,27 +82,27 @@ pub use action::{
     ActionOfferId, ActionProvider, ActionProviderDispatchError, ActionProviderEntry,
     ActionProviderLookupError, ActionProviderPrepareError, ActionProviderRegistry,
     ActionProviderRegistryBuilder, ActionProviderRegistryError, ActionReceiptMetadata,
-    ActionReceiptMetadataError, AuthoritativeActionOutput, AuthorityGuard, AuthorityGuardKind,
-    AuthorityGuardValidator, AuthorityGuardValidatorEntry, AuthorityGuardValidatorLookupError,
-    AuthorityGuardValidatorRegistry, AuthorityGuardValidatorRegistryBuilder,
-    AuthorityGuardValidatorRegistryError, CanonicalHash, CanonicalHashError, CascadeError,
-    CausalMetadataError, CausalTriggerQueue, CommitToken, ContactId, FixedHexIdError,
-    GuardRevalidation, GuardRevalidationError, GuardSet, GuardSetBuildError, IdempotencyKey,
-    IdempotencyKeyText, IdempotencyKeyTextError, IdempotencyScope, IngressEnvelope, IngressPayload,
-    IngressSurfaceVersion, MAX_ACTION_ERROR_BYTES, MAX_ACTION_PARAMETER_BYTES,
-    MAX_ACTION_PROVIDERS, MAX_ACTION_PROVIDERS_PER_OWNER, MAX_ACTION_REVISIONS, MAX_ACTION_TARGETS,
-    MAX_AUTHORITY_GUARDS, MAX_AUTHORITY_VALIDATORS, MAX_AUTHORITY_VALIDATORS_PER_OWNER,
-    MAX_CASCADE_BYTES, MAX_CASCADE_OPERATIONS, MAX_CASCADE_TRIGGERS, MAX_GUARD_SET_BYTES,
-    MAX_IDEMPOTENCY_KEY_BYTES, MAX_INGRESS_LINE_BYTES, MAX_INGRESS_PAYLOAD_BYTES,
-    MAX_REVISION_VALIDATORS, MAX_REVISION_VALIDATORS_PER_OWNER, MAX_SEMANTIC_EVENTS,
-    MAX_TRIGGER_DEPTH, PerceivedRef, PreparedAuthoritativeAction, PreparedCausalRef,
-    PreparedEventId, PreparedTrigger, PreparedTriggerDraft, PrincipalId,
-    ProviderRegistrationOrdinal, ReceiptProjectionError, ReceiptProjectionTable, RequestUid,
-    RevisionKey, RevisionKind, RevisionMismatch, RevisionSet, RevisionSetError, RevisionStamp,
-    RevisionValidator, RevisionValidatorEntry, RevisionValidatorLookupError,
-    RevisionValidatorRegistry, RevisionValidatorRegistryBuilder, RevisionValidatorRegistryError,
-    SameCommitTrigger, ScopedIdempotencyKey, ServerGuardSetBuilder, SubjectKey, TriggerEnqueue,
-    TriggerHandlerId, TriggerIdentity, TriggerWork,
+    ActionReceiptMetadataError, AuthoritativeActionOutput, AuthorityGuard, AuthorityGuardContext,
+    AuthorityGuardKind, AuthorityGuardValidator, AuthorityGuardValidatorEntry,
+    AuthorityGuardValidatorLookupError, AuthorityGuardValidatorRegistry,
+    AuthorityGuardValidatorRegistryBuilder, AuthorityGuardValidatorRegistryError, CanonicalHash,
+    CanonicalHashError, CascadeError, CausalMetadataError, CausalTriggerQueue, CommitToken,
+    ContactId, FixedHexIdError, GuardRevalidation, GuardRevalidationError, GuardSet,
+    GuardSetBuildError, IdempotencyKey, IdempotencyKeyText, IdempotencyKeyTextError,
+    IdempotencyScope, IngressEnvelope, IngressPayload, IngressSurfaceVersion,
+    MAX_ACTION_ERROR_BYTES, MAX_ACTION_PARAMETER_BYTES, MAX_ACTION_PROVIDERS,
+    MAX_ACTION_PROVIDERS_PER_OWNER, MAX_ACTION_REVISIONS, MAX_ACTION_TARGETS, MAX_AUTHORITY_GUARDS,
+    MAX_AUTHORITY_VALIDATORS, MAX_AUTHORITY_VALIDATORS_PER_OWNER, MAX_CASCADE_BYTES,
+    MAX_CASCADE_OPERATIONS, MAX_CASCADE_TRIGGERS, MAX_GUARD_SET_BYTES, MAX_IDEMPOTENCY_KEY_BYTES,
+    MAX_INGRESS_LINE_BYTES, MAX_INGRESS_PAYLOAD_BYTES, MAX_REVISION_VALIDATORS,
+    MAX_REVISION_VALIDATORS_PER_OWNER, MAX_SEMANTIC_EVENTS, MAX_TRIGGER_DEPTH, PerceivedRef,
+    PreparedAuthoritativeAction, PreparedCausalRef, PreparedEventId, PreparedTrigger,
+    PreparedTriggerDraft, PrincipalId, ProviderRegistrationOrdinal, ReceiptProjectionError,
+    ReceiptProjectionTable, RequestUid, RevisionKey, RevisionKind, RevisionMismatch, RevisionSet,
+    RevisionSetError, RevisionStamp, RevisionValidator, RevisionValidatorEntry,
+    RevisionValidatorLookupError, RevisionValidatorRegistry, RevisionValidatorRegistryBuilder,
+    RevisionValidatorRegistryError, SameCommitTrigger, ScopedIdempotencyKey, ServerGuardSetBuilder,
+    SubjectKey, TriggerEnqueue, TriggerHandlerId, TriggerIdentity, TriggerWork,
 };
 pub use action_state::{
     ACTION_STATE_PERSISTENCE_ROOT, ActionStateBootRecord, ActionStateError, ActionStateStore,
@@ -155,6 +156,11 @@ pub use cmd::{
 };
 pub use commands::{
     event_subject, ignore_list, is_ignoring, narrative_actor, register_core_commands,
+};
+pub use control::{
+    ControlHandoff, ControlHandoffDraft, ControlLeaseError, ControlLeaseGuardValidator,
+    ControlLeaseKey, ControlLeaseState, ControlLeaseStateCodec, MAX_CONTROL_LEASE_BYTES,
+    control_lease_state_family_descriptor,
 };
 pub use durable_schedule::{
     DurableSchedule, DurableScheduleDraft, DurableScheduleError, DurableScheduleStateCodec,

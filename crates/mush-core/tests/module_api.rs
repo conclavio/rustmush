@@ -886,7 +886,11 @@ impl RevisionValidator for ModuleRevisionValidator {
 struct ModuleAuthorityValidator;
 
 impl AuthorityGuardValidator for ModuleAuthorityValidator {
-    fn is_current(&self, _world: &World, _guard: &AuthorityGuard) -> Result<bool, ActionError> {
+    fn is_current(
+        &self,
+        _context: &mush_core::AuthorityGuardContext<'_>,
+        _guard: &AuthorityGuard,
+    ) -> Result<bool, ActionError> {
         Ok(true)
     }
 }

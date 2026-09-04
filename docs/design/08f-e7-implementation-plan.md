@@ -52,6 +52,12 @@ particular campaign economy.
   `ChannelGrant { actor, subject, owner, station, channels, priority, epoch }` per occupied station.
   Channel and priority are selected from the same grant; no cross-seat union/max promotion. Exact
   station/channel/epoch revalidation is available to delayed work.
+- **K6a control-lease foundation:** a bounded, typed, durable record now names the exclusive
+  `PrincipalId` holder of each `(subject, channel)`, retains a single pending transfer/revocation,
+  and changes holder plus epoch together only at or after an exact comparable `ClockStamp` boundary.
+  Final authority validation reads that record through its composition-branded family handle;
+  `mush-sim` owns the first registered family. Controller-selection and safe-boundary policy remain
+  campaign/domain concerns.
 
 These primitives unblock E7 record design and early gameplay without waiting for every K4/K5
 feature.
@@ -93,9 +99,11 @@ keys, and no hidden side effects after the final fallible preflight.
 ### 2.4 Still required before E7 control handoff
 
 K5a grants establish eligibility and stale-intent witnesses; they are not active exclusive leases.
-Direct/proxy control changes require K6's per-channel lease record and safe-boundary handoff. The
-first production slice may assign title, maintenance, and custody, but it must not silently evict a
-live operator or transfer an active movement/weapons lease.
+K6a now supplies the per-channel record, checked pending-handoff transition, and exact lease guard.
+Direct/proxy control changes still require production request/cancel/apply providers, a domain or
+scene driver that chooses and reaches the safe boundary, and lease-aware offer projection. The first
+production slice may assign title, maintenance, and custody, but it must not silently evict a live
+operator or transfer an active movement/weapons lease.
 
 ## 3. Engine and ruleset boundary
 

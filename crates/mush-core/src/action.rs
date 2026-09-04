@@ -6,6 +6,7 @@
 //! authoritative completion. Commit-token storage and authoritative receipts
 //! belong to K3.
 
+use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
@@ -17,7 +18,9 @@ use sha2::{Digest as _, Sha256};
 use smol_str::SmolStr;
 use thiserror::Error;
 
-use crate::action_state::{ActionStateError, ActionStateStore, ActionTxn, PreparedTxn};
+use crate::action_state::{
+    ActionStateError, ActionStateStore, ActionTxn, PreparedTxn, StateFamilyHandle,
+};
 use crate::authoritative::{
     AuthoritativeBundleError, AuthoritativeSemanticEvent, DurableOutboxIntent,
 };
@@ -1417,10 +1420,64 @@ pub enum RevisionValidatorLookupError {
     },
 }
 
+/// Immutable ordinary-world and typed-family truth available to a final
+/// authority check. This mirrors the resource/effect read boundary: validators
+/// can inspect current authoritative state but cannot mutate it or perform I/O.
+#[derive(Clone, Copy)]
+pub struct AuthorityGuardContext<'a> {
+    world: &'a World,
+    action_state: &'a ActionStateStore,
+}
+
+impl fmt::Debug for AuthorityGuardContext<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AuthorityGuardContext")
+            .field("utc_now", &self.world.now())
+            .field("action_state_revision", &self.action_state.revision())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> AuthorityGuardContext<'a> {
+    pub(crate) const fn new(world: &'a World, action_state: &'a ActionStateStore) -> Self {
+        Self {
+            world,
+            action_state,
+        }
+    }
+
+    #[must_use]
+    pub const fn world(&self) -> &'a World {
+        self.world
+    }
+
+    #[must_use]
+    pub fn module_state<T: Any + Send>(&self) -> Option<&'a T> {
+        self.world.module_state::<T>()
+    }
+
+    pub fn action_state<K, V>(
+        &self,
+        handle: &StateFamilyHandle<K, V>,
+        key: &K,
+    ) -> Result<Option<&'a V>, ActionStateError>
+    where
+        K: Send + Sync + 'static,
+        V: Clone + Send + Sync + 'static,
+    {
+        self.action_state.get(handle, key)
+    }
+}
+
 /// Pure, object-safe final authority check owned by a module.
 pub trait AuthorityGuardValidator: Send + Sync {
     /// `true` means the exact assertion is still current; `false` means stale.
-    fn is_current(&self, world: &World, guard: &AuthorityGuard) -> Result<bool, ActionError>;
+    fn is_current(
+        &self,
+        context: &AuthorityGuardContext<'_>,
+        guard: &AuthorityGuard,
+    ) -> Result<bool, ActionError>;
 }
 
 /// Immutable, owner-stamped authority validator entry.
@@ -1738,19 +1795,37 @@ impl GuardSet {
         builder.finish()
     }
 
-    /// Re-read every registered source against immutable world truth.
-    ///
-    /// This method is deliberately pure. The world-task coordinator must use
-    /// a current result as part of its later atomic transition into
-    /// `CommitPending`; this method does not perform that transition itself.
-    pub fn revalidate(
+    /// Unit-test convenience for guard sets whose validators do not depend on
+    /// typed state. Production admission always uses
+    /// [`Self::revalidate_with_action_state`].
+    #[cfg(test)]
+    fn revalidate(
         &self,
         world: &World,
         revisions: &RevisionValidatorRegistry,
         authority: &AuthorityGuardValidatorRegistry,
         definitions: &DefinitionRegistry,
     ) -> Result<GuardRevalidation, GuardRevalidationError> {
+        let action_state = ActionStateStore::unregistered();
+        self.revalidate_with_action_state(world, &action_state, revisions, authority, definitions)
+    }
+
+    /// Re-read every registered source against immutable world and typed-state
+    /// truth.
+    ///
+    /// This method is deliberately pure. The world-task coordinator must use
+    /// a current result as part of its later atomic transition into
+    /// `CommitPending`; this method does not perform that transition itself.
+    pub fn revalidate_with_action_state(
+        &self,
+        world: &World,
+        action_state: &ActionStateStore,
+        revisions: &RevisionValidatorRegistry,
+        authority: &AuthorityGuardValidatorRegistry,
+        definitions: &DefinitionRegistry,
+    ) -> Result<GuardRevalidation, GuardRevalidationError> {
         self.require_same_composition(revisions, authority, definitions)?;
+        let authority_context = AuthorityGuardContext::new(world, action_state);
         let mut stale_revisions = Vec::new();
         for (key, expected) in self.revisions.iter() {
             let entry = revisions
@@ -1838,7 +1913,7 @@ impl GuardSet {
                         .map_err(GuardRevalidationError::AuthorityLookup)?;
                     let current = entry
                         .validator()
-                        .is_current(world, guard)
+                        .is_current(&authority_context, guard)
                         .map_err(|source| GuardRevalidationError::AuthorityEvaluator {
                             guard: Box::new(guard.clone()),
                             source: Box::new(source),
@@ -4947,7 +5022,11 @@ mod tests {
     struct ConstantAuthority(bool);
 
     impl AuthorityGuardValidator for ConstantAuthority {
-        fn is_current(&self, _world: &World, _guard: &AuthorityGuard) -> Result<bool, ActionError> {
+        fn is_current(
+            &self,
+            _context: &AuthorityGuardContext<'_>,
+            _guard: &AuthorityGuard,
+        ) -> Result<bool, ActionError> {
             Ok(self.0)
         }
     }
@@ -4980,7 +5059,11 @@ mod tests {
     struct FreezeDuringAuthority(MechanicalOwnerReadiness);
 
     impl AuthorityGuardValidator for FreezeDuringAuthority {
-        fn is_current(&self, _world: &World, _guard: &AuthorityGuard) -> Result<bool, ActionError> {
+        fn is_current(
+            &self,
+            _context: &AuthorityGuardContext<'_>,
+            _guard: &AuthorityGuard,
+        ) -> Result<bool, ActionError> {
             freeze_test_owner(&self.0, "authority_race");
             Ok(true)
         }
