@@ -2465,8 +2465,8 @@ unit IDs, revisions, section, exact damage, or draw. Tests prove the two live re
 byte-identical before installation, a stale/disabled source or un-damageable target leaves both
 unchanged, and identical inputs reproduce replay writes, outcome, and RNG evidence. This is a
 transaction-shape proof, not a second production unit authority. Production placement migration
-and the live simultaneous-intent collection provider remain before Gates 2-3 can be claimed
-complete. The fixture now also registers its own composition-branded control-lease family and
+and viewer-specific tactical projections remain before Gates 2-3 can be claimed complete. The
+fixture now also registers its own composition-branded control-lease family and
 requires the `weapons` channel. Neither a station grant nor a lease alone projects `fire`; the
 complete exact pair does, and the internal offer carries both final witnesses. An operated-fire
 test keeps the player actor distinct from the vehicle subject, proves the provider mutates the
@@ -2515,15 +2515,24 @@ the source and chosen target placements plus the exact bridge definition. Moving
 contact does not invalidate it, while moving the selected target does. These remain fixture
 authorities; production `mush-sim` placement migration must reuse this bridge-gated path rather
 than pass its typed family handle to an unregistered owner.
-The fixture now also has an internal simultaneous-fire resolver. A durably closed, canonically
-ordered window containing two exact fire intents is resolved through one root RNG transcript; all
-affected units are preflighted against their opening revisions, complete post-images are computed
-in stable ruleset order, and the changed units plus the window's `Consumed { commit }` transition
-are staged once in the same prepared bundle. Tests prove RAM and the closed window remain unchanged
-before installation, installation lands both attacks and the consume marker together, and one stale
-intent leaves every unit and the entire closed set byte-identical with no prepared transaction.
-The fixture currently bootstraps the accepted/closed set; connecting ordinary resolved offer
-submission to `checked_submit` is the remaining simultaneous collection cut.
+The fixture now also has separate component-provided `submit_fire` and internal `resolve_volley`
+actions. `submit_fire` passes through the ordinary opaque-contact offer/resolution path, exact
+station/channel/lease/window checks, and the action-specific cross-owner placement bridge. Its
+authoritative preparation rechecks source and chosen target revisions plus weapon readiness, then
+uses `checked_submit` to replace exactly one `(actor, truth_subject)` slot. It stages only the
+window post-image: no unit change and no RNG transcript exists at collection time. The private
+submission outcome projects to a generic acknowledgement without actor, target, contact, window,
+or revision identifiers. A live test proves a second submission from one actor replaces rather
+than consumes another capacity slot and that a different actor can still occupy the final slot.
+
+After durable close, the canonically ordered set of exact `submit_fire` intents is resolved through
+one root RNG transcript. All affected units are preflighted against their opening revisions,
+complete post-images are computed in stable ruleset order, and the changed units plus the window's
+`Consumed { commit }` transition are staged once in the same prepared bundle. Tests cover both a
+fixture-bootstrapped closed set and the complete live offer -> submit/replace -> close -> resolve
+path. They prove RAM and the closed window remain unchanged before installation, installation lands
+both attacks and the consume marker together, and one stale intent leaves every unit and the entire
+closed set byte-identical with no prepared transaction.
 
 Exit criteria:
 

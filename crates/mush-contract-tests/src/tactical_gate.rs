@@ -12,22 +12,23 @@ use std::sync::{Arc, Mutex};
 use mush_core::{
     ActionError, ActionErrorCode, ActionInvocation, ActionInvocationDraft, ActionOfferId,
     ActionPresentation, ActionProvider, ActionStateError, ActionTxn, ActionWindow,
-    ActionWindowDraft, ActionWindowGuardValidator, ActionWindowId, ActionWindowPhase,
-    ActionWindowRecord, ActionWindowStateCodec, AuthoritativeActionOutput, AuthorityGuardKind,
-    BridgeDescriptor, CanonicalHash, CanonicalId, ChannelGrant, ChannelId, ClockProviderFailure,
-    ClockProviderKind, ClockRef, ClockStamp, CommitToken, ContactGuardValidator, ContactId,
-    ContactState, ContactStateCodec, ContactStateDraft, ControlHandoffDraft,
-    ControlLeaseGuardValidator, ControlLeaseKey, ControlLeaseState, ControlLeaseStateCodec,
-    DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef, DefinitionRegistryBuilder,
-    DefinitionValidationContext, DefinitionValidator, Engine, GameModule, IdempotencyKey,
-    IdempotencyScope, LegalActionQuery, ModError, ObjId, OfferKeyRing, OfferSecret, OwnerId,
-    PerceivedRef, PrepareCtx, PrincipalId, ProjectedParameterSchema, ProjectedTargetSchema,
-    ProviderOfferDraft, Registrar, RequestUid, ResolutionKeyRing, ResolutionSecret,
-    ResolvedActionInvocation, RevisionKey, RevisionKind, RevisionSet, RevisionValidator,
-    RevisionValidatorContext, RulesValue, ScopedIdempotencyKey, StateFamilyDescriptor,
-    StateFamilyHandle, StateFamilyId, SubjectKey, WindowIntent, WindowMode, WindowOrderKey,
-    WindowRestartPolicy, WindowTimeoutPolicy, World, action_window_state_family_descriptor,
-    contact_state_family_descriptor, control_lease_state_family_descriptor,
+    ActionWindowDraft, ActionWindowError, ActionWindowGuardValidator, ActionWindowId,
+    ActionWindowPhase, ActionWindowRecord, ActionWindowStateCodec, AuthoritativeActionOutput,
+    AuthorityGuardKind, BridgeDescriptor, CanonicalHash, CanonicalId, ChannelGrant, ChannelId,
+    ClockProviderFailure, ClockProviderKind, ClockRef, ClockStamp, CommitToken,
+    ContactGuardValidator, ContactId, ContactState, ContactStateCodec, ContactStateDraft,
+    ControlHandoffDraft, ControlLeaseGuardValidator, ControlLeaseKey, ControlLeaseState,
+    ControlLeaseStateCodec, DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef,
+    DefinitionRegistryBuilder, DefinitionValidationContext, DefinitionValidator, Engine,
+    GameModule, IdempotencyKey, IdempotencyScope, LegalActionQuery, ModError, ObjId, OfferKeyRing,
+    OfferSecret, OwnerId, PerceivedRef, PrepareCtx, PrincipalId, ProjectedParameterSchema,
+    ProjectedTargetSchema, ProviderOfferDraft, Registrar, RequestUid, ResolutionKeyRing,
+    ResolutionSecret, ResolvedActionInvocation, RevisionKey, RevisionKind, RevisionSet,
+    RevisionValidator, RevisionValidatorContext, RulesValue, ScopedIdempotencyKey,
+    StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey, WindowIntent, WindowMode,
+    WindowOrderKey, WindowRestartPolicy, WindowTimeoutPolicy, World,
+    action_window_state_family_descriptor, contact_state_family_descriptor,
+    control_lease_state_family_descriptor,
 };
 use mush_tactics::{
     CellAddr, CellId, CellSpec, ComponentId, ComponentSpec, ConditionId, InstallPoint, SectionId,
@@ -56,6 +57,10 @@ pub const PLACEMENT_FAMILY: &str = "placements";
 pub const RESOLVE_VOLLEY_ACTION_ID: &str = "resolve_volley";
 /// Private durable outcome for simultaneous fire resolution.
 pub const VOLLEY_RESOLVED_OUTCOME_ID: &str = "volley_resolved";
+/// Component action that durably submits one fire intent into a volley window.
+pub const SUBMIT_FIRE_ACTION_ID: &str = "submit_fire";
+/// Private durable outcome for accepting or replacing a fire intent.
+pub const FIRE_SUBMITTED_OUTCOME_ID: &str = "fire_submitted";
 
 const UNIT_RULES_ID: &str = "unit_state";
 const WEAPON_DEFINITION_ID: &str = "weapon";
@@ -78,6 +83,9 @@ pub struct TacticalGateDefinitions {
     pub placement_bridge: DefinitionRef,
     pub resolve_volley: DefinitionRef,
     pub volley_resolved: DefinitionRef,
+    pub submit_fire: DefinitionRef,
+    pub fire_submitted: DefinitionRef,
+    pub submit_placement_bridge: DefinitionRef,
 }
 
 #[derive(Clone, Debug)]
@@ -220,6 +228,37 @@ fn definition_fixture() -> Result<DefinitionFixture, String> {
         .map_err(|error| error.to_string())?;
     descriptors.push(fire_descriptor);
 
+    let fire_submitted_descriptor = descriptor(
+        "outcome",
+        FIRE_SUBMITTED_OUTCOME_ID,
+        json!({
+            "private_fields": ["window", "revision"],
+            "projected_result": "fire_intent_submitted"
+        }),
+    )?
+    .as_current();
+    let fire_submitted = registry
+        .register(owner.clone(), fire_submitted_descriptor.clone())
+        .map_err(|error| error.to_string())?;
+    descriptors.push(fire_submitted_descriptor);
+
+    let submit_fire_descriptor = descriptor(
+        "action",
+        SUBMIT_FIRE_ACTION_ID,
+        json!({
+            "provided_by": WEAPON_COMPONENT_ID,
+            "required_channel": "weapons",
+            "operation": "submit_or_replace_simultaneous_intent",
+            "resolution_draws": []
+        }),
+    )?
+    .with_references(vec![unit.clone(), weapon.clone(), fire_submitted.clone()])
+    .as_current();
+    let submit_fire = registry
+        .register(owner.clone(), submit_fire_descriptor.clone())
+        .map_err(|error| error.to_string())?;
+    descriptors.push(submit_fire_descriptor);
+
     let placement_bridge_descriptor = descriptor(
         "bridge",
         "tactical_placement",
@@ -236,6 +275,23 @@ fn definition_fixture() -> Result<DefinitionFixture, String> {
         .register(owner.clone(), placement_bridge_descriptor.clone())
         .map_err(|error| error.to_string())?;
     descriptors.push(placement_bridge_descriptor);
+
+    let submit_placement_bridge_descriptor = descriptor(
+        "bridge",
+        "submit_fire_placement",
+        json!({
+            "source_owner": TACTICAL_GATE_OWNER,
+            "target_owner": TACTICAL_PLACEMENT_OWNER,
+            "interaction": SUBMIT_FIRE_ACTION_ID,
+            "purpose": "validate_submitted_fire_placements"
+        }),
+    )?
+    .with_references(vec![submit_fire.clone()])
+    .as_current();
+    let submit_placement_bridge = registry
+        .register(owner.clone(), submit_placement_bridge_descriptor.clone())
+        .map_err(|error| error.to_string())?;
+    descriptors.push(submit_placement_bridge_descriptor);
 
     let volley_resolved_descriptor = descriptor(
         "outcome",
@@ -263,7 +319,7 @@ fn definition_fixture() -> Result<DefinitionFixture, String> {
     .with_references(vec![
         unit.clone(),
         weapon.clone(),
-        fire.clone(),
+        submit_fire.clone(),
         volley_resolved.clone(),
     ])
     .as_current();
@@ -282,6 +338,9 @@ fn definition_fixture() -> Result<DefinitionFixture, String> {
             placement_bridge,
             resolve_volley,
             volley_resolved,
+            submit_fire,
+            fire_submitted,
+            submit_placement_bridge,
         },
         unit_spec,
     })
@@ -463,7 +522,7 @@ impl GameModule for TacticalPlacementModule {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct FireProvider {
     units: StateFamilyHandle<ObjId, TacticalUnit>,
     contacts: StateFamilyHandle<ContactId, ContactState>,
@@ -1068,6 +1127,222 @@ impl ActionProvider for FireProvider {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+struct FireSubmittedOutcome {
+    event: String,
+    window: ActionWindowId,
+    revision: u64,
+}
+
+#[derive(Debug)]
+struct VolleySubmitProvider {
+    projector: FireProvider,
+    action: DefinitionRef,
+    outcome: DefinitionRef,
+}
+
+impl VolleySubmitProvider {
+    fn submission_error(error: ActionWindowError) -> ActionError {
+        let (code, message) = match error {
+            ActionWindowError::CapacityReached { .. } => (
+                ActionErrorCode::ProviderRejected,
+                "the simultaneous fire window is full",
+            ),
+            ActionWindowError::InputOperationLimit | ActionWindowError::ReceiptLimit => (
+                ActionErrorCode::BoundsExceeded,
+                "the simultaneous fire window reached its durable operation bound",
+            ),
+            ActionWindowError::OperationConflict { .. } => (
+                ActionErrorCode::InvalidRequest,
+                "the simultaneous fire request identity was reused",
+            ),
+            ActionWindowError::StaleRevision { .. }
+            | ActionWindowError::NotOpen { .. }
+            | ActionWindowError::OutsideWindow => (
+                ActionErrorCode::Stale,
+                "the simultaneous fire window changed",
+            ),
+            _ => (
+                ActionErrorCode::Integrity,
+                "the simultaneous fire window rejected a valid intent",
+            ),
+        };
+        ActionError::new(code, false, message).expect("static submission error is bounded")
+    }
+}
+
+impl ActionProvider for VolleySubmitProvider {
+    fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError> {
+        self.projector.validate_invocation(invocation)
+    }
+
+    fn project_offer(
+        &self,
+        action: &DefinitionRef,
+        query: &LegalActionQuery,
+        engine: &Engine,
+    ) -> Result<Option<ProviderOfferDraft>, ActionError> {
+        let Some(mut draft) = self.projector.project_offer(action, query, engine)? else {
+            return Ok(None);
+        };
+        draft.presentation = ActionPresentation::new(
+            "submit_fire",
+            "Submit fire",
+            "Commit or replace this unit's fire intent for simultaneous resolution.",
+        )
+        .map_err(|_| FireProvider::integrity("the fire submission presentation is invalid"))?;
+        Ok(Some(draft))
+    }
+
+    fn prepare_invocation(
+        &self,
+        _invocation: &ActionInvocation,
+        _txn: &mut ActionTxn<'_>,
+    ) -> Result<(), ActionError> {
+        Err(ActionError::new(
+            ActionErrorCode::Unavailable,
+            false,
+            "simultaneous fire submission requires resolved authority",
+        )
+        .expect("static simultaneous submission error is bounded"))
+    }
+
+    fn prepare_resolved_authoritative_with_context(
+        &self,
+        resolved: &ResolvedActionInvocation,
+        txn: &mut ActionTxn<'_>,
+        _context: &mut PrepareCtx<'_>,
+    ) -> Result<AuthoritativeActionOutput, ActionError> {
+        let source_id = FireProvider::resolved_source(resolved)?;
+        let target_id = FireProvider::resolved_target(resolved)?;
+        if source_id == target_id {
+            return Err(FireProvider::invalid(
+                "a Gate-2 unit cannot submit fire on itself",
+            ));
+        }
+        let parameters = FireProvider::decode_parameters(resolved.invocation())?;
+        let source = self.projector.read_unit(txn, source_id)?;
+        let target = self.projector.read_target_unit(txn, target_id)?;
+        if source.revision() != parameters.source_revision
+            || parameters
+                .target_revision
+                .is_some_and(|revision| target.revision() != revision)
+        {
+            return Err(FireProvider::stale(
+                "a simultaneous fire participant changed",
+            ));
+        }
+        let weapon_id = ComponentId::new(WEAPON_COMPONENT_ID).expect("static component id");
+        let weapon = source
+            .component(&weapon_id)
+            .ok_or_else(|| FireProvider::stale("the firing component is no longer installed"))?;
+        let ammo = CellAddr::Component {
+            component: weapon_id,
+            cell: CellId::new(AMMO_CELL_ID).expect("static cell id"),
+        };
+        let heat = CellAddr::Unit {
+            cell: CellId::new(HEAT_CELL_ID).expect("static cell id"),
+        };
+        if weapon.condition != ConditionId::new(READY_CONDITION_ID).expect("static condition id")
+            || source
+                .cell(&ammo)
+                .is_none_or(|cell| cell.current <= cell.min)
+            || source
+                .cell(&heat)
+                .is_none_or(|cell| cell.current >= cell.max)
+        {
+            return Err(FireProvider::stale(
+                "the firing component cannot submit an intent",
+            ));
+        }
+
+        let record = txn
+            .get(&self.projector.windows, &self.projector.window)
+            .map_err(|error| FireProvider::state_error(&error))?
+            .cloned()
+            .ok_or_else(|| FireProvider::stale("the simultaneous fire window is unavailable"))?;
+        if record.phase() != ActionWindowPhase::Open
+            || record.window().mode() != WindowMode::CollectSimultaneous
+            || !record
+                .window()
+                .contains(&parameters.now)
+                .map_err(|_| FireProvider::integrity("the volley clock is inconsistent"))?
+        {
+            return Err(FireProvider::stale(
+                "the simultaneous fire window is unavailable",
+            ));
+        }
+        let intent = WindowIntent::new(
+            record.window().id(),
+            record.window().generation(),
+            resolved.truth_subject().clone(),
+            resolved.truth_targets().to_vec(),
+            self.action.clone(),
+            resolved.invocation().clone(),
+            WindowOrderKey::new(vec![i64::from(source_id.0)])
+                .map_err(|_| FireProvider::integrity("the volley order key is invalid"))?,
+        )
+        .map_err(|_| FireProvider::integrity("the volley intent is invalid"))?;
+        let transition = record
+            .checked_submit(record.revision(), &parameters.now, intent)
+            .map_err(Self::submission_error)?;
+        let record = transition.into_record();
+        txn.replace(
+            &self.projector.windows,
+            &self.projector.window,
+            record.clone(),
+        )
+        .map_err(|error| FireProvider::state_error(&error))?;
+        let outcome = RulesValue::new(
+            self.outcome.clone(),
+            serde_json::to_value(FireSubmittedOutcome {
+                event: "fire_intent_submitted".to_owned(),
+                window: self.projector.window,
+                revision: record.revision(),
+            })
+            .map_err(|_| FireProvider::integrity("the submission outcome could not be encoded"))?,
+        )
+        .map_err(|_| FireProvider::integrity("the submission outcome exceeds bounds"))?;
+        Ok(AuthoritativeActionOutput::new(outcome)
+            .with_eligible_witnesses(vec![resolved.invocation().principal().clone()]))
+    }
+
+    fn resolved_revision_keys(
+        &self,
+        resolved: &ResolvedActionInvocation,
+    ) -> Result<Vec<RevisionKey>, ActionError> {
+        self.projector.resolved_revision_keys(resolved)
+    }
+
+    fn project_receipt(
+        &self,
+        action: &DefinitionRef,
+        outcome: &RulesValue,
+        _viewer: &PrincipalId,
+    ) -> Result<Option<mush_proto::ProjectedActionResult>, ActionError> {
+        if action != &self.action || outcome.schema() != &self.outcome {
+            return Err(FireProvider::integrity(
+                "fire submission receipt carries the wrong schema",
+            ));
+        }
+        let decoded: FireSubmittedOutcome = serde_json::from_value(outcome.data().clone())
+            .map_err(|_| FireProvider::integrity("fire submission outcome is malformed"))?;
+        if decoded.event != "fire_intent_submitted" || decoded.revision == 0 {
+            return Err(FireProvider::integrity(
+                "fire submission outcome violates its contract",
+            ));
+        }
+        mush_proto::ProjectedActionResult::new(
+            "submit_fire",
+            "Fire intent accepted.",
+            json!({ "event": "fire_intent_submitted" }),
+        )
+        .map(Some)
+        .map_err(|_| FireProvider::integrity("fire submission receipt is invalid"))
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 struct VolleyShotOutcome {
     source: ObjId,
     target: ObjId,
@@ -1439,6 +1714,9 @@ impl GameModule for TacticalGateModule {
             &fixture.definitions.placement_bridge,
             &fixture.definitions.resolve_volley,
             &fixture.definitions.volley_resolved,
+            &fixture.definitions.submit_fire,
+            &fixture.definitions.fire_submitted,
+            &fixture.definitions.submit_placement_bridge,
         ] {
             if !registered.contains(expected) {
                 return Err(ModError::msg("Gate-2 definition identity drift"));
@@ -1486,6 +1764,12 @@ impl GameModule for TacticalGateModule {
             OwnerId::new(TACTICAL_GATE_OWNER).expect("static tactics owner"),
             OwnerId::new(TACTICAL_PLACEMENT_OWNER).expect("static placement owner"),
             fixture.definitions.fire.clone(),
+        ))?;
+        registrar.interaction_bridge(BridgeDescriptor::new(
+            fixture.definitions.submit_placement_bridge.clone(),
+            OwnerId::new(TACTICAL_GATE_OWNER).expect("static tactics owner"),
+            OwnerId::new(TACTICAL_PLACEMENT_OWNER).expect("static placement owner"),
+            fixture.definitions.submit_fire.clone(),
         ))?;
         let contact_codec = ContactStateCodec;
         let contacts = registrar.state_family(
@@ -1561,12 +1845,28 @@ impl GameModule for TacticalGateModule {
             },
         )?;
         registrar.action_provider(
+            fixture.definitions.submit_fire.clone(),
+            VolleySubmitProvider {
+                projector: FireProvider {
+                    units: units.clone(),
+                    contacts: contacts.clone(),
+                    windows: windows.clone(),
+                    placements: placements.clone(),
+                    window: tactical_gate_volley_window_id(),
+                    action: fixture.definitions.submit_fire.clone(),
+                    outcome: fixture.definitions.fire_submitted.clone(),
+                },
+                action: fixture.definitions.submit_fire.clone(),
+                outcome: fixture.definitions.fire_submitted.clone(),
+            },
+        )?;
+        registrar.action_provider(
             fixture.definitions.resolve_volley.clone(),
             VolleyResolver {
                 units: units.clone(),
                 windows: windows.clone(),
                 window: tactical_gate_volley_window_id(),
-                fire: fixture.definitions.fire.clone(),
+                fire: fixture.definitions.submit_fire.clone(),
                 action: fixture.definitions.resolve_volley.clone(),
                 outcome: fixture.definitions.volley_resolved.clone(),
             },
@@ -1812,6 +2112,41 @@ pub fn install_tactical_gate_fire_window(
     record
 }
 
+/// Fixture-only open simultaneous-fire collection window bootstrap.
+pub fn install_tactical_gate_volley_window(
+    engine: &mut Engine,
+    state: &TacticalGateState,
+    capacity: u32,
+) -> ActionWindowRecord {
+    let window = ActionWindow::new(ActionWindowDraft {
+        id: tactical_gate_volley_window_id(),
+        clock: tactical_gate_clock(),
+        opens: tactical_gate_tick(0),
+        closes: tactical_gate_tick(10),
+        generation: 1,
+        mode: WindowMode::CollectSimultaneous,
+        capacity,
+        restart: WindowRestartPolicy::Resume,
+        timeout: WindowTimeoutPolicy::Close,
+        max_catch_up: 1,
+        resolution_secret_version: Some(1),
+    })
+    .expect("valid simultaneous fire window");
+    let record = ActionWindowRecord::open(window);
+    let id = record.window().id();
+    let prepared = {
+        let mut txn = engine
+            .action_transaction(&state.windows)
+            .expect("volley window bootstrap transaction");
+        txn.insert(&state.windows, &id, record.clone())
+            .expect("valid volley window bootstrap");
+        txn.prepare().expect("volley window bootstrap prepares")
+    };
+    let (_, installation) = prepared.into_parts();
+    engine.install_prepared_action(installation);
+    record
+}
+
 /// Fixture-only durable collection/close path for simultaneous fire intents.
 pub fn install_tactical_gate_closed_volley(
     engine: &mut Engine,
@@ -1841,7 +2176,7 @@ pub fn install_tactical_gate_closed_volley(
             window.generation(),
             SubjectKey::Object { id: *source },
             vec![SubjectKey::Object { id: *target }],
-            definitions.fire.clone(),
+            definitions.submit_fire.clone(),
             invocation,
             WindowOrderKey::new(vec![*order]).expect("fixture order key"),
         )
@@ -2389,7 +2724,7 @@ mod tests {
         assert_eq!(closed.phase(), ActionWindowPhase::Closed);
         assert_eq!(closed.intents().len(), 2);
         assert!(closed.intents().iter().all(|intent| {
-            intent.action() == &definitions.fire
+            intent.action() == &definitions.submit_fire
                 && intent.truth_targets() == [SubjectKey::Object { id: target }]
         }));
         let window_id = tactical_gate_volley_window_id();
@@ -2609,6 +2944,311 @@ mod tests {
                 .unwrap()
                 .phase(),
             ActionWindowPhase::Closed
+        );
+    }
+
+    #[test]
+    fn live_simultaneous_submissions_replace_slots_then_resolve_the_frozen_set() {
+        let (mut engine, state, definitions, spec) = tactical_gate_world();
+        let first = spawn_unit_player(&mut engine, &state, &spec, "First Volley Shooter");
+        let second = spawn_unit_player(&mut engine, &state, &spec, "Second Volley Shooter");
+        let target = ObjId(934_567_890);
+        install_tactical_gate_unit(&mut engine, &state, unit(&spec, target.0));
+        install_tactical_gate_placement(&mut engine, &state, target, 1, 0);
+        grant_weapons(&mut engine, &state, first, first);
+        grant_weapons(&mut engine, &state, second, second);
+        let first_contact = ContactId::from_bytes([0xd1; 16]);
+        let second_contact = ContactId::from_bytes([0xd2; 16]);
+        install_tactical_gate_contact(
+            &mut engine,
+            &state,
+            first_contact,
+            target,
+            PrincipalId::Object { id: first },
+        );
+        install_tactical_gate_contact(
+            &mut engine,
+            &state,
+            second_contact,
+            target,
+            PrincipalId::Object { id: second },
+        );
+        install_tactical_gate_volley_window(&mut engine, &state, 2);
+
+        let unit_before: BTreeMap<_, _> = [first, second, target]
+            .into_iter()
+            .map(|id| {
+                (
+                    id,
+                    engine
+                        .action_state()
+                        .canonical(&state.units, &id)
+                        .unwrap()
+                        .unwrap()
+                        .as_slice()
+                        .to_vec(),
+                )
+            })
+            .collect();
+        let submissions = [
+            (
+                first,
+                first_contact,
+                RequestUid::from_bytes([0xd3; 16]),
+                CommitToken::from_bytes([0xd4; 16]),
+                1,
+            ),
+            // A different actor occupies the final capacity slot.
+            (
+                second,
+                second_contact,
+                RequestUid::from_bytes([0xd5; 16]),
+                CommitToken::from_bytes([0xd6; 16]),
+                2,
+            ),
+            // A member may replace its existing slot even when capacity is
+            // full; replacement cannot crowd out the other accepted actor.
+            (
+                first,
+                first_contact,
+                RequestUid::from_bytes([0xd7; 16]),
+                CommitToken::from_bytes([0xd8; 16]),
+                2,
+            ),
+        ];
+        for (actor, contact, request, token, expected_intents) in submissions {
+            let principal = PrincipalId::Object { id: actor };
+            let query = LegalActionQuery::new(
+                principal.clone(),
+                actor,
+                SubjectKey::Object { id: actor },
+                PerceivedRef::SelfActor,
+                1,
+                Some(tactical_gate_tick(7)),
+            )
+            .unwrap();
+            let offers = engine.project_legal_actions(&query).unwrap();
+            assert_eq!(offers.projected().len(), 1);
+            let projected = offers.projected().pop().unwrap();
+            assert_eq!(projected.presentation().verb, SUBMIT_FIRE_ACTION_ID);
+            let ProjectedTargetSchema::Choices { choices, .. } = projected.targets() else {
+                panic!("simultaneous fire must retain opaque target choices");
+            };
+            let selected = choices
+                .iter()
+                .find(|choice| matches!(choice, PerceivedRef::Contact { id, .. } if id == &contact))
+                .expect("the actor's private contact is projected")
+                .clone();
+            let resolved = engine
+                .resolve_legal_action(
+                    &offers,
+                    OfferExecutionContext {
+                        request,
+                        principal: principal.clone(),
+                        actor,
+                        idempotency: ScopedIdempotencyKey::new(
+                            IdempotencyScope {
+                                principal: principal.clone(),
+                                owner: OwnerId::new(TACTICAL_GATE_OWNER).unwrap(),
+                                namespace: CanonicalId::new(SUBMIT_FIRE_ACTION_ID).unwrap(),
+                            },
+                            1,
+                            IdempotencyKey::Request(request),
+                        ),
+                        viewer_scope: query.viewer_scope(),
+                        now: None,
+                    },
+                    OfferSubmission {
+                        offer: projected.offer(),
+                        subject: PerceivedRef::SelfActor,
+                        targets: vec![selected],
+                        parameters: json!({}),
+                    },
+                )
+                .expect("simultaneous fire offer resolves privately");
+            assert_eq!(resolved.action(), &definitions.submit_fire);
+            assert!(
+                resolved
+                    .guards()
+                    .authority()
+                    .contains(&AuthorityGuard::Definition(
+                        definitions.submit_placement_bridge.clone()
+                    ))
+            );
+            for guarded in [actor, target] {
+                assert!(
+                    resolved
+                        .guards()
+                        .revisions()
+                        .iter()
+                        .any(|(key, generation)| {
+                            key.owner.as_str() == TACTICAL_PLACEMENT_OWNER
+                                && key.subject == SubjectKey::Object { id: guarded }
+                                && *generation == 1
+                        })
+                );
+            }
+
+            let window_id = tactical_gate_volley_window_id();
+            let window_before = engine
+                .action_state()
+                .canonical(&state.windows, &window_id)
+                .unwrap()
+                .unwrap()
+                .as_slice()
+                .to_vec();
+            let (prepared, output) = engine
+                .prepare_registered_resolved_authoritative_action(
+                    &definitions.submit_fire,
+                    resolved.resolved_invocation(),
+                    token,
+                )
+                .expect("simultaneous fire submission prepares");
+            assert_eq!(prepared.operation_count(), 1);
+            let (outcome, resolution, _, _, _, _) = output.into_parts();
+            assert!(resolution.is_none());
+            for (id, before) in &unit_before {
+                assert_eq!(
+                    engine
+                        .action_state()
+                        .canonical(&state.units, id)
+                        .unwrap()
+                        .unwrap()
+                        .as_slice(),
+                    before
+                );
+            }
+            assert_eq!(
+                engine
+                    .action_state()
+                    .canonical(&state.windows, &window_id)
+                    .unwrap()
+                    .unwrap()
+                    .as_slice(),
+                window_before
+            );
+            let receipt = engine
+                .registry
+                .action_providers()
+                .unwrap()
+                .receipt_projection_table()
+                .project(&definitions.submit_fire, &outcome, &principal)
+                .unwrap()
+                .unwrap();
+            let receipt_json = serde_json::to_string(&receipt).unwrap();
+            for forbidden in [
+                actor.0.to_string(),
+                target.0.to_string(),
+                contact.to_hex(),
+                tactical_gate_volley_window_id().0.to_hex(),
+            ] {
+                assert!(
+                    !receipt_json.contains(&forbidden),
+                    "submission receipt leaked private identifier {forbidden}"
+                );
+            }
+            let (_, installation) = prepared.into_parts();
+            engine.install_prepared_action(installation);
+            let window = engine
+                .action_state()
+                .get(&state.windows, &window_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(window.intents().len(), expected_intents);
+            assert!(
+                window
+                    .intents()
+                    .iter()
+                    .all(|intent| intent.action() == &definitions.submit_fire)
+            );
+            if actor == first {
+                let intent = window
+                    .intents()
+                    .iter()
+                    .find(|intent| intent.invocation().actor() == first)
+                    .unwrap();
+                assert_eq!(intent.invocation().request(), request);
+            }
+        }
+
+        let window_id = tactical_gate_volley_window_id();
+        let open = engine
+            .action_state()
+            .get(&state.windows, &window_id)
+            .unwrap()
+            .unwrap()
+            .clone();
+        let closed = open
+            .checked_close_due(
+                open.revision(),
+                RequestUid::from_bytes([0xd9; 16]),
+                &tactical_gate_tick(10),
+            )
+            .unwrap()
+            .into_record();
+        let prepared = {
+            let mut txn = engine.action_transaction(&state.windows).unwrap();
+            txn.replace(&state.windows, &window_id, closed.clone())
+                .unwrap();
+            txn.prepare().unwrap()
+        };
+        let (_, installation) = prepared.into_parts();
+        engine.install_prepared_action(installation);
+
+        let resolve = tactical_gate_resolve_volley_invocation(
+            &definitions,
+            closed.revision(),
+            RequestUid::from_bytes([0xda; 16]),
+        );
+        let resolution_token = CommitToken::from_bytes([0xdb; 16]);
+        let (prepared, output) = engine
+            .prepare_registered_authoritative_action(
+                &definitions.resolve_volley,
+                &resolve,
+                resolution_token,
+            )
+            .expect("the frozen live submission set resolves");
+        assert_eq!(prepared.operation_count(), 4);
+        assert!(output.into_parts().1.is_some());
+        let (_, installation) = prepared.into_parts();
+        engine.install_prepared_action(installation);
+        assert_eq!(
+            engine
+                .action_state()
+                .get(&state.units, &first)
+                .unwrap()
+                .unwrap()
+                .revision(),
+            1
+        );
+        assert_eq!(
+            engine
+                .action_state()
+                .get(&state.units, &second)
+                .unwrap()
+                .unwrap()
+                .revision(),
+            1
+        );
+        assert_eq!(
+            engine
+                .action_state()
+                .get(&state.units, &target)
+                .unwrap()
+                .unwrap()
+                .revision(),
+            2
+        );
+        assert_eq!(
+            engine
+                .action_state()
+                .get(&state.windows, &window_id)
+                .unwrap()
+                .unwrap()
+                .phase(),
+            ActionWindowPhase::Consumed {
+                commit: resolution_token
+            }
         );
     }
 
