@@ -3086,6 +3086,19 @@ pub enum CascadeError {
 pub trait ActionProvider: Send + Sync {
     fn validate_invocation(&self, invocation: &ActionInvocation) -> Result<(), ActionError>;
 
+    /// Project this exact registered action for one server-authenticated
+    /// viewer/subject query. The default means that this action is not exposed
+    /// through legal-action discovery. Returned data remains internal until
+    /// the registry stamps the exact action and signs it.
+    fn project_offer(
+        &self,
+        _action: &DefinitionRef,
+        _query: &crate::offer::LegalActionQuery,
+        _engine: &crate::engine::Engine,
+    ) -> Result<Option<crate::offer::ProviderOfferDraft>, ActionError> {
+        Ok(None)
+    }
+
     /// Prepare bounded owner-scoped post-images without access to live mutable
     /// world or module state. Existing validation-only providers inherit a
     /// fail-closed empty transaction; only providers that add state mutations
@@ -3547,6 +3560,67 @@ impl ActionProviderRegistry {
                 source: Box::new(source),
             })?;
         Ok(entry)
+    }
+
+    /// Enumerate providers in canonical action order and stamp every returned
+    /// draft with the exact frozen action identity. The callback runs against
+    /// immutable engine truth and owner readiness is checked again after it
+    /// returns.
+    pub fn project_legal_actions(
+        &self,
+        engine: &crate::engine::Engine,
+        query: &crate::offer::LegalActionQuery,
+        keys: &crate::offer::OfferKeyRing,
+    ) -> Result<crate::offer::ProjectedLegalActionSink, crate::offer::LegalActionProjectionError>
+    {
+        let mut sink = crate::offer::ProjectedLegalActionSink::new(query.viewer_scope());
+        for entry in self.entries.values() {
+            let projected = entry
+                .provider()
+                .project_offer(entry.action(), query, engine)
+                .map_err(
+                    |source| crate::offer::LegalActionProjectionError::Provider {
+                        action: Box::new(entry.action().clone()),
+                        source: Box::new(source),
+                    },
+                )?;
+            self.owner_readiness
+                .require_ready(entry.owner())
+                .map_err(
+                    |_| crate::offer::LegalActionProjectionError::ProviderUnavailable {
+                        action: Box::new(entry.action().clone()),
+                    },
+                )?;
+            let Some(projected) = projected else {
+                continue;
+            };
+            let offer = crate::offer::InternalOffer::new(
+                crate::offer::InternalOfferDraft {
+                    action: entry.action().clone(),
+                    viewer_scope: query.viewer_scope(),
+                    truth_subject: query.truth_subject().clone(),
+                    projected_subject: query.projected_subject().clone(),
+                    fixed_parameters: projected.fixed_parameters,
+                    parameters: projected.parameters,
+                    targets: projected.targets,
+                    required_channels: projected.required_channels,
+                    expires: projected.expires,
+                    presentation: projected.presentation,
+                    guards: projected.guards,
+                },
+                keys,
+            )
+            .map_err(|source| crate::offer::LegalActionProjectionError::Offer {
+                action: Box::new(entry.action().clone()),
+                source: Box::new(source),
+            })?;
+            sink.push(offer)
+                .map_err(|source| crate::offer::LegalActionProjectionError::Offer {
+                    action: Box::new(entry.action().clone()),
+                    source: Box::new(source),
+                })?;
+        }
+        Ok(sink)
     }
 
     /// Validate through the exact ready provider without exposing a callable

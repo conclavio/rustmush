@@ -11,12 +11,11 @@ use mush_core::{
     BoundedScalar, CanonicalHash, CanonicalId, ClockRef, ClockStamp, DefinitionDescriptor,
     DefinitionId, DefinitionKind, DefinitionRef, DefinitionRegistryBuilder,
     DefinitionValidationContext, EffectDuration, EffectInstance, EffectInstanceId, EffectTarget,
-    Engine, GameModule, IdempotencyKey, IdempotencyScope, InternalOffer, InternalOfferDraft,
-    ModError, ObjId, OfferKeyRing, OwnerId, PerceivedRef, PreparedCausalRef, PreparedTrigger,
-    PrincipalId, ProjectedLegalActionSink,
-    ProjectedParameterSchema, ProjectedTargetSchema, ProjectionScopeId, Registrar, RequestUid,
-    ResourceOperation, RulesValue, SameCommitTrigger, ScopedIdempotencyKey, StateFamilyDescriptor,
-    StateFamilyHandle, StateFamilyId, SubjectKey,
+    Engine, GameModule, IdempotencyKey, IdempotencyScope, LegalActionQuery, ModError, ObjId,
+    OwnerId, PerceivedRef, PreparedCausalRef, PreparedTrigger, PrincipalId,
+    ProjectedLegalActionSink, ProjectedParameterSchema, ProjectedTargetSchema, ProviderOfferDraft,
+    Registrar, RequestUid, ResourceOperation, RulesValue, SameCommitTrigger, ScopedIdempotencyKey,
+    StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey,
 };
 use mush_testkit::TestWorld;
 use serde::{Deserialize, Serialize};
@@ -353,6 +352,108 @@ impl ActionProvider for BraceProvider {
             .expect("static action error is bounded"));
         }
         Self::scene_turn(invocation).map(|_| ())
+    }
+
+    fn project_offer(
+        &self,
+        action: &DefinitionRef,
+        query: &LegalActionQuery,
+        engine: &Engine,
+    ) -> Result<Option<ProviderOfferDraft>, ActionError> {
+        let subject_actor = match query.truth_subject() {
+            SubjectKey::Object { id } => *id,
+            SubjectKey::Scoped { .. } => return Ok(None),
+        };
+        if action != &self.brace_definition
+            || query.actor() != subject_actor
+            || query.projected_subject() != &PerceivedRef::SelfActor
+        {
+            return Ok(None);
+        }
+        let focus = engine
+            .action_state()
+            .get(&self.focus, &query.actor())
+            .map_err(|error| Self::state_error(&error))?;
+        let guarded = engine
+            .action_state()
+            .get(&self.guarded, &query.actor())
+            .map_err(|error| Self::state_error(&error))?;
+        if !focus.is_some_and(|focus| focus.amount() > 0) || guarded.is_some() {
+            return Ok(None);
+        }
+        let scene_turn = query.now().cloned().ok_or_else(|| {
+            ActionError::new(
+                ActionErrorCode::Unavailable,
+                false,
+                "brace projection requires the current scene turn",
+            )
+            .expect("static projection error is bounded")
+        })?;
+        if !matches!(scene_turn.clock, ClockRef::SceneTurn { .. }) {
+            return Err(ActionError::new(
+                ActionErrorCode::InvalidRequest,
+                false,
+                "brace projection requires a scene-turn clock",
+            )
+            .expect("static projection error is bounded"));
+        }
+        let definitions = engine.registry.definitions().ok_or_else(|| {
+            ActionError::new(
+                ActionErrorCode::Integrity,
+                false,
+                "toy definition registry is unavailable",
+            )
+            .expect("static projection error is bounded")
+        })?;
+        let mut guard_builder = engine
+            .registry
+            .server_guard_set_builder(mush_core::RevisionSet::default())
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "toy guard registry is unavailable",
+                )
+                .expect("static projection error is bounded")
+            })?;
+        guard_builder
+            .add_definition(action.clone(), definitions)
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "brace definition guard is unavailable",
+                )
+                .expect("static projection error is bounded")
+            })?;
+        Ok(Some(ProviderOfferDraft {
+            fixed_parameters: json!({ "scene_turn": scene_turn }),
+            parameters: ProjectedParameterSchema::empty(),
+            targets: ProjectedTargetSchema::None,
+            required_channels: Vec::new(),
+            expires: None,
+            presentation: ActionPresentation::new(
+                "brace",
+                "Brace",
+                "Spend one focus to become guarded for two scene turns.",
+            )
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "brace presentation is invalid",
+                )
+                .expect("static projection error is bounded")
+            })?,
+            guards: guard_builder.finish().map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "brace offer guards are invalid",
+                )
+                .expect("static projection error is bounded")
+            })?,
+        }))
     }
 
     fn prepare_invocation(
@@ -893,64 +994,23 @@ pub fn toy_scene_turn(at: u64) -> ClockStamp {
 /// the invocation after opaque binding resolution.
 pub fn toy_brace_offers(
     engine: &Engine,
-    families: &ToyStateFamilies,
-    keys: &OfferKeyRing,
     actor: ObjId,
     scene_turn: u64,
     projection_generation: u64,
 ) -> Result<ProjectedLegalActionSink, String> {
     let principal = PrincipalId::Object { id: actor };
-    let viewer_scope = ProjectionScopeId::derive(&principal, projection_generation)
-        .map_err(|error| error.to_string())?;
-    let mut sink = ProjectedLegalActionSink::new(viewer_scope);
-    let focus = engine
-        .action_state()
-        .get(&families.focus, &actor)
-        .map_err(|error| error.to_string())?;
-    let guarded = engine
-        .action_state()
-        .get(&families.guarded, &actor)
-        .map_err(|error| error.to_string())?;
-    if !focus.is_some_and(|focus| focus.amount() > 0) || guarded.is_some() {
-        return Ok(sink);
-    }
-
-    let action = toy_definitions().brace;
-    let definitions = engine
-        .registry
-        .definitions()
-        .ok_or_else(|| "toy definition registry is unavailable".to_owned())?;
-    let mut guard_builder = engine
-        .registry
-        .server_guard_set_builder(mush_core::RevisionSet::default())
-        .map_err(|error| error.to_string())?;
-    guard_builder
-        .add_definition(action.clone(), definitions)
-        .map_err(|error| error.to_string())?;
-    let offer = InternalOffer::new(
-        InternalOfferDraft {
-            action,
-            viewer_scope,
-            truth_subject: SubjectKey::Object { id: actor },
-            projected_subject: PerceivedRef::SelfActor,
-            fixed_parameters: json!({ "scene_turn": toy_scene_turn(scene_turn) }),
-            parameters: ProjectedParameterSchema::empty(),
-            targets: ProjectedTargetSchema::None,
-            required_channels: Vec::new(),
-            expires: None,
-            presentation: ActionPresentation::new(
-                "brace",
-                "Brace",
-                "Spend one focus to become guarded for two scene turns.",
-            )
-            .map_err(|error| error.to_string())?,
-            guards: guard_builder.finish().map_err(|error| error.to_string())?,
-        },
-        keys,
+    let query = LegalActionQuery::new(
+        principal,
+        actor,
+        SubjectKey::Object { id: actor },
+        PerceivedRef::SelfActor,
+        projection_generation,
+        Some(toy_scene_turn(scene_turn)),
     )
     .map_err(|error| error.to_string())?;
-    sink.push(offer).map_err(|error| error.to_string())?;
-    Ok(sink)
+    engine
+        .project_legal_actions(&query)
+        .map_err(|error| error.to_string())
 }
 
 /// Fixture-only variant used to prove cascade bounds abort the whole action.
@@ -1060,7 +1120,8 @@ pub fn toy_rules_value(definition: DefinitionRef, data: Value) -> RulesValue {
 mod tests {
     use super::*;
     use mush_core::{
-        ActionProviderPrepareError, OfferExecutionContext, OfferSubmission, RevisionSet,
+        ActionProviderPrepareError, OfferExecutionContext, OfferKeyRing, OfferSubmission,
+        ProjectionScopeId, RevisionSet,
     };
 
     fn bootstrap_focus(
@@ -1536,7 +1597,8 @@ mod tests {
         bootstrap_focus(&mut world, &families, mush_core::GOD, 3);
         let keys =
             OfferKeyRing::new(mush_core::OfferSecret::new(1, [0x41; 32]).unwrap(), []).unwrap();
-        let offers = toy_brace_offers(world.engine(), &families, &keys, mush_core::GOD, 11, 4)
+        world.engine_mut().set_offer_keys(keys.clone());
+        let offers = toy_brace_offers(world.engine(), mush_core::GOD, 11, 4)
             .expect("offer projection succeeds");
         assert_eq!(offers.len(), 1);
         let projected = offers.projected().pop().unwrap();
@@ -1548,9 +1610,10 @@ mod tests {
         let request = RequestUid::from_bytes([0xD1; 16]);
         let principal = PrincipalId::Object { id: mush_core::GOD };
         let viewer_scope = ProjectionScopeId::derive(&principal, 4).unwrap();
-        let resolved = offers
-            .resolve(
-                &keys,
+        let resolved = world
+            .engine()
+            .resolve_legal_action(
+                &offers,
                 OfferExecutionContext {
                     request,
                     principal: principal.clone(),
@@ -1589,7 +1652,7 @@ mod tests {
             .expect("resolved offer reaches the canonical provider");
         world.engine_mut().abort_prepared_transaction(prepared);
 
-        let changed = toy_brace_offers(world.engine(), &families, &keys, mush_core::GOD, 11, 5)
+        let changed = toy_brace_offers(world.engine(), mush_core::GOD, 11, 5)
             .unwrap()
             .projected()
             .pop()
@@ -1598,17 +1661,11 @@ mod tests {
 
         let (mut empty_world, empty_families) = toy_world_with_state();
         bootstrap_focus(&mut empty_world, &empty_families, mush_core::GOD, 0);
+        empty_world.engine_mut().set_offer_keys(keys.clone());
         assert!(
-            toy_brace_offers(
-                empty_world.engine(),
-                &empty_families,
-                &keys,
-                mush_core::GOD,
-                11,
-                4,
-            )
-            .unwrap()
-            .is_empty()
+            toy_brace_offers(empty_world.engine(), mush_core::GOD, 11, 4,)
+                .unwrap()
+                .is_empty()
         );
     }
 

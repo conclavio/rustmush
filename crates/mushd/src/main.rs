@@ -20,6 +20,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
+use mush_config::offer_keys::DurableOfferKeyStore;
 use mush_core::{ControlMsg, Engine, Inbound};
 use mush_llm::LlmService;
 use mush_net_web::{Metrics, WebConfig};
@@ -161,6 +162,14 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     // valid active records through the store's read-only connection before
     // migrations, account import, world seeding, or module boot can write.
     mush_server::prepare_quarantine_for_writable_boot(&config, &mut quarantine_spool, None).await?;
+    let offer_keys = DurableOfferKeyStore::new(config.offer_key_dir())
+        .load_or_create()
+        .map_err(|error| format!("offer key provisioning failed: {error}"))?;
+    tracing::info!(
+        current_version = offer_keys.current_version(),
+        key_dir = %config.offer_key_dir().display(),
+        "durable legal-action offer keys loaded"
+    );
     tracing::info!(
         name = %config.server.name,
         data_dir = %data_dir.display(),
@@ -276,6 +285,7 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
         "world timeline installed",
     );
     let mut engine = Engine::from_composition(world, composition);
+    engine.set_offer_keys(offer_keys);
     modules::boot_modules(&mut engine, &*store).await?;
 
     // The web hello manifest, collected while the registry is still in

@@ -16,9 +16,9 @@ use sha2::Sha256;
 use thiserror::Error;
 
 use crate::action::{
-    ActionInvocation, ActionInvocationDraft, ActionMetadataError, ActionOfferId, CanonicalHash,
-    CanonicalHashError, GuardSet, PerceivedRef, PrincipalId, RequestUid, ScopedIdempotencyKey,
-    SubjectKey,
+    ActionError, ActionInvocation, ActionInvocationDraft, ActionMetadataError, ActionOfferId,
+    CanonicalHash, CanonicalHashError, GuardSet, PerceivedRef, PrincipalId, RequestUid,
+    ScopedIdempotencyKey, SubjectKey,
 };
 use crate::behavior::ChannelId;
 use crate::clock::ClockStamp;
@@ -68,6 +68,70 @@ impl ProjectionScopeId {
             16 * 1024,
         )
         .map(Self)
+    }
+}
+
+/// Trusted server query presented to every registered action provider in
+/// canonical registry order. It contains both the truth and projected subject
+/// identities; only the latter can enter a client DTO.
+#[derive(Clone, Debug)]
+pub struct LegalActionQuery {
+    principal: PrincipalId,
+    actor: ObjId,
+    truth_subject: SubjectKey,
+    projected_subject: PerceivedRef,
+    viewer_scope: ProjectionScopeId,
+    now: Option<ClockStamp>,
+}
+
+impl LegalActionQuery {
+    pub fn new(
+        principal: PrincipalId,
+        actor: ObjId,
+        truth_subject: SubjectKey,
+        projected_subject: PerceivedRef,
+        projection_generation: u64,
+        now: Option<ClockStamp>,
+    ) -> Result<Self, CanonicalHashError> {
+        let viewer_scope = ProjectionScopeId::derive(&principal, projection_generation)?;
+        Ok(Self {
+            principal,
+            actor,
+            truth_subject,
+            projected_subject,
+            viewer_scope,
+            now,
+        })
+    }
+
+    #[must_use]
+    pub const fn principal(&self) -> &PrincipalId {
+        &self.principal
+    }
+
+    #[must_use]
+    pub const fn actor(&self) -> ObjId {
+        self.actor
+    }
+
+    #[must_use]
+    pub const fn truth_subject(&self) -> &SubjectKey {
+        &self.truth_subject
+    }
+
+    #[must_use]
+    pub const fn projected_subject(&self) -> &PerceivedRef {
+        &self.projected_subject
+    }
+
+    #[must_use]
+    pub const fn viewer_scope(&self) -> ProjectionScopeId {
+        self.viewer_scope
+    }
+
+    #[must_use]
+    pub const fn now(&self) -> Option<&ClockStamp> {
+        self.now.as_ref()
     }
 }
 
@@ -502,6 +566,20 @@ pub struct InternalOfferDraft {
     pub guards: GuardSet,
 }
 
+/// Provider-owned portion of one offer. The frozen registry supplies the
+/// exact action/provider identity and the server query supplies both subject
+/// identities and projection scope, so a provider cannot redirect an offer to
+/// a different registered route.
+pub struct ProviderOfferDraft {
+    pub fixed_parameters: Value,
+    pub parameters: ProjectedParameterSchema,
+    pub targets: ProjectedTargetSchema,
+    pub required_channels: Vec<ChannelId>,
+    pub expires: Option<ClockStamp>,
+    pub presentation: ActionPresentation,
+    pub guards: GuardSet,
+}
+
 /// Server-only legal action. It is deliberately not serializable.
 #[derive(Clone, Debug)]
 pub struct InternalOffer {
@@ -911,6 +989,36 @@ pub enum OfferResolveError {
     AmbiguousBinding,
     #[error("canonical action invocation is invalid: {0}")]
     Invocation(#[from] ActionMetadataError),
+}
+
+/// Engine service failure while resolving an untrusted offer submission.
+#[derive(Debug, Error)]
+pub enum LegalActionResolutionError {
+    #[error("durable legal-action offer keys are not installed")]
+    KeyRingUnavailable,
+    #[error(transparent)]
+    Resolve(#[from] OfferResolveError),
+}
+
+/// Failure while enumerating the bounded canonical offer set.
+#[derive(Debug, Error)]
+pub enum LegalActionProjectionError {
+    #[error("durable legal-action offer keys are not installed")]
+    KeyRingUnavailable,
+    #[error("action-provider registry is unavailable")]
+    RegistryUnavailable,
+    #[error("provider {action} refused legal-action projection: {source}")]
+    Provider {
+        action: Box<DefinitionRef>,
+        source: Box<ActionError>,
+    },
+    #[error("provider owner became unavailable while projecting {action}")]
+    ProviderUnavailable { action: Box<DefinitionRef> },
+    #[error("provider {action} produced an invalid offer: {source}")]
+    Offer {
+        action: Box<DefinitionRef>,
+        source: Box<OfferBuildError>,
+    },
 }
 
 #[cfg(test)]

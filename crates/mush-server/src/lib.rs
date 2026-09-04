@@ -37,6 +37,7 @@ use mush_config::accounts::import_accounts_json;
 use mush_config::config::{Config, StoreBackend, StoreReceiptPolicy};
 use mush_config::ipguard::IpGuard;
 use mush_config::metrics::Metrics;
+use mush_config::offer_keys::DurableOfferKeyStore;
 use mush_core::{
     ActionInvocation, ActionInvocationDraft, CanonicalId, ControlMsg, Engine, IdempotencyKey,
     IdempotencyScope, Inbound, IngressEnvelope, IngressPayload, IngressSurfaceVersion, PrincipalId,
@@ -190,6 +191,14 @@ async fn build_engine(
     store: &Arc<dyn ObjectStore>,
     _validated_spool: &QuarantineSpool,
 ) -> Result<(Engine, Arc<StaffQueue>), String> {
+    let offer_keys = DurableOfferKeyStore::new(config.offer_key_dir())
+        .load_or_create()
+        .map_err(|error| format!("offer key provisioning failed: {error}"))?;
+    tracing::info!(
+        current_version = offer_keys.current_version(),
+        key_dir = %config.offer_key_dir().display(),
+        "durable legal-action offer keys loaded"
+    );
     let authoritative = store.authoritative_store().ok_or_else(|| {
         "configured store does not implement K3 exact-token durability; refusing writable boot"
             .to_owned()
@@ -252,6 +261,7 @@ async fn build_engine(
     let clock = config.game.game_clock().map_err(|e| e.to_string())?;
     timeline::hydrate_world_timeline(&mut world, &**store, clock).await?;
     let mut engine = Engine::from_composition(world, composition);
+    engine.set_offer_keys(offer_keys);
     modules::boot_modules(&mut engine, &**store).await?;
     Ok((engine, staff))
 }

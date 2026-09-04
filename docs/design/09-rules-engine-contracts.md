@@ -14,10 +14,11 @@ checkpoints, watermark-first epoch retirement, a production coordinator plus fir
 and recovery-driven durable-outbox dispatch. K4 now also has checked bounded scalars, exact durable
 reservation transitions, inert typed effect instances, and a Gate-1 `focus -> brace -> guarded ->
 expiry` history that survives checkpoint/restart. K5 now has bounded separate internal/projected
-offers, restart-stable rotating HMAC verification, hidden fixed inputs and guards, opaque submission
-resolution, and a coordinator route into the same Gate-1 provider. Durable deployment key
-provisioning, public line/panel producers, semantic view envelopes, and the IPC portions of Gate 5
-remain cross-cut work; all five complete end-to-end proving gates remain open.
+offers, restart-stable rotating HMAC verification, durable private key provisioning, hidden fixed
+inputs and guards, canonical registered-provider enumeration, opaque submission resolution, and a
+coordinator route into the same Gate-1 provider. Public line/panel producers, semantic view
+envelopes, and the IPC portions of Gate 5 remain cross-cut work; all five complete end-to-end
+proving gates remain open.
 
 **Scope:** the shared contracts that must be stable before RustMUSH substantially expands character,
 tactical, economic, and AI-driven rules
@@ -1800,7 +1801,7 @@ The repository already contains useful local proofs. They should be adapted, not
 |---|---|---|
 | C1 definitions | shared canonical owner/kind/id/digest identities; bounded `RulesValue`; immutable global definition registry; exact-reference closure; one provider semantic validator per owner/kind; bounded monotonic owner-readiness latch; tactics exact-digest owner fan-out; dry-run migration registry; tactics/sim adapters | owner-freeze discovery in remaining rules-bearing adapters, executing one migration through K3 durability, broader production provider coverage |
 | C2 plan/commit | `mush-sim::Transition`, `UnitMutationPlan`, world single writer, `WriteBatch`, K0 exact receipt gate, typed output/effect custody and one `CommitPending` batch; K2 action invocation/provider metadata; engine-owned typed state families; owner-scoped bounded multi-record `ActionTxn`; one-shot `PreparedTxn`; same-owner trigger execution in the root scratch transaction; exact staged pairing between typed post-images and an immutable K3 bundle; FIFO reserve/reconcile custody; separate exact-intent ownership and terminal receipts; exact 128-bit token/hash receipt validation before RAM install; canonical bounded K3 bundle/token/replay/event/outbox models; in-memory exact intent protocol and cut-point matrix; Redis checked-Lua intent/idempotency reservation plus replay/readback/finalization; object-plus-allocator admission; hash-aware status; live Redis 8.10 fault execution; exhaustive pre-hydration server recovery; bounded runtime deterministic retries and whole-bundle dead-letter; event-preserving compact finalized checkpoints; watermark-first epoch retirement; typestate early-idempotency coordinator and first real tactics provider; recovery-driven durable-outbox worker with stable-ID at-least-once delivery; independent bounded authoritative/legacy/control writer lanes; versioned epoch-scoped gateway request UIDs, bounded per-connection/global count+byte custody, explicit dispositions, legacy claim/release, post-reattach FIFO replay, and a structured transport-authenticated action ingress whose exact finalized replay works after the original connection disappears | public parser/K5 legal-offer production of coordinator requests; remaining ownership-ack process-kill matrix; cross-owner transaction/bridge execution; broader provider and legacy migration |
-| C3 legal actions | contextual behavior commands, required channels, exact per-actor/per-station `ChannelGrant` projection with paired channel/priority and epoch revalidation, LLM tool manifests, exact owner-stamped action-provider registry; bounded separate internal/projected offers; canonical HMAC binding to server-held action, subject, fixed inputs, guards, projection scope, and presentation; retained-key verification; projected parameter/target schemas; uniform stale resolution; resolved-offer coordinator entry | durable deployment key provisioning, grant-bound offer witnesses, registered cross-provider enumeration, and one public submission path for human/UI/AI/LLM |
+| C3 legal actions | contextual behavior commands, required channels, exact per-actor/per-station `ChannelGrant` projection with paired channel/priority and epoch revalidation, LLM tool manifests, exact owner-stamped action-provider registry; bounded separate internal/projected offers; canonical HMAC binding to server-held action, subject, fixed inputs, guards, projection scope, and presentation; append-only crash-safe private key provisioning and bounded retained-key rotation; projected parameter/target schemas; canonical registered-provider enumeration; uniform stale resolution; resolved-offer coordinator entry | grant-bound offer witnesses and one public submission path for human/UI/AI/LLM |
 | C4 time/windows | scheduler; strict `ClockRef`/`ClockStamp`; bounded append-only world-IC epoch history `{ real_anchor, ic_anchor, rate, generation }`; continuous rate changes; atomic epoch/head persistence; boot hydration before modules; synchronous `(ic_now, generation)` module-context read; Timestop turns, passive domain clock, Journey timing, mobility switching | registered provider lookup, typed deadline validation, generic window generations, simultaneous intent collection/order, restart/catch-up policy |
 | C5 RNG | injectable `mush-dice::RollCtx`; test-seeded ChaCha in rulesets | idempotency-derived resolution streams, draw transcript, algorithm/version and durable outcome record |
 | C6 causality | `WorldEvent`, scene/canon ledgers, module observers; stable pre-commit request/event IDs and causal references; bounded deterministic trigger queue with duplicate suppression and non-droppable active-work custody; queue execution inside one root `ActionTxn`; v2 bundles and v3 compact receipts retaining ordered root/derived semantic events and event-time witnesses | public commit-token-bound event IDs, intent-resolution-commit-observation integration, cross-owner trigger execution through validated bridges |
@@ -1817,8 +1818,8 @@ compact retry, fresh-engine typed-state hydration, and the structured split-proc
 Its toy variant now also checkpoints, rehydrates, and expires a typed two-turn effect exactly once,
 and a regenerated opaque offer reaches that same provider without serializing its exact action,
 truth subject, fixed clock input, or guards. It does not yet have a public line/panel producer;
-deployment key provisioning, registered multi-provider enumeration, semantic views, and registered
-clock/window policy remain K4/K5 work.
+public interface routing, grant witnesses, semantic views, and registered clock/window policy remain
+K4/K5 work.
 That is the reason for using toy vertical slices rather than declaring the contracts finished from
 their local precursors.
 
@@ -2176,14 +2177,17 @@ two kernel primitives forward before finishing the rest of K4/K5:
    causal bundle, rehydrates it after restart, and removes only that exact instance through a
    deterministic authoritative expiry action. Provider registries, reservation contention, and
    registered clock/window scheduling remain later K4 work.
-4. **K5b — bounded signed offers (core implemented):** server-only `InternalOffer` records bind the
+4. **K5b — bounded signed offers (implemented):** server-only `InternalOffer` records bind the
    exact provider action, truth subject, fixed inputs, guard set, projection scope, public schema,
    channels, expiry, and presentation. Clients receive only a bounded `ProjectedLegalAction` with
    perceived references and an opaque HMAC token. Execution regenerates the current bounded set,
    verifies against the current or retained key without revealing the failure reason, validates
    public inputs, reconstructs the canonical invocation, and enters the existing coordinator.
-   Stable deployment key loading/rotation, registered provider enumeration, grant witnesses, and
-   public interface routing remain the next K5 cut.
+   Providers are enumerated in frozen canonical action order and cannot redirect the registry-stamped
+   route. Both binaries provision a private versioned key directory before module boot; immutable
+   key/manifest publication survives a pre-manifest crash, newest-manifest corruption fails closed,
+   and rotation retains/prunes a hard-bounded verification history. Grant witnesses and public
+   interface routing remain the next K5 cut.
 
 The K3.1 checkpoint-readback and pending-allocator findings are already closed in both memory and
 Redis and therefore are not prerequisites. Mixed authoritative write sets, synchronous typed-family

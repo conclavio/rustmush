@@ -256,7 +256,8 @@ async fn gate_one_offer_is_preflighted_regenerated_and_routed_without_hidden_cli
     install_toy_focus(world.engine_mut(), &families, GOD, 3);
     let _ = world.drain_write_batch();
     let keys = OfferKeyRing::new(OfferSecret::new(1, [0x42; 32]).unwrap(), []).unwrap();
-    let initially_projected = toy_brace_offers(world.engine(), &families, &keys, GOD, 11, 7)
+    world.engine_mut().set_offer_keys(keys.clone());
+    let initially_projected = toy_brace_offers(world.engine(), GOD, 11, 7)
         .unwrap()
         .projected()
         .pop()
@@ -296,10 +297,11 @@ async fn gate_one_offer_is_preflighted_regenerated_and_routed_without_hidden_cli
 
     // This is the execution-time regeneration. It happens only after the
     // durable preflight and reconstructs hidden clock/guard/action data.
-    let regenerated = toy_brace_offers(world.engine(), &families, &keys, GOD, 11, 7).unwrap();
-    let resolved = regenerated
-        .resolve(
-            &keys,
+    let regenerated = toy_brace_offers(world.engine(), GOD, 11, 7).unwrap();
+    let resolved = world
+        .engine()
+        .resolve_legal_action(
+            &regenerated,
             OfferExecutionContext {
                 request,
                 principal,
