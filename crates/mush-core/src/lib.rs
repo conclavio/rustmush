@@ -53,6 +53,7 @@ pub mod attr;
 pub mod authoritative;
 pub mod behavior;
 pub mod clock;
+pub mod clock_provider;
 pub mod cmd;
 pub mod commands;
 pub mod engine;
@@ -136,6 +137,11 @@ pub use clock::{
     WORLD_TIMELINE_HEAD_KEY, WORLD_TIMELINE_NAMESPACE, WorldTimeline, WorldTimelineChangeError,
     WorldTimelineEpoch, WorldTimelineError, WorldTimelineHead, WorldTimelinePersistenceError,
     world_timeline_epoch_key, world_timeline_persistence_ops,
+};
+pub use clock_provider::{
+    ClockProvider, ClockProviderContext, ClockProviderFailure, ClockProviderKey, ClockProviderKind,
+    ClockProviderRegistry, ClockProviderRegistryBuilder, ClockProviderRegistryError,
+    ClockReadError, MAX_CLOCK_PROVIDERS, MAX_CLOCK_PROVIDERS_PER_OWNER,
 };
 pub use cmd::{
     AliasOutcome, AliasStage, ArgShape, CmdError, CommandFallback, CommandGate, CommandHandler,

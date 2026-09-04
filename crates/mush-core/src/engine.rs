@@ -606,6 +606,57 @@ impl Engine {
             .unresolved_window_resolution_secret_versions()
     }
 
+    /// Read one exact typed clock through the kernel's built-in clocks or the
+    /// composition-frozen module provider registry.
+    ///
+    /// Mutable clock generations fail closed: callers cannot ask for an old
+    /// world-IC generation and accidentally receive a value under the current
+    /// rate, and registered providers must explicitly accept the requested
+    /// generation before the kernel constructs the returned stamp.
+    pub fn clock_now(
+        &self,
+        clock: &crate::clock::ClockRef,
+    ) -> Result<crate::clock::ClockStamp, crate::clock_provider::ClockReadError> {
+        match clock {
+            crate::clock::ClockRef::Utc => Ok(crate::clock::ClockStamp {
+                clock: crate::clock::ClockRef::Utc,
+                at: self.world.now(),
+            }),
+            crate::clock::ClockRef::WorldIc { generation } => {
+                if *generation == 0 {
+                    return Err(crate::clock_provider::ClockReadError::ZeroGeneration {
+                        clock: clock.clone(),
+                    });
+                }
+                let current = self.world.world_ic_now();
+                let crate::clock::ClockRef::WorldIc {
+                    generation: current_generation,
+                } = current.clock
+                else {
+                    unreachable!("world timeline must return a world-IC stamp")
+                };
+                if *generation != current_generation {
+                    return Err(crate::clock_provider::ClockReadError::StaleGeneration {
+                        requested: *generation,
+                        current: current_generation,
+                    });
+                }
+                Ok(current)
+            }
+            crate::clock::ClockRef::SceneTurn { .. } => {
+                Err(crate::clock_provider::ClockReadError::UnsupportedClock {
+                    clock: clock.clone(),
+                })
+            }
+            crate::clock::ClockRef::DomainTick { .. }
+            | crate::clock::ClockRef::Registered { .. } => self
+                .registry
+                .clock_providers()
+                .ok_or(crate::clock_provider::ClockReadError::RegistryUnavailable)?
+                .read(&self.world, &self.action_state, clock),
+        }
+    }
+
     /// Enumerate the current viewer-safe legal actions through the frozen
     /// provider registry and deployment offer key ring.
     pub fn project_legal_actions(

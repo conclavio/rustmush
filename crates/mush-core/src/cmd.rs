@@ -490,6 +490,8 @@ pub struct Registry {
         crate::action::AuthorityGuardValidatorRegistryBuilder,
     /// K2 engine-owned typed state families, mutable only while modules register.
     pub(crate) state_family_builder: crate::action_state::StateFamilyRegistryBuilder,
+    /// K4 module-owned typed clock providers, mutable only while modules register.
+    pub(crate) clock_provider_builder: crate::clock_provider::ClockProviderRegistryBuilder,
     /// Process-lifetime, one-way readiness for the bounded composed owner roster.
     pub(crate) mechanics_owner_readiness: Option<crate::mechanics::MechanicalOwnerReadiness>,
     /// Frozen before any persisted rules-bearing record is loaded.
@@ -506,6 +508,8 @@ pub struct Registry {
     pub(crate) authority_guard_validators: Option<crate::action::AuthorityGuardValidatorRegistry>,
     /// Frozen owner-stamped state-family registry.
     pub(crate) state_families: Option<crate::action_state::StateFamilyRegistry>,
+    /// Frozen owner-stamped typed clock-provider registry.
+    pub(crate) clock_providers: Option<crate::clock_provider::ClockProviderRegistry>,
 }
 
 impl Registry {

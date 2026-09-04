@@ -1112,6 +1112,7 @@ impl Registry {
             || self.revision_validators.is_some()
             || self.authority_guard_validators.is_some()
             || self.state_families.is_some()
+            || self.clock_providers.is_some()
             || self.mechanics_owner_readiness.is_some()
         {
             return Err(ModError::msg("mechanics registries were already frozen"));
@@ -1130,6 +1131,9 @@ impl Registry {
         let state_families = std::mem::take(&mut self.state_family_builder)
             .freeze_for_owners_with_readiness(module_owners, owner_readiness.clone())
             .map_err(|e| ModError::msg(format!("state family registry: {e}")))?;
+        let clock_providers = std::mem::take(&mut self.clock_provider_builder)
+            .freeze_for_owners_with_readiness(module_owners, owner_readiness.clone())
+            .map_err(|e| ModError::msg(format!("clock provider registry: {e}")))?;
         let revision_validators = std::mem::take(&mut self.revision_validator_builder)
             .freeze_for_owners_with_readiness(module_owners, owner_readiness.clone())
             .map_err(|e| ModError::msg(format!("revision validator registry: {e}")))?;
@@ -1147,6 +1151,7 @@ impl Registry {
         self.revision_validators = Some(revision_validators);
         self.authority_guard_validators = Some(authority_guard_validators);
         self.state_families = Some(state_families);
+        self.clock_providers = Some(clock_providers);
         self.definition_migrations = Some(definition_migrations);
         Ok(())
     }
@@ -1240,6 +1245,12 @@ impl Registry {
         self.state_families.as_ref()
     }
 
+    /// Immutable owner-stamped clock-provider registry after composition.
+    #[must_use]
+    pub fn clock_providers(&self) -> Option<&crate::clock_provider::ClockProviderRegistry> {
+        self.clock_providers.as_ref()
+    }
+
     /// Start a server-owned guard bundle bound to this exact frozen module
     /// composition. A bare or not-yet-composed registry fails closed.
     pub fn server_guard_set_builder(
@@ -1282,8 +1293,9 @@ impl Registry {
         let revisions = self.revision_validators.as_ref()?;
         let authority = self.authority_guard_validators.as_ref()?;
         let state_families = self.state_families.as_ref()?;
+        let clock_providers = self.clock_providers.as_ref()?;
         crate::mechanics::DefinitionDigest::for_canonical_value(
-            "mechanics_registry.v4",
+            "mechanics_registry.v5",
             &serde_json::json!({
                 "definitions": definitions.fingerprint().to_hex(),
                 "bridges": bridges.fingerprint().to_hex(),
@@ -1292,6 +1304,7 @@ impl Registry {
                 "revision_validators": revisions.fingerprint().to_hex(),
                 "authority_validators": authority.fingerprint().to_hex(),
                 "state_families": state_families.fingerprint().to_hex(),
+                "clock_providers": clock_providers.fingerprint().to_hex(),
             }),
         )
         .ok()
@@ -1736,6 +1749,44 @@ impl<'a> Registrar<'a> {
             .map_err(|e| {
                 ModError::msg(format!(
                     "module {}: state-family registration: {e}",
+                    self.module
+                ))
+            })
+    }
+
+    /// Register a synchronous provider for one exact module-owned clock.
+    ///
+    /// The registrar stamps the provider owner. At read time the kernel
+    /// supplies the requested generation and immutable world/state context;
+    /// the provider returns only the scalar value, never a relabelled stamp.
+    pub fn clock_provider<P>(
+        &mut self,
+        kind: crate::clock_provider::ClockProviderKind,
+        id: crate::mechanics::CanonicalId,
+        provider: P,
+    ) -> Result<(), ModError>
+    where
+        P: crate::clock_provider::ClockProvider + 'static,
+    {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.clock_providers.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: clock-provider registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .clock_provider_builder
+            .register(owner, kind, id, Arc::new(provider))
+            .map_err(|e| {
+                ModError::msg(format!(
+                    "module {}: clock provider registration: {e}",
                     self.module
                 ))
             })

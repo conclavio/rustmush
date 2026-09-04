@@ -33,7 +33,9 @@ particular campaign economy.
 - **K4a versioned world timeline:** shipped shape is an append-only sequence of
   `{ real_anchor, ic_anchor, rate, generation }`, strict `ClockRef`/`ClockStamp`, atomic epoch/head
   persistence, boot hydration before modules, and synchronous module-context reads. Configuration
-  seeds generation one only; persisted truth wins thereafter.
+  seeds generation one only; persisted truth wins thereafter. Exact module-owned registered/domain
+  clocks now use the composition-frozen provider registry: the provider validates the requested
+  generation and returns only its scalar value, while the kernel owns stamp identity and readiness.
 - **K5a station channel grants:** one
   `ChannelGrant { actor, subject, owner, station, channels, priority, epoch }` per occupied station.
   Channel and priority are selected from the same grant; no cross-seat union/max promotion. Exact
