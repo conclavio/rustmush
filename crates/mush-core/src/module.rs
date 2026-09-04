@@ -1137,7 +1137,12 @@ impl Registry {
             .freeze_for_owners_with_readiness(module_owners, owner_readiness.clone())
             .map_err(|e| ModError::msg(format!("clock provider registry: {e}")))?;
         let resource_effect_providers = std::mem::take(&mut self.resource_effect_provider_builder)
-            .freeze_for_composition(&definitions, module_owners, owner_readiness.clone())
+            .freeze_for_composition(
+                &definitions,
+                module_owners,
+                &state_families,
+                owner_readiness.clone(),
+            )
             .map_err(|e| ModError::msg(format!("resource/effect provider registry: {e}")))?;
         let schedule_sources = std::mem::take(&mut self.schedule_source_builder)
             .freeze_for_composition(
@@ -1885,10 +1890,48 @@ impl<'a> Registrar<'a> {
         })?;
         self.reg
             .resource_effect_provider_builder
-            .register_resource(owner, definition, Arc::new(provider))
+            .register_resource(owner, definition, None, Arc::new(provider))
             .map_err(|e| {
                 ModError::msg(format!(
                     "module {}: resource provider registration: {e}",
+                    self.module
+                ))
+            })
+    }
+
+    /// Register a resource adapter together with the owner-local
+    /// authoritative reservation-book family that gates its spendable value.
+    pub fn reservable_resource_provider<P>(
+        &mut self,
+        definition: crate::mechanics::DefinitionRef,
+        reservations: crate::action_state::StateFamilyHandle<
+            crate::resource::ReservationBookId,
+            crate::resource::ReservationBook,
+        >,
+        provider: P,
+    ) -> Result<(), ModError>
+    where
+        P: crate::resource_provider::ResourceProvider + 'static,
+    {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.resource_effect_providers.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: resource/effect provider registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .resource_effect_provider_builder
+            .register_resource(owner, definition, Some(reservations), Arc::new(provider))
+            .map_err(|e| {
+                ModError::msg(format!(
+                    "module {}: reservable resource provider registration: {e}",
                     self.module
                 ))
             })

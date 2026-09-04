@@ -1,7 +1,7 @@
 use mush_contract_tests::{
-    TOY_OWNER, install_toy_focus, install_toy_scheduled_expiry, toy_action_window,
-    toy_brace_invocation, toy_brace_offers, toy_definitions, toy_scene_turn, toy_window_invocation,
-    toy_world_with_state,
+    TOY_OWNER, install_toy_focus, install_toy_reservation_book, install_toy_scheduled_expiry,
+    toy_action_window, toy_brace_invocation, toy_brace_offers, toy_definitions, toy_scene_turn,
+    toy_window_invocation, toy_world_with_state,
 };
 use mush_core::{
     ActionInvocation, ActionInvocationDraft, ActionOfferId, ActionWindowPhase, AuthoritativeBundle,
@@ -724,6 +724,7 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
     let store = InMemoryStore::new();
     let (mut world, families) = toy_world_with_state();
     install_toy_focus(world.engine_mut(), &families, GOD, 3);
+    let reservation_book = install_toy_reservation_book(world.engine_mut(), &families, GOD);
     let _ = world.drain_write_batch();
     let request = RequestUid::from_bytes([0xB1; 16]);
     let invocation = toy_brace_invocation(GOD, 11, request);
@@ -762,7 +763,7 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
         StagedActionPersistence::Authoritative(bundle) => *bundle,
         StagedActionPersistence::Legacy(_) => panic!("toy cascade used legacy persistence"),
     };
-    assert_eq!(bundle.writes().len(), 2);
+    assert_eq!(bundle.writes().len(), 3);
     assert_eq!(bundle.semantic_events().len(), 2);
     assert_eq!(bundle.semantic_events()[0].kind().as_str(), "brace");
     assert_eq!(bundle.semantic_events()[1].kind().as_str(), "apply_guarded");
@@ -839,6 +840,28 @@ async fn toy_trigger_cascade_survives_bundle_checkpoint_and_restart() {
             .unwrap()
             .expires_at(),
         &toy_scene_turn(13)
+    );
+    let restarted_book = restarted
+        .engine()
+        .action_state()
+        .get(&restarted_families.reservations, &reservation_book)
+        .unwrap()
+        .unwrap();
+    assert_eq!(restarted_book.revision(), 1);
+    assert_eq!(restarted_book.resource_revision(), 1);
+    assert_eq!(
+        restarted_book
+            .checked_available(
+                restarted
+                    .engine()
+                    .action_state()
+                    .get(&restarted_families.focus, &GOD)
+                    .unwrap()
+                    .unwrap()
+                    .value,
+            )
+            .unwrap(),
+        2
     );
 
     let effect = restarted

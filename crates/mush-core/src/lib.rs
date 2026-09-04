@@ -223,9 +223,11 @@ pub use resolution::{
 };
 pub use resource::{
     BoundedScalar, EffectDuration, EffectInstance, EffectInstanceError, EffectInstanceId,
-    EffectTarget, MAX_EFFECT_STACKS, MAX_RESOURCE_RESERVATIONS, ReservationAvailabilityError,
-    ReservationError, ReservationId, ReservationRecord, ReservationState, ResourceOperation,
-    ResourceRef, ResourceValueError, checked_resource_availability,
+    EffectTarget, MAX_EFFECT_STACKS, MAX_RESERVATION_BOOK_BYTES, MAX_RESERVATION_BOOK_RECORDS,
+    MAX_RESOURCE_RESERVATIONS, ReservationAvailabilityError, ReservationBook, ReservationBookError,
+    ReservationBookId, ReservationBookStateCodec, ReservationError, ReservationId,
+    ReservationRecord, ReservationReplacement, ReservationState, ResourceOperation, ResourceRef,
+    ResourceValueError, checked_resource_availability, reservation_book_state_family_descriptor,
 };
 pub use resource_provider::{
     EffectProvider, EffectProviderResultMismatch, EffectReadError, MAX_RESOURCE_EFFECT_PROVIDERS,

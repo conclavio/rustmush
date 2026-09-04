@@ -16,11 +16,13 @@ use mush_core::{
     Engine, GameModule, IdempotencyKey, IdempotencyScope, LegalActionQuery, ModError, ObjId,
     OwnerId, PerceivedRef, PrepareCtx, PreparedCausalRef, PreparedTrigger, PrincipalId,
     ProjectedLegalActionSink, ProjectedParameterSchema, ProjectedTargetSchema, ProviderOfferDraft,
-    Registrar, RequestUid, ResolutionKeyRing, ResolutionSecret, ResourceOperation, RulesValue,
+    Registrar, RequestUid, ReservationBook, ReservationBookError, ReservationBookId,
+    ReservationBookStateCodec, ResolutionKeyRing, ResolutionSecret, ResourceOperation, RulesValue,
     SameCommitTrigger, ScheduleActionAdapter, ScheduleActionDraft, ScheduleAdvance, ScheduleId,
     ScopedIdempotencyKey, StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey,
     WindowIntent, WindowMode, WindowOrderKey, WindowRestartPolicy, WindowTimeoutPolicy,
     action_window_state_family_descriptor, durable_schedule_state_family_descriptor,
+    reservation_book_state_family_descriptor,
 };
 use mush_core::{
     EffectProvider, ResourceProvider, ResourceProviderContext, ResourceProviderFailure, ResourceRef,
@@ -31,7 +33,7 @@ use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
-use mush_core::CommitToken;
+use mush_core::{CommitToken, ReservationId, ReservationRecord};
 
 /// Canonical owner stamped on every toy definition.
 pub const TOY_OWNER: &str = "toy";
@@ -325,6 +327,7 @@ impl ToyGuardedState {
 #[derive(Clone, Debug)]
 pub struct ToyStateFamilies {
     pub focus: StateFamilyHandle<ObjId, ToyFocusState>,
+    pub reservations: StateFamilyHandle<ReservationBookId, ReservationBook>,
     pub guarded: StateFamilyHandle<ObjId, ToyGuardedState>,
     pub windows: StateFamilyHandle<ActionWindowId, ActionWindowRecord>,
     pub schedules: StateFamilyHandle<ScheduleId, DurableSchedule>,
@@ -384,12 +387,21 @@ impl EffectProvider for ToyGuardedEffectProvider {
 #[derive(Debug)]
 struct BraceProvider {
     focus: StateFamilyHandle<ObjId, ToyFocusState>,
+    reservations: StateFamilyHandle<ReservationBookId, ReservationBook>,
     guarded: StateFamilyHandle<ObjId, ToyGuardedState>,
     brace_definition: DefinitionRef,
     guarded_definition: DefinitionRef,
 }
 
 impl BraceProvider {
+    fn focus_resource(actor: ObjId) -> ResourceRef {
+        ResourceRef::new(
+            OwnerId::new(TOY_OWNER).expect("static owner"),
+            SubjectKey::Object { id: actor },
+            CanonicalId::new("focus").expect("static resource id"),
+        )
+    }
+
     fn scene_turn(invocation: &ActionInvocation) -> Result<ClockStamp, ActionError> {
         let parameters = invocation.parameters().as_object().ok_or_else(|| {
             ActionError::new(
@@ -472,6 +484,86 @@ impl BraceProvider {
         };
         ActionError::new(code, false, "toy action-state operation was refused")
             .expect("static action error is bounded")
+    }
+
+    fn reservation_error(error: &ReservationBookError) -> ActionError {
+        let code = match error {
+            ReservationBookError::Availability(_)
+            | ReservationBookError::Resource(mush_core::ResourceValueError::OutOfBounds {
+                ..
+            }) => ActionErrorCode::ProviderRejected,
+            ReservationBookError::RecordLimit { .. }
+            | ReservationBookError::RevisionExhausted
+            | ReservationBookError::Resource(
+                mush_core::ResourceValueError::ArithmeticOverflow
+                | mush_core::ResourceValueError::RevisionExhausted,
+            ) => ActionErrorCode::BoundsExceeded,
+            _ => ActionErrorCode::Integrity,
+        };
+        ActionError::new(code, false, "focus reservation gate refused the spend")
+            .expect("static action error is bounded")
+    }
+
+    fn spend_focus(
+        &self,
+        actor: ObjId,
+        txn: &mut ActionTxn<'_>,
+    ) -> Result<(ToyFocusState, BoundedScalar), ActionError> {
+        let focus = txn
+            .get(&self.focus, &actor)
+            .map_err(|error| Self::state_error(&error))?
+            .cloned()
+            .ok_or_else(|| {
+                ActionError::new(
+                    ActionErrorCode::ProviderRejected,
+                    false,
+                    "the actor has no focus resource",
+                )
+                .expect("static action error is bounded")
+            })?;
+        let resource = Self::focus_resource(actor);
+        let book_id = ReservationBookId::derive(&resource).map_err(|_| {
+            ActionError::new(
+                ActionErrorCode::BoundsExceeded,
+                false,
+                "focus reservation identity exceeds canonical bounds",
+            )
+            .expect("static action error is bounded")
+        })?;
+        let (book, value) = if let Some(book) = txn
+            .get(&self.reservations, &book_id)
+            .map_err(|error| Self::state_error(&error))?
+            .cloned()
+        {
+            let (book, value) = book
+                .checked_apply_resource(
+                    book.revision(),
+                    focus.value,
+                    ResourceOperation::Decrease { amount: 1 },
+                )
+                .map_err(|error| Self::reservation_error(&error))?;
+            (Some(book), value)
+        } else {
+            let value = focus
+                .value
+                .checked_apply(ResourceOperation::Decrease { amount: 1 })
+                .map_err(|_| {
+                    ActionError::new(
+                        ActionErrorCode::ProviderRejected,
+                        false,
+                        "insufficient focus",
+                    )
+                    .expect("static action error is bounded")
+                })?;
+            (None, value)
+        };
+        txn.replace(&self.focus, &actor, ToyFocusState { value })
+            .map_err(|error| Self::state_error(&error))?;
+        if let Some(book) = book {
+            txn.replace(&self.reservations, &book_id, book)
+                .map_err(|error| Self::state_error(&error))?;
+        }
+        Ok((focus, value))
     }
 
     fn guarded_effect(
@@ -572,14 +664,20 @@ impl ActionProvider for BraceProvider {
             return Ok(None);
         }
         let focus = engine
-            .action_state()
-            .get(&self.focus, &query.actor())
-            .map_err(|error| Self::state_error(&error))?;
+            .resource_snapshot(&Self::focus_resource(query.actor()))
+            .map_err(|_| {
+                ActionError::new(
+                    ActionErrorCode::Integrity,
+                    false,
+                    "focus resource projection is unavailable",
+                )
+                .expect("static action error is bounded")
+            })?;
         let guarded = engine
             .action_state()
             .get(&self.guarded, &query.actor())
             .map_err(|error| Self::state_error(&error))?;
-        if !focus.is_some_and(|focus| focus.amount() > 0) || guarded.is_some() {
+        if !focus.is_some_and(|focus| focus.available() > 0) || guarded.is_some() {
             return Ok(None);
         }
         let scene_turn = query.now().cloned().ok_or_else(|| {
@@ -665,32 +763,8 @@ impl ActionProvider for BraceProvider {
         self.validate_invocation(invocation)?;
         let actor = invocation.actor();
         let turn = Self::scene_turn(invocation)?;
-        let focus = txn
-            .get(&self.focus, &actor)
-            .map_err(|error| Self::state_error(&error))?
-            .cloned()
-            .ok_or_else(|| {
-                ActionError::new(
-                    ActionErrorCode::ProviderRejected,
-                    false,
-                    "the actor has no focus resource",
-                )
-                .expect("static action error is bounded")
-            })?;
-        let value = focus
-            .value
-            .checked_apply(ResourceOperation::Decrease { amount: 1 })
-            .map_err(|_| {
-                ActionError::new(
-                    ActionErrorCode::ProviderRejected,
-                    false,
-                    "insufficient focus",
-                )
-                .expect("static action error is bounded")
-            })?;
+        self.spend_focus(actor, txn)?;
         let effect = self.guarded_effect(invocation, turn)?;
-        txn.replace(&self.focus, &actor, ToyFocusState { value })
-            .map_err(|error| Self::state_error(&error))?;
         txn.insert(&self.guarded, &actor, ToyGuardedState { effect })
             .map_err(|error| Self::state_error(&error))?;
         Ok(())
@@ -706,31 +780,7 @@ impl ActionProvider for BraceProvider {
         let actor = invocation.actor();
         let turn = Self::scene_turn(invocation)?;
         let cascade_steps = Self::cascade_steps(invocation)?;
-        let focus = txn
-            .get(&self.focus, &actor)
-            .map_err(|error| Self::state_error(&error))?
-            .cloned()
-            .ok_or_else(|| {
-                ActionError::new(
-                    ActionErrorCode::ProviderRejected,
-                    false,
-                    "the actor has no focus resource",
-                )
-                .expect("static action error is bounded")
-            })?;
-        let value = focus
-            .value
-            .checked_apply(ResourceOperation::Decrease { amount: 1 })
-            .map_err(|_| {
-                ActionError::new(
-                    ActionErrorCode::ProviderRejected,
-                    false,
-                    "insufficient focus",
-                )
-                .expect("static action error is bounded")
-            })?;
-        txn.replace(&self.focus, &actor, ToyFocusState { value })
-            .map_err(|error| Self::state_error(&error))?;
+        let (focus, value) = self.spend_focus(actor, txn)?;
         let inputs_hash = CanonicalHash::for_canonical_value(
             "toy_brace_inputs.v1",
             1,
@@ -1566,6 +1616,16 @@ impl GameModule for ToyRulesModule {
             },
             |value: &ToyFocusState| serde_json::to_value(value).map_err(|error| error.to_string()),
         )?;
+        let reservations = registrar.state_family(
+            reservation_book_state_family_descriptor(
+                StateFamilyId::new("resource_reservations").expect("static family id"),
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            ReservationBookStateCodec,
+            ReservationBookStateCodec,
+            ReservationBookStateCodec,
+            ReservationBookStateCodec,
+        )?;
         let guarded_definition = actual.guarded.clone();
         let guarded = registrar.state_family(
             StateFamilyDescriptor::new(
@@ -1654,13 +1714,15 @@ impl GameModule for ToyRulesModule {
         )?;
         let families = ToyStateFamilies {
             focus,
+            reservations,
             guarded,
             windows,
             schedules,
             scheduled_expiries,
         };
-        registrar.resource_provider(
+        registrar.reservable_resource_provider(
             actual.focus.clone(),
+            families.reservations.clone(),
             ToyFocusResourceProvider {
                 focus: families.focus.clone(),
             },
@@ -1675,6 +1737,7 @@ impl GameModule for ToyRulesModule {
             actual.brace.clone(),
             BraceProvider {
                 focus: families.focus.clone(),
+                reservations: families.reservations.clone(),
                 guarded: families.guarded.clone(),
                 brace_definition: actual.brace.clone(),
                 guarded_definition: actual.guarded.clone(),
@@ -1761,6 +1824,40 @@ pub fn install_toy_focus(
     };
     let (_, installation) = prepared.into_parts();
     engine.install_prepared_action(installation);
+}
+
+/// Attach an empty authoritative reservation book to an existing toy focus
+/// resource. Fixture setup uses the typed family path; later spends must keep
+/// the book and scalar revisions synchronized in one transaction.
+pub fn install_toy_reservation_book(
+    engine: &mut Engine,
+    families: &ToyStateFamilies,
+    actor: ObjId,
+) -> ReservationBookId {
+    let focus = engine
+        .action_state()
+        .get(&families.focus, &actor)
+        .expect("toy focus family read")
+        .expect("toy focus must exist before its reservation book")
+        .clone();
+    let resource = ResourceRef::new(
+        OwnerId::new(TOY_OWNER).expect("static owner"),
+        SubjectKey::Object { id: actor },
+        CanonicalId::new("focus").expect("static resource id"),
+    );
+    let book = ReservationBook::new(resource, focus.value).expect("toy reservation book");
+    let id = book.id();
+    let prepared = {
+        let mut txn = engine
+            .action_transaction(&families.reservations)
+            .expect("toy reservation transaction");
+        txn.insert(&families.reservations, &id, book)
+            .expect("valid toy reservation book");
+        txn.prepare().expect("reservation bootstrap prepares")
+    };
+    let (_, installation) = prepared.into_parts();
+    engine.install_prepared_action(installation);
+    id
 }
 
 /// Install one valid durable schedule through the typed family used by the
@@ -2114,6 +2211,9 @@ mod tests {
         assert_eq!(snapshot.definition(), &definitions.focus);
         assert_eq!(snapshot.resource(), &resource);
         assert_eq!(snapshot.value().current(), 3);
+        assert_eq!(snapshot.available(), 3);
+        assert!(snapshot.is_reservable());
+        assert!(snapshot.reservations().is_none());
 
         let guarded = world
             .engine()
@@ -2154,6 +2254,225 @@ mod tests {
                 .effect_instance(&definitions.guarded, &effect_target, effect_id,),
             Err(mush_core::EffectReadError::OwnerNotReady(_))
         ));
+    }
+
+    #[test]
+    fn reservation_lifecycle_is_bounded_atomic_and_restart_safe() {
+        let (mut world, families) = toy_world_with_state();
+        bootstrap_focus(&mut world, &families, mush_core::GOD, 3);
+        let _bootstrap = world.drain_write_batch();
+
+        let resource = ResourceRef::new(
+            OwnerId::new(TOY_OWNER).unwrap(),
+            SubjectKey::Object { id: mush_core::GOD },
+            CanonicalId::new("focus").unwrap(),
+        );
+        let focus = world
+            .engine()
+            .action_state()
+            .get(&families.focus, &mush_core::GOD)
+            .unwrap()
+            .unwrap()
+            .clone();
+        let mut book = ReservationBook::new(resource.clone(), focus.value).unwrap();
+        let make_hold = |byte: u8, expires: u64| {
+            let holder = ScopedIdempotencyKey::new(
+                IdempotencyScope {
+                    principal: PrincipalId::Object { id: mush_core::GOD },
+                    owner: OwnerId::new(TOY_OWNER).unwrap(),
+                    namespace: CanonicalId::new("reserve_focus").unwrap(),
+                },
+                0,
+                IdempotencyKey::Request(RequestUid::from_bytes([byte; 16])),
+            );
+            let id = ReservationId::derive(&holder, &resource).unwrap();
+            (
+                id,
+                ReservationRecord::held(id, resource.clone(), holder, 1, toy_scene_turn(expires))
+                    .unwrap(),
+            )
+        };
+        let (consumed_id, consumed) = make_hold(1, 20);
+        let (released_id, released) = make_hold(2, 20);
+        let (expired_id, expired) = make_hold(3, 12);
+        book = book
+            .checked_hold(0, focus.value, consumed, &toy_scene_turn(10))
+            .unwrap();
+        book = book
+            .checked_hold(1, focus.value, released, &toy_scene_turn(10))
+            .unwrap();
+        book = book
+            .checked_hold(2, focus.value, expired, &toy_scene_turn(10))
+            .unwrap();
+        assert_eq!(book.checked_available(focus.value).unwrap(), 0);
+
+        let (next_book, focus_value) = book
+            .checked_consume(
+                3,
+                focus.value,
+                consumed_id,
+                1,
+                &toy_scene_turn(11),
+                CommitToken::from_bytes([0x51; 16]),
+            )
+            .unwrap();
+        book = next_book
+            .checked_release(4, focus_value, released_id, 1)
+            .unwrap()
+            .checked_expire(5, focus_value, expired_id, 1, &toy_scene_turn(12))
+            .unwrap();
+        assert_eq!(book.checked_available(focus_value).unwrap(), 2);
+
+        let prepared = {
+            let mut txn = world
+                .engine_mut()
+                .action_transaction(&families.focus)
+                .unwrap();
+            txn.replace(
+                &families.focus,
+                &mush_core::GOD,
+                ToyFocusState { value: focus_value },
+            )
+            .unwrap();
+            txn.insert(&families.reservations, &book.id(), book.clone())
+                .unwrap();
+            txn.prepare().unwrap()
+        };
+        assert_eq!(prepared.operation_count(), 2);
+        let (module_ops, installation) = prepared.into_parts();
+        world.engine_mut().install_prepared_action(installation);
+        let boot_records = module_ops
+            .into_iter()
+            .filter_map(|operation| match operation.op {
+                mush_core::ModuleWrite::JsonSet { key, value }
+                    if key.starts_with("action-state/") =>
+                {
+                    Some(mush_core::ActionStateBootRecord::new(
+                        operation.ns,
+                        key,
+                        value,
+                    ))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(boot_records.len(), 2);
+
+        let (mut restarted, restarted_families) = toy_world_with_state();
+        restarted
+            .engine_mut()
+            .hydrate_action_state(boot_records)
+            .unwrap();
+        let snapshot = restarted
+            .engine()
+            .resource_snapshot(&resource)
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.value().current(), 2);
+        assert_eq!(snapshot.value().revision(), 1);
+        assert_eq!(snapshot.available(), 2);
+        assert_eq!(snapshot.reservations(), Some(&book));
+        assert_eq!(
+            restarted
+                .engine()
+                .action_state()
+                .get(&restarted_families.reservations, &book.id())
+                .unwrap(),
+            Some(&book)
+        );
+    }
+
+    #[test]
+    fn reservable_focus_cannot_be_spent_around_a_live_hold() {
+        let (mut world, families) = toy_world_with_state();
+        bootstrap_focus(&mut world, &families, mush_core::GOD, 3);
+        let resource = ResourceRef::new(
+            OwnerId::new(TOY_OWNER).unwrap(),
+            SubjectKey::Object { id: mush_core::GOD },
+            CanonicalId::new("focus").unwrap(),
+        );
+        let focus = world
+            .engine()
+            .action_state()
+            .get(&families.focus, &mush_core::GOD)
+            .unwrap()
+            .unwrap()
+            .clone();
+        let holder = ScopedIdempotencyKey::new(
+            IdempotencyScope {
+                principal: PrincipalId::Object { id: mush_core::GOD },
+                owner: OwnerId::new(TOY_OWNER).unwrap(),
+                namespace: CanonicalId::new("reserve_focus").unwrap(),
+            },
+            0,
+            IdempotencyKey::Request(RequestUid::from_bytes([0x62; 16])),
+        );
+        let reservation = ReservationId::derive(&holder, &resource).unwrap();
+        let book = ReservationBook::new(resource.clone(), focus.value)
+            .unwrap()
+            .checked_hold(
+                0,
+                focus.value,
+                ReservationRecord::held(
+                    reservation,
+                    resource.clone(),
+                    holder,
+                    3,
+                    toy_scene_turn(20),
+                )
+                .unwrap(),
+                &toy_scene_turn(10),
+            )
+            .unwrap();
+        let installation = {
+            let mut txn = world
+                .engine_mut()
+                .action_transaction(&families.reservations)
+                .unwrap();
+            txn.insert(&families.reservations, &book.id(), book.clone())
+                .unwrap();
+            let (_, installation) = txn.prepare().unwrap().into_parts();
+            installation
+        };
+        world.engine_mut().install_prepared_action(installation);
+        assert_eq!(
+            world
+                .engine()
+                .resource_snapshot(&resource)
+                .unwrap()
+                .unwrap()
+                .available(),
+            0
+        );
+
+        let invocation =
+            toy_brace_invocation(mush_core::GOD, 11, RequestUid::from_bytes([0x63; 16]));
+        let error = world
+            .engine_mut()
+            .prepare_registered_action(&toy_definitions().brace, &invocation)
+            .expect_err("a live hold consumes all spendable focus");
+        assert!(matches!(
+            error,
+            ActionProviderPrepareError::Provider { source, .. }
+                if source.code() == ActionErrorCode::ProviderRejected
+        ));
+        assert!(!world.engine().action_state().has_prepared());
+        assert_eq!(
+            world
+                .engine()
+                .action_state()
+                .get(&families.focus, &mush_core::GOD)
+                .unwrap(),
+            Some(&focus)
+        );
+        assert_eq!(
+            world
+                .engine()
+                .action_state()
+                .get(&families.reservations, &book.id())
+                .unwrap(),
+            Some(&book)
+        );
     }
 
     #[test]

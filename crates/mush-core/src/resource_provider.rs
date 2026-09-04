@@ -13,12 +13,18 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::action_state::{ActionStateError, ActionStateStore, StateFamilyHandle};
+use crate::action::CanonicalHashError;
+use crate::action_state::{
+    ActionStateError, ActionStateStore, StateFamilyHandle, StateFamilyRegistry,
+};
 use crate::mechanics::{
     CanonicalEncodingError, CanonicalId, DefinitionDigest, DefinitionLookupError, DefinitionRef,
     DefinitionRegistry, MechanicalOwnerReadiness, MechanicalOwnerReadinessError, OwnerId,
 };
-use crate::resource::{BoundedScalar, EffectInstance, EffectInstanceId, EffectTarget, ResourceRef};
+use crate::resource::{
+    BoundedScalar, EffectInstance, EffectInstanceId, EffectTarget, ReservationBook,
+    ReservationBookError, ReservationBookId, ResourceRef, ResourceValueError,
+};
 use crate::world::World;
 
 /// Maximum resource and effect adapters in one deployment.
@@ -185,6 +191,9 @@ pub struct ResourceSnapshot {
     definition: DefinitionRef,
     resource: ResourceRef,
     value: BoundedScalar,
+    available: u64,
+    reservable: bool,
+    reservations: Option<ReservationBook>,
 }
 
 impl ResourceSnapshot {
@@ -202,11 +211,30 @@ impl ResourceSnapshot {
     pub const fn value(&self) -> BoundedScalar {
         self.value
     }
+
+    /// Spendable value after every live hold in the authoritative book.
+    #[must_use]
+    pub const fn available(&self) -> u64 {
+        self.available
+    }
+
+    #[must_use]
+    pub const fn is_reservable(&self) -> bool {
+        self.reservable
+    }
+
+    /// Current authoritative book, if one has been created. A reservable
+    /// resource with no book has no holds yet.
+    #[must_use]
+    pub const fn reservations(&self) -> Option<&ReservationBook> {
+        self.reservations.as_ref()
+    }
 }
 
 struct ResourceProviderEntry {
     key: ResourceProviderKey,
     definition: DefinitionRef,
+    reservations: Option<StateFamilyHandle<ReservationBookId, ReservationBook>>,
     provider: Arc<dyn ResourceProvider>,
 }
 
@@ -216,6 +244,13 @@ impl fmt::Debug for ResourceProviderEntry {
             .debug_struct("ResourceProviderEntry")
             .field("key", &self.key)
             .field("definition", &self.definition)
+            .field(
+                "reservation_family",
+                &self
+                    .reservations
+                    .as_ref()
+                    .map(|handle| handle.descriptor().id()),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -264,6 +299,7 @@ impl ResourceEffectProviderRegistryBuilder {
         &mut self,
         owner: OwnerId,
         definition: DefinitionRef,
+        reservations: Option<StateFamilyHandle<ReservationBookId, ReservationBook>>,
         provider: Arc<dyn ResourceProvider>,
     ) -> Result<(), ResourceEffectProviderRegistryError> {
         self.require_capacity(&owner)?;
@@ -279,6 +315,7 @@ impl ResourceEffectProviderRegistryBuilder {
             ResourceProviderEntry {
                 key,
                 definition,
+                reservations,
                 provider,
             },
         );
@@ -337,6 +374,7 @@ impl ResourceEffectProviderRegistryBuilder {
         self,
         definitions: &DefinitionRegistry,
         module_owners: &BTreeSet<OwnerId>,
+        state_families: &StateFamilyRegistry,
         owner_readiness: MechanicalOwnerReadiness,
     ) -> Result<ResourceEffectProviderRegistry, ResourceEffectProviderRegistryError> {
         for entry in self.resources.values() {
@@ -353,6 +391,24 @@ impl ResourceEffectProviderRegistryBuilder {
                     definition: Box::new(entry.definition.clone()),
                 });
             }
+            if let Some(reservations) = &entry.reservations {
+                if reservations.owner() != entry.key.owner() {
+                    return Err(
+                        ResourceEffectProviderRegistryError::ReservationFamilyOwnerMismatch {
+                            provider: entry.key.clone(),
+                            family_owner: reservations.owner().clone(),
+                        },
+                    );
+                }
+                state_families
+                    .validate_handle(reservations)
+                    .map_err(
+                        |source| ResourceEffectProviderRegistryError::ReservationFamily {
+                            provider: entry.key.clone(),
+                            source: Box::new(source),
+                        },
+                    )?;
+            }
         }
         for entry in self.effects.values() {
             validate_provider_definition(
@@ -364,11 +420,15 @@ impl ResourceEffectProviderRegistryBuilder {
             )?;
         }
         let fingerprint = DefinitionDigest::for_canonical_value(
-            "resource_effect_provider_registry.v1",
+            "resource_effect_provider_registry.v2",
             &serde_json::json!({
                 "resources": self.resources.values().map(|entry| serde_json::json!({
                     "key": entry.key,
                     "definition": entry.definition,
+                    "reservation_family": entry.reservations.as_ref().map(|handle| serde_json::json!({
+                        "owner": handle.owner(),
+                        "id": handle.descriptor().id(),
+                    })),
                 })).collect::<Vec<_>>(),
                 "effects": self.effects.keys().collect::<Vec<_>>(),
             }),
@@ -471,12 +531,56 @@ impl ResourceEffectProviderRegistry {
                 source,
             }
         })?;
+        let snapshot = if let Some(value) = value {
+            let (available, reservations) = if let Some(handle) = &entry.reservations {
+                let book_id = ReservationBookId::derive(resource)
+                    .map_err(ResourceReadError::ReservationIdentity)?;
+                let book = action_state
+                    .get(handle, &book_id)
+                    .map_err(|source| ResourceReadError::ReservationState {
+                        resource: Box::new(resource.clone()),
+                        source: Box::new(source),
+                    })?
+                    .cloned();
+                let available = if let Some(book) = &book {
+                    if book.resource() != resource {
+                        return Err(ResourceReadError::ReservationBookResourceMismatch {
+                            resource: Box::new(resource.clone()),
+                        });
+                    }
+                    book.checked_available(value).map_err(|source| {
+                        ResourceReadError::ReservationBook {
+                            resource: Box::new(resource.clone()),
+                            source: Box::new(source),
+                        }
+                    })?
+                } else {
+                    value
+                        .checked_available(std::iter::empty())
+                        .map_err(ResourceReadError::ResourceValue)?
+                };
+                (available, book)
+            } else {
+                (
+                    value
+                        .checked_available(std::iter::empty())
+                        .map_err(ResourceReadError::ResourceValue)?,
+                    None,
+                )
+            };
+            Some(ResourceSnapshot {
+                definition: entry.definition.clone(),
+                resource: resource.clone(),
+                value,
+                available,
+                reservable: entry.reservations.is_some(),
+                reservations,
+            })
+        } else {
+            None
+        };
         self.owner_readiness.require_ready(key.owner())?;
-        Ok(value.map(|value| ResourceSnapshot {
-            definition: entry.definition.clone(),
-            resource: resource.clone(),
-            value,
-        }))
+        Ok(snapshot)
     }
 
     pub(crate) fn read_effect(
@@ -562,12 +666,22 @@ pub enum ResourceEffectProviderRegistryError {
         key: ResourceProviderKey,
         definition: Box<DefinitionRef>,
     },
+    #[error("resource provider {provider:?} cannot use reservation family owned by {family_owner}")]
+    ReservationFamilyOwnerMismatch {
+        provider: ResourceProviderKey,
+        family_owner: OwnerId,
+    },
+    #[error("resource provider {provider:?} has an invalid reservation family: {source}")]
+    ReservationFamily {
+        provider: ResourceProviderKey,
+        source: Box<ActionStateError>,
+    },
     #[error("resource/effect provider registry fingerprint is not canonical: {0}")]
     Fingerprint(#[from] CanonicalEncodingError),
 }
 
 /// Failure to read one ruleset-owned resource.
-#[derive(Clone, Debug, Eq, Error, PartialEq)]
+#[derive(Debug, Error)]
 pub enum ResourceReadError {
     #[error("resource provider registry is unavailable")]
     RegistryUnavailable,
@@ -578,6 +692,22 @@ pub enum ResourceReadError {
         resource: Box<ResourceRef>,
         source: ResourceProviderFailure,
     },
+    #[error("resource reservation-book identity cannot be derived: {0}")]
+    ReservationIdentity(CanonicalHashError),
+    #[error("reservation state cannot be read for {resource:?}: {source}")]
+    ReservationState {
+        resource: Box<ResourceRef>,
+        source: Box<ActionStateError>,
+    },
+    #[error("reservation book is addressed under the wrong resource: {resource:?}")]
+    ReservationBookResourceMismatch { resource: Box<ResourceRef> },
+    #[error("reservation book is invalid for {resource:?}: {source}")]
+    ReservationBook {
+        resource: Box<ResourceRef>,
+        source: Box<ReservationBookError>,
+    },
+    #[error("resource scalar is invalid: {0}")]
+    ResourceValue(ResourceValueError),
     #[error(transparent)]
     OwnerNotReady(#[from] MechanicalOwnerReadinessError),
 }
