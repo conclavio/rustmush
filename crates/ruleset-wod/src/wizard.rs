@@ -54,6 +54,7 @@ enum Step {
     Splat,
     Virtues,
     Freebies,
+    Residence,
     Review,
 }
 
@@ -69,6 +70,7 @@ const ORDER: &[Step] = &[
     Step::Splat,
     Step::Virtues,
     Step::Freebies,
+    Step::Residence,
     Step::Review,
 ];
 
@@ -86,6 +88,7 @@ impl Step {
             Step::Splat => "Template Traits",
             Step::Virtues => "Virtues",
             Step::Freebies => "Freebies",
+            Step::Residence => "Residence",
             Step::Review => "Review & Submit",
         }
     }
@@ -258,6 +261,12 @@ impl ChargenWizard {
             if ORDER[i] == Step::Splat && mortal {
                 continue;
             }
+            // E5c: the Residence step only exists where housing does. It is
+            // **optional** even then (08d §11 answer 2, binding) — 'next' walks past
+            // it and the character is approved with no home.
+            if ORDER[i] == Step::Residence && !self.residence_step_applies() {
+                continue;
+            }
             break;
         }
         self.idx = i;
@@ -354,6 +363,7 @@ impl ChargenWizard {
                 "e.g.  Resources=3   Allies=2".to_string(),
             ],
             Step::Splat => self.splat_guidance(ctx),
+            Step::Residence => self.residence_guidance(ctx),
             Step::Virtues => {
                 let mut v = vec![
                     "Rate your Virtues with <virtue>=<n> (each starts at 1; more cost freebies):"
@@ -396,6 +406,81 @@ impl ChargenWizard {
                 v
             }
         }
+    }
+
+    /// Whether the Residence step applies at all: the WoD economic layer is on and
+    /// its `housing` knob is set (08d §5.4).
+    fn residence_step_applies(&self) -> bool {
+        self.cmd.econ.personal_mode.is_on() && self.cmd.econ.housing
+    }
+
+    /// The support level a character's Resources will derive to at approval. The
+    /// stance modifier is deliberately **not** applied: a home is chosen against what
+    /// the character can carry steadily, not against a temporary `Exploit` bump.
+    fn residence_level(&self, ctx: &Ctx<'_>) -> u8 {
+        crate::economy::sheet_resources(ctx.w, ctx.actor).unwrap_or(0)
+    }
+
+    /// The Residence step's guidance: the vacancies this character could carry, by
+    /// **name and tier only**.
+    ///
+    /// Never who lives anywhere else — a `Let` or `Withdrawn` property is not listed
+    /// at all, so occupancy is not inferable from what is present or from what is
+    /// missing (`crate::economy::chargen` documents the disclosure rule in full).
+    fn residence_guidance(&self, ctx: &mut Ctx<'_>) -> Vec<String> {
+        let level = self.residence_level(ctx);
+        let mut v = vec![format!(
+            "Where does your character live? Your Resources ({level}) can carry a tier-{level} \
+             place or lower.",
+        )];
+        let offered = crate::economy::chargen::vacancies(ctx, level);
+        if offered.is_empty() {
+            v.push(
+                "  Nothing is free right now. That is fine — type 'next' and staff can house \
+                 you later."
+                    .to_string(),
+            );
+            return v;
+        }
+        for o in &offered {
+            v.push(format!("  #{}  {}  (tier {})", o.property, o.name, o.tier));
+        }
+        v.push("Choose with the number, e.g.  #3   — or 'none' for nowhere in particular."
+            .to_string());
+        v.push("This step is optional: 'next' leaves it unset.".to_string());
+        // What is *not* said here is the point: no occupancy, no tenants, no
+        // landlord, and no mention of any property that is already let.
+        let _ = offered.len();
+        v
+    }
+
+    /// Record a Residence pick (`#3`, `3`, or `none`).
+    fn apply_residence(&self, ctx: &mut Ctx<'_>, line: &str) -> Result<String, CmdError> {
+        if !self.residence_step_applies() {
+            return Err(CmdError::msg("This game does not assign homes at chargen."));
+        }
+        let level = self.residence_level(ctx);
+        let raw = line.trim();
+        if raw.eq_ignore_ascii_case("none") || raw.eq_ignore_ascii_case("nowhere") {
+            crate::economy::chargen::choose(ctx, ctx.actor, level, None)
+                .map_err(CmdError::msg)?;
+            return Ok("No residence chosen.".to_string());
+        }
+        let id = raw
+            .trim_start_matches('#')
+            .parse::<u64>()
+            .map_err(|_| CmdError::msg("Choose one of the numbers listed, or 'none'."))?;
+        let picked = crate::economy::chargen::choose(
+            ctx,
+            ctx.actor,
+            level,
+            Some(mush_housing::PropertyId(id)),
+        )
+        .map_err(CmdError::msg)?;
+        Ok(match picked {
+            Some(v) => format!("Residence set to {} (tier {}).", v.name, v.tier),
+            None => "No residence chosen.".to_string(),
+        })
     }
 
     /// The splat-step guidance for the active template (fields + pool, read off
@@ -556,6 +641,7 @@ impl ChargenWizard {
             }
             Step::Splat => self.apply_splat(ctx, line),
             Step::Freebies => self.apply_generic(ctx, line),
+            Step::Residence => self.apply_residence(ctx, line),
             Step::Review => Err(CmdError::msg(
                 "Type 'submit' to file for approval, or 'back' to revise.",
             )),

@@ -9,7 +9,7 @@
 
 use mush_core::ObjId;
 
-use crate::ids::TenancyId;
+use crate::ids::{PropertyId, TenancyId};
 
 /// Why a housing operation was refused.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -61,4 +61,31 @@ pub enum HousingError {
     /// clock, and a corrupt document can hold any two of them.
     #[error("arithmetic overflow")]
     Overflow,
+    /// E5c: [`crate::create_tenancy`] was pointed at a property this world does not
+    /// have. Deliberately **not** an existence oracle at the command layer —
+    /// `@tenancy/create` folds it into `No such property.` like every other refusal
+    /// that names a record the actor may not view.
+    #[error("no such property: {0}")]
+    NoSuchProperty(PropertyId),
+    /// The property is `Withdrawn`: a service decision, and nobody moves into a
+    /// residence that is out of service.
+    #[error("property {0} is withdrawn")]
+    Withdrawn(PropertyId),
+    /// The property already carries a live tenancy. **One live tenancy per property**
+    /// (E5a fold, handoff 1): two would mean two rosters, two guest lists and two
+    /// answers to the same door.
+    #[error("property {0} already has a live tenancy")]
+    AlreadyLet(PropertyId),
+    /// The named cadence clock does not resolve. A tenancy assessed on a clock that
+    /// does not exist is one the tick freezes and pages about forever, so it is
+    /// refused at creation instead.
+    #[error("that cadence clock does not resolve")]
+    NoSuchCadence,
+    /// An id allocator is at the `u64` ceiling (E4b1's B2 rule: refuse one operation
+    /// loudly, never wrap a live id).
+    #[error("the {0} allocator is exhausted")]
+    Exhausted(&'static str),
+    /// The housing module is not loaded.
+    #[error("housing is not loaded")]
+    NotLoaded,
 }

@@ -201,12 +201,12 @@ pub use sweep::MAX_REPUBLISH_PER_SWEEP;
 
 // E2b/E3b1 public surface.
 pub use api::{
-    META_KEY, ObligationSpec, PostOutcome, account_key, acknowledge_escalation, approval_key,
-    asset_key, cadence_key, contract_key, create_system_obligation, create_vault, hold_key,
-    instrument_key, issue_title, mark_canon_published, open_escalation,
-    obligation_key as obligation_doc_key, open_account, post, post_capability, register_instrument,
-    reverse, set_account_approval, set_account_status, set_asset_frozen, set_economy_frozen,
-    set_vault_status, vault_key,
+    CadenceError, MAX_CADENCE_NAME_BYTES, MAX_CADENCES, META_KEY, ObligationSpec, PostOutcome,
+    account_key, acknowledge_escalation, approval_key, asset_key, cadence_key, contract_key,
+    create_cadence, create_system_obligation, create_vault, hold_key, instrument_key, issue_title,
+    mark_canon_published, open_escalation, obligation_key as obligation_doc_key, open_account, post,
+    post_capability, register_instrument, reverse, set_account_approval, set_account_status,
+    set_asset_frozen, set_economy_frozen, set_system_obligation, set_vault_status, vault_key,
 };
 pub use commands::{may_view_account, may_view_hold, may_view_obligation};
 pub use custody::{ContainerProvider, CustodyError, CustodyProvider, CustodyTable};

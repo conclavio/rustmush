@@ -46,6 +46,9 @@ fn chargen_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if ctx.switches.has("abil") {
         return set_priorities(cmd, ctx, false);
     }
+    if ctx.switches.has("residence") {
+        return residence(cmd, ctx);
+    }
     if ctx.switches.has("submit") {
         return submit(cmd, ctx);
     }
@@ -358,6 +361,67 @@ fn set_template_to(cmd: &WodCmd, ctx: &mut Ctx<'_>, id: &str) -> Result<(), CmdE
     status(cmd, ctx)
 }
 
+/// `+chargen/residence [#<property>|none]` — the E5c **Residence** stage (08d §5.4)
+/// on the classic command surface; the wizard's step drives the same helpers.
+///
+/// With no argument it **lists** the vacancies this character's Resources can carry:
+/// names and tiers only. A `Let` or `Withdrawn` property is not listed at all, so
+/// nothing about who lives where is disclosed — by presence or by absence. The step
+/// is optional (08d §11 answer 2, binding): a character who never runs it is approved
+/// with no home.
+fn residence(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    require_chargen(ctx)?;
+    if !cmd.econ.personal_mode.is_on() || !cmd.econ.housing {
+        return Err(CmdError::msg("This game does not assign homes at chargen."));
+    }
+    let actor = ctx.actor;
+    let level = crate::economy::sheet_resources(ctx.w, actor).unwrap_or(0);
+    let raw = ctx.args.raw().trim().to_string();
+    if raw.is_empty() {
+        let offered = crate::economy::chargen::vacancies(ctx, level);
+        ctx.out.sys_to_actor(
+            actor,
+            "wod",
+            format!("Residence — your Resources ({level}) can carry tier {level} or lower:"),
+        );
+        if offered.is_empty() {
+            ctx.out.info(
+                actor,
+                "Nothing is free right now. That is fine — staff can house you later.",
+            );
+            return Ok(());
+        }
+        for o in &offered {
+            ctx.out.sys_to_actor(
+                actor,
+                "wod",
+                format!("  #{}  {}  (tier {})", o.property, o.name, o.tier),
+            );
+        }
+        ctx.out.info(actor, "Pick one with +chargen/residence #<n>, or 'none'.");
+        return Ok(());
+    }
+    if raw.eq_ignore_ascii_case("none") || raw.eq_ignore_ascii_case("nowhere") {
+        crate::economy::chargen::choose(ctx, actor, level, None).map_err(CmdError::msg)?;
+        ctx.out.info(actor, "No residence chosen.");
+        return Ok(());
+    }
+    let id = raw
+        .trim_start_matches('#')
+        .parse::<u64>()
+        .map_err(|_| CmdError::msg("Choose one of the numbers listed, or 'none'."))?;
+    let picked =
+        crate::economy::chargen::choose(ctx, actor, level, Some(mush_housing::PropertyId(id)))
+            .map_err(CmdError::msg)?;
+    match picked {
+        Some(v) => ctx
+            .out
+            .info(actor, format!("Residence set to {} (tier {}).", v.name, v.tier)),
+        None => ctx.out.info(actor, "No residence chosen."),
+    }
+    Ok(())
+}
+
 /// `+spec <ability>=<specialty>` — record a specialty on an ability.
 fn spec_cmd(cmd: &WodCmd, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let ability = ctx.args.lhs().trim().to_string();
@@ -572,6 +636,7 @@ pub(crate) fn chargen_approval(
     config: &WodConfig,
     dispatch: &Dispatch,
     onboarding: &crate::onboarding::OnboardingConfig,
+    econ: &crate::economy::WodEconomyConfig,
     ctx: &mut Ctx<'_>,
     job: &Job,
 ) -> Result<(), String> {
@@ -599,6 +664,16 @@ pub(crate) fn chargen_approval(
         .store_for_doc(&doc)
         .put_by(ctx.w, target, &doc, ctx.actor)
         .map_err(|es| fmt_errs(&es))?;
+    // E5c (08d §5.4): the economic artifacts, per `personal_mode` — nothing / a
+    // `SpendingProfile` / an account with starting funds — plus the tenancy if the
+    // player picked a residence. Deliberately **after** the sheet is stamped and
+    // **before** the onboarding move, and deliberately not fallible: a sheet a
+    // storyteller has signed off is not un-signed because an account could not be
+    // opened. Anything that went wrong is reported to the approver instead.
+    let by = ctx.actor;
+    for line in crate::economy::chargen::on_approved(ctx, econ, target) {
+        ctx.out.sys_to_actor(by, "wod", line);
+    }
     // Onboarding: lift the gate — move the newly-approved character to the live
     // start room and re-render it (a no-op when chargen_required is off).
     crate::onboarding::on_approved(onboarding, ctx, target);
@@ -736,6 +811,7 @@ pub(crate) fn register(
                 "template".into(),
                 "attr".into(),
                 "abil".into(),
+                "residence".into(),
                 "submit".into(),
             ],
             shape: ArgShape::Raw,
@@ -747,6 +823,8 @@ pub(crate) fn register(
                    priorities.\n\
                    +chargen/abil talents=13 skills=9 knowledges=5  --  Assign ability \
                    priorities.\n\
+                   +chargen/residence [#<n>|none]  --  Where you live: the vacant places \
+                   your Resources can carry, by name and tier. Optional.\n\
                    +chargen/status  --  Show the live budget.\n\
                    +chargen/submit  --  Finalize and file for staff approval."
                 .into(),

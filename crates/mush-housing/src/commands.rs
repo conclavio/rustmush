@@ -968,18 +968,19 @@ fn tenancy_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     let exact = opts.get("mode").is_some_and(|m| m.eq_ignore_ascii_case("exact"));
 
-    let id = {
-        let store =
-            ctx.w.module_state_mut::<HousingStore>().ok_or_else(|| CmdError::msg("No housing."))?;
-        store
-            .alloc_tenancy()
-            .ok_or_else(|| CmdError::msg("The tenancy-id allocator is exhausted."))?
-    };
-    let mut t = Tenancy::new(id, p.id, tenants.clone(), cadence)
-        .map_err(|e| CmdError::msg(e.to_string()))?;
-    t.terms = terms;
-
     if exact {
+        let id = {
+            let store = ctx
+                .w
+                .module_state_mut::<HousingStore>()
+                .ok_or_else(|| CmdError::msg("No housing."))?;
+            store
+                .alloc_tenancy()
+                .ok_or_else(|| CmdError::msg("The tenancy-id allocator is exhausted."))?
+        };
+        let mut t = Tenancy::new(id, p.id, tenants.clone(), cadence)
+            .map_err(|e| CmdError::msg(e.to_string()))?;
+        t.terms = terms;
         let contract = offer_lease(ctx, &p, &t, &opts)?;
         t.funding =
             Funding::Exact { contract, obligation: crate::econ::PENDING_OBLIGATION };
@@ -1000,13 +1001,9 @@ fn tenancy_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
     // Abstract: the staff act that creates it is both consents recorded at once —
     // there is no separate accept verb in E5 (08d §4's command list), and chargen's
-    // approval step (§5.4) creates a live tenancy the same way.
-    let now = crate::module::cadence_now(ctx.w, cadence).unwrap_or(0);
-    let live = crate::accept(&t, true, &tenants, now).map_err(|e| CmdError::msg(e.to_string()))?;
-    put_tenancy(ctx, live.clone());
-    crate::flow::seed_assessment(ctx, &live);
-    crate::flow::activate(ctx, &live);
-    crate::module::persist_meta(ctx);
+    // approval step (§5.4) creates a live tenancy through the **same** entry.
+    let id = crate::flow::create_tenancy(ctx, p.id, tenants.clone(), cadence, terms)
+        .map_err(|e| hidden(ctx, Some(&p), None, e.to_string()))?;
     let who: Vec<String> = tenants.iter().map(|o| format!("#{}", o.0)).collect();
     info(ctx, format!("Tenancy #{id} is active on property #{}: {}.", p.id, who.join(", ")));
     info(

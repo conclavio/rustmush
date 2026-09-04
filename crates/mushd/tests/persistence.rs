@@ -824,6 +824,7 @@ async fn boot_wod_rig(
         mushd::modules::ruleset_modules(
             &["wod".to_string()],
             &ruleset_wod::OnboardingConfig::default(),
+            &ruleset_wod::WodEconomyConfig::default(),
         )
         .expect("wod ruleset"),
     );

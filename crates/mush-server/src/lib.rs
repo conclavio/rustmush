@@ -242,10 +242,20 @@ async fn build_engine(
     let llm =
         Arc::new(LlmService::from_config(&llm_config).map_err(|e| format!("llm config: {e}"))?);
     let onboarding = crate::config_ext::onboarding_ruleset(&config.onboarding);
+    // E5c: `[wod.economy]`, validated here (an unknown mode is a hard boot error).
+    // `None` when no WoD ruleset is enabled — that is what gates the housing title
+    // issuer (08d §2).
+    let wod_economy = crate::config_ext::wod_economy_config(&config.wod)?;
+    let wod_selected = config
+        .rulesets
+        .enabled
+        .iter()
+        .any(|r| r.trim().eq_ignore_ascii_case("wod"));
     let mut mods = modules::server_modules_with(
         crate::config_ext::weather_config(&config.weather),
         crate::config_ext::economy_config(&config.economy),
         &onboarding,
+        wod_selected.then_some(&wod_economy),
     );
     mods.push(modules::worldgen_module_with(
         Arc::clone(&llm),
@@ -253,7 +263,7 @@ async fn build_engine(
     ));
     let npc_grounding = modules::npc_agent_adapter(&config.rulesets.enabled);
     mods.push(modules::npc_module(npc_grounding));
-    let rulesets = modules::ruleset_modules(&config.rulesets.enabled, &onboarding)
+    let rulesets = modules::ruleset_modules(&config.rulesets.enabled, &onboarding, &wod_economy)
         .map_err(|e| format!("ruleset selection: {e}"))?;
     mods.extend(rulesets);
     // Compose and freeze every mechanics registry before any persisted world

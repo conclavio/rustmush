@@ -1,4 +1,4 @@
-# Economy / org / ownership — build status & E5 handoff
+# Economy / org / ownership — build status & E6 handoff
 
 **Companion to [08-economy-organizations-ownership.md](08-economy-organizations-ownership.md)** (the
 design; prefer it for *why*), [08b-e3-implementation-plan.md](08b-e3-implementation-plan.md) (the
@@ -6,7 +6,9 @@ E3 plan as reviewed and as built) and [08c-e4-implementation-plan.md](08c-e4-imp
 (the same for E4 — prefer its §3.5a/§4.7/§5.1/§6.1 "as built" blocks for *how* E4 fits together).
 This doc is the **build ledger**: what of the E0–E8 plan is actually shipped, the decisions made
 while building it, the live seams a later milestone consumes, and the concrete pickup point for
-**E5**. Read this first when resuming economy work.
+**E6**. Read this first when resuming economy work. **E5 is built** — for *how* the housing and WoD
+layers fit together, prefer [08d](08d-e5-implementation-plan.md)'s §3.5 / §4.1 / §5.6 "as built"
+blocks.
 
 E0–E3 are on `origin/main` (the E3 commits, `99f5b9c` through the post-E3 module-order commit, were
 pushed 2026-09-03). Each cut ran the standing rhythm — design-review-before-build, adversarial-verify — with
@@ -14,6 +16,8 @@ one variation for E3: by owner instruction the adversarial verify ran **once, ov
 diff, after E3d**, and its confirmed findings were folded in a separate commit (see the last E3
 Shipped row) rather than per cut. **E4 went back to per-cut verifies** — E4a, E4b1 and E4b2 each
 have their own adversarial pass and fold commit, and 08c §3.7 / §4.8 / §5.2 record the outcomes.
+**E5 kept the per-cut cadence**: E5a and E5b each have their own adversarial pass and fold, recorded
+in 08d §3.6 and §4.2; E5c's is still to run.
 
 ## Shipped
 
@@ -40,6 +44,10 @@ have their own adversarial pass and fold commit, and 08c §3.7 / §4.8 / §5.2 r
 | **E4b2** | `mush-economy` module | `e56c2a9`, fold `4972455` | contracts end to end: draft/offer/accept (escrow at accept)/attest/settle/dispute/cancel/expire, live re-verification, custody locks, `Lease`/`Collateral`, the sweep's contract step, `@contract/*`, the outcome table + roster lock + adjudicator, `EconomicVisibility::Audience`, and the plan-first terminal-transition rule |
 | **E4c** | `mush-economy` + `mush-org` + `mush-jobs` + `mush-server` | `8873863`, fold *(uncommitted)* | the `FactProvider` seam (jobs implements it), the `CanonRecorded` attestation observer, `EconomyObserver` + compact events + the canon evidence bridge, `mush_org::audit`, `@econ/history` under the disclosure filter, `issue_title` for registered system principals; **two `mush-core` changes** — `WorldEvent::CanonRecorded` gains `source`, and (verify fold) `Outbox::pin_deferred` makes a terminal canon commit non-truncatable by a failing command |
 | **E4c verify fold** | economy + jobs + server + core + canon | *(uncommitted)* | three lenses' confirmed findings, each with a regression test (08c §6.2): canon attestors must be **producer-declared outcome kinds** with a mandatory source and a party in `entities`; `jobs.resolved` answers from an applied-payload marker; a missed canon edge is recoverable (`@econ/unfreeze`, activation re-scan, `@contract/resolve <id>=settle [reason]`); deterministic conditions carry an observed-at stamp so `After` can anchor on one; `issue_title` needs a live object and mints a title **generation**; the reservation-visible / contract-hidden rule; publication keyed on a durable `canon_published` marker with a sweep retry |
+| **E5 plan** | docs | `08d` | three-pass reviewed, plus the owner's twenty answers (08d §10) and the three accepted defaults (§11), all binding |
+| **E5a** | `mush-housing` (pure) | shipped, folded | `Property`/`Tenancy`/`SupportPlan`, the tenancy state machine that **never ends a home on its own** (D-E5-1), the multi-resident best-of assessment (`assess_at` + `harden`), the fail-closed access predicate, the `Obj.home` invariant helpers, the story window's notice decay. 55 tests (08d §3.5/§3.6) |
+| **E5b** | `mush-housing` module | shipped, folded | persistence + boot reconciliation, the `MoveAttempt`/`CarryAttempt` hook, the destroy gate + `ObjDestroyed` backstop, the **pull-model** assessment tick, the lease-backed exact mode, the story job + escalation, `@property/*`, `@tenancy/*`, `+home`, `+guest`. 121 tests (08d §4.1/§4.2) |
+| **E5c** | `ruleset-wod::economy` + `mush-config`/`mush-server` + four additive seams | *(uncommitted)* | the WoD layer: `[wod.economy]` parsed host-side, `SpendingProfile`/`CareerProfile`/four stances, the period evaluation on the cadence clock (one period per fire, rotation-capped), the attention budget with housing preemption, the bounded per-faction pool, non-response defaults, front attribution incl. orphaned fronts, `wod.usd` + three faucets + faucet-funded income in exact mode, the chargen Residence stage and the mode-dependent approval artifacts, `@wod/economy migrate`, `+career`/`+prompt`/`+resources`/`@career/set`. 40 tests (08d §5.6) |
 
 Test tally after E3 (post-fold): **mush-org 46**, **mush-economy 157**, **mush-sim 72**,
 **mush-tactics 52**, **mush-faction 56**, **mush-server 62**; `cargo test --workspace --no-fail-fast` runs 2012 passing. The one
@@ -56,6 +64,12 @@ named `vf_<lens><n>_…`.
 `mushd::web_e2e` failure is gone (it is `spa_if_built_and_healthz_are_served` now and tolerates an
 unbuilt `web/dist`). Both digest pins (E2 `9c917eee…`, E3-shaped `b780e3a0…`) are green in every
 cut. `cargo fmt` stays off, unchanged.
+
+Test tally after E5 (each cut post-fold): **mush-housing 121** — `e5a.rs` 54, `e5b.rs` 66, 1
+in-crate — and **ruleset-wod +40** in `e5c.rs`.
+`cargo test -p ruleset-wod -p mush-housing -p mush-economy -p mush-server` runs **923 passing**;
+`cargo test --workspace` runs **2735 passing across 184 suites, 0 failing**; `cargo clippy
+--workspace --all-targets -- -D warnings` is clean. `cargo fmt` stays off, unchanged.
 
 ### The E4 seams a later milestone consumes
 
@@ -308,33 +322,65 @@ so a reader can see which cut answered what:
   no provider; the inert non-quarantined `Unplaced` placement doc after an interior withdrawal; an
   operator-eviction verb for a new title owner (E7).
 
-## Pick up here: E5 — the WoD slice (housing, upkeep, income, consequences)
+## What E5 closed (the E4 pickup list, resolved)
 
-Design: doc 08 §11.1, §18 "E5". **Plan:** [08d](08d-e5-implementation-plan.md) — build from it.
-What E4 leaves as the hooks, concretely:
+- **Cadence clocks have a verb — and a programmatic creator.** `@econ/cadence create|show|list|
+  advance` shipped in E5b; E5c lifted the creation core into
+  **`mush_economy::create_cadence(ctx, name, source, period, catch_up)`** so a ruleset's boot can
+  make the campaign clock its configuration names (there is nobody to type a verb at boot). One
+  creator, so the caps, the duplicate-name rule and the "anchored at now" rule cannot drift. E4b1's
+  B6 (a schedule on a deleted clock) and S2 (cadence starvation) are now exercised against **real**
+  clocks by `mush-housing/tests/e5b.rs` and `ruleset-wod/tests/e5c.rs`.
+- **The income table is `create_system_obligation`'s first caller**, as planned — and E5c added its
+  counterpart, **`mush_economy::set_system_obligation(ctx, faucet, id, Option<Amount>)`**, so a
+  faucet can re-rate or cancel a standing mint it created. Same four locks (minted by this faucet,
+  still live, both accounts `Active`, inside `mint_cap`); a missing record and somebody else's
+  answer the same `Unauthorized`.
+- **`Delinquent`'s consequence hook is housing's.** An exact tenancy mirrors its obligation onto the
+  ladder's first rung through `HousingEconomyObserver` and walks the rest on its own cadence;
+  `@obligation/reinstate` is still the manual path, and nothing ends a home automatically (D-E5-1).
+- **The title issuer is registered, and now conditionally.** `EconomyModule::with_title_issuers`
+  carries `sys:wod.housing` **only when `[rulesets].enabled` selects `wod` and
+  `[wod.economy].housing` is on**; `@property/create` mints the anchor's title through
+  `issue_title` under it, and refuses when the list is empty.
+- **Sub-threshold drip: still documented, not fixed.** E5's income lines are bounded by
+  `EconomyConfig::mint_cap` rather than by an `ApprovalRule`, so the drip is out of their way; a
+  budget primitive is still unbuilt and is E6/E8's.
+- **Notifications still reach only `PrincipalId::Object`.** Unchanged by E5: `contract_live::notify`,
+  `sweep::notify_principal` and the escalation fan-out all stop there, and an org or system
+  landlord still has no inbox. The `EconomyObserver` seam is where that belongs.
 
-- **Cadence clocks have no verb.** E4b1 persists, boots and sweeps `cadence:{id}` records, and
-  `advance_cadence_manual` exists; nothing creates one. `@econ/cadence` is E5's, and E5 must test
-  E4b1's findings B6 (a schedule pointing at a deleted clock) and S2 (cadence starvation) against
-  **real** clocks — E4b1 could only pin them through injected documents.
-- **The income table is `create_system_obligation`'s first caller** (E4b1's M1): the faucet must own
-  the debit account, both sides must be `Active` and share an instrument, and the per-period amount
-  must sit inside `EconomyConfig::mint_cap`, re-read at every settlement.
-- **`Delinquent` has no automatic recovery.** `@obligation/reinstate` is the manual path; E5's
-  consequence hook is what should own the transition.
-- **The title issuer is registered, not granted** (E4c): `EconomyModule::with_title_issuers(vec![
-  SystemPrincipalId::new("wod.housing")])` in `mush-server/src/modules.rs`, then
-  `mush_economy::issue_title(ctx, object, owner, scope, issuer)` mints the housing title as a
-  journaled `Created` effect. The server passes an empty list today.
+## Pick up here: E6 — markets, quotes, catalogs
+
+Design: doc 08 §18 "E6"; 08e is the plan document. What E4 and E5 leave as the hooks, concretely:
+
+- **`with_canon_outcome_kinds` is still empty, deliberately.** E6b owes the attestation seam a
+  **producer**: `scene.outcome`, outcome-bearing, sealed under facilitator/adjudicator authority,
+  named at offer, registered through that table. `scene.concluded` never attests, and neither does
+  E5c's `wod.career.exposure` — an evidence record its own subject produces is one they could settle
+  a contract with alone. Until a kind is registered, `@contract/offer` refuses every `canon:`
+  attestor set, which is fail-closed and visible to whoever drafts it.
+- **The per-faction off-screen pool is a shared seam.** `ruleset_wod::WodEconomyStore::open_ops()`
+  is a derived `BTreeMap<FactionId, u32>` of currently-open front-attributed prompts, capped at
+  `MAX_OFFSCREEN_OPS_PER_FACTION` (8). A faction simulation that starts running its own operations
+  should read and contribute to that map rather than growing a second budget — one ceiling per
+  faction is the whole point.
+- **`FrontRef` is the pre-C6 attribution shape** (08d §7 item 3, §5.6). The canon `source` string
+  `front:{faction}:{front}` is the stable half and is what E4c matches an attestor on; the record
+  becomes a projection of the kernel causal chain once doc 09's C6 lands.
 - **A fact provider is how a domain answers a contract.** `mush-jobs` is the worked example
-  (`JobsFactProvider`, `jobs.resolved`, payload-bearing jobs only); anything E5 wants a contract to
-  settle on registers the same way rather than teaching the economy about it.
-- **Sub-threshold drip, documented not fixed** (E4b1): an `ApprovalRule` is a per-transaction
-  escalation, so a per-period amount under the threshold never escalates however long it runs, and
-  one over it cannot settle at all. A budget primitive is E5's.
-- **Notifications still reach only `PrincipalId::Object`.** `contract_live::notify`,
-  `sweep::notify_principal` and the escalation re-notification fan-out all stop there; the
-  `EconomyObserver` seam (E4c) is where an org or system party's notice belongs.
+  (`JobsFactProvider`, `jobs.resolved`, payload-bearing jobs only, answered from an **applied
+  marker** and never from a status). Doc 10 §15's `sim.*`/`tactics.*` kinds register the same way.
+- **Housing's seams are library-level now.** `mush_housing::create_tenancy` (abstract, live
+  immediately) and `mush_housing::submit_support_plan` are the two entries a layered module uses;
+  a plan older than `PLAN_MAX_AGE_PERIODS` (2) is *absent*, so any evaluator must restate every
+  period.
+- **Mode flips have a pattern.** `@wod/economy migrate` is the shape a later reconciliation should
+  copy: staff, one-shot, idempotent, it lists what it did, and it mints nothing in either direction.
+- **Still open from the E3 list, unchanged by E4 and E5:** an `Organization.revision` bump op +
+  `SetOrgStatus`/`PutRole`; per-asset isolation of the whole-economy freeze; the durability
+  checkpoint; `CustodyRef::Registered` has no provider; the inert non-quarantined `Unplaced`
+  placement doc after an interior withdrawal; an operator-eviction verb for a new title owner (E7).
 
 ## Build discipline (keep it)
 

@@ -5,7 +5,10 @@
 **E5a is built** — `crates/mush-housing`, the pure library; read §3.5 "As built" for its signatures,
 deviations and the seams E5b consumes. **E5b is built** — the `HousingModule` that attaches it to a
 world; read §4.1 "As built" for its signatures, doc shapes, the pull-model assessment, the
-lease-backed exact mode, the deviations and the handoffs to E5c.
+lease-backed exact mode, the deviations and the handoffs to E5c. **E5c is built** — the WoD layer in
+`ruleset-wod::economy` plus the host config plumbing; read §5.6 "As built" for the config shape, the
+doc shapes, the evaluation's bounds, the sheet-blindness proof, the mode-transition table, the four
+additive seams below the ruleset, and the handoffs to E6/E7.
 Companion to [08-economy-organizations-ownership.md](08-economy-organizations-ownership.md) (§6.3
 abstract wealth, §11.1 the WoD slice, §18-E5), [08a-economy-build-status.md](08a-economy-build-status.md)
 (ledger), [08c-e4-implementation-plan.md](08c-e4-implementation-plan.md) (E4, which E5 is layered on),
@@ -899,7 +902,7 @@ who lives elsewhere — and lets the player choose one (or none); approval creat
 strain, sources; exact: balance via the economy's `@account/show` rules). Staff: `@wod/economy`
 (show effective config; `migrate`), `@career/set <who>=…` (employer, front).
 
-Tests (~32): scenario 23 end to end in abstract mode (Resources 3 quietly supports a tier-2
+Tests (planned ~32; **40 as built**, `crates/ruleset-wod/tests/e5c.rs`): scenario 23 end to end in abstract mode (Resources 3 quietly supports a tier-2
 residence for N periods with no output; drop Resources via a staff `@sheet/set` → the next period's
 plan is `Unsupported` → Grace → Delinquent → EvictionPending with one notice each, a job opened,
 no movement, `home` still works; `@tenancy/resolve end` after a staff scene ends it); the same in
@@ -912,6 +915,230 @@ economy never writes the sheet (assert `sheet:wod` unchanged across every test);
 the right artifact per mode; the Residence step offers only tier-appropriate vacancies and no
 occupancy data; `@wod/economy migrate` in both directions mints nothing and hides/opens accounts as
 specified.
+
+### 5.6 As built (E5c, `ruleset-wod::economy` + the host config plumbing)
+
+Built as a submodule of the ruleset (`crates/ruleset-wod/src/economy/`), plus four small additive
+seams in crates below it. `cargo test -p ruleset-wod -p mush-housing -p mush-economy -p mush-server`
+**923 passing**; `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo test
+--workspace` **2735 passing across 184 suites, 0 failing**. `cargo fmt` stays off, unchanged.
+
+**Files.** `src/economy/config.rs` (`WodEconomyConfig`, `PersonalMode`, `Engagement`, the three
+faucet names and `wod.usd`) · `record.rs` (§5.2/§5.3's records + the §9 constants) · `store.rs`
+(`WodEconomyStore`, the four documents, boot `load`) · `boot.rs` (the clock, the instrument, the
+faucet accounts) · `evaluate.rs` (the period evaluation) · `prompt.rs` (the attention budget,
+preemption, the pool, non-response, front rendering) · `chargen.rs` (the Residence step + the
+approval artifacts) · `migrate.rs` (`@wod/economy migrate`) · `commands.rs` (the verb surface) ·
+`tests/e5c.rs`.
+
+**Dependencies added to `ruleset-wod`:** `mush-housing`, `mush-economy`, `mush-org`,
+`mush-faction`, `mush-canon` — exactly §2's list. None of the five depends on any ruleset crate,
+directly or transitively, so the edge introduces no cycle (checked over the full closure).
+
+**Config shape** (`[wod]`, parsed host-side in `mush-config` → validated in
+`mush_server::config_ext::wod_economy_config` → `WodRuleset::economy`):
+
+```toml
+[wod.economy]
+personal_mode = "off"            # off | abstract | exact          (default: off)
+housing = true                   # create tenancies; register the title issuer
+careers = true
+default_engagement = "ambient"   # ambient | engaged
+cadence = "chronicle.period"     # the campaign clock, by NAME
+starting_funds_major = 0         # exact only
+reserved_rooms = []              # extra #N rooms that may never be property rooms
+
+[wod.economy.income]             # exact only, authoritative only there
+"3" = 1200                       # major units per period, per Resources dot
+```
+
+An unknown `personal_mode` or `default_engagement`, an income key outside `0..=5` and an empty
+`cadence` are **hard boot errors**, on `[rulesets].enabled`'s rule that a silently-ignored typo is
+worse than not starting.
+
+**Doc shapes** (namespace `wod`, alongside M17's `conceal`/`pending`/`extended`):
+
+| doc | class | corrupt → |
+|---|---|---|
+| `profile:{obj}` | leaf | **skipped loudly and re-derived** at the next evaluation |
+| `eval:{obj}` | leaf (the pull cursor: `position`, `period`, `seeded`) | skipped loudly, re-seeded |
+| `residence:{obj}` | leaf (a chargen pick, consumed at approval) | skipped loudly |
+| `econ:meta` | allocators (`next_prompt_id`, `eval_cursor`) | tolerated field by field |
+
+A corrupt profile does **not** fail the boot the way housing's two container docs do, and that is a
+decision rather than an omission: a `SpendingProfile` is *derived* — Resources comes off the sheet,
+the level comes off Resources, and the plan it submits is restated every period — so re-deriving one
+costs the character their strain counter and their open prompt and costs their **home** nothing.
+Both losses are the lenient half of every rule they take part in. The prompt allocator floors past
+every id a surviving profile holds, not only past `meta` (E4b1's B1), and saturates.
+
+**The evaluation's bounds** (`evaluate.rs`, `TickCadence::Coarse(30 s)`, tag `wod.economy`):
+
+- at most `MAX_EVALUATIONS_PER_FIRE` (128) characters per fire, from a **rotation cursor**, so a
+  world with more than that still reaches every one of them;
+- **one period per character however far the clock jumped** — forty periods of downtime evaluate
+  once. Catch-up is computed from the cadence `position`, never from a tick count: the position is
+  the idempotency key, so a missed fire loses nothing and a duplicate fire does nothing. The 30 s
+  wall period is a *latency* bound and nothing else;
+- the cursor is **seeded at profile creation** at the clock's current position (the ruleset-side
+  twin of `flow::seed_assessment`), so the next period the clock advances is the first one this
+  character is evaluated on. This is load-bearing, not cosmetic: housing assesses *before* the
+  ruleset does (module order), so a wasted first period is a period the tenancy has no plan at all,
+  and two of those in a row is exactly what `UNKNOWN_GRACE` fires on;
+- a cadence that does not resolve **freezes** the evaluation and says so loudly, once per fire — an
+  unresolvable clock never makes anything happen (the economy's rule, and E5b's);
+- every match in `evaluate.rs` is exhaustive, and the file contains **no** `?`, `unwrap`, `expect`
+  or panicking index at all — a tick handler runs in the world task, so a panic here takes the world
+  down. `prompt.rs` and `store.rs` use `?` only to short-circuit an `Option`-returning helper
+  (`expire`, `alloc_prompt`), and `expect` only on infallible serde of owned plain data inside a
+  persist helper — the same idiom `mush_housing::put_tenancy` and `mush_economy::persist_*` use.
+  Nothing in the layer can panic on record data.
+
+**The sheet-blindness proof.** The whole `economy` module reads the sheet in **one** function,
+`economy::sheet_resources` (plus `sheet_haven`, the same shape), and `SHEET_ATTR` appears nowhere
+else in it. `World::set_attr`, `SheetStore::put_by` and `mush_ruleset::validate` appear **zero**
+times in `src/economy/**` — the layer has no write path to a sheet at all, and no jobs-filing path
+either (it opens no job of any kind). What crosses into `mush-housing` is a
+`SupportPlan { level: 0..=5, sources: [label] }` and nothing else; `SupportSource::to_housing` is
+deliberately lossy, dropping the stance, the employer, the front and the risk numbers. §5.5's
+"assert `sheet:wod` unchanged across every test" is pinned three ways: a twelve-period run with an
+`Exploit` career and answered prompts, an `Advance` run, and scenario 23's whole ladder.
+
+**The mode-transition table as implemented** (`migrate.rs`, `@wod/economy migrate`, staff, one-shot,
+idempotent, and it lists what it did):
+
+| flip | what it does | what it never does |
+|---|---|---|
+| → `abstract` (from exact) | creates a `SpendingProfile` per sheeted character from Resources; **stops** every income line it opened; reports which wallets `+resources` now hides | touch an account or a balance — they are economy infrastructure and persist untouched |
+| → `exact` (from abstract) | opens a **zero-balance** `wod.usd` account per profiled character and points the profile at it | mint anything — the report says so and names `@econ/mint` as the attributed way to seed one |
+| `housing = false` | stops **new** tenancies (chargen creates none; the title issuer is not registered) | end, alter or hide an existing tenancy |
+| `off` | stops evaluating; stops the standing mints | delete a profile, a wallet, a balance or a tenancy |
+
+**Deviations and clarifications** (all recorded, none silent):
+
+1. **`personal_mode` defaults to `off`, `housing` to `true`.** §5.1's block *illustrates*
+   `abstract`; making that the default would switch a live E5b server into a mode it never
+   configured. Off-config the layer registers its verbs, creates nothing, evaluates nothing and
+   shows nothing — the byte-identical back-compat rule the rest of the tree follows — while
+   `housing = true` keeps the title issuer wired exactly as E5b wired it.
+2. **`CareerProfile::pending_stance`** joins §5.2's struct. "A stance change takes effect at the
+   **next** period boundary" cannot be implemented without somewhere to hold the pending answer;
+   `+career/stance` writes it, and the evaluation's first act is to land it.
+3. **`Engagement` is what gates opportunity generation.** `Ambient` (the default) never opens an
+   `Opportunity` or `Advancement` prompt; the career still supports the lease, still carries strain
+   and still leaves `Exploit`'s evidence. `Engaged` is opting in to being asked. §5.2 lists
+   `engagement` without saying what it does, and this is the reading that serves the tedium axis.
+4. **`Advance` emits no canon evidence.** §5.2's table calls its exposure "low"; the two rows the
+   plan pins to a *count* are `Exploit` (one per period) and `Conceal` (none). Inventing a rate for
+   "low" would have meant inventing a constant §9 does not have, so `Advance`'s exposure is the
+   `+career` visibility line and nothing in canon.
+5. **A career with no front generates nothing at all.** Owner answer 20 says every opportunity and
+   every progress event cites a specific front; the honest consequence is that an unattributed
+   career is quiet by construction rather than generating unattributed prompts. `@career/set`
+   records a front that does not resolve yet (a staffer may be setting one up ahead of the faction)
+   and the evaluation simply stays quiet until it does.
+6. **`Advancement` prompts count against the per-faction pool.** §5.3 says the pool counts
+   "opportunities … attributed to a faction's front"; an advancement prompt is one, so both
+   front-bearing kinds are counted and `StrainRelief`/`HousingPressure` are not.
+7. **The pool is derived, never stored.** `WodEconomyStore::open_ops()` recomputes it from the live
+   prompts on every ask, so "decremented on resolution or expiry" is true by construction and there
+   is no counter to drift. It is the seam the faction simulation shares.
+8. **A prompt that lapsed this period is not replaced this period.** The point of the budget is
+   quiet; answering nothing must not summon the next question in the same breath.
+9. **The Residence step does not go through `may_view_property`.** Housing's read verbs answer
+   `No such property.` to anybody who is not a tenant, guest, officer or staff — which is every
+   character in chargen — so the step applies its own narrower rule: only a property that is
+   `Vacant` **and** carries no live tenancy is offered, and only its **name and tier** are printed.
+   A `Let` or `Withdrawn` property is not listed at all, so occupancy is not inferable from what is
+   present *or* from what is missing. A pick that is not on the offered list is refused with the
+   same words a nonexistent one gets.
+10. **Chargen's starting funds are attributed to the approving staffer.** Nobody acts for a `System`
+    principal, staff included (E4b1's A-lens rule), so a plan whose *actor* is `system:wod.chargen`
+    is refused at validation. The post debits the chargen faucet's account with
+    `actor = PrincipalId::Object(ctx.actor)` and a deterministic idempotency key — the same
+    attribution `@econ/mint` carries, and a re-run of the handler mints nothing new.
+11. **The approval artifacts never fail the approval.** A sheet a storyteller has signed off is not
+    un-signed because an account could not be opened; whatever went wrong is reported to the
+    approver instead.
+12. **`+resources` shows the number to the character themself and to staff**, and the assessment
+    word to everybody else — E5b fold A2's rule, extended by the brief. A non-staff third party
+    cannot ask about somebody else at all. The exact-mode balance is rendered only when
+    `mush_economy::may_view_account` says yes, and is omitted entirely otherwise (never a
+    placeholder).
+13. **Two new documented commands are `@wod/economy` and `@career/set`** — `@wod` with an `economy`
+    switch and `@career` with a `set` switch, matching `@econ/cadence`'s shape. `+chargen/residence`
+    is the classic-surface twin of the wizard's Residence step so the stage is drivable without an
+    input context.
+14. **No state families, still.** E5a deviation 10 and E5b deviation 11 carried the `action-state/*`
+    question to the K-series review; E5c adds nothing to it.
+
+**The four additive seams below the ruleset** (all `pub`, all with the same locks their neighbours
+carry, all consumed by exactly one new caller plus the staff verb that already existed):
+
+1. **`mush_economy::create_cadence(ctx, name, source, period, catch_up)`** + `CadenceError`,
+   `MAX_CADENCES`, `MAX_CADENCE_NAME_BYTES`. `@econ/cadence create` now calls it, so the caps, the
+   duplicate-name rule and the "anchored at now, not at the epoch" rule are one implementation. A
+   ruleset's boot is the other caller — a campaign clock named in configuration has to exist before
+   the first period is assessed on it, and there is nobody to type the verb at boot. `CadenceError`
+   is a **dedicated** error rather than a new `EconomyError` variant: creating a clock moves no
+   value, and `sweep::disposition` classifies every `EconomyError` by name with no `_` arm, so
+   widening that enum would force a settlement-disposition decision that does not exist.
+2. **`mush_economy::set_system_obligation(ctx, faucet, id, Option<Amount>)`** — the faucet's own
+   maintenance of a standing mint it created: `Some(a)` re-rates, `None` cancels.
+   `create_system_obligation` opens the hole and something has to be able to close it; a character
+   whose Resources drop is owed the smaller stipend from the next period, and a deployment that
+   flips back to `abstract` must stop minting. The four locks are creation's, re-asked: the record
+   must be one **this faucet minted** (`minted_by`), still live, with both accounts `Active` and
+   the debit account still the faucet's, and the new amount inside the live `mint_cap`. A missing
+   record and one minted by somebody else answer the same `Unauthorized`, so it is no oracle. Only
+   the amount or the status moves — not the schedule, the grace policy, the counters or the
+   history — so a re-rate is not a re-anchor.
+3. **`mush_housing::create_tenancy(ctx, property, tenants, cadence, terms)`** — the abstract half of
+   `@tenancy/create`, lifted so chargen approval and the staff verb share one creator. Six
+   preconditions travel with it (property exists, not `Withdrawn`, no live tenancy, cadence
+   resolves, the tenant caps, and E5a's `accept`), plus the seeding, the `Obj.home` invariant and
+   the `Let` latch. Exact mode stays in the command: a lease's activation is the tenant's own
+   `@contract/accept`, which is not something a caller can do on their behalf. Six new
+   `HousingError` variants name the refusals; `@tenancy/create` folds each through `hidden(..)`, so
+   the command's existence hiding is unchanged.
+4. **`mush_housing`'s re-exports widen** by `officer_of` and `render_principal` — reuse rather than
+   fork. `+career` renders an employer principal through housing's own renderer, and `officer_of`
+   is the one landlord-authority path (E5b fold A4/A5) that any later layer needing it must go
+   through rather than re-deriving. The tick's live-id index (`open_tenancy_ids`) needed no new
+   export: E5c asks the per-character `live_tenancies_of_tenant` and never walks the store.
+
+**The host wiring changed shape once.** `server_modules_with` takes
+`wod: Option<&WodEconomyConfig>` and `ruleset_modules` takes `&WodEconomyConfig`. 08d §2's "the
+server registers `system:wod.housing` **only when the WoD ruleset is configured**" is now real: the
+title-issuer list is empty when `[rulesets].enabled` does not select `wod` or
+`[wod.economy].housing = false`, and `@property/create` then refuses rather than minting title
+nobody asked for. `HousingModule::with_reserved_rooms` is **extended**, not re-wired —
+`[onboarding]`'s two rooms plus Limbo (E5b fold H4) chained with `[wod.economy].reserved_rooms`.
+
+**IC time.** The evaluation reads the K4a versioned world timeline through `Ctx::world_ic_now()`
+where it needs a stamp — the whole `ClockStamp`, generation and all, is serialized into an exposure
+record's `detail` and onto a `Prompt`, so nothing downstream can compare two of them across a rate
+change by accident. E5c **registers nothing** with the timeline and owns no clock of its own.
+
+**Handoffs to E6/E7:**
+
+- **The per-faction pool is the seam the faction simulation shares.** `WodEconomyStore::open_ops()`
+  is a `BTreeMap<FactionId, u32>` derived from the live prompts; E5 counts only its own. When the
+  faction sim starts running operations of its own, it should read (and contribute to) this map
+  rather than growing a second budget — the whole point of `MAX_OFFSCREEN_OPS_PER_FACTION` is one
+  ceiling per faction, and two half-ceilings is how that becomes none.
+- **`FrontRef` is the pre-C6 shape** (08d §7 item 3). Once doc 09's C6 causal chain lands, front
+  attribution nests inside the kernel's own chain and `FrontRef` becomes a projection of it; the
+  canon `source` string (`front:{faction}:{front}`) is the stable part and is what E4c matches an
+  attestor on, so it should survive the change.
+- **`wod.career.exposure` is a canon record, not an attestor.** It is deliberately **not**
+  registered through `EconomyModule::with_canon_outcome_kinds`, because a contract gated on
+  evidence its own subject produces is one they can settle for themselves (E4c fold E1's rule).
+  E6b's `scene.outcome` is the shape a real attestor takes.
+- **Dependents remain reserved** (D-E5-10): `SupportSource::Dependent` exists in both the ruleset's
+  enum and housing's, and nothing constructs or interprets either.
+- **`@wod/economy migrate` is the pattern for every later mode flip.** It is a staff act, one-shot,
+  idempotent, it lists what it did, and it mints nothing in either direction.
 
 ---
 

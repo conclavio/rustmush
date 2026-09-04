@@ -100,11 +100,12 @@ pub use commands::{
     LIST_CAP, NO_SUCH_PROPERTY, NO_SUCH_TENANCY, may_view_property, may_view_tenancy,
 };
 pub use econ::{BindEdge, HousingEconomyObserver, PENDING_OBLIGATION};
-pub use flow::submit_support_plan;
+pub use commands::officer_of;
+pub use flow::{create_tenancy, submit_support_plan};
 pub use hooks::{NO_DESTROY, REFUSED, REFUSED_CARRY, may_reach};
 pub use module::{
     AssessState, CAPABILITIES, HousingModule, HousingStore, MAX_ASSESSMENTS_PER_FIRE,
     MAX_NOTICE_BYTES, MAX_PENDING_NOTICES, META_KEY, NO_PROPERTY_MARKER, NS, PendingNotice,
     STORY_QUEUE, TICK_PERIOD_SECS, TICK_TAG, assess_key, cadence_now, is_staff, notice_key,
-    property_key, tenancy_key,
+    property_key, render_principal, tenancy_key,
 };

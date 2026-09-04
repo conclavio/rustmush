@@ -27,6 +27,14 @@
 //! | `[worldgen].batch_max_rooms` | `40` | M10 `@gen/building` interior-walk cap (rooms per batch) |
 //! | `[economy].mint_obligation_cap_major` | `50000` | E4 per-period ceiling on a faucet-funded obligation, in major units |
 //! | `[economy.instruments."<code>"].mint_obligation_cap_major` | (the above) | per-instrument override of that ceiling |
+//! | `[wod.economy].personal_mode` | `"off"` | E5c WoD personal economy: `off` \| `abstract` \| `exact` |
+//! | `[wod.economy].housing` | `true` | whether the WoD layer creates tenancies and registers the housing title issuer |
+//! | `[wod.economy].careers` | `true` | whether careers, stances and opportunities are evaluated |
+//! | `[wod.economy].default_engagement` | `"ambient"` | a new profile's engagement: `ambient` \| `engaged` |
+//! | `[wod.economy].cadence` | `"chronicle.period"` | the campaign clock careers and abstract housing are assessed on |
+//! | `[wod.economy].starting_funds_major` | `0` | exact mode: chargen starting funds, in major units |
+//! | `[wod.economy].reserved_rooms` | `[]` | extra `#N` rooms that may never become property rooms (D-E5-12) |
+//! | `[wod.economy.income]."<dots>"` | (none) | exact mode: income per period per Resources dot (`"0"`…`"5"`), major units |
 //! | `[llm]` | `enabled = false` | M7 LLM layer (providers, routes, budgets); into [`mush_llm::LlmConfig`] |
 //!
 //! The `[web]` table deserializes straight into
@@ -351,6 +359,74 @@ impl Default for EconomyCfg {
     }
 }
 
+/// `[wod]` — the World of Darkness ruleset's own configuration (E5c, 08d §5.1).
+///
+/// Ruleset-owned by decision **D-E5-9**: there is no platform economy switch, and
+/// the knobs below turn the *WoD layer* on and off, never the E2–E4 economy the
+/// server runs regardless.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct WodCfg {
+    /// `[wod.economy]`.
+    pub economy: WodEconomyCfg,
+}
+
+/// `[wod.economy]` — 08d §5.1's block, verbatim, plus two host-side extras
+/// (`starting_funds_major`, `reserved_rooms`).
+///
+/// The default is **`personal_mode = "off"`**: a server that has never heard of this
+/// section keeps exactly its pre-E5c behaviour — housing works, staff create
+/// tenancies, and the WoD layer creates no profile, evaluates nothing and shows
+/// nothing. `housing` defaults **on** so the title issuer stays wired as E5b wired
+/// it.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+pub struct WodEconomyCfg {
+    /// `off` | `abstract` | `exact`. An unknown word is a hard boot error (the
+    /// `[rulesets].enabled` rule: a silently-ignored typo is worse than not
+    /// starting), resolved in `mush_server::config_ext::wod_economy_config`.
+    pub personal_mode: String,
+    /// Whether the WoD layer creates tenancies at all, and whether the server
+    /// registers `system:wod.housing` as an economy title issuer (08d §4.1's
+    /// handoff). Existing tenancies are untouched when this goes false; only new
+    /// ones stop.
+    pub housing: bool,
+    /// Whether careers, stances, opportunities and exposure are evaluated.
+    pub careers: bool,
+    /// `ambient` | `engaged` — a new profile's engagement.
+    pub default_engagement: String,
+    /// The **name** of the economy cadence clock (`@econ/cadence list`) careers and
+    /// abstract housing are assessed on. Created at the ruleset's boot if it does not
+    /// exist.
+    pub cadence: String,
+    /// Exact mode only: the funds a newly approved character starts with, in major
+    /// units, minted from `system:wod.chargen`.
+    pub starting_funds_major: u64,
+    /// Extra rooms (`#N`) that may never become property rooms (D-E5-12), chained
+    /// into `HousingModule::with_reserved_rooms` alongside `[onboarding]`'s two.
+    pub reserved_rooms: Vec<u32>,
+    /// `[wod.economy.income]` — exact mode only, and **authoritative only there**
+    /// (owner answer 3): one per-period amount in **major** units per Resources dot,
+    /// keyed `"0"`…`"5"`. Every line is bounded by `[economy]`'s mint cap (with the
+    /// per-instrument override for `wod.usd`), re-checked at every settlement.
+    pub income: BTreeMap<String, u64>,
+}
+
+impl Default for WodEconomyCfg {
+    fn default() -> Self {
+        WodEconomyCfg {
+            personal_mode: "off".to_string(),
+            housing: true,
+            careers: true,
+            default_engagement: "ambient".to_string(),
+            cadence: "chronicle.period".to_string(),
+            starting_funds_major: 0,
+            reserved_rooms: Vec::new(),
+            income: BTreeMap::new(),
+        }
+    }
+}
+
 /// `[worldgen]` section — the M10 batch `@gen/building` knobs.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -560,6 +636,9 @@ pub struct Config {
     /// `[onboarding]` — the `chargen_required` gate + start rooms (M9). Off by
     /// default; consumed by the WoD ruleset via [`OnboardingCfg::to_ruleset`].
     pub onboarding: OnboardingCfg,
+    /// `[wod]` — the WoD ruleset's own knobs (E5c, D-E5-9). `personal_mode` is
+    /// `"off"` off-config, so an unconfigured server keeps its pre-E5c behaviour.
+    pub wod: WodCfg,
     /// `[llm]` — the M7 LLM layer (providers, feature routes, budgets, kill
     /// switch). The raw section, deserialized into `mush_llm::LlmConfig` by the
     /// server / all-in-one binary (kept untyped here so `mush-config` need not
@@ -588,6 +667,7 @@ impl Default for Config {
             worldgen: WorldgenCfg::default(),
             economy: EconomyCfg::default(),
             onboarding: OnboardingCfg::default(),
+            wod: WodCfg::default(),
             llm: empty_toml_table(),
             ipc: IpcCfg::default(),
         }

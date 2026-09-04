@@ -1324,24 +1324,12 @@ fn parse_cadence_id(s: &str) -> Option<CadenceId> {
     s.trim().trim_start_matches('#').parse::<u64>().ok().map(CadenceId)
 }
 
-/// The most cadence clocks one world may name. A cadence is campaign structure, not
-/// a per-record timer, and every one of them is walked by every sweep fire.
-const MAX_CADENCES: usize = 32;
-/// The largest name a cadence stores (the crate's bounded-string discipline).
-const MAX_CADENCE_NAME_BYTES: usize = 32;
-
 fn cadence_create(
     ctx: &mut Ctx<'_>,
     name: &str,
     source: &str,
     catchup: Option<u8>,
 ) -> Result<(), String> {
-    if name.is_empty() {
-        return Err("A cadence needs a name.".to_string());
-    }
-    if name.len() > MAX_CADENCE_NAME_BYTES {
-        return Err(format!("A cadence name is at most {MAX_CADENCE_NAME_BYTES} bytes."));
-    }
     // The period is part of the source word, because the two are one fact: "every
     // 3600 real seconds", "every 86400 IC seconds", "whenever a human says so".
     let (src, period) = match source.split_once(':') {
@@ -1353,49 +1341,12 @@ fn cadence_create(
     let Some(period) = period.filter(|p| *p > 0) else {
         return Err("A cadence period must be a positive number of seconds.".to_string());
     };
-    let taken = ctx.w.module_state::<EconomyStore>().map_or(0, |s| s.snapshot().cadences().count());
-    if taken >= MAX_CADENCES {
-        return Err(format!("This world already has {taken} cadence clocks (the cap is {MAX_CADENCES})."));
-    }
-    if ctx
-        .w
-        .module_state::<EconomyStore>()
-        .is_some_and(|s| s.snapshot().cadences().any(|c| c.name.eq_ignore_ascii_case(name)))
-    {
-        return Err("A cadence with that name already exists.".to_string());
-    }
-    let now = ctx.w.now();
-    let ic_now = ctx.w.game_now_unix();
-    let id = {
-        let store = ctx.w.module_state_mut::<EconomyStore>().ok_or("No economy.")?;
-        store.alloc_cadence().ok_or("The cadence-id allocator is exhausted; nothing was created.")?
-    };
-    let c = crate::clock::CadenceClock {
-        id,
-        name: SmolStr::new(name),
-        source: src,
-        period,
-        // Clamped at both ends by `advance_cadence` anyway; clamped here too so the
-        // stored record never *claims* a cap it cannot honour.
-        catch_up_cap: catchup.unwrap_or(crate::DEFAULT_CATCH_UP).clamp(1, crate::MAX_CATCH_UP_CAP),
-        position: 0,
-        // Anchored at **now**, not at zero: a clock anchored at the epoch would
-        // "elapse" fifty years on its first sweep and forgive all but its cap, which
-        // reads as a catch-up incident on a clock that was created a second ago.
-        advanced_at: match src {
-            CadenceSource::RealUtc => now,
-            CadenceSource::WorldIc => ic_now,
-            CadenceSource::Manual => 0,
-        },
-        revision: 1,
-    };
-    api::put_cadence(ctx, c);
-    let meta = ctx.w.module_state::<EconomyStore>().map(EconomyStore::meta_doc);
-    if let Some(meta) = meta {
-        api::persist_meta(ctx.out, meta);
-    }
+    // E5c: one creator. The caps, the duplicate-name rule and the "anchored at now"
+    // rule live in `api::create_cadence`, which a ruleset's boot also calls — a
+    // campaign clock named in configuration has to exist before the first period is
+    // assessed on it, and there is nobody to type this verb at boot.
+    let id = api::create_cadence(ctx, name, src, period, catchup).map_err(|e| e.to_string())?;
     info(ctx, format!("Cadence #{id} created: {name} ({}).", source_word(src, period)));
-    ctx.gate_on_durable_ack();
     Ok(())
 }
 

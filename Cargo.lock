@@ -3299,10 +3299,15 @@ dependencies = [
 name = "ruleset-wod"
 version = "0.1.0"
 dependencies = [
+ "mush-canon",
  "mush-core",
  "mush-dice",
+ "mush-economy",
+ "mush-faction",
+ "mush-housing",
  "mush-jobs",
  "mush-llm",
+ "mush-org",
  "mush-proto",
  "mush-ruleset",
  "mush-store",

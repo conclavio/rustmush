@@ -101,6 +101,7 @@ async fn boot_wod(tag: &str, session_config: SessionConfig, auth_burst: u32) -> 
     let wod = modules::ruleset_modules(
         &["wod".to_string()],
         &ruleset_wod::OnboardingConfig::default(),
+        &ruleset_wod::WodEconomyConfig::default(),
     )
     .expect("wod ruleset");
     boot_inner(tag, session_config, auth_burst, wod).await

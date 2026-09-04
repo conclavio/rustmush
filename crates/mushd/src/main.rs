@@ -25,7 +25,8 @@ use mush_core::{ControlMsg, Engine, Inbound};
 use mush_llm::LlmService;
 use mush_net_web::{Metrics, WebConfig};
 use mush_server::config_ext::{
-    economy_config, llm_config, onboarding_ruleset, weather_config, worldgen_config,
+    economy_config, llm_config, onboarding_ruleset, weather_config, wod_economy_config,
+    worldgen_config,
 };
 use mush_session::{SessionConfig, SessionManager};
 use mush_store::{InMemoryStore, ObjectStore, RedisStore, core_migrations, run_migrations};
@@ -252,10 +253,20 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     // namespace's store migrations and hand each module its persisted boot
     // data — all before the world task starts serving.
     let onboarding = onboarding_ruleset(&config.onboarding);
+    // E5c: `[wod.economy]`, validated here (an unknown mode is a hard boot error).
+    // `None` when no WoD ruleset is enabled — that is what gates the housing title
+    // issuer (08d §2).
+    let wod_economy = wod_economy_config(&config.wod)?;
+    let wod_selected = config
+        .rulesets
+        .enabled
+        .iter()
+        .any(|r| r.trim().eq_ignore_ascii_case("wod"));
     let mut mods = modules::server_modules_with(
         weather_config(&config.weather),
         economy_config(&config.economy),
         &onboarding,
+        wod_selected.then_some(&wod_economy),
     );
     mods.push(modules::worldgen_module_with(
         Arc::clone(&llm),
@@ -266,7 +277,7 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     // Shadowrun, …); dialogue-only when no ruleset is enabled.
     let npc_grounding = modules::npc_agent_adapter(&config.rulesets.enabled);
     mods.push(modules::npc_module(npc_grounding));
-    let rulesets = modules::ruleset_modules(&config.rulesets.enabled, &onboarding)
+    let rulesets = modules::ruleset_modules(&config.rulesets.enabled, &onboarding, &wod_economy)
         .map_err(|e| format!("ruleset selection: {e}"))?;
     if !rulesets.is_empty() {
         tracing::info!(rulesets = ?config.rulesets.enabled, "rulesets enabled");

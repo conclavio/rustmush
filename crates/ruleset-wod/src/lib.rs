@@ -33,6 +33,7 @@ pub mod chargen_cmds;
 pub mod config;
 pub mod damage;
 pub mod dice;
+pub mod economy;
 pub mod health;
 pub mod onboarding;
 pub mod perception;
@@ -49,7 +50,7 @@ use std::sync::Arc;
 
 use mush_core::{
     GameModule, HookPoint, JobQueueSpec, ModError, ModuleBootData, ModuleCtx, ObjId, Outbox,
-    PanelFeedHandle, Registrar, Role, World, WorldEventKind,
+    PanelFeedHandle, Registrar, Role, TickCadence, World, WorldEventKind,
 };
 use mush_jobs::register_payload_handler;
 use mush_ruleset::chargen::ChargenFlow;
@@ -68,6 +69,9 @@ use crate::splats::{
 use crate::state::WodState;
 
 pub use crate::agent::{WOD_ROLL_ABILITY, agent_profile, wod_roll_tool_spec};
+pub use crate::economy::{
+    Engagement, PersonalMode, SpendingProfile, Stance, WodEconomyConfig, WodEconomyStore,
+};
 pub use crate::onboarding::OnboardingConfig;
 pub use crate::st::{NS, run_st_async};
 
@@ -82,6 +86,9 @@ pub(crate) struct WodCmd {
     pub dispatch: Arc<Dispatch>,
     pub config: WodConfig,
     pub roll_feed: PanelFeedHandle,
+    /// E5c's frozen `[wod.economy]`, so the chargen wizard's Residence step knows
+    /// whether housing is on and what a support level can carry.
+    pub econ: WodEconomyConfig,
 }
 
 impl WodCmd {
@@ -135,6 +142,7 @@ pub struct WodRuleset {
     chargen: WodChargen,
     seed: Option<u64>,
     onboarding: OnboardingConfig,
+    econ: WodEconomyConfig,
 }
 
 impl WodRuleset {
@@ -181,6 +189,7 @@ impl WodRuleset {
             chargen,
             seed,
             onboarding: OnboardingConfig::default(),
+            econ: WodEconomyConfig::default(),
         }
     }
 
@@ -190,6 +199,18 @@ impl WodRuleset {
     #[must_use]
     pub fn onboarding(mut self, onboarding: OnboardingConfig) -> WodRuleset {
         self.onboarding = onboarding;
+        self
+    }
+
+    /// Set the E5c `[wod.economy]` configuration (08d §5.1, D-E5-9).
+    ///
+    /// `personal_mode = "off"` by default, so a server that has never configured the
+    /// section keeps exactly its pre-E5c behaviour: the layer registers its verbs,
+    /// creates no profile, evaluates nothing, and shows nothing. The driver builds
+    /// this from `mushd.toml`'s `[wod.economy]` section.
+    #[must_use]
+    pub fn economy(mut self, econ: WodEconomyConfig) -> WodRuleset {
+        self.econ = econ;
         self
     }
 
@@ -244,6 +265,7 @@ impl GameModule for WodRuleset {
             dispatch: Arc::clone(&self.dispatch),
             config: self.config.clone(),
             roll_feed,
+            econ: self.econ.clone(),
         });
 
         // Template-dispatching sheet surface (+sheet/@sheet/@sheet/set + the
@@ -292,6 +314,25 @@ impl GameModule for WodRuleset {
                 cfg: self.onboarding.clone(),
             }),
         );
+
+        // E5c — the WoD economic layer (08d §5). A second state slot on the same
+        // module (slots are keyed by type, and a module may declare more than one):
+        // the career layer's records have nothing to do with the dice RNG and the
+        // scene transients `WodState` carries, and one slot holding both would make
+        // every profile write clone the roll-log ring.
+        //
+        // Registration is unconditional and the *config* is the switch: the verbs
+        // exist so `@wod/economy` can say the layer is off, and the tick returns
+        // immediately in `off`.
+        reg.state(economy::WodEconomyStore::default());
+        reg.tick(
+            economy::store::TICK_TAG,
+            TickCadence::Coarse(std::time::Duration::from_secs(
+                economy::store::TICK_PERIOD_SECS,
+            )),
+            Arc::new(economy::evaluate::tick),
+        )?;
+        economy::commands::register(reg)?;
         Ok(())
     }
 
@@ -308,6 +349,13 @@ impl GameModule for WodRuleset {
         // state is in place before the first re-attached `look` renders. The RNG,
         // the roll-log ring, and chargen are NOT persisted (re-seed / transient /
         // re-derivable), so the slot is never replaced — only these fields are.
+        // E5c reads the same namespace: its four document families live alongside
+        // M17's three, so the boot data is loaded once and each half takes its own
+        // keys. `load` is total — it skips what it cannot parse and says so — so a
+        // corrupt profile never fails the boot the way housing's containers do
+        // (`economy::store`'s table says why).
+        let econ_store = economy::load_store(&data.kv, self.econ.clone());
+
         let mut conceal_doc = None;
         let mut pending_doc = None;
         let mut extended_doc = None;
@@ -316,7 +364,7 @@ impl GameModule for WodRuleset {
                 "conceal" => conceal_doc = Some(value),
                 "pending" => pending_doc = Some(value),
                 "extended" => extended_doc = Some(value),
-                // Tolerate unknown keys (forward schema).
+                // Tolerate unknown keys (forward schema) — E5c's included.
                 _ => {}
             }
         }
@@ -370,16 +418,27 @@ impl GameModule for WodRuleset {
             ctx.persist(op);
         }
 
+        // E5c: install the loaded slot, then run the layer's own boot — resolve (or
+        // create) the campaign clock, and in exact mode register `wod.usd` and the
+        // three faucet accounts. It runs **after** the housing and economy modules'
+        // own boots (the ruleset is last in the module list), so both are loaded.
+        if let Some(slot) = ctx.w.module_state_mut::<economy::WodEconomyStore>() {
+            *slot = econ_store;
+        }
+        let econ_cfg = self.econ.clone();
+        economy::boot::run(ctx, &econ_cfg);
+
         // Chargen approval: re-validate the budget (template-aware), stamp
         // Approved, then lift the onboarding gate (move to the live start room).
         let dispatch = Arc::clone(&self.dispatch);
         let config = self.config.clone();
         let onboarding = self.onboarding.clone();
+        let econ = self.econ.clone();
         register_payload_handler(
             ctx.w,
             chargen_cmds::CHARGEN_HANDLER,
             Arc::new(move |ctx, job| {
-                chargen_cmds::chargen_approval(&config, &dispatch, &onboarding, ctx, job)
+                chargen_cmds::chargen_approval(&config, &dispatch, &onboarding, &econ, ctx, job)
             }),
         )
         .map_err(ModError::msg)?;

@@ -77,21 +77,52 @@ pub fn server_modules() -> Vec<Box<dyn GameModule>> {
         mush_weather::WeatherConfig::default(),
         mush_economy::EconomyConfig::default(),
         &ruleset_wod::OnboardingConfig::default(),
+        // `[rulesets].enabled` defaults to `["wod"]`, so the default composition is a
+        // WoD server and the housing title issuer stays wired exactly as E5b wired
+        // it. A host that enables no WoD ruleset passes `None` (see
+        // [`server_modules_with`]).
+        Some(&ruleset_wod::WodEconomyConfig::default()),
     )
 }
 
 /// [`server_modules`] with explicit module configs: the `[weather]` knobs (the M10
 /// flavor-variant sizing), the `[economy]` knobs (E4's mint bound on a ruleset's
-/// faucet-funded obligations), and `[onboarding]`'s start rooms (E5b's reserved-room
-/// list). `main.rs` uses this so those sections in `mushd.toml` actually reach their
-/// modules; every other caller (tests) takes the crate defaults via
-/// [`server_modules`].
+/// faucet-funded obligations), `[onboarding]`'s start rooms (E5b's reserved-room
+/// list), and `[wod.economy]` (E5c: whether the housing title issuer is registered at
+/// all, plus any extra reserved rooms the ruleset names). `main.rs` uses this so
+/// those sections in `mushd.toml` actually reach their modules; every other caller
+/// (tests) takes the crate defaults via [`server_modules`].
+///
+/// `wod` is `None` when `[rulesets].enabled` does not select the WoD ruleset. That
+/// is what 08d §2's "the server registers `system:wod.housing` **only when the WoD
+/// ruleset is configured**" means in code, and it replaces E5b's unconditional
+/// wiring: a Shadowrun-only server no longer carries a title issuer for a ruleset it
+/// does not load.
 #[must_use]
 pub fn server_modules_with(
     weather: mush_weather::WeatherConfig,
     economy: mush_economy::EconomyConfig,
     onboarding: &ruleset_wod::OnboardingConfig,
+    wod: Option<&ruleset_wod::WodEconomyConfig>,
 ) -> Vec<Box<dyn GameModule>> {
+    // The issuer is registered when the WoD ruleset is configured **and** its housing
+    // knob is on. `issue_title` refuses an issuer that is not on both the economy's
+    // list and `HousingModule::with_issuer`, so the two are computed once, here, and
+    // a mismatch is impossible by construction.
+    let housing_on = wod.is_some_and(|w| w.housing);
+    let issuers: Vec<mush_org::SystemPrincipalId> =
+        if housing_on { vec![housing_title_issuer()] } else { Vec::new() };
+    let issuer = housing_on.then(housing_title_issuer);
+    // `[onboarding]`'s two start rooms plus Limbo (E5b fold H4), extended by whatever
+    // the ruleset knows is never somebody's living room (E5b's handoff to E5c).
+    let reserved: Vec<mush_core::ObjId> = [
+        onboarding.start_room,
+        onboarding.start_room_unapproved,
+        mush_core::LIMBO,
+    ]
+    .into_iter()
+    .chain(wod.into_iter().flat_map(|w| w.reserved_rooms.iter().copied()))
+    .collect();
     vec![
         Box::new(mush_comsys::ComsysModule::new()),
         Box::new(mush_canon::CanonModule::new()),
@@ -161,11 +192,11 @@ pub fn server_modules_with(
             // principal is wired into `HousingModule::with_issuer` below, and
             // `issue_title` refuses any issuer that is not on BOTH lists.
             //
-            // 08d §2 says the server registers it "only when the WoD ruleset is
-            // configured"; E5c owns that knob (`[wod.economy].housing`), and until it
-            // lands the issuer is wired unconditionally. It is inert without housing:
-            // a registered issuer that nothing calls mints nothing.
-            .with_title_issuers(vec![housing_title_issuer()])
+            // E5c: 08d §2's "only when the WoD ruleset is configured" is now real —
+            // the list is empty when no WoD ruleset is enabled or
+            // `[wod.economy].housing = false`, and `@property/create` then refuses
+            // rather than minting title nobody asked for.
+            .with_title_issuers(issuers)
             // E4c verify fold (E1): the canon kinds that count as a
             // **producer-declared outcome**. Deliberately empty — `scene.concluded`
             // is a lifecycle record any participant can produce, so a payee gated on
@@ -188,15 +219,15 @@ pub fn server_modules_with(
         // and every fresh character would have walked out of chargen into a private
         // residence the access hook then answered for. `[onboarding]` owns the two
         // rooms; Limbo is on the list belt-and-braces (housing refuses it anyway).
-        Box::new(
-            mush_housing::HousingModule::new()
-                .with_issuer(housing_title_issuer())
-                .with_reserved_rooms([
-                    onboarding.start_room,
-                    onboarding.start_room_unapproved,
-                    mush_core::LIMBO,
-                ]),
-        ),
+        // E5c **extends** that list with `[wod.economy].reserved_rooms` (E5b's
+        // handoff) — it does not re-wire it.
+        Box::new({
+            let m = mush_housing::HousingModule::new().with_reserved_rooms(reserved);
+            match issuer {
+                Some(i) => m.with_issuer(i),
+                None => m,
+            }
+        }),
         Box::new(mush_weather::WeatherModule::with_config(weather)),
         Box::new(mush_script::ScriptModule::new()),
     ]
@@ -260,6 +291,7 @@ pub fn org_capability_vocabulary() -> std::collections::BTreeSet<mush_org::Capab
 pub fn ruleset_modules(
     enabled: &[String],
     onboarding: &ruleset_wod::OnboardingConfig,
+    wod: &ruleset_wod::WodEconomyConfig,
 ) -> Result<Vec<Box<dyn GameModule>>, String> {
     let mut seen: Vec<String> = Vec::new();
     let mut mods: Vec<Box<dyn GameModule>> = Vec::new();
@@ -271,7 +303,9 @@ pub fn ruleset_modules(
         match key.as_str() {
             "wod" => {
                 mods.push(Box::new(
-                    ruleset_wod::WodRuleset::new().onboarding(onboarding.clone()),
+                    ruleset_wod::WodRuleset::new()
+                        .onboarding(onboarding.clone())
+                        .economy(wod.clone()),
                 ));
             }
             "shadowrun" => {
@@ -1344,6 +1378,7 @@ mod tests {
         let mods = ruleset_modules(
             &["wod".to_string()],
             &ruleset_wod::OnboardingConfig::default(),
+            &ruleset_wod::WodEconomyConfig::default(),
         )
         .unwrap();
         assert_eq!(mods.len(), 1);
@@ -1352,12 +1387,17 @@ mod tests {
         let mods = ruleset_modules(
             &["  WoD ".to_string()],
             &ruleset_wod::OnboardingConfig::default(),
+            &ruleset_wod::WodEconomyConfig::default(),
         )
         .unwrap();
         assert_eq!(mods[0].name(), "wod");
         // Empty list is fine (a ruleset-less server).
         assert!(
-            ruleset_modules(&[], &ruleset_wod::OnboardingConfig::default())
+            ruleset_modules(
+                &[],
+                &ruleset_wod::OnboardingConfig::default(),
+                &ruleset_wod::WodEconomyConfig::default(),
+            )
                 .unwrap()
                 .is_empty()
         );
@@ -1369,6 +1409,7 @@ mod tests {
         let mods = ruleset_modules(
             &["shadowrun".to_string()],
             &ruleset_wod::OnboardingConfig::default(),
+            &ruleset_wod::WodEconomyConfig::default(),
         )
         .unwrap();
         assert_eq!(mods.len(), 1);
@@ -1383,6 +1424,7 @@ mod tests {
         let err = match ruleset_modules(
             &["wod".to_string(), "shadowrun".to_string()],
             &ruleset_wod::OnboardingConfig::default(),
+            &ruleset_wod::WodEconomyConfig::default(),
         ) {
             Err(e) => e,
             Ok(_) => panic!("enabling two rulesets must be rejected"),
@@ -1397,6 +1439,7 @@ mod tests {
         let err = match ruleset_modules(
             &["tacsim".to_string()],
             &ruleset_wod::OnboardingConfig::default(),
+            &ruleset_wod::WodEconomyConfig::default(),
         ) {
             Err(e) => e,
             Ok(_) => panic!("unknown ruleset must be rejected"),
@@ -1405,6 +1448,7 @@ mod tests {
         let err = match ruleset_modules(
             &["wod".to_string(), "wod".to_string()],
             &ruleset_wod::OnboardingConfig::default(),
+            &ruleset_wod::WodEconomyConfig::default(),
         ) {
             Err(e) => e,
             Ok(_) => panic!("duplicate ruleset must be rejected"),
@@ -1434,6 +1478,7 @@ mod tests {
             ruleset_modules(
                 &["wod".to_string()],
                 &ruleset_wod::OnboardingConfig::default(),
+                &ruleset_wod::WodEconomyConfig::default(),
             )
             .unwrap(),
         );
@@ -1492,6 +1537,7 @@ mod tests {
             ruleset_modules(
                 &["shadowrun".to_string()],
                 &ruleset_wod::OnboardingConfig::default(),
+                &ruleset_wod::WodEconomyConfig::default(),
             )
             .unwrap(),
         );
@@ -1547,6 +1593,7 @@ mod tests {
             ruleset_modules(
                 &["wod".to_string()],
                 &ruleset_wod::OnboardingConfig::default(),
+                &ruleset_wod::WodEconomyConfig::default(),
             )
             .unwrap(),
         );

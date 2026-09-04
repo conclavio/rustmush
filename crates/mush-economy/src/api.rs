@@ -1202,6 +1202,220 @@ pub fn create_system_obligation(
     Ok(id)
 }
 
+/// **The faucet's own maintenance of a standing mint it created** (E5c, 08d §5.2).
+///
+/// [`create_system_obligation`] opens the hole; something has to be able to re-rate
+/// and close it. A World-of-Darkness character whose Resources drop from 4 to 2 is
+/// owed the smaller stipend from the next period on, and a deployment that flips
+/// `personal_mode` back to `abstract` must stop minting altogether — and neither can
+/// be a staff verb, for exactly the reason opening one is not: a standing mint the
+/// scheduler executes forever is a decision the ruleset makes in code.
+///
+/// `amount = Some(a)` re-rates; `amount = None` **cancels**. The four locks are
+/// [`create_system_obligation`]'s, re-asked:
+///
+/// 1. **The obligation must be one this faucet minted** — `minted_by` names it. A
+///    faucet may not touch an obligation somebody else created, and it learns
+///    nothing about one: a missing record and one minted by another principal
+///    answer the same [`EconomyError::Unauthorized`].
+/// 2. **It must still be live.** `Cancelled` and `Satisfied` are over; re-rating one
+///    would resurrect a standing mint that had been closed.
+/// 3. **The debit account must still be that faucet's own and `Active`**, and the
+///    credit account `Active` — the same pair of checks creation made, re-asked
+///    because either could have been closed since.
+/// 4. **The new amount must sit inside the live cap** ([`crate::EconomyConfig::mint_cap`]).
+///    The sweep re-reads the cap at every settlement anyway (M1); this is the same
+///    bound applied at the moment the number changes, so a refusal names the change
+///    that caused it.
+///
+/// Only the amount (or the status) moves: the schedule, the grace policy, the
+/// counters and the history are untouched, so a re-rate is not a re-anchor and does
+/// not forgive or re-charge a period.
+///
+/// # Errors
+///
+/// [`EconomyError::EconomyFrozen`] (frozen, or the module is not loaded),
+/// [`EconomyError::Unauthorized`] (not this faucet's live standing mint),
+/// [`EconomyError::ZeroLine`] (a non-positive amount),
+/// [`EconomyError::NoSuchAccount`] / [`EconomyError::InactiveAccount`],
+/// [`EconomyError::MintCapExceeded`].
+pub fn set_system_obligation(
+    ctx: &mut Ctx<'_>,
+    faucet: &mush_org::SystemPrincipalId,
+    id: ObligationId,
+    amount: Option<Amount>,
+) -> Result<(), EconomyError> {
+    let owner = PrincipalId::System(faucet.clone());
+    if let Some(a) = amount
+        && (a.is_zero() || a.is_negative())
+    {
+        return Err(EconomyError::ZeroLine(0));
+    }
+    let next = {
+        let store = ctx.w.module_state::<EconomyStore>().ok_or(EconomyError::EconomyFrozen)?;
+        if store.frozen {
+            return Err(EconomyError::EconomyFrozen);
+        }
+        let snap = store.snapshot();
+        let o = snap.obligation(id).ok_or(EconomyError::Unauthorized)?;
+        // Lock 1 — it is this faucet's own standing mint.
+        if o.minted_by.as_ref() != Some(&owner) {
+            return Err(EconomyError::Unauthorized);
+        }
+        // Lock 2 — it is still live.
+        if matches!(
+            o.status,
+            crate::obligation::ObligationStatus::Cancelled
+                | crate::obligation::ObligationStatus::Satisfied
+        ) {
+            return Err(EconomyError::Unauthorized);
+        }
+        let mut next = o.clone();
+        match amount {
+            None => next.status = crate::obligation::ObligationStatus::Cancelled,
+            Some(a) => {
+                // Locks 3 + 4 — both sides still live, and the new number inside the
+                // live ceiling for this instrument.
+                let debit = snap
+                    .account(o.debit_account)
+                    .ok_or(EconomyError::NoSuchAccount(o.debit_account))?;
+                let credit = snap
+                    .account(o.credit_account)
+                    .ok_or(EconomyError::NoSuchAccount(o.credit_account))?;
+                if debit.owner != owner {
+                    return Err(EconomyError::Unauthorized);
+                }
+                if debit.status != crate::record::AccountStatus::Active {
+                    return Err(EconomyError::InactiveAccount(o.debit_account));
+                }
+                if credit.status != crate::record::AccountStatus::Active {
+                    return Err(EconomyError::InactiveAccount(o.credit_account));
+                }
+                let cap = store
+                    .config()
+                    .mint_cap(snap, &debit.instrument)
+                    .ok_or(EconomyError::MintCapExceeded(o.debit_account))?;
+                if a > cap {
+                    return Err(EconomyError::MintCapExceeded(o.debit_account));
+                }
+                if a == next.amount {
+                    return Ok(());
+                }
+                next.amount = a;
+            }
+        }
+        next.revision = next.revision.saturating_add(1);
+        next
+    };
+    put_obligation(ctx, next);
+    ctx.gate_on_durable_ack();
+    Ok(())
+}
+
+/// The most cadence clocks one world may name (E4b1's `@econ/cadence` cap, lifted
+/// here so [`create_cadence`] and the staff verb share one number).
+pub const MAX_CADENCES: usize = 32;
+/// The largest name a cadence stores (the crate's bounded-string discipline).
+pub const MAX_CADENCE_NAME_BYTES: usize = 32;
+
+/// Why a cadence clock could not be created.
+///
+/// A small dedicated error rather than a new [`EconomyError`] variant: creating a
+/// clock moves no value, and `sweep::disposition` classifies **every**
+/// `EconomyError` by name with no `_` arm, so widening that enum for a
+/// non-monetary refusal would force a settlement-disposition decision that does not
+/// exist.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum CadenceError {
+    /// Empty, or longer than [`MAX_CADENCE_NAME_BYTES`].
+    #[error("a cadence needs a name of 1..={MAX_CADENCE_NAME_BYTES} bytes")]
+    Name,
+    /// A non-positive period.
+    #[error("a cadence period must be a positive number of seconds")]
+    Period,
+    /// The name is taken (case-insensitively).
+    #[error("a cadence with that name already exists")]
+    Duplicate,
+    /// [`MAX_CADENCES`] already exist.
+    #[error("this world already has {MAX_CADENCES} cadence clocks")]
+    TooMany,
+    /// The id allocator is at the `u64` ceiling.
+    #[error("the cadence-id allocator is exhausted; nothing was created")]
+    Exhausted,
+    /// The economy module is not loaded.
+    #[error("the economy module is not loaded")]
+    NoEconomy,
+}
+
+/// Create a cadence clock (E5c, 08d §5.1).
+///
+/// `@econ/cadence create` is the staff path and calls this; a **ruleset's boot** is
+/// the other caller, because a campaign clock named in configuration has to exist
+/// before the first period is assessed on it and there is nobody to type the verb at
+/// boot. Both go through one creator, so the caps, the duplicate-name rule and the
+/// anchoring below cannot drift between them.
+///
+/// The clock is anchored at **now**, not at the epoch: a clock anchored at zero
+/// would "elapse" fifty years on its first sweep and forgive all but its catch-up
+/// cap, which reads as a catch-up incident on a clock created a second ago.
+///
+/// # Errors
+///
+/// See [`CadenceError`].
+pub fn create_cadence(
+    ctx: &mut Ctx<'_>,
+    name: &str,
+    source: crate::clock::CadenceSource,
+    period: i64,
+    catch_up: Option<u8>,
+) -> Result<CadenceId, CadenceError> {
+    let name = name.trim();
+    if name.is_empty() || name.len() > MAX_CADENCE_NAME_BYTES {
+        return Err(CadenceError::Name);
+    }
+    if period <= 0 {
+        return Err(CadenceError::Period);
+    }
+    {
+        let store = ctx.w.module_state::<EconomyStore>().ok_or(CadenceError::NoEconomy)?;
+        if store.snapshot().cadences().count() >= MAX_CADENCES {
+            return Err(CadenceError::TooMany);
+        }
+        if store.snapshot().cadences().any(|c| c.name.eq_ignore_ascii_case(name)) {
+            return Err(CadenceError::Duplicate);
+        }
+    }
+    let now = ctx.w.now();
+    let ic_now = ctx.w.game_now_unix();
+    let id = {
+        let store = ctx.w.module_state_mut::<EconomyStore>().ok_or(CadenceError::NoEconomy)?;
+        store.alloc_cadence().ok_or(CadenceError::Exhausted)?
+    };
+    let c = crate::clock::CadenceClock {
+        id,
+        name: SmolStr::new(name),
+        source,
+        period,
+        // Clamped at both ends by `advance_cadence` anyway; clamped here too so the
+        // stored record never *claims* a cap it cannot honour.
+        catch_up_cap: catch_up.unwrap_or(crate::DEFAULT_CATCH_UP).clamp(1, crate::MAX_CATCH_UP_CAP),
+        position: 0,
+        advanced_at: match source {
+            crate::clock::CadenceSource::RealUtc => now,
+            crate::clock::CadenceSource::WorldIc => ic_now,
+            crate::clock::CadenceSource::Manual => 0,
+        },
+        revision: 1,
+    };
+    put_cadence(ctx, c);
+    let meta = ctx.w.module_state::<EconomyStore>().map(EconomyStore::meta_doc);
+    if let Some(meta) = meta {
+        persist_meta(ctx.out, meta);
+    }
+    ctx.gate_on_durable_ack();
+    Ok(id)
+}
+
 /// Install an obligation into RAM and queue its container doc (E4b1).
 ///
 /// The latch rule (§4.2) is trivially satisfied here and worth stating: an

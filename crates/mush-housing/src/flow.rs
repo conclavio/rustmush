@@ -64,6 +64,71 @@ pub(crate) fn seed_assessment(ctx: &mut Ctx<'_>, t: &Tenancy) {
     });
 }
 
+/// **Create a live abstract tenancy** (E5c, 08d §5.4's chargen approval).
+///
+/// `@tenancy/create` is the staff path and calls this; `ruleset-wod`'s chargen
+/// approval is the other caller, because a Residence chosen at character creation
+/// becomes somebody's home the moment staff approve the sheet and there is no
+/// staffer typing a verb inside a payload handler. One creator, so the four
+/// preconditions below — and the "the staff act records both consents" rule, and the
+/// seeding, and the `Obj.home` invariant — cannot drift between them.
+///
+/// Abstract only: an **exact** tenancy stands on a lease contract whose activation is
+/// the tenant's own `@contract/accept` (08d §4.1), which is not something a caller
+/// can do on their behalf.
+///
+/// The tenancy goes straight to `Active`: in abstract mode the staff (or approval)
+/// act that creates it is both consents recorded at once — 08d §4's command list has
+/// no accept verb, and §5.4's approval "creates the tenancy (`Pending → Active`)".
+///
+/// # Errors
+///
+/// [`HousingError::NoSuchProperty`], [`HousingError::Withdrawn`],
+/// [`HousingError::AlreadyLet`], [`HousingError::NoSuchCadence`],
+/// [`HousingError::Exhausted`], [`HousingError::NotLoaded`], plus whatever
+/// [`Tenancy::new`] and [`crate::accept`] refuse (the tenant caps).
+pub fn create_tenancy(
+    ctx: &mut Ctx<'_>,
+    property: crate::ids::PropertyId,
+    tenants: BTreeSet<ObjId>,
+    cadence: mush_economy::CadenceId,
+    terms: crate::record::AccessTerms,
+) -> Result<TenancyId, crate::HousingError> {
+    {
+        let store = ctx.w.module_state::<HousingStore>().ok_or(crate::HousingError::NotLoaded)?;
+        let p = store.property(property).ok_or(crate::HousingError::NoSuchProperty(property))?;
+        if p.status == PropertyStatus::Withdrawn {
+            return Err(crate::HousingError::Withdrawn(property));
+        }
+        if store.has_live_tenancy(property) {
+            return Err(crate::HousingError::AlreadyLet(property));
+        }
+    }
+    // A clock that does not resolve makes a home the tick freezes and pages about
+    // forever (fold T6). Refuse it here instead.
+    if !ctx
+        .w
+        .module_state::<mush_economy::EconomyStore>()
+        .is_some_and(|e| e.snapshot().cadence(cadence).is_some())
+    {
+        return Err(crate::HousingError::NoSuchCadence);
+    }
+    let id = {
+        let store =
+            ctx.w.module_state_mut::<HousingStore>().ok_or(crate::HousingError::NotLoaded)?;
+        store.alloc_tenancy().ok_or(crate::HousingError::Exhausted("tenancy-id"))?
+    };
+    let mut t = Tenancy::new(id, property, tenants.clone(), cadence)?;
+    t.terms = terms;
+    let now = crate::module::cadence_now(ctx.w, cadence).unwrap_or(0);
+    let live = crate::accept(&t, true, &tenants, now)?;
+    put_tenancy(ctx, live.clone());
+    seed_assessment(ctx, &live);
+    activate(ctx, &live);
+    crate::module::persist_meta(ctx);
+    Ok(id)
+}
+
 /// Point every tenant's `Obj.home` at the property's anchor, and latch the property
 /// `Let` (08d §3.3, D-E5-11).
 ///
