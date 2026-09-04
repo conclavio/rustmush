@@ -265,14 +265,15 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     let composition =
         Engine::compose_modules(registry, mods).map_err(|e| format!("module registration: {e}"))?;
     let mut world = load_or_seed_world(&*store).await?;
-    // Install the IC game clock from [game] before module state and ticks are
-    // materialized into the engine.
+    // Hydrate the versioned IC timeline before module state and ticks are
+    // materialized into the engine. [game] seeds an empty store only;
+    // persisted epochs remain authoritative across configuration changes.
     let clock = config.game.game_clock().map_err(|e| e.to_string())?;
-    world.set_game_clock(clock);
+    mush_server::timeline::hydrate_world_timeline(&mut world, &*store, clock).await?;
     tracing::info!(
-        ic_ratio = clock.ic_ratio,
-        ic_epoch = %config.game.ic_epoch,
-        "game clock installed",
+        generation = world.world_timeline().current().generation,
+        ic_rate = world.world_timeline().current().rate,
+        "world timeline installed",
     );
     let mut engine = Engine::from_composition(world, composition);
     modules::boot_modules(&mut engine, &*store).await?;

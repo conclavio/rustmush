@@ -609,6 +609,11 @@ impl Engine {
         let mut noncanonical_name: Option<(&'static str, String)> = None;
         for m in &modules {
             let name = m.name();
+            if name == crate::clock::WORLD_TIMELINE_NAMESPACE {
+                return Err(ModError::msg(format!(
+                    "module name {name:?} is reserved for engine-owned world timeline state"
+                )));
+            }
             let owner = crate::mechanics::OwnerId::new(name).map_err(|error| {
                 ModError::msg(format!(
                     "module name {name:?} is not a valid mechanics owner id: {error}"

@@ -62,6 +62,7 @@ pub mod persist;
 pub mod quarantine;
 pub mod retained;
 pub mod staff;
+pub mod timeline;
 pub mod world_task;
 
 use crate::gateway_sink::SocketSink;
@@ -243,7 +244,7 @@ async fn build_engine(
         Engine::compose_modules(registry, mods).map_err(|e| format!("module registration: {e}"))?;
     let mut world = load_or_seed_world(&**store).await?;
     let clock = config.game.game_clock().map_err(|e| e.to_string())?;
-    world.set_game_clock(clock);
+    timeline::hydrate_world_timeline(&mut world, &**store, clock).await?;
     let mut engine = Engine::from_composition(world, composition);
     modules::boot_modules(&mut engine, &**store).await?;
     Ok((engine, staff))

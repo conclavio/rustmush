@@ -168,10 +168,12 @@ fn pilot_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     ctx.w.publish_command_subject(CommandSubjectLink {
         actor,
         subject,
+        station: SmolStr::new_static("cockpit"),
         relation: SmolStr::new_static("pilot"),
         owner: SmolStr::new_static(NS),
         priority: 0,
         channels: Default::default(),
+        epoch: 0,
     });
     ctx.persist(ModuleOp {
         ns: SmolStr::new_static(NS),
@@ -265,10 +267,12 @@ impl GameModule for ConsoleModule {
             ctx.w.publish_command_subject(CommandSubjectLink {
                 actor,
                 subject,
+                station: SmolStr::new_static("cockpit"),
                 relation: SmolStr::new_static("pilot"),
                 owner: SmolStr::new_static(NS),
                 priority: 0,
                 channels: Default::default(),
+                epoch: 0,
             });
         }
         Ok(())

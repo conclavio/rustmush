@@ -1373,12 +1373,11 @@ fn spatial_unassign(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 /// `@spatial/authority <actor>` — the read-only inspector: what the actor's
-/// derived control links grant (subject, relation, priority, granted channels)
-/// and each unit's current control epoch. Diagnoses fail-safe-open channel typos.
+/// derived station grants (subject, station, relation, priority, channels,
+/// epoch). Diagnoses fail-safe-open channel typos and stale queued intents.
 fn spatial_authority(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let actor = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
     let lines: Vec<String> = {
-        let s = st(ctx);
         ctx.w
             .command_subjects_of(actor)
             .iter()
@@ -1394,12 +1393,13 @@ fn spatial_authority(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     ch.join("+")
                 };
                 format!(
-                    "  {} — {} (priority {}, channels: {}, epoch {})",
+                    "  {} — {}:{} (priority {}, channels: {}, epoch {})",
                     display_name(ctx.w, l.subject),
+                    l.station,
                     l.relation,
                     l.priority,
                     chans,
-                    s.control_generation(l.subject),
+                    l.epoch,
                 )
             })
             .collect()

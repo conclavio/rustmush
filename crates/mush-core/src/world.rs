@@ -22,7 +22,10 @@ use smol_str::SmolStr;
 
 use crate::attr::{Attr, AttrFlags, UncasedName};
 use crate::behavior::{BehaviorBinding, BehaviorId};
-use crate::clock::{GameClock, Season, TimeOfDay};
+use crate::clock::{
+    ClockStamp, DAYS_PER_YEAR, GameClock, SECS_PER_DAY, Season, TimeOfDay, WorldTimeline,
+    WorldTimelineEpoch, WorldTimelineError,
+};
 use crate::flags::Flags;
 use crate::module::{InputContext, InputStacks, ModuleStateMap, Scene, SceneId, StateInit};
 use crate::obj::{GOD, LIMBO, Obj, ObjId, ObjKind};
@@ -34,30 +37,40 @@ pub const MAX_PARENT_DEPTH: usize = 10;
 /// room (design 06 §4.3, "bounded location chain").
 pub const MAX_CONTAINMENT_DEPTH: usize = 8;
 
-/// A published "actor operates subject" link (design 06 §4.4) — how a pilot in
-/// a cockpit gets the vehicle as a command subject, or a rigger a remote drone.
-/// Transient and rebuildable: the publishing `owner` module holds the
-/// authoritative assignment and republishes on boot; core never persists it.
-/// Keyed on `(actor, subject, owner)`; within an actor's list, higher
-/// `priority` wins.
+/// One projected actor/station control grant (design C8) — how a pilot in a
+/// cockpit gets the vehicle as a command subject, or a rigger a remote drone.
+///
+/// Channels and priority stay paired on this exact station.  The resolver may
+/// select the highest-priority grant that carries a required channel, but may
+/// never union one seat's channels with another seat's priority.  Transient
+/// and rebuildable: the publishing `owner` module holds the authoritative
+/// assignment and republishes on boot; core never persists it.  Keyed on
+/// `(actor, subject, owner, station)`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CommandSubjectLink {
+pub struct ChannelGrant {
     /// The operating actor.
     pub actor: ObjId,
     /// The operated object.
     pub subject: ObjId,
+    /// Owner-local station identifier.  Core treats it as opaque projection
+    /// identity; the publishing module validates its own canonical form.
+    pub station: SmolStr,
     /// The relation (`"pilot"`, `"gunner"`, `"remote"`, …) — descriptive.
     pub relation: SmolStr,
     /// The module that published it (responsible for republish/removal).
     pub owner: SmolStr,
-    /// Higher wins among an actor's links.
+    /// Higher wins only among grants eligible for the requested channel.
     pub priority: u16,
-    /// The control channels this link GRANTS the actor over the subject. The
-    /// publisher unions an actor's seats before publishing; the resolver unions
-    /// across multiple owners' links. Transient (republished at boot), so it is
-    /// never serialized.
+    /// The control channels this exact station grants over the subject.
     pub channels: std::collections::BTreeSet<super::behavior::ChannelId>,
+    /// Monotonic authority epoch captured by stale intents.  Revocation or any
+    /// control-surface change republishes grants under a newer epoch.
+    pub epoch: u64,
 }
+
+/// Backward-compatible name for the command-subject projection.  The value is
+/// now deliberately a first-class per-station [`ChannelGrant`].
+pub type CommandSubjectLink = ChannelGrant;
 
 /// Errors from [`World`] mutators.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -142,8 +155,8 @@ pub struct World {
     /// The movement gate and the NPC wake loop consult it; the driver rebuilds
     /// it on boot from its persisted scene records. Never persisted here.
     exclusive_scene: BTreeSet<ObjId>,
-    /// Published command-subject links (design 06 §4.4): per actor, the objects
-    /// it operates (a pilot's mech, a rigger's drone), highest priority first.
+    /// Published channel grants (design 06 §4.4 / C8): per actor and station,
+    /// the objects and exact channels it operates, highest priority first.
     /// A transient, rebuildable index: the owning module holds the authoritative
     /// assignment and republishes on boot; never persisted here. Scrubbed by
     /// [`World::destroy`] in both roles.
@@ -159,11 +172,14 @@ pub struct World {
     next_correlation: u64,
     /// Wall-clock unix seconds, fed by the driver via [`World::set_now`].
     now: i64,
-    /// The IC game clock (IC:OOC ratio + calendar phase). Boot configuration,
-    /// not persisted and not dirty-tracked; the driver installs it from
-    /// `mushd.toml [game]` via [`World::set_game_clock`] and it derives IC
-    /// time purely from [`World::now`]. `Default` is 1:1 with OOC time.
+    /// Compatibility view of the current integer-ratio clock.  New code reads
+    /// [`World::world_timeline`]; this remains for configuration and callers
+    /// that still inspect [`GameClock`].
     game_clock: GameClock,
+    /// Versioned world-IC truth.  The server hydrates its append-only epoch log
+    /// before module boot; ordinary module code reads it synchronously through
+    /// this world-owned value.
+    world_timeline: WorldTimeline,
     /// Active scenes (transient world state; module data persists via
     /// module ops).
     scenes: BTreeMap<SceneId, Scene>,
@@ -178,6 +194,16 @@ pub struct World {
     /// Per-actor input-context stacks (transient parser state — empty on
     /// clone).
     input_stacks: InputStacks,
+}
+
+fn game_clock_compatibility(epoch: WorldTimelineEpoch) -> GameClock {
+    let scaled_anchor = i128::from(epoch.real_anchor) * i128::from(epoch.rate);
+    let offset = (i128::from(epoch.ic_anchor) - scaled_anchor)
+        .clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+    GameClock {
+        ic_ratio: epoch.rate,
+        epoch_offset: offset,
+    }
 }
 
 impl World {
@@ -310,11 +336,14 @@ impl World {
     // IC game clock (read model for commands, modules, scripts)
     // ------------------------------------------------------------------
 
-    /// Install the IC game clock (the driver calls this once at boot from
-    /// `mushd.toml [game]`; `ic_ratio` is therefore read at boot — hot-reload
-    /// comes later). Purely configuration: nothing is dirtied or persisted.
+    /// Seed a generation-one IC timeline from legacy boot configuration.
+    ///
+    /// Production boot replaces this seed with persisted timeline truth when
+    /// present.  Tests and embedders without a store retain the historical
+    /// configuration behavior.
     pub fn set_game_clock(&mut self, clock: GameClock) {
         self.game_clock = clock;
+        self.world_timeline = WorldTimeline::from_game_clock(clock);
     }
 
     /// The configured IC game clock.
@@ -323,68 +352,121 @@ impl World {
         self.game_clock
     }
 
+    /// Install a fully validated persisted world timeline at boot.
+    pub fn set_world_timeline(&mut self, timeline: WorldTimeline) {
+        self.game_clock = game_clock_compatibility(timeline.current());
+        self.world_timeline = timeline;
+    }
+
+    /// The complete append-only world-IC epoch history.
+    #[must_use]
+    pub fn world_timeline(&self) -> &WorldTimeline {
+        &self.world_timeline
+    }
+
+    /// Prepare a continuous new rate generation without changing live truth.
+    pub fn next_world_timeline_epoch(
+        &self,
+        rate: u32,
+    ) -> Result<WorldTimelineEpoch, WorldTimelineError> {
+        self.world_timeline.next_rate_epoch(self.now, rate)
+    }
+
+    /// Install one exact prepared world-time generation.  Persistence-facing
+    /// callers queue its immutable epoch/head documents in the same engine
+    /// step before using this method.
+    pub fn append_world_timeline_epoch(
+        &mut self,
+        epoch: WorldTimelineEpoch,
+    ) -> Result<(), WorldTimelineError> {
+        self.world_timeline.append(epoch)?;
+        self.game_clock = game_clock_compatibility(epoch);
+        Ok(())
+    }
+
+    /// Typed `(ic_now, generation)` snapshot for the ordinary module context.
+    #[must_use]
+    pub fn world_ic_now(&self) -> ClockStamp {
+        self.world_timeline.stamp_at(self.now)
+    }
+
     /// IC ("in-character") unix-style timestamp for the current wall time —
     /// the game clock applied to [`World::now`]. Modules and scripts read the
     /// IC clock through these accessors rather than touching
     /// [`World::now`] (which is OOC wall time).
     #[must_use]
     pub fn game_now_unix(&self) -> i64 {
-        self.game_clock.ic_unix(self.now)
+        self.world_ic_now().at
     }
 
     /// The IC season right now.
     #[must_use]
     pub fn season(&self) -> Season {
-        self.game_clock.season(self.now)
+        match self.ic_day_of_year() {
+            59..=150 => Season::Spring,
+            151..=242 => Season::Summer,
+            243..=333 => Season::Autumn,
+            _ => Season::Winter,
+        }
     }
 
     /// The IC time-of-day bucket right now.
     #[must_use]
     pub fn time_of_day(&self) -> TimeOfDay {
-        self.game_clock.time_of_day(self.now)
+        match self.ic_hour() {
+            0..=5 => TimeOfDay::Night,
+            6..=7 => TimeOfDay::Dawn,
+            8..=11 => TimeOfDay::Morning,
+            12..=17 => TimeOfDay::Afternoon,
+            18..=19 => TimeOfDay::Dusk,
+            _ => TimeOfDay::Evening,
+        }
     }
 
     /// IC hour of day right now, `0..24`.
     #[must_use]
     pub fn ic_hour(&self) -> u32 {
-        self.game_clock.ic_hour(self.now)
+        (self.game_now_unix().rem_euclid(SECS_PER_DAY) / 3_600) as u32
     }
 
     /// IC minute of the hour right now, `0..60`.
     #[must_use]
     pub fn ic_minute(&self) -> u32 {
-        self.game_clock.ic_minute(self.now)
+        ((self.game_now_unix().rem_euclid(3_600)) / 60) as u32
     }
 
     /// IC day of the current month, `1..=` its length.
     #[must_use]
     pub fn ic_day(&self) -> u32 {
-        self.game_clock.ic_day(self.now)
+        crate::clock::CivilDate::from_ic_seconds(self.game_now_unix()).day
     }
 
     /// IC day of the current year, `0..365`.
     #[must_use]
     pub fn ic_day_of_year(&self) -> u32 {
-        self.game_clock.ic_day_of_year(self.now)
+        self.game_now_unix()
+            .div_euclid(SECS_PER_DAY)
+            .rem_euclid(DAYS_PER_YEAR) as u32
     }
 
     /// IC month right now, `1..=12`.
     #[must_use]
     pub fn ic_month(&self) -> u32 {
-        self.game_clock.ic_month(self.now)
+        crate::clock::CivilDate::from_ic_seconds(self.game_now_unix()).month
     }
 
     /// IC year right now.
     #[must_use]
     pub fn ic_year(&self) -> i64 {
-        self.game_clock.ic_year(self.now)
+        self.game_now_unix()
+            .div_euclid(SECS_PER_DAY * DAYS_PER_YEAR)
     }
 
     /// The human-facing IC datetime string right now
     /// (`"August 28, 2075, 02:57"`).
     #[must_use]
     pub fn ic_datetime(&self) -> String {
-        self.game_clock.ic_datetime(self.now)
+        crate::clock::CivilDate::from_ic_seconds(self.game_now_unix()).to_string()
     }
 
     /// The next id the allocator will hand out (monotonic, never recycled).
@@ -563,8 +645,8 @@ impl World {
     // Command-subject links (design 06 §4.4; transient, rebuildable)
     // ------------------------------------------------------------------
 
-    /// Publish (upsert) a command-subject link. Keyed on `(actor, subject,
-    /// owner)`: republishing replaces the relation and priority. A no-op if
+    /// Publish (upsert) one station grant. Keyed on `(actor, subject, owner,
+    /// station)`: republishing replaces only that station's grant. A no-op if
     /// either object does not exist. Never persisted — the owner republishes
     /// on boot from its own records.
     pub fn publish_command_subject(&mut self, link: CommandSubjectLink) {
@@ -572,9 +654,48 @@ impl World {
             return;
         }
         let list = self.command_subject_links.entry(link.actor).or_default();
-        list.retain(|l| !(l.subject == link.subject && l.owner == link.owner));
+        list.retain(|l| {
+            !(l.subject == link.subject && l.owner == link.owner && l.station == link.station)
+        });
         list.push(link);
-        list.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.subject.cmp(&b.subject)));
+        list.sort_by(|a, b| {
+            b.priority
+                .cmp(&a.priority)
+                .then(a.subject.cmp(&b.subject))
+                .then(a.owner.cmp(&b.owner))
+                .then(a.station.cmp(&b.station))
+        });
+    }
+
+    /// Find one exact current station grant.
+    #[must_use]
+    pub fn channel_grant(
+        &self,
+        actor: ObjId,
+        subject: ObjId,
+        owner: &str,
+        station: &str,
+    ) -> Option<&ChannelGrant> {
+        self.command_subjects_of(actor).iter().find(|grant| {
+            grant.subject == subject && grant.owner == owner && grant.station == station
+        })
+    }
+
+    /// Revalidate a queued intent's exact station epoch and required channel.
+    /// Assignment/lease policy remains with the publishing module; absence,
+    /// revocation, an epoch bump, or a narrowed channel set all fail closed.
+    #[must_use]
+    pub fn channel_grant_is_current(
+        &self,
+        actor: ObjId,
+        subject: ObjId,
+        owner: &str,
+        station: &str,
+        epoch: u64,
+        required_channel: &crate::behavior::ChannelId,
+    ) -> bool {
+        self.channel_grant(actor, subject, owner, station)
+            .is_some_and(|grant| grant.epoch == epoch && grant.channels.contains(required_channel))
     }
 
     /// Retract links published by `owner` — for one `actor`, or for every

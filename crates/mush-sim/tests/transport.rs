@@ -100,11 +100,13 @@ fn state(tw: &TestWorld) -> &SpatialState {
 }
 
 fn subjects(tw: &TestWorld, actor: ObjId) -> Vec<ObjId> {
-    tw.world()
-        .command_subjects_of(actor)
-        .iter()
-        .map(|l| l.subject)
-        .collect()
+    let mut subjects = Vec::new();
+    for grant in tw.world().command_subjects_of(actor) {
+        if !subjects.contains(&grant.subject) {
+            subjects.push(grant.subject);
+        }
+    }
+    subjects
 }
 
 /// Deterministic fixture: Field(#2 domain host), Bay(#3 sim.interior),
@@ -598,7 +600,7 @@ fn boot_drops_assignments_whose_actor_or_host_is_gone() {
 }
 
 #[test]
-fn control_links_are_per_unit_at_highest_role_and_survive_partial_unassign() {
+fn control_grants_are_per_station_and_survive_partial_unassign() {
     let mut tw = boot();
     let fx = fixture(&mut tw);
     let mech2 = tw
@@ -611,7 +613,7 @@ fn control_links_are_per_unit_at_highest_role_and_survive_partial_unassign() {
     ok(&mut tw, "@spatial/place/domain Atlas=0");
     ok(&mut tw, &format!("@spatial/place/domain #{}=0", mech2.0));
     let ann = fx.pilot;
-    // Two stations on Atlas: the actor's single link takes the higher role.
+    // Two stations on Atlas remain two independently scoped grants.
     ok(&mut tw, "@spatial/station Atlas=gun,gunner");
     ok(&mut tw, "@spatial/station Atlas=cockpit,pilot");
     ok(&mut tw, &format!("@spatial/assign Atlas=gun,#{}", ann.0));
@@ -622,14 +624,18 @@ fn control_links_are_per_unit_at_highest_role_and_survive_partial_unassign() {
     assert_eq!(
         subjects(&tw, ann),
         vec![fx.mech],
-        "one link per unit even with two stations"
+        "both grants address one unit"
     );
     assert_eq!(
-        tw.world().command_subjects_of(ann)[0].relation.as_str(),
-        "pilot",
-        "highest role wins"
+        tw.world()
+            .command_subjects_of(ann)
+            .iter()
+            .filter(|grant| grant.subject == fx.mech)
+            .count(),
+        2,
+        "one grant per occupied station"
     );
-    // Also crew mech2; Ann holds links to both units.
+    // Also crew mech2; Ann holds grants to both units.
     ok(
         &mut tw,
         &format!("@spatial/station #{}=cockpit,pilot", mech2.0),
@@ -642,13 +648,13 @@ fn control_links_are_per_unit_at_highest_role_and_survive_partial_unassign() {
     subs.sort();
     let mut want = vec![fx.mech, mech2];
     want.sort();
-    assert_eq!(subs, want, "links to both units");
-    // Unassigning one Atlas station keeps the pilot link to Atlas AND mech2.
+    assert_eq!(subs, want, "grants to both units");
+    // Unassigning one Atlas station keeps the cockpit grant and mech2.
     ok(&mut tw, "@spatial/unassign Atlas=gun");
     let mut subs = subjects(&tw, ann);
     subs.sort();
     assert_eq!(subs, want, "partial unassign keeps the survivors");
-    // Redefining the surviving station's role updates the link priority in place.
+    // Redefining the surviving station's role updates that exact grant in place.
     ok(&mut tw, "@spatial/station Atlas=cockpit,gunner");
     assert_eq!(
         tw.world()
@@ -659,9 +665,9 @@ fn control_links_are_per_unit_at_highest_role_and_survive_partial_unassign() {
             .relation
             .as_str(),
         "gunner",
-        "role redefine refreshes the link"
+        "role redefine refreshes the station grant"
     );
-    // Fully unassign Atlas: only the mech2 link remains.
+    // Fully unassign Atlas: only the mech2 grant remains.
     ok(&mut tw, "@spatial/unassign Atlas=cockpit");
     assert_eq!(subjects(&tw, ann), vec![mech2]);
 }
@@ -772,16 +778,17 @@ fn boot_fails_on_stations_key_host_mismatch() {
 }
 
 // ---------------------------------------------------------------------
-// F3: control channels, authority union, and the control-epoch lease
+// F3/K5a: per-station control-channel grants and control epochs
 // ---------------------------------------------------------------------
 
 fn channels_of(tw: &TestWorld, actor: ObjId, subject: ObjId) -> Vec<String> {
     tw.world()
         .command_subjects_of(actor)
         .iter()
-        .find(|l| l.subject == subject)
-        .map(|l| l.channels.iter().map(|c| c.as_str().to_string()).collect())
-        .unwrap_or_default()
+        .filter(|grant| grant.subject == subject)
+        .flat_map(|grant| grant.channels.iter())
+        .map(|channel| channel.as_str().to_string())
+        .collect()
 }
 
 #[test]
@@ -805,22 +812,27 @@ fn a_station_grants_channels_and_priority_defaults_by_role() {
         &format!("@spatial/assign Atlas=cockpit,#{}", ann.0),
     );
     ok(&mut tw, &format!("@spatial/assign Atlas=gun,#{}", ann.0));
-    // The actor's single link UNIONS both seats' channels; relation = the
-    // max-priority seat (pilot), priority = 2.
+    // Each station keeps its own channels and priority.
     let mut chans = channels_of(&tw, ann, fx.mech);
     chans.sort();
     assert_eq!(
         chans,
         vec!["movement".to_string(), "weapons".to_string()],
-        "channels union across seats"
+        "both exact grants are projected"
     );
-    let link = tw.world().command_subjects_of(ann)[0].clone();
-    assert_eq!(
-        link.relation.as_str(),
-        "pilot",
-        "relation = max-priority seat"
-    );
-    assert_eq!(link.priority, 2, "pilot's default priority");
+    let grants = tw.world().command_subjects_of(ann);
+    assert_eq!(grants.len(), 2, "one grant per station");
+    let cockpit = grants
+        .iter()
+        .find(|grant| grant.station == "cockpit")
+        .unwrap();
+    let gun = grants.iter().find(|grant| grant.station == "gun").unwrap();
+    assert_eq!(cockpit.relation.as_str(), "pilot");
+    assert_eq!(cockpit.priority, 2, "pilot's default priority");
+    assert_eq!(cockpit.channels.iter().next().unwrap().as_str(), "movement");
+    assert_eq!(gun.priority, 1, "gunner's default priority");
+    assert_eq!(gun.channels.iter().next().unwrap().as_str(), "weapons");
+    assert_eq!(cockpit.epoch, gun.epoch, "unit epoch stamps every grant");
 }
 
 #[test]
@@ -858,6 +870,11 @@ fn control_epoch_bumps_on_assign_unassign_and_survives_reboot() {
     );
     let g1 = state(&tw).control_generation(fx.mech);
     assert!(g1 > g0, "assign bumps the control epoch ({g0} -> {g1})");
+    assert_eq!(
+        tw.world().command_subjects_of(fx.pilot)[0].epoch,
+        g1,
+        "projected grant carries the durable control epoch"
+    );
     ok(&mut tw, "@spatial/unassign Atlas=cockpit");
     let g2 = state(&tw).control_generation(fx.mech);
     assert!(g2 > g1, "unassign bumps the control epoch ({g1} -> {g2})");

@@ -118,7 +118,13 @@ pub use behavior::{
     CommandReach, DestroyGate, DestroyPolicy, DetachGate, MAX_CARRIED_SCAN,
     resolve_behavior_command,
 };
-pub use clock::{CivilDate, GameClock, Season, TimeOfDay};
+pub use clock::{
+    CivilDate, ClockArithmeticError, ClockMismatch, ClockRef, ClockStamp, GameClock,
+    MAX_WORLD_TIMELINE_EPOCHS, Season, TimeOfDay, WORLD_TIMELINE_EPOCH_PREFIX,
+    WORLD_TIMELINE_HEAD_KEY, WORLD_TIMELINE_NAMESPACE, WorldTimeline, WorldTimelineChangeError,
+    WorldTimelineEpoch, WorldTimelineError, WorldTimelineHead, WorldTimelinePersistenceError,
+    world_timeline_epoch_key, world_timeline_persistence_ops,
+};
 pub use cmd::{
     AliasOutcome, AliasStage, ArgShape, CmdError, CommandFallback, CommandGate, CommandHandler,
     CommandSpec, Ctx, HelpTopic, LookupErr, ParsedArgs, Registry, RegistryError, SceneClass,
@@ -173,4 +179,6 @@ pub use sched::{
     MAX_PENDING_ENTRIES_PER_INSPECTION, MAX_SCHEDULED_FIRES_PER_STEP, PendingEntrySnapshot,
     ScheduledKind, Scheduler, TimerId,
 };
-pub use world::{CommandSubjectLink, MAX_CONTAINMENT_DEPTH, SessionStat, World, WorldError};
+pub use world::{
+    ChannelGrant, CommandSubjectLink, MAX_CONTAINMENT_DEPTH, SessionStat, World, WorldError,
+};

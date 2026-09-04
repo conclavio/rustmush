@@ -308,7 +308,7 @@ pub enum ClockRef {
 
 pub struct ClockStamp {
     pub clock: ClockRef,
-    pub value: i64,
+    pub at: i64,
 }
 ```
 
@@ -990,8 +990,14 @@ a declared safe boundary.
 
 Command-subject priority is channel-specific. Unioning all seat channels and assigning the maximum
 seat priority to the union can promote a low-priority movement grant to weapons/command priority.
-Use `ChannelGrant { channel, priority }`; unchannelled contextual commands may retain a separate
-relationship priority.
+The projection unit is
+`ChannelGrant { actor, subject, owner, station, channels, priority, epoch }`: one grant per occupied
+station, with no union across seats. Resolution may select the highest-priority grant that carries
+the requested channel, but channel eligibility and priority must come from that same grant.
+`epoch` is captured by delayed work and checked against the exact station grant at re-entry;
+revocation, republish, or channel narrowing invalidates it. Unchannelled contextual commands may
+retain a separate relationship priority. A station grant is lease eligibility, not the active
+exclusive lease.
 
 Reservations have a small durable state machine:
 
@@ -1786,12 +1792,12 @@ The repository already contains useful local proofs. They should be adapted, not
 |---|---|---|
 | C1 definitions | shared canonical owner/kind/id/digest identities; bounded `RulesValue`; immutable global definition registry; exact-reference closure; one provider semantic validator per owner/kind; bounded monotonic owner-readiness latch; tactics exact-digest owner fan-out; dry-run migration registry; tactics/sim adapters | owner-freeze discovery in remaining rules-bearing adapters, executing one migration through K3 durability, broader production provider coverage |
 | C2 plan/commit | `mush-sim::Transition`, `UnitMutationPlan`, world single writer, `WriteBatch`, K0 exact receipt gate, typed output/effect custody and one `CommitPending` batch; K2 action invocation/provider metadata; engine-owned typed state families; owner-scoped bounded multi-record `ActionTxn`; one-shot `PreparedTxn`; same-owner trigger execution in the root scratch transaction; exact staged pairing between typed post-images and an immutable K3 bundle; FIFO reserve/reconcile custody; exact 128-bit token/hash receipt validation before RAM install; canonical bounded K3 bundle/token/replay/event/outbox models; in-memory exact intent protocol and cut-point matrix; Redis checked-Lua intent/idempotency reservation plus replay/readback/finalization; object-plus-allocator admission; hash-aware status; live Redis 8.10 fault execution; exhaustive pre-hydration server recovery; bounded runtime deterministic retries and whole-bundle dead-letter; event-preserving compact finalized checkpoints; watermark-first epoch retirement; typestate early-idempotency coordinator and first real tactics provider; recovery-driven durable-outbox worker with stable-ID at-least-once delivery; independent bounded authoritative/legacy/control writer lanes; versioned epoch-scoped gateway request UIDs, bounded per-connection/global count+byte custody, explicit dispositions, legacy claim/release, and post-reattach FIFO replay | transport/parser/legal-offer coordinator wiring; remaining ownership-ack process/IPC fault matrix; cross-owner transaction/bridge execution; broader provider and legacy migration |
-| C3 legal actions | contextual behavior commands, required channels, command-subject links, LLM tool manifests, exact owner-stamped action-provider registry | separate internal/projected legal actions, bounded offer store, one submission path for human/UI/AI/LLM |
-| C4 time/windows | scheduler, `GameClock`, Timestop turns, passive domain clock, Journey timing, mobility switching | typed clock identity/provider, generic window generations, simultaneous intent collection/order, restart/catch-up policy |
+| C3 legal actions | contextual behavior commands, required channels, exact per-actor/per-station `ChannelGrant` projection with paired channel/priority and epoch revalidation, LLM tool manifests, exact owner-stamped action-provider registry | separate internal/projected legal actions, bounded offer store, grant-bound offer witnesses, one submission path for human/UI/AI/LLM |
+| C4 time/windows | scheduler; strict `ClockRef`/`ClockStamp`; bounded append-only world-IC epoch history `{ real_anchor, ic_anchor, rate, generation }`; continuous rate changes; atomic epoch/head persistence; boot hydration before modules; synchronous `(ic_now, generation)` module-context read; Timestop turns, passive domain clock, Journey timing, mobility switching | registered provider lookup, typed deadline validation, generic window generations, simultaneous intent collection/order, restart/catch-up policy |
 | C5 RNG | injectable `mush-dice::RollCtx`; test-seeded ChaCha in rulesets | idempotency-derived resolution streams, draw transcript, algorithm/version and durable outcome record |
 | C6 causality | `WorldEvent`, scene/canon ledgers, module observers; stable pre-commit request/event IDs and causal references; bounded deterministic trigger queue with duplicate suppression and non-droppable active-work custody; queue execution inside one root `ActionTxn`; v2 bundles and v3 compact receipts retaining ordered root/derived semantic events and event-time witnesses | public commit-token-bound event IDs, intent-resolution-commit-observation integration, cross-owner trigger execution through validated bridges |
 | C7 tracks/effects | sheet tracks, tactical `ScalarCell`, ruleset-specific damage/effect state | common checked operations, resource/effect addressing, provenance/duration/revision contract and adapters |
-| C8 guards | F3 control channels, unit `control_gen`, expected unit revision, economy plan draft; canonical `RevisionSet`, owner-stamped validator registries, explicit server-created `GuardSet` on every staged typed action, final fail-closed revalidation at the synchronous writer-custody transition, durable exact-bundle reservation, and coordinator-owned early idempotency preflight | actual per-channel leases and wiring every delayed result through guards |
+| C8 guards | per-station channel grants (no cross-seat union/max promotion), persisted unit `control_gen` carried as each grant's epoch, exact station/channel/epoch stale-intent revalidation, expected unit revision, economy plan draft; canonical `RevisionSet`, owner-stamped validator registries, explicit server-created `GuardSet` on every staged typed action, final fail-closed revalidation at the synchronous writer-custody transition, durable exact-bundle reservation, and coordinator-owned early idempotency preflight | active per-channel leases, safe-boundary handoff, and wiring every delayed result/offer through the exact grant plus lease guards |
 | C9 projection | per-observer perception and delivery, witness-aware power events | opaque contact references, dedicated view DTOs, shared legal-action/error/LLM projection |
 | C10 ownership | registrar-stamped definition/action/state-family owners; composition-bound opaque typed state handles; provider-stamped transactions that reject cross-owner handles; fail-closed cross-owner tactical references; immutable directional exact-definition bridge registry; shared owner-readiness gates on executable definitions/providers/validators/bridge routes | ownership migration for state outside `ActionStateStore`, executable bridge preparation across typed transactions, freeze aggregation from remaining owner adapters |
 | C11 lifecycle | pre-boot validated unified poison spool; v1 Ledger read compatibility plus tagged v2 Ledger/bundle records sharing one lock, capacity gate, and evidence archive; exact seal retention/isolation; structural world modes; bounded recovery incidents/reports; tactical Active/Frozen/Migrating/Quarantined records; tactics owner-scoped digest-conflict freeze; prepared typed images install or abort on the matching legacy serial or K3 token/hash receipt; strict atomic state-family decode/validate/canonical boot hydration; legacy isolation of `action-state/*`; store-enforced ownership of authoritative module prefixes; bounded in-memory and Redis pending indexes plus independent paged full-intent discovery; exhaustive bounded boot reconciliation before world hydration or writable bootstrap; exact retry repair of stale pending-index membership; canonical retained-intent storage validation; atomic reconstruction of derived Redis count/byte counters from exhaustive boot discovery; exact bundle quarantine recovery with live Redis WRONGTYPE proof; coordinator abort of typed reservations on pre-stage assembly failure; exact checkpoint/epoch/outbox cleanup and retry | exhaustive orphan-owner discovery; full C11 resolution receipts; owner freezes in remaining lifecycle adapters; authoritative account ingress; automated runbook |
@@ -2125,6 +2131,30 @@ Exit criteria:
 - restart after ack/before output recovers the receipt and keyframe;
 - an action-created object and allocator restart without ID reuse;
 - legacy pre-state dependencies cannot be lost beneath a later committed action.
+
+#### E7-enabling priority cut (K4a/K5a)
+
+E7's first production/requisition cuts must not mint temporary clock or control models.  Pull these
+two kernel primitives forward before finishing the rest of K4/K5:
+
+1. **K4a — versioned world timeline (implemented):** `ClockRef`/`ClockStamp`, a bounded
+   append-only `{ real_anchor, ic_anchor, rate, generation }` epoch history, continuous rate
+   changes, immutable generation documents plus an atomically updated head, fail-closed boot
+   validation, configuration-as-genesis-only behavior, and synchronous `Ctx::world_ic_now()`.
+   Campaign policy decides who may open a generation; the kernel only enforces shape, continuity,
+   generation, bounds, persistence, and comparison rules.
+2. **K5a — station channel grants (implemented):** project one
+   `ChannelGrant { actor, subject, owner, station, channels, priority, epoch }` per occupied station.
+   Command resolution selects priority from the same grant that supplies the required channel, and
+   delayed intents can revalidate the exact station/channel/epoch. The existing persisted unit
+   `control_gen` is a conservative grant epoch: any control-surface change invalidates every grant
+   on that unit. Per-channel active leases and safe-boundary transfer remain K6 work.
+
+The K3.1 checkpoint-readback and pending-allocator findings are already closed in both memory and
+Redis and therefore are not prerequisites. Mixed authoritative write sets, synchronous typed-family
+module reads, and folding a Ledger seal into an authoritative bundle remain the migration gate
+before E7 reservations or production settlement move from the economy journal onto kernel
+authority; they do not block E7 records and policy from using the two primitives above.
 
 ### K4. Typed clocks, resolution RNG, resources, and effects
 

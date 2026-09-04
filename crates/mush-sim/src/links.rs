@@ -1,4 +1,4 @@
-//! Control command-subjects, DERIVED from station assignments (cut 2). An
+//! Per-station channel grants, DERIVED from station assignments (cut 2). An
 //! assignment to a control station grants the actor the unit as a command
 //! subject at the `Operated` reach tier, so the unit's contextual behavior
 //! commands (ruleset-tacsim STARTUP/HEADING, later) reach only its crew.
@@ -10,51 +10,52 @@
 //! and republish the survivors. `World::destroy` already scrubs links for a
 //! dead actor/subject, so lifecycle cleanup only drops the durable records.
 
-use std::collections::BTreeSet;
-
-use mush_core::{ChannelId, CommandSubjectLink, Flags, ObjId, World};
+use mush_core::{ChannelGrant, Flags, ObjId, World};
 use smol_str::SmolStr;
 
 use crate::data::{NS, SpatialState};
 
-/// The (unit, role, priority) links `actor` should currently hold: one per
-/// unit the actor crews, for a **placed, live** unit, at the actor's
-/// highest-priority role on that unit.
-fn desired_links(
-    st: &SpatialState,
-    w: &World,
-    actor: ObjId,
-) -> Vec<(ObjId, SmolStr, u16, BTreeSet<ChannelId>)> {
+/// Exact grants `actor` should currently hold: one per occupied station on a
+/// **placed, live** unit. Channels, priority, and epoch stay paired on that
+/// station all the way through command resolution and stale-intent checks.
+fn desired_links(st: &SpatialState, w: &World, actor: ObjId) -> Vec<ChannelGrant> {
     let Some(units) = st.derived.assignments_by_actor.get(&actor) else {
         return Vec::new();
     };
-    units
-        .iter()
-        .copied()
-        .filter(|&unit| {
-            st.is_placed(unit) && w.get(unit).is_some_and(|o| !o.flags.contains(Flags::GOING))
-        })
-        .filter_map(|unit| {
-            let seats = &st.assignments.get(&unit)?.seats;
-            let hs = st.stations.get(&unit)?;
-            // Full authority = UNION of channels + MAX priority across ALL of the
-            // actor's seats on this unit; `relation` is the max-priority seat's
-            // role (ties keep the lowest StationId, since seats is a BTreeMap).
-            let mut channels: BTreeSet<ChannelId> = BTreeSet::new();
-            let mut best: Option<(SmolStr, u16)> = None;
-            for (sid, asg) in seats {
-                if asg.actor == actor
-                    && let Some(spec) = hs.stations.get(sid)
-                {
-                    channels.extend(spec.channels.iter().cloned());
-                    if best.as_ref().is_none_or(|(_, b)| spec.priority > *b) {
-                        best = Some((spec.role.clone(), spec.priority));
-                    }
-                }
+    let mut grants = Vec::new();
+    for unit in units.iter().copied() {
+        if !st.is_placed(unit)
+            || w.get(unit)
+                .is_none_or(|object| object.flags.contains(Flags::GOING))
+        {
+            continue;
+        }
+        let (Some(assignments), Some(stations)) =
+            (st.assignments.get(&unit), st.stations.get(&unit))
+        else {
+            continue;
+        };
+        let epoch = st.control_generation(unit);
+        for (station, assignment) in &assignments.seats {
+            if assignment.actor != actor {
+                continue;
             }
-            best.map(|(role, pr)| (unit, role, pr, channels))
-        })
-        .collect()
+            let Some(spec) = stations.stations.get(station) else {
+                continue;
+            };
+            grants.push(ChannelGrant {
+                actor,
+                subject: unit,
+                station: SmolStr::new(station.as_str()),
+                relation: spec.role.clone(),
+                owner: SmolStr::new_static(NS),
+                priority: spec.priority,
+                channels: spec.channels.clone(),
+                epoch,
+            });
+        }
+    }
+    grants
 }
 
 /// Recompute and republish `actor`'s `sim` control links from the current
@@ -67,15 +68,8 @@ pub(crate) fn refresh_actor_links(w: &mut World, actor: ObjId) {
         desired_links(st, w, actor)
     };
     w.retract_command_subjects(NS, Some(actor));
-    for (unit, relation, priority, channels) in desired {
-        w.publish_command_subject(CommandSubjectLink {
-            actor,
-            subject: unit,
-            relation,
-            owner: SmolStr::new_static(NS),
-            priority,
-            channels,
-        });
+    for grant in desired {
+        w.publish_command_subject(grant);
     }
 }
 
