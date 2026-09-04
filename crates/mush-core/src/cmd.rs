@@ -492,6 +492,9 @@ pub struct Registry {
     pub(crate) state_family_builder: crate::action_state::StateFamilyRegistryBuilder,
     /// K4 module-owned typed clock providers, mutable only while modules register.
     pub(crate) clock_provider_builder: crate::clock_provider::ClockProviderRegistryBuilder,
+    /// K4 read adapters over ruleset-owned resource/effect truth.
+    pub(crate) resource_effect_provider_builder:
+        crate::resource_provider::ResourceEffectProviderRegistryBuilder,
     /// K4 declarative durable schedule sources, mutable only while modules register.
     pub(crate) schedule_source_builder: crate::schedule_source::ScheduleSourceRegistryBuilder,
     /// Process-lifetime, one-way readiness for the bounded composed owner roster.
@@ -512,6 +515,9 @@ pub struct Registry {
     pub(crate) state_families: Option<crate::action_state::StateFamilyRegistry>,
     /// Frozen owner-stamped typed clock-provider registry.
     pub(crate) clock_providers: Option<crate::clock_provider::ClockProviderRegistry>,
+    /// Frozen owner-stamped resource/effect read adapters.
+    pub(crate) resource_effect_providers:
+        Option<crate::resource_provider::ResourceEffectProviderRegistry>,
     /// Frozen owner-stamped durable schedule-source registry.
     pub(crate) schedule_sources: Option<crate::schedule_source::ScheduleSourceRegistry>,
 }

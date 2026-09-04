@@ -22,6 +22,9 @@ use mush_core::{
     WindowIntent, WindowMode, WindowOrderKey, WindowRestartPolicy, WindowTimeoutPolicy,
     action_window_state_family_descriptor, durable_schedule_state_family_descriptor,
 };
+use mush_core::{
+    EffectProvider, ResourceProvider, ResourceProviderContext, ResourceProviderFailure, ResourceRef,
+};
 use mush_testkit::TestWorld;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -326,6 +329,56 @@ pub struct ToyStateFamilies {
     pub windows: StateFamilyHandle<ActionWindowId, ActionWindowRecord>,
     pub schedules: StateFamilyHandle<ScheduleId, DurableSchedule>,
     pub scheduled_expiries: StateFamilyHandle<ScheduleId, ToyScheduledExpiry>,
+}
+
+#[derive(Debug)]
+struct ToyFocusResourceProvider {
+    focus: StateFamilyHandle<ObjId, ToyFocusState>,
+}
+
+impl ResourceProvider for ToyFocusResourceProvider {
+    fn read(
+        &self,
+        context: &ResourceProviderContext<'_>,
+        resource: &ResourceRef,
+    ) -> Result<Option<BoundedScalar>, ResourceProviderFailure> {
+        let SubjectKey::Object { id } = &resource.subject else {
+            return Err(ResourceProviderFailure::UnsupportedSubject);
+        };
+        context
+            .action_state(&self.focus, id)
+            .map(|state| state.map(|state| state.value))
+            .map_err(|_| ResourceProviderFailure::Integrity)
+    }
+}
+
+#[derive(Debug)]
+struct ToyGuardedEffectProvider {
+    guarded: StateFamilyHandle<ObjId, ToyGuardedState>,
+}
+
+impl EffectProvider for ToyGuardedEffectProvider {
+    fn read(
+        &self,
+        context: &ResourceProviderContext<'_>,
+        target: &EffectTarget,
+        instance: EffectInstanceId,
+    ) -> Result<Option<EffectInstance>, ResourceProviderFailure> {
+        let EffectTarget::Subject {
+            subject: SubjectKey::Object { id },
+        } = target
+        else {
+            return Err(ResourceProviderFailure::UnsupportedSubject);
+        };
+        context
+            .action_state(&self.guarded, id)
+            .map(|state| {
+                state
+                    .filter(|state| state.effect.id() == instance)
+                    .map(|state| state.effect.clone())
+            })
+            .map_err(|_| ResourceProviderFailure::Integrity)
+    }
 }
 
 #[derive(Debug)]
@@ -1606,6 +1659,18 @@ impl GameModule for ToyRulesModule {
             schedules,
             scheduled_expiries,
         };
+        registrar.resource_provider(
+            actual.focus.clone(),
+            ToyFocusResourceProvider {
+                focus: families.focus.clone(),
+            },
+        )?;
+        registrar.effect_provider(
+            actual.guarded.clone(),
+            ToyGuardedEffectProvider {
+                guarded: families.guarded.clone(),
+            },
+        )?;
         registrar.action_provider(
             actual.brace.clone(),
             BraceProvider {
@@ -2027,6 +2092,68 @@ mod tests {
                 reference
             );
         }
+    }
+
+    #[test]
+    fn resource_and_effect_adapters_expose_exact_owner_truth() {
+        let (mut world, families) = toy_world_with_state();
+        bootstrap_focus(&mut world, &families, mush_core::GOD, 3);
+        bootstrap_guarded(&mut world, &families, mush_core::GOD, 9);
+
+        let definitions = toy_definitions();
+        let resource = ResourceRef::new(
+            OwnerId::new(TOY_OWNER).unwrap(),
+            SubjectKey::Object { id: mush_core::GOD },
+            CanonicalId::new("focus").unwrap(),
+        );
+        let snapshot = world
+            .engine()
+            .resource_snapshot(&resource)
+            .expect("resource provider read succeeds")
+            .expect("focus exists");
+        assert_eq!(snapshot.definition(), &definitions.focus);
+        assert_eq!(snapshot.resource(), &resource);
+        assert_eq!(snapshot.value().current(), 3);
+
+        let guarded = world
+            .engine()
+            .action_state()
+            .get(&families.guarded, &mush_core::GOD)
+            .unwrap()
+            .unwrap();
+        let effect = world
+            .engine()
+            .effect_instance(
+                &definitions.guarded,
+                guarded.effect.target(),
+                guarded.effect.id(),
+            )
+            .expect("effect provider read succeeds")
+            .expect("guarded exists");
+        assert_eq!(effect, guarded.effect);
+
+        let effect_target = effect.target().clone();
+        let effect_id = effect.id();
+        world
+            .registry()
+            .freeze_mechanics_owner(
+                &OwnerId::new(TOY_OWNER).unwrap(),
+                mush_core::IncidentId(77),
+                mush_core::RecoveryReason::IntegrityViolation {
+                    code: CanonicalId::new("provider_read_test").unwrap(),
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            world.engine().resource_snapshot(&resource),
+            Err(mush_core::ResourceReadError::OwnerNotReady(_))
+        ));
+        assert!(matches!(
+            world
+                .engine()
+                .effect_instance(&definitions.guarded, &effect_target, effect_id,),
+            Err(mush_core::EffectReadError::OwnerNotReady(_))
+        ));
     }
 
     #[test]

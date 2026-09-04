@@ -70,6 +70,7 @@ pub mod output;
 pub mod perm;
 pub mod resolution;
 pub mod resource;
+pub mod resource_provider;
 pub mod sched;
 pub mod schedule_source;
 pub mod world;
@@ -225,6 +226,13 @@ pub use resource::{
     EffectTarget, MAX_EFFECT_STACKS, MAX_RESOURCE_RESERVATIONS, ReservationAvailabilityError,
     ReservationError, ReservationId, ReservationRecord, ReservationState, ResourceOperation,
     ResourceRef, ResourceValueError, checked_resource_availability,
+};
+pub use resource_provider::{
+    EffectProvider, EffectProviderResultMismatch, EffectReadError, MAX_RESOURCE_EFFECT_PROVIDERS,
+    MAX_RESOURCE_EFFECT_PROVIDERS_PER_OWNER, ResourceEffectProviderRegistry,
+    ResourceEffectProviderRegistryBuilder, ResourceEffectProviderRegistryError, ResourceProvider,
+    ResourceProviderContext, ResourceProviderFailure, ResourceProviderKey, ResourceReadError,
+    ResourceSnapshot,
 };
 pub use sched::{
     MAX_PENDING_ENTRIES_PER_INSPECTION, MAX_SCHEDULED_FIRES_PER_STEP, PendingEntrySnapshot,

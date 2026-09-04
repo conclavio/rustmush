@@ -657,6 +657,41 @@ impl Engine {
         }
     }
 
+    /// Read one ruleset-owned resource through its composition-frozen,
+    /// read-only adapter.
+    pub fn resource_snapshot(
+        &self,
+        resource: &crate::resource::ResourceRef,
+    ) -> Result<
+        Option<crate::resource_provider::ResourceSnapshot>,
+        crate::resource_provider::ResourceReadError,
+    > {
+        self.registry
+            .resource_effect_providers()
+            .ok_or(crate::resource_provider::ResourceReadError::RegistryUnavailable)?
+            .read_resource(&self.world, &self.action_state, resource)
+    }
+
+    /// Read one exact effect instance through its definition-owned adapter.
+    pub fn effect_instance(
+        &self,
+        definition: &crate::mechanics::DefinitionRef,
+        target: &crate::resource::EffectTarget,
+        instance: crate::resource::EffectInstanceId,
+    ) -> Result<Option<crate::resource::EffectInstance>, crate::resource_provider::EffectReadError>
+    {
+        self.registry
+            .resource_effect_providers()
+            .ok_or(crate::resource_provider::EffectReadError::RegistryUnavailable)?
+            .read_effect(
+                &self.world,
+                &self.action_state,
+                definition,
+                target,
+                instance,
+            )
+    }
+
     /// Discover a bounded canonical page of durable schedules that need an
     /// authoritative action under the requested drive cause.
     pub fn discover_scheduled_actions(

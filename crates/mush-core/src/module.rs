@@ -1113,6 +1113,7 @@ impl Registry {
             || self.authority_guard_validators.is_some()
             || self.state_families.is_some()
             || self.clock_providers.is_some()
+            || self.resource_effect_providers.is_some()
             || self.schedule_sources.is_some()
             || self.mechanics_owner_readiness.is_some()
         {
@@ -1135,6 +1136,9 @@ impl Registry {
         let clock_providers = std::mem::take(&mut self.clock_provider_builder)
             .freeze_for_owners_with_readiness(module_owners, owner_readiness.clone())
             .map_err(|e| ModError::msg(format!("clock provider registry: {e}")))?;
+        let resource_effect_providers = std::mem::take(&mut self.resource_effect_provider_builder)
+            .freeze_for_composition(&definitions, module_owners, owner_readiness.clone())
+            .map_err(|e| ModError::msg(format!("resource/effect provider registry: {e}")))?;
         let schedule_sources = std::mem::take(&mut self.schedule_source_builder)
             .freeze_for_composition(
                 module_owners,
@@ -1161,6 +1165,7 @@ impl Registry {
         self.authority_guard_validators = Some(authority_guard_validators);
         self.state_families = Some(state_families);
         self.clock_providers = Some(clock_providers);
+        self.resource_effect_providers = Some(resource_effect_providers);
         self.schedule_sources = Some(schedule_sources);
         self.definition_migrations = Some(definition_migrations);
         Ok(())
@@ -1261,6 +1266,14 @@ impl Registry {
         self.clock_providers.as_ref()
     }
 
+    /// Immutable resource/effect read adapters after module composition.
+    #[must_use]
+    pub fn resource_effect_providers(
+        &self,
+    ) -> Option<&crate::resource_provider::ResourceEffectProviderRegistry> {
+        self.resource_effect_providers.as_ref()
+    }
+
     /// Immutable declarative durable schedule sources after composition.
     #[must_use]
     pub fn schedule_sources(&self) -> Option<&crate::schedule_source::ScheduleSourceRegistry> {
@@ -1310,9 +1323,10 @@ impl Registry {
         let authority = self.authority_guard_validators.as_ref()?;
         let state_families = self.state_families.as_ref()?;
         let clock_providers = self.clock_providers.as_ref()?;
+        let resource_effect_providers = self.resource_effect_providers.as_ref()?;
         let schedule_sources = self.schedule_sources.as_ref()?;
         crate::mechanics::DefinitionDigest::for_canonical_value(
-            "mechanics_registry.v6",
+            "mechanics_registry.v7",
             &serde_json::json!({
                 "definitions": definitions.fingerprint().to_hex(),
                 "bridges": bridges.fingerprint().to_hex(),
@@ -1322,6 +1336,7 @@ impl Registry {
                 "authority_validators": authority.fingerprint().to_hex(),
                 "state_families": state_families.fingerprint().to_hex(),
                 "clock_providers": clock_providers.fingerprint().to_hex(),
+                "resource_effect_providers": resource_effect_providers.fingerprint().to_hex(),
                 "schedule_sources": schedule_sources.fingerprint().to_hex(),
             }),
         )
@@ -1839,6 +1854,75 @@ impl<'a> Registrar<'a> {
             .map_err(|e| {
                 ModError::msg(format!(
                     "module {}: scene clock provider registration: {e}",
+                    self.module
+                ))
+            })
+    }
+
+    /// Register a read-only adapter for one exact resource definition owned
+    /// by this module. The definition's stable id becomes the resource id;
+    /// composition selects exactly one version for that address.
+    pub fn resource_provider<P>(
+        &mut self,
+        definition: crate::mechanics::DefinitionRef,
+        provider: P,
+    ) -> Result<(), ModError>
+    where
+        P: crate::resource_provider::ResourceProvider + 'static,
+    {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.resource_effect_providers.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: resource/effect provider registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .resource_effect_provider_builder
+            .register_resource(owner, definition, Arc::new(provider))
+            .map_err(|e| {
+                ModError::msg(format!(
+                    "module {}: resource provider registration: {e}",
+                    self.module
+                ))
+            })
+    }
+
+    /// Register a read-only adapter for instances of one exact effect
+    /// definition owned by this module.
+    pub fn effect_provider<P>(
+        &mut self,
+        definition: crate::mechanics::DefinitionRef,
+        provider: P,
+    ) -> Result<(), ModError>
+    where
+        P: crate::resource_provider::EffectProvider + 'static,
+    {
+        self.require_mechanics_registration_authority()?;
+        if self.reg.resource_effect_providers.is_some() {
+            return Err(ModError::msg(format!(
+                "module {}: resource/effect provider registry is already frozen",
+                self.module
+            )));
+        }
+        let owner = crate::mechanics::OwnerId::new(self.module.as_str()).map_err(|e| {
+            ModError::msg(format!(
+                "module {} has no canonical mechanics owner id: {e}",
+                self.module
+            ))
+        })?;
+        self.reg
+            .resource_effect_provider_builder
+            .register_effect(owner, definition, Arc::new(provider))
+            .map_err(|e| {
+                ModError::msg(format!(
+                    "module {}: effect provider registration: {e}",
                     self.module
                 ))
             })
