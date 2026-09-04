@@ -2602,9 +2602,21 @@ pub fn look_rendered_lines(reg: &Registry, w: &World, looker: ObjId, room: ObjId
 /// Invoke every observer subscribed to `ev`'s kind, post-mutation, each
 /// with a [`Ctx`] carrying its module identity.
 pub fn emit_world_event(reg: &Registry, w: &mut World, out: &mut Outbox, ev: &WorldEvent) {
+    emit_world_event_with_action_state(reg, w, out, ev, None);
+}
+
+pub(crate) fn emit_world_event_with_action_state(
+    reg: &Registry,
+    w: &mut World,
+    out: &mut Outbox,
+    ev: &WorldEvent,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) {
     let observers = reg.observers_matching(ev);
     let actor = ev.subject();
     for (module, obs) in observers {
+        let typed_state =
+            crate::action_state::ModuleActionState::for_module(action_state, Some(module.as_str()));
         let mut ctx = Ctx {
             w: &mut *w,
             actor,
@@ -2613,6 +2625,7 @@ pub fn emit_world_event(reg: &Registry, w: &mut World, out: &mut Outbox, ev: &Wo
             out: &mut *out,
             reg,
             module: Some(module),
+            typed_state,
         };
         obs.on_event(&mut ctx, ev);
     }
@@ -2632,10 +2645,35 @@ pub fn apply_async_completion(
     correlation: u64,
     payload: &str,
 ) {
+    apply_async_completion_with_action_state(
+        reg,
+        w,
+        out,
+        module,
+        actor,
+        correlation,
+        payload,
+        None,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_async_completion_with_action_state(
+    reg: &Registry,
+    w: &mut World,
+    out: &mut Outbox,
+    module: SmolStr,
+    actor: ObjId,
+    correlation: u64,
+    payload: &str,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) {
     let Some(handler) = reg.async_completion(&module) else {
         tracing::warn!(%module, correlation, "async completion for unregistered module dropped");
         return;
     };
+    let typed_state =
+        crate::action_state::ModuleActionState::for_module(action_state, Some(module.as_str()));
     let mut ctx = Ctx {
         w,
         actor,
@@ -2644,6 +2682,7 @@ pub fn apply_async_completion(
         out,
         reg,
         module: Some(module),
+        typed_state,
     };
     handler.on_complete(&mut ctx, correlation, payload);
 }
@@ -2656,6 +2695,17 @@ pub fn fire_conn_hook(
     actor: ObjId,
     connected: bool,
 ) {
+    fire_conn_hook_with_action_state(reg, w, out, actor, connected, None);
+}
+
+pub(crate) fn fire_conn_hook_with_action_state(
+    reg: &Registry,
+    w: &mut World,
+    out: &mut Outbox,
+    actor: ObjId,
+    connected: bool,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) {
     let point = if connected {
         HookPoint::Connected
     } else {
@@ -2663,6 +2713,10 @@ pub fn fire_conn_hook(
     };
     let hooks: Vec<HookReg> = reg.hooks(point).to_vec();
     for h in hooks {
+        let typed_state = crate::action_state::ModuleActionState::for_module(
+            action_state,
+            Some(h.module.as_str()),
+        );
         let mut ctx = Ctx {
             w: &mut *w,
             actor,
@@ -2671,6 +2725,7 @@ pub fn fire_conn_hook(
             out: &mut *out,
             reg,
             module: Some(h.module.clone()),
+            typed_state,
         };
         if connected {
             h.hook.connected(&mut ctx, actor);
@@ -2689,6 +2744,17 @@ pub fn fire_scene_hook(
     scene: SceneId,
     started: bool,
 ) {
+    fire_scene_hook_with_action_state(reg, w, out, scene, started, None);
+}
+
+pub(crate) fn fire_scene_hook_with_action_state(
+    reg: &Registry,
+    w: &mut World,
+    out: &mut Outbox,
+    scene: SceneId,
+    started: bool,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) {
     let point = if started {
         HookPoint::SceneStarted
     } else {
@@ -2696,6 +2762,10 @@ pub fn fire_scene_hook(
     };
     let hooks: Vec<HookReg> = reg.hooks(point).to_vec();
     for h in hooks {
+        let typed_state = crate::action_state::ModuleActionState::for_module(
+            action_state,
+            Some(h.module.as_str()),
+        );
         let mut ctx = Ctx {
             w: &mut *w,
             actor: GOD,
@@ -2704,6 +2774,7 @@ pub fn fire_scene_hook(
             out: &mut *out,
             reg,
             module: Some(h.module.clone()),
+            typed_state,
         };
         if started {
             h.hook.scene_started(&mut ctx, scene);
@@ -2771,11 +2842,50 @@ impl Ctx<'_> {
         self.w.module_state_mut::<T>()
     }
 
+    /// Read one record from an engine-owned typed family registered by this
+    /// context's module. This is a read-only capability: authoritative
+    /// changes still require an [`ActionTxn`](crate::ActionTxn).
+    pub fn action_state<K, V>(
+        &self,
+        handle: &crate::action_state::StateFamilyHandle<K, V>,
+        key: &K,
+    ) -> Result<Option<&V>, crate::action_state::ModuleActionStateReadError>
+    where
+        K: Send + Sync + 'static,
+        V: Clone + Send + Sync + 'static,
+    {
+        self.typed_state.get(handle, key)
+    }
+
+    /// Scan one bounded canonical page of a typed family registered by this
+    /// context's module.
+    pub fn scan_action_state<K, V>(
+        &self,
+        handle: &crate::action_state::StateFamilyHandle<K, V>,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<
+        crate::action_state::StateFamilyPage<'_, V>,
+        crate::action_state::ModuleActionStateReadError,
+    >
+    where
+        K: Send + Sync + 'static,
+        V: Clone + Send + Sync + 'static,
+    {
+        self.typed_state.scan_family(handle, after, limit)
+    }
+
     /// Emit a world event to subscribed observers (post-mutation). Command
     /// handlers that mutate the world through paths not covered by the
     /// core helpers call this themselves.
     pub fn emit_world_event(&mut self, ev: &WorldEvent) {
-        emit_world_event(self.reg, self.w, self.out, ev);
+        emit_world_event_with_action_state(
+            self.reg,
+            self.w,
+            self.out,
+            ev,
+            self.typed_state.store(),
+        );
     }
 
     // ------------------------------------------------------------------
@@ -2864,7 +2974,14 @@ impl Ctx<'_> {
     pub fn start_scene(&mut self, kind: &str, members: BTreeSet<ObjId>) -> SceneId {
         let ns = self.module.clone().unwrap_or_else(|| SmolStr::new(kind));
         let id = self.w.scene_create(kind, &ns, members);
-        fire_scene_hook(self.reg, self.w, self.out, id, true);
+        fire_scene_hook_with_action_state(
+            self.reg,
+            self.w,
+            self.out,
+            id,
+            true,
+            self.typed_state.store(),
+        );
         id
     }
 
@@ -2877,7 +2994,14 @@ impl Ctx<'_> {
         if self.w.scene(id).is_none() {
             return false;
         }
-        fire_scene_hook(self.reg, self.w, self.out, id, false);
+        fire_scene_hook_with_action_state(
+            self.reg,
+            self.w,
+            self.out,
+            id,
+            false,
+            self.typed_state.store(),
+        );
         let Some(scene) = self.w.scene_remove(id) else {
             return false;
         };

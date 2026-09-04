@@ -2260,6 +2260,7 @@ fn deferred_persist_rides_the_outbox_side_channel() {
         out: &mut out,
         reg: &reg,
         module: Some("toy".into()),
+        typed_state: mush_core::ModuleActionState::unavailable(),
     };
     ctx.persist(ModuleOp {
         ns: "toy".into(),
@@ -2366,6 +2367,7 @@ fn scene_persistence_uses_owning_namespace_regardless_of_caller() {
         out: &mut out,
         reg: &engine.registry,
         module: None,
+        typed_state: mush_core::ModuleActionState::unavailable(),
     };
     assert!(ctx.end_scene(id));
     // Route the deferred ops through the engine's queue.
@@ -2414,6 +2416,7 @@ fn scene_tick_start_validates_registration() {
         out: &mut out,
         reg: &engine.registry,
         module: Some("toy".into()),
+        typed_state: mush_core::ModuleActionState::unavailable(),
     };
     // Unregistered tag refused; "fast" is registered but not Scene-cadence.
     assert!(

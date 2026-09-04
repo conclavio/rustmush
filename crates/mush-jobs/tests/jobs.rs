@@ -567,6 +567,7 @@ fn open_job_validations() {
         out: &mut out,
         reg: &env.engine.registry,
         module: None,
+        typed_state: mush_core::ModuleActionState::unavailable(),
     };
     let err = ctx_open(&mut ctx, "ghostqueue", "T").unwrap_err();
     assert!(err.contains("no such job queue"), "{err}");

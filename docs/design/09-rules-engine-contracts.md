@@ -2189,9 +2189,12 @@ Gate-5 work:
    live installation as legacy handlers are migrated, never "fixed" by an unbounded spool.
 
 Economy obligations/contracts remain on their legacy durable path until mixed authoritative write
-sets can include the Ledger append, modules can read their own typed families outside an action, and
-the Ledger seal participates in the same bundle instead of blocking it. That migration is a later
-provider milestone, not part of K3.1's kernel repair.
+sets can include the Ledger append and the Ledger seal participates in the same bundle instead of
+blocking it. The module-read prerequisite is now closed: engine-dispatched commands, hooks,
+observers, ticks, boot callbacks, async completions, and nested scene/event callbacks receive an
+owner-scoped read-only `ModuleActionState`; exact opaque handles enforce family ownership, bounded
+canonical scans are available to drivers, and no mutation surface crosses the context. The two
+remaining persistence changes are a later provider milestone, not part of K3.1's kernel repair.
 
 Work:
 

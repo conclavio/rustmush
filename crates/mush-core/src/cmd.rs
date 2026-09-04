@@ -298,6 +298,10 @@ pub struct Ctx<'a> {
     /// The module this handler was registered by (`None` for core
     /// commands) — the identity attr-namespace enforcement checks.
     pub module: Option<SmolStr>,
+    /// Owner-scoped, read-only access to engine-owned typed families. Engine
+    /// dispatch installs a live reader; manually constructed compatibility
+    /// contexts may use [`ModuleActionState::unavailable`](crate::ModuleActionState::unavailable).
+    pub typed_state: crate::action_state::ModuleActionState<'a>,
 }
 
 /// A command implementation. Registered as `Arc<dyn CommandHandler>`
@@ -925,6 +929,17 @@ fn edit_distance(a: &str, b: &str) -> usize {
 /// the exact order). All output — including errors and `Huh?` — is queued
 /// on `out`.
 pub fn dispatch(reg: &Registry, w: &mut World, actor: ObjId, line: &str, out: &mut Outbox) {
+    dispatch_with_action_state(reg, w, actor, line, out, None);
+}
+
+pub(crate) fn dispatch_with_action_state(
+    reg: &Registry,
+    w: &mut World,
+    actor: ObjId,
+    line: &str,
+    out: &mut Outbox,
+    action_state: Option<&crate::action_state::ActionStateStore>,
+) {
     if w.get(actor).is_none() {
         return;
     }
@@ -960,6 +975,10 @@ pub fn dispatch(reg: &Registry, w: &mut World, actor: ObjId, line: &str, out: &m
                     // pushed it (mail compose persists as "mail"; a chargen
                     // context may write its ruleset's attr namespace).
                     module: stacked.module.clone(),
+                    typed_state: crate::action_state::ModuleActionState::for_module(
+                        action_state,
+                        stacked.module.as_deref(),
+                    ),
                 };
                 stacked.cx.feed(&mut ctx, trimmed)
             };
@@ -974,7 +993,7 @@ pub fn dispatch(reg: &Registry, w: &mut World, actor: ObjId, line: &str, out: &m
                 ContextOutcome::PopAndRun(cmd) => {
                     let spec = restored_prompt(w, actor);
                     out.to_actor(actor, OutputEvent::Prompt(spec));
-                    dispatch(reg, w, actor, &cmd, out);
+                    dispatch_with_action_state(reg, w, actor, &cmd, out, action_state);
                 }
             }
             return;
@@ -1073,9 +1092,17 @@ pub fn dispatch(reg: &Registry, w: &mut World, actor: ObjId, line: &str, out: &m
                     {
                         let handler = Arc::clone(&cmd.handler);
                         let module = Some(bspec.owner.clone());
-                        run_handler(reg, w, actor, switches, args, module, out, |ctx| {
-                            handler.call(ctx, &target)
-                        });
+                        run_handler(
+                            reg,
+                            w,
+                            actor,
+                            switches,
+                            args,
+                            module,
+                            out,
+                            action_state,
+                            |ctx| handler.call(ctx, &target),
+                        );
                     }
                     return;
                 }
@@ -1122,9 +1149,17 @@ pub fn dispatch(reg: &Registry, w: &mut World, actor: ObjId, line: &str, out: &m
         }
         Ok((spec, handler, module)) => {
             if let Some((args, switches)) = gate_spec(w, actor, spec, &switch_names, rest, out) {
-                run_handler(reg, w, actor, switches, args, module, out, |ctx| {
-                    handler.call(ctx)
-                });
+                run_handler(
+                    reg,
+                    w,
+                    actor,
+                    switches,
+                    args,
+                    module,
+                    out,
+                    action_state,
+                    |ctx| handler.call(ctx),
+                );
             }
         }
     }
@@ -1192,11 +1227,14 @@ fn run_handler(
     args: ParsedArgs,
     module: Option<SmolStr>,
     out: &mut Outbox,
+    action_state: Option<&crate::action_state::ActionStateStore>,
     body: impl FnOnce(&mut Ctx<'_>) -> Result<(), CmdError>,
 ) {
     let events_before = out.len();
     let deferred_before = out.deferred().len();
     let result = {
+        let typed_state =
+            crate::action_state::ModuleActionState::for_module(action_state, module.as_deref());
         let mut ctx = Ctx {
             w,
             actor,
@@ -1205,6 +1243,7 @@ fn run_handler(
             out,
             reg,
             module,
+            typed_state,
         };
         body(&mut ctx)
     };

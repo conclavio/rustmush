@@ -111,11 +111,12 @@ pub use action_state::{
     ActionTxn, ActionTxnLimits, CanonicalStateBytes, MAX_ACTION_BUNDLE_BYTES,
     MAX_ACTION_MUTATION_OPERATIONS, MAX_ACTION_STATE_BOOT_BYTES, MAX_ACTION_STATE_BOOT_RECORDS,
     MAX_ACTION_STATE_RECORD_BYTES, MAX_STATE_FAMILIES, MAX_STATE_FAMILIES_PER_OWNER,
-    MAX_STATE_FAMILY_SCAN_RECORDS, MAX_STATE_KEY_BYTES, PreparedInstallation, PreparedRecord,
-    PreparedTxn, StateFamilyDescriptor, StateFamilyDescriptorError, StateFamilyHandle,
-    StateFamilyId, StateFamilyPage, StateFamilyRegistry, StateFamilyRegistryBuilder,
-    StateFamilyRegistryError, StateFamilyScanEntry, StateKey, StateKeyCodec, StateValueDecoder,
-    StateValueSerializer, StateValueValidator, is_action_state_persistence_key,
+    MAX_STATE_FAMILY_SCAN_RECORDS, MAX_STATE_KEY_BYTES, ModuleActionState,
+    ModuleActionStateReadError, PreparedInstallation, PreparedRecord, PreparedTxn,
+    StateFamilyDescriptor, StateFamilyDescriptorError, StateFamilyHandle, StateFamilyId,
+    StateFamilyPage, StateFamilyRegistry, StateFamilyRegistryBuilder, StateFamilyRegistryError,
+    StateFamilyScanEntry, StateKey, StateKeyCodec, StateValueDecoder, StateValueSerializer,
+    StateValueValidator, is_action_state_persistence_key,
 };
 pub use action_window::{
     ActionWindow, ActionWindowDraft, ActionWindowError, ActionWindowId, ActionWindowPhase,

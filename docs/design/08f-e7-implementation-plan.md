@@ -90,11 +90,11 @@ change rather than a model rewrite.
 ### 2.3 Does not block the first E7 slice, but gates kernel migration
 
 Before production reservations or settlement move from the economy journal to authoritative K3
-state families, all three must land:
+state families, both remaining persistence changes must land. The synchronous module-context read
+gate is now closed by an owner-scoped, handle-checked, read-only `ModuleActionState` capability:
 
 1. an authoritative bundle can carry the mixed owner write set, including the Ledger append;
-2. ordinary module code can synchronously read its typed state families outside an action;
-3. the Ledger seal is folded into the same exact bundle rather than acting as an external
+2. the Ledger seal is folded into the same exact bundle rather than acting as an external
    predecessor barrier.
 
 Until then, the economy journal remains authority and E7 conventional documents are projections or

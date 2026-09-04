@@ -186,6 +186,7 @@ impl Rig {
                 out: &mut out,
                 reg: &self.engine.registry,
                 module: Some(SmolStr::new("npc")),
+                typed_state: mush_core::ModuleActionState::unavailable(),
             };
             handler.tick(&mut ctx, "agent", None);
         }
@@ -226,6 +227,7 @@ impl Rig {
                 out: &mut out,
                 reg: &self.engine.registry,
                 module: Some(SmolStr::new("npc")),
+                typed_state: mush_core::ModuleActionState::unavailable(),
             };
             handler.tick(&mut ctx, "agent", None);
         }
@@ -303,6 +305,7 @@ impl Rig {
             out: &mut out,
             reg: &self.engine.registry,
             module: Some(SmolStr::new("npc")),
+            typed_state: mush_core::ModuleActionState::unavailable(),
         };
         ctx.emit_world_event(&ev);
     }

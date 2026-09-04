@@ -34,7 +34,8 @@ use crate::action_state::{
 };
 use crate::authoritative::AuthoritativeBundle;
 use crate::cmd::{
-    ArgShape, CmdError, CommandSpec, Ctx, ParsedArgs, Registry, RegistryError, SwitchSet, dispatch,
+    ArgShape, CmdError, CommandSpec, Ctx, ParsedArgs, Registry, RegistryError, SwitchSet,
+    dispatch_with_action_state,
 };
 use crate::commands::narrative_emit;
 use crate::flags::Role;
@@ -1027,6 +1028,10 @@ impl Engine {
         for m in &mut modules {
             let data = boot.remove(m.name()).unwrap_or_default();
             let module_name = SmolStr::new(m.name());
+            let typed_state = crate::action_state::ModuleActionState::for_module(
+                Some(&self.action_state),
+                Some(module_name.as_str()),
+            );
             let mut ctx = Ctx {
                 w: &mut self.world,
                 actor: GOD,
@@ -1035,6 +1040,7 @@ impl Engine {
                 out,
                 reg: &self.registry,
                 module: Some(module_name),
+                typed_state,
             };
             if let Err(e) = m.on_world_loaded(&mut ctx, data) {
                 result = Err(e);
@@ -1339,7 +1345,13 @@ impl Engine {
     /// queue and ride the caller's next `WriteBatch`, exactly as if the
     /// event had been emitted during a step.
     pub fn emit_world_event(&mut self, ev: &WorldEvent, out: &mut Outbox, fx: &mut Effects) {
-        module::emit_world_event(&self.registry, &mut self.world, out, ev);
+        module::emit_world_event_with_action_state(
+            &self.registry,
+            &mut self.world,
+            out,
+            ev,
+            Some(&self.action_state),
+        );
         self.drain_deferred(out, fx);
     }
 
@@ -1380,7 +1392,14 @@ impl Engine {
             } => {
                 if self.world.get(actor).is_some() {
                     self.world.session_input(actor);
-                    dispatch(&self.registry, &mut self.world, actor, &line, out);
+                    dispatch_with_action_state(
+                        &self.registry,
+                        &mut self.world,
+                        actor,
+                        &line,
+                        out,
+                        Some(&self.action_state),
+                    );
                 } else {
                     tracing::warn!(%actor, "Cmd for missing actor dropped");
                 }
@@ -1457,7 +1476,14 @@ impl Engine {
                     // Re-validate: the actor may be gone by the time the
                     // timer fires.
                     if self.world.get(actor).is_some() {
-                        dispatch(&self.registry, &mut self.world, actor, &line, out);
+                        dispatch_with_action_state(
+                            &self.registry,
+                            &mut self.world,
+                            actor,
+                            &line,
+                            out,
+                            Some(&self.action_state),
+                        );
                     } else {
                         tracing::debug!(%actor, "WaitCmd for missing actor dropped");
                     }
@@ -1492,6 +1518,10 @@ impl Engine {
             return;
         };
         {
+            let typed_state = crate::action_state::ModuleActionState::for_module(
+                Some(&self.action_state),
+                Some(module.as_str()),
+            );
             let mut ctx = Ctx {
                 w: &mut self.world,
                 actor: GOD,
@@ -1500,6 +1530,7 @@ impl Engine {
                 out,
                 reg: &self.registry,
                 module: Some(module.clone()),
+                typed_state,
             };
             handler.tick(&mut ctx, &tag, None);
         }
@@ -1538,6 +1569,10 @@ impl Engine {
             return;
         };
         {
+            let typed_state = crate::action_state::ModuleActionState::for_module(
+                Some(&self.action_state),
+                Some(module.as_str()),
+            );
             let mut ctx = Ctx {
                 w: &mut self.world,
                 actor: GOD,
@@ -1546,6 +1581,7 @@ impl Engine {
                 out,
                 reg: &self.registry,
                 module: Some(module.clone()),
+                typed_state,
             };
             handler.tick(&mut ctx, &tag, Some(scene));
         }
@@ -1651,12 +1687,20 @@ impl Engine {
                 // Hooks/observers fire on the world-side transition only — a
                 // link-dead revival never "connected" twice.
                 if !was_connected {
-                    module::fire_conn_hook(&self.registry, &mut self.world, out, actor, true);
-                    module::emit_world_event(
+                    module::fire_conn_hook_with_action_state(
+                        &self.registry,
+                        &mut self.world,
+                        out,
+                        actor,
+                        true,
+                        Some(&self.action_state),
+                    );
+                    module::emit_world_event_with_action_state(
                         &self.registry,
                         &mut self.world,
                         out,
                         &WorldEvent::Connected { who: actor },
+                        Some(&self.action_state),
                     );
                 }
             }
@@ -1719,12 +1763,20 @@ impl Engine {
                 announce_room(&self.world, actor, " has disconnected.", out);
                 self.world.set_connected(actor, false);
                 self.world.session_end(actor);
-                module::fire_conn_hook(&self.registry, &mut self.world, out, actor, false);
-                module::emit_world_event(
+                module::fire_conn_hook_with_action_state(
+                    &self.registry,
+                    &mut self.world,
+                    out,
+                    actor,
+                    false,
+                    Some(&self.action_state),
+                );
+                module::emit_world_event_with_action_state(
                     &self.registry,
                     &mut self.world,
                     out,
                     &WorldEvent::Disconnected { who: actor },
+                    Some(&self.action_state),
                 );
             } else {
                 // The character stays in the room (and connected, for WHO)
@@ -1751,12 +1803,20 @@ impl Engine {
         if self.world.is_connected(actor) {
             announce_room(&self.world, actor, " has disconnected.", out);
             self.world.set_connected(actor, false);
-            module::fire_conn_hook(&self.registry, &mut self.world, out, actor, false);
-            module::emit_world_event(
+            module::fire_conn_hook_with_action_state(
+                &self.registry,
+                &mut self.world,
+                out,
+                actor,
+                false,
+                Some(&self.action_state),
+            );
+            module::emit_world_event_with_action_state(
                 &self.registry,
                 &mut self.world,
                 out,
                 &WorldEvent::Disconnected { who: actor },
+                Some(&self.action_state),
             );
         }
         self.world.session_end(actor);
@@ -1824,7 +1884,7 @@ impl Engine {
                 // Disjoint field borrows (world mut, registry shared), the
                 // same shape emit_world_event uses. The handler re-validates
                 // against current state (treaty ruling 3).
-                module::apply_async_completion(
+                module::apply_async_completion_with_action_state(
                     &self.registry,
                     &mut self.world,
                     out,
@@ -1832,6 +1892,7 @@ impl Engine {
                     actor,
                     correlation,
                     &payload,
+                    Some(&self.action_state),
                 );
             }
         }
@@ -2238,6 +2299,129 @@ mod tests {
                 .unwrap_err(),
             crate::offer::LegalActionSubjectError::Invalid
         );
+    }
+
+    #[test]
+    fn module_command_reads_only_its_own_typed_family() {
+        use std::sync::Mutex;
+
+        use crate::action_state::{
+            ActionStateError, ModuleActionState, ModuleActionStateReadError, StateFamilyDescriptor,
+            StateFamilyHandle, StateFamilyId,
+        };
+        use crate::mechanics::{CanonicalId, IncidentId, OwnerId, RecoveryReason};
+
+        struct TypedReaderModule {
+            captured: Arc<Mutex<Option<StateFamilyHandle<u32, u32>>>>,
+        }
+
+        impl GameModule for TypedReaderModule {
+            fn name(&self) -> &'static str {
+                "typed_reader"
+            }
+
+            fn register(&mut self, reg: &mut module::Registrar<'_>) -> Result<(), ModError> {
+                let handle = reg.state_family(
+                    StateFamilyDescriptor::new(
+                        StateFamilyId::new("records").unwrap(),
+                        CanonicalId::new("u32.decimal.v1").unwrap(),
+                        CanonicalId::new("u32.value.v1").unwrap(),
+                        1,
+                        CanonicalId::new("u32.decode.v1").unwrap(),
+                        CanonicalId::new("u32.validate.v1").unwrap(),
+                        CanonicalId::new("u32.serialize.v1").unwrap(),
+                    )
+                    .unwrap(),
+                    |key: &u32| Ok(key.to_string()),
+                    |value: &serde_json::Value| {
+                        serde_json::from_value(value.clone()).map_err(|error| error.to_string())
+                    },
+                    |_value: &u32| Ok(()),
+                    |value: &u32| serde_json::to_value(value).map_err(|error| error.to_string()),
+                )?;
+                let command_handle = handle.clone();
+                reg.command(
+                    CommandSpec {
+                        name: "typedread".into(),
+                        ..CommandSpec::default()
+                    },
+                    Arc::new(move |ctx: &mut Ctx<'_>| {
+                        let value = ctx
+                            .action_state(&command_handle, &7)
+                            .map_err(|error| CmdError::msg(error.to_string()))?
+                            .copied()
+                            .ok_or_else(|| CmdError::msg("typed record is missing"))?;
+                        let page = ctx
+                            .scan_action_state(&command_handle, None, 8)
+                            .map_err(|error| CmdError::msg(error.to_string()))?;
+                        ctx.out.info(
+                            ctx.actor,
+                            format!("typed={value}; records={}", page.entries().len()),
+                        );
+                        Ok(())
+                    }),
+                )?;
+                *self.captured.lock().unwrap() = Some(handle);
+                Ok(())
+            }
+        }
+
+        let captured = Arc::new(Mutex::new(None));
+        let mut engine = Engine::with_modules(
+            World::new_minimal(),
+            Registry::new(),
+            vec![Box::new(TypedReaderModule {
+                captured: Arc::clone(&captured),
+            })],
+        )
+        .unwrap();
+        let handle = captured.lock().unwrap().clone().unwrap();
+        let mut transaction = engine.action_transaction(&handle).unwrap();
+        transaction.insert(&handle, &7, 41).unwrap();
+        let (_, installation) = transaction.prepare().unwrap().into_parts();
+        engine.install_prepared_action(installation);
+
+        let mut out = Outbox::new();
+        let mut effects = Effects::new();
+        engine.step(
+            Inbound::Cmd {
+                conn: 1,
+                actor: GOD,
+                line: "typedread".into(),
+            },
+            &mut out,
+            &mut effects,
+        );
+        assert!(texts(&out).iter().any(|line| line == "typed=41; records=1"));
+
+        let foreign =
+            ModuleActionState::for_module(Some(engine.action_state()), Some("different_owner"));
+        assert!(matches!(
+            foreign.get(&handle, &7),
+            Err(ModuleActionStateReadError::ForeignOwner { .. })
+        ));
+        assert!(matches!(
+            ModuleActionState::unavailable().get(&handle, &7),
+            Err(ModuleActionStateReadError::Unavailable)
+        ));
+
+        let own = ModuleActionState::for_module(Some(engine.action_state()), Some("typed_reader"));
+        engine
+            .registry
+            .freeze_mechanics_owner(
+                &OwnerId::new("typed_reader").unwrap(),
+                IncidentId(701),
+                RecoveryReason::IntegrityViolation {
+                    code: CanonicalId::new("typed_read_freeze_test").unwrap(),
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            own.get(&handle, &7),
+            Err(ModuleActionStateReadError::State(
+                ActionStateError::OwnerNotReady(_)
+            ))
+        ));
     }
 
     fn room_saw(out: &Outbox, room: ObjId, needle: &str) -> bool {

@@ -446,6 +446,114 @@ impl<K: 'static, V: 'static> StateFamilyHandle<K, V> {
     }
 }
 
+/// Read-only, owner-scoped view of engine-owned typed state supplied to an
+/// ordinary module context.
+///
+/// The backing store and owner stamp are private. A module can use only an
+/// opaque family handle minted for its own owner; it cannot mutate state or
+/// borrow another owner's family through this surface.
+pub struct ModuleActionState<'a> {
+    store: Option<&'a ActionStateStore>,
+    owner: Option<OwnerId>,
+}
+
+impl fmt::Debug for ModuleActionState<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ModuleActionState")
+            .field("available", &self.store.is_some())
+            .field("owner", &self.owner)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> ModuleActionState<'a> {
+    /// An unavailable reader for manually constructed compatibility contexts.
+    /// Engine-dispatched module contexts always receive a live reader.
+    #[must_use]
+    pub const fn unavailable() -> Self {
+        Self {
+            store: None,
+            owner: None,
+        }
+    }
+
+    pub(crate) fn for_module(store: Option<&'a ActionStateStore>, module: Option<&str>) -> Self {
+        Self {
+            store,
+            owner: module.and_then(|name| OwnerId::parse_canonical(name).ok()),
+        }
+    }
+
+    #[must_use]
+    pub const fn is_available(&self) -> bool {
+        self.store.is_some() && self.owner.is_some()
+    }
+
+    /// Read one exact record from a family owned by this context's module.
+    pub fn get<K, V>(
+        &self,
+        handle: &StateFamilyHandle<K, V>,
+        key: &K,
+    ) -> Result<Option<&'a V>, ModuleActionStateReadError>
+    where
+        K: Send + Sync + 'static,
+        V: Clone + Send + Sync + 'static,
+    {
+        let store = self.store.ok_or(ModuleActionStateReadError::Unavailable)?;
+        self.require_owner(handle.owner())?;
+        store.get(handle, key).map_err(Into::into)
+    }
+
+    /// Scan one bounded canonical page from a family owned by this context's
+    /// module. The cursor is the previous page's opaque encoded key.
+    pub fn scan_family<K, V>(
+        &self,
+        handle: &StateFamilyHandle<K, V>,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<StateFamilyPage<'a, V>, ModuleActionStateReadError>
+    where
+        K: Send + Sync + 'static,
+        V: Clone + Send + Sync + 'static,
+    {
+        let store = self.store.ok_or(ModuleActionStateReadError::Unavailable)?;
+        self.require_owner(handle.owner())?;
+        store.scan_family(handle, after, limit).map_err(Into::into)
+    }
+
+    fn require_owner(&self, family: &OwnerId) -> Result<(), ModuleActionStateReadError> {
+        let context = self
+            .owner
+            .as_ref()
+            .ok_or(ModuleActionStateReadError::UnownedContext)?;
+        if context != family {
+            return Err(ModuleActionStateReadError::ForeignOwner {
+                context: context.clone(),
+                family: family.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) const fn store(&self) -> Option<&'a ActionStateStore> {
+        self.store
+    }
+}
+
+/// Refusal from an ordinary module's read-only typed-state capability.
+#[derive(Debug, Error)]
+pub enum ModuleActionStateReadError {
+    #[error("typed action state is unavailable in this compatibility context")]
+    Unavailable,
+    #[error("core context has no module owner for typed action-state reads")]
+    UnownedContext,
+    #[error("module {context} cannot read typed state owned by {family}")]
+    ForeignOwner { context: OwnerId, family: OwnerId },
+    #[error("typed action-state read failed: {0}")]
+    State(#[from] ActionStateError),
+}
+
 type StateFamilyLocator = (OwnerId, StateFamilyId);
 
 /// Mutable state-family composition table.
