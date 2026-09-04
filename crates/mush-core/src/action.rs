@@ -1154,7 +1154,7 @@ pub enum AuthorityGuard {
     },
     Window {
         owner: OwnerId,
-        id: CanonicalId,
+        id: crate::action_window::ActionWindowId,
         generation: u64,
     },
     Definition(DefinitionRef),

@@ -119,12 +119,13 @@ pub use action_state::{
     StateValueValidator, is_action_state_persistence_key,
 };
 pub use action_window::{
-    ActionWindow, ActionWindowDraft, ActionWindowError, ActionWindowId, ActionWindowPhase,
-    ActionWindowRecord, ActionWindowStateCodec, MAX_WINDOW_CAPACITY, MAX_WINDOW_CATCH_UP,
-    MAX_WINDOW_INPUT_OPERATIONS, MAX_WINDOW_OPERATION_RECEIPTS, MAX_WINDOW_ORDER_KEY_PARTS,
-    WindowDriveCause, WindowDriveDecision, WindowIntent, WindowIntentSlot, WindowMode,
-    WindowMutationReceipt, WindowMutationResult, WindowOrderKey, WindowRestartPolicy,
-    WindowTimeoutPolicy, WindowTransition, action_window_state_family_descriptor,
+    ActionWindow, ActionWindowDraft, ActionWindowError, ActionWindowGuardValidator, ActionWindowId,
+    ActionWindowPhase, ActionWindowRecord, ActionWindowStateCodec, MAX_WINDOW_CAPACITY,
+    MAX_WINDOW_CATCH_UP, MAX_WINDOW_INPUT_OPERATIONS, MAX_WINDOW_OPERATION_RECEIPTS,
+    MAX_WINDOW_ORDER_KEY_PARTS, WindowDriveCause, WindowDriveDecision, WindowIntent,
+    WindowIntentSlot, WindowMode, WindowMutationReceipt, WindowMutationResult, WindowOrderKey,
+    WindowRestartPolicy, WindowTimeoutPolicy, WindowTransition,
+    action_window_state_family_descriptor,
 };
 pub use attr::{Attr, AttrFlags, AttrMap, AttrValue, UncasedName};
 pub use authoritative::{

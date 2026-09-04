@@ -11,18 +11,22 @@ use std::sync::{Arc, Mutex};
 
 use mush_core::{
     ActionError, ActionErrorCode, ActionInvocation, ActionInvocationDraft, ActionOfferId,
-    ActionPresentation, ActionProvider, ActionStateError, ActionTxn, AuthoritativeActionOutput,
-    AuthorityGuardKind, CanonicalHash, CanonicalId, ChannelGrant, ChannelId, ClockRef, ClockStamp,
-    CommitToken, ContactGuardValidator, ContactId, ContactState, ContactStateCodec,
-    ContactStateDraft, ControlHandoffDraft, ControlLeaseGuardValidator, ControlLeaseKey,
-    ControlLeaseState, ControlLeaseStateCodec, DefinitionDescriptor, DefinitionId, DefinitionKind,
-    DefinitionRef, DefinitionRegistryBuilder, DefinitionValidationContext, DefinitionValidator,
-    Engine, GameModule, IdempotencyKey, IdempotencyScope, LegalActionQuery, ModError, ObjId,
-    OfferKeyRing, OfferSecret, OwnerId, PerceivedRef, PrepareCtx, PrincipalId,
+    ActionPresentation, ActionProvider, ActionStateError, ActionTxn, ActionWindow,
+    ActionWindowDraft, ActionWindowGuardValidator, ActionWindowId, ActionWindowPhase,
+    ActionWindowRecord, ActionWindowStateCodec, AuthoritativeActionOutput, AuthorityGuardKind,
+    CanonicalHash, CanonicalId, ChannelGrant, ChannelId, ClockProviderFailure, ClockProviderKind,
+    ClockRef, ClockStamp, CommitToken, ContactGuardValidator, ContactId, ContactState,
+    ContactStateCodec, ContactStateDraft, ControlHandoffDraft, ControlLeaseGuardValidator,
+    ControlLeaseKey, ControlLeaseState, ControlLeaseStateCodec, DefinitionDescriptor, DefinitionId,
+    DefinitionKind, DefinitionRef, DefinitionRegistryBuilder, DefinitionValidationContext,
+    DefinitionValidator, Engine, GameModule, IdempotencyKey, IdempotencyScope, LegalActionQuery,
+    ModError, ObjId, OfferKeyRing, OfferSecret, OwnerId, PerceivedRef, PrepareCtx, PrincipalId,
     ProjectedParameterSchema, ProjectedTargetSchema, ProviderOfferDraft, Registrar, RequestUid,
     ResolutionKeyRing, ResolutionSecret, ResolvedActionInvocation, RevisionSet, RulesValue,
     ScopedIdempotencyKey, StateFamilyDescriptor, StateFamilyHandle, StateFamilyId, SubjectKey,
-    World, contact_state_family_descriptor, control_lease_state_family_descriptor,
+    WindowMode, WindowRestartPolicy, WindowTimeoutPolicy, World,
+    action_window_state_family_descriptor, contact_state_family_descriptor,
+    control_lease_state_family_descriptor,
 };
 use mush_tactics::{
     CellAddr, CellId, CellSpec, ComponentId, ComponentSpec, ConditionId, InstallPoint, SectionId,
@@ -41,6 +45,8 @@ pub const FIRED_OUTCOME_ID: &str = "fired";
 pub const TACTICAL_UNIT_FAMILY: &str = "units";
 /// Engine-owned family holding the fixture's channel leases.
 pub const CONTROL_LEASE_FAMILY: &str = "control_leases";
+/// Engine-owned family holding the fixture's action window.
+pub const ACTION_WINDOW_FAMILY: &str = "action_windows";
 
 const UNIT_RULES_ID: &str = "unit_state";
 const WEAPON_DEFINITION_ID: &str = "weapon";
@@ -67,6 +73,7 @@ pub struct TacticalGateState {
     pub units: StateFamilyHandle<ObjId, TacticalUnit>,
     pub contacts: StateFamilyHandle<ContactId, ContactState>,
     pub control_leases: StateFamilyHandle<ControlLeaseKey, ControlLeaseState>,
+    pub windows: StateFamilyHandle<ActionWindowId, ActionWindowRecord>,
 }
 
 #[derive(Clone)]
@@ -273,6 +280,8 @@ impl DefinitionValidator for FixtureDefinitionValidator {
 struct FireProvider {
     units: StateFamilyHandle<ObjId, TacticalUnit>,
     contacts: StateFamilyHandle<ContactId, ContactState>,
+    windows: StateFamilyHandle<ActionWindowId, ActionWindowRecord>,
+    window: ActionWindowId,
     action: DefinitionRef,
     outcome: DefinitionRef,
 }
@@ -632,16 +641,22 @@ impl ActionProvider for FireProvider {
         if !projection_matches {
             return Ok(None);
         }
-        let Some(now) = query.now() else {
+        let now = engine
+            .clock_now(&tactical_gate_clock())
+            .map_err(|_| Self::stale("the tactical clock is unavailable"))?;
+        let Some(window) = engine
+            .action_state()
+            .get(&self.windows, &self.window)
+            .map_err(|error| Self::state_error(&error))?
+        else {
             return Ok(None);
         };
-        if !matches!(
-            &now.clock,
-            ClockRef::DomainTick { owner, id, generation }
-                if owner.as_str() == TACTICAL_GATE_OWNER
-                    && id.as_str() == "arena"
-                    && *generation > 0
-        ) {
+        if window.phase() != ActionWindowPhase::Open
+            || !window
+                .window()
+                .contains(&now)
+                .map_err(|_| Self::integrity("the tactical window clock is inconsistent"))?
+        {
             return Ok(None);
         }
         let Some(source) = engine
@@ -721,6 +736,13 @@ impl ActionProvider for FireProvider {
         guards
             .add_definition(action.clone(), definitions)
             .map_err(|_| Self::integrity("the fire definition guard is unavailable"))?;
+        guards
+            .add(mush_core::AuthorityGuard::Window {
+                owner: self.windows.owner().clone(),
+                id: window.window().id(),
+                generation: window.window().generation(),
+            })
+            .map_err(|_| Self::integrity("the fire window guard is unavailable"))?;
         Ok(Some(ProviderOfferDraft {
             fixed_parameters: json!({
                 "source_revision": source.revision(),
@@ -733,7 +755,7 @@ impl ActionProvider for FireProvider {
                 choices,
             },
             required_channels: vec![ChannelId::new("weapons").expect("static channel id")],
-            expires: None,
+            expires: Some(window.window().closes().clone()),
             presentation: ActionPresentation::new(
                 "fire",
                 "Fire",
@@ -911,11 +933,43 @@ impl GameModule for TacticalGateModule {
             AuthorityGuardKind::ControlLease,
             ControlLeaseGuardValidator::new(control_leases.clone()),
         )?;
+        let window_codec = ActionWindowStateCodec;
+        let windows = registrar.state_family(
+            action_window_state_family_descriptor(
+                StateFamilyId::new(ACTION_WINDOW_FAMILY)
+                    .map_err(|error| ModError::msg(error.to_string()))?,
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            window_codec,
+            window_codec,
+            window_codec,
+            window_codec,
+        )?;
+        registrar.authority_guard_validator(
+            AuthorityGuardKind::Window,
+            ActionWindowGuardValidator::new(windows.clone()),
+        )?;
+        registrar.clock_provider(
+            ClockProviderKind::DomainTick,
+            CanonicalId::new("arena").map_err(|error| ModError::msg(error.to_string()))?,
+            |_context: &mush_core::ClockProviderContext<'_>, generation| {
+                if generation == 1 {
+                    Ok(7)
+                } else {
+                    Err(ClockProviderFailure::StaleGeneration {
+                        requested: generation,
+                        current: 1,
+                    })
+                }
+            },
+        )?;
         registrar.action_provider(
             fixture.definitions.fire.clone(),
             FireProvider {
                 units: units.clone(),
                 contacts: contacts.clone(),
+                windows: windows.clone(),
+                window: tactical_gate_window_id(),
                 action: fixture.definitions.fire.clone(),
                 outcome: fixture.definitions.fired.clone(),
             },
@@ -925,6 +979,7 @@ impl GameModule for TacticalGateModule {
                 units,
                 contacts,
                 control_leases,
+                windows,
             },
             fixture.definitions,
             unit_spec,
@@ -1072,15 +1127,65 @@ pub fn publish_tactical_gate_weapons_station(
     });
 }
 
+/// Fixture-only open tactical action-window bootstrap.
+pub fn install_tactical_gate_fire_window(
+    engine: &mut Engine,
+    state: &TacticalGateState,
+) -> ActionWindowRecord {
+    let window = ActionWindow::new(ActionWindowDraft {
+        id: tactical_gate_window_id(),
+        clock: tactical_gate_clock(),
+        opens: tactical_gate_tick(0),
+        closes: tactical_gate_tick(10),
+        generation: 1,
+        mode: WindowMode::Immediate,
+        capacity: 1,
+        restart: WindowRestartPolicy::Resume,
+        timeout: WindowTimeoutPolicy::Close,
+        max_catch_up: 1,
+        resolution_secret_version: None,
+    })
+    .expect("valid Gate-3 fire window");
+    let record = ActionWindowRecord::open(window);
+    let id = record.window().id();
+    let prepared = {
+        let mut txn = engine
+            .action_transaction(&state.windows)
+            .expect("Gate-3 window bootstrap transaction");
+        txn.insert(&state.windows, &id, record.clone())
+            .expect("valid Gate-3 window bootstrap");
+        txn.prepare().expect("Gate-3 window bootstrap prepares")
+    };
+    let (_, installation) = prepared.into_parts();
+    engine.install_prepared_action(installation);
+    record
+}
+
+/// Exact domain clock routed through the fixture's composed provider.
+#[must_use]
+pub fn tactical_gate_clock() -> ClockRef {
+    ClockRef::DomainTick {
+        owner: OwnerId::new(TACTICAL_GATE_OWNER).expect("static owner"),
+        id: CanonicalId::new("arena").expect("static domain id"),
+        generation: 1,
+    }
+}
+
+/// Stable fire-window identity for the fixture owner.
+#[must_use]
+pub fn tactical_gate_window_id() -> ActionWindowId {
+    ActionWindowId::derive(
+        &OwnerId::new(TACTICAL_GATE_OWNER).expect("static owner"),
+        &CanonicalId::new("fire_window").expect("static window id"),
+    )
+    .expect("static Gate-3 window identity")
+}
+
 /// Canonical domain clock used by the fixture.
 #[must_use]
 pub fn tactical_gate_tick(at: i64) -> ClockStamp {
     ClockStamp {
-        clock: ClockRef::DomainTick {
-            owner: OwnerId::new(TACTICAL_GATE_OWNER).expect("static owner"),
-            id: CanonicalId::new("arena").expect("static domain id"),
-            generation: 1,
-        },
+        clock: tactical_gate_clock(),
         at,
     }
 }
@@ -1526,6 +1631,7 @@ mod tests {
         let principal = PrincipalId::Object { id: actor };
         let contact_id = ContactId::from_bytes([0x83; 16]);
         install_tactical_gate_contact(&mut engine, &state, contact_id, target, principal.clone());
+        install_tactical_gate_fire_window(&mut engine, &state);
         let query = LegalActionQuery::new(
             principal.clone(),
             actor,
@@ -1611,6 +1717,15 @@ mod tests {
                         && *epoch == 1
             )
         }));
+        assert!(resolved.guards().authority().iter().any(|guard| {
+            matches!(
+                guard,
+                AuthorityGuard::Window { owner, id, generation }
+                    if owner.as_str() == TACTICAL_GATE_OWNER
+                        && *id == tactical_gate_window_id()
+                        && *generation == 1
+            )
+        }));
 
         let (prepared, output) = engine
             .prepare_registered_resolved_authoritative_action(
@@ -1668,6 +1783,103 @@ mod tests {
     }
 
     #[test]
+    fn closing_the_action_window_invalidates_a_retained_fire_offer() {
+        let (mut engine, state, _definitions, spec) = tactical_gate_world();
+        let source = spawn_unit_player(&mut engine, &state, &spec, "Window Shooter");
+        let target = ObjId(765_432_109);
+        install_tactical_gate_unit(&mut engine, &state, unit(&spec, target.0));
+        grant_weapons(&mut engine, &state, source, source);
+        let open = install_tactical_gate_fire_window(&mut engine, &state);
+        let principal = PrincipalId::Object { id: source };
+        install_tactical_gate_contact(
+            &mut engine,
+            &state,
+            ContactId::from_bytes([0x86; 16]),
+            target,
+            principal.clone(),
+        );
+        let query = LegalActionQuery::new(
+            principal.clone(),
+            source,
+            SubjectKey::Object { id: source },
+            PerceivedRef::SelfActor,
+            1,
+            None,
+        )
+        .unwrap();
+        let offers = engine.project_legal_actions(&query).unwrap();
+        let projected = offers.projected().pop().unwrap();
+        let ProjectedTargetSchema::Choices { choices, .. } = projected.targets() else {
+            panic!("open fire window must project a contact");
+        };
+        let request = RequestUid::from_bytes([0x87; 16]);
+        let resolved = engine
+            .resolve_legal_action(
+                &offers,
+                OfferExecutionContext {
+                    request,
+                    principal: principal.clone(),
+                    actor: source,
+                    idempotency: ScopedIdempotencyKey::new(
+                        IdempotencyScope {
+                            principal,
+                            owner: OwnerId::new(TACTICAL_GATE_OWNER).unwrap(),
+                            namespace: CanonicalId::new(FIRE_ACTION_ID).unwrap(),
+                        },
+                        1,
+                        IdempotencyKey::Request(request),
+                    ),
+                    viewer_scope: query.viewer_scope(),
+                    // Engine resolution must read the exact expiry clock; a
+                    // caller-provided observation is not authoritative.
+                    now: Some(tactical_gate_tick(-1)),
+                },
+                OfferSubmission {
+                    offer: projected.offer(),
+                    subject: PerceivedRef::SelfActor,
+                    targets: vec![choices[0].clone()],
+                    parameters: json!({}),
+                },
+            )
+            .expect("engine-owned clock admits the unexpired offer");
+
+        let closed = open
+            .checked_close_due(
+                open.revision(),
+                RequestUid::from_bytes([0x88; 16]),
+                &tactical_gate_tick(10),
+            )
+            .unwrap()
+            .into_record();
+        let id = tactical_gate_window_id();
+        let prepared = {
+            let mut txn = engine.action_transaction(&state.windows).unwrap();
+            txn.replace(&state.windows, &id, closed).unwrap();
+            txn.prepare().unwrap()
+        };
+        let (_, installation) = prepared.into_parts();
+        engine.install_prepared_action(installation);
+
+        let check = resolved
+            .guards()
+            .revalidate_with_action_state(
+                &engine.world,
+                engine.action_state(),
+                engine.registry.revision_validators().unwrap(),
+                engine.registry.authority_guard_validators().unwrap(),
+                engine.registry.definitions().unwrap(),
+            )
+            .unwrap();
+        assert_eq!(check.stale_authority().len(), 1);
+        assert!(matches!(
+            check.stale_authority()[0],
+            AuthorityGuard::Window { .. }
+        ));
+        assert!(engine.project_legal_actions(&query).unwrap().is_empty());
+        assert!(!engine.action_state().has_prepared());
+    }
+
+    #[test]
     fn opaque_contact_target_resolves_privately_and_adds_a_final_guard() {
         let (mut engine, state, definitions, spec) = tactical_gate_world();
         let source_id = spawn_unit_player(&mut engine, &state, &spec, "Contact Shooter");
@@ -1683,6 +1895,7 @@ mod tests {
             hidden_target_id,
             principal.clone(),
         );
+        install_tactical_gate_fire_window(&mut engine, &state);
         let query = LegalActionQuery::new(
             principal.clone(),
             source_id,
@@ -1789,6 +2002,7 @@ mod tests {
             target_id,
             principal.clone(),
         );
+        install_tactical_gate_fire_window(&mut engine, &state);
         let query = LegalActionQuery::new(
             principal.clone(),
             source_id,
@@ -1878,6 +2092,7 @@ mod tests {
             hidden_target,
             PrincipalId::Object { id: second },
         );
+        install_tactical_gate_fire_window(&mut engine, &state);
 
         let projected_contact = |engine: &Engine, viewer: ObjId| {
             let query = LegalActionQuery::new(

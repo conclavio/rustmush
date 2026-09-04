@@ -2464,14 +2464,21 @@ to-hit/location/damage transcript and a private durable outcome; its receipt pro
 unit IDs, revisions, section, exact damage, or draw. Tests prove the two live records remain
 byte-identical before installation, a stale/disabled source or un-damageable target leaves both
 unchanged, and identical inputs reproduce replay writes, outcome, and RNG evidence. This is a
-transaction-shape proof, not a second production unit authority. Placement/window guards,
-durable simultaneous resolution, and the cross-owner bridge remain before Gates 2-3 can be claimed
+transaction-shape proof, not a second production unit authority. Placement guards, durable
+simultaneous resolution, and the cross-owner bridge remain before Gates 2-3 can be claimed
 complete. The fixture now also registers its own composition-branded control-lease family and
 requires the `weapons` channel. Neither a station grant nor a lease alone projects `fire`; the
 complete exact pair does, and the internal offer carries both final witnesses. An operated-fire
 test keeps the player actor distinct from the vehicle subject, proves the provider mutates the
 vehicle rather than the pilot, and proves safe-boundary lease revocation makes the retained guard
 set stale even while the transient station grant remains published.
+The reusable action-window family now has a typed `ActionWindowGuardValidator`; the guard names an
+exact `ActionWindowId` and remains current only while that exact generation is durably open.
+Tactical `fire` reads its owner-stamped domain clock synchronously, projects only inside the
+half-open window, binds the window guard, and carries the close stamp as its offer expiry. Engine
+resolution obtains that expiry clock itself rather than trusting `OfferExecutionContext.now`.
+Tests prove a caller-supplied earlier time cannot replace the engine read, and a durable close both
+removes the fresh offer and makes the retained guard stale without preparing either unit.
 Selected target contacts now cross the same private resolution boundary as contact subjects. After
 an opaque offer is HMAC-matched and its projected target choices validate, the engine re-reads each
 selected contact through its exact authority provider, builds a non-serializable

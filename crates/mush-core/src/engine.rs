@@ -842,7 +842,7 @@ impl Engine {
     pub fn resolve_legal_action(
         &self,
         offers: &crate::offer::ProjectedLegalActionSink,
-        execution: crate::offer::OfferExecutionContext,
+        mut execution: crate::offer::OfferExecutionContext,
         submission: crate::offer::OfferSubmission,
     ) -> Result<crate::offer::ResolvedAuthoritativeOffer, crate::offer::LegalActionResolutionError>
     {
@@ -850,6 +850,16 @@ impl Engine {
             .offer_keys
             .as_ref()
             .ok_or(crate::offer::LegalActionResolutionError::KeyRingUnavailable)?;
+        if let Some(expires) = offers
+            .expiration_for(keys, submission.offer)
+            .map_err(crate::offer::LegalActionResolutionError::from)?
+        {
+            execution.now = Some(self.clock_now(&expires.clock).map_err(|_| {
+                crate::offer::LegalActionResolutionError::Resolve(
+                    crate::offer::OfferResolveError::Unavailable,
+                )
+            })?);
+        }
         let resolved = offers
             .resolve(keys, execution, submission)
             .map_err(crate::offer::LegalActionResolutionError::from)?;

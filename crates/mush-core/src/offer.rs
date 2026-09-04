@@ -914,16 +914,7 @@ impl ProjectedLegalActionSink {
         execution: OfferExecutionContext,
         submission: OfferSubmission,
     ) -> Result<ResolvedOffer, OfferResolveError> {
-        let mut matched = None;
-        for offer in self.offers.values() {
-            if keys.matches(submission.offer, offer.route, offer.binding_hash) {
-                if matched.is_some() {
-                    return Err(OfferResolveError::AmbiguousBinding);
-                }
-                matched = Some(offer);
-            }
-        }
-        let offer = matched.ok_or(OfferResolveError::Unavailable)?;
+        let offer = self.matching_offer(keys, submission.offer)?;
         if execution.viewer_scope != self.viewer_scope
             || execution.viewer_scope != offer.viewer_scope
             || execution.idempotency.scope().owner != offer.provider
@@ -971,6 +962,35 @@ impl ProjectedLegalActionSink {
             truth_subject: offer.truth_subject.clone(),
             guards: offer.guards.clone(),
         })
+    }
+
+    pub(crate) fn expiration_for(
+        &self,
+        keys: &OfferKeyRing,
+        offered: ActionOfferId,
+    ) -> Result<Option<&ClockStamp>, OfferResolveError> {
+        Ok(self
+            .matching_offer(keys, offered)?
+            .projected
+            .expires
+            .as_ref())
+    }
+
+    fn matching_offer(
+        &self,
+        keys: &OfferKeyRing,
+        offered: ActionOfferId,
+    ) -> Result<&InternalOffer, OfferResolveError> {
+        let mut matched = None;
+        for offer in self.offers.values() {
+            if keys.matches(offered, offer.route, offer.binding_hash) {
+                if matched.is_some() {
+                    return Err(OfferResolveError::AmbiguousBinding);
+                }
+                matched = Some(offer);
+            }
+        }
+        matched.ok_or(OfferResolveError::Unavailable)
     }
 }
 

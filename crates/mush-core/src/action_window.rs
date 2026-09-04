@@ -11,13 +11,15 @@ use serde_json::json;
 use thiserror::Error;
 
 use crate::action::{
-    ActionInvocation, CanonicalHash, CanonicalHashError, CommitToken, RequestUid, SubjectKey,
+    ActionError, ActionErrorCode, ActionInvocation, AuthorityGuard, AuthorityGuardContext,
+    AuthorityGuardValidator, CanonicalHash, CanonicalHashError, CommitToken, RequestUid,
+    SubjectKey,
 };
 use crate::clock::{ClockMismatch, ClockRef, ClockStamp};
 use crate::mechanics::{CanonicalId, OwnerId};
 use crate::{
-    StateFamilyDescriptor, StateFamilyDescriptorError, StateFamilyId, StateKeyCodec,
-    StateValueDecoder, StateValueSerializer, StateValueValidator,
+    StateFamilyDescriptor, StateFamilyDescriptorError, StateFamilyHandle, StateFamilyId,
+    StateKeyCodec, StateValueDecoder, StateValueSerializer, StateValueValidator,
 };
 
 /// Hard cap on simultaneous intents retained by one window.
@@ -97,6 +99,65 @@ pub fn action_window_state_family_descriptor(
         CanonicalId::new("action_window_validate.v1").expect("static canonical id"),
         CanonicalId::new("action_window_serialize.v1").expect("static canonical id"),
     )
+}
+
+/// Generic typed-family validator for a module-owned action-window guard.
+/// A witness remains current only while the exact window generation is open;
+/// closing, cancelling, consuming, deleting, or replacing the generation
+/// invalidates every action admitted under it.
+#[derive(Clone)]
+pub struct ActionWindowGuardValidator {
+    windows: StateFamilyHandle<ActionWindowId, ActionWindowRecord>,
+}
+
+impl std::fmt::Debug for ActionWindowGuardValidator {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ActionWindowGuardValidator")
+            .field("owner", self.windows.owner())
+            .field("family", self.windows.descriptor().id())
+            .finish()
+    }
+}
+
+impl ActionWindowGuardValidator {
+    #[must_use]
+    pub const fn new(windows: StateFamilyHandle<ActionWindowId, ActionWindowRecord>) -> Self {
+        Self { windows }
+    }
+}
+
+impl AuthorityGuardValidator for ActionWindowGuardValidator {
+    fn is_current(
+        &self,
+        context: &AuthorityGuardContext<'_>,
+        guard: &AuthorityGuard,
+    ) -> Result<bool, ActionError> {
+        let AuthorityGuard::Window {
+            owner,
+            id,
+            generation,
+        } = guard
+        else {
+            return Ok(false);
+        };
+        if owner != self.windows.owner() {
+            return Ok(false);
+        }
+        let current = context.action_state(&self.windows, id).map_err(|_| {
+            ActionError::new(
+                ActionErrorCode::Integrity,
+                false,
+                "action-window authority state is unavailable",
+            )
+            .expect("static action-window read error is bounded")
+        })?;
+        Ok(current.is_some_and(|record| {
+            record.phase() == ActionWindowPhase::Open
+                && record.window().id() == *id
+                && record.window().generation() == *generation
+        }))
+    }
 }
 
 /// Whether an eligible action resolves immediately or joins a frozen set.
