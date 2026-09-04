@@ -2580,6 +2580,26 @@ Work:
 
 #### K7 implementation plan (ready after the E5/K6 integration gate)
 
+**Pre-implementation seam audit (2026-09-04).** The existing NPC/LLM path proves the useful
+off-loop ownership rule, provider budgets/timeouts, typed parsing, and on-loop revalidation, but it
+is not a mechanical delayed-action protocol and must not be promoted in place. The migration starts
+from these explicit seams:
+
+| Current seam | Reuse | K7 replacement or closure |
+|---|---|---|
+| `TurnSnapshot` is owned data and the worker holds no `World` reference, but it contains truth `ObjId`s, scene names, and ruleset tool descriptions. | Keep snapshot-before-await and projection-before-provider. | Build `DecisionPrompt` only from projection DTOs; keep private truth/revision witnesses solely in `PendingDecision`. Never serialize the private record into the LLM request. |
+| `NpcRuntime::{in_flight, correlation}` is volatile process memory. Exact correlation matching now rejects delayed/duplicate legacy completions, and its stimulus mailbox has hard count/byte bounds, but restart loses the turn and effect. | Keep per-controller coalescing as an admission policy. | Make the typed pending family authoritative; derive live indicators from it and repair pending/outbox/schedule linkage at boot. |
+| `Effect::ModuleAsync` dispatch is hard-coded by module name and spawns a task before the service concurrency permit. Missing service/routing, process death, or an apply refused by a non-writable world can abandon the result. | Keep the driver-owned service handle and bounded world-channel re-entry. | Dispatch only a stable-ID durable-outbox effect after the capture bundle commits. Bound admitted decisions and dispatcher workers before spawn; retry/terminalize from durable state. |
+| `ModuleAsyncDone` carries opaque JSON plus actor/correlation. NPC completion currently applies `say`, `move`, `remember`, and `UseAbility` directly; the last path invokes ruleset mechanics outside the action coordinator. | Keep hostile decoding, bounded typed response parsing, and current-state checks for non-mechanical legacy dialogue during migration. | Authenticate `DecisionToken`, load the exact record revision, reconstruct one offered invocation, then enter `ActionCoordinator::preflight` and `prepare_and_stage_resolved`. Delete migrated bespoke mutation arms. |
+| `ActionCoordinator` already provides exact authoritative idempotency preflight, resolved-offer preparation, one-shot staging, and durable semantic status. | Reuse it as the sole mechanical execution path and race arbiter. | Add delayed-decision ingress construction and terminal-status reconciliation; do not create an LLM-specific commit lane. |
+| `LlmService` bounds active calls with semaphores and provider wire bytes at 4 MiB. Provider SSE handoff is now a bounded, backpressured event channel. Waiting spawned callers and total pending decisions are not yet durably/count bounded. | Keep budgets, circuit breaking, request timeouts, and bounded provider streaming. | Enforce global/controller/actor decision admission before capture and a bounded dispatcher queue. HTTP timeout is transport policy, not the authoritative gameplay deadline. |
+| Legacy failure produces a profile fallback line immediately and has no authoritative cancellation/deadline race. | Reuse only staff-authored fallback content where it projects to a legal action. | A durable schedule submits the deterministic fallback through the same action idempotency key; cancellation and completion are exact revision transitions. |
+
+This audit leaves no prerequisite request to the E-series beyond the already-declared E5/K6
+integration gate. K7 implementation remains intentionally paused until that convergence; isolated
+legacy bounds/correlation fixes may land beforehand because they neither introduce K7 storage nor
+change shared E-side ownership.
+
 **K7.0 — freeze the delayed-decision contract.** Use the authoritative action idempotency record as
 the winner of the LLM/fallback race; do not require a cross-owner delete of the pending-decision
 record in the action's commit. Both paths submit the same scoped idempotency key. Whichever exact
@@ -2806,6 +2826,8 @@ The initial configuration surface should include:
 - gateway pre-intent custody per connection/global by count and bytes, plus oldest-age SLA/alert;
 - authoritative pending-intent/recovery count and bytes;
 - must-retain mailboxes and durable-outbox attempts/age;
+- NPC/controller stimulus mailboxes by count and canonical bytes, bounded async-dispatch admission,
+  and provider-stream buffers by event count in addition to wire bytes;
 - idempotency horizon/checkpoint evidence, presentation receipts, and view-delta history.
 
 Metrics and staff diagnostics include:
