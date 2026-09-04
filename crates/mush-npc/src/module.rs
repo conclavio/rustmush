@@ -36,8 +36,10 @@ use crate::memory::{MAX_MEMORY_SUBJECT_BYTES, MAX_MEMORY_SUMMARY_CHARS, MemoryRe
 use crate::profile::{AgentProfile, NS, PROFILE_ATTR, SUMMARY_ATTR, THINKING_FEED};
 use crate::runtime::NpcHostState;
 use crate::snapshot::{
-    AgentGrounding, AppliedAction, NoGrounding, PresentPlayer, RecalledMemory, SceneView,
-    StimulusLine, TurnKind, TurnOutcome, TurnSnapshot,
+    AgentGrounding, AppliedAction, MAX_PRESENT_DESCRIPTION_BYTES, MAX_SCENE_DESCRIPTION_BYTES,
+    MAX_SCENE_EXITS, MAX_SCENE_PRESENT, MAX_SCENE_TIME_BYTES, MAX_SCENE_WEATHER_BYTES,
+    MAX_SNAPSHOT_NAME_BYTES, NoGrounding, PresentPlayer, RecalledMemory, SceneView, StimulusLine,
+    TurnKind, TurnOutcome, TurnSnapshot, validate_agent_capability_profile,
 };
 use crate::stimulus::{SpeechKind, Stimulus};
 
@@ -976,8 +978,9 @@ impl NpcTick {
             &batch,
             correlation,
         );
-        emit_thinking(ctx, npc, room);
-        defer_turn(ctx, npc, correlation, &snap);
+        if defer_turn(ctx, npc, correlation, &snap) {
+            emit_thinking(ctx, npc, room);
+        }
     }
 
     fn fire_summarize(
@@ -1003,7 +1006,7 @@ impl NpcTick {
             return;
         }
         let snap = build_summarize_snapshot(ctx, npc, profile, room, present, fold, correlation);
-        defer_turn(ctx, npc, correlation, &snap);
+        let _ = defer_turn(ctx, npc, correlation, &snap);
     }
 }
 
@@ -2065,9 +2068,40 @@ fn build_dialogue_snapshot(
     batch: &[Stimulus],
     correlation: u64,
 ) -> TurnSnapshot {
-    let mut scene = build_scene(ctx, npc, room, present);
-    let agent_profile = grounding.profile(ctx.w, npc);
-    let present_names: Vec<String> = present.iter().map(|&p| display_name(ctx.w, p)).collect();
+    // A crowded room is projected through a fixed-size view, but the players
+    // responsible for this exact batch must win admission over unrelated
+    // occupants. Otherwise crowding could make direct speech appear to come
+    // from someone absent from the model's scene.
+    let mut prioritized_present = Vec::with_capacity(MAX_SCENE_PRESENT);
+    for subject in batch
+        .iter()
+        .filter_map(Stimulus::subject)
+        .chain(present.iter().copied())
+    {
+        let is_present_player =
+            ctx.w.get(subject).is_some_and(|object| {
+                object.kind == ObjKind::Player && object.location == Some(room)
+            }) && ctx.w.is_connected(subject);
+        if is_present_player && !prioritized_present.contains(&subject) {
+            prioritized_present.push(subject);
+            if prioritized_present.len() == MAX_SCENE_PRESENT {
+                break;
+            }
+        }
+    }
+    let mut scene = build_scene(ctx, npc, room, &prioritized_present);
+    let agent_profile = grounding.profile(ctx.w, npc).and_then(|profile| {
+        if let Err(error) = validate_agent_capability_profile(&profile) {
+            tracing::error!(npc = npc.0, %error, "npc: invalid ruleset capability profile omitted");
+            return None;
+        }
+        Some(profile)
+    });
+    let present_names: Vec<String> = scene
+        .present
+        .iter()
+        .map(|player| player.name.clone())
+        .collect();
 
     let (summary, transcript, recalled) = memory_context(ctx, npc, &present_names);
     let stimuli = batch.iter().map(|s| render_line(ctx.w, s)).collect();
@@ -2090,7 +2124,7 @@ fn build_dialogue_snapshot(
     TurnSnapshot {
         kind: TurnKind::Dialogue,
         npc,
-        npc_name: display_name(ctx.w, npc),
+        npc_name: bounded_text(display_name(ctx.w, npc), MAX_SNAPSHOT_NAME_BYTES),
         profile: profile.clone(),
         agent_profile,
         scene,
@@ -2151,7 +2185,7 @@ fn build_summarize_snapshot(
     TurnSnapshot {
         kind: TurnKind::Summarize,
         npc,
-        npc_name: display_name(ctx.w, npc),
+        npc_name: bounded_text(display_name(ctx.w, npc), MAX_SNAPSHOT_NAME_BYTES),
         profile: profile.clone(),
         agent_profile: None,
         scene,
@@ -2167,16 +2201,23 @@ fn build_summarize_snapshot(
 }
 
 fn build_scene(ctx: &Ctx<'_>, npc: ObjId, room: ObjId, present: &[ObjId]) -> SceneView {
-    let room_name = display_name(ctx.w, room);
-    let room_desc = attr_text(ctx.w, room, "short_desc")
-        .or_else(|| attr_text(ctx.w, room, "desc"))
-        .unwrap_or_default();
+    let room_name = bounded_text(display_name(ctx.w, room), MAX_SNAPSHOT_NAME_BYTES);
+    let room_desc = bounded_text(
+        attr_text(ctx.w, room, "short_desc")
+            .or_else(|| attr_text(ctx.w, room, "desc"))
+            .unwrap_or_default(),
+        MAX_SCENE_DESCRIPTION_BYTES,
+    );
     let present = present
         .iter()
         .filter(|&&p| p != npc)
+        .take(MAX_SCENE_PRESENT)
         .map(|&p| PresentPlayer {
-            name: display_name(ctx.w, p),
-            short_desc: attr_text(ctx.w, p, "short_desc").unwrap_or_default(),
+            name: bounded_text(display_name(ctx.w, p), MAX_SNAPSHOT_NAME_BYTES),
+            short_desc: bounded_text(
+                attr_text(ctx.w, p, "short_desc").unwrap_or_default(),
+                MAX_PRESENT_DESCRIPTION_BYTES,
+            ),
             // Volatile per-asker trust is filled in by the dialogue-snapshot
             // builder (which has host state); the summarize path leaves the
             // default (Stranger).
@@ -2187,14 +2228,20 @@ fn build_scene(ctx: &Ctx<'_>, npc: ObjId, room: ObjId, present: &[ObjId]) -> Sce
         .w
         .exits_of(room)
         .iter()
-        .filter_map(|&e| ctx.w.get(e).map(|o| primary(&o.name).to_string()))
+        .filter_map(|&e| {
+            ctx.w
+                .get(e)
+                .map(|o| bounded_text(primary(&o.name).to_string(), MAX_SNAPSHOT_NAME_BYTES))
+        })
+        .take(MAX_SCENE_EXITS)
         .collect();
-    let weather = weather_digest(ctx, room);
+    let weather =
+        weather_digest(ctx, room).map(|weather| bounded_text(weather, MAX_SCENE_WEATHER_BYTES));
     SceneView {
         room_name,
         room_desc,
         present,
-        time: ctx.ic_datetime(),
+        time: bounded_text(ctx.ic_datetime(), MAX_SCENE_TIME_BYTES),
         weather,
         exits,
     }
@@ -2234,25 +2281,25 @@ fn memory_context(
 fn render_line(w: &World, s: &Stimulus) -> StimulusLine {
     match s {
         Stimulus::SpokenTo { by, text, kind } => StimulusLine {
-            who: display_name(w, *by),
+            who: bounded_text(display_name(w, *by), MAX_SNAPSHOT_NAME_BYTES),
             text: text.clone(),
             directed: true,
             tag: speech_tag(*kind).to_string(),
         },
         Stimulus::HeardInRoom { by, text } => StimulusLine {
-            who: display_name(w, *by),
+            who: bounded_text(display_name(w, *by), MAX_SNAPSHOT_NAME_BYTES),
             text: text.clone(),
             directed: false,
             tag: "say".to_string(),
         },
         Stimulus::PlayerArrived { who } => StimulusLine {
-            who: display_name(w, *who),
+            who: bounded_text(display_name(w, *who), MAX_SNAPSHOT_NAME_BYTES),
             text: String::new(),
             directed: false,
             tag: "arrived".to_string(),
         },
         Stimulus::PlayerLeft { who } => StimulusLine {
-            who: display_name(w, *who),
+            who: bounded_text(display_name(w, *who), MAX_SNAPSHOT_NAME_BYTES),
             text: String::new(),
             directed: false,
             tag: "left".to_string(),
@@ -2270,7 +2317,7 @@ fn render_line(w: &World, s: &Stimulus) -> StimulusLine {
             tag: "event".to_string(),
         },
         Stimulus::StaffPoke { by, note } => StimulusLine {
-            who: display_name(w, *by),
+            who: bounded_text(display_name(w, *by), MAX_SNAPSHOT_NAME_BYTES),
             text: note.clone(),
             directed: true,
             tag: "poke".to_string(),
@@ -2359,7 +2406,16 @@ fn notify_staff_once(ctx: &mut Ctx<'_>, npc: ObjId, reason: &str) {
     }
 }
 
-fn defer_turn(ctx: &mut Ctx<'_>, npc: ObjId, correlation: u64, snap: &TurnSnapshot) {
+fn defer_turn(ctx: &mut Ctx<'_>, npc: ObjId, correlation: u64, snap: &TurnSnapshot) -> bool {
+    if let Err(error) = snap.validate() {
+        tracing::error!(npc = npc.0, %error, "npc: invalid bounded snapshot; turn dropped");
+        let now = now_ms(ctx.w);
+        if let Some(host) = ctx.state_mut::<NpcHostState>() {
+            host.finish_turn(npc, now);
+        }
+        notify_staff_once(ctx, npc, &error.to_string());
+        return false;
+    }
     let payload = match serde_json::to_string(snap) {
         Ok(p) => p,
         Err(e) => {
@@ -2368,7 +2424,8 @@ fn defer_turn(ctx: &mut Ctx<'_>, npc: ObjId, correlation: u64, snap: &TurnSnapsh
             if let Some(h) = ctx.state_mut::<NpcHostState>() {
                 h.finish_turn(npc, nm);
             }
-            return;
+            notify_staff_once(ctx, npc, "the turn snapshot could not be serialized");
+            return false;
         }
     };
     ctx.out.defer(Deferred::Effect(Effect::ModuleAsync {
@@ -2377,6 +2434,7 @@ fn defer_turn(ctx: &mut Ctx<'_>, npc: ObjId, correlation: u64, snap: &TurnSnapsh
         correlation,
         payload,
     }));
+    true
 }
 
 fn persist_memory(ctx: &mut Ctx<'_>, update: &crate::memory::MemoryUpdate) {
@@ -2547,7 +2605,20 @@ fn players_present(w: &World, room: ObjId) -> Vec<ObjId> {
         .iter()
         .copied()
         .filter(|&o| w.get(o).is_some_and(|x| x.kind == ObjKind::Player) && w.is_connected(o))
+        .take(MAX_SCENE_PRESENT)
         .collect()
+}
+
+fn bounded_text(mut value: String, maximum_bytes: usize) -> String {
+    if value.len() <= maximum_bytes {
+        return value;
+    }
+    let mut boundary = maximum_bytes;
+    while !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    value.truncate(boundary);
+    value
 }
 
 fn is_connected_player(w: &World, who: ObjId) -> bool {

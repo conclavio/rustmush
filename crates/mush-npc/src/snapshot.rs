@@ -11,6 +11,8 @@
 //! ruleset's [`invoke_ability`](mush_ruleset::Ruleset::invoke_ability) needs to
 //! read the NPC's own sheet, roll on the shared RNG, and emit to the room.
 
+use std::fmt;
+
 use mush_core::{ObjId, Outbox, World};
 use mush_ruleset::{AbilityError, AbilityOutcome, AgentCapabilityProfile};
 use serde::{Deserialize, Serialize};
@@ -18,6 +20,83 @@ use serde::{Deserialize, Serialize};
 use crate::action::NpcAction;
 use crate::knowledge::{Familiarity, LoreEntry};
 use crate::profile::AgentProfile;
+
+/// Maximum encoded bytes in one complete legacy NPC turn snapshot.
+///
+/// K7 replaces this opaque payload with smaller projected prompt and private
+/// decision records. Until then this ceiling prevents a crowded or
+/// misconfigured world from creating an unbounded async handoff.
+pub const MAX_TURN_SNAPSHOT_BYTES: usize = 1024 * 1024;
+/// Maximum other players represented in one scene snapshot.
+pub const MAX_SCENE_PRESENT: usize = 128;
+/// Maximum exits represented in one scene snapshot.
+pub const MAX_SCENE_EXITS: usize = 128;
+/// Maximum bytes in an object or room name copied into a snapshot.
+pub const MAX_SNAPSHOT_NAME_BYTES: usize = 256;
+/// Maximum bytes in the room description copied into a snapshot.
+pub const MAX_SCENE_DESCRIPTION_BYTES: usize = 16 * 1024;
+/// Maximum bytes in one present player's short description.
+pub const MAX_PRESENT_DESCRIPTION_BYTES: usize = 2 * 1024;
+/// Maximum bytes in a weather digest copied into a snapshot.
+pub const MAX_SCENE_WEATHER_BYTES: usize = 4 * 1024;
+/// Maximum bytes in the rendered IC time copied into a snapshot.
+pub const MAX_SCENE_TIME_BYTES: usize = 256;
+/// Maximum tools advertised by one ruleset capability profile.
+pub const MAX_AGENT_CAPABILITY_TOOLS: usize = 32;
+/// Maximum capability tags advertised by one ruleset profile.
+pub const MAX_AGENT_CAPABILITY_TAGS: usize = 128;
+/// Maximum bytes in the prose summary of one ruleset capability profile.
+pub const MAX_AGENT_CAPABILITY_SUMMARY_BYTES: usize = 32 * 1024;
+/// Maximum encoded bytes in the stats value of one ruleset capability profile.
+pub const MAX_AGENT_CAPABILITY_STATS_BYTES: usize = 256 * 1024;
+/// Maximum bytes in one ruleset capability tag.
+pub const MAX_AGENT_CAPABILITY_TAG_BYTES: usize = 256;
+/// Maximum bytes in one ruleset ability/tool name.
+pub const MAX_AGENT_TOOL_NAME_BYTES: usize = 128;
+/// Maximum bytes in one ruleset ability/tool description.
+pub const MAX_AGENT_TOOL_DESCRIPTION_BYTES: usize = 8 * 1024;
+/// Maximum encoded bytes in one ruleset ability/tool parameter schema.
+pub const MAX_AGENT_TOOL_SCHEMA_BYTES: usize = 64 * 1024;
+/// Maximum encoded bytes in one complete ruleset capability profile.
+pub const MAX_AGENT_CAPABILITY_BYTES: usize = 512 * 1024;
+
+/// Why a legacy NPC turn snapshot or its ruleset grounding was refused.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SnapshotValidationError {
+    TooManyPresent,
+    TooManyExits,
+    SceneFieldTooLarge,
+    TooManyCapabilityTags,
+    CapabilityTagTooLarge,
+    TooManyCapabilityTools,
+    CapabilitySummaryTooLarge,
+    CapabilityStatsTooLarge,
+    CapabilityToolTooLarge,
+    CapabilityProfileTooLarge,
+    SnapshotTooLarge,
+}
+
+impl fmt::Display for SnapshotValidationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::TooManyPresent => "NPC scene exceeds its participant limit",
+            Self::TooManyExits => "NPC scene exceeds its exit limit",
+            Self::SceneFieldTooLarge => "NPC scene contains an oversized prompt field",
+            Self::TooManyCapabilityTags => "ruleset capability profile has too many tags",
+            Self::CapabilityTagTooLarge => "ruleset capability profile has an oversized tag",
+            Self::TooManyCapabilityTools => "ruleset capability profile has too many tools",
+            Self::CapabilitySummaryTooLarge => "ruleset capability summary exceeds its byte limit",
+            Self::CapabilityStatsTooLarge => "ruleset capability stats exceed their byte limit",
+            Self::CapabilityToolTooLarge => "ruleset capability tool exceeds its byte limit",
+            Self::CapabilityProfileTooLarge => {
+                "encoded ruleset capability profile exceeds its byte limit"
+            }
+            Self::SnapshotTooLarge => "encoded NPC turn snapshot exceeds its byte limit",
+        })
+    }
+}
+
+impl std::error::Error for SnapshotValidationError {}
 
 /// What kind of off-loop turn this is.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,6 +214,93 @@ pub struct TurnSnapshot {
     /// A deterministic per-turn seed (the correlation id) for fallback picking
     /// and off-loop ability rolls.
     pub seed: u64,
+}
+
+impl TurnSnapshot {
+    /// Validate the variable-size scene and ruleset portions plus the complete
+    /// encoded async payload before it leaves the world task.
+    pub fn validate(&self) -> Result<(), SnapshotValidationError> {
+        validate_scene(&self.scene)?;
+        if let Some(profile) = &self.agent_profile {
+            validate_agent_capability_profile(profile)?;
+        }
+        let encoded =
+            serde_json::to_vec(self).map_err(|_| SnapshotValidationError::SnapshotTooLarge)?;
+        if encoded.len() > MAX_TURN_SNAPSHOT_BYTES {
+            return Err(SnapshotValidationError::SnapshotTooLarge);
+        }
+        Ok(())
+    }
+}
+
+/// Validate ruleset-provided prompt grounding before it is copied across the
+/// async boundary. Ruleset code is trusted, but a plugin bug must not create
+/// unbounded tool manifests or JSON schemas.
+pub fn validate_agent_capability_profile(
+    profile: &AgentCapabilityProfile,
+) -> Result<(), SnapshotValidationError> {
+    if profile.summary.len() > MAX_AGENT_CAPABILITY_SUMMARY_BYTES {
+        return Err(SnapshotValidationError::CapabilitySummaryTooLarge);
+    }
+    if encoded_len(&profile.stats) > MAX_AGENT_CAPABILITY_STATS_BYTES {
+        return Err(SnapshotValidationError::CapabilityStatsTooLarge);
+    }
+    if profile.tags.len() > MAX_AGENT_CAPABILITY_TAGS {
+        return Err(SnapshotValidationError::TooManyCapabilityTags);
+    }
+    if profile
+        .tags
+        .iter()
+        .any(|tag| tag.len() > MAX_AGENT_CAPABILITY_TAG_BYTES)
+    {
+        return Err(SnapshotValidationError::CapabilityTagTooLarge);
+    }
+    if profile.tools.len() > MAX_AGENT_CAPABILITY_TOOLS {
+        return Err(SnapshotValidationError::TooManyCapabilityTools);
+    }
+    if profile.tools.iter().any(|tool| {
+        tool.name.len() > MAX_AGENT_TOOL_NAME_BYTES
+            || tool.description.len() > MAX_AGENT_TOOL_DESCRIPTION_BYTES
+            || encoded_len(&tool.params_schema) > MAX_AGENT_TOOL_SCHEMA_BYTES
+    }) {
+        return Err(SnapshotValidationError::CapabilityToolTooLarge);
+    }
+    if encoded_len(profile) > MAX_AGENT_CAPABILITY_BYTES {
+        return Err(SnapshotValidationError::CapabilityProfileTooLarge);
+    }
+    Ok(())
+}
+
+fn validate_scene(scene: &SceneView) -> Result<(), SnapshotValidationError> {
+    if scene.present.len() > MAX_SCENE_PRESENT {
+        return Err(SnapshotValidationError::TooManyPresent);
+    }
+    if scene.exits.len() > MAX_SCENE_EXITS {
+        return Err(SnapshotValidationError::TooManyExits);
+    }
+    if scene.room_name.len() > MAX_SNAPSHOT_NAME_BYTES
+        || scene.room_desc.len() > MAX_SCENE_DESCRIPTION_BYTES
+        || scene.time.len() > MAX_SCENE_TIME_BYTES
+        || scene
+            .weather
+            .as_ref()
+            .is_some_and(|weather| weather.len() > MAX_SCENE_WEATHER_BYTES)
+        || scene.present.iter().any(|player| {
+            player.name.len() > MAX_SNAPSHOT_NAME_BYTES
+                || player.short_desc.len() > MAX_PRESENT_DESCRIPTION_BYTES
+        })
+        || scene
+            .exits
+            .iter()
+            .any(|exit| exit.len() > MAX_SNAPSHOT_NAME_BYTES)
+    {
+        return Err(SnapshotValidationError::SceneFieldTooLarge);
+    }
+    Ok(())
+}
+
+fn encoded_len(value: &impl Serialize) -> usize {
+    serde_json::to_vec(value).map_or(usize::MAX, |encoded| encoded.len())
 }
 
 /// One applied action, re-validated (and, for `UseAbility`, executed) in the
@@ -267,5 +433,93 @@ pub struct NoGrounding;
 impl AgentGrounding for NoGrounding {
     fn profile(&self, _w: &World, _npc: ObjId) -> Option<AgentCapabilityProfile> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use mush_ruleset::AgentToolSpec;
+    use serde_json::json;
+    use smol_str::SmolStr;
+
+    use super::*;
+
+    fn snapshot() -> TurnSnapshot {
+        TurnSnapshot {
+            kind: TurnKind::Dialogue,
+            npc: ObjId(9),
+            npc_name: "bounded npc".to_string(),
+            profile: AgentProfile::default(),
+            agent_profile: None,
+            scene: SceneView {
+                room_name: "room".to_string(),
+                room_desc: String::new(),
+                present: Vec::new(),
+                time: "now".to_string(),
+                weather: None,
+                exits: Vec::new(),
+            },
+            knowledge: Vec::new(),
+            summary: String::new(),
+            recalled: Vec::new(),
+            transcript: String::new(),
+            stimuli: Vec::new(),
+            actor: None,
+            fold_events: Vec::new(),
+            seed: 1,
+        }
+    }
+
+    fn tool() -> AgentToolSpec {
+        AgentToolSpec {
+            name: SmolStr::new_static("roll"),
+            description: "roll a bounded pool".to_string(),
+            params_schema: json!({"type": "object"}),
+        }
+    }
+
+    #[test]
+    fn capability_profile_rejects_unbounded_tools_and_schemas() {
+        let mut profile = AgentCapabilityProfile {
+            summary: String::new(),
+            stats: json!({}),
+            tags: Vec::new(),
+            tools: vec![tool(); MAX_AGENT_CAPABILITY_TOOLS + 1],
+        };
+        assert_eq!(
+            validate_agent_capability_profile(&profile),
+            Err(SnapshotValidationError::TooManyCapabilityTools)
+        );
+
+        profile.tools = vec![tool()];
+        profile.tools[0].params_schema =
+            serde_json::Value::String("x".repeat(MAX_AGENT_TOOL_SCHEMA_BYTES + 1));
+        assert_eq!(
+            validate_agent_capability_profile(&profile),
+            Err(SnapshotValidationError::CapabilityToolTooLarge)
+        );
+    }
+
+    #[test]
+    fn snapshot_rejects_unbounded_scene_and_complete_payload() {
+        let mut snap = snapshot();
+        snap.scene.present = (0..=MAX_SCENE_PRESENT)
+            .map(|index| PresentPlayer {
+                name: format!("player {index}"),
+                short_desc: String::new(),
+                familiarity: Familiarity::Stranger,
+            })
+            .collect();
+        assert_eq!(
+            snap.validate(),
+            Err(SnapshotValidationError::TooManyPresent)
+        );
+
+        let mut snap = snapshot();
+        snap.transcript = "x".repeat(MAX_TURN_SNAPSHOT_BYTES);
+        assert_eq!(
+            snap.validate(),
+            Err(SnapshotValidationError::SnapshotTooLarge)
+        );
     }
 }

@@ -31,7 +31,16 @@ use crate::snapshot::{AppliedAction, TurnKind, TurnOutcome, TurnSnapshot};
 /// `payload` is a serialized [`TurnSnapshot`].
 pub async fn run_npc_turn_async(llm: &LlmService, payload: &str) -> String {
     let outcome = match serde_json::from_str::<TurnSnapshot>(payload) {
-        Ok(snap) => run_turn(llm, &snap).await,
+        Ok(snap) => match snap.validate() {
+            Ok(()) => run_turn(llm, &snap).await,
+            Err(error) => {
+                tracing::error!(npc = snap.npc.0, %error, "npc: invalid bounded turn snapshot");
+                TurnOutcome::Nothing {
+                    npc: snap.npc,
+                    reason: error.to_string(),
+                }
+            }
+        },
         Err(e) => {
             tracing::error!(error = %e, "npc: undecodable turn snapshot");
             TurnOutcome::Nothing {

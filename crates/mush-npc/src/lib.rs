@@ -147,8 +147,14 @@ pub use runtime::{
     MAX_PENDING_STIMULI, MAX_PENDING_STIMULUS_BYTES, NpcConfig, NpcHostState, NpcRuntime,
 };
 pub use snapshot::{
-    AgentGrounding, AppliedAction, NoGrounding, PresentPlayer, RecalledMemory, SceneView,
-    StimulusLine, TurnKind, TurnOutcome, TurnSnapshot,
+    AgentGrounding, AppliedAction, MAX_AGENT_CAPABILITY_BYTES, MAX_AGENT_CAPABILITY_STATS_BYTES,
+    MAX_AGENT_CAPABILITY_SUMMARY_BYTES, MAX_AGENT_CAPABILITY_TAG_BYTES, MAX_AGENT_CAPABILITY_TAGS,
+    MAX_AGENT_CAPABILITY_TOOLS, MAX_AGENT_TOOL_DESCRIPTION_BYTES, MAX_AGENT_TOOL_NAME_BYTES,
+    MAX_AGENT_TOOL_SCHEMA_BYTES, MAX_PRESENT_DESCRIPTION_BYTES, MAX_SCENE_DESCRIPTION_BYTES,
+    MAX_SCENE_EXITS, MAX_SCENE_PRESENT, MAX_SCENE_TIME_BYTES, MAX_SCENE_WEATHER_BYTES,
+    MAX_SNAPSHOT_NAME_BYTES, MAX_TURN_SNAPSHOT_BYTES, NoGrounding, PresentPlayer, RecalledMemory,
+    SceneView, SnapshotValidationError, StimulusLine, TurnKind, TurnOutcome, TurnSnapshot,
+    validate_agent_capability_profile,
 };
 pub use stimulus::{SpeechKind, Stimulus};
 pub use turn::run_npc_turn_async;

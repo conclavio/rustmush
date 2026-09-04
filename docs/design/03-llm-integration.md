@@ -417,6 +417,14 @@ byte ceilings, and boot requires every embedded principal to match its document 
 plus faction pull considers at most the newest 128 records, 128 readable faction pools, and 256 KiB
 of encoded records. The line and panel paths use the same newest-first bounded selection.
 
+The legacy pre-K7 async turn handoff is also a bounded document. Scene construction retains at most
+128 present players and 128 exits, caps every copied name/description/weather/time field, and gives
+the actors responsible for the current stimulus batch priority in a crowded room. A ruleset's
+capability profile is rejected before dispatch if its summary, stats, tags, tool manifest, or tool
+schemas exceed their individual limits. The complete serialized `TurnSnapshot` is capped at 1 MiB
+and validated again by the off-loop consumer. K7 replaces this compatibility payload with its
+smaller projected prompt record; these limits do not make the legacy path authoritative.
+
 ### 6.4 Tools → safe actions
 
 ```rust
