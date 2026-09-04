@@ -713,6 +713,88 @@ pub struct DecisionActionBinding {
     pub request_hash: CanonicalHash,
 }
 
+/// Public-safe worker input fenced to one exact durable lease. It owns only
+/// the persisted projected prompt; no world or private witness reference can
+/// cross the async boundary.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecisionWorkerLease {
+    controller: DecisionControllerId,
+    decision: DecisionId,
+    revision: u64,
+    attempt: u8,
+    lease_until: ClockStamp,
+    prompt: DecisionPrompt,
+}
+
+impl DecisionWorkerLease {
+    #[must_use]
+    pub const fn controller(&self) -> &DecisionControllerId {
+        &self.controller
+    }
+
+    #[must_use]
+    pub const fn decision(&self) -> DecisionId {
+        self.decision
+    }
+
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    #[must_use]
+    pub const fn attempt(&self) -> u8 {
+        self.attempt
+    }
+
+    #[must_use]
+    pub const fn lease_until(&self) -> &ClockStamp {
+        &self.lease_until
+    }
+
+    #[must_use]
+    pub const fn prompt(&self) -> &DecisionPrompt {
+        &self.prompt
+    }
+}
+
+/// Exact Ready-to-Leased post-image and the worker custody released only
+/// after that post-image receives its authoritative commit acknowledgement.
+#[must_use = "the leased post-image must commit before worker custody is released"]
+#[derive(Clone, Debug)]
+pub struct DecisionLeaseTransition {
+    post_image: PendingDecision,
+    worker: DecisionWorkerLease,
+}
+
+impl DecisionLeaseTransition {
+    #[must_use]
+    pub const fn post_image(&self) -> &PendingDecision {
+        &self.post_image
+    }
+
+    #[must_use]
+    pub fn into_parts(self) -> (PendingDecision, DecisionWorkerLease) {
+        (self.post_image, self.worker)
+    }
+
+    /// Stage the exact lease post-image. The returned worker value remains
+    /// caller-owned custody and must not be spawned before transaction commit.
+    pub fn stage(
+        self,
+        txn: &mut ActionTxn<'_>,
+        families: &DecisionCaptureFamilies,
+    ) -> Result<DecisionWorkerLease, DecisionError> {
+        if txn.owner() != families.owner() || txn.owner() != &self.post_image.controller.owner {
+            return Err(DecisionError::CaptureOwnerMismatch);
+        }
+        let decision = self.post_image.id;
+        txn.replace(&families.pending, &decision, self.post_image)
+            .map_err(|error| DecisionError::State(error.to_string()))?;
+        Ok(self.worker)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DecisionTerminalOutcome {
@@ -895,6 +977,51 @@ impl PendingDecision {
         status.validate(&self.deadline)?;
         self.status = status;
         Ok(attempt)
+    }
+
+    /// Plan one dispatcher lease from an exact durable wake and prompt pair.
+    /// The lease is clipped to the decision deadline and never crosses clock
+    /// generations. No async work is started by this method.
+    pub fn plan_worker_lease(
+        &self,
+        prompt: &DecisionPromptRecord,
+        wake: &DecisionWake,
+        keys: &DecisionKeyRing,
+        now: &ClockStamp,
+        lease_duration: i64,
+    ) -> Result<DecisionLeaseTransition, DecisionError> {
+        self.validate_prompt_pair(prompt, keys)?;
+        self.validate_wake(wake)?;
+        if lease_duration <= 0 {
+            return Err(DecisionError::InvalidLeaseDuration);
+        }
+        self.deadline
+            .checked_cmp(now)
+            .map_err(|_| DecisionError::LeaseDeadlineMismatch)?;
+        if now.at >= self.deadline.at {
+            return Err(DecisionError::DeadlineReached);
+        }
+        let proposed = now
+            .at
+            .checked_add(lease_duration)
+            .ok_or(DecisionError::Overflow)?;
+        let lease_until = ClockStamp {
+            clock: now.clock.clone(),
+            at: proposed.min(self.deadline.at),
+        };
+        let mut post_image = self.clone();
+        let attempt = post_image.lease(self.revision, lease_until.clone())?;
+        Ok(DecisionLeaseTransition {
+            post_image,
+            worker: DecisionWorkerLease {
+                controller: self.controller.clone(),
+                decision: self.id,
+                revision: self.revision,
+                attempt,
+                lease_until,
+                prompt: prompt.prompt.clone(),
+            },
+        })
     }
 
     pub fn begin_resolving(
@@ -1460,6 +1587,10 @@ pub enum DecisionError {
     InvalidTransition,
     #[error("decision lease has not expired on its exact clock")]
     LeaseNotExpired,
+    #[error("decision worker lease duration must be positive")]
+    InvalidLeaseDuration,
+    #[error("decision deadline has already been reached")]
+    DeadlineReached,
     #[error("decision provider attempts are exhausted")]
     AttemptsExhausted,
     #[error("decision counter overflow")]
@@ -1791,6 +1922,36 @@ mod tests {
             pending.status,
             PendingDecisionStatus::Resolving { attempt: 2, .. }
         ));
+    }
+
+    #[test]
+    fn worker_lease_is_public_safe_exact_and_clipped_to_deadline() {
+        let (keys, pending, prompt) = pair();
+        let wake = DecisionWake {
+            id: pending.id,
+            revision: pending.revision,
+            prompt_digest: pending.prompt_digest,
+        };
+        let transition = pending
+            .plan_worker_lease(&prompt, &wake, &keys, &deadline(18), 10)
+            .unwrap();
+        assert!(matches!(
+            transition.post_image().status,
+            PendingDecisionStatus::Leased { attempt: 1, .. }
+        ));
+        let (post_image, worker) = transition.into_parts();
+        assert_eq!(worker.decision(), pending.id);
+        assert_eq!(worker.revision(), pending.revision);
+        assert_eq!(worker.attempt(), 1);
+        assert_eq!(worker.lease_until(), &pending.deadline);
+        assert_eq!(worker.prompt(), &prompt.prompt);
+        assert_eq!(post_image.revision, prompt.revision);
+        assert_eq!(
+            pending
+                .plan_worker_lease(&prompt, &wake, &keys, &deadline(20), 1)
+                .unwrap_err(),
+            DecisionError::DeadlineReached
+        );
     }
 
     #[test]
