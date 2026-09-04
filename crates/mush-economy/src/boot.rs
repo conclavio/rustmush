@@ -750,14 +750,55 @@ pub(crate) fn load_boot(
     let mut healed_contracts: Vec<EconomicContract> = Vec::new();
     for (_, mut c) in stored_contracts {
         let mut quarantine: Option<String> = None;
+        // E4b2 verify fold, B6: **a stored surface is not evidence.** `Offered` on
+        // disk only means it passed `check_offerable` at some past moment, against a
+        // past code version, before whatever edit or migration produced the bytes now
+        // on disk. A record whose `After` anchors form a cycle, whose split cannot be
+        // paid, whose deadline names a clock nothing resolves, or whose payer is not a
+        // party can never settle — and its escrow would sit until a deadline that may
+        // itself be unresolvable, with nothing saying why. Re-run the structural half
+        // here (the world half needs a snapshot boot is still assembling) and
+        // quarantine what it refuses; the escrow is untouched either way.
+        if !c.state.is_terminal()
+            && let Err(e) = crate::contract::check_structure(&c)
+        {
+            quarantine = Some(format!(
+                "contract #{} could not settle as stored ({e}); its surface is quarantined",
+                c.id
+            ));
+        }
         match &c.state {
             ContractState::Active | ContractState::ReadyToSettle => {
-                for id in &c.escrow {
-                    match journal_holds.get(id) {
-                        Some(h) if h.status.is_held() => {}
-                        _ => {
+                let broken = c.escrow.iter().any(|id| {
+                    !journal_holds.get(id).is_some_and(|h| h.status.is_held())
+                });
+                // E4b2 verify fold, B1: **finish the transition before disputing it.**
+                // A terminal transition is a post under the contract's own
+                // deterministic key followed by a state write, so a lost doc write
+                // leaves exactly this shape: escrow released (or captured) in the
+                // journal, and a record still claiming to be live. Disputing that is
+                // wrong twice over — it pages a human about a contract that is
+                // finished, and it leaves the state machine claiming money is reserved
+                // that the journal says is not. The key resolves the question with no
+                // guessing at all.
+                if broken && quarantine.is_none() {
+                    match finished_transition(&c, &snapshot, &transactions) {
+                        Some(state) => {
+                            tracing::info!(
+                                contract = c.id.0,
+                                state = ?state.kind(),
+                                "economy: a contract's terminal transition had posted but its doc \
+                                 write was lost; finishing it from the idempotency index"
+                            );
+                            c.state = state;
+                            c.pending = None;
+                            c.revision += 1;
+                            healed_contracts.push(c.clone());
+                        }
+                        None => {
                             quarantine = Some(format!(
-                                "contract #{}'s escrow hold #{id} is not held in the journal",
+                                "contract #{}'s escrow is not held in the journal, and none of its \
+                                 terminal keys resolves to a transaction",
                                 c.id
                             ));
                         }
@@ -765,19 +806,22 @@ pub(crate) fn load_boot(
                 }
             }
             ContractState::Settled { transaction } => {
-                if transactions.contains_key(transaction) {
-                    if snapshot.is_reversed(*transaction) {
-                        quarantine = Some(format!(
-                            "contract #{}'s settlement transaction #{transaction} was reversed",
-                            c.id
-                        ));
-                    }
-                } else {
+                // E4b2 verify fold, B5: existence is not identity. A doc naming a
+                // transaction the journal HAS, but which is some other contract's
+                // settlement (or any other post), is a record claiming a payout that
+                // never happened to it — the same class of drift as naming a
+                // transaction that does not exist, and it must not read as clean.
+                let mine = crate::contract::contract_op_key(c.id, "settle", c.amendments);
+                let claims_another = transactions
+                    .get(transaction)
+                    .is_some_and(|tx| tx.idempotency != mine);
+                if !transactions.contains_key(transaction) || claims_another {
                     tracing::error!(
                         contract = c.id.0,
                         transaction = transaction.0,
-                        "economy: a settled contract names a transaction the journal does not have; \
-                         freezing the economy"
+                        claims_another,
+                        "economy: a settled contract names a transaction that is not its own \
+                         settlement; freezing the economy"
                     );
                     frozen = true;
                     if opened_escalations.len() < MAX_BOOT_ESCALATIONS
@@ -788,9 +832,9 @@ pub(crate) fn load_boot(
                             EscalationKind::EconomyFrozen,
                             EscalationSubject::Contract(c.id),
                             format!(
-                                "contract #{} says it settled as transaction #{transaction}, and the \
-                                 journal has no such transaction. A settlement the journal does not \
-                                 know is drift, so the whole economy is frozen.",
+                                "contract #{} says it settled as transaction #{transaction}, and \
+                                 that is not this contract's settlement. A settlement the journal \
+                                 does not attribute here is drift, so the whole economy is frozen.",
                                 c.id
                             ),
                             vec![
@@ -801,6 +845,11 @@ pub(crate) fn load_boot(
                             now,
                         ));
                     }
+                } else if snapshot.is_reversed(*transaction) {
+                    quarantine = Some(format!(
+                        "contract #{}'s settlement transaction #{transaction} was reversed",
+                        c.id
+                    ));
                 }
             }
             ContractState::Draft
@@ -812,6 +861,7 @@ pub(crate) fn load_boot(
         if let Some(reason) = quarantine {
             tracing::error!(contract = c.id.0, %reason, "economy: boot quarantined a contract");
             c.state = ContractState::Disputed;
+            c.pending = None;
             c.revision += 1;
             healed_contracts.push(c.clone());
             if opened_escalations.len() < MAX_BOOT_ESCALATIONS
@@ -847,6 +897,116 @@ pub(crate) fn load_boot(
         // `DepositInto` conditions, so the locks come back exactly as the live states
         // describe them and a terminal contract holds nothing.
         snapshot.put_contract(c);
+    }
+
+    // ---- E4b2 verify fold, B2: orphan escrow ------------------------------
+    //
+    // A hold the journal says is **`Held`** with `purpose: Escrow { contract }`, that
+    // the contract's own `escrow` list does not name, is money nothing in the world
+    // can reach: `WorldAuth::authorize_hold` refuses every op on an escrow hold, and
+    // `ContractAuth` only ever touches what `qualifying_escrow` returns — which reads
+    // that list. It is exactly what a lost `@contract/accept` doc write leaves behind
+    // (which is why the accept now rides the post's own batch), and a boot is the one
+    // place that can see both halves at once.
+    //
+    // Three answers, because the three cases are different:
+    //
+    // - **non-terminal and it qualifies** — the hold matches an unclaimed
+    //   consideration, so it IS this contract's escrow: adopt it. Loud, no page: the
+    //   record is now right and the contract can settle or refund normally.
+    // - **terminal** — the money has to come back, and the contract's own unwind is
+    //   the only thing that may release it. Adopt it, advance the key **generation**
+    //   (the old refund key is spent, and reusing it would be an idempotency HIT that
+    //   hands nothing back), and set `pending` so the sweep posts the unwind under a
+    //   fresh key and lands the same terminal state again.
+    // - **anything else** — a settled contract, a hold matching no consideration, a
+    //   contract with no record at all: a human decides. Page, with the command.
+    let orphans: Vec<Hold> = journal_holds
+        .values()
+        .filter(|h| h.status.is_held())
+        .filter(|h| match h.purpose {
+            crate::record::HoldPurpose::Escrow { contract } => snapshot
+                .contract(contract)
+                .is_none_or(|c| !c.escrow.contains(&h.id)),
+            _ => false,
+        })
+        .cloned()
+        .collect();
+    for hold in orphans {
+        let crate::record::HoldPurpose::Escrow { contract } = hold.purpose else { continue };
+        let Some(mut c) = snapshot.contract(contract).cloned() else {
+            tracing::error!(hold = hold.id.0, contract = contract.0, "economy: an escrow hold names a contract with no record");
+            if opened_escalations.len() < MAX_BOOT_ESCALATIONS
+                && let Some(id) = mint_escalation(&mut next_escalation)
+            {
+                opened_escalations.push(Escalation::page(
+                    id,
+                    EscalationKind::BootReconciliation,
+                    EscalationSubject::Contract(contract),
+                    format!(
+                        "hold #{} is escrow for contract #{contract}, and there is no such contract                          record; the money is reserved and nothing can release it",
+                        hold.id
+                    ),
+                    vec![format!("@contract/show #{contract}"), "@econ/audit".to_string()],
+                    now,
+                ));
+            }
+            continue;
+        };
+        // Does it qualify? Ask the real predicate, with the hold provisionally listed.
+        let mut probe = c.clone();
+        probe.escrow.push(hold.id);
+        let qualifies = crate::contract::qualifying_escrow(&probe, &snapshot)
+            .holds
+            .iter()
+            .any(|h| h.id == hold.id);
+        let terminal = c.state.is_terminal();
+        if qualifies && !terminal {
+            tracing::warn!(hold = hold.id.0, contract = contract.0, "economy: adopting an orphaned escrow hold into its contract");
+            c.escrow.push(hold.id);
+            c.revision += 1;
+            healed_contracts.push(c.clone());
+            snapshot.put_contract(c);
+            continue;
+        }
+        if qualifies && matches!(c.state, ContractState::Cancelled | ContractState::Expired) {
+            tracing::error!(hold = hold.id.0, contract = contract.0, "economy: an ended contract still holds escrow; scheduling its own unwind under a fresh key generation");
+            c.escrow.push(hold.id);
+            c.amendments = c.amendments.saturating_add(1);
+            c.pending = Some(crate::contract::PendingTerminal {
+                kind: if c.state == ContractState::Cancelled {
+                    crate::contract::PendingKind::Cancel
+                } else {
+                    crate::contract::PendingKind::Expire
+                },
+                attempts: 0,
+                since: now,
+            });
+            c.revision += 1;
+            healed_contracts.push(c.clone());
+            snapshot.put_contract(c);
+            continue;
+        }
+        tracing::error!(hold = hold.id.0, contract = contract.0, state = ?c.state.kind(), "economy: an escrow hold belongs to no consideration its contract names");
+        if opened_escalations.len() < MAX_BOOT_ESCALATIONS
+            && let Some(id) = mint_escalation(&mut next_escalation)
+        {
+            opened_escalations.push(Escalation::page(
+                id,
+                EscalationKind::BootReconciliation,
+                EscalationSubject::Contract(contract),
+                format!(
+                    "hold #{} is escrow for contract #{contract} but matches nothing that contract                      agreed to pay; the money is reserved and only a human can decide where it goes",
+                    hold.id
+                ),
+                vec![
+                    format!("@contract/show #{contract}"),
+                    format!("@contract/resolve #{contract}=refund"),
+                    "@econ/audit".to_string(),
+                ],
+                now,
+            ));
+        }
     }
 
     // ---- E4b1: obligations (containers, §4.2) ----------------------------
@@ -1026,6 +1186,7 @@ pub(crate) fn load_boot(
     let next_contract = meta_u64(&meta, "next_contract_id")
         .max(next_after(max_contract_key))
         .max(next_after(snapshot.contracts().map(|c| c.id.0).max()));
+    let sweep_contract_cursor = meta_u64(&meta, "sweep_contract_cursor");
     let last_sweep_real = meta_i64(&meta, "last_sweep_real");
     let last_sweep_ic = meta_i64(&meta, "last_sweep_ic");
 
@@ -1085,6 +1246,7 @@ pub(crate) fn load_boot(
         next_escalation,
         next_contract,
         last_custody,
+        sweep_contract_cursor,
         last_sweep_real,
         last_sweep_ic,
         // S3: the boot marker. Stamped at the END of every boot, so a sweep gap that
@@ -1284,6 +1446,38 @@ fn mint_escalation(next: &mut u64) -> Option<EscalationId> {
     let id = EscalationId(*next);
     *next = next.saturating_add(1);
     Some(id)
+}
+
+/// Which terminal transition, if any, this contract's own deterministic keys say has
+/// already posted (E4b2 verify fold, B1).
+///
+/// The keys are read **at the record's own generation**, because that is the only
+/// generation whose posts belong to the surface the record now carries: an amended
+/// contract's generation-0 refund is a different agreement's money.
+///
+/// A key counts only when it resolves to a transaction the journal actually has and
+/// which has not been reversed — the same two questions the `Settled` arm asks, for
+/// the same reason.
+fn finished_transition(
+    c: &EconomicContract,
+    snapshot: &EconomySnapshot,
+    transactions: &BTreeMap<TransactionId, EconomicTransaction>,
+) -> Option<ContractState> {
+    for verb in ["settle", "refund", "forfeit"] {
+        let key = crate::contract::contract_op_key(c.id, verb, c.amendments);
+        let Some(record) = snapshot.idempotency(&key) else { continue };
+        if !transactions.contains_key(&record.transaction)
+            || snapshot.is_reversed(record.transaction)
+        {
+            continue;
+        }
+        return Some(match verb {
+            "settle" => ContractState::Settled { transaction: record.transaction },
+            "forfeit" => ContractState::Expired,
+            _ => ContractState::Cancelled,
+        });
+    }
+    None
 }
 
 /// The depositor of every object a live contract's `DepositInto` condition names,

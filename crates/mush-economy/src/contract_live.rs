@@ -34,9 +34,9 @@ use smol_str::SmolStr;
 use crate::api::{self, PostAuth, PostOutcome};
 use crate::clock::{EconomicClock, EconomicDeadline, EconomicSchedule};
 use crate::commands::{
-    asset_target, cmd_key, emit_list, info, is_admin, may_view_account, parse_account, parse_amount,
-    parse_deadline, parse_opts, parse_principal, parse_scope, parse_vault_id, refuse,
-    refuse_if_frozen, render_principal,
+    asset_target, cmd_key, emit_list, info, is_admin, is_hidden, may_view_account, may_view_vault,
+    parse_account, parse_amount, parse_deadline, parse_opts, parse_principal, parse_scope,
+    parse_vault_id, refuse, refuse_if_frozen, refuse_named, render_principal,
 };
 use crate::contract::{
     Acceptance, Attestation, AttestorRef, AttestorSet, ConsentSurface, Consideration, ContractAuth,
@@ -45,9 +45,9 @@ use crate::contract::{
     MAX_AMENDMENTS, MAX_CONDITIONS, MAX_CONTRACT_NAME_BYTES, MAX_DELIVERABLES, MAX_DEPOSITS,
     MAX_LIVE_CONTRACTS_PER_PARTY, MAX_OPEN_CONTRACTS_PER_ISSUER, MAX_OUTCOMES, MAX_PARTIES,
     MAX_SETTLE_ATTEMPTS, MAX_SHARES, ObligationTemplate, OutcomeTerms, PERMILLE, PartyAgreement,
-    PayoutShare, Readiness, Resolution, Share, TypedCondition, activate_key, check_offerable,
-    consent_hash, forfeit_plan, principal_key, readiness, refund_plan, resolve_outcome,
-    settlement_plan,
+    PayoutShare, PendingKind, PendingTerminal, Readiness, Resolution, Share, TypedCondition,
+    activate_key, check_offerable, consent_hash, forfeit_plan, principal_key, qualifying_escrow,
+    readiness, refund_plan, resolve_outcome, settlement_plan,
 };
 use crate::custody::WorldCustody;
 use crate::engine::{NoFacts, ValidateEnv};
@@ -175,31 +175,37 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             .map(SmolStr::new)
             .collect(),
             help: "@contract/draft <name> [scope=<id>]        start a draft\n\
-                   Builders (Draft only, or an Offered contract whose roster is open):\n\
+                   Builders — the ISSUER (or staff), on a Draft, or on an Offered contract whose\n\
+                   roster is still open and which nobody has accepted:\n\
                    @contract/party <id>=<principal>\n\
-                   @contract/pay <id>=<from acct> <amount>    what that account escrows\n\
+                   @contract/pay <id>=<acct> <amount>         what that account escrows\n\
+                   \x20  the issuer may name only an account they may view; a listed PARTY may add\n\
+                   \x20  their own account to a Draft (@contract/pay <id>=<your acct> <amount>)\n\
                    @contract/deliver <id>=title <obj> <from>-><to> | deposit <obj> <vault>\n\
                    \x20                    | collateral <obj> <from> | obligation <debit> <credit> <amt> every=<secs>\n\
+                   \x20  a collateral is pledged BY A PARTY who holds its title\n\
                    @contract/split <id>=<acct> <exact|N‰> [<acct> <share> …]\n\
                    @contract/remainder <id>=<acct>\n\
-                   @contract/condition <id>=attest <who> | deposit <obj> <vault> | title <obj> <who>\n\
+                   @contract/condition <id>=attest <who> | deposit <obj> <vault> | title <obj> <principal>\n\
                    \x20                    | fact <provider> <kind> <id> | before <secs|ic:secs> | after <n> <delay>\n\
-                   \x20  <who> = party:<principal> | cap:<capability>[:<scope>] | staff | canon:<kind>[:<source>]\n\
+                   \x20  <who> = party:<principal> | cap:<capability>:<scope> | staff | canon:<kind>[:<source>]\n\
+                   \x20  `title` takes a bare <principal> (#123, org:Name) — no party: prefix\n\
                    @contract/deadline <id>=<secs|ic:secs> [refund|forfeit=<acct>|dispute]\n\
-                   @contract/visibility <id>=parties|staff|public|audience <principal> …\n\
+                   @contract/visibility <id>=parties|staff|public|audience <principal> … [announce=yes]\n\
+                   \x20  an audience sees a NOTICE (name, state, window, condition kinds) and no money\n\
                    @contract/adjudicator <id>=<who>|none      who may attest (consented)\n\
                    @contract/evidence <id>=attest,deposit,title,fact,before,after|any\n\
                    @contract/outcome <id>=<name> when=<n,…> pay=<acct>:<share>,… [titles=<n,…>]\n\
                    @contract/role <id>=author|payer|johnson|facilitator <principal>|none\n\
-                   @contract/roster <id>=lock|open            freeze (or re-open) the party list\n\
+                   @contract/roster <id>=lock|open            issuer or staff: freeze/re-open the parties\n\
                    Lifecycle:\n\
-                   @contract/offer <id>                       Draft → Offered; freezes the consent hash\n\
-                   @contract/accept <id>                      a party; places their escrow in the same step\n\
-                   @contract/amend <id>                       Offered → Draft: refunds and voids every acceptance\n\
-                   @contract/attest <id>=<n>                  an attestor; may settle in the same step\n\
-                   @contract/dispute <id>                     a party; freezes the escrow\n\
-                   @contract/agree <id>=settle|refund         unanimous party agreement ends a dispute\n\
-                   @contract/cancel <id>                      the issuer (Draft/Offered) or staff\n\
+                   @contract/offer <id>                       ISSUER or staff: Draft → Offered; freezes the hash\n\
+                   @contract/accept <id>                      a PARTY; places their escrow in the same step\n\
+                   @contract/amend <id>                       ISSUER or staff: Offered → Draft; refunds every acceptance\n\
+                   @contract/attest <id>=<n>                  an ATTESTOR; may settle in the same step (once per condition)\n\
+                   @contract/dispute <id>                     a PARTY (or staff); freezes the escrow\n\
+                   @contract/agree <id>=settle|refund         a PARTY; unanimity ends a dispute\n\
+                   @contract/cancel <id>                      the ISSUER (Draft/Offered) or staff\n\
                    @contract/resolve <id>=settle|refund       staff\n\
                    @contract/show <id>   @contract/list\n\
                    Accepting is TWO rights, checked separately: the right to accept, and debit\n\
@@ -288,10 +294,18 @@ fn holds_contract_capability(ctx: &Ctx<'_>, scope: Option<OrgScopeId>, capabilit
 
 /// Which party this actor speaks for on this contract, if any.
 ///
-/// Two routes, and the order matters only for determinism: the actor **is** a party,
-/// or the actor holds `capability` on the contract's compartment and one of the
-/// parties is that compartment's organization. An org contract therefore lets the
-/// people an org authorized act for it without anyone storing a delegation.
+/// Three routes, tried in a fixed order so "which party did I accept for" is never
+/// iteration-dependent: the actor **is** a party; the actor holds `capability` on the
+/// contract's own compartment and one of the parties is that compartment's
+/// organization; or the actor simply [`api::WorldAuth::acts_for`] one of the parties.
+///
+/// The third is the E4b2 verify fold's A4. The capability route needs a compartment,
+/// and an **unscoped** contract has none — so an `org:X` party on a contract drafted
+/// without `scope=` could be accepted, disputed and agreed by *nobody*: its escrow
+/// would sit until the deadline with the org's own officers locked out. `acts_for` is
+/// the same predicate that decides who may spend an organization's money and who may
+/// see its holds (E4b1's A2), so seeing a contract, funding it and acting on it stay
+/// one question.
 fn acting_party(
     ctx: &Ctx<'_>,
     c: &EconomicContract,
@@ -301,17 +315,29 @@ fn acting_party(
     if c.consent.parties.contains(&me) {
         return Some(me);
     }
-    if !holds_contract_capability(ctx, c.consent.scope, capability) {
-        return None;
-    }
-    let scope = c.consent.scope?;
-    let store = ctx.w.module_state::<mush_org::OrgStore>()?;
-    let org = store.state().scope(scope)?.org;
-    let wanted = PrincipalId::Organization(org);
-    // Canonical order, so "which party did I accept for" is never iteration-dependent.
+    // Canonical order, so a contract naming two principals one actor speaks for
+    // resolves to the same party every time.
     let mut parties: Vec<&PrincipalId> = c.consent.parties.iter().collect();
     parties.sort_by(|a, b| principal_key(a).cmp(&principal_key(b)));
-    parties.into_iter().find(|p| **p == wanted).cloned()
+    if holds_contract_capability(ctx, c.consent.scope, capability)
+        && let Some(scope) = c.consent.scope
+        && let Some(store) = ctx.w.module_state::<mush_org::OrgStore>()
+        && let Some(org) = store.state().scope(scope).map(|s| s.org)
+    {
+        let wanted = PrincipalId::Organization(org);
+        if let Some(p) = parties.iter().find(|p| ***p == wanted) {
+            return Some((*p).clone());
+        }
+    }
+    let auth = api::WorldAuth { w: ctx.w };
+    parties
+        .into_iter()
+        // Only for a principal that cannot act for itself. A **person** party is
+        // still an identity match: staff and MUSH controllers get no silent power to
+        // accept, dispute or agree in somebody else's name (staff already have
+        // `@contract/cancel` and `@contract/resolve`, which say whose act it was).
+        .find(|p| matches!(p, PrincipalId::Organization(_)) && auth.acts_for(&me, p))
+        .cloned()
 }
 
 /// Whether the actor is the contract's issuer (or acts for it), or staff.
@@ -354,13 +380,43 @@ fn editable(ctx: &Ctx<'_>, s: &str) -> Result<EconomicContract, CmdError> {
 
 /// Persist an edited contract, re-freezing its consent hash while it is still open
 /// for editing so `consent_intact()` never reads a draft as tampered-with.
-fn save_open(ctx: &mut Ctx<'_>, mut c: EconomicContract) -> ContractId {
+///
+/// **An `Offered` contract is re-validated here** (E4b2 verify fold, M7).
+/// `@contract/roster <id>=open` puts an offered contract back under the builders, and
+/// every builder then re-signed the surface with no feasibility check at all: an
+/// offer that had passed `check_offerable` could be edited into one that could never
+/// settle — an infeasible split, an account that had since closed, a `Manual`
+/// deadline — and the parties would be looking at a live offer that would refuse
+/// every acceptance or strand its escrow. Re-validating is the same gate `/offer`
+/// runs, and the parties are told their offer moved, because it did.
+fn save_open(ctx: &mut Ctx<'_>, mut c: EconomicContract) -> Result<ContractId, CmdError> {
     c.consent_hash = consent_hash(&c.issuer, &c.consent);
     c.revision = c.revision.saturating_add(1);
     let id = c.id;
+    if c.state == ContractState::Offered {
+        let verdict = {
+            let store =
+                ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
+            check_offerable(&c, store.snapshot())
+        };
+        if let Err(e) = verdict {
+            return Err(contract_refusal(ctx, &c, &e));
+        }
+    }
+    let offered = c.state == ContractState::Offered;
+    let parties = c.consent.parties.clone();
     api::put_contract(ctx, c);
+    if offered {
+        for p in &parties {
+            notify(
+                ctx,
+                p,
+                &format!("Contract #{id}'s offered terms have changed (@contract/show #{id})."),
+            );
+        }
+    }
     ctx.gate_on_durable_ack();
-    id
+    Ok(id)
 }
 
 /// Persist a contract whose consent surface must NOT be re-hashed (anything from
@@ -467,6 +523,7 @@ fn contract_draft(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         roster_locked: false,
         deposits: Vec::new(),
         agreements: Vec::new(),
+        pending: None,
         roles: ContractRoles { author: Some(PrincipalId::Object(ctx.actor)), ..ContractRoles::default() },
         revision: 1,
     };
@@ -503,14 +560,31 @@ fn build_party(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     c.consent.parties.push(who.clone());
     let rendered = render_principal(ctx, &who);
-    let id = save_open(ctx, c);
+    let id = save_open(ctx, c)?;
     info(ctx, format!("Contract #{id}: {rendered} is now a party."));
     Ok(())
 }
 
+/// `@contract/pay <id>=<account> <amount>` — what that account escrows at acceptance.
+///
+/// **Two rules, both from the E4b2 verify fold's A1.**
+///
+/// (a) The issuer may name only an account they [`may_view_account`]. `/pay` used to
+/// answer three different ways for an id the drafter had no standing over — "No such
+/// account." for a missing one, the same text for a closed one, and *success* for a
+/// live one, whose owner it then printed — which made it an existence-and-owner oracle
+/// over every wallet in the game, driveable from a throwaway draft.
+///
+/// (b) A **listed party** may add their own consideration to a `Draft`, naming an
+/// account they may view. That is the other half: with (a) alone, a payer whose wallet
+/// the Johnson cannot see could never be written into the contract at all, and the
+/// answer to "who pays" would have quietly become "only people whose finances the
+/// drafter can read". Self-consideration keeps the disclosure where it belongs — the
+/// payer discloses their own account, to a contract they are already named on.
 fn build_pay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    const USAGE: &str = "Usage: @contract/pay <id>=<from account> <amount>";
-    let mut c = editable(ctx, ctx.args.lhs())?;
+    const USAGE: &str = "Usage: @contract/pay <id>=<account> <amount>";
+    const HIDDEN: &str = "No such account.";
+    let seen = contract_of(ctx, ctx.args.lhs())?;
     let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?.to_string();
     let mut words = rhs.split_whitespace();
     let account = words.next().and_then(parse_account).ok_or_else(|| CmdError::msg(USAGE))?;
@@ -518,15 +592,37 @@ fn build_pay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if amount.is_zero() || amount.is_negative() {
         return Err(CmdError::msg("A consideration must be positive."));
     }
+    // Rule (a)/(b) share one gate: an account the actor may not VIEW renders exactly
+    // like one that does not exist, before anything else is decided.
+    if !may_view_account(ctx.w, ctx.actor, account) {
+        return Err(CmdError::msg(HIDDEN));
+    }
     // The payer is whoever OWNS the account: the accountable escrow principal is a
     // fact about the wallet, never a claim the drafter makes (08e answer 4).
     let owner = {
         let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
-        let a = store.snapshot().account(account).ok_or_else(|| CmdError::msg("No such account."))?;
+        let a = store.snapshot().account(account).ok_or_else(|| CmdError::msg(HIDDEN))?;
         if a.status != AccountStatus::Active {
-            return Err(CmdError::msg("No such account."));
+            return Err(CmdError::msg(HIDDEN));
         }
         a.owner.clone()
+    };
+    let mut c = if is_issuer(ctx, &seen) {
+        editable(ctx, ctx.args.lhs())?
+    } else {
+        // A party's self-consideration: a `Draft` only, and only their own account —
+        // adding somebody else's wallet is the issuer's job, and adding one to an
+        // offer people have already read would change what they are accepting.
+        acting_party(ctx, &seen, "contract.accept")
+            .filter(|p| principal_key(p) == principal_key(&owner))
+            .ok_or_else(|| CmdError::msg(NO_SUCH))?;
+        if seen.state != ContractState::Draft {
+            return Err(CmdError::msg(format!(
+                "Contract #{} is no longer being drafted; ask its issuer to amend it.",
+                seen.id
+            )));
+        }
+        seen
     };
     if c.consent.terms.consideration.len() >= MAX_SHARES {
         return Err(CmdError::msg("Too many considerations."));
@@ -538,7 +634,7 @@ fn build_pay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if c.roles.payer.is_none() {
         c.roles.payer = Some(owner);
     }
-    let id = save_open(ctx, c);
+    let id = save_open(ctx, c)?;
     info(ctx, format!("Contract #{id}: account #{account} escrows {} at acceptance.", amount.minor()));
     Ok(())
 }
@@ -563,9 +659,11 @@ fn build_deliver(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
         "deposit" => {
             let object = asset_target(ctx, words.next().unwrap_or(""))?;
+            // The same draft-time viewability gate `/condition deposit` runs (A2).
             let vault = words
                 .next()
                 .and_then(parse_vault_id)
+                .filter(|v| may_view_vault(ctx.w, ctx.actor, *v))
                 .ok_or_else(|| CmdError::msg("No such vault."))?;
             Deliverable::DepositInto { object, vault }
         }
@@ -624,7 +722,7 @@ fn build_deliver(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     c.consent.terms.deliverables.push(deliverable);
     let n = c.consent.terms.deliverables.len() - 1;
-    let id = save_open(ctx, c);
+    let id = save_open(ctx, c)?;
     info(ctx, format!("Contract #{id}: deliverable {n} recorded ({kind})."));
     Ok(())
 }
@@ -661,7 +759,7 @@ fn build_split(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     c.consent.terms.split = shares;
     let n = c.consent.terms.split.len();
-    let id = save_open(ctx, c);
+    let id = save_open(ctx, c)?;
     info(ctx, format!("Contract #{id}: the split now has {n} share(s)."));
     Ok(())
 }
@@ -692,7 +790,7 @@ fn build_remainder(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let rhs = ctx.args.rhs().unwrap_or("").to_string();
     let account = parse_account(&rhs).ok_or_else(|| CmdError::msg("No such account."))?;
     c.consent.terms.remainder_to = account;
-    let id = save_open(ctx, c);
+    let id = save_open(ctx, c)?;
     info(ctx, format!("Contract #{id}: the floored remainder goes to account #{account}."));
     Ok(())
 }
@@ -723,8 +821,10 @@ fn parse_attestor(ctx: &Ctx<'_>, s: &str) -> Option<AttestorSet> {
 
 fn build_condition(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     const USAGE: &str = "Usage: @contract/condition <id>=attest <who> | deposit <obj> <vault> | \
-                         title <obj> <who> | fact <provider> <kind> <id> | before <secs|ic:secs> | \
-                         after <n> <delay>";
+                         title <obj> <principal> | fact <provider> <kind> <id> | \
+                         before <secs|ic:secs> | after <n> <delay>   \
+                         (<who> = party:<principal> | cap:<capability>:<scope> | staff | \
+                         canon:<kind>[:<source>]; `title` takes a bare <principal>)";
     let mut c = editable(ctx, ctx.args.lhs())?;
     let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?.to_string();
     let mut words = rhs.split_whitespace();
@@ -736,11 +836,16 @@ fn build_condition(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 by: parse_attestor(ctx, &spec).ok_or_else(|| CmdError::msg(USAGE))?,
             }
         }
+        // E4b2 verify fold, A2: the vault and the object are checked for
+        // **viewability at draft**, so an unviewable one and a nonexistent one render
+        // identically here and not only at `/offer`. Without it a draft was a probe
+        // that took two commands instead of one.
         "deposit" => {
             let object = asset_target(ctx, words.next().unwrap_or(""))?;
             let vault = words
                 .next()
                 .and_then(parse_vault_id)
+                .filter(|v| may_view_vault(ctx.w, ctx.actor, *v))
                 .ok_or_else(|| CmdError::msg("No such vault."))?;
             TypedCondition::DepositInto { object, vault }
         }
@@ -791,7 +896,7 @@ fn build_condition(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // `satisfied` is parallel to `conditions` by construction, everywhere.
     c.satisfied.push(None);
     let n = c.consent.conditions.len() - 1;
-    let id = save_open(ctx, c);
+    let id = save_open(ctx, c)?;
     info(ctx, format!("Contract #{id}: condition {n} recorded ({kind})."));
     Ok(())
 }
@@ -818,15 +923,20 @@ fn build_deadline(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     c.consent.deadline = Some(deadline);
     c.consent.terms.on_expiry = on_expiry;
-    let id = save_open(ctx, c);
+    let id = save_open(ctx, c)?;
     info(ctx, format!("Contract #{id}: it lapses at {} on {:?}.", deadline.at, deadline.clock));
     Ok(())
 }
 
 fn build_visibility(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    const USAGE: &str = "Usage: @contract/visibility <id>=parties|staff|public|audience <principal> …";
+    const USAGE: &str =
+        "Usage: @contract/visibility <id>=parties|staff|public|audience <principal> … [announce=yes]";
     let mut c = editable(ctx, ctx.args.lhs())?;
-    let rhs = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?.to_string();
+    let raw = ctx.args.rhs().ok_or_else(|| CmdError::msg(USAGE))?.to_string();
+    let (rhs, opts) = parse_opts(&raw, &["announce"]);
+    let announce_issuer = opts
+        .get("announce")
+        .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "yes" | "true" | "1"));
     let mut words = rhs.split_whitespace();
     let word = words.next().unwrap_or("").to_ascii_lowercase();
     let visibility = match word.as_str() {
@@ -846,14 +956,25 @@ fn build_visibility(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     "An audience names 1-{MAX_AUDIENCE} principals besides the parties."
                 )));
             }
-            EconomicVisibility::Audience { members }
+            EconomicVisibility::Audience { members, announce_issuer }
         }
         _ => return Err(CmdError::msg(USAGE)),
     };
     let label = visibility.label();
+    let audience = matches!(visibility, EconomicVisibility::Audience { .. });
     c.consent.visibility = visibility;
-    let id = save_open(ctx, c);
+    let id = save_open(ctx, c)?;
     info(ctx, format!("Contract #{id}: visibility is now {label}."));
+    if audience {
+        info(
+            ctx,
+            format!(
+                "The audience sees a notice — name, state, window and the kinds of condition — \
+                 and nothing about anyone's money or roles. The issuer is {}named on it.",
+                if announce_issuer { "" } else { "NOT " }
+            ),
+        );
+    }
     if label == "public" {
         info(
             ctx,
@@ -875,7 +996,7 @@ fn build_adjudicator(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Some(parse_attestor(ctx, &rhs).ok_or_else(|| CmdError::msg(USAGE))?)
     };
     let named = c.consent.adjudicator.is_some();
-    let id = save_open(ctx, c);
+    let id = save_open(ctx, c)?;
     if named {
         info(ctx, format!("Contract #{id}: the adjudicator is named, and only they may attest."));
     } else {
@@ -911,7 +1032,7 @@ fn build_evidence(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     c.consent.evidence = kinds;
     let n = c.consent.evidence.len();
-    let id = save_open(ctx, c);
+    let id = save_open(ctx, c)?;
     if n == 0 {
         info(ctx, format!("Contract #{id}: any kind of evidence is permitted."));
     } else {
@@ -957,7 +1078,7 @@ fn build_outcome(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         asset_consequences,
     });
     let n = c.consent.terms.outcomes.len();
-    let id = save_open(ctx, c);
+    let id = save_open(ctx, c)?;
     info(ctx, format!("Contract #{id}: outcome \"{name}\" recorded ({n} in the table)."));
     info(
         ctx,
@@ -1002,7 +1123,7 @@ fn build_role(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         "facilitator" => c.roles.facilitator = who,
         _ => return Err(CmdError::msg(USAGE)),
     }
-    let id = save_open(ctx, c);
+    let id = save_open(ctx, c)?;
     info(ctx, format!("Contract #{id}: the {role} role is recorded. Roles are attribution, never authority."));
     Ok(())
 }
@@ -1050,9 +1171,15 @@ fn contract_offer(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     // The satisfaction vector is parallel to the conditions, always.
     c.satisfied.resize(c.consent.conditions.len(), None);
+    let verdict = {
+        let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
+        check_offerable(&c, store.snapshot())
+    };
+    if let Err(e) = verdict {
+        return Err(contract_refusal(ctx, &c, &e));
+    }
     {
         let store = ctx.w.module_state::<EconomyStore>().ok_or_else(|| CmdError::msg("No economy."))?;
-        check_offerable(&c, store.snapshot()).map_err(|e| contract_refusal(&c, &e))?;
         // §9's per-party cap, counted over the parties this offer would bind.
         for p in &c.consent.parties {
             let live = store
@@ -1088,12 +1215,30 @@ fn contract_offer(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-/// Render a [`ContractError`] behind the existence-hiding rule: a viewer sees the
-/// real reason, everyone else sees the nonexistent-contract text. The caller has
-/// already proved viewability for every path that reaches this, so it is the message
-/// that varies, never the disclosure.
-fn contract_refusal(c: &EconomicContract, e: &ContractError) -> CmdError {
-    CmdError::msg(format!("Contract #{}: {e}", c.id))
+/// Render a [`ContractError`] behind the existence-hiding rule (§4.5, E4b2 verify
+/// fold, A2).
+///
+/// The caller has already proved the *contract* is viewable, but the error names
+/// other people's resources: `no such vault: 7` and `no such account: 12` are answers
+/// about a vault or a wallet the actor may have no standing over at all, and rendering
+/// them raw made `@contract/offer` a probe — build a draft naming any id, offer it,
+/// and read the reply. So every refusal goes through the same
+/// [`crate::commands::refuse`] the money verbs use, against the resource the error
+/// names *and* (for a refusal that is a policy answer about them) every resource the
+/// surface names.
+fn contract_refusal(ctx: &Ctx<'_>, c: &EconomicContract, e: &ContractError) -> CmdError {
+    let named = e.named_resources();
+    let surface = if e.concerns_named_subjects() {
+        ContractError::surface_resources(c)
+    } else {
+        Vec::new()
+    };
+    refuse_named(
+        ctx,
+        NamedResource::Contract(c.id),
+        named.iter().chain(surface.iter()).copied(),
+        format!("Contract #{}: {e}", c.id),
+    )
 }
 
 // ---- @contract/accept -----------------------------------------------------
@@ -1108,7 +1253,7 @@ fn contract_refusal(c: &EconomicContract, e: &ContractError) -> CmdError {
 /// **no acceptance at all** (D-E4-11).
 fn contract_accept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let c = contract_of(ctx, ctx.args.lhs())?;
-    if c.state != ContractState::Offered {
+    if c.state != ContractState::Offered || c.pending.is_some() {
         return Err(CmdError::msg(format!("Contract #{} is not open for acceptance.", c.id)));
     }
     if !c.consent_intact() {
@@ -1131,7 +1276,35 @@ fn contract_accept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .filter(|x| principal_key(&x.from) == principal_key(&party))
         .cloned()
         .collect();
+    // **The acceptance rides the escrow post's own batch** (E4b2 verify fold, B2).
+    // The record is built BEFORE the post, with the hold ids the engine is about to
+    // mint (`peek_next_hold` is the very floor `validate` allocates from, one per
+    // `Place`), and handed to `post_with_companions` — so the journal chunk, the
+    // hold projections and the contract doc that names them are one durable write.
+    // A separate later write could drop, leaving escrow reserved to a contract whose
+    // record does not list it: money nothing in the world could release.
+    let now = ctx.w.now();
+    let mut c = c;
+    c.acceptances.push(Acceptance { party: party.clone(), at: now, consent_hash: c.consent_hash });
+    let predicted: Vec<HoldId> = {
+        let floor = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .map_or(0, EconomyStore::peek_next_hold);
+        (0..considerations.len())
+            .map(|i| HoldId(floor.saturating_add(u64::try_from(i).unwrap_or(u64::MAX))))
+            .collect()
+    };
+    if !considerations.is_empty() {
+        c.escrow.extend(predicted.iter().copied());
+    }
+    // 08e answers 5/7: the first acceptance freezes the roster snapshot and the
+    // exact shares. From here a substitution is an amendment.
+    c.roster_locked = true;
+    let id = c.id;
     let placed: Vec<HoldId> = if considerations.is_empty() {
+        // Nothing to post, so nothing to ride: the ordinary container write.
+        save(ctx, c.clone());
         Vec::new()
     } else {
         let mut plan = EconomyPlan::new(
@@ -1158,7 +1331,9 @@ fn contract_accept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             })
             .collect();
         let first = considerations.first().map_or(AccountId(0), |x| x.account);
-        match api::post(ctx, &plan) {
+        let mut committed = c.clone();
+        committed.revision = committed.revision.saturating_add(1);
+        match api::post_with_companions(ctx, &plan, PostAuth::World, vec![committed]) {
             Ok(PostOutcome::Posted(txid)) => ctx
                 .w
                 .module_state::<EconomyStore>()
@@ -1175,14 +1350,14 @@ fn contract_accept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 return Err(CmdError::msg("That escrow was already placed; try again."));
             }
             // D-E4-11: no acceptance is recorded, the contract stays `Offered`, and
-            // the party re-runs accept once the approval is collected.
+            // the party re-runs accept once the approval is collected. Nothing posted,
+            // so the companion was never written either.
             Ok(PostOutcome::NeedsApproval(request)) => {
                 info(
                     ctx,
                     format!(
                         "Approval required before you can escrow that: request #{request}. Nothing \
-                         was accepted — run @contract/accept #{} again once it is approved.",
-                        c.id
+                         was accepted — run @contract/accept #{id} again once it is approved."
                     ),
                 );
                 return Ok(());
@@ -1190,25 +1365,25 @@ fn contract_accept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             Err(e) => {
                 return Err(refuse(
                     ctx,
-                    NamedResource::Contract(c.id),
+                    NamedResource::Contract(id),
                     &[NamedResource::Account(first)],
                     &e,
                 ));
             }
         }
     };
-    // The money is durable (or there was none to move); record the acceptance.
-    let now = ctx.w.now();
-    let mut c = c;
-    c.acceptances.push(Acceptance { party: party.clone(), at: now, consent_hash: c.consent_hash });
-    c.escrow.extend(placed.iter().copied());
-    // 08e answers 5/7: the first acceptance freezes the roster snapshot and the
-    // exact shares. From here a substitution is an amendment.
-    c.roster_locked = true;
-    let id = c.id;
+    // Belt and braces: if the engine somehow minted ids other than the predicted run,
+    // heal the record rather than leave it naming holds that are not this escrow.
+    if !placed.is_empty() && placed != predicted {
+        tracing::warn!(contract = id.0, "economy: escrow hold ids differed from the predicted run; healing the contract record");
+        let mut healed = c.clone();
+        healed.escrow.retain(|h| !predicted.contains(h));
+        healed.escrow.extend(placed.iter().copied());
+        c = healed.clone();
+        save(ctx, healed);
+    }
     let full = c.fully_accepted();
     let escrowed: Vec<String> = placed.iter().map(|h| format!("#{h}")).collect();
-    save(ctx, c);
     if escrowed.is_empty() {
         info(ctx, format!("Contract #{id}: accepted."));
     } else {
@@ -1432,12 +1607,39 @@ fn contract_attest(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let Some(TypedCondition::Attestation { by }) = c.consent.conditions.get(n).cloned() else {
         return Err(CmdError::msg(format!("Contract #{} has no attestable condition {n}.", c.id)));
     };
+    // **An attestation is written once** (E4b2 verify fold, M5). Overwriting a filled
+    // slot re-stamped `at`, which is the anchor an `After` condition counts its delay
+    // from — so a party could push a consented settlement delay forward indefinitely
+    // by re-attesting, one command at a time, and the contract would never mature.
+    // The one exception is an attestor who no longer qualifies live: their record has
+    // stopped counting at re-verification anyway, so replacing it is the difference
+    // between a contract that can settle and one that is stuck.
+    let filled = c.satisfied.get(n).and_then(|s| s.as_ref()).cloned();
     let me = PrincipalId::Object(ctx.actor);
     let auth = api::WorldAuth { w: ctx.w };
     let qualifies = |set: &AttestorSet| -> bool {
         use crate::engine::AuthEval;
         auth.authorize_attestor(&me, set)
     };
+    if let Some(recorded) = &filled {
+        let set = c.consent.adjudicator.clone().unwrap_or_else(|| by.clone());
+        let stands = match &recorded.by {
+            AttestorRef::Principal(p) => {
+                use crate::engine::AuthEval;
+                matches!(&set, AttestorSet::Party(want) if want == p)
+                    || auth.authorize_attestor(p, &set)
+            }
+            // A canon record, a fact and the clock are not people; nothing about them
+            // stops qualifying, so they stand.
+            AttestorRef::Canon { .. } | AttestorRef::Fact(_) | AttestorRef::Clock => true,
+        };
+        if stands {
+            return Err(CmdError::msg(format!(
+                "Contract #{}: condition {n} is already attested.",
+                c.id
+            )));
+        }
+    }
     // 08e answer 6: when the surface NAMES an adjudicator, that authority **replaces**
     // each condition's own attestor set. Runners consent to the adjudicator when they
     // accept, and the whole point of consenting to an authority is that an interested
@@ -1458,6 +1660,17 @@ fn contract_attest(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             }
         }
     }
+    // **Whose attestation is it?** (A3) When the set names a `Party` and the actor
+    // merely acts for that party — an org's capability holder speaking for
+    // `org:Ironhold` — the record names the **party**, with the human in `source`.
+    // Recording the individual instead would make `attestation_matches` (which
+    // compares the recorded principal to the named party, and deliberately does not
+    // re-qualify — a party attestation stands once given) fail forever, so an
+    // org-attested condition could be attested and then never settle.
+    let recorded_by = match (&c.consent.adjudicator, &by) {
+        (None, AttestorSet::Party(p)) if p != &me => p.clone(),
+        _ => me,
+    };
     let now = ctx.w.now();
     let mut c = c;
     if c.satisfied.len() < c.consent.conditions.len() {
@@ -1465,7 +1678,7 @@ fn contract_attest(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     if let Some(slot) = c.satisfied.get_mut(n) {
         *slot = Some(Attestation {
-            by: AttestorRef::Principal(me),
+            by: AttestorRef::Principal(recorded_by),
             at: now,
             clock: EconomicClock::RealUtc,
             source: SmolStr::new(format!("actor:{}", ctx.actor.0)),
@@ -1488,10 +1701,27 @@ pub(crate) enum Settled {
     /// Posted (or already posted) as this transaction.
     Posted(#[allow(dead_code)] crate::ids::TransactionId),
     /// Re-verification (or the plan) refused; nothing moved.
-    Refused(String),
+    ///
+    /// It carries the resources the detail **names** (E4b2 verify fold, A6) as well
+    /// as the text, because the text goes to a party: `no usable account: 12` and
+    /// `hold 7 is no longer held` are answers about somebody else's wallet, and a
+    /// runner who agrees a settlement should not learn from the refusal that the
+    /// Johnson's account has been frozen. `refusal_text` collapses those.
+    Refused(String, Vec<NamedResource>),
     /// Nothing to do: the contract is not ready, or the outcome table says nothing
     /// happened yet.
     NotReady,
+}
+
+/// Render a settlement refusal for a **party** (A6): the detail when every resource
+/// it names is one they may view, and otherwise the fact that it failed and that a
+/// human has been told — which is all they are owed and all they need.
+fn refusal_text(ctx: &Ctx<'_>, detail: &str, named: &[NamedResource]) -> String {
+    if named.iter().any(|r| is_hidden(ctx, *r)) {
+        "it could not settle; staff have been paged".to_string()
+    } else {
+        detail.to_string()
+    }
 }
 
 /// Move a live contract to `ReadyToSettle` if its conditions now hold, and settle it
@@ -1499,6 +1729,12 @@ pub(crate) enum Settled {
 pub(crate) fn promote_and_settle(ctx: &mut Ctx<'_>, id: ContractId, settle_now: bool) -> Settled {
     let Some(c) = live_contract(ctx, id) else { return Settled::NotReady };
     if !matches!(c.state, ContractState::Active | ContractState::ReadyToSettle) {
+        return Settled::NotReady;
+    }
+    // A contract on its way out does not settle on the way (M2+M3): the unwind's plan
+    // may already be durable, and paying the split out on top of it would spend the
+    // escrow twice.
+    if c.pending.is_some() {
         return Settled::NotReady;
     }
     let verdict = {
@@ -1521,7 +1757,10 @@ pub(crate) fn promote_and_settle(ctx: &mut Ctx<'_>, id: ContractId, settle_now: 
         // A contract that cannot settle at all as it stands is a decision, not a wait
         // (§3.5: an ambiguous outcome is `Disputed`). Retrying it every thirty seconds
         // would freeze the escrow indefinitely and tell nobody.
-        Readiness::Undecidable(e) => return note_settle_failure(ctx, id, &e.to_string(), true),
+        Readiness::Undecidable(e) => {
+            let named = e.named_resources();
+            return note_settle_failure(ctx, id, &e.to_string(), &named, true);
+        }
         Readiness::Ready(_) => {}
     }
     if c.state == ContractState::Active {
@@ -1568,7 +1807,16 @@ pub(crate) fn settle(ctx: &mut Ctx<'_>, id: ContractId) -> Settled {
     };
     let (plan, outcome) = match built {
         Ok(v) => v,
-        Err(e) => return note_settle_failure(ctx, id, &e.to_string(), matches!(e, ContractError::AmbiguousOutcome)),
+        Err(e) => {
+            let named = e.named_resources();
+            return note_settle_failure(
+                ctx,
+                id,
+                &e.to_string(),
+                &named,
+                matches!(e, ContractError::AmbiguousOutcome),
+            );
+        }
     };
     let owned = c.clone();
     let posted = {
@@ -1591,19 +1839,30 @@ pub(crate) fn settle(ctx: &mut Ctx<'_>, id: ContractId) -> Settled {
             ctx,
             id,
             &format!("the settlement asked for approval (request #{request}), which nothing can collect"),
+            &[],
             true,
         ),
-        Err(e) => note_settle_failure(ctx, id, &e.to_string(), false),
+        Err(e) => {
+            let named = e.named_resources();
+            note_settle_failure(ctx, id, &e.to_string(), &named, false)
+        }
     }
 }
 
 /// Record a failed settlement attempt: loud log, `ReadyToSettle` kept, and
 /// `Disputed` + a level-2 page once the attempts are spent (or at once, for a
 /// failure no retry can fix — an ambiguous outcome is a decision, not a wait).
-fn note_settle_failure(ctx: &mut Ctx<'_>, id: ContractId, detail: &str, terminal: bool) -> Settled {
-    let Some(mut c) = live_contract(ctx, id) else { return Settled::Refused(detail.to_string()) };
+fn note_settle_failure(
+    ctx: &mut Ctx<'_>,
+    id: ContractId,
+    detail: &str,
+    named: &[NamedResource],
+    terminal: bool,
+) -> Settled {
+    let refused = || Settled::Refused(detail.to_string(), named.to_vec());
+    let Some(mut c) = live_contract(ctx, id) else { return refused() };
     if !matches!(c.state, ContractState::Active | ContractState::ReadyToSettle) {
-        return Settled::Refused(detail.to_string());
+        return refused();
     }
     tracing::warn!(contract = id.0, detail, "economy: a contract settlement was refused; nothing moved");
     c.settle_attempts = c.settle_attempts.saturating_add(1);
@@ -1622,7 +1881,7 @@ fn note_settle_failure(ctx: &mut Ctx<'_>, id: ContractId, detail: &str, terminal
             ),
         );
     }
-    Settled::Refused(detail.to_string())
+    refused()
 }
 
 // ---- dispute, agreement, resolution ---------------------------------------
@@ -1632,10 +1891,12 @@ fn note_settle_failure(ctx: &mut Ctx<'_>, id: ContractId, detail: &str, terminal
 /// reopened rather than re-minted.
 pub(crate) fn dispute_with(ctx: &mut Ctx<'_>, id: ContractId, context: String) {
     let Some(mut c) = live_contract(ctx, id) else { return };
-    if c.state.is_terminal() {
-        return;
-    }
-    if c.state != ContractState::Disputed {
+    // A **terminal** contract is not moved to `Disputed` — that would be a state
+    // machine going backwards — but it is still **paged** (E4b2 verify fold, M2+M3).
+    // The old early return meant every problem discovered about a settled, cancelled
+    // or expired contract went nowhere at all: exactly the class of problem that has
+    // already touched money and most needs a human.
+    if !c.state.is_terminal() && c.state != ContractState::Disputed {
         c.state = ContractState::Disputed;
         c.disputed_at = Some(ctx.w.now());
         save(ctx, c.clone());
@@ -1689,7 +1950,13 @@ fn contract_agree(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if c.state != ContractState::Disputed {
         return Err(CmdError::msg(format!("Contract #{} is not disputed.", c.id)));
     }
-    let party = acting_party(ctx, &c, "contract.dispute").ok_or_else(|| CmdError::msg(NO_SUCH))?;
+    // E4b2 verify fold, A5: agreeing is an **accept-level** right, not a dispute-level
+    // one. `contract.dispute` is the power to freeze an org's escrow and demand a
+    // human look at it — a safety valve, deliberately cheap to hand out. Agreeing
+    // disposes of the money: a unanimous `settle` pays the whole escrow out, a
+    // unanimous `refund` unwinds an agreement the org is bound to. Consenting the org
+    // to a disposition is exactly what `contract.accept` is.
+    let party = acting_party(ctx, &c, "contract.accept").ok_or_else(|| CmdError::msg(NO_SUCH))?;
     let resolution = match ctx.args.rhs().map(str::trim).map(str::to_ascii_lowercase).as_deref() {
         Some("settle") => Resolution::Settle,
         Some("refund") => Resolution::Refund,
@@ -1759,11 +2026,15 @@ fn apply_resolution(ctx: &mut Ctx<'_>, id: ContractId, resolution: Resolution) {
             save(ctx, c);
             match settle(ctx, id) {
                 Settled::Posted(_) => {}
-                Settled::Refused(detail) => {
+                // A6: the detail reaches a **party**, so it goes through the hiding
+                // renderer first. Naming another party's frozen account in the reply
+                // to `@contract/agree` is a disclosure the surface never made.
+                Settled::Refused(detail, named) => {
+                    let text = refusal_text(ctx, &detail, &named);
                     info(
                         ctx,
                         format!(
-                            "Contract #{id} could not settle even so: {detail}. Nothing moved; it \
+                            "Contract #{id} could not settle even so: {text}. Nothing moved; it \
                              stays where it was."
                         ),
                     );
@@ -1775,6 +2046,15 @@ fn apply_resolution(ctx: &mut Ctx<'_>, id: ContractId, resolution: Resolution) {
         }
         Resolution::Refund => {
             unwind(ctx, id, ContractState::Cancelled);
+            if live_contract(ctx, id).is_some_and(|c| !c.state.is_terminal()) {
+                info(
+                    ctx,
+                    format!(
+                        "Contract #{id}'s refund was refused; nothing moved. It stays in force with \
+                         its escrow reserved, the sweep is retrying, and staff have been paged."
+                    ),
+                );
+            }
         }
     }
 }
@@ -1809,7 +2089,19 @@ fn contract_cancel(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     let id = c.id;
     unwind(ctx, id, ContractState::Cancelled);
-    info(ctx, format!("Contract #{id} is cancelled."));
+    // M2+M3: the state moves only once the refund posts, so the confirmation says
+    // what actually happened rather than what was asked for.
+    if live_contract(ctx, id).is_some_and(|c| c.state.is_terminal()) {
+        info(ctx, format!("Contract #{id} is cancelled."));
+    } else {
+        info(
+            ctx,
+            format!(
+                "Contract #{id} is ending, but its refund was refused: it stays in force with its \
+                 escrow reserved while the sweep retries, and staff have been paged."
+            ),
+        );
+    }
     ctx.gate_on_durable_ack();
     Ok(())
 }
@@ -1839,13 +2131,39 @@ fn contract_amend(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             c.id
         )));
     }
+    // **An amendment may not run over a refund that has not landed** (E4b2 verify
+    // fold, M2+M3). The old code called `unwind`, ignored its outcome, cleared
+    // `escrow` and bumped the generation — so a refused refund left holds nobody's
+    // record listed any more, under a key generation that would never be posted
+    // again. The escrow was simply gone from the model while still reserving the
+    // payer's money. So: refuse while a transition is pending, and refuse while any
+    // qualifying escrow is still `Held`.
+    if c.pending.is_some() {
+        return Err(CmdError::msg(format!(
+            "Contract #{}'s refund has not landed yet. It is being retried; try again shortly, or \
+             @contract/resolve #{}=refund.",
+            c.id, c.id
+        )));
+    }
     let id = c.id;
     let had = c.acceptances.len();
-    // Refund through the ordinary unwind (the state change first, then the money),
-    // then re-open the surface.
+    // Refund through the ordinary unwind (the plan posts, then the state moves), then
+    // re-open the surface.
     unwind(ctx, id, ContractState::Cancelled);
+    let held_still = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().contract(id).map(|c| qualifying_escrow(c, s.snapshot())))
+        .is_some_and(|e| !e.holds.is_empty());
+    if held_still {
+        return Err(CmdError::msg(format!(
+            "Contract #{id}'s escrow could not be released, so it cannot be amended yet: staff have \
+             been paged and the sweep is retrying. Nothing was changed."
+        )));
+    }
     let Some(mut back) = live_contract(ctx, id) else { return Ok(()) };
     back.state = ContractState::Draft;
+    back.pending = None;
     // The generation every deterministic key carries. It moves BEFORE anything else,
     // because the refund above posted under the old one: without it a second
     // cancellation would reuse `contract/{id}/refund`, resolve to that first refund
@@ -1857,7 +2175,8 @@ fn contract_amend(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     back.deposits.clear();
     back.roster_locked = false;
     back.settle_attempts = 0;
-    save_open(ctx, back.clone());
+    // `Draft`, so `save_open` re-validates nothing and cannot refuse.
+    let _ = save_open(ctx, back.clone());
     info(ctx, format!("Contract #{id} is back to draft; {had} acceptance(s) were voided and refunded."));
     notify_parties(
         ctx,
@@ -1867,72 +2186,220 @@ fn contract_amend(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+// ---- terminal transitions: the plan first, then the state (M2+M3) ---------
+//
+// **The rule this whole section turns on.** A terminal transition is:
+//
+//   1. write `pending: Some(PendingTerminal { kind, .. })` on the live record;
+//   2. post the transition's plan under the contract's deterministic key **at its own
+//      generation** (`contract/{id}/refund/{n}`, `contract/{id}/forfeit/{n}`);
+//   3. only then write the terminal state and clear `pending`.
+//
+// E4b2 shipped it the other way round — state first, money after — because that is
+// what lifts the `DepositInto` custody lock. But a refused post then left a
+// **terminal** contract holding live escrow: `unwind` logged, `forfeit` disputed a
+// contract it had already expired (and `dispute_with` returned immediately on a
+// terminal state, so even the page never happened), and nothing in the world retried
+// either. The escrow was unreachable by any command, because every path that could
+// release it refuses a terminal contract.
+//
+// Inverting the order needs one new thing — a way to withdraw a deposit while the
+// contract is still live and the lock is still on — which is
+// `AuthEval::authorize_custody_unlock`, answered `true` only by
+// `ContractAuth::unwinding` for a deposit that contract recorded.
+//
+// It buys three properties, and each one is a bug the fold closes: the sweep can
+// **retry** a half-done transition (step 3), boot can **finish** one by looking the
+// same key up in the idempotency index (`boot.rs`), and a refusal is **paged** rather
+// than logged, with `@contract/resolve` already written out.
+
 /// Take a contract out of force and give everything back (§5).
 ///
-/// The order is not negotiable: the **state change comes first**, because that is
-/// what lifts the `DepositInto` custody lock (E4a verify fold, finding 2), and only
-/// then does the refund plan run — releasing the escrow, releasing the pledges, and
-/// returning the deposit to its depositor, all in the same durable bundle under
-/// [`ContractAuth::unwinding`].
+/// Sets `pending` and attempts the unwind at once; a refusal leaves the contract live,
+/// paged, and retried by the sweep.
 pub(crate) fn unwind(ctx: &mut Ctx<'_>, id: ContractId, state: ContractState) {
-    let Some(mut c) = live_contract(ctx, id) else { return };
-    if c.state.is_terminal() {
-        return;
-    }
-    c.state = state;
-    save(ctx, c.clone());
-    cancel_lease_obligations(ctx, id);
-
-    // Only the returns this world can actually perform ride the plan: an object that
-    // is no longer in the vault, or a depositor who is not a legal destination, must
-    // not make the whole refund fail and strand the escrow.
-    let mut working = c.clone();
-    working.deposits.retain(|d| returnable(ctx, d));
-    let plan = {
-        let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
-        refund_plan(&working, store.snapshot())
+    let kind = match state {
+        ContractState::Cancelled => PendingKind::Cancel,
+        _ => PendingKind::Expire,
     };
-    let plan = match plan {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::error!(contract = id.0, error = %e, "economy: a contract's refund plan could not be built");
-            return;
+    if begin_pending(ctx, id, kind) {
+        finish_terminal(ctx, id);
+    }
+}
+
+/// Record that a terminal transition has begun. `false` when there is nothing to
+/// begin (no contract, or it is already terminal).
+fn begin_pending(ctx: &mut Ctx<'_>, id: ContractId, kind: PendingKind) -> bool {
+    let Some(mut c) = live_contract(ctx, id) else { return false };
+    if c.state.is_terminal() {
+        return false;
+    }
+    if c.pending.is_none() {
+        // A transition already in flight WINS: two of them would post under two keys
+        // and could each hand back a share of the same escrow.
+        c.pending = Some(PendingTerminal { kind, attempts: 0, since: ctx.w.now() });
+        save(ctx, c);
+    }
+    true
+}
+
+/// Attempt the pending terminal transition once (the command path's own attempt, the
+/// sweep's retry, and the route boot takes when no key resolved).
+///
+/// Returns `true` when the contract is terminal afterwards.
+pub(crate) fn finish_terminal(ctx: &mut Ctx<'_>, id: ContractId) -> bool {
+    let Some(c) = live_contract(ctx, id) else { return false };
+    // A contract that is **already terminal** and still carries `pending` is boot's
+    // orphan-escrow recovery (B2): the record ended while money it did not list was
+    // still reserved, so boot adopted the hold, advanced the key generation, and
+    // asked for the contract's own unwind. Everything below works unchanged —
+    // `refund_plan` accepts a `Cancelled`/`Expired` contract by construction, and
+    // `land_terminal` leaves a terminal state where it is.
+    let Some(pending) = c.pending.clone() else { return false };
+
+    // M6: the returns are derived **now**, from the journal's last-custody map, not
+    // from what `record_deposits` cached at activation. A `DepositInto` delivered
+    // after activation was invisible to the cache, so its object was custody-locked
+    // for the contract's whole life and then — because the refund never named it —
+    // left in the vault with the lock gone and no record of whose it was.
+    let mut working = c.clone();
+    working.deposits = record_deposits(ctx, &c);
+    working.deposits.retain(|d| returnable(ctx, d));
+
+    let built = {
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else { return false };
+        match pending.kind {
+            PendingKind::Forfeit => forfeit_plan(&working, store.snapshot()),
+            PendingKind::Cancel | PendingKind::Expire => refund_plan(&working, store.snapshot()),
         }
     };
-    if plan.hold_ops.is_empty() && plan.asset_ops.is_empty() && plan.custody_ops.is_empty() {
-        return;
+    let plan = match built {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(contract = id.0, error = %e, "economy: a contract's unwind plan could not be built");
+            note_terminal_failure(ctx, id, &e.to_string());
+            return false;
+        }
+    };
+    // Nothing to post: no escrow to release, no pledge to lift, no deposit to hand
+    // back. The transition is complete the moment the state is written.
+    if plan.requested_lines.is_empty()
+        && plan.hold_ops.is_empty()
+        && plan.asset_ops.is_empty()
+        && plan.custody_ops.is_empty()
+    {
+        return land_terminal(ctx, id, pending.kind);
     }
     let posted = {
         let auth = {
-            let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
-            ContractAuth::unwinding(&working, store.snapshot())
+            let Some(store) = ctx.w.module_state::<EconomyStore>() else { return false };
+            match pending.kind {
+                PendingKind::Forfeit => match working.consent.terms.on_expiry {
+                    Expiry::Forfeit { to } => {
+                        ContractAuth::forfeiting(&working, store.snapshot(), to)
+                    }
+                    _ => return false,
+                },
+                PendingKind::Cancel | PendingKind::Expire => {
+                    ContractAuth::unwinding(&working, store.snapshot())
+                }
+            }
         };
         api::post_with(ctx, &plan, PostAuth::Injected(&auth))
     };
     match posted {
         Ok(PostOutcome::Posted(_) | PostOutcome::AlreadyPosted(_)) => {
-            notify_parties(ctx, &c, &format!("Contract #{id} ended; its escrow was released."));
+            land_terminal(ctx, id, pending.kind)
         }
         Ok(PostOutcome::NeedsApproval(request)) => {
-            tracing::error!(contract = id.0, request = request.0, "economy: a contract refund asked for approval");
+            note_terminal_failure(
+                ctx,
+                id,
+                &format!("it asked for approval (request #{request}), which nothing can collect"),
+            );
+            false
         }
         Err(e) => {
-            tracing::error!(contract = id.0, error = %e, "economy: a contract refund was refused; the escrow is still held");
-            let now = ctx.w.now();
-            crate::sweep::page(
-                ctx,
-                EscalationKind::SettlementRefused,
-                EscalationSubject::Contract(id),
-                None,
-                format!(
-                    "contract #{id} ended but its refund was refused ({e}); the escrow is still \
-                     reserved and its parties cannot spend it"
-                ),
-                vec![format!("@contract/show #{id}"), "@econ/audit".to_string()],
-                now,
-            );
+            note_terminal_failure(ctx, id, &e.to_string());
+            false
         }
     }
+}
+
+/// The transition's plan is durable: write the terminal state, clear `pending`, stop
+/// the lease's rent, and tell the parties.
+fn land_terminal(ctx: &mut Ctx<'_>, id: ContractId, kind: PendingKind) -> bool {
+    let Some(mut c) = live_contract(ctx, id) else { return false };
+    if !c.state.is_terminal() {
+        c.state = kind.target();
+        c.pending = None;
+        save(ctx, c.clone());
+    } else {
+        clear_pending(ctx, id);
+    }
+    cancel_lease_obligations(ctx, id);
+    let msg = match kind {
+        PendingKind::Forfeit => format!("Contract #{id} lapsed; its escrow was forfeit."),
+        PendingKind::Cancel | PendingKind::Expire => {
+            format!("Contract #{id} ended; its escrow was released.")
+        }
+    };
+    notify_parties(ctx, &c, &msg);
+    true
+}
+
+fn clear_pending(ctx: &mut Ctx<'_>, id: ContractId) {
+    let Some(mut c) = live_contract(ctx, id) else { return };
+    if c.pending.is_some() {
+        c.pending = None;
+        save(ctx, c);
+    }
+}
+
+/// One refused attempt at a terminal transition: the contract stays **live** with its
+/// escrow intact, the attempt is counted, and a human is paged with the two commands
+/// that end it. At [`MAX_SETTLE_ATTEMPTS`] it is `Disputed` — still not terminal, so
+/// the money is still reachable.
+fn note_terminal_failure(ctx: &mut Ctx<'_>, id: ContractId, detail: &str) {
+    let Some(mut c) = live_contract(ctx, id) else { return };
+    let Some(mut pending) = c.pending.clone() else { return };
+    tracing::error!(
+        contract = id.0,
+        detail,
+        "economy: a contract's terminal transition was refused; it stays live and its escrow is intact"
+    );
+    pending.attempts = pending.attempts.saturating_add(1);
+    let spent = pending.attempts >= MAX_SETTLE_ATTEMPTS;
+    c.pending = if spent { None } else { Some(pending) };
+    save(ctx, c);
+    if spent {
+        dispute_with(
+            ctx,
+            id,
+            format!(
+                "contract #{id} could not be unwound after {MAX_SETTLE_ATTEMPTS} attempts \
+                 ({detail}); it is still live and its escrow is still reserved"
+            ),
+        );
+        return;
+    }
+    let now = ctx.w.now();
+    crate::sweep::page(
+        ctx,
+        EscalationKind::SettlementRefused,
+        EscalationSubject::Contract(id),
+        None,
+        format!(
+            "contract #{id} is ending but its plan was refused ({detail}); it is still live, its \
+             escrow is still reserved, and the sweep is retrying"
+        ),
+        vec![
+            format!("@contract/show #{id}"),
+            format!("@contract/resolve #{id}=refund"),
+            format!("@contract/resolve #{id}=settle"),
+        ],
+        now,
+    );
 }
 
 /// Whether a recorded deposit can actually be handed back right now: the object is
@@ -1960,6 +2427,11 @@ fn returnable(ctx: &Ctx<'_>, d: &DepositRecord) -> bool {
 pub(crate) fn expire(ctx: &mut Ctx<'_>, id: ContractId) {
     let Some(c) = live_contract(ctx, id) else { return };
     let bound = c.fully_accepted();
+    // A forfeit with nothing to forfeit is a refund: `forfeit_plan` refuses an empty
+    // escrow, and there is still a pledge to release and a deposit to hand back.
+    let has_escrow = ctx.w.module_state::<EconomyStore>().is_some_and(|s| {
+        !qualifying_escrow(&c, s.snapshot()).holds.is_empty()
+    });
     match c.consent.terms.on_expiry {
         Expiry::Refund => {
             unwind(ctx, id, ContractState::Expired);
@@ -1974,63 +2446,19 @@ pub(crate) fn expire(ctx: &mut Ctx<'_>, id: ContractId) {
         Expiry::Dispute => {
             unwind(ctx, id, ContractState::Expired);
         }
-        Expiry::Forfeit { .. } if bound => forfeit(ctx, id),
+        Expiry::Forfeit { .. } if bound && has_escrow => {
+            if begin_pending(ctx, id, PendingKind::Forfeit) {
+                finish_terminal(ctx, id);
+            }
+        }
         Expiry::Forfeit { .. } => {
             tracing::warn!(
                 contract = id.0,
-                "economy: an offered contract lapsed before it bound anybody; refunding rather \
-                 than forfeiting"
+                bound,
+                "economy: a lapsed contract cannot forfeit (it never bound anybody, or there is \
+                 nothing escrowed); refunding instead"
             );
             unwind(ctx, id, ContractState::Expired);
-        }
-    }
-}
-
-/// `Expiry::Forfeit { to }`: the escrow pays out to the account the consent surface
-/// named, under a [`ContractAuth::forfeiting`] that can credit exactly that account
-/// and nothing else.
-fn forfeit(ctx: &mut Ctx<'_>, id: ContractId) {
-    let Some(mut c) = live_contract(ctx, id) else { return };
-    let Expiry::Forfeit { to } = c.consent.terms.on_expiry else { return };
-    if c.state.is_terminal() {
-        return;
-    }
-    c.state = ContractState::Expired;
-    save(ctx, c.clone());
-    cancel_lease_obligations(ctx, id);
-    let plan = {
-        let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
-        forfeit_plan(&c, store.snapshot())
-    };
-    let plan = match plan {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::error!(contract = id.0, error = %e, "economy: a forfeit plan could not be built");
-            return;
-        }
-    };
-    let posted = {
-        let auth = {
-            let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
-            ContractAuth::forfeiting(&c, store.snapshot(), to)
-        };
-        api::post_with(ctx, &plan, PostAuth::Injected(&auth))
-    };
-    match posted {
-        Ok(PostOutcome::Posted(_) | PostOutcome::AlreadyPosted(_)) => {
-            notify_parties(ctx, &c, &format!("Contract #{id} lapsed; its escrow was forfeit."));
-        }
-        Ok(PostOutcome::NeedsApproval(_)) | Err(_) => {
-            let detail = match posted {
-                Err(e) => e.to_string(),
-                _ => "the forfeit asked for an approval nothing can collect".to_string(),
-            };
-            tracing::error!(contract = id.0, %detail, "economy: a contract forfeit was refused");
-            dispute_with(
-                ctx,
-                id,
-                format!("contract #{id} lapsed but its forfeit was refused ({detail}); the escrow is frozen"),
-            );
         }
     }
 }
@@ -2063,9 +2491,65 @@ fn notify_parties(ctx: &mut Ctx<'_>, c: &EconomicContract, msg: &str) {
 
 // ---- @contract/show | list ------------------------------------------------
 
+/// Which disclosure class this viewer is in (E4b2 verify fold, A7).
+///
+/// `may_view_contract` answers *whether* you may look; this answers **at what**, and
+/// the two were the same question before the fold: an audience member — doc 10 T6's
+/// "eligible defenders", people told an operation is happening precisely because they
+/// are on the other side of it — got the full surface, with every party, every
+/// amount, every share and every escrow hold id. That is the plan, not the notice.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum ShowClass {
+    /// A party, the issuer, a named attestor, or staff: the whole surface, with
+    /// account ids masked by `may_view_account`.
+    Full,
+    /// A declared audience member: a **notice** — that it exists, its state, its
+    /// window, and the kinds of condition. No money, no roles, no ids.
+    Notice,
+    /// Anyone else who got through the gate, which means the surface said `Public`:
+    /// the consent surface as consented, with account ids masked.
+    Consented,
+}
+
+fn show_class(ctx: &Ctx<'_>, c: &EconomicContract) -> ShowClass {
+    if is_admin(ctx.w, ctx.actor) || is_issuer(ctx, c) {
+        return ShowClass::Full;
+    }
+    let me = PrincipalId::Object(ctx.actor);
+    let auth = api::WorldAuth { w: ctx.w };
+    if c.consent.parties.iter().any(|p| auth.acts_for(&me, p)) {
+        return ShowClass::Full;
+    }
+    // A named attestor or the adjudicator is a consented **authority** over this
+    // contract's conditions; they have to read what they are being asked to attest.
+    let named_attestor = c
+        .consent
+        .adjudicator
+        .iter()
+        .chain(c.consent.conditions.iter().filter_map(|cond| match cond {
+            TypedCondition::Attestation { by } => Some(by),
+            _ => None,
+        }))
+        .any(|set| attestor_can_view(ctx.w, ctx.actor, set));
+    if named_attestor {
+        return ShowClass::Full;
+    }
+    if c.consent.visibility.members().iter().any(|p| auth.acts_for(&me, p)) {
+        return ShowClass::Notice;
+    }
+    ShowClass::Consented
+}
+
 fn contract_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let c = contract_of(ctx, ctx.args.lhs())?;
+    let class = show_class(ctx, &c);
     let staff = is_admin(ctx.w, ctx.actor);
+    if class == ShowClass::Notice {
+        for l in notice_lines(ctx, &c) {
+            info(ctx, l);
+        }
+        return Ok(());
+    }
     let scale = ctx.w.module_state::<EconomyStore>().map_or(0, |s| {
         let snap = s.snapshot();
         c.consent
@@ -2076,6 +2560,16 @@ fn contract_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .and_then(|a| snap.instrument(&a.instrument))
             .map_or(0, |i| i.scale)
     });
+    // Every account id on this page goes through the same per-class rule: an id the
+    // viewer may see, or the word "an account". E4c's disclosure filter renders
+    // through this and nothing else.
+    let acct = |ctx: &Ctx<'_>, id: AccountId| -> String {
+        if may_view_account(ctx.w, ctx.actor, id) {
+            format!("account #{id}")
+        } else {
+            "an account".to_string()
+        }
+    };
     let mut lines = vec![
         format!("contract #{} \"{}\" — {}", c.id, c.name, render_state(&c.state)),
         format!("  issued by {}", render_principal(ctx, &c.issuer)),
@@ -2095,28 +2589,32 @@ fn contract_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         if accepted.is_empty() { "nobody yet".to_string() } else { accepted.join(", ") }
     ));
     for x in &c.consent.terms.consideration {
-        let acct = if may_view_account(ctx.w, ctx.actor, x.account) {
-            format!("account #{}", x.account)
+        // A1: the payer's NAME comes from the party list, never from the account's
+        // owner — otherwise `/pay` plus `/show` was an owner oracle over any wallet
+        // the drafter could name. A `from` the surface does not list as a party is
+        // rendered as a payer, not as a person.
+        let who = if c.consent.parties.iter().any(|p| principal_key(p) == principal_key(&x.from)) {
+            render_principal(ctx, &x.from)
         } else {
-            "an account".to_string()
+            "a payer".to_string()
         };
         lines.push(format!(
-            "  {} escrows {} from {acct}",
-            render_principal(ctx, &x.from),
-            x.amount.to_decimal_string(scale)
+            "  {who} escrows {} from {}",
+            x.amount.to_decimal_string(scale),
+            acct(ctx, x.account)
         ));
     }
     if c.consent.terms.outcomes.is_empty() {
-        for s in &c.consent.terms.split {
-            lines.push(format!("  pays #{} {}", s.to, render_share(s.share, scale)));
+        for sh in &c.consent.terms.split {
+            lines.push(format!("  pays {} {}", acct(ctx, sh.to), render_share(sh.share, scale)));
         }
-        lines.push(format!("  remainder to #{}", c.consent.terms.remainder_to));
+        lines.push(format!("  remainder to {}", acct(ctx, c.consent.terms.remainder_to)));
     } else {
         for o in &c.consent.terms.outcomes {
             let pays: Vec<String> = o
                 .payouts
                 .iter()
-                .map(|s| format!("#{} {}", s.to, render_share(s.share, scale)))
+                .map(|sh| format!("{} {}", acct(ctx, sh.to), render_share(sh.share, scale)))
                 .collect();
             lines.push(format!(
                 "  outcome \"{}\" when {:?} pays {}",
@@ -2147,27 +2645,37 @@ fn contract_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             "  deadline {} on {:?}; on expiry {}",
             d.at,
             d.clock,
-            render_expiry(c.consent.terms.on_expiry)
+            render_expiry_masked(ctx, c.consent.terms.on_expiry)
         ));
     }
     lines.push(format!("  visibility: {}", c.consent.visibility.label()));
-    if let EconomicVisibility::Audience { members } = &c.consent.visibility {
+    if let EconomicVisibility::Audience { members, .. } = &c.consent.visibility {
         let who: Vec<String> = members.iter().map(|p| render_principal(ctx, p)).collect();
         lines.push(format!("  audience: {}", who.join(", ")));
     }
-    for (label, who) in [
-        ("author", &c.roles.author),
-        ("payer", &c.roles.payer),
-        ("johnson", &c.roles.representative),
-        ("facilitator", &c.roles.facilitator),
-    ] {
-        if let Some(p) = who {
-            lines.push(format!("  {label}: {}", render_principal(ctx, p)));
+    // The roles and the escrow hold ids are operational detail about the people
+    // running this, not part of what a public reader consented to see.
+    if class == ShowClass::Full {
+        for (label, who) in [
+            ("author", &c.roles.author),
+            ("payer", &c.roles.payer),
+            ("johnson", &c.roles.representative),
+            ("facilitator", &c.roles.facilitator),
+        ] {
+            if let Some(p) = who {
+                lines.push(format!("  {label}: {}", render_principal(ctx, p)));
+            }
         }
-    }
-    if !c.escrow.is_empty() {
-        let ids: Vec<String> = c.escrow.iter().map(|h| format!("#{h}")).collect();
-        lines.push(format!("  escrow holds: {}", ids.join(", ")));
+        if !c.escrow.is_empty() {
+            let ids: Vec<String> = c.escrow.iter().map(|h| format!("#{h}")).collect();
+            lines.push(format!("  escrow holds: {}", ids.join(", ")));
+        }
+        if let Some(pending) = &c.pending {
+            lines.push(format!(
+                "  ending ({:?}) — attempt {} of {MAX_SETTLE_ATTEMPTS}; its escrow is still reserved",
+                pending.kind, pending.attempts
+            ));
+        }
     }
     if staff {
         lines.push(format!(
@@ -2191,6 +2699,51 @@ fn contract_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// The **audience notice** (A7, doc 10 T6): notice of the window, not the plan.
+///
+/// What is here is deliberate and short — that a contract exists, what it is called,
+/// where it is in its life, how long it runs, and what *kinds* of thing have to be
+/// true for it to settle. What is NOT here is everything a defender would use to act
+/// against the parties rather than prepare for the operation: who is on it, what
+/// anyone is paying or being paid, which accounts, which objects, which holds, and
+/// (unless the surface says `announce=yes`) who is running it.
+fn notice_lines(ctx: &Ctx<'_>, c: &EconomicContract) -> Vec<String> {
+    let mut lines = vec![format!(
+        "contract #{} \"{}\" — {} (you are in its declared audience)",
+        c.id,
+        c.name,
+        render_state(&c.state)
+    )];
+    if c.consent.visibility.announce_issuer() {
+        lines.push(format!("  issued by {}", render_principal(ctx, &c.issuer)));
+    }
+    if let Some(d) = c.consent.deadline {
+        lines.push(format!("  window closes at {} on {:?}", d.at, d.clock));
+    }
+    let kinds: Vec<String> = c
+        .consent
+        .conditions
+        .iter()
+        .enumerate()
+        .map(|(i, cond)| {
+            let mark = if c.satisfied.get(i).and_then(|s| s.as_ref()).is_some() { " (met)" } else { "" };
+            format!("{:?}{mark}", cond.evidence_kind())
+        })
+        .collect();
+    if kinds.is_empty() {
+        lines.push("  no recorded conditions".to_string());
+    } else {
+        lines.push(format!("  conditions: {}", kinds.join(", ")));
+    }
+    lines.push(format!("  visibility: {}", c.consent.visibility.label()));
+    lines.push(
+        "  This is a notice, not the terms: an audience is told that something is happening and \
+         when, never who is paying whom."
+            .to_string(),
+    );
+    lines
+}
+
 fn render_state(s: &ContractState) -> String {
     match s {
         ContractState::Draft => "draft".to_string(),
@@ -2211,10 +2764,18 @@ fn render_share(s: Share, scale: u8) -> String {
     }
 }
 
-fn render_expiry(e: Expiry) -> String {
+/// `on_expiry`, with the forfeit account behind the same per-class mask as every
+/// other account id on the page (A7).
+fn render_expiry_masked(ctx: &Ctx<'_>, e: Expiry) -> String {
     match e {
         Expiry::Refund => "refund".to_string(),
-        Expiry::Forfeit { to } => format!("forfeit to #{to}"),
+        Expiry::Forfeit { to } => {
+            if may_view_account(ctx.w, ctx.actor, to) {
+                format!("forfeit to account #{to}")
+            } else {
+                "forfeit to an account".to_string()
+            }
+        }
         Expiry::Dispute => "dispute".to_string(),
     }
 }
@@ -2233,12 +2794,21 @@ fn render_deliverable(ctx: &Ctx<'_>, d: &Deliverable) -> String {
         Deliverable::Collateral { object, from } => {
             format!("#{} pledged by {}", object.0, render_principal(ctx, from))
         }
-        Deliverable::Obligation { template } => format!(
-            "an obligation: account #{} owes #{} {} each period",
-            template.debit_account,
-            template.credit_account,
-            template.amount.minor()
-        ),
+        Deliverable::Obligation { template } => {
+            let side = |id: crate::ids::AccountId| {
+                if may_view_account(ctx.w, ctx.actor, id) {
+                    format!("account #{id}")
+                } else {
+                    "an account".to_string()
+                }
+            };
+            format!(
+                "an obligation: {} owes {} {} each period",
+                side(template.debit_account),
+                side(template.credit_account),
+                template.amount.minor()
+            )
+        }
     }
 }
 

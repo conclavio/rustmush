@@ -1045,6 +1045,7 @@ fn contract_shell() -> EconomicContract {
         roster_locked: true,
         deposits: Vec::new(),
         agreements: Vec::new(),
+        pending: None,
         roles: mush_economy::ContractRoles::default(),
         revision: 1,
     }
@@ -1363,10 +1364,11 @@ fn check_offerable_refuses_an_infeasible_split_and_an_oversized_contract() {
         Deliverable::DepositInto { object: obj(60), vault: VaultId(1) },
         Deliverable::DepositInto { object: obj(61), vault: VaultId(1) },
     ];
-    // No vault at all is its own refusal…
-    assert!(matches!(check_offerable(&two_deposits, &s), Err(ContractError::NoSuchVault(_))));
-    // …and with the vault present, E3's one-custody-op-per-plan module cap is what
-    // refuses the second deposit, at Offer, rather than at a half-applied settlement.
+    // E3's one-custody-op-per-plan module cap refuses the second deposit at Offer,
+    // rather than at a half-applied settlement — and it is a **structural** refusal
+    // since the E4b2 verify fold split `check_structure` out of `check_offerable`, so
+    // it fires whether or not the vault exists (which is what lets boot re-run it).
+    assert!(matches!(check_offerable(&two_deposits, &s), Err(ContractError::Infeasible(_))));
     let mut with_vault = s.clone();
     with_vault.put_vault(vault(1, 80));
     assert!(matches!(
@@ -1375,6 +1377,8 @@ fn check_offerable_refuses_an_infeasible_split_and_an_oversized_contract() {
     ));
     let mut one_deposit = two_deposits.clone();
     one_deposit.consent.terms.deliverables.truncate(1);
+    // With one deposit, the world half is what answers: no vault is `NoSuchVault`.
+    assert!(matches!(check_offerable(&one_deposit, &s), Err(ContractError::NoSuchVault(_))));
     assert!(check_offerable(&one_deposit, &with_vault).is_ok());
 
     let mut too_many_deliverables = base.clone();

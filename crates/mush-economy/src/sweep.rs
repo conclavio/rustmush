@@ -1034,6 +1034,10 @@ const MAX_CONTRACTS_PER_SWEEP: usize = 64;
 /// lookups of its own that could see a half-changed state.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum ContractStep {
+    /// A terminal transition whose plan has not posted yet (E4b2 verify fold,
+    /// M2+M3): retry it. This step comes **before** every other one — a contract on
+    /// its way out must not settle, expire again, or be paged as a stalled dispute.
+    Retry,
     /// Every condition holds: promote it if it is still `Active`, and settle.
     Settle,
     /// Its deadline has passed unsettled: apply `on_expiry` (refund / forfeit /
@@ -1054,9 +1058,22 @@ enum ContractStep {
 /// resolve (a `Manual` contract deadline, a cadence with no record) reads as *not
 /// passed* — the same fail-closed rule hold expiry uses. A contract must never lapse
 /// because nobody could tell what time it was.
+///
+/// **The per-fire cap bounds work, not the scan** (E4b2 verify fold, B4). Two rules
+/// keep it from starving a contract that genuinely needs the fire:
+///
+/// 1. **Nothing-due records are filtered out before the cap.** A `Disputed` contract
+///    past `DISPUTE_TTL_SECS` used to yield `Page` on every fire forever; `page`
+///    deduped it to a no-op, but it had already spent one of the sixty-four slots. So
+///    a `Page` counts only when its record is actually due to say something — there
+///    is no record yet, or it is due to re-notify, or it is an acknowledged one whose
+///    cause has come back.
+/// 2. **The scan rotates.** Even with only real work in the pool, `contracts()` is in
+///    id order, so a sixty-fifth contract would never be reached. The cursor makes
+///    the pass a rotation, so every record is reached within one sweep of the pool.
 fn step_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
     let clocks = Clocks::new(now, ic_now);
-    let work: Vec<(crate::ids::ContractId, ContractStep)> = {
+    let due: Vec<(crate::ids::ContractId, ContractStep)> = {
         let Some(store) = ctx.w.module_state::<EconomyStore>() else { return };
         let providers = store.providers();
         let custody = crate::custody::WorldCustody { w: ctx.w, providers };
@@ -1073,8 +1090,24 @@ fn step_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
         let lapsed = |c: &crate::contract::EconomicContract| {
             c.consent.deadline.is_some_and(|d| clocks.passed(&d, snap, i64::MIN))
         };
+        // Rule 1: a dispute past its TTL is work only when the ladder has something
+        // to say about it this fire.
+        let page_due = |id: crate::ids::ContractId| match store
+            .escalations()
+            .find(|e| e.subject == EscalationSubject::Contract(id))
+        {
+            None => true,
+            Some(e) => e.renotify_due(now) || e.reopen_due(now),
+        };
         snap.contracts()
             .filter_map(|c| {
+                // A pending terminal transition outranks everything: its plan may
+                // already be durable, and nothing else may run over it.
+                // (A terminal contract carrying one is boot's orphan-escrow
+                // recovery — it still has money to hand back.)
+                if c.pending.is_some() {
+                    return Some((c.id, ContractStep::Retry));
+                }
                 let step = match c.state {
                     crate::contract::ContractState::Draft => {
                         (now.saturating_sub(c.created_at) > crate::DRAFT_TTL_SECS)
@@ -1102,21 +1135,38 @@ fn step_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
                             }
                         }
                     }
-                    crate::contract::ContractState::Disputed => c
+                    crate::contract::ContractState::Disputed => (c
                         .disputed_at
                         .is_some_and(|at| now.saturating_sub(at) > crate::DISPUTE_TTL_SECS)
-                        .then_some(ContractStep::Page),
+                        && page_due(c.id))
+                    .then_some(ContractStep::Page),
                     crate::contract::ContractState::Settled { .. }
                     | crate::contract::ContractState::Cancelled
                     | crate::contract::ContractState::Expired => None,
                 };
                 step.map(|s| (c.id, s))
             })
-            .take(MAX_CONTRACTS_PER_SWEEP)
             .collect()
     };
+    // Rule 2: rotate the (id-ordered) due list so the scan resumes where it stopped.
+    let cursor = ctx.w.module_state::<EconomyStore>().map_or(0, |s| s.sweep_contract_cursor);
+    let mut due = due;
+    let split = due.iter().position(|(id, _)| id.0 >= cursor).unwrap_or(due.len());
+    due.rotate_left(split);
+    let work: Vec<(crate::ids::ContractId, ContractStep)> =
+        due.into_iter().take(MAX_CONTRACTS_PER_SWEEP).collect();
+    let next_cursor = work.last().map_or(0, |(id, _)| id.0.saturating_add(1));
+    if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
+        store.sweep_contract_cursor = next_cursor;
+    }
     for (id, step) in work {
         match step {
+            // The plan-first rule (M2+M3): one more attempt at the transition. Every
+            // outcome is handled inside — a refusal counts an attempt, pages, and
+            // leaves the contract live with its escrow intact; the last one disputes.
+            ContractStep::Retry => {
+                let _ = crate::contract_live::finish_terminal(ctx, id);
+            }
             ContractStep::Settle => {
                 // Every outcome of a settlement attempt is already handled inside:
                 // a refusal leaves the contract `ReadyToSettle` with a loud log, and

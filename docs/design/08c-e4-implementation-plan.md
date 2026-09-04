@@ -959,7 +959,9 @@ placement that rides an acceptance, live settlement, unwind and forfeit, the
 step, and the E6-driven extensions (outcome table, roster lock + amendment, named
 adjudicator + permitted evidence, separate roles). `tests/e4b2.rs` is **37** tests;
 `mush-economy` is **346** in total, and both digest pins (E2 `9c917eee…`, E3-shaped
-`b780e3a0…`) are green.
+`b780e3a0…`) are green. (Those counts are the cut as built; the **Verify-fold deltas**
+block below and §5.2 record what the end-of-build adversarial verify changed, and the
+totals after it.)
 
 **Signatures and new files.**
 
@@ -1101,6 +1103,83 @@ contract that does not exist and one they may not see.
     refund — goes through `sweep::page` and therefore through subject dedupe and the
     reopen-rather-than-re-mint rule.
 
+**Verify-fold deltas (E4b2 verify fold).** The adversarial verify's confirmed
+findings, folded in. The load-bearing one is the **terminal-transition rule**, which
+replaces §5.1's "the state change comes first, then the money":
+
+> A terminal transition is a **post under the contract's own deterministic key at its
+> generation, followed by the state write.** While the post has not succeeded the
+> contract stays live and carries `pending: Option<PendingTerminal { kind: Cancel |
+> Expire | Forfeit, attempts, since }>`. The sweep retries a pending terminal every
+> fire (step 3's `Retry`, which outranks every other step) up to
+> `MAX_SETTLE_ATTEMPTS` and then `Disputed`; boot finishes a half-done one by looking
+> the same key up in the idempotency index. **A contract is never terminal while its
+> escrow is still reserved.**
+
+The old order existed because the terminal state is what lifts the `DepositInto`
+custody lock, so inverting it needs one new seam: `AuthEval::authorize_custody_unlock
+(object, vault) -> bool`, `false` by default and for `WorldAuth`, answered `true` only
+by `ContractAuth` with purpose `Unwind` for a deposit **that contract** recorded. It is
+unforgeable from a command, because only this crate can inject a `ContractAuth`.
+
+The rest, by area:
+
+- **Escrow and the accept.** `@contract/accept` writes the contract doc **in the escrow
+  post's own batch** (`api::post_with_companions`, whose companions ride
+  `install_commit`'s write batch and its post-image snapshot). The hold ids are
+  predicted from `peek_next_hold` — the very floor `validate` allocates from — and
+  healed if they ever differ. Boot gains an **orphan-escrow pass**: a journal-`Held`
+  hold with `purpose: Escrow { contract }` that the contract does not list is adopted
+  when it qualifies and the contract is non-terminal; on an ended contract it is
+  adopted, the key **generation advanced** (the old refund key is spent) and `pending`
+  set, so the contract's own unwind hands it back; anything else pages.
+- **Amounts, not membership.** `ContractPurpose::Settle` carries `(account, amount)`
+  pairs netted per account (and `Forfeit` carries `(to, total)`), so a credit must be
+  **exactly** what the consented split owes that account.
+- **Consent for a pledge.** `authorize_asset`'s `Encumber` arm requires
+  `asset.title_owner == from` and `contract.accepted_by(from)`; `Release` stays
+  unconditional (a pledge always comes back). `check_offerable` proves every
+  `Collateral { object, from }` has `from` a party holding title.
+- **The pay rule.** `@contract/pay` names only an account the actor
+  `may_view_account`s; a **listed party** may add their own consideration to a `Draft`
+  (self-consideration), which is how a payer whose wallet the issuer cannot see gets
+  into the surface. Every `consideration.from` must be a party
+  (`check_structure`). `/show` derives a payer's name from the **party list**, never
+  from an account's owner.
+- **Feasibility, split.** `check_offerable` splits into `check_structure` (pure: caps,
+  split and outcome arithmetic, parties, payers, the condition graph and its cycles,
+  resolvable clocks, satisfiable attestor sets) plus the world half. Boot re-runs the
+  pure half on every non-terminal record and quarantines what it refuses; `save_open`
+  re-runs the whole of `check_offerable` on an `Offered` contract (so `/roster open`
+  cannot re-sign an infeasible surface) and re-notifies the parties.
+- **Authority.** `authorize_attestor`'s `Party(p)` arm uses `acts_for` when `p` is an
+  **organization** (identity still, for a person); `contract_attest` records the
+  **party**, not the officer, so the attestation still stands once given, and refuses
+  a second attestation of a filled slot unless the recorded attestor no longer
+  qualifies (an `After` anchor cannot be pushed forward). `acting_party` gains the same
+  organization-only `acts_for` fallback, so an org party on an **unscoped** contract can
+  act. `/agree` requires `contract.accept`, not `contract.dispute`.
+- **Disclosure.** Every contract refusal routes through `commands::refuse_named`, so an
+  unviewable and a nonexistent vault/account/asset render identically at draft and at
+  offer. `contract_show` renders **per class**: party/issuer/attestor/staff get the
+  full surface with every account id masked by `may_view_account`; an **audience** gets
+  a *notice* (name, state, window, condition kinds — no money, roles or hold ids; the
+  issuer only when the new `EconomicVisibility::Audience { announce_issuer }`, inside
+  the consent surface, says so); a public stranger gets the consented surface with ids
+  masked. A settlement refusal shown to a party collapses to "staff have been paged"
+  when it names something they may not view.
+- **Deposits.** The returns are derived at unwind time from the journal's
+  `last_custody`, so a deposit delivered **after** activation still goes home;
+  `record_deposits` is only a cache now.
+- **The sweep.** Step 3 filters records with nothing due **before** the per-fire cap (a
+  `Disputed` past its TTL counts only when its escalation is `renotify_due`/
+  `reopen_due`) and rotates the scan with a durable `meta.sweep_contract_cursor`, so id
+  order cannot starve a high id.
+- **Boot.** `Settled` additionally requires the named transaction's idempotency key to
+  be **this contract's** `settle_key` at its generation; a doc claiming another
+  contract's settlement freezes as drift. `dispute_with` pages from every state,
+  terminal included.
+
 **§5.x — owner abandonment (doc 10 T3) is deferred to E7, and precisely why.**
 
 The brief's condition was *"if E3's asset record admits an untitled state cheaply"*.
@@ -1154,6 +1233,52 @@ contract can re-title it.
   boot can see: E4b1's rule "a `Contract` cause whose contract is not live →
   `Suspended`" was vacuously true (no contracts loaded) and is now the live check,
   and `@contract/cancel`/expiry cancels a lease's rent outright.
+
+---
+
+### 5.2 E4b2 verify outcome
+
+An adversarial verify ran three lenses over the cut — **A** command authority and
+existence hiding, **M** consent and settlement money, **B** durability, boot and the
+sweep's contract step. Twenty-two findings were confirmed by probe and all are folded
+in above, with one regression test each in `tests/e4b2.rs` (`vf_<lens><n>_...`, 22
+tests; the file is **59**, `mush-economy` **368**, both digest pins green).
+
+**Lens A (8).** A1 `@contract/pay` was an account existence-and-owner oracle (HIGH).
+A2 `contract_refusal` bypassed the hiding renderer, so `/offer` probed vaults and
+wallets. A3 an org attestor could never attest, and an attestor set nobody could
+satisfy was offerable. A4 an org party on an unscoped contract could never accept,
+dispute or agree. A5 `/agree` took the *freeze* right rather than the disposition
+right. A6 a settlement refusal reached a party raw. A7 an `Audience` — doc 10 T6's
+eligible defenders — was rendered exactly like a party, plan and all. A8 the help text
+and the parser disagreed about `condition … title`.
+
+**Lens M (8).** M1 a contract could encumber a bystander's asset (HIGH). M2+M3 a
+refused forfeit or unwind left a **terminal** contract holding live escrow that no
+command could reach, and the failure was logged rather than paged (HIGH). M4 credits
+were membership-checked, so a hand-built plan could route the whole escrow to
+`remainder_to`. M5 an attestation could be overwritten, which moved an `After` anchor
+and could defer a consented settlement indefinitely. M6 deposit return worked only for
+pre-activation deposits. M7 `/roster open` let the builders re-sign a surface with no
+re-validation. M8 a consideration from a non-party was offerable and unfundable.
+
+**Lens B (6).** B1 boot disputed a correctly settled or refunded contract whose doc
+write was lost (HIGH). B2 a lost `accept` doc write orphaned the escrow forever (HIGH).
+B3 a refused forfeit was silent and terminal (HIGH; closed by M2+M3's design). B4 step
+3 starved a high-id contract behind a wall of disputes. B5 the `Settled` check was
+existence-only. B6 boot trusted a stored surface.
+
+**Handoffs.**
+
+- **E4c**'s disclosure filter renders through the **same per-class rule** as
+  `contract_show` (`ShowClass::{Full, Notice, Consented}` plus the `may_view_account`
+  mask), rather than inventing a second, weaker one; its canon bridge still reads
+  `is_public()`, and an `Audience` is emphatically not public.
+- **E6a** inherits the **audience notice render** for run boards — a board is a notice
+  surface, not a terms surface — and the still-open **per-party binding** question for
+  amendments (deviation 3): today an amendment voids and re-collects *every*
+  acceptance, which is right for a changed split and heavy for a changed roster.
+- **E7** inherits owner abandonment (§5.x), unchanged by this fold.
 
 ---
 

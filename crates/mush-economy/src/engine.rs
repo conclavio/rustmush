@@ -35,7 +35,7 @@ use crate::amount::Amount;
 use crate::clock::Clocks;
 use crate::contract::AttestorSet;
 use crate::hash::{asset_op_key, custody_op_key, hold_op_key, plan_hash};
-use crate::ids::{AccountId, ApprovalRequestId, HoldId, InstrumentId, TransactionId};
+use crate::ids::{AccountId, ApprovalRequestId, HoldId, InstrumentId, TransactionId, VaultId};
 use crate::plan::{
     ApprovalNeed, AssetOp, CustodyOp, EconomyError, EconomyPlan, HoldOp, PlanResult, Prepared,
 };
@@ -193,6 +193,18 @@ pub trait AuthEval {
     /// a `Capability`/`Staff` attestor who has since lost the capability stops
     /// counting, so an attestation is a record of a claim, not a captured credential.
     fn authorize_attestor(&self, _actor: &PrincipalId, _set: &AttestorSet) -> bool {
+        false
+    }
+    /// `true` if this authority may take `object` out of `vault` **while a live
+    /// contract's `DepositInto` still locks it** (E4b2 verify fold, M2+M3).
+    ///
+    /// The default is `false`, and [`crate::WorldAuth`] keeps it: no command, staff
+    /// included, opens a custody lock. The only `true` comes from
+    /// `ContractAuth::unwinding`, for a deposit that contract itself recorded — which
+    /// is what lets an unwind post its refund *before* the state change, so a refused
+    /// refund leaves a live, retryable contract instead of a terminal one holding
+    /// somebody's money.
+    fn authorize_custody_unlock(&self, _object: ObjId, _vault: VaultId) -> bool {
         false
     }
 }
@@ -1221,7 +1233,17 @@ fn resolve_custody_ops(
                 // first, which lifts the lock, and E4b2's refund then returns the
                 // object to its depositor with a `ContractAuth`-authorized `Withdraw`
                 // in the same step.
-                if snapshot.custody_lock(*object, vault_id).is_some() {
+                //
+                // E4b2 verify fold, M2+M3: the lock now has exactly **one** key, and
+                // it is not a state and not a cause — it is the authority itself
+                // (`AuthEval::authorize_custody_unlock`, `false` by default and for
+                // `WorldAuth`). A `ContractAuth::unwinding` opens it for a deposit
+                // that contract recorded, so the refund can post BEFORE the terminal
+                // state write and a refused refund leaves a live contract to retry
+                // rather than a terminal one holding the goods.
+                if snapshot.custody_lock(*object, vault_id).is_some()
+                    && !env.auth.authorize_custody_unlock(*object, vault_id)
+                {
                     return Err(EconomyError::CustodyLocked(*object));
                 }
                 // A2: an unconstrained destination is a laundering primitive. The

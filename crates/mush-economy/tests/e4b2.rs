@@ -351,7 +351,9 @@ fn a_party_who_did_not_accept_is_never_debited() {
     ok(&mut tw, GOD, &format!("@econ/mint 0={} 500", r.a_acct));
     ok(&mut tw, r.johnson, &format!("@contract/party {id}=#{}", r.a.0));
     ok(&mut tw, r.johnson, &format!("@contract/pay {id}={} 300", r.j_acct));
-    ok(&mut tw, r.johnson, &format!("@contract/pay {id}={} 200", r.a_acct));
+    // A1: the Johnson cannot name Alder's wallet (he may not view it); Alder adds her
+    // own consideration to the draft instead.
+    ok(&mut tw, r.a, &format!("@contract/pay {id}={} 200", r.a_acct));
     ok(&mut tw, r.johnson, &format!("@contract/split {id}={} 1000‰", r.b_acct));
     ok(&mut tw, r.johnson, &format!("@contract/remainder {id}={}", r.j_acct));
     ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
@@ -506,8 +508,11 @@ fn contract_auth_grants_no_debit_no_stranger_credit_and_no_escrow_release() {
     // No bare debit authority at all, on any account, ever.
     assert!(!settling.authorize(&actor, payer, Amount::from_minor(-1)));
     assert!(!settling.authorize(&actor, payee, Amount::from_minor(-1)));
-    // A credit only to a declared payee — an extra line to a stranger is refused.
-    assert!(settling.authorize(&actor, payee, Amount::from_minor(1)));
+    // A credit only to a declared payee, and only the EXACT amount the consented
+    // split owes them (E4b2 verify fold, M4): 333‰ of the 300 escrowed is 99.
+    assert!(settling.authorize(&actor, payee, Amount::from_minor(99)));
+    assert!(!settling.authorize(&actor, payee, Amount::from_minor(1)));
+    assert!(!settling.authorize(&actor, payee, Amount::from_minor(300)));
     assert!(!settling.authorize(&actor, stranger, Amount::from_minor(1)));
     // The escrow hold: a settlement captures and may not release.
     let hold = s.hold(c.escrow[0]).expect("escrow");
@@ -690,14 +695,17 @@ fn deposit_rig(tw: &mut TestWorld) -> Deposit {
     tw.world_mut().move_to(widget, seller).expect("hand it to the seller");
     ok(tw, seller, &format!("@vault/deposit #{}={vault}", widget.0));
 
-    ok(tw, buyer, "@contract/draft Delivery");
+    // The SELLER drafts: the escrow vault is theirs, and A2 checks vault viewability
+    // at draft, so the party who can see the vault is the one who can name it. The
+    // buyer adds their own consideration (A1's self-consideration rule).
+    ok(tw, seller, "@contract/draft Delivery");
     let id = only_contract(tw);
-    ok(tw, buyer, &format!("@contract/party {id}=#{}", seller.0));
+    ok(tw, seller, &format!("@contract/party {id}=#{}", buyer.0));
     ok(tw, buyer, &format!("@contract/pay {id}={buyer_acct} 200"));
-    ok(tw, buyer, &format!("@contract/split {id}={seller_acct} 1000‰"));
-    ok(tw, buyer, &format!("@contract/remainder {id}={seller_acct}"));
-    ok(tw, buyer, &format!("@contract/condition {id}=deposit #{} {vault}", widget.0));
-    ok(tw, buyer, &format!("@contract/offer {id}"));
+    ok(tw, seller, &format!("@contract/split {id}={seller_acct} 1000‰"));
+    ok(tw, seller, &format!("@contract/remainder {id}={seller_acct}"));
+    ok(tw, seller, &format!("@contract/condition {id}=deposit #{} {vault}", widget.0));
+    ok(tw, seller, &format!("@contract/offer {id}"));
     ok(tw, buyer, &format!("@contract/accept {id}"));
     ok(tw, seller, &format!("@contract/accept {id}"));
     Deposit { seller, buyer, buyer_acct, seller_acct, widget, vault, id }
@@ -1214,6 +1222,7 @@ fn an_audience_sees_a_declared_operation_and_a_stranger_does_not() {
     let mut c = contract(&tw, id);
     c.consent.visibility = mush_economy::EconomicVisibility::Audience {
         members: vec![PrincipalId::Object(r.watcher)],
+        announce_issuer: false,
     };
     assert_eq!(mush_economy::consent_hash(&c.issuer, &c.consent), hash);
 }
@@ -1274,7 +1283,8 @@ fn a_lease_encumbers_the_pledge_and_creates_its_rent_at_activation() {
     ok(&mut tw, landlord, "@contract/draft Lease");
     let id = only_contract(&tw);
     ok(&mut tw, landlord, &format!("@contract/party {id}=#{}", tenant.0));
-    ok(&mut tw, landlord, &format!("@contract/pay {id}={t_acct} 100"));
+    // A1: the landlord cannot name the tenant's wallet; the tenant adds it.
+    ok(&mut tw, tenant, &format!("@contract/pay {id}={t_acct} 100"));
     ok(&mut tw, landlord, &format!("@contract/split {id}={l_acct} 1000‰"));
     ok(&mut tw, landlord, &format!("@contract/remainder {id}={l_acct}"));
     ok(&mut tw, landlord, &format!("@contract/deliver {id}=collateral #{} #{}", flat.0, landlord.0));
@@ -1341,7 +1351,7 @@ fn a_pledge_that_was_never_placed_does_not_block_the_refund_that_ends_the_offer(
     ok(&mut tw, landlord, "@contract/draft Pledge");
     let id = only_contract(&tw);
     ok(&mut tw, landlord, &format!("@contract/party {id}=#{}", tenant.0));
-    ok(&mut tw, landlord, &format!("@contract/pay {id}={t_acct} 100"));
+    ok(&mut tw, tenant, &format!("@contract/pay {id}={t_acct} 100"));
     ok(&mut tw, landlord, &format!("@contract/split {id}={l_acct} 1000‰"));
     ok(&mut tw, landlord, &format!("@contract/remainder {id}={l_acct}"));
     ok(&mut tw, landlord, &format!("@contract/deliver {id}=collateral #{} #{}", flat.0, landlord.0));
@@ -1532,4 +1542,938 @@ fn the_permitted_evidence_list_is_exhaustive_when_it_is_set() {
     err(&mut tw, r.johnson, &format!("@contract/offer {id}"));
     ok(&mut tw, r.johnson, &format!("@contract/evidence {id}=attest,before"));
     ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
+}
+
+// ======================================================================
+// ---- E4b2 verify fold ----
+//
+// Lens A (command authority + existence hiding), lens M (consent and settlement
+// money), lens B (durability, boot, the sweep's contract step). One test per
+// numbered finding; every one asserts against balances, `held_amount`, object
+// locations and the journal, not just against the message.
+// ======================================================================
+
+/// A1 — `@contract/pay` was an account existence-and-owner oracle.
+#[test]
+fn vf_a1_pay_names_only_a_viewable_account_and_a_party_adds_their_own() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    ok(&mut tw, r.johnson, "@contract/draft Oracle");
+    let id = only_contract(&tw);
+    ok(&mut tw, r.johnson, &format!("@contract/party {id}=#{}", r.a.0));
+
+    // (a) The issuer probing a live account they may not view gets the same text as
+    // an account that does not exist at all.
+    let hidden = err(&mut tw, r.johnson, &format!("@contract/pay {id}={} 100", r.a_acct));
+    let absent = err(&mut tw, r.johnson, &format!("@contract/pay {id}=4242 100"));
+    assert_eq!(hidden, absent, "an unviewable account and a missing one read differently");
+    assert!(hidden.contains("No such account."), "wrong refusal: {hidden}");
+    assert!(
+        contract(&tw, id).consent.terms.consideration.is_empty(),
+        "a refused /pay still wrote a consideration"
+    );
+
+    // (b) The party adds it themselves, and the confirmation echoes no owner.
+    let seen = ok(&mut tw, r.a, &format!("@contract/pay {id}={} 100", r.a_acct));
+    assert!(!seen.contains("Alder"), "the confirmation named the account's owner: {seen}");
+    let c = contract(&tw, id);
+    assert_eq!(c.consent.terms.consideration.len(), 1);
+    assert_eq!(c.consent.terms.consideration[0].from, PrincipalId::Object(r.a));
+
+    // A non-party cannot, and the contract does not exist as far as they are told.
+    let w_acct = account_of(&tw, r.watcher);
+    let seen = err(&mut tw, r.watcher, &format!("@contract/pay {id}={w_acct} 50"));
+    assert!(seen.contains("No such contract."), "wrong refusal: {seen}");
+
+    // ...and `/show` never derives a name from an account the viewer cannot view.
+    ok(&mut tw, r.johnson, &format!("@contract/pay {id}={} 100", r.j_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/split {id}={} 1000‰", r.a_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/remainder {id}={}", r.j_acct));
+    let seen = ok(&mut tw, r.johnson, &format!("@contract/show {id}"));
+    assert!(seen.contains("an account"), "an unviewable account id was printed: {seen}");
+}
+
+/// A2 — `contract_refusal` bypassed the existence-hiding renderer.
+#[test]
+fn vf_a2_a_contract_refusal_hides_a_resource_the_actor_may_not_view() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    // A vault the Johnson has no standing over at all.
+    let chest = thing(&mut tw, "chest");
+    ok(&mut tw, GOD, &format!("@vault/create theirs=container:#{} owner=#{}", chest.0, r.a.0));
+    let vault = snap(&tw).vaults().next().expect("vault").id;
+    let widget = thing(&mut tw, "widget");
+
+    ok(&mut tw, r.johnson, "@contract/draft Probe");
+    let id = only_contract(&tw);
+    // At DRAFT: an unviewable vault and a nonexistent one are one message.
+    let hidden = err(&mut tw, r.johnson, &format!("@contract/condition {id}=deposit #{} {vault}", widget.0));
+    let absent = err(&mut tw, r.johnson, &format!("@contract/condition {id}=deposit #{} 999", widget.0));
+    assert_eq!(hidden, absent, "an unviewable vault and a missing one read differently at draft");
+    assert!(hidden.contains("No such vault."), "wrong refusal: {hidden}");
+
+    // At OFFER: the same rule, through `contract_refusal`. A closed account the
+    // Johnson may not view renders exactly like an account id that never existed.
+    let w_acct = account_of(&tw, r.watcher);
+    ok(&mut tw, GOD, &format!("@account/close {w_acct}"));
+    ok(&mut tw, r.johnson, &format!("@contract/party {id}=#{}", r.a.0));
+    ok(&mut tw, r.johnson, &format!("@contract/pay {id}={} 100", r.j_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/split {id}={} 1000‰", r.a_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/remainder {id}={w_acct}"));
+    let hidden = err(&mut tw, r.johnson, &format!("@contract/offer {id}"));
+    ok(&mut tw, r.johnson, &format!("@contract/remainder {id}=4242"));
+    let absent = err(&mut tw, r.johnson, &format!("@contract/offer {id}"));
+    assert_eq!(hidden, absent, "an unviewable account and a missing one read differently at offer");
+    assert!(hidden.contains("No such account."), "wrong refusal: {hidden}");
+    assert_eq!(state(&tw, id), ContractState::Draft);
+
+    // Staff, who may view everything, still see the real reason.
+    let staff = err(&mut tw, GOD, &format!("@contract/offer {id}"));
+    assert!(staff.contains("no usable account"), "staff got the hidden text: {staff}");
+}
+
+/// A3 — an org attestor could never attest, and an unsatisfiable set was offerable.
+#[test]
+fn vf_a3_an_org_attestor_can_attest_and_an_unsatisfiable_set_is_refused() {
+    let mut tw = boot();
+    let o = org_rig(&mut tw);
+
+    // (1) A `Capability` set with no scope names a compartment that does not exist,
+    // so nobody can ever hold it: the condition could never be discharged and the
+    // escrow behind it would sit until the deadline with nothing saying why.
+    ok(&mut tw, GOD, &format!("@contract/draft Impossible scope=#{}", o.scope.0));
+    let bad = only_contract(&tw);
+    ok(&mut tw, GOD, &format!("@contract/party {bad}=#{}", o.payee.0));
+    ok(&mut tw, GOD, &format!("@contract/pay {bad}={} 400", o.acct));
+    ok(&mut tw, GOD, &format!("@contract/split {bad}={} 1000‰", o.payee_acct));
+    ok(&mut tw, GOD, &format!("@contract/remainder {bad}={}", o.acct));
+    ok(&mut tw, GOD, &format!("@contract/condition {bad}=attest cap:contract.attest"));
+    let seen = err(&mut tw, GOD, &format!("@contract/offer {bad}"));
+    assert!(seen.contains("nobody can satisfy"), "wrong refusal: {seen}");
+    assert_eq!(state(&tw, bad), ContractState::Draft);
+    ok(&mut tw, GOD, &format!("@contract/cancel {bad}"));
+
+    // (2) `party:org:Ironhold` — an organization types nothing, so whoever may spend
+    // its money attests for it, and the RECORD names the org rather than the officer
+    // (so the attestation stands once given, as a party attestation must).
+    ok(&mut tw, GOD, &format!("@contract/draft Supply scope=#{}", o.scope.0));
+    let id = snap(&tw).contracts().map(|c| c.id).max().expect("second contract");
+    ok(&mut tw, GOD, &format!("@contract/party {id}=#{}", o.payee.0));
+    ok(&mut tw, GOD, &format!("@contract/pay {id}={} 400", o.acct));
+    ok(&mut tw, GOD, &format!("@contract/split {id}={} 1000‰", o.payee_acct));
+    ok(&mut tw, GOD, &format!("@contract/remainder {id}={}", o.acct));
+    ok(&mut tw, GOD, &format!("@contract/condition {id}=attest party:org:Ironhold"));
+    ok(&mut tw, GOD, &format!("@contract/offer {id}"));
+    ok(&mut tw, GOD, &format!("@org/grant #{}=Ironhold contract.accept scope=#{}", o.member.0, o.scope.0));
+    ok(&mut tw, GOD, &format!("@org/grant #{}=Ironhold economy.account.post", o.member.0));
+    ok(&mut tw, o.member, &format!("@contract/accept {id}"));
+    ok(&mut tw, o.payee, &format!("@contract/accept {id}"));
+    assert_eq!(state(&tw, id), ContractState::Active);
+
+    ok(&mut tw, o.member, &format!("@contract/attest {id}=0"));
+    assert!(matches!(state(&tw, id), ContractState::Settled { .. }), "an org attestation did not settle it");
+    assert_eq!(bal(&tw, o.payee_acct), 400);
+    // The record names the ORG, not Quinn: that is what makes it re-verify.
+    let c = contract(&tw, id);
+    assert!(
+        matches!(&c.satisfied[0], Some(a) if a.by == mush_economy::AttestorRef::Principal(PrincipalId::Organization(o.org))),
+        "the attestation named the officer instead of the party: {:?}",
+        c.satisfied[0]
+    );
+}
+
+/// A4 — an org party on an **unscoped** contract could never act.
+#[test]
+fn vf_a4_an_org_party_on_an_unscoped_contract_can_accept_dispute_and_agree() {
+    let mut tw = boot();
+    let o = org_rig(&mut tw);
+    let issuer = tw.spawn_player("Fixer");
+    ok(&mut tw, GOD, &format!("@account/open #{}=gold", issuer.0));
+    let i_acct = account_of(&tw, issuer);
+    let faucet = snap(&tw)
+        .accounts()
+        .find(|x| matches!(x.owner, PrincipalId::System(_)))
+        .expect("faucet")
+        .id;
+    ok(&mut tw, GOD, &format!("@econ/mint {faucet}={i_acct} 500"));
+
+    // No `scope=`, so there is no compartment and the capability route cannot apply.
+    ok(&mut tw, issuer, "@contract/draft Unscoped");
+    let id = only_contract(&tw);
+    ok(&mut tw, issuer, &format!("@contract/party {id}=org:Ironhold"));
+    ok(&mut tw, issuer, &format!("@contract/pay {id}={i_acct} 100"));
+    ok(&mut tw, issuer, &format!("@contract/split {id}={} 1000‰", o.payee_acct));
+    ok(&mut tw, issuer, &format!("@contract/remainder {id}={i_acct}"));
+    ok(&mut tw, issuer, &format!("@contract/condition {id}=attest party:#{}", issuer.0));
+    ok(&mut tw, issuer, &format!("@contract/offer {id}"));
+    ok(&mut tw, issuer, &format!("@contract/accept {id}"));
+
+    // Whoever may spend the org's money speaks for it — the same predicate a capture
+    // and `may_view_hold` ask.
+    err(&mut tw, o.member, &format!("@contract/accept {id}"));
+    ok(&mut tw, GOD, &format!("@org/grant #{}=Ironhold economy.account.post", o.member.0));
+    ok(&mut tw, o.member, &format!("@contract/accept {id}"));
+    assert_eq!(state(&tw, id), ContractState::Active, "the org's member could not accept for it");
+    ok(&mut tw, o.member, &format!("@contract/dispute {id}"));
+    assert_eq!(state(&tw, id), ContractState::Disputed);
+    ok(&mut tw, o.member, &format!("@contract/agree {id}=refund"));
+    ok(&mut tw, issuer, &format!("@contract/agree {id}=refund"));
+    assert_eq!(state(&tw, id), ContractState::Cancelled, "unanimity did not resolve it");
+    assert_eq!(held(&tw, i_acct), 0, "the agreed refund did not release the escrow");
+    assert_eq!(bal(&tw, i_acct), 500);
+}
+
+/// A5 — `/agree` accepted `contract.dispute`, which is the freeze right, not the
+/// disposition right.
+#[test]
+fn vf_a5_agreeing_needs_the_accept_right_and_disputing_does_not() {
+    let mut tw = boot();
+    let o = org_rig(&mut tw);
+    ok(&mut tw, GOD, &format!("@contract/draft Disposition scope=#{}", o.scope.0));
+    let id = only_contract(&tw);
+    ok(&mut tw, GOD, &format!("@contract/party {id}=#{}", o.payee.0));
+    ok(&mut tw, GOD, &format!("@contract/pay {id}={} 400", o.acct));
+    ok(&mut tw, GOD, &format!("@contract/split {id}={} 1000‰", o.payee_acct));
+    ok(&mut tw, GOD, &format!("@contract/remainder {id}={}", o.acct));
+    ok(&mut tw, GOD, &format!("@contract/condition {id}=attest staff"));
+    ok(&mut tw, GOD, &format!("@contract/offer {id}"));
+    ok(&mut tw, GOD, &format!("@org/grant #{}=Ironhold contract.accept scope=#{}", o.member.0, o.scope.0));
+    ok(&mut tw, GOD, &format!("@org/grant #{}=Ironhold economy.account.post scope=#{}", o.member.0, o.scope.0));
+    ok(&mut tw, o.member, &format!("@contract/accept {id}"));
+    ok(&mut tw, o.payee, &format!("@contract/accept {id}"));
+    assert_eq!(state(&tw, id), ContractState::Active);
+
+    // A second member with the FREEZE right only.
+    let watcher = tw.spawn_player("Watcher");
+    ok(&mut tw, GOD, &format!("@org/grant #{}=Ironhold contract.dispute scope=#{}", watcher.0, o.scope.0));
+    ok(&mut tw, watcher, &format!("@contract/dispute {id}"));
+    assert_eq!(state(&tw, id), ContractState::Disputed);
+    let seen = err(&mut tw, watcher, &format!("@contract/agree {id}=settle"));
+    assert!(seen.contains("No such contract."), "wrong refusal: {seen}");
+    assert!(contract(&tw, id).agreements.is_empty(), "a dispute-only member recorded an agreement");
+
+    // The accept-level right disposes of it.
+    ok(&mut tw, o.member, &format!("@contract/agree {id}=refund"));
+    assert_eq!(contract(&tw, id).agreements.len(), 1);
+}
+
+/// A6 — a settlement refusal reached a party raw.
+#[test]
+fn vf_a6_a_settlement_refusal_does_not_leak_another_partys_account_status() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    ok(&mut tw, r.johnson, "@contract/draft Leak");
+    let id = only_contract(&tw);
+    ok(&mut tw, r.johnson, &format!("@contract/party {id}=#{}", r.a.0));
+    ok(&mut tw, r.johnson, &format!("@contract/pay {id}={} 100", r.j_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/split {id}={} 1000‰", r.a_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/remainder {id}={}", r.j_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/condition {id}=attest party:#{}", r.johnson.0));
+    ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
+    ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
+    ok(&mut tw, r.a, &format!("@contract/accept {id}"));
+    ok(&mut tw, r.a, &format!("@contract/dispute {id}"));
+    // Alder closes her own wallet; the settlement can no longer pay her.
+    ok(&mut tw, r.a, &format!("@account/close {}", r.a_acct));
+
+    ok(&mut tw, r.a, &format!("@contract/agree {id}=settle"));
+    let seen = ok(&mut tw, r.johnson, &format!("@contract/agree {id}=settle"));
+    assert!(
+        seen.contains("staff have been paged"),
+        "the Johnson was told about an account he may not view: {seen}"
+    );
+    assert!(!seen.contains("no usable account"), "the raw refusal reached a party: {seen}");
+    assert_eq!(bal(&tw, r.a_acct), 0, "a refused settlement paid somebody");
+    assert_eq!(held(&tw, r.j_acct), 100, "a refused settlement released the escrow");
+}
+
+/// A7 — an `Audience` was rendered exactly like a party.
+#[test]
+fn vf_a7_an_audience_gets_a_notice_and_a_public_stranger_gets_no_hidden_ids() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    ok(&mut tw, r.johnson, "@contract/draft Operation");
+    let id = only_contract(&tw);
+    ok(&mut tw, r.johnson, &format!("@contract/party {id}=#{}", r.a.0));
+    ok(&mut tw, r.johnson, &format!("@contract/pay {id}={} 300", r.j_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/split {id}={} 1000‰", r.a_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/remainder {id}={}", r.j_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/condition {id}=attest party:#{}", r.johnson.0));
+    ok(&mut tw, r.johnson, &format!("@contract/deadline {id}=600 refund"));
+    ok(&mut tw, r.johnson, &format!("@contract/visibility {id}=audience #{}", r.watcher.0));
+    ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
+    ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
+    ok(&mut tw, r.a, &format!("@contract/accept {id}"));
+
+    // The audience is told there IS an operation, and when — nothing else.
+    let seen = ok(&mut tw, r.watcher, &format!("@contract/show {id}"));
+    assert!(seen.contains("Operation"), "the audience could not read the notice: {seen}");
+    assert!(seen.contains("window closes"), "the notice does not carry the window: {seen}");
+    assert!(seen.contains("Attestation"), "the notice does not carry the condition kinds: {seen}");
+    assert!(!seen.contains("300"), "the notice leaked an amount: {seen}");
+    assert!(!seen.contains("Alder"), "the notice leaked a party: {seen}");
+    assert!(!seen.contains("escrow holds"), "the notice leaked a hold id: {seen}");
+    assert!(!seen.contains("issued by"), "the notice named the issuer by default: {seen}");
+    // A party still sees the whole surface.
+    let full = ok(&mut tw, r.a, &format!("@contract/show {id}"));
+    assert!(full.contains("Alder"), "a party lost the party list: {full}");
+    assert!(full.contains("escrow holds"), "a party lost the escrow ids: {full}");
+
+    // A public contract: a stranger reads the surface as consented, with every
+    // account id they may not view masked.
+    let stranger = tw.spawn_player("Nobody");
+    ok(&mut tw, r.johnson, "@contract/draft Open");
+    let pid = snap(&tw).contracts().map(|c| c.id).max().expect("second contract");
+    ok(&mut tw, r.johnson, &format!("@contract/party {pid}=#{}", r.a.0));
+    ok(&mut tw, r.johnson, &format!("@contract/pay {pid}={} 100", r.j_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/split {pid}={} 1000‰", r.a_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/remainder {pid}={}", r.j_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/visibility {pid}=public"));
+    ok(&mut tw, r.johnson, &format!("@contract/offer {pid}"));
+    let seen = ok(&mut tw, stranger, &format!("@contract/show {pid}"));
+    assert!(seen.contains("Johnson"), "the consented surface lost its parties: {seen}");
+    assert!(seen.contains("an account"), "a public stranger read an account id: {seen}");
+    assert!(
+        !seen.contains(&format!("account #{}", r.j_acct)),
+        "a public stranger read an account id they may not view: {seen}"
+    );
+}
+
+/// A8 — the help text and the parser disagreed about `condition … title`.
+#[test]
+fn vf_a8_help_matches_the_parser_for_title_and_names_who_may_run_what() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    let seen = ok(&mut tw, r.johnson, "help @contract");
+    assert!(seen.contains("title <obj> <principal>"), "help still documents an attestor: {seen}");
+    assert!(seen.contains("no party: prefix"), "help does not say the prefix is wrong: {seen}");
+    assert!(seen.contains("ISSUER or staff"), "help does not say who may offer: {seen}");
+    assert!(seen.contains("a PARTY"), "help does not say who may accept: {seen}");
+
+    // …and the parser agrees.
+    let widget = thing(&mut tw, "widget");
+    ok(&mut tw, GOD, &format!("@asset/title #{}=#{}", widget.0, r.a.0));
+    ok(&mut tw, r.johnson, "@contract/draft Help");
+    let id = only_contract(&tw);
+    ok(&mut tw, r.johnson, &format!("@contract/condition {id}=title #{} #{}", widget.0, r.a.0));
+    let seen = err(&mut tw, r.johnson, &format!("@contract/condition {id}=title #{} party:#{}", widget.0, r.a.0));
+    assert!(seen.contains("No such principal."), "the parser took a party: prefix: {seen}");
+}
+
+// ---- lens M: consent and settlement money ----------------------------------
+
+/// M1 — a contract could encumber a bystander's asset.
+#[test]
+fn vf_m1_a_bystanders_asset_is_never_encumbered() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    let bystander = tw.spawn_player("Bystander");
+    let heirloom = thing(&mut tw, "heirloom");
+    ok(&mut tw, GOD, &format!("@asset/title #{}=#{}", heirloom.0, bystander.0));
+
+    ok(&mut tw, r.johnson, "@contract/draft Pledge");
+    let id = only_contract(&tw);
+    ok(&mut tw, r.johnson, &format!("@contract/party {id}=#{}", r.a.0));
+    ok(&mut tw, r.johnson, &format!("@contract/pay {id}={} 100", r.j_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/split {id}={} 1000‰", r.a_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/remainder {id}={}", r.j_acct));
+    // Somebody who is not a party, pledging something that is not the parties' to
+    // pledge. A pledge encumbers at activation, and an encumbered asset cannot be
+    // transferred — so this is a claim placed on a stranger's property by an
+    // agreement they were never shown.
+    ok(&mut tw, r.johnson, &format!("@contract/deliver {id}=collateral #{} #{}", heirloom.0, bystander.0));
+    let seen = err(&mut tw, r.johnson, &format!("@contract/offer {id}"));
+    assert!(seen.contains("not a party"), "wrong refusal: {seen}");
+    assert_eq!(state(&tw, id), ContractState::Draft);
+    assert!(
+        snap(&tw).asset(heirloom).expect("asset").encumbrances.is_empty(),
+        "a refused offer still encumbered a bystander's asset"
+    );
+
+    // Naming them a party is not enough either: the pledger must hold the title.
+    ok(&mut tw, r.johnson, &format!("@contract/party {id}=#{}", bystander.0));
+    ok(&mut tw, GOD, &format!("@asset/transfer #{}=#{}", heirloom.0, r.a.0));
+    let seen = err(&mut tw, r.johnson, &format!("@contract/offer {id}"));
+    assert!(seen.contains("No such asset."), "wrong refusal: {seen}");
+    assert_eq!(state(&tw, id), ContractState::Draft);
+
+    // With the title where the surface says it is, the offer stands and the claim is
+    // placed at activation — and comes off again whatever happens.
+    ok(&mut tw, GOD, &format!("@asset/transfer #{}=#{}", heirloom.0, bystander.0));
+    ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
+    ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
+    ok(&mut tw, r.a, &format!("@contract/accept {id}"));
+    ok(&mut tw, bystander, &format!("@contract/accept {id}"));
+    assert_eq!(state(&tw, id), ContractState::Active);
+    assert_eq!(
+        snap(&tw).asset(heirloom).expect("asset").encumbrances.len(),
+        1,
+        "the consented pledge was not placed"
+    );
+    ok(&mut tw, GOD, &format!("@contract/cancel {id}"));
+    assert!(
+        snap(&tw).asset(heirloom).expect("asset").encumbrances.is_empty(),
+        "the pledge did not come back"
+    );
+}
+
+/// M2 + M3 + B3 — a refused forfeit was silent and terminal, and the escrow was
+/// stranded on a contract nothing could reach.
+#[test]
+fn vf_m2_a_refused_forfeit_leaves_a_live_contract_and_recoverable_escrow() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    ok(&mut tw, r.johnson, "@contract/draft Forfeit");
+    let id = only_contract(&tw);
+    ok(&mut tw, r.johnson, &format!("@contract/party {id}=#{}", r.a.0));
+    ok(&mut tw, r.johnson, &format!("@contract/pay {id}={} 250", r.j_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/split {id}={} 1000‰", r.a_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/remainder {id}={}", r.j_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/condition {id}=attest party:#{}", r.a.0));
+    ok(&mut tw, r.johnson, &format!("@contract/deadline {id}=600 forfeit={}", r.b_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
+    ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
+    ok(&mut tw, r.a, &format!("@contract/accept {id}"));
+    // The forfeit target closes before the deadline.
+    ok(&mut tw, r.b, &format!("@account/close {}", r.b_acct));
+
+    sweep_at(&mut tw, 1_000);
+    // **Terminal only after the post.** The contract is still live, the escrow is
+    // still reserved and reachable, and a human has been told.
+    assert!(
+        matches!(state(&tw, id), ContractState::Active | ContractState::ReadyToSettle),
+        "a refused forfeit made the contract terminal: {:?}",
+        state(&tw, id)
+    );
+    assert_eq!(held(&tw, r.j_acct), 250, "a refused forfeit lost the escrow");
+    assert_eq!(bal(&tw, r.b_acct), 0, "a refused forfeit paid the closed account");
+    let c = contract(&tw, id);
+    assert!(c.pending.is_some(), "the refused transition was not recorded as pending");
+    assert!(
+        store(&tw).escalations().any(|e| e.subject == EscalationSubject::Contract(id)),
+        "a refused forfeit was silent"
+    );
+
+    // The sweep retries it every fire, and spends the attempts rather than looping.
+    for n in 1..=u32::from(mush_economy::MAX_SETTLE_ATTEMPTS) {
+        sweep_at(&mut tw, 1_000 + i64::from(n) * 60);
+    }
+    assert_eq!(state(&tw, id), ContractState::Disputed, "the retries never gave up");
+    assert_eq!(held(&tw, r.j_acct), 250, "the escrow was lost on the way to Disputed");
+
+    // …and `@contract/resolve` still ends it, because it was never terminal.
+    ok(&mut tw, GOD, &format!("@contract/resolve {id}=refund"));
+    assert_eq!(state(&tw, id), ContractState::Cancelled);
+    assert_eq!(held(&tw, r.j_acct), 0, "the escrow was not recoverable");
+    assert_eq!(bal(&tw, r.j_acct), 3_000);
+}
+
+/// M2 + M3 — a refused UNWIND leaves the contract live too, and `@contract/amend` is
+/// refused while its escrow is still held.
+#[test]
+fn vf_m3_a_refused_unwind_stays_live_and_blocks_an_amendment() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    let id = offered_run(&mut tw, &r, 300);
+    ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
+    assert_eq!(held(&tw, r.j_acct), 300);
+
+    // A consent surface that no longer matches its hash: `ContractAuth::unwinding`
+    // is not bound, so the refund cannot release anything.
+    let mut kv = fold_kv(&mut tw);
+    patch(&mut kv, &format!("contract:{id}"), |v| {
+        v["consent"]["terms"]["remainder_to"] = serde_json::json!(4242);
+    });
+    reboot(&mut tw, kv);
+    assert_eq!(state(&tw, id), ContractState::Offered);
+    assert_eq!(held(&tw, r.j_acct), 300, "the reboot lost the escrow");
+
+    let seen = err(&mut tw, r.johnson, &format!("@contract/amend {id}"));
+    assert!(seen.contains("could not be released"), "wrong refusal: {seen}");
+    let c = contract(&tw, id);
+    assert_eq!(c.state, ContractState::Offered, "a failed amendment moved the state");
+    assert_eq!(c.amendments, 0, "a failed amendment burned a key generation");
+    assert_eq!(c.escrow.len(), 1, "a failed amendment dropped the escrow from the record");
+    assert_eq!(held(&tw, r.j_acct), 300, "a failed amendment stranded the escrow");
+    assert!(c.pending.is_some(), "the refused unwind was not recorded as pending");
+    assert!(
+        store(&tw).escalations().any(|e| e.subject == EscalationSubject::Contract(id)),
+        "a refused unwind was silent"
+    );
+    // A second attempt says so plainly rather than trying again underneath.
+    let seen = err(&mut tw, r.johnson, &format!("@contract/amend {id}"));
+    assert!(seen.contains("has not landed"), "wrong refusal: {seen}");
+}
+
+/// M4 — settlement credits were membership-checked, not amount-checked.
+#[test]
+fn vf_m4_a_settle_plan_that_reroutes_the_split_is_refused() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    let id = offered_run(&mut tw, &r, 300);
+    accept_all(&mut tw, &r, id);
+
+    use mush_economy::AuthEval;
+    let c = contract(&tw, id);
+    let s = snap(&tw);
+    let auth = ContractAuth::new(&c, s);
+    let actor = PrincipalId::Object(r.johnson);
+    let remainder = s.account(r.j_acct).expect("account");
+    let payee = s.account(r.a_acct).expect("account");
+
+    // The consented split pays 99/99/99 and 3 to the remainder. Those exact amounts,
+    // and nothing else: a plan routing the whole 300 to `remainder_to` names an
+    // account the terms DO name, which is precisely why membership was not enough.
+    assert!(auth.authorize(&actor, remainder, Amount::from_minor(3)));
+    assert!(!auth.authorize(&actor, remainder, Amount::from_minor(300)));
+    assert!(!auth.authorize(&actor, remainder, Amount::from_minor(102)));
+    assert!(auth.authorize(&actor, payee, Amount::from_minor(99)));
+    assert!(!auth.authorize(&actor, payee, Amount::from_minor(198)));
+
+    // A forfeit is the same rule with one payee: exactly the escrowed total.
+    let forfeiting = ContractAuth::forfeiting(&c, s, r.b_acct);
+    let target = s.account(r.b_acct).expect("account");
+    assert!(forfeiting.authorize(&actor, target, Amount::from_minor(300)));
+    assert!(!forfeiting.authorize(&actor, target, Amount::from_minor(299)));
+}
+
+/// M5 — an attestation could be overwritten, which moved an `After` anchor.
+#[test]
+fn vf_m5_a_re_attest_is_refused_and_the_after_anchor_does_not_move() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    ok(&mut tw, r.johnson, "@contract/draft Fence");
+    let id = only_contract(&tw);
+    ok(&mut tw, r.johnson, &format!("@contract/party {id}=#{}", r.a.0));
+    ok(&mut tw, r.johnson, &format!("@contract/pay {id}={} 100", r.j_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/split {id}={} 1000‰", r.a_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/remainder {id}={}", r.j_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/condition {id}=attest party:#{}", r.johnson.0));
+    ok(&mut tw, r.johnson, &format!("@contract/condition {id}=after 0 600"));
+    ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
+    ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
+    ok(&mut tw, r.a, &format!("@contract/accept {id}"));
+
+    tw.set_now(1_000);
+    ok(&mut tw, r.johnson, &format!("@contract/attest {id}=0"));
+    let anchored_at = contract(&tw, id).satisfied[0].as_ref().expect("attested").at;
+    assert_eq!(anchored_at, 1_000);
+
+    // A second attestation of the same condition is refused, so the consented delay
+    // cannot be pushed forward one command at a time.
+    tw.set_now(1_500);
+    let seen = err(&mut tw, r.johnson, &format!("@contract/attest {id}=0"));
+    assert!(seen.contains("already attested"), "wrong refusal: {seen}");
+    assert_eq!(
+        contract(&tw, id).satisfied[0].as_ref().expect("attested").at,
+        1_000,
+        "a re-attest moved the anchor"
+    );
+
+    // …and it settles at the ORIGINAL delay, not 600 after the second attempt.
+    sweep_at(&mut tw, 1_700);
+    assert!(matches!(state(&tw, id), ContractState::Settled { .. }), "the delay did not mature");
+    assert_eq!(bal(&tw, r.a_acct), 100);
+}
+
+/// M6 — deposit return worked only for deposits made before activation.
+#[test]
+fn vf_m6_a_deposit_delivered_after_activation_still_returns_to_its_depositor() {
+    let mut tw = boot();
+    let buyer = tw.spawn_player("Buyer");
+    let seller = tw.spawn_player("Seller");
+    ok(&mut tw, GOD, "@instrument/register gold=0");
+    ok(&mut tw, GOD, "@account/system faucet=gold");
+    ok(&mut tw, GOD, &format!("@account/open #{}=gold", buyer.0));
+    ok(&mut tw, GOD, &format!("@account/open #{}=gold", seller.0));
+    let faucet = snap(&tw)
+        .accounts()
+        .find(|x| matches!(x.owner, PrincipalId::System(_)))
+        .expect("faucet")
+        .id;
+    let buyer_acct = account_of(&tw, buyer);
+    let seller_acct = account_of(&tw, seller);
+    ok(&mut tw, GOD, &format!("@econ/mint {faucet}={buyer_acct} 500"));
+    let chest = thing(&mut tw, "chest");
+    ok(&mut tw, GOD, &format!("@vault/create escrowbox=container:#{} owner=#{}", chest.0, seller.0));
+    let vault = snap(&tw).vaults().next().expect("vault").id;
+    let widget = thing(&mut tw, "widget");
+    tw.world_mut().move_to(widget, seller).expect("hand it to the seller");
+
+    ok(&mut tw, seller, "@contract/draft Late");
+    let id = only_contract(&tw);
+    ok(&mut tw, seller, &format!("@contract/party {id}=#{}", buyer.0));
+    ok(&mut tw, buyer, &format!("@contract/pay {id}={buyer_acct} 200"));
+    ok(&mut tw, seller, &format!("@contract/split {id}={seller_acct} 1000‰"));
+    ok(&mut tw, seller, &format!("@contract/remainder {id}={seller_acct}"));
+    ok(&mut tw, seller, &format!("@contract/condition {id}=deposit #{} {vault}", widget.0));
+    ok(&mut tw, seller, &format!("@contract/offer {id}"));
+    ok(&mut tw, seller, &format!("@contract/accept {id}"));
+    ok(&mut tw, buyer, &format!("@contract/accept {id}"));
+    assert_eq!(state(&tw, id), ContractState::Active);
+    // Nothing was in the vault at activation, so the cache is empty…
+    assert!(contract(&tw, id).deposits.is_empty());
+
+    // …and the goods are delivered afterwards, which is the ordinary case.
+    ok(&mut tw, seller, &format!("@vault/deposit #{}={vault}", widget.0));
+    let backing = snap(&tw).vault(vault).expect("vault").backing.object().expect("backing");
+    assert_eq!(loc(&tw, widget), Some(backing));
+
+    ok(&mut tw, GOD, &format!("@contract/cancel {id}"));
+    assert_eq!(state(&tw, id), ContractState::Cancelled);
+    assert_eq!(
+        loc(&tw, widget),
+        Some(seller),
+        "a deposit delivered after activation was left in the vault with the lock gone"
+    );
+    assert_eq!(held(&tw, buyer_acct), 0, "the refund did not release the escrow");
+    assert_eq!(bal(&tw, buyer_acct), 500);
+}
+
+/// M7 — `/roster open` let the builders re-sign a surface with no re-validation.
+#[test]
+fn vf_m7_roster_open_re_validates_the_surface_and_re_notifies() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    let id = offered_run(&mut tw, &r, 300);
+    ok(&mut tw, r.johnson, &format!("@contract/roster {id}=open"));
+
+    // A split that pays out more than is escrowed is refused where it was refused at
+    // Offer, instead of being silently re-signed onto a live offer.
+    let seen = err(&mut tw, r.johnson, &format!("@contract/split {id}={} 500", r.a_acct));
+    assert!(seen.contains("split is not feasible"), "wrong refusal: {seen}");
+    let c = contract(&tw, id);
+    assert_eq!(c.consent.terms.split.len(), 3, "a refused edit was still written");
+    assert!(c.consent_intact(), "a refused edit left the surface unsigned");
+
+    // A legitimate edit goes through, and the parties are told their offer moved.
+    let seen = ok(&mut tw, r.johnson, &format!("@contract/split {id}={} 1000‰", r.a_acct));
+    assert!(seen.contains("offered terms have changed"), "the parties were not re-notified: {seen}");
+    assert_eq!(contract(&tw, id).consent.terms.split.len(), 1);
+    ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
+}
+
+/// M8 — a consideration from someone who is not a party was offerable, and nobody
+/// could ever fund it.
+#[test]
+fn vf_m8_a_non_party_payer_is_neither_offerable_nor_bootable() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    let id = offered_run(&mut tw, &r, 300);
+
+    // The pure check, which is also what boot re-runs.
+    let mut c = contract(&tw, id);
+    c.consent.terms.consideration[0].from = PrincipalId::Object(r.watcher);
+    assert!(
+        matches!(mush_economy::check_structure(&c), Err(mush_economy::ContractError::Infeasible(_))),
+        "a payer who is not a party passed the structural check"
+    );
+    assert!(mush_economy::check_structure(&contract(&tw, id)).is_ok());
+
+    // …and a stored record carrying one is quarantined rather than left waiting for
+    // money nobody can place.
+    let mut kv = fold_kv(&mut tw);
+    patch(&mut kv, &format!("contract:{id}"), |v| {
+        v["consent"]["terms"]["consideration"][0]["from"] =
+            serde_json::to_value(PrincipalId::Object(r.watcher)).expect("principal serializes");
+    });
+    reboot(&mut tw, kv);
+    assert_eq!(state(&tw, id), ContractState::Disputed, "boot loaded an unfundable contract as live");
+    assert!(store(&tw).escalations().any(|e| e.subject == EscalationSubject::Contract(id)));
+}
+
+// ---- lens B: durability, boot, the sweep's contract step -------------------
+
+/// The persisted value of one key, for a test that wants to put it back.
+fn doc_of(kv: &[(SmolStr, serde_json::Value)], key: &str) -> serde_json::Value {
+    kv.iter().find(|(k, _)| k.as_str() == key).map(|(_, v)| v.clone()).expect("no such doc")
+}
+
+/// B1 — boot disputed a contract whose terminal transition had already posted.
+///
+/// The transition is a post under the contract's own deterministic key followed by a
+/// state write, so a lost doc write leaves the journal finished and the record still
+/// claiming to be live. Boot resolves that by looking the key up, not by guessing.
+#[test]
+fn vf_b1_boot_finishes_a_transition_whose_doc_write_was_lost() {
+    for verb in ["settle", "refund", "forfeit"] {
+        let mut tw = boot();
+        let r = run_rig(&mut tw, 3_000);
+        ok(&mut tw, r.johnson, "@contract/draft Lost");
+        let id = only_contract(&tw);
+        ok(&mut tw, r.johnson, &format!("@contract/party {id}=#{}", r.a.0));
+        ok(&mut tw, r.johnson, &format!("@contract/pay {id}={} 300", r.j_acct));
+        ok(&mut tw, r.johnson, &format!("@contract/split {id}={} 1000‰", r.a_acct));
+        ok(&mut tw, r.johnson, &format!("@contract/remainder {id}={}", r.j_acct));
+        ok(&mut tw, r.johnson, &format!("@contract/condition {id}=attest party:#{}", r.johnson.0));
+        if verb == "forfeit" {
+            ok(&mut tw, r.johnson, &format!("@contract/deadline {id}=600 forfeit={}", r.b_acct));
+        }
+        ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
+        ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
+        ok(&mut tw, r.a, &format!("@contract/accept {id}"));
+        assert_eq!(held(&tw, r.j_acct), 300);
+
+        // The doc as it stood BEFORE the transition — the write that gets lost.
+        let mut kv = fold_kv(&mut tw);
+        let pre = doc_of(&kv, &format!("contract:{id}"));
+        match verb {
+            "settle" => {
+                ok(&mut tw, r.johnson, &format!("@contract/attest {id}=0"));
+            }
+            "refund" => {
+                ok(&mut tw, GOD, &format!("@contract/cancel {id}"));
+            }
+            _ => {
+                sweep_at(&mut tw, 1_000);
+            }
+        }
+        assert!(state(&tw, id).is_terminal(), "{verb}: the transition did not land");
+        merge(&mut kv, drain(&mut tw));
+        patch(&mut kv, &format!("contract:{id}"), |v| *v = pre.clone());
+        reboot(&mut tw, kv);
+
+        let expected = match verb {
+            "settle" => "settled",
+            "refund" => "cancelled",
+            _ => "expired",
+        };
+        let got = state(&tw, id);
+        let ok_state = match expected {
+            "settled" => matches!(got, ContractState::Settled { .. }),
+            "cancelled" => got == ContractState::Cancelled,
+            _ => got == ContractState::Expired,
+        };
+        assert!(ok_state, "{verb}: boot did not finish the transition, got {got:?}");
+        assert!(contract(&tw, id).pending.is_none(), "{verb}: pending survived the finish");
+        assert!(!store(&tw).is_frozen(), "{verb}: finishing a transition froze the economy");
+        assert!(
+            !store(&tw).escalations().any(|e| e.subject == EscalationSubject::Contract(id)),
+            "{verb}: boot paged a human about a contract that was already finished"
+        );
+        assert_eq!(held(&tw, r.j_acct), 0, "{verb}: the escrow came back reserved");
+    }
+}
+
+/// B2 — a lost `accept` doc write orphaned the escrow forever.
+#[test]
+fn vf_b2_an_orphaned_escrow_hold_is_adopted_and_an_ended_contract_gives_it_back() {
+    // (1) The contract doc rolls back; the hold survives, because it is journal
+    // authority. Boot adopts it, and the contract refunds normally.
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    let id = offered_run(&mut tw, &r, 300);
+    let mut kv = fold_kv(&mut tw);
+    let pre = doc_of(&kv, &format!("contract:{id}"));
+    ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
+    assert_eq!(held(&tw, r.j_acct), 300);
+    merge(&mut kv, drain(&mut tw));
+    patch(&mut kv, &format!("contract:{id}"), |v| *v = pre.clone());
+    reboot(&mut tw, kv.clone());
+
+    let c = contract(&tw, id);
+    assert_eq!(c.state, ContractState::Offered);
+    assert_eq!(c.escrow.len(), 1, "boot did not adopt the orphaned escrow hold");
+    assert_eq!(held(&tw, r.j_acct), 300, "boot moved money");
+    ok(&mut tw, GOD, &format!("@contract/cancel {id}"));
+    assert_eq!(held(&tw, r.j_acct), 0, "the adopted escrow was not refundable");
+    assert_eq!(bal(&tw, r.j_acct), 3_000);
+
+    // (2) The same orphan on a contract that has already ENDED. Boot cannot post, so
+    // it adopts the hold, advances the key generation (the old refund key is spent)
+    // and asks for the contract's own unwind; the sweep hands the money back.
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    let id = offered_run(&mut tw, &r, 300);
+    let mut kv = fold_kv(&mut tw);
+    let pre = doc_of(&kv, &format!("contract:{id}"));
+    ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
+    merge(&mut kv, drain(&mut tw));
+    patch(&mut kv, &format!("contract:{id}"), |v| {
+        *v = pre.clone();
+        v["state"] = serde_json::json!("Cancelled");
+    });
+    reboot(&mut tw, kv);
+    let c = contract(&tw, id);
+    assert_eq!(c.state, ContractState::Cancelled);
+    assert_eq!(c.escrow.len(), 1, "boot did not adopt the orphan on an ended contract");
+    assert!(c.pending.is_some(), "boot did not schedule the ended contract's own unwind");
+    assert_eq!(held(&tw, r.j_acct), 300, "boot released money by itself");
+
+    sweep_at(&mut tw, 100);
+    assert_eq!(held(&tw, r.j_acct), 0, "the sweep did not release the adopted escrow");
+    assert_eq!(bal(&tw, r.j_acct), 3_000);
+    assert_eq!(state(&tw, id), ContractState::Cancelled, "the recovery moved the terminal state");
+    assert!(contract(&tw, id).pending.is_none(), "pending survived a landed unwind");
+}
+
+/// B3 — a refused forfeit was silent: `dispute_with` returned at once on a terminal
+/// contract, so the page never happened either.
+#[test]
+fn vf_b3_a_refused_forfeit_is_paged_once_and_stays_resolvable() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    ok(&mut tw, r.johnson, "@contract/draft Silent");
+    let id = only_contract(&tw);
+    ok(&mut tw, r.johnson, &format!("@contract/party {id}=#{}", r.a.0));
+    ok(&mut tw, r.johnson, &format!("@contract/pay {id}={} 250", r.j_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/split {id}={} 1000‰", r.a_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/remainder {id}={}", r.j_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/condition {id}=attest party:#{}", r.a.0));
+    ok(&mut tw, r.johnson, &format!("@contract/deadline {id}=600 forfeit={}", r.b_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
+    ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
+    ok(&mut tw, r.a, &format!("@contract/accept {id}"));
+    ok(&mut tw, r.b, &format!("@account/close {}", r.b_acct));
+
+    for n in 0..4 {
+        sweep_at(&mut tw, 1_000 + i64::from(n) * 60);
+    }
+    // One record for one decision, however many fires refused it.
+    let records: Vec<_> = store(&tw)
+        .escalations()
+        .filter(|e| e.subject == EscalationSubject::Contract(id))
+        .collect();
+    assert_eq!(records.len(), 1, "a refused forfeit minted an alert per fire: {records:?}");
+    assert!(
+        records[0].recommended.iter().any(|c| c.contains("@contract/resolve")),
+        "the page does not carry the command that ends it: {:?}",
+        records[0].recommended
+    );
+    assert_eq!(held(&tw, r.j_acct), 250, "the escrow was lost while the transition was refused");
+    assert_eq!(bal(&tw, r.b_acct), 0, "a closed account was paid");
+}
+
+/// B4 — step 3 starved: the per-fire cap was spent on records with nothing due, in id
+/// order, so a high-id contract past its own deadline was never reached.
+#[test]
+fn vf_b4_a_high_id_contract_is_not_starved_by_a_wall_of_disputes() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    ok(&mut tw, r.johnson, "@contract/draft Victim");
+    let id = only_contract(&tw);
+    ok(&mut tw, r.johnson, &format!("@contract/party {id}=#{}", r.a.0));
+    ok(&mut tw, r.johnson, &format!("@contract/pay {id}={} 300", r.j_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/split {id}={} 1000‰", r.a_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/remainder {id}={}", r.j_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/condition {id}=attest party:#{}", r.a.0));
+    ok(&mut tw, r.johnson, &format!("@contract/deadline {id}=600 refund"));
+    ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
+
+    // The victim moves to a high id, and sixty-five long-disputed contracts sit in
+    // front of it. Sixty-five is one more than the per-fire cap.
+    let victim = mush_economy::ContractId(100);
+    let mut kv = fold_kv(&mut tw);
+    let doc = doc_of(&kv, &format!("contract:{id}"));
+    kv.retain(|(k, _)| k.as_str() != format!("contract:{id}"));
+    let mut moved = doc.clone();
+    moved["id"] = serde_json::json!(victim.0);
+    kv.push((SmolStr::new(format!("contract:{}", victim.0)), moved));
+    for n in 1..=65u64 {
+        let mut d = doc.clone();
+        d["id"] = serde_json::json!(n);
+        d["state"] = serde_json::json!("Disputed");
+        d["disputed_at"] = serde_json::json!(0);
+        d["consent"]["deadline"] = serde_json::Value::Null;
+        kv.push((SmolStr::new(format!("contract:{n}")), d));
+    }
+    patch(&mut kv, "meta", |v| v["next_contract_id"] = serde_json::json!(101));
+    reboot(&mut tw, kv);
+    assert_eq!(snap(&tw).contracts().count(), 66);
+    assert_eq!(state(&tw, victim), ContractState::Offered);
+
+    // Two fires is the whole budget: the wall of disputes is work only while the
+    // ladder has something to say, and the scan rotates so id order cannot starve.
+    // Well past `DISPUTE_TTL_SECS`, so every one of the sixty-five disputes is work.
+    sweep_at(&mut tw, 400_000);
+    // The first fire spends its budget on the disputes (which is the old behaviour,
+    // and legitimate: they had never been paged).
+    assert_eq!(
+        store(&tw).escalations().count(),
+        64,
+        "the first fire did not spend its budget on the wall of disputes"
+    );
+    assert_eq!(state(&tw, victim), ContractState::Offered, "the victim was reached early");
+    sweep_at(&mut tw, 400_060);
+    assert_eq!(
+        state(&tw, victim),
+        ContractState::Expired,
+        "a high-id contract was starved past its own deadline"
+    );
+}
+
+/// B5 — the `Settled` check was existence-only, so a doc could claim another
+/// contract's settlement and read as clean.
+#[test]
+fn vf_b5_a_settled_doc_claiming_another_contracts_transaction_is_drift() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 6_000);
+    // Two contracts, both really settled.
+    let first = offered_run(&mut tw, &r, 300);
+    accept_all(&mut tw, &r, first);
+    ok(&mut tw, r.johnson, &format!("@contract/attest {first}=0"));
+
+    ok(&mut tw, r.johnson, "@contract/draft Second");
+    let second = snap(&tw).contracts().map(|c| c.id).max().expect("second");
+    ok(&mut tw, r.johnson, &format!("@contract/party {second}=#{}", r.a.0));
+    ok(&mut tw, r.johnson, &format!("@contract/pay {second}={} 200", r.j_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/split {second}={} 1000‰", r.a_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/remainder {second}={}", r.j_acct));
+    ok(&mut tw, r.johnson, &format!("@contract/condition {second}=attest party:#{}", r.johnson.0));
+    ok(&mut tw, r.johnson, &format!("@contract/offer {second}"));
+    ok(&mut tw, r.johnson, &format!("@contract/accept {second}"));
+    ok(&mut tw, r.a, &format!("@contract/accept {second}"));
+    ok(&mut tw, r.johnson, &format!("@contract/attest {second}=0"));
+    let ContractState::Settled { transaction: other } = state(&tw, second) else {
+        panic!("the second contract did not settle");
+    };
+
+    // The first contract's doc now names a transaction the journal HAS — and which
+    // is not its settlement.
+    let mut kv = fold_kv(&mut tw);
+    patch(&mut kv, &format!("contract:{first}"), |v| {
+        v["state"] = serde_json::json!({ "Settled": { "transaction": other.0 } });
+    });
+    reboot(&mut tw, kv);
+    assert!(
+        store(&tw).is_frozen(),
+        "a settlement doc claiming another contract's transaction read as clean"
+    );
+    assert!(
+        store(&tw).escalations().any(|e| e.subject == EscalationSubject::Contract(first)),
+        "the freeze opened no companion record"
+    );
+}
+
+/// B6 — boot trusted a stored surface, so a record that could never settle came back
+/// live and held its escrow until a deadline it might not even have.
+#[test]
+fn vf_b6_boot_quarantines_a_stored_surface_that_could_never_settle() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    let id = offered_run(&mut tw, &r, 300);
+    accept_all(&mut tw, &r, id);
+    assert_eq!(state(&tw, id), ContractState::Active);
+    assert_eq!(held(&tw, r.j_acct), 300);
+
+    // Two `After` conditions anchored on each other: individually plausible, and
+    // neither can ever be satisfied.
+    let mut kv = fold_kv(&mut tw);
+    patch(&mut kv, &format!("contract:{id}"), |v| {
+        v["consent"]["conditions"] = serde_json::json!([
+            { "After": { "condition": 1, "delay": 60, "clock": "RealUtc" } },
+            { "After": { "condition": 0, "delay": 60, "clock": "RealUtc" } },
+        ]);
+        v["satisfied"] = serde_json::json!([null, null]);
+    });
+    reboot(&mut tw, kv);
+    assert_eq!(state(&tw, id), ContractState::Disputed, "boot trusted a stored surface");
+    assert!(!store(&tw).is_frozen(), "one broken surface froze the whole economy");
+    assert!(
+        store(&tw).escalations().any(|e| e.subject == EscalationSubject::Contract(id)),
+        "boot quarantined a contract without paging"
+    );
+    // The escrow is untouched: quarantine reserves no value and moves none.
+    assert_eq!(held(&tw, r.j_acct), 300, "quarantine moved the escrow");
+    assert_eq!(bal(&tw, r.j_acct), 3_000);
 }

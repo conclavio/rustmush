@@ -352,6 +352,15 @@ pub enum EconomicVisibility {
     Audience {
         /// Who else may see it (≤ [`MAX_AUDIENCE`]).
         members: Vec<PrincipalId>,
+        /// Whether the audience's **notice** names the issuer (E4b2 verify fold, A7).
+        ///
+        /// Default `false`, and it lives inside the consent surface rather than
+        /// beside it because it is a disclosure the parties agree to: doc 10 T6's
+        /// class is "notice of the window, not the plan", and who is running an
+        /// operation is exactly the thing a defender learning about it must not get
+        /// for free. An issuer who *wants* to be named says so, before anyone accepts.
+        #[serde(default)]
+        announce_issuer: bool,
     },
 }
 
@@ -360,9 +369,15 @@ impl EconomicVisibility {
     #[must_use]
     pub fn members(&self) -> &[PrincipalId] {
         match self {
-            EconomicVisibility::Audience { members } => members,
+            EconomicVisibility::Audience { members, .. } => members,
             _ => &[],
         }
+    }
+    /// Whether an audience notice names the issuer (A7). Always `false` outside an
+    /// [`EconomicVisibility::Audience`], which has no notice render.
+    #[must_use]
+    pub fn announce_issuer(&self) -> bool {
+        matches!(self, EconomicVisibility::Audience { announce_issuer: true, .. })
     }
     /// Whether this visibility is the one E4c's canon bridge may publish (D-E4-12:
     /// only a `Public` contract, whose every party accepted that disclosure, ever

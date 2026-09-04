@@ -535,8 +535,32 @@ pub(crate) fn refuse(ctx: &Ctx<'_>, subject: NamedResource, also: &[NamedResourc
     CmdError::msg(e.to_string())
 }
 
+/// Whether this resource renders as "No such …" for this actor — the predicate half
+/// of [`hidden_text`], for callers that are shaping a *message* rather than a refusal
+/// (E4b2 verify fold, A6).
+pub(crate) fn is_hidden(ctx: &Ctx<'_>, resource: NamedResource) -> bool {
+    hidden_text(ctx, resource).is_some()
+}
+
+/// [`refuse`] for a refusal that is not an [`crate::EconomyError`] (E4b2 verify fold,
+/// A2): the same hiding loop over an explicit list of resources, so a contract
+/// refusal and a money refusal disclose exactly the same amount.
+pub(crate) fn refuse_named(
+    ctx: &Ctx<'_>,
+    subject: NamedResource,
+    named: impl IntoIterator<Item = NamedResource>,
+    detail: String,
+) -> CmdError {
+    for r in std::iter::once(subject).chain(named) {
+        if let Some(text) = hidden_text(ctx, r) {
+            return CmdError::msg(text);
+        }
+    }
+    CmdError::msg(detail)
+}
+
 /// §4.5 view standing over a vault: staff, its owner, or `vault.view` on its scope.
-fn may_view_vault(w: &World, actor: ObjId, id: VaultId) -> bool {
+pub(crate) fn may_view_vault(w: &World, actor: ObjId, id: VaultId) -> bool {
     if api::is_staff(w, actor) {
         return true;
     }

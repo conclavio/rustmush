@@ -118,6 +118,15 @@ pub struct EconomyStore {
     /// How many **consecutive** sweep fires have deferred each obligation's
     /// settlement as transient (S7). RAM-only for the same reason.
     pub(crate) obligation_defers: BTreeMap<ObligationId, u32>,
+    /// Where the contract step starts scanning next fire (E4b2 verify fold, B4).
+    ///
+    /// The per-fire cap bounds *work*, and id order decided who got it: sixty-five
+    /// contracts with something due meant the sixty-fifth was never reached, fire
+    /// after fire, so a high-id contract could sit past its own deadline forever
+    /// behind a wall of low-id ones. The cursor makes the scan a **rotation**, so
+    /// every record is reached within one pass of the pool whatever its id. Durable in
+    /// `meta` so a restart does not always resume from zero.
+    pub(crate) sweep_contract_cursor: u64,
     /// The wall-clock instant of the last completed sweep fire — the evidence
     /// [`crate::classify_forgiveness`] reads to tell downtime from overload. Durable
     /// in `meta`; a sweep that did not run (a frozen economy) does not stamp it.
@@ -196,6 +205,7 @@ pub(crate) struct BootParts {
     pub(crate) next_escalation: u64,
     pub(crate) next_contract: u64,
     pub(crate) last_custody: BTreeMap<ObjId, CustodyMark>,
+    pub(crate) sweep_contract_cursor: u64,
     pub(crate) last_sweep_real: i64,
     pub(crate) last_sweep_ic: i64,
     pub(crate) last_boot_real: i64,
@@ -223,6 +233,7 @@ impl EconomyStore {
             next_escalation: p.next_escalation,
             next_contract: p.next_contract,
             last_custody: p.last_custody,
+            sweep_contract_cursor: p.sweep_contract_cursor,
             hold_expiry_failures: BTreeMap::new(),
             obligation_defers: BTreeMap::new(),
             last_sweep_real: p.last_sweep_real,
@@ -423,6 +434,7 @@ impl EconomyStore {
             "next_cadence_id": self.next_cadence,
             "next_escalation_id": self.next_escalation,
             "next_contract_id": self.next_contract,
+            "sweep_contract_cursor": self.sweep_contract_cursor,
             "last_sweep_real": self.last_sweep_real,
             "last_sweep_ic": self.last_sweep_ic,
             "last_boot_real": self.last_boot_real,

@@ -545,9 +545,15 @@ impl AuthEval for WorldAuth<'_> {
     /// through this method, could never re-qualify, so a contract satisfied by one
     /// could never settle at all.
     ///
-    /// - `Party(p)`: the actor **is** `p`. Not `acts_for` — a party attestation is a
-    ///   statement by that party about the world, and the whole point of naming the
-    ///   party is that somebody else's word is not theirs.
+    /// - `Party(p)`: the actor **is** `p` when `p` is a person, and **acts for** `p`
+    ///   when `p` is an organization (E4b2 verify fold, A3). The identity rule reads
+    ///   well — "somebody else's word is not theirs" — and it stays, for people. But
+    ///   `p` is a `PrincipalId`, and an **organization never types a command**: a
+    ///   contract attested by `party:org:Ironhold` could be satisfied by nobody at
+    ///   all, so its escrow sat until the deadline with the org's own officers locked
+    ///   out. For that case the question is the same one `may_view_hold` and every
+    ///   capture ask (E4b1's A2). The *record* still names the party, not the officer
+    ///   (`contract_attest`), so a party attestation still stands once given.
     /// - `Capability { scope, capability }`: the capability, live, on a live
     ///   compartment — the ordinary org question. A capability set with no scope
     ///   qualifies nobody (there is no compartment to hold it on).
@@ -557,7 +563,16 @@ impl AuthEval for WorldAuth<'_> {
     ///   without asking this method at all.
     fn authorize_attestor(&self, actor: &PrincipalId, set: &crate::AttestorSet) -> bool {
         match set {
-            crate::AttestorSet::Party(p) => actor == p,
+            crate::AttestorSet::Party(p) => match p {
+                // A person's word is their own: naming a party means somebody else's
+                // assertion is not theirs, staff included (staff have
+                // `@contract/resolve` for what they legitimately need here).
+                PrincipalId::Object(_) => actor == p,
+                // An organization types nothing. Whoever may spend its money speaks
+                // for it — the same predicate `may_view_hold` and every capture ask.
+                PrincipalId::Organization(_) => actor == p || self.acts_for(actor, p),
+                PrincipalId::System(_) => false,
+            },
             crate::AttestorSet::Capability { scope, capability } => {
                 let (PrincipalId::Object(a), Some(scope)) = (actor, scope) else { return false };
                 let req = AuthRequest {
@@ -828,6 +843,30 @@ pub(crate) fn post_with(
     plan: &EconomyPlan,
     auth: PostAuth<'_>,
 ) -> Result<PostOutcome, EconomyError> {
+    post_with_companions(ctx, plan, auth, Vec::new())
+}
+
+/// [`post_with`], plus **companion container docs written in the post's own batch**
+/// (E4b2 verify fold, B2).
+///
+/// The problem it solves is `@contract/accept`. The escrow placement and the
+/// acceptance are two facts about one act, and they were two writes: the post's
+/// journal chunk and hold/account projections, then — separately, afterwards — the
+/// contract doc carrying `escrow: [id]` and the acceptance. Lose the second and the
+/// hold survives replay (it is journal authority) while the record that names it does
+/// not: the payer's money is reserved to `HoldPurpose::Escrow { contract }`, which
+/// `WorldAuth` refuses every op on, for a contract whose `escrow` list is empty and
+/// whose settlement therefore never reaches it. Nothing anywhere could release it.
+///
+/// Handing the doc to the post closes that: every companion rides
+/// [`install_commit`]'s batch with the journal append, and is installed into the same
+/// post-image snapshot, so the two facts are durable together or neither is.
+pub(crate) fn post_with_companions(
+    ctx: &mut Ctx<'_>,
+    plan: &EconomyPlan,
+    auth: PostAuth<'_>,
+    companions: Vec<crate::contract::EconomicContract>,
+) -> Result<PostOutcome, EconomyError> {
     let (outcome, providers) = {
         let store = ctx.w.module_state::<EconomyStore>().ok_or(EconomyError::EconomyFrozen)?;
         if store.frozen {
@@ -852,7 +891,7 @@ pub(crate) fn post_with(
         };
         (validate(plan, store.snapshot(), &env), providers)
     };
-    finish(ctx, outcome, &providers, &plan.actor)
+    finish(ctx, outcome, &providers, &plan.actor, companions)
 }
 
 /// Reverse transaction `target`: fetch the real original from the journal-derived
@@ -873,7 +912,7 @@ pub fn reverse(
         let auth = WorldAuth { w: ctx.w };
         (plan_reversal(&original, actor.clone(), cause, store.snapshot(), &auth), store.providers())
     };
-    finish(ctx, outcome, &providers, &actor)
+    finish(ctx, outcome, &providers, &actor, Vec::new())
 }
 
 /// Run the prepared custody moves through their resolved providers — §4.2 step 2,
@@ -1234,6 +1273,7 @@ fn finish(
     outcome: PlanResult,
     providers: &crate::custody::CustodyTable,
     requester: &PrincipalId,
+    companions: Vec<crate::contract::EconomicContract>,
 ) -> Result<PostOutcome, EconomyError> {
     match outcome {
         PlanResult::AlreadyPosted(id) => {
@@ -1267,7 +1307,7 @@ fn finish(
             // representable before custody can move an object. This closes the
             // K0 poison-append seam without changing E3's rule that the world move
             // occurs before the economic state becomes live.
-            let commit = prepare_commit(ctx, &prepared, now)?;
+            let commit = prepare_commit(ctx, &prepared, now, companions)?;
             // §4.2 step 2: the world moves BEFORE the store advances, and only from
             // the prepared effects (never the plan's ops — see `AlreadyPosted` above,
             // which performs zero world mutation). **This is the last fallible act
@@ -1296,12 +1336,15 @@ struct PreparedEconomyCommit {
     asset_docs: Vec<EconomicAsset>,
     hold_docs: Vec<Hold>,
     approval_doc: Option<ApprovalRequest>,
+    /// Caller-supplied container docs that must be durable with this post (B2).
+    contract_docs: Vec<crate::contract::EconomicContract>,
 }
 
 fn prepare_commit(
     ctx: &Ctx<'_>,
     prepared: &Prepared,
     now: i64,
+    companions: Vec<crate::contract::EconomicContract>,
 ) -> Result<PreparedEconomyCommit, EconomyError> {
     let store = ctx.w.module_state::<EconomyStore>().expect("economy store");
     let txid = TransactionId(store.peek_next_transaction());
@@ -1310,7 +1353,12 @@ fn prepare_commit(
         .checked_add(1)
         .ok_or(EconomyError::Overflow)?;
     let journal_seq = store.journal.next_seq(JOURNAL_LOG);
-    let (snapshot, transaction) = apply(store.snapshot(), prepared, txid, journal_seq, now);
+    let (mut snapshot, transaction) = apply(store.snapshot(), prepared, txid, journal_seq, now);
+    // The companion docs go into the SAME post-image, before it is handed to
+    // `install_commit`, so RAM and the batch carry one state (B2).
+    for c in &companions {
+        snapshot.put_contract(c.clone());
+    }
     let journal = store
         .journal
         .prepare_append(
@@ -1356,6 +1404,7 @@ fn prepare_commit(
         asset_docs,
         hold_docs,
         approval_doc,
+        contract_docs: companions,
     })
 }
 
@@ -1408,6 +1457,7 @@ fn install_commit(ctx: &mut Ctx<'_>, commit: PreparedEconomyCommit) -> Transacti
         asset_docs,
         hold_docs,
         approval_doc,
+        contract_docs,
     } = commit;
     let (journal_op, meta) = {
         let store = ctx.w.module_state_mut::<EconomyStore>().expect("economy store");
@@ -1441,6 +1491,9 @@ fn install_commit(ctx: &mut Ctx<'_>, commit: PreparedEconomyCommit) -> Transacti
     }
     if let Some(r) = &approval_doc {
         persist_approval(ctx.out, r);
+    }
+    for c in &contract_docs {
+        persist_contract(ctx.out, c);
     }
     persist_meta(ctx.out, meta);
     txid
